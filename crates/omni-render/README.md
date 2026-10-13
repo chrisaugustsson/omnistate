@@ -96,16 +96,30 @@ surface, which the tests check pixel by pixel.
 height, in page coordinates) by the CSS that `docs/formats/layout.md` maps
 each layout property to, so designs lay out the way a browser lays out the
 same design written as HTML and CSS. Taffy runs the flexbox, grid and
-absolute positioning; `src/layout/style.rs` holds the mapping. Text is shaped
-and broken into lines by Skia's paragraph layout (`src/text.rs`), with line
-heights and baselines rounded the way Chrome rounds them.
+absolute positioning; `src/layout/style.rs` holds the mapping.
+
+Text is shaped by Skia's paragraph layout (`src/text.rs`), which measures
+each piece of a text between two places where a line may break. Lines then
+take as many pieces as fit, the way Chrome fills lines, with line heights and
+baselines rounded the way Chrome rounds them. Skia's own line breaking cannot
+stand in for Chrome's: it breaks words that are wider than their line, and
+breaks after slashes. So `src/text/breaks.rs` finds the places where Chrome
+breaks lines: Blink's rules between two ASCII characters, and Unicode's line
+breaking algorithm (UAX #14, through the `unicode-linebreak` crate) next to
+any other character.
 
 Layout owns its Taffy tree (`src/layout/tree.rs`) instead of using Taffy's
-`TaffyTree`, for two reasons:
+`TaffyTree`, for three reasons:
 
-- Taffy makes a single-line row flex container as wide as its items' flex
-  bases add up to whenever the space available decides its width, where CSS
-  gives it its fit-content width. The tree lays such a row out at that width.
+- Where the space available decides the width of a row flex container, CSS
+  gives the row its fit-content width, bounded by the row's min and max
+  widths. Taffy makes a single-line row as wide as its items' flex bases add
+  up to and a row that wraps as wide as its widest line, and it wraps the
+  items at the row's max width while it measures them. The tree lays such a
+  row out at its CSS width.
+- Taffy lets a parent's layout make a box smaller than its padding, such as a
+  column that stretches a child across less than its padding. CSS never
+  does, and neither does the tree.
 - Taffy's cache keeps 9 measured sizes per node, too few for nested rows and
   columns, which then measure the same sizes again at a cost that grows with
   every level of nesting. The tree keeps every size it measures during a

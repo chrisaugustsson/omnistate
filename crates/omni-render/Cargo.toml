@@ -8,9 +8,12 @@ publish.workspace = true
 omni-core = { path = "../omni-core" }
 # Keep the default features: the prebuilt Skia binaries (see README.md) exist
 # only for feature sets that include them. `textlayout` adds Skia's paragraph
-# layout, which shapes and wraps text.
+# layout, which shapes and measures text.
 skia-safe = { version = "0.153.3", features = ["gl", "textlayout"] }
 taffy = "0.15.0"
+# Unicode's line breaking algorithm (UAX #14), which decides where lines may
+# break next to characters beyond ASCII, as it does in Chrome.
+unicode-linebreak = "0.1.5"
 
 [dev-dependencies]
 serde_json = "1"

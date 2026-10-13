@@ -2,20 +2,21 @@
 //! Taffy's flexbox, grid and block algorithms, with text measured by Skia's
 //! paragraph layout.
 //!
-//! Layout owns the tree, rather than using Taffy's `TaffyTree`, to size one
-//! kind of container the way CSS does where Taffy does not (see
-//! [`LayoutTree::fit_content_width`]), and to keep every size it measures
-//! (see its [`CacheTree`] implementation).
+//! Layout owns the tree, rather than using Taffy's `TaffyTree`, to size rows
+//! the way CSS does where Taffy does not (see
+//! [`LayoutTree::fit_content_width`]), to keep every box at least as large as
+//! its padding (see its [`LayoutPartialTree`] implementation), and to keep
+//! every size it measures (see its [`CacheTree`] implementation).
 
 use crate::text::ShapedText;
 use std::iter::Copied;
 use std::slice;
 use taffy::prelude::TaffyMaxContent;
 use taffy::{
-    AvailableSpace, Baselines, Cache, CacheTree, Dimension, Display, FlexDirection, FlexWrap,
-    Layout, LayoutBlockContainer, LayoutContainingBlock, LayoutFlexboxContainer,
-    LayoutGridContainer, LayoutInput, LayoutOutput, LayoutPartialTree, LengthPercentageAuto, Line,
-    NodeId, Rect, RequestedAxis, RunMode, Size, SizingMode, Style, TraversePartialTree,
+    AvailableSpace, Baselines, Cache, CacheTree, Dimension, Display, FlexDirection, Layout,
+    LayoutBlockContainer, LayoutContainingBlock, LayoutFlexboxContainer, LayoutGridContainer,
+    LayoutInput, LayoutOutput, LayoutPartialTree, LengthPercentageAuto, Line, NodeId, Rect,
+    RequestedAxis, ResolveOrZero, RunMode, Size, SizingMode, Style, TraversePartialTree,
     TraverseTree, compute_block_layout, compute_cached_layout, compute_flexbox_layout,
     compute_grid_layout, compute_hidden_layout, compute_leaf_layout, compute_oof_layout,
     compute_root_layout,
@@ -39,6 +40,9 @@ struct TreeNode {
     /// Every size measured for the node, by the inputs it was measured with:
     /// see [`CacheTree`].
     measured: Vec<(LayoutInput, LayoutOutput)>,
+    /// The max-content and min-content widths of a row's content, once they
+    /// are measured: see [`LayoutTree::content_widths`].
+    content_widths: Option<[f32; 2]>,
 }
 
 impl LayoutTree {
@@ -61,6 +65,7 @@ impl LayoutTree {
             layout: Layout::new(),
             cache: Cache::new(),
             measured: Vec::new(),
+            content_widths: None,
         });
         NodeId::from(self.nodes.len() - 1)
     }
@@ -88,17 +93,21 @@ impl LayoutTree {
         &mut self.nodes[usize::from(node)]
     }
 
-    /// The width of a single-line row flex container whose width the space
-    /// available decides, such as a row that hugs its content in a column
-    /// that aligns it to the start. Taffy makes such a row as wide as its
-    /// items' flex bases add up to, even when they could shrink to fit the
-    /// space or grow beyond their bases. CSS gives the row its fit-content
-    /// width: its max-content width, but no wider than the space available
-    /// unless its min-content width is wider still.
+    /// The width of a row flex container whose width the space available
+    /// decides, such as a row that hugs its content in a column that aligns
+    /// it to the start. Taffy makes a single-line row as wide as its items'
+    /// flex bases add up to, even when they could shrink to fit the space or
+    /// grow beyond their bases, and a row that wraps as wide as its widest
+    /// line, even when an item on it is wider than the space. CSS gives the
+    /// row its fit-content width: its max-content width, but no wider than
+    /// the space available unless its min-content width is wider still, and
+    /// then bounds it by the row's own min and max widths. The bounds apply
+    /// even where Taffy sizes the row's content alone, as it does to find
+    /// how tall the row is in a column, because the row's items wrap at the
+    /// bounded width.
     ///
     /// Returns `None` for every other node, and for a row whose width is
-    /// already known. Taffy sizes a row that wraps the way CSS does, except
-    /// when one of its items is wider than the space available.
+    /// already known.
     fn fit_content_width(&mut self, node: NodeId, inputs: &LayoutInput) -> Option<f32> {
         let AvailableSpace::Definite(available) = inputs.available_space.width else {
             return None;
@@ -106,26 +115,50 @@ impl LayoutTree {
         let TreeNode {
             style, children, ..
         } = self.node(node);
-        let single_line_row = style.display == Display::Flex
+        let row = style.display == Display::Flex
             && matches!(
                 style.flex_direction,
                 FlexDirection::Row | FlexDirection::RowReverse
             )
-            && style.flex_wrap == FlexWrap::NoWrap
             && !children.is_empty();
         let sized = inputs.known_dimensions.width.is_some()
             || (inputs.sizing_mode == SizingMode::InherentSize && !style.size.width.is_auto());
-        if !single_line_row || sized {
+        if !row || sized {
             return None;
         }
-        // Designs have no percentages and no aspect ratios, so neither the
-        // size of the parent nor the height of a single-line row changes its
-        // max-content and min-content widths. Measuring them without either
-        // measures each once, however many sizes the row is measured at.
-        let mut width_under = |width| {
+        let [max_content, min_content] = self.content_widths(node);
+        let width = max_content.min(min_content.max(available));
+        let style = &self.node(node).style;
+        let [min, max] = [style.min_size.width, style.max_size.width]
+            .map(|bound| bound.resolve_to_option(0.0, |_, _| 0.0));
+        // A min beats a max, as in CSS.
+        let width = max.map_or(width, |max| width.min(max));
+        Some(min.map_or(width, |min| width.max(min)))
+    }
+
+    /// The max-content and min-content widths of the content of the row
+    /// `node`, which CSS measures without the row's own min and max widths.
+    /// Taffy wraps the items of a row at its max width while it measures
+    /// them, so the row's bounds are left out of its style meanwhile, and
+    /// the widths are kept on the node instead of in its cache, where they
+    /// would stand in for sizes measured with the bounds.
+    ///
+    /// Designs have no percentages and no aspect ratios, so neither the size
+    /// of the parent nor the height of a row changes these widths, and each
+    /// is measured once per layout, however many sizes the row is measured
+    /// at.
+    fn content_widths(&mut self, node: NodeId) -> [f32; 2] {
+        if let Some(widths) = self.node(node).content_widths {
+            return widths;
+        }
+        let style = &mut self.node_mut(node).style;
+        let bounds = [style.min_size.width, style.max_size.width];
+        style.min_size.width = LengthPercentageAuto::auto();
+        style.max_size.width = LengthPercentageAuto::auto();
+        let widths = [AvailableSpace::MaxContent, AvailableSpace::MinContent].map(|width| {
             let inputs = LayoutInput {
                 run_mode: RunMode::ComputeSize,
-                sizing_mode: inputs.sizing_mode,
+                sizing_mode: SizingMode::ContentSize,
                 axis: RequestedAxis::Horizontal,
                 known_dimensions: Size::NONE,
                 known_dimensions_are_definite: Size {
@@ -139,13 +172,12 @@ impl LayoutTree {
                 },
                 vertical_margins_are_collapsible: Line::FALSE,
             };
-            self.compute_child_layout(node, inputs).size.width
-        };
-        let max_content = width_under(AvailableSpace::MaxContent);
-        if max_content <= available {
-            return Some(max_content);
-        }
-        Some(width_under(AvailableSpace::MinContent).max(available))
+            self.compute_uncached(node, inputs).size.width
+        });
+        let node = self.node_mut(node);
+        [node.style.min_size.width, node.style.max_size.width] = bounds;
+        node.content_widths = Some(widths);
+        widths
     }
 
     /// Lays out `node` by its CSS `display`, without the cache.
@@ -156,7 +188,7 @@ impl LayoutTree {
         match (style.display, children.is_empty()) {
             (Display::None, _) => compute_hidden_layout(self, node),
             (_, true) => {
-                let TreeNode { style, text, .. } = self.node_mut(node);
+                let TreeNode { style, text, .. } = self.node(node);
                 match text {
                     Some(text) => measure_text(inputs, style, text),
                     // An empty frame, an image, a vector or an instance has no
@@ -175,17 +207,16 @@ impl LayoutTree {
 
 /// Sizes a text node. A width that the text's own size or its parent's layout
 /// sets is the width its lines break at; otherwise the text takes the CSS
-/// fit-content width of the space available. Its height is as many lines as
-/// its content breaks into at that width.
-fn measure_text(inputs: LayoutInput, style: &Style, text: &mut ShapedText) -> LayoutOutput {
+/// fit-content width of the space available, bounded by its min and max
+/// widths. Its height is as many lines as its content breaks into at that
+/// width.
+fn measure_text(inputs: LayoutInput, style: &Style, text: &ShapedText) -> LayoutOutput {
     // Sizing the content alone ignores the text's own size and its bounds.
     let inherent = inputs.sizing_mode == SizingMode::InherentSize;
     let styled = |size: Dimension| size.into_option().filter(|_| inherent);
-    let clamp = |size: f32, min: LengthPercentageAuto, max: LengthPercentageAuto| {
+    let clamp = |size: f32, min: LengthPercentageAuto, max: LengthPercentageAuto, bounded: bool| {
         let bound = |bound: LengthPercentageAuto| {
-            bound
-                .resolve_to_option(0.0, |_, _| 0.0)
-                .filter(|_| inherent)
+            bound.resolve_to_option(0.0, |_, _| 0.0).filter(|_| bounded)
         };
         // A min beats a max, as in CSS.
         let size = bound(max).map_or(size, |max| size.min(max));
@@ -200,11 +231,26 @@ fn measure_text(inputs: LayoutInput, style: &Style, text: &mut ShapedText) -> La
                 AvailableSpace::MinContent => text.min_content_width(),
                 AvailableSpace::MaxContent => text.max_content_width(),
             });
-        clamp(width, style.min_size.width, style.max_size.width)
+        // CSS bounds a fit-content width before it breaks the lines there, so
+        // the bounds apply even where Taffy sizes the content alone in the
+        // space available, as it sizes an absolute text, whose max width
+        // only narrows that space.
+        let fit_content = matches!(inputs.available_space.width, AvailableSpace::Definite(_));
+        clamp(
+            width,
+            style.min_size.width,
+            style.max_size.width,
+            inherent || fit_content,
+        )
     });
     let height = inputs.known_dimensions.height.unwrap_or_else(|| {
         let height = styled(style.size.height).unwrap_or_else(|| text.height(width));
-        clamp(height, style.min_size.height, style.max_size.height)
+        clamp(
+            height,
+            style.min_size.height,
+            style.max_size.height,
+            inherent,
+        )
     });
     LayoutOutput::from_sizes_and_baselines(
         Size { width, height },
@@ -248,6 +294,22 @@ impl LayoutPartialTree for LayoutTree {
         if inputs.run_mode == RunMode::PerformHiddenLayout {
             return compute_hidden_layout(self, node);
         }
+        // CSS never makes a box smaller than its padding, even where its
+        // parent's layout makes it smaller, as a column narrower than the
+        // padding does when it stretches a child. Taffy lets such a size
+        // through.
+        let padding = self
+            .node(node)
+            .style
+            .padding
+            .resolve_or_zero(None, |_, _| 0.0)
+            .sum_axes();
+        let inputs = LayoutInput {
+            known_dimensions: inputs.known_dimensions.zip_map(padding, |known, padding| {
+                known.map(|known| known.max(padding))
+            }),
+            ..inputs
+        };
         compute_cached_layout(self, node, inputs, |tree, node, inputs| {
             if let Some(width) = tree.fit_content_width(node, &inputs) {
                 let known_dimensions = Size {
@@ -302,6 +364,7 @@ impl CacheTree for LayoutTree {
         let node = self.node_mut(node);
         node.cache.clear();
         node.measured.clear();
+        node.content_widths = None;
     }
 }
 

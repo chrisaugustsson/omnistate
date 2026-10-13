@@ -118,7 +118,10 @@ components (US-032).
   width), but no wider than the space available, unless the content's
   narrowest arrangement (its min-content width) is wider still. That is the
   case in a grid area, on the cross axis of a column that does not stretch
-  the node, and for positioned nodes. A `hug` height is the content's height.
+  the node, and for positioned nodes. For a row that wraps, the widest
+  arrangement puts all its children on one line, and the narrowest puts each
+  child on a line of its own, as narrow as it gets. A `hug` height is the
+  content's height.
 - `fill` is `width: auto` too, and the parent's layout makes the node as
   large as it can, by the declarations below.
 
@@ -167,7 +170,13 @@ absolutely positioned box.
 
 `minWidth`, `maxWidth`, `minHeight` and `maxHeight` are `min-width`,
 `max-width`, `min-height` and `max-height`. They bound every sizing,
-including a stretched or filling one, and a min beats a max, as in CSS.
+including a stretched or filling one, and a min beats a max, as in CSS. A
+fit-content width is bounded before the content is laid out in it, so a text
+breaks its lines at its `maxWidth`.
+
+Whatever its sizing and bounds, a node is never smaller than its padding:
+stretched across a column narrower than its padding, a child is as wide as
+its padding.
 
 ### Content
 
@@ -200,10 +209,26 @@ parent.
 ## Text
 
 A text node's element holds its `content` exactly as written, with
-`white-space: pre-wrap`: spaces and line breaks are kept, and when the text is
-narrower than its content its lines also break at spaces, and wherever else
-Unicode allows a line break. Words never break: a word wider than its line
-overflows it (`overflow-wrap: normal`).
+`white-space: pre-wrap`: spaces, tabs and line breaks are kept. When the text
+is narrower than its content, its lines also break where Chrome breaks them
+(`line-break: auto`, `word-break: normal`):
+
+- After a run of spaces or tabs, never before one. The run stays at the end
+  of its line, even where it does not fit (it hangs).
+- Between two other ASCII characters, only after a hyphen (`-`) or a question
+  mark, and before an opening bracket (`(`, `<`, `[`, `{`) that follows
+  closing punctuation or most other symbols. Between a hyphen and a digit, a
+  line breaks only when a letter or a digit comes before the hyphen, so `-1`
+  stays whole. No other punctuation breaks, so `input/output`, URLs and
+  `e.g.` stay whole.
+- Next to any other character, where Unicode's line breaking algorithm
+  (UAX #14) allows a break: before and after an em dash, after an en dash or
+  an ellipsis, and between ideographs, for example. A no-break space never
+  breaks, and a hyphen or en dash that starts a word stays with it.
+
+Each line takes as many pieces between these places as fit. Words never
+break: a piece wider than its line overflows a line of its own
+(`overflow-wrap: normal`).
 
 | Property | CSS |
 | --- | --- |
@@ -227,14 +252,23 @@ overflows it (`overflow-wrap: normal`).
   Inter). Half of the space between the line height and the glyphs goes above
   the glyphs, rounded down to a whole pixel, which places the first baseline
   for `alignItems: baseline`.
+- A tab moves its line on to the next tab stop, every eight spaces from the
+  start of the line (CSS's initial `tab-size: 8`), letter spacing included,
+  or to the stop after it when less than half a space is left.
 - Width: a `fixed` or `fill` width, or a width that `alignItems` stretches,
   is the width the lines break at. A `hug` width is the text's fit-content
   width, where CSS makes it one: its max-content width is its widest line when
-  lines break only at line breaks, and its min-content width is its widest
-  word.
+  lines break only at line breaks, the spaces at the end of the line
+  included, and its min-content width is its widest piece between two places
+  where a line may break, without the spaces after it.
 - Height: the number of lines times the line height. An empty text has no
   line, and a line break at the very end of the content starts no line.
 - `textAlign`, `textDecoration` and `color` do not change the box.
+
+The renderer still breaks some text differently from Chrome: Thai, Lao,
+Khmer and Myanmar break only at spaces (Chrome finds their words in a
+dictionary), and a soft hyphen (U+00AD) breaks without the hyphen that Chrome
+shows at the end of the line.
 
 ## Token references
 
