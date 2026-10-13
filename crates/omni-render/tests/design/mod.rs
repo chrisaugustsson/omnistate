@@ -48,8 +48,11 @@
 //!   break at the very end starts no line, and an empty text has none. Each
 //!   line is `lineHeight` × `fontSize` tall, fractions included, or as tall
 //!   as Chrome makes `line-height: normal` when `lineHeight` is left out: the
-//!   font's ascent and descent, each rounded to whole pixels. `letterSpacing`
-//!   is CSS `letter-spacing`, which follows every character.
+//!   font's ascent and descent, each rounded to whole device pixels.
+//!   `letterSpacing` is CSS `letter-spacing`, which follows every character.
+//! - Where Chrome rounds to device pixels, the boxes are the ones it gives at
+//!   a device pixel ratio of 2, the ratio that the renderer gate (US-008,
+//!   US-009) compares boxes at: device pixels are half CSS pixels there.
 #![allow(dead_code)]
 
 use omni_core::design::{Node, NodeId};
@@ -241,6 +244,15 @@ pub fn with(json: &Value, key: &str, value: Value) -> Value {
     copy.as_object_mut()
         .expect("fixture nodes are objects")
         .insert(key.to_string(), value);
+    copy
+}
+
+/// A copy of `json` with `key` left out.
+pub fn without(json: &Value, key: &str) -> Value {
+    let mut copy = json.clone();
+    copy.as_object_mut()
+        .expect("fixture nodes are objects")
+        .remove(key);
     copy
 }
 

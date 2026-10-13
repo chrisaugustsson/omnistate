@@ -127,6 +127,25 @@ fn the_doc_maps_layout_to_css_properties() {
 }
 
 #[test]
+fn the_doc_names_the_device_pixel_ratio_that_layout_matches_chrome_at() {
+    // Chrome rounds font metrics and the leading above a line's glyphs to
+    // device pixels, so the boxes it gives text depend on the device pixel
+    // ratio. Layout matches the boxes Chrome gives at a ratio of 2, the ratio
+    // the renderer gate (US-008, US-009) uses, and the mapping must say so.
+    let doc = normalized(&layout_doc()).to_lowercase();
+    let names_two = doc.match_indices("pixel ratio").any(|(start, phrase)| {
+        let after: String = doc[start + phrase.len()..].chars().take(16).collect();
+        after
+            .split(|c: char| !c.is_ascii_digit())
+            .any(|number| number == "2")
+    });
+    assert!(
+        names_two,
+        "docs/formats/layout.md must say that layout gives the boxes Chrome gives at a device pixel ratio of 2, the ratio of the renderer gate (US-008, US-009), because Chrome rounds line heights and baselines to device pixels"
+    );
+}
+
+#[test]
 fn the_doc_defines_fixed_hug_and_fill_per_axis_in_flex_and_in_grid() {
     let doc = layout_doc();
     let lower = doc.to_lowercase();

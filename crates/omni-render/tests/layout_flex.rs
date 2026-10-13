@@ -7,7 +7,7 @@ mod design;
 
 use design::{
     SIX_WORDS, absolute, assert_box, assert_box_within, at, board, box_of, fixed, flex, frame,
-    grid, hugging, lay_out, none, rect, sized, text, with,
+    grid, hugging, lay_out, none, rect, sized, text, with, without,
 };
 use serde_json::{Value, json};
 
@@ -395,45 +395,65 @@ fn align_items_places_children_on_the_cross_axis_of_a_column() {
 
 #[test]
 fn align_items_baseline_lines_up_the_first_baselines_of_a_row() {
-    // Lines of Inter are lineHeight x fontSize tall, with the leading split
-    // evenly above and below the glyphs (CSS half-leading), so the baseline
-    // of a 32 px line with lineHeight 1.5 is 35 to 35.6 px below its top, and
-    // that of a 16 px line 17.8 to 18 px: Chrome rounds the font's ascent and
-    // descent to whole pixels first. A box without text has no baseline, so
-    // its bottom edge stands in for one. The 16 px text then sits 17 to 17.8
-    // px down, and the box 15 to 15.6 px down.
-    let boxes = lay_out(&board(
-        "brd00001",
-        fixed(400.0),
-        fixed(100.0),
-        flex(json!({"alignItems": "baseline"})),
-        vec![
-            text("txt00001", "Hello", 32.0, 1.5),
-            text("txt00002", "Hello", 16.0, 1.5),
-            rect("c0000001", 20.0, 20.0),
-        ],
-    ));
-    let case = "a 32 px text, a 16 px text and a 20 x 20 box aligned on their baselines";
-    let first = box_of(&boxes, "txt00001");
-    assert!(
-        first.y.abs() <= 0.01 && (first.height - 48.0).abs() <= 0.01,
-        "{case}: the 32 px text has the deepest baseline, so it sits at the top of the row as a 48 px line; layout gave {first:?}"
-    );
-    let second = box_of(&boxes, "txt00002");
-    assert_box_within(
-        &boxes,
-        "txt00002",
-        [first.x + first.width, 17.4, second.width, 24.0],
-        0.5,
-        case,
-    );
-    assert_box_within(
-        &boxes,
-        "c0000001",
-        [second.x + second.width, 15.3, 20.0, 20.0],
-        0.5,
-        case,
-    );
+    // Lines of Inter are lineHeight x fontSize tall, or as tall as Chrome
+    // makes `line-height: normal`, with half the leading above the glyphs
+    // (CSS half-leading). Chrome rounds the font's ascent and descent to
+    // whole device pixels, and that half of the leading down to a whole
+    // device pixel. At the device pixel ratio of 2 of the renderer gate, a
+    // device pixel is half a CSS pixel. A box without text has no baseline,
+    // so its bottom edge stands in for one. The row lines every first
+    // baseline up with the deepest one. These are Chrome's boxes at that
+    // ratio.
+    let without_line_height = |json: Value| without(&json, "lineHeight");
+    for (case, children, expected) in [
+        (
+            // Baselines 35.5 px below the top of the 32 px line, and 17.5 px
+            // below that of the 16 px line.
+            "a 32 px text, a 16 px text and a 20 x 20 box",
+            vec![
+                text("txt00001", "Hello", 32.0, 1.5),
+                text("txt00002", "Hello", 16.0, 1.5),
+                rect("c0000001", 20.0, 20.0),
+            ],
+            vec![
+                ("txt00001", 0.0, 48.0),
+                ("txt00002", 18.0, 24.0),
+                ("c0000001", 15.5, 20.0),
+            ],
+        ),
+        (
+            // Baselines 14.5, 17.5 and 23 px below the tops of the lines: the
+            // 28.8 px line of the 24 px text is shorter than its glyphs.
+            "a 13 px text, an 18 px text with lineHeight left out, a 24 px text with lineHeight 1.2 and a 10 x 10 box",
+            vec![
+                text("txt00001", "Hello", 13.0, 1.5),
+                without_line_height(text("txt00002", "Hello", 18.0, 1.5)),
+                text("txt00003", "Hello", 24.0, 1.2),
+                rect("c0000001", 10.0, 10.0),
+            ],
+            vec![
+                ("txt00001", 8.5, 19.5),
+                ("txt00002", 5.5, 22.0),
+                ("txt00003", 0.0, 28.8),
+                ("c0000001", 13.0, 10.0),
+            ],
+        ),
+    ] {
+        let case = format!("{case} aligned on their baselines in a 400 x 100 row");
+        let boxes = lay_out(&board(
+            "brd00001",
+            fixed(400.0),
+            fixed(100.0),
+            flex(json!({"alignItems": "baseline"})),
+            children,
+        ));
+        let mut x = 0.0;
+        for (id, y, height) in expected {
+            let width = box_of(&boxes, id).width;
+            assert_box(&boxes, id, [x, y, width, height], &case);
+            x += width;
+        }
+    }
 }
 
 #[test]
@@ -864,6 +884,259 @@ fn a_hug_row_that_wraps_fits_into_the_space_where_css_gives_it_a_fit_content_wid
 }
 
 #[test]
+fn a_hug_row_is_bounded_by_its_min_and_max_width_before_its_text_wraps() {
+    // Where CSS makes the width of a row that hugs it fit-content, the row's
+    // own min and max widths bound that width before its content is laid out
+    // in it. A row hugging six words with maxWidth 150, in a 300 px grid area,
+    // is 150 px wide, and its text wraps there onto two lines. One with
+    // minWidth 170, in a 100 px grid area, is 170 px wide, and its text needs
+    // two lines there too, where 100 px would take three.
+    for (area, bound, value, width) in [
+        (300.0, "maxWidth", 150, 150.0),
+        (100.0, "minWidth", 170, 170.0),
+    ] {
+        let case =
+            format!("a row hugging six words with {bound} {value} in a grid area {area} px wide");
+        let boxes = lay_out(&board(
+            "brd00001",
+            fixed(400.0),
+            json!("hug"),
+            grid(json!({"columns": [{"fixed": area}, {"fr": 1}]})),
+            vec![with(&row_hugging_six_words(), bound, json!(value))],
+        ));
+        assert_box(&boxes, "frm00001", [0.0, 0.0, width, 48.0], &case);
+        assert_box(&boxes, "txt00001", [0.0, 0.0, width, 48.0], &case);
+    }
+}
+
+#[test]
+fn a_wrapping_row_with_a_max_width_wraps_its_items_at_that_width() {
+    // CSS measures the content of a row without the row's own min and max
+    // widths: on one line the chips need 458.73 px. In a 500 px column that
+    // aligns it to the start, a wrapping row of chips with maxWidth 300 is
+    // 300 px wide: "Design" and "Research" share its first line, and the
+    // long chip (287.59 px) fits on the second line whole.
+    let case =
+        "a wrapping row of chips with maxWidth 300 in a 500 px column that aligns it to the start";
+    let boxes = lay_out(&column(
+        500.0,
+        "start",
+        vec![with(&wrapping_row_of_chips(), "maxWidth", json!(300))],
+    ));
+    assert_box(&boxes, "frm00001", [0.0, 0.0, 300.0, 72.0], case);
+    for (id, expected) in [
+        ("c0000001", [0.0, 0.0, 68.469, 32.0]),
+        ("c0000002", [76.469, 0.0, 86.672, 32.0]),
+        ("c0000003", [0.0, 40.0, 287.594, 32.0]),
+    ] {
+        assert_box_within(&boxes, id, expected, TEXT_TOLERANCE, case);
+    }
+
+    // Nothing limits the width of a row that hugs it, so a wrapping row of
+    // chips with maxWidth 200 inside it is 200 px wide, and wraps as it does
+    // in 200 px of space: the long chip takes the second line, shrinks to the
+    // row's width and wraps its label onto two lines.
+    let case = "a wrapping row of chips with maxWidth 200 in a board that hugs its row";
+    let boxes = lay_out(&board(
+        "brd00001",
+        json!("hug"),
+        json!("hug"),
+        flex(json!({"alignItems": "start"})),
+        vec![with(&wrapping_row_of_chips(), "maxWidth", json!(200))],
+    ));
+    assert_box(&boxes, "brd00001", [0.0, 0.0, 200.0, 96.0], case);
+    assert_box(&boxes, "frm00001", [0.0, 0.0, 200.0, 96.0], case);
+    assert_box_within(
+        &boxes,
+        "c0000002",
+        [76.469, 0.0, 86.672, 32.0],
+        TEXT_TOLERANCE,
+        case,
+    );
+    assert_box(&boxes, "c0000003", [0.0, 40.0, 200.0, 56.0], case);
+    assert_box(&boxes, "t0000003", [8.0, 44.0, 184.0, 48.0], case);
+}
+
+#[test]
+fn a_hug_row_that_wraps_counts_each_item_at_its_bounded_width() {
+    // An item's max width bounds what it adds to the width of a row that
+    // hugs it, whether the row wraps or not.
+    let case = "a wrapping row hugging a 100 px box with maxWidth 60 and a 30 px box, 8 px apart";
+    let boxes = lay_out(&board(
+        "brd00001",
+        json!("hug"),
+        json!("hug"),
+        flex(json!({"wrap": "wrap", "gap": {"column": 8}})),
+        vec![
+            with(&rect("a0000001", 100.0, 20.0), "maxWidth", json!(60)),
+            rect("b0000001", 30.0, 20.0),
+        ],
+    ));
+    assert_box(&boxes, "brd00001", [0.0, 0.0, 98.0, 20.0], case);
+    assert_box(&boxes, "a0000001", [0.0, 0.0, 60.0, 20.0], case);
+    assert_box(&boxes, "b0000001", [68.0, 0.0, 30.0, 20.0], case);
+
+    // "input/output" never breaks, and is 80.82 px wide in 14 px Inter, but
+    // with maxWidth 40 its text is 40 px wide and overflows, and so is the
+    // wrapping row that hugs it.
+    let case = "a wrapping row hugging \"input/output\" with maxWidth 40, in a board that hugs it";
+    let boxes = lay_out(&board(
+        "brd00001",
+        json!("hug"),
+        json!("hug"),
+        flex(json!({"alignItems": "start"})),
+        vec![frame(
+            "frm00001",
+            json!("hug"),
+            json!("hug"),
+            flex(json!({"wrap": "wrap"})),
+            vec![with(
+                &text("txt00001", "input/output", 14.0, 1.5),
+                "maxWidth",
+                json!(40),
+            )],
+        )],
+    ));
+    assert_box(&boxes, "brd00001", [0.0, 0.0, 40.0, 21.0], case);
+    assert_box(&boxes, "frm00001", [0.0, 0.0, 40.0, 21.0], case);
+    assert_box(&boxes, "txt00001", [0.0, 0.0, 40.0, 21.0], case);
+}
+
+#[test]
+fn a_hug_row_that_wraps_is_as_wide_as_its_fill_items_can_shrink() {
+    // A fill item grows from a flex basis of 0, but it never shrinks below
+    // its min-content width, like any flex item. Where CSS makes the width of
+    // a wrapping row fit-content, the row is never narrower than its widest
+    // item can shrink: a row holding a fill text of "Supercalifragilistic"
+    // is as wide as the word, 139.70 px, in a 50 px column as in a 100 px
+    // one, where a 30 px box after the text wraps onto a second line.
+    let super_text = || {
+        with(
+            &text("txt00001", "Supercalifragilistic", 16.0, 1.5),
+            "width",
+            json!("fill"),
+        )
+    };
+    let case = "a wrapping row hugging a fill text in a 50 px column that aligns it to the start";
+    let boxes = lay_out(&column(
+        50.0,
+        "start",
+        vec![frame(
+            "frm00001",
+            json!("hug"),
+            json!("hug"),
+            flex(json!({"wrap": "wrap"})),
+            vec![super_text()],
+        )],
+    ));
+    assert_box_within(
+        &boxes,
+        "frm00001",
+        [0.0, 0.0, 139.703, 24.0],
+        TEXT_TOLERANCE,
+        case,
+    );
+    assert_box_within(
+        &boxes,
+        "txt00001",
+        [0.0, 0.0, 139.703, 24.0],
+        TEXT_TOLERANCE,
+        case,
+    );
+
+    let case = "a wrapping row hugging a fill text and a 30 px box, 8 px apart, in a 100 px column that aligns it to the start";
+    let boxes = lay_out(&column(
+        100.0,
+        "start",
+        vec![frame(
+            "frm00001",
+            json!("hug"),
+            json!("hug"),
+            flex(json!({"wrap": "wrap", "gap": {"row": 8, "column": 8}})),
+            vec![super_text(), rect("a0000001", 30.0, 20.0)],
+        )],
+    ));
+    assert_box_within(
+        &boxes,
+        "frm00001",
+        [0.0, 0.0, 139.703, 52.0],
+        TEXT_TOLERANCE,
+        case,
+    );
+    assert_box_within(
+        &boxes,
+        "txt00001",
+        [0.0, 0.0, 139.703, 24.0],
+        TEXT_TOLERANCE,
+        case,
+    );
+    assert_box(&boxes, "a0000001", [0.0, 32.0, 30.0, 20.0], case);
+}
+
+#[test]
+fn a_hug_row_is_as_wide_as_a_column_that_wraps_inside_it() {
+    // A column that wraps is as wide as the lines it wraps into, and the
+    // height those lines break at can come from the row around it. Here a
+    // row 100 px tall stretches a column of five 80 x 30 boxes to its height,
+    // so the boxes wrap into three lines 20 px apart, and the row, which
+    // hugs its width in a 600 px column that aligns it to the start, is as
+    // wide as those lines: 280 px.
+    let wrapping_column = || {
+        frame(
+            "frm00001",
+            json!("hug"),
+            json!("hug"),
+            flex(json!({
+                "direction": "column",
+                "wrap": "wrap",
+                "gap": {"row": 10, "column": 20}
+            })),
+            five_rects(),
+        )
+    };
+    let wrapped = [
+        ("a0000001", [0.0, 0.0, 80.0, 30.0]),
+        ("b0000001", [0.0, 40.0, 80.0, 30.0]),
+        ("c0000001", [100.0, 0.0, 80.0, 30.0]),
+        ("d0000001", [100.0, 40.0, 80.0, 30.0]),
+        ("e0000001", [200.0, 0.0, 80.0, 30.0]),
+    ];
+    let case = "a row 100 px tall, hugging its width in a 600 px column, around a column of five boxes that wraps";
+    let boxes = lay_out(&column(
+        600.0,
+        "start",
+        vec![frame(
+            "frm00002",
+            json!("hug"),
+            fixed(100.0),
+            flex(json!({})),
+            vec![wrapping_column()],
+        )],
+    ));
+    assert_box(&boxes, "frm00002", [0.0, 0.0, 280.0, 100.0], case);
+    assert_box(&boxes, "frm00001", [0.0, 0.0, 280.0, 100.0], case);
+    for (id, expected) in wrapped {
+        assert_box(&boxes, id, expected, case);
+    }
+
+    // A column that hugs its height wraps at its maxHeight instead, and is
+    // as tall as its longest line: 30 + 10 + 30 = 70 px.
+    let case = "a column of five boxes that wraps at maxHeight 100, in a board that hugs it";
+    let boxes = lay_out(&board(
+        "brd00001",
+        json!("hug"),
+        json!("hug"),
+        flex(json!({"alignItems": "start"})),
+        vec![with(&wrapping_column(), "maxHeight", json!(100))],
+    ));
+    assert_box(&boxes, "brd00001", [0.0, 0.0, 280.0, 70.0], case);
+    assert_box(&boxes, "frm00001", [0.0, 0.0, 280.0, 70.0], case);
+    for (id, expected) in wrapped {
+        assert_box(&boxes, id, expected, case);
+    }
+}
+
+#[test]
 fn fill_children_share_the_free_space_of_the_main_axis_equally() {
     let case = "a 100 px box and two fill children in a 500 px row with 20 px gaps";
     let boxes = lay_out(&board(
@@ -1092,4 +1365,56 @@ fn min_and_max_sizes_bound_stretched_children() {
     assert_box(&boxes, "a0000001", [0.0, 0.0, 50.0, 40.0], case);
     let case = "a fill height in a 100 px row, with minHeight 150";
     assert_box(&boxes, "b0000001", [50.0, 0.0, 50.0, 150.0], case);
+}
+
+#[test]
+fn a_child_is_never_narrower_than_its_padding() {
+    // CSS never makes a box smaller than its padding: its content box is 0 px
+    // at least. A frame padded 15 px on each side, holding a 4 x 4 box, is
+    // 30 px wide even where a narrower column stretches it or gives it a fill
+    // width, and its box sits inside its padding.
+    let padded = |width: Value| {
+        frame(
+            "frm00001",
+            width,
+            json!("hug"),
+            flex(json!({"padding": {"top": 10, "right": 15, "bottom": 10, "left": 15}})),
+            vec![rect("a0000001", 4.0, 4.0)],
+        )
+    };
+    for (case, column_width, align, width) in [
+        (
+            "a frame that a 20 px column stretches",
+            20.0,
+            None,
+            json!("hug"),
+        ),
+        (
+            "a frame that a 0 px column stretches",
+            0.0,
+            None,
+            json!("hug"),
+        ),
+        (
+            "a frame that fills the width of a 20 px column that aligns it to the start",
+            20.0,
+            Some("start"),
+            json!("fill"),
+        ),
+    ] {
+        let layout = match align {
+            Some(align) => flex(json!({"direction": "column", "alignItems": align})),
+            None => flex(json!({"direction": "column"})),
+        };
+        let boxes = lay_out(&board(
+            "brd00001",
+            fixed(column_width),
+            json!("hug"),
+            layout,
+            vec![padded(width)],
+        ));
+        let case = format!("{case}, padded 15 px on each side");
+        assert_box(&boxes, "frm00001", [0.0, 0.0, 30.0, 24.0], &case);
+        assert_box(&boxes, "a0000001", [15.0, 10.0, 4.0, 4.0], &case);
+    }
 }

@@ -7,8 +7,8 @@ mod common;
 mod design;
 
 use design::{
-    SIX_WORDS, assert_box, assert_box_within, at, board, box_of, fixed, flex, frame, grid, lay_out,
-    none, rect, sized, text, with,
+    SIX_WORDS, absolute, assert_box, assert_box_within, at, board, box_of, fixed, flex, frame,
+    grid, lay_out, none, rect, sized, text, with, without,
 };
 use serde_json::{Value, json};
 use skia_safe::{Data, Font, FontMgr};
@@ -35,14 +35,6 @@ fn inter(size: f32) -> Font {
 /// glyphs' advances, unshaped, so without kerning.
 fn advance_width(content: &str, size: f32) -> f32 {
     inter(size).measure_str(content, None).0
-}
-
-/// The height a browser gives one line of the bundled Inter at `size` px with
-/// `line-height: normal`: the font's ascent, descent and line gap, each
-/// rounded to whole pixels, as Chrome rounds them.
-fn normal_line_height(size: f32) -> f32 {
-    let (_, metrics) = inter(size).metrics();
-    (-metrics.ascent).round() + metrics.descent.round() + metrics.leading.round()
 }
 
 /// A board wide enough that no text in it needs to wrap, which places its
@@ -162,23 +154,27 @@ fn text_is_shaped_so_kerning_pairs_move_closer() {
 fn a_text_without_a_line_height_gets_the_normal_line_height_a_browser_gives_its_font() {
     // Chrome makes each line of `line-height: normal` as tall as the font's
     // ascent plus its descent (Inter has no line gap), each rounded to whole
-    // pixels: 16 + 4 = 20 px at 16 px, where the unrounded sum is 19.36 px.
-    for (content, size, lines) in [
-        ("Hello", 13.0, 1.0),
-        ("Hello", 16.0, 1.0),
-        ("Hello", 18.0, 1.0),
-        ("Hello", 32.0, 1.0),
-        ("Hello\nworld", 16.0, 2.0),
+    // device pixels. At the device pixel ratio of 2 that the renderer gate
+    // compares boxes at, a device pixel is half a CSS pixel: at 16 px the
+    // ascent of 15.5 and the descent of 3.86 px make 15.5 + 4 = 19.5 px,
+    // where whole CSS pixels would make 20 px. These are Chrome's heights.
+    for (content, size, expected) in [
+        ("Hello", 11.0, 13.0),
+        ("Hello", 12.0, 14.5),
+        ("Hello", 13.0, 15.5),
+        ("Hello", 14.0, 17.0),
+        ("Hello", 16.0, 19.5),
+        ("Hello", 18.0, 22.0),
+        ("Hello", 20.0, 24.5),
+        ("Hello", 24.0, 29.5),
+        ("Hello", 32.0, 38.5),
+        ("Hello\nworld", 16.0, 39.0),
     ] {
-        let mut json = text("txt00001", content, size, 1.5);
-        json.as_object_mut()
-            .expect("text fixtures are objects")
-            .remove("lineHeight");
+        let json = without(&text("txt00001", content, size, 1.5), "lineHeight");
         let height = hug_text_box(json).height;
-        let expected = lines * normal_line_height(size as f32);
         assert!(
             (height - expected).abs() <= 0.01,
-            "{content:?} in {size} px Inter with lineHeight left out is {lines} lines of CSS `line-height: normal`, {expected} px in all; layout gave {height} px"
+            "{content:?} in {size} px Inter with lineHeight left out is as tall as Chrome makes CSS `line-height: normal` at a device pixel ratio of 2, {expected} px; layout gave {height} px"
         );
     }
 }
@@ -208,6 +204,92 @@ fn a_fixed_width_text_wraps_its_lines_at_that_width() {
                 "six words of 16 px Inter in a {width} px wide text, as {lines} lines of {line} px"
             ),
         );
+    }
+}
+
+#[test]
+fn a_line_breaks_when_it_is_a_tenth_of_a_pixel_too_narrow_for_its_text() {
+    // "Hello world" is 85.41 px wide in 16 px Inter, in Chrome as in the
+    // renderer. Chrome lets a line overflow by no more than its rounding
+    // error, so 0.1 px too little breaks the text onto two lines, and 0.1 px
+    // to spare keeps it on one.
+    assert_lines_at_fixed_width("Hello world", 85.3, 2.0);
+    assert_lines_at_fixed_width("Hello world", 85.5, 1.0);
+}
+
+#[test]
+fn labels_that_hug_their_text_inside_padded_frames_stay_on_one_line() {
+    // A frame that hugs a text is as wide as the text plus its padding, and
+    // the text gets its width back from that sum, which can come back a
+    // rounding error short of the text's own width. Chrome keeps such labels
+    // on one line: a button centered in a toolbar, and two chips in a row,
+    // all with letter spacing. These are Chrome's boxes.
+    let case = "a button whose 18 px label has letterSpacing 0.2, centered in an 800 px row";
+    let boxes = lay_out(&board(
+        "brd00001",
+        fixed(800.0),
+        json!("hug"),
+        flex(json!({"alignItems": "start", "justifyContent": "center"})),
+        vec![frame(
+            "frm00001",
+            json!("hug"),
+            json!("hug"),
+            flex(json!({"padding": {"left": 12, "right": 12}})),
+            vec![with(
+                &text("txt00001", "Save changes", 18.0, 1.5),
+                "letterSpacing",
+                json!(0.2),
+            )],
+        )],
+    ));
+    assert_box_within(
+        &boxes,
+        "frm00001",
+        [327.086, 0.0, 145.82, 27.0],
+        TEXT_TOLERANCE,
+        case,
+    );
+    assert_box_within(
+        &boxes,
+        "txt00001",
+        [339.086, 0.0, 121.82, 27.0],
+        TEXT_TOLERANCE,
+        case,
+    );
+
+    let case =
+        "two chips whose 14 px labels have letterSpacing 0.1, 4 px apart in a row that hugs them";
+    let chip = |id: &str, label_id: &str, label: &str| {
+        frame(
+            id,
+            json!("hug"),
+            json!("hug"),
+            flex(json!({"padding": {"top": 4, "right": 12, "bottom": 4, "left": 12}})),
+            vec![with(
+                &text(label_id, label, 14.0, 1.2),
+                "letterSpacing",
+                json!(0.1),
+            )],
+        )
+    };
+    let boxes = lay_out(&board(
+        "brd00001",
+        json!("hug"),
+        json!("hug"),
+        flex(json!({"gap": {"column": 4}})),
+        vec![
+            chip("c0000001", "t0000001", "Sign in"),
+            chip("c0000002", "t0000002", "Overview"),
+        ],
+    ));
+    for (id, expected) in [
+        ("brd00001", [0.0, 0.0, 160.914, 24.8]),
+        ("c0000001", [0.0, 0.0, 69.531, 24.8]),
+        ("t0000001", [12.0, 4.0, 45.531, 16.8]),
+        ("c0000002", [73.531, 0.0, 87.383, 24.8]),
+        ("t0000002", [85.531, 4.0, 63.383, 16.8]),
+    ] {
+        assert_box_within(&boxes, id, expected, TEXT_TOLERANCE, case);
     }
 }
 
@@ -350,6 +432,105 @@ fn lines_never_break_after_a_slash_between_letters() {
 }
 
 #[test]
+fn a_line_breaks_after_a_hyphen_before_a_digit_only_when_a_letter_or_digit_comes_first() {
+    // Chrome breaks between a hyphen and a digit when a letter or a digit
+    // comes before the hyphen: "pre-" / "2020" and "COVID-" / "19". Anywhere
+    // else the hyphen may be a minus sign, which stays with its number, so
+    // "-2020", "(-2020)" and the "-12" of "x -12" stay whole.
+    for (content, lines) in [
+        ("pre-2020", 2.0),
+        ("COVID-19", 2.0),
+        ("-2020", 1.0),
+        ("(-2020)", 1.0),
+        ("x -12", 2.0),
+    ] {
+        assert_lines_at_fixed_width(content, 10.0, lines);
+    }
+}
+
+#[test]
+fn a_line_breaks_after_a_question_mark_and_before_a_bracket_that_follows_punctuation() {
+    // Between two ASCII characters Chrome breaks lines by its own table:
+    // besides after hyphens, after a question mark ("what?" / "why"), and
+    // before an opening bracket that follows closing punctuation or a symbol
+    // ("matrix[0]" / "[1]", "f(x)=" / "(y)"), but not before one that follows
+    // a letter.
+    for content in ["what?why", "matrix[0][1]", "f(x)=(y)"] {
+        assert_lines_at_fixed_width(content, 10.0, 2.0);
+    }
+}
+
+#[test]
+fn a_hyphen_or_dash_that_starts_a_word_stays_with_the_word() {
+    // Unicode's line breaking rules keep a hyphen, or an en dash, that starts
+    // a word with the letter after it (rule LB20a of Unicode 15.1, which
+    // Chrome follows), so these break only at their space: "word " / "–word".
+    for content in ["word \u{2013}word", "word \u{2010}word", "a -\u{e9}lan"] {
+        assert_lines_at_fixed_width(content, 10.0, 2.0);
+    }
+    // A text that hugs its width in a narrow column is then as wide as
+    // "–word", 45.95 px in Chrome.
+    assert_hug_text_in_column("word \u{2013}word", 10.0, 45.953, 2.0);
+}
+
+#[test]
+fn a_no_break_space_joins_its_neighbors_except_after_a_hyphen() {
+    // A no-break space (U+00A0) keeps the characters on both sides of it
+    // together: "10 km" and "Mr. Smith" written with one never break. After
+    // a hyphen, though, Unicode's line breaking rules allow a break before
+    // it, and Chrome breaks there: "well-" / " known".
+    assert_lines_at_fixed_width("10\u{a0}km", 10.0, 1.0);
+    assert_lines_at_fixed_width("Mr.\u{a0}Smith", 10.0, 1.0);
+    assert_lines_at_fixed_width("well-\u{a0}known", 10.0, 2.0);
+    // So a text that hugs its width in a narrow column is as wide as
+    // " known", 54.59 px in Chrome.
+    assert_hug_text_in_column("well-\u{a0}known", 10.0, 54.586, 2.0);
+}
+
+#[test]
+fn a_tab_moves_its_line_on_to_the_next_tab_stop() {
+    // CSS `tab-size: 8`: a tab moves its line on to the next stop, every
+    // eight spaces from the start of the line (36 px in 16 px Inter). Letter
+    // spacing widens the spaces that stops are counted in, so with 1 px of it
+    // they are 44 px apart. A tab at the end of a line still counts toward
+    // the text's width. The widths are Chrome's.
+    for (content, spacing, width) in [
+        ("a\tb", 0.0, 45.797),
+        ("a\t\tb", 0.0, 81.797),
+        ("Name\tValue", 0.0, 113.875),
+        ("x\t", 0.0, 36.0),
+        ("a\tb", 2.0, 63.797),
+        ("Name\tValue", 1.0, 134.875),
+    ] {
+        let json = with(
+            &text("txt00001", content, 16.0, 1.5),
+            "letterSpacing",
+            json!(spacing),
+        );
+        let boxes = lay_out(&wide_row(vec![json]));
+        assert_box_within(
+            &boxes,
+            "txt00001",
+            [0.0, 0.0, width, 24.0],
+            TEXT_TOLERANCE,
+            &format!(
+                "{content:?} in 16 px Inter with letterSpacing {spacing}, hugging its width on one line"
+            ),
+        );
+    }
+    // A line also breaks before the piece that the tabs before it have moved
+    // past the line's end.
+    for (content, width, lines) in [
+        ("Item\tPrice\tQty", 120.0, 2.0),
+        ("Item\tPrice\tQty", 140.0, 1.0),
+        ("a\tb\tc", 40.0, 3.0),
+        ("a\tb\tc", 60.0, 2.0),
+    ] {
+        assert_lines_at_fixed_width(content, width, lines);
+    }
+}
+
+#[test]
 fn a_max_width_makes_a_hug_text_wrap() {
     let json = with(
         &text("txt00001", SIX_WORDS, 16.0, 1.5),
@@ -363,6 +544,62 @@ fn a_max_width_makes_a_hug_text_wrap() {
         [0.0, 0.0, 100.0, 72.0],
         "six words in a text that hugs its content with maxWidth 100",
     );
+}
+
+#[test]
+fn a_max_width_narrower_than_the_widest_word_still_bounds_a_hug_text() {
+    // A text that hugs its width is never wider than its maxWidth, even when
+    // its widest word is wider, and its lines break at that width: with
+    // maxWidth 50, "Supercalifragilistic word word" is 50 px wide, and each
+    // word takes a line of its own, the long one overflowing it. Chrome lays
+    // the text out so wherever CSS makes its width fit-content.
+    let bounded = || {
+        with(
+            &text("txt00001", "Supercalifragilistic word word", 16.0, 1.5),
+            "maxWidth",
+            json!(50),
+        )
+    };
+    for (case, x, y, design) in [
+        (
+            "in a 400 px column that aligns it to the start",
+            0.0,
+            0.0,
+            start_aligned_column(400.0, vec![bounded()]),
+        ),
+        (
+            "at x 20, y 10 in a board with no layout",
+            20.0,
+            10.0,
+            board(
+                "brd00001",
+                fixed(400.0),
+                fixed(300.0),
+                none(),
+                vec![at(&bounded(), 20.0, 10.0)],
+            ),
+        ),
+        (
+            "absolute at x 20, y 10 in a row",
+            20.0,
+            10.0,
+            board(
+                "brd00001",
+                fixed(400.0),
+                fixed(300.0),
+                flex(json!({})),
+                vec![absolute(&bounded(), 20.0, 10.0)],
+            ),
+        ),
+    ] {
+        let boxes = lay_out(&design);
+        assert_box(
+            &boxes,
+            "txt00001",
+            [x, y, 50.0, 72.0],
+            &format!("a text of 16 px Inter with maxWidth 50 {case}, as three lines of 24 px"),
+        );
+    }
 }
 
 #[test]
@@ -426,6 +663,35 @@ fn letter_spacing_adds_space_after_every_character() {
         assert!(
             (width - expected).abs() <= TEXT_TOLERANCE,
             "CSS `letter-spacing: {spacing}px` adds {spacing} px after each of the 5 characters of \"Hello\", so it is {expected} px wide; layout measured {width} px"
+        );
+    }
+}
+
+#[test]
+fn letter_spacing_turns_off_contextual_alternates() {
+    // Inter's contextual alternates (OpenType `calt`) change glyphs by their
+    // neighbors: "->" becomes one arrow, and a colon between capitals takes
+    // the form made for capitals. Chrome turns them off in text with letter
+    // spacing, as CSS allows for optional ligatures, so the hyphen and the
+    // greater-than sign keep their own glyphs, each followed by the spacing.
+    // Without letter spacing they stay on. The widths are Chrome's.
+    for (content, spacing, width) in [
+        ("a->b", 0.0, 34.047),
+        ("a->b", 2.0, 44.727),
+        ("Learn more ->", 2.0, 134.883),
+        ("C:VBQ", 0.0, 50.039),
+        ("C:VBQ", 2.0, 59.039),
+        ("C:VBQ", -0.5, 46.539),
+    ] {
+        let json = with(
+            &text("txt00001", content, 16.0, 1.5),
+            "letterSpacing",
+            json!(spacing),
+        );
+        let measured = hug_text_box(json).width;
+        assert!(
+            (measured - width).abs() <= TEXT_TOLERANCE,
+            "{content:?} in 16 px Inter with letterSpacing {spacing} is {width} px wide in Chrome, which shapes letter-spaced text without contextual alternates; layout measured {measured} px"
         );
     }
 }
