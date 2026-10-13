@@ -10,6 +10,12 @@ Layout gives every node a box: `x`, `y`, `width` and `height` in CSS pixels,
 in page coordinates, with the fractions of a pixel a browser keeps. No box is
 ever stored in a design; layout computes them when a design is drawn.
 
+The boxes are the ones Chrome gives at a device pixel ratio of 2, the ratio
+that the renderer gate (US-008, US-009) compares them at. Chrome rounds the
+heights of lines of text and their baselines to device pixels, which are half
+a CSS pixel there (see [Text](#text)), so at other ratios its text boxes
+differ by up to a pixel.
+
 ## Elements
 
 Every node is one element (a `div`), and its children are the elements of its
@@ -118,10 +124,12 @@ components (US-032).
   width), but no wider than the space available, unless the content's
   narrowest arrangement (its min-content width) is wider still. That is the
   case in a grid area, on the cross axis of a column that does not stretch
-  the node, and for positioned nodes. For a row that wraps, the widest
-  arrangement puts all its children on one line, and the narrowest puts each
-  child on a line of its own, as narrow as it gets. A `hug` height is the
-  content's height.
+  the node, and for positioned nodes. Where nothing limits the width, as on
+  a board or in a row that hugs its width, a `hug` width is the max-content
+  width. A `hug` height is the content's height, whatever the space
+  available: for a column that wraps, its longest line.
+  [Flex content widths](#flex-content-widths) gives the widest and narrowest
+  arrangements of flex layouts.
 - `fill` is `width: auto` too, and the parent's layout makes the node as
   large as it can, by the declarations below.
 
@@ -190,6 +198,28 @@ The content whose size a `hug` axis takes:
 - An image, a vector or an instance: nothing in layout, so 0 px. Images are
   drawn into their box, and instances take their component's size in US-032.
 
+### Flex content widths
+
+The widest and narrowest arrangements of a flex layout's content are the ones
+Chrome measures, plus the layout's padding:
+
+- A row's widest arrangement puts all its children on one line, each at its
+  max-content contribution, with the gaps between them. At its narrowest, a
+  row that wraps puts each child on a line of its own, so it is as wide as
+  its widest child at its narrowest. A row that does not wrap keeps its
+  children on one line at their narrowest, with the gaps.
+- A column is as wide as its widest child, and at its narrowest as its widest
+  child at its narrowest. A column that wraps puts the lines its children
+  wrap into side by side, with the gaps between them, each line as wide as
+  its widest child. Its children wrap at its height when that is `fixed`, or
+  when a row that does not wrap stretches it to the row's own `fixed`
+  height, and otherwise at its `maxHeight`, or not at all.
+- A child's contribution is its `fixed` width, or else the widest or
+  narrowest arrangement of its own content, bounded by its `minWidth` and
+  `maxWidth` and never narrower than its padding. A `fill` child counts at
+  the widths of its content, as a `hug` child does, although it grows from a
+  flex basis of 0 once its parent's width is known.
+
 ## Placement: `x`, `y` and `absolute`
 
 The children of a `none` layout, and the children of flex and grid layouts
@@ -223,8 +253,10 @@ is narrower than its content, its lines also break where Chrome breaks them
   `e.g.` stay whole.
 - Next to any other character, where Unicode's line breaking algorithm
   (UAX #14) allows a break: before and after an em dash, after an en dash or
-  an ellipsis, and between ideographs, for example. A no-break space never
-  breaks, and a hyphen or en dash that starts a word stays with it.
+  an ellipsis, and between ideographs, for example. A no-break space
+  (U+00A0) keeps the characters on both sides of it together, except that a
+  line may break before one that follows a hyphen or a vertical bar (`|`),
+  as UAX #14 allows. A hyphen or en dash that starts a word stays with it.
 
 Each line takes as many pieces between these places as fit. Words never
 break: a piece wider than its line overflows a line of its own
@@ -245,13 +277,19 @@ break: a piece wider than its line overflows a line of its own
   weight and style measures as Inter Regular.
 - Text is shaped with Skia's paragraph layout: kerning pairs move closer, and
   `letterSpacing` adds space after every character, the last one included,
-  as Chrome does.
-- Every line is `lineHeight` × `fontSize` tall, fractions included. With
-  `line-height: normal`, a line is as tall as Chrome makes it: the font's
-  ascent, descent and line gap, each rounded to whole pixels (20 px for 16 px
-  Inter). Half of the space between the line height and the glyphs goes above
-  the glyphs, rounded down to a whole pixel, which places the first baseline
-  for `alignItems: baseline`.
+  as Chrome does. Like Chrome, the renderer shapes text with letter spacing
+  without ligatures and contextual alternates (OpenType `liga`, `clig` and
+  `calt`), so Inter's `->` keeps its two glyphs there instead of becoming an
+  arrow.
+- Lines are as tall as Chrome makes them at a device pixel ratio of 2. Every
+  line is `lineHeight` × `fontSize` tall, rounded down to a 64th of a device
+  pixel (1/128 px): 28.796875 px for 24 px text with `lineHeight` 1.2. With
+  `line-height: normal`, a line is as tall as the font's ascent, descent and
+  line gap, each rounded to whole device pixels: 19.5 px for 16 px Inter,
+  whose ascent of 15.5 px and descent of 3.86 px round to 15.5 and 4 px. Half
+  of the space between the line height and the glyphs goes above the glyphs,
+  rounded down to a whole device pixel, which places the first baseline for
+  `alignItems: baseline`.
 - A tab moves its line on to the next tab stop, every eight spaces from the
   start of the line (CSS's initial `tab-size: 8`), letter spacing included,
   or to the stop after it when less than half a space is left.
@@ -268,7 +306,12 @@ break: a piece wider than its line overflows a line of its own
 The renderer still breaks some text differently from Chrome: Thai, Lao,
 Khmer and Myanmar break only at spaces (Chrome finds their words in a
 dictionary), and a soft hyphen (U+00AD) breaks without the hyphen that Chrome
-shows at the end of the line.
+shows at the end of the line. It also measures the pieces of a line as the
+whole line is shaped, where Chrome shapes a piece on its own when a ligature
+or a contextual alternate spans the place where the line may break: without
+letter spacing, the narrowest arrangement of `a->b` is narrower than in
+Chrome, which draws the arrow when the text stays on one line but measures
+`a-` and `>b` apart.
 
 ## Token references
 

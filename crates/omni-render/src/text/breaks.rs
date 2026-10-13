@@ -24,10 +24,12 @@ use unicode_linebreak::{break_property, linebreaks};
 ///   breaks only when a letter or a digit comes before the hyphen, so that a
 ///   minus sign stays with its number. Paths, URLs and abbreviations such as
 ///   `input/output` and `e.g.` stay whole.
-/// - Next to any other character, except a no-break space, a line breaks
-///   where UAX #14 allows it: before and after an em dash, after an ellipsis
-///   or an en dash, and between ideographs, for example. As in Unicode 15.1
-///   and later, a hyphen or an en dash that starts a word stays with it.
+/// - Next to any other character, a line breaks where UAX #14 allows it:
+///   before and after an em dash, after an ellipsis or an en dash, and
+///   between ideographs, for example. A no-break space joins the characters
+///   on both sides of it, except that a line may break before one that
+///   follows a hyphen or a vertical bar. As in Unicode 15.1 and later, a
+///   hyphen or an en dash that starts a word stays with it.
 pub(super) fn soft_breaks(text: &str) -> Vec<usize> {
     let unicode_breaks: Vec<usize> = linebreaks(text).map(|(offset, _)| offset).collect();
     let mut breaks = Vec::new();
@@ -60,7 +62,7 @@ fn breaks_between(before_last: Option<char>, last: char, next: char, unicode_all
         ascii_breaks_between(last, next)
     } else {
         unicode_allows
-            && (beyond_ascii(last) || beyond_ascii(next))
+            && !(last.is_ascii() && next.is_ascii())
             && !starts_word_with_hyphen(before_last, last, next)
     }
 }
@@ -109,10 +111,4 @@ fn ascii_breaks_between(last: char, next: char) -> bool {
 /// Spaces, tabs and line breaks, which a line never breaks before.
 fn is_space(c: char) -> bool {
     matches!(c, ' ' | '\t' | '\n')
-}
-
-/// A character whose breaks UAX #14 decides: one beyond ASCII, except a
-/// no-break space, which never breaks next to ASCII.
-fn beyond_ascii(c: char) -> bool {
-    c > '\u{7f}' && c != '\u{a0}'
 }

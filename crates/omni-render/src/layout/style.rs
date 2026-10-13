@@ -6,8 +6,8 @@ use omni_core::design::{self, Length, Node, NodeData, Sizing};
 use taffy::prelude::{TaffyAuto, TaffyGridLine, fr, length};
 use taffy::{
     AlignItems, AlignSelf, Dimension, Display, FlexDirection, FlexWrap, GridPlacement,
-    GridTemplateComponent, JustifyContent, LengthPercentage, LengthPercentageAuto, Line, Position,
-    Rect, Size, Style,
+    GridTemplateComponent, JustifyContent, LengthPercentage, LengthPercentageAuto, Line, MaybeMath,
+    Position, Rect, Size, Style,
 };
 
 /// How a parent places a child.
@@ -40,8 +40,8 @@ pub(super) fn item(node: &Node, flow: Flow) -> Style {
     let sizes = Sizes::of(node);
     let mut style = Style {
         size: Size {
-            width: dimension(sizes.width),
-            height: dimension(sizes.height),
+            width: dimension(sizes.width, sizes.min_width, sizes.max_width),
+            height: dimension(sizes.height, sizes.min_height, sizes.max_height),
         },
         min_size: Size {
             width: bound(sizes.min_width),
@@ -238,9 +238,16 @@ impl<'a> Sizes<'a> {
 
 /// The CSS `width` or `height` of a sizing: the length of a fixed size, or
 /// `auto` for `hug` and `fill`, which the parent's layout resolves.
-fn dimension(sizing: Option<&Sizing>) -> Dimension {
+///
+/// A fixed length comes bounded by `min` and `max`, a min beating a max, as
+/// CSS uses it. Taffy would otherwise count it unbounded in places, as in the
+/// height of a column that hugs a fixed child with a max height.
+fn dimension(sizing: Option<&Sizing>, min: Option<&Length>, max: Option<&Length>) -> Dimension {
     match sizing {
-        Some(Sizing::Fixed(size)) => literal(size).map_or(Dimension::auto(), Dimension::length),
+        Some(Sizing::Fixed(size)) => literal(size).map_or(Dimension::auto(), |size| {
+            let [min, max] = [min, max].map(|bound| bound.and_then(literal));
+            Dimension::length(size.maybe_clamp(min, max))
+        }),
         Some(Sizing::Hug | Sizing::Fill) | None => Dimension::auto(),
     }
 }
