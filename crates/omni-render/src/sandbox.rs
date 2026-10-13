@@ -2,13 +2,10 @@
 //! one filled rectangle and one line of text.
 
 use skia_safe::{
-    AlphaType, Canvas, Color, ColorType, Data, Font, FontMgr, ImageInfo, Paint, Typeface,
-    font::Edging, surfaces,
+    AlphaType, Canvas, Color, ColorType, Font, ImageInfo, Paint, font::Edging, surfaces,
 };
 
-/// Inter Regular, under the SIL Open Font License (`fonts/LICENSE.txt`).
-/// Skia has no system fonts in the browser, so the text font is compiled in.
-const INTER_REGULAR: &[u8] = include_bytes!("../fonts/Inter-Regular.ttf");
+use crate::text::inter;
 
 /// An opaque sRGB color: `[red, green, blue]`.
 pub type Rgb = [u8; 3];
@@ -116,14 +113,4 @@ fn pixels(length: u32) -> i32 {
 
 fn color([red, green, blue]: Rgb) -> Color {
     Color::from_rgb(red, green, blue)
-}
-
-/// The bundled Inter typeface. Where Skia is built with FreeType (WebAssembly)
-/// it loads the font through an empty FreeType font manager; elsewhere the
-/// platform font manager loads it (CoreText on macOS).
-fn inter() -> Typeface {
-    FontMgr::custom_empty()
-        .unwrap_or_default()
-        .new_from_data(Data::new_copy(INTER_REGULAR), None)
-        .expect("Skia loads the bundled Inter font")
 }

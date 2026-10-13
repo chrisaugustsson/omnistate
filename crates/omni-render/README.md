@@ -4,7 +4,8 @@ The OmniState renderer. It draws with [Skia](https://skia.org) through the
 `skia-safe` crate ([rust-skia](https://github.com/rust-skia/rust-skia)): natively
 on a CPU raster surface (the tests), and in the browser on a WebGL 2 canvas,
 compiled to WebAssembly with Emscripten for the `wasm32-unknown-emscripten`
-target.
+target. It lays designs out with [Taffy](https://github.com/DioxusLabs/taffy)
+(see [Layout](#layout)).
 
 ## Toolchain
 
@@ -25,12 +26,13 @@ Xcode Command Line Tools works) need to be installed beforehand.
 
 skia-bindings downloads prebuilt Skia binaries for the target and feature set,
 so neither a Skia build nor LLVM, Ninja or GNU binutils is needed. omni-render
-enables the `gl` feature and keeps the default features, which selects these
-archives of the 0.153.3 release:
+enables the `gl` feature, and the `textlayout` feature for Skia's paragraph
+layout, and keeps the default features, which selects these archives of the
+0.153.3 release:
 
-- macOS on Apple silicon: `skia-binaries-b7f043e0b1e2a850e702-aarch64-apple-darwin-ganesh-gl-jpegd-jpege-pdf.tar.gz`
-- macOS on Intel: `skia-binaries-b7f043e0b1e2a850e702-x86_64-apple-darwin-ganesh-gl-jpegd-jpege-pdf.tar.gz`
-- WebAssembly: `skia-binaries-b7f043e0b1e2a850e702-wasm32-unknown-emscripten-ganesh-gl-jpegd-jpege-pdf.tar.gz`
+- macOS on Apple silicon: `skia-binaries-b7f043e0b1e2a850e702-aarch64-apple-darwin-ganesh-gl-jpegd-jpege-pdf-textlayout.tar.gz`
+- macOS on Intel: `skia-binaries-b7f043e0b1e2a850e702-x86_64-apple-darwin-ganesh-gl-jpegd-jpege-pdf-textlayout.tar.gz`
+- WebAssembly: `skia-binaries-b7f043e0b1e2a850e702-wasm32-unknown-emscripten-ganesh-gl-jpegd-jpege-pdf-textlayout.tar.gz`
 
 Changing the skia-safe version or its features selects other binaries; a
 combination without prebuilt binaries makes skia-bindings build Skia from
@@ -88,10 +90,33 @@ context and draws `SandboxScene::demo()` (`src/sandbox.rs`), scaled by the
 pixel ratio. Natively, `render_rgba` draws the same scene on a CPU raster
 surface, which the tests check pixel by pixel.
 
+## Layout
+
+`layout::compute` gives every node of a design its box (x, y, width and
+height, in page coordinates) by the CSS that `docs/formats/layout.md` maps
+each layout property to, so designs lay out the way a browser lays out the
+same design written as HTML and CSS. Taffy runs the flexbox, grid and
+absolute positioning; `src/layout/style.rs` holds the mapping. Text is shaped
+and broken into lines by Skia's paragraph layout (`src/text.rs`), with line
+heights and baselines rounded the way Chrome rounds them.
+
+Layout owns its Taffy tree (`src/layout/tree.rs`) instead of using Taffy's
+`TaffyTree`, for two reasons:
+
+- Taffy makes a single-line row flex container as wide as its items' flex
+  bases add up to whenever the space available decides its width, where CSS
+  gives it its fit-content width. The tree lays such a row out at that width.
+- Taffy's cache keeps 9 measured sizes per node, too few for nested rows and
+  columns, which then measure the same sizes again at a cost that grows with
+  every level of nesting. The tree keeps every size it measures during a
+  layout.
+
 ## Fonts
 
 There are no system fonts for Skia in the browser, so omni-render compiles in
 Inter Regular (`fonts/Inter-Regular.ttf`, from the
 [Inter 4.1 release](https://github.com/rsms/inter/releases/tag/v4.1)), under
 the SIL Open Font License (`fonts/LICENSE.txt`). The WebAssembly build loads it
-through FreeType; macOS loads it through CoreText.
+through FreeType; macOS loads it through CoreText. Text in a font family that
+the renderer has no font files for is set in Inter, so it measures the same
+on every machine.
