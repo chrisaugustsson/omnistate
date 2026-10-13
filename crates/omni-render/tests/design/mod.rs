@@ -6,17 +6,26 @@
 //!
 //! - Boxes are in page coordinates and keep their fractions, as a browser's
 //!   do (it lays out in 1/64 px), so nothing is rounded to whole pixels.
-//!   Sizes include padding (`box-sizing: border-box`).
+//!   Sizes include padding (`box-sizing: border-box`). A page is not laid
+//!   out: its own box is empty (0 x 0) at its origin.
 //! - Flex layouts are CSS flexbox: `direction` is `flex-direction`,
 //!   `gap.row` is `row-gap` and `gap.column` is `column-gap`, and a property
 //!   left out keeps its CSS initial value: `row`, `nowrap`, and `normal`
 //!   alignment, which stretches children that hug their cross axis and
 //!   stretches wrapped lines into free cross space (`align-content`).
+//!   `start` and `end` are the CSS keywords, not `flex-start` and `flex-end`,
+//!   so they follow the page (left to right, top to bottom) even where
+//!   `direction` or `wrap-reverse` reverses an axis.
 //! - On the main axis of a flex layout, `fixed` never grows or shrinks
 //!   (`flex-shrink: 0`), and `fill` children share the free space equally
 //!   (`flex-grow: 1` from `flex-basis: 0`). On the cross axis, `hug` is
 //!   `auto`, so `alignItems` places it, and `fill` stretches
 //!   (`align-self: stretch`).
+//! - Where CSS makes an `auto` width fit-content (a grid area, the cross axis
+//!   of a column that does not stretch, a positioned spot), a `hug` width is
+//!   the content's max-content width, but no wider than the space unless its
+//!   min-content width is wider still. That holds for texts and for frames,
+//!   wrapping rows included.
 //! - On a grid, tracks are `px`, `fr` and `auto`, `gridColumn` and `gridRow`
 //!   are `grid-column` and `grid-row`, `fixed` and `hug` children sit at the
 //!   start of their area (`justify-self: start`, `align-self: start`), and
@@ -24,17 +33,23 @@
 //! - Children of `none` layouts and `absolute` children of flex and grid
 //!   layouts sit at `x` and `y` from their parent's top-left corner
 //!   (`position: absolute` in a `position: relative` parent) and take no space.
+//!   One that fills an axis stretches to the parent's far edge (`right: 0`,
+//!   `bottom: 0`).
 //! - Hidden nodes (`"visible": false`) take no space (`display: none`).
 //! - `minWidth`, `maxWidth`, `minHeight` and `maxHeight` bound every sizing,
 //!   and a min beats a max, as in CSS.
 //! - Text is shaped and measured with Skia's paragraph layout, in the bundled
 //!   Inter when its family is missing. A `hug` width is the text's own width,
 //!   which wraps only where CSS makes it `fit-content`; a `fixed` or `fill`
-//!   width wraps lines at that width, and so does a line break. Each line is
-//!   `lineHeight` × `fontSize` tall, fractions included, or as tall as Chrome
-//!   makes `line-height: normal` when `lineHeight` is left out: the font's
-//!   ascent and descent, each rounded to whole pixels. `letterSpacing` is CSS
-//!   `letter-spacing`, which follows every character.
+//!   width wraps lines at that width, and so does a line break. Lines break
+//!   where Chrome breaks them: at spaces, after hyphens, before and after em
+//!   dashes and after ellipses, but never after a slash between letters, and
+//!   never inside a word, which overflows a line too narrow for it. A line
+//!   break at the very end starts no line, and an empty text has none. Each
+//!   line is `lineHeight` × `fontSize` tall, fractions included, or as tall
+//!   as Chrome makes `line-height: normal` when `lineHeight` is left out: the
+//!   font's ascent and descent, each rounded to whole pixels. `letterSpacing`
+//!   is CSS `letter-spacing`, which follows every character.
 #![allow(dead_code)]
 
 use omni_core::design::{Node, NodeId};
@@ -69,19 +84,23 @@ pub fn id(id: &str) -> NodeId {
 }
 
 /// The box of node `id`. Panics if layout gave it none.
+#[track_caller]
 pub fn box_of(boxes: &Boxes, node: &str) -> LayoutBox {
-    *boxes.get(&id(node)).unwrap_or_else(|| {
-        panic!("layout must return a box for every node, but node {node} has none")
-    })
+    match boxes.get(&id(node)) {
+        Some(node_box) => *node_box,
+        None => panic!("layout must return a box for every node, but node {node} has none"),
+    }
 }
 
 /// Asserts that node `node` has the box `[x, y, width, height]`, give or take
 /// [`EPSILON`]. `case` names the situation, for the failure message.
+#[track_caller]
 pub fn assert_box(boxes: &Boxes, node: &str, expected: [f32; 4], case: &str) {
     assert_box_within(boxes, node, expected, EPSILON, case);
 }
 
 /// Like [`assert_box`], give or take `tolerance` pixels.
+#[track_caller]
 pub fn assert_box_within(
     boxes: &Boxes,
     node: &str,
@@ -195,6 +214,10 @@ pub fn hugging(id: &str, child: &str, width: f64, height: f64) -> Value {
         vec![rect(child, width, height)],
     )
 }
+
+/// Six words that wrap predictably at 16 px: one is about 38 px wide, two
+/// about 80 px, three about 123 px and four about 165 px.
+pub const SIX_WORDS: &str = "word word word word word word";
 
 /// A text node in the bundled Inter that hugs its content: `font_size` px,
 /// with lines `line_height` times as tall.

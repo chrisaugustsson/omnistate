@@ -256,6 +256,51 @@ fn boxes_are_in_page_coordinates() {
 }
 
 #[test]
+fn a_page_gets_an_empty_box_at_its_origin() {
+    // A page is a canvas without a size. It is not laid out, so its own box
+    // is empty (0 x 0) at x 0, y 0, wherever its boards sit.
+    let placed_board = at(
+        &board("brd00001", fixed(100.0), fixed(50.0), none(), Vec::new()),
+        100.0,
+        200.0,
+    );
+    let hugging_board = at(
+        &board(
+            "brd00002",
+            json!("hug"),
+            json!("hug"),
+            flex(json!({})),
+            vec![rect("a0000001", 10.0, 10.0)],
+        ),
+        -300.0,
+        -40.0,
+    );
+    let boxes = lay_out(&json!({
+        "id": "page0001",
+        "type": "page",
+        "name": "Page",
+        "children": [placed_board, hugging_board]
+    }));
+    let case = "a page with boards at (100, 200) and (-300, -40)";
+    assert_box(&boxes, "page0001", [0.0, 0.0, 0.0, 0.0], case);
+    assert_box(&boxes, "brd00001", [100.0, 200.0, 100.0, 50.0], case);
+    assert_box(&boxes, "brd00002", [-300.0, -40.0, 10.0, 10.0], case);
+
+    let boxes = lay_out(&json!({
+        "id": "page0001",
+        "type": "page",
+        "name": "Page",
+        "children": []
+    }));
+    assert_eq!(
+        boxes.len(),
+        1,
+        "an empty page has one node, so layout returns one box; it returned {boxes:?}"
+    );
+    assert_box(&boxes, "page0001", [0.0, 0.0, 0.0, 0.0], "an empty page");
+}
+
+#[test]
 fn sizes_include_the_padding() {
     let boxes = lay_out(&board(
         "brd00001",

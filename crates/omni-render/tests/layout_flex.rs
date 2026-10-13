@@ -1,14 +1,19 @@
 //! US-003: flex layouts place and size their children by CSS flexbox: row and
 //! column directions, gap, padding, wrapping, alignment, `fixed`, `hug` and
-//! `fill` sizing on each axis, and min and max sizes.
+//! `fill` sizing on each axis, and min and max sizes. Rows that hug their
+//! width take CSS's fit-content width where CSS gives them one.
 
 mod design;
 
 use design::{
-    assert_box, assert_box_within, board, box_of, fixed, flex, frame, hugging, lay_out, rect,
-    sized, text, with,
+    SIX_WORDS, absolute, assert_box, assert_box_within, at, board, box_of, fixed, flex, frame,
+    grid, hugging, lay_out, none, rect, sized, text, with,
 };
 use serde_json::{Value, json};
+
+/// How far a box that text sizes may be from the box Chrome gives it, which
+/// keeps text widths to 1/64 px.
+const TEXT_TOLERANCE: f32 = 0.05;
 
 /// Three fixed boxes of different sizes: 50 x 20, 80 x 30 and 30 x 40.
 fn three_rects() -> Vec<Value> {
@@ -25,6 +30,63 @@ fn five_rects() -> Vec<Value> {
         .iter()
         .map(|id| rect(id, 80.0, 30.0))
         .collect()
+}
+
+/// A board that is a `width` px wide column, aligning its children by
+/// `align`, and hugging its height.
+fn column(width: f64, align: &str, children: Vec<Value>) -> Value {
+    board(
+        "brd00001",
+        fixed(width),
+        json!("hug"),
+        flex(json!({"direction": "column", "alignItems": align})),
+        children,
+    )
+}
+
+/// A row frame that hugs both axes and holds one text of six words of 16 px
+/// Inter: about 250 px wide on one line, and 24 px lines.
+fn row_hugging_six_words() -> Value {
+    frame(
+        "frm00001",
+        json!("hug"),
+        json!("hug"),
+        flex(json!({})),
+        vec![text("txt00001", SIX_WORDS, 16.0, 1.5)],
+    )
+}
+
+/// A chip: a frame that hugs a label of 16 px Inter on 24 px lines, padded
+/// 4 px above and below it and 8 px beside it.
+fn chip(id: &str, label_id: &str, label: &str) -> Value {
+    frame(
+        id,
+        json!("hug"),
+        json!("hug"),
+        flex(json!({"padding": {"top": 4, "right": 8, "bottom": 4, "left": 8}})),
+        vec![text(label_id, label, 16.0, 1.5)],
+    )
+}
+
+/// A row frame that hugs both axes and wraps three chips onto lines, 8 px
+/// apart both ways: "Design" (68.47 px wide in Chrome), "Research"
+/// (86.67 px) and a long label whose chip is 287.59 px wide on one line.
+fn wrapping_row_of_chips() -> Value {
+    frame(
+        "frm00001",
+        json!("hug"),
+        json!("hug"),
+        flex(json!({"wrap": "wrap", "gap": {"row": 8, "column": 8}})),
+        vec![
+            chip("c0000001", "t0000001", "Design"),
+            chip("c0000002", "t0000002", "Research"),
+            chip(
+                "c0000003",
+                "t0000003",
+                "A much longer chip label that wraps",
+            ),
+        ],
+    )
 }
 
 #[test]
@@ -375,6 +437,80 @@ fn align_items_baseline_lines_up_the_first_baselines_of_a_row() {
 }
 
 #[test]
+fn align_items_start_and_end_follow_the_page_when_lines_wrap_in_reverse() {
+    // `wrap-reverse` stacks the lines of a row from the bottom up, which
+    // moves `flex-start` to the bottom of each line. `start` and `end` are the
+    // CSS keywords, so they still align each child to the top and the bottom
+    // of its line. Here lines of 40 and 30 px and a 10 px gap leave 120 of
+    // the 200 px, which stretch each line by 60 px: the first line runs from
+    // y 100 to 200, and the second from y 0 to 90.
+    for (align, [a, b, c, d]) in [
+        (
+            "start",
+            [
+                [0.0, 100.0, 80.0, 20.0],
+                [100.0, 100.0, 80.0, 40.0],
+                [0.0, 0.0, 80.0, 30.0],
+                [100.0, 0.0, 80.0, 10.0],
+            ],
+        ),
+        (
+            "end",
+            [
+                [0.0, 180.0, 80.0, 20.0],
+                [100.0, 160.0, 80.0, 40.0],
+                [0.0, 60.0, 80.0, 30.0],
+                [100.0, 80.0, 80.0, 10.0],
+            ],
+        ),
+    ] {
+        let case =
+            format!("four boxes wrapping in reverse in a 200 x 200 row with alignItems {align}");
+        let boxes = lay_out(&board(
+            "brd00001",
+            fixed(200.0),
+            fixed(200.0),
+            flex(json!({
+                "wrap": "wrap-reverse",
+                "alignItems": align,
+                "gap": {"row": 10, "column": 20}
+            })),
+            vec![
+                rect("a0000001", 80.0, 20.0),
+                rect("b0000001", 80.0, 40.0),
+                rect("c0000001", 80.0, 30.0),
+                rect("d0000001", 80.0, 10.0),
+            ],
+        ));
+        assert_box(&boxes, "a0000001", a, &case);
+        assert_box(&boxes, "b0000001", b, &case);
+        assert_box(&boxes, "c0000001", c, &case);
+        assert_box(&boxes, "d0000001", d, &case);
+    }
+
+    // A column that wraps in reverse stacks its lines from the right, but
+    // `start` still aligns to the left of a line and `end` to its right.
+    for (align, a_x) in [("start", 0.0), ("end", 30.0)] {
+        let case = format!(
+            "a 20 x 20 and a 50 x 40 box in a column that wraps in reverse, with alignItems {align}"
+        );
+        let boxes = lay_out(&board(
+            "brd00001",
+            json!("hug"),
+            json!("hug"),
+            flex(json!({
+                "direction": "column",
+                "wrap": "wrap-reverse",
+                "alignItems": align
+            })),
+            vec![rect("a0000001", 20.0, 20.0), rect("b0000001", 50.0, 40.0)],
+        ));
+        assert_box(&boxes, "a0000001", [a_x, 0.0, 20.0, 20.0], &case);
+        assert_box(&boxes, "b0000001", [0.0, 20.0, 50.0, 40.0], &case);
+    }
+}
+
+#[test]
 fn justify_content_spreads_the_free_space_along_the_main_axis() {
     // Three 50 px boxes in a 300 px row leave 150 px free.
     for (justify, xs) in [
@@ -457,6 +593,67 @@ fn justify_content_spreads_the_free_space_along_the_main_axis() {
 }
 
 #[test]
+fn justify_content_start_and_end_follow_the_page_in_reversed_directions() {
+    // `start` and `end` are the CSS keywords, not `flex-start` and
+    // `flex-end`: they pack the children against the left or top edge and the
+    // right or bottom edge, whatever `direction` says, in reversed order.
+    for (direction, justify, height, [a, b, c]) in [
+        (
+            "row-reverse",
+            "start",
+            100.0,
+            [
+                [110.0, 0.0, 50.0, 20.0],
+                [30.0, 0.0, 80.0, 30.0],
+                [0.0, 0.0, 30.0, 40.0],
+            ],
+        ),
+        (
+            "row-reverse",
+            "end",
+            100.0,
+            [
+                [350.0, 0.0, 50.0, 20.0],
+                [270.0, 0.0, 80.0, 30.0],
+                [240.0, 0.0, 30.0, 40.0],
+            ],
+        ),
+        (
+            "column-reverse",
+            "start",
+            300.0,
+            [
+                [0.0, 70.0, 50.0, 20.0],
+                [0.0, 40.0, 80.0, 30.0],
+                [0.0, 0.0, 30.0, 40.0],
+            ],
+        ),
+        (
+            "column-reverse",
+            "end",
+            300.0,
+            [
+                [0.0, 280.0, 50.0, 20.0],
+                [0.0, 250.0, 80.0, 30.0],
+                [0.0, 210.0, 30.0, 40.0],
+            ],
+        ),
+    ] {
+        let case = format!("a 400 x {height} {direction} with justifyContent {justify}");
+        let boxes = lay_out(&board(
+            "brd00001",
+            fixed(400.0),
+            fixed(height),
+            flex(json!({"direction": direction, "justifyContent": justify})),
+            three_rects(),
+        ));
+        assert_box(&boxes, "a0000001", a, &case);
+        assert_box(&boxes, "b0000001", b, &case);
+        assert_box(&boxes, "c0000001", c, &case);
+    }
+}
+
+#[test]
 fn fixed_children_keep_their_size_when_the_line_overflows() {
     let case = "three 100 px boxes in a 200 px row";
     let boxes = lay_out(&board(
@@ -525,6 +722,145 @@ fn hug_children_take_the_size_of_their_content() {
     assert_box(&boxes, "frm00002", [145.0, 0.0, 50.0, 65.0], case);
     assert_box(&boxes, "c0000001", [145.0, 0.0, 50.0, 20.0], case);
     assert_box(&boxes, "d0000001", [145.0, 25.0, 30.0, 40.0], case);
+}
+
+#[test]
+fn a_hug_row_fits_into_the_space_where_css_gives_it_a_fit_content_width() {
+    // A row that hugs its width is a flex container with `width: auto`. Where
+    // CSS makes that width fit-content, the row is as wide as its content on
+    // one line, its max-content width, but no wider than the space unless its
+    // min-content width is wider still. Six words need about 250 px on one
+    // line, so in 150 px the row is 150 px wide, and its text shrinks with it
+    // and wraps onto two lines of three words.
+    for align in ["start", "center", "end"] {
+        let case = format!("a row hugging six words in a 150 px column with alignItems {align}");
+        let boxes = lay_out(&column(150.0, align, vec![row_hugging_six_words()]));
+        assert_box(&boxes, "frm00001", [0.0, 0.0, 150.0, 48.0], &case);
+        assert_box(&boxes, "txt00001", [0.0, 0.0, 150.0, 48.0], &case);
+    }
+
+    let case = "a row hugging six words in a grid area 150 px wide";
+    let boxes = lay_out(&board(
+        "brd00001",
+        fixed(400.0),
+        json!("hug"),
+        grid(json!({"columns": [{"fixed": 150}, {"fr": 1}]})),
+        vec![row_hugging_six_words()],
+    ));
+    assert_box(&boxes, "frm00001", [0.0, 0.0, 150.0, 48.0], case);
+    assert_box(&boxes, "txt00001", [0.0, 0.0, 150.0, 48.0], case);
+
+    // A positioned row fits into the space between its x and its parent's
+    // right edge: CSS's shrink-to-fit width.
+    let case = "a row hugging six words at x 50 in a 200 px board with no layout";
+    let boxes = lay_out(&board(
+        "brd00001",
+        fixed(200.0),
+        fixed(200.0),
+        none(),
+        vec![at(&row_hugging_six_words(), 50.0, 10.0)],
+    ));
+    assert_box(&boxes, "frm00001", [50.0, 10.0, 150.0, 48.0], case);
+    assert_box(&boxes, "txt00001", [50.0, 10.0, 150.0, 48.0], case);
+
+    let case = "an absolute row hugging six words at x 50 in a padded 200 px row";
+    let boxes = lay_out(&board(
+        "brd00001",
+        fixed(200.0),
+        fixed(200.0),
+        flex(json!({"padding": {"top": 10, "right": 10, "bottom": 10, "left": 10}})),
+        vec![absolute(&row_hugging_six_words(), 50.0, 10.0)],
+    ));
+    assert_box(&boxes, "frm00001", [50.0, 10.0, 150.0, 48.0], case);
+    assert_box(&boxes, "txt00001", [50.0, 10.0, 150.0, 48.0], case);
+
+    // Two texts of three words, about 125 px each on one line, shrink by the
+    // same amount to share the 150 px: 75 px each, where every word takes a
+    // line of its own.
+    let case =
+        "a row hugging two texts of three words in a 150 px column that aligns it to the start";
+    let boxes = lay_out(&column(
+        150.0,
+        "start",
+        vec![frame(
+            "frm00001",
+            json!("hug"),
+            json!("hug"),
+            flex(json!({})),
+            vec![
+                text("txt00001", "word word word", 16.0, 1.5),
+                text("txt00002", "word word word", 16.0, 1.5),
+            ],
+        )],
+    ));
+    assert_box(&boxes, "frm00001", [0.0, 0.0, 150.0, 72.0], case);
+    assert_box(&boxes, "txt00001", [0.0, 0.0, 75.0, 72.0], case);
+    assert_box(&boxes, "txt00002", [75.0, 0.0, 75.0, 72.0], case);
+}
+
+#[test]
+fn a_hug_row_that_wraps_fits_into_the_space_where_css_gives_it_a_fit_content_width() {
+    // On one line the chips need 458.73 px, so where CSS makes the row's width
+    // fit-content the row is as wide as the 200 px of space. "Design" and
+    // "Research" share its first line. The long chip, wider than the row,
+    // gets the second line to itself, shrinks to the row's width and wraps
+    // its label onto two lines: 2 x 24 + 8 = 56 px. The row is
+    // 32 + 8 + 56 = 96 px tall. Chrome lays the chips out so in each of these
+    // places.
+    let cases = [
+        (
+            "a wrapping row of chips in a 200 px column that aligns it to the start",
+            0.0,
+            column(200.0, "start", vec![wrapping_row_of_chips()]),
+        ),
+        (
+            "a wrapping row of chips in a 200 px column that centers it",
+            0.0,
+            column(200.0, "center", vec![wrapping_row_of_chips()]),
+        ),
+        (
+            "a wrapping row of chips in a grid area 200 px wide",
+            0.0,
+            board(
+                "brd00001",
+                fixed(200.0),
+                json!("hug"),
+                grid(json!({"columns": [{"fr": 1}]})),
+                vec![wrapping_row_of_chips()],
+            ),
+        ),
+        (
+            "a wrapping row of chips at x 50 in a 250 px board with no layout",
+            50.0,
+            board(
+                "brd00001",
+                fixed(250.0),
+                fixed(300.0),
+                none(),
+                vec![at(&wrapping_row_of_chips(), 50.0, 0.0)],
+            ),
+        ),
+    ];
+    for (case, x, design) in cases {
+        let boxes = lay_out(&design);
+        assert_box(&boxes, "frm00001", [x, 0.0, 200.0, 96.0], case);
+        assert_box_within(
+            &boxes,
+            "c0000001",
+            [x, 0.0, 68.469, 32.0],
+            TEXT_TOLERANCE,
+            case,
+        );
+        assert_box_within(
+            &boxes,
+            "c0000002",
+            [x + 76.469, 0.0, 86.672, 32.0],
+            TEXT_TOLERANCE,
+            case,
+        );
+        assert_box(&boxes, "c0000003", [x, 40.0, 200.0, 56.0], case);
+        assert_box(&boxes, "t0000003", [x + 8.0, 44.0, 184.0, 48.0], case);
+    }
 }
 
 #[test]
