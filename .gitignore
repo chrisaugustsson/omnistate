@@ -1,0 +1,15 @@
+# Planning files (never committed, per your pipeline convention)
+tasks/
+
+# Build output and dependencies
+target/
+node_modules/
+render-sandbox/build/
+
+# Emscripten SDK installed by `make render-wasm`
+.emsdk/
+
+# Local files
+.DS_Store
+.env
+.env.*

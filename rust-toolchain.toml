@@ -1,0 +1,7 @@
+# The Rust toolchain of the workspace. Its LLVM must match the Emscripten that
+# links the WebAssembly renderer (see crates/omni-render/README.md).
+[toolchain]
+channel = "1.88.0"
+profile = "minimal"
+components = ["clippy", "rustfmt"]
+targets = ["wasm32-unknown-emscripten"]

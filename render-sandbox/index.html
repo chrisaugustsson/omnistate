@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>omni-render sandbox</title>
+    <style>
+      body {
+        margin: 0;
+        padding: 32px;
+        background: #e2e8f0;
+        color: #0f172a;
+        font: 15px/1.5 system-ui, sans-serif;
+      }
+
+      h1 {
+        margin: 0 0 4px;
+        font-size: 20px;
+      }
+
+      p {
+        margin: 0 0 16px;
+      }
+
+      /* The CSS size matches SandboxScene::demo(); main.js sizes the drawing
+         buffer in device pixels. */
+      #canvas {
+        display: block;
+        width: 640px;
+        height: 360px;
+        box-shadow: 0 1px 3px rgb(15 23 42 / 0.2);
+      }
+
+      #status {
+        margin-top: 12px;
+        color: #475569;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>omni-render sandbox</h1>
+    <p>Skia, compiled from Rust to WebAssembly, draws a rectangle and one line of text on this WebGL canvas.</p>
+    <canvas id="canvas"></canvas>
+    <p id="status">Loading the renderer…</p>
+    <script type="module" src="./main.js"></script>
+  </body>
+</html>
