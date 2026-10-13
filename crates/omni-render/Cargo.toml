@@ -5,6 +5,7 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+omni-core = { path = "../omni-core" }
 # Keep the default features: the prebuilt Skia binaries (see README.md) exist
 # only for feature sets that include them.
 skia-safe = { version = "0.153.3", features = ["gl"] }
