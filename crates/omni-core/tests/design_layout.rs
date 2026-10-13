@@ -6,7 +6,7 @@ mod common;
 
 use common::{
     assert_distinct_values, assert_rejected, assert_round_trips, board, containing, flex_frame,
-    frame, image, instance, parse, placed, strings, text, vector, with, without,
+    frame, image, instance, page, parse, placed, strings, text, try_parse, vector, with, without,
 };
 use serde_json::{Value, json};
 
@@ -346,6 +346,107 @@ fn absolute_children_of_flex_and_grid_layouts_keep_x_and_y() {
         parse(&in_flow),
         "`absolute` takes a child out of its parent's flow"
     );
+}
+
+/// Every layout length that CSS never lets go below 0, set to `length`: the
+/// fixed sizes and the min and max sizes of a frame and of an instance, the
+/// gaps and padding of a flex and a grid layout, and fixed grid tracks. Each
+/// comes with a name for messages.
+fn non_negative_layout_lengths(length: &Value) -> Vec<(String, Value)> {
+    let card = flex_card();
+    let grid = product_grid();
+    let button = instance("btn00001");
+    let mut lengths = Vec::new();
+    for (name, base) in [("a frame", &card), ("an instance", &button)] {
+        for axis in ["/width", "/height"] {
+            let json = with(base, axis, json!({"fixed": length}));
+            lengths.push((format!("{axis} of {name}"), json));
+        }
+        for bound in ["/minWidth", "/maxWidth", "/minHeight", "/maxHeight"] {
+            let json = with(base, bound, length.clone());
+            lengths.push((format!("{bound} of {name}"), json));
+        }
+    }
+    for (name, base) in [("flex", &card), ("grid", &grid)] {
+        for spacing in [
+            "/layout/gap/row",
+            "/layout/gap/column",
+            "/layout/padding/top",
+            "/layout/padding/right",
+            "/layout/padding/bottom",
+            "/layout/padding/left",
+        ] {
+            let json = with(base, spacing, length.clone());
+            lengths.push((format!("{spacing} of a {name} layout"), json));
+        }
+    }
+    for track in ["/layout/columns/0", "/layout/rows/1"] {
+        let json = with(&grid, track, json!({"fixed": length}));
+        lengths.push((format!("the fixed track {track}"), json));
+    }
+    lengths
+}
+
+#[test]
+fn layout_values_stay_in_the_ranges_css_allows() {
+    for (slot, json) in non_negative_layout_lengths(&json!(0)) {
+        if let Err(error) = try_parse(&json) {
+            panic!("CSS allows {slot} = 0, but it was rejected: {error}");
+        }
+        assert_round_trips(&json);
+    }
+    for negative in [json!(-1), json!(-0.5), json!(-320)] {
+        for (slot, json) in non_negative_layout_lengths(&negative) {
+            assert_rejected(
+                &json,
+                &format!(
+                    "CSS has no negative sizes, gaps, padding or tracks, so {slot} = {negative}"
+                ),
+            );
+        }
+    }
+
+    let grid = product_grid();
+    assert_round_trips(&with(&grid, "/layout/columns/1", json!({"fr": 0})));
+    assert_rejected(
+        &with(&grid, "/layout/columns/1", json!({"fr": -1})),
+        "CSS has no negative `fr` tracks, so {\"fr\": -1}",
+    );
+    assert_round_trips(&with(&grid, "/children/0/gridColumn/start", json!(-1)));
+    for (field, bad) in [
+        ("start", json!(0)),
+        ("start", json!(1.5)),
+        ("span", json!(0)),
+        ("span", json!(-2)),
+    ] {
+        assert_rejected(
+            &with(
+                &grid,
+                &format!("/children/0/gridColumn/{field}"),
+                bad.clone(),
+            ),
+            &format!(
+                "grid lines are whole numbers other than 0 and spans are 1 or more, so {field} = {bad}"
+            ),
+        );
+    }
+
+    // x and y may be negative, as CSS `left` and `top` may: a node can start
+    // left of or above its parent's edge.
+    let pinned = placed(
+        &with(&text("text0002"), "/absolute", json!(true)),
+        -24.0,
+        -0.5,
+    );
+    assert_round_trips(&flex_frame("frame001", vec![pinned]));
+    assert_round_trips(&containing(
+        &frame("frame001"),
+        vec![placed(&vector("vec00001"), -12.0, -36.5)],
+    ));
+    assert_round_trips(&page(
+        "page0001",
+        vec![placed(&board("brd00001"), -1440.0, -900.5)],
+    ));
 }
 
 #[test]

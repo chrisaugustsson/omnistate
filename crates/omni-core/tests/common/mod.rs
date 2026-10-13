@@ -37,14 +37,21 @@
 //! - A length is a number of CSS pixels. A color is `#rrggbb` or `#rrggbbaa`.
 //!   Every style and layout value used here also accepts a token reference
 //!   such as `$color.surface`.
+//! - Literal values stay in the ranges CSS allows. Sizes, min and max sizes,
+//!   gaps, padding, fixed grid tracks, `fr`, stroke widths, corner radii,
+//!   shadow blurs, font sizes and line heights are 0 or more; `x`, `y`, shadow
+//!   offsets and spread, letter spacing and gradient angles may be negative.
+//!   Grid lines are whole numbers other than 0, and spans are 1 or more.
+//!   Opacity goes from 0 to 1, and font weights from 1 to 1000.
 //! - Required: `id`, `type` and `name`; `layout` on boards and frames; `width`
 //!   and `height` on every node except pages and instances; `content`,
 //!   `fontFamily` and `fontSize` on text; `image` and `fit` on images and image
 //!   fills; `angle` and stop `position`s on gradients; `color` and `width` on
 //!   strokes; `path` on vectors; `component` on instances. Unknown properties
 //!   are rejected.
-//! - Serializing writes back every property a node sets, with its value. What
-//!   else it writes must parse back to the same node.
+//! - Serializing writes back every property a node sets, with its value, and
+//!   every number as the same double, down to the last digit. What else it
+//!   writes must parse back to the same node.
 #![allow(dead_code)]
 
 use omni_core::design::Node;

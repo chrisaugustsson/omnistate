@@ -6,7 +6,7 @@ mod common;
 
 use common::{
     assert_distinct_values, assert_rejected, assert_round_trips, flex_frame, parse, strings, text,
-    with, without,
+    try_parse, with, without,
 };
 use serde_json::{Value, json};
 
@@ -147,6 +147,39 @@ fn a_text_node_has_exactly_one_style() {
         &with(&base, "/color", json!(["#0f172a", "#16a34a"])),
         "one style per text node, so two colors",
     );
+}
+
+#[test]
+fn text_values_stay_in_the_ranges_css_allows() {
+    let base = styled_text();
+    parse(&base);
+    for pointer in ["/fontSize", "/lineHeight"] {
+        let zero = with(&base, pointer, json!(0));
+        if let Err(error) = try_parse(&zero) {
+            panic!("CSS allows {pointer} = 0, but it was rejected: {error}");
+        }
+        assert_round_trips(&zero);
+        for negative in [json!(-1), json!(-0.5), json!(-16)] {
+            assert_rejected(
+                &with(&base, pointer, negative.clone()),
+                &format!(
+                    "CSS has no negative font sizes or line heights, so {pointer} = {negative}"
+                ),
+            );
+        }
+    }
+    for spacing in [json!(-1.5), json!(-0.02)] {
+        assert_round_trips(&with(&base, "/letterSpacing", spacing));
+    }
+    for weight in [json!(1), json!(1000), json!(350.5)] {
+        assert_round_trips(&with(&base, "/fontWeight", weight));
+    }
+    for weight in [json!(0), json!(1001), json!(-400)] {
+        assert_rejected(
+            &with(&base, "/fontWeight", weight.clone()),
+            &format!("CSS font weights go from 1 to 1000, so {weight}"),
+        );
+    }
 }
 
 #[test]

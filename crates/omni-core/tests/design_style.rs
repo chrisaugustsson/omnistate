@@ -6,7 +6,7 @@ mod common;
 
 use common::{
     PHOTO, assert_distinct_values, assert_rejected, assert_round_trips, flex_frame, frame, image,
-    parse, strings, text, vector, with, without,
+    parse, strings, text, try_parse, vector, with, without,
 };
 use serde_json::{Value, json};
 
@@ -300,6 +300,86 @@ fn shadows_are_drop_or_inner_and_keep_their_order() {
         parse(&base),
         "shadows are drawn in order, so their order is part of the node"
     );
+}
+
+/// `styled_frame()`, and an image and a vector with its strokes, corner radii
+/// (images only) and shadows.
+fn styled_boxes() -> [Value; 3] {
+    let card = styled_frame();
+    let styled = |json: Value, keys: &[&str]| {
+        keys.iter().fold(json, |json, &key| {
+            with(&json, &format!("/{key}"), card[key].clone())
+        })
+    };
+    let photo = styled(image("jpeg0001"), &["strokes", "radius", "shadows"]);
+    let icon = styled(vector("vec00001"), &["strokes", "shadows"]);
+    [card, photo, icon]
+}
+
+/// Style lengths that CSS never lets go below 0: stroke widths, corner radii
+/// and shadow blurs.
+const NON_NEGATIVE_STYLE_LENGTHS: [&str; 8] = [
+    "/strokes/0/width",
+    "/strokes/1/width",
+    "/radius/topLeft",
+    "/radius/topRight",
+    "/radius/bottomRight",
+    "/radius/bottomLeft",
+    "/shadows/0/blur",
+    "/shadows/1/blur",
+];
+
+#[test]
+fn style_values_stay_in_their_ranges() {
+    for json in styled_boxes() {
+        let kind = json["type"]
+            .as_str()
+            .expect("a node has a type")
+            .to_string();
+        parse(&json);
+        for pointer in NON_NEGATIVE_STYLE_LENGTHS {
+            if json.pointer(pointer).is_none() {
+                continue;
+            }
+            let zero = with(&json, pointer, json!(0));
+            if let Err(error) = try_parse(&zero) {
+                panic!("CSS allows {pointer} = 0 on the {kind} node, but it was rejected: {error}");
+            }
+            assert_round_trips(&zero);
+            for negative in [json!(-1), json!(-0.5)] {
+                assert_rejected(
+                    &with(&json, pointer, negative.clone()),
+                    &format!(
+                        "CSS has no negative stroke widths, corner radii or blurs, so {pointer} = {negative} on the {kind} node"
+                    ),
+                );
+            }
+        }
+        // Shadows may be offset up and to the left, and a negative spread
+        // shrinks them, as in CSS `box-shadow`.
+        for pointer in [
+            "/shadows/0/offsetX",
+            "/shadows/0/offsetY",
+            "/shadows/0/spread",
+            "/shadows/1/spread",
+        ] {
+            assert_round_trips(&with(&json, pointer, json!(-12.5)));
+        }
+    }
+
+    let base = styled_frame();
+    for angle in [json!(-90), json!(-405.5), json!(720)] {
+        assert_round_trips(&with(&base, "/fills/1/angle", angle));
+    }
+    for opacity in [json!(0), json!(1)] {
+        assert_round_trips(&with(&base, "/opacity", opacity));
+    }
+    for opacity in [json!(-0.1), json!(1.5)] {
+        assert_rejected(
+            &with(&base, "/opacity", opacity.clone()),
+            &format!("opacity goes from 0 to 1, so {opacity}"),
+        );
+    }
 }
 
 #[test]

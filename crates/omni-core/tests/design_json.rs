@@ -371,27 +371,75 @@ fn serializing_a_parsed_design_again_gives_the_same_text() {
     );
 }
 
+/// Doubles that need all 17 significant digits: 37.035000000000004,
+/// 1439.1764831232663, 216.66666666666666 and 1.5384615384615385. A JSON
+/// parser that is not exact, such as serde_json without its `float_roundtrip`
+/// feature, reads each of them back as a neighboring double.
+const FULL_PRECISION: [f64; 4] = [12.345 * 3.0, 1439.1764831232663, 650.0 / 3.0, 20.0 / 13.0];
+
 #[test]
 fn numbers_keep_their_exact_values() {
-    for value in [0.1, 0.15, 1.3, -0.4, 12.345, 1440.0, -1200.5] {
-        for (json, pointer) in [
-            (placed(&frame("frame001"), value, 1.0), "/x"),
+    let short = [0.1, 0.15, 1.3, 12.345, 1440.0, 1200.5];
+    for value in short.into_iter().chain(FULL_PRECISION) {
+        for (json, pointer, written) in [
+            (placed(&frame("frame001"), value, 1.0), "/x", value),
+            (placed(&frame("frame001"), -value, 1.0), "/x", -value),
             (
                 with(&frame("frame001"), "/minWidth", json!(value)),
                 "/minWidth",
+                value,
             ),
             (
                 with(&frame("frame001"), "/width", json!({"fixed": value})),
                 "/width/fixed",
+                value,
             ),
         ] {
             let output = assert_round_trips(&json);
             assert_eq!(
                 output.pointer(pointer).and_then(Value::as_f64),
-                Some(value),
-                "{pointer} = {value} is written back exactly"
+                Some(written),
+                "{pointer} = {written} is written back exactly"
             );
         }
+    }
+}
+
+#[test]
+fn every_number_in_a_design_keeps_all_its_digits() {
+    let [length, wide, weight, ratio] = FULL_PRECISION;
+    let fraction = 10.0 / 11.0;
+    let design = complete_design();
+    for (pointer, value) in [
+        ("/children/0/x", -wide),
+        ("/children/0/y", length),
+        ("/children/0/width/fixed", wide),
+        ("/children/0/minHeight", weight),
+        ("/children/0/layout/gap/row", length),
+        ("/children/0/layout/padding/top", length),
+        ("/children/0/fills/1/angle", -length),
+        ("/children/0/fills/1/stops/1/position", fraction),
+        ("/children/0/radius/topLeft", length),
+        ("/children/0/children/0/maxWidth", wide),
+        ("/children/0/children/0/strokes/0/width", ratio),
+        ("/children/0/children/0/shadows/0/offsetX", -length),
+        ("/children/0/children/0/shadows/0/offsetY", length),
+        ("/children/0/children/0/shadows/0/blur", length),
+        ("/children/0/children/0/shadows/0/spread", -ratio),
+        ("/children/0/children/0/children/0/fontSize", length),
+        ("/children/0/children/0/children/0/fontWeight", weight),
+        ("/children/0/children/0/children/0/lineHeight", ratio),
+        ("/children/0/children/0/children/0/letterSpacing", -ratio),
+        ("/children/0/children/0/children/2/opacity", fraction),
+        ("/children/0/children/1/layout/columns/0/fixed", weight),
+        ("/children/0/children/1/layout/columns/1/fr", ratio),
+    ] {
+        let output = assert_round_trips(&with(&design, pointer, json!(value)));
+        assert_eq!(
+            output.pointer(pointer).and_then(Value::as_f64),
+            Some(value),
+            "{pointer} = {value} is written back exactly"
+        );
     }
 }
 
