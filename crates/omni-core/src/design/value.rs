@@ -21,6 +21,27 @@ pub enum TokenOr<T> {
 /// A length in CSS pixels, or a token reference.
 pub type Length = TokenOr<f64>;
 
+/// Reads a value that CSS never lets go below 0: a size, a min or max size, a
+/// gap, padding, a fixed grid track, a stroke width, a corner radius, a shadow
+/// blur, a font size or a line height. A token's value is checked where the
+/// token is defined.
+pub(crate) fn non_negative<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Length, D::Error> {
+    let value = Length::deserialize(deserializer)?;
+    match value {
+        TokenOr::Literal(number) if number < 0.0 => Err(de::Error::custom(format_args!(
+            "{number} is negative, but CSS sizes, gaps, padding, grid tracks, stroke widths, corner radii, shadow blurs, font sizes and line heights are 0 or more"
+        ))),
+        _ => Ok(value),
+    }
+}
+
+/// Like [`non_negative`], for a property that may be left out.
+pub(crate) fn some_non_negative<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Length>, D::Error> {
+    non_negative(deserializer).map(Some)
+}
+
 mod sealed {
     use serde::Serializer;
     use serde::de::{self, Expected, MapAccess, Unexpected};

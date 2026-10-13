@@ -1,7 +1,7 @@
 //! Layout properties, which follow CSS flexbox, grid and absolute positioning.
 
 use super::json::{Number, Object, first_set, read_number, some, some_number, some_object};
-use super::value::Length;
+use super::value::{Length, non_negative, some_non_negative};
 use serde::de::value::MapAccessDeserializer;
 use serde::de::{self, Deserializer, MapAccess, Unexpected, Visitor};
 use serde::ser::{SerializeMap, Serializer};
@@ -196,10 +196,10 @@ impl TryFrom<Object<RawLayout>> for Layout {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Gap {
-    #[serde(default, deserialize_with = "some")]
+    #[serde(default, deserialize_with = "some_non_negative")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub row: Option<Length>,
-    #[serde(default, deserialize_with = "some")]
+    #[serde(default, deserialize_with = "some_non_negative")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub column: Option<Length>,
 }
@@ -208,16 +208,16 @@ pub struct Gap {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Padding {
-    #[serde(default, deserialize_with = "some")]
+    #[serde(default, deserialize_with = "some_non_negative")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub top: Option<Length>,
-    #[serde(default, deserialize_with = "some")]
+    #[serde(default, deserialize_with = "some_non_negative")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub right: Option<Length>,
-    #[serde(default, deserialize_with = "some")]
+    #[serde(default, deserialize_with = "some_non_negative")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bottom: Option<Length>,
-    #[serde(default, deserialize_with = "some")]
+    #[serde(default, deserialize_with = "some_non_negative")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub left: Option<Length>,
 }
@@ -270,6 +270,7 @@ impl<'de> Deserialize<'de> for Sizing {
                 #[derive(Deserialize)]
                 #[serde(deny_unknown_fields)]
                 struct Fixed {
+                    #[serde(deserialize_with = "non_negative")]
                     fixed: Length,
                 }
 
@@ -335,7 +336,7 @@ impl<'de> Deserialize<'de> for Track {
                 #[derive(Deserialize)]
                 #[serde(deny_unknown_fields)]
                 struct RawTrack {
-                    #[serde(default, deserialize_with = "some")]
+                    #[serde(default, deserialize_with = "some_non_negative")]
                     fixed: Option<Length>,
                     #[serde(default, deserialize_with = "some_number")]
                     fr: Option<f64>,

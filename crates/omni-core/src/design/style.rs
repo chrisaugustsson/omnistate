@@ -1,7 +1,7 @@
 //! Style properties: fills, strokes, corner radii, shadows and text styles.
 
 use super::json::{Object, first_set, read_number, some, some_number, some_objects, write_number};
-use super::value::{AttachmentRef, Color, Length, TokenOr};
+use super::value::{AttachmentRef, Color, Length, TokenOr, non_negative, some_non_negative};
 use serde::{Deserialize, Serialize};
 
 keywords! {
@@ -112,6 +112,7 @@ keywords! {
 #[serde(deny_unknown_fields)]
 pub struct Stroke {
     pub color: TokenOr<Color>,
+    #[serde(deserialize_with = "non_negative")]
     pub width: Length,
 }
 
@@ -119,16 +120,16 @@ pub struct Stroke {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct Radius {
-    #[serde(default, deserialize_with = "some")]
+    #[serde(default, deserialize_with = "some_non_negative")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub top_left: Option<Length>,
-    #[serde(default, deserialize_with = "some")]
+    #[serde(default, deserialize_with = "some_non_negative")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub top_right: Option<Length>,
-    #[serde(default, deserialize_with = "some")]
+    #[serde(default, deserialize_with = "some_non_negative")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bottom_right: Option<Length>,
-    #[serde(default, deserialize_with = "some")]
+    #[serde(default, deserialize_with = "some_non_negative")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bottom_left: Option<Length>,
 }
@@ -151,7 +152,7 @@ pub struct Shadow {
     pub color: TokenOr<Color>,
     pub offset_x: Length,
     pub offset_y: Length,
-    #[serde(default, deserialize_with = "some")]
+    #[serde(default, deserialize_with = "some_non_negative")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub blur: Option<Length>,
     #[serde(default, deserialize_with = "some")]

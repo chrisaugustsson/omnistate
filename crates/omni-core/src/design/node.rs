@@ -5,7 +5,7 @@ use super::json::{Number, Object, entry, first_set, some, some_number, some_obje
 use super::layout::{GridPlacement, Layout, LayoutMode, Sizing};
 use super::path::PathData;
 use super::style::{Fill, FontStyle, ImageFit, Radius, Shadow, Stroke, TextAlign, TextDecoration};
-use super::value::{AttachmentRef, Color, FontFamily, Length, TokenOr};
+use super::value::{AttachmentRef, Color, FontFamily, Length, TokenOr, some_non_negative};
 use serde::de::Error as _;
 use serde::ser::SerializeMap;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -354,13 +354,13 @@ struct RawNode {
     width: Option<Sizing>,
     #[serde(default, deserialize_with = "some")]
     height: Option<Sizing>,
-    #[serde(default, deserialize_with = "some")]
+    #[serde(default, deserialize_with = "some_non_negative")]
     min_width: Option<Length>,
-    #[serde(default, deserialize_with = "some")]
+    #[serde(default, deserialize_with = "some_non_negative")]
     max_width: Option<Length>,
-    #[serde(default, deserialize_with = "some")]
+    #[serde(default, deserialize_with = "some_non_negative")]
     min_height: Option<Length>,
-    #[serde(default, deserialize_with = "some")]
+    #[serde(default, deserialize_with = "some_non_negative")]
     max_height: Option<Length>,
     #[serde(default, deserialize_with = "some")]
     layout: Option<Layout>,
@@ -380,13 +380,13 @@ struct RawNode {
     content: Option<String>,
     #[serde(default, deserialize_with = "some")]
     font_family: Option<TokenOr<FontFamily>>,
-    #[serde(default, deserialize_with = "some")]
+    #[serde(default, deserialize_with = "some_non_negative")]
     font_size: Option<Length>,
     #[serde(default, deserialize_with = "some")]
     font_weight: Option<TokenOr<f64>>,
     #[serde(default, deserialize_with = "some")]
     font_style: Option<FontStyle>,
-    #[serde(default, deserialize_with = "some")]
+    #[serde(default, deserialize_with = "some_non_negative")]
     line_height: Option<TokenOr<f64>>,
     #[serde(default, deserialize_with = "some")]
     letter_spacing: Option<Length>,

@@ -31,10 +31,15 @@
 //!
 //! Lengths are CSS pixels and colors are `#rrggbb` or `#rrggbbaa`. Every
 //! color, every length except `x` and `y`, every opacity and font value, and a
-//! whole shadow may instead be a token reference such as `$color.surface`. The
-//! format is closed: unknown properties, `null` values and properties that a
-//! node's type has no use for are rejected. Serializing writes back every
-//! property a node sets.
+//! whole shadow may instead be a token reference such as `$color.surface`.
+//! Literals stay in the ranges CSS allows: sizes, min and max sizes, gaps,
+//! padding, grid tracks, stroke widths, corner radii, shadow blurs, font sizes
+//! and line heights are 0 or more, opacity goes from 0 to 1 and font weights
+//! from 1 to 1000, while `x`, `y`, shadow offsets and spread, letter spacing
+//! and gradient angles may be negative. The format is closed: unknown
+//! properties, `null` values and properties that a node's type has no use for
+//! are rejected. Serializing writes back every property a node sets, and
+//! every number as the same double, so a round trip is lossless.
 
 /// Defines an enum of keywords, written in JSON as strings.
 macro_rules! keywords {

@@ -6,6 +6,8 @@ publish.workspace = true
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
-
-[dev-dependencies]
-serde_json = "1"
+# The renderer, the API and the CLI read designs with serde_json. Its
+# float_roundtrip feature reads each number back as the exact double it was
+# written from, so designs round-trip without loss. Cargo unifies features, so
+# declaring it here turns it on in every build that links omni-core.
+serde_json = { version = "1", features = ["float_roundtrip"] }
