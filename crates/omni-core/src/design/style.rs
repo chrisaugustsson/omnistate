@@ -1,0 +1,187 @@
+//! Style properties: fills, strokes, corner radii, shadows and text styles.
+
+use super::json::{Object, first_set, read_number, some, some_number, some_objects, write_number};
+use super::value::{AttachmentRef, Color, Length, TokenOr};
+use serde::{Deserialize, Serialize};
+
+keywords! {
+    enum FillKind {
+        Solid = "solid",
+        LinearGradient = "linear-gradient",
+        Image = "image",
+    }
+}
+
+/// A paint that fills a box or a vector. Fills are painted in list order, so
+/// the last one ends up on top.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "kebab-case", try_from = "Object<RawFill>")]
+pub enum Fill {
+    /// One color.
+    Solid { color: TokenOr<Color> },
+    /// A CSS linear gradient. `angle` is in degrees, clockwise from pointing
+    /// up, and the stops give the color at positions from 0 to 1.
+    LinearGradient {
+        #[serde(serialize_with = "write_number")]
+        angle: f64,
+        stops: Vec<GradientStop>,
+    },
+    /// An image that covers its box or fits inside it.
+    Image { image: AttachmentRef, fit: ImageFit },
+}
+
+/// Every fill property, before the fill's type says which ones apply.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawFill {
+    #[serde(rename = "type")]
+    kind: FillKind,
+    #[serde(default, deserialize_with = "some")]
+    color: Option<TokenOr<Color>>,
+    #[serde(default, deserialize_with = "some_number")]
+    angle: Option<f64>,
+    #[serde(default, deserialize_with = "some_objects")]
+    stops: Option<Vec<GradientStop>>,
+    #[serde(default, deserialize_with = "some")]
+    image: Option<AttachmentRef>,
+    #[serde(default, deserialize_with = "some")]
+    fit: Option<ImageFit>,
+}
+
+impl TryFrom<Object<RawFill>> for Fill {
+    type Error = String;
+
+    fn try_from(Object(mut raw): Object<RawFill>) -> Result<Self, String> {
+        fn required<T>(kind: FillKind, key: &str, value: Option<T>) -> Result<T, String> {
+            value.ok_or_else(|| format!("{kind} fills need `{key}`"))
+        }
+
+        let kind = raw.kind;
+        let fill = match kind {
+            FillKind::Solid => Fill::Solid {
+                color: required(kind, "color", raw.color.take())?,
+            },
+            FillKind::LinearGradient => {
+                let angle = required(kind, "angle", raw.angle.take())?;
+                let stops = required(kind, "stops", raw.stops.take())?;
+                if stops.len() < 2 {
+                    return Err(format!("{kind} fills need at least two stops"));
+                }
+                Fill::LinearGradient { angle, stops }
+            }
+            FillKind::Image => Fill::Image {
+                image: required(kind, "image", raw.image.take())?,
+                fit: required(kind, "fit", raw.fit.take())?,
+            },
+        };
+        let unused = first_set([
+            ("color", raw.color.is_some()),
+            ("angle", raw.angle.is_some()),
+            ("stops", raw.stops.is_some()),
+            ("image", raw.image.is_some()),
+            ("fit", raw.fit.is_some()),
+        ]);
+        match unused {
+            Some(key) => Err(format!("{kind} fills have no `{key}`")),
+            None => Ok(fill),
+        }
+    }
+}
+
+/// The color at one position along a gradient, from 0 at its start to 1 at
+/// its end.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GradientStop {
+    #[serde(serialize_with = "write_number")]
+    #[serde(deserialize_with = "read_number")]
+    pub position: f64,
+    pub color: TokenOr<Color>,
+}
+
+keywords! {
+    /// How an image fits its box, as CSS `object-fit`.
+    pub enum ImageFit {
+        Cover = "cover",
+        Contain = "contain",
+    }
+}
+
+/// A line along the edge of a box or along a vector's path.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Stroke {
+    pub color: TokenOr<Color>,
+    pub width: Length,
+}
+
+/// The radius of each corner of a box. A corner left out is square.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct Radius {
+    #[serde(default, deserialize_with = "some")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub top_left: Option<Length>,
+    #[serde(default, deserialize_with = "some")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub top_right: Option<Length>,
+    #[serde(default, deserialize_with = "some")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bottom_right: Option<Length>,
+    #[serde(default, deserialize_with = "some")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bottom_left: Option<Length>,
+}
+
+keywords! {
+    /// Whether a shadow falls outside a box or inside it.
+    pub enum ShadowKind {
+        Drop = "drop",
+        Inner = "inner",
+    }
+}
+
+/// A shadow, as one CSS `box-shadow`. `blur` and `spread` are 0 when they are
+/// left out.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct Shadow {
+    #[serde(rename = "type")]
+    pub kind: ShadowKind,
+    pub color: TokenOr<Color>,
+    pub offset_x: Length,
+    pub offset_y: Length,
+    #[serde(default, deserialize_with = "some")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub blur: Option<Length>,
+    #[serde(default, deserialize_with = "some")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub spread: Option<Length>,
+}
+
+keywords! {
+    /// Upright or italic text, as CSS `font-style`.
+    pub enum FontStyle {
+        Normal = "normal",
+        Italic = "italic",
+    }
+}
+
+keywords! {
+    /// How text lines align in their box, as CSS `text-align`.
+    pub enum TextAlign {
+        Left = "left",
+        Center = "center",
+        Right = "right",
+        Justify = "justify",
+    }
+}
+
+keywords! {
+    /// A line drawn with text, as CSS `text-decoration-line`.
+    pub enum TextDecoration {
+        None = "none",
+        Underline = "underline",
+        LineThrough = "line-through",
+    }
+}
