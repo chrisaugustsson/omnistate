@@ -249,6 +249,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "omni-penpot"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+]
+
+[[package]]
 name = "omni-render"
 version = "0.1.0"
 dependencies = [
