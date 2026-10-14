@@ -149,8 +149,8 @@ impl LayoutTree {
         &mut self.nodes[usize::from(node)]
     }
 
-    /// The width of a flex container whose content decides it, as Chrome
-    /// sizes it before the container lays out its items. CSS gives such a
+    /// The width of a flex container or a grid whose content decides it, as
+    /// Chrome sizes it before the node lays out its items. CSS gives such a
     /// container its max-content width under a max-content constraint, its
     /// min-content width under a min-content one, and otherwise its
     /// fit-content width: the max-content width, but no wider than the space
@@ -169,10 +169,17 @@ impl LayoutTree {
     /// items of a column before it knows the column's width, so a text in
     /// the column may break its lines at another width than the one it gets.
     ///
+    /// Taffy gives a grid its max-content width, whatever the space available,
+    /// where CSS fits it into that space like a flex container: in a grid area,
+    /// on the cross axis of a column that does not stretch it or that wraps, and
+    /// where it is positioned.
+    ///
     /// Returns `None` for every other node, and for a container whose width
     /// is already known.
     fn auto_width(&mut self, node: NodeId, inputs: &LayoutInput) -> Option<f32> {
-        Flex::of(self.node(node))?;
+        if self.node(node).style.display != Display::Grid {
+            Flex::of(self.node(node))?;
+        }
         let style = &self.node(node).style;
         let sized = inputs.known_dimensions.width.is_some()
             || (inputs.sizing_mode == SizingMode::InherentSize && !style.size.width.is_auto());

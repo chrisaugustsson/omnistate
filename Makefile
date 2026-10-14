@@ -13,7 +13,7 @@ WASM_TARGET := wasm32-unknown-emscripten
 WASM_OUT := $(or $(CARGO_TARGET_DIR),target)/$(WASM_TARGET)/release
 SANDBOX_BUILD := render-sandbox/build
 
-.PHONY: lint test render-wasm chrome-boxes stress-file nodes-boxes bench-render
+.PHONY: lint test render-wasm chrome-boxes stress-file nodes-boxes bench-render check-layout
 
 # The last clippy run covers the WebAssembly-only code of omni-render.
 lint:
@@ -60,6 +60,16 @@ nodes-boxes:
 bench-render: render-wasm stress-file
 	npm install --prefix render-sandbox --no-audit --no-fund --loglevel=error
 	node render-sandbox/bench-render.mjs
+
+# Renderer gate B (US-009): renders the stress file in headed Chrome through
+# Playwright and compares every node's box with the one that the WebAssembly
+# build of the renderer lays out, then appends the result to
+# docs/renderer-gate.md. Like `make bench-render` it needs a Mac with Chrome,
+# and the first run installs Playwright (without a browser) with npm. It fails
+# if a node is more than 2 px from Chrome's box.
+check-layout: render-wasm stress-file
+	npm install --prefix render-sandbox --no-audit --no-fund --loglevel=error
+	node render-sandbox/check-layout.mjs
 
 $(EMCC):
 	test -d "$(EMSDK)" || git clone --depth 1 --branch $(EMSDK_VERSION) https://github.com/emscripten-core/emsdk.git "$(EMSDK)"

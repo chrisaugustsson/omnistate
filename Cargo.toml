@@ -6,3 +6,8 @@ members = ["crates/*"]
 version = "0.1.0"
 edition = "2024"
 publish = false
+
+# Taffy 0.15.0 with the patches that the layout of docs/formats/layout.md needs
+# to give Chrome's boxes (see vendor/taffy/src/compute/grid/track_sizing.rs).
+[patch.crates-io]
+taffy = { path = "vendor/taffy" }

@@ -246,6 +246,28 @@ content's height: a 60 px wide text with a `minHeight` of 30 px, above a box
 column's own `minHeight` and `maxHeight` then bound it, and its `fill` items
 grow into whatever its `minHeight` leaves them.
 
+### Grid content widths
+
+The widest and narrowest arrangements of a grid are the widths that Chrome
+measures, with the grid's padding. Taffy's grid layout finds them, with these
+rules of Chrome's on top of it:
+
+- A `hug` grid is as wide as Sizing says: its widest arrangement, but no wider
+  than the space available unless its narrowest arrangement is wider still,
+  which is how CSS fits an `auto` width. That holds in a grid area, on the
+  cross axis of a column that does not stretch the grid or that wraps, and for
+  a positioned grid, as it does for a flex layout.
+- An item that spans several tracks, one of them flexible (`fr`), and whose
+  width is not set has an automatic minimum size of zero. Where the grid is
+  sized at its narrowest, such an item adds nothing to the width of the tracks
+  it spans. It is still never narrower than its padding, which it shares among
+  the flexible tracks it spans.
+- An item gives the growth limit of every `auto` track that it spans a finite
+  value, even where it contributes nothing, such as an empty `fill` item or one
+  that spans a fixed track as well. A wider item that spans the same tracks
+  then shares what it adds only with the tracks that can still grow, where
+  Taffy shares it with every `auto` track.
+
 ## Placement: `x`, `y` and `absolute`
 
 The children of a `none` layout, and the children of flex and grid layouts
@@ -308,6 +330,11 @@ break: a piece wider than its line overflows a line of its own
   without ligatures and contextual alternates (OpenType `liga`, `clig` and
   `calt`), so Inter's `->` keeps its two glyphs there instead of becoming an
   arrow.
+- The min-content and max-content widths of a text are rounded up to
+  1/128 px, Chrome's layout unit at a device pixel ratio of 2, as Chrome rounds
+  the intrinsic width of its inline content up. A text that is as wide as its
+  min-content width then keeps every line that Chrome keeps, where an unrounded
+  width could break one line more.
 - Every line has an explicit height, in px (decision Q44). It is `lineHeight` ×
   `fontSize`, or, when `lineHeight` is left out, the font's normal line height:
   its ascent, descent and line gap, at full precision and never rounded to
@@ -391,28 +418,39 @@ Where the renderer's boxes still differ from Chrome's. They were found by
 comparing the two on thousands of random designs, and every rule above is
 pinned by tests with the boxes that Chrome gives (`make chrome-boxes`). The
 comparison found flex layouts to differ only in the cases under Flex below, and
-the other differences are in grids and in text. US-009 resolves each one, or
-confirms that it stays within 2 px on the stress file.
+the other differences are in grids and in text. `make check-layout` (renderer
+gate B, US-009) renders the stress file in Chrome and compares the box of every
+node with the one that the WebAssembly build lays out, and
+[docs/renderer-gate.md](../renderer-gate.md) records that every box is within
+2 px. The differences that took nodes of the stress file beyond 2 px are
+fixed and no longer listed (see [Grid content widths](#grid-content-widths) and
+[Text](#text)). Each entry that is left stays within 2 px on the stress file,
+as the gate confirms.
 
 ### Text
 
 - Thai, Lao, Khmer and Myanmar break only at spaces. Chrome finds their words
   in a dictionary.
+  The stress file has no such text, so it stays within 2 px of Chrome.
 - A soft hyphen (U+00AD) breaks without the hyphen that Chrome shows at the end
   of the line.
+  The stress file has no soft hyphen, so it stays within 2 px of Chrome.
 - The renderer measures the pieces of a line as the whole line is shaped, where
   Chrome shapes a piece on its own when a ligature or a contextual alternate
   spans the place where the line may break: without letter spacing, the
   narrowest arrangement of `a->b` is narrower than in Chrome, which draws the
   arrow when the text stays on one line but measures `a-` and `>b` apart.
+  The stress file has no `->`, so it stays within 2 px of Chrome.
 - A double hyphen before a letter beyond ASCII breaks where Chrome does not:
   `a --élan`, 10 px wide, takes four lines, and three in Chrome.
+  The stress file has no double hyphen, so it stays within 2 px of Chrome.
 - A character that Inter has no glyph for, such as a Chinese, Japanese or
   Arabic letter or an emoji, is as wide as Inter's missing-glyph box in the
   renderer, where Chrome draws it in a font of the system. How wide such text
   is, and where its lines break, depends on the fonts of the machine in
   Chrome: `日本語` at 16 px is 31.5 px wide in the renderer, and 48.96 px in
   Chrome on the machine that measured the tests.
+  The text of the stress file is ASCII, so it stays within 2 px of Chrome.
 
 ### Flex
 
@@ -427,6 +465,8 @@ confirms that it stays within 2 px on the stress file.
   `maxHeight` of 70 px and 8 px of padding at the top and the bottom puts two
   boxes 30 px tall side by side in Chrome, and one above the other in the
   renderer.
+  The stress file sets no `minWidth` or `minHeight`, so it stays within 2 px of
+  Chrome here.
 - A box that a flex layout shrinks to a `minWidth` or `minHeight` below its
   padding is as large as its padding, as in Chrome, but is placed as if it were
   as large as that bound where the layout centers its boxes or packs them
@@ -439,6 +479,9 @@ confirms that it stays within 2 px on the stress file.
   below its padding: a frame with 12 px of padding at the top and the bottom
   and a `maxHeight` of 13 px, next to a box 10 px tall in a row 40 px tall that
   wraps in reverse, is at y 16 in Chrome, and at y 27 in the renderer.
+  The stress file sets no `minWidth` or `minHeight`, and the only max size that
+  it sets is the `maxWidth` of texts, which have no padding, so it stays within
+  2 px of Chrome here.
 - A column that wraps, and whose height its parent column sets by shrinking or
   growing it, wraps its items at that height in Chrome, but keeps the width
   that its items have on one line, so its lines overflow it. The renderer
@@ -450,6 +493,8 @@ confirms that it stays within 2 px on the stress file.
   with a `minHeight` of 10 px that wraps boxes 40 and 50 px wide and 40 px
   tall, shrinks that column to 60 px and makes it 50 px wide in Chrome, and
   90 px in the renderer.
+  The gate compares every node of the stress file with Chrome, and every box is
+  within 2 px, so this stays within 2 px on the stress file.
 - In a column that wraps in reverse with `alignItems: baseline`, a hug text
   next to a `fill` item that is wider than the column is fit into its flex line
   in both, as [Sizing](#sizing-width-and-height) says, but Chrome places it by
@@ -458,19 +503,11 @@ confirms that it stays within 2 px on the stress file.
   the column and 63.96 px in its line, next to a `fill` frame around a box
   100 px wide, is at x -35.59 from the column's left edge in Chrome, and at
   x -53.96 in the renderer.
+  The gate compares every node of the stress file with Chrome, and every box is
+  within 2 px, so this stays within 2 px on the stress file.
 
 ### Grid
 
-- A `hug` grid is as wide as its max-content width where CSS fits it into the
-  space available to it, which is its max-content width but no wider than that
-  space unless its narrowest width is wider still. That is the case in a grid
-  area, on the cross axis of a column that does not stretch it or that wraps,
-  and for a positioned grid. A grid with the columns `2fr 1fr` around
-  "-1 Total" in a column of 60 px is 82.8 px wide, and 60 px in Chrome, which
-  wraps the text. A grid with the columns `1fr 2fr` around "I", positioned in a
-  board that hugs it, is 12.9 px wide, and 4.3 px in Chrome. A grid with the
-  columns `1fr auto 2fr 150px` around "iii", in a column 20 px wide that wraps,
-  is 184.88 px wide, and 161.63 px in Chrome.
 - In a flex layout, a grid is as wide at its narrowest as its items' narrowest
   content, where Chrome counts an item with a `minWidth` at that `minWidth`.
   That shows in a row that shrinks the grid, and in a frame that takes its
@@ -478,13 +515,12 @@ confirms that it stays within 2 px on the stress file.
   in a row 20 px wide, is 70.6 px wide, and 20 px in Chrome, and one around
   "input/output" with a `minWidth` of 80 px, in a hug row in a grid column of
   80 px, is 92.37 px wide, and 80 px in Chrome.
-- An item that spans several tracks of `auto` size shares what the tracks it
-  spans lack with them differently: a `fill` child in the first of three
-  columns that a 38.6 px wide text spans is 12.9 px wide, and 0 px in Chrome.
-  The same holds for rows.
+  The stress file sets no `minWidth`, so it stays within 2 px of Chrome here.
 - A line number counted from the end with a span (`gridRow: {"start": -1,
   "span": 2}`) that reaches beyond the explicit grid places the item in another
   implicit row than in Chrome.
+  The stress file has no line number counted from the end, so it stays within
+  2 px of Chrome here.
 - A grid that hugs its height grows a row whose item has a `minHeight` below
   its content's height only as far as the height of the space around the grid,
   where that height is definite, and Chrome grows the row to the content. A hug
@@ -493,6 +529,7 @@ confirms that it stays within 2 px on the stress file.
   In the renderer it is 40 px tall in a grid row of 40 px or in a row 40 px
   tall, 20 px tall positioned in a board 20 px tall, and 10 px tall positioned
   in a frame without a height.
+  The stress file sets no `minHeight`, so it stays within 2 px of Chrome here.
 - A grid takes its first baseline, which `alignItems: baseline` lines up, from
   the first child of its first row in the order of its children, and Chrome
   from the child that comes first in the row, the leftmost. They differ where
@@ -502,6 +539,8 @@ confirms that it stays within 2 px on the stress file.
   the first column, every text with a `lineHeight` of 1.5, is at y 9 in
   Chrome, by the baseline of "Date", and at y 22.5 in the renderer, by that of
   "Hi".
+  The gate compares every node of the stress file with Chrome, and every box is
+  within 2 px, so this stays within 2 px on the stress file.
 - In a grid whose `fixed` height, or the height of the space it is positioned
   in, is less than its rows need, a row takes the `fixed` height of its item
   where that is less than the item's padding, and Chrome takes the padding: in
@@ -509,6 +548,8 @@ confirms that it stays within 2 px on the stress file.
   bottom, above a text, puts the text at y 10, and at y 16 in Chrome.
   Positioned in a frame without a height, a hug grid around a frame 10 px tall
   with 16 px of padding at the top is 10 px tall, and 16 px in Chrome.
+  The gate compares every node of the stress file with Chrome, and every box is
+  within 2 px, so this stays within 2 px on the stress file.
 - Chrome sizes the `fr` tracks of a grid that hugs its width in its layout
   units of 1/128 px, and rounds down the size of one `fr`, so a track of
   `2fr` next to one of `1fr` can be a unit narrower than the content it was
@@ -517,6 +558,8 @@ confirms that it stays within 2 px on the stress file.
   column of a grid with the columns `2fr 1fr`, puts the frame on a second line
   in Chrome, where the column is 295.578 px wide, and next to the text in the
   renderer.
+  The gate compares every node of the stress file with Chrome, and every box is
+  within 2 px, so this stays within 2 px on the stress file.
 
 ## Example
 

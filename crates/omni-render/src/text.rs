@@ -326,15 +326,18 @@ impl ShapedText {
     }
 
     /// The CSS min-content width: the width of the widest piece, without the
-    /// spaces that end it.
+    /// spaces that end it, rounded up to a layout unit as Chrome rounds an
+    /// intrinsic width, so that a text sized to it keeps the lines that Chrome
+    /// keeps.
     pub fn min_content_width(&self) -> f32 {
-        self.min_content_width
+        (self.min_content_width * LAYOUT_UNITS_PER_PX).ceil() / LAYOUT_UNITS_PER_PX
     }
 
     /// The CSS max-content width: the width of the widest line when lines
-    /// break only at line breaks.
+    /// break only at line breaks, rounded up to a layout unit like the
+    /// min-content width.
     pub fn max_content_width(&self) -> f32 {
-        self.max_content_width
+        (self.max_content_width * LAYOUT_UNITS_PER_PX).ceil() / LAYOUT_UNITS_PER_PX
     }
 
     /// How far the baseline of the first line is below the top of the text,

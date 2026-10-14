@@ -258,6 +258,38 @@ verdict is the median of the 5 runs, which the Gate A section of
 string. `render-sandbox/bench-render-lib.mjs` holds the numbers and the report, and
 the tests run it in Node.
 
+## Renderer gate B
+
+`make check-layout` is the pass/fail layout test of the renderer (US-009): what
+the product owner reviews is what gets built only if the renderer lays designs
+out the way a browser does. Like `make bench-render` it needs a Mac with Chrome,
+builds the module and the stress file, and installs Playwright with npm
+(`playwright-core`, which downloads no browser). It runs
+`render-sandbox/check-layout.mjs`:
+
+1. The stress file is exported as HTML by the export of `make chrome-boxes`
+   (`render-sandbox/layout-export.mjs`: line heights in px, never `normal`, the
+   bundled Inter loaded through `@font-face`, `check-layout-lib.mjs`'s
+   `prepareExport`).
+2. Headed Chrome, at the viewport (1440 x 900) and the device pixel ratio (2) of
+   gate A, renders the export once the fonts have loaded, and the script reads
+   the box of every node with `getBoundingClientRect`.
+3. `render-sandbox/check-layout.html` loads the WebAssembly build that
+   `make render-wasm` builds and the stress file in a page of the same Chrome,
+   and lays the file out with `_omni_render_layout_design`: the renderer's boxes
+   come from the WebAssembly build, never from the native one.
+4. `compareBoxes` compares the two. Every x, y, width and height of every node
+   must be within 2 px of Chrome's, and every mismatch is listed with its node
+   ID, largest first.
+5. `renderReport` and `spliceReport` write the result as the Gate B section of
+   `docs/renderer-gate.md`, after Gate A, and the exit status is 0 only if every
+   node is within 2 px.
+
+`render-sandbox/check-layout-lib.mjs` holds the export, the comparison and the
+report, and the tests run it in Node. The entries of "Known differences" in
+`docs/formats/layout.md` are either fixed or confirmed by this gate to stay
+within 2 px on the stress file.
+
 ## Selection
 
 Comments pin to the exact node that was clicked, so `view::Scene` answers which
@@ -347,6 +379,23 @@ Layout owns its Taffy tree (`src/layout/tree.rs`) instead of using Taffy's
   columns, which then measure the same sizes again at a cost that grows with
   every level of nesting. The tree keeps every size it measures during a
   layout.
+
+Taffy is the copy in `vendor/taffy` (Taffy 0.15.0, MIT licensed, selected by the
+`[patch.crates-io]` entry of the workspace's `Cargo.toml`), because some of
+Chrome's grid rules need changes inside its track sizing. Each change in
+`src/compute/grid/` is marked `omni-render patch`:
+
+- Under a min-content constraint, an item that spans several tracks, one of them
+  flexible, contributes only its minimum contribution (`track_sizing.rs`).
+- An item that is no wider than its padding is still as wide as its padding,
+  where Taffy gives an automatic minimum size of zero (`types/grid_item.rs`).
+- An item that touches an `auto` track gives it a finite growth limit even where
+  it contributes nothing (`track_sizing.rs`).
+
+`docs/formats/layout.md` describes the rules ([Grid content
+widths](../../docs/formats/layout.md#grid-content-widths)), and the tests pin
+them with Chrome's boxes. The rest of `layout/tree.rs` also sizes a `hug` grid
+as CSS fits its content into the space available, as it does a flex layout.
 
 ### Chrome's boxes
 
