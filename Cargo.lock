@@ -276,6 +276,8 @@ dependencies = [
 name = "omni-penpot"
 version = "0.1.0"
 dependencies = [
+ "omni-core",
+ "omni-render",
  "serde",
  "serde_json",
  "zip",

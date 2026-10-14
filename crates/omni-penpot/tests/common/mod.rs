@@ -7,6 +7,8 @@ use std::path::{Path, PathBuf};
 use omni_penpot::{Page, Shape};
 use serde_json::{Value, json};
 
+pub mod convert;
+
 /// The id of the root frame that every page of an export has, the parent of the
 /// shapes that sit directly on the page.
 pub const ROOT_ID: &str = "00000000-0000-0000-0000-000000000000";
@@ -110,6 +112,16 @@ pub fn shape_json(
 /// shapes go into the archive in the order given, which tests use to check that
 /// the reader does not depend on it.
 pub fn export(file_id: &str, file_name: &str, pages: &[SyntheticPage]) -> Vec<u8> {
+    stored_zip(&export_entries(file_id, file_name, pages))
+}
+
+/// The archive entries of the export that [`export`] zips, for tests that add
+/// entries of their own.
+pub fn export_entries(
+    file_id: &str,
+    file_name: &str,
+    pages: &[SyntheticPage],
+) -> Vec<(String, Vec<u8>)> {
     let mut entries: Vec<(String, Vec<u8>)> = Vec::new();
     let manifest = json!({
         "type": "penpot/export-files",
@@ -158,7 +170,7 @@ pub fn export(file_id: &str, file_name: &str, pages: &[SyntheticPage]) -> Vec<u8
             ));
         }
     }
-    stored_zip(&entries)
+    entries
 }
 
 /// Writes `bytes` to a file of its own in the temporary directory and returns
