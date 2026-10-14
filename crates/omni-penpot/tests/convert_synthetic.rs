@@ -1102,6 +1102,92 @@ fn shapes_outside_boards_are_listed_instead_of_dropped() {
     }
 }
 
+/// The component fields of a component's root shape, as the real exports store
+/// them: `componentId` names the component, `componentRoot` marks the root of a
+/// copy or of the main instance, and `shapeRef` points a copy at the main.
+fn component_root(component: u32, shape_ref: Option<u32>) -> serde_json::Value {
+    let mut fields = json!({
+        "componentId": uid(component),
+        "componentFile": FILE_ID,
+        "componentRoot": true
+    });
+    match shape_ref {
+        Some(main) => fields["shapeRef"] = json!(uid(main)),
+        None => fields["mainInstance"] = json!(true),
+    }
+    fields
+}
+
+#[test]
+fn component_roots_are_listed_in_the_report_and_still_converted() {
+    let conversion = convert(
+        "report-components",
+        vec![
+            shape(1, "frame", "Home", [0.0, 0.0, 400.0, 300.0]).kids(vec![
+                shape(2, "frame", "Button copy", [0.0, 0.0, 120.0, 40.0])
+                    .with(component_root(500, Some(4)))
+                    .kids(vec![
+                        text(3, "Button label", [10.0, 10.0, 100.0, 20.0], "Save")
+                            .with(json!({ "shapeRef": uid(5) })),
+                    ]),
+                shape(4, "frame", "Button main", [0.0, 100.0, 120.0, 40.0])
+                    .with(component_root(500, None))
+                    .kids(vec![text(
+                        5,
+                        "Main label",
+                        [10.0, 110.0, 100.0, 20.0],
+                        "Save",
+                    )]),
+                shape(6, "rect", "Plain", [200.0, 0.0, 40.0, 40.0]),
+            ]),
+            shape(7, "frame", "Card", [500.0, 0.0, 200.0, 100.0])
+                .with(component_root(501, Some(99))),
+        ],
+    );
+    for (n, board_n, board_name, name, component) in [
+        (2, 1, "Home", "Button copy", 500),
+        (4, 1, "Home", "Button main", 500),
+        (7, 7, "Card", "Card", 501),
+    ] {
+        assert_reported(
+            &conversion,
+            &uid(n),
+            &uid(board_n),
+            board_name,
+            name,
+            &["component"],
+        );
+        let entry = entries_of(&conversion, &uid(n))
+            .into_iter()
+            .find(|entry| entry.reason.to_lowercase().contains("component"))
+            .expect("a component entry");
+        assert!(
+            entry.reason.contains(&uid(component)),
+            "the reason {:?} names the component {}",
+            entry.reason,
+            uid(component)
+        );
+        assert!(
+            entry.property.is_some(),
+            "{entry:?}: the shape is still converted, only its component link is left out"
+        );
+    }
+    // The component's shapes are converted as the plain shapes they are.
+    let home = board_node(board(&conversion, "Home"));
+    assert_eq!(node(home, "Button copy").kind(), NodeKind::Frame);
+    assert_eq!(child_names(node(home, "Button copy")), ["Button label"]);
+    assert_eq!(child_names(node(home, "Button main")), ["Main label"]);
+    assert_eq!(board_node(board(&conversion, "Card")).name(), "Card");
+    // Only the roots are listed: not the shapes inside them, nor plain shapes.
+    for n in [3, 5, 6] {
+        assert!(
+            entries_of(&conversion, &uid(n)).is_empty(),
+            "shape {n} is listed: {:#?}",
+            conversion.report.entries
+        );
+    }
+}
+
 #[test]
 fn converting_twice_gives_the_same_result() {
     let top = || {

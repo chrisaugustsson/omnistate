@@ -293,3 +293,79 @@ fn ordrar_lists_what_it_leaves_out_and_nothing_else() {
     // The 232 texts that sit directly on the pages.
     assert_eq!(loose, 232);
 }
+
+/// The root shapes of components in the export at `path`: the shapes stored
+/// with `componentRoot` true, as their id, name and `componentId`. The reader
+/// does not expose component fields, so this reads the shape entries itself.
+fn component_roots(path: &std::path::Path) -> Vec<(String, String, String)> {
+    use std::io::Read;
+
+    let file = std::fs::File::open(path).expect("the export opens");
+    let mut archive = zip::ZipArchive::new(file).expect("the export is a zip");
+    let mut roots = Vec::new();
+    let mut text = String::new();
+    for index in 0..archive.len() {
+        let mut entry = archive.by_index(index).expect("an archive entry");
+        let name = entry.name().expect("an entry name").to_string();
+        if !(name.contains("/pages/") && name.matches('/').count() == 4) {
+            continue;
+        }
+        text.clear();
+        entry
+            .read_to_string(&mut text)
+            .expect("a shape entry is text");
+        if !text.contains("\"componentRoot\"") {
+            continue;
+        }
+        let shape: serde_json::Value = serde_json::from_str(&text).expect("a shape is JSON");
+        if shape["componentRoot"] != serde_json::Value::Bool(true) {
+            continue;
+        }
+        let field = |key: &str| shape[key].as_str().expect("a string field").to_string();
+        roots.push((field("id"), field("name"), field("componentId")));
+    }
+    roots
+}
+
+#[test]
+fn ordrar_lists_every_component_root_in_the_report() {
+    let (Some(path), Some(conversion), Some(file)) =
+        (fixture("tirebud-ordrar.penpot"), ordrar(), ordrar_file())
+    else {
+        return;
+    };
+    // Every shape id inside a board, with the board that holds it.
+    let mut board_of = std::collections::HashMap::new();
+    for page in &file.pages {
+        for board in page.boards() {
+            for shape in flatten(board) {
+                board_of.insert(shape.id.as_str(), board);
+            }
+        }
+    }
+    let roots = component_roots(&path);
+    // Counted from the export: every one is a frame inside a board, and 375 of
+    // them are boards themselves.
+    assert_eq!(roots.len(), 10_005);
+    for (id, name, component) in &roots {
+        let board = board_of
+            .get(id.as_str())
+            .unwrap_or_else(|| panic!("component root {id} ({name}) is in a board"));
+        let entry = conversion
+            .report
+            .entries
+            .iter()
+            .find(|entry| {
+                entry.shape_id == *id && entry.reason.to_lowercase().contains("component")
+            })
+            .unwrap_or_else(|| panic!("the report does not list component root {id} ({name})"));
+        assert_eq!(entry.board_id, board.id, "board id of {entry:?}");
+        assert_eq!(entry.board, board.name, "board name of {entry:?}");
+        assert_eq!(entry.name, *name, "shape name of {entry:?}");
+        assert!(
+            entry.reason.contains(component.as_str()),
+            "the reason of {entry:?} names the component {component}"
+        );
+        assert!(entry.property.is_some(), "{entry:?} is still converted");
+    }
+}
