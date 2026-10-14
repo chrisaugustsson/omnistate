@@ -225,9 +225,10 @@ fn check_cases(test: &str, cases: &[Case]) {
 
 #[test]
 fn it_prints_a_box_for_every_node_of_a_page_and_an_empty_one_for_the_page() {
-    // The page holds the board of every case, which is some 2,000 nodes, and a
-    // board at a place of its own. Boards sit at their own x and y, which is
-    // where the nodes below hidden nodes get their empty boxes.
+    // The page holds the board of every case, some 950 nodes, and a board at a
+    // place of its own, and the tool must print the box Chrome gives every node
+    // of every case. Boards sit at their own x and y, which is where a hidden
+    // board and the nodes below it get their empty boxes.
     let second = cases::case(
         "a board at (300, 40)",
         at(
@@ -261,22 +262,11 @@ fn it_prints_a_box_for_every_node_of_a_page_and_an_empty_one_for_the_page() {
         [0.0, 0.0, 0.0, 0.0],
         "a page is a canvas without a size, so its box is empty at its origin"
     );
-    let placed = |name: &str| {
-        cases
-            .iter()
-            .position(|case| case.name.contains(name))
-            .unwrap_or_else(|| panic!("a case about {name}"))
-    };
-    let wrong: Vec<String> = ["hidden frame", "a board at (300, 40)"]
-        .iter()
-        .flat_map(|name| {
-            let index = placed(name);
-            wrong_boxes(&cases[index..=index], &renamings[index..=index], &printed)
-        })
-        .collect();
+    let wrong = wrong_boxes(&cases, &renamings, &printed);
     assert!(
         wrong.is_empty(),
-        "boards sit at their own x and y, and a hidden node and every node below it get an empty box at the top-left corner of its parent:\n{}",
+        "`make chrome-boxes` must print the box Chrome gives every node of every case, with all of them on one page: boards sit at their own x and y, and a hidden node and every node below it get an empty box at the top-left corner of its parent, or at the x and y of a hidden board; but {} boxes differ:\n{}",
+        wrong.len(),
         wrong.join("\n")
     );
 }
@@ -287,6 +277,7 @@ fn it_exports_the_css_of_the_layout_doc_for_every_layout_property() {
     // each way a parent sizes and places a child, and for the documented rules
     // that depend on the CSS being exactly as the doc says.
     let mut cases = cases::css_mapping();
+    cases.extend(cases::six_words_at_fixed_widths());
     cases.extend(cases::boards_sized_by_their_content());
     cases.extend(cases::none_frames_and_media_take_no_space());
     cases.extend(cases::fill_items());
@@ -307,6 +298,25 @@ fn it_renders_text_in_the_bundled_inter_whatever_its_family_weight_and_style() {
     cases.extend(cases::tabs());
     cases.extend(cases::tabs_near_a_stop());
     cases.extend(cases::line_breaks());
+    cases.extend(cases::hug_texts_on_one_line());
+    cases.extend(cases::kerning_pairs());
+    cases.extend(cases::lines_that_are_a_tenth_too_narrow());
+    cases.extend(cases::words_wider_than_their_line());
+    cases.extend(cases::words_after_a_word_wider_than_their_line());
+    cases.extend(cases::breaks_after_hyphens_dashes_and_ellipses());
+    cases.extend(cases::no_breaks_after_slashes());
+    cases.extend(cases::hyphens_before_digits());
+    cases.extend(cases::question_marks_and_brackets());
+    cases.extend(cases::hyphens_and_dashes_that_start_a_word());
+    cases.extend(cases::no_break_spaces());
+    cases.extend(cases::tab_stops());
+    cases.extend(cases::line_breaks_in_the_content());
+    cases.extend(cases::letter_spacing_after_every_character());
+    cases.extend(cases::letter_spacing_without_contextual_alternates());
+    cases.extend(cases::missing_families());
+    cases.extend(cases::texts_in_grid_columns());
+    cases.extend(cases::frames_that_hug_a_text());
+    cases.extend(cases::labels_in_padded_frames());
     check_cases("text", &cases);
 }
 
@@ -327,6 +337,9 @@ fn it_prints_the_boxes_chrome_gives_the_layout_cases_of_the_story() {
     cases.extend(cases::wrapping_rows_at_their_max_content_width());
     cases.extend(cases::hug_columns_take_the_height_their_items_need());
     cases.extend(cases::narrow_columns_wrap_their_texts());
+    cases.extend(cases::lines_that_overflow());
+    cases.extend(cases::first_baselines_of_containers());
+    cases.extend(cases::empty_grids());
     check_cases("story", &cases);
 }
 
@@ -342,6 +355,48 @@ fn it_writes_line_heights_in_px_and_renders_at_a_device_pixel_ratio_of_2() {
     cases.extend(cases::normal_line_heights_on_baselines());
     cases.extend(cases::empty_texts_have_no_baseline());
     check_cases("line-heights", &cases);
+}
+
+#[test]
+fn it_rounds_every_line_height_down_to_a_64th_of_a_pixel() {
+    // The tool writes every line height in px, rounded down to a multiple of
+    // 1/64 px, as layout.md says: 13 px Inter's normal line height, 15.7295 px,
+    // is written as 15.71875 px, where rounding it to the nearest 64th or up
+    // makes 15.734375 px, and writing it as it is lets Chrome round it to the
+    // nearest 1/128 px, 15.7265625 px. Eight lines of each make the difference
+    // show.
+    check_cases("snapped-line-heights", &cases::snapped_line_heights());
+}
+
+#[test]
+fn it_leaves_out_the_style_of_nodes_and_clips_without_changing_layout() {
+    // Strokes take no space, so the tool draws no CSS borders, and `clip` is
+    // `overflow: clip`: as a scroll container (`overflow: hidden`), a clipped
+    // frame around a word wider than its 60 px row would shrink to 40 px,
+    // where Chrome keeps it as wide as the word, 139.70 px.
+    check_cases("style", &cases::style_never_changes_a_box());
+}
+
+#[test]
+fn it_writes_the_content_of_texts_as_text_and_never_as_markup() {
+    // Unescaped, "a&b <i>c</i> d" would be "a&b c d" in Chrome, 57.02 px wide
+    // where the fourteen characters are 112.88 px.
+    check_cases("markup", &cases::markup_characters_in_text());
+}
+
+#[test]
+fn it_gives_a_hidden_board_and_the_nodes_below_it_an_empty_box_at_the_boards_x_and_y() {
+    // A page has no box to take a corner from, so a hidden board at (200, 100)
+    // gets its empty box there, and so does every node below it.
+    check_cases("hidden", &cases::hidden_nodes_get_empty_boxes());
+}
+
+#[test]
+fn it_makes_a_board_as_wide_as_its_content_on_one_line_wherever_it_sits() {
+    // A board that hugs or fills its width is `width: max-content`: at x 1300,
+    // where the 1440 px window leaves it 140 px, a `fit-content` board would
+    // be 140 px wide and wrap its six words, which need 250.22 px.
+    check_cases("boards", &cases::boards_sized_by_their_content());
 }
 
 #[test]

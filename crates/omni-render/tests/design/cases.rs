@@ -9,8 +9,10 @@
 //! left out). The boxes are in page coordinates.
 //!
 //! The groups name the findings of the checker that compared the layout with
-//! Chrome on thousands of random designs, and the documented rules that a
-//! small change of the layout code used to pass every test.
+//! Chrome on thousands of random designs, the documented rules that a small
+//! change of the layout code or of the export used to pass every test, and the
+//! texts that the layout tests measure, so that no expected box is worked out
+//! by hand.
 
 use super::{
     EPSILON, SIX_WORDS, absolute, at, board, fixed, flex, frame, grid, hugging, none, rect, sized,
@@ -95,6 +97,32 @@ pub fn all() -> Vec<Case> {
         empty_texts_have_no_baseline(),
         hug_columns_take_the_height_their_items_need(),
         narrow_columns_wrap_their_texts(),
+        snapped_line_heights(),
+        style_never_changes_a_box(),
+        markup_characters_in_text(),
+        lines_that_overflow(),
+        first_baselines_of_containers(),
+        empty_grids(),
+        six_words_at_fixed_widths(),
+        hug_texts_on_one_line(),
+        kerning_pairs(),
+        lines_that_are_a_tenth_too_narrow(),
+        words_wider_than_their_line(),
+        words_after_a_word_wider_than_their_line(),
+        breaks_after_hyphens_dashes_and_ellipses(),
+        no_breaks_after_slashes(),
+        hyphens_before_digits(),
+        question_marks_and_brackets(),
+        hyphens_and_dashes_that_start_a_word(),
+        no_break_spaces(),
+        tab_stops(),
+        line_breaks_in_the_content(),
+        letter_spacing_after_every_character(),
+        letter_spacing_without_contextual_alternates(),
+        missing_families(),
+        texts_in_grid_columns(),
+        frames_that_hug_a_text(),
+        labels_in_padded_frames(),
     ]
     .into_iter()
     .flatten()
@@ -1286,7 +1314,9 @@ fn hidden(json: &Value) -> Value {
 }
 
 /// A board has no parent to fill, so one that hugs or fills its width is as wide
-/// as its content on one line.
+/// as its content on one line (`width: max-content`), wherever it sits on its
+/// page: also at x 1300, where the 1440 px window of `make chrome-boxes` leaves
+/// it 140 px, which a `fit-content` width would wrap the text in.
 pub fn boards_sized_by_their_content() -> Vec<Case> {
     vec![
         rounded_case(
@@ -1312,6 +1342,39 @@ pub fn boards_sized_by_their_content() -> Vec<Case> {
             &[
                 ("brd00001", [0.0, 0.0, 250.21875, 24.0]),
                 ("txt00001", [0.0, 0.0, 250.21875, 24.0]),
+            ],
+        ),
+        rounded_case(
+            "a board at x 1300 that hugs six words",
+            at(
+                &hug_board(
+                    flex(json!({})),
+                    vec![text("txt00001", SIX_WORDS, 16.0, 1.5)],
+                ),
+                1300.0,
+                0.0,
+            ),
+            &[
+                ("brd00001", [1300.0, 0.0, 250.21875, 24.0]),
+                ("txt00001", [1300.0, 0.0, 250.21875, 24.0]),
+            ],
+        ),
+        rounded_case(
+            "a board at x 1300 that fills both axes around six words",
+            at(
+                &board(
+                    "brd00001",
+                    json!("fill"),
+                    json!("fill"),
+                    flex(json!({})),
+                    vec![text("txt00001", SIX_WORDS, 16.0, 1.5)],
+                ),
+                1300.0,
+                0.0,
+            ),
+            &[
+                ("brd00001", [1300.0, 0.0, 250.21875, 24.0]),
+                ("txt00001", [1300.0, 0.0, 250.21875, 24.0]),
             ],
         ),
     ]
@@ -1381,39 +1444,61 @@ pub fn none_frames_and_media_take_no_space() -> Vec<Case> {
 }
 
 /// A hidden node, and every node below it, gets an empty box at the top-left
-/// corner of its parent.
+/// corner of its parent. A hidden board, whose parent is its page, gets its
+/// empty box at its own `x` and `y`.
 pub fn hidden_nodes_get_empty_boxes() -> Vec<Case> {
-    vec![case(
-        "a hidden frame with a child in a row at (50, 20)",
-        at(
-            &board(
-                "brd00001",
-                fixed(300.0),
-                fixed(100.0),
-                flex(json!({"gap": {"column": 10}})),
-                vec![
-                    rect("a0000001", 50.0, 20.0),
-                    hidden(&frame(
-                        "frm00001",
-                        fixed(200.0),
-                        fixed(200.0),
-                        flex(json!({})),
-                        vec![rect("a0000002", 100.0, 100.0)],
-                    )),
-                    rect("a0000003", 70.0, 20.0),
-                ],
-            ),
-            50.0,
-            20.0,
+    vec![
+        case(
+            "a hidden board at (200, 100) with a frame and a box in it",
+            hidden(&at(
+                &board(
+                    "brd00001",
+                    fixed(100.0),
+                    fixed(50.0),
+                    flex(json!({"padding": {"top": 5, "left": 5}})),
+                    vec![hugging("frm00001", "a0000001", 30.0, 20.0)],
+                ),
+                200.0,
+                100.0,
+            )),
+            &[
+                ("brd00001", [200.0, 100.0, 0.0, 0.0]),
+                ("frm00001", [200.0, 100.0, 0.0, 0.0]),
+                ("a0000001", [200.0, 100.0, 0.0, 0.0]),
+            ],
         ),
-        &[
-            ("brd00001", [50.0, 20.0, 300.0, 100.0]),
-            ("a0000001", [50.0, 20.0, 50.0, 20.0]),
-            ("frm00001", [50.0, 20.0, 0.0, 0.0]),
-            ("a0000002", [50.0, 20.0, 0.0, 0.0]),
-            ("a0000003", [110.0, 20.0, 70.0, 20.0]),
-        ],
-    )]
+        case(
+            "a hidden frame with a child in a row at (50, 20)",
+            at(
+                &board(
+                    "brd00001",
+                    fixed(300.0),
+                    fixed(100.0),
+                    flex(json!({"gap": {"column": 10}})),
+                    vec![
+                        rect("a0000001", 50.0, 20.0),
+                        hidden(&frame(
+                            "frm00001",
+                            fixed(200.0),
+                            fixed(200.0),
+                            flex(json!({})),
+                            vec![rect("a0000002", 100.0, 100.0)],
+                        )),
+                        rect("a0000003", 70.0, 20.0),
+                    ],
+                ),
+                50.0,
+                20.0,
+            ),
+            &[
+                ("brd00001", [50.0, 20.0, 300.0, 100.0]),
+                ("a0000001", [50.0, 20.0, 50.0, 20.0]),
+                ("frm00001", [50.0, 20.0, 0.0, 0.0]),
+                ("a0000002", [50.0, 20.0, 0.0, 0.0]),
+                ("a0000003", [110.0, 20.0, 70.0, 20.0]),
+            ],
+        ),
+    ]
 }
 
 /// Fill items grow from a flex basis of 0 but never shrink below their
@@ -3142,57 +3227,7 @@ pub fn css_mapping() -> Vec<Case> {
     ("g0000001", [90.0, 50.0, 10.0, 10.0]),
 ],
     ));
-    // Text.
-    for (width, lines, boxes) in [
-        (
-            70.0,
-            6,
-            &[
-                ("brd00001", [0.0, 0.0, 2000.0, 500.0]),
-                ("txt00001", [0.0, 0.0, 70.0, 144.0]),
-            ],
-        ),
-        (
-            100.0,
-            3,
-            &[
-                ("brd00001", [0.0, 0.0, 2000.0, 500.0]),
-                ("txt00001", [0.0, 0.0, 100.0, 72.0]),
-            ],
-        ),
-        (
-            130.0,
-            2,
-            &[
-                ("brd00001", [0.0, 0.0, 2000.0, 500.0]),
-                ("txt00001", [0.0, 0.0, 130.0, 48.0]),
-            ],
-        ),
-        (
-            300.0,
-            1,
-            &[
-                ("brd00001", [0.0, 0.0, 2000.0, 500.0]),
-                ("txt00001", [0.0, 0.0, 300.0, 24.0]),
-            ],
-        ),
-    ] {
-        cases.push(rounded_case(
-            format!("six words in a text {width} px wide, as {lines} lines"),
-            board(
-                "brd00001",
-                fixed(2000.0),
-                fixed(500.0),
-                flex(json!({"alignItems": "start"})),
-                vec![with(
-                    &text("txt00001", SIX_WORDS, 16.0, 1.5),
-                    "width",
-                    fixed(width),
-                )],
-            ),
-            boxes,
-        ));
-    }
+    // Text. Texts of fixed widths are in `six_words_at_fixed_widths`.
     cases.push(rounded_case(
         "a text that fills a padded column",
         board(
@@ -3340,8 +3375,10 @@ fn five_box_column(height: Value) -> Value {
 /// A column wraps its children at its height when that is fixed, bounded by
 /// its min and max heights and never below its padding, and at the height of a
 /// row that does not wrap and stretches it, less the row's padding. A row that
-/// wraps does not stretch it. The lines it wraps into set its width where
-/// nothing else does.
+/// wraps does not stretch it. A column that hugs its height wraps at its
+/// maxHeight less its padding, the room its items have inside the max-height
+/// of its border box. The lines it wraps into set its width where nothing else
+/// does.
 pub fn wrapping_columns_wrap_at_their_height() -> Vec<Case> {
     let in_start_column = |row: Value| {
         board(
@@ -3353,6 +3390,39 @@ pub fn wrapping_columns_wrap_at_their_height() -> Vec<Case> {
         )
     };
     vec![
+        // 30 + 30 px fit into the 70 px of maxHeight, but not into the 58 px
+        // inside its padding, so each box takes a line of its own.
+        case(
+            "a column that wraps at maxHeight 70, padded 6 px above and below, around three 40 x 30 boxes, in a board that hugs it",
+            hug_board(
+                flex(json!({"alignItems": "start"})),
+                vec![bounded(
+                    frame(
+                        "frm00001",
+                        json!("hug"),
+                        json!("hug"),
+                        flex(json!({
+                            "direction": "column",
+                            "wrap": "wrap",
+                            "padding": {"top": 6, "bottom": 6}
+                        })),
+                        vec![
+                            rect("a0000001", 40.0, 30.0),
+                            rect("b0000001", 40.0, 30.0),
+                            rect("c0000001", 40.0, 30.0),
+                        ],
+                    ),
+                    &[("maxHeight", 70)],
+                )],
+            ),
+            &[
+                ("brd00001", [0.0, 0.0, 120.0, 42.0]),
+                ("frm00001", [0.0, 0.0, 120.0, 42.0]),
+                ("a0000001", [0.0, 6.0, 40.0, 30.0]),
+                ("b0000001", [40.0, 6.0, 40.0, 30.0]),
+                ("c0000001", [80.0, 6.0, 40.0, 30.0]),
+            ],
+        ),
         case(
             "a column of fixed height 200 with maxHeight 100, in a board that hugs it",
             hug_board(
@@ -4007,6 +4077,1133 @@ pub fn narrow_columns_wrap_their_texts() -> Vec<Case> {
                 ("brd00001", [0.0, 0.0, 174.0, 50.0]),
                 ("txt00001", [0.0, 0.0, 24.0, 48.0]),
                 ("a0000001", [24.0, 0.0, 150.0, 24.0]),
+            ],
+        ),
+    ]
+}
+
+// Line heights rounded down to a multiple of 1/64 px.
+
+/// A copy of `json` with each of `properties`, such as `("clip", true)`, set.
+fn with_all(json: &Value, properties: &[(&str, Value)]) -> Value {
+    properties.iter().fold(json.clone(), |json, (key, value)| {
+        with(&json, key, value.clone())
+    })
+}
+
+/// Eight lines of "Hello" in a text of `size` px Inter 150 px wide, with
+/// `line_height` as its lineHeight, or without one.
+fn eight_lines(id: &str, size: f64, line_height: Option<f64>) -> Value {
+    let content = ["Hello"; 8].join("\n");
+    let lines = with(
+        &text(id, &content, size, line_height.unwrap_or(1.0)),
+        "width",
+        fixed(150.0),
+    );
+    match line_height {
+        Some(_) => lines,
+        None => without(&lines, "lineHeight"),
+    }
+}
+
+/// Every line height is rounded down to a multiple of 1/64 px (decision Q44),
+/// the font's normal line height and lineHeight × fontSize alike. The exact
+/// heights of these lines lie between two such multiples: 13 px Inter's normal
+/// line height is 1006.6875 64ths of a pixel, 13 px text with lineHeight 1.4
+/// is 1164.8 64ths and 24 px text with lineHeight 1.2 is 1843.2. Rounding them
+/// up gives other heights, and so does rounding them to the nearest 64th, or
+/// leaving them as they are, which Chrome rounds to the nearest 1/128 px at a
+/// device pixel ratio of 2, for all but the last. Eight lines of each add up
+/// the differences.
+pub fn snapped_line_heights() -> Vec<Case> {
+    vec![case(
+        "eight lines of text at sizes and line heights whose exact height is not a multiple of 1/64 px",
+        board(
+            "brd00001",
+            fixed(200.0),
+            json!("hug"),
+            flex(json!({"direction": "column", "alignItems": "start"})),
+            vec![
+                eight_lines("t0000001", 13.0, None),
+                eight_lines("t0000002", 24.0, Some(1.2)),
+                eight_lines("t0000003", 13.0, Some(1.4)),
+                eight_lines("t0000004", 11.0, None),
+                eight_lines("t0000005", 20.0, None),
+                eight_lines("t0000006", 24.0, None),
+            ],
+        ),
+        &[
+            ("brd00001", [0.0, 0.0, 200.0, 1033.75]),
+            ("t0000001", [0.0, 0.0, 150.0, 125.75]),
+            ("t0000002", [0.0, 125.75, 150.0, 230.375]),
+            ("t0000003", [0.0, 356.125, 150.0, 145.5]),
+            ("t0000004", [0.0, 501.625, 150.0, 106.375]),
+            ("t0000005", [0.0, 608.0, 150.0, 193.5]),
+            ("t0000006", [0.0, 801.5, 150.0, 232.25]),
+        ],
+    )]
+}
+
+// Style.
+
+/// Fills, strokes, corner radii, shadows, opacity and `clip` never change a
+/// box. Strokes take no space, and `clip` is `overflow: clip`, which clips
+/// without changing layout: a clipped hug frame in a row that is too narrow
+/// for it still never shrinks below its content's narrowest width, where a
+/// scroll container (`overflow: hidden`) would shrink to the room left.
+pub fn style_never_changes_a_box() -> Vec<Case> {
+    let fills = json!([{"type": "solid", "color": "#2563eb"}]);
+    let strokes = json!([{"color": "#0f172a", "width": 6}, {"color": "#ffffff80", "width": 2.5}]);
+    let radius = json!({"topLeft": 12, "topRight": 8, "bottomRight": 4, "bottomLeft": 2});
+    let shadows = json!([
+        {"type": "drop", "color": "#0f172a33", "offsetX": 4, "offsetY": 8, "blur": 24, "spread": 6},
+        {"type": "inner", "color": "#ffffff80", "offsetX": 1, "offsetY": 1, "blur": 2, "spread": 1}
+    ]);
+    let box_style = [
+        ("fills", fills.clone()),
+        ("strokes", strokes.clone()),
+        ("radius", radius.clone()),
+        ("shadows", shadows.clone()),
+        ("opacity", json!(0.5)),
+        ("clip", json!(true)),
+    ];
+    vec![
+        rounded_case(
+            "a clipped hug frame around a word wider than a 60 px row, next to a 20 x 20 box",
+            board(
+                "brd00001",
+                fixed(60.0),
+                json!("hug"),
+                flex(json!({})),
+                vec![
+                    with(
+                        &frame(
+                            "frm00001",
+                            json!("hug"),
+                            json!("hug"),
+                            flex(json!({})),
+                            vec![text("txt00001", "Supercalifragilistic", 16.0, 1.5)],
+                        ),
+                        "clip",
+                        json!(true),
+                    ),
+                    rect("a0000001", 20.0, 20.0),
+                ],
+            ),
+            &[
+                ("brd00001", [0.0, 0.0, 60.0, 24.0]),
+                ("frm00001", [0.0, 0.0, 139.703125, 24.0]),
+                ("txt00001", [0.0, 0.0, 139.703125, 24.0]),
+                ("a0000001", [139.703125, 0.0, 20.0, 20.0]),
+            ],
+        ),
+        rounded_case(
+            "a padded board, a frame, an image, a vector and a text with fills, strokes, corner radii, shadows and opacity",
+            with_all(
+                &hug_board(
+                    flex(json!({
+                        "gap": {"column": 10},
+                        "alignItems": "start",
+                        "padding": {"top": 5, "left": 5}
+                    })),
+                    vec![
+                        with_all(&hugging("frm00001", "a0000001", 30.0, 20.0), &box_style),
+                        with_all(
+                            &image("jpg00001", fixed(40.0), fixed(40.0)),
+                            &[
+                                ("strokes", strokes.clone()),
+                                ("radius", radius.clone()),
+                                ("shadows", shadows.clone()),
+                                ("opacity", json!(0.8)),
+                            ],
+                        ),
+                        with_all(
+                            &vector("vec00001", 24.0),
+                            &[
+                                ("fills", fills.clone()),
+                                ("strokes", strokes.clone()),
+                                ("shadows", shadows.clone()),
+                                ("opacity", json!(0.9)),
+                            ],
+                        ),
+                        with_all(
+                            &text("txt00001", "Hello", 16.0, 1.5),
+                            &[("color", json!("#16a34a")), ("opacity", json!(0.75))],
+                        ),
+                    ],
+                ),
+                &box_style,
+            ),
+            &[
+                ("brd00001", [0.0, 0.0, 167.5625, 45.0]),
+                ("frm00001", [5.0, 5.0, 30.0, 20.0]),
+                ("a0000001", [5.0, 5.0, 30.0, 20.0]),
+                ("jpg00001", [45.0, 5.0, 40.0, 40.0]),
+                ("vec00001", [95.0, 5.0, 24.0, 24.0]),
+                ("txt00001", [129.0, 5.0, 38.5625, 24.0]),
+            ],
+        ),
+    ]
+}
+
+// Text content.
+
+/// A text's content is text, never markup: `&`, `<` and `>` are characters
+/// like any other, and the export escapes them.
+pub fn markup_characters_in_text() -> Vec<Case> {
+    vec![rounded_case(
+        "texts with &, < and >, in a 400 px start-aligned column",
+        start_column(
+            400.0,
+            vec![
+                text("txt00001", "a&b <i>c</i> d", 16.0, 1.5),
+                text("txt00002", "x &lt; y &amp;&amp; z > 0", 16.0, 1.5),
+            ],
+        ),
+        &[
+            ("brd00001", [0.0, 0.0, 400.0, 48.0]),
+            ("txt00001", [0.0, 0.0, 112.8828125, 24.0]),
+            ("txt00002", [0.0, 24.0, 194.578125, 24.0]),
+        ],
+    )]
+}
+
+// Lines and items that overflow their flex container.
+
+/// Where the lines of a flex container that wraps in reverse overflow its
+/// cross size, they are packed against its far edge, where the first line is,
+/// and overflow its near edge: `align-content: normal` stretches the lines,
+/// and falls back to `flex-start` where they overflow, which is the far edge
+/// there. Where the items of a line that
+/// runs in reverse overflow it, `justifyContent: space-between` packs them
+/// against the main start, the far edge, too. Items that `alignItems:
+/// baseline` aligns in a column that wraps in reverse have no baseline to
+/// align by, and start together at the start of their line, also where the
+/// line is wider than the column.
+pub fn lines_that_overflow() -> Vec<Case> {
+    let two = |width: f64, height: f64| {
+        vec![
+            rect("a0000001", width, height),
+            rect("b0000001", width, height),
+        ]
+    };
+    vec![
+        case(
+            "two 60 x 30 boxes in a 100 x 40 row that wraps in reverse",
+            board(
+                "brd00001",
+                fixed(100.0),
+                fixed(40.0),
+                flex(json!({"wrap": "wrap-reverse"})),
+                two(60.0, 30.0),
+            ),
+            &[
+                ("brd00001", [0.0, 0.0, 100.0, 40.0]),
+                ("a0000001", [0.0, 10.0, 60.0, 30.0]),
+                ("b0000001", [0.0, -20.0, 60.0, 30.0]),
+            ],
+        ),
+        case(
+            "two 30 x 60 boxes in a 40 x 100 column that wraps in reverse",
+            board(
+                "brd00001",
+                fixed(40.0),
+                fixed(100.0),
+                flex(json!({"direction": "column", "wrap": "wrap-reverse"})),
+                two(30.0, 60.0),
+            ),
+            &[
+                ("brd00001", [0.0, 0.0, 40.0, 100.0]),
+                ("a0000001", [10.0, 0.0, 30.0, 60.0]),
+                ("b0000001", [-20.0, 0.0, 30.0, 60.0]),
+            ],
+        ),
+        case(
+            "two 60 x 30 boxes in a 100 x 40 row-reverse with justifyContent space-between",
+            board(
+                "brd00001",
+                fixed(100.0),
+                fixed(40.0),
+                flex(json!({"direction": "row-reverse", "justifyContent": "space-between"})),
+                two(60.0, 30.0),
+            ),
+            &[
+                ("brd00001", [0.0, 0.0, 100.0, 40.0]),
+                ("a0000001", [40.0, 0.0, 60.0, 30.0]),
+                ("b0000001", [-20.0, 0.0, 60.0, 30.0]),
+            ],
+        ),
+        case(
+            "two 30 x 60 boxes in a 40 x 100 column-reverse with justifyContent space-between",
+            board(
+                "brd00001",
+                fixed(40.0),
+                fixed(100.0),
+                flex(json!({"direction": "column-reverse", "justifyContent": "space-between"})),
+                two(30.0, 60.0),
+            ),
+            &[
+                ("brd00001", [0.0, 0.0, 40.0, 100.0]),
+                ("a0000001", [0.0, 40.0, 30.0, 60.0]),
+                ("b0000001", [0.0, -20.0, 30.0, 60.0]),
+            ],
+        ),
+        case(
+            "a 20 x 20 and a 50 x 40 box in a column that wraps in reverse, with alignItems baseline",
+            hug_board(
+                flex(json!({
+                    "direction": "column",
+                    "wrap": "wrap-reverse",
+                    "alignItems": "baseline"
+                })),
+                vec![rect("a0000001", 20.0, 20.0), rect("b0000001", 50.0, 40.0)],
+            ),
+            &[
+                ("brd00001", [0.0, 0.0, 50.0, 60.0]),
+                ("a0000001", [0.0, 0.0, 20.0, 20.0]),
+                ("b0000001", [0.0, 20.0, 50.0, 40.0]),
+            ],
+        ),
+        // The 130 px box makes the line wider than the 120 px column, so the
+        // line overflows the column's near edge, the left.
+        rounded_case(
+            "a hug text above a 130 px box in a 120 px column that wraps in reverse, with alignItems baseline",
+            wrapping_in_reverse("baseline"),
+            &[
+                ("brd00001", [0.0, 0.0, 120.0, 68.0]),
+                ("frm00001", [0.0, 0.0, 120.0, 68.0]),
+                ("txt00001", [-10.0, 0.0, 125.421875, 48.0]),
+                ("a0000001", [-10.0, 48.0, 130.0, 20.0]),
+            ],
+        ),
+        rounded_case(
+            "a hug text above a 130 px box in a 120 px column that wraps in reverse, with alignItems end",
+            wrapping_in_reverse("end"),
+            &[
+                ("brd00001", [0.0, 0.0, 120.0, 68.0]),
+                ("frm00001", [0.0, 0.0, 120.0, 68.0]),
+                ("txt00001", [-5.421875, 0.0, 125.421875, 48.0]),
+                ("a0000001", [-10.0, 48.0, 130.0, 20.0]),
+            ],
+        ),
+    ]
+}
+
+/// A column 120 px wide that wraps in reverse, with `align` as its alignItems,
+/// around a text that hugs its width and a 130 x 20 box, in a board that hugs
+/// it.
+fn wrapping_in_reverse(align: &str) -> Value {
+    board(
+        "brd00001",
+        json!("hug"),
+        json!("hug"),
+        flex(json!({"direction": "column"})),
+        vec![frame(
+            "frm00001",
+            fixed(120.0),
+            json!("hug"),
+            flex(json!({"direction": "column", "wrap": "wrap-reverse", "alignItems": align})),
+            vec![
+                text("txt00001", BROWN_FOX, 16.0, 1.5),
+                rect("a0000001", 130.0, 20.0),
+            ],
+        )],
+    )
+}
+
+// The first baselines of containers that `alignItems: baseline` aligns.
+
+/// A row that aligns its children on their baselines lines up a flex
+/// container or a grid by the first baseline of one of its items: the item
+/// that comes first along the main axis of a row, which is its last item where
+/// the row runs in reverse, on its first line, or on its last line, the one at
+/// its top, where it wraps in reverse, and the first item of a grid, by its
+/// own baseline rather than its bottom edge.
+pub fn first_baselines_of_containers() -> Vec<Case> {
+    let texts = || {
+        vec![
+            text("txt00002", "Hello", 16.0, 1.5),
+            text("txt00003", "Hello", 24.0, 1.5),
+        ]
+    };
+    vec![
+        rounded_case(
+            "a row-reverse of a 16 px and a 24 px text, on the baseline of a 32 px text",
+            baseline_row(vec![
+                text("txt00001", "Hello", 32.0, 1.5),
+                frame(
+                    "frm00001",
+                    json!("hug"),
+                    json!("hug"),
+                    flex(json!({"direction": "row-reverse"})),
+                    texts(),
+                ),
+            ]),
+            &[
+                ("brd00001", [0.0, 0.0, 400.0, 100.0]),
+                ("txt00001", [0.0, 0.0, 77.125, 48.0]),
+                ("frm00001", [77.125, 9.0, 96.40625, 36.0]),
+                ("txt00002", [134.96875, 9.0, 38.5625, 36.0]),
+                ("txt00003", [77.125, 9.0, 57.84375, 36.0]),
+            ],
+        ),
+        rounded_case(
+            "a 60 px row that wraps a 16 px and a 24 px text in reverse, on the baseline of a 32 px text",
+            baseline_row(vec![
+                text("txt00001", "Hello", 32.0, 1.5),
+                frame(
+                    "frm00001",
+                    fixed(60.0),
+                    json!("hug"),
+                    flex(json!({"wrap": "wrap-reverse"})),
+                    texts(),
+                ),
+            ]),
+            &[
+                ("brd00001", [0.0, 0.0, 400.0, 100.0]),
+                ("txt00001", [0.0, 0.0, 77.125, 48.0]),
+                ("frm00001", [77.125, 9.0, 60.0, 60.0]),
+                ("txt00002", [77.125, 45.0, 38.5625, 24.0]),
+                ("txt00003", [77.125, 9.0, 57.84375, 36.0]),
+            ],
+        ),
+        rounded_case(
+            "a grid of a 16 px text, on the baseline of a 32 px text",
+            baseline_row(vec![
+                text("txt00001", "Hello", 32.0, 1.5),
+                frame(
+                    "grd00001",
+                    json!("hug"),
+                    json!("hug"),
+                    grid(json!({})),
+                    vec![text("txt00002", "Hello", 16.0, 1.5)],
+                ),
+            ]),
+            &[
+                ("brd00001", [0.0, 0.0, 400.0, 100.0]),
+                ("txt00001", [0.0, 0.0, 77.125, 48.0]),
+                ("grd00001", [77.125, 18.0, 38.5625, 24.0]),
+                ("txt00002", [77.125, 18.0, 38.5625, 24.0]),
+            ],
+        ),
+    ]
+}
+
+// Grids without children.
+
+/// A grid keeps the tracks it declares when it has no children
+/// (`grid-template-columns`, `grid-template-rows`): an empty grid that hugs
+/// its content is as large as its fixed tracks, its gaps and its padding.
+pub fn empty_grids() -> Vec<Case> {
+    vec![case(
+        "empty grids of a 50 and a 30 px column, one with a 20 px row, a gap and padding, in a board that hugs them",
+        hug_board(
+            flex(json!({"alignItems": "start", "gap": {"column": 10}})),
+            vec![
+                frame(
+                    "grd00001",
+                    json!("hug"),
+                    json!("hug"),
+                    grid(json!({"columns": [{"fixed": 50}, {"fixed": 30}]})),
+                    Vec::new(),
+                ),
+                frame(
+                    "grd00002",
+                    json!("hug"),
+                    json!("hug"),
+                    grid(json!({
+                        "columns": [{"fixed": 50}, {"fixed": 30}],
+                        "rows": [{"fixed": 20}],
+                        "gap": {"column": 10},
+                        "padding": {"top": 4, "right": 4, "bottom": 4, "left": 4}
+                    })),
+                    Vec::new(),
+                ),
+            ],
+        ),
+        &[
+            ("brd00001", [0.0, 0.0, 188.0, 28.0]),
+            ("grd00001", [0.0, 0.0, 80.0, 0.0]),
+            ("grd00002", [90.0, 0.0, 98.0, 28.0]),
+        ],
+    )]
+}
+
+// Texts, measured by Chrome.
+
+/// A column of texts in 16 px Inter with lineHeight 1.5, each of the fixed
+/// width given with its content: the lines each breaks into make its height.
+/// The texts are `t0000000`, `t0000001` and so on.
+fn texts_at_widths(texts: &[(&str, f64)]) -> Value {
+    board(
+        "brd00001",
+        fixed(200.0),
+        json!("hug"),
+        flex(json!({"direction": "column", "alignItems": "start"})),
+        texts
+            .iter()
+            .enumerate()
+            .map(|(index, (content, width))| {
+                let id = format!("t{index:07}");
+                with(&text(&id, content, 16.0, 1.5), "width", fixed(*width))
+            })
+            .collect(),
+    )
+}
+
+/// A column `width` px wide that aligns texts in 16 px Inter with lineHeight
+/// 1.5 to its start, where each text that hugs its width has the fit-content
+/// width: as wide as its content on one line, but no wider than the column
+/// unless its widest piece is wider still. The texts are `h0000000`,
+/// `h0000001` and so on.
+fn hug_texts_in_column(width: f64, contents: &[&str]) -> Value {
+    start_column(
+        width,
+        contents
+            .iter()
+            .enumerate()
+            .map(|(index, content)| text(&format!("h{index:07}"), content, 16.0, 1.5))
+            .collect(),
+    )
+}
+
+/// A text in 16 px Inter with lineHeight 1.5 and a letterSpacing of `spacing`.
+fn spaced_text(id: &str, content: &str, spacing: f64) -> Value {
+    with(
+        &text(id, content, 16.0, 1.5),
+        "letterSpacing",
+        json!(spacing),
+    )
+}
+
+/// Six words in a text of a fixed width wrap their lines at that width, and
+/// each line is lineHeight × fontSize tall, rounded down to 1/64 px: 20.796875
+/// px with lineHeight 1.3.
+pub fn six_words_at_fixed_widths() -> Vec<Case> {
+    [
+        (70.0, 1.5, [0.0, 0.0, 70.0, 144.0]),
+        (100.0, 1.5, [0.0, 0.0, 100.0, 72.0]),
+        (130.0, 1.5, [0.0, 0.0, 130.0, 48.0]),
+        (300.0, 1.5, [0.0, 0.0, 300.0, 24.0]),
+        (100.0, 1.3, [0.0, 0.0, 100.0, 62.390625]),
+    ]
+    .into_iter()
+    .map(|(width, line_height, text_box)| {
+        rounded_case(
+            format!("six words in a text {width} px wide with lineHeight {line_height}"),
+            board(
+                "brd00001",
+                fixed(2000.0),
+                fixed(500.0),
+                flex(json!({"alignItems": "start"})),
+                vec![with(
+                    &text("txt00001", SIX_WORDS, 16.0, line_height),
+                    "width",
+                    fixed(width),
+                )],
+            ),
+            &[
+                ("brd00001", [0.0, 0.0, 2000.0, 500.0]),
+                ("txt00001", text_box),
+            ],
+        )
+    })
+    .collect()
+}
+
+/// Texts that hug their width on one line are as wide as their shaped glyphs
+/// and as tall as their line: lineHeight × fontSize, rounded down to 1/64 px,
+/// so 28.796875 px for 24 px text with lineHeight 1.2, not 28.8 or a rounded
+/// 29.
+pub fn hug_texts_on_one_line() -> Vec<Case> {
+    vec![rounded_case(
+        "\"Hello\", \"minimum\" and \"Hi\" at 13 to 32 px and line heights of 1 to 2",
+        text_row(vec![
+            text("txt00001", "Hello", 16.0, 1.5),
+            text("txt00002", "Hello", 32.0, 1.25),
+            text("txt00003", "minimum", 16.0, 1.0),
+            text("txt00004", "Hi", 13.0, 2.0),
+            text("txt00005", "Hello", 24.0, 1.2),
+            text("txt00006", "Hi", 14.0, 1.4),
+        ]),
+        &[
+            ("brd00001", [0.0, 0.0, 2000.0, 500.0]),
+            ("txt00001", [0.0, 0.0, 38.5625, 24.0]),
+            ("txt00002", [38.5625, 0.0, 77.125, 40.0]),
+            ("txt00003", [115.6875, 0.0, 68.7109375, 16.0]),
+            ("txt00004", [184.3984375, 0.0, 12.8125, 26.0]),
+            ("txt00005", [197.2109375, 0.0, 57.84375, 28.796875]),
+            ("txt00006", [255.0546875, 0.0, 13.796875, 19.59375]),
+        ],
+    )]
+}
+
+/// Text is shaped, so kerning pairs move closer: "AV" is narrower than "A"
+/// and "V" side by side, and "AVAVAVAV" narrower than four of each.
+pub fn kerning_pairs() -> Vec<Case> {
+    vec![rounded_case(
+        "\"A\", \"V\", \"AV\" and \"AVAVAVAV\"",
+        text_row(vec![
+            text("txt00001", "A", 16.0, 1.5),
+            text("txt00002", "V", 16.0, 1.5),
+            text("txt00003", "AV", 16.0, 1.5),
+            text("txt00004", "AVAVAVAV", 16.0, 1.5),
+        ]),
+        &[
+            ("brd00001", [0.0, 0.0, 2000.0, 500.0]),
+            ("txt00001", [0.0, 0.0, 11.0390625, 24.0]),
+            ("txt00002", [11.0390625, 0.0, 11.0390625, 24.0]),
+            ("txt00003", [22.078125, 0.0, 20.984375, 24.0]),
+            ("txt00004", [43.0625, 0.0, 80.65625, 24.0]),
+        ],
+    )]
+}
+
+/// A line breaks when its width is a tenth of a pixel short of its text:
+/// "Hello world" is 85.41 px wide.
+pub fn lines_that_are_a_tenth_too_narrow() -> Vec<Case> {
+    vec![rounded_case(
+        "\"Hello world\" in texts 85.3 and 85.5 px wide",
+        texts_at_widths(&[("Hello world", 85.3), ("Hello world", 85.5)]),
+        &[
+            ("brd00001", [0.0, 0.0, 200.0, 72.0]),
+            ("t0000000", [0.0, 0.0, 85.296875, 48.0]),
+            ("t0000001", [0.0, 48.0, 85.5, 24.0]),
+        ],
+    )]
+}
+
+/// A word wider than its line overflows a line of its own instead of breaking
+/// (`overflow-wrap: normal`), and a text that hugs its width is never narrower
+/// than its widest word.
+pub fn words_wider_than_their_line() -> Vec<Case> {
+    vec![
+        rounded_case(
+            "\"Supercalifragilistic\" in texts 20, 60 and 100 px wide",
+            texts_at_widths(&[
+                ("Supercalifragilistic", 20.0),
+                ("Supercalifragilistic", 60.0),
+                ("Supercalifragilistic", 100.0),
+            ]),
+            &[
+                ("brd00001", [0.0, 0.0, 200.0, 72.0]),
+                ("t0000000", [0.0, 0.0, 20.0, 24.0]),
+                ("t0000001", [0.0, 24.0, 60.0, 24.0]),
+                ("t0000002", [0.0, 48.0, 100.0, 24.0]),
+            ],
+        ),
+        rounded_case(
+            "\"Supercalifragilistic\" hugging its width in a 60 px start-aligned column",
+            hug_texts_in_column(60.0, &["Supercalifragilistic"]),
+            &[
+                ("brd00001", [0.0, 0.0, 60.0, 24.0]),
+                ("h0000000", [0.0, 0.0, 139.703125, 24.0]),
+            ],
+        ),
+    ]
+}
+
+/// The words after a word wider than its line still wrap at the line's width.
+pub fn words_after_a_word_wider_than_their_line() -> Vec<Case> {
+    const CONTENT: &str = "Supercalifragilistic a b c d e f g h";
+    vec![
+        rounded_case(
+            "a long word and eight letters in texts 60 and 40 px wide",
+            texts_at_widths(&[(CONTENT, 60.0), (CONTENT, 40.0)]),
+            &[
+                ("brd00001", [0.0, 0.0, 200.0, 168.0]),
+                ("t0000000", [0.0, 0.0, 60.0, 72.0]),
+                ("t0000001", [0.0, 72.0, 40.0, 96.0]),
+            ],
+        ),
+        rounded_case(
+            "a long word and eight letters hugging their width in a 60 px start-aligned column",
+            hug_texts_in_column(60.0, &[CONTENT]),
+            &[
+                ("brd00001", [0.0, 0.0, 60.0, 48.0]),
+                ("h0000000", [0.0, 0.0, 139.703125, 48.0]),
+            ],
+        ),
+    ]
+}
+
+/// Lines break after hyphens, around em dashes and after ellipses, and a text
+/// that hugs its width is never narrower than its widest piece between them.
+pub fn breaks_after_hyphens_dashes_and_ellipses() -> Vec<Case> {
+    vec![
+        rounded_case(
+            "hyphenated words, em dashes and an ellipsis in texts 40 to 80 px wide",
+            texts_at_widths(&[
+                ("state-of-the-art", 80.0),
+                ("state-of-the-art", 60.0),
+                ("state-of-the-art", 40.0),
+                ("one\u{2014}two\u{2014}three", 60.0),
+                ("one\u{2014}two\u{2014}three", 40.0),
+                ("hello\u{2026}world", 60.0),
+            ]),
+            &[
+                ("brd00001", [0.0, 0.0, 200.0, 456.0]),
+                ("t0000000", [0.0, 0.0, 80.0, 48.0]),
+                ("t0000001", [0.0, 48.0, 60.0, 72.0]),
+                ("t0000002", [0.0, 120.0, 40.0, 96.0]),
+                ("t0000003", [0.0, 216.0, 60.0, 72.0]),
+                ("t0000004", [0.0, 288.0, 40.0, 120.0]),
+                ("t0000005", [0.0, 408.0, 60.0, 48.0]),
+            ],
+        ),
+        rounded_case(
+            "a hyphenated word hugging its width in a 60 px start-aligned column",
+            hug_texts_in_column(60.0, &["state-of-the-art"]),
+            &[
+                ("brd00001", [0.0, 0.0, 60.0, 72.0]),
+                ("h0000000", [0.0, 0.0, 60.0, 72.0]),
+            ],
+        ),
+        rounded_case(
+            "a hyphenated word, em dashes and an ellipsis hugging their width in a 20 px start-aligned column",
+            hug_texts_in_column(
+                20.0,
+                &[
+                    "state-of-the-art",
+                    "one\u{2014}two\u{2014}three",
+                    "hello\u{2026}world",
+                ],
+            ),
+            &[
+                ("brd00001", [0.0, 0.0, 20.0, 264.0]),
+                ("h0000000", [0.0, 0.0, 44.5078125, 96.0]),
+                ("h0000001", [0.0, 96.0, 39.109375, 120.0]),
+                ("h0000002", [0.0, 216.0, 49.9609375, 48.0]),
+            ],
+        ),
+    ]
+}
+
+/// Lines never break after a slash between letters, so paths and URLs stay
+/// whole and overflow their line.
+pub fn no_breaks_after_slashes() -> Vec<Case> {
+    vec![
+        rounded_case(
+            "paths in texts 40 to 180 px wide",
+            texts_at_widths(&[
+                ("input/output", 40.0),
+                ("word input/output word", 60.0),
+                ("word input/output word", 100.0),
+                ("See example.com/a/very/long/path today", 180.0),
+            ]),
+            &[
+                ("brd00001", [0.0, 0.0, 200.0, 240.0]),
+                ("t0000000", [0.0, 0.0, 40.0, 24.0]),
+                ("t0000001", [0.0, 24.0, 60.0, 72.0]),
+                ("t0000002", [0.0, 96.0, 100.0, 72.0]),
+                ("t0000003", [0.0, 168.0, 180.0, 72.0]),
+            ],
+        ),
+        rounded_case(
+            "a path hugging its width in a 60 px start-aligned column",
+            hug_texts_in_column(60.0, &["word input/output word"]),
+            &[
+                ("brd00001", [0.0, 0.0, 60.0, 72.0]),
+                ("h0000000", [0.0, 0.0, 92.3671875, 72.0]),
+            ],
+        ),
+    ]
+}
+
+/// A line breaks between a hyphen and a digit only when a letter or a digit
+/// comes before the hyphen, so a minus sign stays with its number.
+pub fn hyphens_before_digits() -> Vec<Case> {
+    vec![rounded_case(
+        "hyphens before digits in texts 10 px wide",
+        texts_at_widths(&[
+            ("pre-2020", 10.0),
+            ("COVID-19", 10.0),
+            ("-2020", 10.0),
+            ("(-2020)", 10.0),
+            ("x -12", 10.0),
+        ]),
+        &[
+            ("brd00001", [0.0, 0.0, 200.0, 192.0]),
+            ("t0000000", [0.0, 0.0, 10.0, 48.0]),
+            ("t0000001", [0.0, 48.0, 10.0, 48.0]),
+            ("t0000002", [0.0, 96.0, 10.0, 24.0]),
+            ("t0000003", [0.0, 120.0, 10.0, 24.0]),
+            ("t0000004", [0.0, 144.0, 10.0, 48.0]),
+        ],
+    )]
+}
+
+/// A line breaks after a question mark, and before an opening bracket that
+/// follows closing punctuation or a symbol.
+pub fn question_marks_and_brackets() -> Vec<Case> {
+    vec![rounded_case(
+        "question marks and brackets in texts 10 px wide",
+        texts_at_widths(&[
+            ("what?why", 10.0),
+            ("matrix[0][1]", 10.0),
+            ("f(x)=(y)", 10.0),
+        ]),
+        &[
+            ("brd00001", [0.0, 0.0, 200.0, 144.0]),
+            ("t0000000", [0.0, 0.0, 10.0, 48.0]),
+            ("t0000001", [0.0, 48.0, 10.0, 48.0]),
+            ("t0000002", [0.0, 96.0, 10.0, 48.0]),
+        ],
+    )]
+}
+
+/// A hyphen or an en dash that starts a word stays with the word.
+pub fn hyphens_and_dashes_that_start_a_word() -> Vec<Case> {
+    vec![
+        rounded_case(
+            "words that start with an en dash or a hyphen in texts 10 px wide",
+            texts_at_widths(&[
+                ("word \u{2013}word", 10.0),
+                ("word \u{2010}word", 10.0),
+                ("a -\u{e9}lan", 10.0),
+            ]),
+            &[
+                ("brd00001", [0.0, 0.0, 200.0, 144.0]),
+                ("t0000000", [0.0, 0.0, 10.0, 48.0]),
+                ("t0000001", [0.0, 48.0, 10.0, 48.0]),
+                ("t0000002", [0.0, 96.0, 10.0, 48.0]),
+            ],
+        ),
+        rounded_case(
+            "a word that starts with an en dash hugging its width in a 10 px start-aligned column",
+            hug_texts_in_column(10.0, &["word \u{2013}word"]),
+            &[
+                ("brd00001", [0.0, 0.0, 10.0, 48.0]),
+                ("h0000000", [0.0, 0.0, 45.953125, 48.0]),
+            ],
+        ),
+    ]
+}
+
+/// A no-break space keeps its neighbors together, except after a hyphen.
+pub fn no_break_spaces() -> Vec<Case> {
+    vec![
+        rounded_case(
+            "no-break spaces in texts 10 px wide",
+            texts_at_widths(&[
+                ("10\u{a0}km", 10.0),
+                ("Mr.\u{a0}Smith", 10.0),
+                ("well-\u{a0}known", 10.0),
+            ]),
+            &[
+                ("brd00001", [0.0, 0.0, 200.0, 96.0]),
+                ("t0000000", [0.0, 0.0, 10.0, 24.0]),
+                ("t0000001", [0.0, 24.0, 10.0, 24.0]),
+                ("t0000002", [0.0, 48.0, 10.0, 48.0]),
+            ],
+        ),
+        rounded_case(
+            "a no-break space after a hyphen hugging its width in a 10 px start-aligned column",
+            hug_texts_in_column(10.0, &["well-\u{a0}known"]),
+            &[
+                ("brd00001", [0.0, 0.0, 10.0, 48.0]),
+                ("h0000000", [0.0, 0.0, 54.5859375, 48.0]),
+            ],
+        ),
+    ]
+}
+
+/// A tab moves its line on to the next tab stop, every eight spaces from the
+/// start of the line, letter spacing included, and a tab at the end of a line
+/// counts toward the text's width. A line also breaks before the piece that
+/// the tabs before it moved past the line's end.
+pub fn tab_stops() -> Vec<Case> {
+    vec![
+        rounded_case(
+            "tabs in texts with letter spacings of 0, 1 and 2 px, on one line",
+            board(
+                "brd00001",
+                fixed(1000.0),
+                json!("hug"),
+                flex(json!({"direction": "column", "alignItems": "start"})),
+                vec![
+                    spaced_text("txt00001", "a\tb", 0.0),
+                    spaced_text("txt00002", "a\t\tb", 0.0),
+                    spaced_text("txt00003", "Name\tValue", 0.0),
+                    spaced_text("txt00004", "x\t", 0.0),
+                    spaced_text("txt00005", "a\tb", 2.0),
+                    spaced_text("txt00006", "Name\tValue", 1.0),
+                ],
+            ),
+            &[
+                ("brd00001", [0.0, 0.0, 1000.0, 144.0]),
+                ("txt00001", [0.0, 0.0, 45.796875, 24.0]),
+                ("txt00002", [0.0, 24.0, 81.796875, 24.0]),
+                ("txt00003", [0.0, 48.0, 113.875, 24.0]),
+                ("txt00004", [0.0, 72.0, 36.0, 24.0]),
+                ("txt00005", [0.0, 96.0, 63.796875, 24.0]),
+                ("txt00006", [0.0, 120.0, 134.875, 24.0]),
+            ],
+        ),
+        rounded_case(
+            "tabs in texts 40 to 140 px wide",
+            texts_at_widths(&[
+                ("Item\tPrice\tQty", 120.0),
+                ("Item\tPrice\tQty", 140.0),
+                ("a\tb\tc", 40.0),
+                ("a\tb\tc", 60.0),
+            ]),
+            &[
+                ("brd00001", [0.0, 0.0, 200.0, 192.0]),
+                ("t0000000", [0.0, 0.0, 120.0, 48.0]),
+                ("t0000001", [0.0, 48.0, 140.0, 24.0]),
+                ("t0000002", [0.0, 72.0, 40.0, 72.0]),
+                ("t0000003", [0.0, 144.0, 60.0, 48.0]),
+            ],
+        ),
+    ]
+}
+
+/// A line break in the content starts a new line, but one at the very end
+/// starts none, and an empty text has no line at all.
+pub fn line_breaks_in_the_content() -> Vec<Case> {
+    vec![
+        rounded_case(
+            "texts with line breaks hugging their width in a 400 px start-aligned column",
+            hug_texts_in_column(
+                400.0,
+                &[
+                    "Hello\nminimum",
+                    "Hello\n",
+                    "Hello\nworld\n",
+                    "Hello\n\n",
+                    "\n",
+                    "\n\n",
+                    "",
+                ],
+            ),
+            &[
+                ("brd00001", [0.0, 0.0, 400.0, 240.0]),
+                ("h0000000", [0.0, 0.0, 68.7109375, 48.0]),
+                ("h0000001", [0.0, 48.0, 38.5625, 24.0]),
+                ("h0000002", [0.0, 72.0, 42.34375, 48.0]),
+                ("h0000003", [0.0, 120.0, 38.5625, 48.0]),
+                ("h0000004", [0.0, 168.0, 0.0, 24.0]),
+                ("h0000005", [0.0, 192.0, 0.0, 48.0]),
+                ("h0000006", [0.0, 240.0, 0.0, 0.0]),
+            ],
+        ),
+        rounded_case(
+            "a text with a line break at its end, 50 px wide",
+            texts_at_widths(&[("Hello\n", 50.0)]),
+            &[
+                ("brd00001", [0.0, 0.0, 200.0, 24.0]),
+                ("t0000000", [0.0, 0.0, 50.0, 24.0]),
+            ],
+        ),
+    ]
+}
+
+/// `letterSpacing` adds space after every character, the last one included.
+pub fn letter_spacing_after_every_character() -> Vec<Case> {
+    vec![rounded_case(
+        "\"Hello\" with letter spacings of 0, 2 and -0.5 px",
+        text_row(vec![
+            text("txt00001", "Hello", 16.0, 1.5),
+            spaced_text("txt00002", "Hello", 2.0),
+            spaced_text("txt00003", "Hello", -0.5),
+        ]),
+        &[
+            ("brd00001", [0.0, 0.0, 2000.0, 500.0]),
+            ("txt00001", [0.0, 0.0, 38.5625, 24.0]),
+            ("txt00002", [38.5625, 0.0, 48.5625, 24.0]),
+            ("txt00003", [87.125, 0.0, 36.0625, 24.0]),
+        ],
+    )]
+}
+
+/// Letter-spaced text is shaped without ligatures and contextual alternates,
+/// however small the spacing, as Chrome shapes it: "->" keeps its two glyphs,
+/// and a colon between capitals keeps its own form. Without letter spacing
+/// they stay on.
+pub fn letter_spacing_without_contextual_alternates() -> Vec<Case> {
+    vec![rounded_case(
+        "\"a->b\", \"Learn more ->\" and \"C:VBQ\" with letter spacings from -0.5 to 2 px",
+        board(
+            "brd00001",
+            fixed(1000.0),
+            json!("hug"),
+            flex(json!({"direction": "column", "alignItems": "start"})),
+            vec![
+                spaced_text("txt00001", "a->b", 0.0),
+                spaced_text("txt00002", "a->b", 2.0),
+                spaced_text("txt00003", "Learn more ->", 2.0),
+                spaced_text("txt00004", "C:VBQ", 0.0),
+                spaced_text("txt00005", "C:VBQ", 2.0),
+                spaced_text("txt00006", "C:VBQ", -0.5),
+                spaced_text("txt00007", "C:VBQ", 0.2),
+                spaced_text("txt00008", "a->b", 0.1),
+                spaced_text("txt00009", "a->b", -0.1),
+            ],
+        ),
+        &[
+            ("brd00001", [0.0, 0.0, 1000.0, 216.0]),
+            ("txt00001", [0.0, 0.0, 34.046875, 24.0]),
+            ("txt00002", [0.0, 24.0, 44.7265625, 24.0]),
+            ("txt00003", [0.0, 48.0, 134.8828125, 24.0]),
+            ("txt00004", [0.0, 72.0, 50.0390625, 24.0]),
+            ("txt00005", [0.0, 96.0, 59.0390625, 24.0]),
+            ("txt00006", [0.0, 120.0, 46.5390625, 24.0]),
+            ("txt00007", [0.0, 144.0, 50.0390625, 24.0]),
+            ("txt00008", [0.0, 168.0, 37.1328125, 24.0]),
+            ("txt00009", [0.0, 192.0, 36.328125, 24.0]),
+        ],
+    )]
+}
+
+/// The bundled Inter stands in for every font family that is missing.
+pub fn missing_families() -> Vec<Case> {
+    vec![rounded_case(
+        "\"Hello world\" in Inter, Helvetica, Times New Roman and Missing Sans",
+        text_row(
+            ["Inter", "Helvetica", "Times New Roman", "Missing Sans"]
+                .iter()
+                .enumerate()
+                .map(|(index, family)| {
+                    with(
+                        &text(&format!("txt{index:05}"), "Hello world", 16.0, 1.5),
+                        "fontFamily",
+                        json!(family),
+                    )
+                })
+                .collect(),
+        ),
+        &[
+            ("brd00001", [0.0, 0.0, 2000.0, 500.0]),
+            ("txt00000", [0.0, 0.0, 85.40625, 24.0]),
+            ("txt00001", [85.40625, 0.0, 85.40625, 24.0]),
+            ("txt00002", [170.8125, 0.0, 85.40625, 24.0]),
+            ("txt00003", [256.21875, 0.0, 85.40625, 24.0]),
+        ],
+    )]
+}
+
+/// A text that fills a grid column wraps at its width, and an `auto` column is
+/// as wide as the text that hugs its width in it.
+pub fn texts_in_grid_columns() -> Vec<Case> {
+    vec![
+        rounded_case(
+            "six words in a text that fills a 100 px column of a 400 px grid",
+            board(
+                "brd00001",
+                fixed(400.0),
+                json!("hug"),
+                grid(json!({"columns": [{"fixed": 100}, {"fr": 1}]})),
+                vec![with(
+                    &text("txt00001", SIX_WORDS, 16.0, 1.5),
+                    "width",
+                    json!("fill"),
+                )],
+            ),
+            &[
+                ("brd00001", [0.0, 0.0, 400.0, 72.0]),
+                ("txt00001", [0.0, 0.0, 100.0, 72.0]),
+            ],
+        ),
+        rounded_case(
+            "an auto column around \"Hello\", and a 1fr column that a frame fills",
+            board(
+                "brd00001",
+                fixed(400.0),
+                json!("hug"),
+                grid(json!({"columns": ["auto", {"fr": 1}]})),
+                vec![
+                    text("txt00001", "Hello", 16.0, 1.5),
+                    sized("a0000001", json!("fill"), json!("fill")),
+                ],
+            ),
+            &[
+                ("brd00001", [0.0, 0.0, 400.0, 24.0]),
+                ("txt00001", [0.0, 0.0, 38.5625, 24.0]),
+                ("a0000001", [38.5625, 0.0, 361.4375, 24.0]),
+            ],
+        ),
+    ]
+}
+
+/// A frame that hugs a text is as large as the text and its padding.
+pub fn frames_that_hug_a_text() -> Vec<Case> {
+    vec![rounded_case(
+        "a frame padded 8 px around \"Hello\"",
+        text_row(vec![frame(
+            "frm00001",
+            json!("hug"),
+            json!("hug"),
+            flex(json!({"padding": {"top": 8, "right": 8, "bottom": 8, "left": 8}})),
+            vec![text("txt00001", "Hello", 16.0, 1.5)],
+        )]),
+        &[
+            ("brd00001", [0.0, 0.0, 2000.0, 500.0]),
+            ("frm00001", [0.0, 0.0, 54.5625, 40.0]),
+            ("txt00001", [8.0, 8.0, 38.5625, 24.0]),
+        ],
+    )]
+}
+
+/// A label that hugs its text inside a padded frame stays on one line, where
+/// the width the text gets back from the frame's sum of text and padding is a
+/// rounding error short of the text's own: a button centered in a toolbar, and
+/// two chips in a row, all with letter spacing.
+pub fn labels_in_padded_frames() -> Vec<Case> {
+    let chip = |id: &str, label_id: &str, label: &str| {
+        frame(
+            id,
+            json!("hug"),
+            json!("hug"),
+            flex(json!({"padding": {"top": 4, "right": 12, "bottom": 4, "left": 12}})),
+            vec![with(
+                &text(label_id, label, 14.0, 1.2),
+                "letterSpacing",
+                json!(0.1),
+            )],
+        )
+    };
+    vec![
+        rounded_case(
+            "a button whose 18 px label has letterSpacing 0.2, centered in an 800 px row",
+            board(
+                "brd00001",
+                fixed(800.0),
+                json!("hug"),
+                flex(json!({"alignItems": "start", "justifyContent": "center"})),
+                vec![frame(
+                    "frm00001",
+                    json!("hug"),
+                    json!("hug"),
+                    flex(json!({"padding": {"left": 12, "right": 12}})),
+                    vec![with(
+                        &text("txt00001", "Save changes", 18.0, 1.5),
+                        "letterSpacing",
+                        json!(0.2),
+                    )],
+                )],
+            ),
+            &[
+                ("brd00001", [0.0, 0.0, 800.0, 27.0]),
+                ("frm00001", [327.0859375, 0.0, 145.8203125, 27.0]),
+                ("txt00001", [339.0859375, 0.0, 121.8203125, 27.0]),
+            ],
+        ),
+        rounded_case(
+            "two chips whose 14 px labels have letterSpacing 0.1, 4 px apart in a row that hugs them",
+            hug_board(
+                flex(json!({"gap": {"column": 4}})),
+                vec![
+                    chip("c0000001", "t0000001", "Sign in"),
+                    chip("c0000002", "t0000002", "Overview"),
+                ],
+            ),
+            &[
+                ("brd00001", [0.0, 0.0, 160.9140625, 24.796875]),
+                ("c0000001", [0.0, 0.0, 69.53125, 24.796875]),
+                ("t0000001", [12.0, 4.0, 45.53125, 16.796875]),
+                ("c0000002", [73.53125, 0.0, 87.3828125, 24.796875]),
+                ("t0000002", [85.53125, 4.0, 63.3828125, 16.796875]),
             ],
         ),
     ]

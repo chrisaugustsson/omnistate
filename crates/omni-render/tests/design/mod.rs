@@ -137,6 +137,17 @@ pub fn assert_box_within(
     );
 }
 
+/// Asserts that each node of `expected` has the box `[x, y, width, height]`
+/// that Chrome gives it, as `make chrome-boxes` prints it, give or take
+/// `tolerance`. `case` names the situation, for the failure message.
+#[track_caller]
+pub fn assert_boxes(boxes: &Boxes, expected: &[(&str, [f64; 4])], tolerance: f32, case: &str) {
+    for (node, expected) in expected {
+        let expected = expected.map(|value| value as f32);
+        assert_box_within(boxes, node, expected, tolerance, case);
+    }
+}
+
 /// Lays out the design of each case and asserts that every node the case lists
 /// has the box Chrome gives it.
 #[track_caller]

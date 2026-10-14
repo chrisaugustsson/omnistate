@@ -265,3 +265,62 @@ fn the_doc_gives_every_line_an_explicit_height_in_px_at_full_precision() {
         "docs/formats/layout.md must say that the CSS of a text's `lineHeight` is a `line-height` in px, never `normal` or a multiple of the font size"
     );
 }
+
+/// The contents of the fenced code blocks of `doc` in `language`, such as
+/// `html`.
+fn fenced_blocks(doc: &str, language: &str) -> Vec<String> {
+    let mut blocks = Vec::new();
+    let mut open: Option<(bool, String)> = None;
+    for line in doc.lines() {
+        let fence = line.trim_start().strip_prefix("```");
+        match (&mut open, fence) {
+            (None, Some(info)) => open = Some((info.trim() == language, String::new())),
+            (Some((wanted, block)), Some(_)) => {
+                if *wanted {
+                    blocks.push(std::mem::take(block));
+                }
+                open = None;
+            }
+            (Some((_, block)), None) => {
+                block.push_str(line);
+                block.push('\n');
+            }
+            (None, None) => {}
+        }
+    }
+    blocks
+}
+
+#[test]
+fn the_html_of_the_docs_example_writes_its_line_height_in_px() {
+    // The export writes every line height in px (decision Q44), never a
+    // multiple of the font size, and the HTML that the doc gives for its
+    // example is the CSS of its card by the doc's own rules. The title is 20 px
+    // text with lineHeight 1.2, so its line height is `line-height: 24px`.
+    let doc = layout_doc();
+    let html = fenced_blocks(&doc, "html").join("\n");
+    let html = normalized(&html);
+    let line_heights: Vec<String> = html
+        .match_indices("line-height:")
+        .map(|(start, property)| {
+            html[start + property.len()..]
+                .chars()
+                .take_while(|&c| !c.is_whitespace() && !matches!(c, ';' | '"' | '\''))
+                .collect()
+        })
+        .collect();
+    assert!(
+        !line_heights.is_empty(),
+        "docs/formats/layout.md must give the HTML of its example, whose title has a lineHeight, in an ```html block with the title's `line-height`"
+    );
+    for value in line_heights {
+        let px = value
+            .strip_suffix("px")
+            .and_then(|number| number.parse::<f64>().ok());
+        assert_eq!(
+            px,
+            Some(24.0),
+            "the HTML of the example in docs/formats/layout.md must write the title's line height as the export does, in px (decision Q44): `line-height: 24px` for 20 px text with lineHeight 1.2, but it writes `line-height: {value}`"
+        );
+    }
+}

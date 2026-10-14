@@ -6,8 +6,8 @@ mod common;
 mod design;
 
 use design::{
-    absolute, assert_box, assert_cases, at, board, box_of, cases, fixed, flex, frame, grid, ids_in,
-    lay_out, none, rect, sized, text, with,
+    EPSILON, absolute, assert_box, assert_boxes, assert_cases, at, board, box_of, cases, fixed,
+    flex, frame, grid, ids_in, lay_out, none, rect, sized, text, with,
 };
 use serde_json::{Value, json};
 
@@ -316,7 +316,8 @@ fn sizes_include_the_padding() {
 
 #[test]
 fn boxes_keep_their_fractions() {
-    let third = 100.0_f32 / 3.0;
+    // Chrome shares the 100 px between the three fill children in its layout
+    // units of 1/128 px: 33.328125, 33.3359375 and 33.3359375 px.
     let boxes = lay_out(&board(
         "brd00001",
         fixed(110.25),
@@ -330,15 +331,13 @@ fn boxes_keep_their_fractions() {
         ],
     ));
     let case = "a 10.25 x 20.75 box and three fill children sharing the other 100 px of a row";
-    assert_box(&boxes, "a0000001", [0.0, 0.0, 10.25, 20.75], case);
-    assert_box(&boxes, "b0000001", [10.25, 0.0, third, 30.0], case);
-    assert_box(&boxes, "c0000001", [10.25 + third, 0.0, third, 30.0], case);
-    assert_box(
-        &boxes,
-        "d0000001",
-        [10.25 + 2.0 * third, 0.0, third, 30.0],
-        case,
-    );
+    let expected = [
+        ("a0000001", [0.0, 0.0, 10.25, 20.75]),
+        ("b0000001", [10.25, 0.0, 33.328125, 30.0]),
+        ("c0000001", [43.578125, 0.0, 33.3359375, 30.0]),
+        ("d0000001", [76.9140625, 0.0, 33.3359375, 30.0]),
+    ];
+    assert_boxes(&boxes, &expected, EPSILON, case);
 }
 
 #[test]
@@ -418,7 +417,8 @@ fn omni_render_lays_out_with_taffy() {
 #[test]
 fn a_board_that_hugs_or_fills_its_width_is_as_wide_as_its_content_on_one_line() {
     // Nothing around a board limits its width, so a board is `width:
-    // max-content` where it hugs or fills it.
+    // max-content` where it hugs or fills it, wherever it sits on its page:
+    // six words make a board 250.22 px wide at x 0 and at x 1300 alike.
     assert_cases(cases::boards_sized_by_their_content());
 }
 
@@ -430,8 +430,19 @@ fn a_none_frame_an_image_a_vector_and_an_instance_have_no_content_that_takes_spa
 #[test]
 fn a_hidden_node_and_every_node_below_it_get_an_empty_box_at_the_top_left_of_their_parent() {
     // The row sits at (50, 20): its hidden frame and the box inside it have
-    // empty boxes there, not at the origin of the page.
+    // empty boxes there, not at the origin of the page. A hidden board at
+    // (200, 100), whose page has no box to take a corner from, and the nodes
+    // below it get theirs at the board's own x and y.
     assert_cases(cases::hidden_nodes_get_empty_boxes());
+}
+
+#[test]
+fn fills_strokes_corner_radii_shadows_opacity_and_clip_never_change_a_box() {
+    // Strokes take no space, and `clip` clips without changing layout
+    // (`overflow: clip`): a clipped frame around "Supercalifragilistic" in a
+    // 60 px row stays 139.70 px wide, as wide as the word, where a scroll
+    // container would shrink to the 40 px that a 20 px box leaves it.
+    assert_cases(cases::style_never_changes_a_box());
 }
 
 #[test]

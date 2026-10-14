@@ -266,3 +266,12 @@ fn an_absolute_child_ignores_its_grid_lines_and_a_placement_without_a_start_or_s
     // placement, `{}`, is `auto / auto` like one that is left out.
     assert_cases(cases::absolute_children_and_empty_grid_lines());
 }
+
+#[test]
+fn an_empty_grid_keeps_the_tracks_it_declares() {
+    // A grid without children still has its `grid-template-columns` and
+    // `grid-template-rows`: one that hugs its content is as large as its fixed
+    // tracks, its gaps and its padding. Columns of 50 and 30 px make it 80 px
+    // wide.
+    assert_cases(cases::empty_grids());
+}

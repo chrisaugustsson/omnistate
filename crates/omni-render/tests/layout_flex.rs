@@ -6,8 +6,8 @@
 mod design;
 
 use design::{
-    SIX_WORDS, absolute, assert_box, assert_box_within, assert_cases, at, board, box_of, cases,
-    fixed, flex, frame, grid, hugging, lay_out, none, rect, sized, text, with,
+    EPSILON, SIX_WORDS, absolute, assert_box, assert_box_within, assert_boxes, assert_cases, at,
+    board, cases, fixed, flex, frame, grid, hugging, lay_out, none, rect, sized, text, with,
 };
 use serde_json::{Value, json};
 
@@ -69,8 +69,8 @@ fn chip(id: &str, label_id: &str, label: &str) -> Value {
 }
 
 /// A row frame that hugs both axes and wraps three chips onto lines, 8 px
-/// apart both ways: "Design" (68.47 px wide in Chrome), "Research"
-/// (86.67 px) and a long label whose chip is 287.59 px wide on one line.
+/// apart both ways: "Design" (68.46 px wide in Chrome), "Research"
+/// (86.66 px) and a long label whose chip is 287.59 px wide on one line.
 fn wrapping_row_of_chips() -> Value {
     frame(
         "frm00001",
@@ -276,18 +276,16 @@ fn wrap_moves_children_that_do_not_fit_onto_new_lines() {
         five_rects(),
     ));
     // Three 80 px columns and two 20 px gaps leave 20 px, which the columns
-    // share: each grows to 86.67 px (`align-content: normal`).
-    let third = 20.0 / 3.0;
-    assert_box(&boxes, "a0000001", [0.0, 0.0, 80.0, 30.0], case);
-    assert_box(&boxes, "b0000001", [0.0, 40.0, 80.0, 30.0], case);
-    assert_box(&boxes, "c0000001", [100.0 + third, 0.0, 80.0, 30.0], case);
-    assert_box(&boxes, "d0000001", [100.0 + third, 40.0, 80.0, 30.0], case);
-    assert_box(
-        &boxes,
-        "e0000001",
-        [200.0 + 2.0 * third, 0.0, 80.0, 30.0],
-        case,
-    );
+    // share (`align-content: normal`): Chrome puts the second and the third at
+    // x 106.66 and 213.34, to its 1/128 px.
+    let expected = [
+        ("a0000001", [0.0, 0.0, 80.0, 30.0]),
+        ("b0000001", [0.0, 40.0, 80.0, 30.0]),
+        ("c0000001", [106.6640625, 0.0, 80.0, 30.0]),
+        ("d0000001", [106.6640625, 40.0, 80.0, 30.0]),
+        ("e0000001", [213.3359375, 0.0, 80.0, 30.0]),
+    ];
+    assert_boxes(&boxes, &expected, EPSILON, case);
 }
 
 #[test]
@@ -309,19 +307,16 @@ fn wrapped_lines_share_the_free_cross_space() {
         children,
     ));
     // Lines of 30, 30 and 10 px with two 10 px gaps leave 110 px, which the
-    // three lines share equally.
-    let share = 110.0 / 3.0;
+    // three lines share equally, to Chrome's 1/128 px: each grows by 36.66 px.
     let case = "five children wrapping onto three lines in a 200 x 200 row";
-    assert_box(&boxes, "a0000001", [0.0, 0.0, 80.0, 30.0], case);
-    assert_box(&boxes, "b0000001", [100.0, 0.0, 80.0, 30.0], case);
-    assert_box(&boxes, "c0000001", [0.0, 40.0 + share, 80.0, 30.0], case);
-    assert_box(&boxes, "d0000001", [100.0, 40.0 + share, 80.0, 30.0], case);
-    assert_box(
-        &boxes,
-        "e0000001",
-        [0.0, 80.0 + 2.0 * share, 80.0, 10.0 + share],
-        case,
-    );
+    let expected = [
+        ("a0000001", [0.0, 0.0, 80.0, 30.0]),
+        ("b0000001", [100.0, 0.0, 80.0, 30.0]),
+        ("c0000001", [0.0, 76.6640625, 80.0, 30.0]),
+        ("d0000001", [100.0, 76.6640625, 80.0, 30.0]),
+        ("e0000001", [0.0, 153.3359375, 80.0, 46.6640625]),
+    ];
+    assert_boxes(&boxes, &expected, EPSILON, case);
 }
 
 #[test]
@@ -416,16 +411,12 @@ fn align_items_baseline_lines_up_the_first_baselines_of_a_row() {
             rect("c0000001", 20.0, 20.0),
         ],
     ));
-    let mut x = 0.0;
-    for (id, y, height) in [
-        ("txt00001", 0.0, 48.0),
-        ("txt00002", 18.0, 24.0),
-        ("c0000001", 15.5, 20.0),
-    ] {
-        let width = box_of(&boxes, id).width;
-        assert_box_within(&boxes, id, [x, y, width, height], TEXT_TOLERANCE, case);
-        x += width;
-    }
+    let expected = [
+        ("txt00001", [0.0, 0.0, 77.125, 48.0]),
+        ("txt00002", [77.125, 18.0, 38.5625, 24.0]),
+        ("c0000001", [115.6875, 15.5, 20.0, 20.0]),
+    ];
+    assert_boxes(&boxes, &expected, TEXT_TOLERANCE, case);
 }
 
 #[test]
@@ -435,6 +426,31 @@ fn align_items_baseline_lines_up_texts_without_a_line_height_by_their_normal_lin
     // ascent and descent at 16 px and below: half the leading is then negative,
     // and Chrome rounds it down to a whole device pixel.
     assert_cases(cases::normal_line_heights_on_baselines());
+}
+
+#[test]
+fn a_container_aligned_on_its_first_baseline_takes_it_from_the_item_chrome_takes_it_from() {
+    // A row that runs in reverse takes its first baseline from its last item,
+    // the first along its main axis, a row that wraps in reverse from the line
+    // at its top, its last line, and a grid from its first item's own first
+    // baseline, not from that item's bottom edge. So a row-reverse of a 16 px
+    // and a 24 px text sits 9 px below the top of a row that lines it up with
+    // a 32 px text, on the baseline of the 24 px text, and a grid of a 16 px
+    // text 18 px below it.
+    assert_cases(cases::first_baselines_of_containers());
+}
+
+#[test]
+fn lines_and_items_that_overflow_a_container_in_reverse_go_where_chrome_puts_them() {
+    // A row that wraps in reverse packs its lines against its far edge, the
+    // bottom, so lines that need more than its height overflow its top: two
+    // 60 x 30 boxes in a 100 x 40 row are at y 10 and -20. A row that runs in
+    // reverse with justifyContent space-between packs a line that overflows it
+    // against its main start, the right edge: two 60 px boxes in a 100 px row
+    // are at x 40 and -20. Columns do the same along their axes. Items that
+    // alignItems baseline aligns in a column that wraps in reverse start
+    // together at the start of their line.
+    assert_cases(cases::lines_that_overflow());
 }
 
 #[test]
@@ -801,27 +817,40 @@ fn a_hug_row_fits_into_the_space_where_css_gives_it_a_fit_content_width() {
 
 #[test]
 fn a_hug_row_that_wraps_fits_into_the_space_where_css_gives_it_a_fit_content_width() {
-    // On one line the chips need 458.73 px, so where CSS makes the row's width
+    // On one line the chips need 458.72 px, so where CSS makes the row's width
     // fit-content the row is as wide as the 200 px of space. "Design" and
     // "Research" share its first line. The long chip, wider than the row,
     // gets the second line to itself, shrinks to the row's width and wraps
-    // its label onto two lines: 2 x 24 + 8 = 56 px. The row is
-    // 32 + 8 + 56 = 96 px tall. Chrome lays the chips out so in each of these
-    // places.
+    // its label onto two lines, 56 px tall with its padding, and the row is
+    // 96 px tall. Chrome lays the chips out so in each of these places.
+    let at_the_left = [
+        ("frm00001", [0.0, 0.0, 200.0, 96.0]),
+        ("c0000001", [0.0, 0.0, 68.4609375, 32.0]),
+        ("c0000002", [76.4609375, 0.0, 86.6640625, 32.0]),
+        ("c0000003", [0.0, 40.0, 200.0, 56.0]),
+        ("t0000003", [8.0, 44.0, 184.0, 48.0]),
+    ];
+    let at_x_50 = [
+        ("frm00001", [50.0, 0.0, 200.0, 96.0]),
+        ("c0000001", [50.0, 0.0, 68.4609375, 32.0]),
+        ("c0000002", [126.4609375, 0.0, 86.6640625, 32.0]),
+        ("c0000003", [50.0, 40.0, 200.0, 56.0]),
+        ("t0000003", [58.0, 44.0, 184.0, 48.0]),
+    ];
     let cases = [
         (
             "a wrapping row of chips in a 200 px column that aligns it to the start",
-            0.0,
+            at_the_left,
             column(200.0, "start", vec![wrapping_row_of_chips()]),
         ),
         (
             "a wrapping row of chips in a 200 px column that centers it",
-            0.0,
+            at_the_left,
             column(200.0, "center", vec![wrapping_row_of_chips()]),
         ),
         (
             "a wrapping row of chips in a grid area 200 px wide",
-            0.0,
+            at_the_left,
             board(
                 "brd00001",
                 fixed(200.0),
@@ -832,7 +861,7 @@ fn a_hug_row_that_wraps_fits_into_the_space_where_css_gives_it_a_fit_content_wid
         ),
         (
             "a wrapping row of chips at x 50 in a 250 px board with no layout",
-            50.0,
+            at_x_50,
             board(
                 "brd00001",
                 fixed(250.0),
@@ -842,25 +871,8 @@ fn a_hug_row_that_wraps_fits_into_the_space_where_css_gives_it_a_fit_content_wid
             ),
         ),
     ];
-    for (case, x, design) in cases {
-        let boxes = lay_out(&design);
-        assert_box(&boxes, "frm00001", [x, 0.0, 200.0, 96.0], case);
-        assert_box_within(
-            &boxes,
-            "c0000001",
-            [x, 0.0, 68.469, 32.0],
-            TEXT_TOLERANCE,
-            case,
-        );
-        assert_box_within(
-            &boxes,
-            "c0000002",
-            [x + 76.469, 0.0, 86.672, 32.0],
-            TEXT_TOLERANCE,
-            case,
-        );
-        assert_box(&boxes, "c0000003", [x, 40.0, 200.0, 56.0], case);
-        assert_box(&boxes, "t0000003", [x + 8.0, 44.0, 184.0, 48.0], case);
+    for (case, expected, design) in cases {
+        assert_boxes(&lay_out(&design), &expected, TEXT_TOLERANCE, case);
     }
 }
 
@@ -893,7 +905,7 @@ fn a_hug_row_is_bounded_by_its_min_and_max_width_before_its_text_wraps() {
 #[test]
 fn a_wrapping_row_with_a_max_width_wraps_its_items_at_that_width() {
     // CSS measures the content of a row without the row's own min and max
-    // widths: on one line the chips need 458.73 px. In a 500 px column that
+    // widths: on one line the chips need 458.72 px. In a 500 px column that
     // aligns it to the start, a wrapping row of chips with maxWidth 300 is
     // 300 px wide: "Design" and "Research" share its first line, and the
     // long chip (287.59 px) fits on the second line whole.
@@ -905,13 +917,12 @@ fn a_wrapping_row_with_a_max_width_wraps_its_items_at_that_width() {
         vec![with(&wrapping_row_of_chips(), "maxWidth", json!(300))],
     ));
     assert_box(&boxes, "frm00001", [0.0, 0.0, 300.0, 72.0], case);
-    for (id, expected) in [
-        ("c0000001", [0.0, 0.0, 68.469, 32.0]),
-        ("c0000002", [76.469, 0.0, 86.672, 32.0]),
-        ("c0000003", [0.0, 40.0, 287.594, 32.0]),
-    ] {
-        assert_box_within(&boxes, id, expected, TEXT_TOLERANCE, case);
-    }
+    let expected = [
+        ("c0000001", [0.0, 0.0, 68.4609375, 32.0]),
+        ("c0000002", [76.4609375, 0.0, 86.6640625, 32.0]),
+        ("c0000003", [0.0, 40.0, 287.59375, 32.0]),
+    ];
+    assert_boxes(&boxes, &expected, TEXT_TOLERANCE, case);
 
     // Nothing limits the width of a row that hugs it, so a wrapping row of
     // chips with maxWidth 200 inside it is 200 px wide, and wraps as it does
@@ -927,10 +938,9 @@ fn a_wrapping_row_with_a_max_width_wraps_its_items_at_that_width() {
     ));
     assert_box(&boxes, "brd00001", [0.0, 0.0, 200.0, 96.0], case);
     assert_box(&boxes, "frm00001", [0.0, 0.0, 200.0, 96.0], case);
-    assert_box_within(
+    assert_boxes(
         &boxes,
-        "c0000002",
-        [76.469, 0.0, 86.672, 32.0],
+        &[("c0000002", [76.4609375, 0.0, 86.6640625, 32.0])],
         TEXT_TOLERANCE,
         case,
     );
@@ -1497,8 +1507,10 @@ fn a_column_wraps_its_children_at_its_fixed_height_or_at_the_height_a_row_stretc
     // A column wraps its children at its height when that is fixed, bounded by
     // its min and max heights and never below its padding, or when a row that
     // does not wrap stretches it to the row's own fixed height, less the row's
-    // padding. A row that wraps does not stretch it. The lines it wraps into
-    // set its width, where nothing else does.
+    // padding. A row that wraps does not stretch it. A column that hugs its
+    // height wraps at its maxHeight less its padding: with maxHeight 70 and 6
+    // px of padding above and below, three 30 px boxes take a line each. The
+    // lines it wraps into set its width, where nothing else does.
     assert_cases(cases::wrapping_columns_wrap_at_their_height());
 }
 

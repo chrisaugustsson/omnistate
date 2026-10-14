@@ -1,44 +1,20 @@
 //! US-003: text nodes are measured with Skia's paragraph layout, through
 //! Taffy's measure callback: their glyphs are shaped, their lines wrap at the
 //! width layout gives them where Chrome breaks lines, and their size sets the
-//! size of what hugs them.
+//! size of what hugs them. The expected boxes are the ones Chrome gives, as
+//! `make chrome-boxes` prints them (`tests/design/cases.rs`).
 
 mod common;
 mod design;
 
 use design::{
-    SIX_WORDS, absolute, assert_box, assert_box_within, assert_cases, at, board, box_of, cases,
-    fixed, flex, frame, grid, lay_out, node, none, rect, sized, text, with, without,
+    SIX_WORDS, absolute, assert_box, assert_cases, at, board, cases, fixed, flex, lay_out, node,
+    none, rect, text, with,
 };
 use omni_render::layout;
 use omni_render::text::Fonts;
 use serde_json::{Value, json};
-use skia_safe::{Data, Font, FontMgr};
 use std::collections::BTreeSet;
-
-/// The bundled Inter, which the tests measure their expectations with.
-const INTER: &[u8] = include_bytes!("../fonts/Inter-Regular.ttf");
-
-/// How far a measured text width may be from the width of its glyphs.
-const TEXT_TOLERANCE: f32 = 0.05;
-
-/// The bundled Inter at `size` px.
-fn inter(size: f32) -> Font {
-    let typeface = FontMgr::custom_empty()
-        .unwrap_or_default()
-        .new_from_data(Data::new_copy(INTER), None)
-        .expect("Skia loads the bundled Inter");
-    let mut font = Font::from_typeface(typeface, size);
-    font.set_subpixel(true);
-    font.set_linear_metrics(true);
-    font
-}
-
-/// The width of `content` in the bundled Inter at `size` px: the sum of its
-/// glyphs' advances, unshaped, so without kerning.
-fn advance_width(content: &str, size: f32) -> f32 {
-    inter(size).measure_str(content, None).0
-}
 
 /// A board wide enough that no text in it needs to wrap, which places its
 /// children in a row from its top-left corner without stretching them.
@@ -50,15 +26,6 @@ fn wide_row(children: Vec<Value>) -> Value {
         flex(json!({"alignItems": "start"})),
         children,
     )
-}
-
-/// The box of the one text of a wide row.
-fn hug_text_box(text_json: Value) -> omni_render::layout::LayoutBox {
-    let id = text_json["id"]
-        .as_str()
-        .expect("text fixtures have an id")
-        .to_string();
-    box_of(&lay_out(&wide_row(vec![text_json])), &id)
 }
 
 /// A column `width` px wide that aligns its children to the start of its
@@ -75,82 +42,19 @@ fn start_aligned_column(width: f64, children: Vec<Value>) -> Value {
     )
 }
 
-/// Lays out a text of `content` in 16 px Inter with lineHeight 1.5 (24 px
-/// lines), `width` px wide, in a wide row, and asserts that it breaks into
-/// `lines` lines.
-#[track_caller]
-fn assert_lines_at_fixed_width(content: &str, width: f64, lines: f32) {
-    let json = with(&text("txt00001", content, 16.0, 1.5), "width", fixed(width));
-    let boxes = lay_out(&wide_row(vec![json]));
-    assert_box(
-        &boxes,
-        "txt00001",
-        [0.0, 0.0, width as f32, 24.0 * lines],
-        &format!("{content:?} in a {width} px wide text of 16 px Inter, as {lines} lines of 24 px"),
-    );
-}
-
-/// Lays out a text of `content` in 16 px Inter with lineHeight 1.5 that hugs
-/// its width in a start-aligned column `column` px wide, and asserts that it
-/// is `width` px wide (give or take [`TEXT_TOLERANCE`]) and breaks into
-/// `lines` lines of 24 px.
-#[track_caller]
-fn assert_hug_text_in_column(content: &str, column: f64, width: f32, lines: f32) {
-    let boxes = lay_out(&start_aligned_column(
-        column,
-        vec![text("txt00001", content, 16.0, 1.5)],
-    ));
-    assert_box_within(
-        &boxes,
-        "txt00001",
-        [0.0, 0.0, width, 24.0 * lines],
-        TEXT_TOLERANCE,
-        &format!(
-            "{content:?} in 16 px Inter hugging its width in a {column} px column that aligns it to the start, as {lines} lines of 24 px"
-        ),
-    );
-}
-
 #[test]
 fn a_hug_text_is_as_wide_as_its_glyphs_and_as_tall_as_its_line() {
-    // A line is lineHeight x fontSize tall, fractions included, as in CSS:
-    // 28.8 px for 24 px text with lineHeight 1.2, not a rounded 29.
-    for (content, size, line_height) in [
-        ("Hello", 16.0, 1.5),
-        ("Hello", 32.0, 1.25),
-        ("minimum", 16.0, 1.0),
-        ("Hi", 13.0, 2.0),
-        ("Hello", 24.0, 1.2),
-        ("Hi", 14.0, 1.4),
-    ] {
-        // These words have no kerning pairs in Inter, so shaping leaves their
-        // advances as they are.
-        let expected_width = advance_width(content, size as f32);
-        let expected_height = (size * line_height) as f32;
-        let boxes = lay_out(&wide_row(vec![text(
-            "txt00001",
-            content,
-            size,
-            line_height,
-        )]));
-        assert_box_within(
-            &boxes,
-            "txt00001",
-            [0.0, 0.0, expected_width, expected_height],
-            TEXT_TOLERANCE,
-            &format!("{content:?} in {size} px Inter with lineHeight {line_height}"),
-        );
-    }
+    // A line is lineHeight x fontSize tall, rounded down to a multiple of 1/64
+    // px (decision Q44): 28.796875 px for 24 px text with lineHeight 1.2, not
+    // the exact 28.8 px, and not a rounded 29.
+    assert_cases(cases::hug_texts_on_one_line());
 }
 
 #[test]
 fn text_is_shaped_so_kerning_pairs_move_closer() {
-    let unshaped = advance_width("AVAVAVAV", 16.0);
-    let shaped = hug_text_box(text("txt00001", "AVAVAVAV", 16.0, 1.5)).width;
-    assert!(
-        shaped < unshaped - 4.0 && shaped > unshaped * 0.8,
-        "Inter kerns the pair AV, so shaped \"AVAVAVAV\" at 16 px is several pixels narrower than its {unshaped} px of unshaped advances; layout measured {shaped} px"
-    );
+    // Inter kerns the pair AV: Chrome measures "AV" at 20.98 px in 16 px
+    // Inter, where "A" and "V" are 11.04 px each, and "AVAVAVAV" at 80.66 px.
+    assert_cases(cases::kerning_pairs());
 }
 
 #[test]
@@ -166,72 +70,21 @@ fn a_text_without_a_line_height_gets_its_fonts_normal_line_height_at_full_precis
     assert_cases(cases::normal_line_heights());
 }
 
-/// The normal line height of Inter at `size` px at full precision: its ascent
-/// of 1984, descent of 494 and line gap of 0, in units of 1/2048 em.
-fn normal_line_height(size: f32) -> f32 {
-    size * (1984.0 + 494.0) / 2048.0
-}
-
 #[test]
-fn every_line_height_is_snapped_to_a_multiple_of_a_64th_of_a_pixel() {
+fn every_line_height_is_rounded_down_to_a_multiple_of_a_64th_of_a_pixel() {
     // Chrome lays out in 1/64 of a device pixel, so a line height that is a
     // multiple of 1/64 CSS px is the same at every integer pixel ratio. Layout
-    // snaps every line height, the normal one and lineHeight times fontSize,
-    // to such a multiple: within 1/64 px of the exact height, and nothing
-    // coarser than 1/64 px or finer. These sizes have exact heights between
-    // two multiples.
-    let snapped = |height: f32, exact: f32, case: &str| {
-        let units = height * 64.0;
-        assert!(
-            (units - units.round()).abs() <= 0.001 && (height - exact).abs() < 1.0 / 64.0,
-            "{case} is {exact} px tall exactly, so a line height snapped to a multiple of 1/64 px is within 1/64 px of it; layout gave {height} px"
-        );
-    };
-    for size in [11.0, 13.0, 15.0, 18.0, 20.0, 24.0] {
-        let height =
-            hug_text_box(without(&text("txt00001", "Hello", size, 1.5), "lineHeight")).height;
-        snapped(
-            height,
-            normal_line_height(size as f32),
-            &format!("a line of {size} px Inter without a lineHeight"),
-        );
-    }
-    for (size, multiple) in [(11.0, 1.33), (13.0, 1.4), (17.0, 1.35), (15.0, 1.1)] {
-        let height = hug_text_box(text("txt00001", "Hello", size, multiple)).height;
-        snapped(
-            height,
-            (size * multiple) as f32,
-            &format!("a line of {size} px Inter with lineHeight {multiple}"),
-        );
-    }
+    // rounds every line height down to such a multiple, the normal one and
+    // lineHeight times fontSize alike, and so does the CSS that `make
+    // chrome-boxes` writes: 13 px Inter's normal line height of 15.7295 px is
+    // 15.71875 px, where rounding it to the nearest 64th, or up, gives
+    // 15.734375 px.
+    assert_cases(cases::snapped_line_heights());
 }
 
 #[test]
 fn a_fixed_width_text_wraps_its_lines_at_that_width() {
-    for (width, line_height, lines) in [
-        (70.0, 1.5, 6.0),
-        (100.0, 1.5, 3.0),
-        (130.0, 1.5, 2.0),
-        (300.0, 1.5, 1.0),
-        (100.0, 1.3, 3.0),
-    ] {
-        let json = with(
-            &text("txt00001", SIX_WORDS, 16.0, line_height),
-            "width",
-            fixed(width),
-        );
-        let boxes = lay_out(&wide_row(vec![json]));
-        let line = (16.0 * line_height) as f32;
-        assert_box_within(
-            &boxes,
-            "txt00001",
-            [0.0, 0.0, width as f32, line * lines],
-            TEXT_TOLERANCE,
-            &format!(
-                "six words of 16 px Inter in a {width} px wide text, as {lines} lines of {line} px"
-            ),
-        );
-    }
+    assert_cases(cases::six_words_at_fixed_widths());
 }
 
 #[test]
@@ -240,8 +93,7 @@ fn a_line_breaks_when_it_is_a_tenth_of_a_pixel_too_narrow_for_its_text() {
     // renderer. Chrome lets a line overflow by no more than its rounding
     // error, so 0.1 px too little breaks the text onto two lines, and 0.1 px
     // to spare keeps it on one.
-    assert_lines_at_fixed_width("Hello world", 85.3, 2.0);
-    assert_lines_at_fixed_width("Hello world", 85.5, 1.0);
+    assert_cases(cases::lines_that_are_a_tenth_too_narrow());
 }
 
 #[test]
@@ -250,74 +102,8 @@ fn labels_that_hug_their_text_inside_padded_frames_stay_on_one_line() {
     // the text gets its width back from that sum, which can come back a
     // rounding error short of the text's own width. Chrome keeps such labels
     // on one line: a button centered in a toolbar, and two chips in a row,
-    // all with letter spacing. These are Chrome's boxes.
-    let case = "a button whose 18 px label has letterSpacing 0.2, centered in an 800 px row";
-    let boxes = lay_out(&board(
-        "brd00001",
-        fixed(800.0),
-        json!("hug"),
-        flex(json!({"alignItems": "start", "justifyContent": "center"})),
-        vec![frame(
-            "frm00001",
-            json!("hug"),
-            json!("hug"),
-            flex(json!({"padding": {"left": 12, "right": 12}})),
-            vec![with(
-                &text("txt00001", "Save changes", 18.0, 1.5),
-                "letterSpacing",
-                json!(0.2),
-            )],
-        )],
-    ));
-    assert_box_within(
-        &boxes,
-        "frm00001",
-        [327.086, 0.0, 145.82, 27.0],
-        TEXT_TOLERANCE,
-        case,
-    );
-    assert_box_within(
-        &boxes,
-        "txt00001",
-        [339.086, 0.0, 121.82, 27.0],
-        TEXT_TOLERANCE,
-        case,
-    );
-
-    let case =
-        "two chips whose 14 px labels have letterSpacing 0.1, 4 px apart in a row that hugs them";
-    let chip = |id: &str, label_id: &str, label: &str| {
-        frame(
-            id,
-            json!("hug"),
-            json!("hug"),
-            flex(json!({"padding": {"top": 4, "right": 12, "bottom": 4, "left": 12}})),
-            vec![with(
-                &text(label_id, label, 14.0, 1.2),
-                "letterSpacing",
-                json!(0.1),
-            )],
-        )
-    };
-    let boxes = lay_out(&board(
-        "brd00001",
-        json!("hug"),
-        json!("hug"),
-        flex(json!({"gap": {"column": 4}})),
-        vec![
-            chip("c0000001", "t0000001", "Sign in"),
-            chip("c0000002", "t0000002", "Overview"),
-        ],
-    ));
-    for (id, expected) in [
-        ("brd00001", [0.0, 0.0, 160.914, 24.8]),
-        ("c0000001", [0.0, 0.0, 69.531, 24.8]),
-        ("t0000001", [12.0, 4.0, 45.531, 16.8]),
-        ("c0000002", [73.531, 0.0, 87.383, 24.8]),
-        ("t0000002", [85.531, 4.0, 63.383, 16.8]),
-    ] {
-        assert_box_within(&boxes, id, expected, TEXT_TOLERANCE, case);
-    }
+    // all with letter spacing.
+    assert_cases(cases::labels_in_padded_frames());
 }
 
 #[test]
@@ -380,13 +166,10 @@ fn a_hug_text_wraps_where_css_gives_it_a_fit_content_width() {
 #[test]
 fn a_word_wider_than_its_line_overflows_it_instead_of_breaking() {
     // CSS breaks no word (`overflow-wrap: normal`): a word wider than its line
-    // stays whole on one line and overflows it.
-    for width in [20.0, 60.0, 100.0] {
-        assert_lines_at_fixed_width("Supercalifragilistic", width, 1.0);
-    }
-    // A text that hugs its width is never narrower than its widest word, its
-    // min-content width: Chrome measures "Supercalifragilistic" at 139.70 px.
-    assert_hug_text_in_column("Supercalifragilistic", 60.0, 139.703, 1.0);
+    // stays whole on one line and overflows it. A text that hugs its width is
+    // never narrower than its widest word, its min-content width: Chrome
+    // measures "Supercalifragilistic" at 139.70 px.
+    assert_cases(cases::words_wider_than_their_line());
 }
 
 #[test]
@@ -394,68 +177,36 @@ fn words_after_a_word_wider_than_its_line_still_wrap_at_the_line_width() {
     // The overflowing word takes a line of its own and leaves the lines after
     // it as wide as the text. Chrome breaks this text into
     // "Supercalifragilistic", "a b c d" and "e f g h" at 60 px, and into
-    // "Supercalifragilistic", "a b c", "d e f" and "g h" at 40 px.
-    let content = "Supercalifragilistic a b c d e f g h";
-    assert_lines_at_fixed_width(content, 60.0, 3.0);
-    assert_lines_at_fixed_width(content, 40.0, 4.0);
-    // Hugging its width in a 60 px column, the text is as wide as its widest
-    // word, where the letters all fit on the second line.
-    assert_hug_text_in_column(content, 60.0, 139.703, 2.0);
+    // "Supercalifragilistic", "a b c", "d e f" and "g h" at 40 px. Hugging its
+    // width in a 60 px column, the text is as wide as its widest word, where
+    // the letters all fit on the second line.
+    assert_cases(cases::words_after_a_word_wider_than_their_line());
 }
 
 #[test]
 fn lines_also_break_after_hyphens_and_around_em_dashes_and_after_ellipses() {
     // Besides spaces, Chrome breaks lines where Unicode's line breaking rules
     // allow it inside a word: after a hyphen, before and after an em dash, and
-    // after an ellipsis. The comments give the lines Chrome breaks each text
-    // into.
-    for (content, width, lines) in [
-        // "state-of-" / "the-art"
-        ("state-of-the-art", 80.0, 2.0),
-        // "state-" / "of-the-" / "art"
-        ("state-of-the-art", 60.0, 3.0),
-        // "state-" (overflowing) / "of-" / "the-" / "art"
-        ("state-of-the-art", 40.0, 4.0),
-        // "one—" / "two—" / "three"
-        ("one—two—three", 60.0, 3.0),
-        // "one" / "—" / "two" / "—" / "three"
-        ("one—two—three", 40.0, 5.0),
-        // "hello…" / "world"
-        ("hello…world", 60.0, 2.0),
-    ] {
-        assert_lines_at_fixed_width(content, width, lines);
-    }
-
+    // after an ellipsis. It breaks "state-of-the-art" into "state-of-" and
+    // "the-art" at 80 px, "state-", "of-the-" and "art" at 60 px, and "state-"
+    // (overflowing), "of-", "the-" and "art" at 40 px; "one—two—three" into
+    // "one—", "two—" and "three" at 60 px and into "one", "—", "two", "—" and
+    // "three" at 40 px; and "hello…world" into "hello…" and "world" at 60 px.
     // So where CSS makes the width of a text that hugs it fit-content, the
     // text is no wider than the space, unless its widest piece, its
-    // min-content width, is wider still.
-    for (content, column, width, lines) in [
-        ("state-of-the-art", 60.0, 60.0, 3.0),
-        // As wide as "state-", 44.52 px in Chrome.
-        ("state-of-the-art", 20.0, 44.516, 4.0),
-        // As wide as "three", 39.11 px in Chrome.
-        ("one—two—three", 20.0, 39.109, 5.0),
-        // As wide as "hello…", 49.97 px in Chrome.
-        ("hello…world", 20.0, 49.969, 2.0),
-    ] {
-        assert_hug_text_in_column(content, column, width, lines);
-    }
+    // min-content width, is wider still: "state-" (44.51 px), "three" (39.11
+    // px) or "hello…" (49.96 px).
+    assert_cases(cases::breaks_after_hyphens_dashes_and_ellipses());
 }
 
 #[test]
 fn lines_never_break_after_a_slash_between_letters() {
     // Unicode allows a break after a slash, but Chrome keeps letters joined by
     // a slash together, so paths and URLs stay whole and overflow their line
-    // instead.
-    assert_lines_at_fixed_width("input/output", 40.0, 1.0);
-    // "word" / "input/output" / "word"
-    assert_lines_at_fixed_width("word input/output word", 60.0, 3.0);
-    assert_lines_at_fixed_width("word input/output word", 100.0, 3.0);
-    // "See" / "example.com/a/very/long/path" / "today"
-    assert_lines_at_fixed_width("See example.com/a/very/long/path today", 180.0, 3.0);
-    // Hugging its width in a 60 px column, the text is as wide as
-    // "input/output", 92.38 px in Chrome.
-    assert_hug_text_in_column("word input/output word", 60.0, 92.375, 3.0);
+    // instead: "word", "input/output" and "word" at 60 and 100 px, and "See",
+    // "example.com/a/very/long/path" and "today" at 180 px. Hugging its width
+    // in a 60 px column, the text is as wide as "input/output", 92.37 px.
+    assert_cases(cases::no_breaks_after_slashes());
 }
 
 #[test]
@@ -464,15 +215,7 @@ fn a_line_breaks_after_a_hyphen_before_a_digit_only_when_a_letter_or_digit_comes
     // comes before the hyphen: "pre-" / "2020" and "COVID-" / "19". Anywhere
     // else the hyphen may be a minus sign, which stays with its number, so
     // "-2020", "(-2020)" and the "-12" of "x -12" stay whole.
-    for (content, lines) in [
-        ("pre-2020", 2.0),
-        ("COVID-19", 2.0),
-        ("-2020", 1.0),
-        ("(-2020)", 1.0),
-        ("x -12", 2.0),
-    ] {
-        assert_lines_at_fixed_width(content, 10.0, lines);
-    }
+    assert_cases(cases::hyphens_before_digits());
 }
 
 #[test]
@@ -482,9 +225,7 @@ fn a_line_breaks_after_a_question_mark_and_before_a_bracket_that_follows_punctua
     // before an opening bracket that follows closing punctuation or a symbol
     // ("matrix[0]" / "[1]", "f(x)=" / "(y)"), but not before one that follows
     // a letter.
-    for content in ["what?why", "matrix[0][1]", "f(x)=(y)"] {
-        assert_lines_at_fixed_width(content, 10.0, 2.0);
-    }
+    assert_cases(cases::question_marks_and_brackets());
 }
 
 #[test]
@@ -492,12 +233,9 @@ fn a_hyphen_or_dash_that_starts_a_word_stays_with_the_word() {
     // Unicode's line breaking rules keep a hyphen, or an en dash, that starts
     // a word with the letter after it (rule LB20a of Unicode 15.1, which
     // Chrome follows), so these break only at their space: "word " / "–word".
-    for content in ["word \u{2013}word", "word \u{2010}word", "a -\u{e9}lan"] {
-        assert_lines_at_fixed_width(content, 10.0, 2.0);
-    }
     // A text that hugs its width in a narrow column is then as wide as
-    // "–word", 45.95 px in Chrome.
-    assert_hug_text_in_column("word \u{2013}word", 10.0, 45.953, 2.0);
+    // "–word", 45.95 px.
+    assert_cases(cases::hyphens_and_dashes_that_start_a_word());
 }
 
 #[test]
@@ -505,13 +243,9 @@ fn a_no_break_space_joins_its_neighbors_except_after_a_hyphen() {
     // A no-break space (U+00A0) keeps the characters on both sides of it
     // together: "10 km" and "Mr. Smith" written with one never break. After
     // a hyphen, though, Unicode's line breaking rules allow a break before
-    // it, and Chrome breaks there: "well-" / " known".
-    assert_lines_at_fixed_width("10\u{a0}km", 10.0, 1.0);
-    assert_lines_at_fixed_width("Mr.\u{a0}Smith", 10.0, 1.0);
-    assert_lines_at_fixed_width("well-\u{a0}known", 10.0, 2.0);
-    // So a text that hugs its width in a narrow column is as wide as
-    // " known", 54.59 px in Chrome.
-    assert_hug_text_in_column("well-\u{a0}known", 10.0, 54.586, 2.0);
+    // it, and Chrome breaks there: "well-" / " known". So a text that hugs its
+    // width in a narrow column is as wide as " known", 54.59 px.
+    assert_cases(cases::no_break_spaces());
 }
 
 #[test]
@@ -520,41 +254,9 @@ fn a_tab_moves_its_line_on_to_the_next_tab_stop() {
     // eight spaces from the start of the line (36 px in 16 px Inter). Letter
     // spacing widens the spaces that stops are counted in, so with 1 px of it
     // they are 44 px apart. A tab at the end of a line still counts toward
-    // the text's width. The widths are Chrome's.
-    for (content, spacing, width) in [
-        ("a\tb", 0.0, 45.797),
-        ("a\t\tb", 0.0, 81.797),
-        ("Name\tValue", 0.0, 113.875),
-        ("x\t", 0.0, 36.0),
-        ("a\tb", 2.0, 63.797),
-        ("Name\tValue", 1.0, 134.875),
-    ] {
-        let json = with(
-            &text("txt00001", content, 16.0, 1.5),
-            "letterSpacing",
-            json!(spacing),
-        );
-        let boxes = lay_out(&wide_row(vec![json]));
-        assert_box_within(
-            &boxes,
-            "txt00001",
-            [0.0, 0.0, width, 24.0],
-            TEXT_TOLERANCE,
-            &format!(
-                "{content:?} in 16 px Inter with letterSpacing {spacing}, hugging its width on one line"
-            ),
-        );
-    }
-    // A line also breaks before the piece that the tabs before it have moved
-    // past the line's end.
-    for (content, width, lines) in [
-        ("Item\tPrice\tQty", 120.0, 2.0),
-        ("Item\tPrice\tQty", 140.0, 1.0),
-        ("a\tb\tc", 40.0, 3.0),
-        ("a\tb\tc", 60.0, 2.0),
-    ] {
-        assert_lines_at_fixed_width(content, width, lines);
-    }
+    // the text's width, and a line also breaks before the piece that the tabs
+    // before it have moved past the line's end.
+    assert_cases(cases::tab_stops());
 }
 
 #[test]
@@ -630,68 +332,20 @@ fn a_max_width_narrower_than_the_widest_word_still_bounds_a_hug_text() {
 }
 
 #[test]
-fn a_line_break_in_the_content_starts_a_new_line() {
-    let measured = hug_text_box(text("txt00001", "Hello\nminimum", 16.0, 1.5));
-    let expected_width = advance_width("minimum", 16.0);
-    assert!(
-        (measured.width - expected_width).abs() <= TEXT_TOLERANCE
-            && (measured.height - 48.0).abs() <= 0.01,
-        "\"Hello\\nminimum\" is two lines of 24 px, as wide as \"minimum\" ({expected_width} px); layout gave {measured:?}"
-    );
-}
-
-#[test]
-fn a_line_break_at_the_end_of_the_content_starts_no_line() {
+fn a_line_break_starts_a_new_line_but_not_at_the_very_end_and_an_empty_text_has_no_line() {
     // A line break ends its line, but in CSS it starts a new line only when
-    // something follows it, so a final line break adds no empty line. One
+    // something follows it, so a final line break adds no empty line and
+    // nothing to the width: "Hello\n" is one line, as wide as "Hello". One
     // with nothing before it still ends an empty line, and an empty text has
-    // no line at all.
-    for (content, lines) in [
-        ("Hello\n", 1.0),
-        ("Hello\nworld\n", 2.0),
-        ("Hello\n\n", 2.0),
-        ("\n", 1.0),
-        ("\n\n", 2.0),
-        ("", 0.0),
-    ] {
-        let height = hug_text_box(text("txt00001", content, 16.0, 1.5)).height;
-        let expected = 24.0 * lines;
-        assert!(
-            (height - expected).abs() <= 0.01,
-            "{content:?} in 16 px Inter is {lines} lines of 24 px, {expected} px in all; layout gave {height} px"
-        );
-    }
-
-    let hello = advance_width("Hello", 16.0);
-    let measured = hug_text_box(text("txt00001", "Hello\n", 16.0, 1.5));
-    assert!(
-        (measured.width - hello).abs() <= TEXT_TOLERANCE,
-        "a final line break adds nothing to the width of \"Hello\\n\", which is as wide as \"Hello\" ({hello} px); layout gave {measured:?}"
-    );
-    let empty = hug_text_box(text("txt00001", "", 16.0, 1.5));
-    assert!(
-        empty.width.abs() <= 0.01 && empty.height.abs() <= 0.01,
-        "an empty text that hugs its content has no line, so its box is empty; layout gave {empty:?}"
-    );
-    assert_lines_at_fixed_width("Hello\n", 50.0, 1.0);
+    // no line at all, so its box is empty.
+    assert_cases(cases::line_breaks_in_the_content());
 }
 
 #[test]
 fn letter_spacing_adds_space_after_every_character() {
-    let plain = advance_width("Hello", 16.0);
-    for spacing in [2.0, -0.5] {
-        let json = with(
-            &text("txt00001", "Hello", 16.0, 1.5),
-            "letterSpacing",
-            json!(spacing),
-        );
-        let width = hug_text_box(json).width;
-        let expected = plain + 5.0 * spacing as f32;
-        assert!(
-            (width - expected).abs() <= TEXT_TOLERANCE,
-            "CSS `letter-spacing: {spacing}px` adds {spacing} px after each of the 5 characters of \"Hello\", so it is {expected} px wide; layout measured {width} px"
-        );
-    }
+    // CSS `letter-spacing` adds its spacing after each of the 5 characters of
+    // "Hello", the last one included: 2 px of it make the text 10 px wider.
+    assert_cases(cases::letter_spacing_after_every_character());
 }
 
 #[test]
@@ -700,121 +354,37 @@ fn letter_spacing_turns_off_contextual_alternates() {
     // neighbors: "->" becomes one arrow, and a colon between capitals takes
     // the form made for capitals. Chrome turns them off in text with letter
     // spacing, as CSS allows for optional ligatures, so the hyphen and the
-    // greater-than sign keep their own glyphs, each followed by the spacing.
-    // Without letter spacing they stay on. The widths are Chrome's.
-    for (content, spacing, width) in [
-        ("a->b", 0.0, 34.047),
-        ("a->b", 2.0, 44.727),
-        ("Learn more ->", 2.0, 134.883),
-        ("C:VBQ", 0.0, 50.039),
-        ("C:VBQ", 2.0, 59.039),
-        ("C:VBQ", -0.5, 46.539),
-        // Any spacing turns them off, however small.
-        ("C:VBQ", 0.2, 50.039),
-        ("a->b", 0.1, 37.133),
-        ("a->b", -0.1, 36.328),
-    ] {
-        let json = with(
-            &text("txt00001", content, 16.0, 1.5),
-            "letterSpacing",
-            json!(spacing),
-        );
-        let measured = hug_text_box(json).width;
-        assert!(
-            (measured - width).abs() <= TEXT_TOLERANCE,
-            "{content:?} in 16 px Inter with letterSpacing {spacing} is {width} px wide in Chrome, which shapes letter-spaced text without contextual alternates; layout measured {measured} px"
-        );
-    }
+    // greater-than sign keep their own glyphs, each followed by the spacing:
+    // "C:VBQ" in 16 px Inter with 2 px of letter spacing is 59.04 px wide.
+    // Any spacing turns them off, however small, and without letter spacing
+    // they stay on.
+    assert_cases(cases::letter_spacing_without_contextual_alternates());
 }
 
 #[test]
 fn font_families_that_are_missing_measure_as_the_bundled_inter() {
-    let inter = hug_text_box(text("txt00001", "Hello world", 16.0, 1.5)).width;
-    for family in ["Helvetica", "Times New Roman", "Missing Sans"] {
-        let json = with(
-            &text("txt00001", "Hello world", 16.0, 1.5),
-            "fontFamily",
-            json!(family),
-        );
-        let width = hug_text_box(json).width;
-        assert!(
-            (width - inter).abs() <= 0.01,
-            "the bundled Inter stands in for the missing family {family:?}, so text measures the same on every machine: {inter} px, but layout measured {width} px"
-        );
-    }
+    // The bundled Inter stands in for every missing family, so text measures
+    // the same on every machine.
+    assert_cases(cases::missing_families());
 }
 
 #[test]
 fn a_text_in_a_grid_column_wraps_at_the_column_width() {
-    let case = "a text that fills a 100 px column";
-    let boxes = lay_out(&board(
-        "brd00001",
-        fixed(400.0),
-        json!("hug"),
-        grid(json!({"columns": [{"fixed": 100}, {"fr": 1}]})),
-        vec![with(
-            &text("txt00001", SIX_WORDS, 16.0, 1.5),
-            "width",
-            json!("fill"),
-        )],
-    ));
-    assert_box(&boxes, "txt00001", [0.0, 0.0, 100.0, 72.0], case);
-    assert_box(&boxes, "brd00001", [0.0, 0.0, 400.0, 72.0], case);
-
-    let case = "an auto column as wide as the text that hugs its content in it";
-    let hello = advance_width("Hello", 16.0);
-    let boxes = lay_out(&board(
-        "brd00001",
-        fixed(400.0),
-        json!("hug"),
-        grid(json!({"columns": ["auto", {"fr": 1}]})),
-        vec![
-            text("txt00001", "Hello", 16.0, 1.5),
-            sized("a0000001", json!("fill"), json!("fill")),
-        ],
-    ));
-    assert_box_within(
-        &boxes,
-        "txt00001",
-        [0.0, 0.0, hello, 24.0],
-        TEXT_TOLERANCE,
-        case,
-    );
-    assert_box_within(
-        &boxes,
-        "a0000001",
-        [hello, 0.0, 400.0 - hello, 24.0],
-        TEXT_TOLERANCE,
-        case,
-    );
+    // A text that fills a 100 px column wraps there, and an auto column is as
+    // wide as the text that hugs its content in it.
+    assert_cases(cases::texts_in_grid_columns());
 }
 
 #[test]
 fn a_frame_that_hugs_a_text_is_the_size_of_the_text_and_its_padding() {
-    let hello = advance_width("Hello", 16.0);
-    let button = frame(
-        "frm00001",
-        json!("hug"),
-        json!("hug"),
-        flex(json!({"padding": {"top": 8, "right": 8, "bottom": 8, "left": 8}})),
-        vec![text("txt00001", "Hello", 16.0, 1.5)],
-    );
-    let boxes = lay_out(&wide_row(vec![button]));
-    let case = "a padded frame that hugs one line of 16 px text";
-    assert_box_within(
-        &boxes,
-        "frm00001",
-        [0.0, 0.0, hello + 16.0, 40.0],
-        TEXT_TOLERANCE,
-        case,
-    );
-    assert_box_within(
-        &boxes,
-        "txt00001",
-        [8.0, 8.0, hello, 24.0],
-        TEXT_TOLERANCE,
-        case,
-    );
+    assert_cases(cases::frames_that_hug_a_text());
+}
+
+#[test]
+fn the_content_of_a_text_is_text_and_never_markup() {
+    // "a&b <i>c</i> d" is fourteen characters, all of them drawn, and so is
+    // every character of "x &lt; y &amp;&amp; z > 0".
+    assert_cases(cases::markup_characters_in_text());
 }
 
 #[test]
