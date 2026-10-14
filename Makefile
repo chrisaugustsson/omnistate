@@ -13,7 +13,7 @@ WASM_TARGET := wasm32-unknown-emscripten
 WASM_OUT := $(or $(CARGO_TARGET_DIR),target)/$(WASM_TARGET)/release
 SANDBOX_BUILD := render-sandbox/build
 
-.PHONY: lint test render-wasm chrome-boxes
+.PHONY: lint test render-wasm chrome-boxes stress-file
 
 # The last clippy run covers the WebAssembly-only code of omni-render.
 lint:
@@ -38,6 +38,13 @@ render-wasm: $(EMCC)
 chrome-boxes:
 	@test -n "$(FILE)" || { echo "usage: make chrome-boxes FILE=<design.json>" >&2; exit 2; }
 	@node render-sandbox/chrome-boxes.mjs "$(FILE)"
+
+# Writes the stress file, a large design file with 100 boards that every
+# renderer story is tested on (crates/omni-core/src/bin/stress-file.rs). SEED
+# picks the file, the same seed always giving the same bytes, and OUT where it
+# goes, relative to the repository root.
+stress-file:
+	$(CARGO) run --quiet -p omni-core --bin stress-file -- $(if $(SEED),--seed $(SEED)) --out $(or $(OUT),$(SANDBOX_BUILD)/stress-file.json)
 
 $(EMCC):
 	test -d "$(EMSDK)" || git clone --depth 1 --branch $(EMSDK_VERSION) https://github.com/emscripten-core/emsdk.git "$(EMSDK)"
