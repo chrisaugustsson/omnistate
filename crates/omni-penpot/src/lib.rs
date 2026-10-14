@@ -152,34 +152,41 @@ impl RawBox {
     }
 }
 
-/// Reads the `.penpot` export at `path`.
-pub fn read_file(path: &Path) -> Result<PenpotFile, ReadError> {
+/// Opens the `.penpot` export at `path` as a zip archive.
+fn open_archive(path: &Path) -> Result<ZipArchive<BufReader<File>>, ReadError> {
     let shown = path.display();
     let file =
         File::open(path).map_err(|error| ReadError(format!("cannot open {shown}: {error}")))?;
-    let mut archive = ZipArchive::new(BufReader::new(file))
-        .map_err(|error| ReadError(format!("{shown} is not a zip archive: {error}")))?;
+    ZipArchive::new(BufReader::new(file))
+        .map_err(|error| ReadError(format!("{shown} is not a zip archive: {error}")))
+}
+
+/// Where a page is in the archive, and where it goes in the file.
+struct PageHead {
+    /// `files/<file id>/pages/<page id>`, the folder of the page's shapes.
+    dir: String,
+    id: String,
+    name: String,
+    index: u32,
+}
+
+/// Reads the `.penpot` export at `path`.
+pub fn read_file(path: &Path) -> Result<PenpotFile, ReadError> {
+    let mut archive = open_archive(path)?;
     let mut reader = Reader {
         archive: &mut archive,
-        shown: shown.to_string(),
+        shown: path.display().to_string(),
         buffer: Vec::new(),
     };
-    let manifest: Manifest = reader.json("manifest.json")?;
-    let entry = manifest
-        .files
-        .into_iter()
-        .next()
-        .ok_or_else(|| ReadError(format!("manifest.json of {shown} lists no file")))?;
+    let entry = reader.first_file()?;
     let mut pages = Vec::new();
-    for page_id in reader.page_ids(&entry.id) {
-        let dir = format!("files/{}/pages/{page_id}", entry.id);
-        pages.push((reader.page(&dir, &page_id)?, dir));
+    for head in reader.page_heads(&entry.id)? {
+        pages.push(reader.page(&head)?);
     }
-    pages.sort_by(|(a, _), (b, _)| (a.0, &a.1.id).cmp(&(b.0, &b.1.id)));
     Ok(PenpotFile {
         id: entry.id,
         name: entry.name,
-        pages: pages.into_iter().map(|(page, _)| page.1).collect(),
+        pages,
     })
 }
 
@@ -239,21 +246,52 @@ impl<R: Read + Seek> Reader<'_, R> {
             .collect()
     }
 
-    /// The page in `dir` (`files/<file id>/pages/<page id>`) with its index.
-    fn page(&mut self, dir: &str, page_id: &str) -> Result<(u32, Page), ReadError> {
-        let raw: RawPage = self.json(&format!("{dir}.json"))?;
-        let root: RawShape = self.json(&format!("{dir}/{ROOT_ID}.json"))?;
-        let mut seen = HashSet::from([ROOT_ID.to_string()]);
-        let mut shapes = Vec::with_capacity(root.shapes.len());
-        for id in &root.shapes {
-            shapes.push(self.shape(dir, id, ROOT_ID, &mut seen)?);
+    /// The file that the manifest lists first, the one the crate reads.
+    fn first_file(&mut self) -> Result<ManifestFile, ReadError> {
+        let manifest: Manifest = self.json("manifest.json")?;
+        manifest
+            .files
+            .into_iter()
+            .next()
+            .ok_or_else(|| ReadError(format!("manifest.json of {} lists no file", self.shown)))
+    }
+
+    /// The pages of the file `file_id`, in the order of their index.
+    fn page_heads(&mut self, file_id: &str) -> Result<Vec<PageHead>, ReadError> {
+        let mut heads = Vec::new();
+        for page_id in self.page_ids(file_id) {
+            let dir = format!("files/{file_id}/pages/{page_id}");
+            let raw: RawPage = self.json(&format!("{dir}.json"))?;
+            heads.push(PageHead {
+                id: raw.id.unwrap_or(page_id),
+                name: raw.name,
+                index: raw.index.unwrap_or(u32::MAX),
+                dir,
+            });
         }
-        let page = Page {
-            id: raw.id.unwrap_or_else(|| page_id.to_string()),
-            name: raw.name,
+        heads.sort_by(|a, b| (a.index, &a.id).cmp(&(b.index, &b.id)));
+        Ok(heads)
+    }
+
+    /// The ids of the shapes directly on a page, bottom of the stacking order
+    /// first: the list of its root frame.
+    fn top_level_ids(&mut self, dir: &str) -> Result<Vec<String>, ReadError> {
+        let root: RawShape = self.json(&format!("{dir}/{ROOT_ID}.json"))?;
+        Ok(root.shapes)
+    }
+
+    fn page(&mut self, head: &PageHead) -> Result<Page, ReadError> {
+        let mut seen = HashSet::from([ROOT_ID.to_string()]);
+        let ids = self.top_level_ids(&head.dir)?;
+        let mut shapes = Vec::with_capacity(ids.len());
+        for id in &ids {
+            shapes.push(self.shape(&head.dir, id, ROOT_ID, &mut seen)?);
+        }
+        Ok(Page {
+            id: head.id.clone(),
+            name: head.name.clone(),
             shapes,
-        };
-        Ok((raw.index.unwrap_or(u32::MAX), page))
+        })
     }
 
     /// The shape `id` of the page in `dir`, with the shapes inside it. A shape

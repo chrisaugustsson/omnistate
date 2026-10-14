@@ -130,3 +130,95 @@ does not break it.
 A board is a top-level `frame`: a direct child of the root frame whose `type` is
 `frame`. The small export has 23 top-level shapes, of which 15 are boards and 8
 are texts (labels); a top-level group, rect or unknown shape is not a board.
+
+## What the converter takes from a shape
+
+`omni-penpot convert` reads more of each shape than the reader does. Fields
+below were seen in the two exports unless marked ASSUMED. ASSUMED means that
+neither export holds an example, so the name follows Penpot's public naming and
+the converter's tests build such shapes themselves; check it against a real
+export when one turns up.
+
+### Placement and size
+
+- `selrect` gives the box in page coordinates. A child's `x` and `y` in the
+  design are its box minus its parent's box. Boards keep the exact page
+  position; every other number is rounded to a thousandth to hide float noise
+  such as a width of 76.99999809265137.
+- `layoutItemHSizing` and `layoutItemVSizing` take `fix`, `auto` (hug) and
+  `fill`. They apply to a board and to children that flow in a flex or grid
+  layout. `layoutItemAbsolute: true` takes a child out of the flow; it keeps a
+  position relative to its parent. `layoutItemMinW` is seen; the other three
+  bounds (`layoutItemMaxW`, `layoutItemMinH`, `layoutItemMaxH`) are ASSUMED.
+- Text sizes by `growType`: `auto-width` hugs both ways, `auto-height` keeps the
+  width and hugs the height, `fixed` keeps the box.
+- `showContent: false` means the frame clips its children. Most frames say
+  `true` or nothing, and those are left unclipped.
+
+### Layouts
+
+A frame with `layout: "flex"` has `layoutFlexDir` (`row`, `column`),
+`layoutWrapType`, `layoutGap` (`rowGap`, `columnGap`), `layoutPadding` (`p1` top,
+`p2` right, `p3` bottom, `p4` left), `layoutAlignItems`, `layoutJustifyContent`
+and `layoutAlignContent`. In every flex frame the `shapes` list runs in the
+reverse of the visual order, for rows and columns alike, so the converter
+reverses it. Children taken out of the flow are placed after the others.
+
+A frame with `layout: "grid"` adds `layoutGridColumns` and `layoutGridRows`, lists
+of `{type, value}` where `type` is `flex` (a share of the space), `auto` or
+`fixed` (a length; ASSUMED, not seen), and `layoutGridCells`, an object of
+cells with `column`, `row`, `columnSpan`, `rowSpan` (counted from 1) and the ids
+of the `shapes` in them. Every grid seen aligns its items to the center
+(`layoutAlignItems`) and start (`layoutJustifyItems`), which OmniState cannot
+express, so each such grid is listed in the report.
+
+### Looks
+
+- `fills`: `{fillColor, fillOpacity}` is seen. `fillColorGradient` with `type`,
+  `startX`, `startY`, `endX`, `endY` (fractions of the box) and `stops` (`color`,
+  `opacity`, `offset`), and `fillImage` with the media `id` and
+  `keepAspectRatio`, are ASSUMED. No shape seen has more than one fill, so the
+  order of several is unknown; the converter keeps the list order.
+- `strokes`: `strokeColor`, `strokeOpacity`, `strokeWidth`, `strokeStyle` (`solid`,
+  `dashed`) and `strokeAlignment` (`inner`, `outer`).
+- `shadow`: a list of `{style, hidden, color: {color, opacity}, offsetX, offsetY,
+  blur, spread}`. `drop-shadow` is seen, `inner-shadow` is ASSUMED. `blur` on a
+  shape (`type`, `value`, `hidden`) is ASSUMED.
+- `r1` to `r4` are the corner radii. All four were equal everywhere, so the
+  corner order (top left, top right, bottom right, bottom left) is ASSUMED.
+- `opacity`, `hidden`, `rotation`, `flipX`, `flipY`. A rotated or flipped shape
+  is listed in the report and drawn upright.
+
+### Text
+
+`content` is a tree of `root`, `paragraph-set`, `paragraph` and runs holding
+`text`. Style numbers are strings (`"18"`, `"1.2"`). A run carries `fontFamily`,
+`fontSize`, `fontWeight`, `fontStyle`, `lineHeight` (a multiple of the size),
+`letterSpacing`, `textAlign`, `textDecoration`, `textTransform` and `fills`.
+Paragraphs are joined with a newline, and `textTransform` is applied to the
+characters. A text whose runs differ in style is listed as mixed and takes the
+style of its first run. The decorations `underline` and `line-through` are
+ASSUMED. The shape's own `fills` are empty for text.
+
+### Paths and circles
+
+A `path`'s `content` is an SVG path string in absolute page coordinates, and
+`selrect` is its box; the converter subtracts the box origin from every absolute
+coordinate. A `circle` becomes an ellipse path in its box.
+
+### Images
+
+ASSUMED: an `image` shape has `metadata.id`, and a `fillImage` has `id`; both name
+a media record `files/<file>/media/<id>.json` whose `mediaId` names the stored
+file `objects/<mediaId>.<extension>`. The image is written as an attachment
+named after the media id.
+
+### Left out, and reported
+
+Shapes of type `bool` and any unknown type (with the shapes inside them),
+shapes that sit directly on the page outside every board, masked groups
+(`maskedGroup`), blur, radial gradients, dashed strokes, stroke alignments other
+than `inner`, item margins (`layoutItemMargin`), rotation, flips, grid item
+alignment, mixed text styles, and text strokes and shadows. Component links
+(`componentId`, `shapeRef`) are not read: a component copy is converted as the
+plain shapes it holds, which needs no report entry.
