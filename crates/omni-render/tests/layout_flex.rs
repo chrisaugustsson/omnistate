@@ -436,7 +436,16 @@ fn a_container_aligned_on_its_first_baseline_takes_it_from_the_item_chrome_takes
     // baseline, not from that item's bottom edge. So a row-reverse of a 16 px
     // and a 24 px text sits 9 px below the top of a row that lines it up with
     // a 32 px text, on the baseline of the 24 px text, and a grid of a 16 px
-    // text 18 px below it.
+    // text 18 px below it. A row that aligns its items by baseline takes the
+    // baseline of the first item it aligns so, not that of a box that fills its
+    // height, which stretches instead, wherever that box is. A row-reverse
+    // that wraps takes it from the last item of its first line, not from its
+    // first item, and a column from its first item, even where alignItems
+    // baseline aligns the item after it. An item without a baseline of its
+    // own, an empty box, lines up by its bottom edge, also as the first item
+    // of a column. And a grid takes the baseline of its first item where the
+    // second item of its first row is as tall: 19.5 px below the top of the
+    // row, not 18 px, which is where "Date" would put it.
     assert_cases(cases::first_baselines_of_containers());
 }
 
@@ -449,7 +458,9 @@ fn lines_and_items_that_overflow_a_container_in_reverse_go_where_chrome_puts_the
     // against its main start, the right edge: two 60 px boxes in a 100 px row
     // are at x 40 and -20. Columns do the same along their axes. Items that
     // alignItems baseline aligns in a column that wraps in reverse start
-    // together at the start of their line.
+    // together at the start of their line, and in a row that wraps in reverse
+    // they line up on their baselines: a 20 px box's bottom edge with that of
+    // a 30 px box.
     assert_cases(cases::lines_that_overflow());
 }
 
@@ -1440,7 +1451,9 @@ fn hug_items_of_a_wrapping_column_are_sized_against_their_flex_lines_cross_size(
     // In a wrapping column a hug item's width is fit into the cross size of its
     // flex line, which a wider item in the line sets, not into the inner width
     // of the container: with alignItems start, center or end a text is as wide
-    // as it needs up to its line, where the container is narrower.
+    // as it needs up to its line, where the container is narrower. A column
+    // that runs in reverse does the same with the items of each line, which
+    // follow one another upwards.
     assert_cases(cases::wrapping_columns());
 }
 
@@ -1460,6 +1473,9 @@ fn a_row_that_does_not_wrap_is_as_wide_at_its_narrowest_as_its_items_and_gaps() 
 
 #[test]
 fn a_columns_content_width_includes_its_padding() {
+    // At its widest and at its narrowest: a column that wraps a 50 and a 30 px
+    // box, padded 10 px on each side, is 70 px wide in a 30 px column that
+    // aligns it to the start, not the 50 px of its widest box.
     assert_cases(cases::column_padding());
 }
 
@@ -1507,10 +1523,17 @@ fn a_column_wraps_its_children_at_its_fixed_height_or_at_the_height_a_row_stretc
     // A column wraps its children at its height when that is fixed, bounded by
     // its min and max heights and never below its padding, or when a row that
     // does not wrap stretches it to the row's own fixed height, less the row's
-    // padding. A row that wraps does not stretch it. A column that hugs its
-    // height wraps at its maxHeight less its padding: with maxHeight 70 and 6
-    // px of padding above and below, three 30 px boxes take a line each. The
-    // lines it wraps into set its width, where nothing else does.
+    // padding. A row that wraps does not stretch it, and neither does a row
+    // that aligns it to its start, center or end: in a row 100 px tall, such a
+    // column keeps five 30 px boxes on one line, 190 px tall, and the row
+    // that hugs its width is 80 px wide, not the 280 px of three lines. A row
+    // whose maxHeight of 50 px bounds its height stretches the column, which
+    // wraps two 30 px boxes there, but the column is as wide as one box, 40
+    // px, because that height is not fixed. A column that hugs its height
+    // wraps at its maxHeight less its padding:
+    // with maxHeight 70 and 6 px of padding above and below, three 30 px boxes
+    // take a line each. The lines it wraps into set its width, where nothing
+    // else does.
     assert_cases(cases::wrapping_columns_wrap_at_their_height());
 }
 
@@ -1543,4 +1566,38 @@ fn a_column_narrower_than_its_text_wraps_the_text_at_its_width_or_lets_its_line_
     // board that is a column of fixed height that wraps is as wide as the lines
     // it wraps into.
     assert_cases(cases::narrow_columns_wrap_their_texts());
+}
+
+#[test]
+fn a_fill_item_adds_no_less_than_its_padding_to_a_column_that_hugs_its_height() {
+    // A column whose content decides its height counts a fill item at its
+    // hypothetical height, its minHeight where that is below its content, but
+    // no box is smaller than its padding: a frame with 11 and 8 px of padding
+    // and a minHeight of 17 px is 19 px tall, and so is the column that hugs
+    // it, whether the frame holds a 30 x 10 box, which needs 29 px, or also a
+    // text that would need 80 px more.
+    assert_cases(cases::padding_of_fill_items_in_hug_columns());
+}
+
+#[test]
+fn an_item_of_no_size_ends_its_line_where_the_next_item_does_not_fit_after_it() {
+    // A flex container that wraps starts a new line with the first item that
+    // does not fit after the items before it and the gap, even where those
+    // take no room: an empty frame keeps a line of its own where a 95 px box
+    // does not fit after it and a 10 px gap in 100 px. Neither line overflows,
+    // so a row-reverse with justifyContent space-between keeps the frame at its
+    // right edge and the box at x 5, and a column that wraps in reverse with
+    // alignItems baseline starts the box at its own line, not at the line of
+    // an 80 px wide frame.
+    assert_cases(cases::items_of_no_size_end_their_lines());
+}
+
+#[test]
+fn a_row_that_hugs_a_column_it_stretches_without_a_fixed_height_is_as_wide_as_one_line() {
+    // A row whose maxHeight of 50 px bounds its height stretches a column that
+    // wraps two 30 px boxes, and the boxes wrap there, but the row's height is
+    // not fixed, so where the row's width is measured the column keeps its
+    // boxes on one line: the row that hugs its width is as wide as one box, 40
+    // px, as the column is, not the 80 px of both lines.
+    assert_cases(cases::hug_rows_around_columns_without_a_fixed_height());
 }

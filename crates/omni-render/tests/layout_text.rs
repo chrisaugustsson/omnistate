@@ -92,7 +92,10 @@ fn a_line_breaks_when_it_is_a_tenth_of_a_pixel_too_narrow_for_its_text() {
     // "Hello world" is 85.41 px wide in 16 px Inter, in Chrome as in the
     // renderer. Chrome lets a line overflow by no more than its rounding
     // error, so 0.1 px too little breaks the text onto two lines, and 0.1 px
-    // to spare keeps it on one.
+    // to spare keeps it on one. That error is one of its layout units, 1/128
+    // px at a device pixel ratio of 2, after it rounds the width down to a
+    // unit: "Hello Hello", 81.625 px, stays on one line in a text one unit
+    // narrower, and breaks in a text a unit and a half narrower.
     assert_cases(cases::lines_that_are_a_tenth_too_narrow());
 }
 
@@ -168,7 +171,9 @@ fn a_word_wider_than_its_line_overflows_it_instead_of_breaking() {
     // CSS breaks no word (`overflow-wrap: normal`): a word wider than its line
     // stays whole on one line and overflows it. A text that hugs its width is
     // never narrower than its widest word, its min-content width: Chrome
-    // measures "Supercalifragilistic" at 139.70 px.
+    // measures "Supercalifragilistic" at 139.70 px. A word that a line break
+    // puts at the start of a line overflows that line, and no empty line comes
+    // before it: "Hi\nSupercalifragilistic" takes two lines at 60 px.
     assert_cases(cases::words_wider_than_their_line());
 }
 
@@ -234,7 +239,9 @@ fn a_hyphen_or_dash_that_starts_a_word_stays_with_the_word() {
     // a word with the letter after it (rule LB20a of Unicode 15.1, which
     // Chrome follows), so these break only at their space: "word " / "–word".
     // A text that hugs its width in a narrow column is then as wide as
-    // "–word", 45.95 px.
+    // "–word", 45.95 px. A character of ambiguous width (UAX #14 class AI),
+    // such as "§", "×" or "½", counts as a letter there, so "a -§x" takes two
+    // lines at 10 px, "a " and "-§x", not three.
     assert_cases(cases::hyphens_and_dashes_that_start_a_word());
 }
 
@@ -254,8 +261,10 @@ fn a_tab_moves_its_line_on_to_the_next_tab_stop() {
     // eight spaces from the start of the line (36 px in 16 px Inter). Letter
     // spacing widens the spaces that stops are counted in, so with 1 px of it
     // they are 44 px apart. A tab at the end of a line still counts toward
-    // the text's width, and a line also breaks before the piece that the tabs
-    // before it have moved past the line's end.
+    // the text's width, and so do the spaces after a tab, from the stop it
+    // moves to: "a\t b" is 4.5 px wider than "a\tb". A line also breaks before
+    // the piece that the tabs before it, and the spaces after them, have moved
+    // past the line's end, as "b" in "a\t    b" at 50 and 60 px.
     assert_cases(cases::tab_stops());
 }
 
@@ -528,7 +537,12 @@ fn a_tab_moves_its_line_on_to_the_stop_after_the_next_when_less_than_half_a_spac
     assert_cases(cases::tabs());
     // "mZ9" is 34 px wide and leaves 2 px, which is less than half a space, but
     // "xsGI" is 33.41 px wide and leaves 2.59 px. A letter spacing that cancels
-    // the width of a space leaves no tab stops at all.
+    // the width of a space leaves no tab stops at all. Half a space is half of
+    // the space alone, though letter spacing widens the spaces that stops are
+    // counted in: "Time" with 1 px of letter spacing is 41.55 px wide and
+    // leaves 2.45 px to the stop at 44 px, more than half of the 4.5 px space
+    // but less than half of the space and its letter spacing, and its tab
+    // stops there.
     assert_cases(cases::tabs_near_a_stop());
 }
 
@@ -545,4 +559,14 @@ fn the_spaces_at_the_end_of_a_text_count_in_its_width_but_not_in_its_narrowest_p
 #[test]
 fn every_weight_style_and_missing_family_measures_as_inter_regular() {
     assert_cases(cases::weights_styles_and_families_measure_as_inter_regular());
+}
+
+#[test]
+fn a_min_width_above_a_max_width_is_the_width_a_text_breaks_its_lines_at() {
+    // A min beats a max, as in CSS, also before a fit-content width breaks the
+    // lines of a text: with a minWidth of 80 px and a maxWidth of 60 px,
+    // "alpha beta gamma delta" is 80 px wide and takes the three lines it
+    // breaks into at 80 px, not the four it would take at 60 px, in a column
+    // that aligns it to its start, in a grid area and where it is positioned.
+    assert_cases(cases::texts_whose_min_width_beats_their_max_width());
 }

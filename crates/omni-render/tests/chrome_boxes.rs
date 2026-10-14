@@ -340,6 +340,11 @@ fn it_prints_the_boxes_chrome_gives_the_layout_cases_of_the_story() {
     cases.extend(cases::lines_that_overflow());
     cases.extend(cases::first_baselines_of_containers());
     cases.extend(cases::empty_grids());
+    cases.extend(cases::hug_rows_around_columns_without_a_fixed_height());
+    cases.extend(cases::max_heights_of_texts_in_grid_rows());
+    cases.extend(cases::texts_whose_min_width_beats_their_max_width());
+    cases.extend(cases::padding_of_fill_items_in_hug_columns());
+    cases.extend(cases::items_of_no_size_end_their_lines());
     check_cases("story", &cases);
 }
 
