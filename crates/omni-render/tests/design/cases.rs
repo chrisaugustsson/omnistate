@@ -128,6 +128,7 @@ pub fn all() -> Vec<Case> {
         texts_in_grid_columns(),
         frames_that_hug_a_text(),
         labels_in_padded_frames(),
+        unprotected_layout_rules(),
     ]
     .into_iter()
     .flatten()
@@ -6107,4 +6108,227 @@ pub fn labels_in_padded_frames() -> Vec<Case> {
             ],
         ),
     ]
+}
+
+// Six layout rules that the US-003 checker found unprotected: a change of the
+// layout code that broke one of them still passed every test. Each case
+// matched Chrome when it was written, so each protects a rule that holds.
+
+/// A column that hugs both axes and wraps, around two 40 x 30 boxes at
+/// (0, 0) and (40, 0) of the column.
+fn two_boxes_in_a_wrapping_column(height: Value) -> Value {
+    frame(
+        "cm000001",
+        json!("hug"),
+        height,
+        flex(json!({"direction": "column", "wrap": "wrap"})),
+        vec![rect("a0000001", 40.0, 30.0), rect("a0000002", 40.0, 30.0)],
+    )
+}
+
+/// The boxes of [`two_boxes_in_a_wrapping_column`] once it wraps at 50 px: two
+/// boxes side by side, so the column is 80 px wide.
+fn wrapped_at_50(board_height: f64) -> Vec<(&'static str, [f64; 4])> {
+    vec![
+        ("brd00001", [0.0, 0.0, 600.0, board_height]),
+        ("cm000001", [0.0, 0.0, 80.0, 50.0]),
+        ("a0000001", [0.0, 0.0, 40.0, 30.0]),
+        ("a0000002", [40.0, 0.0, 40.0, 30.0]),
+    ]
+}
+
+/// A wrapping column with fill height in a grid row of 50 px wraps at that
+/// height, so it is 80 x 50.
+pub fn wrapping_column_in_a_grid_row() -> Case {
+    case(
+        "a wrapping column of two 40 x 30 boxes with fill height, in a 600 px grid board with the rows [50]",
+        board(
+            "brd00001",
+            fixed(600.0),
+            json!("hug"),
+            grid(json!({"rows": [{"fixed": 50}]})),
+            vec![two_boxes_in_a_wrapping_column(json!("fill"))],
+        ),
+        &wrapped_at_50(50.0),
+    )
+}
+
+/// The same column positioned in a board without a layout, which stretches it
+/// to the board's 50 px, is 80 wide.
+pub fn positioned_wrapping_column() -> Case {
+    case(
+        "the same column positioned with fill height in a 600 x 50 board without a layout",
+        board(
+            "brd00001",
+            fixed(600.0),
+            fixed(50.0),
+            none(),
+            vec![two_boxes_in_a_wrapping_column(json!("fill"))],
+        ),
+        &wrapped_at_50(50.0),
+    )
+}
+
+/// A hug row inside a row of fixed height 50 is stretched to 50 px, and so is
+/// the column in it: both rows and the column are 80 wide.
+pub fn column_stretched_by_a_fixed_height_row() -> Case {
+    case(
+        "a row of fixed height 50 around a hug row around the column, in a 600 px start-aligned column board",
+        board(
+            "brd00001",
+            fixed(600.0),
+            json!("hug"),
+            flex(json!({"direction": "column", "alignItems": "start"})),
+            vec![frame(
+                "rw000001",
+                json!("hug"),
+                fixed(50.0),
+                flex(json!({})),
+                vec![frame(
+                    "rw000002",
+                    json!("hug"),
+                    json!("hug"),
+                    flex(json!({})),
+                    vec![two_boxes_in_a_wrapping_column(json!("hug"))],
+                )],
+            )],
+        ),
+        &[
+            ("brd00001", [0.0, 0.0, 600.0, 50.0]),
+            ("rw000001", [0.0, 0.0, 80.0, 50.0]),
+            ("rw000002", [0.0, 0.0, 80.0, 50.0]),
+            ("cm000001", [0.0, 0.0, 80.0, 50.0]),
+            ("a0000001", [0.0, 0.0, 40.0, 30.0]),
+            ("a0000002", [40.0, 0.0, 40.0, 30.0]),
+        ],
+    )
+}
+
+/// A fill-height row in a 50 px column board stretches the column in it to
+/// 50 px, so that it is 80 wide. A flex item is never shorter than its content
+/// unless it says so (`min-height: auto`), and the column needs 60 px
+/// unwrapped, so the row says it may be shorter, with a `minHeight` of 0 or a
+/// `maxHeight` of 50. Without either, Chrome keeps the row 60 px tall.
+pub fn column_stretched_by_a_fill_height_row() -> Vec<Case> {
+    let in_a_row = |bound: (&str, u32)| {
+        board(
+            "brd00001",
+            fixed(600.0),
+            fixed(50.0),
+            flex(json!({"direction": "column", "alignItems": "start"})),
+            vec![with(
+                &frame(
+                    "rw000001",
+                    json!("hug"),
+                    json!("fill"),
+                    flex(json!({})),
+                    vec![two_boxes_in_a_wrapping_column(json!("hug"))],
+                ),
+                bound.0,
+                json!(bound.1),
+            )],
+        )
+    };
+    let expected = || {
+        let mut expected = wrapped_at_50(50.0);
+        expected.insert(1, ("rw000001", [0.0, 0.0, 80.0, 50.0]));
+        expected
+    };
+    vec![
+        case(
+            "a fill-height row with a minHeight of 0 around the column, in a 600 x 50 start-aligned column board",
+            in_a_row(("minHeight", 0)),
+            &expected(),
+        ),
+        case(
+            "a fill-height row with a maxHeight of 50 around the column, in a 600 x 50 start-aligned column board",
+            in_a_row(("maxHeight", 50)),
+            &expected(),
+        ),
+    ]
+}
+
+/// A wrapping column with a fixed height of 30, a maxHeight of 84 and padding
+/// of 10, 6, 3 and 6 px wraps its 50 x 15 and 40 x 10 boxes at the 17 px inside
+/// its padding, and is 6 + 50 + 40 + 6 = 102 px wide.
+pub fn wrapping_column_with_height_max_height_and_padding() -> Case {
+    case(
+        "a wrapping column of fixed height 30 with a maxHeight of 84 and padding, in a hug board that starts its items",
+        board(
+            "brd00001",
+            json!("hug"),
+            json!("hug"),
+            flex(json!({"alignItems": "start"})),
+            vec![with(
+                &frame(
+                    "cm000001",
+                    json!("hug"),
+                    fixed(30.0),
+                    flex(json!({
+                        "direction": "column",
+                        "wrap": "wrap",
+                        "padding": {"top": 10, "right": 6, "bottom": 3, "left": 6}
+                    })),
+                    vec![rect("a0000001", 50.0, 15.0), rect("a0000002", 40.0, 10.0)],
+                ),
+                "maxHeight",
+                json!(84),
+            )],
+        ),
+        &[
+            ("brd00001", [0.0, 0.0, 102.0, 30.0]),
+            ("cm000001", [0.0, 0.0, 102.0, 30.0]),
+            ("a0000001", [6.0, 10.0, 50.0, 15.0]),
+            ("a0000002", [56.0, 10.0, 40.0, 10.0]),
+        ],
+    )
+}
+
+/// A row with fill width and hug height in a grid row of 52 px is as tall as
+/// its content, 69 px, not the row's 52 px, and the wrapping column in it
+/// keeps its 38 px width: the height of a grid row that its item does not fix
+/// is not a height to wrap at.
+pub fn row_in_a_grid_row_that_is_not_its_height() -> Case {
+    case(
+        "a row with fill width and hug height around a wrapping column of 38 x 55 and 21 x 14 boxes, in a 200 px grid board with the rows [52]",
+        board(
+            "brd00001",
+            fixed(200.0),
+            json!("hug"),
+            grid(json!({"rows": [{"fixed": 52}]})),
+            vec![frame(
+                "rw000001",
+                json!("fill"),
+                json!("hug"),
+                flex(json!({})),
+                vec![frame(
+                    "cm000001",
+                    json!("hug"),
+                    json!("hug"),
+                    flex(json!({"direction": "column", "wrap": "wrap"})),
+                    vec![rect("a0000001", 38.0, 55.0), rect("a0000002", 21.0, 14.0)],
+                )],
+            )],
+        ),
+        &[
+            ("brd00001", [0.0, 0.0, 200.0, 52.0]),
+            ("rw000001", [0.0, 0.0, 200.0, 69.0]),
+            ("cm000001", [0.0, 0.0, 38.0, 69.0]),
+            ("a0000001", [0.0, 0.0, 38.0, 55.0]),
+            ("a0000002", [0.0, 55.0, 21.0, 14.0]),
+        ],
+    )
+}
+
+/// The six rules together.
+pub fn unprotected_layout_rules() -> Vec<Case> {
+    let mut cases = vec![
+        wrapping_column_in_a_grid_row(),
+        positioned_wrapping_column(),
+        column_stretched_by_a_fixed_height_row(),
+    ];
+    cases.extend(column_stretched_by_a_fill_height_row());
+    cases.push(wrapping_column_with_height_max_height_and_padding());
+    cases.push(row_in_a_grid_row_that_is_not_its_height());
+    cases
 }
