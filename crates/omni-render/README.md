@@ -125,6 +125,25 @@ Layout owns its Taffy tree (`src/layout/tree.rs`) instead of using Taffy's
   every level of nesting. The tree keeps every size it measures during a
   layout.
 
+### Chrome's boxes
+
+Every box that the layout tests expect is one that headless Chrome gives the
+same design written as HTML and CSS, by the mapping in
+`docs/formats/layout.md`. `make chrome-boxes FILE=<design.json>` exports a
+design that way (`render-sandbox/layout-export.mjs`), renders it in headless
+Chrome at a device pixel ratio of 2 (`render-sandbox/chrome-boxes.mjs`), and
+prints the box of every node as JSON, so a test's expected value is what the
+tool prints, never a number worked out by hand:
+
+```sh
+make chrome-boxes FILE=card.json   # the board of the example in layout.md
+```
+
+The tool needs Node.js 22 or later and Google Chrome, which `make test` uses
+too, for the tests of the tool. The expected boxes were measured with Chrome
+155, at `/Applications/Google Chrome.app` on macOS. `CHROME` names the binary
+elsewhere, and the tool says so when it runs another version of Chrome.
+
 ## Fonts
 
 There are no system fonts for Skia in the browser, so omni-render compiles in

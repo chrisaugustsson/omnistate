@@ -13,7 +13,7 @@ WASM_TARGET := wasm32-unknown-emscripten
 WASM_OUT := $(or $(CARGO_TARGET_DIR),target)/$(WASM_TARGET)/release
 SANDBOX_BUILD := render-sandbox/build
 
-.PHONY: lint test render-wasm
+.PHONY: lint test render-wasm chrome-boxes
 
 # The last clippy run covers the WebAssembly-only code of omni-render.
 lint:
@@ -31,6 +31,13 @@ render-wasm: $(EMCC)
 	mkdir -p $(SANDBOX_BUILD)
 	cp $(WASM_OUT)/omni-render.js $(SANDBOX_BUILD)/omni_render.js
 	cp $(WASM_OUT)/omni_render.wasm $(SANDBOX_BUILD)/omni_render.wasm
+
+# Prints the box of every node of the design in FILE as headless Chrome lays it
+# out at a device pixel ratio of 2: one JSON object on standard output, the boxes
+# the layout tests expect (render-sandbox/chrome-boxes.mjs).
+chrome-boxes:
+	@test -n "$(FILE)" || { echo "usage: make chrome-boxes FILE=<design.json>" >&2; exit 2; }
+	@node render-sandbox/chrome-boxes.mjs "$(FILE)"
 
 $(EMCC):
 	test -d "$(EMSDK)" || git clone --depth 1 --branch $(EMSDK_VERSION) https://github.com/emscripten-core/emsdk.git "$(EMSDK)"

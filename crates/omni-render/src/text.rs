@@ -23,22 +23,22 @@ const INTER: &str = "Inter";
 /// CSS's initial `font-size`, `medium`.
 const MEDIUM_FONT_SIZE: f32 = 16.0;
 
-/// How far a line may be wider than the width it breaks at and still fit.
-/// Widths that layout computes from the text's own width can come back a
-/// rounding error short, which must not break a line.
-const FIT_TOLERANCE: f32 = 0.01;
+/// How many layout units Chrome has to a CSS pixel at a device pixel ratio of 2:
+/// it lays out in 1/64 of a device pixel.
+const LAYOUT_UNITS_PER_PX: f32 = 64.0 * DEVICE_PIXEL_RATIO;
 
 /// How many spaces apart tab stops are: CSS's initial `tab-size`.
 const TAB_SIZE: f32 = 8.0;
 
 /// The device pixel ratio that text is laid out for, as the renderer gate
 /// (US-008, US-009) compares it with Chrome: two device pixels to a CSS
-/// pixel. Chrome rounds font metrics and the leading above a line's glyphs to
-/// device pixels, so line heights and baselines depend on it.
+/// pixel. Chrome rounds the font's ascent and descent and the leading above a
+/// line's glyphs to device pixels, so baselines depend on it.
 const DEVICE_PIXEL_RATIO: f32 = 2.0;
 
-/// How finely Chrome lays out lengths: in 1/64ths of a device pixel.
-const LAYOUT_UNITS_PER_DEVICE_PIXEL: f32 = 64.0;
+/// How many parts of a CSS pixel line heights are snapped to: 1/64 px, which
+/// Chrome lays out in at every integer device pixel ratio.
+const LINE_HEIGHT_UNITS_PER_PX: f64 = 64.0;
 
 /// The OpenType features that Chrome turns off in text with letter spacing:
 /// common ligatures and contextual alternates, which would join or reshape
@@ -101,7 +101,7 @@ pub struct ShapedText {
     min_content_width: f32,
     /// The width of the widest line when lines break only at line breaks.
     max_content_width: f32,
-    /// The height of every line.
+    /// The height of every line, a multiple of 1/64 px.
     line_height: f32,
     /// How far the baseline of the first line is below the top of the text,
     /// or `None` when the text is empty and so has no line.
@@ -165,7 +165,8 @@ impl ShapedText {
             TokenOr::Literal(family) => family.as_str(),
             TokenOr::Token(_) => INTER,
         };
-        let font_size = literal(&text.font_size).unwrap_or(MEDIUM_FONT_SIZE);
+        let font_size_in_px = font_size_in_px(text);
+        let font_size = font_size_in_px as f32;
         let font_style = font_style(text);
         let letter_spacing = text
             .letter_spacing
@@ -199,33 +200,31 @@ impl ShapedText {
         paragraph.layout(f32::INFINITY);
         let lines = pieces(&text.content, &paragraph);
 
-        // Chrome sizes lines and places baselines in device pixels: it rounds
-        // the font's ascent, descent and line gap to whole device pixels, and
-        // a line height to whole layout units, rounding down.
         let mut font = Font::from_typeface(fonts.typeface(family, font_style), font_size);
         font.set_hinting(FontHinting::None)
             .set_linear_metrics(true)
             .set_subpixel(true);
         let (_, metrics) = font.metrics();
+        // Every line height is explicit (decision Q44): a multiple of the font
+        // size, or else the font's normal line height, its ascent, descent
+        // and line gap, at full precision. Both are snapped to 1/64 px, so
+        // that Chrome, given the height in px, lays out the same at any pixel
+        // ratio and never rounds the font's metrics, as it does for
+        // `line-height: normal`.
+        let line_height = snap_line_height(match text.line_height.as_ref() {
+            Some(TokenOr::Literal(multiple)) => font_size_in_px * multiple,
+            Some(TokenOr::Token(_)) | None => {
+                f64::from(-metrics.ascent + metrics.descent + metrics.leading)
+            }
+        });
+        // Chrome places baselines in device pixels: it rounds the font's ascent
+        // and descent to whole device pixels, and half the leading above the
+        // glyphs down to a whole device pixel.
         let ascent = (-metrics.ascent * DEVICE_PIXEL_RATIO).round();
         let descent = (metrics.descent * DEVICE_PIXEL_RATIO).round();
-        let line_height = match text.line_height.as_ref() {
-            // A unitless CSS `line-height`, which Chrome keeps as a percentage
-            // of the font size.
-            Some(TokenOr::Literal(multiple)) => {
-                let percentage = (multiple * 100.0) as f32;
-                let line_height = font_size * DEVICE_PIXEL_RATIO * percentage / 100.0;
-                (line_height * LAYOUT_UNITS_PER_DEVICE_PIXEL).floor()
-                    / LAYOUT_UNITS_PER_DEVICE_PIXEL
-            }
-            // CSS `line-height: normal`.
-            Some(TokenOr::Token(_)) | None => {
-                ascent + descent + (metrics.leading * DEVICE_PIXEL_RATIO).round()
-            }
-        };
-        // Half the leading goes above the glyphs, rounded down to a whole
-        // device pixel.
-        let first_baseline = ascent + ((line_height - ascent - descent) / 2.0).floor();
+        let line_height_in_device_pixels = line_height * DEVICE_PIXEL_RATIO;
+        let first_baseline =
+            ascent + ((line_height_in_device_pixels - ascent - descent) / 2.0).floor();
         let space = font.measure_str(" ", None).0;
         let tab_stops = TabStops {
             every: TAB_SIZE * (space + letter_spacing),
@@ -248,7 +247,7 @@ impl ShapedText {
                 .fold(0.0, f32::max),
             lines,
             tab_stops,
-            line_height: line_height / DEVICE_PIXEL_RATIO,
+            line_height,
             first_baseline: (!text.content.is_empty())
                 .then_some(first_baseline / DEVICE_PIXEL_RATIO),
         }
@@ -273,8 +272,8 @@ impl ShapedText {
     }
 
     /// The height of the text when its lines break at `width`: every line is
-    /// `lineHeight` × `fontSize` tall, rounded down to a whole layout unit,
-    /// or as tall as Chrome makes `line-height: normal`.
+    /// `lineHeight` × `fontSize` tall, or as tall as the font's normal line
+    /// height when `lineHeight` is left out, snapped to 1/64 px.
     pub fn height(&self, width: f32) -> f32 {
         self.line_count(width) as f32 * self.line_height
     }
@@ -293,7 +292,7 @@ impl ShapedText {
                 let mut lines = 1;
                 let mut line = first.end(0.0, self.tab_stops);
                 for piece in rest {
-                    if line + piece.width > width + FIT_TOLERANCE {
+                    if !fits(line + piece.width, width) {
                         lines += 1;
                         line = 0.0;
                     }
@@ -384,6 +383,29 @@ pub(crate) fn literal(value: &TokenOr<f64>) -> Option<f32> {
         TokenOr::Literal(value) => Some(*value as f32),
         TokenOr::Token(_) => None,
     }
+}
+
+/// The font size of `text` in CSS pixels, as written. A token reference counts
+/// as left out, which is CSS's initial `font-size`.
+fn font_size_in_px(text: &Text) -> f64 {
+    match &text.font_size {
+        TokenOr::Literal(size) => *size,
+        TokenOr::Token(_) => f64::from(MEDIUM_FONT_SIZE),
+    }
+}
+
+/// Whether a line of `line` px fits in the `width` px that it breaks at. Chrome
+/// works in layout units, 1/128 px: it rounds the width down and the line up,
+/// and lets a line be one unit wider than its width. So a line fits when it is
+/// no wider than the width rounded down, plus a unit. That also takes in the
+/// rounding error of a width that layout computed from the line's own width.
+fn fits(line: f32, width: f32) -> bool {
+    line * LAYOUT_UNITS_PER_PX <= (width * LAYOUT_UNITS_PER_PX).floor() + 1.0
+}
+
+/// A line height in CSS pixels, snapped down to a multiple of 1/64 px.
+fn snap_line_height(height: f64) -> f32 {
+    ((height * LINE_HEIGHT_UNITS_PER_PX).floor() / LINE_HEIGHT_UNITS_PER_PX) as f32
 }
 
 /// The weight and slant of `text`, as CSS `font-weight` and `font-style`.

@@ -4,10 +4,13 @@
 //!
 //! Layout owns the tree, rather than using Taffy's `TaffyTree`, to size flex
 //! containers and their items the way Chrome does where Taffy does not (see
-//! [`LayoutTree::auto_width`], [`LayoutTree::flex_inputs`] and
-//! [`LayoutTree::without_guessed_cross_size`]), to keep every box at least as
+//! [`LayoutTree::auto_width`], [`LayoutTree::auto_height`],
+//! [`LayoutTree::flex_inputs`], [`LayoutTree::without_guessed_cross_size`] and
+//! [`LayoutTree::finish_flex_lines`]), to keep every box at least as
 //! large as its padding (see [`LayoutTree::compute_layout`]), and to keep
 //! every size it measures (see its [`CacheTree`] implementation).
+
+mod lines;
 
 use crate::text::ShapedText;
 use std::iter::Copied;
@@ -16,16 +19,20 @@ use taffy::prelude::TaffyMaxContent;
 use taffy::{
     AlignItems, AvailableSpace, Baselines, Cache, CacheTree, Dimension, Display, FlexDirection,
     FlexWrap, Layout, LayoutBlockContainer, LayoutContainingBlock, LayoutFlexboxContainer,
-    LayoutGridContainer, LayoutInput, LayoutOutput, LayoutPartialTree, LengthPercentageAuto, Line,
-    MaybeMath, NodeId, Position, Rect, RequestedAxis, ResolveOrZero, RunMode, Size, SizingMode,
-    Style, TraversePartialTree, TraverseTree, compute_block_layout, compute_cached_layout,
-    compute_flexbox_layout, compute_grid_layout, compute_hidden_layout, compute_leaf_layout,
-    compute_oof_layout, compute_root_layout,
+    LayoutGridContainer, LayoutInput, LayoutOutput, LayoutPartialTree, LengthPercentage,
+    LengthPercentageAuto, Line, MaybeMath, NodeId, Position, Rect, RequestedAxis, ResolveOrZero,
+    RunMode, Size, SizingMode, Style, TraversePartialTree, TraverseTree, compute_block_layout,
+    compute_cached_layout, compute_flexbox_layout, compute_grid_layout, compute_hidden_layout,
+    compute_leaf_layout, compute_oof_layout, compute_root_layout,
 };
 
 /// How far the height that a parent hands back to a column that wraps may be
 /// from the column's own height and still count as that height.
 const SAME_HEIGHT: f32 = 0.01;
+
+/// How far two sizes or places may be apart and still count as the same when
+/// the items of a flex container are sorted into their lines.
+const SAME_PLACE: f32 = 0.01;
 
 /// The Taffy tree of a design.
 pub(super) struct LayoutTree {
@@ -53,6 +60,12 @@ struct TreeNode {
     /// The inputs that the node's layout is laying it out with, while it lays
     /// out its children: see [`LayoutTree::without_guessed_cross_size`].
     laying_out: Option<LayoutInput>,
+    /// The inputs of the last layout that the node's parent placed it with:
+    /// see [`LayoutTree::finish_flex_lines`].
+    placed_with: Option<LayoutInput>,
+    /// How far the first baseline of the node is below its top, as of that
+    /// layout, where it has one.
+    baseline: Option<f32>,
 }
 
 /// How a flex container places its items: in a row or a column, and on one
@@ -106,6 +119,8 @@ impl LayoutTree {
             content_widths: Vec::new(),
             parent: None,
             laying_out: None,
+            placed_with: None,
+            baseline: None,
         });
         node
     }
@@ -141,7 +156,9 @@ impl LayoutTree {
     /// available unless the min-content width is wider still, as where a
     /// column aligns it to the start. The container's own min and max widths
     /// then bound it, also where Taffy sizes its content alone, because its
-    /// items wrap at the bounded width.
+    /// items wrap at the bounded width. Only an item of a row that is measured
+    /// for its flex base size is not bounded, as CSS leaves the bounds to its
+    /// hypothetical size: see [`LayoutTree::is_measured_for_its_flex_base_size`].
     ///
     /// Taffy sizes these containers otherwise (see
     /// [`LayoutTree::content_widths`] for what Chrome counts). It counts the
@@ -174,8 +191,30 @@ impl LayoutTree {
             AvailableSpace::MaxContent => max_content,
             AvailableSpace::MinContent => min_content,
         };
+        // CSS clamps an item's width by its min and max widths in its
+        // hypothetical size, not in its flex base size, which is its content's
+        // width however wide that is: a row that overflows shrinks its items
+        // from their flex base sizes. A column's item, or any other box, is
+        // bounded where its width is fit into its space.
+        if self.is_measured_for_its_flex_base_size(node, inputs) {
+            return Some(width);
+        }
         let style = &self.node(node).style;
         Some(bounded(width, style.min_size.width, style.max_size.width))
+    }
+
+    /// Whether `inputs` measure `node`, an item of a row, for its flex base size
+    /// or its automatic minimum size: its content's width under a max-content
+    /// or min-content constraint, where CSS ignores its min and max widths.
+    fn is_measured_for_its_flex_base_size(&self, node: NodeId, inputs: &LayoutInput) -> bool {
+        let TreeNode { parent, style, .. } = self.node(node);
+        let in_row =
+            parent.is_some_and(|parent| Flex::of(self.node(parent)).is_some_and(|flex| flex.row));
+        in_row
+            && style.position != Position::Absolute
+            && inputs.run_mode == RunMode::ComputeSize
+            && inputs.sizing_mode == SizingMode::ContentSize
+            && !matches!(inputs.available_space.width, AvailableSpace::Definite(_))
     }
 
     /// The max-content and min-content widths of the content of `node`,
@@ -190,10 +229,11 @@ impl LayoutTree {
     /// - A column is as wide as its widest item, and at its narrowest as its
     ///   widest item at its narrowest. A column that wraps takes the lines
     ///   it wraps its items into, at its height or else at its max height,
-    ///   side by side with the gaps between them: each line is as wide as
-    ///   its widest item.
+    ///   less its padding, side by side with the gaps between them: each line
+    ///   is as wide as its widest item.
     /// - A text's widths are those of its widest line and its widest piece.
-    /// - A grid's widths are Taffy's.
+    /// - A grid's widths are Taffy's, also where it has no items: the tracks
+    ///   that it declares still take space.
     /// - Any other node has no content that takes space.
     ///
     /// An item's contribution is its fixed width or the widths of its content,
@@ -261,10 +301,8 @@ impl LayoutTree {
                     widest.map(|width| width + inset)
                 }
             }
-            (Display::Grid, None) if !self.node(node).children.is_empty() => {
-                [AvailableSpace::MaxContent, AvailableSpace::MinContent]
-                    .map(|width| self.measure_width(node, height, width))
-            }
+            (Display::Grid, None) => [AvailableSpace::MaxContent, AvailableSpace::MinContent]
+                .map(|width| self.measure_width(node, height, width)),
             _ => {
                 let text = self.node(node).text.as_ref();
                 let widths = text.map_or([0.0; 2], |text| {
@@ -415,10 +453,19 @@ impl LayoutTree {
             },
             vertical_margins_are_collapsible: Line::FALSE,
         };
-        let measured = self.compute_uncached(node, inputs).size.width;
+        // Where its content decides its height, a column that wraps at its max
+        // height breaks its lines inside its padding.
+        let padded = self
+            .padded_wrapping_column(node)
+            .filter(|_| height.is_none());
+        let measured = match padded {
+            Some(padding) => self
+                .inside_vertical_padding(node, padding, |tree| tree.compute_uncached(node, inputs)),
+            None => self.compute_uncached(node, inputs),
+        };
         let style = &mut self.node_mut(node).style;
         [style.min_size.width, style.max_size.width] = bounds;
-        measured
+        measured.size.width
     }
 
     /// The inputs that Taffy lays out the flex container `node` with, in place
@@ -478,6 +525,154 @@ impl LayoutTree {
         inputs
     }
 
+    /// The height of a column whose content decides it, as Chrome sizes it: the
+    /// sum of the hypothetical main sizes of its items, each its flex base size
+    /// clamped by its min and max heights, with the gaps between them, and the
+    /// padding. The column's own min and max heights then bound it. Where the
+    /// column wraps at its max height, it is as tall as its longest line.
+    ///
+    /// Taffy sizes such a column in two ways that differ from Chrome's:
+    ///
+    /// - It takes the intrinsic main size of CSS's flexbox specification,
+    ///   where an item that grows counts at its content's height: a `fill`
+    ///   item, whose flex base size is 0, adds the height of its content
+    ///   however small its `minHeight` is, so a text that fills a column and
+    ///   is 30 px tall at its `minHeight` adds the 168 px that it needs in 60
+    ///   px of width. The items that do not grow are sized the same way in
+    ///   both, so the column is measured once with its items kept from
+    ///   growing, which leaves each at its hypothetical size, and laid out at
+    ///   the height that gives, where its `fill` items grow into whatever its
+    ///   own min height leaves them.
+    /// - It breaks the lines of a column that wraps at its max height there,
+    ///   where Chrome breaks them at the max height less the padding, so the
+    ///   column is measured inside its padding (see
+    ///   [`LayoutTree::inside_vertical_padding`]), and laid out at the height
+    ///   that gives, plus the padding, where Taffy takes that height less
+    ///   the padding for the room that breaks the lines.
+    ///
+    /// Returns that height and whether Taffy may break the lines at it, which
+    /// it does only for a column that wraps at its max height. Returns `None`
+    /// for every other node, for a column that has the height it is laid out
+    /// at, and for one that needs neither.
+    fn auto_height(&mut self, node: NodeId, inputs: &LayoutInput) -> Option<(f32, bool)> {
+        let flex = Flex::of(self.node(node)).filter(|flex| !flex.row)?;
+        let style = &self.node(node).style;
+        let content_height =
+            inputs.sizing_mode == SizingMode::ContentSize || style.size.height.is_auto();
+        if inputs.known_dimensions.height.is_some() || !content_height {
+            return None;
+        }
+        let wraps_at_max_height = flex.wraps && !style.max_size.height.is_auto();
+        let [min, max] = [style.min_size.height, style.max_size.height];
+        let padding = self.padded_wrapping_column(node);
+        let items = self.items(node);
+        let unchanged: Vec<(f32, LengthPercentageAuto)> = items
+            .iter()
+            .map(|&item| {
+                let style = &self.node(item).style;
+                (style.flex_grow, style.min_size.height)
+            })
+            .collect();
+        let grows = unchanged.iter().any(|&(grow, _)| grow != 0.0);
+        if !grows && padding.is_none() {
+            return None;
+        }
+        if grows {
+            for &item in &items {
+                let style = &mut self.node_mut(item).style;
+                style.flex_grow = 0.0;
+                // An item is never shorter than its padding, whatever its min
+                // height says: Taffy counts the item at its min height alone
+                // where it adds up its content's height, for an item that hugs.
+                let padding = style
+                    .padding
+                    .resolve_or_zero(None, |_, _| 0.0)
+                    .vertical_axis_sum();
+                if let Some(min) = style.min_size.height.resolve_to_option(0.0, |_, _| 0.0) {
+                    style.min_size.height = LengthPercentageAuto::length(min.max(padding));
+                }
+            }
+        }
+        let measure = |tree: &mut Self| {
+            tree.compute_uncached(
+                node,
+                LayoutInput {
+                    run_mode: RunMode::ComputeSize,
+                    axis: RequestedAxis::Vertical,
+                    ..*inputs
+                },
+            )
+        };
+        let measured = match padding {
+            Some(padding) => self.inside_vertical_padding(node, padding, measure),
+            None => measure(self),
+        };
+        for (&item, (grow, min_height)) in items.iter().zip(unchanged) {
+            let style = &mut self.node_mut(item).style;
+            style.flex_grow = grow;
+            style.min_size.height = min_height;
+        }
+        let height = bounded(measured.size.height + padding.unwrap_or(0.0), min, max);
+        Some((height, wraps_at_max_height))
+    }
+
+    /// The vertical padding of the column `node`, if it wraps at its max height
+    /// and has any. Chrome breaks the lines of such a column at its max height
+    /// less that padding, the room that its items have. Taffy breaks them at the
+    /// max height itself, so its lines are too long by the padding, and a line
+    /// that fits Chrome's room exactly is moved to a line of its own.
+    fn padded_wrapping_column(&self, node: NodeId) -> Option<f32> {
+        Flex::of(self.node(node)).filter(|flex| !flex.row && flex.wraps)?;
+        let style = &self.node(node).style;
+        let padding = style
+            .padding
+            .resolve_or_zero(None, |_, _| 0.0)
+            .vertical_axis_sum();
+        (!style.max_size.height.is_auto() && padding > 0.0).then_some(padding)
+    }
+
+    /// The result of `measure`, which sizes the column `node` that
+    /// [`LayoutTree::padded_wrapping_column`] finds, as if the room that its
+    /// items have were all its height: its vertical padding is taken off, and
+    /// its min and max heights are reduced by it. Taffy then breaks the lines
+    /// where Chrome does.
+    fn inside_vertical_padding<R>(
+        &mut self,
+        node: NodeId,
+        padding: f32,
+        measure: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        let style = &mut self.node_mut(node).style;
+        let kept = (
+            style.padding.top,
+            style.padding.bottom,
+            style.min_size.height,
+            style.max_size.height,
+        );
+        // A min or max height less the padding, which a size that is left out
+        // is not.
+        let inside = |bound: LengthPercentageAuto| {
+            bound
+                .resolve_to_option(0.0, |_, _| 0.0)
+                .map_or(bound, |bound| {
+                    LengthPercentageAuto::length((bound - padding).max(0.0))
+                })
+        };
+        style.padding.top = LengthPercentage::length(0.0);
+        style.padding.bottom = LengthPercentage::length(0.0);
+        style.min_size.height = inside(kept.2);
+        style.max_size.height = inside(kept.3);
+        let measured = measure(self);
+        let style = &mut self.node_mut(node).style;
+        (
+            style.padding.top,
+            style.padding.bottom,
+            style.min_size.height,
+            style.max_size.height,
+        ) = kept;
+        measured
+    }
+
     /// Lays out `node` with the inputs that its parent's layout gives it,
     /// through the cache.
     fn compute_layout(&mut self, node: NodeId, inputs: LayoutInput) -> LayoutOutput {
@@ -515,8 +710,29 @@ impl LayoutTree {
                     },
                 );
             }
+            if let Some((height, definite)) = tree.auto_height(node, &inputs) {
+                return tree.compute_layout(
+                    node,
+                    LayoutInput {
+                        known_dimensions: Size {
+                            height: Some(height),
+                            ..inputs.known_dimensions
+                        },
+                        // The height comes from the column's own content, so
+                        // percentages ignore it, and so does the wrapping of
+                        // its items, unless it is the height that they wrap at.
+                        known_dimensions_are_definite: Size {
+                            height: definite,
+                            ..inputs.known_dimensions_are_definite
+                        },
+                        ..inputs
+                    },
+                );
+            }
             let mut output = tree.compute_uncached(node, inputs);
             if inputs.run_mode == RunMode::PerformLayout {
+                tree.finish_flex_lines(node, &mut output);
+                tree.finish_grid_baseline(node, &mut output);
                 compute_oof_layout(tree, node, &mut output);
             }
             output
@@ -537,6 +753,8 @@ impl LayoutTree {
         } = self.node(node);
         match (style.display, children.is_empty()) {
             (Display::None, _) => compute_hidden_layout(self, node),
+            // An empty grid still has the tracks that it declares.
+            (Display::Grid, true) => compute_grid_layout(self, node, inputs),
             (_, true) => {
                 let TreeNode { style, text, .. } = self.node(node);
                 match text {
@@ -656,8 +874,16 @@ impl LayoutPartialTree for LayoutTree {
         if inputs.run_mode == RunMode::PerformHiddenLayout {
             return compute_hidden_layout(self, node);
         }
+        let placed = inputs.run_mode == RunMode::PerformLayout;
+        if placed {
+            self.node_mut(node).placed_with = Some(inputs);
+        }
         let inputs = self.without_guessed_cross_size(node, inputs);
-        self.compute_layout(node, inputs)
+        let output = self.compute_layout(node, inputs);
+        if placed {
+            self.node_mut(node).baseline = output.baselines.first;
+        }
+        output
     }
 }
 
