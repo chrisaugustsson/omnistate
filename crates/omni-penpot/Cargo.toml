@@ -13,3 +13,6 @@ zip = { version = "9", default-features = false, features = ["deflate"] }
 [dev-dependencies]
 # The converter tests check that the images it writes load in the renderer.
 omni-render = { path = "../omni-render" }
+# The comparison tests read and write PNGs; this is the PNG codec the renderer
+# already links, at the version and features omni-render pins.
+skia-safe = { version = "0.153.3", features = ["gl", "textlayout"] }

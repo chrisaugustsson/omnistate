@@ -280,6 +280,7 @@ dependencies = [
  "omni-render",
  "serde",
  "serde_json",
+ "skia-safe",
  "zip",
 ]
 
