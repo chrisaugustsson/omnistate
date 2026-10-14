@@ -178,7 +178,18 @@ impl LayoutTree {
         if sized {
             return None;
         }
-        let height = inputs.known_dimensions.height.or_else(|| {
+        // Chrome measures the content at the container's height only where
+        // that height is definite, as Taffy marks it, such as a fixed height
+        // or the height that a row of fixed height stretches the container
+        // to. A column that hugs its height gives the container the height of
+        // its content, bounded by its max height, which is not definite, so a
+        // column that the container stretches to that height keeps its
+        // children on one line there.
+        let definite_height = inputs
+            .known_dimensions
+            .height
+            .filter(|_| inputs.known_dimensions_are_definite.height);
+        let height = definite_height.or_else(|| {
             fixed(
                 style.size.height,
                 style.min_size.height,
