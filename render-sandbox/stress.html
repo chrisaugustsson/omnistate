@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+    <title>omni-render stress file</title>
+    <style>
+      html,
+      body {
+        height: 100%;
+        margin: 0;
+        overflow: hidden;
+        background: #cbd5e1;
+        color: #0f172a;
+        font: 13px/1.5 system-ui, sans-serif;
+      }
+
+      /* main-stress.js sizes the drawing buffer to this canvas. touch-action
+         keeps the browser from scrolling or zooming the page itself. */
+      #canvas {
+        position: fixed;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        touch-action: none;
+      }
+
+      #canvas.panning {
+        cursor: grab;
+      }
+
+      #canvas.grabbing {
+        cursor: grabbing;
+      }
+
+      #hud {
+        position: fixed;
+        top: 12px;
+        left: 12px;
+        max-width: 420px;
+        padding: 8px 12px;
+        border-radius: 6px;
+        background: rgb(255 255 255 / 0.9);
+        box-shadow: 0 1px 3px rgb(15 23 42 / 0.25);
+        pointer-events: none;
+      }
+
+      #hud strong {
+        font-size: 14px;
+      }
+
+      #hud p {
+        margin: 0;
+      }
+
+      #status {
+        color: #475569;
+        font-variant-numeric: tabular-nums;
+      }
+
+      code {
+        font-size: 12px;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="canvas"></canvas>
+    <div id="hud">
+      <p><strong>omni-render stress file</strong></p>
+      <p>
+        Zoom: pinch, or <code>Ctrl</code>/<code>Cmd</code> + wheel. Pan: scroll, or drag while holding
+        <code>Space</code>.
+      </p>
+      <p id="status">Loading the renderer…</p>
+    </div>
+    <script type="module" src="./main-stress.js"></script>
+  </body>
+</html>

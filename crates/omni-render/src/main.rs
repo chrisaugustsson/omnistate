@@ -20,6 +20,8 @@ mod exports {
         static ERROR: RefCell<CString> = RefCell::new(CString::default());
         /// The result of the last `omni_render_layout_design`.
         static LAYOUT: RefCell<CString> = RefCell::new(CString::default());
+        /// The result of the last `omni_render_scene_stats`.
+        static STATS: RefCell<CString> = RefCell::new(CString::default());
     }
 
     /// Takes the text or bytes at `ptr` and `len` from the page.
@@ -141,6 +143,103 @@ mod exports {
         let result = unsafe { text(design, design_len) }
             .and_then(|design| omni_render::web::draw_design(design, width, height, pixel_ratio));
         succeeded(result)
+    }
+
+    /// Loads the design, a page as JSON in the format of `omni_core::design`,
+    /// into the scene of the stress page, with the images and fonts supplied
+    /// so far (supply them first). The view is fitted to the boards when the
+    /// first frame is drawn. Returns whether the design was valid.
+    ///
+    /// # Safety
+    /// The pointer and length must be a block from `omni_render_alloc`.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn omni_render_scene_load(design: *const u8, design_len: usize) -> bool {
+        // SAFETY: the caller promises the block is there.
+        let result = unsafe { text(design, design_len) }.and_then(omni_render::web::scene_load);
+        succeeded(result)
+    }
+
+    /// Draws the scene in its current view on the default framebuffer of the
+    /// page's current WebGL 2 context: `width` x `height` device pixels, with
+    /// `pixel_ratio` device pixels per CSS pixel. The view takes the size of
+    /// the canvas in CSS pixels first. Returns whether Skia drew it.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn omni_render_scene_draw(width: i32, height: i32, pixel_ratio: f32) -> bool {
+        succeeded(omni_render::web::scene_draw(width, height, pixel_ratio))
+    }
+
+    /// What the last frame did, as a NUL-ended JSON object that stays until
+    /// the next call: `{"boardsDrawn": 3, "nodesPainted": 640, "detail":
+    /// "full", "zoom": 1}`. Null before the first frame.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn omni_render_scene_stats() -> *const c_char {
+        let Some(stats) = omni_render::web::scene_stats() else {
+            return std::ptr::null();
+        };
+        STATS.set(CString::new(stats).unwrap_or_default());
+        STATS.with_borrow(|stats| stats.as_ptr())
+    }
+
+    /// A wheel event at the canvas point `x`, `y` (CSS pixels): Ctrl or Cmd
+    /// zooms around the point, the wheel alone pans. Returns whether it was
+    /// used, so that the page stops the browser from acting on it too.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn omni_render_view_wheel(
+        delta_x: f32,
+        delta_y: f32,
+        x: f32,
+        y: f32,
+        ctrl: bool,
+        meta: bool,
+    ) -> bool {
+        let event = omni_render::view::Wheel {
+            delta_x,
+            delta_y,
+            x,
+            y,
+            ctrl,
+            meta,
+        };
+        omni_render::web::with_controls(|controls| controls.wheel(event))
+    }
+
+    /// A touch pinch: the change in distance `scale` between the fingers
+    /// since the last call, around the point `x`, `y` between them.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn omni_render_view_pinch(scale: f32, x: f32, y: f32) -> bool {
+        omni_render::web::with_controls(|controls| controls.pinch(scale, x, y))
+    }
+
+    /// The pointer went down at the canvas point `x`, `y`. Returns whether it
+    /// began a pan, which it does while space is held.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn omni_render_view_pointer_down(x: f32, y: f32) -> bool {
+        omni_render::web::with_controls(|controls| controls.pointer_down(x, y))
+    }
+
+    /// The pointer moved to the canvas point `x`, `y`. Returns whether it
+    /// panned the view.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn omni_render_view_pointer_move(x: f32, y: f32) -> bool {
+        omni_render::web::with_controls(|controls| controls.pointer_move(x, y))
+    }
+
+    /// The pointer went up.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn omni_render_view_pointer_up() {
+        omni_render::web::with_controls(|controls| {
+            controls.pointer_up();
+            true
+        });
+    }
+
+    /// Whether the space key is held, which lets the pointer pan.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn omni_render_view_space(held: bool) {
+        omni_render::web::with_controls(|controls| {
+            controls.set_space(held);
+            true
+        });
     }
 
     /// Lays the design out and returns the box of every node as a NUL-ended

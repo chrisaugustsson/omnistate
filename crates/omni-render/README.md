@@ -149,6 +149,72 @@ the 189 nodes of `nodes.json` is 0 px: both read the same Inter file with linear
 metrics and no hinting, so the boxes match exactly. The measurement needs
 a browser, so run it again after changing the examples, the fonts or the layout.
 
+## Zooming, panning and level of detail
+
+`view::Viewport` is the part of the page that the screen shows: a zoom and the
+page point at the screen's top-left corner. `view::Controls` turns the page's
+events into changes of it: Ctrl or Cmd with the wheel zooms around the pointer
+(which is also how browsers report a trackpad pinch), a touch pinch zooms around
+the fingers, the wheel alone pans, and so does dragging while the space key is
+held. Zoom is exponential in the wheel delta, so a notch of 100 zooms by 22% and
+events add up however they are split, and it stays between 1% and 6400%. All of
+it is plain Rust, so the tests drive it natively and the browser page only
+forwards events.
+
+`view::Scene` holds a page laid out once and draws it in any viewport. It draws
+the boards that reach into the view and no others, where a board reaches as far
+as its drop shadows do, so culling never changes the picture. `FrameStats` says
+which boards a frame drew, how many nodes it painted and at what detail.
+
+### Level of detail
+
+The technique is board snapshots, on top of cached pictures:
+
+- **Full detail** (device scale of 50% or more, the zoom times the pixel ratio):
+  each board in view is recorded once into a Skia picture, with a bounding box
+  hierarchy, and every frame after that replays the picture. Panning and zooming
+  never shape text or walk the design again, and the replay skips what is out of
+  view.
+- **Reduced detail** (below 50%): each board in view is drawn from a snapshot, a
+  raster image of the whole board at 50% (at most 2,048 pixels on its longest
+  side), made once from the board's picture. A snapshot is only ever reduced, so
+  it is composited with mipmaps and looks like the board at any zoom down to the
+  1% minimum. A frame then draws one image per board and no nodes, however many
+  nodes the boards have.
+
+Snapshots made for one zoom serve every other, so the cost is paid once per board:
+the first frame at a reduced zoom paints every node of the boards in view to make
+them (all 36,000 nodes of the stress file, if it is fitted in the view at the
+start), and `nodes_painted` counts those. After that a frame of the stress file
+fitted in view draws 100 images and paints no nodes. That is how it holds 60
+frames per second on the stress file where drawing 36,000 nodes a frame would not:
+the tests pin the budget at no more than 5,000 nodes painted per frame after the
+first. The smoothness in a browser, on a GPU, is the human check of US-006, and
+the frame rate gate itself is US-008.
+
+The browser module keeps one Skia GPU context for the page's WebGL context, so
+the compiled shaders and the textures of the snapshots stay on the GPU between
+frames.
+
+### The stress page
+
+`render-sandbox/stress.html` draws the stress file on a WebGL canvas through the
+WebAssembly module, and lets you zoom and pan around it. It shows the zoom, the
+detail, how many boards were drawn, and how many nodes the last frame painted:
+
+```sh
+make stress-file render-wasm
+python3 -m http.server 8000 --directory render-sandbox
+```
+
+Open http://localhost:8000/stress.html. Zoom with a pinch or Ctrl/Cmd + wheel,
+pan with the wheel, or drag while holding Space. The page forwards its events
+to the exports `_omni_render_view_wheel`, `_view_pinch`, `_view_pointer_down`,
+`_view_pointer_move`, `_view_pointer_up` and `_view_space`, loads the file with
+`_omni_render_scene_load`, draws with `_omni_render_scene_draw` and reads
+`_omni_render_scene_stats`. Supply images and fonts before loading a scene: the
+scene keeps the ones it was loaded with.
+
 ## Layout
 
 `layout::compute` gives every node of a design its box (x, y, width and

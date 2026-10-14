@@ -34,6 +34,7 @@ use skia_safe::{
     ImageInfo, MaskFilter, MipmapMode, Paint, Path, PathBuilder, PathOp, RRect, Rect,
     SamplingOptions, Shader, TileMode, Vector, paint, path_utils, surfaces,
 };
+use std::cell::Cell;
 use std::collections::HashMap;
 
 /// What the host supplies for drawing: the images that `attachment:<id>`
@@ -86,12 +87,95 @@ impl Default for Assets {
 /// Draws `root` and every node below it on `canvas`, in page coordinates (one
 /// canvas pixel to a CSS pixel), each node in the box that `boxes` gives it.
 pub fn draw(canvas: &Canvas, root: &Node, boxes: &HashMap<NodeId, LayoutBox>, assets: &Assets) {
-    Painter {
+    draw_counted(canvas, root, boxes, assets);
+}
+
+/// As [`draw`], and returns how many nodes it painted: the visible ones that
+/// layout gave a box, below `root` and including it.
+pub(crate) fn draw_counted(
+    canvas: &Canvas,
+    root: &Node,
+    boxes: &HashMap<NodeId, LayoutBox>,
+    assets: &Assets,
+) -> usize {
+    let painter = Painter {
         canvas,
         boxes,
         assets,
+        painted: Cell::new(0),
+    };
+    painter.node(root);
+    painter.painted.get()
+}
+
+/// The area that painting `node` and everything below it can touch: its box,
+/// grown by the drop shadows that reach beyond it, and by whatever of its
+/// children sticks out of it unless it clips them. `None` if nothing of it is
+/// painted. Culling by this area never changes the picture.
+pub(crate) fn reach(node: &Node, boxes: &HashMap<NodeId, LayoutBox>) -> Option<Rect> {
+    let layout_box = boxes.get(node.id())?;
+    if !node.visible() {
+        return None;
     }
-    .node(root);
+    let rect = Rect::from_xywh(
+        layout_box.x,
+        layout_box.y,
+        layout_box.width,
+        layout_box.height,
+    );
+    let below = |own: Rect, children: &[Node]| {
+        children
+            .iter()
+            .filter_map(|child| reach(child, boxes))
+            .fold(own, Rect::join2)
+    };
+    match node.data() {
+        NodeData::Page(page) => Some(below(Rect::new_empty(), &page.children)),
+        NodeData::Board(frame) | NodeData::Frame(frame) => {
+            let own = with_shadows(rect, frame.shadows.as_deref());
+            Some(if frame.clip == Some(true) {
+                own
+            } else {
+                below(own, &frame.children)
+            })
+        }
+        NodeData::Text(_) => Some(rect),
+        NodeData::Image(image) => Some(with_shadows(rect, image.shadows.as_deref())),
+        NodeData::Vector(vector) => {
+            let widest = vector
+                .strokes
+                .iter()
+                .flatten()
+                .filter_map(|stroke| literal(&stroke.width))
+                .fold(0.0, f32::max);
+            // The path is not clipped to the box, and a miter join reaches up
+            // to four times half the stroke width from the path.
+            let drawn = Path::from_svg(vector.path.as_str()).map_or(rect, |path| {
+                let path = path.with_offset((rect.left, rect.top));
+                let bounds = path
+                    .compute_tight_bounds()
+                    .with_outset((widest * 2.0, widest * 2.0));
+                Rect::join2(rect, bounds)
+            });
+            Some(with_shadows(drawn, vector.shadows.as_deref()))
+        }
+        NodeData::Instance(_) => None,
+    }
+}
+
+/// `rect` and the area of the drop shadows it casts: shifted by their offsets
+/// and grown by their spread and by three standard deviations of their blur.
+fn with_shadows(rect: Rect, casting: Option<&[TokenOr<Shadow>]>) -> Rect {
+    shadows(casting)
+        .iter()
+        .filter(|shadow| shadow.kind == ShadowKind::Drop)
+        .fold(rect, |reach, shadow| {
+            let grow = shadow.spread.max(0.0) + shadow.blur * 1.5;
+            let cast = rect
+                .with_offset((shadow.x, shadow.y))
+                .with_outset((grow, grow));
+            Rect::join2(reach, cast)
+        })
 }
 
 /// Lays `root` out with the fonts of `assets`, draws it with Skia on a
@@ -119,6 +203,8 @@ struct Painter<'a> {
     canvas: &'a Canvas,
     boxes: &'a HashMap<NodeId, LayoutBox>,
     assets: &'a Assets,
+    /// The nodes painted so far.
+    painted: Cell<usize>,
 }
 
 impl Painter<'_> {
@@ -130,6 +216,9 @@ impl Painter<'_> {
         };
         if !node.visible() {
             return;
+        }
+        if !matches!(node.data(), NodeData::Page(_) | NodeData::Instance(_)) {
+            self.painted.set(self.painted.get() + 1);
         }
         let rect = Rect::from_xywh(
             layout_box.x,
