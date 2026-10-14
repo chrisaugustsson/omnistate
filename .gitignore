@@ -16,3 +16,6 @@ render-sandbox/build/
 
 # Penpot exports for the comparison project (keep local until decided)
 fixtures/penpot/
+
+# The report holds Penpot's PNGs, so it stays local like fixtures/penpot/
+docs/penpot-compare/

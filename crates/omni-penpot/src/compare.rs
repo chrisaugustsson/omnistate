@@ -73,6 +73,8 @@ pub struct PixelComparison {
     pub masked: u64,
     /// The compared pixels that differ by more than [`TOLERANCE`].
     pub differing: u64,
+    /// Penpot's PNG, as it was read.
+    pub penpot: Vec<u8>,
     /// OmniState's render, as the bytes of a PNG.
     pub render: Vec<u8>,
     /// The differing pixels in [`HIGHLIGHT`] over a pale copy of Penpot's PNG,
@@ -172,6 +174,7 @@ pub fn compare_file(path: &Path) -> Result<Comparison, ReadError> {
                             &boxes,
                             &assets,
                             &penpot,
+                            bytes,
                             &unconverted,
                         )),
                         None,
@@ -354,6 +357,7 @@ fn compare_pixels(
     boxes: &HashMap<NodeId, LayoutBox>,
     assets: &Assets,
     penpot: &Pixels,
+    penpot_png: Vec<u8>,
     unconverted: &[&ReportEntry],
 ) -> PixelComparison {
     let (width, height) = (penpot.width, penpot.height);
@@ -395,6 +399,7 @@ fn compare_pixels(
         compared,
         masked: masked_count,
         differing,
+        penpot: penpot_png,
         render: encode(width, height, &render),
         diff: encode(width, height, &diff),
     }

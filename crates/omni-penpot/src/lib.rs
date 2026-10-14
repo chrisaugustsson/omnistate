@@ -1,9 +1,10 @@
 //! Reads Penpot's `.penpot` export files (docs/formats/penpot-export.md) and
 //! converts their boards into OmniState designs and compares those with Penpot's
-//! own rendering.
+//! own rendering, and writes the page that sets the two side by side.
 
 pub mod compare;
 mod convert;
+pub mod report;
 
 pub use convert::{
     Attachment, Conversion, ConvertedBoard, ConvertedShape, Report, ReportEntry, convert_file,

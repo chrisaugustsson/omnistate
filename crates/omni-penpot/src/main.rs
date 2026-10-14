@@ -1,5 +1,6 @@
-//! The `omni-penpot` command line: `omni-penpot convert <file.penpot> --out <dir>`
-//! and `omni-penpot compare <file.penpot> --out <dir>`.
+//! The `omni-penpot` command line: `omni-penpot convert <file.penpot> --out <dir>`,
+//! `omni-penpot compare <file.penpot> --out <dir>` and
+//! `omni-penpot report <folder> --out <dir>`.
 
 use std::collections::HashSet;
 use std::fs;
@@ -7,11 +8,13 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use omni_penpot::compare::{BoardComparison, Comparison, TOLERANCE, compare_file};
+use omni_penpot::report::write_report;
 use omni_penpot::{Conversion, convert_file};
 use serde_json::{Value, json};
 
 const USAGE: &str = "usage: omni-penpot convert <file.penpot> --out <dir>
-       omni-penpot compare <file.penpot> --out <dir>";
+       omni-penpot compare <file.penpot> --out <dir>
+       omni-penpot report <folder> --out <dir>";
 
 fn main() -> ExitCode {
     match run(std::env::args().skip(1).collect()) {
@@ -28,9 +31,19 @@ fn run(args: Vec<String>) -> Result<(), String> {
         return Err(USAGE.to_string());
     };
     let (file, out) = match command.as_str() {
-        "convert" | "compare" => file_and_out(command, rest)?,
+        "convert" | "compare" | "report" => file_and_out(command, rest)?,
         _ => return Err(format!("unknown command `{command}`\n{USAGE}")),
     };
+    if command == "report" {
+        let written = write_report(&file, &out)?;
+        println!(
+            "{} boards of {} files compared, report written to {}",
+            written.boards,
+            written.files,
+            out.join("index.html").display()
+        );
+        return Ok(());
+    }
     if command == "compare" {
         let comparison = compare_file(&file).map_err(|error| error.to_string())?;
         write_comparison(&comparison, &out)?;
@@ -52,7 +65,8 @@ fn run(args: Vec<String>) -> Result<(), String> {
     Ok(())
 }
 
-/// The file and the `--out` directory of a command's arguments.
+/// The file (the folder, for `report`) and the `--out` directory of a command's
+/// arguments.
 fn file_and_out(command: &str, args: &[String]) -> Result<(PathBuf, PathBuf), String> {
     let mut file = None;
     let mut out = None;
@@ -67,11 +81,16 @@ fn file_and_out(command: &str, args: &[String]) -> Result<(PathBuf, PathBuf), St
             return Err(format!("unknown option `{arg}`\n{USAGE}"));
         } else if file.replace(PathBuf::from(arg)).is_some() {
             return Err(format!(
-                "only one file can be used at a time for `{command}`\n{USAGE}"
+                "only one input can be used at a time for `{command}`\n{USAGE}"
             ));
         }
     }
-    let file = file.ok_or_else(|| format!("no file for `{command}`\n{USAGE}"))?;
+    let what = if command == "report" {
+        "folder"
+    } else {
+        "file"
+    };
+    let file = file.ok_or_else(|| format!("no {what} for `{command}`\n{USAGE}"))?;
     let out = out.ok_or_else(|| format!("missing --out <dir>\n{USAGE}"))?;
     Ok((file, out))
 }

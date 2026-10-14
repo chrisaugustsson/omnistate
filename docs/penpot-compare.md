@@ -69,3 +69,29 @@ board that matches in layout but differs in pixels has a drawing difference.
 A board with no Penpot PNG, which is every board of `tirebud-ordrar.penpot`,
 gets the layout comparison only. Its entry has `layoutOnly` true, `pixel` null
 and a `note` that says "Layout comparison only" and why.
+
+## The report page
+
+`make penpot-compare` converts and compares every `.penpot` file directly in
+`fixtures/penpot/` (`PENPOT_FIXTURES` replaces the folder) and writes
+`docs/penpot-compare/index.html` (`PENPOT_REPORT` replaces the folder) with the
+images it shows in `images/` beside it. It is the same as
+`omni-penpot report <folder> --out <dir>`. The page works from disk: every image
+path is relative, and Penpot's PNGs are copied into the report folder. The
+`images/` folder is emptied before each run. The folder is gitignored, like the
+fixtures, because it holds Penpot's designs.
+
+At the top, the summary gives the number of boards, the median pixel score (the
+middle score of the boards that have a PNG, the mean of the two middle ones for
+an even number) and the totals of layout mismatches and unconverted shapes.
+Below it, the boards are sorted worst first: the boards that have a pixel score
+come first, the largest share of differing pixels first, and then the boards
+without a PNG, the most layout mismatches first. Ties keep the order of the
+files and the boards.
+
+Each board shows Penpot's PNG, OmniState's render and the difference image side
+by side (click one to open it full size), its pixel score as a percentage (lower
+is better, 0.0% is a perfect match), the layout mismatches with both boxes and
+how far off they are, and the unconverted shapes with the reason. A board with
+no PNG shows no images and says "Layout comparison only". Names and reasons come
+from the design and are escaped in the page.

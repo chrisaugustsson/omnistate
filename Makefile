@@ -13,7 +13,7 @@ WASM_TARGET := wasm32-unknown-emscripten
 WASM_OUT := $(or $(CARGO_TARGET_DIR),target)/$(WASM_TARGET)/release
 SANDBOX_BUILD := render-sandbox/build
 
-.PHONY: lint test render-wasm chrome-boxes stress-file nodes-boxes bench-render check-layout
+.PHONY: lint test render-wasm chrome-boxes stress-file nodes-boxes bench-render check-layout penpot-compare
 
 # The last clippy run covers the WebAssembly-only code of omni-render.
 lint:
@@ -70,6 +70,15 @@ bench-render: render-wasm stress-file
 check-layout: render-wasm stress-file
 	npm install --prefix render-sandbox --no-audit --no-fund --loglevel=error
 	node render-sandbox/check-layout.mjs
+
+# Penpot comparison (US-104): converts every .penpot export in PENPOT_FIXTURES,
+# renders and compares each board with Penpot's own PNG, and writes the report
+# page, PENPOT_REPORT/index.html, with its images (docs/penpot-compare.md).
+PENPOT_FIXTURES ?= fixtures/penpot
+PENPOT_REPORT ?= docs/penpot-compare
+
+penpot-compare:
+	$(CARGO) run --quiet -p omni-penpot -- report "$(PENPOT_FIXTURES)" --out "$(PENPOT_REPORT)"
 
 $(EMCC):
 	test -d "$(EMSDK)" || git clone --depth 1 --branch $(EMSDK_VERSION) https://github.com/emscripten-core/emsdk.git "$(EMSDK)"
