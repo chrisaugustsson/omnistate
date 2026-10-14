@@ -17,6 +17,7 @@
 
 use crate::layout::{self, LayoutBox};
 use crate::paint::{self, Assets};
+use crate::select::{Event, Modifiers, NodeAddress, Outline};
 use omni_core::design::{Node, NodeData, NodeId};
 use skia_safe::{
     AlphaType, Canvas, ColorType, FilterMode, Image, ImageInfo, MipmapMode, Paint, Picture,
@@ -457,6 +458,53 @@ impl Scene {
             .filter(|board| board.is_in(&visible))
             .map(|board| board.id)
             .collect()
+    }
+
+    /// The topmost visible node at the page point `point`.
+    pub fn node_at(&self, _point: (f32, f32)) -> Option<NodeId> {
+        None
+    }
+
+    /// The box, in page coordinates, of the node at `address`.
+    pub fn bounds_of(&self, _address: &NodeAddress) -> Option<LayoutBox> {
+        None
+    }
+
+    /// The pointer moved to the screen point `screen` of `viewport`.
+    pub fn pointer_move(&mut self, _viewport: &Viewport, _screen: (f32, f32), _keys: Modifiers) {}
+
+    /// A click at the screen point `screen` of `viewport`.
+    pub fn click(&mut self, _viewport: &Viewport, _screen: (f32, f32), _keys: Modifiers) {}
+
+    /// A double-click at the screen point `screen` of `viewport`.
+    pub fn double_click(&mut self, _viewport: &Viewport, _screen: (f32, f32)) {}
+
+    /// The Escape key.
+    pub fn escape(&mut self) {}
+
+    /// The node the pointer is over, as a click would select it.
+    pub fn hovered(&self) -> Option<NodeId> {
+        None
+    }
+
+    /// The selected node.
+    pub fn selected(&self) -> Option<NodeId> {
+        None
+    }
+
+    /// The node whose children a click selects among.
+    pub fn context(&self) -> Option<NodeId> {
+        None
+    }
+
+    /// The hover and selection changes since the last call, oldest first.
+    pub fn take_events(&mut self) -> Vec<Event> {
+        Vec::new()
+    }
+
+    /// The outlines of the hovered and the selected node in `viewport`.
+    pub fn overlay(&self, _viewport: &Viewport) -> Vec<Outline> {
+        Vec::new()
     }
 
     /// Draws what `viewport` shows on `canvas`, whose unit is one CSS pixel

@@ -4,6 +4,7 @@
 pub mod layout;
 pub mod paint;
 pub mod sandbox;
+pub mod select;
 pub mod text;
 pub mod view;
 #[cfg(target_os = "emscripten")]
