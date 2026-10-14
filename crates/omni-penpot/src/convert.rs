@@ -37,7 +37,28 @@ pub struct ConvertedBoard {
     pub id: String,
     /// The name of the board.
     pub name: String,
+    /// The box Penpot stores for the board, in page coordinates. None when the
+    /// file has none, and then the board sits at 0, 0 with no size.
+    pub bounds: Option<Rect>,
     pub design: Node,
+    /// Every shape of the board that became a node, the board included, with
+    /// the box Penpot stores for it.
+    pub shapes: Vec<ConvertedShape>,
+    /// The box Penpot stores for each shape left out whole (a report entry with
+    /// no property), by Penpot id. A shape the file gives no box is not here.
+    pub left_out: HashMap<String, Rect>,
+}
+
+/// A Penpot shape that became a node of a design.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConvertedShape {
+    /// The Penpot id of the shape.
+    pub id: String,
+    pub name: String,
+    /// The id of the node it became, as the design writes it.
+    pub node_id: String,
+    /// The box Penpot stores for the shape, in page coordinates.
+    pub bounds: Rect,
 }
 
 /// An image file of the export, written as `<id>.<extension>`.
@@ -190,6 +211,8 @@ struct Common {
     id: String,
     name: String,
     bounds: Rect,
+    /// Whether `bounds` is the box of the file, not a stand-in for a missing one.
+    boxed: bool,
     hidden: bool,
 }
 
@@ -219,6 +242,10 @@ struct Converter<'a, R: Read + Seek> {
     attached: HashMap<String, Result<String, String>>,
     entries: Vec<ReportEntry>,
     next_id: u64,
+    /// The shapes converted so far in the board being converted.
+    shapes: Vec<ConvertedShape>,
+    /// The boxes of the shapes left out whole so far in that board.
+    left_out: HashMap<String, Rect>,
 }
 
 /// Reads the `.penpot` export at `path` and converts its boards.
@@ -240,6 +267,8 @@ pub fn convert_file(path: &Path) -> Result<Conversion, ReadError> {
         attached: HashMap::new(),
         entries: Vec::new(),
         next_id: 0,
+        shapes: Vec::new(),
+        left_out: HashMap::new(),
     };
     let mut boards = Vec::new();
     for head in &heads {
@@ -365,6 +394,7 @@ impl<R: Read + Seek> Converter<'_, R> {
                 id: shape_id.clone(),
                 name: name.clone(),
             };
+            let board_bounds = bounds(&pen);
             let Some(node) = self.convert(&head.dir, &shape_id, *pen, &page, &board, &mut seen)?
             else {
                 continue;
@@ -384,7 +414,10 @@ impl<R: Read + Seek> Converter<'_, R> {
                 page: head.name.clone(),
                 id: shape_id,
                 name,
+                bounds: board_bounds,
                 design,
+                shapes: std::mem::take(&mut self.shapes),
+                left_out: std::mem::take(&mut self.left_out),
             });
         }
         Ok(())
@@ -421,8 +454,12 @@ impl<R: Read + Seek> Converter<'_, R> {
                 format!("unknown shape type `{kind}` is not converted")
             };
             self.report(&who, None, reason);
+            if let Some(bounds) = bounds(&pen) {
+                self.left_out.insert(id.clone(), bounds);
+            }
             return Ok(None);
         }
+        let boxed = bounds(&pen).is_some();
         let bounds = match bounds(&pen) {
             Some(bounds) => bounds,
             None => {
@@ -443,6 +480,7 @@ impl<R: Read + Seek> Converter<'_, R> {
             id: id.clone(),
             name: name.clone(),
             bounds,
+            boxed,
             hidden: pen.hidden.0.unwrap_or(false),
         };
         self.checks(&who, &pen, &kind);
@@ -555,7 +593,16 @@ impl<R: Read + Seek> Converter<'_, R> {
         parent: &Parent,
     ) -> Map<String, Value> {
         let mut node = Map::new();
-        node.insert("id".into(), json!(self.new_id()));
+        let node_id = self.new_id();
+        if common.boxed {
+            self.shapes.push(ConvertedShape {
+                id: common.id.clone(),
+                name: common.name.clone(),
+                node_id: node_id.clone(),
+                bounds: common.bounds,
+            });
+        }
+        node.insert("id".into(), json!(node_id));
         node.insert("type".into(), json!(kind));
         node.insert("name".into(), json!(common.name));
         if common.hidden {

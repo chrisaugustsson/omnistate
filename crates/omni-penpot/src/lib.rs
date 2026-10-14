@@ -1,9 +1,13 @@
 //! Reads Penpot's `.penpot` export files (docs/formats/penpot-export.md) and
-//! converts their boards into OmniState designs.
+//! converts their boards into OmniState designs and compares those with Penpot's
+//! own rendering.
 
+pub mod compare;
 mod convert;
 
-pub use convert::{Attachment, Conversion, ConvertedBoard, Report, ReportEntry, convert_file};
+pub use convert::{
+    Attachment, Conversion, ConvertedBoard, ConvertedShape, Report, ReportEntry, convert_file,
+};
 
 use std::collections::HashSet;
 use std::fmt;

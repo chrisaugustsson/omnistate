@@ -1,14 +1,17 @@
-//! The `omni-penpot` command line: `omni-penpot convert <file.penpot> --out <dir>`.
+//! The `omni-penpot` command line: `omni-penpot convert <file.penpot> --out <dir>`
+//! and `omni-penpot compare <file.penpot> --out <dir>`.
 
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use omni_penpot::compare::{BoardComparison, Comparison, TOLERANCE, compare_file};
 use omni_penpot::{Conversion, convert_file};
 use serde_json::{Value, json};
 
-const USAGE: &str = "usage: omni-penpot convert <file.penpot> --out <dir>";
+const USAGE: &str = "usage: omni-penpot convert <file.penpot> --out <dir>
+       omni-penpot compare <file.penpot> --out <dir>";
 
 fn main() -> ExitCode {
     match run(std::env::args().skip(1).collect()) {
@@ -24,26 +27,20 @@ fn run(args: Vec<String>) -> Result<(), String> {
     let Some((command, rest)) = args.split_first() else {
         return Err(USAGE.to_string());
     };
-    if command != "convert" {
-        return Err(format!("unknown command `{command}`\n{USAGE}"));
+    let (file, out) = match command.as_str() {
+        "convert" | "compare" => file_and_out(command, rest)?,
+        _ => return Err(format!("unknown command `{command}`\n{USAGE}")),
+    };
+    if command == "compare" {
+        let comparison = compare_file(&file).map_err(|error| error.to_string())?;
+        write_comparison(&comparison, &out)?;
+        println!(
+            "{} boards compared, written to {}",
+            comparison.boards.len(),
+            out.display()
+        );
+        return Ok(());
     }
-    let mut file = None;
-    let mut out = None;
-    let mut rest = rest.iter();
-    while let Some(arg) = rest.next() {
-        if arg == "--out" {
-            let dir = rest
-                .next()
-                .ok_or_else(|| format!("--out needs a directory\n{USAGE}"))?;
-            out = Some(PathBuf::from(dir));
-        } else if arg.starts_with("--") {
-            return Err(format!("unknown option `{arg}`\n{USAGE}"));
-        } else if file.replace(PathBuf::from(arg)).is_some() {
-            return Err(format!("only one file can be converted at a time\n{USAGE}"));
-        }
-    }
-    let file = file.ok_or_else(|| format!("no file to convert\n{USAGE}"))?;
-    let out = out.ok_or_else(|| format!("missing --out <dir>\n{USAGE}"))?;
     let conversion = convert_file(&file).map_err(|error| error.to_string())?;
     write(&conversion, &out)?;
     println!(
@@ -53,6 +50,30 @@ fn run(args: Vec<String>) -> Result<(), String> {
         out.display()
     );
     Ok(())
+}
+
+/// The file and the `--out` directory of a command's arguments.
+fn file_and_out(command: &str, args: &[String]) -> Result<(PathBuf, PathBuf), String> {
+    let mut file = None;
+    let mut out = None;
+    let mut rest = args.iter();
+    while let Some(arg) = rest.next() {
+        if arg == "--out" {
+            let dir = rest
+                .next()
+                .ok_or_else(|| format!("--out needs a directory\n{USAGE}"))?;
+            out = Some(PathBuf::from(dir));
+        } else if arg.starts_with("--") {
+            return Err(format!("unknown option `{arg}`\n{USAGE}"));
+        } else if file.replace(PathBuf::from(arg)).is_some() {
+            return Err(format!(
+                "only one file can be used at a time for `{command}`\n{USAGE}"
+            ));
+        }
+    }
+    let file = file.ok_or_else(|| format!("no file for `{command}`\n{USAGE}"))?;
+    let out = out.ok_or_else(|| format!("missing --out <dir>\n{USAGE}"))?;
+    Ok((file, out))
 }
 
 /// Writes the designs, the report and the images below `out`.
@@ -127,4 +148,82 @@ fn unique_name(used: &mut HashSet<String>, name: &str, id: &str) -> String {
         candidate = format!("{base}-{count}");
     }
     candidate
+}
+
+/// Writes `compare.json` and the images it names below `out`.
+fn write_comparison(comparison: &Comparison, out: &Path) -> Result<(), String> {
+    let images = out.join("images");
+    fs::create_dir_all(&images)
+        .map_err(|error| format!("cannot create {}: {error}", images.display()))?;
+    let mut used = HashSet::new();
+    let mut boards = Vec::with_capacity(comparison.boards.len());
+    for board in &comparison.boards {
+        let name = unique_name(&mut used, &board.board, &board.board_id);
+        boards.push(board_json(board, &name, &images)?);
+    }
+    let mut text = serde_json::to_string_pretty(&json!({
+        "tolerance": TOLERANCE,
+        "boards": boards,
+    }))
+    .map_err(|error| error.to_string())?;
+    text.push('\n');
+    put(&out.join("compare.json"), text.as_bytes())
+}
+
+/// The entry of a board in `compare.json`, after writing its images to `images`
+/// as `<name>-render.png` and `<name>-diff.png`.
+fn board_json(board: &BoardComparison, name: &str, images: &Path) -> Result<Value, String> {
+    let pixel = match &board.pixel {
+        None => Value::Null,
+        Some(pixel) => {
+            let mut paths = Vec::new();
+            for (kind, bytes) in [("render", &pixel.render), ("diff", &pixel.diff)] {
+                let file = format!("{name}-{kind}.png");
+                put(&images.join(&file), bytes)?;
+                paths.push(format!("images/{file}"));
+            }
+            json!({
+                "width": pixel.width,
+                "height": pixel.height,
+                "compared": pixel.compared,
+                "masked": pixel.masked,
+                "differing": pixel.differing,
+                "share": pixel.share(),
+                "render": paths[0],
+                "diff": paths[1],
+            })
+        }
+    };
+    let rect = |rect: &omni_penpot::Rect| json!({ "x": rect.x, "y": rect.y, "width": rect.width, "height": rect.height });
+    let mismatches: Vec<Value> = board
+        .layout
+        .mismatches
+        .iter()
+        .map(|mismatch| {
+            json!({
+                "shapeId": mismatch.shape_id,
+                "name": mismatch.name,
+                "penpot": rect(&mismatch.penpot),
+                "omnistate": rect(&mismatch.omnistate),
+                "offBy": mismatch.off_by,
+            })
+        })
+        .collect();
+    let unconverted: Vec<Value> = board
+        .unconverted
+        .iter()
+        .map(|shape| {
+            json!({ "shapeId": shape.shape_id, "name": shape.name, "reason": shape.reason })
+        })
+        .collect();
+    Ok(json!({
+        "board": board.board,
+        "boardId": board.board_id,
+        "page": board.page,
+        "layoutOnly": board.pixel.is_none(),
+        "note": board.note,
+        "pixel": pixel,
+        "layout": { "compared": board.layout.compared, "mismatches": mismatches },
+        "unconverted": unconverted,
+    }))
 }
