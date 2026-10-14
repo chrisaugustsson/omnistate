@@ -47,13 +47,24 @@
 //!   never inside a word, which overflows a line too narrow for it. A line
 //!   break at the very end starts no line, and an empty text has none. Each
 //!   line is `lineHeight` × `fontSize` tall, fractions included, or as tall
-//!   as Chrome makes `line-height: normal` when `lineHeight` is left out: the
-//!   font's ascent and descent, each rounded to whole device pixels.
+//!   as the font's normal line height (ascent + descent + line gap) at full
+//!   precision when `lineHeight` is left out: 19.359375 px for 16 px Inter
+//!   (decision Q44). Every line height is snapped to a multiple of 1/64 px,
+//!   and `make chrome-boxes` writes it in px, never `normal`, so Chrome gives
+//!   the same line heights at any pixel ratio. The tests keep to font sizes
+//!   and line height multiples where rounding down and rounding to the nearest
+//!   1/64 px agree, except where they check the snapping itself.
 //!   `letterSpacing` is CSS `letter-spacing`, which follows every character.
-//! - Where Chrome rounds to device pixels, the boxes are the ones it gives at
+//! - Where Chrome rounds to device pixels (the baselines of lines of text,
+//!   which `alignItems: baseline` lines up), the boxes are the ones it gives at
 //!   a device pixel ratio of 2, the ratio that the renderer gate (US-008,
 //!   US-009) compares boxes at: device pixels are half CSS pixels there.
+//! - Every expected box comes from `make chrome-boxes`: headless Chrome at that
+//!   ratio, with the bundled Inter loaded through `@font-face`, laying out the
+//!   design as HTML with the CSS above. Nothing is calculated by hand.
 #![allow(dead_code)]
+
+pub mod cases;
 
 use omni_core::design::{Node, NodeId};
 use omni_render::layout::{self, LayoutBox};
@@ -124,6 +135,19 @@ pub fn assert_box_within(
         actual.width,
         actual.height
     );
+}
+
+/// Lays out the design of each case and asserts that every node the case lists
+/// has the box Chrome gives it.
+#[track_caller]
+pub fn assert_cases(cases: Vec<cases::Case>) {
+    for case in &cases {
+        let boxes = lay_out(&case.design);
+        for (node, expected) in &case.boxes {
+            let expected = expected.map(|value| value as f32);
+            assert_box_within(&boxes, node, expected, case.tolerance, &case.name);
+        }
+    }
 }
 
 /// The IDs of `json` and of every node below it.

@@ -5,7 +5,9 @@
 
 mod design;
 
-use design::{assert_box, board, fixed, grid, hugging, lay_out, rect, sized, with};
+use design::{
+    assert_box, assert_cases, board, cases, fixed, grid, hugging, lay_out, rect, sized, with,
+};
 use serde_json::{Value, json};
 
 /// An empty child that fills its grid area.
@@ -255,4 +257,12 @@ fn fixed_and_hug_children_sit_at_the_start_of_their_area_and_fill_children_fill_
     ));
     assert_box(&boxes, "e0000001", [0.0, 0.0, 60.0, 100.0], case);
     assert_box(&boxes, "f0000001", [200.0, 0.0, 120.0, 50.0], case);
+}
+
+#[test]
+fn an_absolute_child_ignores_its_grid_lines_and_a_placement_without_a_start_or_span_is_automatic() {
+    // An absolute child is placed by its `x` and `y` only, so it is not placed
+    // in the grid area its `gridColumn` and `gridRow` name; and an empty
+    // placement, `{}`, is `auto / auto` like one that is left out.
+    assert_cases(cases::absolute_children_and_empty_grid_lines());
 }

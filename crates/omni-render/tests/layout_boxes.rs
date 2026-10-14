@@ -6,8 +6,8 @@ mod common;
 mod design;
 
 use design::{
-    absolute, assert_box, at, board, box_of, fixed, flex, frame, grid, ids_in, lay_out, none, rect,
-    sized, text, with,
+    absolute, assert_box, assert_cases, at, board, box_of, cases, fixed, flex, frame, grid, ids_in,
+    lay_out, none, rect, sized, text, with,
 };
 use serde_json::{Value, json};
 
@@ -413,4 +413,36 @@ fn omni_render_lays_out_with_taffy() {
             "omni-render lays out the omni-core node tree with Taffy, so it needs a normal dependency on the `{crate_name}` crate"
         );
     }
+}
+
+#[test]
+fn a_board_that_hugs_or_fills_its_width_is_as_wide_as_its_content_on_one_line() {
+    // Nothing around a board limits its width, so a board is `width:
+    // max-content` where it hugs or fills it.
+    assert_cases(cases::boards_sized_by_their_content());
+}
+
+#[test]
+fn a_none_frame_an_image_a_vector_and_an_instance_have_no_content_that_takes_space() {
+    assert_cases(cases::none_frames_and_media_take_no_space());
+}
+
+#[test]
+fn a_hidden_node_and_every_node_below_it_get_an_empty_box_at_the_top_left_of_their_parent() {
+    // The row sits at (50, 20): its hidden frame and the box inside it have
+    // empty boxes there, not at the origin of the page.
+    assert_cases(cases::hidden_nodes_get_empty_boxes());
+}
+
+#[test]
+fn a_token_reference_counts_as_left_out() {
+    assert_cases(cases::token_references_count_as_left_out());
+}
+
+#[test]
+fn layout_gives_the_boxes_chrome_gives_for_every_row_of_the_css_mapping() {
+    // One design for each value of each property of docs/formats/layout.md,
+    // and for each way that a parent sizes and places a child. Chrome's boxes
+    // for them are the ones `make chrome-boxes` prints.
+    assert_cases(cases::css_mapping());
 }

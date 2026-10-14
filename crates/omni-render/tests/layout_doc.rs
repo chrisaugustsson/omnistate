@@ -170,7 +170,6 @@ fn the_doc_defines_fixed_hug_and_fill_per_axis_in_flex_and_in_grid() {
         "justify-self:stretch",
         "align-self:start",
         "justify-self:start",
-        "line-height:normal",
         "white-space:pre-wrap",
     ] {
         assert!(
@@ -179,4 +178,90 @@ fn the_doc_defines_fixed_hug_and_fill_per_axis_in_flex_and_in_grid() {
             declaration.replace(':', ": ")
         );
     }
+}
+
+/// The text of the section of `doc` whose heading is `title`, up to the next
+/// heading of the same or a higher level, or `None` when it has no such
+/// section. Lines inside code fences are not headings.
+fn section(doc: &str, title: &str) -> Option<String> {
+    let mut in_fence = false;
+    let mut level_of_section = None;
+    let mut text = String::new();
+    for line in doc.lines() {
+        if line.trim_start().starts_with("```") {
+            in_fence = !in_fence;
+        }
+        let level = if in_fence {
+            0
+        } else {
+            line.chars().take_while(|&c| c == '#').count()
+        };
+        let is_heading = level > 0 && line[level..].starts_with(' ');
+        match level_of_section {
+            None if is_heading && line[level..].trim().eq_ignore_ascii_case(title) => {
+                level_of_section = Some(level);
+            }
+            Some(start) if is_heading && level <= start => break,
+            Some(_) => {
+                text.push_str(line);
+                text.push('\n');
+            }
+            None => {}
+        }
+    }
+    level_of_section.map(|_| text)
+}
+
+#[test]
+fn the_doc_lists_the_known_differences_from_chrome_under_a_heading_of_that_name() {
+    // The differences that the checker finds on random designs and that stay
+    // are listed under "Known differences", for US-009 to resolve or to
+    // confirm within 2 px. The text differences the doc already names belong
+    // there too.
+    let doc = layout_doc();
+    let known = section(&doc, "Known differences").unwrap_or_else(|| {
+        panic!("docs/formats/layout.md must have a section with the heading `Known differences`, which lists where the renderer's boxes differ from Chrome's for US-009 to resolve")
+    });
+    let lower = known.to_lowercase();
+    for difference in ["thai", "soft hyphen"] {
+        assert!(
+            lower.contains(difference),
+            "the `Known differences` section of docs/formats/layout.md must list the difference that the doc already names for {difference:?}, the text that the renderer still breaks differently from Chrome; it says:\n{known}"
+        );
+    }
+}
+
+/// Whether `doc`, which `normalized` has turned into a single line with no
+/// spaces around colons, spells out a CSS `line-height` in px.
+fn writes_a_line_height_in_px(doc: &str) -> bool {
+    doc.match_indices("line-height:").any(|(start, property)| {
+        let value: String = doc[start + property.len()..]
+            .chars()
+            .take_while(|&c| !c.is_whitespace() && !matches!(c, '`' | ';' | ')' | ','))
+            .collect();
+        value.ends_with("px")
+    })
+}
+
+#[test]
+fn the_doc_gives_every_line_an_explicit_height_in_px_at_full_precision() {
+    // Decision Q44: a text without lineHeight has its font's normal line
+    // height (ascent + descent + line gap) at full precision, never rounded to
+    // whole pixels: 19.359375 px for 16 px Inter. Every line height is snapped
+    // to a multiple of 1/64 px, and the export writes it in px, never
+    // `normal`, so Chrome gives the same result at any pixel ratio.
+    let raw = layout_doc();
+    let doc = normalized(&raw);
+    assert!(
+        doc.contains("19.359375"),
+        "docs/formats/layout.md must give the normal line height of 16 px Inter at full precision, 19.359375 px (15.5 + 3.859375 + 0), as the example of a text without a lineHeight"
+    );
+    assert!(
+        doc.contains("1/64"),
+        "docs/formats/layout.md must say that every line height is snapped to a multiple of 1/64 px"
+    );
+    assert!(
+        writes_a_line_height_in_px(&doc),
+        "docs/formats/layout.md must say that the CSS of a text's `lineHeight` is a `line-height` in px, never `normal` or a multiple of the font size"
+    );
 }

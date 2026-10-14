@@ -6,8 +6,8 @@
 mod design;
 
 use design::{
-    SIX_WORDS, absolute, assert_box, assert_box_within, at, board, box_of, fixed, flex, frame,
-    grid, hugging, lay_out, none, rect, sized, text, with, without,
+    SIX_WORDS, absolute, assert_box, assert_box_within, assert_cases, at, board, box_of, cases,
+    fixed, flex, frame, grid, hugging, lay_out, none, rect, sized, text, with,
 };
 use serde_json::{Value, json};
 
@@ -395,65 +395,46 @@ fn align_items_places_children_on_the_cross_axis_of_a_column() {
 
 #[test]
 fn align_items_baseline_lines_up_the_first_baselines_of_a_row() {
-    // Lines of Inter are lineHeight x fontSize tall, or as tall as Chrome
-    // makes `line-height: normal`, with half the leading above the glyphs
-    // (CSS half-leading). Chrome rounds the font's ascent and descent to
-    // whole device pixels, and that half of the leading down to a whole
-    // device pixel. At the device pixel ratio of 2 of the renderer gate, a
-    // device pixel is half a CSS pixel. A box without text has no baseline,
+    // Lines of Inter are lineHeight x fontSize tall, with half the leading
+    // above the glyphs (CSS half-leading). Chrome rounds the font's ascent and
+    // descent to whole device pixels, and that half of the leading down to a
+    // whole device pixel. At the device pixel ratio of 2 of the renderer gate,
+    // a device pixel is half a CSS pixel. A box without text has no baseline,
     // so its bottom edge stands in for one. The row lines every first
     // baseline up with the deepest one. These are Chrome's boxes at that
-    // ratio.
-    let without_line_height = |json: Value| without(&json, "lineHeight");
-    for (case, children, expected) in [
-        (
-            // Baselines 35.5 px below the top of the 32 px line, and 17.5 px
-            // below that of the 16 px line.
-            "a 32 px text, a 16 px text and a 20 x 20 box",
-            vec![
-                text("txt00001", "Hello", 32.0, 1.5),
-                text("txt00002", "Hello", 16.0, 1.5),
-                rect("c0000001", 20.0, 20.0),
-            ],
-            vec![
-                ("txt00001", 0.0, 48.0),
-                ("txt00002", 18.0, 24.0),
-                ("c0000001", 15.5, 20.0),
-            ],
-        ),
-        (
-            // Baselines 14.5, 17.5 and 23 px below the tops of the lines: the
-            // 28.8 px line of the 24 px text is shorter than its glyphs.
-            "a 13 px text, an 18 px text with lineHeight left out, a 24 px text with lineHeight 1.2 and a 10 x 10 box",
-            vec![
-                text("txt00001", "Hello", 13.0, 1.5),
-                without_line_height(text("txt00002", "Hello", 18.0, 1.5)),
-                text("txt00003", "Hello", 24.0, 1.2),
-                rect("c0000001", 10.0, 10.0),
-            ],
-            vec![
-                ("txt00001", 8.5, 19.5),
-                ("txt00002", 5.5, 22.0),
-                ("txt00003", 0.0, 28.8),
-                ("c0000001", 13.0, 10.0),
-            ],
-        ),
+    // ratio: baselines 35.5 px below the top of the 32 px line, and 17.5 px
+    // below that of the 16 px line.
+    let case = "a 32 px text, a 16 px text and a 20 x 20 box aligned on their baselines in a 400 x 100 row";
+    let boxes = lay_out(&board(
+        "brd00001",
+        fixed(400.0),
+        fixed(100.0),
+        flex(json!({"alignItems": "baseline"})),
+        vec![
+            text("txt00001", "Hello", 32.0, 1.5),
+            text("txt00002", "Hello", 16.0, 1.5),
+            rect("c0000001", 20.0, 20.0),
+        ],
+    ));
+    let mut x = 0.0;
+    for (id, y, height) in [
+        ("txt00001", 0.0, 48.0),
+        ("txt00002", 18.0, 24.0),
+        ("c0000001", 15.5, 20.0),
     ] {
-        let case = format!("{case} aligned on their baselines in a 400 x 100 row");
-        let boxes = lay_out(&board(
-            "brd00001",
-            fixed(400.0),
-            fixed(100.0),
-            flex(json!({"alignItems": "baseline"})),
-            children,
-        ));
-        let mut x = 0.0;
-        for (id, y, height) in expected {
-            let width = box_of(&boxes, id).width;
-            assert_box(&boxes, id, [x, y, width, height], &case);
-            x += width;
-        }
+        let width = box_of(&boxes, id).width;
+        assert_box_within(&boxes, id, [x, y, width, height], TEXT_TOLERANCE, case);
+        x += width;
     }
+}
+
+#[test]
+fn align_items_baseline_lines_up_texts_without_a_line_height_by_their_normal_line_height() {
+    // The line of a text without a lineHeight is its font's normal line height
+    // at full precision (decision Q44), which is shorter than Chrome's rounded
+    // ascent and descent at 16 px and below: half the leading is then negative,
+    // and Chrome rounds it down to a whole device pixel.
+    assert_cases(cases::normal_line_heights_on_baselines());
 }
 
 #[test]
@@ -1417,4 +1398,137 @@ fn a_child_is_never_narrower_than_its_padding() {
         assert_box(&boxes, "frm00001", [0.0, 0.0, 30.0, 24.0], &case);
         assert_box(&boxes, "a0000001", [15.0, 10.0, 4.0, 4.0], &case);
     }
+}
+
+#[test]
+fn a_fill_height_item_with_a_min_height_below_its_content_stays_at_its_min_height() {
+    // A hug-height column holds a text (width fixed 60, height fill, minHeight
+    // 30, "Quarterly report Supercalifragilistic Lorem ipsum dolor sit amet" in
+    // 16 px Inter, lineHeight 1.5) and a 20 x 20 box. The text would need
+    // 168 px at that width, but its explicit minHeight turns off the automatic
+    // minimum of a flex item, and the column's height is the sum of the
+    // hypothetical sizes of its items. Chrome gives the text 60 x 30, the box
+    // y 30 and the column a height of 50, in a grid area, absolutely
+    // positioned in a flex parent, in a `none` layout and in a fixed-height
+    // row.
+    assert_cases(cases::fill_height_with_min_height());
+}
+
+#[test]
+fn a_max_width_clamps_the_hypothetical_size_of_a_shrinking_item_not_its_flex_basis() {
+    // CSS clamps an item's min and max width in its hypothetical size, not in
+    // its flex basis, which stays the width of its content. A 160 px row
+    // holds a hug frame with maxWidth 100 around "alpha beta gamma delta
+    // epsilon" and the text "zeta eta theta". The row shrinks both items
+    // from the widths of their content, and the frame, which its max width
+    // stops at 100 px, leaves 60 px to the text.
+    assert_cases(cases::max_width_while_shrinking());
+}
+
+#[test]
+fn hug_items_of_a_wrapping_column_are_sized_against_their_flex_lines_cross_size() {
+    // In a wrapping column a hug item's width is fit into the cross size of its
+    // flex line, which a wider item in the line sets, not into the inner width
+    // of the container: with alignItems start, center or end a text is as wide
+    // as it needs up to its line, where the container is narrower.
+    assert_cases(cases::wrapping_columns());
+}
+
+#[test]
+fn a_hug_row_that_wraps_sizes_items_with_a_max_width_and_fill_items_that_shrink_as_chrome_does() {
+    assert_cases(cases::hug_rows_that_wrap());
+}
+
+#[test]
+fn a_row_that_does_not_wrap_is_as_wide_at_its_narrowest_as_its_items_and_gaps() {
+    // The min-content width of a row that does not wrap is the sum of the
+    // min-content widths of its items plus the gaps: in a 50 px column that
+    // aligns it to the start, a row of "alpha beta" and "gamma delta", 8 px
+    // apart, is 104.914 px wide, and its texts are 41.102 and 55.812 px.
+    assert_cases(cases::nowrap_hug_row());
+}
+
+#[test]
+fn a_columns_content_width_includes_its_padding() {
+    assert_cases(cases::column_padding());
+}
+
+#[test]
+fn item_contributions_to_the_width_of_a_row_respect_their_min_width() {
+    assert_cases(cases::minimum_widths());
+}
+
+#[test]
+fn a_column_that_wraps_is_as_wide_at_its_narrowest_as_its_widest_item() {
+    assert_cases(cases::wrapping_column_overflow());
+}
+
+#[test]
+fn a_grid_counts_in_the_content_widths_of_the_row_that_holds_it() {
+    assert_cases(cases::grids_in_rows());
+}
+
+#[test]
+fn a_column_that_hugs_its_width_takes_its_min_width_in_a_grid_area() {
+    assert_cases(cases::auto_widths_for_columns());
+}
+
+#[test]
+fn fixed_sizes_are_bounded_by_min_and_max_sizes_where_a_hug_parent_counts_them() {
+    assert_cases(cases::clamped_fixed_sizes());
+}
+
+#[test]
+fn fill_items_never_shrink_below_their_min_content_and_count_at_their_content_in_a_hug_row() {
+    // A fill item grows from a flex basis of 0, but like any flex item it
+    // never shrinks below its min-content width, the width of its widest word
+    // for a text. In a row that hugs its width it counts at the width of its
+    // content.
+    assert_cases(cases::fill_items());
+}
+
+#[test]
+fn a_box_is_never_smaller_than_its_padding_on_either_axis_or_in_the_width_it_adds_to_a_row() {
+    assert_cases(cases::boxes_are_never_smaller_than_their_padding());
+}
+
+#[test]
+fn a_column_wraps_its_children_at_its_fixed_height_or_at_the_height_a_row_stretches_it_to() {
+    // A column wraps its children at its height when that is fixed, bounded by
+    // its min and max heights and never below its padding, or when a row that
+    // does not wrap stretches it to the row's own fixed height, less the row's
+    // padding. A row that wraps does not stretch it. The lines it wraps into
+    // set its width, where nothing else does.
+    assert_cases(cases::wrapping_columns_wrap_at_their_height());
+}
+
+#[test]
+fn a_row_that_wraps_keeps_its_items_on_one_line_at_their_max_content_widths() {
+    // The widths of the items and of the row's padding add up to numbers a
+    // float cannot hold exactly. Chrome keeps the items on one line anyway.
+    assert_cases(cases::wrapping_rows_at_their_max_content_width());
+}
+
+#[test]
+fn an_empty_text_has_no_baseline_so_its_bottom_edge_stands_in_for_one() {
+    assert_cases(cases::empty_texts_have_no_baseline());
+}
+
+#[test]
+fn a_column_whose_content_decides_its_height_is_as_tall_as_its_items_need() {
+    // Whatever the space around it, a column that hugs its height is as tall as
+    // its content: a fill item gets the height of its content, the automatic
+    // minimum of a flex item, where it would get nothing from a flex basis of
+    // 0, and a text's maxHeight bounds it.
+    assert_cases(cases::hug_columns_take_the_height_their_items_need());
+}
+
+#[test]
+fn a_column_narrower_than_its_text_wraps_the_text_at_its_width_or_lets_its_line_grow() {
+    // A column that stretches a text that hugs its width wraps it at the
+    // column's width. A column that wraps sizes its line by the text, and its
+    // flex basis, the text's height, was measured at the column's width. A
+    // board that is a column of fixed height that wraps is as wide as the lines
+    // it wraps into.
+    assert_cases(cases::narrow_columns_wrap_their_texts());
 }

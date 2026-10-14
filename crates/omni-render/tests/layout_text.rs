@@ -7,11 +7,14 @@ mod common;
 mod design;
 
 use design::{
-    SIX_WORDS, absolute, assert_box, assert_box_within, at, board, box_of, fixed, flex, frame,
-    grid, lay_out, none, rect, sized, text, with, without,
+    SIX_WORDS, absolute, assert_box, assert_box_within, assert_cases, at, board, box_of, cases,
+    fixed, flex, frame, grid, lay_out, node, none, rect, sized, text, with, without,
 };
+use omni_render::layout;
+use omni_render::text::Fonts;
 use serde_json::{Value, json};
 use skia_safe::{Data, Font, FontMgr};
+use std::collections::BTreeSet;
 
 /// The bundled Inter, which the tests measure their expectations with.
 const INTER: &[u8] = include_bytes!("../fonts/Inter-Regular.ttf");
@@ -151,30 +154,54 @@ fn text_is_shaped_so_kerning_pairs_move_closer() {
 }
 
 #[test]
-fn a_text_without_a_line_height_gets_the_normal_line_height_a_browser_gives_its_font() {
-    // Chrome makes each line of `line-height: normal` as tall as the font's
-    // ascent plus its descent (Inter has no line gap), each rounded to whole
-    // device pixels. At the device pixel ratio of 2 that the renderer gate
-    // compares boxes at, a device pixel is half a CSS pixel: at 16 px the
-    // ascent of 15.5 and the descent of 3.86 px make 15.5 + 4 = 19.5 px,
-    // where whole CSS pixels would make 20 px. These are Chrome's heights.
-    for (content, size, expected) in [
-        ("Hello", 11.0, 13.0),
-        ("Hello", 12.0, 14.5),
-        ("Hello", 13.0, 15.5),
-        ("Hello", 14.0, 17.0),
-        ("Hello", 16.0, 19.5),
-        ("Hello", 18.0, 22.0),
-        ("Hello", 20.0, 24.5),
-        ("Hello", 24.0, 29.5),
-        ("Hello", 32.0, 38.5),
-        ("Hello\nworld", 16.0, 39.0),
-    ] {
-        let json = without(&text("txt00001", content, size, 1.5), "lineHeight");
-        let height = hug_text_box(json).height;
+fn a_text_without_a_line_height_gets_its_fonts_normal_line_height_at_full_precision() {
+    // Decision Q44: a text without lineHeight is as tall per line as its
+    // font's normal line height, ascent + descent + line gap, never rounded to
+    // whole pixels. Inter's ascent is 15.5 px at 16 px and its descent 3.859375
+    // px, and it has no line gap, so a line is 19.359375 px tall. That is not
+    // what Chrome's own `line-height: normal` gives (19.5 px at a device pixel
+    // ratio of 2, 20 px at 1), which is why the export writes the line height
+    // in px. The font sizes are those where rounding down and rounding to the
+    // nearest 1/64 px agree.
+    assert_cases(cases::normal_line_heights());
+}
+
+/// The normal line height of Inter at `size` px at full precision: its ascent
+/// of 1984, descent of 494 and line gap of 0, in units of 1/2048 em.
+fn normal_line_height(size: f32) -> f32 {
+    size * (1984.0 + 494.0) / 2048.0
+}
+
+#[test]
+fn every_line_height_is_snapped_to_a_multiple_of_a_64th_of_a_pixel() {
+    // Chrome lays out in 1/64 of a device pixel, so a line height that is a
+    // multiple of 1/64 CSS px is the same at every integer pixel ratio. Layout
+    // snaps every line height, the normal one and lineHeight times fontSize,
+    // to such a multiple: within 1/64 px of the exact height, and nothing
+    // coarser than 1/64 px or finer. These sizes have exact heights between
+    // two multiples.
+    let snapped = |height: f32, exact: f32, case: &str| {
+        let units = height * 64.0;
         assert!(
-            (height - expected).abs() <= 0.01,
-            "{content:?} in {size} px Inter with lineHeight left out is as tall as Chrome makes CSS `line-height: normal` at a device pixel ratio of 2, {expected} px; layout gave {height} px"
+            (units - units.round()).abs() <= 0.001 && (height - exact).abs() < 1.0 / 64.0,
+            "{case} is {exact} px tall exactly, so a line height snapped to a multiple of 1/64 px is within 1/64 px of it; layout gave {height} px"
+        );
+    };
+    for size in [11.0, 13.0, 15.0, 18.0, 20.0, 24.0] {
+        let height =
+            hug_text_box(without(&text("txt00001", "Hello", size, 1.5), "lineHeight")).height;
+        snapped(
+            height,
+            normal_line_height(size as f32),
+            &format!("a line of {size} px Inter without a lineHeight"),
+        );
+    }
+    for (size, multiple) in [(11.0, 1.33), (13.0, 1.4), (17.0, 1.35), (15.0, 1.1)] {
+        let height = hug_text_box(text("txt00001", "Hello", size, multiple)).height;
+        snapped(
+            height,
+            (size * multiple) as f32,
+            &format!("a line of {size} px Inter with lineHeight {multiple}"),
         );
     }
 }
@@ -682,6 +709,10 @@ fn letter_spacing_turns_off_contextual_alternates() {
         ("C:VBQ", 0.0, 50.039),
         ("C:VBQ", 2.0, 59.039),
         ("C:VBQ", -0.5, 46.539),
+        // Any spacing turns them off, however small.
+        ("C:VBQ", 0.2, 50.039),
+        ("a->b", 0.1, 37.133),
+        ("a->b", -0.1, 36.328),
     ] {
         let json = with(
             &text("txt00001", content, 16.0, 1.5),
@@ -818,4 +849,130 @@ fn omni_render_measures_text_with_skias_paragraph_layout() {
         features.contains(&"textlayout"),
         "omni-render shapes and wraps text with Skia's paragraph layout, which skia-safe's `textlayout` feature provides; it enables {features:?}"
     );
+}
+
+#[test]
+fn lines_break_where_chrome_breaks_urls_and_hyphenated_words() {
+    // "state-of-the-art" in a text 60 px wide takes three lines, and so does
+    // "See https://example.com/a/very/long/path/name for more" in a text 150
+    // px wide: "See", the URL, which never breaks, and "for more".
+    assert_cases(cases::line_breaks());
+}
+
+/// For each printable ASCII character that a line may break after, the
+/// printable ASCII characters that it may break before, as Chrome breaks
+/// between two ASCII characters (Blink's table, measured in Chrome 155):
+///
+/// - After a hyphen a line breaks before most characters, but not before a
+///   digit, so that a minus sign stays with its number, nor before closing
+///   punctuation or a slash.
+/// - After a question mark it breaks before most characters, a digit included,
+///   but not before closing punctuation, a quote or a slash.
+/// - After closing punctuation and most symbols it breaks only before an
+///   opening bracket.
+/// - After any other character it never breaks, so that paths, URLs and
+///   abbreviations stay whole.
+const BREAKS_BEFORE: [(&str, &str); 21] = [
+    ("!", "(<[{"),
+    ("\"", "(<[{"),
+    ("#", "(<[{"),
+    ("%", "(<[{"),
+    ("&", "(<[{"),
+    (")", "(<[{"),
+    ("*", "(<[{"),
+    ("+", "(<[{"),
+    (",", "(<[{"),
+    (
+        "-",
+        "\"#%&'(*+-<=>@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\^_`abcdefghijklmnopqrstuvwxyz{|~",
+    ),
+    (".", "(<[{"),
+    (":", "(<[{"),
+    (";", "(<[{"),
+    ("=", "(<[{"),
+    (">", "(<[{"),
+    (
+        "?",
+        "#$%&(*+-0123456789<=>@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\^_`abcdefghijklmnopqrstuvwxyz{|~",
+    ),
+    ("\\", "(<[{"),
+    ("]", "(<[{"),
+    ("|", "(<[{"),
+    ("}", "(<[{"),
+    ("~", "(<[{"),
+];
+
+#[test]
+fn a_line_breaks_between_two_ascii_characters_exactly_where_chrome_breaks_it() {
+    // Every pair of printable ASCII characters, written without a space, in a
+    // text that is 1 px wide: it takes two lines where a line may break
+    // between the two characters and one line where it may not.
+    let fonts = Fonts::bundled();
+    let mut wrong = BTreeSet::new();
+    for first in '!'..='~' {
+        let breaks_before = BREAKS_BEFORE
+            .iter()
+            .find(|(character, _)| character.starts_with(first))
+            .map_or("", |(_, seconds)| *seconds);
+        let pairs: Vec<(char, Value)> = ('!'..='~')
+            .enumerate()
+            .map(|(index, second)| {
+                let content = format!("{first}{second}");
+                let id = format!("t{index:07}");
+                let pair = with(&text(&id, &content, 16.0, 1.5), "width", fixed(1.0));
+                (second, pair)
+            })
+            .collect();
+        let design = board(
+            "brd00001",
+            fixed(100.0),
+            json!("hug"),
+            flex(json!({"direction": "column", "alignItems": "start"})),
+            pairs.iter().map(|(_, pair)| pair.clone()).collect(),
+        );
+        let boxes = layout::compute(&node(&design), &fonts);
+        for (index, (second, _)) in pairs.iter().enumerate() {
+            let id = format!("t{index:07}").parse().expect("a valid node ID");
+            let lines = (boxes[&id].height / 24.0).round();
+            let expected = if breaks_before.contains(*second) {
+                2.0
+            } else {
+                1.0
+            };
+            if lines != expected {
+                wrong.insert(format!("{first}{second} ({lines} lines, not {expected})"));
+            }
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "Chrome breaks a line between two ASCII characters only where its table says, but layout breaks these pairs differently: {wrong:?}"
+    );
+}
+
+#[test]
+fn a_tab_moves_its_line_on_to_the_stop_after_the_next_when_less_than_half_a_space_is_left() {
+    // "Date" is 34.94 px wide, which leaves 1.06 px, less than half of the
+    // 4.5 px of a space, to the first tab stop at 36 px, so a tab after it goes
+    // on to the stop at 72 px; "Item" is 32.95 px and its tab stops at 36 px.
+    assert_cases(cases::tabs());
+    // "mZ9" is 34 px wide and leaves 2 px, which is less than half a space, but
+    // "xsGI" is 33.41 px wide and leaves 2.59 px. A letter spacing that cancels
+    // the width of a space leaves no tab stops at all.
+    assert_cases(cases::tabs_near_a_stop());
+}
+
+#[test]
+fn text_style_leaves_boxes_alone() {
+    assert_cases(cases::text_style_leaves_boxes_alone());
+}
+
+#[test]
+fn the_spaces_at_the_end_of_a_text_count_in_its_width_but_not_in_its_narrowest_piece() {
+    assert_cases(cases::spaces_in_text());
+}
+
+#[test]
+fn every_weight_style_and_missing_family_measures_as_inter_regular() {
+    assert_cases(cases::weights_styles_and_families_measure_as_inter_regular());
 }
