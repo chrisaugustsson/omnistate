@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>omni-render nodes</title>
+    <style>
+      body {
+        margin: 0;
+        padding: 32px;
+        background: #e2e8f0;
+        color: #0f172a;
+        font: 15px/1.5 system-ui, sans-serif;
+      }
+
+      h1 {
+        margin: 0 0 4px;
+        font-size: 20px;
+      }
+
+      p {
+        margin: 0 0 12px;
+        max-width: 72ch;
+      }
+
+      code {
+        font-size: 13px;
+      }
+
+      /* main-nodes.js sizes the canvas to the boards of nodes.json. */
+      #canvas {
+        display: block;
+        margin-top: 16px;
+        box-shadow: 0 1px 3px rgb(15 23 42 / 0.2);
+      }
+
+      #status,
+      #layout {
+        color: #475569;
+      }
+
+      label {
+        display: block;
+        margin-top: 8px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>omni-render nodes</h1>
+    <p>
+      Skia, compiled from Rust to WebAssembly, draws <code>nodes.json</code> on this WebGL canvas: one
+      example of every node type and property, in six boards. Check that every example looks right:
+      the caption under each shows what it should be. Images are generated here, because the host page
+      supplies them; so are fonts, below.
+    </p>
+    <p id="status">Loading the renderer…</p>
+    <p id="layout"></p>
+    <label>
+      Supply a font file (TrueType or OpenType) for the family “Missing Sans”, which the Text board sets a line in:
+      <input id="font" type="file" accept=".ttf,.otf,font/ttf,font/otf">
+    </label>
+    <canvas id="canvas"></canvas>
+    <script type="module" src="./main-nodes.js"></script>
+  </body>
+</html>

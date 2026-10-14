@@ -1,11 +1,14 @@
-//! The scene drawn by the `render-sandbox/` test page: a solid background,
-//! one filled rectangle and one line of text.
+//! What the `render-sandbox/` test pages draw: the scene of the first page, a
+//! solid background with one filled rectangle and one line of text, and the
+//! layout boxes that the second page compares between builds.
 
+use omni_core::design::Node;
 use skia_safe::{
     AlphaType, Canvas, Color, ColorType, Font, ImageInfo, Paint, font::Edging, surfaces,
 };
 
-use crate::text::inter;
+use crate::layout;
+use crate::text::{Fonts, inter};
 
 /// An opaque sRGB color: `[red, green, blue]`.
 pub type Rgb = [u8; 3];
@@ -113,4 +116,27 @@ fn pixels(length: u32) -> i32 {
 
 fn color([red, green, blue]: Rgb) -> Color {
     Color::from_rgb(red, green, blue)
+}
+
+/// Lays out the design in `design_json`, a design node in the JSON of
+/// `omni_core::design`, with `fonts`, and returns the box of every node as one
+/// JSON object by node ID: `{"<node id>": {"x": 0, "y": 0, "width": 60,
+/// "height": 30}}`, in CSS pixels and page coordinates. The native build and
+/// the WebAssembly build both write it, so that the test page can measure how
+/// far apart they lay the same design out.
+pub fn layout_json(design_json: &str, fonts: &Fonts) -> Result<String, String> {
+    let design: Node = serde_json::from_str(design_json).map_err(|error| error.to_string())?;
+    let boxes = layout::compute(&design, fonts)
+        .into_iter()
+        .map(|(id, layout_box)| {
+            let value = serde_json::json!({
+                "x": f64::from(layout_box.x),
+                "y": f64::from(layout_box.y),
+                "width": f64::from(layout_box.width),
+                "height": f64::from(layout_box.height),
+            });
+            (id.as_str().to_string(), value)
+        })
+        .collect::<serde_json::Map<_, _>>();
+    Ok(serde_json::Value::Object(boxes).to_string())
 }

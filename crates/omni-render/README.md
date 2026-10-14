@@ -90,6 +90,65 @@ context and draws `SandboxScene::demo()` (`src/sandbox.rs`), scaled by the
 pixel ratio. Natively, `render_rgba` draws the same scene on a CPU raster
 surface, which the tests check pixel by pixel.
 
+## Drawing nodes
+
+`paint::draw` paints a laid-out design on a Skia canvas: every node in the
+box that `layout::compute` gave it, one canvas pixel to a CSS pixel. The same
+function draws on the CPU raster surface of `paint::render_rgba` (the tests,
+which look at its pixels) and on the WebGL canvas of the browser. Its module
+documentation lists what the design format leaves open: the paint order of a
+frame, strokes inside the edge of boxes but centered on vectors, shadows as CSS
+`box-shadow`, opacity as a group, and images fitted like CSS `object-fit`.
+
+- Frames and boards paint shadows, fills (solid, linear gradient along CSS's
+  gradient line, image), inner shadows, strokes and then their children, clipped
+  to the rounded box when `clip` is set. Images paint like frames with one image,
+  and vectors fill and stroke their SVG path, in pixels from the corner of their
+  box.
+- Instances and token references are out of scope until US-032: an instance is
+  not drawn, and a color that is a token is not painted.
+- The host supplies images (`Assets::add_image`, PNG or JPEG bytes for an
+  `attachment:<id>`) and font files (`Assets::add_font`, for a family name). An
+  image that was not supplied draws nothing. Text in a family that was not
+  supplied is measured and drawn in the bundled Inter, so only Inter Regular is
+  there until more weights are bundled: Skia slants it for italic text, and the
+  WebAssembly build also thickens it for heavier weights, which the native build
+  does not.
+- Text is drawn in the lines that layout computed (`ShapedText`, `src/text.rs`):
+  Skia shapes and paints each run of a line, but never breaks a line, so the lines
+  are the ones Chrome breaks. Lines align left, center, right or justified inside
+  the text's box, and underlines and lines through text span the whole line.
+
+### The nodes test page
+
+`render-sandbox/nodes.html` draws `render-sandbox/nodes.json` on a WebGL canvas
+through the WebAssembly module: one example of every node type and property, in
+six boards (fills, radii and strokes; shadows; opacity, clip and visibility;
+layouts; text; images and vectors), each captioned with what it should look
+like. Build the module and serve the folder as above, then open
+http://localhost:8000/nodes.html. The page generates the images itself, because
+the host supplies them, and has a file input that supplies a font for the family
+"Missing Sans".
+
+The module exports the functions that the page calls, and
+`omni_render_alloc`, `omni_render_free` and `omni_render_error` to hand text and
+bytes across (`src/main.rs`; the page copies them in through the exported
+`HEAPU8`):
+
+- `_omni_render_add_image` and `_omni_render_add_font` supply an image or a font.
+- `_omni_render_draw_design` draws a design on the current WebGL context.
+- `_omni_render_layout_design` lays a design out and returns the box of every
+  node as JSON.
+
+`make nodes-boxes` writes the boxes that the native build gives the same design
+to `render-sandbox/build/nodes-boxes.json`, and the page lines them up with its
+own: the page reports the largest difference of any x, y, width or height of any
+node. Measured in Chrome on macOS, the largest difference between the layout
+boxes of the WebAssembly build (FreeType) and the native build (CoreText) over
+the 189 nodes of `nodes.json` is 0 px: both read the same Inter file with linear
+metrics and no hinting, so the boxes match exactly. The measurement needs
+a browser, so run it again after changing the examples, the fonts or the layout.
+
 ## Layout
 
 `layout::compute` gives every node of a design its box (x, y, width and

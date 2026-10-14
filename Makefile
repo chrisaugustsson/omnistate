@@ -13,7 +13,7 @@ WASM_TARGET := wasm32-unknown-emscripten
 WASM_OUT := $(or $(CARGO_TARGET_DIR),target)/$(WASM_TARGET)/release
 SANDBOX_BUILD := render-sandbox/build
 
-.PHONY: lint test render-wasm chrome-boxes stress-file
+.PHONY: lint test render-wasm chrome-boxes stress-file nodes-boxes
 
 # The last clippy run covers the WebAssembly-only code of omni-render.
 lint:
@@ -45,6 +45,13 @@ chrome-boxes:
 # goes, relative to the repository root.
 stress-file:
 	$(CARGO) run --quiet -p omni-core --bin stress-file -- $(if $(SEED),--seed $(SEED)) --out $(or $(OUT),$(SANDBOX_BUILD)/stress-file.json)
+
+# Writes the boxes that the native build lays out the nodes test page's design
+# in (render-sandbox/nodes.json), which render-sandbox/nodes.html compares with
+# the boxes of the WebAssembly build.
+nodes-boxes:
+	mkdir -p $(SANDBOX_BUILD)
+	$(CARGO) run --quiet -p omni-render --example layout-boxes -- render-sandbox/nodes.json > $(SANDBOX_BUILD)/nodes-boxes.json
 
 $(EMCC):
 	test -d "$(EMSDK)" || git clone --depth 1 --branch $(EMSDK_VERSION) https://github.com/emscripten-core/emsdk.git "$(EMSDK)"

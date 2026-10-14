@@ -16,7 +16,10 @@ fn main() {
         // current with the exported GL object.
         "MIN_WEBGL_VERSION=2",
         "MAX_WEBGL_VERSION=2",
-        "EXPORTED_RUNTIME_METHODS=GL",
+        // The page registers its WebGL context through GL, copies designs,
+        // images and fonts into the module's memory through HEAPU8, and reads
+        // the text that the module returns with UTF8ToString.
+        "EXPORTED_RUNTIME_METHODS=GL,HEAPU8,UTF8ToString",
     ] {
         println!("cargo::rustc-link-arg-bins=-s{setting}");
     }

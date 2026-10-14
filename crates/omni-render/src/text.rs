@@ -3,13 +3,15 @@
 
 mod breaks;
 
-use omni_core::design::{self, Text, TokenOr};
+use omni_core::design::{self, Text, TextAlign, TextDecoration, TokenOr};
 use skia_safe::font_style::{Slant, Weight, Width};
 use skia_safe::textlayout::{
     FontCollection, Paragraph, ParagraphBuilder, ParagraphStyle, RectHeightStyle, RectWidthStyle,
     TextStyle, TypefaceFontProvider,
 };
-use skia_safe::{Data, Font, FontHinting, FontMgr, FontStyle, Typeface};
+use skia_safe::{
+    Canvas, Color, Data, Font, FontHinting, FontMgr, FontStyle, Paint, Rect, Typeface,
+};
 use std::ops::Range;
 
 /// Inter Regular, under the SIL Open Font License (`fonts/LICENSE.txt`).
@@ -47,6 +49,9 @@ const FEATURES_OFF_WITH_LETTER_SPACING: [&str; 3] = ["liga", "clig", "calt"];
 
 /// The fonts that text is shaped and measured with.
 pub struct Fonts {
+    /// The registry of the typefaces that were supplied, which `collection`
+    /// looks families up in.
+    provider: TypefaceFontProvider,
     collection: FontCollection,
 }
 
@@ -60,8 +65,24 @@ impl Fonts {
         let mut collection = FontCollection::new();
         // No system fonts: a family that is not registered falls back to the
         // default family, Inter.
-        collection.set_default_font_manager(Some(provider.into()), INTER);
-        Fonts { collection }
+        collection.set_default_font_manager(Some(provider.clone().into()), INTER);
+        Fonts {
+            provider,
+            collection,
+        }
+    }
+
+    /// Supplies a font file (TrueType or OpenType) for text in `family`: text
+    /// in that family is measured and drawn with it from now on. Fails if the
+    /// bytes are not a font.
+    pub fn add_font(&mut self, family: &str, data: &[u8]) -> Result<(), String> {
+        let typeface = FontMgr::custom_empty()
+            .unwrap_or_default()
+            .new_from_data(Data::new_copy(data), None)
+            .ok_or_else(|| format!("the bytes for font family {family:?} are not a font"))?;
+        self.provider.register_typeface(typeface, family);
+        self.collection.clear_caches();
+        Ok(())
     }
 
     /// The typeface that text in `family` and `style` is set in: the closest
@@ -92,6 +113,14 @@ pub(crate) fn inter() -> Typeface {
 /// `white-space: pre-wrap`: at line breaks, after spaces and wherever else
 /// Chrome allows a line to break (see `text/breaks.rs`), never inside a word.
 pub struct ShapedText {
+    /// The text, kept to draw from.
+    content: String,
+    /// How the text is drawn: its style and paragraph style, from which the
+    /// paragraphs of the runs of a line are built, and the lines that
+    /// decorate it.
+    style: TextStyle,
+    paragraph_style: ParagraphStyle,
+    decoration: Decoration,
     /// The lines that the content's line breaks make, each cut into the
     /// pieces that it may break between. An empty line has no pieces.
     lines: Vec<Vec<Piece>>,
@@ -106,10 +135,47 @@ pub struct ShapedText {
     /// How far the baseline of the first line is below the top of the text,
     /// or `None` when the text is empty and so has no line.
     first_baseline: Option<f32>,
+    /// How the lines of the text align in its box.
+    align: TextAlign,
+}
+
+/// The line that decorates text, if it has one, as the font sets it.
+struct Decoration {
+    /// How far below the baseline the top of the line is, up being negative,
+    /// and how thick it is.
+    rule: Option<(f32, f32)>,
+}
+
+impl Decoration {
+    fn of(text: &Text, metrics: &skia_safe::FontMetrics, font_size: f32) -> Self {
+        // Thinner than a pixel, a line fades instead of showing.
+        let thickness = |thickness: Option<f32>| thickness.unwrap_or(font_size / 16.0).max(1.0);
+        let rule = match text.text_decoration {
+            Some(TextDecoration::Underline) => Some((
+                // The font gives where the top of an underline is.
+                metrics.underline_position().unwrap_or(font_size / 10.0),
+                thickness(metrics.underline_thickness()),
+            )),
+            Some(TextDecoration::LineThrough) => {
+                let thickness = thickness(metrics.strikeout_thickness());
+                // The font gives where the bottom of the line is.
+                let bottom = metrics.strikeout_position().unwrap_or(-font_size * 0.3);
+                Some((bottom - thickness, thickness))
+            }
+            Some(TextDecoration::None) | None => None,
+        };
+        Decoration { rule }
+    }
 }
 
 /// A piece of a line, from one place where the line may break to the next.
 struct Piece {
+    /// Where the piece starts in the content, in bytes, and where its word
+    /// ends and the spaces and tabs that end it start. It ends where the next
+    /// piece of the line starts.
+    start: usize,
+    word_end: usize,
+    end: usize,
     /// The width of the piece without the spaces and tabs that end it, which
     /// hang at the end of a line: the line holds them even where they do not
     /// fit.
@@ -226,12 +292,18 @@ impl ShapedText {
         let first_baseline =
             ascent + ((line_height_in_device_pixels - ascent - descent) / 2.0).floor();
         let space = font.measure_str(" ", None).0;
+        let decoration = Decoration::of(text, &metrics, font_size);
         let tab_stops = TabStops {
             every: TAB_SIZE * (space + letter_spacing),
             space,
         };
 
         ShapedText {
+            content: text.content.clone(),
+            style,
+            paragraph_style,
+            decoration,
+            align: text.text_align.unwrap_or(TextAlign::Left),
             // The spaces and tabs that end a piece hang, so they never widen
             // the text when every piece takes a line of its own.
             min_content_width: lines
@@ -278,30 +350,167 @@ impl ShapedText {
         self.line_count(width) as f32 * self.line_height
     }
 
-    /// How many lines the text breaks into at `width`. As in a browser, each
-    /// line takes as many pieces as fit, and a piece wider than `width`
-    /// overflows a line of its own.
+    /// How many lines the text breaks into at `width`.
     fn line_count(&self, width: f32) -> usize {
-        self.lines
-            .iter()
-            .map(|pieces| {
-                let Some((first, rest)) = pieces.split_first() else {
-                    // An empty line, which a line break ends.
-                    return 1;
-                };
-                let mut lines = 1;
-                let mut line = first.end(0.0, self.tab_stops);
-                for piece in rest {
-                    if !fits(line + piece.width, width) {
-                        lines += 1;
-                        line = 0.0;
-                    }
-                    line = piece.end(line, self.tab_stops);
-                }
-                lines
-            })
-            .sum()
+        let mut lines = 0;
+        self.each_line(width, |_, _| lines += 1);
+        lines
     }
+
+    /// Calls `visit` with the pieces of each line that the text breaks into at
+    /// `width`, top to bottom, and whether a line break or the end of the text
+    /// ends the line. As in a browser, each line takes as many pieces as fit,
+    /// and a piece wider than `width` overflows a line of its own. An empty
+    /// line, which a line break ends, has no pieces.
+    fn each_line(&self, width: f32, mut visit: impl FnMut(&[Piece], bool)) {
+        for pieces in &self.lines {
+            let Some(first) = pieces.first() else {
+                visit(&[], true);
+                continue;
+            };
+            let mut start = 0;
+            let mut line = first.end(0.0, self.tab_stops);
+            for (index, piece) in pieces.iter().enumerate().skip(1) {
+                if !fits(line + piece.width, width) {
+                    visit(&pieces[start..index], false);
+                    start = index;
+                    line = 0.0;
+                }
+                line = piece.end(line, self.tab_stops);
+            }
+            visit(&pieces[start..], true);
+        }
+    }
+
+    /// Draws the text in `color` with its top-left corner at `origin`, in a
+    /// box `width` px wide: each line is where layout put it, breaking at
+    /// `width`, a line height below the one above, aligned in the box.
+    pub fn draw(
+        &self,
+        canvas: &Canvas,
+        fonts: &Fonts,
+        color: Color,
+        origin: (f32, f32),
+        width: f32,
+    ) {
+        let Some(first_baseline) = self.first_baseline else {
+            return;
+        };
+        let mut style = self.style.clone();
+        style.set_color(color);
+        let mut paragraph_style = self.paragraph_style.clone();
+        paragraph_style.set_text_style(&style);
+        let mut paint = Paint::default();
+        paint.set_anti_alias(true);
+        paint.set_color(color);
+
+        let mut baseline = origin.1 + first_baseline;
+        self.each_line(width, |pieces, ends_paragraph| {
+            let line = self.arrange(pieces, width, ends_paragraph);
+            for run in &line.runs {
+                let mut builder = ParagraphBuilder::new(&paragraph_style, &fonts.collection);
+                builder.add_text(&self.content[run.range.clone()]);
+                let mut paragraph = builder.build();
+                paragraph.layout(f32::INFINITY);
+                paragraph.paint(
+                    canvas,
+                    (
+                        origin.0 + line.x + run.x,
+                        baseline - paragraph.alphabetic_baseline(),
+                    ),
+                );
+            }
+            // A line of text is decorated across its whole width, between
+            // words too.
+            if let Some((offset, thickness)) = self.decoration.rule.filter(|_| line.width > 0.0) {
+                let rule =
+                    Rect::from_xywh(origin.0 + line.x, baseline + offset, line.width, thickness);
+                canvas.draw_rect(rule, &paint);
+            }
+            baseline += self.line_height;
+        });
+    }
+
+    /// Places the `pieces` of a line in a box `width` px wide, as `text-align`
+    /// does. Text is a set of runs that each shape as one: a line is one run,
+    /// except where a tab or a justified space moves the next word on.
+    fn arrange(&self, pieces: &[Piece], width: f32, ends_paragraph: bool) -> Line {
+        let Some(last) = pieces.last() else {
+            return Line {
+                x: 0.0,
+                width: 0.0,
+                runs: Vec::new(),
+            };
+        };
+        // Where the last word ends, without the spaces and tabs that hang
+        // after it.
+        let mut x = 0.0;
+        for piece in &pieces[..pieces.len() - 1] {
+            x = piece.end(x, self.tab_stops);
+        }
+        let natural_width = x + last.width;
+        // Justified lines spread the free space over their spaces, but not
+        // the spaces that hang at their end, and not at the end of a line that
+        // a line break or the end of the text ends.
+        let spaces = pieces[..pieces.len() - 1]
+            .iter()
+            .map(|piece| self.content[piece.word_end..piece.end].matches(' ').count())
+            .sum::<usize>();
+        let justify = self.align == TextAlign::Justify && !ends_paragraph && spaces > 0;
+        let extra_per_space = if justify {
+            ((width - natural_width) / spaces as f32).max(0.0)
+        } else {
+            0.0
+        };
+        let line_width = natural_width + extra_per_space * spaces as f32;
+        let x = match self.align {
+            TextAlign::Center => ((width - line_width) / 2.0).max(0.0),
+            TextAlign::Right => (width - line_width).max(0.0),
+            TextAlign::Left | TextAlign::Justify => 0.0,
+        };
+
+        let mut runs: Vec<Run> = Vec::new();
+        let mut open: Option<(usize, f32)> = None;
+        let mut at = 0.0;
+        for piece in pieces {
+            let (start, run_x) = *open.get_or_insert((piece.start, at));
+            let ends_run = justify || !piece.tabs.is_empty();
+            if ends_run || std::ptr::eq(piece, last) {
+                if start < piece.word_end {
+                    runs.push(Run {
+                        range: start..piece.word_end,
+                        x: run_x,
+                    });
+                }
+                open = None;
+            }
+            at = piece.end(at, self.tab_stops);
+            if justify {
+                at += extra_per_space
+                    * self.content[piece.word_end..piece.end].matches(' ').count() as f32;
+            }
+        }
+        Line {
+            x,
+            width: line_width,
+            runs,
+        }
+    }
+}
+
+/// A line of text, placed in its box.
+struct Line {
+    /// How far the line starts from the left edge of the box.
+    x: f32,
+    /// The width of the line without the spaces and tabs that hang after it.
+    width: f32,
+    runs: Vec<Run>,
+}
+
+/// Text on a line that is shaped as one, and starts `x` px after the line.
+struct Run {
+    range: Range<usize>,
+    x: f32,
 }
 
 /// Cuts `content` into its lines at its line breaks, and each line into the
@@ -365,6 +574,9 @@ fn pieces(content: &str, paragraph: &Paragraph) -> Vec<Vec<Piece>> {
                     width(run)
                 });
                 pieces.push(Piece {
+                    start: piece_start,
+                    word_end: spaces_start,
+                    end: piece_end,
                     width: width(piece_start..spaces_start),
                     spaces: runs.next().unwrap_or(0.0),
                     tabs: runs.collect(),
