@@ -9,6 +9,7 @@ use serde_json::{Value, json};
 
 pub mod compare;
 pub mod convert;
+pub mod report;
 
 /// The id of the root frame that every page of an export has, the parent of the
 /// shapes that sit directly on the page.
