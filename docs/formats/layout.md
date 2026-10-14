@@ -390,9 +390,9 @@ them. Anything else that the tool says goes to standard error.
 Where the renderer's boxes still differ from Chrome's. They were found by
 comparing the two on thousands of random designs, and every rule above is
 pinned by tests with the boxes that Chrome gives (`make chrome-boxes`). The
-comparison found flex layouts to differ only in the two cases under Flex below,
-and the other differences are in grids and in text. US-009 resolves each one,
-or confirms that it stays within 2 px on the stress file.
+comparison found flex layouts to differ only in the cases under Flex below, and
+the other differences are in grids and in text. US-009 resolves each one, or
+confirms that it stays within 2 px on the stress file.
 
 ### Text
 
@@ -407,36 +407,77 @@ or confirms that it stays within 2 px on the stress file.
   arrow when the text stays on one line but measures `a-` and `>b` apart.
 - A double hyphen before a letter beyond ASCII breaks where Chrome does not:
   `a --élan`, 10 px wide, takes four lines, and three in Chrome.
+- A character that Inter has no glyph for, such as a Chinese, Japanese or
+  Arabic letter or an emoji, is as wide as Inter's missing-glyph box in the
+  renderer, where Chrome draws it in a font of the system. How wide such text
+  is, and where its lines break, depends on the fonts of the machine in
+  Chrome: `日本語` at 16 px is 31.5 px wide in the renderer, and 48.96 px in
+  Chrome on the machine that measured the tests.
 
 ### Flex
 
-- A row that hugs its width and wraps, with a `minWidth`, a `maxWidth` and
-  padding, breaks its lines at its `minWidth` where that is wider than the
-  space inside its padding, where Chrome breaks them at that space. Items that
-  need up to the padding more than that space stay on one line. A frame with a
-  `minWidth` of 120 px, a `maxWidth` of 150 px and 16 px of padding on the
-  right, around boxes of 60 and 45 px, is 40 px tall in Chrome, which wraps
-  them, and 20 px in the renderer.
-- A box that a row shrinks to a `minWidth` below its padding is as wide as its
-  padding, as in Chrome, but is placed as if it were as wide as that
-  `minWidth`. With `justifyContent: center` or `end`, a hug frame with a
-  `minWidth` of 20 px and 12 px of padding on each side, around a box of 20 px,
-  in a row of 20 px, is at x -4 in Chrome with `end`, and at x 0 in the
+- A row that wraps, with a `minWidth`, a `maxWidth` and padding, breaks its
+  lines at its `minWidth` where that is wider than the space inside its
+  padding, where Chrome breaks them at that space. Items that need up to the
+  padding more than that space stay on one line. In a row 100 px wide, a frame
+  with a `minWidth` of 120 px, a `maxWidth` of 150 px and 16 px of padding on
+  the right, around boxes of 60 and 45 px, is 40 px tall in Chrome, which wraps
+  them, and 20 px in the renderer. A column that wraps does the same with its
+  `minHeight`, `maxHeight` and padding: a column with a `minHeight` and a
+  `maxHeight` of 70 px and 8 px of padding at the top and the bottom puts two
+  boxes 30 px tall side by side in Chrome, and one above the other in the
   renderer.
+- A box that a flex layout shrinks to a `minWidth` or `minHeight` below its
+  padding is as large as its padding, as in Chrome, but is placed as if it were
+  as large as that bound where the layout centers its boxes or packs them
+  against its right or bottom edge: with `justifyContent: center` or `end`, and
+  in a `row-reverse` or `column-reverse` unless `justifyContent` is `start`. A
+  hug frame with a `minWidth` of 20 px and 12 px of padding on each side,
+  around a box of 20 px, in a row of 20 px, is at x -4 in Chrome with `end`,
+  and at x 0 in the renderer. The same holds across the lines of a row or a
+  column that wraps in reverse, for a box with a `maxHeight` or a `maxWidth`
+  below its padding: a frame with 12 px of padding at the top and the bottom
+  and a `maxHeight` of 13 px, next to a box 10 px tall in a row 40 px tall that
+  wraps in reverse, is at y 16 in Chrome, and at y 27 in the renderer.
+- A column that wraps, and whose height its parent column sets by shrinking or
+  growing it, wraps its items at that height in Chrome, but keeps the width
+  that its items have on one line, so its lines overflow it. The renderer
+  keeps such a column's items on one line, or makes the column as wide as all
+  its lines. A column with a `minHeight` of 30 px that wraps boxes of 56 × 20
+  and 26 × 20 px, above a box 30 px tall in a column with a `maxHeight` of
+  44 px, is shrunk to 30 px: Chrome puts the second box at x 56 and y 0, and
+  the renderer at x 0 and y 20. A column 60 px tall that wraps, around a column
+  with a `minHeight` of 10 px that wraps boxes 40 and 50 px wide and 40 px
+  tall, shrinks that column to 60 px and makes it 50 px wide in Chrome, and
+  90 px in the renderer.
+- In a column that wraps in reverse with `alignItems: baseline`, a hug text
+  next to a `fill` item that is wider than the column is fit into its flex line
+  in both, as [Sizing](#sizing-width-and-height) says, but Chrome places it by
+  the narrower width that the column gave it, and the renderer by its width in
+  the line. In a column 10 px wide, the 16 px text "ipsum -1", 45.59 px wide in
+  the column and 63.96 px in its line, next to a `fill` frame around a box
+  100 px wide, is at x -35.59 from the column's left edge in Chrome, and at
+  x -53.96 in the renderer.
 
 ### Grid
 
 - A `hug` grid is as wide as its max-content width where CSS fits it into the
   space available to it, which is its max-content width but no wider than that
   space unless its narrowest width is wider still. That is the case in a grid
-  area and for a positioned grid. A grid with the columns `2fr 1fr` around
+  area, on the cross axis of a column that does not stretch it or that wraps,
+  and for a positioned grid. A grid with the columns `2fr 1fr` around
   "-1 Total" in a column of 60 px is 82.8 px wide, and 60 px in Chrome, which
   wraps the text. A grid with the columns `1fr 2fr` around "I", positioned in a
-  board that hugs it, is 12.9 px wide, and 4.3 px in Chrome.
-- A grid in a row that shrinks it is as wide at its narrowest as its items'
-  narrowest content, where Chrome counts an item with a `minWidth` at that
-  `minWidth`: a hug grid around "Quarterly" with a `minWidth` of 20 px, in a
-  row 20 px wide, is 70.6 px wide, and 20 px in Chrome.
+  board that hugs it, is 12.9 px wide, and 4.3 px in Chrome. A grid with the
+  columns `1fr auto 2fr 150px` around "iii", in a column 20 px wide that wraps,
+  is 184.88 px wide, and 161.63 px in Chrome.
+- In a flex layout, a grid is as wide at its narrowest as its items' narrowest
+  content, where Chrome counts an item with a `minWidth` at that `minWidth`.
+  That shows in a row that shrinks the grid, and in a frame that takes its
+  narrowest width: a hug grid around "Quarterly" with a `minWidth` of 20 px,
+  in a row 20 px wide, is 70.6 px wide, and 20 px in Chrome, and one around
+  "input/output" with a `minWidth` of 80 px, in a hug row in a grid column of
+  80 px, is 92.37 px wide, and 80 px in Chrome.
 - An item that spans several tracks of `auto` size shares what the tracks it
   spans lack with them differently: a `fill` child in the first of three
   columns that a 38.6 px wide text spans is 12.9 px wide, and 0 px in Chrome.
@@ -444,14 +485,38 @@ or confirms that it stays within 2 px on the stress file.
 - A line number counted from the end with a span (`gridRow: {"start": -1,
   "span": 2}`) that reaches beyond the explicit grid places the item in another
   implicit row than in Chrome.
-- In a positioned grid that hugs its height, a row takes the `minHeight` of its
-  item where it should take the item's content height, when that is more: a
-  text of 24 px with a `minHeight` of 10 px makes a row of 10 px.
-- In a grid whose `fixed` height is less than its rows need, a row takes the
-  `fixed` height of its item where that is less than the item's padding, and
-  Chrome takes the padding: in a board that is 20 px tall, a frame 10 px tall
-  with 16 px of padding at the bottom, above a text, puts the text at y 10, and
-  at y 16 in Chrome.
+- A grid that hugs its height grows a row whose item has a `minHeight` below
+  its content's height only as far as the height of the space around the grid,
+  where that height is definite, and Chrome grows the row to the content. A hug
+  grid around the 24 px text "Quarterly report" with a `minHeight` of 10 px,
+  105.87 px wide so that the text takes two lines, is 58.06 px tall in Chrome.
+  In the renderer it is 40 px tall in a grid row of 40 px or in a row 40 px
+  tall, 20 px tall positioned in a board 20 px tall, and 10 px tall positioned
+  in a frame without a height.
+- A grid takes its first baseline, which `alignItems: baseline` lines up, from
+  the first child of its first row in the order of its children, and Chrome
+  from the child that comes first in the row, the leftmost. They differ where
+  the placement puts a child ahead of one that comes before it: next to a 32
+  px text in a row that aligns them by baseline, a grid of two `auto` columns
+  around a 12 px "Hi" and a 24 px "Date" placed on row 1, which puts "Date" in
+  the first column, every text with a `lineHeight` of 1.5, is at y 9 in
+  Chrome, by the baseline of "Date", and at y 22.5 in the renderer, by that of
+  "Hi".
+- In a grid whose `fixed` height, or the height of the space it is positioned
+  in, is less than its rows need, a row takes the `fixed` height of its item
+  where that is less than the item's padding, and Chrome takes the padding: in
+  a board that is 20 px tall, a frame 10 px tall with 16 px of padding at the
+  bottom, above a text, puts the text at y 10, and at y 16 in Chrome.
+  Positioned in a frame without a height, a hug grid around a frame 10 px tall
+  with 16 px of padding at the top is 10 px tall, and 16 px in Chrome.
+- Chrome sizes the `fr` tracks of a grid that hugs its width in its layout
+  units of 1/128 px, and rounds down the size of one `fr`, so a track of
+  `2fr` next to one of `1fr` can be a unit narrower than the content it was
+  sized for. A line that the content fills exactly then no longer fits: a row
+  that wraps a 16 px text 295.586 px wide and an empty frame, in the `2fr`
+  column of a grid with the columns `2fr 1fr`, puts the frame on a second line
+  in Chrome, where the column is 295.578 px wide, and next to the text in the
+  renderer.
 
 ## Example
 
@@ -485,7 +550,7 @@ or confirms that it stays within 2 px on the stress file.
             width: 320px; display: flex; flex-direction: column; row-gap: 12px;
             padding: 16px">
   <div style="box-sizing: border-box; align-self: stretch; font-family: 'Inter';
-              font-size: 20px; line-height: 1.2; white-space: pre-wrap">Quarterly report</div>
+              font-size: 20px; line-height: 24px; white-space: pre-wrap">Quarterly report</div>
   <div style="position: absolute; left: 280px; top: 8px; box-sizing: border-box;
               width: 24px; height: 24px; display: block"></div>
 </div>
@@ -493,6 +558,8 @@ or confirms that it stays within 2 px on the stress file.
 
 The title fills the width of the column (`align-self: stretch`), so it is
 288 px wide and breaks its lines there, and it hugs its height, the column's
-main axis, with CSS's initial `flex: 0 1 auto`: one line of 24 px. The badge
-sits 280 px from the card's left edge and 8 px from its top, and the card's
-height ignores it: 16 + 24 + 16 = 56 px.
+main axis, with CSS's initial `flex: 0 1 auto`: one line of 24 px, its
+`lineHeight` of 1.2 times its 20 px font size, which the export writes in px
+as `line-height: 24px` (see [Text](#text)). The badge sits 280 px from the
+card's left edge and 8 px from its top, and the card's height ignores it:
+16 + 24 + 16 = 56 px.
