@@ -14,10 +14,12 @@
 //!   recorded once into a Skia picture, so that moving the view replays it
 //!   without shaping its text again. Zoomed far out, a board is drawn from a
 //!   small raster snapshot of it instead (see the README's "Level of detail").
+//!   It also keeps what the reviewer points at: the hovered and the selected
+//!   node (see the README's "Selection").
 
 use crate::layout::{self, LayoutBox};
 use crate::paint::{self, Assets};
-use crate::select::{Event, Modifiers, NodeAddress, Outline};
+use crate::select::{Event, Index, Modifiers, NodeAddress, Outline, OutlineKind};
 use omni_core::design::{Node, NodeData, NodeId};
 use skia_safe::{
     AlphaType, Canvas, ColorType, FilterMode, Image, ImageInfo, MipmapMode, Paint, Picture,
@@ -384,6 +386,13 @@ pub struct Scene {
     boxes: HashMap<NodeId, LayoutBox>,
     /// The visible boards of the page, in page order.
     boards: Vec<Board>,
+    /// The boxes of every node, to find the node at a point.
+    index: Index,
+    hovered: Option<usize>,
+    /// The selected node. The context is always its parent (the board is its
+    /// own context), so it is not kept apart.
+    selected: Option<usize>,
+    events: Vec<Event>,
 }
 
 /// The boards of `page`: its children, or the node itself if it is not a page.
@@ -411,11 +420,16 @@ impl Scene {
                 })
             })
             .collect();
+        let index = Index::new(board_nodes(&page), &boxes);
         Self {
             page,
             assets,
             boxes,
             boards,
+            index,
+            hovered: None,
+            selected: None,
+            events: Vec::new(),
         }
     }
 
@@ -460,51 +474,141 @@ impl Scene {
             .collect()
     }
 
-    /// The topmost visible node at the page point `point`.
-    pub fn node_at(&self, _point: (f32, f32)) -> Option<NodeId> {
-        None
+    /// The topmost visible node at the page point `point`: the deepest node
+    /// whose box holds it, with later siblings above earlier ones. Hidden
+    /// nodes and what lies outside a clipping ancestor cannot be hit.
+    pub fn node_at(&self, point: (f32, f32)) -> Option<NodeId> {
+        self.index.node_at(point).map(|at| self.index.id(at))
     }
 
-    /// The box, in page coordinates, of the node at `address`.
-    pub fn bounds_of(&self, _address: &NodeAddress) -> Option<LayoutBox> {
-        None
+    /// The box, in page coordinates, of the node at `address`. An address
+    /// inside a component instance has none until components are resolved
+    /// (US-032).
+    pub fn bounds_of(&self, address: &NodeAddress) -> Option<LayoutBox> {
+        if address.instance().is_some() {
+            return None;
+        }
+        Some(self.index.rect(self.index.lookup(address.node())?))
+    }
+
+    /// What a click, or the pointer moving with Ctrl or Cmd held for `deep`,
+    /// at the screen point `screen` of `viewport` selects: the deepest node
+    /// there when `deep`, and otherwise the child of the context that holds
+    /// it, or the board when no child of the context does.
+    fn target(&self, viewport: &Viewport, screen: (f32, f32), deep: bool) -> Option<usize> {
+        let hit = self.index.node_at(viewport.to_design(screen))?;
+        if deep {
+            return Some(hit);
+        }
+        let board = self.index.board(hit);
+        // A context in another board is not one here: a click starts over.
+        let context = self
+            .selected
+            .map(|selected| self.index.context(selected))
+            .filter(|&context| self.index.board(context) == board)
+            .unwrap_or(board);
+        Some(self.index.child_of(hit, context).unwrap_or(board))
+    }
+
+    fn select(&mut self, selected: Option<usize>) {
+        if self.selected != selected {
+            self.selected = selected;
+            let address = selected.map(|at| self.index.address(at));
+            self.events.push(Event::Select(address));
+        }
     }
 
     /// The pointer moved to the screen point `screen` of `viewport`.
-    pub fn pointer_move(&mut self, _viewport: &Viewport, _screen: (f32, f32), _keys: Modifiers) {}
+    pub fn pointer_move(&mut self, viewport: &Viewport, screen: (f32, f32), keys: Modifiers) {
+        let hovered = self.target(viewport, screen, keys.ctrl || keys.meta);
+        if self.hovered != hovered {
+            self.hovered = hovered;
+            let address = hovered.map(|at| self.index.address(at));
+            self.events.push(Event::Hover(address));
+        }
+    }
 
-    /// A click at the screen point `screen` of `viewport`.
-    pub fn click(&mut self, _viewport: &Viewport, _screen: (f32, f32), _keys: Modifiers) {}
+    /// A click at the screen point `screen` of `viewport`. With Ctrl or Cmd
+    /// held it selects the deepest node there. A click on no board clears the
+    /// selection.
+    pub fn click(&mut self, viewport: &Viewport, screen: (f32, f32), keys: Modifiers) {
+        let target = self.target(viewport, screen, keys.ctrl || keys.meta);
+        self.select(target);
+    }
 
-    /// A double-click at the screen point `screen` of `viewport`.
-    pub fn double_click(&mut self, _viewport: &Viewport, _screen: (f32, f32)) {}
+    /// A double-click at the screen point `screen` of `viewport`: a click,
+    /// then the selected node becomes the context and its child under the
+    /// pointer is selected. With no child there, the click's selection stays.
+    pub fn double_click(&mut self, viewport: &Viewport, screen: (f32, f32)) {
+        self.click(viewport, screen, Modifiers::default());
+        let Some(selected) = self.selected else {
+            return;
+        };
+        let child = self
+            .index
+            .node_at(viewport.to_design(screen))
+            .and_then(|hit| self.index.child_of(hit, selected));
+        if child.is_some() {
+            self.select(child);
+        }
+    }
 
-    /// The Escape key.
-    pub fn escape(&mut self) {}
+    /// The Escape key: selects the parent of the selection, which moves the
+    /// context up one level. On a board it clears the selection.
+    pub fn escape(&mut self) {
+        if let Some(selected) = self.selected {
+            self.select(self.index.parent(selected));
+        }
+    }
 
     /// The node the pointer is over, as a click would select it.
     pub fn hovered(&self) -> Option<NodeId> {
-        None
+        self.hovered.map(|at| self.index.id(at))
     }
 
     /// The selected node.
     pub fn selected(&self) -> Option<NodeId> {
-        None
+        self.selected.map(|at| self.index.id(at))
     }
 
-    /// The node whose children a click selects among.
+    /// The node whose children a click selects among: the parent of the
+    /// selection, or the board when a board is selected. `None` while nothing
+    /// is selected.
     pub fn context(&self) -> Option<NodeId> {
-        None
+        let selected = self.selected?;
+        Some(self.index.id(self.index.context(selected)))
     }
 
     /// The hover and selection changes since the last call, oldest first.
     pub fn take_events(&mut self) -> Vec<Event> {
-        Vec::new()
+        std::mem::take(&mut self.events)
     }
 
-    /// The outlines of the hovered and the selected node in `viewport`.
-    pub fn overlay(&self, _viewport: &Viewport) -> Vec<Outline> {
-        Vec::new()
+    /// The outlines of the hovered and the selected node in `viewport`, the
+    /// selection last so that it is drawn on top. A node that is both is
+    /// outlined as the selection.
+    pub fn overlay(&self, viewport: &Viewport) -> Vec<Outline> {
+        let outline = |at: usize, kind: OutlineKind| {
+            let rect = self.index.rect(at);
+            let (x, y) = viewport.to_screen((rect.x, rect.y));
+            Outline {
+                kind,
+                node: self.index.address(at),
+                label: self.index.name(at).to_string(),
+                rect: LayoutBox {
+                    x,
+                    y,
+                    width: rect.width * viewport.zoom(),
+                    height: rect.height * viewport.zoom(),
+                },
+            }
+        };
+        let hovered = self
+            .hovered
+            .filter(|&at| Some(at) != self.selected)
+            .map(|at| outline(at, OutlineKind::Hover));
+        let selected = self.selected.map(|at| outline(at, OutlineKind::Selection));
+        hovered.into_iter().chain(selected).collect()
     }
 
     /// Draws what `viewport` shows on `canvas`, whose unit is one CSS pixel
@@ -524,6 +628,7 @@ impl Scene {
             assets,
             boxes,
             boards,
+            ..
         } = self;
         let nodes = board_nodes(page);
         let mut stats = FrameStats {

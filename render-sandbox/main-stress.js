@@ -6,12 +6,22 @@
 // Zoom with a pinch or Ctrl/Cmd + wheel, pan with the wheel, or by dragging while
 // the space key is held. The module takes the design as bytes in its own memory:
 // this page copies it in with `_omni_render_alloc` and the exported `HEAPU8`.
+//
+// Click, double-click, Esc and Ctrl/Cmd + click select nodes, and the pointer
+// hovers them. The module keeps the selection and tells this page what changed
+// (`_omni_render_take_events`); this page draws the outlines it asks for
+// (`_omni_render_overlay`) in the #overlay element above the canvas, once for
+// every frame, so that they follow the nodes while zooming and panning. The
+// events also leave the page as `omni-hover` and `omni-select` events of the
+// canvas, for a host that embeds the renderer.
 import createOmniRender from './build/omni_render.js';
 
 const DESIGN_URL = './build/stress-file.json';
 
 const canvas = document.querySelector('#canvas');
 const status = document.querySelector('#status');
+const overlay = document.querySelector('#overlay');
+const selection = document.querySelector('#selection');
 const encoder = new TextEncoder();
 
 let renderer;
@@ -39,6 +49,62 @@ function loadScene(json) {
   }
 }
 
+// Calls an export that takes text, and returns the NUL-ended JSON text it gave
+// back parsed, or null if it gave none.
+function callWithText(name, text) {
+  const bytes = encoder.encode(text);
+  const pointer = renderer._omni_render_alloc(bytes.length);
+  renderer.HEAPU8.set(bytes, pointer);
+  try {
+    const result = renderer[name](pointer, bytes.length);
+    return result ? JSON.parse(renderer.UTF8ToString(result)) : null;
+  } finally {
+    renderer._omni_render_free(pointer, bytes.length);
+  }
+}
+
+// The bounds of the node at an address, in page and in canvas pixels, or null.
+function boundsOf(address) {
+  return callWithText('_omni_render_bounds_of', address);
+}
+
+// Draws the outlines of the hovered and the selected node above the canvas.
+function drawOverlay() {
+  const outlines = JSON.parse(renderer.UTF8ToString(renderer._omni_render_overlay()));
+  overlay.replaceChildren(
+    ...outlines.map((outline) => {
+      const box = document.createElement('div');
+      box.className = `outline ${outline.kind}`;
+      // A label above the top edge would be cut off at the top of the screen.
+      if (outline.y < 18) box.classList.add('inside');
+      box.style.left = `${outline.x}px`;
+      box.style.top = `${outline.y}px`;
+      box.style.width = `${outline.width}px`;
+      box.style.height = `${outline.height}px`;
+      const label = document.createElement('span');
+      label.className = 'label';
+      label.textContent = outline.label;
+      box.append(label);
+      return box;
+    }),
+  );
+}
+
+// Picks up what the module says changed about hover and selection.
+function takeEvents() {
+  const events = JSON.parse(renderer.UTF8ToString(renderer._omni_render_take_events()));
+  for (const event of events) {
+    canvas.dispatchEvent(new CustomEvent(`omni-${event.type}`, { detail: event.node }));
+    if (event.type !== 'select') continue;
+    const bounds = event.node && boundsOf(event.node);
+    selection.textContent = bounds
+      ? `Selected ${event.node}: ${Math.round(bounds.page.width)} x ${Math.round(bounds.page.height)} at ` +
+        `${Math.round(bounds.page.x)}, ${Math.round(bounds.page.y)}.`
+      : 'Nothing selected.';
+  }
+  drawOverlay();
+}
+
 // Makes the drawing buffer as large as the canvas is on the screen, in device pixels.
 function sizeCanvas() {
   const ratio = window.devicePixelRatio || 1;
@@ -59,6 +125,8 @@ function drawFrame() {
   const finished = performance.now();
   frameTimes.push(finished);
   while (frameTimes.length > 1 && finished - frameTimes[0] > 1000) frameTimes.shift();
+
+  drawOverlay();
 
   const stats = JSON.parse(renderer.UTF8ToString(renderer._omni_render_scene_stats()));
   status.textContent =
@@ -112,13 +180,37 @@ function between() {
   return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2, distance: Math.hypot(a.x - b.x, a.y - b.y) };
 }
 
+// Where the pointer last was and whether Ctrl or Cmd is held, so that hover
+// can be worked out again when the selection or the keys change.
+let pointer = null;
+let deepKeys = { ctrl: false, meta: false };
+// Whether the click that follows the pointer going up belongs to a pan or a
+// pinch, and is not a click on a node.
+let ignoreClick = false;
+
+function hover() {
+  if (pointer) {
+    renderer._omni_render_select_pointer_move(pointer[0], pointer[1], deepKeys.ctrl, deepKeys.meta);
+  }
+}
+
+function setKeys(event) {
+  const keys = { ctrl: event.ctrlKey, meta: event.metaKey };
+  if (keys.ctrl === deepKeys.ctrl && keys.meta === deepKeys.meta) return;
+  deepKeys = keys;
+  hover();
+  takeEvents();
+}
+
 function pointerDown(event) {
   const [x, y] = position(event);
   canvas.setPointerCapture(event.pointerId);
   touches.set(event.pointerId, { x, y });
+  ignoreClick = touches.size >= 2;
   if (touches.size === 2) {
     pinch = between();
   } else if (renderer._omni_render_view_pointer_down(x, y)) {
+    ignoreClick = true;
     canvas.classList.add('grabbing');
   }
 }
@@ -137,7 +229,35 @@ function pointerMove(event) {
     requestFrame();
   } else if (touches.size <= 1 && renderer._omni_render_view_pointer_move(x, y)) {
     requestFrame();
+  } else if (touches.size <= 1) {
+    pointer = [x, y];
+    deepKeys = { ctrl: event.ctrlKey, meta: event.metaKey };
+    hover();
+    takeEvents();
   }
+}
+
+// A click selects the node the pointer is over, as hover showed, unless it
+// ended a pan or a pinch.
+function click(event) {
+  const [x, y] = position(event);
+  if (ignoreClick) {
+    ignoreClick = false;
+    return;
+  }
+  renderer._omni_render_select_click(x, y, event.ctrlKey, event.metaKey);
+  // The context changed, so hover is what a click would select now.
+  pointer = [x, y];
+  hover();
+  takeEvents();
+}
+
+function doubleClick(event) {
+  const [x, y] = position(event);
+  renderer._omni_render_select_double_click(x, y);
+  pointer = [x, y];
+  hover();
+  takeEvents();
 }
 
 function pointerUp(event) {
@@ -195,6 +315,14 @@ try {
   canvas.addEventListener('pointermove', pointerMove);
   canvas.addEventListener('pointerup', pointerUp);
   canvas.addEventListener('pointercancel', pointerUp);
+  canvas.addEventListener('pointerleave', () => {
+    pointer = null;
+    // A point that is nowhere, so that hover clears.
+    renderer._omni_render_select_pointer_move(NaN, NaN, false, false);
+    takeEvents();
+  });
+  canvas.addEventListener('click', click);
+  canvas.addEventListener('dblclick', doubleClick);
 
   // Safari reports a trackpad pinch as gesture events instead of Ctrl + wheel.
   let gestureScale = 1;
@@ -211,12 +339,19 @@ try {
   });
 
   window.addEventListener('keydown', (event) => {
+    setKeys(event);
+    if (event.key === 'Escape') {
+      renderer._omni_render_select_escape();
+      hover();
+      takeEvents();
+    }
     if (event.code !== 'Space') return;
     // Space would scroll the page.
     event.preventDefault();
     setSpace(true);
   });
   window.addEventListener('keyup', (event) => {
+    setKeys(event);
     if (event.code === 'Space') setSpace(false);
   });
   window.addEventListener('blur', () => setSpace(false));

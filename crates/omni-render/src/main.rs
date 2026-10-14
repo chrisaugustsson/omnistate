@@ -22,6 +22,12 @@ mod exports {
         static LAYOUT: RefCell<CString> = RefCell::new(CString::default());
         /// The result of the last `omni_render_scene_stats`.
         static STATS: RefCell<CString> = RefCell::new(CString::default());
+        /// The result of the last `omni_render_bounds_of`.
+        static BOUNDS: RefCell<CString> = RefCell::new(CString::default());
+        /// The result of the last `omni_render_take_events`.
+        static EVENTS: RefCell<CString> = RefCell::new(CString::default());
+        /// The result of the last `omni_render_overlay`.
+        static OUTLINES: RefCell<CString> = RefCell::new(CString::default());
     }
 
     /// Takes the text or bytes at `ptr` and `len` from the page.
@@ -240,6 +246,80 @@ mod exports {
             controls.set_space(held);
             true
         });
+    }
+
+    /// The pointer moved to the canvas point `x`, `y` (CSS pixels), with
+    /// Ctrl or Cmd held or not: hover follows it.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn omni_render_select_pointer_move(x: f32, y: f32, ctrl: bool, meta: bool) {
+        omni_render::web::select_pointer_move(x, y, ctrl, meta);
+    }
+
+    /// A click at the canvas point `x`, `y`, with Ctrl or Cmd held or not.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn omni_render_select_click(x: f32, y: f32, ctrl: bool, meta: bool) {
+        omni_render::web::select_click(x, y, ctrl, meta);
+    }
+
+    /// A double-click at the canvas point `x`, `y`.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn omni_render_select_double_click(x: f32, y: f32) {
+        omni_render::web::select_double_click(x, y);
+    }
+
+    /// The Escape key.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn omni_render_select_escape() {
+        omni_render::web::select_escape();
+    }
+
+    /// The bounds of the node at the address (`<id>` or
+    /// `<instanceId>/<componentNodeId>`) as a NUL-ended JSON object that stays
+    /// until the next call: `{"page": {"x": 20, "y": 20, "width": 200,
+    /// "height": 200}, "screen": {...}}`, in page coordinates and in canvas
+    /// pixels at the current view. Null if the address names no node or is not
+    /// an address (`omni_render_error` has the reason in that case).
+    ///
+    /// # Safety
+    /// The pointer and length must be a block from `omni_render_alloc`.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn omni_render_bounds_of(
+        address: *const u8,
+        address_len: usize,
+    ) -> *const c_char {
+        // SAFETY: the caller promises the block is there.
+        let bounds = unsafe { text(address, address_len) }.and_then(omni_render::web::bounds_of);
+        match bounds {
+            Ok(Some(bounds)) => {
+                BOUNDS.set(CString::new(bounds).unwrap_or_default());
+                BOUNDS.with_borrow(|bounds| bounds.as_ptr())
+            }
+            Ok(None) => std::ptr::null(),
+            Err(reason) => {
+                fail(&reason);
+                std::ptr::null()
+            }
+        }
+    }
+
+    /// The hover and selection changes since the last call as a NUL-ended
+    /// JSON array that stays until the next call, oldest first:
+    /// `[{"type": "hover", "node": "<address>" | null}, {"type": "select",
+    /// "node": "<address>" | null}]`.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn omni_render_take_events() -> *const c_char {
+        EVENTS.set(CString::new(omni_render::web::take_events()).unwrap_or_default());
+        EVENTS.with_borrow(|events| events.as_ptr())
+    }
+
+    /// The outlines of the hovered and the selected node in the current view
+    /// as a NUL-ended JSON array that stays until the next call: `[{"kind":
+    /// "hover" | "selection", "node": "<address>", "label": "Card", "x": 240,
+    /// "y": 140, "width": 400, "height": 400}]`, in canvas pixels.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn omni_render_overlay() -> *const c_char {
+        OUTLINES.set(CString::new(omni_render::web::overlay()).unwrap_or_default());
+        OUTLINES.with_borrow(|outlines| outlines.as_ptr())
     }
 
     /// Lays the design out and returns the box of every node as a NUL-ended

@@ -215,6 +215,61 @@ to the exports `_omni_render_view_wheel`, `_view_pinch`, `_view_pointer_down`,
 `_omni_render_scene_stats`. Supply images and fonts before loading a scene: the
 scene keeps the ones it was loaded with.
 
+## Selection
+
+Comments pin to the exact node that was clicked, so `view::Scene` answers which
+node that is and keeps the reviewer's hover and selection (the types are in
+`select`).
+
+`nodeAt` (`Scene::node_at`) takes a page point and returns the topmost visible
+node there: the deepest node whose box holds the point, with later siblings
+above earlier ones. Hidden nodes and their subtrees cannot be hit, a node cannot
+be hit outside an ancestor that clips, and a node that overflows an ancestor that
+does not clip can. It is answered from an index of node boxes built when the
+scene is: every node knows the extent of itself and its visible descendants, so a
+query skips whole subtrees and takes microseconds on the 2,000-node board of the
+stress file (the tests pin the 99th percentile under 1 ms).
+
+The selection follows these rules. The context is the node whose children a click
+selects among, always the parent of the selection (the board is its own context):
+
+- A click selects the direct child of the context that holds the node under the
+  pointer, or the board itself if no child of the context does. The context
+  starts at the board, and a click on another board starts over there.
+- A double-click makes the selected node the context and selects its child under
+  the pointer. With no child there, nothing changes.
+- Esc selects the parent and moves the context up one level. On a board it clears
+  the selection, and with nothing selected it does nothing.
+- Cmd or Ctrl + click selects the deepest node under the pointer, and its parent
+  becomes the context.
+- Clicking where there is no board clears the selection and resets the context.
+
+Hover is what a click would select, so it follows the context and goes to the
+deepest node while Cmd or Ctrl is held. Selection input takes screen points and a
+`Viewport`, so a click lands on the node that is drawn under the pointer at any
+zoom and pan.
+
+The host page hears about changes through `Scene::take_events`, which gives an
+`Event::Hover` or `Event::Select` with the node's address each time the hovered
+or the selected node actually changes, oldest first. `boundsOf`
+(`Scene::bounds_of`) gives the box of a node address in page coordinates. An
+address is `<id>`, or `<instanceId>/<componentNodeId>` for a node inside a
+component instance; the bounds of the latter wait for components to be resolved
+(US-032).
+
+The overlay is the outlines of the hovered and the selected node, labeled with
+the node's name: `Scene::overlay(&viewport)` gives their boxes in screen pixels
+of that viewport, so the page draws them in an element above the canvas and, by
+asking again for every frame, keeps them aligned while zooming and panning.
+
+The WebAssembly module exports `_omni_render_select_pointer_move`,
+`_select_click`, `_select_double_click` and `_select_escape` for the input,
+`_omni_render_take_events` and `_omni_render_overlay` for what the page draws and
+hears (JSON arrays), and `_omni_render_bounds_of` (the box of an address, in page
+and in canvas pixels, as JSON). The stress page wires them to click, dblclick,
+pointermove and Escape listeners, draws the outlines in `#overlay`, and shows the
+selected node and its size.
+
 ## Layout
 
 `layout::compute` gives every node of a design its box (x, y, width and

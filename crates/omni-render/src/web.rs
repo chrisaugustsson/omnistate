@@ -11,10 +11,12 @@ use skia_safe::{
     },
 };
 
-use crate::layout;
+use crate::layout::{self, LayoutBox};
 use crate::paint::{self, Assets};
 use crate::sandbox::{self, SandboxScene};
+use crate::select::{Event, Modifiers, NodeAddress, Outline, OutlineKind};
 use crate::view::{Controls, Detail, FrameStats, Scene, Viewport};
+use serde_json::{Value, json};
 
 /// `GL_RGBA8`, the format of a WebGL default framebuffer with an alpha channel.
 const GL_RGBA8: u32 = 0x8058;
@@ -162,6 +164,106 @@ pub fn scene_stats() -> Option<String> {
 /// Runs `handle` on the controls of the scene. `false` if no scene is loaded.
 pub fn with_controls(handle: impl FnOnce(&mut Controls) -> bool) -> bool {
     STAGE.with_borrow_mut(|stage| stage.as_mut().is_some_and(|s| handle(&mut s.controls)))
+}
+
+/// Runs `handle` on the scene and its current view. `None` if no scene is
+/// loaded.
+fn with_stage<T>(handle: impl FnOnce(&mut Scene, &Viewport) -> T) -> Option<T> {
+    STAGE.with_borrow_mut(|stage| {
+        let stage = stage.as_mut()?;
+        let viewport = *stage.controls.viewport();
+        Some(handle(&mut stage.scene, &viewport))
+    })
+}
+
+/// The pointer moved to the canvas point `x`, `y` (CSS pixels): hover.
+pub fn select_pointer_move(x: f32, y: f32, ctrl: bool, meta: bool) {
+    with_stage(|scene, viewport| scene.pointer_move(viewport, (x, y), Modifiers { ctrl, meta }));
+}
+
+/// A click at the canvas point `x`, `y`.
+pub fn select_click(x: f32, y: f32, ctrl: bool, meta: bool) {
+    with_stage(|scene, viewport| scene.click(viewport, (x, y), Modifiers { ctrl, meta }));
+}
+
+/// A double-click at the canvas point `x`, `y`.
+pub fn select_double_click(x: f32, y: f32) {
+    with_stage(|scene, viewport| scene.double_click(viewport, (x, y)));
+}
+
+/// The Escape key.
+pub fn select_escape() {
+    with_stage(|scene, _| scene.escape());
+}
+
+fn box_json(rect: LayoutBox) -> Value {
+    json!({"x": rect.x, "y": rect.y, "width": rect.width, "height": rect.height})
+}
+
+/// The bounds of the node at `address` (`<id>` or `<instanceId>/<componentNodeId>`)
+/// as JSON, in page coordinates and in canvas pixels at the current view:
+/// `{"page": {"x": 20, "y": 20, "width": 200, "height": 200}, "screen": {...}}`.
+/// `Ok(None)` if the address names no node.
+pub fn bounds_of(address: &str) -> Result<Option<String>, String> {
+    let address: NodeAddress = address.parse().map_err(|error| format!("{error}"))?;
+    Ok(with_stage(|scene, viewport| {
+        let page = scene.bounds_of(&address)?;
+        let (x, y) = viewport.to_screen((page.x, page.y));
+        let zoom = viewport.zoom();
+        let screen = LayoutBox {
+            x,
+            y,
+            width: page.width * zoom,
+            height: page.height * zoom,
+        };
+        Some(json!({"page": box_json(page), "screen": box_json(screen)}).to_string())
+    })
+    .flatten())
+}
+
+fn address_json(address: Option<NodeAddress>) -> Value {
+    address.map_or(Value::Null, |address| Value::String(address.to_string()))
+}
+
+/// The hover and selection changes since the last call as a JSON array,
+/// oldest first: `[{"type": "hover", "node": "<address>" | null}, {"type":
+/// "select", "node": "<address>" | null}]`.
+pub fn take_events() -> String {
+    let events = with_stage(|scene, _| scene.take_events()).unwrap_or_default();
+    let events: Vec<Value> = events
+        .into_iter()
+        .map(|event| match event {
+            Event::Hover(address) => json!({"type": "hover", "node": address_json(address)}),
+            Event::Select(address) => json!({"type": "select", "node": address_json(address)}),
+        })
+        .collect();
+    Value::Array(events).to_string()
+}
+
+/// The outlines of the hovered and the selected node in the current view as a
+/// JSON array, in canvas pixels: `[{"kind": "hover" | "selection", "node":
+/// "<address>", "label": "Card", "x": 240, "y": 140, "width": 400, "height":
+/// 400}]`.
+pub fn overlay() -> String {
+    let outlines = with_stage(|scene, viewport| scene.overlay(viewport)).unwrap_or_default();
+    let outlines: Vec<Value> = outlines.into_iter().map(outline_json).collect();
+    Value::Array(outlines).to_string()
+}
+
+fn outline_json(outline: Outline) -> Value {
+    let kind = match outline.kind {
+        OutlineKind::Hover => "hover",
+        OutlineKind::Selection => "selection",
+    };
+    json!({
+        "kind": kind,
+        "node": outline.node.to_string(),
+        "label": outline.label,
+        "x": outline.rect.x,
+        "y": outline.rect.y,
+        "width": outline.rect.width,
+        "height": outline.rect.height,
+    })
 }
 
 /// Runs `draw` on a canvas over the default framebuffer of the current WebGL 2

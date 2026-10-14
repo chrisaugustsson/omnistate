@@ -33,6 +33,52 @@
         cursor: grabbing;
       }
 
+      /* Hover and selection outlines, drawn by main-stress.js from the module's
+         overlay, in the same pixels as the canvas under it. */
+      #overlay {
+        position: fixed;
+        inset: 0;
+        overflow: hidden;
+        pointer-events: none;
+      }
+
+      #overlay .outline {
+        position: absolute;
+        box-sizing: border-box;
+        border: 1.5px solid #3b82f6;
+      }
+
+      #overlay .outline.selection {
+        border-color: #2563eb;
+        border-width: 2px;
+      }
+
+      #overlay .label {
+        position: absolute;
+        left: -2px;
+        bottom: 100%;
+        max-width: 240px;
+        padding: 1px 6px;
+        overflow: hidden;
+        border-radius: 3px 3px 0 0;
+        background: #3b82f6;
+        color: #fff;
+        font-size: 11px;
+        line-height: 16px;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      #overlay .outline.selection .label {
+        background: #2563eb;
+      }
+
+      #overlay .outline.inside .label {
+        bottom: auto;
+        top: 0;
+        border-radius: 0 0 3px 0;
+      }
+
       #hud {
         position: fixed;
         top: 12px;
@@ -65,12 +111,18 @@
   </head>
   <body>
     <canvas id="canvas"></canvas>
+    <div id="overlay"></div>
     <div id="hud">
       <p><strong>omni-render stress file</strong></p>
       <p>
         Zoom: pinch, or <code>Ctrl</code>/<code>Cmd</code> + wheel. Pan: scroll, or drag while holding
         <code>Space</code>.
       </p>
+      <p>
+        Select: click a node of the board, double-click to go into it, <code>Esc</code> to go back out,
+        <code>Ctrl</code>/<code>Cmd</code> + click for the deepest node.
+      </p>
+      <p id="selection">Nothing selected.</p>
       <p id="status">Loading the renderer…</p>
     </div>
     <script type="module" src="./main-stress.js"></script>
