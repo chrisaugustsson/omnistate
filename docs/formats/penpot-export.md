@@ -3,7 +3,9 @@
 What the `omni-penpot` crate reads from a Penpot file export, and what it does
 with the rest. Everything here was observed in two exports made by hand from a
 local Penpot 2.19 (`generatedBy` says `penpot/2.19.0-RC1`) with "treat assets as
-basic objects" on, so they carry no component links:
+basic objects" on. That option does not remove component links: the small export
+has none, but the large one still marks component shapes (see "Left out, and
+reported" below):
 
 - `tirebud-idag.penpot`, 3.9 MB: one page, 2,426 shape files.
 - `tirebud-ordrar.penpot`, 114 MB: five pages, 111,013 shape files.
@@ -219,6 +221,14 @@ Shapes of type `bool` and any unknown type (with the shapes inside them),
 shapes that sit directly on the page outside every board, masked groups
 (`maskedGroup`), blur, radial gradients, dashed strokes, stroke alignments other
 than `inner`, item margins (`layoutItemMargin`), rotation, flips, grid item
-alignment, mixed text styles, and text strokes and shadows. Component links
-(`componentId`, `shapeRef`) are not read: a component copy is converted as the
-plain shapes it holds, which needs no report entry.
+alignment, mixed text styles, and text strokes and shadows.
+
+Component links are left out too. In `tirebud-ordrar.penpot` 10,005 shapes have
+`componentRoot` true, all of them frames inside boards (375 are boards
+themselves). Each such root names its component in `componentId`; a copy points
+at the main shape through `shapeRef`, and the main instance has `mainInstance`
+true. The shapes inside a root carry `shapeRef` (and sometimes `componentId`)
+but no `componentRoot`. The converter draws a component's shapes as the plain
+shapes they are and lists each root once, with property `componentId` and a
+reason that names the component, so a report reader can see which parts of a
+board come from components. The shapes inside a root get no entry of their own.

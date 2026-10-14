@@ -123,6 +123,9 @@ struct Pen {
     grow_type: L<String>,
     content: L<Value>,
     metadata: L<Value>,
+    component_id: L<String>,
+    component_root: L<bool>,
+    main_instance: L<bool>,
 }
 
 /// A value that reads as `None` when it is not a `T`.
@@ -479,7 +482,8 @@ impl<R: Read + Seek> Converter<'_, R> {
         Ok(Some(value))
     }
 
-    /// Reports what no node can show: rotation, flips, blur, masks, margins.
+    /// Reports what no node can show: rotation, flips, blur, masks, margins,
+    /// component links.
     fn checks(&mut self, who: &Who, pen: &Pen, kind: &str) {
         if let Some(rotation) = pen.rotation.0.filter(|rotation| rotation.abs() > 0.01) {
             self.report(
@@ -507,6 +511,19 @@ impl<R: Read + Seek> Converter<'_, R> {
                     format!("blur ({style}) is not supported; the shape is drawn sharp"),
                 );
             }
+        }
+        if pen.component_root.0 == Some(true) {
+            let component = pen.component_id.0.as_deref().unwrap_or("with no id");
+            let role = if pen.main_instance.0 == Some(true) {
+                "main instance"
+            } else {
+                "copy"
+            };
+            self.report(
+                who,
+                Some("componentId"),
+                format!("the shape is the root of a {role} of component {component}; the component link is not converted, so it is drawn as the plain shapes it holds"),
+            );
         }
         if kind == "group" && pen.masked_group.0 == Some(true) {
             self.report(
