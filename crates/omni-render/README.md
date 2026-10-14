@@ -177,24 +177,41 @@ The technique is board snapshots, on top of cached pictures:
   view.
 - **Reduced detail** (below 50%): each board in view is drawn from a snapshot, a
   raster image of the whole board at 50% (at most 2,048 pixels on its longest
-  side), made once from the board's picture. A snapshot is only ever reduced, so
-  it is composited with mipmaps and looks like the board at any zoom down to the
-  1% minimum. A frame then draws one image per board and no nodes, however many
-  nodes the boards have.
+  side), made once. A snapshot is only ever reduced, so it is composited with
+  mipmaps and looks like the board at any zoom down to the 1% minimum. A frame
+  then draws one image per board and no nodes, however many nodes the boards
+  have.
+
+A snapshot is drawn from the board's nodes at reduced detail
+(`paint::draw_reduced`), not from its picture, because it is only ever seen
+small: text is not shaped but shown as a bar, its box filled with the text color
+at 35% opacity, and shadows are left out. Everything else is drawn as at full
+detail. Shaping the text and working out the shadows of a board is most of what
+drawing it costs, and a board of 50% or less shows next to nothing of either.
 
 Snapshots made for one zoom serve every other, so the cost is paid once per board:
 the first frame at a reduced zoom paints every node of the boards in view to make
 them (all 36,000 nodes of the stress file, if it is fitted in the view at the
-start), and `nodes_painted` counts those. After that a frame of the stress file
-fitted in view draws 100 images and paints no nodes. That is how it holds 60
-frames per second on the stress file where drawing 36,000 nodes a frame would not:
-the tests pin the budget at no more than 5,000 nodes painted per frame after the
-first. The smoothness in a browser, on a GPU, is the human check of US-006, and
-the frame rate gate itself is US-008.
+start, in about a tenth of a second natively), and `nodes_painted` counts those.
+After that a frame of the stress file fitted in view draws 100 images and paints
+no nodes. That is how it holds 60 frames per second on the stress file where
+drawing 36,000 nodes a frame would not: the tests pin the budget at no more than
+5,000 nodes painted per frame after the first. The renderer gate measures it on a
+GPU (see [Renderer gate A](#renderer-gate-a)), and the smoothness in a browser is
+the human check of US-006.
+
+Drawing a design shapes its text only once. `layout::compute_shaped` returns the
+text that layout shaped to measure it, the scene keeps it, and recording a board
+draws from it.
 
 The browser module keeps one Skia GPU context for the page's WebGL context, so
 the compiled shaders and the textures of the snapshots stay on the GPU between
-frames.
+frames. It draws the text of a view from signed distance fields, which Skia makes
+once for each glyph and scales on the GPU, from 1 px up (`ContextOptions::
+min_distance_field_font_size`, and device-independent fonts on the surface). Glyph
+bitmaps are made for one scale, so while zooming every step made them again for
+every glyph in view: at a zoom between 25% and 100% that was 20 to 90 ms a frame
+on the stress file.
 
 ### The stress page
 
@@ -214,6 +231,32 @@ to the exports `_omni_render_view_wheel`, `_view_pinch`, `_view_pointer_down`,
 `_omni_render_scene_load`, draws with `_omni_render_scene_draw` and reads
 `_omni_render_scene_stats`. Supply images and fonts before loading a scene: the
 scene keeps the ones it was loaded with.
+
+## Renderer gate A
+
+`make bench-render` is the pass/fail performance test of the renderer (US-008,
+Q35: if it cannot meet these there is no product). It needs a Mac with a GPU and
+Chrome. It builds the module and the stress file, installs Playwright with npm
+into `render-sandbox/` (`playwright-core`, which downloads no browser), and runs
+`render-sandbox/bench-render.mjs`: headed Chrome driven by Playwright at 1440 x
+900 and a device pixel ratio of 2. It stops if the WebGL renderer string shows
+software rendering, such as SwiftShader, and takes each measurement 5 times from a
+cold page load (a new Chrome with an empty profile for every one) on
+`render-sandbox/bench.html`:
+
+| Measurement | Limit |
+| --- | --- |
+| The 2,000-node board: from its data being loaded in the page to its first complete frame | under 500 ms |
+| The 100-board file: from its data being loaded to the first frame showing every board | under 2 s |
+| A scripted path that zooms in on the middle of the screen to 100%, pans across the boards and zooms out again: the 95th-percentile frame time | 16.7 ms or less (60 frames per second) |
+
+A frame is complete when the GPU has finished it: the page draws and then waits
+for `gl.finish()` and a pixel read-back. The first frame of a measurement includes
+what Skia does once, such as making the GPU context and compiling shaders. The
+verdict is the median of the 5 runs, which the Gate A section of
+`docs/renderer-gate.md` reports with every run, the machine and the WebGL renderer
+string. `render-sandbox/bench-render-lib.mjs` holds the numbers and the report, and
+the tests run it in Node.
 
 ## Selection
 

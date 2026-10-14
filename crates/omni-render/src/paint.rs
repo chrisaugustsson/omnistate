@@ -22,7 +22,7 @@
 //!   fill, stroke or shadow whose color is a token is not drawn, and a token
 //!   for a length or an opacity is as if it were left out.
 
-use crate::layout::{self, LayoutBox};
+use crate::layout::{self, LayoutBox, ShapedTexts};
 use crate::text::{Fonts, ShapedText, literal};
 use omni_core::design::{
     self, AttachmentRef, Fill, GradientStop, ImageFit, Node, NodeData, NodeId, Radius, Shadow,
@@ -36,6 +36,10 @@ use skia_safe::{
 };
 use std::cell::Cell;
 use std::collections::HashMap;
+
+/// How much of its color the box of a text is filled with at the reduced level
+/// of detail.
+const TEXT_BAR_ALPHA: f32 = 0.35;
 
 /// What the host supplies for drawing: the images that `attachment:<id>`
 /// references name, and font files. The bundled Inter is always there, and
@@ -87,7 +91,7 @@ impl Default for Assets {
 /// Draws `root` and every node below it on `canvas`, in page coordinates (one
 /// canvas pixel to a CSS pixel), each node in the box that `boxes` gives it.
 pub fn draw(canvas: &Canvas, root: &Node, boxes: &HashMap<NodeId, LayoutBox>, assets: &Assets) {
-    draw_counted(canvas, root, boxes, assets);
+    paint_counted(canvas, root, boxes, None, assets, false);
 }
 
 /// As [`draw`], and returns how many nodes it painted: the visible ones that
@@ -96,12 +100,47 @@ pub(crate) fn draw_counted(
     canvas: &Canvas,
     root: &Node,
     boxes: &HashMap<NodeId, LayoutBox>,
+    texts: &ShapedTexts,
     assets: &Assets,
+) -> usize {
+    paint_counted(canvas, root, boxes, Some(texts), assets, false)
+}
+
+/// As [`draw_counted`], at the reduced level of detail for boards that are
+/// drawn at half size or less, where shaping text and blurring shadows costs
+/// a great deal and shows next to nothing:
+///
+/// - Text is not shaped. Its box is filled with the text color at 35% of its
+///   opacity, about the share of a box of text that ink covers.
+/// - Shadows are not drawn.
+///
+/// Everything else is drawn as in [`draw`].
+pub(crate) fn draw_reduced(
+    canvas: &Canvas,
+    root: &Node,
+    boxes: &HashMap<NodeId, LayoutBox>,
+    assets: &Assets,
+) -> usize {
+    paint_counted(canvas, root, boxes, None, assets, true)
+}
+
+/// Paints `root`. `texts` has the text nodes already shaped, as layout shaped
+/// them, so that painting does not shape them again; a text that is not in it
+/// is shaped here.
+fn paint_counted(
+    canvas: &Canvas,
+    root: &Node,
+    boxes: &HashMap<NodeId, LayoutBox>,
+    texts: Option<&ShapedTexts>,
+    assets: &Assets,
+    reduced: bool,
 ) -> usize {
     let painter = Painter {
         canvas,
         boxes,
+        texts,
         assets,
+        reduced,
         painted: Cell::new(0),
     };
     painter.node(root);
@@ -202,7 +241,11 @@ fn pixels(length: u32) -> i32 {
 struct Painter<'a> {
     canvas: &'a Canvas,
     boxes: &'a HashMap<NodeId, LayoutBox>,
+    /// The text nodes that are shaped already.
+    texts: Option<&'a ShapedTexts>,
     assets: &'a Assets,
+    /// Whether to draw at the reduced level of detail ([`draw_reduced`]).
+    reduced: bool,
     /// The nodes painted so far.
     painted: Cell<usize>,
 }
@@ -229,22 +272,33 @@ impl Painter<'_> {
         match node.data() {
             NodeData::Page(page) => self.children(&page.children),
             NodeData::Board(frame) | NodeData::Frame(frame) => {
-                self.group(frame.opacity.as_ref(), || self.frame(frame, rect));
+                self.group(node, frame.opacity.as_ref(), || self.frame(frame, rect));
             }
-            NodeData::Text(text) => self.group(text.opacity.as_ref(), || {
+            NodeData::Text(text) => self.group(node, text.opacity.as_ref(), || {
                 let color = text.color.as_ref().and_then(color).unwrap_or(Color::BLACK);
-                ShapedText::new(text, &self.assets.fonts).draw(
-                    self.canvas,
-                    &self.assets.fonts,
-                    color,
-                    (rect.left, rect.top),
-                    rect.width(),
-                );
+                if self.reduced {
+                    self.text_bar(color, rect);
+                    return;
+                }
+                let shaped = self.texts.and_then(|texts| texts.get(node.id()));
+                let origin = (rect.left, rect.top);
+                match shaped {
+                    Some(shaped) => {
+                        shaped.draw(self.canvas, &self.assets.fonts, color, origin, rect.width())
+                    }
+                    None => ShapedText::new(text, &self.assets.fonts).draw(
+                        self.canvas,
+                        &self.assets.fonts,
+                        color,
+                        origin,
+                        rect.width(),
+                    ),
+                }
             }),
-            NodeData::Image(image) => self.group(image.opacity.as_ref(), || {
+            NodeData::Image(image) => self.group(node, image.opacity.as_ref(), || {
                 self.image(image, rect);
             }),
-            NodeData::Vector(vector) => self.group(vector.opacity.as_ref(), || {
+            NodeData::Vector(vector) => self.group(node, vector.opacity.as_ref(), || {
                 self.vector(vector, rect);
             }),
             // Instances wait for components and tokens (US-032).
@@ -258,15 +312,18 @@ impl Painter<'_> {
         }
     }
 
-    /// Runs `draw` with the node's `opacity` applied to everything it draws
-    /// together, or not at all when the node is transparent.
-    fn group(&self, opacity: Option<&TokenOr<f64>>, draw: impl FnOnce()) {
+    /// Runs `draw` with the `opacity` of `node` applied to everything it draws
+    /// together, or not at all when the node is transparent. The group is a
+    /// layer only as large as what the node can touch, not as the whole
+    /// canvas, which a layer of an unbounded group would be.
+    fn group(&self, node: &Node, opacity: Option<&TokenOr<f64>>, draw: impl FnOnce()) {
         let alpha = opacity.and_then(literal).map_or(1.0, |o| o.clamp(0.0, 1.0));
         if alpha <= 0.0 {
             return;
         }
         if alpha < 1.0 {
-            self.canvas.save_layer_alpha_f(None, alpha);
+            self.canvas
+                .save_layer_alpha_f(reach(node, self.boxes), alpha);
         } else {
             self.canvas.save();
         }
@@ -295,6 +352,17 @@ impl Painter<'_> {
         } else {
             self.children(&frame.children);
         }
+    }
+
+    /// Fills the box of a text that is not shaped with its color, faded.
+    fn text_bar(&self, color: Color, rect: Rect) {
+        let ink = Color4f::from(color);
+        let mut paint = Paint::default();
+        paint.set_anti_alias(true).set_color4f(
+            Color4f::new(ink.r, ink.g, ink.b, ink.a * TEXT_BAR_ALPHA),
+            None,
+        );
+        self.canvas.draw_rect(rect, &paint);
     }
 
     fn image(&self, image: &design::Image, rect: Rect) {
@@ -329,19 +397,25 @@ impl Painter<'_> {
             return;
         };
         let path = path.with_offset((rect.left, rect.top));
-        let widest = strokes.iter().map(|&(_, width)| width).fold(0.0, f32::max);
-        // The shape of a vector's shadow is what the vector paints.
-        let shape = match (fills.is_empty(), strokes.is_empty()) {
-            (true, true) => return,
-            (false, true) => path.clone(),
-            (true, false) => stroke_outline(&path, widest),
-            (false, false) => path
-                .op(&stroke_outline(&path, widest), PathOp::Union)
-                .unwrap_or_else(|| path.clone()),
-        };
-        let shape = Shape::Path(shape);
+        if fills.is_empty() && strokes.is_empty() {
+            return;
+        }
         let shadows = shadows(vector.shadows.as_deref());
-        self.drop_shadows(&shape, &shadows);
+        // The shape of a vector's shadow is what the vector paints. Working
+        // it out takes path operations, so it is left alone without shadows.
+        let shape = (!shadows.is_empty() && !self.reduced).then(|| {
+            let widest = strokes.iter().map(|&(_, width)| width).fold(0.0, f32::max);
+            Shape::Path(match (fills.is_empty(), strokes.is_empty()) {
+                (_, true) => path.clone(),
+                (true, false) => stroke_outline(&path, widest),
+                (false, false) => path
+                    .op(&stroke_outline(&path, widest), PathOp::Union)
+                    .unwrap_or_else(|| path.clone()),
+            })
+        });
+        if let Some(shape) = &shape {
+            self.drop_shadows(shape, &shadows);
+        }
         for fill in fills {
             self.canvas.save();
             self.canvas.clip_path(&path, None, true);
@@ -357,7 +431,9 @@ impl Painter<'_> {
                 .set_color(stroke_color);
             self.canvas.draw_path(&path, &paint);
         }
-        self.inner_shadows(&shape, &shadows);
+        if let Some(shape) = &shape {
+            self.inner_shadows(shape, &shadows);
+        }
     }
 
     /// Paints `fill` over `shape`, whose box is `rect`.
@@ -447,6 +523,9 @@ impl Painter<'_> {
     /// Draws the drop shadows of `shape`, the first on top, never beneath the
     /// shape itself.
     fn drop_shadows(&self, shape: &Shape, shadows: &[ResolvedShadow]) {
+        if self.reduced {
+            return;
+        }
         for shadow in shadows
             .iter()
             .rev()
@@ -468,6 +547,9 @@ impl Painter<'_> {
     /// shrunk by the spread and moved by the offsets is a hole in the shadow
     /// that fills the rest of the shape.
     fn inner_shadows(&self, shape: &Shape, shadows: &[ResolvedShadow]) {
+        if self.reduced {
+            return;
+        }
         for shadow in shadows
             .iter()
             .rev()

@@ -4,10 +4,10 @@ use std::cell::RefCell;
 
 use omni_core::design::{AttachmentRef, Node};
 use skia_safe::{
-    Canvas, Color, ColorType,
+    Canvas, Color, ColorType, PixelGeometry, SurfaceProps, SurfacePropsFlags,
     gpu::{
-        DirectContext, Protected, SurfaceOrigin, backend_render_targets, direct_contexts,
-        gl::FramebufferInfo, interfaces, surfaces,
+        ContextOptions, DirectContext, Protected, SurfaceOrigin, backend_render_targets,
+        direct_contexts, gl::FramebufferInfo, interfaces, surfaces,
     },
 };
 
@@ -50,7 +50,7 @@ thread_local! {
 /// WebGL 2 context. The framebuffer is `width` x `height` device pixels, with
 /// `pixel_ratio` device pixels per canvas pixel. Returns whether Skia drew it.
 pub fn draw_sandbox(width: i32, height: i32, pixel_ratio: f32) -> bool {
-    on_canvas(width, height, pixel_ratio, |canvas| {
+    on_canvas(width, height, pixel_ratio, false, |canvas| {
         sandbox::draw(canvas, &SandboxScene::demo());
     })
 }
@@ -79,7 +79,7 @@ pub fn draw_design(
     let design: Node = serde_json::from_str(design_json).map_err(|error| error.to_string())?;
     let drawn = ASSETS.with_borrow(|assets| {
         let boxes = layout::compute(&design, assets.fonts());
-        on_canvas(width, height, pixel_ratio, |canvas| {
+        on_canvas(width, height, pixel_ratio, false, |canvas| {
             canvas.clear(Color::TRANSPARENT);
             paint::draw(canvas, &design, &boxes, assets);
         })
@@ -128,7 +128,7 @@ pub fn scene_draw(width: i32, height: i32, pixel_ratio: f32) -> Result<(), Strin
         }
         let viewport = *stage.controls.viewport();
         let mut stats = None;
-        let drawn = on_canvas(width, height, pixel_ratio, |canvas| {
+        let drawn = on_canvas(width, height, pixel_ratio, true, |canvas| {
             canvas.clear(Color::TRANSPARENT);
             stats = Some(stage.scene.render(canvas, &viewport));
         });
@@ -269,7 +269,17 @@ fn outline_json(outline: Outline) -> Value {
 /// Runs `draw` on a canvas over the default framebuffer of the current WebGL 2
 /// context, scaled by `pixel_ratio`, and flushes it. Returns whether Skia
 /// could draw.
-fn on_canvas(width: i32, height: i32, pixel_ratio: f32, draw: impl FnOnce(&Canvas)) -> bool {
+///
+/// The design pages draw text from distance fields at every size (see
+/// [`webgl_context`]), which needs the surface to say that its fonts are
+/// device independent. The demo scene keeps Skia's usual hinted glyphs.
+fn on_canvas(
+    width: i32,
+    height: i32,
+    pixel_ratio: f32,
+    device_independent_fonts: bool,
+    draw: impl FnOnce(&Canvas),
+) -> bool {
     let Some(mut context) = webgl_context() else {
         return false;
     };
@@ -279,13 +289,19 @@ fn on_canvas(width: i32, height: i32, pixel_ratio: f32, draw: impl FnOnce(&Canva
         protected: Protected::No,
     };
     let target = backend_render_targets::make_gl((width, height), None, STENCIL_BITS, framebuffer);
+    let flags = if device_independent_fonts {
+        SurfacePropsFlags::USE_DEVICE_INDEPENDENT_FONTS
+    } else {
+        SurfacePropsFlags::empty()
+    };
+    let props = SurfaceProps::new(flags, PixelGeometry::Unknown);
     let Some(mut surface) = surfaces::wrap_backend_render_target(
         &mut context,
         &target,
         SurfaceOrigin::BottomLeft,
         ColorType::RGBA8888,
         None,
-        None,
+        Some(&props),
     ) else {
         return false;
     };
@@ -298,10 +314,19 @@ fn on_canvas(width: i32, height: i32, pixel_ratio: f32, draw: impl FnOnce(&Canva
 
 /// The Skia GPU context on the WebGL context the page made current, made on
 /// first use.
+///
+/// Text of a zooming view is drawn from signed distance fields, which Skia
+/// makes once per glyph and then scales on the GPU, from 1 px up. Glyph
+/// bitmaps are made for one scale, so a view that zooms makes them again at
+/// every step, which is most of the cost of a frame (US-008). The glyph atlas
+/// may grow to 64 MB, as a board of text fills a good deal of it.
 fn webgl_context() -> Option<DirectContext> {
     GPU.with_borrow_mut(|gpu| {
         if gpu.is_none() {
-            *gpu = direct_contexts::make_gl(interfaces::make_web_gl()?, None);
+            let mut options = ContextOptions::new();
+            options.min_distance_field_font_size = 1.0;
+            options.glyph_cache_texture_maximum_bytes = 64 << 20;
+            *gpu = direct_contexts::make_gl(interfaces::make_web_gl()?, &options);
         }
         let mut context = gpu.clone()?;
         // The canvas was resized or the page drew in between, so what Skia

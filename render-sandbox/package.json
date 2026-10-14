@@ -1,0 +1,9 @@
+{
+  "name": "omni-render-sandbox",
+  "private": true,
+  "type": "module",
+  "description": "Scripts of the renderer sandbox that need npm packages: make bench-render installs them.",
+  "dependencies": {
+    "playwright-core": "^1.64.1"
+  }
+}

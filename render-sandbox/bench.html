@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>omni-render gate A</title>
+    <style>
+      html,
+      body {
+        height: 100%;
+        margin: 0;
+        overflow: hidden;
+        background: #cbd5e1;
+        font: 13px/1.5 system-ui, sans-serif;
+      }
+
+      /* main-bench.js sizes the drawing buffer to this canvas. */
+      #canvas {
+        position: fixed;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+      }
+
+      #status {
+        position: fixed;
+        top: 12px;
+        left: 12px;
+        margin: 0;
+        padding: 6px 10px;
+        border-radius: 6px;
+        background: rgb(255 255 255 / 0.9);
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="canvas"></canvas>
+    <p id="status">Loading the renderer…</p>
+    <script type="module" src="./main-bench.js"></script>
+  </body>
+</html>

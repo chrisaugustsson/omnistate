@@ -7,6 +7,7 @@ mod tree;
 use crate::text::{Fonts, ShapedText};
 use omni_core::design::{Node, NodeData, NodeId};
 use std::collections::HashMap;
+use std::rc::Rc;
 use style::Flow;
 use taffy::Display;
 use tree::LayoutTree;
@@ -29,7 +30,20 @@ pub struct LayoutBox {
 /// when left out), so a board's box is where the board sits on its page, and
 /// every node below it is offset by the positions of its ancestors.
 pub fn compute(root: &Node, fonts: &Fonts) -> HashMap<NodeId, LayoutBox> {
+    compute_shaped(root, fonts).0
+}
+
+/// The text nodes of a design, shaped as layout measured them.
+pub(crate) type ShapedTexts = HashMap<NodeId, Rc<ShapedText>>;
+
+/// As [`compute`], and also returns the shaped text of every text node, so
+/// that drawing the design does not shape its text a second time.
+pub(crate) fn compute_shaped(
+    root: &Node,
+    fonts: &Fonts,
+) -> (HashMap<NodeId, LayoutBox>, ShapedTexts) {
     let mut boxes = HashMap::new();
+    let mut texts = HashMap::new();
     let roots = match root.data() {
         // A page is a canvas with no size: its box is empty at its origin,
         // and each of its boards is laid out on its own.
@@ -41,18 +55,25 @@ pub fn compute(root: &Node, fonts: &Fonts) -> HashMap<NodeId, LayoutBox> {
     };
     let mut tree = LayoutTree::new();
     for root in roots {
-        let tree_root = add(&mut tree, root, Flow::Root, fonts);
+        let tree_root = add(&mut tree, root, Flow::Root, fonts, &mut texts);
         tree.lay_out(tree_root);
         let placement = root.placement();
         let origin = [placement.x, placement.y].map(|offset| offset.unwrap_or(0.0) as f32);
         collect(&tree, tree_root, root, origin, &mut boxes);
     }
-    boxes
+    (boxes, texts)
 }
 
 /// Adds `node` and its subtree to `tree`, placed in its parent by `flow`, and
-/// returns the tree node of `node`.
-fn add(tree: &mut LayoutTree, node: &Node, flow: Flow, fonts: &Fonts) -> taffy::NodeId {
+/// returns the tree node of `node`. The shaped text of every text node goes in
+/// `texts`.
+fn add(
+    tree: &mut LayoutTree,
+    node: &Node,
+    flow: Flow,
+    fonts: &Fonts,
+    texts: &mut ShapedTexts,
+) -> taffy::NodeId {
     let mut style = style::item(node, flow);
     let (children, text) = match node.data() {
         NodeData::Board(frame) | NodeData::Frame(frame) => {
@@ -60,11 +81,15 @@ fn add(tree: &mut LayoutTree, node: &Node, flow: Flow, fonts: &Fonts) -> taffy::
             let children = frame
                 .children
                 .iter()
-                .map(|child| add(tree, child, children_flow.of(child), fonts))
+                .map(|child| add(tree, child, children_flow.of(child), fonts, texts))
                 .collect();
             (children, None)
         }
-        NodeData::Text(text) => (Vec::new(), Some(ShapedText::new(text, fonts))),
+        NodeData::Text(text) => {
+            let shaped = Rc::new(ShapedText::new(text, fonts));
+            texts.insert(*node.id(), Rc::clone(&shaped));
+            (Vec::new(), Some(shaped))
+        }
         NodeData::Page(_) | NodeData::Image(_) | NodeData::Vector(_) | NodeData::Instance(_) => {
             (Vec::new(), None)
         }

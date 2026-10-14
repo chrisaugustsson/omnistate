@@ -17,7 +17,7 @@
 //!   It also keeps what the reviewer points at: the hovered and the selected
 //!   node (see the README's "Selection").
 
-use crate::layout::{self, LayoutBox};
+use crate::layout::{self, LayoutBox, ShapedTexts};
 use crate::paint::{self, Assets};
 use crate::select::{Event, Index, Modifiers, NodeAddress, Outline, OutlineKind};
 use omni_core::design::{Node, NodeData, NodeId};
@@ -310,6 +310,7 @@ impl Board {
         &mut self,
         node: &Node,
         boxes: &HashMap<NodeId, LayoutBox>,
+        texts: &ShapedTexts,
         assets: &Assets,
     ) -> usize {
         if self.picture.is_some() {
@@ -319,7 +320,7 @@ impl Board {
         // The bounding box hierarchy lets a replay skip the parts of the
         // board that are out of view.
         let canvas = recorder.begin_recording(self.reach, true);
-        let painted = paint::draw_counted(canvas, node, boxes, assets);
+        let painted = paint::draw_counted(canvas, node, boxes, texts, assets);
         self.picture = recorder.finish_recording_as_picture(None);
         painted
     }
@@ -331,14 +332,19 @@ impl Board {
         }
     }
 
-    /// Makes the snapshot from the recorded drawing unless that is done.
-    fn snapshot(&mut self) {
+    /// Makes the snapshot of `node`, the board, unless that is done, and
+    /// returns how many nodes making it painted. It is drawn at reduced detail
+    /// (`paint::draw_reduced`), as it is only ever seen small, so it needs
+    /// neither the board's picture nor the shaping of its text.
+    fn snapshot(
+        &mut self,
+        node: &Node,
+        boxes: &HashMap<NodeId, LayoutBox>,
+        assets: &Assets,
+    ) -> usize {
         if self.snapshot.is_some() {
-            return;
+            return 0;
         }
-        let Some(picture) = &self.picture else {
-            return;
-        };
         let reach = self.reach;
         let longest = reach.width().max(reach.height());
         let scale = SNAPSHOT_SCALE.min(SNAPSHOT_MAX_SIDE / longest);
@@ -347,12 +353,12 @@ impl Board {
             (reach.height() * scale).ceil().max(1.0) as i32,
         );
         let Some(mut surface) = surfaces::raster_n32_premul(size) else {
-            return;
+            return 0;
         };
         let canvas = surface.canvas();
         canvas.scale((scale, scale));
         canvas.translate((-reach.left, -reach.top));
-        canvas.draw_picture(picture, None, None);
+        let painted = paint::draw_reduced(canvas, node, boxes, assets);
         self.snapshot = Some(Snapshot {
             image: surface.image_snapshot(),
             rect: Rect::from_xywh(
@@ -362,6 +368,7 @@ impl Board {
                 size.1 as f32 / scale,
             ),
         });
+        painted
     }
 
     /// Draws the snapshot on `canvas`, in page coordinates.
@@ -384,6 +391,8 @@ pub struct Scene {
     page: Node,
     assets: Assets,
     boxes: HashMap<NodeId, LayoutBox>,
+    /// The text nodes, shaped as layout measured them.
+    texts: ShapedTexts,
     /// The visible boards of the page, in page order.
     boards: Vec<Board>,
     /// The boxes of every node, to find the node at a point.
@@ -405,7 +414,7 @@ fn board_nodes(page: &Node) -> &[Node] {
 
 impl Scene {
     pub fn new(page: Node, assets: Assets) -> Self {
-        let boxes = layout::compute(&page, assets.fonts());
+        let (boxes, texts) = layout::compute_shaped(&page, assets.fonts());
         let boards = board_nodes(&page)
             .iter()
             .enumerate()
@@ -425,6 +434,7 @@ impl Scene {
             page,
             assets,
             boxes,
+            texts,
             boards,
             index,
             hovered: None,
@@ -627,6 +637,7 @@ impl Scene {
             page,
             assets,
             boxes,
+            texts,
             boards,
             ..
         } = self;
@@ -642,11 +653,14 @@ impl Scene {
         canvas.translate((-x, -y));
         for board in boards.iter_mut().filter(|board| board.is_in(&visible)) {
             stats.boards_drawn.push(board.id);
-            stats.nodes_painted += board.record(&nodes[board.index], boxes, assets);
+            let node = &nodes[board.index];
             match detail {
-                Detail::Full => board.draw_full(canvas),
+                Detail::Full => {
+                    stats.nodes_painted += board.record(node, boxes, texts, assets);
+                    board.draw_full(canvas);
+                }
                 Detail::Reduced => {
-                    board.snapshot();
+                    stats.nodes_painted += board.snapshot(node, boxes, assets);
                     board.draw_reduced(canvas);
                 }
             }

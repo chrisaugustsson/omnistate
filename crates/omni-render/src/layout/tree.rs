@@ -14,6 +14,7 @@ mod lines;
 
 use crate::text::ShapedText;
 use std::iter::Copied;
+use std::rc::Rc;
 use std::slice;
 use taffy::prelude::TaffyMaxContent;
 use taffy::{
@@ -44,7 +45,7 @@ struct TreeNode {
     style: Style,
     children: Vec<NodeId>,
     /// The text of a text node, which sizes it.
-    text: Option<ShapedText>,
+    text: Option<Rc<ShapedText>>,
     /// Where the node sits in its parent, and its size.
     layout: Layout,
     /// Taffy's cache of the node's layout.
@@ -103,7 +104,7 @@ impl LayoutTree {
         &mut self,
         style: Style,
         children: Vec<NodeId>,
-        text: Option<ShapedText>,
+        text: Option<Rc<ShapedText>>,
     ) -> NodeId {
         let node = NodeId::from(self.nodes.len());
         for &child in &children {
