@@ -156,7 +156,7 @@ const HISTORY_COLUMNS: &str = concat!(
 
 /// The JSON body of a request, or 400 `invalid_request` when it is not JSON of
 /// the expected shape. An empty body counts as `{}`.
-fn parse_body<T: DeserializeOwned>(body: &Bytes) -> Result<T, ApiError> {
+pub(crate) fn parse_body<T: DeserializeOwned>(body: &Bytes) -> Result<T, ApiError> {
     let bytes: &[u8] = if body.iter().all(u8::is_ascii_whitespace) {
         b"{}"
     } else {
@@ -166,7 +166,7 @@ fn parse_body<T: DeserializeOwned>(body: &Bytes) -> Result<T, ApiError> {
 }
 
 /// The text without its surrounding whitespace, `None` when nothing is left.
-fn non_blank(text: Option<String>) -> Option<String> {
+pub(crate) fn non_blank(text: Option<String>) -> Option<String> {
     text.map(|text| text.trim().to_string())
         .filter(|text| !text.is_empty())
 }
@@ -245,7 +245,7 @@ pub async fn list_projects(
 
 /// Fails with 404 unless the project exists in the transaction's workspace
 /// (row-level security hides the projects of other workspaces).
-async fn require_project(
+pub(crate) async fn require_project(
     tx: &mut Transaction<'static, Postgres>,
     project_id: &str,
 ) -> Result<(), ApiError> {

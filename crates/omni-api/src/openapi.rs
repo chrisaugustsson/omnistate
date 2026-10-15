@@ -10,6 +10,11 @@ use crate::changesets::{
     CreateProjectRequest, HistoryEntry, ProjectBody, ProjectListResponse, ProjectResponse,
     RejectRequest,
 };
+use crate::docs::{
+    ConflictBody, ConflictDetails, CreateDocRequest, CreatedDocResponse, DocBody, DocResponse,
+    DraftBody, DraftHtmlResponse, DraftResponse, DraftWithHtml, EditRequest, EditResponse,
+    InvalidOperationBody, MainlineHtmlResponse, OpResultBody,
+};
 use crate::routes::{Access, registry};
 use crate::session::{
     ErrorBody, LoginRequest, UserBody, UserResponse, WorkspaceBody, WorkspaceListResponse,
@@ -47,7 +52,13 @@ use utoipa::OpenApi;
         crate::changesets::reopen,
         crate::changesets::abandon,
         crate::attachments::upload,
-        crate::attachments::download
+        crate::attachments::download,
+        crate::docs::create_doc,
+        crate::docs::show_doc,
+        crate::docs::read_doc_html,
+        crate::docs::open_draft,
+        crate::docs::read_draft,
+        crate::docs::edit_draft
     ),
     components(schemas(
         LoginRequest,
@@ -73,7 +84,22 @@ use utoipa::OpenApi;
         ChangesetResponse,
         ChangesetListResponse,
         AttachmentBody,
-        AttachmentResponse
+        AttachmentResponse,
+        CreateDocRequest,
+        DocBody,
+        DocResponse,
+        CreatedDocResponse,
+        DraftBody,
+        DraftResponse,
+        DraftWithHtml,
+        DraftHtmlResponse,
+        MainlineHtmlResponse,
+        EditRequest,
+        OpResultBody,
+        EditResponse,
+        ConflictDetails,
+        ConflictBody,
+        InvalidOperationBody
     ))
 )]
 struct ApiDoc;

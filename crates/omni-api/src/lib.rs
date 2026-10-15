@@ -11,6 +11,7 @@ mod attachments;
 pub mod auth;
 mod changesets;
 pub mod delete_workspace;
+mod docs;
 mod live;
 mod openapi;
 pub mod password;
@@ -77,6 +78,8 @@ pub struct AppState {
     auth: Arc<dyn auth::AuthProvider>,
     /// Wakes the open WebSockets when a project has new live events.
     live: live::LiveBus,
+    /// The drafts that are in memory, and the node IDs in use.
+    drafts: docs::DraftStore,
 }
 
 impl AppState {
@@ -130,6 +133,7 @@ impl AppState {
             bucket,
             auth,
             live: live::LiveBus::new(),
+            drafts: docs::DraftStore::default(),
         })
     }
 
@@ -269,6 +273,30 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/abandon",
             post(changesets::abandon),
+        )
+        .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs",
+            post(docs::create_doc),
+        )
+        .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}",
+            get(docs::show_doc),
+        )
+        .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}/html",
+            get(docs::read_doc_html),
+        )
+        .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs/{doc_id}",
+            get(docs::read_draft),
+        )
+        .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs/{doc_id}/open",
+            post(docs::open_draft),
+        )
+        .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs/{doc_id}/ops",
+            post(docs::edit_draft),
         )
         .route(
             "/api/v1/w/{workspace_id}/attachments",

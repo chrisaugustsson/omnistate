@@ -22,7 +22,7 @@ fn parsed(text: &str, what: &str) -> Result<Value> {
 }
 
 /// A UUID in its 36-character form, which is all that goes into a path.
-fn is_uuid(text: &str) -> bool {
+pub(crate) fn is_uuid(text: &str) -> bool {
     text.len() == 36
         && text.char_indices().all(|(i, c)| match i {
             8 | 13 | 18 | 23 => c == '-',
@@ -87,7 +87,7 @@ fn projects_path(agent: &Agent) -> String {
 /// The ID of the project a command works in: `--project`, else the project of
 /// `.omni.toml`. Either is a project ID, used as it is, or a project name,
 /// which the API's list of projects turns into its ID.
-fn project_id(args: &Args, agent: &Agent) -> Result<String> {
+pub(crate) fn project_id(args: &Args, agent: &Agent) -> Result<String> {
     let given = match args.project.clone() {
         Some(project) => project,
         None => config::project()?.ok_or_else(|| {

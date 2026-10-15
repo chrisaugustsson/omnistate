@@ -165,6 +165,14 @@ impl EditDoc {
         HtmlDoc::from_blocks(self.top.iter().map(|id| self.block(*id)).collect()).to_html()
     }
 
+    /// The doc as HTML, with `data-node-id` and `data-rev` (the node's
+    /// revision) on every block: what an agent reads before it edits.
+    pub fn to_html_with_revisions(&self) -> String {
+        let revision = |id: &NodeId| self.revision(*id);
+        HtmlDoc::from_blocks(self.top.iter().map(|id| self.block(*id)).collect())
+            .to_html_with(Some(&revision))
+    }
+
     /// One node and its descendants as HTML.
     pub fn node_html(&self, id: NodeId) -> Option<String> {
         self.nodes

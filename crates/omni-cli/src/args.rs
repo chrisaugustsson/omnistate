@@ -20,6 +20,14 @@ pub struct Args {
     pub title: Option<String>,
     pub description: Option<String>,
     pub run: Option<String>,
+    /// `--changeset <id>`, `--kind` and `--module` say which change set a doc
+    /// command works in and what kind of doc `omni doc create` starts.
+    pub changeset: Option<String>,
+    pub kind: Option<String>,
+    pub module: Option<String>,
+    /// `omni doc read --version <v>`: the version to read. Everywhere else
+    /// `--version` is the bare flag that shows the version of omni.
+    pub doc_version: Option<String>,
     pub json: bool,
     pub help: bool,
     pub version: bool,
@@ -46,6 +54,13 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Args> {
                 parsed.help = true;
                 continue;
             }
+            "--version"
+                if parsed
+                    .words
+                    .starts_with(&["doc".to_string(), "read".to_string()]) =>
+            {
+                &mut parsed.doc_version
+            }
             "--version" | "-V" => {
                 parsed.version = true;
                 continue;
@@ -63,6 +78,9 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Args> {
             "--title" => &mut parsed.title,
             "--description" => &mut parsed.description,
             "--run" => &mut parsed.run,
+            "--changeset" => &mut parsed.changeset,
+            "--kind" => &mut parsed.kind,
+            "--module" => &mut parsed.module,
             // Rejecting is the human's, whatever options it is tried with:
             // the command itself explains that.
             _ if parsed
@@ -130,6 +148,36 @@ mod tests {
         assert_eq!(parsed.description.as_deref(), Some("D"));
         assert_eq!(parsed.run.as_deref(), Some("r-1"));
         assert_eq!(parsed.project.as_deref(), Some("p"));
+    }
+
+    #[test]
+    fn doc_options_take_values_and_doc_read_takes_a_version() {
+        let parsed = parse_strs(&[
+            "doc",
+            "create",
+            "--changeset",
+            "c",
+            "--kind=html",
+            "--module",
+            "prd",
+        ])
+        .unwrap();
+        assert_eq!(parsed.words, ["doc", "create"]);
+        assert_eq!(parsed.changeset.as_deref(), Some("c"));
+        assert_eq!(parsed.kind.as_deref(), Some("html"));
+        assert_eq!(parsed.module.as_deref(), Some("prd"));
+
+        let parsed = parse_strs(&["doc", "read", "d", "--version", "v"]).unwrap();
+        assert_eq!(parsed.words, ["doc", "read", "d"]);
+        assert_eq!(parsed.doc_version.as_deref(), Some("v"));
+        assert!(!parsed.version);
+        // Anywhere else it is still the flag that shows omni's version.
+        assert!(parse_strs(&["--version"]).unwrap().version);
+        assert!(
+            parse_strs(&["doc", "show", "d", "--version"])
+                .unwrap()
+                .version
+        );
     }
 
     #[test]

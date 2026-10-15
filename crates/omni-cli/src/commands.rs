@@ -1,5 +1,6 @@
 //! The commands: `login`, `key list|revoke`, `whoami`, `api` and `config show`;
-//! the project and change set commands are in `changesets`.
+//! the project and change set commands are in `changesets`, the doc commands in
+//! `docs`.
 //!
 //! Standard output holds only the result of a command (short text, or the API's
 //! JSON with `--json`), so a script can parse it. Prompts, notices and errors go
@@ -9,6 +10,7 @@ use crate::args::Args;
 use crate::attach;
 use crate::changesets;
 use crate::config::{self, Stored};
+use crate::docs;
 use crate::error::{CliError, Result, bail};
 use crate::http::{self, Response, Server};
 use crate::identity::Identity;
@@ -58,6 +60,16 @@ pub fn run(args: &Args) -> Result<()> {
         ["changeset", ..] => {
             bail!("usage: omni changeset create|list|show|submit|reopen|abandon; see `omni --help`")
         }
+        ["doc", "create"] => docs::create(args),
+        ["doc", "open"] => docs::open(args, None),
+        ["doc", "open", doc] => docs::open(args, Some(doc)),
+        ["doc", "read"] => docs::read(args, None),
+        ["doc", "read", doc] => docs::read(args, Some(doc)),
+        ["doc", "show"] => docs::show(args, None),
+        ["doc", "show", doc] => docs::show(args, Some(doc)),
+        ["doc", "edit"] => docs::edit(args, None),
+        ["doc", "edit", doc] => docs::edit(args, Some(doc)),
+        ["doc", ..] => bail!("usage: omni doc create|open|read|show|edit; see `omni --help`"),
         ["attach", file] => attach::run(args, file),
         ["attach", ..] => bail!("usage: omni attach <file>"),
         ["whoami"] => whoami(args),
@@ -170,24 +182,65 @@ fn checked(response: Response) -> Result<Response> {
 
 /// One line for an error response: the API's error code and what to do.
 fn api_error(response: &Response) -> CliError {
-    let code = Value::parse(&response.text())
-        .ok()
+    let body = Value::parse(&response.text()).ok();
+    let code = body
+        .as_ref()
         .and_then(|body| body.str_at("error").map(str::to_string))
         .unwrap_or_else(|| format!("http_{}", response.status));
     let status = response.status;
-    CliError::new(match status {
-        401 => format!(
+    if let Some(body) = &body {
+        if let Some(message) = refused_operation(body) {
+            return CliError::new(message);
+        }
+    }
+    CliError::new(match (status, code.as_str()) {
+        (401, _) => format!(
             "{code}: the server did not accept the credentials; run `omni login` to get a new key"
         ),
-        403 => format!("{code}: only the human can do this, in the web app; an agent cannot"),
-        404 => format!(
+        (403, _) => format!("{code}: only the human can do this, in the web app; an agent cannot"),
+        (404, _) => format!(
             "{code}: there is no such workspace or record, or you cannot reach it; check `omni config show`"
         ),
-        503 => format!(
+        (409, "no_mainline_version") => format!(
+            "{code}: the doc has no mainline version yet, so only the change set that started it has a draft of it"
+        ),
+        (503, _) => format!(
             "{code}: the server cannot reach its database or storage right now; try again shortly"
         ),
         _ => format!("{code}: the server answered HTTP {status}"),
     })
+}
+
+/// The line for an edit that the API refused: a conflict names the node and
+/// the revisions, a refused operation carries the API's own message.
+fn refused_operation(body: &Value) -> Option<String> {
+    match body.str_at("error")? {
+        "conflict" => {
+            let conflict = body.get("conflict")?;
+            let number = |name: &str| match conflict.get(name) {
+                Some(Value::Number(number)) => number.clone(),
+                _ => "?".to_string(),
+            };
+            Some(format!(
+                "conflict: operation {} expected node {} at revision {}, but it is at revision {}; read the draft again and send the operation with the new revision",
+                number("index"),
+                conflict.str_at("node").unwrap_or("?"),
+                number("expected"),
+                number("current_revision")
+            ))
+        }
+        "invalid_operation" => {
+            let index = match body.get("index") {
+                Some(Value::Number(index)) => index.clone(),
+                _ => "?".to_string(),
+            };
+            Some(format!(
+                "invalid_operation: operation {index}: {}; nothing was applied",
+                body.str_at("message").unwrap_or("the operation is refused")
+            ))
+        }
+        _ => None,
+    }
 }
 
 // whoami and api ----------------------------------------------------------------

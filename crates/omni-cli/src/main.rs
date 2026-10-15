@@ -9,6 +9,7 @@ mod attach;
 mod changesets;
 mod commands;
 mod config;
+mod docs;
 mod error;
 mod http;
 mod identity;
@@ -35,6 +36,19 @@ Usage:
   omni changeset submit <id>          send an open change set to review
   omni changeset reopen <id>          reopen a rejected change set
   omni changeset abandon <id>         abandon a change set (it is kept, never deleted)
+  omni doc create --changeset <id> --kind html|design|design-system --module prd|architecture|db|ui
+                --title <text>        start a doc in a change set (its first version comes
+                                      through the change set)
+  omni doc open <doc> --changeset <id>
+                                      make (or reuse) the change set's draft of a doc
+  omni doc read <doc> [--changeset <id> | --version <v>]
+                                      print the doc as HTML with data-node-id (data-rev too
+                                      for a draft); without options, the mainline version
+  omni doc show <doc>                 show the doc's metadata, mainline version, drafts, claims
+  omni doc edit <doc> --changeset <id>
+                                      apply a batch of operations (a JSON array, from
+                                      --body-file or standard input) to the draft; prints
+                                      each node's new revision and the IDs of new nodes
   omni attach <file>                  upload a file (at most 20 MB) and print attachment:<id>,
                                       how docs, designs and posts refer to it
   omni whoami                         show the workspace and who the key acts as
@@ -48,7 +62,9 @@ Options (before or after the command):
   --server <url>        the API address (fallback: OMNI_SERVER, then the config file)
   --project <name|id>   the project to work in (fallback: project in .omni.toml)
   --body-file <path>    send this file as the request body (for a change set: its
-                        description); - reads standard input
+                        description; for `doc edit`: the operations); - reads
+                        standard input
+  --changeset <id>      the change set a doc command works in
   --json                print the full JSON instead of short text
   -h, --help            show this help
   -V, --version         show the version

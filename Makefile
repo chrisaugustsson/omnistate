@@ -13,7 +13,7 @@ WASM_TARGET := wasm32-unknown-emscripten
 WASM_OUT := $(or $(CARGO_TARGET_DIR),target)/$(WASM_TARGET)/release
 SANDBOX_BUILD := render-sandbox/build
 
-.PHONY: lint test web-deps render-wasm chrome-boxes stress-file nodes-boxes bench-render check-layout penpot-compare
+.PHONY: lint test web-deps render-wasm chrome-boxes stress-file nodes-boxes bench-render check-layout penpot-compare bench-ops
 
 # The last clippy run covers the WebAssembly-only code of omni-render.
 lint: web-deps
@@ -85,6 +85,16 @@ bench-render: render-wasm stress-file
 check-layout: render-wasm stress-file
 	npm install --prefix render-sandbox --no-audit --no-fund --loglevel=error
 	node render-sandbox/check-layout.mjs
+
+# One operation at the command line (US-022, Q31): builds a doc of 1,000 blocks
+# in a draft, runs 500 single `set` operations on it one after the other, each
+# with its own `omni doc edit`, and prints the 95th percentile of the time as
+# the CLI measures it. It fails if that is 50 ms or more. It runs in the test
+# container against the warm local stack (Postgres and RustFS), in release mode
+# like the stack's own API, and on its own, so nothing else skews the times.
+bench-ops:
+	docker compose up --build --wait --detach proxy
+	docker compose run --rm test cargo test --release -p omni-cli --features stack-tests --test stack_bench_ops -- --nocapture
 
 # Penpot comparison (US-104): converts every .penpot export in PENPOT_FIXTURES,
 # renders and compares each board with Penpot's own PNG, and writes the report

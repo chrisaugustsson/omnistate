@@ -1370,6 +1370,7 @@ version = "0.1.0"
 dependencies = [
  "argon2",
  "axum",
+ "omni-core",
  "rust-s3",
  "serde",
  "serde_json",

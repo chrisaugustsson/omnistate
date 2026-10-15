@@ -341,9 +341,17 @@ impl Block {
 
     /// The block as HTML, with its blocks inside it.
     pub(crate) fn to_html(&self) -> String {
-        let mut out = String::new();
+        self.to_html_with(None)
+    }
+
+    /// Like `to_html`, with `data-rev` on every block that `revisions` knows.
+    pub(crate) fn to_html_with(&self, revisions: Option<&dyn Revisions>) -> String {
+        let mut out = Printer {
+            text: String::new(),
+            revisions,
+        };
         print_block(self, &mut out);
-        out
+        out.text
     }
 
     /// The tag that holds the inline content of a text block.
@@ -541,9 +549,17 @@ impl HtmlDoc {
 
     /// The doc as HTML, with `data-node-id` on every block.
     pub fn to_html(&self) -> String {
-        let mut out = String::new();
+        self.to_html_with(None)
+    }
+
+    /// Like `to_html`, with `data-rev` on every block that `revisions` knows.
+    pub(crate) fn to_html_with(&self, revisions: Option<&dyn Revisions>) -> String {
+        let mut out = Printer {
+            text: String::new(),
+            revisions,
+        };
         print_blocks(&self.blocks, &mut out);
-        out
+        out.text
     }
 }
 
@@ -1955,14 +1971,46 @@ fn escape_attr(value: &str) -> String {
     escape_text(value).replace('"', "&quot;")
 }
 
-fn print_blocks(blocks: &[Block], out: &mut String) {
+/// Says the revision of a node, for the `data-rev` that the printer adds.
+pub(crate) trait Revisions {
+    fn revision(&self, id: &NodeId) -> Option<u64>;
+}
+
+impl<F: Fn(&NodeId) -> Option<u64>> Revisions for F {
+    fn revision(&self, id: &NodeId) -> Option<u64> {
+        self(id)
+    }
+}
+
+/// The text that the printer writes, and the revisions it adds as `data-rev`
+/// when it has them (a doc under edit, which knows each node's revision).
+struct Printer<'a> {
+    text: String,
+    revisions: Option<&'a dyn Revisions>,
+}
+
+impl Printer<'_> {
+    fn push(&mut self, c: char) {
+        self.text.push(c);
+    }
+
+    fn push_str(&mut self, text: &str) {
+        self.text.push_str(text);
+    }
+
+    fn revision(&self, id: &NodeId) -> Option<u64> {
+        self.revisions.and_then(|revisions| revisions.revision(id))
+    }
+}
+
+fn print_blocks(blocks: &[Block], out: &mut Printer) {
     for block in blocks {
         print_block(block, out);
         out.push('\n');
     }
 }
 
-fn print_inline(inline: &[Inline], out: &mut String) {
+fn print_inline(inline: &[Inline], out: &mut Printer) {
     for part in inline {
         match part {
             Inline::Text(text) => out.push_str(&escape_text(text)),
@@ -1994,19 +2042,24 @@ fn print_inline(inline: &[Inline], out: &mut String) {
 }
 
 /// Prints `<tag data-node-id="..." extra>`, the ID first.
-fn open_tag(tag: &str, id: Option<&NodeId>, extra: &str, out: &mut String) {
+fn open_tag(tag: &str, id: Option<&NodeId>, extra: &str, out: &mut Printer) {
     out.push('<');
     out.push_str(tag);
     if let Some(id) = id {
         out.push_str(" data-node-id=\"");
         out.push_str(id.as_str());
         out.push('"');
+        if let Some(revision) = out.revision(id) {
+            out.push_str(" data-rev=\"");
+            out.push_str(&revision.to_string());
+            out.push('"');
+        }
     }
     out.push_str(extra);
     out.push('>');
 }
 
-fn print_text_block(tag: &str, block: &Block, extra: &str, inline: &[Inline], out: &mut String) {
+fn print_text_block(tag: &str, block: &Block, extra: &str, inline: &[Inline], out: &mut Printer) {
     open_tag(tag, block.id(), extra, out);
     print_inline(inline, out);
     out.push_str("</");
@@ -2014,7 +2067,7 @@ fn print_text_block(tag: &str, block: &Block, extra: &str, inline: &[Inline], ou
     out.push('>');
 }
 
-fn print_container(tag: &str, block: &Block, extra: &str, children: &[Block], out: &mut String) {
+fn print_container(tag: &str, block: &Block, extra: &str, children: &[Block], out: &mut Printer) {
     open_tag(tag, block.id(), extra, out);
     out.push('\n');
     print_blocks(children, out);
@@ -2023,7 +2076,7 @@ fn print_container(tag: &str, block: &Block, extra: &str, children: &[Block], ou
     out.push('>');
 }
 
-fn print_block(block: &Block, out: &mut String) {
+fn print_block(block: &Block, out: &mut Printer) {
     match &block.body {
         Body::Section { children } => print_container("section", block, "", children, out),
         Body::Heading { level, inline } => {

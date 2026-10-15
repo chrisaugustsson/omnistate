@@ -20,6 +20,7 @@ sha2 = "0.10"
 subtle = "2"
 utoipa = "5"
 serde = { version = "1", features = ["derive"] }
+omni-core = { path = "../omni-core" }
 
 [features]
 # The setup, key, deletion, change set, doc and stack tests
