@@ -20,3 +20,13 @@ stack-tests = []
 [[test]]
 name = "stack"
 required-features = ["stack-tests"]
+
+[dev-dependencies]
+# The tenancy tests (tests/tenancy.rs) talk to Postgres and apply migrations/
+# the way the API does.
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "migrate"] }
+tokio = { version = "1", features = ["rt", "net", "time"] }
+
+[[test]]
+name = "tenancy"
+required-features = ["stack-tests"]
