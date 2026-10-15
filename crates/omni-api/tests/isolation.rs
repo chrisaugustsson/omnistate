@@ -16,8 +16,8 @@
 //!   `Workspace` (its path holds `{workspace_id}`, and the suite attacks it) or
 //!   `Global` (no workspace in the path, with the reason). The path may hold
 //!   `{project_id}`, `{changeset_id}`, `{key_id}`, `{attachment_id}`,
-//!   `{doc_id}`, `{version_id}` and `{other_version_id}`, which the suite
-//!   fills with the IDs of the seeded records; a path with another
+//!   `{doc_id}`, `{version_id}`, `{other_version_id}` and `{conflict_id}`,
+//!   which the suite fills with the IDs of the seeded records; a path with another
 //!   placeholder, or a registry route without a case, fails the suite. The
 //!   seeded doc (US-022) was created in the open change set `{changeset_id}`,
 //!   which has its draft, and has one applied operation; once the claim routes
@@ -26,7 +26,10 @@
 //!   as `{version_id}`, edited and saved again as `{other_version_id}`. Once
 //!   the approve route exists (US-025), each workspace also has a change set
 //!   with a saved version of a doc of its own that the human approved and that
-//!   merged, so whatever records approvals has rows of both workspaces.
+//!   merged, so whatever records approvals has rows of both workspaces. Once
+//!   the rebase route exists (US-026), `{changeset_id}` was also submitted,
+//!   approved and rebased with a conflict on a doc whose mainline moved on
+//!   under it, which left it `open` again with the conflict `{conflict_id}`.
 //! - Workspace A's credentials against workspace B's workspace and IDs, and
 //!   against B's IDs under A's own workspace, are always 404
 //!   `{"error": "not_found"}` with nothing of B in the body, and the answer is
@@ -316,6 +319,24 @@ const CASES: &[Case] = &[
         Some("{}"),
         Kind::Workspace,
     ),
+    case(
+        "POST",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/rebase",
+        Some("{}"),
+        Kind::Workspace,
+    ),
+    case(
+        "GET",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/conflicts",
+        None,
+        Kind::Workspace,
+    ),
+    case(
+        "POST",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/conflicts/{conflict_id}/resolve",
+        Some(r#"{"note":"intruder"}"#),
+        Kind::Workspace,
+    ),
 ];
 
 /// The WebSocket routes that the suite attacks, as the paths of
@@ -596,6 +617,192 @@ fn has_approve_route() -> bool {
     })
 }
 
+/// Whether the router has the rebase route (US-026) yet.
+fn has_rebase_route() -> bool {
+    registry().iter().any(|r| {
+        r.method == "POST"
+            && r.path
+                == "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/rebase"
+    })
+}
+
+/// The `data-rev` of the block with `data-node-id="{node}"` in a draft's HTML.
+fn rev_of(html: &str, node: &str) -> u64 {
+    let at = html
+        .find(&format!("data-node-id=\"{node}\""))
+        .unwrap_or_else(|| panic!("the draft has {node}: {html}"));
+    let start = html[..at].rfind('<').expect("the start of the tag");
+    let end = at + html[at..].find('>').expect("the end of the tag");
+    let tag = &html[start..end];
+    let rev = tag
+        .find("data-rev=\"")
+        .map(|i| &tag[i + "data-rev=\"".len()..])
+        .and_then(|rest| rest.split('"').next())
+        .unwrap_or_else(|| panic!("{node} has a data-rev: {tag}"));
+    rev.parse().expect("a revision")
+}
+
+/// Leaves a conflict in `target`, an open change set of the project whose
+/// change sets are at `changesets` (US-026): a doc with one paragraph merges,
+/// another change set rewrites the paragraph and merges, `target` rewrites it
+/// too from the same base, the human approves it, it needs a rebase, and the
+/// agent rebases it with the body of the rebase case. Returns the conflict's ID.
+fn seed_conflict(
+    client: &Client,
+    changesets: &str,
+    agent: &Auth,
+    human: &Auth,
+    target: &str,
+    label: &str,
+) -> String {
+    let changeset = || -> String {
+        let body = json!({ "title": unique(&format!("{label}-change")) }).to_string();
+        let created = must(
+            call(client, "POST", changesets, agent, Some(&body)),
+            201,
+            "create a change set",
+        );
+        created["changeset"]["id"]
+            .as_str()
+            .expect("an id")
+            .to_string()
+    };
+    let submit_and_approve = |id: &str| -> Value {
+        let path = format!("{changesets}/{id}");
+        must(
+            call(client, "POST", &format!("{path}/submit"), agent, None),
+            200,
+            "submit",
+        );
+        must(
+            call(
+                client,
+                "POST",
+                &format!("{path}/approve"),
+                human,
+                Some("{}"),
+            ),
+            200,
+            "approve",
+        )
+    };
+    let save = |draft: &str| {
+        must(
+            call(
+                client,
+                "POST",
+                &format!("{draft}/versions"),
+                agent,
+                Some("{}"),
+            ),
+            201,
+            "save a version",
+        );
+    };
+
+    // A doc with one paragraph on the mainline.
+    let first = changeset();
+    let body = json!({ "kind": "html", "module": "prd", "title": unique(&format!("{label}-rebased-doc")) })
+        .to_string();
+    let created = must(
+        call(
+            client,
+            "POST",
+            &format!("{changesets}/{first}/docs"),
+            agent,
+            Some(&body),
+        ),
+        201,
+        "create a doc to rebase",
+    );
+    let doc = created["doc"]["id"].as_str().expect("an id").to_string();
+    let ops = json!({ "ops": [{
+        "op": "insert",
+        "parent": null,
+        "position": { "after": null },
+        "content": format!("<p>{}</p>", unique(&format!("{label}-base")))
+    }] })
+    .to_string();
+    let inserted = must(
+        call(
+            client,
+            "POST",
+            &format!("{changesets}/{first}/docs/{doc}/ops"),
+            agent,
+            Some(&ops),
+        ),
+        200,
+        "write the paragraph",
+    );
+    let paragraph = inserted["results"][0]["node"]
+        .as_str()
+        .expect("the new paragraph")
+        .to_string();
+    save(&format!("{changesets}/{first}/docs/{doc}"));
+    let merged = submit_and_approve(&first);
+    assert_eq!(merged["changeset"]["status"], "merged", "{merged}");
+
+    // Two change sets rewrite it from the same base; one merges first.
+    let ahead = changeset();
+    for id in [ahead.as_str(), target] {
+        let opened = call(
+            client,
+            "POST",
+            &format!("{changesets}/{id}/docs/{doc}/open"),
+            agent,
+            Some("{}"),
+        );
+        assert!(
+            matches!(opened.status, 200 | 201),
+            "open the doc: {}",
+            opened.text()
+        );
+    }
+    for id in [ahead.as_str(), target] {
+        let draft = format!("{changesets}/{id}/docs/{doc}");
+        let read = must(call(client, "GET", &draft, agent, None), 200, "read");
+        let html = read["draft"]["html"].as_str().expect("the draft's html");
+        let ops = json!({ "ops": [{
+            "op": "set",
+            "node": paragraph,
+            "rev": rev_of(html, &paragraph),
+            "properties": { "html": unique(&format!("{label}-rewrite")) }
+        }] })
+        .to_string();
+        must(
+            call(client, "POST", &format!("{draft}/ops"), agent, Some(&ops)),
+            200,
+            "rewrite the paragraph",
+        );
+        save(&draft);
+    }
+    let merged = submit_and_approve(&ahead);
+    assert_eq!(merged["changeset"]["status"], "merged", "{merged}");
+    let behind = submit_and_approve(target);
+    assert_eq!(behind["changeset"]["status"], "needs_rebase", "{behind}");
+
+    let rebase = case_named(
+        "POST",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/rebase",
+    );
+    let rebased = must(
+        call(
+            client,
+            "POST",
+            &format!("{changesets}/{target}/rebase"),
+            agent,
+            rebase.body,
+        ),
+        200,
+        "rebase",
+    );
+    assert_eq!(rebased["changeset"]["status"], "open", "{rebased}");
+    rebased["conflicts"][0]["id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("the rebase left a conflict: {rebased}"))
+        .to_string()
+}
+
 /// Uploads `bytes` as `name` with an API key; the raw bytes are the body.
 fn upload_attachment(
     client: &Client,
@@ -653,6 +860,9 @@ struct Side {
     /// approved and which merged (US-025): empty until the approve route
     /// exists.
     merged_changeset_id: String,
+    /// The conflict that a rebase left in `changeset_id` (US-026): empty
+    /// until the rebase route exists.
+    conflict_id: String,
 }
 
 impl Side {
@@ -680,6 +890,7 @@ impl Side {
             version_id: same(),
             other_version_id: same(),
             merged_changeset_id: same(),
+            conflict_id: same(),
         }
     }
 
@@ -705,6 +916,7 @@ impl Side {
             &self.version_id,
             &self.other_version_id,
             &self.merged_changeset_id,
+            &self.conflict_id,
         ]
         .into_iter()
         .map(String::as_str)
@@ -1053,6 +1265,16 @@ fn fixture() -> &'static Fixture {
             } else {
                 String::new()
             };
+            // US-026: the open change set is approved and rebased onto a
+            // mainline that moved on, with a conflict, so whatever records
+            // conflicts has rows of the workspace and the conflict routes have
+            // a conflict of `{changeset_id}`. Seeded as soon as the registry
+            // has the rebase route.
+            let conflict_id = if has_rebase_route() {
+                seed_conflict(client, &changesets, &agent, &human, &changeset_id, name)
+            } else {
+                String::new()
+            };
             Side {
                 id: workspace,
                 email: format!("{name}@example.test"),
@@ -1077,6 +1299,7 @@ fn fixture() -> &'static Fixture {
                 version_id,
                 other_version_id,
                 merged_changeset_id,
+                conflict_id,
             }
         });
         let a = sides.next().expect("workspace A");
@@ -1110,6 +1333,7 @@ fn fill(template: &str, workspace: &Side, record: &Side) -> String {
             "doc_id" => &record.doc_id,
             "version_id" => &record.version_id,
             "other_version_id" => &record.other_version_id,
+            "conflict_id" => &record.conflict_id,
             other => panic!(
                 "{template} has the placeholder {{{other}}}, for which the suite has no seeded \
                  ID: add it to Side and fill() in tests/isolation.rs"
@@ -2194,6 +2418,110 @@ fn the_approve_call_of_the_attacks_works_for_the_workspace_that_owns_the_records
         "approve",
     );
     assert_eq!(approved["changeset"]["status"], "merged", "{approved}");
+}
+
+// ---------------------------------------------------------------------------
+// Rebase and conflicts (US-026)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn the_rebase_and_conflict_routes_are_in_the_registry_and_the_suite_attacks_them() {
+    for (method, path, access) in [
+        (
+            "POST",
+            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/rebase",
+            Access::Agent,
+        ),
+        (
+            "GET",
+            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/conflicts",
+            Access::Both,
+        ),
+        (
+            "POST",
+            "/api/v1/w/{workspace_id}/projects/{project_id}/conflicts/{conflict_id}/resolve",
+            Access::Agent,
+        ),
+    ] {
+        let entry = registry()
+            .into_iter()
+            .find(|r| r.method == method && r.path == path)
+            .unwrap_or_else(|| panic!("the registry has no route {method} {path}"));
+        assert_eq!(entry.access, access, "{method} {path}");
+        assert!(
+            matches!(case_for(&entry).kind, Kind::Workspace),
+            "{path} is a workspace route that the suite attacks"
+        );
+    }
+
+    let (f, _) = ready();
+    for side in [&f.a, &f.b] {
+        assert!(
+            !side.conflict_id.is_empty(),
+            "the suite seeded no conflict for {}",
+            side.id
+        );
+    }
+}
+
+#[test]
+fn the_rebase_and_conflict_calls_of_the_attacks_work_for_the_workspace_that_owns_the_records() {
+    // The control for the rebase, conflicts and resolve routes: the owner's
+    // agent rebases a change set of its own workspace into a conflict, lists
+    // it and resolves it, with the bodies of the cases.
+    let (f, client) = ready();
+    let _guard = serial();
+    let key = Auth::Key(&f.a.key);
+    let human = Auth::Session(&f.a.token);
+    let changesets = format!(
+        "/api/v1/w/{}/projects/{}/changesets",
+        f.a.id, f.a.project_id
+    );
+    let body = json!({ "title": unique("owner-rebase") }).to_string();
+    let created = must(
+        call(client, "POST", &changesets, &key, Some(&body)),
+        201,
+        "create a change set",
+    );
+    let target = created["changeset"]["id"].as_str().expect("an id");
+    let conflict = seed_conflict(client, &changesets, &key, &human, target, "owner");
+
+    let listed = must(
+        call(
+            client,
+            "GET",
+            &format!("{changesets}/{target}/conflicts"),
+            &key,
+            None,
+        ),
+        200,
+        "list the conflicts",
+    );
+    assert!(
+        listed["conflicts"]
+            .as_array()
+            .is_some_and(|all| all.iter().any(|c| c["id"] == conflict.as_str())),
+        "{listed}"
+    );
+    let resolve = case_named(
+        "POST",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/conflicts/{conflict_id}/resolve",
+    );
+    let resolved = must(
+        call(
+            client,
+            "POST",
+            &format!(
+                "/api/v1/w/{}/projects/{}/conflicts/{conflict}/resolve",
+                f.a.id, f.a.project_id
+            ),
+            &key,
+            resolve.body,
+        ),
+        200,
+        "resolve the conflict",
+    );
+    assert_eq!(resolved["conflict"]["id"], conflict.as_str(), "{resolved}");
 }
 
 // ---------------------------------------------------------------------------

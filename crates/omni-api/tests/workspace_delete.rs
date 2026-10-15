@@ -547,6 +547,32 @@ async fn fill_workspace(conn: &mut PgConnection, workspace: &str, membership: &s
                 .await
                 .expect("insert an approval");
             }
+
+            // US-026: a conflict that a rebase recorded on a node of the doc,
+            // with the version of each side. Conflicts may live in the
+            // existing tables; if they live in the tenant table `conflicts`
+            // (tests/rebase.rs pins its name and the columns without a
+            // default), it is seeded as soon as it exists, for the same reason
+            // as above.
+            let conflicts_exist: bool =
+                sqlx::query_scalar("SELECT to_regclass('public.conflicts') IS NOT NULL")
+                    .fetch_one(&mut *conn)
+                    .await
+                    .expect("look for the conflicts table");
+            if conflicts_exist {
+                sqlx::query(
+                    "INSERT INTO conflicts (workspace_id, changeset_id, doc_id, node, \
+                     mainline_version_id, changeset_version_id) \
+                     VALUES ($1::uuid, $2::uuid, $3::uuid, 'k3f9x2qa', $4::uuid, $4::uuid)",
+                )
+                .bind(workspace)
+                .bind(&changeset_id)
+                .bind(&doc_id)
+                .bind(&version_id)
+                .execute(&mut *conn)
+                .await
+                .expect("insert a conflict");
+            }
         }
     }
 }
