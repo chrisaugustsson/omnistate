@@ -35,8 +35,17 @@
 //!   nodes only the second version has and `removed` those only the first has
 //!   (as their node index entries); `changed` lists the nodes in both whose
 //!   fingerprint differs (as in the second version); `moved` lists the nodes in
-//!   both whose parent differs, as `{"id", "type", "from_parent",
-//!   "to_parent"}`. A node in none of the four lists is the same in both.
+//!   both whose place differs, as `{"id", "type", "from_parent", "to_parent",
+//!   "from_after", "to_after"}`, where `from_after` and `to_after` are the
+//!   sibling the node follows in the first and in the second version (`null`
+//!   for a first child). A node's place differs when its parent does, or when
+//!   it keeps its parent but its order among the siblings that also keep that
+//!   parent changes (a reorder with the `move` op). A reorder lists only the
+//!   fewest nodes that account for it, those outside a longest common
+//!   subsequence of the two orders: moving one node after another sibling
+//!   lists just that node, not the siblings it passed, and an insertion or a
+//!   deletion that shifts its siblings lists none of them. A node in none of
+//!   the four lists is the same in both.
 //!   Versions of two different docs are 400 `{"error": "invalid_request"}`.
 //! - `POST /changesets/{changeset_id}/docs/{doc_id}/remove` (agent) takes `{}`
 //!   and removes the doc in that change set: it saves a version marking the
@@ -1183,6 +1192,8 @@ fn a_diff_lists_added_removed_changed_and_moved_nodes() {
     assert_eq!(moved["type"], "paragraph", "{moved}");
     assert_eq!(moved["from_parent"], Value::Null, "{moved}");
     assert_eq!(moved["to_parent"], s.section.as_str(), "{moved}");
+    assert_eq!(moved["from_after"], s.section.as_str(), "{moved}");
+    assert_eq!(moved["to_after"], s.keep.as_str(), "{moved}");
 }
 
 #[test]
@@ -1212,6 +1223,76 @@ fn a_diff_the_other_way_round_swaps_added_and_removed() {
     );
     assert_eq!(d["moved"][0]["from_parent"], s.section.as_str(), "{d}");
     assert_eq!(d["moved"][0]["to_parent"], Value::Null, "{d}");
+    assert_eq!(d["moved"][0]["from_after"], s.keep.as_str(), "{d}");
+    assert_eq!(d["moved"][0]["to_after"], s.section.as_str(), "{d}");
+}
+
+#[test]
+fn a_diff_lists_a_node_moved_after_another_sibling_of_the_same_parent() {
+    let (f, client) = ready();
+    let (project, changeset) = project_with_changeset(f, client);
+    let doc = id_of(&create_doc(f, client, &project, &changeset)["doc"]);
+    let results = edit(
+        f,
+        client,
+        &project,
+        &changeset,
+        &doc,
+        &json!([insert(
+            None,
+            None,
+            "<section><p>A</p><p>B</p><p>C</p><p>D</p></section>"
+        )]),
+    );
+    let created_ids: Vec<String> = results[0]["created"]
+        .as_array()
+        .expect("created")
+        .iter()
+        .map(|id| id.as_str().expect("an ID").to_string())
+        .collect();
+    let [section, a, b, c, d] = <[String; 5]>::try_from(created_ids)
+        .unwrap_or_else(|ids| panic!("five new nodes in document order: {ids:?}"));
+    let v1 = save(f, client, &project, &changeset, &doc);
+
+    // A moves after C inside the same section: A B C D becomes B C A D.
+    edit(
+        f,
+        client,
+        &project,
+        &changeset,
+        &doc,
+        &json!([{ "op": "move", "node": a, "rev": 1, "parent": section, "position": { "after": c } }]),
+    );
+    let v2 = save(f, client, &project, &changeset, &doc);
+    assert_eq!(
+        node_ids(&v2["nodes"]),
+        vec![section.clone(), b.clone(), c.clone(), a.clone(), d.clone()],
+        "the second version has the new order: {v2}"
+    );
+    assert_eq!(index_of(&v2)[&a]["parent"], section.as_str(), "{v2}");
+
+    let diff_ab = diff(f, client, &project, &id_of(&v1), &id_of(&v2));
+    for list in ["added", "removed", "changed"] {
+        assert_eq!(diff_ab[list], json!([]), "{list}: {diff_ab}");
+    }
+    assert_eq!(
+        node_ids(&diff_ab["moved"]),
+        vec![a.clone()],
+        "a reorder inside one parent is a move of just the node that moved, \
+         not of the siblings it passed: {diff_ab}"
+    );
+    let moved = &diff_ab["moved"][0];
+    assert_eq!(moved["type"], "paragraph", "{moved}");
+    assert_eq!(moved["from_parent"], section.as_str(), "{moved}");
+    assert_eq!(moved["to_parent"], section.as_str(), "{moved}");
+    assert_eq!(moved["from_after"], Value::Null, "{moved}");
+    assert_eq!(moved["to_after"], c.as_str(), "{moved}");
+
+    // The other way round, A moves back to the front.
+    let diff_ba = diff(f, client, &project, &id_of(&v2), &id_of(&v1));
+    assert_eq!(node_ids(&diff_ba["moved"]), vec![a.clone()], "{diff_ba}");
+    assert_eq!(diff_ba["moved"][0]["from_after"], c.as_str(), "{diff_ba}");
+    assert_eq!(diff_ba["moved"][0]["to_after"], Value::Null, "{diff_ba}");
 }
 
 #[test]
