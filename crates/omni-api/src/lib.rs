@@ -205,6 +205,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/auth/login", post(session::login))
         .route("/api/v1/auth/logout", post(session::logout))
         .route("/api/v1/auth/me", get(session::me))
+        .route("/api/v1/auth/workspaces", get(session::workspaces))
         .route("/api/v1/w/{workspace_id}/whoami", get(workspace::whoami))
         .route(
             "/api/v1/w/{workspace_id}/api-keys",

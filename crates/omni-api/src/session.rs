@@ -36,6 +36,18 @@ pub struct UserResponse {
     pub user: UserBody,
 }
 
+#[derive(Serialize, ToSchema)]
+pub struct WorkspaceBody {
+    /// The workspace's UUID.
+    pub id: String,
+    pub name: String,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct WorkspaceListResponse {
+    pub workspaces: Vec<WorkspaceBody>,
+}
+
 /// The body of every error response: a stable code such as `unauthorized`.
 #[derive(Serialize, ToSchema)]
 pub struct ErrorBody {
@@ -197,4 +209,45 @@ pub async fn logout(
 )]
 pub async fn me(current: CurrentUser) -> Json<UserResponse> {
     Json(UserResponse::from(current.user))
+}
+
+/// The workspaces the logged-in user is a member of, by name. It is how
+/// `omni login` offers a choice before any workspace is picked.
+#[utoipa::path(
+    get,
+    path = "/api/v1/auth/workspaces",
+    responses(
+        (status = 200, description = "The user's workspaces, ordered by name", body = WorkspaceListResponse),
+        (status = 401, description = "No live session", body = ErrorBody),
+        (status = 503, description = "The database or the login provider cannot answer", body = ErrorBody),
+    )
+)]
+pub async fn workspaces(
+    State(state): State<AppState>,
+    current: CurrentUser,
+) -> Result<Json<WorkspaceListResponse>, ApiError> {
+    let memberships: Vec<(String,)> =
+        sqlx::query_as("SELECT workspace_id::text FROM user_memberships($1::uuid)")
+            .bind(&current.user.id)
+            .fetch_all(&state.pool)
+            .await
+            .map_err(ApiError::database)?;
+    // Row-level security hides a workspace's name from every other workspace,
+    // so each name is read in a transaction of its own workspace.
+    let mut workspaces = Vec::with_capacity(memberships.len());
+    for (id,) in memberships {
+        let mut tx = state.workspace_tx(&id).await?;
+        let name: Option<(String,)> =
+            sqlx::query_as("SELECT name FROM workspaces WHERE id = $1::uuid")
+                .bind(&id)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(ApiError::database)?;
+        tx.commit().await.map_err(ApiError::database)?;
+        if let Some((name,)) = name {
+            workspaces.push(WorkspaceBody { id, name });
+        }
+    }
+    workspaces.sort_by(|a, b| (&a.name, &a.id).cmp(&(&b.name, &b.id)));
+    Ok(Json(WorkspaceListResponse { workspaces }))
 }

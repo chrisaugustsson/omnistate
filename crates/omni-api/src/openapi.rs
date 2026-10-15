@@ -5,7 +5,9 @@
 
 use crate::api_keys::{ApiKeyBody, CreatedKeyResponse, KeyListResponse, KeyResponse};
 use crate::routes::{Access, registry};
-use crate::session::{ErrorBody, LoginRequest, UserBody, UserResponse};
+use crate::session::{
+    ErrorBody, LoginRequest, UserBody, UserResponse, WorkspaceBody, WorkspaceListResponse,
+};
 use crate::workspace::{ActorBody, WhoamiResponse};
 use axum::Json;
 use serde_json::{Value, json};
@@ -24,6 +26,7 @@ use utoipa::OpenApi;
         crate::session::login,
         crate::session::logout,
         crate::session::me,
+        crate::session::workspaces,
         crate::workspace::whoami,
         crate::api_keys::list,
         crate::api_keys::create,
@@ -33,6 +36,8 @@ use utoipa::OpenApi;
         LoginRequest,
         UserBody,
         UserResponse,
+        WorkspaceBody,
+        WorkspaceListResponse,
         ErrorBody,
         WhoamiResponse,
         ActorBody,
