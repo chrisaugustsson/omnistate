@@ -10,6 +10,7 @@ mod api_keys;
 mod attachments;
 pub mod auth;
 mod changesets;
+mod claims;
 pub mod delete_workspace;
 mod docs;
 mod live;
@@ -80,6 +81,8 @@ pub struct AppState {
     live: live::LiveBus,
     /// The drafts that are in memory, and the node IDs in use.
     drafts: docs::DraftStore,
+    /// The claims that agents hold on sections of drafts.
+    claims: claims::ClaimStore,
 }
 
 impl AppState {
@@ -106,8 +109,9 @@ impl AppState {
 
     /// Sets how long a claim lasts without an operation from its holder in its
     /// draft (US-023). Without it a claim lasts 10 minutes.
-    pub fn with_claim_ttl(self, _ttl: std::time::Duration) -> Self {
-        todo!("US-023: claims")
+    pub fn with_claim_ttl(mut self, ttl: Duration) -> Self {
+        self.claims = claims::ClaimStore::new(ttl);
+        self
     }
 
     fn build(
@@ -140,6 +144,7 @@ impl AppState {
             auth,
             live: live::LiveBus::new(),
             drafts: docs::DraftStore::default(),
+            claims: claims::ClaimStore::default(),
         })
     }
 
@@ -303,6 +308,14 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs/{doc_id}/ops",
             post(docs::edit_draft),
+        )
+        .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/claims",
+            post(claims::take_claim),
+        )
+        .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/claims/release",
+            post(claims::release_claim),
         )
         .route(
             "/api/v1/w/{workspace_id}/attachments",

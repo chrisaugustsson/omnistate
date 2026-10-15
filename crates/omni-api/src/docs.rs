@@ -14,6 +14,7 @@
 
 use crate::AppState;
 use crate::changesets::{non_blank, parse_body};
+use crate::claims::{self, ClaimBody};
 use crate::live;
 use crate::session::{ApiError, ErrorBody};
 use crate::workspace::{AgentRequest, WorkspaceRequest, parse_uuid};
@@ -34,7 +35,7 @@ use std::convert::Infallible;
 use std::sync::{Arc, Mutex};
 use utoipa::ToSchema;
 
-type Tx = Transaction<'static, Postgres>;
+pub(crate) type Tx = Transaction<'static, Postgres>;
 
 /// The columns of a doc; `created_at` is ISO 8601 text in UTC.
 const DOC_COLUMNS: &str = "id::text, project_id::text, kind, module, title, \
@@ -81,9 +82,8 @@ pub struct DocBody {
     pub mainline_version_id: Option<String>,
     /// The doc's drafts, one per change set, oldest first.
     pub drafts: Vec<DraftBody>,
-    /// The doc's claims (US-023); none until then.
-    #[schema(value_type = Vec<Object>)]
-    pub claims: Vec<Value>,
+    /// The doc's live claims, oldest first.
+    pub claims: Vec<ClaimBody>,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -190,12 +190,23 @@ pub struct InvalidOperationBody {
     pub message: String,
 }
 
-/// An error of an edit: the usual ones, a revision conflict, or an operation
-/// that the engine refuses. Each of the last two changes nothing.
+/// An error of an edit or a claim: the usual ones, a revision conflict, an
+/// operation that the engine refuses, or a claim of another agent in the way.
+/// Each of the last three changes nothing.
 pub enum DocError {
     Api(ApiError),
     Conflict(Conflict),
-    Invalid { index: usize, message: String },
+    Invalid {
+        index: usize,
+        message: String,
+    },
+    /// A claim of another agent is in the way (US-023); nothing changed.
+    Claimed {
+        /// The operation that touches the claim; `None` for a claim request.
+        index: Option<usize>,
+        message: String,
+        claim: Box<ClaimBody>,
+    },
 }
 
 impl From<ApiError> for DocError {
@@ -231,6 +242,17 @@ impl IntoResponse for DocError {
                 })),
             )
                 .into_response(),
+            Self::Claimed {
+                index,
+                message,
+                claim,
+            } => {
+                let mut body = json!({ "error": "claimed", "message": message, "claim": claim });
+                if let Some(index) = index {
+                    body["index"] = json!(index);
+                }
+                (StatusCode::CONFLICT, Json(body)).into_response()
+            }
         }
     }
 }
@@ -240,7 +262,7 @@ impl IntoResponse for DocError {
 /// The agent identity that a request declares in `X-Omni-Run`, `X-Omni-Role`,
 /// `X-Omni-Model` and `X-Omni-Harness`. The server records what the agent
 /// declares and does not verify it; a header that is missing is `null`.
-pub struct AgentIdentity {
+pub(crate) struct AgentIdentity {
     run: Option<String>,
     role: Option<String>,
     model: Option<String>,
@@ -251,7 +273,7 @@ pub struct AgentIdentity {
 const MAX_IDENTITY_CHARS: usize = 200;
 
 impl AgentIdentity {
-    fn to_json(&self) -> Value {
+    pub(crate) fn to_json(&self) -> Value {
         json!({
             "run": self.run,
             "role": self.role,
@@ -286,12 +308,12 @@ impl<S: Send + Sync> FromRequestParts<S> for AgentIdentity {
 
 /// A draft that is in memory: the doc under edit and the `seq` of the next
 /// operation of its log.
-struct DraftState {
-    doc: EditDoc,
+pub(crate) struct DraftState {
+    pub(crate) doc: EditDoc,
     next_seq: i64,
 }
 
-type Slot = Arc<tokio::sync::Mutex<Option<DraftState>>>;
+pub(crate) type Slot = Arc<tokio::sync::Mutex<Option<DraftState>>>;
 type UsedIds = Arc<Mutex<HashSet<NodeId>>>;
 
 /// The drafts that are in memory, and the node IDs of every project in use.
@@ -308,7 +330,7 @@ pub struct DraftStore {
 }
 
 impl DraftStore {
-    fn slot(&self, workspace_id: &str, draft_id: &str) -> Slot {
+    pub(crate) fn slot(&self, workspace_id: &str, draft_id: &str) -> Slot {
         let mut drafts = self.drafts.lock().unwrap_or_else(|e| e.into_inner());
         drafts
             .entry((workspace_id.to_string(), draft_id.to_string()))
@@ -407,13 +429,28 @@ async fn load_state(tx: &mut Tx, draft: &DraftRow) -> Result<DraftState, ApiErro
     Ok(DraftState { doc, next_seq })
 }
 
+/// Loads the draft into its locked slot when it is not in memory.
+pub(crate) async fn ensure_loaded(
+    state: &AppState,
+    workspace_id: &str,
+    draft: &DraftRow,
+    held: &mut Option<DraftState>,
+) -> Result<(), ApiError> {
+    if held.is_none() {
+        let mut tx = state.workspace_tx(workspace_id).await?;
+        *held = Some(load_state(&mut tx, draft).await?);
+        tx.commit().await.map_err(ApiError::database)?;
+    }
+    Ok(())
+}
+
 // Looking things up ----------------------------------------------------------------
 
 #[derive(sqlx::FromRow)]
-struct DraftRow {
-    id: String,
-    doc_id: String,
-    changeset_id: String,
+pub(crate) struct DraftRow {
+    pub(crate) id: String,
+    pub(crate) doc_id: String,
+    pub(crate) changeset_id: String,
     base_version_id: Option<String>,
 }
 
@@ -454,7 +491,7 @@ async fn find_draft(
     .ok_or(ApiError::NotFound)
 }
 
-async fn require_changeset(
+pub(crate) async fn require_changeset(
     tx: &mut Tx,
     project_id: &str,
     changeset_id: &str,
@@ -492,7 +529,7 @@ async fn drafts_of(tx: &mut Tx, doc_id: &str) -> Result<Vec<DraftBody>, ApiError
     .map_err(ApiError::database)
 }
 
-fn doc_body(row: DocRow, drafts: Vec<DraftBody>) -> DocBody {
+fn doc_body(row: DocRow, drafts: Vec<DraftBody>, claims: Vec<ClaimBody>) -> DocBody {
     DocBody {
         id: row.id,
         project_id: row.project_id,
@@ -502,7 +539,7 @@ fn doc_body(row: DocRow, drafts: Vec<DraftBody>) -> DocBody {
         created_at: row.created_at,
         mainline_version_id: row.mainline_version_id,
         drafts,
-        claims: Vec::new(),
+        claims,
     }
 }
 
@@ -601,6 +638,7 @@ pub async fn create_doc(
             changeset_id: draft.changeset_id.clone(),
             base_version_id: None,
         }],
+        Vec::new(),
     );
     Ok((StatusCode::CREATED, Json(CreatedDocResponse { doc, draft })))
 }
@@ -627,12 +665,14 @@ pub async fn show_doc(
 ) -> Result<Json<DocResponse>, ApiError> {
     let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
     let doc_id = parse_uuid(&doc_id).ok_or(ApiError::NotFound)?;
+    claims::sweep(&state, &request.workspace_id).await;
     let mut tx = state.workspace_tx(&request.workspace_id).await?;
     let row = find_doc(&mut tx, &project_id, &doc_id).await?;
     let drafts = drafts_of(&mut tx, &row.id).await?;
     tx.commit().await.map_err(ApiError::database)?;
+    let claims = state.claims.live_of_doc(&request.workspace_id, &row.id);
     Ok(Json(DocResponse {
-        doc: doc_body(row, drafts),
+        doc: doc_body(row, drafts, claims),
     }))
 }
 
@@ -814,11 +854,7 @@ pub async fn read_draft(
 
     let slot = state.drafts.slot(&request.workspace_id, &draft.id);
     let mut held = slot.lock().await;
-    if held.is_none() {
-        let mut tx = state.workspace_tx(&request.workspace_id).await?;
-        *held = Some(load_state(&mut tx, &draft).await?);
-        tx.commit().await.map_err(ApiError::database)?;
-    }
+    ensure_loaded(&state, &request.workspace_id, &draft, &mut held).await?;
     let html = held
         .as_ref()
         .map(|loaded| loaded.doc.to_html_with_revisions())
@@ -866,7 +902,7 @@ struct Edit {
         (status = 401, description = "No valid API key or session", body = ErrorBody),
         (status = 403, description = "Called with a session; agents only", body = ErrorBody),
         (status = 404, description = "The change set has no draft of this doc in this project and workspace", body = ErrorBody),
-        (status = 409, description = "A node is at another revision than the operation expected; nothing changed", body = ConflictBody),
+        (status = 409, description = "A node is at another revision than the operation expected (`conflict`), or an operation touches a claim of another agent (`claimed`); nothing changed", body = ConflictBody),
     )
 )]
 pub async fn edit_draft(
@@ -885,6 +921,7 @@ pub async fn edit_draft(
     tx.commit().await.map_err(ApiError::database)?;
 
     let sent = batch?.ops;
+    claims::sweep(&state, &request.workspace_id).await;
     let mut ops = Vec::with_capacity(sent.len());
     for (index, op) in sent.iter().enumerate() {
         match serde_json::from_value::<Operation>(op.clone()) {
@@ -939,6 +976,11 @@ async fn apply_batch(state: &AppState, edit: Edit) -> Result<Vec<OpResultBody>, 
     let loaded = held.as_mut().expect("the draft was just loaded");
     let first_seq = loaded.next_seq;
 
+    let live = state.claims.live_in_draft(&workspace_id, &draft.id);
+    if let Some((index, claim)) = claims::blocked(&loaded.doc, &ops, &live, &agent) {
+        return Err(state.claims.refusal(Some(index), claim));
+    }
+
     let mut new_ids = || loop {
         let id = random_node_id();
         if used.lock().unwrap_or_else(|e| e.into_inner()).insert(id) {
@@ -983,6 +1025,7 @@ async fn apply_batch(state: &AppState, edit: Edit) -> Result<Vec<OpResultBody>, 
             held.as_mut().expect("the draft is loaded").next_seq += results.len() as i64;
             drop(held);
             if !results.is_empty() {
+                state.claims.touch(&workspace_id, &draft.id, &agent);
                 state.live.announce(&workspace_id, &project_id);
             }
             Ok(results)

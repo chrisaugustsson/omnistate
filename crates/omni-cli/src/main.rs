@@ -7,6 +7,7 @@
 mod args;
 mod attach;
 mod changesets;
+mod claims;
 mod commands;
 mod config;
 mod docs;
@@ -49,6 +50,11 @@ Usage:
                                       apply a batch of operations (a JSON array, from
                                       --body-file or standard input) to the draft; prints
                                       each node's new revision and the IDs of new nodes
+  omni claim <node> --changeset <id>  claim a board or section of the change set's draft, so
+                                      that no other agent changes it; a claim lasts 10 minutes
+                                      after your last operation in the draft
+  omni release <node> --changeset <id>
+                                      end your claim on a board or section
   omni attach <file>                  upload a file (at most 20 MB) and print attachment:<id>,
                                       how docs, designs and posts refer to it
   omni whoami                         show the workspace and who the key acts as
@@ -64,7 +70,7 @@ Options (before or after the command):
   --body-file <path>    send this file as the request body (for a change set: its
                         description; for `doc edit`: the operations); - reads
                         standard input
-  --changeset <id>      the change set a doc command works in
+  --changeset <id>      the change set a doc, claim or release command works in
   --json                print the full JSON instead of short text
   -h, --help            show this help
   -V, --version         show the version

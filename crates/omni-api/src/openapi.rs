@@ -10,6 +10,7 @@ use crate::changesets::{
     CreateProjectRequest, HistoryEntry, ProjectBody, ProjectListResponse, ProjectResponse,
     RejectRequest,
 };
+use crate::claims::{ClaimBody, ClaimRequest, ClaimResponse, ClaimedBody};
 use crate::docs::{
     ConflictBody, ConflictDetails, CreateDocRequest, CreatedDocResponse, DocBody, DocResponse,
     DraftBody, DraftHtmlResponse, DraftResponse, DraftWithHtml, EditRequest, EditResponse,
@@ -58,7 +59,9 @@ use utoipa::OpenApi;
         crate::docs::read_doc_html,
         crate::docs::open_draft,
         crate::docs::read_draft,
-        crate::docs::edit_draft
+        crate::docs::edit_draft,
+        crate::claims::take_claim,
+        crate::claims::release_claim
     ),
     components(schemas(
         LoginRequest,
@@ -99,7 +102,11 @@ use utoipa::OpenApi;
         EditResponse,
         ConflictDetails,
         ConflictBody,
-        InvalidOperationBody
+        InvalidOperationBody,
+        ClaimBody,
+        ClaimRequest,
+        ClaimResponse,
+        ClaimedBody
     ))
 )]
 struct ApiDoc;

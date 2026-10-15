@@ -9,6 +9,7 @@
 use crate::args::Args;
 use crate::attach;
 use crate::changesets;
+use crate::claims;
 use crate::config::{self, Stored};
 use crate::docs;
 use crate::error::{CliError, Result, bail};
@@ -70,6 +71,12 @@ pub fn run(args: &Args) -> Result<()> {
         ["doc", "edit"] => docs::edit(args, None),
         ["doc", "edit", doc] => docs::edit(args, Some(doc)),
         ["doc", ..] => bail!("usage: omni doc create|open|read|show|edit; see `omni --help`"),
+        ["claim"] => claims::take(args, None),
+        ["claim", node] => claims::take(args, Some(node)),
+        ["claim", ..] => bail!("usage: omni claim <node> --changeset <id>"),
+        ["release"] => claims::release(args, None),
+        ["release", node] => claims::release(args, Some(node)),
+        ["release", ..] => bail!("usage: omni release <node> --changeset <id>"),
         ["attach", file] => attach::run(args, file),
         ["attach", ..] => bail!("usage: omni attach <file>"),
         ["whoami"] => whoami(args),
@@ -153,6 +160,30 @@ impl Agent {
         self.request_with(method, path, extra, body)
     }
 
+    /// Like `request`, but a 404 is the error `not_found`, for a command that
+    /// knows what a missing record means.
+    pub(crate) fn request_or_not_found(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<&[u8]>,
+        not_found: &str,
+    ) -> Result<Response> {
+        let mut headers = self.headers.clone();
+        if body.is_some() {
+            headers.push(("Content-Type".to_string(), "application/json".to_string()));
+        }
+        let response = http::send(&self.server, method, path, &headers, body)?;
+        let status = response.status;
+        checked(response).map_err(|error| {
+            if status == 404 {
+                CliError::new(not_found)
+            } else {
+                error
+            }
+        })
+    }
+
     /// Like `request`, but the caller sets the headers of the body itself (the
     /// content type, a file name), for a body that is not JSON.
     pub(crate) fn request_with(
@@ -228,6 +259,15 @@ fn refused_operation(body: &Value) -> Option<String> {
                 number("expected"),
                 number("current_revision")
             ))
+        }
+        "claimed" => {
+            let message = body.str_at("message").unwrap_or("a claim is in the way");
+            Some(match body.get("index") {
+                Some(Value::Number(index)) => {
+                    format!("claimed: operation {index}: {message}; nothing was applied")
+                }
+                _ => format!("claimed: {message}"),
+            })
         }
         "invalid_operation" => {
             let index = match body.get("index") {

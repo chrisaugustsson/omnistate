@@ -261,7 +261,15 @@ pub fn show(args: &Args, doc: Option<&str>) -> Result<()> {
         say("claims:");
     }
     for claim in claims {
-        say(&format!("  {claim}"));
+        let agent = claim.get("agent");
+        let part = |name: &str| agent.and_then(|a| a.str_at(name)).unwrap_or("?");
+        say(&format!(
+            "  {}  {}/{}  until {}",
+            field(claim, "node"),
+            part("run"),
+            part("role"),
+            field(claim, "expires_at")
+        ));
     }
     Ok(())
 }

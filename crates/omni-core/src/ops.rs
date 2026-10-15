@@ -197,6 +197,19 @@ impl EditDoc {
         }
     }
 
+    /// The parent of a node: `Some(None)` for a top-level node, `None` when the
+    /// node is not in the doc.
+    pub fn parent(&self, id: NodeId) -> Option<Option<NodeId>> {
+        self.nodes.get(&id).map(|node| node.parent)
+    }
+
+    /// Whether the node is a section, which an agent may claim (US-023).
+    pub fn is_section(&self, id: NodeId) -> bool {
+        self.nodes
+            .get(&id)
+            .is_some_and(|node| node.block.kind() == BlockKind::Section)
+    }
+
     /// The fractional index that orders a node among its siblings.
     pub fn sort_key(&self, id: NodeId) -> Option<String> {
         self.nodes.get(&id).map(|node| node.key.clone())
