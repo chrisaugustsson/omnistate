@@ -43,6 +43,12 @@
 //!   human approves next is that rebased state or the agent's later saves, so
 //!   nothing that the mainline gained is lost even when the agent saves
 //!   nothing more.
+//! - Only nodes changed on both sides conflict, in nested structure too: a
+//!   section that the change set removed after moving or wrapping its
+//!   children elsewhere conflicts with nothing when the mainline changed
+//!   something else. When both sides reorder the same siblings, the change
+//!   set's reorder survives next to the mainline's or becomes a conflict; it
+//!   is never silently lost.
 //! - A Conflict is `{"id", "changeset_id", "doc_id", "node", "mainline":
 //!   Side, "changeset": Side, "resolution"}`, where a Side is `{"version_id",
 //!   "html"}`: the version that side's state comes from (the mainline version
@@ -1727,6 +1733,351 @@ fn a_rebase_with_conflicts_never_drops_what_the_mainline_gained() {
         "the change set's own change merges: {html}"
     );
     assert!(!html.contains("Alpha by behind"), "{html}");
+}
+
+// ---------------------------------------------------------------------------
+// Nested structure and concurrent reorders
+// ---------------------------------------------------------------------------
+
+/// A doc merged with some top-level blocks, and two change sets opened on
+/// that version: `ahead` merges first and `behind` needs a rebase.
+struct Fork {
+    project: String,
+    doc: String,
+    ahead: String,
+    behind: String,
+    /// The base doc's node IDs in document order.
+    nodes: Vec<String>,
+}
+
+fn fork(f: &Fixture, client: &Client, blocks: &[&str]) -> Fork {
+    let project = new_project(f, client);
+    let first = new_changeset(f, client, &project);
+    let doc = create_doc(f, client, &project, &first);
+    let mut nodes: Vec<String> = Vec::new();
+    let mut last: Option<String> = None;
+    for block in blocks {
+        let results = edit(
+            f,
+            client,
+            &project,
+            &first,
+            &doc,
+            vec![json!({
+                "op": "insert",
+                "parent": null,
+                "position": { "after": last },
+                "content": block
+            })],
+        );
+        last = Some(
+            results[0]["node"]
+                .as_str()
+                .expect("the inserted node")
+                .to_string(),
+        );
+        nodes.extend(
+            results[0]["created"]
+                .as_array()
+                .expect("the created nodes")
+                .iter()
+                .map(|id| id.as_str().expect("an ID").to_string()),
+        );
+    }
+    let base = save(f, client, &project, &first, &doc);
+    submit(f, client, &project, &first);
+    let merged = approve(f, client, &project, &first);
+    assert_eq!(merged["status"], "merged", "set up the base: {merged}");
+
+    let ahead = new_changeset(f, client, &project);
+    let behind = new_changeset(f, client, &project);
+    for changeset in [&ahead, &behind] {
+        let draft = open_doc(f, client, &project, changeset, &doc);
+        assert_eq!(draft["base_version_id"], base.as_str(), "{draft}");
+    }
+    Fork {
+        project,
+        doc,
+        ahead,
+        behind,
+        nodes,
+    }
+}
+
+/// Applies each operation in a batch of its own; an operation on a node gets
+/// the revision that the draft shows for it at that point.
+fn edit_each(f: &Fixture, client: &Client, x: &Fork, changeset: &str, ops: Vec<Value>) {
+    for mut op in ops {
+        if let Some(node) = op["node"].as_str().map(str::to_string) {
+            let html = draft_html(f, client, &x.project, changeset, &x.doc);
+            op["rev"] = json!(rev_in(&html, &node));
+        }
+        edit(f, client, &x.project, changeset, &x.doc, vec![op]);
+    }
+}
+
+/// The ahead change set makes its changes and merges; returns the mainline
+/// version.
+fn merge_ahead(f: &Fixture, client: &Client, x: &Fork, ops: Vec<Value>) -> String {
+    edit_each(f, client, x, &x.ahead, ops);
+    let version = save(f, client, &x.project, &x.ahead, &x.doc);
+    submit(f, client, &x.project, &x.ahead);
+    let merged = approve(f, client, &x.project, &x.ahead);
+    assert_eq!(merged["status"], "merged", "merge the ahead side: {merged}");
+    version
+}
+
+/// The behind change set makes its changes, saves and is approved on the
+/// old base.
+fn fall_behind(f: &Fixture, client: &Client, x: &Fork, ops: Vec<Value>) {
+    edit_each(f, client, x, &x.behind, ops);
+    save(f, client, &x.project, &x.behind, &x.doc);
+    submit(f, client, &x.project, &x.behind);
+    let approved = approve(f, client, &x.project, &x.behind);
+    assert_eq!(
+        approved["status"], "needs_rebase",
+        "set up a change set behind the mainline: {approved}"
+    );
+}
+
+fn move_to(node: &str, parent: Option<&str>, after: Option<&str>) -> Value {
+    json!({
+        "op": "move",
+        "node": node,
+        "parent": parent,
+        "position": { "after": after }
+    })
+}
+
+fn set_text(node: &str, text: &str) -> Value {
+    json!({ "op": "set", "node": node, "properties": { "html": text } })
+}
+
+fn delete(node: &str) -> Value {
+    json!({ "op": "delete", "node": node })
+}
+
+/// The base of the nested cases: an intro, then a section of two paragraphs.
+const NESTED: [&str; 2] = ["<p>Intro</p>", "<section><p>One</p><p>Two</p></section>"];
+
+/// The parents of the nodes in `html` as node ID -> parent ID, `None` at the
+/// top level, read from the nesting of the tags that carry `data-node-id`.
+fn parents(html: &str) -> BTreeMap<String, Option<String>> {
+    let mut found = BTreeMap::new();
+    let mut open: Vec<Option<String>> = Vec::new();
+    let mut rest = html;
+    while let Some(start) = rest.find('<') {
+        let Some(end) = rest[start..].find('>') else {
+            break;
+        };
+        let tag = &rest[start + 1..start + end];
+        rest = &rest[start + end + 1..];
+        if tag.starts_with('/') {
+            open.pop();
+        } else if !tag.ends_with('/') && !VOID.iter().any(|v| tag.split(' ').next() == Some(v)) {
+            let parent = open.iter().rev().flatten().next().cloned();
+            let id = attribute(tag, "data-node-id");
+            if let Some(id) = &id {
+                found.insert(id.clone(), parent);
+            }
+            open.push(id);
+        }
+    }
+    found
+}
+
+/// Elements without a closing tag.
+const VOID: [&str; 4] = ["br", "img", "hr", "wbr"];
+
+#[test]
+fn a_section_removed_after_its_children_moved_out_rebases_cleanly() {
+    // Nested structure: the change set moves both paragraphs out of the
+    // section and then removes the empty section, while the mainline edits
+    // the intro. Only the intro changed on the mainline, so nothing changed
+    // on both sides.
+    let (f, client) = ready();
+    let x = fork(f, client, &NESTED);
+    let [intro, section, one, two] = <[String; 4]>::try_from(x.nodes.clone())
+        .unwrap_or_else(|ids| panic!("four nodes in document order: {ids:?}"));
+    let ahead_version = merge_ahead(f, client, &x, vec![set_text(&intro, "Intro by ahead")]);
+    fall_behind(
+        f,
+        client,
+        &x,
+        vec![
+            move_to(&one, None, Some(&intro)),
+            move_to(&two, None, Some(&one)),
+            delete(&section),
+        ],
+    );
+
+    let answer = rebase(f, client, &x.project, &x.behind);
+    assert_eq!(
+        answer["conflicts"],
+        json!([]),
+        "the section's children left before it was removed, so its removal \
+         conflicts with nothing: {answer}"
+    );
+    assert_eq!(answer["changeset"]["status"], "merged", "{answer}");
+    assert_eq!(
+        conflicts_of(f, client, &x.project, &x.behind),
+        Vec::<Value>::new(),
+        "no conflicts are recorded"
+    );
+
+    let html = mainline_html(f, client, &x.project, &x.doc);
+    assert!(html.contains("Intro by ahead"), "{html}");
+    assert_eq!(
+        node_ids(&html),
+        vec![intro.clone(), one.clone(), two.clone()],
+        "the paragraphs moved out and the section is gone: {html}"
+    );
+    assert_eq!(
+        parents(&html),
+        BTreeMap::from([(intro, None), (one.clone(), None), (two.clone(), None)]),
+        "{html}"
+    );
+
+    let merged = mainline_of(f, client, &x.project, &x.doc);
+    let merged = merged.as_str().expect("a mainline version");
+    let diff = diff_of(f, client, &x.project, &ahead_version, merged);
+    assert_eq!(ids(&diff["removed"]), vec![section], "{diff}");
+    assert_eq!(ids(&diff["moved"]), vec![one, two], "{diff}");
+    assert_eq!(ids(&diff["added"]), Vec::<String>::new(), "{diff}");
+    assert_eq!(ids(&diff["changed"]), Vec::<String>::new(), "{diff}");
+}
+
+#[test]
+fn a_section_removed_after_its_children_were_wrapped_in_a_new_one_rebases_cleanly() {
+    // The change set wraps the paragraphs in a section of its own and removes
+    // the old one; the mainline edits the intro.
+    let (f, client) = ready();
+    let x = fork(f, client, &NESTED);
+    let [intro, section, one, two] = <[String; 4]>::try_from(x.nodes.clone())
+        .unwrap_or_else(|ids| panic!("four nodes in document order: {ids:?}"));
+    merge_ahead(f, client, &x, vec![set_text(&intro, "Intro by ahead")]);
+
+    let results = edit(
+        f,
+        client,
+        &x.project,
+        &x.behind,
+        &x.doc,
+        vec![json!({
+            "op": "insert",
+            "parent": null,
+            "position": { "after": intro },
+            "content": "<section><h2>Wrapped</h2></section>"
+        })],
+    );
+    let created: Vec<String> = results[0]["created"]
+        .as_array()
+        .expect("the created nodes")
+        .iter()
+        .map(|id| id.as_str().expect("an ID").to_string())
+        .collect();
+    let [wrap, heading] = <[String; 2]>::try_from(created)
+        .unwrap_or_else(|ids| panic!("a section and its heading: {ids:?}"));
+    fall_behind(
+        f,
+        client,
+        &x,
+        vec![
+            move_to(&one, Some(&wrap), Some(&heading)),
+            move_to(&two, Some(&wrap), Some(&one)),
+            delete(&section),
+        ],
+    );
+
+    let answer = rebase(f, client, &x.project, &x.behind);
+    assert_eq!(
+        answer["conflicts"],
+        json!([]),
+        "the old section's children left before it was removed: {answer}"
+    );
+    assert_eq!(answer["changeset"]["status"], "merged", "{answer}");
+
+    let html = mainline_html(f, client, &x.project, &x.doc);
+    assert!(
+        html.contains("Intro by ahead") && html.contains("Wrapped"),
+        "{html}"
+    );
+    assert_eq!(
+        node_ids(&html),
+        vec![
+            intro.clone(),
+            wrap.clone(),
+            heading.clone(),
+            one.clone(),
+            two.clone()
+        ],
+        "the paragraphs sit in the new section and the old one is gone: {html}"
+    );
+    assert_eq!(
+        parents(&html),
+        BTreeMap::from([
+            (intro, None),
+            (wrap.clone(), None),
+            (heading, Some(wrap.clone())),
+            (one, Some(wrap.clone())),
+            (two, Some(wrap)),
+        ]),
+        "{html}"
+    );
+}
+
+#[test]
+fn a_reorder_on_each_side_keeps_both_or_becomes_a_conflict() {
+    // Base A B C D. The mainline moves D to the front (D A B C); the change
+    // set moves A to the end (B C D A). Replaying "A after D" onto the
+    // mainline would leave D A B C and silently drop the change set's move.
+    let (f, client) = ready();
+    let x = fork(f, client, &["<p>A</p>", "<p>B</p>", "<p>C</p>", "<p>D</p>"]);
+    let [a, b, c, d] = <[String; 4]>::try_from(x.nodes.clone())
+        .unwrap_or_else(|ids| panic!("four nodes in document order: {ids:?}"));
+    let ahead_version = merge_ahead(f, client, &x, vec![move_to(&d, None, None)]);
+    assert_eq!(
+        node_ids(&mainline_html(f, client, &x.project, &x.doc)),
+        vec![d.clone(), a.clone(), b.clone(), c.clone()],
+        "set up the mainline's reorder"
+    );
+    fall_behind(f, client, &x, vec![move_to(&a, None, Some(&d))]);
+
+    let answer = rebase(f, client, &x.project, &x.behind);
+    let recorded = answer["conflicts"]
+        .as_array()
+        .unwrap_or_else(|| panic!("the rebase answers its conflicts: {answer}"))
+        .clone();
+    if recorded.is_empty() {
+        // Both moves survive: D first as on the mainline, A last as in the
+        // change set.
+        assert_eq!(answer["changeset"]["status"], "merged", "{answer}");
+        assert_eq!(
+            node_ids(&mainline_html(f, client, &x.project, &x.doc)),
+            vec![d, b, c, a],
+            "a clean rebase keeps the mainline's move and the change set's move"
+        );
+    } else {
+        // Or the two reorders conflict: nothing merges and the conflict names
+        // a node that one of them moved.
+        assert_eq!(answer["changeset"]["status"], "open", "{answer}");
+        let nodes: BTreeSet<String> = by_node(&recorded).keys().cloned().collect();
+        assert!(
+            nodes.is_subset(&BTreeSet::from([a.clone(), d.clone()])),
+            "only the moved nodes conflict: {answer}"
+        );
+        assert_eq!(
+            mainline_of(f, client, &x.project, &x.doc),
+            ahead_version.as_str(),
+            "nothing merged"
+        );
+        let draft = node_ids(&draft_html(f, client, &x.project, &x.behind, &x.doc));
+        assert_eq!(
+            draft.first(),
+            Some(&d),
+            "the mainline's move stays in the draft: {draft:?}"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
