@@ -22,9 +22,11 @@ pub struct RouteEntry {
 /// WebSocket route is no OpenAPI operation, but the isolation suite attacks it
 /// like the rest (tests/isolation.rs fails on one that it does not cover).
 pub fn websocket_registry() -> Vec<RouteEntry> {
-    // US-018 (green): list `GET /ws/w/{workspace_id}`, which is open to agents
-    // and to the human.
-    Vec::new()
+    vec![RouteEntry {
+        method: "GET".to_string(),
+        path: "/ws/w/{workspace_id}".to_string(),
+        access: Access::Both,
+    }]
 }
 
 /// Every HTTP route that the router serves. A new route is added here and in
