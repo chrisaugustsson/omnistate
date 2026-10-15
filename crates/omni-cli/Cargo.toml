@@ -18,8 +18,9 @@ sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio",
 serde_json = "1"
 
 [features]
-# tests/stack.rs and tests/stack_changesets.rs need Postgres and run against
-# it, so they only build with this feature, which the Compose test container turns on.
+# tests/stack.rs, tests/stack_changesets.rs and tests/stack_attachments.rs need
+# Postgres (and RustFS) and run against them, so they only build with this
+# feature, which the Compose test container turns on.
 stack-tests = []
 
 [[test]]
@@ -28,4 +29,8 @@ required-features = ["stack-tests"]
 
 [[test]]
 name = "stack_changesets"
+required-features = ["stack-tests"]
+
+[[test]]
+name = "stack_attachments"
 required-features = ["stack-tests"]

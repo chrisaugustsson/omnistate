@@ -406,6 +406,25 @@ async fn fill_workspace(conn: &mut PgConnection, workspace: &str, membership: &s
         .await
         .expect("insert a live event");
     }
+
+    // US-019: the metadata of an attachment. Seeded as soon as the table
+    // exists (tests/attachments.rs pins its name and columns), for the same
+    // reason as the live events above.
+    let attachments_exist: bool =
+        sqlx::query_scalar("SELECT to_regclass('public.attachments') IS NOT NULL")
+            .fetch_one(&mut *conn)
+            .await
+            .expect("look for the attachments table");
+    if attachments_exist {
+        sqlx::query(
+            "INSERT INTO attachments (workspace_id, filename, content_type, size_bytes) \
+             VALUES ($1::uuid, 'deletion-test.txt', 'text/plain', 12)",
+        )
+        .bind(workspace)
+        .execute(&mut *conn)
+        .await
+        .expect("insert an attachment");
+    }
 }
 
 async fn put_objects(keys: Vec<String>) {

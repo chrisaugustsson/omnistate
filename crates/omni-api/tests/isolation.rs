@@ -15,9 +15,9 @@
 //! - `CASES` lists every route of `omni_api::routes::registry()`, each either
 //!   `Workspace` (its path holds `{workspace_id}`, and the suite attacks it) or
 //!   `Global` (no workspace in the path, with the reason). The path may hold
-//!   `{project_id}`, `{changeset_id}` and `{key_id}`, which the suite fills
-//!   with the IDs of the seeded records; a path with another placeholder, or a
-//!   registry route without a case, fails the suite.
+//!   `{project_id}`, `{changeset_id}`, `{key_id}` and `{attachment_id}`, which
+//!   the suite fills with the IDs of the seeded records; a path with another
+//!   placeholder, or a registry route without a case, fails the suite.
 //! - Workspace A's credentials against workspace B's workspace and IDs, and
 //!   against B's IDs under A's own workspace, are always 404
 //!   `{"error": "not_found"}` with nothing of B in the body, and the answer is
@@ -39,6 +39,8 @@ mod common;
 use common::{Client, Response, TestServer, cookie};
 use omni_api::Config;
 use omni_api::routes::{Access, RouteEntry, registry, websocket_registry};
+use s3::creds::Credentials;
+use s3::{Bucket, BucketConfiguration, Region};
 use serde_json::{Value, json};
 use sqlx::Connection;
 use sqlx::postgres::{PgConnectOptions, PgConnection};
@@ -53,6 +55,8 @@ use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
 
 const TEST_DB: &str = "omni_us018_isolation";
+/// The scratch bucket of the attachments that the suite seeds (US-019).
+const TEST_BUCKET: &str = "omni-us018-isolation";
 /// An ID that no row has.
 const UNKNOWN_ID: &str = "01900000-0000-7000-8000-000000000000";
 /// The handshake key of RFC 6455's example.
@@ -211,6 +215,18 @@ const CASES: &[Case] = &[
         None,
         Kind::Workspace,
     ),
+    case(
+        "POST",
+        "/api/v1/w/{workspace_id}/attachments",
+        Some("the bytes of a file"),
+        Kind::Workspace,
+    ),
+    case(
+        "GET",
+        "/api/v1/w/{workspace_id}/attachments/{attachment_id}",
+        None,
+        Kind::Workspace,
+    ),
 ];
 
 /// The WebSocket routes that the suite attacks, as the paths of
@@ -311,12 +327,61 @@ fn config() -> Config {
         ),
         admin_database_url: format!("{server}/{TEST_DB}"),
         api_db_password: api_password(),
-        // Nothing here reaches RustFS: the routes under test only use Postgres.
-        s3_endpoint: "http://127.0.0.1:1".to_string(),
-        s3_access_key: "none".to_string(),
-        s3_secret_key: "none".to_string(),
-        s3_bucket: "omni".to_string(),
+        // The attachments (US-019) keep their bytes in RustFS.
+        s3_endpoint: s3_endpoint(),
+        s3_access_key: s3_access_key(),
+        s3_secret_key: s3_secret_key(),
+        s3_bucket: TEST_BUCKET.to_string(),
     }
+}
+
+fn s3_endpoint() -> String {
+    std::env::var("OMNI_S3_ENDPOINT").unwrap_or_else(|_| "http://rustfs:9000".to_string())
+}
+
+fn s3_access_key() -> String {
+    std::env::var("OMNI_S3_ACCESS_KEY").unwrap_or_else(|_| "omni-dev".to_string())
+}
+
+fn s3_secret_key() -> String {
+    std::env::var("OMNI_S3_SECRET_KEY").unwrap_or_else(|_| "omni-dev-secret".to_string())
+}
+
+fn s3_region() -> Region {
+    Region::Custom {
+        region: "us-east-1".to_string(),
+        endpoint: s3_endpoint(),
+    }
+}
+
+fn s3_credentials() -> Credentials {
+    Credentials::new(
+        Some(&s3_access_key()),
+        Some(&s3_secret_key()),
+        None,
+        None,
+        None,
+    )
+    .expect("storage credentials")
+}
+
+fn bucket() -> Box<Bucket> {
+    Bucket::new(TEST_BUCKET, s3_region(), s3_credentials())
+        .expect("bucket settings")
+        .with_path_style()
+}
+
+/// The keys in the scratch bucket under `prefix`, sorted.
+fn keys_under(prefix: &str) -> Vec<String> {
+    let pages = block(bucket().list(prefix.to_string(), None))
+        .unwrap_or_else(|e| panic!("cannot list {prefix}: {e}"));
+    let mut keys: Vec<String> = pages
+        .into_iter()
+        .flat_map(|page| page.contents)
+        .map(|object| object.key)
+        .collect();
+    keys.sort();
+    keys
 }
 
 async fn admin_connection() -> PgConnection {
@@ -399,6 +464,34 @@ fn must(response: Response, status: u16, what: &str) -> Value {
     response.json()
 }
 
+/// Whether the router has the attachment routes (US-019) yet.
+fn has_attachment_routes() -> bool {
+    registry()
+        .iter()
+        .any(|r| r.method == "POST" && r.path == "/api/v1/w/{workspace_id}/attachments")
+}
+
+/// Uploads `bytes` as `name` with an API key; the raw bytes are the body.
+fn upload_attachment(
+    client: &Client,
+    workspace: &str,
+    key: &str,
+    bytes: &[u8],
+    name: &str,
+) -> Response {
+    let bearer = format!("Bearer {key}");
+    client.request_bytes(
+        "POST",
+        &format!("/api/v1/w/{workspace}/attachments"),
+        &[
+            ("Authorization", bearer.as_str()),
+            ("Content-Type", "text/plain"),
+            ("X-Omni-Filename", name),
+        ],
+        Some(bytes),
+    )
+}
+
 /// One workspace as the suite sees it: who belongs to it and which records it
 /// has. The fields of a stranger hold one made-up ID.
 struct Side {
@@ -415,6 +508,12 @@ struct Side {
     other_project_id: String,
     changeset_id: String,
     rejected_changeset_id: String,
+    /// A file that the workspace's agent uploaded (US-019): empty until the
+    /// attachment routes exist.
+    attachment_id: String,
+    attachment_name: String,
+    /// The file's content, which is text that nothing else holds.
+    attachment_text: String,
 }
 
 impl Side {
@@ -433,6 +532,9 @@ impl Side {
             other_project_id: same(),
             changeset_id: same(),
             rejected_changeset_id: same(),
+            attachment_id: same(),
+            attachment_name: String::new(),
+            attachment_text: String::new(),
         }
     }
 
@@ -449,6 +551,9 @@ impl Side {
             &self.other_project_id,
             &self.changeset_id,
             &self.rejected_changeset_id,
+            &self.attachment_id,
+            &self.attachment_name,
+            &self.attachment_text,
         ]
         .into_iter()
         .map(String::as_str)
@@ -485,6 +590,16 @@ fn fixture() -> &'static Fixture {
             omni_api::migrate(&config(), 30)
                 .await
                 .expect("apply the migrations to the scratch database");
+            if !bucket().exists().await.unwrap_or(false) {
+                Bucket::create_with_path_style(
+                    TEST_BUCKET,
+                    s3_region(),
+                    s3_credentials(),
+                    BucketConfiguration::default(),
+                )
+                .await
+                .unwrap_or_else(|e| panic!("cannot create the scratch bucket: {e}"));
+            }
         });
         let workspaces = block(async {
             let mut conn = admin_connection().await;
@@ -593,6 +708,21 @@ fn fixture() -> &'static Fixture {
                 200,
                 "reject",
             );
+            // US-019: a file of the workspace's own. The attachment routes are
+            // seeded as soon as the registry has them; the table behind them
+            // would otherwise make the checks below fail on a tenant table
+            // without rows.
+            let (attachment_id, attachment_name, attachment_text) = if has_attachment_routes() {
+                let file_name = format!("{name}-notes.txt");
+                let text = unique(&format!("{name}-file-content"));
+                let uploaded =
+                    upload_attachment(client, &workspace, &key, text.as_bytes(), &file_name);
+                let uploaded = must(uploaded, 201, "upload a file");
+                let id = uploaded["attachment"]["id"].as_str().expect("an id");
+                (id.to_string(), file_name, text)
+            } else {
+                (String::new(), String::new(), String::new())
+            };
             Side {
                 id: workspace,
                 email: format!("{name}@example.test"),
@@ -608,6 +738,9 @@ fn fixture() -> &'static Fixture {
                 other_project_id,
                 changeset_id,
                 rejected_changeset_id,
+                attachment_id,
+                attachment_name,
+                attachment_text,
             }
         });
         let a = sides.next().expect("workspace A");
@@ -637,6 +770,7 @@ fn fill(template: &str, workspace: &Side, record: &Side) -> String {
             "project_id" => &record.project_id,
             "changeset_id" => &record.changeset_id,
             "key_id" => &record.key_id,
+            "attachment_id" => &record.attachment_id,
             other => panic!(
                 "{template} has the placeholder {{{other}}}, for which the suite has no seeded \
                  ID: add it to Side and fill() in tests/isolation.rs"
@@ -1054,7 +1188,13 @@ fn the_lists_of_a_workspace_hold_nothing_of_the_other() {
                         response.text()
                     );
                 }
-                if names_a_record(&entry.path)
+                if entry.path.contains("/attachments/") {
+                    assert_eq!(
+                        response.text(),
+                        own.attachment_text,
+                        "{what}: the control call returns the workspace's own file"
+                    );
+                } else if names_a_record(&entry.path)
                     || entry.path.ends_with("/projects")
                     || entry.path.ends_with("/api-keys")
                 {
@@ -1214,6 +1354,118 @@ fn the_workspace_of_a_request_is_the_one_in_the_path_never_one_in_the_body_query
         None,
     );
     assert_not_found_without_data(&response, &f.b, "A's key on B's path naming A elsewhere");
+}
+
+// ---------------------------------------------------------------------------
+// Attachments (US-019)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn the_attachment_routes_are_in_the_registry_and_the_suite_attacks_them() {
+    let wanted = [
+        (
+            "POST",
+            "/api/v1/w/{workspace_id}/attachments",
+            Access::Agent,
+        ),
+        (
+            "GET",
+            "/api/v1/w/{workspace_id}/attachments/{attachment_id}",
+            Access::Both,
+        ),
+    ];
+    let routes = registry();
+    for (method, path, access) in wanted {
+        let entry = routes
+            .iter()
+            .find(|r| r.method == method && r.path == path)
+            .unwrap_or_else(|| panic!("the registry has no {}", route_name(method, path)));
+        assert_eq!(entry.access, access, "{}", route_name(method, path));
+        assert!(
+            matches!(case_for(entry).kind, Kind::Workspace),
+            "{} is a workspace route that the suite attacks",
+            route_name(method, path)
+        );
+    }
+
+    let (f, client) = ready();
+    let _guard = serial();
+    for side in [&f.a, &f.b] {
+        assert!(
+            !side.attachment_id.is_empty(),
+            "the suite seeded no attachment for {}",
+            side.id
+        );
+    }
+    let b_folder = format!("ws/{}/attachments/", f.b.id);
+    let a_folder = format!("ws/{}/attachments/", f.a.id);
+    assert!(
+        keys_under(&b_folder).contains(&format!("{b_folder}{}", f.b.attachment_id)),
+        "B's file is stored in B's folder"
+    );
+    assert!(
+        keys_under(&a_folder).contains(&format!("{a_folder}{}", f.a.attachment_id)),
+        "A's file is stored in A's folder"
+    );
+
+    let before = snapshot(&f.b.id);
+    let objects = keys_under(&format!("ws/{}/", f.b.id));
+    let read_b_file = |workspace: &Side, auth: &Auth| {
+        let path = format!(
+            "/api/v1/w/{}/attachments/{}",
+            workspace.id, f.b.attachment_id
+        );
+        call(client, "GET", &path, auth, None)
+    };
+    // A's credentials read B's file neither under B's workspace nor under A's.
+    for auth in [
+        Auth::Key(&f.a.key),
+        Auth::Session(&f.a.token),
+        Auth::KeyAndSession(&f.a.key, &f.a.token),
+    ] {
+        for workspace in [&f.b, &f.a] {
+            let what = format!(
+                "B's file under workspace {} with {}",
+                workspace.id,
+                auth.label()
+            );
+            let response = read_b_file(workspace, &auth);
+            assert_not_found_without_data(&response, &f.b, &what);
+        }
+    }
+    // A's credentials cannot put a file into B's workspace.
+    let intruder = upload_attachment(client, &f.b.id, &f.a.key, b"intruder", "intruder.txt");
+    assert_not_found_without_data(&intruder, &f.b, "A's key uploading into B");
+    let intruder = call(
+        client,
+        "POST",
+        &format!("/api/v1/w/{}/attachments", f.b.id),
+        &Auth::Session(&f.a.token),
+        Some("intruder"),
+    );
+    assert_not_found_without_data(&intruder, &f.b, "A's session uploading into B");
+    assert_eq!(snapshot(&f.b.id), before, "an attack changed B's rows");
+    assert_eq!(
+        keys_under(&format!("ws/{}/", f.b.id)),
+        objects,
+        "an attack changed B's files"
+    );
+
+    // The control: the owner uploads and reads, and the file lands in its folder.
+    let name = unique("owner") + ".txt";
+    let uploaded = must(
+        upload_attachment(client, &f.a.id, &f.a.key, name.as_bytes(), &name),
+        201,
+        "upload a file",
+    );
+    let id = uploaded["attachment"]["id"].as_str().expect("an id");
+    assert!(keys_under(&a_folder).contains(&format!("{a_folder}{id}")));
+    let path = format!("/api/v1/w/{}/attachments/{id}", f.a.id);
+    for auth in [Auth::Key(&f.a.key), Auth::Session(&f.a.token)] {
+        let response = call(client, "GET", &path, &auth, None);
+        assert_eq!(response.status, 200, "read the file: {}", response.text());
+        assert_eq!(response.text(), name, "{}", auth.label());
+    }
 }
 
 // ---------------------------------------------------------------------------

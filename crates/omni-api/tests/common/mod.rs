@@ -150,6 +150,26 @@ impl Client {
         extra_headers: &[(&str, &str)],
         body: Option<&str>,
     ) -> Response {
+        let json_type = [("Content-Type", "application/json")];
+        let headers: Vec<(&str, &str)> = extra_headers
+            .iter()
+            .copied()
+            .chain(body.map(|_| json_type[0]))
+            .collect();
+        self.request_bytes(method, path, &headers, body.map(str::as_bytes))
+    }
+
+    /// Like `request`, but the body is raw bytes and the caller sets every
+    /// header, `Content-Type` included. A server that answers before it has
+    /// read all of a large body (a 413) may close the connection under the
+    /// writer, so a failed write is not an error here: the answer is read anyway.
+    pub fn request_bytes(
+        &self,
+        method: &str,
+        path: &str,
+        extra_headers: &[(&str, &str)],
+        body: Option<&[u8]>,
+    ) -> Response {
         let mut stream = TcpStream::connect((self.host.as_str(), self.port))
             .unwrap_or_else(|e| panic!("cannot connect to {}:{}: {e}", self.host, self.port));
         stream
@@ -163,15 +183,12 @@ impl Client {
             head.push_str(&format!("{name}: {value}\r\n"));
         }
         if let Some(body) = body {
-            head.push_str(&format!(
-                "Content-Type: application/json\r\nContent-Length: {}\r\n",
-                body.len()
-            ));
+            head.push_str(&format!("Content-Length: {}\r\n", body.len()));
         }
         head.push_str("\r\n");
         stream.write_all(head.as_bytes()).expect("send request");
         if let Some(body) = body {
-            stream.write_all(body.as_bytes()).expect("send body");
+            let _ = stream.write_all(body);
         }
 
         let mut raw = Vec::new();
