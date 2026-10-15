@@ -126,6 +126,26 @@ pub fn registry() -> Vec<RouteEntry> {
         ),
         (
             "POST",
+            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs/{doc_id}/versions",
+            Access::Agent,
+        ),
+        (
+            "POST",
+            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs/{doc_id}/remove",
+            Access::Agent,
+        ),
+        (
+            "GET",
+            "/api/v1/w/{workspace_id}/projects/{project_id}/versions/{version_id}",
+            Access::Both,
+        ),
+        (
+            "GET",
+            "/api/v1/w/{workspace_id}/projects/{project_id}/versions/{version_id}/diff/{other_version_id}",
+            Access::Both,
+        ),
+        (
+            "POST",
             "/api/v1/w/{workspace_id}/attachments",
             Access::Agent,
         ),

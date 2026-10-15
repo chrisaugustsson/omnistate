@@ -137,6 +137,20 @@ struct Node {
     children: Vec<NodeId>,
 }
 
+/// A node of a doc as a saved version indexes it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IndexedNode {
+    pub id: NodeId,
+    /// The block's type: `section`, `heading`, `paragraph` and so on.
+    pub kind: &'static str,
+    /// `None` for a top-level node.
+    pub parent: Option<NodeId>,
+    /// The node's own content (its type, properties and text), which does not
+    /// change when a child or the node's place does. The fingerprint is a hash
+    /// of this text.
+    pub content: String,
+}
+
 /// A doc under edit.
 #[derive(Clone, Debug)]
 pub struct EditDoc {
@@ -171,6 +185,24 @@ impl EditDoc {
         let revision = |id: &NodeId| self.revision(*id);
         HtmlDoc::from_blocks(self.top.iter().map(|id| self.block(*id)).collect())
             .to_html_with(Some(&revision))
+    }
+
+    /// Every node of the doc in document order, as the node index of a saved
+    /// version holds it.
+    pub fn index(&self) -> Vec<IndexedNode> {
+        let mut nodes = Vec::with_capacity(self.nodes.len());
+        let mut pending: Vec<NodeId> = self.top.iter().rev().copied().collect();
+        while let Some(id) = pending.pop() {
+            let node = &self.nodes[&id];
+            nodes.push(IndexedNode {
+                id,
+                kind: node.block.type_name(),
+                parent: node.parent,
+                content: node.block.own_content(),
+            });
+            pending.extend(node.children.iter().rev().copied());
+        }
+        nodes
     }
 
     /// One node and its descendants as HTML.
@@ -753,5 +785,71 @@ fn midpoint(before: &[u8], after: Option<&[u8]>) -> Vec<u8> {
         let mut key = vec![DIGITS[low]];
         key.extend(midpoint(before.get(1..).unwrap_or(&[]), None));
         key
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn doc(html: &str) -> EditDoc {
+        EditDoc::from_html(html).expect("the doc parses")
+    }
+
+    fn id(text: &str) -> NodeId {
+        text.parse().expect("a node ID")
+    }
+
+    #[test]
+    fn the_index_lists_nodes_in_document_order_with_their_parents() {
+        let doc = doc(concat!(
+            "<section data-node-id=\"sect0001\"><h2 data-node-id=\"head0001\">Scope</h2>",
+            "<p data-node-id=\"para0001\">Text</p></section>",
+            "<p data-node-id=\"para0002\">After</p>"
+        ));
+        let index = doc.index();
+        let listed: Vec<_> = index
+            .iter()
+            .map(|n| (n.id.to_string(), n.kind, n.parent.map(|p| p.to_string())))
+            .collect();
+        assert_eq!(
+            listed,
+            [
+                ("sect0001".to_string(), "section", None),
+                (
+                    "head0001".to_string(),
+                    "heading",
+                    Some("sect0001".to_string())
+                ),
+                (
+                    "para0001".to_string(),
+                    "paragraph",
+                    Some("sect0001".to_string())
+                ),
+                ("para0002".to_string(), "paragraph", None),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_nodes_content_leaves_out_its_children_and_its_place() {
+        let one = doc(concat!(
+            "<section data-node-id=\"sect0001\"><p data-node-id=\"para0001\">One</p></section>",
+            "<p data-node-id=\"para0002\">Same</p>"
+        ));
+        let two = doc(concat!(
+            "<section data-node-id=\"sect0001\"><p data-node-id=\"para0001\">Other</p>",
+            "<p data-node-id=\"para0002\">Same</p></section>"
+        ));
+        let content = |doc: &EditDoc, node: &str| {
+            doc.index()
+                .into_iter()
+                .find(|n| n.id == id(node))
+                .map(|n| n.content)
+                .expect("the node is indexed")
+        };
+        assert_eq!(content(&one, "sect0001"), content(&two, "sect0001"));
+        assert_eq!(content(&one, "para0002"), content(&two, "para0002"));
+        assert_ne!(content(&one, "para0001"), content(&two, "para0001"));
     }
 }

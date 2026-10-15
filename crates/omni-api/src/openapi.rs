@@ -20,6 +20,9 @@ use crate::routes::{Access, registry};
 use crate::session::{
     ErrorBody, LoginRequest, UserBody, UserResponse, WorkspaceBody, WorkspaceListResponse,
 };
+use crate::versions::{
+    DiffBody, DiffResponse, MovedNode, NodeEntry, SaveVersionRequest, VersionBody, VersionResponse,
+};
 use crate::workspace::{ActorBody, WhoamiResponse};
 use axum::Json;
 use serde_json::{Value, json};
@@ -61,7 +64,11 @@ use utoipa::OpenApi;
         crate::docs::read_draft,
         crate::docs::edit_draft,
         crate::claims::take_claim,
-        crate::claims::release_claim
+        crate::claims::release_claim,
+        crate::versions::save_version,
+        crate::versions::remove_doc,
+        crate::versions::show_version,
+        crate::versions::diff_versions
     ),
     components(schemas(
         LoginRequest,
@@ -106,7 +113,14 @@ use utoipa::OpenApi;
         ClaimBody,
         ClaimRequest,
         ClaimResponse,
-        ClaimedBody
+        ClaimedBody,
+        NodeEntry,
+        VersionBody,
+        VersionResponse,
+        MovedNode,
+        DiffBody,
+        DiffResponse,
+        SaveVersionRequest
     ))
 )]
 struct ApiDoc;

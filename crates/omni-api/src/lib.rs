@@ -19,6 +19,7 @@ pub mod password;
 pub mod routes;
 mod session;
 pub mod setup;
+mod versions;
 mod workspace;
 
 use axum::extract::{DefaultBodyLimit, Request, State};
@@ -316,6 +317,22 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/claims/release",
             post(claims::release_claim),
+        )
+        .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs/{doc_id}/versions",
+            post(versions::save_version),
+        )
+        .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs/{doc_id}/remove",
+            post(versions::remove_doc),
+        )
+        .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/versions/{version_id}",
+            get(versions::show_version),
+        )
+        .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/versions/{version_id}/diff/{other_version_id}",
+            get(versions::diff_versions),
         )
         .route(
             "/api/v1/w/{workspace_id}/attachments",

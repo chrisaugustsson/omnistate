@@ -204,6 +204,38 @@ impl Block {
         }
     }
 
+    /// The block's type as a stored doc names it: `section`, `heading`,
+    /// `paragraph`, `list_item`, `code_block`, `user_story` and so on.
+    pub fn type_name(&self) -> &'static str {
+        match self.kind() {
+            BlockKind::Section => "section",
+            BlockKind::Heading => "heading",
+            BlockKind::Paragraph => "paragraph",
+            BlockKind::Quote => "quote",
+            BlockKind::Divider => "divider",
+            BlockKind::List => "list",
+            BlockKind::ListItem => "list_item",
+            BlockKind::Table => "table",
+            BlockKind::TableRow => "table_row",
+            BlockKind::TableCell => "table_cell",
+            BlockKind::Figure => "figure",
+            BlockKind::Callout => "callout",
+            BlockKind::CodeBlock => "code_block",
+            BlockKind::Image => "image",
+            BlockKind::Requirement => "requirement",
+            BlockKind::UserStory => "user_story",
+        }
+    }
+
+    /// The block's own content as text: its type, properties and inline
+    /// content as stored, with neither its ID nor the blocks inside it. Two
+    /// blocks with the same text have the same content, wherever they sit.
+    pub fn own_content(&self) -> String {
+        let mut own = self.clone();
+        own.take_children();
+        serde_json::to_string(&own.body).expect("a block body serializes")
+    }
+
     /// The block's `data-node-id`, or `None` for a block that is new.
     pub fn id(&self) -> Option<&NodeId> {
         self.id.as_ref()

@@ -16,6 +16,7 @@ mod http;
 mod identity;
 mod json;
 mod toml;
+mod versions;
 
 use std::process::ExitCode;
 
@@ -50,6 +51,14 @@ Usage:
                                       apply a batch of operations (a JSON array, from
                                       --body-file or standard input) to the draft; prints
                                       each node's new revision and the IDs of new nodes
+  omni doc remove <doc> --changeset <id>
+                                      remove a doc in a change set: saves a version that
+                                      marks it removed; the doc and its history stay
+  omni version save <doc> --changeset <id>
+                                      save the change set's draft of a doc as a version, an
+                                      unchangeable snapshot; prints the version's ID
+  omni version diff <a> <b>           list the nodes added, removed, changed and moved from
+                                      version <a> to version <b> of a doc
   omni claim <node> --changeset <id>  claim a board or section of the change set's draft, so
                                       that no other agent changes it; a claim lasts 10 minutes
                                       after your last operation in the draft

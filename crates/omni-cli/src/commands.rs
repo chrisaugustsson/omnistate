@@ -1,6 +1,6 @@
 //! The commands: `login`, `key list|revoke`, `whoami`, `api` and `config show`;
 //! the project and change set commands are in `changesets`, the doc commands in
-//! `docs`.
+//! `docs` and the version commands in `versions`.
 //!
 //! Standard output holds only the result of a command (short text, or the API's
 //! JSON with `--json`), so a script can parse it. Prompts, notices and errors go
@@ -16,6 +16,7 @@ use crate::error::{CliError, Result, bail};
 use crate::http::{self, Response, Server};
 use crate::identity::Identity;
 use crate::json::{Value, quote};
+use crate::versions;
 use std::io::{BufRead, IsTerminal, Read, Write};
 use std::process::{Command, Stdio};
 
@@ -70,7 +71,17 @@ pub fn run(args: &Args) -> Result<()> {
         ["doc", "show", doc] => docs::show(args, Some(doc)),
         ["doc", "edit"] => docs::edit(args, None),
         ["doc", "edit", doc] => docs::edit(args, Some(doc)),
-        ["doc", ..] => bail!("usage: omni doc create|open|read|show|edit; see `omni --help`"),
+        ["doc", "remove"] => versions::remove(args, None),
+        ["doc", "remove", doc] => versions::remove(args, Some(doc)),
+        ["doc", ..] => {
+            bail!("usage: omni doc create|open|read|show|edit|remove; see `omni --help`")
+        }
+        ["version", "save"] => versions::save(args, None),
+        ["version", "save", doc] => versions::save(args, Some(doc)),
+        ["version", "diff"] => versions::diff(args, None, None),
+        ["version", "diff", from] => versions::diff(args, Some(from), None),
+        ["version", "diff", from, to] => versions::diff(args, Some(from), Some(to)),
+        ["version", ..] => bail!("usage: omni version save|diff; see `omni --help`"),
         ["claim"] => claims::take(args, None),
         ["claim", node] => claims::take(args, Some(node)),
         ["claim", ..] => bail!("usage: omni claim <node> --changeset <id>"),

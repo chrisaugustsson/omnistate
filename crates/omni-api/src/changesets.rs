@@ -77,7 +77,8 @@ pub struct RejectRequest {
 pub struct HistoryEntry {
     pub from_status: Option<String>,
     pub to_status: String,
-    /// `agent` or `human`.
+    /// `agent` or `human`, or `system` when the server moved the change set
+    /// itself (saving a version clears an approval).
     pub actor: String,
     /// Only set when the human rejected the change set.
     pub reason: Option<String>,
@@ -518,8 +519,8 @@ impl Action {
 /// Moves a change set along the lifecycle and records the move. The row is
 /// locked first, so of several requests that race for the same change set one
 /// makes the move and the rest find the new status and are refused. This is
-/// the one place where a status changes: the live events of US-017 are emitted
-/// from here (through `insert_history`).
+/// the place where a status changes by request: the live events of US-017 are
+/// emitted from here (through `insert_history`).
 async fn transition(
     state: &AppState,
     workspace_id: &str,
@@ -575,6 +576,43 @@ async fn transition(
     Ok(Json(ChangesetResponse {
         changeset: row.with_history(history),
     }))
+}
+
+/// Saving a version while a change set is `approved` or `needs_rebase` clears
+/// the approval: the change set moves back to `in_review`, in the transaction of
+/// the save, with the actor `system` (a rebase, US-026, saves its versions
+/// without calling this). The row is locked first, as in `transition`. Any
+/// other status stays as it is.
+pub(crate) async fn clear_approval(
+    tx: &mut Transaction<'static, Postgres>,
+    workspace_id: &str,
+    project_id: &str,
+    changeset_id: &str,
+) -> Result<(), ApiError> {
+    let status: String =
+        sqlx::query_scalar("SELECT status FROM changesets WHERE id = $1::uuid FOR UPDATE")
+            .bind(changeset_id)
+            .fetch_optional(&mut **tx)
+            .await
+            .map_err(ApiError::database)?
+            .ok_or(ApiError::NotFound)?;
+    if !matches!(status.as_str(), "approved" | "needs_rebase") {
+        return Ok(());
+    }
+    sqlx::query("UPDATE changesets SET status = 'in_review' WHERE id = $1::uuid")
+        .bind(changeset_id)
+        .execute(&mut **tx)
+        .await
+        .map_err(ApiError::database)?;
+    let change = StatusChange {
+        project_id,
+        changeset_id,
+        from: Some(&status),
+        to: "in_review",
+        actor: "system",
+        reason: None,
+    };
+    insert_history(tx, workspace_id, change).await
 }
 
 /// Sends an `open` change set to review.

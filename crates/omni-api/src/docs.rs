@@ -17,6 +17,7 @@ use crate::changesets::{non_blank, parse_body};
 use crate::claims::{self, ClaimBody};
 use crate::live;
 use crate::session::{ApiError, ErrorBody};
+use crate::versions;
 use crate::workspace::{AgentRequest, WorkspaceRequest, parse_uuid};
 use argon2::password_hash::rand_core::{OsRng, RngCore};
 use axum::Json;
@@ -382,17 +383,29 @@ fn random_node_id() -> NodeId {
 
 /// Rebuilds a draft from its base version and its log. The log holds the IDs
 /// that the server assigned, which the replay hands out again in the same order.
-async fn load_state(tx: &mut Tx, draft: &DraftRow) -> Result<DraftState, ApiError> {
-    if draft.base_version_id.is_some() {
-        // The content of a version is read here once versions are saved
-        // (US-024); no draft has a base version before that.
-        eprintln!(
-            "omni-api: draft {} has a base version, which cannot be loaded yet",
-            draft.id
-        );
-        return Err(ApiError::Unavailable);
-    }
-    let mut doc = EditDoc::from_html("").expect("an empty doc parses");
+async fn load_state(
+    state: &AppState,
+    tx: &mut Tx,
+    workspace_id: &str,
+    draft: &DraftRow,
+) -> Result<DraftState, ApiError> {
+    let mut doc = match &draft.base_version_id {
+        None => EditDoc::from_html("").expect("an empty doc parses"),
+        Some(base) => {
+            let chunk = versions::chunk_of_version(tx, &draft.doc_id, base).await?;
+            let html = match chunk {
+                Some(chunk) => versions::read_chunk(state, workspace_id, &chunk).await?,
+                None => String::new(),
+            };
+            EditDoc::from_html(&html).map_err(|e| {
+                eprintln!(
+                    "omni-api: the base version {base} of draft {} cannot be loaded: {e}",
+                    draft.id
+                );
+                ApiError::Unavailable
+            })?
+        }
+    };
     let rows: Vec<(i64, String, Vec<String>)> = sqlx::query_as(
         "SELECT seq, op::text, created FROM draft_ops WHERE draft_id = $1::uuid ORDER BY seq",
     )
@@ -438,7 +451,7 @@ pub(crate) async fn ensure_loaded(
 ) -> Result<(), ApiError> {
     if held.is_none() {
         let mut tx = state.workspace_tx(workspace_id).await?;
-        *held = Some(load_state(&mut tx, draft).await?);
+        *held = Some(load_state(state, &mut tx, workspace_id, draft).await?);
         tx.commit().await.map_err(ApiError::database)?;
     }
     Ok(())
@@ -467,7 +480,7 @@ impl From<DraftRow> for DraftBody {
 
 /// The draft that `changeset_id` has of `doc_id`, 404 when the change set, the
 /// doc or the draft is not there (or not in this project).
-async fn find_draft(
+pub(crate) async fn find_draft(
     tx: &mut Tx,
     project_id: &str,
     changeset_id: &str,
@@ -677,8 +690,8 @@ pub async fn show_doc(
 }
 
 /// A doc's mainline version as HTML with `data-node-id`, or the version named
-/// by `?version=`. A doc that has no mainline version gives no version and no
-/// HTML.
+/// by `?version=` (a version has no `data-rev`). A doc that has no mainline
+/// version gives no version and no HTML.
 #[utoipa::path(
     get,
     path = "/api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}/html",
@@ -704,24 +717,29 @@ pub async fn read_doc_html(
     let doc_id = parse_uuid(&doc_id).ok_or(ApiError::NotFound)?;
     let mut tx = state.workspace_tx(&request.workspace_id).await?;
     let row = find_doc(&mut tx, &project_id, &doc_id).await?;
+    let version_id = match query.get("version") {
+        Some(version) => Some(parse_uuid(version).ok_or(ApiError::NotFound)?),
+        None => row.mainline_version_id.clone(),
+    };
+    let Some(version_id) = version_id else {
+        tx.commit().await.map_err(ApiError::database)?;
+        return Ok(Json(MainlineHtmlResponse {
+            doc_id: row.id,
+            version_id: None,
+            html: String::new(),
+        }));
+    };
+    let chunk = versions::chunk_of_version(&mut tx, &row.id, &version_id).await?;
     tx.commit().await.map_err(ApiError::database)?;
-    // Versions are saved and merged by later stories (US-024, US-025): until
-    // then no doc has one, so a named version is never found and the mainline
-    // is empty.
-    if query.contains_key("version") {
-        return Err(ApiError::NotFound);
-    }
-    if row.mainline_version_id.is_some() {
-        eprintln!(
-            "omni-api: doc {} has a mainline version, which cannot be read yet",
-            row.id
-        );
-        return Err(ApiError::Unavailable);
-    }
+    // A version that holds no content (the removal of the doc) reads as empty.
+    let html = match chunk {
+        Some(chunk) => versions::read_chunk(&state, &request.workspace_id, &chunk).await?,
+        None => String::new(),
+    };
     Ok(Json(MainlineHtmlResponse {
         doc_id: row.id,
-        version_id: None,
-        html: String::new(),
+        version_id: Some(version_id),
+        html,
     }))
 }
 
@@ -967,7 +985,7 @@ async fn apply_batch(state: &AppState, edit: Edit) -> Result<Vec<OpResultBody>, 
     let mut held = slot.lock().await;
     let mut tx = state.workspace_tx(&workspace_id).await?;
     if held.is_none() {
-        *held = Some(load_state(&mut tx, &draft).await?);
+        *held = Some(load_state(state, &mut tx, &workspace_id, &draft).await?);
     }
     let used = state
         .drafts
