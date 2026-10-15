@@ -5,7 +5,10 @@
 //! its place differs (another parent, or a reorder among the siblings that keep
 //! theirs). A node that both sides changed differently is a conflict and keeps
 //! its mainline state; everything else of the change set is replayed with the
-//! node IDs it has.
+//! node IDs it has. Additions and moves are replayed before removals, so that a
+//! container the change set emptied and removed is judged by what is still in
+//! it, and a moved node goes after a sibling that the mainline left in place,
+//! so that a reorder on each side keeps both.
 
 use super::{EditDoc, MAX_DEPTH, Node, can_hold, longest_increasing};
 use crate::design::NodeId;
@@ -131,7 +134,6 @@ impl EditDoc {
             .collect();
 
         let mut doc = mainline.clone();
-        doc.remove_removed(&m, &mine, &mut conflicts);
         for id in &t.order {
             if mine.content.contains(id) && !conflicts.contains(id) {
                 if let Some(node) = doc.nodes.get_mut(id) {
@@ -153,11 +155,20 @@ impl EditDoc {
             } else if mine.place.contains(id)
                 && !conflicts.contains(id)
                 && doc.nodes.contains_key(id)
-                && !doc.replay_moved(changes, &t, *id)
             {
-                conflicts.insert(*id);
+                // A sibling that the mainline moved, or that keeps its
+                // mainline place as a conflict, is not where the change set
+                // put it, so the moved node does not follow it.
+                let settled = |sibling: &NodeId| {
+                    !theirs.place.contains(sibling)
+                        && (!mine.place.contains(sibling) || !conflicts.contains(sibling))
+                };
+                if !doc.replay_moved(changes, &t, *id, &settled) {
+                    conflicts.insert(*id);
+                }
             }
         }
+        doc.remove_removed(&m, &mine, &mut conflicts);
 
         let mut listed: Vec<NodeId> = b
             .order
@@ -173,8 +184,11 @@ impl EditDoc {
     }
 
     /// Removes the nodes that the change set removed and the mainline left
-    /// alone. A removal takes a whole subtree, so a node stays, as a conflict,
-    /// when something under it stays: a node the mainline added or a conflict.
+    /// alone, once the change set's additions and moves are in place. A
+    /// removal takes a whole subtree, so a node stays, as a conflict, when
+    /// something under it stays: a node the mainline added or moved there, or
+    /// a conflict. The children that the change set moved elsewhere are gone
+    /// from it by then.
     fn remove_removed(&mut self, m: &Shape, mine: &Changes, conflicts: &mut HashSet<NodeId>) {
         let mut gone: HashSet<NodeId> = mine
             .removed
@@ -182,16 +196,17 @@ impl EditDoc {
             .filter(|id| m.parent.contains_key(id) && !conflicts.contains(id))
             .copied()
             .collect();
+        let order: Vec<NodeId> = self.index().into_iter().map(|n| n.id).collect();
         // Children follow their parent in document order, so in reverse a
         // node is judged after the nodes under it.
-        for id in m.order.iter().rev() {
+        for id in order.iter().rev() {
             let stays = |children: &[NodeId]| children.iter().any(|child| !gone.contains(child));
             if gone.contains(id) && stays(&self.nodes[id].children) {
                 gone.remove(id);
                 conflicts.insert(*id);
             }
         }
-        for id in &m.order {
+        for id in &order {
             if gone.contains(id) && self.nodes.contains_key(id) {
                 self.detach(*id);
                 for removed in self.subtree(*id) {
@@ -220,7 +235,7 @@ impl EditDoc {
                 None => return false,
             }
         }
-        let after = self.preceding(changes, t, id, candidate);
+        let after = self.preceding(changes, t, id, candidate, &|_| true);
         let (at, key) = self.place(candidate, after);
         self.nodes.insert(
             id,
@@ -236,10 +251,17 @@ impl EditDoc {
         true
     }
 
-    /// Moves a node the change set moved to the place it has there. `false`
-    /// when that place is not possible here: its parent is gone, the move
-    /// would put the node under itself, or the parent cannot hold it.
-    fn replay_moved(&mut self, changes: &EditDoc, t: &Shape, id: NodeId) -> bool {
+    /// Moves a node the change set moved to the place it has there, after the
+    /// nearest of its preceding siblings there that is `settled`. `false` when
+    /// that place is not possible here: its parent is gone, the move would put
+    /// the node under itself, or the parent cannot hold it.
+    fn replay_moved(
+        &mut self,
+        changes: &EditDoc,
+        t: &Shape,
+        id: NodeId,
+        settled: &dyn Fn(&NodeId) -> bool,
+    ) -> bool {
         let parent = t.parent[&id];
         if parent.is_some_and(|parent| !self.nodes.contains_key(&parent)) {
             return false;
@@ -257,7 +279,7 @@ impl EditDoc {
             return false;
         }
         self.detach(id);
-        let after = self.preceding(changes, t, id, parent);
+        let after = self.preceding(changes, t, id, parent, settled);
         let (at, key) = self.place(parent, after);
         self.siblings_mut(parent).insert(at, id);
         let node = self.nodes.get_mut(&id).expect("the node is in the doc");
@@ -268,23 +290,26 @@ impl EditDoc {
     }
 
     /// The sibling that `id` follows in the change set's doc and that is a
-    /// child of `parent` in this one: the nearest of the siblings before it.
-    /// `None` puts the node first.
+    /// child of `parent` in this one: the nearest of the siblings before it
+    /// that is `settled`. `None` puts the node first.
     fn preceding(
         &self,
         changes: &EditDoc,
         t: &Shape,
         id: NodeId,
         parent: Option<NodeId>,
+        settled: &dyn Fn(&NodeId) -> bool,
     ) -> Option<NodeId> {
         let siblings = changes
             .children(t.parent[&id])
             .expect("the parent is in the change set's doc");
         let at = siblings.iter().position(|s| *s == id)?;
         siblings[..at].iter().rev().copied().find(|sibling| {
-            self.nodes
-                .get(sibling)
-                .is_some_and(|node| node.parent == parent)
+            settled(sibling)
+                && self
+                    .nodes
+                    .get(sibling)
+                    .is_some_and(|node| node.parent == parent)
         })
     }
 
@@ -410,6 +435,22 @@ mod tests {
         let changes = doc("");
         let rebased = EditDoc::rebase(&base, &mainline, &changes);
         // The change set removed the section and A; the mainline added B to it.
+        assert_eq!(rebased.conflicts, [id("s0000000")]);
+        assert_eq!(order(&rebased.doc), ["s0000000", "b0000000"]);
+    }
+
+    #[test]
+    fn a_removed_section_stays_when_the_mainline_moved_a_node_into_it() {
+        let base = doc(concat!(
+            "<section data-node-id=\"s0000000\"><p data-node-id=\"a0000000\">A</p></section>",
+            "<p data-node-id=\"b0000000\">B</p>"
+        ));
+        let mainline = doc(concat!(
+            "<section data-node-id=\"s0000000\"><p data-node-id=\"a0000000\">A</p>",
+            "<p data-node-id=\"b0000000\">B</p></section>"
+        ));
+        let changes = doc("<p data-node-id=\"b0000000\">B</p>");
+        let rebased = EditDoc::rebase(&base, &mainline, &changes);
         assert_eq!(rebased.conflicts, [id("s0000000")]);
         assert_eq!(order(&rebased.doc), ["s0000000", "b0000000"]);
     }
