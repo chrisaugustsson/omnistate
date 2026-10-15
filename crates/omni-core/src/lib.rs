@@ -3,3 +3,4 @@
 
 pub mod design;
 pub mod html_doc;
+pub mod ops;
