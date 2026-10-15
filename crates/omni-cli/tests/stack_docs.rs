@@ -5,9 +5,10 @@
 //! The tests migrate a scratch database, seed a workspace with an API key (the
 //! agent), create a scratch RustFS bucket and serve the API's router on a local
 //! port against both. The built `omni` runs against that address with the key
-//! in its config file. The contract of the CLI is in tests/docs.rs and
-//! tests/claims.rs (US-023), and the API's in crates/omni-api/tests/docs.rs and
-//! crates/omni-api/tests/claims.rs.
+//! in its config file. The contract of the CLI is in tests/docs.rs,
+//! tests/claims.rs (US-023) and tests/versions.rs (US-024), and the API's in
+//! crates/omni-api/tests/docs.rs, crates/omni-api/tests/claims.rs and
+//! crates/omni-api/tests/versions.rs.
 
 mod common;
 
@@ -655,4 +656,129 @@ fn an_agent_claims_a_section_and_another_agent_cannot_change_it_until_it_is_rele
         claim_events(&changeset, &section),
         ["claim.taken", "claim.released"]
     );
+}
+
+#[test]
+fn an_agent_saves_versions_compares_them_and_removes_the_doc() {
+    let f = fixture();
+    let home = agent_home(f);
+    let (project, changeset, created) = project_with_doc(&home);
+    let doc = created["doc"]["id"].as_str().unwrap().to_string();
+    let p = ["--project", project.as_str()];
+    let edit = |ops: Value| -> Value {
+        let out = run_as(
+            &home,
+            "run-7/author",
+            &[
+                &["doc", "edit", &doc, "--changeset", &changeset, "--json"][..],
+                &p,
+            ]
+            .concat(),
+            ops.to_string().as_bytes(),
+        );
+        assert_eq!(out.code, 0, "doc edit: {}", out.stderr);
+        out.json()
+    };
+    let save = || -> String {
+        let out = run(
+            &home,
+            &[
+                &["version", "save", &doc, "--changeset", &changeset, "--json"][..],
+                &p,
+            ]
+            .concat(),
+        );
+        assert_eq!(out.code, 0, "version save: {}", out.stderr);
+        out.json()["version"]["id"]
+            .as_str()
+            .unwrap_or_else(|| panic!("a version id: {}", out.stdout))
+            .to_string()
+    };
+
+    let answer = edit(json!([
+        { "op": "insert", "parent": null, "position": { "after": null }, "content": "<p>Keep this.</p>" },
+        { "op": "insert", "parent": null, "position": { "after": null }, "content": "<p>Drop this.</p>" },
+        { "op": "insert", "parent": null, "position": { "after": null }, "content": "<p>Change this.</p>" }
+    ]));
+    let node = |i: usize| answer["results"][i]["node"].as_str().unwrap().to_string();
+    let (kept, dropped, changed) = (node(0), node(1), node(2));
+    let v1 = save();
+
+    let answer = edit(json!([
+        { "op": "delete", "node": dropped, "rev": 1 },
+        { "op": "set", "node": changed, "rev": 1, "properties": { "html": "Changed." } },
+        { "op": "insert", "parent": null, "position": { "after": null }, "content": "<p>Added.</p>" }
+    ]));
+    let added = answer["results"][2]["node"].as_str().unwrap().to_string();
+    let v2 = save();
+
+    // The diff lists each difference on a line of its own.
+    let diff = run(&home, &[&["version", "diff", &v1, &v2][..], &p].concat());
+    assert_eq!(diff.code, 0, "{}", diff.stderr);
+    let lines = non_empty_lines(&diff.stdout);
+    for (word, id) in [
+        ("added", &added),
+        ("removed", &dropped),
+        ("changed", &changed),
+    ] {
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains(id.as_str()) && l.contains(word)),
+            "{id} is {word}: {:?}",
+            diff.stdout
+        );
+    }
+    assert!(
+        !diff.stdout.contains(&kept),
+        "an unchanged node is not listed: {:?}",
+        diff.stdout
+    );
+
+    // Version 1 reads as it was saved.
+    let read = run(
+        &home,
+        &[&["doc", "read", &doc, "--version", &v1][..], &p].concat(),
+    );
+    assert_eq!(read.code, 0, "{}", read.stderr);
+    assert!(
+        read.stdout.contains("Drop this.") && read.stdout.contains("Change this."),
+        "{:?}",
+        read.stdout
+    );
+    assert!(!read.stdout.contains("Added."), "{:?}", read.stdout);
+
+    // Removing the doc saves a version marking it removed; the history stays.
+    let removed = run(
+        &home,
+        &[
+            &["doc", "remove", &doc, "--changeset", &changeset, "--json"][..],
+            &p,
+        ]
+        .concat(),
+    );
+    assert_eq!(removed.code, 0, "{}", removed.stderr);
+    let removal = removed.json();
+    assert_eq!(removal["version"]["removed"], true, "{removal}");
+    let removal = removal["version"]["id"].as_str().unwrap().to_string();
+    let diff = run(
+        &home,
+        &[&["version", "diff", &v2, &removal][..], &p].concat(),
+    );
+    assert_eq!(diff.code, 0, "{}", diff.stderr);
+    for id in [&kept, &changed, &added] {
+        assert!(
+            non_empty_lines(&diff.stdout)
+                .iter()
+                .any(|l| l.contains(id.as_str()) && l.contains("removed")),
+            "{id} is removed with the doc: {:?}",
+            diff.stdout
+        );
+    }
+    let read = run(
+        &home,
+        &[&["doc", "read", &doc, "--version", &v2][..], &p].concat(),
+    );
+    assert_eq!(read.code, 0, "{}", read.stderr);
+    assert!(read.stdout.contains("Added."), "{:?}", read.stdout);
 }

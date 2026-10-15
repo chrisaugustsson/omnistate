@@ -19,7 +19,10 @@
 //!   least the columns `id` and `workspace_id`, `user_memberships(user_id)`
 //!   the user's `memberships` rows with at least `id` and `workspace_id`.
 //! - The API role is `omni_api`: it can log in, may SELECT, INSERT and UPDATE
-//!   the tenant tables, and may not DELETE from or TRUNCATE them.
+//!   the tenant tables, and may not DELETE from or TRUNCATE them. The
+//!   append-only tables (US-024, FR-18) are the exception to UPDATE: the
+//!   operation log `draft_ops`, the `versions` and the `node_index` exist, and
+//!   the API role may only SELECT and INSERT them.
 
 use sqlx::migrate::Migrator;
 use sqlx::postgres::{PgConnectOptions, PgConnection, PgPoolOptions};
@@ -35,6 +38,9 @@ const TEST_DB: &str = "omni_us011_tenancy";
 const API_ROLE: &str = "omni_api";
 const GLOBAL_TABLES: [&str; 3] = ["users", "login_identities", "sessions"];
 const TENANT_TABLES: [&str; 3] = ["workspaces", "memberships", "api_keys"];
+/// The tenant tables whose rows are never changed: the API role may not UPDATE
+/// them (US-024).
+const APPEND_ONLY_TABLES: [&str; 3] = ["draft_ops", "versions", "node_index"];
 const POLICY_EXPRESSION: &str = "NULLIF(current_setting('app.workspace_id', true), '')::uuid";
 /// A UUIDv4, which the database must refuse as a record ID.
 const V4_ID: &str = "f47ac10b-58cc-4372-a567-0e02b2c3d479";
@@ -774,10 +780,11 @@ fn the_api_role_can_read_and_write_but_not_delete_or_truncate_tenant_tables() {
             .unwrap();
         assert!(usage, "{API_ROLE} needs USAGE on the public schema");
         for table in tenant_tables(&mut conn).await {
+            let append_only = APPEND_ONLY_TABLES.contains(&table.as_str());
             for (privilege, expected) in [
                 ("SELECT", true),
                 ("INSERT", true),
-                ("UPDATE", true),
+                ("UPDATE", !append_only),
                 ("DELETE", false),
                 ("TRUNCATE", false),
             ] {
@@ -793,6 +800,31 @@ fn the_api_role_can_read_and_write_but_not_delete_or_truncate_tenant_tables() {
                     "{API_ROLE} {privilege} on {table}: expected {expected}"
                 );
             }
+        }
+    });
+}
+
+#[test]
+fn the_api_role_has_no_update_privilege_on_the_log_the_versions_or_the_node_index() {
+    let db = test_db();
+    block(async {
+        let mut conn = admin_connection(db).await;
+        let tenant = tenant_tables(&mut conn).await;
+        for table in APPEND_ONLY_TABLES {
+            assert!(
+                tenant.iter().any(|t| t == table),
+                "the migrations must create the tenant table {table}; the tenant tables are {tenant:?}"
+            );
+            let granted: bool = sqlx::query_scalar("select has_table_privilege($1, $2, 'UPDATE')")
+                .bind(API_ROLE)
+                .bind(format!("public.{table}"))
+                .fetch_one(&mut conn)
+                .await
+                .unwrap();
+            assert!(
+                !granted,
+                "{API_ROLE} may UPDATE the append-only table {table}"
+            );
         }
     });
 }

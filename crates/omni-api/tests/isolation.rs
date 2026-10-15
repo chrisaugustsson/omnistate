@@ -15,13 +15,15 @@
 //! - `CASES` lists every route of `omni_api::routes::registry()`, each either
 //!   `Workspace` (its path holds `{workspace_id}`, and the suite attacks it) or
 //!   `Global` (no workspace in the path, with the reason). The path may hold
-//!   `{project_id}`, `{changeset_id}`, `{key_id}`, `{attachment_id}` and
-//!   `{doc_id}`, which the suite fills with the IDs of the seeded records; a
-//!   path with another placeholder, or a registry route without a case, fails
-//!   the suite. The seeded doc (US-022) was created in the open change set
-//!   `{changeset_id}`, which has its draft, and has one applied operation;
-//!   once the claim routes exist (US-023), the draft also has a section that
-//!   the workspace's agent claimed.
+//!   `{project_id}`, `{changeset_id}`, `{key_id}`, `{attachment_id}`,
+//!   `{doc_id}`, `{version_id}` and `{other_version_id}`, which the suite
+//!   fills with the IDs of the seeded records; a path with another
+//!   placeholder, or a registry route without a case, fails the suite. The
+//!   seeded doc (US-022) was created in the open change set `{changeset_id}`,
+//!   which has its draft, and has one applied operation; once the claim routes
+//!   exist (US-023), the draft also has a section that the workspace's agent
+//!   claimed, and once the version routes exist (US-024), the draft was saved
+//!   as `{version_id}`, edited and saved again as `{other_version_id}`.
 //! - Workspace A's credentials against workspace B's workspace and IDs, and
 //!   against B's IDs under A's own workspace, are always 404
 //!   `{"error": "not_found"}` with nothing of B in the body, and the answer is
@@ -279,6 +281,30 @@ const CASES: &[Case] = &[
         "POST",
         "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/claims/release",
         Some(r#"{"node":"zzzzzzzz"}"#),
+        Kind::Workspace,
+    ),
+    case(
+        "POST",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs/{doc_id}/versions",
+        Some("{}"),
+        Kind::Workspace,
+    ),
+    case(
+        "POST",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs/{doc_id}/remove",
+        Some("{}"),
+        Kind::Workspace,
+    ),
+    case(
+        "GET",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/versions/{version_id}",
+        None,
+        Kind::Workspace,
+    ),
+    case(
+        "GET",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/versions/{version_id}/diff/{other_version_id}",
+        None,
         Kind::Workspace,
     ),
 ];
@@ -543,6 +569,15 @@ fn has_claim_routes() -> bool {
     })
 }
 
+/// Whether the router has the version routes (US-024) yet.
+fn has_version_routes() -> bool {
+    registry().iter().any(|r| {
+        r.method == "POST"
+            && r.path
+                == "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs/{doc_id}/versions"
+    })
+}
+
 /// Uploads `bytes` as `name` with an API key; the raw bytes are the body.
 fn upload_attachment(
     client: &Client,
@@ -592,6 +627,10 @@ struct Side {
     doc_title: String,
     /// The text of the doc's one paragraph, which nothing else holds.
     doc_text: String,
+    /// Two saved versions of the doc's draft (US-024), the second after one
+    /// more paragraph: empty until the version routes exist.
+    version_id: String,
+    other_version_id: String,
 }
 
 impl Side {
@@ -616,6 +655,8 @@ impl Side {
             doc_id: same(),
             doc_title: String::new(),
             doc_text: String::new(),
+            version_id: same(),
+            other_version_id: same(),
         }
     }
 
@@ -638,6 +679,8 @@ impl Side {
             &self.doc_id,
             &self.doc_title,
             &self.doc_text,
+            &self.version_id,
+            &self.other_version_id,
         ]
         .into_iter()
         .map(String::as_str)
@@ -886,6 +929,46 @@ fn fixture() -> &'static Fixture {
             } else {
                 (String::new(), String::new(), String::new())
             };
+            // US-024: the draft saved as a version, edited and saved again, so
+            // the version and node index tables have rows of the workspace and
+            // the diff route has two versions to compare. Seeded as soon as the
+            // registry has the version routes.
+            let (version_id, other_version_id) = if has_version_routes() {
+                let draft = format!("{changesets}/{changeset_id}/docs/{doc_id}");
+                let save = || -> String {
+                    let saved = must(
+                        call(
+                            client,
+                            "POST",
+                            &format!("{draft}/versions"),
+                            &agent,
+                            Some("{}"),
+                        ),
+                        201,
+                        "save a version of the doc",
+                    );
+                    saved["version"]["id"]
+                        .as_str()
+                        .expect("a version id")
+                        .to_string()
+                };
+                let version_id = save();
+                let ops = json!({ "ops": [{
+                    "op": "insert",
+                    "parent": null,
+                    "position": { "after": null },
+                    "content": format!("<p>{}</p>", unique(&format!("{name}-later")))
+                }] })
+                .to_string();
+                must(
+                    call(client, "POST", &format!("{draft}/ops"), &agent, Some(&ops)),
+                    200,
+                    "edit the doc's draft again",
+                );
+                (version_id, save())
+            } else {
+                (String::new(), String::new())
+            };
             Side {
                 id: workspace,
                 email: format!("{name}@example.test"),
@@ -907,6 +990,8 @@ fn fixture() -> &'static Fixture {
                 doc_id,
                 doc_title,
                 doc_text,
+                version_id,
+                other_version_id,
             }
         });
         let a = sides.next().expect("workspace A");
@@ -938,6 +1023,8 @@ fn fill(template: &str, workspace: &Side, record: &Side) -> String {
             "key_id" => &record.key_id,
             "attachment_id" => &record.attachment_id,
             "doc_id" => &record.doc_id,
+            "version_id" => &record.version_id,
+            "other_version_id" => &record.other_version_id,
             other => panic!(
                 "{template} has the placeholder {{{other}}}, for which the suite has no seeded \
                  ID: add it to Side and fill() in tests/isolation.rs"
@@ -1799,6 +1886,131 @@ fn the_doc_routes_are_in_the_registry_and_the_suite_attacks_them() {
             "{draft}"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// Versions (US-024)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn the_version_routes_are_in_the_registry_and_the_suite_attacks_them() {
+    let routes = registry();
+    for path in [
+        "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs/{doc_id}/versions",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs/{doc_id}/remove",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/versions/{version_id}",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/versions/{version_id}/diff/{other_version_id}",
+    ] {
+        let entry = routes
+            .iter()
+            .find(|r| r.path == path)
+            .unwrap_or_else(|| panic!("the registry has no route {path}"));
+        assert!(
+            matches!(case_for(entry).kind, Kind::Workspace),
+            "{path} is a workspace route that the suite attacks"
+        );
+    }
+
+    let (f, _) = ready();
+    for side in [&f.a, &f.b] {
+        assert!(
+            !side.version_id.is_empty() && !side.other_version_id.is_empty(),
+            "the suite seeded no versions for {}",
+            side.id
+        );
+    }
+}
+
+#[test]
+fn the_version_calls_of_the_attacks_work_for_the_workspace_that_owns_the_records() {
+    // The control for the version routes: the owner's agent saves a version of
+    // a doc of its own, reads it, compares it and removes the doc, with the
+    // bodies of the cases.
+    let (f, client) = ready();
+    let _guard = serial();
+    let key = Auth::Key(&f.a.key);
+    let human = Auth::Session(&f.a.token);
+    let path = |template: &str| fill(template, &f.a, &f.a);
+
+    let docs = case_named(
+        "POST",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs",
+    );
+    let body = docs.body.map(|b| b.replace("intruder", &unique("owner")));
+    let created = must(
+        call(client, "POST", &path(docs.path), &key, body.as_deref()),
+        201,
+        "create a doc",
+    );
+    let doc_id = created["doc"]["id"].as_str().expect("an id");
+    let draft = format!(
+        "/api/v1/w/{}/projects/{}/changesets/{}/docs/{doc_id}",
+        f.a.id, f.a.project_id, f.a.changeset_id
+    );
+    let ops = case_named(
+        "POST",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs/{doc_id}/ops",
+    );
+    must(
+        call(client, "POST", &format!("{draft}/ops"), &key, ops.body),
+        200,
+        "edit the draft",
+    );
+    let save = case_named(
+        "POST",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs/{doc_id}/versions",
+    );
+    let saved = must(
+        call(
+            client,
+            "POST",
+            &format!("{draft}/versions"),
+            &key,
+            save.body,
+        ),
+        201,
+        "save a version",
+    );
+    let version = saved["version"]["id"].as_str().expect("an id");
+    let versions = format!(
+        "/api/v1/w/{}/projects/{}/versions/{version}",
+        f.a.id, f.a.project_id
+    );
+    for auth in [&key, &human] {
+        let read = must(
+            call(client, "GET", &versions, auth, None),
+            200,
+            "read the version",
+        );
+        assert_eq!(read["version"]["doc_id"], doc_id, "{read}");
+        must(
+            call(
+                client,
+                "GET",
+                &format!("{versions}/diff/{version}"),
+                auth,
+                None,
+            ),
+            200,
+            "compare the version with itself",
+        );
+    }
+    let remove = case_named(
+        "POST",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs/{doc_id}/remove",
+    );
+    let removed = must(
+        call(
+            client,
+            "POST",
+            &format!("{draft}/remove"),
+            &key,
+            remove.body,
+        ),
+        201,
+        "remove the doc",
+    );
+    assert_eq!(removed["version"]["removed"], true, "{removed}");
 }
 
 // ---------------------------------------------------------------------------

@@ -490,6 +490,40 @@ async fn fill_workspace(conn: &mut PgConnection, workspace: &str, membership: &s
             .await
             .expect("insert a claim");
         }
+
+        // US-024: a saved version of the doc and one row of the node index.
+        // Seeded as soon as the tables exist (tests/versions.rs pins their names;
+        // the columns without a default are `workspace_id`, `doc_id` and
+        // `changeset_id` for `versions`, and `workspace_id`, `chunk`, `node`,
+        // `type` and `fingerprint` for `node_index`, where `chunk` names the
+        // stored content that the nodes belong to), for the same reason as above.
+        let versions_exist: bool = sqlx::query_scalar(
+            "SELECT to_regclass('public.versions') IS NOT NULL \
+             AND to_regclass('public.node_index') IS NOT NULL",
+        )
+        .fetch_one(&mut *conn)
+        .await
+        .expect("look for the version tables");
+        if versions_exist {
+            sqlx::query(
+                "INSERT INTO versions (workspace_id, doc_id, changeset_id) \
+                 VALUES ($1::uuid, $2::uuid, $3::uuid)",
+            )
+            .bind(workspace)
+            .bind(&doc_id)
+            .bind(&changeset_id)
+            .execute(&mut *conn)
+            .await
+            .expect("insert a version");
+            sqlx::query(
+                "INSERT INTO node_index (workspace_id, chunk, node, type, fingerprint) \
+                 VALUES ($1::uuid, 'deletion-test-chunk', 'k3f9x2qa', 'paragraph', 'fingerprint')",
+            )
+            .bind(workspace)
+            .execute(&mut *conn)
+            .await
+            .expect("insert a node of the node index");
+        }
     }
 }
 
