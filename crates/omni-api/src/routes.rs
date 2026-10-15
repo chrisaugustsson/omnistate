@@ -17,6 +17,16 @@ pub struct RouteEntry {
     pub access: Access,
 }
 
+/// Every WebSocket route that the router serves. It is kept apart from
+/// `registry`, which lists the HTTP routes of the OpenAPI document: a
+/// WebSocket route is no OpenAPI operation, but the isolation suite attacks it
+/// like the rest (tests/isolation.rs fails on one that it does not cover).
+pub fn websocket_registry() -> Vec<RouteEntry> {
+    // US-018 (green): list `GET /ws/w/{workspace_id}`, which is open to agents
+    // and to the human.
+    Vec::new()
+}
+
 /// Every HTTP route that the router serves. A new route is added here and in
 /// `router`; the OpenAPI document picks the access up from this list.
 pub fn registry() -> Vec<RouteEntry> {

@@ -24,7 +24,7 @@ serde = { version = "1", features = ["derive"] }
 [features]
 # The setup, key, deletion, change set and stack tests (tests/setup_login.rs,
 # tests/api_keys.rs, tests/workspace_delete.rs, tests/changesets.rs,
-# tests/live_events.rs, tests/stack_auth.rs) talk to
+# tests/live_events.rs, tests/isolation.rs, tests/stack_auth.rs) talk to
 # Postgres and the running Compose stack, so they only build with this feature,
 # which the Compose test container turns on.
 stack-tests = []
@@ -51,4 +51,8 @@ required-features = ["stack-tests"]
 
 [[test]]
 name = "live_events"
+required-features = ["stack-tests"]
+
+[[test]]
+name = "isolation"
 required-features = ["stack-tests"]
