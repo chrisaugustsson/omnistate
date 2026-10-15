@@ -1,4 +1,4 @@
-use omni_api::{AppState, Config, setup};
+use omni_api::{AppState, Config, delete_workspace, setup};
 use std::io::BufRead;
 
 #[tokio::main]
@@ -14,6 +14,7 @@ async fn run() -> Result<(), String> {
     match args.first().map(String::as_str) {
         None => serve().await,
         Some("setup") => first_run_setup(&args[1..]).await,
+        Some("delete-workspace") => delete_workspace(&args[1..]).await,
         Some(other) => Err(format!("unknown command {other}")),
     }
 }
@@ -33,6 +34,19 @@ async fn first_run_setup(args: &[String]) -> Result<(), String> {
     println!(
         "Created {} with the workspace {}.",
         setup_args.email, setup_args.workspace
+    );
+    Ok(())
+}
+
+/// Erases a workspace: every row of it and its whole RustFS folder. It runs
+/// as the database owner; the API has no operation that deletes.
+async fn delete_workspace(args: &[String]) -> Result<(), String> {
+    let workspace_id = delete_workspace::parse_args(args)?;
+    let config = delete_workspace::AdminConfig::from_env()?;
+    let deleted = delete_workspace::run(&config, &workspace_id).await?;
+    println!(
+        "Deleted the workspace {workspace_id}: {} rows and {} files.",
+        deleted.rows, deleted.files
     );
     Ok(())
 }

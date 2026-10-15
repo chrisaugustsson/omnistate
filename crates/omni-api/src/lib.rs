@@ -8,6 +8,7 @@
 
 mod api_keys;
 pub mod auth;
+pub mod delete_workspace;
 mod openapi;
 pub mod password;
 pub mod routes;
@@ -94,9 +95,13 @@ impl AppState {
             .acquire_timeout(CHECK_TIMEOUT)
             .connect_lazy(&config.database_url)
             .map_err(|e| format!("invalid database url: {e}"))?;
-        let bucket = Bucket::new(&config.s3_bucket, region(config), credentials(config)?)
-            .map_err(|e| format!("invalid storage settings: {e}"))?
-            .with_path_style();
+        let bucket = Bucket::new(
+            &config.s3_bucket,
+            region(&config.s3_endpoint),
+            credentials(&config.s3_access_key, &config.s3_secret_key)?,
+        )
+        .map_err(|e| format!("invalid storage settings: {e}"))?
+        .with_path_style();
         let auth = provider.unwrap_or_else(|| Arc::new(password::PasswordAuth::new(pool.clone())));
         Ok(Self { pool, bucket, auth })
     }
@@ -111,8 +116,8 @@ impl AppState {
                 Ok(false) => {
                     let created = Bucket::create_with_path_style(
                         &config.s3_bucket,
-                        region(config),
-                        credentials(config)?,
+                        region(&config.s3_endpoint),
+                        credentials(&config.s3_access_key, &config.s3_secret_key)?,
                         BucketConfiguration::default(),
                     )
                     .await;
@@ -177,22 +182,16 @@ async fn apply_migrations(conn: &mut PgConnection, api_password: &str) -> Result
     Ok(())
 }
 
-fn region(config: &Config) -> Region {
+fn region(endpoint: &str) -> Region {
     Region::Custom {
         region: "us-east-1".to_string(),
-        endpoint: config.s3_endpoint.clone(),
+        endpoint: endpoint.to_string(),
     }
 }
 
-fn credentials(config: &Config) -> Result<Credentials, String> {
-    Credentials::new(
-        Some(&config.s3_access_key),
-        Some(&config.s3_secret_key),
-        None,
-        None,
-        None,
-    )
-    .map_err(|e| format!("invalid storage credentials: {e}"))
+fn credentials(access_key: &str, secret_key: &str) -> Result<Credentials, String> {
+    Credentials::new(Some(access_key), Some(secret_key), None, None, None)
+        .map_err(|e| format!("invalid storage credentials: {e}"))
 }
 
 async fn check<T, E>(call: impl Future<Output = Result<T, E>>) -> bool {
