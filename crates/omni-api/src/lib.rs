@@ -6,6 +6,9 @@
 //! bypass row-level security (migrations/README.md). Only start-up uses the
 //! owner's login: it applies the migrations and sets the API role's password.
 
+pub mod auth;
+pub mod routes;
+
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::routing::{any, get};
@@ -16,6 +19,7 @@ use serde_json::{Value, json};
 use sqlx::postgres::PgPoolOptions;
 use sqlx::{Connection, PgConnection, PgPool};
 use std::future::Future;
+use std::sync::Arc;
 use std::time::Duration;
 
 /// How long a health check waits for Postgres or RustFS before it reports an error.
@@ -70,6 +74,15 @@ impl AppState {
             .map_err(|e| format!("invalid storage settings: {e}"))?
             .with_path_style();
         Ok(Self { pool, bucket })
+    }
+
+    /// Like `new`, but every login and session check goes to `provider`
+    /// instead of the built-in password login.
+    pub fn with_auth_provider(
+        _config: &Config,
+        _provider: Arc<dyn auth::AuthProvider>,
+    ) -> Result<Self, String> {
+        todo!("an AppState with a custom AuthProvider")
     }
 
     /// Creates the RustFS bucket if it does not exist yet, waiting up to

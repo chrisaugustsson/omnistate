@@ -15,3 +15,17 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "time",
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "migrate", "macros"] }
 rust-s3 = { version = "0.37", default-features = false, features = ["tokio-rustls-tls"] }
 serde_json = "1"
+
+[features]
+# The setup and stack tests (tests/setup_login.rs, tests/stack_auth.rs) talk to
+# Postgres and the running Compose stack, so they only build with this feature,
+# which the Compose test container turns on.
+stack-tests = []
+
+[[test]]
+name = "setup_login"
+required-features = ["stack-tests"]
+
+[[test]]
+name = "stack_auth"
+required-features = ["stack-tests"]
