@@ -2,3 +2,4 @@
 //! It compiles natively and to WebAssembly.
 
 pub mod design;
+pub mod html_doc;
