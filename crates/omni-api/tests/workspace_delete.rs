@@ -306,8 +306,13 @@ async fn new_membership(conn: &mut PgConnection, workspace: &str, user: &str) ->
 }
 
 /// A key, two projects with two documents each and two versions of each
-/// document: rows in every tenant table, referencing each other and the
-/// workspace's memberships.
+/// document, plus one row in every real tenant table that later stories add:
+/// rows in every tenant table, referencing each other and the workspace's
+/// memberships.
+///
+/// Every story that adds a tenant table must seed it here too, or the
+/// deletion tests fail on purpose: they check that the seeded workspace has
+/// a row in every table that has a `workspace_id` column.
 async fn fill_workspace(conn: &mut PgConnection, workspace: &str, membership: &str) {
     sqlx::query(
         "INSERT INTO api_keys (workspace_id, prefix, key_hash, created_by_membership_id) \
@@ -354,6 +359,33 @@ async fn fill_workspace(conn: &mut PgConnection, workspace: &str, membership: &s
             }
         }
     }
+
+    // US-016: projects, change sets and their status history.
+    let project_id: String = sqlx::query_scalar(
+        "INSERT INTO projects (workspace_id, name) VALUES ($1::uuid, 'deletion test') RETURNING id::text",
+    )
+    .bind(workspace)
+    .fetch_one(&mut *conn)
+    .await
+    .expect("insert a project");
+    let changeset_id: String = sqlx::query_scalar(
+        "INSERT INTO changesets (workspace_id, project_id, title, status) \
+         VALUES ($1::uuid, $2::uuid, 'deletion test', 'open') RETURNING id::text",
+    )
+    .bind(workspace)
+    .bind(&project_id)
+    .fetch_one(&mut *conn)
+    .await
+    .expect("insert a change set");
+    sqlx::query(
+        "INSERT INTO changeset_status_history (workspace_id, changeset_id, from_status, to_status, actor) \
+         VALUES ($1::uuid, $2::uuid, NULL, 'open', 'agent')",
+    )
+    .bind(workspace)
+    .bind(&changeset_id)
+    .execute(&mut *conn)
+    .await
+    .expect("insert a change set status");
 }
 
 async fn put_objects(keys: Vec<String>) {

@@ -17,6 +17,8 @@ Tenant isolation is enforced by the database, not by the code that queries it. E
 - [ ] Anything that must be looked up before the workspace is known goes through a SECURITY DEFINER function with a pinned `search_path` whose EXECUTE is revoked from PUBLIC and granted to `omni_api`; the API reads no tenant table without a workspace. The only two are `resolve_api_key(prefix)` and `user_memberships(user_id)`.
 - [ ] The API role owns no table, so it cannot disable row-level security, change a policy or bypass it.
 
+- [ ] Seed one row of the table in `fill_workspace()` in `crates/omni-api/tests/workspace_delete.rs`. The deletion tests check that the seeded workspace has a row in every table with a `workspace_id` column, so they fail until the new table is seeded.
+
 ## Notes
 
 - The migrations run as the database owner (the `omni` superuser of the Compose stack), which is not subject to row-level security; that is what lets the SECURITY DEFINER functions see across workspaces. The API connects as `omni_api` for everything else. The API sets that role's password when it starts, so no password is in a migration.
