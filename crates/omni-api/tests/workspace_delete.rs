@@ -386,6 +386,26 @@ async fn fill_workspace(conn: &mut PgConnection, workspace: &str, membership: &s
     .execute(&mut *conn)
     .await
     .expect("insert a change set status");
+
+    // US-017: the live events of a project. The table is seeded as soon as it
+    // exists (tests/live_events.rs pins its name and columns), so a migration
+    // that adds it fails the deletion tests until it is erased with the rest.
+    let live_events_exist: bool =
+        sqlx::query_scalar("SELECT to_regclass('public.live_events') IS NOT NULL")
+            .fetch_one(&mut *conn)
+            .await
+            .expect("look for the live events table");
+    if live_events_exist {
+        sqlx::query(
+            "INSERT INTO live_events (workspace_id, project_id, seq, event, data) \
+             VALUES ($1::uuid, $2::uuid, 1, 'changeset.open', '{}'::jsonb)",
+        )
+        .bind(workspace)
+        .bind(&project_id)
+        .execute(&mut *conn)
+        .await
+        .expect("insert a live event");
+    }
 }
 
 async fn put_objects(keys: Vec<String>) {

@@ -126,6 +126,11 @@ impl Client {
         }
     }
 
+    /// The port of the server, for tests that speak another protocol to it.
+    pub fn port(&self) -> u16 {
+        self.port
+    }
+
     pub fn get(&self, path: &str) -> Response {
         self.request("GET", path, &[], None)
     }
