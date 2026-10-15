@@ -394,7 +394,7 @@ fn a_key_is_shown_once_and_stored_as_a_sha256_hash() {
     );
 
     let stored = db_text(
-        "select key_hash = encode(sha256(convert_to($2, 'UTF8')), 'hex') from api_keys where id = $1::uuid",
+        "select (key_hash = encode(sha256(convert_to($2, 'UTF8')), 'hex'))::text from api_keys where id = $1::uuid",
         &[&id, &secret],
     );
     assert_eq!(
