@@ -11,3 +11,12 @@ serde = { version = "1", features = ["derive"] }
 # written from, so designs round-trip without loss. Cargo unifies features, so
 # declaring it here turns it on in every build that links omni-core.
 serde_json = { version = "1", features = ["float_roundtrip"] }
+
+[features]
+# The stack tests (tests/stack.rs) talk to the running Docker Compose stack, so
+# they only build with this feature, which the Compose test container turns on.
+stack-tests = []
+
+[[test]]
+name = "stack"
+required-features = ["stack-tests"]
