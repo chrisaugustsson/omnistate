@@ -6,12 +6,14 @@
 //! bypass row-level security (migrations/README.md). Only start-up uses the
 //! owner's login: it applies the migrations and sets the API role's password.
 
+mod api_keys;
 pub mod auth;
 mod openapi;
 pub mod password;
 pub mod routes;
 mod session;
 pub mod setup;
+mod workspace;
 
 use axum::extract::State;
 use axum::http::StatusCode;
@@ -204,6 +206,15 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/auth/login", post(session::login))
         .route("/api/v1/auth/logout", post(session::logout))
         .route("/api/v1/auth/me", get(session::me))
+        .route("/api/v1/w/{workspace_id}/whoami", get(workspace::whoami))
+        .route(
+            "/api/v1/w/{workspace_id}/api-keys",
+            get(api_keys::list).post(api_keys::create),
+        )
+        .route(
+            "/api/v1/w/{workspace_id}/api-keys/{key_id}/revoke",
+            post(api_keys::revoke),
+        )
         .route("/ws/w/{workspace_id}", any(unauthorized))
         .fallback(not_found)
         .with_state(state)

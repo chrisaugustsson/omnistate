@@ -57,7 +57,20 @@ impl From<AuthUser> for UserResponse {
 pub enum ApiError {
     InvalidCredentials,
     Unauthorized,
+    /// A human-only route was called with an API key.
+    Forbidden,
+    /// The workspace or record is not one the caller can reach. It is the same
+    /// answer for one that does not exist, so nothing leaks.
+    NotFound,
     Unavailable,
+}
+
+impl ApiError {
+    /// A database failure: it is logged and the caller sees a 503.
+    pub fn database(error: sqlx::Error) -> Self {
+        eprintln!("omni-api: database error: {error}");
+        Self::Unavailable
+    }
 }
 
 impl IntoResponse for ApiError {
@@ -65,6 +78,8 @@ impl IntoResponse for ApiError {
         let (status, code) = match self {
             Self::InvalidCredentials => (StatusCode::UNAUTHORIZED, "invalid_credentials"),
             Self::Unauthorized => (StatusCode::UNAUTHORIZED, "unauthorized"),
+            Self::Forbidden => (StatusCode::FORBIDDEN, "forbidden"),
+            Self::NotFound => (StatusCode::NOT_FOUND, "not_found"),
             Self::Unavailable => (StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
         };
         (status, Json(json!({ "error": code }))).into_response()
@@ -107,7 +122,7 @@ impl FromRequestParts<AppState> for CurrentUser {
 }
 
 /// The value of the session cookie, if the request has a non-empty one.
-fn session_token(parts: &Parts) -> Option<String> {
+pub(crate) fn session_token(parts: &Parts) -> Option<String> {
     parts
         .headers
         .get_all(COOKIE)

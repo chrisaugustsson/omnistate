@@ -3,8 +3,10 @@
 //! in the route registry (`agent`, `human` or `both`), so the document and the
 //! registry cannot disagree about who may call a route.
 
+use crate::api_keys::{ApiKeyBody, CreatedKeyResponse, KeyListResponse, KeyResponse};
 use crate::routes::{Access, registry};
 use crate::session::{ErrorBody, LoginRequest, UserBody, UserResponse};
+use crate::workspace::{ActorBody, WhoamiResponse};
 use axum::Json;
 use serde_json::{Value, json};
 use std::sync::OnceLock;
@@ -21,9 +23,24 @@ use utoipa::OpenApi;
         document,
         crate::session::login,
         crate::session::logout,
-        crate::session::me
+        crate::session::me,
+        crate::workspace::whoami,
+        crate::api_keys::list,
+        crate::api_keys::create,
+        crate::api_keys::revoke
     ),
-    components(schemas(LoginRequest, UserBody, UserResponse, ErrorBody))
+    components(schemas(
+        LoginRequest,
+        UserBody,
+        UserResponse,
+        ErrorBody,
+        WhoamiResponse,
+        ActorBody,
+        ApiKeyBody,
+        KeyResponse,
+        KeyListResponse,
+        CreatedKeyResponse
+    ))
 )]
 struct ApiDoc;
 

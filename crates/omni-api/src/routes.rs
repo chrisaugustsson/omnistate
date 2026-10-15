@@ -26,6 +26,14 @@ pub fn registry() -> Vec<RouteEntry> {
         ("POST", "/api/v1/auth/login", Access::Human),
         ("POST", "/api/v1/auth/logout", Access::Human),
         ("GET", "/api/v1/auth/me", Access::Human),
+        ("GET", "/api/v1/w/{workspace_id}/whoami", Access::Both),
+        ("GET", "/api/v1/w/{workspace_id}/api-keys", Access::Human),
+        ("POST", "/api/v1/w/{workspace_id}/api-keys", Access::Human),
+        (
+            "POST",
+            "/api/v1/w/{workspace_id}/api-keys/{key_id}/revoke",
+            Access::Human,
+        ),
     ]
     .into_iter()
     .map(|(method, path, access)| RouteEntry {
