@@ -20,6 +20,9 @@ pub struct Args {
     pub title: Option<String>,
     pub description: Option<String>,
     pub run: Option<String>,
+    /// `omni changeset resolve <conflict-id> --note <text>`: how the conflict
+    /// was resolved.
+    pub note: Option<String>,
     /// `--changeset <id>`, `--kind` and `--module` say which change set a doc
     /// command works in and what kind of doc `omni doc create` starts.
     pub changeset: Option<String>,
@@ -82,6 +85,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Args> {
             "--title" => &mut parsed.title,
             "--description" => &mut parsed.description,
             "--run" => &mut parsed.run,
+            "--note" => &mut parsed.note,
             "--changeset" => &mut parsed.changeset,
             "--kind" => &mut parsed.kind,
             "--module" => &mut parsed.module,
@@ -154,6 +158,20 @@ mod tests {
         assert_eq!(parsed.description.as_deref(), Some("D"));
         assert_eq!(parsed.run.as_deref(), Some("r-1"));
         assert_eq!(parsed.project.as_deref(), Some("p"));
+    }
+
+    #[test]
+    fn resolve_takes_a_note() {
+        let parsed = parse_strs(&["changeset", "resolve", "c", "--note", "Kept both"]).unwrap();
+        assert_eq!(parsed.words, ["changeset", "resolve", "c"]);
+        assert_eq!(parsed.note.as_deref(), Some("Kept both"));
+        assert_eq!(
+            parse_strs(&["changeset", "resolve", "--note=N", "c"])
+                .unwrap()
+                .note
+                .as_deref(),
+            Some("N")
+        );
     }
 
     #[test]

@@ -36,6 +36,15 @@ Usage:
   omni changeset submit <id>          send an open change set to review
   omni changeset reopen <id>          reopen a rejected change set
   omni changeset abandon <id>         abandon a change set (it is kept, never deleted)
+  omni changeset rebase <id>          replay a change set that needs a rebase onto the current
+                                      mainline; with no conflicts it merges, else it is open
+                                      again and each node changed on both sides is a conflict
+  omni changeset conflicts <id>       list the change set's conflicts, with the node on the
+                                      mainline side and on the change set's side
+  omni changeset resolve <conflict-id> --note <text>
+                                      resolve a conflict once the draft is fixed with `omni doc
+                                      edit`; a change set cannot be submitted until every
+                                      conflict is resolved
   omni doc create --changeset <id> --kind html|design|design-system --module prd|architecture|db|ui
                 --title <text>        start a doc in a change set (its first version comes
                                       through the change set)
@@ -80,6 +89,7 @@ Options (before or after the command):
   --body-file <path>    send this file as the request body (for a change set: its
                         description; for `doc edit`: the operations); - reads
                         standard input
+  --note <text>         how a conflict was resolved (`omni changeset resolve`)
   --changeset <id>      the change set a doc, claim, release or wait command works in
   --until <status>      the status `omni wait` waits for
   --timeout <seconds>   how long `omni wait` waits; without it, as long as it takes

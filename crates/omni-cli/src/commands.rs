@@ -49,19 +49,27 @@ pub fn run(args: &Args) -> Result<()> {
         ["changeset", "submit", id] => changesets::act(args, id, "submit"),
         ["changeset", "reopen", id] => changesets::act(args, id, "reopen"),
         ["changeset", "abandon", id] => changesets::act(args, id, "abandon"),
+        ["changeset", "rebase", id] => changesets::rebase(args, id),
+        ["changeset", "conflicts", id] => changesets::conflicts(args, id),
+        ["changeset", "resolve", id] => changesets::resolve(args, id),
         [
             "changeset",
-            action @ ("show" | "submit" | "reopen" | "abandon"),
+            action @ ("show" | "submit" | "reopen" | "abandon" | "rebase" | "conflicts"),
         ] => {
             bail!(
                 "`omni changeset {action}` needs the change set's ID; `omni changeset list` shows them"
             )
         }
+        ["changeset", "resolve"] => bail!(
+            "`omni changeset resolve` needs the conflict's ID; `omni changeset conflicts <id>` lists them"
+        ),
         ["changeset", "reject", ..] => bail!(
             "rejecting a change set is the human's decision and is made in the web app; an agent cannot"
         ),
         ["changeset", ..] => {
-            bail!("usage: omni changeset create|list|show|submit|reopen|abandon; see `omni --help`")
+            bail!(
+                "usage: omni changeset create|list|show|submit|reopen|abandon|rebase|conflicts|resolve; see `omni --help`"
+            )
         }
         ["doc", "create"] => docs::create(args),
         ["doc", "open"] => docs::open(args, None),

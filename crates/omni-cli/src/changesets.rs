@@ -1,6 +1,7 @@
 //! `omni project` and `omni changeset`: create and list projects, create, list
-//! and show change sets, and move them along their lifecycle (submit, reopen,
-//! abandon). Rejecting is the human's, in the web app, so it has no command.
+//! and show change sets, move them along their lifecycle (submit, reopen,
+//! abandon) and rebase them, list their conflicts and resolve those. Rejecting
+//! and approving are the human's, in the web app, so they have no command.
 
 use crate::args::Args;
 use crate::commands::{Agent, agent, read_body, say};
@@ -282,6 +283,162 @@ fn show_changeset_line(args: &Args, text: &str, prefix: &str) -> Result<()> {
     say(&format!(
         "{prefix}{}",
         summary(body.get("changeset").unwrap_or(&body))
+    ));
+    Ok(())
+}
+
+// Rebase and conflicts ----------------------------------------------------------
+
+pub(crate) fn conflict_id(id: &str) -> Result<String> {
+    if is_uuid(id) {
+        Ok(id.to_ascii_lowercase())
+    } else {
+        bail!("{id:?} is not a conflict ID; `omni changeset conflicts <id>` lists them")
+    }
+}
+
+/// One line of text from an HTML fragment: its lines joined by single spaces.
+fn one_line(html: &str) -> String {
+    html.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// One conflict: ID, node, doc and whether it is resolved, then its two sides
+/// and, once resolved, the note.
+fn conflict_lines(conflict: &Value) -> Vec<String> {
+    let field = |name: &str| conflict.str_at(name).unwrap_or("?");
+    let resolution = conflict
+        .get("resolution")
+        .filter(|r| !matches!(r, Value::Null));
+    let state = if resolution.is_some() {
+        "resolved"
+    } else {
+        "unresolved"
+    };
+    let side = |name: &str| match conflict.get(name).and_then(|side| side.str_at("html")) {
+        Some(html) => one_line(html),
+        None => "removed".to_string(),
+    };
+    let mut lines = vec![
+        format!(
+            "{}  node {}  doc {}  {state}",
+            field("id"),
+            field("node"),
+            field("doc_id")
+        ),
+        format!("  mainline: {}", side("mainline")),
+        format!("  changeset: {}", side("changeset")),
+    ];
+    if let Some(note) = resolution.and_then(|r| r.str_at("note")) {
+        lines.push(format!("  resolution: {note}"));
+    }
+    lines
+}
+
+/// `omni changeset rebase <id>`: replays the change set onto the current
+/// mainline and prints where it ended up and the conflicts it recorded.
+pub fn rebase(args: &Args, id: &str) -> Result<()> {
+    let id = changeset_id(id)?;
+    let agent = agent(args)?;
+    let project = project_id(args, &agent)?;
+    let response = agent.request(
+        "POST",
+        &format!("{}/{id}/rebase", changesets_path(&agent, &project)),
+        Some(b"{}"),
+    )?;
+    let text = response.text();
+    if args.json {
+        print_json(&text);
+        return Ok(());
+    }
+    let body = parsed(&text, "the rebase")?;
+    say(&summary(body.get("changeset").unwrap_or(&body)));
+    let conflicts = body
+        .get("conflicts")
+        .and_then(Value::as_array)
+        .unwrap_or_default();
+    if conflicts.is_empty() {
+        say("no conflicts");
+        return Ok(());
+    }
+    say(&format!(
+        "{} conflicts: fix the draft, then `omni changeset resolve <conflict-id> --note <text>` for each",
+        conflicts.len()
+    ));
+    for conflict in conflicts {
+        say(&format!(
+            "  {}  node {}  doc {}",
+            conflict.str_at("id").unwrap_or("?"),
+            conflict.str_at("node").unwrap_or("?"),
+            conflict.str_at("doc_id").unwrap_or("?")
+        ));
+    }
+    Ok(())
+}
+
+/// `omni changeset conflicts <id>`: lists the change set's conflicts with both
+/// sides of each.
+pub fn conflicts(args: &Args, id: &str) -> Result<()> {
+    let id = changeset_id(id)?;
+    let agent = agent(args)?;
+    let project = project_id(args, &agent)?;
+    let response = agent.request(
+        "GET",
+        &format!("{}/{id}/conflicts", changesets_path(&agent, &project)),
+        None,
+    )?;
+    let text = response.text();
+    if args.json {
+        print_json(&text);
+        return Ok(());
+    }
+    let body = parsed(&text, "the conflicts")?;
+    let conflicts = body
+        .get("conflicts")
+        .and_then(Value::as_array)
+        .unwrap_or_default();
+    if conflicts.is_empty() {
+        say("no conflicts");
+    }
+    for conflict in conflicts {
+        for line in conflict_lines(conflict) {
+            say(&line);
+        }
+    }
+    Ok(())
+}
+
+/// `omni changeset resolve <conflict-id> --note <text>`: resolves a conflict
+/// after the agent fixed the draft with normal operations.
+pub fn resolve(args: &Args, id: &str) -> Result<()> {
+    let id = conflict_id(id)?;
+    let note = args.note.as_deref().map(str::trim).unwrap_or_default();
+    if note.is_empty() {
+        bail!(
+            "resolving a conflict needs a note about how it was fixed: omni changeset resolve <conflict-id> --note <text>"
+        );
+    }
+    let agent = agent(args)?;
+    let project = project_id(args, &agent)?;
+    let body = format!("{{\"note\":{}}}", quote(note));
+    let response = agent.request(
+        "POST",
+        &format!(
+            "/api/v1/w/{}/projects/{project}/conflicts/{id}/resolve",
+            agent.workspace_id
+        ),
+        Some(body.as_bytes()),
+    )?;
+    let text = response.text();
+    if args.json {
+        print_json(&text);
+        return Ok(());
+    }
+    let answer = parsed(&text, "the conflict")?;
+    let conflict = answer.get("conflict").unwrap_or(&answer);
+    say(&format!(
+        "resolved conflict {}  node {}",
+        conflict.str_at("id").unwrap_or(&id),
+        conflict.str_at("node").unwrap_or("?")
     ));
     Ok(())
 }

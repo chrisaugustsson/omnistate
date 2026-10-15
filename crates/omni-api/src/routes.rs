@@ -81,6 +81,21 @@ pub fn registry() -> Vec<RouteEntry> {
         ),
         (
             "POST",
+            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/rebase",
+            Access::Agent,
+        ),
+        (
+            "GET",
+            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/conflicts",
+            Access::Both,
+        ),
+        (
+            "POST",
+            "/api/v1/w/{workspace_id}/projects/{project_id}/conflicts/{conflict_id}/resolve",
+            Access::Agent,
+        ),
+        (
+            "POST",
             "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/reopen",
             Access::Agent,
         ),

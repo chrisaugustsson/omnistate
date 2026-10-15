@@ -19,7 +19,9 @@
 
 use crate::AppState;
 use crate::changesets::parse_body;
-use crate::docs::{AgentIdentity, DocError, DraftRow, Tx, ensure_loaded, require_changeset};
+use crate::docs::{
+    AgentIdentity, DRAFT_ROW_COLUMNS, DocError, DraftRow, Tx, ensure_loaded, require_changeset,
+};
 use crate::live;
 use crate::session::{ApiError, ErrorBody};
 use crate::workspace::{AgentRequest, parse_uuid};
@@ -367,14 +369,13 @@ async fn drafts_of_changeset(
     project_id: &str,
     changeset_id: &str,
 ) -> Result<Vec<DraftRow>, ApiError> {
-    sqlx::query_as(
-        "SELECT d.id::text AS id, d.doc_id::text AS doc_id, d.changeset_id::text AS changeset_id, \
-                d.base_version_id::text AS base_version_id \
+    sqlx::query_as(&format!(
+        "SELECT {DRAFT_ROW_COLUMNS} \
          FROM drafts d \
          JOIN changesets c ON c.workspace_id = d.workspace_id AND c.id = d.changeset_id \
          WHERE d.changeset_id = $1::uuid AND c.project_id = $2::uuid \
-         ORDER BY d.created_at, d.id",
-    )
+         ORDER BY d.created_at, d.id"
+    ))
     .bind(changeset_id)
     .bind(project_id)
     .fetch_all(&mut **tx)

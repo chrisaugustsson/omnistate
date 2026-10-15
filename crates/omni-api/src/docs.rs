@@ -45,6 +45,11 @@ const DOC_COLUMNS: &str = "id::text, project_id::text, kind, module, title, \
 
 const DRAFT_COLUMNS: &str = "id::text, doc_id::text, changeset_id::text, base_version_id::text";
 
+/// The columns of a `DraftRow` for a query that names the draft table `d`.
+pub(crate) const DRAFT_ROW_COLUMNS: &str = "d.id::text AS id, d.doc_id::text AS doc_id, \
+     d.changeset_id::text AS changeset_id, d.base_version_id::text AS base_version_id, \
+     d.content_version_id::text AS content_version_id, d.content_after_seq AS content_after_seq";
+
 /// The alphabet of node IDs: Crockford's base32 in lowercase.
 const NODE_ID_ALPHABET: &[u8; 32] = b"0123456789abcdefghjkmnpqrstvwxyz";
 
@@ -389,7 +394,13 @@ async fn load_state(
     workspace_id: &str,
     draft: &DraftRow,
 ) -> Result<DraftState, ApiError> {
-    let mut doc = match &draft.base_version_id {
+    // A rebased draft starts from the version the rebase saved, a draft that
+    // was never rebased from its base.
+    let start = draft
+        .content_version_id
+        .as_ref()
+        .or(draft.base_version_id.as_ref());
+    let mut doc = match start {
         None => EditDoc::from_html("").expect("an empty doc parses"),
         Some(base) => {
             let chunk = versions::chunk_of_version(tx, &draft.doc_id, base).await?;
@@ -407,9 +418,11 @@ async fn load_state(
         }
     };
     let rows: Vec<(i64, String, Vec<String>)> = sqlx::query_as(
-        "SELECT seq, op::text, created FROM draft_ops WHERE draft_id = $1::uuid ORDER BY seq",
+        "SELECT seq, op::text, created FROM draft_ops \
+         WHERE draft_id = $1::uuid AND seq > $2 ORDER BY seq",
     )
     .bind(&draft.id)
+    .bind(draft.content_after_seq)
     .fetch_all(&mut **tx)
     .await
     .map_err(ApiError::database)?;
@@ -420,7 +433,7 @@ async fn load_state(
         );
         ApiError::Unavailable
     };
-    let mut next_seq = 1;
+    let mut next_seq = draft.content_after_seq + 1;
     for (seq, op, created) in rows {
         let op: Operation = serde_json::from_str(&op).map_err(|e| corrupt(seq, &e.to_string()))?;
         let mut ids: VecDeque<NodeId> = created.iter().filter_map(|id| id.parse().ok()).collect();
@@ -464,7 +477,11 @@ pub(crate) struct DraftRow {
     pub(crate) id: String,
     pub(crate) doc_id: String,
     pub(crate) changeset_id: String,
-    base_version_id: Option<String>,
+    pub(crate) base_version_id: Option<String>,
+    /// The version a rebase saved as the draft's content, `None` before one.
+    pub(crate) content_version_id: Option<String>,
+    /// The draft's content takes the operations of the log after this `seq`.
+    pub(crate) content_after_seq: i64,
 }
 
 impl From<DraftRow> for DraftBody {
@@ -486,15 +503,14 @@ pub(crate) async fn find_draft(
     changeset_id: &str,
     doc_id: &str,
 ) -> Result<DraftRow, ApiError> {
-    sqlx::query_as(
-        "SELECT d.id::text AS id, d.doc_id::text AS doc_id, d.changeset_id::text AS changeset_id, \
-                d.base_version_id::text AS base_version_id \
+    sqlx::query_as(&format!(
+        "SELECT {DRAFT_ROW_COLUMNS} \
          FROM drafts d \
          JOIN docs x ON x.workspace_id = d.workspace_id AND x.id = d.doc_id \
          JOIN changesets c ON c.workspace_id = d.workspace_id AND c.id = d.changeset_id \
          WHERE d.changeset_id = $1::uuid AND d.doc_id = $2::uuid \
-           AND x.project_id = $3::uuid AND c.project_id = $3::uuid",
-    )
+           AND x.project_id = $3::uuid AND c.project_id = $3::uuid"
+    ))
     .bind(changeset_id)
     .bind(doc_id)
     .bind(project_id)

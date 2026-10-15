@@ -16,6 +16,10 @@ use crate::docs::{
     DraftBody, DraftHtmlResponse, DraftResponse, DraftWithHtml, EditRequest, EditResponse,
     InvalidOperationBody, MainlineHtmlResponse, OpResultBody,
 };
+use crate::rebase::{
+    ConflictResolution, ConflictSide, RebaseResponse, RecordedConflict,
+    RecordedConflictListResponse, RecordedConflictResponse, ResolveConflictRequest,
+};
 use crate::routes::{Access, registry};
 use crate::session::{
     ErrorBody, LoginRequest, UserBody, UserResponse, WorkspaceBody, WorkspaceListResponse,
@@ -54,6 +58,9 @@ use utoipa::OpenApi;
         crate::changesets::submit,
         crate::changesets::reject,
         crate::changesets::approve,
+        crate::rebase::rebase,
+        crate::rebase::list_conflicts,
+        crate::rebase::resolve,
         crate::changesets::reopen,
         crate::changesets::abandon,
         crate::attachments::upload,
@@ -122,7 +129,14 @@ use utoipa::OpenApi;
         MovedNode,
         DiffBody,
         DiffResponse,
-        SaveVersionRequest
+        SaveVersionRequest,
+        ConflictSide,
+        ConflictResolution,
+        RecordedConflict,
+        RebaseResponse,
+        RecordedConflictResponse,
+        RecordedConflictListResponse,
+        ResolveConflictRequest
     ))
 )]
 struct ApiDoc;

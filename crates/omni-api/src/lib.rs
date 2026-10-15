@@ -16,6 +16,7 @@ mod docs;
 mod live;
 mod openapi;
 pub mod password;
+mod rebase;
 pub mod routes;
 mod session;
 pub mod setup;
@@ -281,6 +282,18 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/approve",
             post(changesets::approve),
+        )
+        .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/rebase",
+            post(rebase::rebase),
+        )
+        .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/conflicts",
+            get(rebase::list_conflicts),
+        )
+        .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/conflicts/{conflict_id}/resolve",
+            post(rebase::resolve),
         )
         .route(
             "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/reopen",

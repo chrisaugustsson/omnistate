@@ -6,9 +6,10 @@
 //!
 //! The human approves a change set in review (US-025). Approving records the
 //! latest saved version of each changed doc and merges them at once when every
-//! doc's base is still its mainline version, else the change set needs a rebase
-//! (US-026). The server, not a request, makes both of those moves, so its
-//! history entries carry the actor `system`.
+//! doc's base is still its mainline version, else the change set needs a rebase.
+//! The server, not a request, makes both of those moves, so its history entries
+//! carry the actor `system`. The agent rebases such a change set (`rebase`
+//! module, US-026) and cannot submit one that has an unresolved conflict.
 
 use crate::AppState;
 use crate::live;
@@ -314,6 +315,23 @@ async fn approved_of(
     .map_err(ApiError::database)
 }
 
+/// One change set as the API answers it: the row, its history and its approval.
+pub(crate) async fn load_changeset(
+    tx: &mut Transaction<'static, Postgres>,
+    changeset_id: &str,
+) -> Result<ChangesetBody, ApiError> {
+    let row: ChangesetRow = sqlx::query_as(&format!(
+        "SELECT {CHANGESET_COLUMNS} FROM changesets WHERE id = $1::uuid"
+    ))
+    .bind(changeset_id)
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(ApiError::database)?;
+    let history = history_of(tx, changeset_id).await?;
+    let approved = approved_of(tx, changeset_id).await?;
+    Ok(row.into_body(history, approved))
+}
+
 /// One move of a change set along the lifecycle, as the history keeps it.
 struct StatusChange<'a> {
     project_id: &'a str,
@@ -570,7 +588,9 @@ impl Action {
             (Self::Submit, "open") => Some("in_review"),
             (Self::Reject, "in_review") => Some("rejected"),
             (Self::Reopen, "rejected") => Some("open"),
-            (Self::Abandon, "open" | "in_review" | "rejected") => Some("abandoned"),
+            (Self::Abandon, "open" | "in_review" | "rejected" | "needs_rebase") => {
+                Some("abandoned")
+            }
             _ => None,
         }
     }
@@ -608,6 +628,19 @@ async fn transition(
     let to = action
         .target(&status)
         .ok_or_else(|| ApiError::conflict("invalid_transition"))?;
+    if matches!(action, Action::Submit) {
+        let unresolved: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM conflicts \
+             WHERE changeset_id = $1::uuid AND resolved_at IS NULL)",
+        )
+        .bind(&changeset_id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(ApiError::database)?;
+        if unresolved {
+            return Err(ApiError::conflict("unresolved_conflicts"));
+        }
+    }
     sqlx::query("UPDATE changesets SET status = $2 WHERE id = $1::uuid")
         .bind(&changeset_id)
         .bind(to)
@@ -623,20 +656,10 @@ async fn transition(
         reason,
     };
     insert_history(&mut tx, workspace_id, change).await?;
-    let row: ChangesetRow = sqlx::query_as(&format!(
-        "SELECT {CHANGESET_COLUMNS} FROM changesets WHERE id = $1::uuid"
-    ))
-    .bind(&changeset_id)
-    .fetch_one(&mut *tx)
-    .await
-    .map_err(ApiError::database)?;
-    let history = history_of(&mut tx, &changeset_id).await?;
-    let approved = approved_of(&mut tx, &changeset_id).await?;
+    let changeset = load_changeset(&mut tx, &changeset_id).await?;
     tx.commit().await.map_err(ApiError::database)?;
     state.live.announce(workspace_id, &project_id);
-    Ok(Json(ChangesetResponse {
-        changeset: row.into_body(history, approved),
-    }))
+    Ok(Json(ChangesetResponse { changeset }))
 }
 
 /// Saving a version while a change set is `approved` or `needs_rebase` clears
@@ -697,7 +720,7 @@ pub(crate) async fn clear_approval(
         (status = 401, description = "No valid API key or session", body = ErrorBody),
         (status = 403, description = "Called with a session; agents only", body = ErrorBody),
         (status = 404, description = "No such change set in this project and workspace", body = ErrorBody),
-        (status = 409, description = "The change set is not `open`", body = ErrorBody),
+        (status = 409, description = "The change set is not `open` (`invalid_transition`), or one of its conflicts is unresolved (`unresolved_conflicts`)", body = ErrorBody),
     )
 )]
 pub async fn submit(
@@ -895,25 +918,15 @@ pub async fn approve(
     )
     .await?;
 
-    let row: ChangesetRow = sqlx::query_as(&format!(
-        "SELECT {CHANGESET_COLUMNS} FROM changesets WHERE id = $1::uuid"
-    ))
-    .bind(&changeset_id)
-    .fetch_one(&mut *tx)
-    .await
-    .map_err(ApiError::database)?;
-    let history = history_of(&mut tx, &changeset_id).await?;
-    let approved = approved_of(&mut tx, &changeset_id).await?;
+    let changeset = load_changeset(&mut tx, &changeset_id).await?;
     tx.commit().await.map_err(ApiError::database)?;
     state.live.announce(workspace_id, &project_id);
-    Ok(Json(ChangesetResponse {
-        changeset: row.into_body(history, approved),
-    }))
+    Ok(Json(ChangesetResponse { changeset }))
 }
 
 /// Sets the status of a change set whose row the transaction has locked and
 /// records the move.
-async fn move_status(
+pub(crate) async fn move_status(
     tx: &mut Transaction<'static, Postgres>,
     workspace_id: &str,
     project_id: &str,

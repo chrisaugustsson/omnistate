@@ -21,7 +21,7 @@ use axum::Json;
 use axum::body::Bytes;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
-use omni_core::ops::IndexedNode;
+use omni_core::ops::{IndexedNode, longest_increasing};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
@@ -122,7 +122,11 @@ fn chunk_key(workspace_id: &str, chunk: &str) -> String {
 /// Stores a doc's HTML as a chunk and returns its name, the hash of the text.
 /// The name follows from the content, so storing the same text again changes
 /// nothing: a chunk is never overwritten with other content.
-async fn store_chunk(state: &AppState, workspace_id: &str, html: &str) -> Result<String, ApiError> {
+pub(crate) async fn store_chunk(
+    state: &AppState,
+    workspace_id: &str,
+    html: &str,
+) -> Result<String, ApiError> {
     let chunk = sha256_hex(html);
     let stored = state
         .bucket
@@ -249,29 +253,22 @@ async fn version_body(tx: &mut Tx, row: VersionRow) -> Result<VersionBody, ApiEr
 
 /// What a version holds: the doc's HTML and its node index, or nothing for a
 /// removal.
-struct Snapshot {
-    html: String,
-    nodes: Vec<IndexedNode>,
+pub(crate) struct Snapshot {
+    pub(crate) html: String,
+    pub(crate) nodes: Vec<IndexedNode>,
 }
 
-/// Writes a version of the draft: the chunk first (it is named by its content,
-/// so a chunk without a version is harmless), then, in one transaction, the
-/// version, the chunk's node index when it is new, the move out of an approval
-/// and the `version.saved` event.
-async fn store_version(
-    state: &AppState,
+/// Inserts a version of the draft, and the node index of its chunk when that
+/// is new, in the caller's transaction; returns the version's ID. `chunk` and
+/// `snapshot` are both `None` for a removal.
+pub(crate) async fn insert_version(
+    tx: &mut Tx,
     workspace_id: &str,
-    project_id: &str,
     draft: &DraftRow,
     agent: &Value,
-    snapshot: Option<Snapshot>,
-) -> Result<VersionBody, ApiError> {
-    let removed = snapshot.is_none();
-    let chunk = match &snapshot {
-        Some(snapshot) => Some(store_chunk(state, workspace_id, &snapshot.html).await?),
-        None => None,
-    };
-    let mut tx = state.workspace_tx(workspace_id).await?;
+    chunk: Option<&str>,
+    snapshot: Option<&Snapshot>,
+) -> Result<String, ApiError> {
     let id: String = sqlx::query_scalar(
         "INSERT INTO versions (workspace_id, doc_id, changeset_id, draft_id, removed, chunk, agent) \
          VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5, $6, $7::text::jsonb) \
@@ -281,13 +278,13 @@ async fn store_version(
     .bind(&draft.doc_id)
     .bind(&draft.changeset_id)
     .bind(&draft.id)
-    .bind(removed)
-    .bind(&chunk)
+    .bind(chunk.is_none())
+    .bind(chunk)
     .bind(agent.to_string())
-    .fetch_one(&mut *tx)
+    .fetch_one(&mut **tx)
     .await
     .map_err(ApiError::database)?;
-    if let (Some(chunk), Some(snapshot)) = (&chunk, &snapshot) {
+    if let (Some(chunk), Some(snapshot)) = (chunk, snapshot) {
         // A chunk that is indexed already has these very nodes: its name is
         // the hash of the content they come from.
         let ids: Vec<String> = snapshot.nodes.iter().map(|n| n.id.to_string()).collect();
@@ -317,24 +314,77 @@ async fn store_version(
         .bind(&parents)
         .bind(&fingerprints)
         .bind(&ordinals)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await
         .map_err(ApiError::database)?;
     }
-    clear_approval(&mut tx, workspace_id, project_id, &draft.changeset_id).await?;
+    Ok(id)
+}
+
+/// Emits `version.saved` for a version that the transaction inserted.
+pub(crate) async fn emit_version_saved(
+    tx: &mut Tx,
+    workspace_id: &str,
+    project_id: &str,
+    draft: &DraftRow,
+    agent: &Value,
+    version_id: &str,
+    removed: bool,
+) -> Result<(), ApiError> {
     live::emit(
-        &mut tx,
+        tx,
         workspace_id,
         project_id,
         "version.saved",
         &json!({
-            "version_id": id,
+            "version_id": version_id,
             "doc_id": draft.doc_id,
             "changeset_id": draft.changeset_id,
             "draft_id": draft.id,
             "removed": removed,
             "agent": agent,
         }),
+    )
+    .await?;
+    Ok(())
+}
+
+/// Writes a version of the draft: the chunk first (it is named by its content,
+/// so a chunk without a version is harmless), then, in one transaction, the
+/// version, the chunk's node index when it is new, the move out of an approval
+/// and the `version.saved` event.
+async fn store_version(
+    state: &AppState,
+    workspace_id: &str,
+    project_id: &str,
+    draft: &DraftRow,
+    agent: &Value,
+    snapshot: Option<Snapshot>,
+) -> Result<VersionBody, ApiError> {
+    let removed = snapshot.is_none();
+    let chunk = match &snapshot {
+        Some(snapshot) => Some(store_chunk(state, workspace_id, &snapshot.html).await?),
+        None => None,
+    };
+    let mut tx = state.workspace_tx(workspace_id).await?;
+    let id = insert_version(
+        &mut tx,
+        workspace_id,
+        draft,
+        agent,
+        chunk.as_deref(),
+        snapshot.as_ref(),
+    )
+    .await?;
+    clear_approval(&mut tx, workspace_id, project_id, &draft.changeset_id).await?;
+    emit_version_saved(
+        &mut tx,
+        workspace_id,
+        project_id,
+        draft,
+        agent,
+        &id,
+        removed,
     )
     .await?;
     let row = find_version(&mut tx, project_id, &id).await?;
@@ -646,31 +696,6 @@ fn reordered<'a>(
         );
     }
     out
-}
-
-/// Which items of `values` belong to one longest strictly increasing
-/// subsequence of them.
-fn longest_increasing(values: Vec<usize>) -> Vec<bool> {
-    // tails[k]: the index of the smallest last value of an increasing run of
-    // length k + 1; previous[i]: the item before i in its run.
-    let mut tails: Vec<usize> = Vec::new();
-    let mut previous: Vec<Option<usize>> = vec![None; values.len()];
-    for (i, &v) in values.iter().enumerate() {
-        let k = tails.partition_point(|&t| values[t] < v);
-        previous[i] = k.checked_sub(1).map(|j| tails[j]);
-        if k == tails.len() {
-            tails.push(i);
-        } else {
-            tails[k] = i;
-        }
-    }
-    let mut stays = vec![false; values.len()];
-    let mut at = tails.last().copied();
-    while let Some(i) = at {
-        stays[i] = true;
-        at = previous[i];
-    }
-    stays
 }
 
 #[cfg(test)]

@@ -14,6 +14,10 @@ use serde_json::{Map, Value};
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 
+mod rebase;
+
+pub use rebase::Rebased;
+
 /// Where a node goes among the children of its parent: right after the child
 /// `after`, or first when `after` is `null`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
@@ -712,6 +716,31 @@ fn collect_ids(blocks: &[Block], ids: &mut Vec<NodeId>) {
         ids.extend(block.id().copied());
         collect_ids(block.children(), ids);
     }
+}
+
+/// Which items of `values` belong to one longest strictly increasing
+/// subsequence of them.
+pub fn longest_increasing(values: Vec<usize>) -> Vec<bool> {
+    // tails[k]: the index of the smallest last value of an increasing run of
+    // length k + 1; previous[i]: the item before i in its run.
+    let mut tails: Vec<usize> = Vec::new();
+    let mut previous: Vec<Option<usize>> = vec![None; values.len()];
+    for (i, &v) in values.iter().enumerate() {
+        let k = tails.partition_point(|&t| values[t] < v);
+        previous[i] = k.checked_sub(1).map(|j| tails[j]);
+        if k == tails.len() {
+            tails.push(i);
+        } else {
+            tails[k] = i;
+        }
+    }
+    let mut stays = vec![false; values.len()];
+    let mut at = tails.last().copied();
+    while let Some(i) = at {
+        stays[i] = true;
+        at = previous[i];
+    }
+    stays
 }
 
 // --- Fractional indexes ---
