@@ -505,14 +505,14 @@ async fn fill_workspace(conn: &mut PgConnection, workspace: &str, membership: &s
         .await
         .expect("look for the version tables");
         if versions_exist {
-            sqlx::query(
+            let version_id: String = sqlx::query_scalar(
                 "INSERT INTO versions (workspace_id, doc_id, changeset_id) \
-                 VALUES ($1::uuid, $2::uuid, $3::uuid)",
+                 VALUES ($1::uuid, $2::uuid, $3::uuid) RETURNING id::text",
             )
             .bind(workspace)
             .bind(&doc_id)
             .bind(&changeset_id)
-            .execute(&mut *conn)
+            .fetch_one(&mut *conn)
             .await
             .expect("insert a version");
             sqlx::query(
@@ -523,6 +523,30 @@ async fn fill_workspace(conn: &mut PgConnection, workspace: &str, membership: &s
             .execute(&mut *conn)
             .await
             .expect("insert a node of the node index");
+
+            // US-025: the approval of the change set, which records the
+            // version. It may live in the existing tables; if it lives in the
+            // tenant table `approvals` (tests/approve_merge.rs pins its name
+            // and the columns without a default), it is seeded as soon as it
+            // exists, for the same reason as above.
+            let approvals_exist: bool =
+                sqlx::query_scalar("SELECT to_regclass('public.approvals') IS NOT NULL")
+                    .fetch_one(&mut *conn)
+                    .await
+                    .expect("look for the approvals table");
+            if approvals_exist {
+                sqlx::query(
+                    "INSERT INTO approvals (workspace_id, changeset_id, doc_id, version_id) \
+                     VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid)",
+                )
+                .bind(workspace)
+                .bind(&changeset_id)
+                .bind(&doc_id)
+                .bind(&version_id)
+                .execute(&mut *conn)
+                .await
+                .expect("insert an approval");
+            }
         }
     }
 }

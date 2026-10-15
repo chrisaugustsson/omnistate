@@ -23,7 +23,10 @@
 //!   which has its draft, and has one applied operation; once the claim routes
 //!   exist (US-023), the draft also has a section that the workspace's agent
 //!   claimed, and once the version routes exist (US-024), the draft was saved
-//!   as `{version_id}`, edited and saved again as `{other_version_id}`.
+//!   as `{version_id}`, edited and saved again as `{other_version_id}`. Once
+//!   the approve route exists (US-025), each workspace also has a change set
+//!   with a saved version of a doc of its own that the human approved and that
+//!   merged, so whatever records approvals has rows of both workspaces.
 //! - Workspace A's credentials against workspace B's workspace and IDs, and
 //!   against B's IDs under A's own workspace, are always 404
 //!   `{"error": "not_found"}` with nothing of B in the body, and the answer is
@@ -307,6 +310,12 @@ const CASES: &[Case] = &[
         None,
         Kind::Workspace,
     ),
+    case(
+        "POST",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/approve",
+        Some("{}"),
+        Kind::Workspace,
+    ),
 ];
 
 /// The WebSocket routes that the suite attacks, as the paths of
@@ -578,6 +587,15 @@ fn has_version_routes() -> bool {
     })
 }
 
+/// Whether the router has the approve route (US-025) yet.
+fn has_approve_route() -> bool {
+    registry().iter().any(|r| {
+        r.method == "POST"
+            && r.path
+                == "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/approve"
+    })
+}
+
 /// Uploads `bytes` as `name` with an API key; the raw bytes are the body.
 fn upload_attachment(
     client: &Client,
@@ -631,6 +649,10 @@ struct Side {
     /// more paragraph: empty until the version routes exist.
     version_id: String,
     other_version_id: String,
+    /// A change set with a saved version of a doc of its own, which the human
+    /// approved and which merged (US-025): empty until the approve route
+    /// exists.
+    merged_changeset_id: String,
 }
 
 impl Side {
@@ -657,6 +679,7 @@ impl Side {
             doc_text: String::new(),
             version_id: same(),
             other_version_id: same(),
+            merged_changeset_id: same(),
         }
     }
 
@@ -681,6 +704,7 @@ impl Side {
             &self.doc_text,
             &self.version_id,
             &self.other_version_id,
+            &self.merged_changeset_id,
         ]
         .into_iter()
         .map(String::as_str)
@@ -969,6 +993,66 @@ fn fixture() -> &'static Fixture {
             } else {
                 (String::new(), String::new())
             };
+            // US-025: a change set whose one doc was saved, submitted, approved
+            // by the human and merged, so whatever records approvals has rows
+            // of the workspace. Seeded as soon as the registry has the approve
+            // route.
+            let merged_changeset_id = if has_approve_route() {
+                let merged = changeset();
+                let path = format!("{changesets}/{merged}");
+                let body = json!({ "kind": "html", "module": "prd", "title": unique(&format!("{name}-merged-doc")) })
+                    .to_string();
+                let created = must(
+                    call(client, "POST", &format!("{path}/docs"), &agent, Some(&body)),
+                    201,
+                    "create a doc to merge",
+                );
+                let doc = created["doc"]["id"].as_str().expect("an id");
+                let ops = json!({ "ops": [{
+                    "op": "insert",
+                    "parent": null,
+                    "position": { "after": null },
+                    "content": format!("<p>{}</p>", unique(&format!("{name}-merged")))
+                }] })
+                .to_string();
+                let draft = format!("{path}/docs/{doc}");
+                must(
+                    call(client, "POST", &format!("{draft}/ops"), &agent, Some(&ops)),
+                    200,
+                    "edit the doc to merge",
+                );
+                must(
+                    call(
+                        client,
+                        "POST",
+                        &format!("{draft}/versions"),
+                        &agent,
+                        Some("{}"),
+                    ),
+                    201,
+                    "save the doc to merge",
+                );
+                must(
+                    call(client, "POST", &format!("{path}/submit"), &agent, None),
+                    200,
+                    "submit the change set to merge",
+                );
+                let approved = must(
+                    call(
+                        client,
+                        "POST",
+                        &format!("{path}/approve"),
+                        &human,
+                        Some("{}"),
+                    ),
+                    200,
+                    "approve the change set",
+                );
+                assert_eq!(approved["changeset"]["status"], "merged", "{approved}");
+                merged
+            } else {
+                String::new()
+            };
             Side {
                 id: workspace,
                 email: format!("{name}@example.test"),
@@ -992,6 +1076,7 @@ fn fixture() -> &'static Fixture {
                 doc_text,
                 version_id,
                 other_version_id,
+                merged_changeset_id,
             }
         });
         let a = sides.next().expect("workspace A");
@@ -2011,6 +2096,104 @@ fn the_version_calls_of_the_attacks_work_for_the_workspace_that_owns_the_records
         "remove the doc",
     );
     assert_eq!(removed["version"]["removed"], true, "{removed}");
+}
+
+// ---------------------------------------------------------------------------
+// Approval (US-025)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn the_approve_route_is_in_the_registry_and_the_suite_attacks_it() {
+    let path = "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/approve";
+    let entry = registry()
+        .into_iter()
+        .find(|r| r.method == "POST" && r.path == path)
+        .unwrap_or_else(|| panic!("the registry has no route POST {path}"));
+    assert_eq!(entry.access, Access::Human, "only the human approves");
+    assert!(
+        matches!(case_for(&entry).kind, Kind::Workspace),
+        "{path} is a workspace route that the suite attacks"
+    );
+
+    let (f, _) = ready();
+    for side in [&f.a, &f.b] {
+        assert!(
+            !side.merged_changeset_id.is_empty(),
+            "the suite seeded no approved change set for {}",
+            side.id
+        );
+    }
+}
+
+#[test]
+fn the_approve_call_of_the_attacks_works_for_the_workspace_that_owns_the_records() {
+    // The control for the approve route: the owner's human approves a change
+    // set of its own workspace, with the body of the case, and it merges.
+    let (f, client) = ready();
+    let _guard = serial();
+    let key = Auth::Key(&f.a.key);
+    let human = Auth::Session(&f.a.token);
+    let changesets = format!(
+        "/api/v1/w/{}/projects/{}/changesets",
+        f.a.id, f.a.project_id
+    );
+    let body = json!({ "title": unique("owner-approval") }).to_string();
+    let created = must(
+        call(client, "POST", &changesets, &key, Some(&body)),
+        201,
+        "create a change set",
+    );
+    let changeset = created["changeset"]["id"].as_str().expect("an id");
+    let path = format!("{changesets}/{changeset}");
+    let body = json!({ "kind": "html", "module": "prd", "title": unique("owner-doc") }).to_string();
+    let created = must(
+        call(client, "POST", &format!("{path}/docs"), &key, Some(&body)),
+        201,
+        "create a doc",
+    );
+    let doc = created["doc"]["id"].as_str().expect("an id");
+    let draft = format!("{path}/docs/{doc}");
+    let ops = case_named(
+        "POST",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs/{doc_id}/ops",
+    );
+    must(
+        call(client, "POST", &format!("{draft}/ops"), &key, ops.body),
+        200,
+        "edit the draft",
+    );
+    must(
+        call(
+            client,
+            "POST",
+            &format!("{draft}/versions"),
+            &key,
+            Some("{}"),
+        ),
+        201,
+        "save a version",
+    );
+    must(
+        call(client, "POST", &format!("{path}/submit"), &key, None),
+        200,
+        "submit",
+    );
+    let approve = case_named(
+        "POST",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/approve",
+    );
+    let approved = must(
+        call(
+            client,
+            "POST",
+            &format!("{path}/approve"),
+            &human,
+            approve.body,
+        ),
+        200,
+        "approve",
+    );
+    assert_eq!(approved["changeset"]["status"], "merged", "{approved}");
 }
 
 // ---------------------------------------------------------------------------

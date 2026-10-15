@@ -7,7 +7,8 @@
 //! router on a local port against that database. The built `omni` runs against
 //! that address with the key in its config file. The human's rejection is a
 //! plain HTTP request with the session cookie, because the CLI has no command
-//! for it. The contract of the CLI is in tests/changesets.rs.
+//! for it. The contract of the CLI is in tests/changesets.rs, and that of
+//! `omni wait --changeset` (US-025) in tests/wait.rs.
 
 mod common;
 
@@ -423,4 +424,113 @@ fn the_default_project_of_omni_toml_is_found_by_name() {
         "{:?}",
         listed.stdout
     );
+}
+
+/// The ID of a project that the agent created, by its name.
+fn project_id_of(home: &Scratch, project: &str) -> String {
+    let projects = run(home, &["project", "list", "--json"]);
+    assert_eq!(projects.code, 0, "{}", projects.stderr);
+    projects.json()["projects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["name"] == project)
+        .map(|p| p["id"].as_str().unwrap().to_string())
+        .expect("the project is listed")
+}
+
+#[test]
+fn omni_wait_blocks_until_the_human_rejects_the_change_set() {
+    let f = fixture();
+    let home = agent_home(f);
+    let (project, id) = project_with_changeset(&home);
+    let submitted = run(&home, &["changeset", "submit", &id, "--project", &project]);
+    assert_eq!(submitted.code, 0, "{}", submitted.stderr);
+    let project_id = project_id_of(&home, &project);
+    let reject = format!(
+        "/api/v1/w/{}/projects/{project_id}/changesets/{id}/reject",
+        f.workspace
+    );
+
+    // The human rejects a moment after the agent starts waiting.
+    let human = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(1500));
+        as_human(
+            f,
+            "POST",
+            &reject,
+            &json!({ "reason": "Rework the headline." }),
+        )
+    });
+    let out = run(
+        &home,
+        &[
+            "wait",
+            "--changeset",
+            &id,
+            "--until",
+            "rejected",
+            "--timeout",
+            "20",
+            "--project",
+            &project,
+        ],
+    );
+    let (status, body) = human.join().expect("the human's request");
+    assert_eq!(status, 200, "the human rejects: {body}");
+    assert_eq!(out.code, 0, "omni wait: {}", out.stderr);
+    assert!(out.stdout.contains("rejected"), "{:?}", out.stdout);
+    assert!(
+        out.elapsed >= std::time::Duration::from_millis(1400),
+        "it waited for the rejection: {:?}",
+        out.elapsed
+    );
+}
+
+#[test]
+fn omni_wait_times_out_with_2_and_gives_up_on_an_abandoned_change_set_with_3() {
+    let f = fixture();
+    let home = agent_home(f);
+    let (project, id) = project_with_changeset(&home);
+    let args = |until: &'static str| -> Vec<String> {
+        [
+            "wait",
+            "--changeset",
+            id.as_str(),
+            "--until",
+            until,
+            "--timeout",
+            "1",
+            "--project",
+            project.as_str(),
+        ]
+        .iter()
+        .map(|a| a.to_string())
+        .collect()
+    };
+
+    let still_open = args("merged");
+    let still_open: Vec<&str> = still_open.iter().map(String::as_str).collect();
+    let out = run(&home, &still_open);
+    assert_eq!(out.code, 2, "a timeout: {} {}", out.stdout, out.stderr);
+    assert_eq!(
+        out.stdout, "",
+        "a timeout prints nothing on standard output"
+    );
+    assert_eq!(out.stderr_lines().len(), 1, "one line: {:?}", out.stderr);
+
+    let abandoned = run(&home, &["changeset", "abandon", &id, "--project", &project]);
+    assert_eq!(abandoned.code, 0, "{}", abandoned.stderr);
+    let gone = args("approved");
+    let gone: Vec<&str> = gone.iter().map(String::as_str).collect();
+    let out = run(&home, &gone);
+    assert_eq!(
+        out.code, 3,
+        "never approved now: {} {}",
+        out.stdout, out.stderr
+    );
+    assert_eq!(out.stdout, "");
+    let lines = out.stderr_lines();
+    assert_eq!(lines.len(), 1, "one line: {:?}", out.stderr);
+    assert!(lines[0].contains("abandoned"), "{:?}", lines[0]);
 }

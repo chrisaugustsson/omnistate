@@ -23,12 +23,13 @@ serde = { version = "1", features = ["derive"] }
 omni-core = { path = "../omni-core" }
 
 [features]
-# The setup, key, deletion, change set, doc, claim, version and stack tests
-# (tests/setup_login.rs, tests/api_keys.rs, tests/workspace_delete.rs,
+# The setup, key, deletion, change set, doc, claim, version, approval and stack
+# tests (tests/setup_login.rs, tests/api_keys.rs, tests/workspace_delete.rs,
 # tests/changesets.rs, tests/live_events.rs, tests/isolation.rs,
 # tests/attachments.rs, tests/docs.rs, tests/claims.rs, tests/versions.rs,
-# tests/stack_auth.rs) talk to Postgres and the running Compose stack, so they
-# only build with this feature, which the Compose test container turns on.
+# tests/approve_merge.rs, tests/stack_auth.rs) talk to Postgres and the running
+# Compose stack, so they only build with this feature, which the Compose test
+# container turns on.
 stack-tests = []
 
 [[test]]
@@ -73,4 +74,8 @@ required-features = ["stack-tests"]
 
 [[test]]
 name = "versions"
+required-features = ["stack-tests"]
+
+[[test]]
+name = "approve_merge"
 required-features = ["stack-tests"]
