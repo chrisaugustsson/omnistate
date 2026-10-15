@@ -33,7 +33,12 @@ services:
       context: .
       dockerfile: docker/api.Dockerfile
     environment:
-      OMNI_DATABASE_URL: postgres://omni:${OMNI_POSTGRES_PASSWORD:-omni-dev}@postgres:5432/omni
+      # The API runs as omni_api, which owns no table and cannot bypass
+      # row-level security. Start-up applies the migrations as the owner and
+      # gives omni_api this password.
+      OMNI_DATABASE_URL: postgres://omni_api:${OMNI_API_DB_PASSWORD:-omni-api-dev}@postgres:5432/omni
+      OMNI_API_DB_PASSWORD: ${OMNI_API_DB_PASSWORD:-omni-api-dev}
+      OMNI_ADMIN_DATABASE_URL: postgres://omni:${OMNI_POSTGRES_PASSWORD:-omni-dev}@postgres:5432/omni
       OMNI_S3_ENDPOINT: http://rustfs:9000
       OMNI_S3_ACCESS_KEY: ${OMNI_S3_ACCESS_KEY:-omni-dev}
       OMNI_S3_SECRET_KEY: ${OMNI_S3_SECRET_KEY:-omni-dev-secret}

@@ -10,6 +10,7 @@ async fn main() {
 
 async fn run() -> Result<(), String> {
     let config = Config::from_env()?;
+    omni_api::migrate(&config, 60).await?;
     let state = AppState::new(&config)?;
     state.ensure_bucket(&config, 60).await?;
 

@@ -1,6 +1,10 @@
 //! The OmniState API: the HTTP and WebSocket server that the web app and the
 //! `omni` command line talk to. This is the skeleton behind the reverse proxy;
 //! the routes of later stories hang off the same router.
+//!
+//! The API talks to Postgres as `omni_api`, a role that owns no table and cannot
+//! bypass row-level security (migrations/README.md). Only start-up uses the
+//! owner's login: it applies the migrations and sets the API role's password.
 
 use axum::extract::State;
 use axum::http::StatusCode;
@@ -9,8 +13,8 @@ use axum::{Json, Router};
 use s3::creds::Credentials;
 use s3::{Bucket, BucketConfiguration, Region};
 use serde_json::{Value, json};
-use sqlx::PgPool;
 use sqlx::postgres::PgPoolOptions;
+use sqlx::{Connection, PgConnection, PgPool};
 use std::future::Future;
 use std::time::Duration;
 
@@ -20,7 +24,12 @@ const CHECK_TIMEOUT: Duration = Duration::from_secs(2);
 /// Where the API listens and the services it talks to, read from the environment.
 pub struct Config {
     pub bind: String,
+    /// The login of the API role `omni_api`, which every request runs as.
     pub database_url: String,
+    /// The login of the database owner, used at start-up to apply migrations.
+    pub admin_database_url: String,
+    /// The password to give the API role, the one in `database_url`.
+    pub api_db_password: String,
     pub s3_endpoint: String,
     pub s3_access_key: String,
     pub s3_secret_key: String,
@@ -33,6 +42,8 @@ impl Config {
         Ok(Self {
             bind: std::env::var("OMNI_API_BIND").unwrap_or_else(|_| "0.0.0.0:8080".to_string()),
             database_url: required("OMNI_DATABASE_URL")?,
+            admin_database_url: required("OMNI_ADMIN_DATABASE_URL")?,
+            api_db_password: required("OMNI_API_DB_PASSWORD")?,
             s3_endpoint: required("OMNI_S3_ENDPOINT")?,
             s3_access_key: required("OMNI_S3_ACCESS_KEY")?,
             s3_secret_key: required("OMNI_S3_SECRET_KEY")?,
@@ -101,6 +112,40 @@ impl AppState {
     async fn database_ok(&self) -> bool {
         check(sqlx::query("SELECT 1").execute(&self.pool)).await
     }
+}
+
+/// Applies the migrations of `migrations/` as the database owner and sets
+/// the API role's password, waiting up to `attempts` seconds for Postgres to
+/// come up. Migrations that are applied already are skipped.
+pub async fn migrate(config: &Config, attempts: u32) -> Result<(), String> {
+    let mut last_error = String::new();
+    for _ in 0..attempts {
+        match PgConnection::connect(&config.admin_database_url).await {
+            Ok(mut conn) => return apply_migrations(&mut conn, &config.api_db_password).await,
+            Err(e) => last_error = e.to_string(),
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+    Err(format!("cannot connect to Postgres: {last_error}"))
+}
+
+async fn apply_migrations(conn: &mut PgConnection, api_password: &str) -> Result<(), String> {
+    sqlx::migrate!("../../migrations")
+        .run(&mut *conn)
+        .await
+        .map_err(|e| format!("applying migrations failed: {e}"))?;
+    // ALTER ROLE takes no bind parameters, so Postgres quotes the literal.
+    let alter: String =
+        sqlx::query_scalar("SELECT format('ALTER ROLE omni_api PASSWORD %L', $1::text)")
+            .bind(api_password)
+            .fetch_one(&mut *conn)
+            .await
+            .map_err(|e| e.to_string())?;
+    sqlx::query(&alter)
+        .execute(&mut *conn)
+        .await
+        .map_err(|e| format!("cannot set the password of omni_api: {e}"))?;
+    Ok(())
 }
 
 fn region(config: &Config) -> Region {
