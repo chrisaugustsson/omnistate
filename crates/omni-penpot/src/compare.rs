@@ -132,6 +132,7 @@ pub fn compare_file(path: &Path) -> Result<Comparison, ReadError> {
     let folder = folder.is_dir().then_some(folder);
 
     let mut assets = Assets::new();
+    load_fonts(&mut assets, path);
     for attachment in &conversion.attachments {
         // An image that cannot be loaded is not drawn, which shows in the diff.
         if let Ok(reference) = format!("attachment:{}", attachment.id).parse::<AttachmentRef>() {
@@ -200,6 +201,42 @@ pub fn compare_file(path: &Path) -> Result<Comparison, ReadError> {
         });
     }
     Ok(Comparison { boards })
+}
+
+/// Supplies the fonts in the `fonts` folder beside the export: each subfolder
+/// is a font family, named as the designs name it, holding its TrueType or
+/// OpenType files. A file that is not a font is skipped; text in a family
+/// without files falls back to the bundled default.
+fn load_fonts(assets: &mut Assets, export: &Path) {
+    let Some(fonts) = export.parent().map(|dir| dir.join("fonts")) else {
+        return;
+    };
+    let Ok(families) = fs::read_dir(&fonts) else {
+        return;
+    };
+    let mut families: Vec<_> = families.flatten().map(|entry| entry.path()).collect();
+    families.sort();
+    for family_dir in families.into_iter().filter(|dir| dir.is_dir()) {
+        let Some(family) = family_dir.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        let Ok(files) = fs::read_dir(&family_dir) else {
+            continue;
+        };
+        let mut files: Vec<_> = files.flatten().map(|entry| entry.path()).collect();
+        files.sort();
+        for file in files {
+            let is_font = file
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| {
+                    ext.eq_ignore_ascii_case("ttf") || ext.eq_ignore_ascii_case("otf")
+                });
+            if let (true, Ok(bytes)) = (is_font, fs::read(&file)) {
+                let _ = assets.add_font(family, &bytes);
+            }
+        }
+    }
 }
 
 fn layout_only(why: &str) -> String {
