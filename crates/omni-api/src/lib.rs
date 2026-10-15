@@ -91,8 +91,7 @@ impl AppState {
     /// Like `new`, but over a connection pool that the caller built, so a test
     /// can size it (one connection) and keep a handle on the same connections.
     pub fn with_pool(config: &Config, pool: PgPool) -> Result<Self, String> {
-        let _ = (config, pool);
-        todo!("US-013: build the state over the given pool")
+        Self::build_over(config, pool, None)
     }
 
     fn build(
@@ -103,6 +102,14 @@ impl AppState {
             .acquire_timeout(CHECK_TIMEOUT)
             .connect_lazy(&config.database_url)
             .map_err(|e| format!("invalid database url: {e}"))?;
+        Self::build_over(config, pool, provider)
+    }
+
+    fn build_over(
+        config: &Config,
+        pool: PgPool,
+        provider: Option<Arc<dyn auth::AuthProvider>>,
+    ) -> Result<Self, String> {
         let bucket = Bucket::new(
             &config.s3_bucket,
             region(&config.s3_endpoint),

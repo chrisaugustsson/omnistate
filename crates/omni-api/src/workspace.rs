@@ -112,6 +112,36 @@ impl AppState {
     }
 }
 
+/// Who a request is: the one place that decides between agent and human, for
+/// every route that needs a caller. A key wins over a cookie, and any
+/// `Authorization` header means an agent, so a bad or revoked key is a 401 and
+/// never falls back to the session cookie next to it. `/auth/login`, which
+/// checks a password instead, does not call this.
+pub(crate) async fn identify(parts: &Parts, state: &AppState) -> Result<Caller, ApiError> {
+    if let Some(header) = parts.headers.get(AUTHORIZATION) {
+        let secret = header.to_str().ok().and_then(bearer_secret);
+        let key = match secret {
+            Some(secret) => crate::api_keys::authenticate(state, secret).await?,
+            None => None,
+        };
+        return key.map(Caller::Key).ok_or(ApiError::Unauthorized);
+    }
+    let token = session_token(parts).ok_or(ApiError::Unauthorized)?;
+    match state.auth.session_user(&token).await? {
+        Some(user) => Ok(Caller::Session { token, user }),
+        None => Err(ApiError::Unauthorized),
+    }
+}
+
+/// The authenticated caller of a request.
+pub(crate) enum Caller {
+    Key(crate::api_keys::ResolvedKey),
+    Session {
+        token: String,
+        user: crate::auth::AuthUser,
+    },
+}
+
 /// Authenticates the request, then checks the workspace. Credentials come
 /// first, so a bad credential is a 401 whatever the workspace. With
 /// `human_only`, an API key is a 403 before the workspace is looked at.
@@ -120,25 +150,7 @@ async fn resolve(
     state: &AppState,
     human_only: bool,
 ) -> Result<WorkspaceRequest, ApiError> {
-    enum Caller {
-        Key(crate::api_keys::ResolvedKey),
-        Session(crate::auth::AuthUser),
-    }
-    // A key wins over a cookie: a request that carries one acts as an agent.
-    let caller = if let Some(header) = parts.headers.get(AUTHORIZATION) {
-        let secret = header.to_str().ok().and_then(bearer_secret);
-        let key = match secret {
-            Some(secret) => crate::api_keys::authenticate(state, secret).await?,
-            None => None,
-        };
-        Caller::Key(key.ok_or(ApiError::Unauthorized)?)
-    } else {
-        let token = session_token(parts).ok_or(ApiError::Unauthorized)?;
-        match state.auth.session_user(&token).await? {
-            Some(user) => Caller::Session(user),
-            None => return Err(ApiError::Unauthorized),
-        }
-    };
+    let caller = identify(parts, state).await?;
     if human_only && matches!(caller, Caller::Key(_)) {
         return Err(ApiError::Forbidden);
     }
@@ -159,7 +171,7 @@ async fn resolve(
             }
             Actor::Agent
         }
-        Caller::Session(user) => {
+        Caller::Session { user, .. } => {
             let membership: Option<(String,)> = sqlx::query_as(
                 "SELECT id::text FROM user_memberships($1::uuid) WHERE workspace_id = $2::uuid",
             )

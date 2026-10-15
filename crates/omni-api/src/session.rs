@@ -4,6 +4,7 @@
 
 use crate::AppState;
 use crate::auth::{AuthError, AuthUser};
+use crate::workspace::{Caller, identify};
 use axum::Json;
 use axum::extract::{FromRequestParts, State};
 use axum::http::header::{COOKIE, SET_COOKIE};
@@ -125,7 +126,8 @@ impl From<AuthError> for ApiError {
 }
 
 /// The user of the request's session cookie. A request without a live session
-/// is rejected with 401 before the handler runs.
+/// is rejected with 401, and one with an `Authorization` header (an agent) with
+/// 403, before the handler runs.
 pub struct CurrentUser {
     pub token: String,
     pub user: AuthUser,
@@ -138,11 +140,9 @@ impl FromRequestParts<AppState> for CurrentUser {
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
-        let token = session_token(parts).ok_or(ApiError::Unauthorized)?;
-        let user = state.auth.session_user(&token).await?;
-        match user {
-            Some(user) => Ok(Self { token, user }),
-            None => Err(ApiError::Unauthorized),
+        match identify(parts, state).await? {
+            Caller::Session { token, user } => Ok(Self { token, user }),
+            Caller::Key(_) => Err(ApiError::Forbidden),
         }
     }
 }
@@ -200,6 +200,7 @@ pub async fn login(
     responses(
         (status = 204, description = "The session is ended and the cookie cleared"),
         (status = 401, description = "No live session", body = ErrorBody),
+        (status = 403, description = "Called with an API key (an Authorization header); human only", body = ErrorBody),
         (status = 503, description = "The login provider cannot answer", body = ErrorBody),
     )
 )]
@@ -218,6 +219,7 @@ pub async fn logout(
     responses(
         (status = 200, description = "The user of the session cookie", body = UserResponse),
         (status = 401, description = "No live session", body = ErrorBody),
+        (status = 403, description = "Called with an API key (an Authorization header); human only", body = ErrorBody),
         (status = 503, description = "The login provider cannot answer", body = ErrorBody),
     )
 )]
@@ -233,6 +235,7 @@ pub async fn me(current: CurrentUser) -> Json<UserResponse> {
     responses(
         (status = 200, description = "The user's workspaces, ordered by name", body = WorkspaceListResponse),
         (status = 401, description = "No live session", body = ErrorBody),
+        (status = 403, description = "Called with an API key (an Authorization header); human only", body = ErrorBody),
         (status = 503, description = "The database or the login provider cannot answer", body = ErrorBody),
     )
 )]

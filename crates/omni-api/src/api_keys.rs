@@ -14,6 +14,7 @@ use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use serde::Serialize;
+use subtle::ConstantTimeEq;
 use utoipa::ToSchema;
 
 /// The longest prefix a key may have.
@@ -86,7 +87,7 @@ fn generate() -> (String, String, String) {
 
 /// Compares in time that does not depend on where the inputs differ.
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+    a.ct_eq(b).into()
 }
 
 /// Looks a presented secret up by its prefix and checks it. `None` when the
