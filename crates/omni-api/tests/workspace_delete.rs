@@ -425,6 +425,50 @@ async fn fill_workspace(conn: &mut PgConnection, workspace: &str, membership: &s
         .await
         .expect("insert an attachment");
     }
+
+    // US-022: a doc, its draft in the change set and one row of the draft's
+    // log. Seeded as soon as the tables exist (tests/docs.rs pins their names
+    // and the columns without a default), for the same reason as above.
+    let docs_exist: bool = sqlx::query_scalar(
+        "SELECT to_regclass('public.docs') IS NOT NULL \
+         AND to_regclass('public.drafts') IS NOT NULL \
+         AND to_regclass('public.draft_ops') IS NOT NULL",
+    )
+    .fetch_one(&mut *conn)
+    .await
+    .expect("look for the doc tables");
+    if docs_exist {
+        let doc_id: String = sqlx::query_scalar(
+            "INSERT INTO docs (workspace_id, project_id, kind, module, title) \
+             VALUES ($1::uuid, $2::uuid, 'html', 'prd', 'deletion test') RETURNING id::text",
+        )
+        .bind(workspace)
+        .bind(&project_id)
+        .fetch_one(&mut *conn)
+        .await
+        .expect("insert a doc");
+        let draft_id: String = sqlx::query_scalar(
+            "INSERT INTO drafts (workspace_id, doc_id, changeset_id) \
+             VALUES ($1::uuid, $2::uuid, $3::uuid) RETURNING id::text",
+        )
+        .bind(workspace)
+        .bind(&doc_id)
+        .bind(&changeset_id)
+        .fetch_one(&mut *conn)
+        .await
+        .expect("insert a draft");
+        sqlx::query(
+            "INSERT INTO draft_ops (workspace_id, draft_id, seq, op, agent) \
+             VALUES ($1::uuid, $2::uuid, 1, $3::jsonb, $4::jsonb)",
+        )
+        .bind(workspace)
+        .bind(&draft_id)
+        .bind(r#"{"op":"delete","node":"k3f9x2qa","rev":1}"#)
+        .bind(r#"{"run":"run-1","role":"writer","model":null,"harness":null}"#)
+        .execute(&mut *conn)
+        .await
+        .expect("insert an operation of the draft's log");
+    }
 }
 
 async fn put_objects(keys: Vec<String>) {

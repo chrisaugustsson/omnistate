@@ -15,9 +15,11 @@
 //! - `CASES` lists every route of `omni_api::routes::registry()`, each either
 //!   `Workspace` (its path holds `{workspace_id}`, and the suite attacks it) or
 //!   `Global` (no workspace in the path, with the reason). The path may hold
-//!   `{project_id}`, `{changeset_id}`, `{key_id}` and `{attachment_id}`, which
-//!   the suite fills with the IDs of the seeded records; a path with another
-//!   placeholder, or a registry route without a case, fails the suite.
+//!   `{project_id}`, `{changeset_id}`, `{key_id}`, `{attachment_id}` and
+//!   `{doc_id}`, which the suite fills with the IDs of the seeded records; a
+//!   path with another placeholder, or a registry route without a case, fails
+//!   the suite. The seeded doc (US-022) was created in the open change set
+//!   `{changeset_id}`, which has its draft, and has one applied operation.
 //! - Workspace A's credentials against workspace B's workspace and IDs, and
 //!   against B's IDs under A's own workspace, are always 404
 //!   `{"error": "not_found"}` with nothing of B in the body, and the answer is
@@ -225,6 +227,44 @@ const CASES: &[Case] = &[
         "GET",
         "/api/v1/w/{workspace_id}/attachments/{attachment_id}",
         None,
+        Kind::Workspace,
+    ),
+    case(
+        "POST",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs",
+        Some(r#"{"kind":"html","module":"prd","title":"intruder doc"}"#),
+        Kind::Workspace,
+    ),
+    case(
+        "GET",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}",
+        None,
+        Kind::Workspace,
+    ),
+    case(
+        "GET",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}/html",
+        None,
+        Kind::Workspace,
+    ),
+    case(
+        "POST",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs/{doc_id}/open",
+        None,
+        Kind::Workspace,
+    ),
+    case(
+        "GET",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs/{doc_id}",
+        None,
+        Kind::Workspace,
+    ),
+    case(
+        "POST",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs/{doc_id}/ops",
+        Some(
+            r#"{"ops":[{"op":"insert","parent":null,"position":{"after":null},"content":"<p>intruder</p>"}]}"#,
+        ),
         Kind::Workspace,
     ),
 ];
@@ -471,6 +511,15 @@ fn has_attachment_routes() -> bool {
         .any(|r| r.method == "POST" && r.path == "/api/v1/w/{workspace_id}/attachments")
 }
 
+/// Whether the router has the doc and draft routes (US-022) yet.
+fn has_doc_routes() -> bool {
+    registry().iter().any(|r| {
+        r.method == "POST"
+            && r.path
+                == "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs"
+    })
+}
+
 /// Uploads `bytes` as `name` with an API key; the raw bytes are the body.
 fn upload_attachment(
     client: &Client,
@@ -514,6 +563,12 @@ struct Side {
     attachment_name: String,
     /// The file's content, which is text that nothing else holds.
     attachment_text: String,
+    /// A doc that the workspace's agent started in `changeset_id` (US-022),
+    /// with one applied operation: empty until the doc routes exist.
+    doc_id: String,
+    doc_title: String,
+    /// The text of the doc's one paragraph, which nothing else holds.
+    doc_text: String,
 }
 
 impl Side {
@@ -535,6 +590,9 @@ impl Side {
             attachment_id: same(),
             attachment_name: String::new(),
             attachment_text: String::new(),
+            doc_id: same(),
+            doc_title: String::new(),
+            doc_text: String::new(),
         }
     }
 
@@ -554,6 +612,9 @@ impl Side {
             &self.attachment_id,
             &self.attachment_name,
             &self.attachment_text,
+            &self.doc_id,
+            &self.doc_title,
+            &self.doc_text,
         ]
         .into_iter()
         .map(String::as_str)
@@ -723,6 +784,48 @@ fn fixture() -> &'static Fixture {
             } else {
                 (String::new(), String::new(), String::new())
             };
+            // US-022: a doc started in the open change set, with one applied
+            // operation, so the doc, draft and log tables have rows of the
+            // workspace. Seeded as soon as the registry has the doc routes.
+            let (doc_id, doc_title, doc_text) = if has_doc_routes() {
+                let doc_title = unique(&format!("{name}-doc"));
+                let body =
+                    json!({ "kind": "html", "module": "prd", "title": doc_title }).to_string();
+                let created = must(
+                    call(
+                        client,
+                        "POST",
+                        &format!("{changesets}/{changeset_id}/docs"),
+                        &agent,
+                        Some(&body),
+                    ),
+                    201,
+                    "create a doc",
+                );
+                let doc_id = created["doc"]["id"].as_str().expect("an id").to_string();
+                let doc_text = unique(&format!("{name}-doc-content"));
+                let ops = json!({ "ops": [{
+                    "op": "insert",
+                    "parent": null,
+                    "position": { "after": null },
+                    "content": format!("<p>{doc_text}</p>")
+                }] })
+                .to_string();
+                must(
+                    call(
+                        client,
+                        "POST",
+                        &format!("{changesets}/{changeset_id}/docs/{doc_id}/ops"),
+                        &agent,
+                        Some(&ops),
+                    ),
+                    200,
+                    "edit the doc's draft",
+                );
+                (doc_id, doc_title, doc_text)
+            } else {
+                (String::new(), String::new(), String::new())
+            };
             Side {
                 id: workspace,
                 email: format!("{name}@example.test"),
@@ -741,6 +844,9 @@ fn fixture() -> &'static Fixture {
                 attachment_id,
                 attachment_name,
                 attachment_text,
+                doc_id,
+                doc_title,
+                doc_text,
             }
         });
         let a = sides.next().expect("workspace A");
@@ -771,6 +877,7 @@ fn fill(template: &str, workspace: &Side, record: &Side) -> String {
             "changeset_id" => &record.changeset_id,
             "key_id" => &record.key_id,
             "attachment_id" => &record.attachment_id,
+            "doc_id" => &record.doc_id,
             other => panic!(
                 "{template} has the placeholder {{{other}}}, for which the suite has no seeded \
                  ID: add it to Side and fill() in tests/isolation.rs"
@@ -1202,7 +1309,8 @@ fn the_lists_of_a_workspace_hold_nothing_of_the_other() {
                     assert!(
                         text.contains(&own.project_id)
                             || text.contains(&own.changeset_id)
-                            || text.contains(&own.key_id),
+                            || text.contains(&own.key_id)
+                            || text.contains(&own.doc_id),
                         "{what}: the control call shows none of its own records: {text}"
                     );
                 }
@@ -1284,6 +1392,59 @@ fn the_calls_of_the_attacks_work_for_the_workspace_that_owns_the_records() {
         "revoke a key",
     );
     assert!(revoked["key"]["revoked_at"].is_string(), "{revoked}");
+
+    // US-022: the doc and draft calls, with the bodies of their cases.
+    let docs = case_named(
+        "POST",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs",
+    );
+    let body = docs.body.map(|b| b.replace("intruder", &unique("owner")));
+    let created = must(
+        call(client, "POST", &path(docs.path), &key, body.as_deref()),
+        201,
+        "create a doc",
+    );
+    let doc_id = created["doc"]["id"].as_str().expect("an id");
+    let draft = format!(
+        "/api/v1/w/{}/projects/{}/changesets/{}/docs/{doc_id}",
+        f.a.id, f.a.project_id, f.a.changeset_id
+    );
+    let open = case_named(
+        "POST",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs/{doc_id}/open",
+    );
+    let opened = call(client, "POST", &format!("{draft}/open"), &key, open.body);
+    assert!(
+        matches!(opened.status, 200 | 201),
+        "open the doc: {}",
+        opened.text()
+    );
+    let ops = case_named(
+        "POST",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs/{doc_id}/ops",
+    );
+    must(
+        call(client, "POST", &format!("{draft}/ops"), &key, ops.body),
+        200,
+        "edit the draft",
+    );
+    let doc = format!(
+        "/api/v1/w/{}/projects/{}/docs/{doc_id}",
+        f.a.id, f.a.project_id
+    );
+    for auth in [&key, &human] {
+        must(
+            call(client, "GET", &draft, auth, None),
+            200,
+            "read the draft",
+        );
+        must(call(client, "GET", &doc, auth, None), 200, "show the doc");
+        must(
+            call(client, "GET", &format!("{doc}/html"), auth, None),
+            200,
+            "read mainline",
+        );
+    }
 }
 
 #[test]
@@ -1465,6 +1626,59 @@ fn the_attachment_routes_are_in_the_registry_and_the_suite_attacks_them() {
         let response = call(client, "GET", &path, &auth, None);
         assert_eq!(response.status, 200, "read the file: {}", response.text());
         assert_eq!(response.text(), name, "{}", auth.label());
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Docs and drafts (US-022)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn the_doc_routes_are_in_the_registry_and_the_suite_attacks_them() {
+    let routes = registry();
+    for path in [
+        "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}/html",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs/{doc_id}/open",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs/{doc_id}",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs/{doc_id}/ops",
+    ] {
+        let entry = routes
+            .iter()
+            .find(|r| r.path == path)
+            .unwrap_or_else(|| panic!("the registry has no route {path}"));
+        assert!(
+            matches!(case_for(entry).kind, Kind::Workspace),
+            "{path} is a workspace route that the suite attacks"
+        );
+    }
+
+    let (f, client) = ready();
+    for side in [&f.a, &f.b] {
+        assert!(
+            !side.doc_id.is_empty(),
+            "the suite seeded no doc for {}",
+            side.id
+        );
+    }
+    // The control: each workspace reads its own draft, with its own text.
+    for side in [&f.a, &f.b] {
+        let path = format!(
+            "/api/v1/w/{}/projects/{}/changesets/{}/docs/{}",
+            side.id, side.project_id, side.changeset_id, side.doc_id
+        );
+        let draft = must(
+            call(client, "GET", &path, &Auth::Key(&side.key), None),
+            200,
+            "read the workspace's own draft",
+        );
+        assert!(
+            draft["draft"]["html"]
+                .as_str()
+                .is_some_and(|html| html.contains(&side.doc_text)),
+            "{draft}"
+        );
     }
 }
 

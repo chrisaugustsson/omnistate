@@ -22,11 +22,12 @@ utoipa = "5"
 serde = { version = "1", features = ["derive"] }
 
 [features]
-# The setup, key, deletion, change set and stack tests (tests/setup_login.rs,
-# tests/api_keys.rs, tests/workspace_delete.rs, tests/changesets.rs,
-# tests/live_events.rs, tests/isolation.rs, tests/attachments.rs,
-# tests/stack_auth.rs) talk to Postgres and the running Compose stack, so they
-# only build with this feature, which the Compose test container turns on.
+# The setup, key, deletion, change set, doc and stack tests
+# (tests/setup_login.rs, tests/api_keys.rs, tests/workspace_delete.rs,
+# tests/changesets.rs, tests/live_events.rs, tests/isolation.rs,
+# tests/attachments.rs, tests/docs.rs, tests/stack_auth.rs) talk to Postgres
+# and the running Compose stack, so they only build with this feature, which
+# the Compose test container turns on.
 stack-tests = []
 
 [[test]]
@@ -59,4 +60,8 @@ required-features = ["stack-tests"]
 
 [[test]]
 name = "attachments"
+required-features = ["stack-tests"]
+
+[[test]]
+name = "docs"
 required-features = ["stack-tests"]
