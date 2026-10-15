@@ -74,10 +74,23 @@ pub enum ApiError {
     /// The workspace or record is not one the caller can reach. It is the same
     /// answer for one that does not exist, so nothing leaks.
     NotFound,
+    /// The request is refused with a status of its own and a stable code, such
+    /// as 409 `invalid_transition`.
+    Refused(StatusCode, &'static str),
     Unavailable,
 }
 
 impl ApiError {
+    /// 400 with the stable `code` (`invalid_request`, `reason_required`, ...).
+    pub fn bad_request(code: &'static str) -> Self {
+        Self::Refused(StatusCode::BAD_REQUEST, code)
+    }
+
+    /// 409 with the stable `code` (`name_taken`, `invalid_transition`, ...).
+    pub fn conflict(code: &'static str) -> Self {
+        Self::Refused(StatusCode::CONFLICT, code)
+    }
+
     /// A database failure: it is logged and the caller sees a 503.
     pub fn database(error: sqlx::Error) -> Self {
         eprintln!("omni-api: database error: {error}");
@@ -92,6 +105,7 @@ impl IntoResponse for ApiError {
             Self::Unauthorized => (StatusCode::UNAUTHORIZED, "unauthorized"),
             Self::Forbidden => (StatusCode::FORBIDDEN, "forbidden"),
             Self::NotFound => (StatusCode::NOT_FOUND, "not_found"),
+            Self::Refused(status, code) => (status, code),
             Self::Unavailable => (StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
         };
         (status, Json(json!({ "error": code }))).into_response()

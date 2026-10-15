@@ -1,10 +1,12 @@
-//! The commands: `login`, `key list|revoke`, `whoami`, `api` and `config show`.
+//! The commands: `login`, `key list|revoke`, `whoami`, `api` and `config show`;
+//! the project and change set commands are in `changesets`.
 //!
 //! Standard output holds only the result of a command (short text, or the API's
 //! JSON with `--json`), so a script can parse it. Prompts, notices and errors go
 //! to standard error.
 
 use crate::args::Args;
+use crate::changesets;
 use crate::config::{self, Stored};
 use crate::error::{CliError, Result, bail};
 use crate::http::{self, Response, Server};
@@ -29,6 +31,32 @@ pub fn run(args: &Args) -> Result<()> {
             bail!("`omni key revoke` needs the key's ID; `omni key list` shows them")
         }
         ["key", ..] => bail!("usage: omni key list | omni key revoke <key-id>"),
+        ["project", "create"] => {
+            bail!("`omni project create` needs a name: omni project create <name>")
+        }
+        ["project", "create", name] => changesets::project_create(args, name),
+        ["project", "list"] => changesets::project_list(args),
+        ["project", ..] => bail!("usage: omni project create <name> | omni project list"),
+        ["changeset", "create"] => changesets::create(args),
+        ["changeset", "list"] => changesets::list(args),
+        ["changeset", "show", id] => changesets::show(args, id),
+        ["changeset", "submit", id] => changesets::act(args, id, "submit"),
+        ["changeset", "reopen", id] => changesets::act(args, id, "reopen"),
+        ["changeset", "abandon", id] => changesets::act(args, id, "abandon"),
+        [
+            "changeset",
+            action @ ("show" | "submit" | "reopen" | "abandon"),
+        ] => {
+            bail!(
+                "`omni changeset {action}` needs the change set's ID; `omni changeset list` shows them"
+            )
+        }
+        ["changeset", "reject", ..] => bail!(
+            "rejecting a change set is the human's decision and is made in the web app; an agent cannot"
+        ),
+        ["changeset", ..] => {
+            bail!("usage: omni changeset create|list|show|submit|reopen|abandon; see `omni --help`")
+        }
         ["whoami"] => whoami(args),
         ["api", method, path] => api(args, method, path),
         ["api", ..] => bail!("usage: omni api <METHOD> <path> [--body-file <path|->]"),
@@ -73,13 +101,13 @@ fn settings(args: &Args) -> Result<Settings> {
 
 /// What a command made with an API key needs: where to send it and the headers
 /// that authenticate it and say which agent it is.
-struct Agent {
+pub(crate) struct Agent {
     server: Server,
-    workspace_id: String,
+    pub(crate) workspace_id: String,
     headers: Vec<(String, String)>,
 }
 
-fn agent(args: &Args) -> Result<Agent> {
+pub(crate) fn agent(args: &Args) -> Result<Agent> {
     let settings = settings(args)?;
     let (Some(server), Some(workspace_id), Some(api_key)) = (
         settings.server,
@@ -99,7 +127,12 @@ fn agent(args: &Args) -> Result<Agent> {
 }
 
 impl Agent {
-    fn request(&self, method: &str, path: &str, body: Option<&[u8]>) -> Result<Response> {
+    pub(crate) fn request(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<&[u8]>,
+    ) -> Result<Response> {
         let mut headers = self.headers.clone();
         if body.is_some() {
             headers.push(("Content-Type".to_string(), "application/json".to_string()));
@@ -190,7 +223,7 @@ fn api(args: &Args, method: &str, path: &str) -> Result<()> {
 }
 
 /// The long text of a request: a file, or standard input for `-`.
-fn read_body(source: &str) -> Result<Vec<u8>> {
+pub(crate) fn read_body(source: &str) -> Result<Vec<u8>> {
     if source == "-" {
         let mut body = Vec::new();
         std::io::stdin()

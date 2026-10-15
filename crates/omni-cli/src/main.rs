@@ -5,6 +5,7 @@
 //! config file or the network are looked at.
 
 mod args;
+mod changesets;
 mod commands;
 mod config;
 mod error;
@@ -25,6 +26,14 @@ Usage:
   omni login                          log in, pick a workspace and store an API key
   omni key list                       list the workspace's API keys (asks for the password)
   omni key revoke <key-id>            revoke an API key (asks for the password)
+  omni project create <name>          create a project
+  omni project list                   list the projects
+  omni changeset create --title <t>   create a change set [--description <d>] [--run <tag>]
+  omni changeset list                 list the project's change sets
+  omni changeset show <id>            show a change set with its status history
+  omni changeset submit <id>          send an open change set to review
+  omni changeset reopen <id>          reopen a rejected change set
+  omni changeset abandon <id>         abandon a change set (it is kept, never deleted)
   omni whoami                         show the workspace and who the key acts as
   omni api <METHOD> <path>            send one request to the API and print the response
   omni config show                    show the effective settings (never the key)
@@ -34,7 +43,9 @@ Options (before or after the command):
   --model <name>        the model behind the agent (fallback: OMNI_MODEL)
   --harness <name>      the harness that runs the agent (fallback: OMNI_HARNESS)
   --server <url>        the API address (fallback: OMNI_SERVER, then the config file)
-  --body-file <path>    send this file as the request body; - reads standard input
+  --project <name|id>   the project to work in (fallback: project in .omni.toml)
+  --body-file <path>    send this file as the request body (for a change set: its
+                        description); - reads standard input
   --json                print the full JSON instead of short text
   -h, --help            show this help
   -V, --version         show the version
@@ -47,6 +58,8 @@ Output:
 Files:
   ~/.config/omni/config.toml   written by `omni login` (mode 600): server, workspace_id, api_key, email
   .omni.toml                   in a project directory: project = \"name\", the default project there
+
+Rejecting and approving are the human's, in the web app; an agent cannot do them.
 
 Exit codes:
   0  success

@@ -35,6 +35,43 @@ pub fn registry() -> Vec<RouteEntry> {
             "/api/v1/w/{workspace_id}/api-keys/{key_id}/revoke",
             Access::Human,
         ),
+        ("GET", "/api/v1/w/{workspace_id}/projects", Access::Both),
+        ("POST", "/api/v1/w/{workspace_id}/projects", Access::Agent),
+        (
+            "GET",
+            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets",
+            Access::Both,
+        ),
+        (
+            "POST",
+            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets",
+            Access::Agent,
+        ),
+        (
+            "GET",
+            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}",
+            Access::Both,
+        ),
+        (
+            "POST",
+            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/submit",
+            Access::Agent,
+        ),
+        (
+            "POST",
+            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/reject",
+            Access::Human,
+        ),
+        (
+            "POST",
+            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/reopen",
+            Access::Agent,
+        ),
+        (
+            "POST",
+            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/abandon",
+            Access::Agent,
+        ),
     ]
     .into_iter()
     .map(|(method, path, access)| RouteEntry {

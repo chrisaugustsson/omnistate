@@ -70,6 +70,30 @@ impl FromRequestParts<AppState> for HumanRequest {
     }
 }
 
+/// A request to an `agent` route: only an API key passes. The human never
+/// writes to a plan, so a session is turned down with 403, after the
+/// workspace of the path was checked (a session of another workspace is 404).
+pub struct AgentRequest {
+    pub workspace_id: String,
+}
+
+impl FromRequestParts<AppState> for AgentRequest {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        let request = resolve(parts, state, false).await?;
+        match request.actor {
+            Actor::Agent => Ok(Self {
+                workspace_id: request.workspace_id,
+            }),
+            Actor::Human { .. } => Err(ApiError::Forbidden),
+        }
+    }
+}
+
 impl AppState {
     /// Starts a transaction that runs as `workspace_id`: `app.workspace_id` is
     /// set for the transaction only (`SET LOCAL`), so row-level security shows

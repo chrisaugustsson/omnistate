@@ -8,6 +8,7 @@
 
 mod api_keys;
 pub mod auth;
+mod changesets;
 pub mod delete_workspace;
 mod openapi;
 pub mod password;
@@ -214,6 +215,34 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/v1/w/{workspace_id}/api-keys/{key_id}/revoke",
             post(api_keys::revoke),
+        )
+        .route(
+            "/api/v1/w/{workspace_id}/projects",
+            get(changesets::list_projects).post(changesets::create_project),
+        )
+        .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets",
+            get(changesets::list_changesets).post(changesets::create_changeset),
+        )
+        .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}",
+            get(changesets::show_changeset),
+        )
+        .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/submit",
+            post(changesets::submit),
+        )
+        .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/reject",
+            post(changesets::reject),
+        )
+        .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/reopen",
+            post(changesets::reopen),
+        )
+        .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/abandon",
+            post(changesets::abandon),
         )
         .route("/ws/w/{workspace_id}", any(unauthorized))
         .fallback(not_found)

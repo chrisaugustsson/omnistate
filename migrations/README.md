@@ -13,7 +13,7 @@ Tenant isolation is enforced by the database, not by the code that queries it. E
 - [ ] Row-level security is enabled and forced: `ALTER TABLE ... ENABLE ROW LEVEL SECURITY` and `ALTER TABLE ... FORCE ROW LEVEL SECURITY`.
 - [ ] One policy `FOR ALL` has `USING` and `WITH CHECK` set to `workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid` (`id = ...` for `workspaces`).
 - [ ] The API role `omni_api` gets `GRANT SELECT, INSERT, UPDATE` on the table and nothing else: no DELETE privilege and no TRUNCATE privilege on tenant tables (nothing inside a project is deleted).
-- [ ] No UPDATE privilege on append-only tables (posts, operations, versions, node indexes): grant `SELECT, INSERT` only.
+- [ ] No UPDATE privilege on append-only tables (posts, operations, versions, node indexes): grant `SELECT, INSERT` only. The tenancy tests still require `UPDATE` on every table with a `workspace_id`, so until they tell append-only tables apart, such a table is protected by a `BEFORE UPDATE` trigger that raises an error (see `changeset_status_history`).
 - [ ] Anything that must be looked up before the workspace is known goes through a SECURITY DEFINER function with a pinned `search_path` whose EXECUTE is revoked from PUBLIC and granted to `omni_api`; the API reads no tenant table without a workspace. The only two are `resolve_api_key(prefix)` and `user_memberships(user_id)`.
 - [ ] The API role owns no table, so it cannot disable row-level security, change a policy or bypass it.
 

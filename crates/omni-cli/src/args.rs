@@ -13,6 +13,13 @@ pub struct Args {
     pub harness: Option<String>,
     pub server: Option<String>,
     pub body_file: Option<String>,
+    /// `--project <name or id>`: the project a command works in, instead of
+    /// the one in `.omni.toml`.
+    pub project: Option<String>,
+    /// `--title`, `--description` and `--run` describe a change set.
+    pub title: Option<String>,
+    pub description: Option<String>,
+    pub run: Option<String>,
     pub json: bool,
     pub help: bool,
     pub version: bool,
@@ -52,6 +59,18 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Args> {
             "--harness" => &mut parsed.harness,
             "--server" => &mut parsed.server,
             "--body-file" => &mut parsed.body_file,
+            "--project" => &mut parsed.project,
+            "--title" => &mut parsed.title,
+            "--description" => &mut parsed.description,
+            "--run" => &mut parsed.run,
+            // Rejecting is the human's, whatever options it is tried with:
+            // the command itself explains that.
+            _ if parsed
+                .words
+                .starts_with(&["changeset".to_string(), "reject".to_string()]) =>
+            {
+                break;
+            }
             _ => bail!("unknown option {arg}; see `omni --help`"),
         };
         match inline.or_else(|| args.next()) {
@@ -90,6 +109,34 @@ mod tests {
         assert_eq!(parsed.words, ["api", "POST", "/x"]);
         let parsed = parse_strs(&["api", "--", "--json"]).unwrap();
         assert_eq!(parsed.words, ["api", "--json"]);
+    }
+
+    #[test]
+    fn change_set_options_take_values() {
+        let parsed = parse_strs(&[
+            "changeset",
+            "create",
+            "--title",
+            "T",
+            "--description=D",
+            "--run",
+            "r-1",
+            "--project",
+            "p",
+        ])
+        .unwrap();
+        assert_eq!(parsed.words, ["changeset", "create"]);
+        assert_eq!(parsed.title.as_deref(), Some("T"));
+        assert_eq!(parsed.description.as_deref(), Some("D"));
+        assert_eq!(parsed.run.as_deref(), Some("r-1"));
+        assert_eq!(parsed.project.as_deref(), Some("p"));
+    }
+
+    #[test]
+    fn rejecting_accepts_any_options_so_the_command_can_explain() {
+        let parsed = parse_strs(&["changeset", "reject", "x", "--reason", "no"]).unwrap();
+        assert_eq!(parsed.words, ["changeset", "reject", "x"]);
+        assert!(parse_strs(&["changeset", "submit", "x", "--reason", "no"]).is_err());
     }
 
     #[test]
