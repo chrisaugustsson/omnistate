@@ -4,4 +4,4 @@
 FROM rust:1.88-bookworm
 ENV RUSTUP_TOOLCHAIN=1.88.0 CARGO_TARGET_DIR=/cargo-target
 WORKDIR /workspace
-CMD ["sh", "-c", "cargo test -p omni-core --features stack-tests --test stack --test tenancy && cargo test -p omni-api --features stack-tests"]
+CMD ["sh", "-c", "cargo test -p omni-core --features stack-tests --test stack --test tenancy && cargo test -p omni-api --features stack-tests && cargo test -p omni-cli --features stack-tests"]

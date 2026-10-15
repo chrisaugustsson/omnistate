@@ -1336,6 +1336,13 @@ dependencies = [
 [[package]]
 name = "omni-cli"
 version = "0.1.0"
+dependencies = [
+ "axum",
+ "omni-api",
+ "serde_json",
+ "sqlx",
+ "tokio",
+]
 
 [[package]]
 name = "omni-core"

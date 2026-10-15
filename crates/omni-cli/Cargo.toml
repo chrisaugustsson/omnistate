@@ -7,3 +7,21 @@ publish.workspace = true
 [[bin]]
 name = "omni"
 path = "src/main.rs"
+
+[dev-dependencies]
+# The stack tests (tests/stack.rs) serve the API's router against a scratch
+# database, as the omni-api tests do, and run the built `omni` against it.
+omni-api = { path = "../omni-api" }
+axum = "0.8"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "time"] }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres"] }
+serde_json = "1"
+
+[features]
+# tests/stack.rs needs Postgres and logs in against it, so it only builds with
+# this feature, which the Compose test container turns on.
+stack-tests = []
+
+[[test]]
+name = "stack"
+required-features = ["stack-tests"]
