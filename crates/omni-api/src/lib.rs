@@ -10,6 +10,7 @@ mod api_keys;
 pub mod auth;
 mod changesets;
 pub mod delete_workspace;
+mod live;
 mod openapi;
 pub mod password;
 pub mod routes;
@@ -19,7 +20,7 @@ mod workspace;
 
 use axum::extract::State;
 use axum::http::StatusCode;
-use axum::routing::{any, get, post};
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use s3::creds::Credentials;
 use s3::{Bucket, BucketConfiguration, Region};
@@ -70,6 +71,8 @@ pub struct AppState {
     bucket: Box<Bucket>,
     /// Decides who a login or a session cookie belongs to.
     auth: Arc<dyn auth::AuthProvider>,
+    /// Wakes the open WebSockets when a project has new live events.
+    live: live::LiveBus,
 }
 
 impl AppState {
@@ -118,7 +121,12 @@ impl AppState {
         .map_err(|e| format!("invalid storage settings: {e}"))?
         .with_path_style();
         let auth = provider.unwrap_or_else(|| Arc::new(password::PasswordAuth::new(pool.clone())));
-        Ok(Self { pool, bucket, auth })
+        Ok(Self {
+            pool,
+            bucket,
+            auth,
+            live: live::LiveBus::new(),
+        })
     }
 
     /// Creates the RustFS bucket if it does not exist yet, waiting up to
@@ -258,7 +266,7 @@ pub fn router(state: AppState) -> Router {
             "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/abandon",
             post(changesets::abandon),
         )
-        .route("/ws/w/{workspace_id}", any(unauthorized))
+        .route("/ws/w/{workspace_id}", get(live::socket))
         .fallback(not_found)
         .with_state(state)
 }
@@ -288,14 +296,6 @@ async fn health(State(state): State<AppState>) -> (StatusCode, Json<Value>) {
             "database": word(database),
             "storage": word(storage),
         })),
-    )
-}
-
-/// A workspace socket needs credentials, and no login exists yet.
-async fn unauthorized() -> (StatusCode, Json<Value>) {
-    (
-        StatusCode::UNAUTHORIZED,
-        Json(json!({ "error": "unauthorized" })),
     )
 }
 

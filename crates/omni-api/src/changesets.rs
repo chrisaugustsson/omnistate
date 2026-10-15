@@ -8,6 +8,7 @@
 //! US-025 and US-026; the database already accepts them.
 
 use crate::AppState;
+use crate::live;
 use crate::session::{ApiError, ErrorBody};
 use crate::workspace::{AgentRequest, HumanRequest, WorkspaceRequest, parse_uuid};
 use axum::Json;
@@ -16,6 +17,7 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use sqlx::{Postgres, Transaction};
 use std::collections::HashMap;
 use utoipa::ToSchema;
@@ -270,15 +272,32 @@ async fn history_of(
     .map_err(ApiError::database)
 }
 
+/// One move of a change set along the lifecycle, as the history keeps it.
+struct StatusChange<'a> {
+    project_id: &'a str,
+    changeset_id: &'a str,
+    /// `None` for the creation.
+    from: Option<&'a str>,
+    to: &'a str,
+    actor: &'a str,
+    reason: Option<&'a str>,
+}
+
+/// Records a status change in the history and emits its live event,
+/// `changeset.<status>`. Callers announce the event once they have committed.
 async fn insert_history(
     tx: &mut Transaction<'static, Postgres>,
     workspace_id: &str,
-    changeset_id: &str,
-    from: Option<&str>,
-    to: &str,
-    actor: &str,
-    reason: Option<&str>,
+    change: StatusChange<'_>,
 ) -> Result<(), ApiError> {
+    let StatusChange {
+        project_id,
+        changeset_id,
+        from,
+        to,
+        actor,
+        reason,
+    } = change;
     sqlx::query(
         "INSERT INTO changeset_status_history \
          (workspace_id, changeset_id, from_status, to_status, actor, reason) \
@@ -293,6 +312,23 @@ async fn insert_history(
     .execute(&mut **tx)
     .await
     .map_err(ApiError::database)?;
+    let mut data = json!({
+        "changeset_id": changeset_id,
+        "from_status": from,
+        "status": to,
+        "actor": actor,
+    });
+    if let Some(reason) = reason {
+        data["reason"] = json!(reason);
+    }
+    live::emit(
+        tx,
+        workspace_id,
+        project_id,
+        &format!("changeset.{to}"),
+        &data,
+    )
+    .await?;
     Ok(())
 }
 
@@ -338,18 +374,18 @@ pub async fn create_changeset(
     .fetch_one(&mut *tx)
     .await
     .map_err(ApiError::database)?;
-    insert_history(
-        &mut tx,
-        &request.workspace_id,
-        &row.id,
-        None,
-        &row.status,
-        "agent",
-        None,
-    )
-    .await?;
+    let creation = StatusChange {
+        project_id: &project_id,
+        changeset_id: &row.id,
+        from: None,
+        to: &row.status,
+        actor: "agent",
+        reason: None,
+    };
+    insert_history(&mut tx, &request.workspace_id, creation).await?;
     let history = history_of(&mut tx, &row.id).await?;
     tx.commit().await.map_err(ApiError::database)?;
+    state.live.announce(&request.workspace_id, &project_id);
     Ok((
         StatusCode::CREATED,
         Json(ChangesetResponse {
@@ -483,7 +519,7 @@ impl Action {
 /// locked first, so of several requests that race for the same change set one
 /// makes the move and the rest find the new status and are refused. This is
 /// the one place where a status changes: the live events of US-017 are emitted
-/// from here.
+/// from here (through `insert_history`).
 async fn transition(
     state: &AppState,
     workspace_id: &str,
@@ -517,16 +553,15 @@ async fn transition(
         .execute(&mut *tx)
         .await
         .map_err(ApiError::database)?;
-    insert_history(
-        &mut tx,
-        workspace_id,
-        &changeset_id,
-        Some(&status),
+    let change = StatusChange {
+        project_id: &project_id,
+        changeset_id: &changeset_id,
+        from: Some(&status),
         to,
         actor,
         reason,
-    )
-    .await?;
+    };
+    insert_history(&mut tx, workspace_id, change).await?;
     let row: ChangesetRow = sqlx::query_as(&format!(
         "SELECT {CHANGESET_COLUMNS} FROM changesets WHERE id = $1::uuid"
     ))
@@ -536,6 +571,7 @@ async fn transition(
     .map_err(ApiError::database)?;
     let history = history_of(&mut tx, &changeset_id).await?;
     tx.commit().await.map_err(ApiError::database)?;
+    state.live.announce(workspace_id, &project_id);
     Ok(Json(ChangesetResponse {
         changeset: row.with_history(history),
     }))

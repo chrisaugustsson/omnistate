@@ -8,7 +8,7 @@ publish.workspace = true
 rust-version = "1.88"
 
 [dependencies]
-axum = "0.8"
+axum = { version = "0.8", features = ["ws"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "time", "signal"] }
 # The Compose network is trusted, so the connections use no TLS. migrate! embeds
 # the SQL files of migrations/ in the binary.
