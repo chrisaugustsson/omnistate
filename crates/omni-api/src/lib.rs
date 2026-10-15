@@ -7,11 +7,15 @@
 //! owner's login: it applies the migrations and sets the API role's password.
 
 pub mod auth;
+mod openapi;
+pub mod password;
 pub mod routes;
+mod session;
+pub mod setup;
 
 use axum::extract::State;
 use axum::http::StatusCode;
-use axum::routing::{any, get};
+use axum::routing::{any, get, post};
 use axum::{Json, Router};
 use s3::creds::Credentials;
 use s3::{Bucket, BucketConfiguration, Region};
@@ -60,12 +64,30 @@ impl Config {
 pub struct AppState {
     pool: PgPool,
     bucket: Box<Bucket>,
+    /// Decides who a login or a session cookie belongs to.
+    auth: Arc<dyn auth::AuthProvider>,
 }
 
 impl AppState {
     /// Prepares the connections. Postgres connects on first use, so the API
     /// starts (and reports the problem on /api/health) while it is still down.
     pub fn new(config: &Config) -> Result<Self, String> {
+        Self::build(config, None)
+    }
+
+    /// Like `new`, but every login and session check goes to `provider`
+    /// instead of the built-in password login.
+    pub fn with_auth_provider(
+        config: &Config,
+        provider: Arc<dyn auth::AuthProvider>,
+    ) -> Result<Self, String> {
+        Self::build(config, Some(provider))
+    }
+
+    fn build(
+        config: &Config,
+        provider: Option<Arc<dyn auth::AuthProvider>>,
+    ) -> Result<Self, String> {
         let pool = PgPoolOptions::new()
             .acquire_timeout(CHECK_TIMEOUT)
             .connect_lazy(&config.database_url)
@@ -73,16 +95,8 @@ impl AppState {
         let bucket = Bucket::new(&config.s3_bucket, region(config), credentials(config)?)
             .map_err(|e| format!("invalid storage settings: {e}"))?
             .with_path_style();
-        Ok(Self { pool, bucket })
-    }
-
-    /// Like `new`, but every login and session check goes to `provider`
-    /// instead of the built-in password login.
-    pub fn with_auth_provider(
-        _config: &Config,
-        _provider: Arc<dyn auth::AuthProvider>,
-    ) -> Result<Self, String> {
-        todo!("an AppState with a custom AuthProvider")
+        let auth = provider.unwrap_or_else(|| Arc::new(password::PasswordAuth::new(pool.clone())));
+        Ok(Self { pool, bucket, auth })
     }
 
     /// Creates the RustFS bucket if it does not exist yet, waiting up to
@@ -186,12 +200,24 @@ async fn check<T, E>(call: impl Future<Output = Result<T, E>>) -> bool {
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/api/health", get(health))
+        .route("/api/openapi.json", get(openapi::document))
+        .route("/api/v1/auth/login", post(session::login))
+        .route("/api/v1/auth/logout", post(session::logout))
+        .route("/api/v1/auth/me", get(session::me))
         .route("/ws/w/{workspace_id}", any(unauthorized))
         .fallback(not_found)
         .with_state(state)
 }
 
 /// Reports whether the API can reach Postgres and the RustFS bucket.
+#[utoipa::path(
+    get,
+    path = "/api/health",
+    responses(
+        (status = 200, description = "Postgres and the RustFS bucket are reachable"),
+        (status = 503, description = "One of them is not; the body says which"),
+    )
+)]
 async fn health(State(state): State<AppState>) -> (StatusCode, Json<Value>) {
     let (database, storage) = tokio::join!(state.database_ok(), state.bucket_exists());
     let word = |ok: bool| if ok { "ok" } else { "error" };

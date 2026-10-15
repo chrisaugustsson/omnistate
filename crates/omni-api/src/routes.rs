@@ -17,7 +17,21 @@ pub struct RouteEntry {
     pub access: Access,
 }
 
-/// Every HTTP route that the router serves.
+/// Every HTTP route that the router serves. A new route is added here and in
+/// `router`; the OpenAPI document picks the access up from this list.
 pub fn registry() -> Vec<RouteEntry> {
-    todo!("the route registry")
+    [
+        ("GET", "/api/health", Access::Both),
+        ("GET", "/api/openapi.json", Access::Both),
+        ("POST", "/api/v1/auth/login", Access::Human),
+        ("POST", "/api/v1/auth/logout", Access::Human),
+        ("GET", "/api/v1/auth/me", Access::Human),
+    ]
+    .into_iter()
+    .map(|(method, path, access)| RouteEntry {
+        method: method.to_string(),
+        path: path.to_string(),
+        access,
+    })
+    .collect()
 }

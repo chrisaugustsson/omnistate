@@ -1,4 +1,5 @@
-use omni_api::{AppState, Config};
+use omni_api::{AppState, Config, setup};
+use std::io::BufRead;
 
 #[tokio::main]
 async fn main() {
@@ -9,6 +10,34 @@ async fn main() {
 }
 
 async fn run() -> Result<(), String> {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    match args.first().map(String::as_str) {
+        None => serve().await,
+        Some("setup") => first_run_setup(&args[1..]).await,
+        Some(other) => Err(format!("unknown command {other}")),
+    }
+}
+
+/// Creates the first user, password and workspace; the password is the first
+/// line of standard input, so it never shows up in the process list.
+async fn first_run_setup(args: &[String]) -> Result<(), String> {
+    let setup_args = setup::parse_args(args)?;
+    let config = Config::from_env()?;
+    let mut line = String::new();
+    std::io::stdin()
+        .lock()
+        .read_line(&mut line)
+        .map_err(|e| format!("cannot read the password from standard input: {e}"))?;
+    let password = line.trim_end_matches(['\n', '\r']);
+    setup::run(&config, &setup_args, password).await?;
+    println!(
+        "Created {} with the workspace {}.",
+        setup_args.email, setup_args.workspace
+    );
+    Ok(())
+}
+
+async fn serve() -> Result<(), String> {
     let config = Config::from_env()?;
     omni_api::migrate(&config, 60).await?;
     let state = AppState::new(&config)?;
