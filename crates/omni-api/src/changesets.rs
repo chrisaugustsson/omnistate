@@ -4,8 +4,11 @@
 //! (submit, reopen, abandon); only the human rejects, and must give a reason.
 //! Nothing is deleted: an abandoned change set stays listed and shown.
 //!
-//! The statuses involving `approved`, `needs_rebase` and `merged` come with
-//! US-025 and US-026; the database already accepts them.
+//! The human approves a change set in review (US-025). Approving records the
+//! latest saved version of each changed doc and merges them at once when every
+//! doc's base is still its mainline version, else the change set needs a rebase
+//! (US-026). The server, not a request, makes both of those moves, so its
+//! history entries carry the actor `system`.
 
 use crate::AppState;
 use crate::live;
@@ -85,6 +88,13 @@ pub struct HistoryEntry {
     pub at: String,
 }
 
+/// The version of a doc that the human approved.
+#[derive(Serialize, ToSchema, sqlx::FromRow)]
+pub struct ApprovedVersion {
+    pub doc_id: String,
+    pub version_id: String,
+}
+
 #[derive(Serialize, ToSchema)]
 pub struct ChangesetBody {
     pub id: String,
@@ -97,6 +107,10 @@ pub struct ChangesetBody {
     pub created_at: String,
     /// The status changes, oldest first.
     pub history: Vec<HistoryEntry>,
+    /// What the human approved: the latest version saved in the change set
+    /// for each doc that has one, removals included. Empty while the change
+    /// set has no approval (saving a version clears it).
+    pub approved_versions: Vec<ApprovedVersion>,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -117,6 +131,14 @@ struct ListedEntry {
     entry: HistoryEntry,
 }
 
+/// An approved version with the change set it belongs to, for the list.
+#[derive(sqlx::FromRow)]
+struct ListedApproval {
+    changeset_id: String,
+    #[sqlx(flatten)]
+    approved: ApprovedVersion,
+}
+
 #[derive(sqlx::FromRow)]
 struct ChangesetRow {
     id: String,
@@ -129,7 +151,11 @@ struct ChangesetRow {
 }
 
 impl ChangesetRow {
-    fn with_history(self, history: Vec<HistoryEntry>) -> ChangesetBody {
+    fn into_body(
+        self,
+        history: Vec<HistoryEntry>,
+        approved_versions: Vec<ApprovedVersion>,
+    ) -> ChangesetBody {
         ChangesetBody {
             id: self.id,
             project_id: self.project_id,
@@ -139,6 +165,7 @@ impl ChangesetRow {
             run_tag: self.run_tag,
             created_at: self.created_at,
             history,
+            approved_versions,
         }
     }
 }
@@ -273,6 +300,20 @@ async fn history_of(
     .map_err(ApiError::database)
 }
 
+async fn approved_of(
+    tx: &mut Transaction<'static, Postgres>,
+    changeset_id: &str,
+) -> Result<Vec<ApprovedVersion>, ApiError> {
+    sqlx::query_as(
+        "SELECT doc_id::text AS doc_id, version_id::text AS version_id FROM approvals \
+         WHERE changeset_id = $1::uuid AND NOT cleared ORDER BY created_at, id",
+    )
+    .bind(changeset_id)
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(ApiError::database)
+}
+
 /// One move of a change set along the lifecycle, as the history keeps it.
 struct StatusChange<'a> {
     project_id: &'a str,
@@ -390,7 +431,7 @@ pub async fn create_changeset(
     Ok((
         StatusCode::CREATED,
         Json(ChangesetResponse {
-            changeset: row.with_history(history),
+            changeset: row.into_body(history, Vec::new()),
         }),
     ))
 }
@@ -435,6 +476,16 @@ pub async fn list_changesets(
     .fetch_all(&mut *tx)
     .await
     .map_err(ApiError::database)?;
+    let approvals: Vec<ListedApproval> = sqlx::query_as(
+        "SELECT changeset_id::text AS changeset_id, doc_id::text AS doc_id, \
+         version_id::text AS version_id FROM approvals \
+         WHERE NOT cleared AND changeset_id IN (SELECT id FROM changesets WHERE project_id = $1::uuid) \
+         ORDER BY created_at, id",
+    )
+    .bind(&project_id)
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(ApiError::database)?;
     tx.commit().await.map_err(ApiError::database)?;
     let mut histories: HashMap<String, Vec<HistoryEntry>> = HashMap::new();
     for listed in entries {
@@ -443,11 +494,19 @@ pub async fn list_changesets(
             .or_default()
             .push(listed.entry);
     }
+    let mut approved: HashMap<String, Vec<ApprovedVersion>> = HashMap::new();
+    for listed in approvals {
+        approved
+            .entry(listed.changeset_id)
+            .or_default()
+            .push(listed.approved);
+    }
     let changesets = rows
         .into_iter()
         .map(|row| {
             let history = histories.remove(&row.id).unwrap_or_default();
-            row.with_history(history)
+            let approved = approved.remove(&row.id).unwrap_or_default();
+            row.into_body(history, approved)
         })
         .collect();
     Ok(Json(ChangesetListResponse { changesets }))
@@ -486,9 +545,10 @@ pub async fn show_changeset(
     .map_err(ApiError::database)?
     .ok_or(ApiError::NotFound)?;
     let history = history_of(&mut tx, &row.id).await?;
+    let approved = approved_of(&mut tx, &row.id).await?;
     tx.commit().await.map_err(ApiError::database)?;
     Ok(Json(ChangesetResponse {
-        changeset: row.with_history(history),
+        changeset: row.into_body(history, approved),
     }))
 }
 
@@ -571,10 +631,11 @@ async fn transition(
     .await
     .map_err(ApiError::database)?;
     let history = history_of(&mut tx, &changeset_id).await?;
+    let approved = approved_of(&mut tx, &changeset_id).await?;
     tx.commit().await.map_err(ApiError::database)?;
     state.live.announce(workspace_id, &project_id);
     Ok(Json(ChangesetResponse {
-        changeset: row.with_history(history),
+        changeset: row.into_body(history, approved),
     }))
 }
 
@@ -604,6 +665,13 @@ pub(crate) async fn clear_approval(
         .execute(&mut **tx)
         .await
         .map_err(ApiError::database)?;
+    sqlx::query(
+        "UPDATE approvals SET cleared = true WHERE changeset_id = $1::uuid AND NOT cleared",
+    )
+    .bind(changeset_id)
+    .execute(&mut **tx)
+    .await
+    .map_err(ApiError::database)?;
     let change = StatusChange {
         project_id,
         changeset_id,
@@ -689,6 +757,186 @@ pub async fn reject(
         reason.as_deref(),
     )
     .await
+}
+
+/// A doc that the change set changes, with the version that the human sees
+/// and what its base is compared with.
+#[derive(sqlx::FromRow)]
+struct MergeCandidate {
+    mainline_version_id: Option<String>,
+    base_version_id: Option<String>,
+}
+
+/// Approves a change set that is in review: records the latest saved version
+/// of each changed doc, then merges them when every doc's base is still its
+/// mainline version, or moves the change set to `needs_rebase` when one is not
+/// (nothing merges then). The change set row is locked first, so only one
+/// request decides its fate, and the docs are locked in ID order, so of two
+/// change sets on the same base that are approved at once the first merges and
+/// the second finds the new mainline and needs a rebase. Both moves are made by
+/// the server (actor `system`) in the transaction of the approval.
+#[utoipa::path(
+    post,
+    path = "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/approve",
+    params(
+        ("workspace_id" = String, Path, description = "The workspace's UUID"),
+        ("project_id" = String, Path, description = "The project's UUID"),
+        ("changeset_id" = String, Path, description = "The change set's UUID"),
+    ),
+    responses(
+        (status = 200, description = "The change set, `merged` or `needs_rebase`", body = ChangesetResponse),
+        (status = 401, description = "No valid session", body = ErrorBody),
+        (status = 403, description = "Called with an API key; human only", body = ErrorBody),
+        (status = 404, description = "No such change set in this project and workspace", body = ErrorBody),
+        (status = 409, description = "The change set is not `in_review`", body = ErrorBody),
+    )
+)]
+pub async fn approve(
+    State(state): State<AppState>,
+    request: HumanRequest,
+    Path((_, project_id, changeset_id)): Path<(String, String, String)>,
+) -> Result<Json<ChangesetResponse>, ApiError> {
+    let workspace_id = &request.workspace_id;
+    let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
+    let changeset_id = parse_uuid(&changeset_id).ok_or(ApiError::NotFound)?;
+    let mut tx = state.workspace_tx(workspace_id).await?;
+    // NO KEY UPDATE keeps out the other moves of this change set but not the
+    // saves of versions, whose foreign keys only share the row.
+    let status: String = sqlx::query_scalar(
+        "SELECT status FROM changesets WHERE id = $1::uuid AND project_id = $2::uuid \
+         FOR NO KEY UPDATE",
+    )
+    .bind(&changeset_id)
+    .bind(&project_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(ApiError::database)?
+    .ok_or(ApiError::NotFound)?;
+    if status != "in_review" {
+        return Err(ApiError::conflict("invalid_transition"));
+    }
+
+    // The latest version saved for each doc, in doc order.
+    let approved: Vec<ApprovedVersion> = sqlx::query_as(
+        "SELECT DISTINCT ON (doc_id) doc_id::text AS doc_id, id::text AS version_id \
+         FROM versions WHERE changeset_id = $1::uuid \
+         ORDER BY doc_id, created_at DESC, id DESC",
+    )
+    .bind(&changeset_id)
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(ApiError::database)?;
+    let docs: Vec<&str> = approved.iter().map(|a| a.doc_id.as_str()).collect();
+    let versions: Vec<&str> = approved.iter().map(|a| a.version_id.as_str()).collect();
+    sqlx::query(
+        "INSERT INTO approvals (workspace_id, changeset_id, doc_id, version_id) \
+         SELECT $1::uuid, $2::uuid, doc, version \
+         FROM unnest($3::text[]::uuid[], $4::text[]::uuid[]) AS a (doc, version)",
+    )
+    .bind(workspace_id)
+    .bind(&changeset_id)
+    .bind(&docs)
+    .bind(&versions)
+    .execute(&mut *tx)
+    .await
+    .map_err(ApiError::database)?;
+    move_status(
+        &mut tx,
+        workspace_id,
+        &project_id,
+        &changeset_id,
+        "in_review",
+        "approved",
+        "human",
+    )
+    .await?;
+
+    // The docs stay locked until the commit, so no other merge slips in
+    // between this check and the new mainline versions.
+    let candidates: Vec<MergeCandidate> = sqlx::query_as(
+        "SELECT d.mainline_version_id::text AS mainline_version_id, \
+                dr.base_version_id::text AS base_version_id \
+         FROM docs d \
+         LEFT JOIN drafts dr ON dr.workspace_id = d.workspace_id AND dr.doc_id = d.id \
+                            AND dr.changeset_id = $2::uuid \
+         WHERE d.id = ANY($1::text[]::uuid[]) ORDER BY d.id FOR NO KEY UPDATE OF d",
+    )
+    .bind(&docs)
+    .bind(&changeset_id)
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(ApiError::database)?;
+    let outdated = candidates
+        .iter()
+        .any(|c| c.base_version_id != c.mainline_version_id);
+    let to = if outdated {
+        "needs_rebase"
+    } else {
+        sqlx::query(
+            "UPDATE docs SET mainline_version_id = a.version \
+             FROM unnest($1::text[]::uuid[], $2::text[]::uuid[]) AS a (doc, version) \
+             WHERE docs.id = a.doc",
+        )
+        .bind(&docs)
+        .bind(&versions)
+        .execute(&mut *tx)
+        .await
+        .map_err(ApiError::database)?;
+        "merged"
+    };
+    move_status(
+        &mut tx,
+        workspace_id,
+        &project_id,
+        &changeset_id,
+        "approved",
+        to,
+        "system",
+    )
+    .await?;
+
+    let row: ChangesetRow = sqlx::query_as(&format!(
+        "SELECT {CHANGESET_COLUMNS} FROM changesets WHERE id = $1::uuid"
+    ))
+    .bind(&changeset_id)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(ApiError::database)?;
+    let history = history_of(&mut tx, &changeset_id).await?;
+    let approved = approved_of(&mut tx, &changeset_id).await?;
+    tx.commit().await.map_err(ApiError::database)?;
+    state.live.announce(workspace_id, &project_id);
+    Ok(Json(ChangesetResponse {
+        changeset: row.into_body(history, approved),
+    }))
+}
+
+/// Sets the status of a change set whose row the transaction has locked and
+/// records the move.
+async fn move_status(
+    tx: &mut Transaction<'static, Postgres>,
+    workspace_id: &str,
+    project_id: &str,
+    changeset_id: &str,
+    from: &str,
+    to: &str,
+    actor: &str,
+) -> Result<(), ApiError> {
+    sqlx::query("UPDATE changesets SET status = $2 WHERE id = $1::uuid")
+        .bind(changeset_id)
+        .bind(to)
+        .execute(&mut **tx)
+        .await
+        .map_err(ApiError::database)?;
+    let change = StatusChange {
+        project_id,
+        changeset_id,
+        from: Some(from),
+        to,
+        actor,
+        reason: None,
+    };
+    insert_history(tx, workspace_id, change).await
 }
 
 /// Reopens a rejected change set so the agent can rework it.

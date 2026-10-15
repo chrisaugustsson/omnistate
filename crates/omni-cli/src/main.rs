@@ -17,11 +17,9 @@ mod identity;
 mod json;
 mod toml;
 mod versions;
+mod wait;
 
 use std::process::ExitCode;
-
-/// Exit codes of `omni`; `HELP` documents them.
-const FAILURE: u8 = 1;
 
 pub const HELP: &str = "\
 omni - the OmniState command line for agents
@@ -59,6 +57,9 @@ Usage:
                                       unchangeable snapshot; prints the version's ID
   omni version diff <a> <b>           list the nodes added, removed, changed and moved from
                                       version <a> to version <b> of a doc
+  omni wait --changeset <id> --until approved|rejected|merged|needs_rebase [--timeout <s>]
+                                      wait until the change set is approved (by the human),
+                                      rejected, merged or needs a rebase; prints its status
   omni claim <node> --changeset <id>  claim a board or section of the change set's draft, so
                                       that no other agent changes it; a claim lasts 10 minutes
                                       after your last operation in the draft
@@ -79,7 +80,9 @@ Options (before or after the command):
   --body-file <path>    send this file as the request body (for a change set: its
                         description; for `doc edit`: the operations); - reads
                         standard input
-  --changeset <id>      the change set a doc, claim or release command works in
+  --changeset <id>      the change set a doc, claim, release or wait command works in
+  --until <status>      the status `omni wait` waits for
+  --timeout <seconds>   how long `omni wait` waits; without it, as long as it takes
   --json                print the full JSON instead of short text
   -h, --help            show this help
   -V, --version         show the version
@@ -99,7 +102,8 @@ Exit codes:
   0  success
   1  the command failed: usage, login, network or API error (the message says which)
   2  `omni wait` timed out before its condition was met
-  3  `omni wait`: the condition can no longer be met
+  3  `omni wait`: the condition can no longer be met (the change set is abandoned, or
+     merged while you wait for rejected or needs_rebase)
 ";
 
 fn main() -> ExitCode {
@@ -107,7 +111,7 @@ fn main() -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("omni: {error}");
-            ExitCode::from(FAILURE)
+            ExitCode::from(error.code())
         }
     }
 }

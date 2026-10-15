@@ -117,14 +117,14 @@ pub(crate) fn project_id(args: &Args, agent: &Agent) -> Result<String> {
 
 // Change sets -------------------------------------------------------------------
 
-fn changesets_path(agent: &Agent, project_id: &str) -> String {
+pub(crate) fn changesets_path(agent: &Agent, project_id: &str) -> String {
     format!(
         "/api/v1/w/{}/projects/{project_id}/changesets",
         agent.workspace_id
     )
 }
 
-fn changeset_id(id: &str) -> Result<String> {
+pub(crate) fn changeset_id(id: &str) -> Result<String> {
     if is_uuid(id) {
         Ok(id.to_ascii_lowercase())
     } else {
@@ -133,7 +133,7 @@ fn changeset_id(id: &str) -> Result<String> {
 }
 
 /// One line: ID, status and title.
-fn summary(changeset: &Value) -> String {
+pub(crate) fn summary(changeset: &Value) -> String {
     let field = |name: &str| changeset.str_at(name).unwrap_or("?");
     format!("{}  {}  {}", field("id"), field("status"), field("title"))
 }

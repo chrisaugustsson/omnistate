@@ -279,6 +279,10 @@ pub fn router(state: AppState) -> Router {
             post(changesets::reject),
         )
         .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/approve",
+            post(changesets::approve),
+        )
+        .route(
             "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/reopen",
             post(changesets::reopen),
         )

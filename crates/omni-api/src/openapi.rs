@@ -6,9 +6,9 @@
 use crate::api_keys::{ApiKeyBody, CreatedKeyResponse, KeyListResponse, KeyResponse};
 use crate::attachments::{AttachmentBody, AttachmentResponse};
 use crate::changesets::{
-    ChangesetBody, ChangesetListResponse, ChangesetResponse, CreateChangesetRequest,
-    CreateProjectRequest, HistoryEntry, ProjectBody, ProjectListResponse, ProjectResponse,
-    RejectRequest,
+    ApprovedVersion, ChangesetBody, ChangesetListResponse, ChangesetResponse,
+    CreateChangesetRequest, CreateProjectRequest, HistoryEntry, ProjectBody, ProjectListResponse,
+    ProjectResponse, RejectRequest,
 };
 use crate::claims::{ClaimBody, ClaimRequest, ClaimResponse, ClaimedBody};
 use crate::docs::{
@@ -53,6 +53,7 @@ use utoipa::OpenApi;
         crate::changesets::show_changeset,
         crate::changesets::submit,
         crate::changesets::reject,
+        crate::changesets::approve,
         crate::changesets::reopen,
         crate::changesets::abandon,
         crate::attachments::upload,
@@ -90,6 +91,7 @@ use utoipa::OpenApi;
         CreateChangesetRequest,
         RejectRequest,
         HistoryEntry,
+        ApprovedVersion,
         ChangesetBody,
         ChangesetResponse,
         ChangesetListResponse,

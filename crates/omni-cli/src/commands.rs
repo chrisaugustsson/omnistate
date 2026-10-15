@@ -17,6 +17,7 @@ use crate::http::{self, Response, Server};
 use crate::identity::Identity;
 use crate::json::{Value, quote};
 use crate::versions;
+use crate::wait;
 use std::io::{BufRead, IsTerminal, Read, Write};
 use std::process::{Command, Stdio};
 
@@ -82,6 +83,8 @@ pub fn run(args: &Args) -> Result<()> {
         ["version", "diff", from] => versions::diff(args, Some(from), None),
         ["version", "diff", from, to] => versions::diff(args, Some(from), Some(to)),
         ["version", ..] => bail!("usage: omni version save|diff; see `omni --help`"),
+        ["wait"] => wait::run(args),
+        ["wait", ..] => bail!("usage: omni wait --changeset <id> --until <status> [--timeout <s>]"),
         ["claim"] => claims::take(args, None),
         ["claim", node] => claims::take(args, Some(node)),
         ["claim", ..] => bail!("usage: omni claim <node> --changeset <id>"),
