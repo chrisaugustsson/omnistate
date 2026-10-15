@@ -104,6 +104,12 @@ impl AppState {
         Self::build_over(config, pool, None)
     }
 
+    /// Sets how long a claim lasts without an operation from its holder in its
+    /// draft (US-023). Without it a claim lasts 10 minutes.
+    pub fn with_claim_ttl(self, _ttl: std::time::Duration) -> Self {
+        todo!("US-023: claims")
+    }
+
     fn build(
         config: &Config,
         provider: Option<Arc<dyn auth::AuthProvider>>,

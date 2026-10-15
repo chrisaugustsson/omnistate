@@ -19,7 +19,9 @@
 //!   `{doc_id}`, which the suite fills with the IDs of the seeded records; a
 //!   path with another placeholder, or a registry route without a case, fails
 //!   the suite. The seeded doc (US-022) was created in the open change set
-//!   `{changeset_id}`, which has its draft, and has one applied operation.
+//!   `{changeset_id}`, which has its draft, and has one applied operation;
+//!   once the claim routes exist (US-023), the draft also has a section that
+//!   the workspace's agent claimed.
 //! - Workspace A's credentials against workspace B's workspace and IDs, and
 //!   against B's IDs under A's own workspace, are always 404
 //!   `{"error": "not_found"}` with nothing of B in the body, and the answer is
@@ -265,6 +267,18 @@ const CASES: &[Case] = &[
         Some(
             r#"{"ops":[{"op":"insert","parent":null,"position":{"after":null},"content":"<p>intruder</p>"}]}"#,
         ),
+        Kind::Workspace,
+    ),
+    case(
+        "POST",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/claims",
+        Some(r#"{"node":"zzzzzzzz"}"#),
+        Kind::Workspace,
+    ),
+    case(
+        "POST",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/claims/release",
+        Some(r#"{"node":"zzzzzzzz"}"#),
         Kind::Workspace,
     ),
 ];
@@ -517,6 +531,15 @@ fn has_doc_routes() -> bool {
         r.method == "POST"
             && r.path
                 == "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs"
+    })
+}
+
+/// Whether the router has the claim routes (US-023) yet.
+fn has_claim_routes() -> bool {
+    registry().iter().any(|r| {
+        r.method == "POST"
+            && r.path
+                == "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/claims"
     })
 }
 
@@ -822,6 +845,43 @@ fn fixture() -> &'static Fixture {
                     200,
                     "edit the doc's draft",
                 );
+                // US-023: a section of the draft that the agent claims, so
+                // whatever holds claims has rows of the workspace. Seeded as
+                // soon as the registry has the claim routes.
+                if has_claim_routes() {
+                    let ops = json!({ "ops": [{
+                        "op": "insert",
+                        "parent": null,
+                        "position": { "after": null },
+                        "content": "<section><h2>Claimed</h2></section>"
+                    }] })
+                    .to_string();
+                    let inserted = must(
+                        call(
+                            client,
+                            "POST",
+                            &format!("{changesets}/{changeset_id}/docs/{doc_id}/ops"),
+                            &agent,
+                            Some(&ops),
+                        ),
+                        200,
+                        "add a section to the doc's draft",
+                    );
+                    let section = inserted["results"][0]["node"]
+                        .as_str()
+                        .expect("the new section");
+                    must(
+                        call(
+                            client,
+                            "POST",
+                            &format!("{changesets}/{changeset_id}/claims"),
+                            &agent,
+                            Some(&json!({ "node": section }).to_string()),
+                        ),
+                        201,
+                        "claim the section",
+                    );
+                }
                 (doc_id, doc_title, doc_text)
             } else {
                 (String::new(), String::new(), String::new())
@@ -1445,6 +1505,65 @@ fn the_calls_of_the_attacks_work_for_the_workspace_that_owns_the_records() {
             "read mainline",
         );
     }
+}
+
+#[test]
+fn the_claim_calls_of_the_attacks_work_for_the_workspace_that_owns_the_records() {
+    // The control for the claim routes (US-023): the owner's agent claims and
+    // releases a section of its own draft.
+    let (f, client) = ready();
+    let _guard = serial();
+    let key = Auth::Key(&f.a.key);
+    let draft = format!(
+        "/api/v1/w/{}/projects/{}/changesets/{}/docs/{}",
+        f.a.id, f.a.project_id, f.a.changeset_id, f.a.doc_id
+    );
+    let ops = json!({ "ops": [{
+        "op": "insert",
+        "parent": null,
+        "position": { "after": null },
+        "content": "<section><h2>Owner</h2></section>"
+    }] })
+    .to_string();
+    let inserted = must(
+        call(client, "POST", &format!("{draft}/ops"), &key, Some(&ops)),
+        200,
+        "add a section",
+    );
+    let section = inserted["results"][0]["node"]
+        .as_str()
+        .expect("the new section");
+    let body = json!({ "node": section }).to_string();
+    let claims = case_named(
+        "POST",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/claims",
+    );
+    must(
+        call(
+            client,
+            "POST",
+            &fill(claims.path, &f.a, &f.a),
+            &key,
+            Some(&body),
+        ),
+        201,
+        "claim the section",
+    );
+    let release = case_named(
+        "POST",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/claims/release",
+    );
+    must(
+        call(
+            client,
+            "POST",
+            &fill(release.path, &f.a, &f.a),
+            &key,
+            Some(&body),
+        ),
+        200,
+        "release the claim",
+    );
 }
 
 #[test]

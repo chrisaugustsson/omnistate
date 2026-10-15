@@ -5,8 +5,9 @@
 //! The tests migrate a scratch database, seed a workspace with an API key (the
 //! agent), create a scratch RustFS bucket and serve the API's router on a local
 //! port against both. The built `omni` runs against that address with the key
-//! in its config file. The contract of the CLI is in tests/docs.rs, and the
-//! API's in crates/omni-api/tests/docs.rs.
+//! in its config file. The contract of the CLI is in tests/docs.rs and
+//! tests/claims.rs (US-023), and the API's in crates/omni-api/tests/docs.rs and
+//! crates/omni-api/tests/claims.rs.
 
 mod common;
 
@@ -509,5 +510,149 @@ fn two_agents_edit_different_nodes_of_one_draft_at_the_same_time() {
         vec![Some((ROUNDS + 1).to_string()); 2],
         "{:?}",
         read.stdout
+    );
+}
+
+/// Seconds since the epoch of an RFC 3339 time, as Postgres reads it.
+fn epoch(time: &Value) -> f64 {
+    let time = time
+        .as_str()
+        .unwrap_or_else(|| panic!("a time is a string: {time}"));
+    block(async {
+        let mut conn = admin_connection().await;
+        sqlx::query_scalar::<_, f64>("select extract(epoch from $1::text::timestamptz)::float8")
+            .bind(time)
+            .fetch_one(&mut conn)
+            .await
+            .unwrap_or_else(|e| panic!("{time:?} is not a time: {e}"))
+    })
+}
+
+/// The names of the live events of a project with that change set and node.
+fn claim_events(changeset: &str, node: &str) -> Vec<String> {
+    block(async {
+        let mut conn = admin_connection().await;
+        sqlx::query_scalar::<_, String>(
+            "select event from live_events \
+             where event like 'claim.%' and data->>'changeset_id' = $1 and data->>'node' = $2 \
+             order by seq",
+        )
+        .bind(changeset)
+        .bind(node)
+        .fetch_all(&mut conn)
+        .await
+        .unwrap_or_else(|e| panic!("read the live events: {e}"))
+    })
+}
+
+#[test]
+fn an_agent_claims_a_section_and_another_agent_cannot_change_it_until_it_is_released() {
+    // US-023: claims through the command line, with the default claim TTL.
+    let f = fixture();
+    let home = agent_home(f);
+    let (project, changeset, created) = project_with_doc(&home);
+    let doc = created["doc"]["id"].as_str().unwrap().to_string();
+    let common = [
+        "--changeset",
+        changeset.as_str(),
+        "--project",
+        project.as_str(),
+    ];
+    let ops = json!([{
+        "op": "insert",
+        "parent": null,
+        "position": { "after": null },
+        "content": "<section><h2>Pricing</h2><p>Pay monthly.</p></section>"
+    }]);
+    let edited = run_as(
+        &home,
+        "run-7/author",
+        &[&["doc", "edit", &doc][..], &common, &["--json"]].concat(),
+        ops.to_string().as_bytes(),
+    );
+    assert_eq!(edited.code, 0, "{}", edited.stderr);
+    let created_ids: Vec<String> = edited.json()["results"][0]["created"]
+        .as_array()
+        .expect("the IDs of the new nodes")
+        .iter()
+        .map(|id| id.as_str().expect("a node ID").to_string())
+        .collect();
+    assert_eq!(created_ids.len(), 3, "{created_ids:?}");
+    let (section, paragraph) = (created_ids[0].clone(), created_ids[2].clone());
+
+    // The author claims the section; a claim lasts 10 minutes by default.
+    let claimed = run(
+        &home,
+        &[&["claim", &section][..], &common, &["--json"]].concat(),
+    );
+    assert_eq!(claimed.code, 0, "{}", claimed.stderr);
+    let claim = claimed.json()["claim"].clone();
+    assert_eq!(claim["node"], section.as_str(), "{claim}");
+    let ttl = epoch(&claim["expires_at"]) - epoch(&claim["taken_at"]);
+    assert!(
+        (595.0..=605.0).contains(&ttl),
+        "a claim lasts 10 minutes, not {ttl} s: {claim}"
+    );
+
+    // Another agent can neither claim nor change it, and is told who holds it.
+    let refused = run_as(
+        &home,
+        "run-8/editor",
+        &[&["claim", &section][..], &common].concat(),
+        b"",
+    );
+    assert_ne!(refused.code, 0, "{:?}", refused.stdout);
+    assert_eq!(refused.stderr_lines().len(), 1, "{:?}", refused.stderr);
+    assert!(
+        refused.stderr.contains("run-7/author"),
+        "{:?}",
+        refused.stderr
+    );
+    let change = json!([{ "op": "set", "node": paragraph, "rev": 1, "properties": { "html": "Pay yearly." } }]);
+    let refused = run_as(
+        &home,
+        "run-8/editor",
+        &[&["doc", "edit", &doc][..], &common].concat(),
+        change.to_string().as_bytes(),
+    );
+    assert_ne!(refused.code, 0, "{:?}", refused.stdout);
+    assert_eq!(refused.stderr_lines().len(), 1, "{:?}", refused.stderr);
+    assert!(
+        refused.stderr.contains("run-7/author"),
+        "{:?}",
+        refused.stderr
+    );
+
+    // The claim shows in doc show.
+    let shown = run(&home, &["doc", "show", &doc, "--project", &project]);
+    assert_eq!(shown.code, 0, "{}", shown.stderr);
+    assert!(
+        non_empty_lines(&shown.stdout)
+            .iter()
+            .any(|l| l.contains(&section) && l.contains("run-7/author")),
+        "{:?}",
+        shown.stdout
+    );
+
+    // Released, the section is free again.
+    let released = run(&home, &[&["release", &section][..], &common].concat());
+    assert_eq!(released.code, 0, "{}", released.stderr);
+    let applied = run_as(
+        &home,
+        "run-8/editor",
+        &[&["doc", "edit", &doc][..], &common].concat(),
+        change.to_string().as_bytes(),
+    );
+    assert_eq!(applied.code, 0, "{}", applied.stderr);
+    let shown = run(&home, &["doc", "show", &doc, "--project", &project]);
+    assert_eq!(shown.code, 0, "{}", shown.stderr);
+    assert!(
+        !shown.stdout.contains("run-7/author"),
+        "a released claim no longer shows: {:?}",
+        shown.stdout
+    );
+    assert_eq!(
+        claim_events(&changeset, &section),
+        ["claim.taken", "claim.released"]
     );
 }

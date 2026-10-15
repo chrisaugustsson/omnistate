@@ -468,6 +468,28 @@ async fn fill_workspace(conn: &mut PgConnection, workspace: &str, membership: &s
         .execute(&mut *conn)
         .await
         .expect("insert an operation of the draft's log");
+
+        // US-023: a claim on a node of the draft. Claims may live in memory;
+        // if they live in the tenant table `claims` (tests/claims.rs pins its
+        // name and the columns without a default), it is seeded as soon as it
+        // exists, for the same reason as above.
+        let claims_exist: bool =
+            sqlx::query_scalar("SELECT to_regclass('public.claims') IS NOT NULL")
+                .fetch_one(&mut *conn)
+                .await
+                .expect("look for the claims table");
+        if claims_exist {
+            sqlx::query(
+                "INSERT INTO claims (workspace_id, draft_id, node, agent) \
+                 VALUES ($1::uuid, $2::uuid, 'k3f9x2qa', $3::jsonb)",
+            )
+            .bind(workspace)
+            .bind(&draft_id)
+            .bind(r#"{"run":"run-1","role":"writer","model":null,"harness":null}"#)
+            .execute(&mut *conn)
+            .await
+            .expect("insert a claim");
+        }
     }
 }
 
