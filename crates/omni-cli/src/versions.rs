@@ -148,6 +148,11 @@ pub fn diff(args: &Args, from: Option<&str>, to: Option<&str>) -> Result<()> {
                     "  to {}",
                     node.str_at("to_parent").unwrap_or("the top level")
                 ));
+                match node.get("to_after") {
+                    Some(Value::String(after)) => line.push_str(&format!(" after {after}")),
+                    Some(Value::Null) => line.push_str(" first"),
+                    _ => {}
+                }
             }
             say(&line);
             lines += 1;

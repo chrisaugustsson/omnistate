@@ -24,7 +24,7 @@ use axum::http::StatusCode;
 use omni_core::ops::IndexedNode;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use utoipa::ToSchema;
 
 /// The columns of a version; `created_at` is ISO 8601 text in UTC.
@@ -70,7 +70,8 @@ pub struct VersionResponse {
     pub version: VersionBody,
 }
 
-/// A node that moved to another parent.
+/// A node whose place differs: it moved to another parent, or its order among
+/// the siblings that keep their parent changed.
 #[derive(Serialize, ToSchema)]
 pub struct MovedNode {
     pub id: String,
@@ -78,6 +79,12 @@ pub struct MovedNode {
     pub kind: String,
     pub from_parent: Option<String>,
     pub to_parent: Option<String>,
+    /// The sibling the node follows in the first version; `null` for a first
+    /// child.
+    pub from_after: Option<String>,
+    /// The sibling the node follows in the second version; `null` for a first
+    /// child.
+    pub to_after: Option<String>,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -91,7 +98,9 @@ pub struct DiffBody {
     pub removed: Vec<NodeEntry>,
     /// The nodes of both whose own content differs, as in the second version.
     pub changed: Vec<NodeEntry>,
-    /// The nodes of both whose parent differs.
+    /// The nodes of both whose place differs: another parent, or, for a
+    /// reorder among the siblings that keep their parent, the fewest nodes
+    /// that account for it.
     pub moved: Vec<MovedNode>,
 }
 
@@ -487,7 +496,8 @@ pub async fn show_version(
 
 /// What differs between two versions of one doc, from the first to the second:
 /// the nodes added and removed, the nodes of both whose own content changed,
-/// and the nodes of both that moved to another parent.
+/// and the nodes of both that moved to another parent or to another place
+/// among their siblings.
 #[utoipa::path(
     get,
     path = "/api/v1/w/{workspace_id}/projects/{project_id}/versions/{version_id}/diff/{other_version_id}",
@@ -555,15 +565,20 @@ fn compare(
         })
         .cloned()
         .collect();
+    let was_after = preceding_siblings(&before);
+    let is_after = preceding_siblings(&after);
+    let reordered = reordered(&before, &after, &was);
     let moved = after
         .iter()
         .filter_map(|n| {
             let w = was.get(n.id.as_str())?;
-            (w.parent != n.parent).then(|| MovedNode {
+            (w.parent != n.parent || reordered.contains(n.id.as_str())).then(|| MovedNode {
                 id: n.id.clone(),
                 kind: n.kind.clone(),
                 from_parent: w.parent.clone(),
                 to_parent: n.parent.clone(),
+                from_after: was_after[n.id.as_str()].map(str::to_string),
+                to_after: is_after[n.id.as_str()].map(str::to_string),
             })
         })
         .collect();
@@ -576,6 +591,86 @@ fn compare(
         changed,
         moved,
     }
+}
+
+/// The sibling each node follows, by node ID; `None` for a first child. The
+/// nodes are in document order, so each parent's children come in their order.
+fn preceding_siblings(nodes: &[NodeEntry]) -> HashMap<&str, Option<&str>> {
+    let mut last: HashMap<Option<&str>, &str> = HashMap::new();
+    nodes
+        .iter()
+        .map(|n| {
+            (
+                n.id.as_str(),
+                last.insert(n.parent.as_deref(), n.id.as_str()),
+            )
+        })
+        .collect()
+}
+
+/// The nodes that keep their parent but change their order among the siblings
+/// that also keep it: for each parent, those outside a longest common
+/// subsequence of the two orders, the fewest nodes that account for the
+/// reorder.
+fn reordered<'a>(
+    before: &[NodeEntry],
+    after: &'a [NodeEntry],
+    was: &HashMap<&str, &NodeEntry>,
+) -> HashSet<&'a str> {
+    let position: HashMap<&str, usize> = before
+        .iter()
+        .enumerate()
+        .map(|(i, n)| (n.id.as_str(), i))
+        .collect();
+    // The siblings that keep their parent, in the second version's order, each
+    // with its position in the first version.
+    let mut kept: HashMap<Option<&str>, Vec<(&str, usize)>> = HashMap::new();
+    for n in after {
+        if was.get(n.id.as_str()).is_some_and(|w| w.parent == n.parent) {
+            kept.entry(n.parent.as_deref())
+                .or_default()
+                .push((n.id.as_str(), position[n.id.as_str()]));
+        }
+    }
+    // Both orders hold the same siblings, so a longest common subsequence is a
+    // longest increasing run of first-version positions.
+    let mut out = HashSet::new();
+    for siblings in kept.values() {
+        let stays = longest_increasing(siblings.iter().map(|&(_, p)| p).collect());
+        out.extend(
+            siblings
+                .iter()
+                .zip(stays)
+                .filter(|&(_, stays)| !stays)
+                .map(|(&(id, _), _)| id),
+        );
+    }
+    out
+}
+
+/// Which items of `values` belong to one longest strictly increasing
+/// subsequence of them.
+fn longest_increasing(values: Vec<usize>) -> Vec<bool> {
+    // tails[k]: the index of the smallest last value of an increasing run of
+    // length k + 1; previous[i]: the item before i in its run.
+    let mut tails: Vec<usize> = Vec::new();
+    let mut previous: Vec<Option<usize>> = vec![None; values.len()];
+    for (i, &v) in values.iter().enumerate() {
+        let k = tails.partition_point(|&t| values[t] < v);
+        previous[i] = k.checked_sub(1).map(|j| tails[j]);
+        if k == tails.len() {
+            tails.push(i);
+        } else {
+            tails[k] = i;
+        }
+    }
+    let mut stays = vec![false; values.len()];
+    let mut at = tails.last().copied();
+    while let Some(i) = at {
+        stays[i] = true;
+        at = previous[i];
+    }
+    stays
 }
 
 #[cfg(test)]
@@ -617,5 +712,44 @@ mod tests {
         assert_eq!(diff.moved[0].id, "move0000");
         assert_eq!(diff.moved[0].from_parent, None);
         assert_eq!(diff.moved[0].to_parent.as_deref(), Some("keep0000"));
+        assert_eq!(diff.moved[0].from_after.as_deref(), Some("drop0000"));
+        assert_eq!(diff.moved[0].to_after, None);
+    }
+
+    #[test]
+    fn a_reorder_lists_only_the_nodes_outside_a_longest_common_order() {
+        let before = vec![
+            node("a0000000", None, "a"),
+            node("b0000000", None, "b"),
+            node("c0000000", None, "c"),
+            node("d0000000", None, "d"),
+            node("e0000000", None, "e"),
+        ];
+        // D moves to the front, B is removed and F is inserted: only D moved.
+        let after = vec![
+            node("d0000000", None, "d"),
+            node("a0000000", None, "a"),
+            node("f0000000", None, "f"),
+            node("c0000000", None, "c"),
+            node("e0000000", None, "e"),
+        ];
+        let diff = compare("doc".into(), "v1".into(), "v2".into(), before, after);
+        let moved: Vec<&str> = diff.moved.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(moved, ["d0000000"]);
+        assert_eq!(diff.moved[0].from_after.as_deref(), Some("c0000000"));
+        assert_eq!(diff.moved[0].to_after, None);
+    }
+
+    #[test]
+    fn longest_increasing_marks_one_longest_run() {
+        assert_eq!(
+            longest_increasing(vec![1, 2, 0, 3]),
+            [true, true, false, true]
+        );
+        assert_eq!(
+            longest_increasing(vec![2, 0, 1, 3]),
+            [false, true, true, true]
+        );
+        assert_eq!(longest_increasing(Vec::new()), Vec::<bool>::new());
     }
 }
