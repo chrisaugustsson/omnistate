@@ -22,6 +22,8 @@
 use omni_api::auth::AuthProvider;
 use omni_api::{AppState, Config};
 use serde_json::Value;
+use sqlx::PgPool;
+use sqlx::postgres::PgPoolOptions;
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::sync::Arc;
@@ -263,6 +265,44 @@ impl TestServer {
     /// Serves the API with `provider` doing all authentication.
     pub fn start_with_provider(config: &Config, provider: Arc<dyn AuthProvider>) -> Self {
         Self::start_with(config, Some(provider))
+    }
+
+    /// Serves the API with its built-in password login over a pool of at most
+    /// `max_connections` connections, and returns a handle on that same pool,
+    /// so a test can look at the connections that the API used afterwards.
+    pub fn start_with_pool_size(config: &Config, max_connections: u32) -> (Self, PgPool) {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .expect("tokio runtime");
+        let listener = runtime
+            .block_on(tokio::net::TcpListener::bind("127.0.0.1:0"))
+            .expect("bind a local port");
+        let port = listener.local_addr().unwrap().port();
+        let (router, pool) = {
+            let _guard = runtime.enter();
+            let pool = PgPoolOptions::new()
+                .max_connections(max_connections)
+                .acquire_timeout(Duration::from_secs(10))
+                .connect_lazy(&config.database_url)
+                .expect("a lazy pool for the API role");
+            let state = AppState::with_pool(config, pool.clone()).expect("build the API state");
+            (omni_api::router(state), pool)
+        };
+        runtime.spawn(async move {
+            axum::serve(listener, router).await.expect("serve the API");
+        });
+        let server = Self {
+            client: Client::local(port),
+            _runtime: runtime,
+        };
+        (server, pool)
+    }
+
+    /// Runs `future` on the server's own runtime, where its pool lives.
+    pub fn block_on<F: std::future::Future>(&self, future: F) -> F::Output {
+        self._runtime.block_on(future)
     }
 
     fn start_with(config: &Config, provider: Option<Arc<dyn AuthProvider>>) -> Self {

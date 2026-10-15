@@ -257,3 +257,44 @@ pub async fn revoke(
     tx.commit().await.map_err(ApiError::database)?;
     Ok(Json(KeyResponse { key }))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::constant_time_eq;
+
+    /// A SHA-256 as 64 hex digits, what the comparison sees in `authenticate`.
+    const HASH: &str = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08";
+
+    #[test]
+    fn equal_inputs_match() {
+        assert!(constant_time_eq(HASH.as_bytes(), HASH.as_bytes()));
+        assert!(constant_time_eq(b"", b""));
+    }
+
+    #[test]
+    fn inputs_of_different_lengths_never_match() {
+        let shorter = &HASH.as_bytes()[..63];
+        assert!(!constant_time_eq(HASH.as_bytes(), shorter));
+        assert!(!constant_time_eq(shorter, HASH.as_bytes()));
+        // One side is a prefix of the other, so equal as far as the shorter goes.
+        assert!(!constant_time_eq(b"abc", b"abcd"));
+        assert!(!constant_time_eq(b"abcd", b"abc"));
+        assert!(!constant_time_eq(b"", HASH.as_bytes()));
+        assert!(!constant_time_eq(HASH.as_bytes(), b""));
+        // A stored hash twice as long, whose first half is the presented one.
+        let doubled = format!("{HASH}{HASH}");
+        assert!(!constant_time_eq(HASH.as_bytes(), doubled.as_bytes()));
+    }
+
+    #[test]
+    fn a_difference_in_any_single_byte_does_not_match() {
+        for i in 0..HASH.len() {
+            let mut other = HASH.as_bytes().to_vec();
+            other[i] ^= 0x01;
+            assert!(
+                !constant_time_eq(HASH.as_bytes(), &other),
+                "a difference at byte {i} must not match"
+            );
+        }
+    }
+}

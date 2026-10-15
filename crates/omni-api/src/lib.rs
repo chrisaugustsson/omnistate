@@ -88,6 +88,13 @@ impl AppState {
         Self::build(config, Some(provider))
     }
 
+    /// Like `new`, but over a connection pool that the caller built, so a test
+    /// can size it (one connection) and keep a handle on the same connections.
+    pub fn with_pool(config: &Config, pool: PgPool) -> Result<Self, String> {
+        let _ = (config, pool);
+        todo!("US-013: build the state over the given pool")
+    }
+
     fn build(
         config: &Config,
         provider: Option<Arc<dyn auth::AuthProvider>>,

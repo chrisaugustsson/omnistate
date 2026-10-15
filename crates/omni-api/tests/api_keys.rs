@@ -27,18 +27,27 @@
 //!   valid credentials is 401 `{"error": "unauthorized"}`; a workspace the
 //!   credentials do not reach is 404 `{"error": "not_found"}`; a `human` route
 //!   called with an API key is 403 `{"error": "forbidden"}`.
+//! - One "who is calling" step decides agent versus human for every route, the
+//!   routes outside `/api/v1/w/{workspace_id}` included: a request that carries
+//!   an `Authorization` header is an agent's, even with a session cookie too,
+//!   so `/api/v1/auth/me`, `/api/v1/auth/logout`, `/api/v1/auth/workspaces` and
+//!   every other `human` route answer it 403. Only `POST /api/v1/auth/login`,
+//!   which checks a password, is exempt.
+//! - `AppState::with_pool(config, pool)` builds the state over a pool the
+//!   caller made, so a test can size it and keep a handle on its connections.
 
 mod common;
 
 use common::{Client, Response, TestServer, cookie};
 use omni_api::Config;
+use omni_api::password::hash_password;
 use omni_api::routes::{Access, registry};
 use serde_json::{Value, json};
 use sqlx::Connection;
 use sqlx::postgres::{PgConnectOptions, PgConnection};
 use std::future::Future;
 use std::str::FromStr;
-use std::sync::{Mutex, MutexGuard, OnceLock};
+use std::sync::{Barrier, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
 
 const TEST_DB: &str = "omni_us013_keys";
@@ -160,7 +169,8 @@ const PROBE_SQL: [&str; 3] = [
         key_workspace text NOT NULL,
         key_id text NOT NULL,
         last_used_changed boolean NOT NULL,
-        revoked_changed boolean NOT NULL
+        revoked_changed boolean NOT NULL,
+        pid integer NOT NULL DEFAULT pg_backend_pid()
     )",
     "CREATE FUNCTION us013_probe_fn() RETURNS trigger
         LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public
@@ -1106,4 +1116,371 @@ fn the_key_routes_and_whoami_are_in_the_registry_and_the_openapi_document() {
             "{method} {path} in the OpenAPI document: {operation}"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// Reopened after the independent check
+// ---------------------------------------------------------------------------
+
+/// A new live session of `user_id` under a token of its own, so that a test
+/// that may end its session (logout) cannot take the shared ones with it.
+fn fresh_session(user_id: &str, label: &str) -> String {
+    let token = format!("us013-fresh-{label}-0123456789abcdef0123456789abcdef0123456789abcd");
+    db_text(
+        "insert into sessions (user_id, token_hash, expires_at) \
+         values ($1::uuid, sha256(convert_to($2, 'UTF8')), now() + interval '1 day') \
+         returning id::text",
+        &[user_id, &token],
+    );
+    token
+}
+
+/// A path of the registry with its parameters filled in: the workspace is `workspace`
+/// and every other ID is one that no row has.
+fn fill_path(path: &str, workspace: &str) -> String {
+    let mut path = path.replace("{workspace_id}", workspace);
+    while let Some(start) = path.find('{') {
+        let end = path[start..].find('}').expect("closing brace") + start;
+        path.replace_range(start..=end, UNKNOWN_ID);
+    }
+    path
+}
+
+#[test]
+fn auth_routes_return_403_to_any_request_with_an_authorization_header() {
+    let (_guard, f, client) = ready();
+    let (secret, key) = create_key(client, &f.carol_token, &f.a);
+    let token = fresh_session(&f.alice_id, "auth-routes");
+    let routes = [
+        ("GET", "/api/v1/auth/me"),
+        ("POST", "/api/v1/auth/logout"),
+        ("GET", "/api/v1/auth/workspaces"),
+    ];
+
+    // The session alone is the human's, on these routes as on the workspace ones.
+    let me = call(client, "GET", "/api/v1/auth/me", &with_cookie(&token), None);
+    assert_eq!(me.status, 200, "the session is live: {}", me.text());
+
+    // A key, with or without a session cookie, is an agent: 403, and the 403
+    // changes nothing (a logout that carries a key does not end the session).
+    for (method, path) in routes {
+        let body = (method != "GET").then(|| json!({}));
+        let mut headers = with_bearer(&secret);
+        assert_error(
+            &call(client, method, path, &headers, body.as_ref()),
+            403,
+            "forbidden",
+        );
+        headers.extend(with_cookie(&token));
+        assert_error(
+            &call(client, method, path, &headers, body.as_ref()),
+            403,
+            "forbidden",
+        );
+    }
+    let still = call(client, "GET", "/api/v1/auth/me", &with_cookie(&token), None);
+    assert_eq!(
+        still.status,
+        200,
+        "the logout that carried a key did not end the session: {}",
+        still.text()
+    );
+    assert_eq!(still.json()["user"]["id"], json!(f.alice_id));
+
+    // A header that is not a valid key never turns into the human either: the
+    // cookie next to it is not used, so the request is not answered as alice.
+    let revoke = call(
+        client,
+        "POST",
+        &format!("/api/v1/w/{}/api-keys/{}/revoke", f.a, key_id(&key)),
+        &with_cookie(&f.carol_token),
+        Some(&json!({})),
+    );
+    assert_eq!(revoke.status, 200, "revoke: {}", revoke.text());
+    for authorization in [
+        format!("Bearer {secret}"),
+        "Bearer omni_not-a-key".to_string(),
+        "Basic YWxpY2U6c2VjcmV0".to_string(),
+    ] {
+        let mut headers = vec![("Authorization".to_string(), authorization.clone())];
+        headers.extend(with_cookie(&token));
+        for (method, path) in routes {
+            let body = (method != "GET").then(|| json!({}));
+            let response = call(client, method, path, &headers, body.as_ref());
+            assert!(
+                response.status == 401 || response.status == 403,
+                "{method} {path} with `Authorization: {authorization}` and a live session cookie \
+                 must not act as the human, got {}: {}",
+                response.status,
+                response.text()
+            );
+        }
+    }
+    let after = call(client, "GET", "/api/v1/auth/me", &with_cookie(&token), None);
+    assert_eq!(
+        after.status,
+        200,
+        "none of those calls ended the session: {}",
+        after.text()
+    );
+}
+
+#[test]
+fn login_is_the_one_route_that_an_authorization_header_does_not_block() {
+    let (_guard, f, client) = ready();
+    let (secret, _) = create_key(client, &f.carol_token, &f.a);
+    let user_id = db_text(
+        "insert into users (email) values ('dave@example.test') returning id::text",
+        &[],
+    )
+    .expect("insert a user");
+    let hash = hash_password("us013 correct horse battery staple").expect("hash a password");
+    db_text(
+        "insert into login_identities (user_id, provider, subject, secret_hash) \
+         values ($1::uuid, 'password', 'dave@example.test', $2) returning id::text",
+        &[&user_id, &hash],
+    );
+
+    let login = call(
+        client,
+        "POST",
+        "/api/v1/auth/login",
+        &with_bearer(&secret),
+        Some(&json!({
+            "email": "dave@example.test",
+            "password": "us013 correct horse battery staple",
+        })),
+    );
+    assert_eq!(
+        login.status,
+        200,
+        "login checks a password, so a key header does not block it: {}",
+        login.text()
+    );
+    assert_eq!(login.json()["user"]["email"], "dave@example.test");
+    assert!(login.session_token().is_some(), "login starts a session");
+
+    // The header does not make a wrong password right either.
+    let wrong = call(
+        client,
+        "POST",
+        "/api/v1/auth/login",
+        &with_bearer(&secret),
+        Some(&json!({ "email": "dave@example.test", "password": "wrong" })),
+    );
+    assert_error(&wrong, 401, "invalid_credentials");
+}
+
+#[test]
+fn every_human_route_in_the_registry_returns_403_to_a_key_with_or_without_a_cookie() {
+    let (_guard, f, client) = ready();
+    let (secret, _) = create_key(client, &f.carol_token, &f.a);
+    let token = fresh_session(&f.alice_id, "registry");
+    let keys = with_bearer(&secret);
+    let mut keys_and_cookie = with_bearer(&secret);
+    keys_and_cookie.extend(with_cookie(&token));
+
+    // Login checks a password and is the only exemption.
+    let exempt = ("POST", "/api/v1/auth/login");
+    let human_routes: Vec<_> = registry()
+        .into_iter()
+        .filter(|r| r.access == Access::Human && (r.method.as_str(), r.path.as_str()) != exempt)
+        .collect();
+    assert!(
+        registry()
+            .iter()
+            .any(|r| (r.method.as_str(), r.path.as_str()) == exempt && r.access == Access::Human),
+        "the login route is in the registry as a human route"
+    );
+    for needed in [
+        ("GET", "/api/v1/auth/me"),
+        ("POST", "/api/v1/auth/logout"),
+        ("GET", "/api/v1/auth/workspaces"),
+        ("GET", "/api/v1/w/{workspace_id}/api-keys"),
+        ("POST", "/api/v1/w/{workspace_id}/api-keys"),
+        ("POST", "/api/v1/w/{workspace_id}/api-keys/{key_id}/revoke"),
+    ] {
+        assert!(
+            human_routes
+                .iter()
+                .any(|r| r.method == needed.0 && r.path == needed.1),
+            "the registry lists {needed:?} as a human route: {human_routes:?}"
+        );
+    }
+    assert!(
+        human_routes
+            .iter()
+            .any(|r| !r.path.starts_with("/api/v1/w/{workspace_id}")),
+        "the check covers human routes outside the workspace paths"
+    );
+
+    let mut failures = Vec::new();
+    for (label, headers) in [
+        ("an API key", &keys),
+        ("an API key and a session cookie", &keys_and_cookie),
+    ] {
+        for route in &human_routes {
+            let path = fill_path(&route.path, &f.a);
+            let body = (route.method != "GET").then(|| json!({}));
+            let response = call(client, &route.method, &path, headers, body.as_ref());
+            if response.status != 403 {
+                failures.push(format!(
+                    "{} {path} with {label}: {} {}",
+                    route.method,
+                    response.status,
+                    response.text()
+                ));
+            }
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "every human route must answer 403 to a request that carries an API key:\n{}",
+        failures.join("\n")
+    );
+}
+
+#[test]
+fn app_workspace_id_lasts_only_for_its_transaction() {
+    let (_guard, f, _client) = ready();
+    // The API gets one connection, so every query it runs, and the checks
+    // below, use the same physical connection.
+    let (server, pool) = TestServer::start_with_pool_size(&config(), 1);
+    let client = &server.client;
+    let setting = || -> Option<String> {
+        server.block_on(async {
+            sqlx::query_scalar::<_, Option<String>>(
+                "select current_setting('app.workspace_id', true)",
+            )
+            .fetch_one(&pool)
+            .await
+            .expect("read the setting on the API's connection")
+        })
+    };
+    let backend_pid = || -> String {
+        server.block_on(async {
+            sqlx::query_scalar::<_, String>("select pg_backend_pid()::text")
+                .fetch_one(&pool)
+                .await
+                .expect("read the backend pid of the API's connection")
+        })
+    };
+    let assert_unset = |after: &str| {
+        let value = setting();
+        assert!(
+            value.as_deref().is_none_or(str::is_empty),
+            "after {after}, a connection of the pool still has app.workspace_id = {value:?}"
+        );
+    };
+
+    db_exec("delete from us013_probe", &[]);
+    let created = call(
+        client,
+        "POST",
+        &format!("/api/v1/w/{}/api-keys", f.b),
+        &with_cookie(&f.carol_token),
+        Some(&json!({})),
+    );
+    assert_eq!(created.status, 201, "create: {}", created.text());
+    let secret = created.json()["secret"].as_str().unwrap().to_string();
+    let id = key_id(&created.json()["key"]);
+    assert_eq!(
+        db_text(
+            "select setting from us013_probe where key_id = $1 and op = 'INSERT'",
+            &[&id]
+        )
+        .as_deref(),
+        Some(f.b.as_str()),
+        "the request did set app.workspace_id to B inside its transaction"
+    );
+    assert_eq!(
+        db_text(
+            "select pid::text from us013_probe where key_id = $1 and op = 'INSERT'",
+            &[&id]
+        ),
+        Some(backend_pid()),
+        "the request ran on the one connection of the pool"
+    );
+    assert_eq!(server.block_on(async { pool.size() }), 1);
+    assert_unset("a committed request");
+
+    // A request that fails after its transaction began leaves nothing behind.
+    let missing = call(
+        client,
+        "POST",
+        &format!("/api/v1/w/{}/api-keys/{UNKNOWN_ID}/revoke", f.b),
+        &with_cookie(&f.carol_token),
+        Some(&json!({})),
+    );
+    assert_error(&missing, 404, "not_found");
+    assert_unset("a request that ended in 404");
+
+    let listed = call(
+        client,
+        "GET",
+        &format!("/api/v1/w/{}/api-keys", f.b),
+        &with_cookie(&f.carol_token),
+        None,
+    );
+    assert_eq!(listed.status, 200, "list: {}", listed.text());
+    assert_unset("a list");
+
+    // An agent's request, which also writes last_used_at in its own transaction.
+    assert_eq!(whoami(client, &f.b, &with_bearer(&secret)).status, 200);
+    assert!(
+        eventually(
+            "select (last_used_at is not null)::text from api_keys where id = $1::uuid",
+            &[&id]
+        ),
+        "the first use of the key is recorded"
+    );
+    assert_unset("an agent request and its last_used_at write");
+    assert_eq!(server.block_on(async { pool.size() }), 1);
+}
+
+#[test]
+fn ten_concurrent_requests_with_a_stale_key_write_last_used_at_once() {
+    let (_guard, f, client) = ready();
+    let (secret, key) = create_key(client, &f.carol_token, &f.a);
+    let id = key_id(&key);
+    db_exec(
+        "update api_keys set last_used_at = now() - interval '2 minutes' where id = $1::uuid",
+        &[&id],
+    );
+    db_exec("delete from us013_probe", &[]);
+
+    let barrier = Barrier::new(10);
+    let statuses: Vec<u16> = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..10)
+            .map(|_| {
+                scope.spawn(|| {
+                    barrier.wait();
+                    whoami(client, &f.a, &with_bearer(&secret)).status
+                })
+            })
+            .collect();
+        handles.into_iter().map(|h| h.join().unwrap()).collect()
+    });
+    assert_eq!(statuses, vec![200; 10], "every request is let in");
+
+    assert!(
+        eventually(
+            "select (last_used_at > now() - interval '30 seconds')::text from api_keys \
+             where id = $1::uuid",
+            &[&id]
+        ),
+        "the stale last_used_at is refreshed"
+    );
+    // Let any further write that the other requests would do land.
+    std::thread::sleep(Duration::from_millis(500));
+    assert_eq!(
+        db_text(
+            "select count(*)::text from us013_probe \
+             where key_id = $1 and op = 'UPDATE' and last_used_changed",
+            &[&id]
+        )
+        .as_deref(),
+        Some("1"),
+        "ten concurrent requests write last_used_at exactly once"
+    );
 }
