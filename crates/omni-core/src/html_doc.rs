@@ -10,13 +10,14 @@
 
 use crate::design::{AttachmentRef, NodeId};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::HashSet;
 use std::fmt;
 use std::str::FromStr;
 
 /// How deeply blocks and inline markup may nest, so that hostile input cannot
 /// overflow the stack.
-const MAX_DEPTH: usize = 64;
+pub(crate) const MAX_DEPTH: usize = 64;
 
 /// The type of a block.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -308,6 +309,189 @@ impl Block {
     }
 }
 
+impl Block {
+    /// Takes the blocks inside this one, leaving it with none.
+    pub(crate) fn take_children(&mut self) -> Vec<Block> {
+        match &mut self.body {
+            Body::Section { children }
+            | Body::List { children, .. }
+            | Body::Table { children }
+            | Body::TableRow { children }
+            | Body::UserStory { children } => std::mem::take(children),
+            _ => Vec::new(),
+        }
+    }
+
+    /// Puts the blocks inside this one, which must be a block that holds
+    /// blocks.
+    pub(crate) fn set_children(&mut self, new_children: Vec<Block>) {
+        match &mut self.body {
+            Body::Section { children }
+            | Body::List { children, .. }
+            | Body::Table { children }
+            | Body::TableRow { children }
+            | Body::UserStory { children } => *children = new_children,
+            _ => debug_assert!(new_children.is_empty(), "only containers hold blocks"),
+        }
+    }
+
+    pub(crate) fn set_id(&mut self, id: NodeId) {
+        self.id = Some(id);
+    }
+
+    /// The block as HTML, with its blocks inside it.
+    pub(crate) fn to_html(&self) -> String {
+        let mut out = String::new();
+        print_block(self, &mut out);
+        out
+    }
+
+    /// The tag that holds the inline content of a text block.
+    fn text_tag(&self) -> Option<String> {
+        Some(match &self.body {
+            Body::Heading { level, .. } => format!("h{level}"),
+            Body::Paragraph { .. } | Body::Requirement { .. } => "p".to_string(),
+            Body::Quote { .. } => "blockquote".to_string(),
+            Body::ListItem { .. } => "li".to_string(),
+            Body::TableCell { header, .. } => (if *header { "th" } else { "td" }).to_string(),
+            Body::Callout { .. } => "aside".to_string(),
+            _ => return None,
+        })
+    }
+
+    /// Sets one property of the block, such as `level` of a heading or `html`
+    /// (the inner HTML) of a text block. The block sits `depth` levels deep.
+    /// The error names the property.
+    pub(crate) fn set_property(
+        &mut self,
+        name: &str,
+        value: &Value,
+        depth: usize,
+    ) -> std::result::Result<(), String> {
+        let kind = self.kind();
+        let wrong_type = |expected: &str| format!("`{name}` must be {expected}, not {value}");
+        match (name, &mut self.body) {
+            ("level", Body::Heading { level, .. }) => {
+                let number = value.as_u64().filter(|n| (1..=6).contains(n));
+                *level = number.ok_or_else(|| wrong_type("a whole number from 1 to 6"))? as u8;
+            }
+            ("kind", Body::Callout { kind, .. }) => {
+                *kind = match value.as_str() {
+                    Some("note") => CalloutKind::Note,
+                    Some("warning") => CalloutKind::Warning,
+                    Some("decision") => CalloutKind::Decision,
+                    _ => return Err(wrong_type("note, warning or decision")),
+                };
+            }
+            ("ordered", Body::List { ordered, .. }) => {
+                *ordered = value.as_bool().ok_or_else(|| wrong_type("true or false"))?;
+            }
+            ("header", Body::TableCell { header, .. }) => {
+                *header = value.as_bool().ok_or_else(|| wrong_type("true or false"))?;
+            }
+            ("alt", Body::Image { alt, .. }) => {
+                *alt = match value {
+                    Value::Null => None,
+                    Value::String(text) => Some(text.clone()),
+                    _ => return Err(wrong_type("text or null")),
+                };
+            }
+            ("caption", Body::Figure { caption, .. }) => {
+                *caption = value
+                    .as_str()
+                    .ok_or_else(|| wrong_type("text"))?
+                    .to_string();
+            }
+            ("html", _) => {
+                let Some(tag) = self.text_tag() else {
+                    return Err(format!(
+                        "`html` cannot be set on {}: it has no inline content",
+                        describe(kind)
+                    ));
+                };
+                let html = value.as_str().ok_or_else(|| wrong_type("text"))?;
+                let parsed = parse_inline(html, &tag, depth)
+                    .map_err(|e| format!("`html`: {}", e.message))?;
+                match &mut self.body {
+                    Body::Heading { inline, .. }
+                    | Body::Paragraph { inline }
+                    | Body::Quote { inline }
+                    | Body::ListItem { inline }
+                    | Body::TableCell { inline, .. }
+                    | Body::Callout { inline, .. }
+                    | Body::Requirement { inline } => *inline = parsed,
+                    _ => unreachable!("text_tag is Some only for text blocks"),
+                }
+            }
+            ("level" | "kind" | "ordered" | "header" | "alt" | "caption", _) => {
+                return Err(format!("`{name}` cannot be set on {}", describe(kind)));
+            }
+            _ => {
+                return Err(format!(
+                    "`{name}` is not a property that can be set: use level, kind, ordered, header, alt, caption or html"
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Whether a block of kind `child` may sit inside a parent of kind `parent`
+/// (`None` for the top level).
+pub(crate) fn can_hold(parent: Option<BlockKind>, child: BlockKind) -> bool {
+    match parent {
+        None | Some(BlockKind::Section | BlockKind::UserStory) => !matches!(
+            child,
+            BlockKind::ListItem | BlockKind::TableRow | BlockKind::TableCell
+        ),
+        Some(BlockKind::List) => child == BlockKind::ListItem,
+        Some(BlockKind::Table) => child == BlockKind::TableRow,
+        Some(BlockKind::TableRow) => child == BlockKind::TableCell,
+        Some(_) => false,
+    }
+}
+
+/// A block kind in words, for error messages.
+pub(crate) fn describe(kind: BlockKind) -> &'static str {
+    match kind {
+        BlockKind::Section => "a section",
+        BlockKind::Heading => "a heading",
+        BlockKind::Paragraph => "a paragraph",
+        BlockKind::Quote => "a quote",
+        BlockKind::Divider => "a divider",
+        BlockKind::List => "a list",
+        BlockKind::ListItem => "a list item",
+        BlockKind::Table => "a table",
+        BlockKind::TableRow => "a table row",
+        BlockKind::TableCell => "a table cell",
+        BlockKind::Figure => "a figure",
+        BlockKind::Callout => "a callout",
+        BlockKind::CodeBlock => "a code block",
+        BlockKind::Image => "an image",
+        BlockKind::Requirement => "a requirement",
+        BlockKind::UserStory => "a user story",
+    }
+}
+
+/// Parses the inner HTML of the text block `tag`, which sits `depth` levels
+/// deep.
+fn parse_inline(html: &str, tag: &str, depth: usize) -> Result<Vec<Inline>> {
+    let wrapped = format!("<{tag}>{html}</{tag}>");
+    let mut parser = Parser::new(&wrapped, false, depth);
+    let Token { line, tok } = parser.next()?;
+    let Tok::Start(open) = tok else {
+        unreachable!("the wrapper starts with a start tag")
+    };
+    let inline = parser.inline_of(&open)?;
+    match parser.next()?.tok {
+        Tok::Eof => Ok(inline),
+        _ => Err(error(
+            line,
+            format!("the inline content closes `</{tag}>` early: it holds inline markup only"),
+        )),
+    }
+}
+
 /// A doc: its blocks, in order. Stored as JSON, never as raw HTML.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct HtmlDoc {
@@ -318,14 +502,36 @@ impl HtmlDoc {
     /// Parses and cleans HTML. Anything outside the format is an error that
     /// names the line and the problem.
     pub fn parse(html: &str) -> std::result::Result<HtmlDoc, ParseError> {
-        let mut parser = Parser {
-            tokens: lex(html).into_iter(),
-            last_line: 1,
-            ids: HashSet::new(),
-            depth: 0,
-        };
+        Self::parse_with(html, false)
+    }
+
+    /// Like [`HtmlDoc::parse`], and every block must carry a `data-node-id`:
+    /// the HTML of a doc under edit.
+    pub(crate) fn parse_identified(html: &str) -> std::result::Result<HtmlDoc, ParseError> {
+        Self::parse_with(html, true)
+    }
+
+    fn parse_with(html: &str, require_ids: bool) -> std::result::Result<HtmlDoc, ParseError> {
+        let mut parser = Parser::new(html, require_ids, 0);
         let blocks = parser.blocks(None)?;
         Ok(HtmlDoc { blocks })
+    }
+
+    pub(crate) fn from_blocks(blocks: Vec<Block>) -> HtmlDoc {
+        HtmlDoc { blocks }
+    }
+
+    /// Parses the HTML of exactly one block that is to go into a parent of kind
+    /// `parent` (`None` for the top level) already `depth` levels deep, with
+    /// the rules of that parent: a list holds items, a table rows and a row
+    /// cells, and a text block holds no blocks.
+    pub(crate) fn parse_block(
+        html: &str,
+        parent: Option<BlockKind>,
+        depth: usize,
+    ) -> std::result::Result<Block, ParseError> {
+        let mut parser = Parser::new(html, false, depth);
+        parser.one_block(parent)
     }
 
     /// The doc's top-level blocks.
@@ -730,6 +936,8 @@ struct Parser {
     last_line: usize,
     ids: HashSet<NodeId>,
     depth: usize,
+    /// Whether a block without a `data-node-id` is an error.
+    require_ids: bool,
 }
 
 fn is_blank(text: &str) -> bool {
@@ -737,6 +945,16 @@ fn is_blank(text: &str) -> bool {
 }
 
 impl Parser {
+    fn new(html: &str, require_ids: bool, depth: usize) -> Parser {
+        Parser {
+            tokens: lex(html).into_iter(),
+            last_line: 1,
+            ids: HashSet::new(),
+            depth,
+            require_ids,
+        }
+    }
+
     /// The next token, including comments. A lexing error is returned when the
     /// parser reaches it, so the first problem in the document is the one named.
     fn raw_next(&mut self) -> Result<Token> {
@@ -787,6 +1005,15 @@ impl Parser {
         allowed.extend_from_slice(extra);
         tag.check_attrs(&allowed)?;
         let Some(value) = tag.attr("data-node-id") else {
+            if self.require_ids {
+                return Err(error(
+                    tag.line,
+                    format!(
+                        "{} has no `data-node-id`: every block of a doc under edit has its ID",
+                        tag.display()
+                    ),
+                ));
+            }
             return Ok(None);
         };
         let id = NodeId::from_str(value).map_err(|_| {
@@ -834,6 +1061,80 @@ impl Parser {
                 Tok::Skipped | Tok::Error(_) => unreachable!("handled by next"),
             }
         }
+    }
+
+    /// The one block that is all of the document, for a parent of kind `parent`.
+    fn one_block(&mut self, parent: Option<BlockKind>) -> Result<Block> {
+        let Token { line, tok } = self.next_non_blank()?;
+        let block = match tok {
+            Tok::Start(tag) => match parent {
+                None | Some(BlockKind::Section | BlockKind::UserStory) => self.block(tag)?,
+                Some(BlockKind::List) => {
+                    self.item_of(tag, &["li"], "a list holds `<li>` items only")?
+                }
+                Some(BlockKind::Table) => {
+                    self.item_of(tag, &["tr"], "a table holds `<tr>` rows only")?
+                }
+                Some(BlockKind::TableRow) => self.item_of(
+                    tag,
+                    &["td", "th"],
+                    "a row holds `<td>` and `<th>` cells only",
+                )?,
+                Some(other) => {
+                    return Err(error(
+                        tag.line,
+                        format!(
+                            "{} cannot go inside {}: it holds text, not blocks",
+                            tag.display(),
+                            describe(other)
+                        ),
+                    ));
+                }
+            },
+            Tok::Text(_) => return Err(error(line, TEXT_OUTSIDE)),
+            Tok::End(name) => {
+                return Err(error(
+                    line,
+                    format!("`</{name}>` closes a tag that is not open"),
+                ));
+            }
+            _ => {
+                return Err(error(
+                    line,
+                    "the content is empty: it must be exactly one block",
+                ));
+            }
+        };
+        let Token { line, tok } = self.next_non_blank()?;
+        match tok {
+            Tok::Eof => Ok(block),
+            _ => Err(error(
+                line,
+                "the content must be exactly one block, but more follows the first",
+            )),
+        }
+    }
+
+    /// The next token that is not white space between blocks.
+    fn next_non_blank(&mut self) -> Result<Token> {
+        loop {
+            let token = self.next()?;
+            match &token.tok {
+                Tok::Text(text) if is_blank(text) => {}
+                _ => return Ok(token),
+            }
+        }
+    }
+
+    /// A list item, table row or table cell, which only `allowed` tags are.
+    fn item_of(&mut self, tag: StartTag, allowed: &[&str], rule: &str) -> Result<Block> {
+        if allowed.contains(&tag.name.as_str()) {
+            return self.child(tag);
+        }
+        Err(error(
+            tag.line,
+            format!("{} is not allowed here: {rule}", tag.display()),
+        ))
     }
 
     fn block(&mut self, tag: StartTag) -> Result<Block> {

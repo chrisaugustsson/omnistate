@@ -21,12 +21,18 @@ stack-tests = []
 name = "stack"
 required-features = ["stack-tests"]
 
-[dev-dependencies]
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 # The tenancy tests (tests/tenancy.rs) talk to Postgres and apply migrations/
-# the way the API does.
+# the way the API does. They never build for WebAssembly, which sqlx and tokio's
+# networking do not support.
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "migrate"] }
 tokio = { version = "1", features = ["rt", "net", "time"] }
 
 [[test]]
 name = "tenancy"
 required-features = ["stack-tests"]
+
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+# The engine tests (tests/ops.rs) run in WebAssembly too, with
+# `wasm-pack test --node`.
+wasm-bindgen-test = "0.3"

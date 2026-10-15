@@ -28,9 +28,13 @@ web-deps:
 	pnpm install --frozen-lockfile
 
 # The integration tests run in the test container inside the Compose network:
-# the stack is (re)built and started first, and left running afterwards.
+# the stack is (re)built and started first, and left running afterwards. The
+# operation engine's tests (crates/omni-core/tests/ops.rs) run in WebAssembly
+# too, in Node; that needs wasm-pack (cargo install wasm-pack) and the
+# wasm32-unknown-unknown target that rust-toolchain.toml lists.
 test: web-deps
 	$(CARGO) test --workspace
+	cd crates/omni-core && wasm-pack test --node -- --test ops
 	pnpm -r test
 	docker compose up --build --wait --detach proxy
 	docker compose run --rm test

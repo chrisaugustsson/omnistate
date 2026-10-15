@@ -4,4 +4,4 @@
 channel = "1.88.0"
 profile = "minimal"
 components = ["clippy", "rustfmt"]
-targets = ["wasm32-unknown-emscripten"]
+targets = ["wasm32-unknown-emscripten", "wasm32-unknown-unknown"]
