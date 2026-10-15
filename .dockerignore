@@ -1,0 +1,14 @@
+.git
+.claude
+.emsdk
+.env
+.env.*
+tasks
+target
+fixtures
+docs/penpot-compare
+render-sandbox/build
+**/node_modules
+web/.output
+web/.nitro
+web/.tanstack

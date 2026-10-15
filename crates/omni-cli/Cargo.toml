@@ -1,0 +1,9 @@
+[package]
+name = "omni-cli"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "omni"
+path = "src/main.rs"

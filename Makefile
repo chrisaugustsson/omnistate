@@ -13,16 +13,27 @@ WASM_TARGET := wasm32-unknown-emscripten
 WASM_OUT := $(or $(CARGO_TARGET_DIR),target)/$(WASM_TARGET)/release
 SANDBOX_BUILD := render-sandbox/build
 
-.PHONY: lint test render-wasm chrome-boxes stress-file nodes-boxes bench-render check-layout penpot-compare
+.PHONY: lint test web-deps render-wasm chrome-boxes stress-file nodes-boxes bench-render check-layout penpot-compare
 
 # The last clippy run covers the WebAssembly-only code of omni-render.
-lint:
+lint: web-deps
 	$(CARGO) fmt --check
 	$(CARGO) clippy --workspace --all-targets -- -D warnings
 	$(CARGO) clippy -p omni-render --target $(WASM_TARGET) --lib --bins -- -D warnings
+	pnpm -r typecheck
+	pnpm -r lint
 
-test:
+# Installs the web app's dependencies from pnpm-lock.yaml (a no-op when they are current).
+web-deps:
+	pnpm install --frozen-lockfile
+
+# The integration tests run in the test container inside the Compose network:
+# the stack is (re)built and started first, and left running afterwards.
+test: web-deps
 	$(CARGO) test --workspace
+	pnpm -r test
+	docker compose up --build --wait --detach proxy
+	docker compose run --rm test
 
 # Builds omni-render for the browser into render-sandbox/build/.
 render-wasm: $(EMCC)

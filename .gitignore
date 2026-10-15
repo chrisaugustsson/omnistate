@@ -19,3 +19,9 @@ fixtures/penpot/
 
 # The report holds Penpot's PNGs, so it stays local like fixtures/penpot/
 docs/penpot-compare/
+
+# Web app build output
+.output/
+.nitro/
+.tanstack/
+dist/
