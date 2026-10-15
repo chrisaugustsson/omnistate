@@ -4,6 +4,7 @@
 //! registry cannot disagree about who may call a route.
 
 use crate::api_keys::{ApiKeyBody, CreatedKeyResponse, KeyListResponse, KeyResponse};
+use crate::attachments::{AttachmentBody, AttachmentResponse};
 use crate::changesets::{
     ChangesetBody, ChangesetListResponse, ChangesetResponse, CreateChangesetRequest,
     CreateProjectRequest, HistoryEntry, ProjectBody, ProjectListResponse, ProjectResponse,
@@ -44,7 +45,9 @@ use utoipa::OpenApi;
         crate::changesets::submit,
         crate::changesets::reject,
         crate::changesets::reopen,
-        crate::changesets::abandon
+        crate::changesets::abandon,
+        crate::attachments::upload,
+        crate::attachments::download
     ),
     components(schemas(
         LoginRequest,
@@ -68,7 +71,9 @@ use utoipa::OpenApi;
         HistoryEntry,
         ChangesetBody,
         ChangesetResponse,
-        ChangesetListResponse
+        ChangesetListResponse,
+        AttachmentBody,
+        AttachmentResponse
     ))
 )]
 struct ApiDoc;

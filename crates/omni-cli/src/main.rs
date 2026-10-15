@@ -5,6 +5,7 @@
 //! config file or the network are looked at.
 
 mod args;
+mod attach;
 mod changesets;
 mod commands;
 mod config;
@@ -34,6 +35,8 @@ Usage:
   omni changeset submit <id>          send an open change set to review
   omni changeset reopen <id>          reopen a rejected change set
   omni changeset abandon <id>         abandon a change set (it is kept, never deleted)
+  omni attach <file>                  upload a file (at most 20 MB) and print attachment:<id>,
+                                      how docs, designs and posts refer to it
   omni whoami                         show the workspace and who the key acts as
   omni api <METHOD> <path>            send one request to the API and print the response
   omni config show                    show the effective settings (never the key)

@@ -6,6 +6,7 @@
 //! to standard error.
 
 use crate::args::Args;
+use crate::attach;
 use crate::changesets;
 use crate::config::{self, Stored};
 use crate::error::{CliError, Result, bail};
@@ -57,6 +58,8 @@ pub fn run(args: &Args) -> Result<()> {
         ["changeset", ..] => {
             bail!("usage: omni changeset create|list|show|submit|reopen|abandon; see `omni --help`")
         }
+        ["attach", file] => attach::run(args, file),
+        ["attach", ..] => bail!("usage: omni attach <file>"),
         ["whoami"] => whoami(args),
         ["api", method, path] => api(args, method, path),
         ["api", ..] => bail!("usage: omni api <METHOD> <path> [--body-file <path|->]"),
@@ -133,10 +136,22 @@ impl Agent {
         path: &str,
         body: Option<&[u8]>,
     ) -> Result<Response> {
+        let json_type = [("Content-Type".to_string(), "application/json".to_string())];
+        let extra: &[(String, String)] = if body.is_some() { &json_type } else { &[] };
+        self.request_with(method, path, extra, body)
+    }
+
+    /// Like `request`, but the caller sets the headers of the body itself (the
+    /// content type, a file name), for a body that is not JSON.
+    pub(crate) fn request_with(
+        &self,
+        method: &str,
+        path: &str,
+        extra_headers: &[(String, String)],
+        body: Option<&[u8]>,
+    ) -> Result<Response> {
         let mut headers = self.headers.clone();
-        if body.is_some() {
-            headers.push(("Content-Type".to_string(), "application/json".to_string()));
-        }
+        headers.extend_from_slice(extra_headers);
         checked(http::send(&self.server, method, path, &headers, body)?)
     }
 }

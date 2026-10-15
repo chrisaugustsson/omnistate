@@ -7,6 +7,7 @@
 //! owner's login: it applies the migrations and sets the API role's password.
 
 mod api_keys;
+mod attachments;
 pub mod auth;
 mod changesets;
 pub mod delete_workspace;
@@ -18,8 +19,11 @@ mod session;
 pub mod setup;
 mod workspace;
 
-use axum::extract::State;
-use axum::http::StatusCode;
+use axum::extract::{DefaultBodyLimit, Request, State};
+use axum::http::header::{CONTENT_SECURITY_POLICY, X_CONTENT_TYPE_OPTIONS};
+use axum::http::{HeaderValue, StatusCode};
+use axum::middleware::{self, Next};
+use axum::response::Response;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use s3::creds::Credentials;
@@ -266,9 +270,29 @@ pub fn router(state: AppState) -> Router {
             "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/abandon",
             post(changesets::abandon),
         )
+        .route(
+            "/api/v1/w/{workspace_id}/attachments",
+            post(attachments::upload).layer(DefaultBodyLimit::max(attachments::MAX_BYTES)),
+        )
+        .route(
+            "/api/v1/w/{workspace_id}/attachments/{attachment_id}",
+            get(attachments::download),
+        )
         .route("/ws/w/{workspace_id}", get(live::socket))
         .fallback(not_found)
+        .layer(middleware::from_fn(harden))
         .with_state(state)
+}
+
+/// Adds the two headers that every response of the API carries (FR-46): no
+/// sniffing of the content type, and a CSP of `sandbox` so that nothing the API
+/// serves can run script with the API's origin, whatever it was taken for.
+async fn harden(request: Request, next: Next) -> Response {
+    let mut response = next.run(request).await;
+    let headers = response.headers_mut();
+    headers.insert(X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
+    headers.insert(CONTENT_SECURITY_POLICY, HeaderValue::from_static("sandbox"));
+    response
 }
 
 /// Reports whether the API can reach Postgres and the RustFS bucket.
