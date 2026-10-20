@@ -1866,6 +1866,117 @@ fn an_empty_design_system_draft_does_not_stop_a_design_save() {
 }
 
 #[test]
+fn a_design_save_never_records_the_mainline_design_system_that_the_draft_emptied() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    // The mainline design system holds components and no tokens.
+    let first = new_changeset(f, client, &project);
+    let design_system = create_doc(
+        f,
+        client,
+        &project,
+        &first,
+        "design-system",
+        "ui",
+        "Design system",
+    );
+    import_components(f, client, &project, &first, &icon_tags(&Ids::new()));
+    let saved_design_system = save(f, client, &project, &first, &design_system);
+    merge(f, client, &project, &first);
+    let mainline = mainline_of(f, client, &project, &design_system);
+    assert_eq!(mainline, id_of(&saved_design_system));
+    assert!(
+        !read_version(f, client, &project, &mainline)["components"]
+            .as_array()
+            .is_none_or(Vec::is_empty),
+        "the mainline design system has components"
+    );
+
+    // A change set empties its draft of the design system, then saves a
+    // design that uses no component.
+    let changeset = new_changeset(f, client, &project);
+    let emptied = import_components(f, client, &project, &changeset, "");
+    assert_eq!(emptied["components"], json!([]), "{emptied}");
+    let design = create_doc(f, client, &project, &changeset, "design", "ui", "Blank");
+    import_design(
+        f,
+        client,
+        &project,
+        &changeset,
+        &design,
+        r#"<Page name="Home">
+  <Board name="Blank" x={0} y={0} width={375} height={64}>
+    <Text name="Title" content="Hello" fontFamily="Inter" fontSize={14}/>
+  </Board>
+</Page>
+"#,
+    );
+    let response = call(
+        client,
+        "POST",
+        &format!(
+            "{}/docs/{design}/versions",
+            changeset_path(f, &project, &changeset)
+        ),
+        &agent(f),
+        Some(&json!({})),
+    );
+
+    // The save either records a design system version that holds the draft
+    // as it is, without components, or refuses with a specific 409; it never
+    // records the mainline version, whose components the draft removed.
+    match response.status {
+        201 => {
+            let saved = response.json()["version"].clone();
+            let recorded = saved["design_system_version_id"]
+                .as_str()
+                .unwrap_or_else(|| {
+                    panic!("the version records the design system version it uses: {saved}")
+                })
+                .to_string();
+            assert_ne!(
+                recorded, mainline,
+                "the design records the mainline design system although the change set's draft of it differs"
+            );
+            let design_system_version = read_version(f, client, &project, &recorded);
+            assert_eq!(design_system_version["doc_id"], design_system.as_str());
+            assert_eq!(design_system_version["changeset_id"], changeset.as_str());
+            assert_eq!(
+                design_system_version["components"],
+                json!([]),
+                "the recorded version holds the draft as it is: {design_system_version}"
+            );
+            assert_eq!(
+                read_version(f, client, &project, &id_of(&saved))["design_system_version_id"],
+                recorded.as_str()
+            );
+        }
+        409 => {
+            let body = response.json();
+            let code = body["error"].as_str().unwrap_or_default();
+            assert!(
+                !code.is_empty() && code != "conflict",
+                "the refusal names why: {body}"
+            );
+            assert_eq!(
+                versions_of(&design, &changeset),
+                0,
+                "a refused save saves no design version"
+            );
+            assert_eq!(
+                versions_of(&design_system, &changeset),
+                0,
+                "a refused save saves no design system version"
+            );
+        }
+        status => panic!(
+            "the save answers 201 or 409, not {status}: {}",
+            response.text()
+        ),
+    }
+}
+
+#[test]
 fn viewers_and_comparisons_use_the_recorded_design_system_version() {
     let (f, client) = ready();
     let lib = library(f, client);
