@@ -94,6 +94,72 @@ impl Node {
     pub fn bind(&self) -> Option<&Bind> {
         self.bind.as_ref()
     }
+
+    /// The children of a page, board, frame or component, to change. Other
+    /// nodes have none.
+    pub fn children_mut(&mut self) -> Option<&mut Vec<Node>> {
+        match &mut self.data {
+            NodeData::Page(page) => Some(&mut page.children),
+            NodeData::Board(frame) | NodeData::Frame(frame) => Some(&mut frame.children),
+            NodeData::Component(component) => Some(&mut component.frame.children),
+            NodeData::Text(_)
+            | NodeData::Image(_)
+            | NodeData::Vector(_)
+            | NodeData::Instance(_) => None,
+        }
+    }
+
+    /// Takes the children out of the node, which is left with none.
+    pub fn take_children(&mut self) -> Vec<Node> {
+        self.children_mut().map(std::mem::take).unwrap_or_default()
+    }
+
+    /// Gives the node `children`, in place of its own. Nodes that cannot have
+    /// children ignore them.
+    pub fn set_children(&mut self, children: Vec<Node>) {
+        if let Some(slot) = self.children_mut() {
+            *slot = children;
+        }
+    }
+
+    /// Whether the node itself is the same as `other`: everything but its
+    /// children, which are not compared.
+    pub fn same_own(&self, other: &Node) -> bool {
+        if self.id != other.id
+            || self.name != other.name
+            || self.visible != other.visible
+            || self.placement != other.placement
+            || self.bind != other.bind
+        {
+            return false;
+        }
+        match (&self.data, &other.data) {
+            (NodeData::Page(_), NodeData::Page(_)) => true,
+            (NodeData::Board(a), NodeData::Board(b)) | (NodeData::Frame(a), NodeData::Frame(b)) => {
+                same_frame(a, b)
+            }
+            (NodeData::Component(a), NodeData::Component(b)) => {
+                a.props == b.props && same_frame(&a.frame, &b.frame)
+            }
+            (NodeData::Text(a), NodeData::Text(b)) => a == b,
+            (NodeData::Image(a), NodeData::Image(b)) => a == b,
+            (NodeData::Vector(a), NodeData::Vector(b)) => a == b,
+            (NodeData::Instance(a), NodeData::Instance(b)) => a == b,
+            _ => false,
+        }
+    }
+}
+
+/// Whether two frames are alike but for their children.
+fn same_frame(a: &Frame, b: &Frame) -> bool {
+    a.size == b.size
+        && a.layout == b.layout
+        && a.fills == b.fills
+        && a.strokes == b.strokes
+        && a.radius == b.radius
+        && a.shadows == b.shadows
+        && a.opacity == b.opacity
+        && a.clip == b.clip
 }
 
 /// A node's type, with the properties of that type.

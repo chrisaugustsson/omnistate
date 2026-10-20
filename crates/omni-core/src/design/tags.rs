@@ -25,8 +25,8 @@ use super::json::Object;
 use super::value::non_negative;
 use super::{
     AttachmentRef, Bind, Color, Fill, FontFamily, Gap, GridPlacement, LayoutMode, Length, Margin,
-    Node, NodeId, NodeKind, Overrides, PROP_KINDS, Padding, PathData, PropDefs, PropValues, Radius,
-    Shadow, Sizing, Stroke, TokenOr, Track,
+    Node, NodeData, NodeId, NodeKind, Overrides, PROP_KINDS, Padding, PathData, PropDefs,
+    PropValues, Radius, Shadow, Sizing, Stroke, TokenOr, Track,
 };
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
@@ -822,6 +822,12 @@ impl TagNode {
         self.id.as_ref()
     }
 
+    /// The node with the ID `id`, whatever ID it had.
+    pub fn with_id(mut self, id: NodeId) -> TagNode {
+        self.id = Some(id);
+        self
+    }
+
     /// Whether the node was written without an `id`.
     pub fn is_new(&self) -> bool {
         self.id.is_none()
@@ -946,6 +952,48 @@ impl std::error::Error for TagError {}
 
 /// Parses one tag and its subtree.
 pub fn parse(source: &str) -> Result<TagNode, TagError> {
+    parse_under(source, None)
+}
+
+/// The node that a tag goes inside, for a tag read on its own: what the
+/// node's type and layout allow its children.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Host {
+    kind: NodeKind,
+    mode: LayoutMode,
+}
+
+impl Host {
+    /// The host that `node` is.
+    pub fn of(node: &Node) -> Host {
+        let mode = match node.data() {
+            NodeData::Board(frame) | NodeData::Frame(frame) => frame.layout.mode(),
+            NodeData::Component(component) => component.frame.layout.mode(),
+            _ => LayoutMode::None,
+        };
+        Host {
+            kind: node.kind(),
+            mode,
+        }
+    }
+
+    fn parent(self) -> Parent {
+        Parent {
+            kind: self.kind,
+            mode: self.mode,
+            defs: None,
+        }
+    }
+}
+
+/// Parses one tag and its subtree that goes inside `host`, so that a tag that
+/// does not fit there (a board inside a frame, a frame inside a page, `x` on a
+/// child that flows) is refused. Without a host it goes at the top.
+pub fn parse_in(source: &str, host: Option<&Host>) -> Result<TagNode, TagError> {
+    parse_under(source, host.map(|host| host.parent()).as_ref())
+}
+
+fn parse_under(source: &str, parent: Option<&Parent>) -> Result<TagNode, TagError> {
     let mut parser = Parser {
         source,
         pos: 0,
@@ -970,7 +1018,7 @@ pub fn parse(source: &str) -> Result<TagNode, TagError> {
             ));
         }
     }
-    let root = parser.element(None, 0)?;
+    let root = parser.element(parent, 0)?;
     parser.skip_whitespace();
     if parser.peek().is_some() {
         return Err(parser.error(
@@ -1879,6 +1927,76 @@ fn write_node(node: &Value, depth: usize, revision: Option<Revision>, out: &mut 
     out.push_str("</");
     out.push_str(tag.name);
     out.push_str(">\n");
+}
+
+/// Changes attributes of a node, named as the attributes of its tag, with
+/// their values in JSON, such as `{"content": "Hej", "fontSize": 18}`; a
+/// `null` takes the attribute away. The node's own tag is written with the
+/// changes and read again, so every rule of the tag format holds for the result
+/// and the node keeps its ID and its children. `host` is the node it sits in,
+/// `None` for a page. With no `properties` it only checks that the node fits
+/// there.
+///
+/// The node is left as it was when the changes are refused; the error says
+/// which attribute and how to fix it.
+pub fn set_properties(
+    node: &mut Node,
+    host: Option<&Host>,
+    properties: &Map<String, Value>,
+) -> Result<(), String> {
+    let kind = node.kind();
+    let tag = tag_of(kind);
+    for name in properties.keys() {
+        if name == "id" {
+            return Err("`id` cannot be set: a node keeps its ID".to_string());
+        }
+        if !tag.attributes.contains(&name.as_str()) {
+            return Err(format!(
+                "`{name}` is not an attribute of `<{}>`: it takes {}",
+                tag.name,
+                list_of(
+                    &tag.attributes
+                        .iter()
+                        .map(|attribute| format!("`{attribute}`"))
+                        .collect::<Vec<_>>()
+                )
+            ));
+        }
+    }
+    // The node's own tag, without the nodes inside it.
+    let children = node.take_children();
+    let json = serde_json::to_value(&*node).expect("a node serializes to JSON");
+    let map = json.as_object().expect("a node is a JSON object");
+    let mut source = format!("<{}", tag.name);
+    for attr in tag.attributes {
+        let text = match properties.get(*attr) {
+            Some(Value::Null) => None,
+            Some(value) => Some(written(attr, value)),
+            None if matches!(*attr, "id" | "name") => {
+                map.get(*attr).map(|value| written(attr, value))
+            }
+            None => attribute(spec_of(kind, attr), map, kind),
+        };
+        if let Some(text) = text {
+            source.push(' ');
+            source.push_str(&text);
+        }
+    }
+    source.push_str("/>");
+    let parsed = parse_in(&source, host)
+        .map_err(|error| format!("{}: {}", error.message(), error.fix()))
+        .and_then(|parsed| parsed.try_assign_ids(|| unreachable!("the node keeps its ID")));
+    match parsed {
+        Ok(mut changed) => {
+            changed.set_children(children);
+            *node = changed;
+            Ok(())
+        }
+        Err(message) => {
+            node.set_children(children);
+            Err(message)
+        }
+    }
 }
 
 /// The attribute that writes the property `spec` stands for, or `None` when

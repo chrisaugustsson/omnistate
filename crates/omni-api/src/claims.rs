@@ -1,5 +1,5 @@
-//! Claims. An agent claims a section (HTML docs; boards for design files, once
-//! their nodes are edited here) of one draft while it works on it, and no other
+//! Claims. An agent claims a section (HTML docs) or a board (design docs) of
+//! one draft while it works on it, and no other
 //! agent identity can claim or change that subtree meanwhile. Nothing is
 //! locked in the database: a claim is advisory and short, so claims are kept
 //! in memory, next to the drafts they belong to, and are gone after a restart.
@@ -33,7 +33,7 @@ use axum::Json;
 use axum::body::Bytes;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
-use omni_core::design::NodeId;
+use omni_core::design::{DesignDoc, NodeId};
 use omni_core::ops::{EditDoc, Operation};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -279,8 +279,38 @@ fn rfc3339(time: SystemTime) -> String {
 
 // Which operations a claim stops ---------------------------------------------------
 
+/// The nodes of a draft that claims are on: an HTML doc's sections or a
+/// design's boards, and what they sit in.
+pub(crate) trait Tree {
+    fn contains(&self, node: NodeId) -> bool;
+
+    /// The parent of a node: `Some(None)` for a top-level node, `None` when
+    /// the node is not in the draft.
+    fn parent(&self, node: NodeId) -> Option<Option<NodeId>>;
+}
+
+impl Tree for EditDoc {
+    fn contains(&self, node: NodeId) -> bool {
+        EditDoc::contains(self, node)
+    }
+
+    fn parent(&self, node: NodeId) -> Option<Option<NodeId>> {
+        EditDoc::parent(self, node)
+    }
+}
+
+impl Tree for DesignDoc {
+    fn contains(&self, node: NodeId) -> bool {
+        DesignDoc::contains(self, node)
+    }
+
+    fn parent(&self, node: NodeId) -> Option<Option<NodeId>> {
+        DesignDoc::parent(self, node)
+    }
+}
+
 /// A node and its ancestors, the node first.
-fn ancestry(doc: &EditDoc, node: NodeId) -> Vec<NodeId> {
+fn ancestry(doc: &dyn Tree, node: NodeId) -> Vec<NodeId> {
     let mut chain = Vec::new();
     let mut at = Some(node);
     while let Some(id) = at {
@@ -296,7 +326,7 @@ fn ancestry(doc: &EditDoc, node: NodeId) -> Vec<NodeId> {
 /// that replaces or deletes an ancestor of the claimed node, which would take the
 /// claimed nodes along.
 pub(crate) fn blocked(
-    doc: &EditDoc,
+    doc: &dyn Tree,
     ops: &[Operation],
     claims: &[ClaimRecord],
     agent: &Value,
@@ -330,7 +360,7 @@ pub(crate) fn blocked(
 
 /// Whether claiming `node` collides with `claim`: the same node, an ancestor
 /// of it or a descendant of it.
-fn overlaps(doc: &EditDoc, node: NodeId, claim: &ClaimRecord) -> bool {
+fn overlaps(doc: &dyn Tree, node: NodeId, claim: &ClaimRecord) -> bool {
     ancestry(doc, node).contains(&claim.node) || ancestry(doc, claim.node).contains(&node)
 }
 
@@ -497,19 +527,17 @@ pub async fn take_claim(
         let draft = current_draft(&mut tx, &draft.id).await?;
         tx.commit().await.map_err(ApiError::database)?;
         ensure_loaded(&state, &workspace_id, &draft, &mut held).await?;
-        if held
-            .as_ref()
-            .is_some_and(|loaded| loaded.doc.contains(node))
-        {
+        if held.as_ref().is_some_and(|loaded| loaded.contains(node)) {
             found = Some((draft, held));
             break;
         }
     }
     let (draft, held) = found.ok_or(ApiError::NotFound)?;
-    let doc = &held.as_ref().expect("the draft is loaded").doc;
-    if !doc.is_section(node) {
+    let loaded = held.as_ref().expect("the draft is loaded");
+    if !loaded.can_claim(node) {
         return Err(ApiError::bad_request("invalid_request").into());
     }
+    let doc = loaded.tree();
 
     let live = state.claims.live_in_draft(&workspace_id, &draft.id);
     if let Some(mine) = live

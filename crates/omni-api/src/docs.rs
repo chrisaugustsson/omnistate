@@ -16,7 +16,7 @@ use crate::AppState;
 use crate::boards;
 use crate::changesets::{non_blank, parse_body};
 use crate::claims::{self, ClaimBody};
-use crate::design;
+use crate::design::{self, Library};
 use crate::live;
 use crate::session::{ApiError, ErrorBody};
 use crate::versions::{self, Snapshot};
@@ -29,7 +29,7 @@ use axum::http::StatusCode;
 use axum::http::request::Parts;
 use axum::response::{IntoResponse, Response};
 use omni_core::design::tokens::TokenTree;
-use omni_core::design::{Node, NodeId};
+use omni_core::design::{DesignDoc, Node, NodeId};
 use omni_core::ops::{ApplyError, Conflict, EditDoc, Operation};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -169,6 +169,10 @@ pub struct EditRequest {
     /// A batch of operations: `insert`, `replace`, `set`, `move` and `delete`.
     #[schema(value_type = Vec<Object>)]
     pub ops: Vec<Value>,
+    /// For a design: the ID of a board that every operation must stay inside
+    /// (its node, and its parent for an insert or a move, are the board or in
+    /// it). An ID that is no board of the doc is 404 `unknown_board`.
+    pub board: Option<String>,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -198,7 +202,8 @@ pub struct ConflictDetails {
     pub expected: u64,
     /// The revision the node has now.
     pub current_revision: u64,
-    /// The node as it is now, as HTML with `data-node-id`.
+    /// The node as it is now: HTML with `data-node-id` for an HTML doc, tags
+    /// with `rev` for a design.
     pub current_html: String,
 }
 
@@ -340,8 +345,9 @@ impl<S: Send + Sync> FromRequestParts<S> for AgentIdentity {
 /// content is the token tree of the last import (`None` before one) and the
 /// components of the last components import, kept in the log as `import_tokens`
 /// and `import_components` operations and in a version as one chunk of JSON.
-/// The draft of a design doc holds the pages of its last import, kept in the
-/// log as an `import_design` operation and in a version as a manifest of chunks.
+/// The draft of a design doc holds pages, which an `import_design` operation
+/// of the log replaces and the operations of the log change node by node
+/// (US-031); a version holds them as a manifest of chunks.
 pub(crate) struct DraftState {
     pub(crate) doc: EditDoc,
     pub(crate) design_system: bool,
@@ -349,12 +355,11 @@ pub(crate) struct DraftState {
     pub(crate) tokens: Option<TokenTree>,
     /// The components of a design system draft, in order.
     pub(crate) components: Vec<Node>,
-    /// The pages of a design draft, in order.
-    pub(crate) pages: Vec<Node>,
-    /// The revision of each node of a design draft's pages: 1 for a node of
-    /// the version the draft started from or one an import added, and one
-    /// more for each later import that changed the node's own content.
-    pub(crate) revisions: HashMap<NodeId, u64>,
+    /// The pages of a design draft, in order, with the revision of each node:
+    /// 1 for a node of the version the draft started from or one an import or
+    /// an insert added, and one more for each later import or operation that
+    /// changed the node's own content.
+    pub(crate) design_doc: DesignDoc,
     pub(crate) next_seq: i64,
 }
 
@@ -365,9 +370,37 @@ impl DraftState {
         if self.design_system {
             Some(Snapshot::new(self.content()?, Vec::new()))
         } else if self.design {
-            Some(boards::snapshot_of(&self.pages))
+            Some(boards::snapshot_of(self.design_doc.pages()))
         } else {
             Some(Snapshot::new(self.doc.to_html(), self.doc.index()))
+        }
+    }
+
+    /// Whether the draft has the node.
+    pub(crate) fn contains(&self, node: NodeId) -> bool {
+        if self.design {
+            self.design_doc.contains(node)
+        } else {
+            self.doc.contains(node)
+        }
+    }
+
+    /// Whether the node can be claimed: a board of a design, a section of an
+    /// HTML doc.
+    pub(crate) fn can_claim(&self, node: NodeId) -> bool {
+        if self.design {
+            self.design_doc.is_board(node)
+        } else {
+            self.doc.is_section(node)
+        }
+    }
+
+    /// The draft's nodes, for the claims on them.
+    pub(crate) fn tree(&self) -> &dyn claims::Tree {
+        if self.design {
+            &self.design_doc
+        } else {
+            &self.doc
         }
     }
 
@@ -382,7 +415,7 @@ impl DraftState {
                 &self.components,
             ))
         } else if self.design {
-            Some(boards::content_of(&self.pages))
+            Some(boards::content_of(self.design_doc.pages()))
         } else {
             Some(self.doc.to_html())
         }
@@ -531,7 +564,8 @@ pub(crate) async fn load_state(
         );
         ApiError::Unavailable
     };
-    let mut revisions = boards::initial_revisions(&pages);
+    let revisions = boards::initial_revisions(&pages);
+    let mut design_doc = DesignDoc::new(pages, revisions);
     let mut next_seq = draft.content_after_seq + 1;
     for (seq, op, created) in rows {
         if design_system {
@@ -550,20 +584,28 @@ pub(crate) async fn load_state(
         }
         if design && let Some(imported) = design::imported_pages(&op) {
             let imported = imported.map_err(|e| corrupt(seq, &e))?;
-            revisions = boards::next_revisions(&pages, &revisions, &imported);
-            pages = imported;
+            let revisions =
+                boards::next_revisions(design_doc.pages(), design_doc.revisions(), &imported);
+            design_doc = DesignDoc::new(imported, revisions);
             next_seq = seq + 1;
             continue;
         }
         let op: Operation = serde_json::from_str(&op).map_err(|e| corrupt(seq, &e.to_string()))?;
         let mut ids: VecDeque<NodeId> = created.iter().filter_map(|id| id.parse().ok()).collect();
         let mut ran_out = false;
-        let applied = doc.apply(&[op], &mut || {
+        let mut next_id = || {
             ids.pop_front().unwrap_or_else(|| {
                 ran_out = true;
                 random_node_id()
             })
-        });
+        };
+        // The operations were checked against the design system when they were
+        // applied, which the replay does not need again.
+        let applied = if design {
+            design_doc.apply(&[op], None, &mut next_id, &|_| Ok(()))
+        } else {
+            doc.apply(&[op], &mut next_id)
+        };
         if let Err(error) = applied {
             return Err(corrupt(seq, &error.to_string()));
         }
@@ -578,8 +620,7 @@ pub(crate) async fn load_state(
         design,
         tokens,
         components,
-        pages,
-        revisions,
+        design_doc,
         next_seq,
     })
 }
@@ -1144,7 +1185,7 @@ pub async fn read_draft(
     let pages = held
         .as_ref()
         .filter(|loaded| loaded.design)
-        .map(|loaded| loaded.pages.clone());
+        .map(|loaded| loaded.design_doc.pages().to_vec());
     drop(held);
     let view = match pages {
         Some(pages) => Some(
@@ -1189,11 +1230,18 @@ struct Edit {
     /// The operations as the agent sent them, kept in the draft's log.
     sent: Vec<Value>,
     ops: Vec<Operation>,
+    /// The board that a design batch must stay inside.
+    board: Option<String>,
+    /// The components that the instances of a design batch are checked
+    /// against.
+    library: Library,
 }
 
 /// Applies a batch of operations to a change set's draft, all or nothing. Each
 /// applied operation is logged with the agent identity and emits `op.applied`;
-/// a batch that is refused changes, logs and emits nothing.
+/// a batch that is refused changes, logs and emits nothing. A design doc's
+/// operations take tags of the tag format as content, and the server assigns
+/// the IDs of the new nodes; `board` keeps a batch inside one board.
 #[utoipa::path(
     post,
     path = "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs/{doc_id}/ops",
@@ -1210,10 +1258,10 @@ struct Edit {
     request_body = EditRequest,
     responses(
         (status = 200, description = "The batch applied; one result per operation", body = EditResponse),
-        (status = 400, description = "The body is not a batch (`invalid_request`), or an operation is refused (`invalid_operation`, naming an unknown ID)", body = InvalidOperationBody),
+        (status = 400, description = "The body is not a batch (`invalid_request`), `board` is given for a doc that is no design (`not_a_design`), or an operation is refused (`invalid_operation`, naming an unknown ID; for a design also an insert whose tags carry an `id`, a placement the tags do not allow, a property the node's tag does not take, or an operation outside `board`)", body = InvalidOperationBody),
         (status = 401, description = "No valid API key or session", body = ErrorBody),
         (status = 403, description = "Called with a session; agents only", body = ErrorBody),
-        (status = 404, description = "The change set has no draft of this doc in this project and workspace", body = ErrorBody),
+        (status = 404, description = "The change set has no draft of this doc in this project and workspace, or `board` is no board of the design (`unknown_board`)", body = ErrorBody),
         (status = 409, description = "A node is at another revision than the operation expected (`conflict`), or an operation touches a claim of another agent (`claimed`); nothing changed", body = ConflictBody),
     )
 )]
@@ -1232,7 +1280,8 @@ pub async fn edit_draft(
     let draft = find_draft(&mut tx, &project_id, &changeset_id, &doc_id).await?;
     tx.commit().await.map_err(ApiError::database)?;
 
-    let sent = batch?.ops;
+    let batch = batch?;
+    let (sent, board) = (batch.ops, batch.board);
     claims::sweep(&state, &request.workspace_id).await;
     let mut ops = Vec::with_capacity(sent.len());
     for (index, op) in sent.iter().enumerate() {
@@ -1246,6 +1295,16 @@ pub async fn edit_draft(
             }
         }
     }
+    // The components come first, under no lock of this draft, so that no two
+    // draft locks are ever held together. Only a batch that places or changes
+    // an instance needs them.
+    let library = if places_instances(&sent) {
+        design::resolve(&state, &request.workspace_id, &project_id, &changeset_id)
+            .await?
+            .library
+    } else {
+        Library::default()
+    };
     let edit = Edit {
         workspace_id: request.workspace_id,
         project_id,
@@ -1253,6 +1312,8 @@ pub async fn edit_draft(
         agent: identity.to_json(),
         sent,
         ops,
+        board,
+        library,
     };
     // A client that gives up must not leave the draft in memory ahead of its
     // log, so the batch runs to its end whatever happens to this request.
@@ -1266,6 +1327,22 @@ pub async fn edit_draft(
     Ok(Json(EditResponse { results }))
 }
 
+/// Whether a batch places an instance of a component or changes one, whose
+/// component, properties and overrides must fit the design system.
+fn places_instances(sent: &[Value]) -> bool {
+    sent.iter().any(|op| match op["op"].as_str() {
+        Some("insert" | "replace") => op["content"]
+            .as_str()
+            .is_some_and(|content| content.contains("<Instance")),
+        Some("set") => op["properties"].as_object().is_some_and(|properties| {
+            ["component", "props", "overrides"]
+                .iter()
+                .any(|name| properties.contains_key(*name))
+        }),
+        _ => false,
+    })
+}
+
 async fn apply_batch(state: &AppState, edit: Edit) -> Result<Vec<OpResultBody>, DocError> {
     let Edit {
         workspace_id,
@@ -1274,6 +1351,8 @@ async fn apply_batch(state: &AppState, edit: Edit) -> Result<Vec<OpResultBody>, 
         agent,
         sent,
         ops,
+        board,
+        library,
     } = edit;
     let slot = state.drafts.slot(&workspace_id, &draft.id);
     let mut held = slot.lock().await;
@@ -1289,8 +1368,20 @@ async fn apply_batch(state: &AppState, edit: Edit) -> Result<Vec<OpResultBody>, 
     let loaded = held.as_mut().expect("the draft was just loaded");
     let first_seq = loaded.next_seq;
 
+    let scope = match board {
+        None => None,
+        Some(_) if !loaded.design => return Err(ApiError::bad_request("not_a_design").into()),
+        Some(board) => Some(
+            board
+                .parse::<NodeId>()
+                .ok()
+                .filter(|board| loaded.design_doc.is_board(*board))
+                .ok_or(ApiError::Refused(StatusCode::NOT_FOUND, "unknown_board"))?,
+        ),
+    };
+
     let live = state.claims.live_in_draft(&workspace_id, &draft.id);
-    if let Some((index, claim)) = claims::blocked(&loaded.doc, &ops, &live, &agent) {
+    if let Some((index, claim)) = claims::blocked(loaded.tree(), &ops, &live, &agent) {
         return Err(state.claims.refusal(Some(index), claim));
     }
 
@@ -1300,7 +1391,13 @@ async fn apply_batch(state: &AppState, edit: Edit) -> Result<Vec<OpResultBody>, 
             return id;
         }
     };
-    let applied = match loaded.doc.apply(&ops, &mut new_ids) {
+    let applied = if loaded.design {
+        let check = |nodes: &[Node]| design::check_instances(nodes, &library);
+        loaded.design_doc.apply(&ops, scope, &mut new_ids, &check)
+    } else {
+        loaded.doc.apply(&ops, &mut new_ids)
+    };
+    let applied = match applied {
         Ok(applied) => applied,
         Err(ApplyError::Conflict(conflict)) => return Err(DocError::Conflict(conflict)),
         Err(ApplyError::Invalid { index, message }) => {

@@ -254,8 +254,10 @@ When an agent reads a board of a draft (`omni design read --changeset`), every
 tag also carries `rev={n}` after its `id`: the node's revision, which an edit
 lists as the revision it expects. A node starts at revision 1, in a draft and
 in the version the draft started from, and each later import that changes what
-the node itself holds (not its children) adds one; adding or moving a child
-leaves its parent's revision alone. The tags of a saved version and of the
+the node itself holds (not its children) adds one, as does each `omni design
+edit` operation that changes, replaces or moves the node (docs/formats/
+operations.md, Designs); adding or moving a child leaves its parent's revision
+alone. The tags of a saved version and of the
 mainline carry no `rev`, and `rev` is only read, never written: a tag that
 sets it is refused.
 

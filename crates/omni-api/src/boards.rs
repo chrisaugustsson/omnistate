@@ -457,7 +457,8 @@ pub async fn read_draft_board(
     ensure_loaded(&state, &request.workspace_id, &draft, &mut held).await?;
     let loaded = held.as_ref().expect("the draft is loaded");
     let (page, node) = loaded
-        .pages
+        .design_doc
+        .pages()
         .iter()
         .find_map(|page| {
             page.children()
@@ -466,7 +467,7 @@ pub async fn read_draft_board(
                 .map(|node| (page, node))
         })
         .ok_or_else(unknown_board)?;
-    let revision = |id: &NodeId| loaded.revisions.get(id).copied();
+    let revision = |id: &NodeId| loaded.design_doc.revision(id);
     let tags = tags::print_with(node, Some(&revision));
     Ok(Json(BoardBody {
         doc_id,

@@ -38,7 +38,9 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use omni_core::design::tags::{self, TagNode};
 use omni_core::design::tokens::TokenTree;
-use omni_core::design::{Instance, Node, NodeData, NodeId, NodeKind, PropDef, PropDefs, PropValue};
+use omni_core::design::{
+    DesignDoc, Instance, Node, NodeData, NodeId, NodeKind, PropDef, PropDefs, PropValue,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -1174,7 +1176,7 @@ async fn apply_design(state: &AppState, import: Import) -> Result<ImportedDesign
         .used_ids(&mut tx, &workspace_id, &project_id)
         .await?;
     let loaded = held.as_ref().expect("the draft was just loaded");
-    let known = all_ids(&loaded.pages);
+    let known = all_ids(loaded.design_doc.pages());
     let (pages, created) = assign(
         roots,
         &known,
@@ -1221,8 +1223,12 @@ async fn apply_design(state: &AppState, import: Import) -> Result<ImportedDesign
     match persisted {
         Ok(()) => {
             let loaded = held.as_mut().expect("the draft is loaded");
-            loaded.revisions = boards::next_revisions(&loaded.pages, &loaded.revisions, &pages);
-            loaded.pages = pages;
+            let revisions = boards::next_revisions(
+                loaded.design_doc.pages(),
+                loaded.design_doc.revisions(),
+                &pages,
+            );
+            loaded.design_doc = DesignDoc::new(pages, revisions);
             loaded.next_seq = seq + 1;
         }
         Err(error) => {
@@ -1230,7 +1236,12 @@ async fn apply_design(state: &AppState, import: Import) -> Result<ImportedDesign
             return Err(error.into());
         }
     }
-    let tags = tags_of(&held.as_ref().expect("the draft is loaded").pages);
+    let tags = tags_of(
+        held.as_ref()
+            .expect("the draft is loaded")
+            .design_doc
+            .pages(),
+    );
     drop(held);
     state.live.announce(&workspace_id, &project_id);
     Ok(ImportedDesign {

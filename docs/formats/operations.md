@@ -2,9 +2,9 @@
 
 Every change to a doc is a batch of operations. One engine applies them for every
 doc type (`crates/omni-core/src/ops.rs`, `EditDoc::apply`), so edits, conflicts
-and history behave the same everywhere. Today the engine edits HTML docs (see
-`docs/formats/html-docs.md`); design files use the same operations on their own
-nodes.
+and history behave the same everywhere. The engine edits HTML docs (see
+`docs/formats/html-docs.md`), and design files use the same operations on their
+own nodes (see Designs below).
 
 A batch is a JSON array of operations. An operation is an object with an `op`
 (`insert`, `replace`, `set`, `move` or `delete`) and the fields below. A missing
@@ -180,12 +180,56 @@ A successful batch returns one result per operation, in order:
 
 A deleted node's result keeps the revision it had.
 
+## Designs
+
+A design doc takes the same five operations on its nodes (pages, boards,
+frames, text, images, vectors and instances), applied by
+`omni_core::design::DesignDoc::apply` (`crates/omni-core/src/design/edit.rs`)
+through `omni design edit`, which sends a batch to the same route as HTML docs.
+Positions are the same, and the `parent` of a page is `null`. `content` is one
+tag of the tag format with its children (`docs/formats/design-tags.md`), read
+against the node it goes into, so a board goes under a page only, a page at the
+top only, and every other node under a board or a frame.
+
+- `insert` adds a subtree. A tag that carries an `id` is refused: the server
+  assigns the 8-character ID of every new node, new to the project, and lists
+  them in `created` in document order. Every new node is at revision 1 and the
+  parent's revision does not change. A new board is an insert under a page.
+- `replace` keeps the descendants whose `id` the content names, removes the ones
+  it leaves out (`removed`) and creates the tags without an `id` (`created`). The
+  replaced node's revision rises by 1, and a kept descendant's only when its own
+  content changed.
+- `set` names properties as the attributes of the node's tag, with JSON values:
+  `{"content": "Hej", "fontSize": 18}`. A `null` takes an attribute away. Only
+  that node's revision rises. The node's tag is written with the change and read
+  again, so every rule of the tag format holds for the result. An attribute the
+  tag does not take, and `id`, are errors that name it.
+- `move` puts the node and its subtree under a new parent that accepts it, and
+  `delete` removes it with its descendants, listed in `removed` in document order.
+
+An ID that is in no node of the draft (an operation's `node` or `parent`, an
+`id` in a replace's content, the `component` of an `<Instance>`) is a 400
+`invalid_operation` whose message names it; a parent or neighbour that is not in
+the draft is named before a stale `rev` is.
+
+The body may add `"board": "<board ID>"`. Every operation of the batch must then
+stay inside that board: its node, and its parent for an insert or a move, are the
+board or in it, or the batch is refused (400 `invalid_operation`, naming the node).
+An ID that is no board of the doc is a 404 `unknown_board`.
+
+Boards are claimed as sections are (`omni claim <board>`). While another agent
+holds a claim, a batch that changes, moves or deletes a node of the board,
+inserts or moves a node into it, or replaces or deletes its page is a 409
+`claimed` that names the holder. Edits on other boards apply, and an applied
+operation of the holder renews the claim. Each applied operation emits
+`op.applied`.
+
 ## Conflicts
 
 A revision mismatch is a conflict, not a failure of the content. The conflict
 says which operation (`index`, counting from 0), which `node`, the revision it
 `expected`, the node's `current_revision`, and the node's `current_html`: its
-current state as HTML with `data-node-id`. The agent reads it, decides how to
+current state as HTML with `data-node-id` (for a design, as tags with `rev`). The agent reads it, decides how to
 merge, and sends a new batch with the current revision.
 
 ```text

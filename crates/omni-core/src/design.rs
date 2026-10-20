@@ -125,6 +125,7 @@ macro_rules! keywords {
 
 mod address;
 mod component;
+mod edit;
 mod id;
 mod json;
 mod layout;
@@ -140,6 +141,7 @@ pub use component::{
     BIND_FIELDS, Bind, OVERRIDE_FIELDS, Override, Overrides, PROP_KINDS, PropDef, PropDefs,
     PropValue, PropValues,
 };
+pub use edit::DesignDoc;
 pub use id::{InvalidNodeId, NodeId};
 pub use layout::{
     AlignItems, FlexDirection, FlexLayout, FlexWrap, Gap, GridLayout, GridPlacement,

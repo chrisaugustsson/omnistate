@@ -279,6 +279,25 @@ pub fn edit(args: &Args, doc: Option<&str>) -> Result<()> {
     const USAGE: &str = "omni doc edit <doc> --changeset <id> [--body-file <path|->]";
     let doc = doc_id(doc, USAGE)?;
     let changeset = changeset_option(args, USAGE)?;
+    let batch = read_batch(args)?;
+
+    let agent = agent(args)?;
+    let project = project_id(args, &agent)?;
+    let body = format!("{{\"ops\":{}}}", batch.trim());
+    let response = agent.request(
+        "POST",
+        &format!(
+            "{}/changesets/{changeset}/docs/{doc}/ops",
+            project_path(&agent, &project)
+        ),
+        Some(body.as_bytes()),
+    )?;
+    print_edit(args, &response.text())
+}
+
+/// The batch of operations of an edit command: a JSON array from
+/// `--body-file`, or from standard input without it.
+pub(crate) fn read_batch(args: &Args) -> Result<String> {
     let source = match args.body_file.as_deref() {
         Some(source) => source,
         None if std::io::stdin().is_terminal() => bail!(
@@ -296,24 +315,17 @@ pub fn edit(args: &Args, doc: Option<&str>) -> Result<()> {
         ),
         Err(why) => bail!("the operations are not valid JSON ({why}); send a JSON array"),
     }
+    Ok(batch)
+}
 
-    let agent = agent(args)?;
-    let project = project_id(args, &agent)?;
-    let body = format!("{{\"ops\":{}}}", batch.trim());
-    let response = agent.request(
-        "POST",
-        &format!(
-            "{}/changesets/{changeset}/docs/{doc}/ops",
-            project_path(&agent, &project)
-        ),
-        Some(body.as_bytes()),
-    )?;
-    let text = response.text();
+/// Prints what an edit did: each node and its new revision, the IDs the
+/// server assigned and the nodes that went. With `--json`, the API's answer.
+pub(crate) fn print_edit(args: &Args, text: &str) -> Result<()> {
     if args.json {
-        print_json(&text);
+        print_json(text);
         return Ok(());
     }
-    let answer = parsed(&text, "the edit")?;
+    let answer = parsed(text, "the edit")?;
     for result in answer
         .get("results")
         .and_then(Value::as_array)

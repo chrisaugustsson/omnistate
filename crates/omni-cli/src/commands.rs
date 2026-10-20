@@ -102,8 +102,9 @@ pub fn run(args: &Args) -> Result<()> {
             "usage: omni tokens import <file> --changeset <id> | omni tokens export [--changeset <id> | --version <v>] [--out <file>] [--per-mode]"
         ),
         ["design", "read"] => design::read(args),
+        ["design", "edit"] => design::edit(args),
         ["design", ..] => bail!(
-            "usage: omni design read --doc <id> --board <id> [--changeset <id> | --version <v>]"
+            "usage: omni design read --doc <id> --board <id> [--changeset <id> | --version <v>] | omni design edit --changeset <id> --doc <id> [--board <id>] [--body-file <path|->]"
         ),
         ["component", "usage"] => components::usage(args, None),
         ["component", "usage", component] => components::usage(args, Some(component)),
@@ -226,9 +227,14 @@ impl Agent {
         &self,
         method: &str,
         path: &str,
+        body: Option<&[u8]>,
         explanations: &[(u16, &str, String)],
     ) -> Result<Response> {
-        let response = http::send(&self.server, method, path, &self.headers, None)?;
+        let mut headers = self.headers.clone();
+        if body.is_some() {
+            headers.push(("Content-Type".to_string(), "application/json".to_string()));
+        }
+        let response = http::send(&self.server, method, path, &headers, body)?;
         let code = Value::parse(&response.text())
             .ok()
             .and_then(|body| body.str_at("error").map(str::to_string));
