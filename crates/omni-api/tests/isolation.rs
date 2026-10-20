@@ -18,7 +18,10 @@
 //!   `{project_id}`, `{changeset_id}`, `{key_id}`, `{attachment_id}`,
 //!   `{doc_id}`, `{version_id}`, `{other_version_id}` and `{conflict_id}`,
 //!   which the suite fills with the IDs of the seeded records; a path with another
-//!   placeholder, or a registry route without a case, fails the suite. The
+//!   placeholder, or a registry route without a case, fails the suite. A body
+//!   may hold `<claimed_node>`, which the suite fills with the section that the
+//!   record's workspace claimed (see below), so that an attack on the claim
+//!   routes names a node that really is claimed. The
 //!   seeded doc (US-022) was created in the open change set `{changeset_id}`,
 //!   which has its draft, and has one applied operation; once the claim routes
 //!   exist (US-023), the draft also has a section that the workspace's agent
@@ -71,6 +74,8 @@ const TEST_DB: &str = "omni_us018_isolation";
 const TEST_BUCKET: &str = "omni-us018-isolation";
 /// An ID that no row has.
 const UNKNOWN_ID: &str = "01900000-0000-7000-8000-000000000000";
+/// A node ID in the right format that no node has.
+const UNKNOWN_NODE: &str = "zzzzzzzz";
 /// The handshake key of RFC 6455's example.
 const HANDSHAKE_KEY: &str = "dGhlIHNhbXBsZSBub25jZQ==";
 /// How long a test waits for something that must happen.
@@ -280,13 +285,13 @@ const CASES: &[Case] = &[
     case(
         "POST",
         "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/claims",
-        Some(r#"{"node":"zzzzzzzz"}"#),
+        Some(r#"{"node":"<claimed_node>"}"#),
         Kind::Workspace,
     ),
     case(
         "POST",
         "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/claims/release",
-        Some(r#"{"node":"zzzzzzzz"}"#),
+        Some(r#"{"node":"<claimed_node>"}"#),
         Kind::Workspace,
     ),
     case(
@@ -852,6 +857,9 @@ struct Side {
     doc_title: String,
     /// The text of the doc's one paragraph, which nothing else holds.
     doc_text: String,
+    /// A section of the doc's draft that the workspace's agent claimed and
+    /// holds (US-023): empty until the claim routes exist.
+    claimed_node: String,
     /// Two saved versions of the doc's draft (US-024), the second after one
     /// more paragraph: empty until the version routes exist.
     version_id: String,
@@ -887,6 +895,7 @@ impl Side {
             doc_id: same(),
             doc_title: String::new(),
             doc_text: String::new(),
+            claimed_node: UNKNOWN_NODE.to_string(),
             version_id: same(),
             other_version_id: same(),
             merged_changeset_id: same(),
@@ -913,6 +922,7 @@ impl Side {
             &self.doc_id,
             &self.doc_title,
             &self.doc_text,
+            &self.claimed_node,
             &self.version_id,
             &self.other_version_id,
             &self.merged_changeset_id,
@@ -1089,7 +1099,7 @@ fn fixture() -> &'static Fixture {
             // US-022: a doc started in the open change set, with one applied
             // operation, so the doc, draft and log tables have rows of the
             // workspace. Seeded as soon as the registry has the doc routes.
-            let (doc_id, doc_title, doc_text) = if has_doc_routes() {
+            let (doc_id, doc_title, doc_text, claimed_node) = if has_doc_routes() {
                 let doc_title = unique(&format!("{name}-doc"));
                 let body =
                     json!({ "kind": "html", "module": "prd", "title": doc_title }).to_string();
@@ -1127,7 +1137,7 @@ fn fixture() -> &'static Fixture {
                 // US-023: a section of the draft that the agent claims, so
                 // whatever holds claims has rows of the workspace. Seeded as
                 // soon as the registry has the claim routes.
-                if has_claim_routes() {
+                let claimed_node = if has_claim_routes() {
                     let ops = json!({ "ops": [{
                         "op": "insert",
                         "parent": null,
@@ -1160,10 +1170,13 @@ fn fixture() -> &'static Fixture {
                         201,
                         "claim the section",
                     );
-                }
-                (doc_id, doc_title, doc_text)
+                    section.to_string()
+                } else {
+                    String::new()
+                };
+                (doc_id, doc_title, doc_text, claimed_node)
             } else {
-                (String::new(), String::new(), String::new())
+                (String::new(), String::new(), String::new(), String::new())
             };
             // US-024: the draft saved as a version, edited and saved again, so
             // the version and node index tables have rows of the workspace and
@@ -1296,6 +1309,7 @@ fn fixture() -> &'static Fixture {
                 doc_id,
                 doc_title,
                 doc_text,
+                claimed_node,
                 version_id,
                 other_version_id,
                 merged_changeset_id,
@@ -1346,6 +1360,13 @@ fn fill(template: &str, workspace: &Side, record: &Side) -> String {
 }
 
 /// Whether the path names a record besides the workspace.
+/// The body of `case` for calls about the records of `record`: its
+/// `<claimed_node>` is the section that `record`'s workspace claimed.
+fn body_of(case: &Case, record: &Side) -> Option<String> {
+    case.body
+        .map(|body| body.replace("<claimed_node>", &record.claimed_node))
+}
+
 fn names_a_record(template: &str) -> bool {
     template.matches('{').count() > 1
 }
@@ -1645,7 +1666,8 @@ fn credentials_of_workspace_a_get_404_and_no_data_for_the_workspace_and_ids_of_b
                 route_name(&entry.method, &path),
                 auth.label()
             );
-            let response = call(client, &entry.method, &path, &auth, case.body);
+            let body = body_of(case, &f.b);
+            let response = call(client, &entry.method, &path, &auth, body.as_deref());
             assert_not_found_without_data(&response, &f.b, &what);
             attacks += 1;
         }
@@ -1678,9 +1700,11 @@ fn ids_of_workspace_b_under_the_workspace_of_a_get_the_answer_for_an_id_that_doe
                 route_name(&entry.method, &stolen),
                 auth.label()
             );
-            let response = call(client, &entry.method, &stolen, &auth, case.body);
+            let body = body_of(case, &f.b);
+            let response = call(client, &entry.method, &stolen, &auth, body.as_deref());
             assert_not_found_without_data(&response, &f.b, &what);
-            let unknown = call(client, &entry.method, &missing, &auth, case.body);
+            let body = body_of(case, &nobody);
+            let unknown = call(client, &entry.method, &missing, &auth, body.as_deref());
             assert_eq!(
                 (response.status, response.body.clone()),
                 (unknown.status, unknown.body.clone()),
@@ -1715,10 +1739,11 @@ fn the_same_attacks_work_the_other_way_round() {
                 route_name(&entry.method, &abroad),
                 auth.label()
             );
-            let response = call(client, &entry.method, &abroad, &auth, case.body);
+            let body = body_of(case, &f.a);
+            let response = call(client, &entry.method, &abroad, &auth, body.as_deref());
             assert_not_found_without_data(&response, &f.a, &what);
             if names_a_record(&entry.path) {
-                let response = call(client, &entry.method, &stolen, &auth, case.body);
+                let response = call(client, &entry.method, &stolen, &auth, body.as_deref());
                 assert_not_found_without_data(&response, &f.a, &what);
             }
         }
@@ -1963,6 +1988,64 @@ fn the_claim_calls_of_the_attacks_work_for_the_workspace_that_owns_the_records()
 }
 
 #[test]
+fn the_claim_attacks_name_a_section_that_workspace_b_really_holds_and_leave_it_held() {
+    let (f, client) = ready();
+    let _guard = serial();
+    assert!(
+        has_claim_routes(),
+        "the claim routes are in the registry (US-023)"
+    );
+    let doc = format!(
+        "/api/v1/w/{}/projects/{}/docs/{}",
+        f.b.id, f.b.project_id, f.b.doc_id
+    );
+    let held = |what: &str| {
+        let shown = must(
+            call(client, "GET", &doc, &Auth::Key(&f.b.key), None),
+            200,
+            "show B's doc",
+        );
+        let claims = shown["doc"]["claims"]
+            .as_array()
+            .unwrap_or_else(|| panic!("the doc lists its claims: {shown}"))
+            .clone();
+        assert!(
+            claims
+                .iter()
+                .any(|c| c["node"] == f.b.claimed_node.as_str()),
+            "{what}: B's agent holds a claim on {}: {claims:?}",
+            f.b.claimed_node
+        );
+    };
+    held("before the attacks");
+
+    // A's key on B's workspace, on A's workspace with B's IDs, and on A's own
+    // change set with B's node: never found, and B's claim stays.
+    for template in [
+        "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/claims",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/claims/release",
+    ] {
+        let case = case_named("POST", template);
+        let body = body_of(case, &f.b);
+        assert!(
+            body.as_deref()
+                .is_some_and(|b| b.contains(f.b.claimed_node.as_str())),
+            "the attack names B's claimed section: {body:?}"
+        );
+        for path in [
+            fill(template, &f.b, &f.b),
+            fill(template, &f.a, &f.b),
+            fill(template, &f.a, &f.a),
+        ] {
+            let response = call(client, "POST", &path, &Auth::Key(&f.a.key), body.as_deref());
+            let what = format!("{} with B's claimed section", route_name("POST", &path));
+            assert_not_found_without_data(&response, &f.b, &what);
+        }
+    }
+    held("after the attacks");
+}
+
+#[test]
 fn every_workspace_route_needs_credentials() {
     let (f, client) = ready();
     for entry in registry() {
@@ -1972,7 +2055,8 @@ fn every_workspace_route_needs_credentials() {
         }
         for (workspace, record) in [(&f.a, &f.a), (&f.b, &f.b)] {
             let path = fill(&entry.path, workspace, record);
-            let response = call(client, &entry.method, &path, &Auth::Nobody, case.body);
+            let body = body_of(case, record);
+            let response = call(client, &entry.method, &path, &Auth::Nobody, body.as_deref());
             assert_eq!(
                 response.status,
                 401,
