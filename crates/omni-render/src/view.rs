@@ -20,6 +20,7 @@
 use crate::layout::{self, LayoutBox, ShapedTexts};
 use crate::paint::{self, Assets};
 use crate::select::{Event, Index, Modifiers, NodeAddress, Outline, OutlineKind};
+use crate::system::{DesignSystem, RenderError};
 use omni_core::design::{Node, NodeData, NodeId};
 use skia_safe::{
     AlphaType, Canvas, ColorType, FilterMode, Image, ImageInfo, MipmapMode, Paint, Picture,
@@ -443,6 +444,23 @@ impl Scene {
         }
     }
 
+    /// A scene whose instances and token references resolve against
+    /// `system`, in its first mode.
+    pub fn with_system(_page: Node, _assets: Assets, _system: DesignSystem) -> Self {
+        todo!("US-032")
+    }
+
+    /// Resolves token references in `mode` from now on. Fails, and keeps the
+    /// current mode, if the design system has no such mode.
+    pub fn set_mode(&mut self, _mode: &str) -> Result<(), String> {
+        todo!("US-032")
+    }
+
+    /// The nodes drawn as error placeholders, with what each was missing.
+    pub fn errors(&self) -> &[RenderError] {
+        todo!("US-032")
+    }
+
     /// The smallest rectangle that holds every board.
     pub fn bounds(&self) -> LayoutBox {
         let mut boards = self.boards.iter().map(|board| board.bounds);
@@ -487,8 +505,8 @@ impl Scene {
     /// The topmost visible node at the page point `point`: the deepest node
     /// whose box holds it, with later siblings above earlier ones. Hidden
     /// nodes and what lies outside a clipping ancestor cannot be hit.
-    pub fn node_at(&self, point: (f32, f32)) -> Option<NodeId> {
-        self.index.node_at(point).map(|at| self.index.id(at))
+    pub fn node_at(&self, point: (f32, f32)) -> Option<NodeAddress> {
+        self.index.node_at(point).map(|at| self.index.address(at))
     }
 
     /// The box, in page coordinates, of the node at `address`. An address

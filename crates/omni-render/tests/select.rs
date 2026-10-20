@@ -4,8 +4,8 @@
 //! hover and selection state of the reviewer, with the types of
 //! `omni_render::select`. What the tests expect:
 //!
-//! - `Scene::node_at(point)` takes a page point and returns the topmost
-//!   visible node there: the deepest node whose box holds the point, later
+//! - `Scene::node_at(point)` takes a page point and returns the address of
+//!   the topmost visible node there: the deepest node whose box holds the point, later
 //!   siblings above earlier ones, and nothing from a hidden node or its
 //!   subtree. A node outside the box of an ancestor with `clip: true` cannot
 //!   be hit there, and one that overflows an unclipped ancestor can. On the
@@ -13,9 +13,9 @@
 //!   them, not counting the work of building the index), and it is the one a
 //!   plain walk over the boxes gives.
 //! - `Scene::bounds_of(&address)` is the box of a node in page coordinates,
-//!   `None` for an address that names no node. An address inside a component
-//!   instance (`<instanceId>/<componentNodeId>`) parses, but its bounds wait
-//!   for components to be resolved (US-032).
+//!   `None` for an address that names no node. Addresses inside component
+//!   instances (`<instanceId>/<componentNodeId>`) are covered by
+//!   `instances.rs` (US-032).
 //! - Selection takes screen points and a `Viewport`, so a click lands on the
 //!   node that is drawn under the pointer at any zoom and pan. The context is
 //!   the node whose children a click selects among; it starts at the board
@@ -332,7 +332,7 @@ fn node_at_returns_the_deepest_node_under_the_point() {
         (BOARD_A_AT, BOARD_A, "the board, where no node covers it"),
         (PANEL_AT, PANEL, "a node of the second board"),
     ] {
-        assert_eq!(scene.node_at(point), Some(id(expected)), "{case}");
+        assert_eq!(scene.node_at(point), Some(addr(expected)), "{case}");
     }
 }
 
@@ -353,7 +353,7 @@ fn a_later_sibling_is_above_an_earlier_one_where_they_overlap() {
         ((800.0, 130.0), FRONT),
         ((870.0, 200.0), FRONT),
     ] {
-        assert_eq!(scene.node_at(point), Some(id(expected)), "{point:?}");
+        assert_eq!(scene.node_at(point), Some(addr(expected)), "{point:?}");
     }
 }
 
@@ -361,8 +361,8 @@ fn a_later_sibling_is_above_an_earlier_one_where_they_overlap() {
 fn a_hidden_node_is_never_the_topmost_node() {
     let scene = fresh();
     // Ghost covers Panel's box and comes after it, but is hidden.
-    assert_eq!(scene.node_at(PANEL_AT), Some(id(PANEL)));
-    assert_eq!(scene.node_at((560.0, 60.0)), Some(id(PANEL)));
+    assert_eq!(scene.node_at(PANEL_AT), Some(addr(PANEL)));
+    assert_eq!(scene.node_at((560.0, 60.0)), Some(addr(PANEL)));
 }
 
 #[test]
@@ -387,7 +387,7 @@ fn a_hidden_node_hides_its_whole_subtree() {
     let scene = Scene::new(node(&page), Assets::new());
     assert_eq!(
         scene.node_at((40.0, 40.0)),
-        Some(id("c0000001")),
+        Some(addr("c0000001")),
         "neither the hidden group nor the node inside it can be hit"
     );
 }
@@ -398,18 +398,18 @@ fn a_node_cannot_be_hit_outside_a_clipping_ancestor_but_can_outside_an_unclipped
     // Overflow is 580-680 wide, its clipping parent only 520-620.
     assert_eq!(
         scene.node_at((600.0, 245.0)),
-        Some(id(OVERFLOW)),
+        Some(addr(OVERFLOW)),
         "inside both boxes"
     );
     assert_eq!(
         scene.node_at((650.0, 245.0)),
-        Some(id(BOARD_B)),
+        Some(addr(BOARD_B)),
         "the part of Overflow that the Clipper clips away is not there"
     );
     // Stray is 700-800 wide, its unclipped parent only 650-730.
     assert_eq!(
         scene.node_at((780.0, 340.0)),
-        Some(id(STRAY)),
+        Some(addr(STRAY)),
         "the part of Stray that overflows the Holder is visible, so it is hit"
     );
 }
@@ -530,10 +530,10 @@ fn node_at_on_the_2000_node_board_agrees_with_a_walk_over_the_boxes() {
     let area = boxes[board.id()];
     let mut deepest = 0usize;
     for point in points_in(area, 600) {
-        let expected = walk(&board, &boxes, point);
+        let expected = walk(&board, &boxes, point).map(|node| NodeAddress::new(None, node));
         let found = scene.node_at(point);
         assert_eq!(found, expected, "the node at {point:?}");
-        deepest += usize::from(found.is_some_and(|node| node != *board.id()));
+        deepest += usize::from(found.is_some_and(|node| node.node() != board.id()));
     }
     assert!(
         deepest > 300,
