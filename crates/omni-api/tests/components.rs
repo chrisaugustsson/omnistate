@@ -1817,6 +1817,55 @@ fn a_design_system_of_components_without_tokens_is_saved_with_the_design_that_us
 }
 
 #[test]
+fn an_empty_design_system_draft_does_not_stop_a_design_save() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    let changeset = new_changeset(f, client, &project);
+    // The design system doc is new and its draft holds neither tokens nor
+    // components; it has no mainline version either.
+    let design_system = create_doc(
+        f,
+        client,
+        &project,
+        &changeset,
+        "design-system",
+        "ui",
+        "Design system",
+    );
+    let design = create_doc(f, client, &project, &changeset, "design", "ui", "Blank");
+    import_design(
+        f,
+        client,
+        &project,
+        &changeset,
+        &design,
+        r#"<Page name="Home">
+  <Board name="Blank" x={0} y={0} width={375} height={64}>
+    <Text name="Title" content="Hello" fontFamily="Inter" fontSize={14}/>
+  </Board>
+</Page>
+"#,
+    );
+
+    // A design that uses no component saves, and there is no design system
+    // version to record.
+    let saved = save(f, client, &project, &changeset, &design);
+    assert!(
+        saved["design_system_version_id"].is_null(),
+        "nothing to record: {saved}"
+    );
+    assert_eq!(
+        versions_of(&design_system, &changeset),
+        0,
+        "the empty design system draft is not saved"
+    );
+    assert_eq!(
+        read_version(f, client, &project, &id_of(&saved))["design_system_version_id"],
+        Value::Null
+    );
+}
+
+#[test]
 fn viewers_and_comparisons_use_the_recorded_design_system_version() {
     let (f, client) = ready();
     let lib = library(f, client);
