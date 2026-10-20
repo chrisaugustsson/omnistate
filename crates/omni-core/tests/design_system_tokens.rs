@@ -32,7 +32,8 @@
 //!   `$extensions` and `$description` are kept.
 //! - A reference to a token that does not exist (or to a group) and a
 //!   reference loop, in any mode, are refused; a loop that only one mode has
-//!   is refused with a message that names that mode.
+//!   is refused with a message that names that mode. A loop between `$value`s
+//!   is refused too when a token on it has mode values that end the chain.
 //! - A typography token may list the font files it uses in
 //!   `$extensions.omnistate.fontFiles`, each `attachment:<id>`;
 //!   `font_files()` lists every one in the tree. A URL or anything else is
@@ -499,6 +500,26 @@ fn reference_loops_are_refused() {
         &dark_only,
         "a loop in one mode is a loop",
         &["color.", "dark"],
+    );
+}
+
+#[test]
+fn a_loop_through_the_value_of_a_token_with_mode_values_is_refused() {
+    // color.surface has a literal value in every mode, so no mode goes round;
+    // its $value, which tools without modes read, does.
+    let looped = with(
+        &with(&sample(), "/color/surface/$value", json!("{color.ink}")),
+        "/color/ink/$value",
+        json!("{color.surface}"),
+    );
+    let message = refuse(
+        &looped,
+        "a loop between $values is a loop, even when one of the tokens has mode values",
+        &["color."],
+    );
+    assert!(
+        message.contains("color.surface") || message.contains("color.ink"),
+        "the message names a token of the loop: {message:?}"
     );
 }
 

@@ -46,6 +46,13 @@
 //!   mode (each `$value` is the mode's value, no token has
 //!   `$extensions.omnistate.modes`) and the answer adds `"mode"`. A mode that
 //!   the design system does not list is 400 `{"error": "unknown_mode"}`.
+//! - A change set whose design system draft is behind the mainline rebases
+//!   like any other (`POST /changesets/{changeset_id}/rebase`, US-026): the
+//!   change set's token changes since the draft's base (each token it added,
+//!   changed or removed) are replayed onto the mainline tree, and a token
+//!   that only the mainline changed keeps its mainline value. Without a token
+//!   changed on both sides, the rebase answers `"conflicts": []` and merges,
+//!   and the mainline tree has the changes of both change sets.
 //! - The three routes are in the route registry: the import as `agent`, the
 //!   reads as `both`.
 
@@ -480,15 +487,16 @@ fn save(f: &Fixture, client: &Client, project: &str, changeset: &str, doc: &str)
     )
 }
 
-/// Submits the change set and has the human approve it, which merges it.
-fn merge(f: &Fixture, client: &Client, project: &str, changeset: &str) {
+/// Submits the change set and has the human approve it; returns the change
+/// set as the approval left it.
+fn submit_and_approve(f: &Fixture, client: &Client, project: &str, changeset: &str) -> Value {
     let path = changeset_path(f, project, changeset);
     must(
         call(client, "POST", &format!("{path}/submit"), &agent(f), None),
         200,
         "submit the change set",
     );
-    let approved = must(
+    must(
         call(
             client,
             "POST",
@@ -498,8 +506,14 @@ fn merge(f: &Fixture, client: &Client, project: &str, changeset: &str) {
         ),
         200,
         "the human approves",
-    );
-    assert_eq!(approved["changeset"]["status"], "merged", "{approved}");
+    )["changeset"]
+        .clone()
+}
+
+/// Submits the change set and has the human approve it, which merges it.
+fn merge(f: &Fixture, client: &Client, project: &str, changeset: &str) {
+    let approved = submit_and_approve(f, client, project, changeset);
+    assert_eq!(approved["status"], "merged", "{approved}");
 }
 
 fn count(sql: &str, binds: &[&str]) -> i64 {
@@ -1020,4 +1034,77 @@ fn a_read_can_give_the_tree_of_one_mode() {
         None,
     );
     assert_error(&response, 400, "unknown_mode");
+}
+
+// ---------------------------------------------------------------------------
+// Rebasing a design system change set
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_design_system_change_set_rebases_onto_the_mainline_tokens() {
+    let (f, client) = ready();
+    let (project, first, doc) = design_system(f, client);
+    import(f, client, &project, &first, &light_and_dark());
+    save(f, client, &project, &first, &doc);
+    merge(f, client, &project, &first);
+
+    // Both change sets start from the same mainline tree; one adds a spacing
+    // token, the other changes the dark surface.
+    let behind = new_changeset(f, client, &project);
+    let mut wider = light_and_dark();
+    wider["spacing"]["lg"] = json!({"$value": "24px"});
+    import(f, client, &project, &behind, &wider);
+    let behind_version = save(f, client, &project, &behind, &doc);
+
+    let ahead = new_changeset(f, client, &project);
+    let mut darker = light_and_dark();
+    darker["color"]["surface"]["$extensions"]["omnistate"]["modes"]["dark"] = json!("#111827");
+    import(f, client, &project, &ahead, &darker);
+    let ahead_version = save(f, client, &project, &ahead, &doc);
+    merge(f, client, &project, &ahead);
+
+    let approved = submit_and_approve(f, client, &project, &behind);
+    assert_eq!(
+        approved["status"], "needs_rebase",
+        "set up a change set behind the mainline: {approved}"
+    );
+
+    let answer = must(
+        call(
+            client,
+            "POST",
+            &format!("{}/rebase", changeset_path(f, &project, &behind)),
+            &agent(f),
+            Some(&json!({})),
+        ),
+        200,
+        "rebase the design system change set",
+    );
+    assert_eq!(
+        answer["conflicts"],
+        json!([]),
+        "no token changed on both sides: {answer}"
+    );
+    assert_eq!(answer["changeset"]["status"], "merged", "{answer}");
+
+    let mut both = light_and_dark();
+    both["spacing"]["lg"] = json!({"$value": "24px"});
+    both["color"]["surface"]["$extensions"]["omnistate"]["modes"]["dark"] = json!("#111827");
+    let mainline = mainline_tokens(f, client, &project, "");
+    assert_eq!(
+        mainline["tokens"], both,
+        "the mainline tree has the changes of both change sets: {mainline}"
+    );
+    assert_eq!(mainline["modes"], json!(["light", "dark"]), "{mainline}");
+    let version = mainline["version_id"].as_str().expect("a mainline version");
+    assert_ne!(
+        version,
+        ahead_version.as_str(),
+        "the rebased change set merged a version of its own"
+    );
+    assert_ne!(
+        version,
+        behind_version.as_str(),
+        "what merged is the rebased tree, not the version on the old base"
+    );
 }
