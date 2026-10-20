@@ -9,23 +9,24 @@ use std::str::FromStr;
 /// Where a node is: a node ID, or an instance and a node of its component.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct NodeAddress {
-    _todo: (),
+    instance: Option<NodeId>,
+    node: NodeId,
 }
 
 impl NodeAddress {
-    pub fn new(_instance: Option<NodeId>, _node: NodeId) -> Self {
-        todo!("US-029: node addresses")
+    pub fn new(instance: Option<NodeId>, node: NodeId) -> Self {
+        Self { instance, node }
     }
 
     /// The instance that holds the node, for an address inside one.
     pub fn instance(&self) -> Option<&NodeId> {
-        todo!("US-029: node addresses")
+        self.instance.as_ref()
     }
 
     /// The addressed node: the component's node for an address inside an
     /// instance.
     pub fn node(&self) -> &NodeId {
-        todo!("US-029: node addresses")
+        &self.node
     }
 }
 
@@ -34,23 +35,32 @@ impl NodeAddress {
 pub struct InvalidNodeAddress;
 
 impl fmt::Display for InvalidNodeAddress {
-    fn fmt(&self, _f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        todo!("US-029: node addresses")
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(
+            "not a node address: write a node ID, or an instance ID and a component node ID with a `/` between",
+        )
     }
 }
 
 impl std::error::Error for InvalidNodeAddress {}
 
 impl fmt::Display for NodeAddress {
-    fn fmt(&self, _f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        todo!("US-029: node addresses")
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.instance {
+            Some(instance) => write!(f, "{instance}/{}", self.node),
+            None => write!(f, "{}", self.node),
+        }
     }
 }
 
 impl FromStr for NodeAddress {
     type Err = InvalidNodeAddress;
 
-    fn from_str(_address: &str) -> Result<Self, Self::Err> {
-        todo!("US-029: node addresses")
+    fn from_str(address: &str) -> Result<Self, Self::Err> {
+        let id = |text: &str| text.parse::<NodeId>().map_err(|_| InvalidNodeAddress);
+        match address.split_once('/') {
+            Some((instance, node)) => Ok(Self::new(Some(id(instance)?), id(node)?)),
+            None => Ok(Self::new(None, id(address)?)),
+        }
     }
 }

@@ -169,3 +169,17 @@ sides changed differently is a conflict named by its path (`color.surface`),
 with each side's token as JSON, and keeps its mainline value. When the merged
 tree fails the checks above, the mainline tree stays and every token that the
 change set changed is a conflict.
+
+The components of the design system (`docs/formats/design-tags.md`) are replayed
+the same way, component by component: one that only a side changed takes that
+side's state, and one that both changed differently is a conflict named by the
+component's node ID that keeps its mainline state.
+
+## Components in a design system version
+
+A saved version of the design system holds the token tree above, and the
+design system's components under the top-level key `$components`, a list of
+`component` nodes in the JSON form of `omni_core::design` (a token tree has no
+key of its own that starts with `$`). A design version records the ID of the
+design system version it was saved against, so its instances resolve against
+the components of that version.

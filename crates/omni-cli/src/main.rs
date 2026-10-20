@@ -9,6 +9,7 @@ mod attach;
 mod changesets;
 mod claims;
 mod commands;
+mod components;
 mod config;
 mod docs;
 mod error;
@@ -67,6 +68,9 @@ Usage:
                                       unchangeable snapshot; prints the version's ID
   omni version diff <a> <b>           list the nodes added, removed, changed and moved from
                                       version <a> to version <b> of a doc
+  omni component usage <component>    list every board of the project's designs that uses a
+                                      component, from the mainline versions: an instance in a
+                                      board, in another component's tree, or a slot value
   omni tokens import <file> --changeset <id>
                                       replace the whole design token tree (DTCG JSON, with a
                                       value per mode) of the change set's draft of the design

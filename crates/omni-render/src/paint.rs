@@ -176,7 +176,9 @@ pub(crate) fn reach(node: &Node, boxes: &HashMap<NodeId, LayoutBox>) -> Option<R
     };
     match node.data() {
         NodeData::Page(page) => Some(below(Rect::new_empty(), &page.children)),
-        NodeData::Board(frame) | NodeData::Frame(frame) => {
+        NodeData::Board(frame)
+        | NodeData::Frame(frame)
+        | NodeData::Component(design::Component { frame, .. }) => {
             let own = with_shadows(rect, frame.shadows.as_deref());
             let own = with_strokes(own, rect, frame.strokes.as_deref());
             Some(if frame.clip == Some(true) {
@@ -297,7 +299,9 @@ impl Painter<'_> {
         );
         match node.data() {
             NodeData::Page(page) => self.children(&page.children),
-            NodeData::Board(frame) | NodeData::Frame(frame) => {
+            NodeData::Board(frame)
+            | NodeData::Frame(frame)
+            | NodeData::Component(design::Component { frame, .. }) => {
                 self.group(node, frame.opacity.as_ref(), || self.frame(frame, rect));
             }
             NodeData::Text(text) => self.group(node, text.opacity.as_ref(), || {

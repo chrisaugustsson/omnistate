@@ -28,15 +28,18 @@ after the type of its node.
 | `<Image>` | `image` | none |
 | `<Vector>` | `vector` | none |
 | `<Instance>` | `instance` | none |
+| `<Component>` | `component` | any node except boards, pages and components |
 
 Attributes are the node's properties, written `name="text"` or
 `name={expression}`. A tag that takes an attribute that it does not list is
 rejected, and so is an attribute written twice. An attribute written without a
 value, such as `clip`, is `true`.
 
-Every tag takes `id`, `name` and `visible`. Every tag except `<Page>` takes the
-placement and size attributes, and `<Board>` and `<Frame>` take every
-attribute of the layout and style tables.
+Every tag takes `id`, `name` and `visible`. Every tag except `<Page>` and
+`<Component>` takes the placement and size attributes, and `<Board>`, `<Frame>`
+and `<Component>` take every attribute of the layout and style tables. A
+`<Component>` takes the size, layout and style attributes of a frame, and
+`props`; it is placed by its instances, so it has no placement attributes.
 
 ### Identity
 
@@ -120,6 +123,100 @@ to CSS.
 | `path` | The SVG path data of a `<Vector>`, never SVG markup. Required. |
 | `component` | The ID of the component an `<Instance>` places. Required. |
 
+## Components and instances
+
+A component is a tree of layers with properties, defined by a `<Component>` tag
+at the top of the design system doc (and nowhere else: a `<Component>` inside a
+page, a board, a frame or another component is an error at its tag name). An
+`<Instance>` in a design places a component. The instance stores only the
+component it places, the values of its properties and its overrides, never a
+copy of the component's tree or style.
+
+### Properties (`props` of a `<Component>`)
+
+`props` is an object that maps a property's name to its definition, with a
+`type` of one of four kinds, and a `default`:
+
+| Kind | Definition | An instance's value |
+| --- | --- | --- |
+| `variant` | `{type: "variant", values: ["primary", "secondary"], default: "primary"}`: one of a fixed set of values, and the default is one of them. | One of the values, as text. |
+| `boolean` | `{type: "boolean", default: true}`: shows or hides a layer. | `true` or `false`. |
+| `text` | `{type: "text", default: "Buy"}`: replaces a label. | Text. |
+| `slot` | `{type: "slot", default: "k3f9x2qa"}`: swaps in another component, whose node ID is the default. | The node ID of a component. |
+
+A type other than these four is an error at the `props` value, and its fix
+lists the four kinds. So is a `variant` default that is not one of its
+`values`, and a `slot` default that is not a node ID. In JSON a property is
+written the same way, and `props` is the `props` of the `component` node.
+
+### Layers (`bind`)
+
+A layer of a component takes a property with `bind`, an object with some of
+these fields, each naming a property of the component:
+
+| Field | Layer | Property | Effect |
+| --- | --- | --- | --- |
+| `visible` | any layer | a `boolean` | shows or hides the layer |
+| `content` | a `<Text>` | a `text` | replaces the text of the label |
+| `component` | an `<Instance>` | a `slot` | swaps the component the instance places |
+
+`bind` is written on the `<Frame>`, `<Text>`, `<Image>`, `<Vector>` and
+`<Instance>` layers of a component. A `bind` to a property the component does
+not define, to a property of the wrong kind, or of `content` or `component` on
+a layer of another type is an error at the `bind` value that names the
+property or the field, and `bind` outside a component is an error too. A
+component that sets only `gap` or `pad` and no other layout attribute lays out
+its layers as a flex layout.
+
+```
+<Component id="btn00001" name="Button" dir="row" gap={8} pad={12} fill="#2563eb" radius={8} props={{style: {type: "variant", values: ["primary", "secondary"], default: "primary"}, showIcon: {type: "boolean", default: true}, label: {type: "text", default: "Buy"}, icon: {type: "slot", default: "cart0001"}}}>
+  <Instance id="gfx00001" name="Icon" component="cart0001" bind={{visible: "showIcon", component: "icon"}}/>
+  <Text id="txt00001" name="Label" content="Buy" fontFamily="Inter" fontSize={14} color="#ffffff" bind={{content: "label"}}/>
+  <Frame id="bdg00001" name="Badge" width={8} height={8} fill="#dc2626"/>
+</Component>
+```
+
+### Instances (`props` and `overrides` of an `<Instance>`)
+
+An `<Instance>` takes `component` (the component's node ID), `props` (a value
+for each property it sets, as in the table above) and `overrides`. It takes no
+style of its own and has no children. `overrides` is an object that maps the ID
+of a node of the component to what the instance changes on it, with these
+fields only:
+
+| Field | Value | On |
+| --- | --- | --- |
+| `content` | The text. | a text node |
+| `fills` | A list of fills, as the `fill` of a `<Frame>`. | a node with fills |
+| `visible` | `true` or `false`. | any node |
+| `component` | The node ID of a component: the contents of a slot. | an instance node |
+
+An override key that is not a node ID, any other field, an invalid fill, and a
+property value that is a list or an object are errors at the value that names
+them.
+
+```
+<Instance id="pay00001" name="Pay button" component="btn00001" props={{style: "secondary", showIcon: false, label: "Pay", icon: "hrt00001"}} overrides={{txt00001: {content: "Pay now"}, bdg00001: {fills: [{type: "solid", color: "#16a34a"}]}, gfx00001: {visible: false, component: "hrt00001"}}}/>
+```
+
+The API checks every instance against the component it resolves to, and
+refuses an unknown component, property, variant value or slot target, an
+override of a node that is not in the component, and a `content` override of a
+node that is not text. A draft resolves instances against its change set's
+draft of the design system, and outside a change set against the mainline
+design system; a saved design version records the design system version it
+used, and every view of that version uses it.
+
+### Addresses
+
+A node inside an instance is addressed as `<instanceId>/<componentNodeId>`:
+the ID of the instance, a `/`, and the ID of the component's node. Overrides
+are keyed by the component's node IDs, so each override key, joined to its
+instance's ID, is the address of the node it changes. Comments and the
+renderer address nodes this way too. `omni_core::design::NodeAddress` parses
+`<id>` and `<instanceId>/<componentNodeId>` and rejects anything deeper or
+malformed.
+
 ## Values
 
 - **Text** is written between double quotes. A backslash writes what cannot
@@ -161,7 +258,7 @@ the problem:
 
 ```
 line 2, column 3: `Box` is not a tag
-fix: use one of `Page`, `Board`, `Frame`, `Text`, `Image`, `Vector` or `Instance`
+fix: use one of `Page`, `Board`, `Frame`, `Text`, `Image`, `Vector`, `Instance` or `Component`
 ```
 
 Tags are rejected for an unknown tag or attribute, an invalid value, an `id`

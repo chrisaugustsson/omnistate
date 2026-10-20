@@ -15,9 +15,10 @@
 use crate::AppState;
 use crate::changesets::{non_blank, parse_body};
 use crate::claims::{self, ClaimBody};
+use crate::design;
 use crate::live;
 use crate::session::{ApiError, ErrorBody};
-use crate::versions;
+use crate::versions::{self, Snapshot};
 use crate::workspace::{AgentRequest, WorkspaceRequest, parse_uuid};
 use argon2::password_hash::rand_core::{OsRng, RngCore};
 use axum::Json;
@@ -26,8 +27,8 @@ use axum::extract::{FromRequestParts, Path, Query, State};
 use axum::http::StatusCode;
 use axum::http::request::Parts;
 use axum::response::{IntoResponse, Response};
-use omni_core::design::NodeId;
 use omni_core::design::tokens::TokenTree;
+use omni_core::design::{Node, NodeId};
 use omni_core::ops::{ApplyError, Conflict, EditDoc, Operation};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -65,14 +66,14 @@ pub struct DraftBody {
 }
 
 #[derive(sqlx::FromRow)]
-struct DocRow {
-    id: String,
+pub(crate) struct DocRow {
+    pub(crate) id: String,
     project_id: String,
-    kind: String,
+    pub(crate) kind: String,
     module: String,
     title: String,
     created_at: String,
-    mainline_version_id: Option<String>,
+    pub(crate) mainline_version_id: Option<String>,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -115,8 +116,28 @@ pub struct DraftWithHtml {
     #[serde(flatten)]
     pub draft: DraftBody,
     /// The draft as HTML: `data-node-id` and `data-rev` (the node's revision)
-    /// on every block.
+    /// on every block; empty for a design doc, whose content is `tags` and
+    /// `pages`.
     pub html: String,
+    /// A design doc's pages as tags, with every ID.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tags: Option<String>,
+    /// A design doc's pages as JSON nodes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<Vec<Object>>)]
+    pub pages: Option<Vec<Value>>,
+    /// The design system that a design doc's instances resolve against:
+    /// `{"doc_id", "source", "draft_id", "version_id"}`, where `source` is
+    /// `draft` (the change set's draft of the design system, with its
+    /// `draft_id`), `mainline` (the mainline version, with its `version_id`) or
+    /// `null` (no components yet).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<Object>)]
+    pub design_system: Option<Value>,
+    /// The components that a design doc's instances use, as resolved.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<Vec<Object>>)]
+    pub components: Option<Vec<Value>>,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -315,18 +336,61 @@ impl<S: Send + Sync> FromRequestParts<S> for AgentIdentity {
 
 /// A draft that is in memory: the doc under edit and the `seq` of the next
 /// operation of its log. The draft of a design system doc holds no blocks: its
-/// content is the token tree of the last import (`None` before one), kept in
-/// the log as an `import_tokens` operation and in a version as one chunk of
-/// JSON.
+/// content is the token tree of the last import (`None` before one) and the
+/// components of the last components import, kept in the log as `import_tokens`
+/// and `import_components` operations and in a version as one chunk of JSON.
+/// The draft of a design doc holds the pages of its last import, kept in the
+/// log as an `import_design` operation and in a version as one chunk of JSON.
 pub(crate) struct DraftState {
     pub(crate) doc: EditDoc,
     pub(crate) design_system: bool,
+    pub(crate) design: bool,
     pub(crate) tokens: Option<TokenTree>,
+    /// The components of a design system draft, in order.
+    pub(crate) components: Vec<Node>,
+    /// The pages of a design draft, in order.
+    pub(crate) pages: Vec<Node>,
     pub(crate) next_seq: i64,
 }
 
+impl DraftState {
+    /// What a version of the draft holds, with its node index. `None` for the
+    /// draft of a design system that has no tokens yet.
+    pub(crate) fn snapshot(&self) -> Option<Snapshot> {
+        if self.design_system {
+            let tokens = self.tokens.as_ref()?;
+            Some(Snapshot {
+                html: design::design_system_text(tokens, &self.components),
+                nodes: Vec::new(),
+            })
+        } else if self.design {
+            Some(Snapshot {
+                html: design::pages_text(&self.pages),
+                nodes: design::index_pages(&self.pages),
+            })
+        } else {
+            Some(Snapshot {
+                html: self.doc.to_html(),
+                nodes: self.doc.index(),
+            })
+        }
+    }
+
+    /// The chunk text of a version of the draft as it is now.
+    pub(crate) fn content(&self) -> Option<String> {
+        if self.design_system {
+            let tokens = self.tokens.as_ref()?;
+            Some(design::design_system_text(tokens, &self.components))
+        } else if self.design {
+            Some(design::pages_text(&self.pages))
+        } else {
+            Some(self.doc.to_html())
+        }
+    }
+}
+
 pub(crate) type Slot = Arc<tokio::sync::Mutex<Option<DraftState>>>;
-type UsedIds = Arc<Mutex<HashSet<NodeId>>>;
+pub(crate) type UsedIds = Arc<Mutex<HashSet<NodeId>>>;
 
 /// The drafts that are in memory, and the node IDs of every project in use.
 /// Held by the `AppState`; clones share it.
@@ -352,7 +416,7 @@ impl DraftStore {
 
     /// The IDs in use in a project, read from the logs of its drafts the first
     /// time the project needs them.
-    async fn used_ids(
+    pub(crate) async fn used_ids(
         &self,
         tx: &mut Tx,
         workspace_id: &str,
@@ -381,7 +445,7 @@ impl DraftStore {
 }
 
 /// A fresh random node ID.
-fn random_node_id() -> NodeId {
+pub(crate) fn random_node_id() -> NodeId {
     let mut bytes = [0u8; 8];
     OsRng.fill_bytes(&mut bytes);
     // 256 is a multiple of 32, so every character is equally likely.
@@ -394,13 +458,7 @@ fn random_node_id() -> NodeId {
 
 /// The token tree that a saved design system version holds.
 pub(crate) fn read_tokens(text: &str, what: &str) -> Result<TokenTree, ApiError> {
-    serde_json::from_str(text)
-        .map_err(|e| e.to_string())
-        .and_then(|json| TokenTree::from_json(&json).map_err(|e| e.to_string()))
-        .map_err(|e| {
-            eprintln!("omni-api: {what} holds no token tree: {e}");
-            ApiError::Unavailable
-        })
+    design::read_design_system(text, what).map(|(tokens, _)| tokens)
 }
 
 /// Rebuilds a draft from its base version and its log. The log holds the IDs
@@ -417,6 +475,7 @@ pub(crate) async fn load_state(
         .await
         .map_err(ApiError::database)?;
     let design_system = kind == "design-system";
+    let design = kind == "design";
     // A rebased draft starts from the version the rebase saved, a draft that
     // was never rebased from its base.
     let start = draft
@@ -425,6 +484,8 @@ pub(crate) async fn load_state(
         .or(draft.base_version_id.as_ref());
     let mut doc = EditDoc::from_html("").expect("an empty doc parses");
     let mut tokens = None;
+    let mut components = Vec::new();
+    let mut pages = Vec::new();
     if let Some(base) = start {
         let chunk = versions::chunk_of_version(tx, &draft.doc_id, base).await?;
         let html = match chunk {
@@ -434,7 +495,14 @@ pub(crate) async fn load_state(
         if design_system {
             if !html.is_empty() {
                 let what = format!("the base version {base} of draft {}", draft.id);
-                tokens = Some(read_tokens(&html, &what)?);
+                let (tree, nodes) = design::read_design_system(&html, &what)?;
+                tokens = Some(tree);
+                components = nodes;
+            }
+        } else if design {
+            if !html.is_empty() {
+                let what = format!("the base version {base} of draft {}", draft.id);
+                pages = design::read_pages(&html, &what)?;
             }
         } else {
             doc = EditDoc::from_html(&html).map_err(|e| {
@@ -472,6 +540,16 @@ pub(crate) async fn load_state(
                 next_seq = seq + 1;
                 continue;
             }
+            if let Some(imported) = design::imported_components(&op) {
+                components = imported.map_err(|e| corrupt(seq, &e))?;
+                next_seq = seq + 1;
+                continue;
+            }
+        }
+        if design && let Some(imported) = design::imported_pages(&op) {
+            pages = imported.map_err(|e| corrupt(seq, &e))?;
+            next_seq = seq + 1;
+            continue;
         }
         let op: Operation = serde_json::from_str(&op).map_err(|e| corrupt(seq, &e.to_string()))?;
         let mut ids: VecDeque<NodeId> = created.iter().filter_map(|id| id.parse().ok()).collect();
@@ -493,7 +571,10 @@ pub(crate) async fn load_state(
     Ok(DraftState {
         doc,
         design_system,
+        design,
         tokens,
+        components,
+        pages,
         next_seq,
     })
 }
@@ -593,7 +674,81 @@ pub(crate) async fn require_changeset(
     found.map(|_| ()).ok_or(ApiError::NotFound)
 }
 
-async fn find_doc(tx: &mut Tx, project_id: &str, doc_id: &str) -> Result<DocRow, ApiError> {
+/// The ID of the draft that `changeset_id` has of `doc_id`. A change set that
+/// has none gets one, based on the doc's mainline version (409
+/// `no_mainline_version` when the doc has none, so that only its own change set
+/// has a draft of it), and `draft.opened` is emitted; two requests that open it
+/// at once get the same draft.
+pub(crate) async fn ensure_draft(
+    tx: &mut Tx,
+    workspace_id: &str,
+    project_id: &str,
+    doc_id: &str,
+    changeset_id: &str,
+    mainline: Option<&str>,
+) -> Result<String, ApiError> {
+    let existing: Option<String> = sqlx::query_scalar(
+        "SELECT id::text FROM drafts WHERE doc_id = $1::uuid AND changeset_id = $2::uuid",
+    )
+    .bind(doc_id)
+    .bind(changeset_id)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(ApiError::database)?;
+    if let Some(draft_id) = existing {
+        return Ok(draft_id);
+    }
+    let Some(mainline) = mainline else {
+        return Err(ApiError::conflict("no_mainline_version"));
+    };
+    // The unique key lets one of two requests make the draft, and the other
+    // reads it.
+    let inserted: Option<String> = sqlx::query_scalar(
+        "INSERT INTO drafts (workspace_id, doc_id, changeset_id, base_version_id) \
+         VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid) \
+         ON CONFLICT (workspace_id, doc_id, changeset_id) DO NOTHING \
+         RETURNING id::text",
+    )
+    .bind(workspace_id)
+    .bind(doc_id)
+    .bind(changeset_id)
+    .bind(mainline)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(ApiError::database)?;
+    match inserted {
+        Some(draft_id) => {
+            live::emit(
+                tx,
+                workspace_id,
+                project_id,
+                "draft.opened",
+                &json!({
+                    "doc_id": doc_id,
+                    "changeset_id": changeset_id,
+                    "draft_id": draft_id,
+                    "base_version_id": mainline,
+                }),
+            )
+            .await?;
+            Ok(draft_id)
+        }
+        None => sqlx::query_scalar(
+            "SELECT id::text FROM drafts WHERE doc_id = $1::uuid AND changeset_id = $2::uuid",
+        )
+        .bind(doc_id)
+        .bind(changeset_id)
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(ApiError::database),
+    }
+}
+
+pub(crate) async fn find_doc(
+    tx: &mut Tx,
+    project_id: &str,
+    doc_id: &str,
+) -> Result<DocRow, ApiError> {
     sqlx::query_as(&format!(
         "SELECT {DOC_COLUMNS} FROM docs WHERE id = $1::uuid AND project_id = $2::uuid"
     ))
@@ -979,11 +1134,43 @@ pub async fn read_draft(
         .as_ref()
         .map(|loaded| loaded.doc.to_html_with_revisions())
         .unwrap_or_default();
+    // A design doc's draft holds pages, which resolve against the change set's
+    // design system once this draft's lock is let go.
+    let pages = held
+        .as_ref()
+        .filter(|loaded| loaded.design)
+        .map(|loaded| loaded.pages.clone());
     drop(held);
+    let view = match pages {
+        Some(pages) => Some(
+            design::view_of_draft(
+                &state,
+                &request.workspace_id,
+                &project_id,
+                &changeset_id,
+                &pages,
+            )
+            .await?,
+        ),
+        None => None,
+    };
+    let (tags, pages, design_system, components) = match view {
+        Some(view) => (
+            Some(view.tags),
+            Some(view.pages),
+            Some(view.design_system),
+            Some(view.components),
+        ),
+        None => (None, None, None, None),
+    };
     Ok(Json(DraftHtmlResponse {
         draft: DraftWithHtml {
             draft: draft.into(),
             html,
+            tags,
+            pages,
+            design_system,
+            components,
         },
     }))
 }

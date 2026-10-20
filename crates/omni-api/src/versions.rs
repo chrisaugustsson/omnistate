@@ -13,6 +13,7 @@
 
 use crate::AppState;
 use crate::changesets::{clear_approval, parse_body};
+use crate::design;
 use crate::docs::{AgentIdentity, DraftRow, Tx, current_draft, ensure_loaded, find_draft};
 use crate::live;
 use crate::session::{ApiError, ErrorBody};
@@ -30,7 +31,8 @@ use utoipa::ToSchema;
 /// The columns of a version; `created_at` is ISO 8601 text in UTC.
 const VERSION_COLUMNS: &str = "v.id::text AS id, v.doc_id::text AS doc_id, \
      v.changeset_id::text AS changeset_id, v.draft_id::text AS draft_id, v.removed, v.chunk, \
-     v.agent::text AS agent, \
+     v.agent::text AS agent, v.design_system_version_id::text AS design_system_version_id, \
+     d.kind AS doc_kind, \
      to_char(v.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"') AS created_at";
 
 /// One node of a version's index.
@@ -61,8 +63,24 @@ pub struct VersionBody {
     /// `{"run", "role", "model", "harness"}`, as the agent declared them.
     #[schema(value_type = Object)]
     pub agent: Value,
+    /// For a design version, the version of the design system it was saved
+    /// against, which every view of it uses; `null` for other versions.
+    pub design_system_version_id: Option<String>,
     /// The version's nodes in document order.
     pub nodes: Vec<NodeEntry>,
+    /// A design version's pages as tags; only when the version is read by ID.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tags: Option<String>,
+    /// A design version's pages as JSON nodes; only when read by ID.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<Vec<Object>>)]
+    pub pages: Option<Vec<Value>>,
+    /// The components that a design version's instances use, as the recorded
+    /// design system version defines them; for a design system version, all of
+    /// its components. Only when the version is read by ID.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<Vec<Object>>)]
+    pub components: Option<Vec<Value>>,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -92,6 +110,11 @@ pub struct DiffBody {
     pub doc_id: String,
     pub from: String,
     pub to: String,
+    /// The design system version that the first version recorded; `null` for
+    /// versions of other docs.
+    pub from_design_system_version_id: Option<String>,
+    /// The design system version that the second version recorded.
+    pub to_design_system_version_id: Option<String>,
     /// The nodes only the second version has.
     pub added: Vec<NodeEntry>,
     /// The nodes only the first version has.
@@ -181,6 +204,8 @@ struct VersionRow {
     removed: bool,
     chunk: Option<String>,
     agent: String,
+    design_system_version_id: Option<String>,
+    doc_kind: String,
     created_at: String,
 }
 
@@ -245,7 +270,11 @@ async fn version_body(tx: &mut Tx, row: VersionRow) -> Result<VersionBody, ApiEr
         removed: row.removed,
         created_at: row.created_at,
         agent: serde_json::from_str(&row.agent).unwrap_or(Value::Null),
+        design_system_version_id: row.design_system_version_id,
         nodes,
+        tags: None,
+        pages: None,
+        components: None,
     })
 }
 
@@ -261,6 +290,7 @@ pub(crate) struct Snapshot {
 /// Inserts a version of the draft, and the node index of its chunk when that
 /// is new, in the caller's transaction; returns the version's ID. `chunk` and
 /// `snapshot` are both `None` for a removal.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn insert_version(
     tx: &mut Tx,
     workspace_id: &str,
@@ -268,10 +298,12 @@ pub(crate) async fn insert_version(
     agent: &Value,
     chunk: Option<&str>,
     snapshot: Option<&Snapshot>,
+    design_system_version: Option<&str>,
 ) -> Result<String, ApiError> {
     let id: String = sqlx::query_scalar(
-        "INSERT INTO versions (workspace_id, doc_id, changeset_id, draft_id, removed, chunk, agent) \
-         VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5, $6, $7::text::jsonb) \
+        "INSERT INTO versions (workspace_id, doc_id, changeset_id, draft_id, removed, chunk, agent, \
+                               design_system_version_id) \
+         VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5, $6, $7::text::jsonb, $8::uuid) \
          RETURNING id::text",
     )
     .bind(workspace_id)
@@ -281,6 +313,7 @@ pub(crate) async fn insert_version(
     .bind(chunk.is_none())
     .bind(chunk)
     .bind(agent.to_string())
+    .bind(design_system_version)
     .fetch_one(&mut **tx)
     .await
     .map_err(ApiError::database)?;
@@ -352,14 +385,16 @@ pub(crate) async fn emit_version_saved(
 /// Writes a version of the draft: the chunk first (it is named by its content,
 /// so a chunk without a version is harmless), then, in one transaction, the
 /// version, the chunk's node index when it is new, the move out of an approval
-/// and the `version.saved` event.
-async fn store_version(
+/// and the `version.saved` event. A design version records the design system
+/// version it was saved against.
+pub(crate) async fn store_version(
     state: &AppState,
     workspace_id: &str,
     project_id: &str,
     draft: &DraftRow,
     agent: &Value,
     snapshot: Option<Snapshot>,
+    design_system_version: Option<&str>,
 ) -> Result<VersionBody, ApiError> {
     let removed = snapshot.is_none();
     let chunk = match &snapshot {
@@ -374,6 +409,7 @@ async fn store_version(
         agent,
         chunk.as_deref(),
         snapshot.as_ref(),
+        design_system_version,
     )
     .await?;
     clear_approval(&mut tx, workspace_id, project_id, &draft.changeset_id).await?;
@@ -436,8 +472,30 @@ pub async fn save_version(
     let sent = parse_body::<SaveVersionRequest>(&body);
     let mut tx = state.workspace_tx(&request.workspace_id).await?;
     let draft = find_draft(&mut tx, &project_id, &changeset_id, &doc_id).await?;
+    let kind: String = sqlx::query_scalar("SELECT kind FROM docs WHERE id = $1::uuid")
+        .bind(&doc_id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(ApiError::database)?;
     tx.commit().await.map_err(ApiError::database)?;
     sent?;
+
+    // A design version records the design system version it uses, which is
+    // saved first when the change set's draft of it has changes that no
+    // version holds. That takes the design system draft's lock, so it is done
+    // before this draft's lock is taken.
+    let design_system_version = if kind == "design" {
+        design::settle_design_system(
+            &state,
+            &request.workspace_id,
+            &project_id,
+            &changeset_id,
+            &identity.to_json(),
+        )
+        .await?
+    } else {
+        None
+    };
 
     // The snapshot is taken under the draft's lock, so it holds whole batches
     // only: the ones that are committed. The lock is held until the version is
@@ -451,21 +509,10 @@ pub async fn save_version(
     tx.commit().await.map_err(ApiError::database)?;
     ensure_loaded(&state, &request.workspace_id, &draft, &mut held).await?;
     let loaded = held.as_ref().expect("the draft is loaded");
-    // A design system's version is its token tree as one chunk of JSON; the
-    // tokens are no nodes, so it has no node index.
-    let snapshot = if loaded.design_system {
-        let Some(tokens) = &loaded.tokens else {
-            return Err(ApiError::conflict("no_tokens"));
-        };
-        Snapshot {
-            html: tokens.to_json().to_string(),
-            nodes: Vec::new(),
-        }
-    } else {
-        Snapshot {
-            html: loaded.doc.to_html(),
-            nodes: loaded.doc.index(),
-        }
+    // A design system's version is its token tree and its components as one
+    // chunk of JSON; the tokens are no nodes, so it has no node index.
+    let Some(snapshot) = loaded.snapshot() else {
+        return Err(ApiError::conflict("no_tokens"));
     };
     let version = store_version(
         &state,
@@ -474,6 +521,7 @@ pub async fn save_version(
         &draft,
         &identity.to_json(),
         Some(snapshot),
+        design_system_version.as_deref(),
     )
     .await?;
     Ok((StatusCode::CREATED, Json(VersionResponse { version })))
@@ -530,6 +578,7 @@ pub async fn remove_doc(
         &draft,
         &identity.to_json(),
         None,
+        None,
     )
     .await?;
     Ok((StatusCode::CREATED, Json(VersionResponse { version })))
@@ -561,8 +610,26 @@ pub async fn show_version(
     let version_id = parse_uuid(&version_id).ok_or(ApiError::NotFound)?;
     let mut tx = state.workspace_tx(&request.workspace_id).await?;
     let row = find_version(&mut tx, &project_id, &version_id).await?;
-    let version = version_body(&mut tx, row).await?;
+    let kind = row.doc_kind.clone();
+    let chunk = row.chunk.clone();
+    let mut version = version_body(&mut tx, row).await?;
     tx.commit().await.map_err(ApiError::database)?;
+    // A design version is shown with the design system version it recorded,
+    // whatever the mainline design system is now.
+    let view = design::view_of_version(
+        &state,
+        &request.workspace_id,
+        &kind,
+        &version.id,
+        chunk.as_deref(),
+        version.design_system_version_id.as_deref(),
+    )
+    .await?;
+    if let Some(view) = view {
+        version.tags = view.tags;
+        version.pages = view.pages;
+        version.components = Some(view.components);
+    }
     Ok(Json(VersionResponse { version }))
 }
 
@@ -603,9 +670,14 @@ pub async fn diff_versions(
     let before = nodes_of(&mut tx, first.chunk.as_deref()).await?;
     let after = nodes_of(&mut tx, second.chunk.as_deref()).await?;
     tx.commit().await.map_err(ApiError::database)?;
-    Ok(Json(DiffResponse {
-        diff: compare(first.doc_id, first.id, second.id, before, after),
-    }))
+    let (from_design_system, to_design_system) = (
+        first.design_system_version_id.clone(),
+        second.design_system_version_id.clone(),
+    );
+    let mut diff = compare(first.doc_id, first.id, second.id, before, after);
+    diff.from_design_system_version_id = from_design_system;
+    diff.to_design_system_version_id = to_design_system;
+    Ok(Json(DiffResponse { diff }))
 }
 
 /// The differences between the nodes of two versions, each list in the document
@@ -658,6 +730,8 @@ fn compare(
         doc_id,
         from,
         to,
+        from_design_system_version_id: None,
+        to_design_system_version_id: None,
         added,
         removed,
         changed,

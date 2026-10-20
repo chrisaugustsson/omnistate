@@ -2,7 +2,7 @@
 //! `docs/formats/layout.md`.
 
 use crate::text::literal;
-use omni_core::design::{self, Length, Node, NodeData, Sizing};
+use omni_core::design::{self, Component, Length, Node, NodeData, Sizing};
 use taffy::prelude::{TaffyAuto, TaffyGridLine, fr, length};
 use taffy::{
     AlignItems, AlignSelf, Dimension, Display, FlexDirection, FlexWrap, GridPlacement,
@@ -202,7 +202,9 @@ struct Sizes<'a> {
 impl<'a> Sizes<'a> {
     fn of(node: &'a Node) -> Self {
         match node.data() {
-            NodeData::Board(frame) | NodeData::Frame(frame) => Self::new(&frame.size),
+            NodeData::Board(frame)
+            | NodeData::Frame(frame)
+            | NodeData::Component(Component { frame, .. }) => Self::new(&frame.size),
             NodeData::Text(text) => Self::new(&text.size),
             NodeData::Image(image) => Self::new(&image.size),
             NodeData::Vector(vector) => Self::new(&vector.size),

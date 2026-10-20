@@ -34,6 +34,14 @@
 //!   `letterSpacing`, `textAlign`, `textDecoration` and `color`.
 //! - Images show an `attachment:<id>`, vectors hold SVG `path` data (never SVG
 //!   markup), and instances name their `component`.
+//! - Components (US-029) are `component` nodes at the top of the design system
+//!   doc: a frame's size, layout and style, its tree of layers and `props`, the
+//!   properties that instances give values to (`variant`, `boolean`, `text`
+//!   and `slot`). A layer takes a property with `bind`. An instance stores
+//!   only its `component`, its `props` and its `overrides` (`content`, `fills`,
+//!   `visible` and `component`, by the ID of a node of the component), and a
+//!   node inside an instance is addressed as `<instanceId>/<componentNodeId>`
+//!   (`NodeAddress`).
 //!
 //! Lengths are CSS pixels and colors are `#rrggbb` or `#rrggbbaa`. Every
 //! color, every length except `x` and `y`, every opacity and font value, and a
@@ -116,6 +124,7 @@ macro_rules! keywords {
 }
 
 mod address;
+mod component;
 mod id;
 mod json;
 mod layout;
@@ -127,13 +136,18 @@ pub mod tokens;
 mod value;
 
 pub use address::{InvalidNodeAddress, NodeAddress};
+pub use component::{
+    BIND_FIELDS, Bind, OVERRIDE_FIELDS, Override, Overrides, PROP_KINDS, PropDef, PropDefs,
+    PropValue, PropValues,
+};
 pub use id::{InvalidNodeId, NodeId};
 pub use layout::{
     AlignItems, FlexDirection, FlexLayout, FlexWrap, Gap, GridLayout, GridPlacement,
     JustifyContent, Layout, LayoutMode, Margin, Padding, SelfAlignment, Sizing, Track,
 };
 pub use node::{
-    Frame, Image, Instance, Node, NodeData, NodeKind, Page, Placement, Size, Text, Vector,
+    Component, Frame, Image, Instance, Node, NodeData, NodeKind, Page, Placement, Size, Text,
+    Vector,
 };
 pub use path::PathData;
 pub use style::{

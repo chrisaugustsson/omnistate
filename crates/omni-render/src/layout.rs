@@ -5,7 +5,7 @@ mod style;
 mod tree;
 
 use crate::text::{Fonts, ShapedText};
-use omni_core::design::{Node, NodeData, NodeId};
+use omni_core::design::{Component, Node, NodeData, NodeId};
 use std::collections::HashMap;
 use std::rc::Rc;
 use style::Flow;
@@ -76,7 +76,9 @@ fn add(
 ) -> taffy::NodeId {
     let mut style = style::item(node, flow);
     let (children, text) = match node.data() {
-        NodeData::Board(frame) | NodeData::Frame(frame) => {
+        NodeData::Board(frame)
+        | NodeData::Frame(frame)
+        | NodeData::Component(Component { frame, .. }) => {
             let children_flow = style::container(&mut style, &frame.layout);
             let children = frame
                 .children

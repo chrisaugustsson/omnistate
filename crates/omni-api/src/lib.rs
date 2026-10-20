@@ -12,6 +12,7 @@ pub mod auth;
 mod changesets;
 mod claims;
 pub mod delete_workspace;
+mod design;
 mod docs;
 mod live;
 mod openapi;
@@ -29,7 +30,7 @@ use axum::http::header::{CONTENT_SECURITY_POLICY, X_CONTENT_TYPE_OPTIONS};
 use axum::http::{HeaderValue, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::Response;
-use axum::routing::{get, post};
+use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use s3::creds::Credentials;
 use s3::{Bucket, BucketConfiguration, Region};
@@ -361,6 +362,18 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/v1/w/{workspace_id}/projects/{project_id}/tokens",
             get(tokens::read_mainline_tokens),
+        )
+        .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/components",
+            put(design::import_components),
+        )
+        .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs/{doc_id}/design",
+            put(design::import_design),
+        )
+        .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/components/usage",
+            get(design::component_usage),
         )
         .route(
             "/api/v1/w/{workspace_id}/attachments",

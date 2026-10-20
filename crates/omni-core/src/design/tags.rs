@@ -3,8 +3,8 @@
 //! between the two without loss.
 //!
 //! - One tag is one node, named after its type: `Page`, `Board`, `Frame`,
-//!   `Text`, `Image`, `Vector` and `Instance`. A tag's children are the node's
-//!   children, in order.
+//!   `Text`, `Image`, `Vector`, `Instance` and `Component`. A tag's children
+//!   are the node's children, in order.
 //! - Attributes are the node's properties, written `name="text"` or
 //!   `name={expression}`, such as
 //!   `<Frame id="k3f9x2qa" name="Card" dir="col" gap="$space.md" pad={16} fill="$color.surface">`.
@@ -24,8 +24,9 @@
 use super::json::Object;
 use super::value::non_negative;
 use super::{
-    AttachmentRef, Color, Fill, FontFamily, Gap, GridPlacement, LayoutMode, Length, Margin, Node,
-    NodeId, NodeKind, Padding, PathData, Radius, Shadow, Sizing, Stroke, TokenOr, Track,
+    AttachmentRef, Bind, Color, Fill, FontFamily, Gap, GridPlacement, LayoutMode, Length, Margin,
+    Node, NodeId, NodeKind, Overrides, PROP_KINDS, Padding, PathData, PropDefs, PropValues, Radius,
+    Shadow, Sizing, Stroke, TokenOr, Track,
 };
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
@@ -43,7 +44,7 @@ pub struct Tag {
     pub attributes: &'static [&'static str],
 }
 
-const FRAME: &[&str] = &[
+const BOARD: &[&str] = &[
     "id",
     "name",
     "visible",
@@ -78,6 +79,70 @@ const FRAME: &[&str] = &[
     "clip",
 ];
 
+const FRAME: &[&str] = &[
+    "id",
+    "name",
+    "visible",
+    "absolute",
+    "x",
+    "y",
+    "gridColumn",
+    "gridRow",
+    "margin",
+    "justifySelf",
+    "alignSelf",
+    "width",
+    "height",
+    "minWidth",
+    "maxWidth",
+    "minHeight",
+    "maxHeight",
+    "layout",
+    "dir",
+    "wrap",
+    "gap",
+    "pad",
+    "align",
+    "justify",
+    "cols",
+    "rows",
+    "fill",
+    "strokes",
+    "radius",
+    "shadows",
+    "opacity",
+    "clip",
+    "bind",
+];
+
+const COMPONENT: &[&str] = &[
+    "id",
+    "name",
+    "visible",
+    "width",
+    "height",
+    "minWidth",
+    "maxWidth",
+    "minHeight",
+    "maxHeight",
+    "layout",
+    "dir",
+    "wrap",
+    "gap",
+    "pad",
+    "align",
+    "justify",
+    "cols",
+    "rows",
+    "fill",
+    "strokes",
+    "radius",
+    "shadows",
+    "opacity",
+    "clip",
+    "props",
+];
+
 const TEXT: &[&str] = &[
     "id",
     "name",
@@ -107,6 +172,7 @@ const TEXT: &[&str] = &[
     "textDecoration",
     "color",
     "opacity",
+    "bind",
 ];
 
 const IMAGE: &[&str] = &[
@@ -133,6 +199,7 @@ const IMAGE: &[&str] = &[
     "radius",
     "shadows",
     "opacity",
+    "bind",
 ];
 
 const VECTOR: &[&str] = &[
@@ -158,6 +225,7 @@ const VECTOR: &[&str] = &[
     "strokes",
     "shadows",
     "opacity",
+    "bind",
 ];
 
 const INSTANCE: &[&str] = &[
@@ -179,17 +247,20 @@ const INSTANCE: &[&str] = &[
     "minHeight",
     "maxHeight",
     "component",
+    "props",
+    "overrides",
+    "bind",
 ];
 
 /// The tags, in the order of [`KINDS`].
-static TAGS: [Tag; 7] = [
+static TAGS: [Tag; 8] = [
     Tag {
         name: "Page",
         attributes: &["id", "name", "visible"],
     },
     Tag {
         name: "Board",
-        attributes: FRAME,
+        attributes: BOARD,
     },
     Tag {
         name: "Frame",
@@ -211,10 +282,14 @@ static TAGS: [Tag; 7] = [
         name: "Instance",
         attributes: INSTANCE,
     },
+    Tag {
+        name: "Component",
+        attributes: COMPONENT,
+    },
 ];
 
 /// The node type of each tag of [`TAGS`].
-const KINDS: [NodeKind; 7] = [
+const KINDS: [NodeKind; 8] = [
     NodeKind::Page,
     NodeKind::Board,
     NodeKind::Frame,
@@ -222,6 +297,7 @@ const KINDS: [NodeKind; 7] = [
     NodeKind::Image,
     NodeKind::Vector,
     NodeKind::Instance,
+    NodeKind::Component,
 ];
 
 /// Every tag of the format, one per node type.
@@ -255,7 +331,10 @@ fn list_of(items: &[String]) -> String {
 
 /// Whether nodes of `kind` have children.
 fn has_children(kind: NodeKind) -> bool {
-    matches!(kind, NodeKind::Page | NodeKind::Board | NodeKind::Frame)
+    matches!(
+        kind,
+        NodeKind::Page | NodeKind::Board | NodeKind::Frame | NodeKind::Component
+    )
 }
 
 /// How deep tags nest at most, which keeps the parser and the printer off
@@ -367,6 +446,12 @@ enum Shape {
     Family,
     Image,
     Component,
+    /// The properties a component defines.
+    Definitions,
+    /// The values an instance gives to properties.
+    Values,
+    Overrides,
+    Bind,
 }
 
 struct Spec {
@@ -444,9 +529,19 @@ static SPECS: &[Spec] = &[
     node("fit", "fit", Shape::Keyword(FIT)),
     node("path", "path", Shape::Path),
     node("component", "component", Shape::Component),
+    node("props", "props", Shape::Values),
+    node("overrides", "overrides", Shape::Overrides),
+    node("bind", "bind", Shape::Bind),
 ];
 
-fn spec_of(attr: &str) -> &'static Spec {
+/// The `props` of a component are its property definitions, and those of an
+/// instance the values it gives them.
+static DEFINITIONS: Spec = node("props", "props", Shape::Definitions);
+
+fn spec_of(kind: NodeKind, attr: &str) -> &'static Spec {
+    if kind == NodeKind::Component && attr == "props" {
+        return &DEFINITIONS;
+    }
     SPECS
         .iter()
         .find(|spec| spec.attr == attr)
@@ -514,6 +609,24 @@ fn how(spec: &Spec) -> String {
         Shape::Family => format!("write the family's name, such as `{attr}=\"Inter\"`, or a token reference such as `{attr}=\"$font.family.sans\"`"),
         Shape::Image => format!("write `{attr}=\"attachment:<id>\"`"),
         Shape::Component => format!("write the ID of a component, such as `{attr}=\"k3f9x2qa\"`"),
+        Shape::Definitions => format!(
+            "write an object with a property of one of the kinds {}, such as `{attr}={{{{label: {{type: \"text\", default: \"Buy\"}}}}}}`",
+            list_of(
+                &PROP_KINDS
+                    .iter()
+                    .map(|kind| format!("`{kind}`"))
+                    .collect::<Vec<_>>()
+            )
+        ),
+        Shape::Values => format!(
+            "write an object of property values, text or `true` or `false`, such as `{attr}={{{{label: \"Pay\", showIcon: false}}}}`"
+        ),
+        Shape::Overrides => format!(
+            "write an object by the ID of a component node, such as `{attr}={{{{k3f9x2qa: {{content: \"Pay now\"}}}}}}` with `content`, `fills`, `visible` or `component`"
+        ),
+        Shape::Bind => format!(
+            "bind a layer of a component to its properties, such as `{attr}={{{{visible: \"showIcon\"}}}}` with `visible`, `content` or `component`"
+        ),
     }
 }
 
@@ -673,6 +786,10 @@ fn convert(spec: &Spec, value: Value) -> Result<Value, Problem> {
         Shape::Family => check::<TokenOr<FontFamily>>(spec, &value).map(|()| value),
         Shape::Image => check::<AttachmentRef>(spec, &value).map(|()| value),
         Shape::Component => check::<NodeId>(spec, &value).map(|()| value),
+        Shape::Definitions => check::<PropDefs>(spec, &value).map(|()| value),
+        Shape::Values => check::<PropValues>(spec, &value).map(|()| value),
+        Shape::Overrides => check::<Overrides>(spec, &value).map(|()| value),
+        Shape::Bind => check::<Bind>(spec, &value).map(|()| value),
     }
 }
 
@@ -723,6 +840,16 @@ impl TagNode {
         &self.children
     }
 
+    /// The `id` of every node of the subtree that was written with one, in
+    /// document order.
+    pub fn ids(&self) -> Vec<NodeId> {
+        let mut ids: Vec<NodeId> = self.id.into_iter().collect();
+        for child in &self.children {
+            ids.extend(child.ids());
+        }
+        ids
+    }
+
     /// The node with an ID on every node: each new node, in document order,
     /// takes the next ID from `next`, and every other node keeps its own.
     ///
@@ -730,10 +857,16 @@ impl TagNode {
     ///
     /// If `next` gives an ID that another node of the tree has, because node
     /// IDs are unique.
-    pub fn assign_ids(self, mut next: impl FnMut() -> NodeId) -> Node {
-        let json = self.with_ids(&mut next);
-        serde_json::from_value(json)
+    pub fn assign_ids(self, next: impl FnMut() -> NodeId) -> Node {
+        self.try_assign_ids(next)
             .expect("the parser checked every node, and `next` gives IDs no other node has")
+    }
+
+    /// Like [`assign_ids`](Self::assign_ids), but the error of a tree that the
+    /// node model refuses is returned instead of a panic.
+    pub fn try_assign_ids(self, mut next: impl FnMut() -> NodeId) -> Result<Node, String> {
+        let json = self.with_ids(&mut next);
+        serde_json::from_value(json).map_err(|error| error.to_string())
     }
 
     fn with_ids(self, next: &mut dyn FnMut() -> NodeId) -> Value {
@@ -849,10 +982,39 @@ pub fn parse(source: &str) -> Result<TagNode, TagError> {
     Ok(root)
 }
 
+/// Parses the tags written one after the other at the top, none or more, each
+/// with its subtree. An `id` is written once in all of them.
+pub fn parse_all(source: &str) -> Result<Vec<TagNode>, TagError> {
+    let mut parser = Parser {
+        source,
+        pos: 0,
+        ids: HashSet::new(),
+        expression: 0,
+    };
+    let mut roots = Vec::new();
+    loop {
+        parser.skip_whitespace();
+        match parser.peek() {
+            None => return Ok(roots),
+            Some('<') => roots.push(parser.element(None, 0)?),
+            Some(_) => {
+                return Err(parser.error(
+                    parser.pos,
+                    "expected a tag, but found text",
+                    "start each tag with `<`, such as `<Frame name=\"Card\"/>`",
+                ));
+            }
+        }
+    }
+}
+
 /// What a parent tells its children: its type and how it lays them out.
 struct Parent {
     kind: NodeKind,
     mode: LayoutMode,
+    /// The properties of the component that the tag is inside, if it is inside
+    /// one.
+    defs: Option<PropDefs>,
 }
 
 struct Parser<'a> {
@@ -964,6 +1126,7 @@ impl<'a> Parser<'a> {
         let mut props = Map::new();
         let mut layout = Map::new();
         let mut explicit_mode = None;
+        let mut bind = None;
         let mut layout_attrs = Vec::new();
         let mut attrs: Vec<(&str, usize)> = Vec::new();
         let self_closing = loop {
@@ -1064,8 +1227,13 @@ impl<'a> Parser<'a> {
                 continue;
             }
 
-            let spec = spec_of(attr);
+            let spec = spec_of(kind, attr);
             let json = convert(spec, value).map_err(|problem| self.problem(value_pos, problem))?;
+            if attr == "bind" {
+                self.check_bind(kind, &json, parent, value_pos)?;
+                bind = Some(json);
+                continue;
+            }
             match (attr, spec.home) {
                 ("name", _) => {
                     name = json.as_str().map(str::to_string);
@@ -1088,8 +1256,11 @@ impl<'a> Parser<'a> {
             }
         };
 
-        let mode = self.layout_mode(explicit_mode, &layout_attrs)?;
-        if matches!(kind, NodeKind::Board | NodeKind::Frame) {
+        let mode = self.layout_mode(kind, explicit_mode, &layout_attrs)?;
+        if matches!(
+            kind,
+            NodeKind::Board | NodeKind::Frame | NodeKind::Component
+        ) {
             layout.insert("mode".to_string(), Value::from(mode.as_str()));
             props.insert("layout".to_string(), Value::Object(layout));
         }
@@ -1133,6 +1304,16 @@ impl<'a> Parser<'a> {
             ));
         }
 
+        // A component's own tag has already checked its properties, and its
+        // layers check their binds against them.
+        let defs = match (kind, props.get("props")) {
+            (NodeKind::Component, Some(defs)) => PropDefs::from_value(defs).ok(),
+            (NodeKind::Component, None) => Some(PropDefs::default()),
+            _ => parent.and_then(|parent| parent.defs.clone()),
+        };
+        if let Some(bind) = bind {
+            props.insert("bind".to_string(), bind);
+        }
         let mut node = TagNode {
             id,
             kind,
@@ -1143,7 +1324,7 @@ impl<'a> Parser<'a> {
         if self_closing {
             return Ok(node);
         }
-        let parent = Parent { kind, mode };
+        let parent = Parent { kind, mode, defs };
         loop {
             self.skip_whitespace();
             match self.peek() {
@@ -1197,6 +1378,7 @@ impl<'a> Parser<'a> {
     /// layout attributes it sets.
     fn layout_mode(
         &self,
+        kind: NodeKind,
         explicit: Option<LayoutMode>,
         attrs: &[(&str, usize)],
     ) -> Result<LayoutMode, TagError> {
@@ -1214,6 +1396,9 @@ impl<'a> Parser<'a> {
             .iter()
             .any(|(attr, _)| class(attr) == Some(LayoutMode::Flex))
         {
+            LayoutMode::Flex
+        } else if kind == NodeKind::Component && !attrs.is_empty() {
+            // A component that sets only `gap` or `pad` is a flex layout.
             LayoutMode::Flex
         } else {
             LayoutMode::None
@@ -1248,6 +1433,34 @@ impl<'a> Parser<'a> {
             return Err(self.error(*at, message, fix));
         }
         Ok(mode)
+    }
+
+    /// Checks the `bind` of a layer: it is for the layers of a component, and
+    /// it names properties that the component defines, of the kinds the bound
+    /// fields need.
+    fn check_bind(
+        &self,
+        kind: NodeKind,
+        json: &Value,
+        parent: Option<&Parent>,
+        at: usize,
+    ) -> Result<(), TagError> {
+        let Some(defs) = parent.and_then(|parent| parent.defs.as_ref()) else {
+            return Err(self.error(
+                at,
+                "`bind` is for the layers of a component, but this tag is not inside a `<Component>`",
+                "remove `bind`, or put the tag inside the `<Component>` that defines the property",
+            ));
+        };
+        let bind = Bind::from_value(json).expect("the value was checked as a bind");
+        match bind.problem(kind, defs) {
+            Some(problem) => Err(self.error(
+                at,
+                problem,
+                "bind `visible` to a boolean property, `content` of a `<Text>` to a text property and `component` of an `<Instance>` to a slot property of the component",
+            )),
+            None => Ok(()),
+        }
     }
 
     /// Checks the attributes that only fit some parents: layout computes the
@@ -1565,6 +1778,12 @@ fn misplaced(kind: NodeKind, parent: Option<&Parent>) -> Option<Problem> {
         ));
     }
     match (parent.kind, kind) {
+        (_, NodeKind::Component) => Some(problem(
+            format!(
+                "a `<Component>` sits only at the top of the design system doc, but this one is inside a `<{parent_tag}>`"
+            ),
+            "write `<Component>` tags at the top, one after the other, and place a component with `<Instance>`",
+        )),
         (NodeKind::Page, NodeKind::Board) => None,
         (NodeKind::Page, _) => Some(problem(
             format!("pages hold only boards, but `<{tag}>` is inside a `<Page>`"),
@@ -1618,7 +1837,7 @@ fn write_node(node: &Value, depth: usize, out: &mut String) {
     for attr in tag.attributes {
         let text = match *attr {
             "id" | "name" => map.get(*attr).map(|value| written(attr, value)),
-            _ => attribute(spec_of(attr), map, kind),
+            _ => attribute(spec_of(kind, attr), map, kind),
         };
         if let Some(text) = text {
             out.push(' ');

@@ -16,7 +16,9 @@
 use crate::AppState;
 use crate::changesets::{parse_body, require_project};
 use crate::docs::require_changeset;
-use crate::docs::{AgentIdentity, DraftRow, Tx, current_draft, load_state, read_tokens};
+use crate::docs::{
+    AgentIdentity, DraftRow, Tx, current_draft, ensure_draft, load_state, read_tokens,
+};
 use crate::live;
 use crate::session::{ApiError, ErrorBody};
 use crate::versions::{chunk_of_version, read_chunk};
@@ -138,7 +140,7 @@ async fn find_design_system(
 
 /// Like `find_design_system`, but a project without one is 404
 /// `no_design_system`, for the routes that change it.
-async fn design_system_of(
+pub(crate) async fn design_system_of(
     tx: &mut Tx,
     project_id: &str,
 ) -> Result<(String, Option<String>), ApiError> {
@@ -252,63 +254,15 @@ pub async fn import_tokens(
     let tree = TokenTree::from_json(&tokens).map_err(|e| TokensError::Invalid(e.to_string()))?;
     check_font_files(&mut tx, &tree).await?;
 
-    let existing: Option<String> = sqlx::query_scalar(
-        "SELECT id::text FROM drafts WHERE doc_id = $1::uuid AND changeset_id = $2::uuid",
+    let draft_id = ensure_draft(
+        &mut tx,
+        &request.workspace_id,
+        &project_id,
+        &doc_id,
+        &changeset_id,
+        mainline.as_deref(),
     )
-    .bind(&doc_id)
-    .bind(&changeset_id)
-    .fetch_optional(&mut *tx)
-    .await
-    .map_err(ApiError::database)?;
-    let draft_id = match existing {
-        Some(draft_id) => draft_id,
-        None => {
-            let Some(mainline) = mainline else {
-                return Err(ApiError::conflict("no_mainline_version").into());
-            };
-            // Two requests may open the draft at once: the unique key lets one
-            // make it, and the other reads it.
-            let inserted: Option<String> = sqlx::query_scalar(
-                "INSERT INTO drafts (workspace_id, doc_id, changeset_id, base_version_id) \
-                 VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid) \
-                 ON CONFLICT (workspace_id, doc_id, changeset_id) DO NOTHING \
-                 RETURNING id::text",
-            )
-            .bind(&request.workspace_id)
-            .bind(&doc_id)
-            .bind(&changeset_id)
-            .bind(&mainline)
-            .fetch_optional(&mut *tx)
-            .await
-            .map_err(ApiError::database)?;
-            match inserted {
-                Some(draft_id) => {
-                    live::emit(
-                        &mut tx,
-                        &request.workspace_id,
-                        &project_id,
-                        "draft.opened",
-                        &json!({
-                            "doc_id": doc_id,
-                            "changeset_id": changeset_id,
-                            "draft_id": draft_id,
-                            "base_version_id": mainline,
-                        }),
-                    )
-                    .await?;
-                    draft_id
-                }
-                None => sqlx::query_scalar(
-                    "SELECT id::text FROM drafts WHERE doc_id = $1::uuid AND changeset_id = $2::uuid",
-                )
-                .bind(&doc_id)
-                .bind(&changeset_id)
-                .fetch_one(&mut *tx)
-                .await
-                .map_err(ApiError::database)?,
-            }
-        }
-    };
+    .await?;
     tx.commit().await.map_err(ApiError::database)?;
 
     let import = Import {

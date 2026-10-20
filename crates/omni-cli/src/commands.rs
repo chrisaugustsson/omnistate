@@ -11,6 +11,7 @@ use crate::args::Args;
 use crate::attach;
 use crate::changesets;
 use crate::claims;
+use crate::components;
 use crate::config::{self, Stored};
 use crate::docs;
 use crate::error::{CliError, Result, bail};
@@ -99,6 +100,9 @@ pub fn run(args: &Args) -> Result<()> {
         ["tokens", ..] => bail!(
             "usage: omni tokens import <file> --changeset <id> | omni tokens export [--changeset <id> | --version <v>] [--out <file>] [--per-mode]"
         ),
+        ["component", "usage"] => components::usage(args, None),
+        ["component", "usage", component] => components::usage(args, Some(component)),
+        ["component", ..] => bail!("usage: omni component usage <component>"),
         ["wait"] => wait::run(args),
         ["wait", ..] => bail!("usage: omni wait --changeset <id> --until <status> [--timeout <s>]"),
         ["claim"] => claims::take(args, None),
@@ -188,6 +192,26 @@ impl Agent {
         let json_type = [("Content-Type".to_string(), "application/json".to_string())];
         let extra: &[(String, String)] = if body.is_some() { &json_type } else { &[] };
         self.request_with(method, path, extra, body)
+    }
+
+    /// Like `request`, but a 404 whose error code is `code` is the error
+    /// `message`, for a command that can say what that record is.
+    pub(crate) fn request_naming(
+        &self,
+        method: &str,
+        path: &str,
+        code: &str,
+        message: &str,
+    ) -> Result<Response> {
+        let response = http::send(&self.server, method, path, &self.headers, None)?;
+        let named = response.status == 404
+            && Value::parse(&response.text())
+                .ok()
+                .is_some_and(|body| body.str_at("error") == Some(code));
+        if named {
+            return Err(CliError::new(format!("{code}: {message}")));
+        }
+        checked(response)
     }
 
     /// Like `request`, but a 404 is the error `not_found`, for a command that
@@ -309,6 +333,10 @@ fn refused_operation(body: &Value) -> Option<String> {
             "invalid_tokens: {}; nothing was imported",
             body.str_at("message")
                 .unwrap_or("the token tree is refused")
+        )),
+        code @ ("invalid_components" | "invalid_design") => Some(format!(
+            "{code}: {}; nothing was imported",
+            body.str_at("message").unwrap_or("the tags are refused")
         )),
         "invalid_operation" => {
             let index = match body.get("index") {

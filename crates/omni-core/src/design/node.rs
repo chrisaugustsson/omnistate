@@ -1,5 +1,6 @@
 //! Design nodes and their JSON form.
 
+use super::component::{Bind, Overrides, PropDefs, PropValues};
 use super::id::NodeId;
 use super::json::{Number, Object, entry, first_set, some, some_number, some_object, some_objects};
 use super::layout::{GridPlacement, Layout, LayoutMode, Margin, SelfAlignment, Sizing};
@@ -9,6 +10,7 @@ use super::value::{AttachmentRef, Color, FontFamily, Length, TokenOr, some_non_n
 use serde::de::Error as _;
 use serde::ser::SerializeMap;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde_json::Value;
 use std::collections::HashSet;
 use std::ops::RangeInclusive;
 
@@ -29,6 +31,9 @@ keywords! {
         Vector = "vector",
         /// A placed component, defined in the design system doc.
         Instance = "instance",
+        /// A component: a tree of layers with properties, in the design system
+        /// doc.
+        Component = "component",
     }
 }
 
@@ -39,6 +44,8 @@ pub struct Node {
     name: String,
     visible: bool,
     placement: Placement,
+    /// The property of its component that the layer takes.
+    bind: Option<Bind>,
     data: NodeData,
 }
 
@@ -59,11 +66,13 @@ impl Node {
         self.visible
     }
 
-    /// The children of a page, board or frame, in order. Other nodes have none.
+    /// The children of a page, board, frame or component, in order. Other
+    /// nodes have none.
     pub fn children(&self) -> &[Node] {
         match &self.data {
             NodeData::Page(page) => &page.children,
             NodeData::Board(frame) | NodeData::Frame(frame) => &frame.children,
+            NodeData::Component(component) => &component.frame.children,
             NodeData::Text(_)
             | NodeData::Image(_)
             | NodeData::Vector(_)
@@ -80,6 +89,11 @@ impl Node {
     pub fn data(&self) -> &NodeData {
         &self.data
     }
+
+    /// The property of its component that a layer of a component takes.
+    pub fn bind(&self) -> Option<&Bind> {
+        self.bind.as_ref()
+    }
 }
 
 /// A node's type, with the properties of that type.
@@ -93,6 +107,7 @@ pub enum NodeData {
     Image(Image),
     Vector(Vector),
     Instance(Instance),
+    Component(Component),
 }
 
 impl NodeData {
@@ -105,6 +120,7 @@ impl NodeData {
             NodeData::Image(_) => NodeKind::Image,
             NodeData::Vector(_) => NodeKind::Vector,
             NodeData::Instance(_) => NodeKind::Instance,
+            NodeData::Component(_) => NodeKind::Component,
         }
     }
 }
@@ -174,13 +190,27 @@ pub struct Vector {
     pub opacity: Option<TokenOr<f64>>,
 }
 
+/// A component: a frame whose layers may take properties, defined at the top
+/// of the design system doc.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Component {
+    /// The component's box and its tree of layers.
+    pub frame: Frame,
+    /// The properties that instances give values to.
+    pub props: Option<PropDefs>,
+}
+
 /// A placed component. It takes its component's size on each axis it leaves
-/// out.
+/// out, and stores nothing of the component's tree or style: only the values
+/// of its properties and its overrides.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Instance {
     /// The node ID of the component in the design system doc.
     pub component: NodeId,
     pub size: Size<Option<Sizing>>,
+    pub props: Option<PropValues>,
+    /// What the instance changes on nodes of the component, by node ID.
+    pub overrides: Option<Overrides>,
 }
 
 /// How a node is placed in its parent. Layout computes the position of every
@@ -243,6 +273,7 @@ impl Serialize for Node {
         entry(&mut map, "margin", placement.margin.as_ref())?;
         entry(&mut map, "justifySelf", placement.justify_self.as_ref())?;
         entry(&mut map, "alignSelf", placement.align_self.as_ref())?;
+        entry(&mut map, "bind", self.bind.as_ref())?;
         match &self.data {
             NodeData::Page(page) => map.serialize_entry("children", &page.children)?,
             NodeData::Board(frame) | NodeData::Frame(frame) => {
@@ -290,6 +321,21 @@ impl Serialize for Node {
             NodeData::Instance(instance) => {
                 write_size(&mut map, &instance.size)?;
                 map.serialize_entry("component", &instance.component)?;
+                entry(&mut map, "props", instance.props.as_ref())?;
+                entry(&mut map, "overrides", instance.overrides.as_ref())?;
+            }
+            NodeData::Component(component) => {
+                let frame = &component.frame;
+                write_size(&mut map, &frame.size)?;
+                map.serialize_entry("layout", &frame.layout)?;
+                entry(&mut map, "fills", frame.fills.as_ref())?;
+                entry(&mut map, "strokes", frame.strokes.as_ref())?;
+                entry(&mut map, "radius", frame.radius.as_ref())?;
+                entry(&mut map, "shadows", frame.shadows.as_ref())?;
+                entry(&mut map, "opacity", frame.opacity.as_ref())?;
+                entry(&mut map, "clip", frame.clip.as_ref())?;
+                entry(&mut map, "props", component.props.as_ref())?;
+                map.serialize_entry("children", &frame.children)?;
             }
         }
         map.end()
@@ -326,6 +372,7 @@ impl<'de> Deserialize<'de> for Node {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let Subtree(node) = Subtree::deserialize(deserializer)?;
         check_unique_ids(&node).map_err(D::Error::custom)?;
+        check_binds_inside_components(&node).map_err(D::Error::custom)?;
         Ok(node)
     }
 }
@@ -422,6 +469,12 @@ struct RawNode {
     #[serde(default, deserialize_with = "some")]
     component: Option<NodeId>,
     #[serde(default, deserialize_with = "some")]
+    props: Option<Value>,
+    #[serde(default, deserialize_with = "some")]
+    overrides: Option<Value>,
+    #[serde(default, deserialize_with = "some")]
+    bind: Option<Value>,
+    #[serde(default, deserialize_with = "some")]
     children: Option<Vec<Subtree>>,
 }
 
@@ -430,8 +483,20 @@ impl RawNode {
     fn into_node(mut self) -> Result<Node, String> {
         let visible = self.visible.take().unwrap_or(true);
         let placement = match self.kind {
-            NodeKind::Page => Placement::default(),
+            NodeKind::Page | NodeKind::Component => Placement::default(),
             _ => self.placement(),
+        };
+        let bind = match self.kind {
+            NodeKind::Frame
+            | NodeKind::Text
+            | NodeKind::Image
+            | NodeKind::Vector
+            | NodeKind::Instance => self
+                .bind
+                .take()
+                .map(|bind| Bind::from_value(&bind))
+                .transpose()?,
+            _ => None,
         };
         let data = match self.kind {
             NodeKind::Page => NodeData::Page(self.page()?),
@@ -441,6 +506,7 @@ impl RawNode {
             NodeKind::Image => NodeData::Image(self.image()?),
             NodeKind::Vector => NodeData::Vector(self.vector()?),
             NodeKind::Instance => NodeData::Instance(self.instance()?),
+            NodeKind::Component => NodeData::Component(self.component()?),
         };
         if let Some(key) = self.unused() {
             return Err(format!("{} nodes have no `{key}`", self.kind));
@@ -450,6 +516,7 @@ impl RawNode {
             name: self.name,
             visible,
             placement,
+            bind,
             data,
         })
     }
@@ -548,7 +615,31 @@ impl RawNode {
         Ok(Instance {
             component: required(self.kind, "component", self.component.take())?,
             size: self.bounds(width, height),
+            props: self
+                .props
+                .take()
+                .map(|props| PropValues::from_value(&props))
+                .transpose()?,
+            overrides: self
+                .overrides
+                .take()
+                .map(|overrides| Overrides::from_value(&overrides))
+                .transpose()?,
         })
+    }
+
+    fn component(&mut self) -> Result<Component, String> {
+        let props = self
+            .props
+            .take()
+            .map(|props| PropDefs::from_value(&props))
+            .transpose()?;
+        let frame = self.frame()?;
+        check_binds(
+            props.as_ref().unwrap_or(&PropDefs::default()),
+            &frame.children,
+        )?;
+        Ok(Component { frame, props })
     }
 
     fn size(&mut self) -> Result<Size, String> {
@@ -622,6 +713,9 @@ impl RawNode {
             ("fit", self.fit.is_some()),
             ("path", self.path.is_some()),
             ("component", self.component.is_some()),
+            ("props", self.props.is_some()),
+            ("overrides", self.overrides.is_some()),
+            ("bind", self.bind.is_some()),
             ("children", self.children.is_some()),
         ])
     }
@@ -659,6 +753,39 @@ fn check_range(
     }
 }
 
+/// Checks the `bind` of every layer under a component against the component's
+/// properties.
+fn check_binds(props: &PropDefs, layers: &[Node]) -> Result<(), String> {
+    for layer in layers {
+        if let Some(bind) = layer.bind()
+            && let Some(problem) = bind.problem(layer.kind(), props)
+        {
+            return Err(format!("the bind of `{}`: {problem}", layer.id()));
+        }
+        check_binds(props, layer.children())?;
+    }
+    Ok(())
+}
+
+/// Checks that only the layers of a component take properties with `bind`.
+/// The tree of a component is checked with the component.
+fn check_binds_inside_components(root: &Node) -> Result<(), String> {
+    if root.kind() == NodeKind::Component {
+        return Ok(());
+    }
+    let mut pending = vec![root];
+    while let Some(node) = pending.pop() {
+        if node.bind().is_some() {
+            return Err(format!(
+                "`bind` is for the layers of a component, but `{}` sets it outside one",
+                node.id()
+            ));
+        }
+        pending.extend(node.children());
+    }
+    Ok(())
+}
+
 /// Checks where `children` sit: pages hold only boards, boards sit only on
 /// pages, layout computes the position of children that flow in a flex or grid
 /// layout, and only the children of grids are placed on grid lines and align
@@ -674,6 +801,11 @@ fn check_children(
         let id = child.id();
         match (kind, child.kind()) {
             (NodeKind::Page, NodeKind::Board) => {}
+            (_, NodeKind::Component) => {
+                return Err(format!(
+                    "components sit only at the top of the design system doc, but the component `{id}` is inside the {kind} `{parent}`"
+                ));
+            }
             (NodeKind::Page, other) => {
                 return Err(format!(
                     "pages hold only boards, but `{id}` is of type `{other}`"

@@ -18,6 +18,7 @@
 
 use crate::AppState;
 use crate::changesets::{ChangesetBody, load_changeset, move_status};
+use crate::design;
 use crate::docs::{
     AgentIdentity, DRAFT_ROW_COLUMNS, DraftRow, DraftState, Tx, ensure_loaded, require_changeset,
 };
@@ -436,6 +437,105 @@ fn token_changes(base: &Value, side: &Value, path: &str, out: &mut Vec<String>) 
     }
 }
 
+/// The token tree of a design system's JSON without its components, and the
+/// components.
+fn split_components(mut json: Value) -> (Value, Vec<Value>) {
+    let components = match json
+        .as_object_mut()
+        .and_then(|object| object.remove(design::COMPONENTS_KEY))
+    {
+        Some(Value::Array(items)) => items,
+        _ => Vec::new(),
+    };
+    (json, components)
+}
+
+/// The token tree with its components, as a version holds them.
+fn with_components(mut tree: Value, components: Vec<Value>) -> Value {
+    if !components.is_empty()
+        && let Some(object) = tree.as_object_mut()
+    {
+        object.insert(design::COMPONENTS_KEY.to_string(), Value::Array(components));
+    }
+    tree
+}
+
+/// The state that a three-way merge of one part of a doc ends in, when at
+/// least one side left it as it was: what only one side changed takes that
+/// side's state. `Err` when both sides changed it differently.
+fn pick<'a>(
+    base: Option<&'a Value>,
+    mainline: Option<&'a Value>,
+    mine: Option<&'a Value>,
+) -> Result<Option<&'a Value>, ()> {
+    if mine == base || mainline == mine {
+        Ok(mainline)
+    } else if mainline == base {
+        Ok(mine)
+    } else {
+        Err(())
+    }
+}
+
+/// The ID of a node or component as JSON.
+fn id_of(node: &Value) -> Option<&str> {
+    node.get("id").and_then(Value::as_str)
+}
+
+/// The parts of a list of nodes by ID, in the order of the mainline followed by
+/// what only the change set has.
+fn merge_by_id(
+    base: &[Value],
+    mainline: &[Value],
+    mine: &[Value],
+    found: &mut Vec<Found>,
+) -> Vec<Value> {
+    let by_id = |items: &[Value]| -> HashMap<String, Value> {
+        items
+            .iter()
+            .filter_map(|item| Some((id_of(item)?.to_string(), item.clone())))
+            .collect()
+    };
+    let (was, theirs, ours) = (by_id(base), by_id(mainline), by_id(mine));
+    let mut order: Vec<String> = mainline
+        .iter()
+        .filter_map(|item| id_of(item).map(str::to_string))
+        .collect();
+    order.extend(
+        mine.iter()
+            .filter_map(|item| id_of(item).map(str::to_string))
+            .filter(|id| !theirs.contains_key(id)),
+    );
+    let mut merged = Vec::new();
+    for id in order {
+        let picked = pick(was.get(&id), theirs.get(&id), ours.get(&id));
+        let state = picked.unwrap_or_else(|()| {
+            found.push(Found {
+                node: id.clone(),
+                kind: ConflictKind::BothChanged,
+                mainline: theirs.get(&id).map(Value::to_string),
+                changeset: ours.get(&id).map(Value::to_string),
+            });
+            theirs.get(&id)
+        });
+        merged.extend(state.cloned());
+    }
+    merged
+}
+
+/// Replays the change set's component changes onto the mainline components,
+/// component by component: a component that only one side changed takes that
+/// side's state, and one that both changed differently is a conflict named by
+/// its ID that keeps the mainline state.
+fn merge_components(
+    base: &[Value],
+    mainline: &[Value],
+    mine: &[Value],
+    found: &mut Vec<Found>,
+) -> Vec<Value> {
+    merge_by_id(base, mainline, mine, found)
+}
+
 /// Replays the change set's token changes onto the mainline token tree of a
 /// design system, token by token: a token that only the mainline changed
 /// keeps its mainline value, and one that both sides changed is a conflict
@@ -448,16 +548,30 @@ async fn rebase_tokens(
     chunks: [Option<&str>; 3],
 ) -> Result<(Option<Snapshot>, Vec<Found>), ApiError> {
     let [base_chunk, mainline_chunk, mine_chunk] = chunks;
-    let base = load_tokens(state, workspace_id, base_chunk).await?;
-    let mainline = load_tokens(state, workspace_id, mainline_chunk).await?;
-    let mine = load_tokens(state, workspace_id, mine_chunk).await?;
+    // The components ride next to the tokens in the JSON; they are replayed
+    // component by component, and the rest token by token.
+    let (base, base_components) =
+        split_components(load_tokens(state, workspace_id, base_chunk).await?);
+    let (mainline, mainline_components) =
+        split_components(load_tokens(state, workspace_id, mainline_chunk).await?);
+    let (mine, mine_components) =
+        split_components(load_tokens(state, workspace_id, mine_chunk).await?);
     let mut found = Vec::new();
     let merged = merge_tokens(&base, &mainline, &mine, "", &mut found);
+    let merged_components = match TokenTree::from_json(&merged) {
+        Ok(_) => merge_components(
+            &base_components,
+            &mainline_components,
+            &mine_components,
+            &mut found,
+        ),
+        Err(_) => mainline_components.clone(),
+    };
     let tree = if merged.is_null() {
         None
     } else {
         match TokenTree::from_json(&merged) {
-            Ok(tree) => Some(tree.to_json()),
+            Ok(tree) => Some(with_components(tree.to_json(), merged_components)),
             Err(_) => {
                 let mut changes = Vec::new();
                 token_changes(&base, &mine, "", &mut changes);
@@ -476,7 +590,8 @@ async fn rebase_tokens(
                         kind: ConflictKind::BothChanged,
                     });
                 }
-                (!mainline.is_null()).then(|| mainline.clone())
+                (!mainline.is_null())
+                    .then(|| with_components(mainline.clone(), mainline_components))
             }
         }
     };
@@ -485,6 +600,195 @@ async fn rebase_tokens(
         nodes: Vec::new(),
     });
     Ok((snapshot, found))
+}
+
+/// The pages of a design chunk as JSON, `None` for a version without content.
+async fn load_pages(
+    state: &AppState,
+    workspace_id: &str,
+    chunk: Option<&str>,
+) -> Result<Option<Vec<Value>>, ApiError> {
+    let Some(chunk) = chunk else {
+        return Ok(None);
+    };
+    let text = read_chunk(state, workspace_id, chunk).await?;
+    let json: Value = serde_json::from_str(&text).map_err(|e| {
+        eprintln!("omni-api: a saved design cannot be loaded for a rebase: {e}");
+        ApiError::Unavailable
+    })?;
+    match json.get("pages") {
+        Some(Value::Array(pages)) => Ok(Some(pages.clone())),
+        _ => {
+            eprintln!("omni-api: a saved design has no pages");
+            Err(ApiError::Unavailable)
+        }
+    }
+}
+
+/// A page without its boards.
+fn own_of_page(page: &Value) -> Value {
+    let mut own = page.clone();
+    if let Some(object) = own.as_object_mut() {
+        object.remove("children");
+    }
+    own
+}
+
+fn children_of(page: &Value) -> Vec<Value> {
+    match page.get("children") {
+        Some(Value::Array(children)) => children.clone(),
+        _ => Vec::new(),
+    }
+}
+
+/// Replays the change set's pages onto the mainline pages of a design: a page
+/// or board that only one side changed takes that side's state, a page that
+/// both changed is merged board by board, and a board (or the name of a page)
+/// that both changed differently is a conflict that keeps the mainline state.
+/// When the merged pages fail the checks of the node model, the mainline pages
+/// stay and each page that the change set changed is a conflict.
+async fn rebase_design(
+    state: &AppState,
+    workspace_id: &str,
+    chunks: [Option<&str>; 3],
+) -> Result<(Option<Snapshot>, Vec<Found>), ApiError> {
+    let [base_chunk, mainline_chunk, mine_chunk] = chunks;
+    let base = load_pages(state, workspace_id, base_chunk).await?;
+    let mainline = load_pages(state, workspace_id, mainline_chunk).await?;
+    let mine = load_pages(state, workspace_id, mine_chunk).await?;
+    let as_json = |pages: &Option<Vec<Value>>| pages.clone().map(Value::Array);
+    let (base_json, mainline_json, mine_json) =
+        (as_json(&base), as_json(&mainline), as_json(&mine));
+    let mut found = Vec::new();
+    // A removed design is a doc-level change, as for the other docs.
+    let whole = pick(
+        base_json.as_ref(),
+        mainline_json.as_ref(),
+        mine_json.as_ref(),
+    );
+    let pages: Option<Vec<Value>> = match whole {
+        Ok(picked) => picked.and_then(|pages| pages.as_array().cloned()),
+        Err(()) => match (&base, &mainline, &mine) {
+            (base, Some(mainline), Some(mine)) => {
+                let base = base.clone().unwrap_or_default();
+                let mut pages = Vec::new();
+                let by_id = |items: &[Value]| -> HashMap<String, Value> {
+                    items
+                        .iter()
+                        .filter_map(|item| Some((id_of(item)?.to_string(), item.clone())))
+                        .collect()
+                };
+                let (was, theirs, ours) = (by_id(&base), by_id(mainline), by_id(mine));
+                let mut order: Vec<String> = mainline
+                    .iter()
+                    .filter_map(|page| id_of(page).map(str::to_string))
+                    .collect();
+                order.extend(
+                    mine.iter()
+                        .filter_map(|page| id_of(page).map(str::to_string))
+                        .filter(|id| !theirs.contains_key(id)),
+                );
+                for id in order {
+                    match pick(was.get(&id), theirs.get(&id), ours.get(&id)) {
+                        Ok(picked) => pages.extend(picked.cloned()),
+                        Err(()) => match (was.get(&id), theirs.get(&id), ours.get(&id)) {
+                            (Some(was), Some(theirs), Some(ours)) => {
+                                let own = match pick(
+                                    Some(&own_of_page(was)),
+                                    Some(&own_of_page(theirs)),
+                                    Some(&own_of_page(ours)),
+                                ) {
+                                    Ok(own) => own.cloned().unwrap_or_default(),
+                                    Err(()) => {
+                                        found.push(Found {
+                                            node: id.clone(),
+                                            kind: ConflictKind::BothChanged,
+                                            mainline: Some(own_of_page(theirs).to_string()),
+                                            changeset: Some(own_of_page(ours).to_string()),
+                                        });
+                                        own_of_page(theirs)
+                                    }
+                                };
+                                let boards = merge_by_id(
+                                    &children_of(was),
+                                    &children_of(theirs),
+                                    &children_of(ours),
+                                    &mut found,
+                                );
+                                let mut page = own;
+                                if let Some(object) = page.as_object_mut() {
+                                    object.insert("children".to_string(), Value::Array(boards));
+                                }
+                                pages.push(page);
+                            }
+                            (_, theirs, ours) => {
+                                found.push(Found {
+                                    node: id.clone(),
+                                    kind: ConflictKind::BothChanged,
+                                    mainline: theirs.map(Value::to_string),
+                                    changeset: ours.map(Value::to_string),
+                                });
+                                pages.extend(theirs.cloned());
+                            }
+                        },
+                    }
+                }
+                Some(pages)
+            }
+            (_, theirs, ours) => {
+                found.push(Found {
+                    node: "design".to_string(),
+                    kind: ConflictKind::BothChanged,
+                    mainline: theirs
+                        .as_ref()
+                        .map(|pages| Value::Array(pages.clone()).to_string()),
+                    changeset: ours
+                        .as_ref()
+                        .map(|pages| Value::Array(pages.clone()).to_string()),
+                });
+                theirs.clone()
+            }
+        },
+    };
+    let Some(pages) = pages else {
+        return Ok((None, found));
+    };
+    let nodes = match design::nodes_from(&Value::Array(pages)) {
+        Ok(nodes) => nodes,
+        Err(_) => {
+            // The merged pages fail the checks (a board was moved to a page
+            // that the mainline removed, say): the mainline pages stay and
+            // each page that the change set changed is a conflict.
+            let theirs = mainline.clone().unwrap_or_default();
+            let ours = mine.clone().unwrap_or_default();
+            let was = base.clone().unwrap_or_default();
+            for page in &ours {
+                let id = id_of(page).unwrap_or_default();
+                let before = was.iter().find(|candidate| id_of(candidate) == Some(id));
+                if before == Some(page) || found.iter().any(|f| f.node == id) {
+                    continue;
+                }
+                found.push(Found {
+                    node: id.to_string(),
+                    kind: ConflictKind::BothChanged,
+                    mainline: theirs
+                        .iter()
+                        .find(|candidate| id_of(candidate) == Some(id))
+                        .map(Value::to_string),
+                    changeset: Some(page.to_string()),
+                });
+            }
+            design::nodes_from(&Value::Array(theirs)).map_err(|e| {
+                eprintln!("omni-api: a saved design cannot be loaded for a rebase: {e}");
+                ApiError::Unavailable
+            })?
+        }
+    };
+    let snapshot = Snapshot {
+        html: design::pages_text(&nodes),
+        nodes: design::index_pages(&nodes),
+    };
+    Ok((Some(snapshot), found))
 }
 
 /// Replays the change set's latest version of a doc onto the doc's mainline
@@ -511,10 +815,10 @@ async fn rebase_doc(
         mainline_chunk.as_deref(),
         changed.chunk.as_deref(),
     ];
-    let (snapshot, found) = if is_design_system(tx, &draft.doc_id).await? {
-        rebase_tokens(state, workspace_id, chunks).await?
-    } else {
-        rebase_html(state, workspace_id, chunks).await?
+    let (snapshot, found) = match doc_kind(tx, &draft.doc_id).await?.as_str() {
+        "design-system" => rebase_tokens(state, workspace_id, chunks).await?,
+        "design" => rebase_design(state, workspace_id, chunks).await?,
+        _ => rebase_html(state, workspace_id, chunks).await?,
     };
 
     let removed = snapshot.is_none();
@@ -522,6 +826,15 @@ async fn rebase_doc(
         Some(snapshot) => Some(store_chunk(state, workspace_id, &snapshot.html).await?),
         None => None,
     };
+    // The rebased design keeps the design system version of the version it
+    // replays.
+    let recorded: Option<String> = sqlx::query_scalar(
+        "SELECT design_system_version_id::text FROM versions WHERE id = $1::uuid",
+    )
+    .bind(&changed.version_id)
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(ApiError::database)?;
     let version_id = insert_version(
         tx,
         workspace_id,
@@ -529,6 +842,7 @@ async fn rebase_doc(
         agent,
         chunk.as_deref(),
         snapshot.as_ref(),
+        recorded.as_deref(),
     )
     .await?;
     emit_version_saved(
@@ -857,18 +1171,11 @@ async fn has_unsaved_operations(
             changed.chunk.as_deref().unwrap_or_default(),
         )
         .await?;
-        // A design system's version holds its token tree as JSON.
-        let draft_content = held.as_ref().map(|loaded| {
-            if loaded.design_system {
-                loaded
-                    .tokens
-                    .as_ref()
-                    .map(|tokens| tokens.to_json().to_string())
-                    .unwrap_or_default()
-            } else {
-                loaded.doc.to_html()
-            }
-        });
+        // A design system's version holds its token tree and components as
+        // JSON, and a design's its pages.
+        let draft_content = held
+            .as_ref()
+            .map(|loaded| loaded.content().unwrap_or_default());
         return Ok(draft_content.is_some_and(|content| content != html));
     }
     sqlx::query_scalar(
@@ -884,15 +1191,14 @@ async fn has_unsaved_operations(
     .map_err(ApiError::database)
 }
 
-/// Whether the doc is a project's design system, whose versions hold a token
-/// tree rather than HTML.
-async fn is_design_system(tx: &mut Tx, doc_id: &str) -> Result<bool, ApiError> {
-    let kind: String = sqlx::query_scalar("SELECT kind FROM docs WHERE id = $1::uuid")
+/// The kind of the doc: a design system's versions hold a token tree and its
+/// components, a design's its pages, and any other doc's HTML.
+async fn doc_kind(tx: &mut Tx, doc_id: &str) -> Result<String, ApiError> {
+    sqlx::query_scalar("SELECT kind FROM docs WHERE id = $1::uuid")
         .bind(doc_id)
         .fetch_one(&mut **tx)
         .await
-        .map_err(ApiError::database)?;
-    Ok(kind == "design-system")
+        .map_err(ApiError::database)
 }
 
 /// Fails with 404 when the change set is not in the project, and with 409
