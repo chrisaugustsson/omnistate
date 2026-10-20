@@ -121,6 +121,7 @@ mod layout;
 mod node;
 mod path;
 mod style;
+pub mod tags;
 mod value;
 
 pub use id::{InvalidNodeId, NodeId};
