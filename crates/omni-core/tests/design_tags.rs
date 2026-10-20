@@ -1126,7 +1126,13 @@ fn invalid_input_is_an_error_not_a_panic() {
 #[test]
 fn there_is_one_tag_per_node_type() {
     let names: BTreeSet<&str> = tags::all().iter().map(|tag| tag.name).collect();
-    let expected: BTreeSet<&str> = TAGS.iter().map(|(tag, _)| *tag).collect();
+    // US-029 adds `<Component>`, which defines a component at the top of the
+    // design system doc (tests/design_components.rs).
+    let expected: BTreeSet<&str> = TAGS
+        .iter()
+        .map(|(tag, _)| *tag)
+        .chain(["Component"])
+        .collect();
     assert_eq!(names, expected);
     for tag in tags::all() {
         for attribute in ["id", "name"] {

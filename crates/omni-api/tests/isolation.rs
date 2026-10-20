@@ -362,6 +362,28 @@ const CASES: &[Case] = &[
         None,
         Kind::Workspace,
     ),
+    case(
+        "PUT",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/components",
+        Some(
+            r##"{"tags":"<Component name=\"Intruder\" dir=\"row\" fill=\"#000000\" props={{label: {type: \"text\", default: \"intruder\"}}}>\n  <Text name=\"Intruder label\" content=\"intruder\" fontFamily=\"Inter\" fontSize={12} bind={{content: \"label\"}}/>\n</Component>"}"##,
+        ),
+        Kind::Workspace,
+    ),
+    case(
+        "PUT",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs/{doc_id}/design",
+        Some(
+            r#"{"tags":"<Page name=\"Intruder\">\n  <Board name=\"Intruder board\" x={0} y={0} width={320} height={200}/>\n</Page>"}"#,
+        ),
+        Kind::Workspace,
+    ),
+    case(
+        "GET",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/components/usage",
+        None,
+        Kind::Workspace,
+    ),
 ];
 
 /// The WebSocket routes that the suite attacks, as the paths of
@@ -2738,6 +2760,143 @@ fn the_token_calls_of_the_attacks_work_for_the_workspace_that_owns_the_records()
             200,
             "read the mainline tokens",
         );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Components and instances (US-029)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn the_component_routes_are_in_the_registry_and_the_suite_attacks_them() {
+    for (method, path, access) in [
+        (
+            "PUT",
+            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/components",
+            Access::Agent,
+        ),
+        (
+            "PUT",
+            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs/{doc_id}/design",
+            Access::Agent,
+        ),
+        (
+            "GET",
+            "/api/v1/w/{workspace_id}/projects/{project_id}/components/usage",
+            Access::Both,
+        ),
+    ] {
+        let entry = registry()
+            .into_iter()
+            .find(|r| r.method == method && r.path == path)
+            .unwrap_or_else(|| panic!("the registry has no route {method} {path}"));
+        assert_eq!(entry.access, access, "{method} {path}");
+        assert!(
+            matches!(case_for(&entry).kind, Kind::Workspace),
+            "{path} is a workspace route that the suite attacks"
+        );
+    }
+}
+
+#[test]
+fn the_component_calls_of_the_attacks_work_for_the_workspace_that_owns_the_records() {
+    // The control for the component routes: the owner's agent starts a
+    // design system and a design doc in a project of its own, imports the
+    // components and the design of the cases' bodies, and the agent and the
+    // human list the boards that use components.
+    let (f, client) = ready();
+    let _guard = serial();
+    let key = Auth::Key(&f.a.key);
+    let human = Auth::Session(&f.a.token);
+    let body = json!({ "name": unique("owner-components") }).to_string();
+    let project = must(
+        call(
+            client,
+            "POST",
+            &format!("/api/v1/w/{}/projects", f.a.id),
+            &key,
+            Some(&body),
+        ),
+        201,
+        "create a project",
+    );
+    let project = project["project"]["id"].as_str().expect("an id");
+    let base = format!("/api/v1/w/{}/projects/{project}", f.a.id);
+    let body = json!({ "title": unique("owner-components") }).to_string();
+    let created = must(
+        call(
+            client,
+            "POST",
+            &format!("{base}/changesets"),
+            &key,
+            Some(&body),
+        ),
+        201,
+        "create a change set",
+    );
+    let changeset = created["changeset"]["id"].as_str().expect("an id");
+    let mut docs = Vec::new();
+    for (kind, title) in [("design-system", "owner-ds"), ("design", "owner-design")] {
+        let body = json!({ "kind": kind, "module": "ui", "title": unique(title) }).to_string();
+        let created = must(
+            call(
+                client,
+                "POST",
+                &format!("{base}/changesets/{changeset}/docs"),
+                &key,
+                Some(&body),
+            ),
+            201,
+            "start a doc",
+        );
+        docs.push(created["doc"]["id"].as_str().expect("an id").to_string());
+    }
+    let design_doc = &docs[1];
+    let import = case_named(
+        "PUT",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/components",
+    );
+    let imported = must(
+        call(
+            client,
+            "PUT",
+            &format!("{base}/changesets/{changeset}/components"),
+            &key,
+            import.body,
+        ),
+        200,
+        "import the components",
+    );
+    assert_eq!(imported["components"][0]["name"], "Intruder", "{imported}");
+    let design = case_named(
+        "PUT",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs/{doc_id}/design",
+    );
+    let placed = must(
+        call(
+            client,
+            "PUT",
+            &format!("{base}/changesets/{changeset}/docs/{design_doc}/design"),
+            &key,
+            design.body,
+        ),
+        200,
+        "import the design",
+    );
+    assert_eq!(placed["pages"][0]["name"], "Intruder", "{placed}");
+    for auth in [&key, &human] {
+        let usage = must(
+            call(
+                client,
+                "GET",
+                &format!("{base}/components/usage"),
+                auth,
+                None,
+            ),
+            200,
+            "list the boards that use components",
+        );
+        assert_eq!(usage["project_id"], project, "{usage}");
     }
 }
 

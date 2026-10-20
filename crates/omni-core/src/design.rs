@@ -115,6 +115,7 @@ macro_rules! keywords {
     };
 }
 
+mod address;
 mod id;
 mod json;
 mod layout;
@@ -125,6 +126,7 @@ pub mod tags;
 pub mod tokens;
 mod value;
 
+pub use address::{InvalidNodeAddress, NodeAddress};
 pub use id::{InvalidNodeId, NodeId};
 pub use layout::{
     AlignItems, FlexDirection, FlexLayout, FlexWrap, Gap, GridLayout, GridPlacement,

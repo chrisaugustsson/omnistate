@@ -91,7 +91,7 @@ fn count(conversion: &Conversion) -> Counts {
                 NodeKind::Vector => counts.vectors += 1,
                 NodeKind::Text => counts.texts += 1,
                 NodeKind::Image => counts.images += 1,
-                NodeKind::Instance => panic!("a converted design has an instance"),
+                other => panic!("a converted design has a node of type {other}"),
             }
             match json_of(node)["layout"]["mode"].as_str() {
                 Some("flex") => counts.flex += 1,
