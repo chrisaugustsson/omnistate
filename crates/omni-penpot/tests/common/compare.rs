@@ -10,7 +10,9 @@ use skia_safe::{
     AlphaType, ColorType, Data, EncodedImageFormat, Image, ImageInfo, gpu::DirectContext, images,
 };
 
-use super::convert::{S, run_cli, shape, temp_dir, write_export_with};
+use super::convert::{
+    S, flex, paragraph, run, run_cli, shape, temp_dir, text_content, write_export_with,
+};
 
 pub const WHITE: [u8; 4] = [255, 255, 255, 255];
 pub const RED: [u8; 4] = [255, 0, 0, 255];
@@ -154,6 +156,69 @@ pub fn standard_board(n: u32, more: Vec<S>) -> S {
     let mut kids = vec![rect(n + 1, "Square", [100.0, 50.0, 100.0, 50.0], "#ff0000")];
     kids.extend(more);
     white_board(n, "Home", [100.0, 50.0, 200.0, 100.0], kids)
+}
+
+/// One line of a text's `positionData`: a run of `text` at `y`.
+fn position_line(y: f64, text: &str, font_size: &str) -> Value {
+    json!({
+        "x": 0, "y": y, "width": 100, "height": 18.2, "text": text,
+        "fontFamily": "Inter", "fontSize": font_size, "fontWeight": "400",
+        "fontStyle": "normal", "lineHeight": "1.2", "letterSpacing": "0px",
+        "textAlign": "left", "textDecoration": "none", "textTransform": "none",
+        "direction": "ltr",
+        "fills": [{ "fillColor": "#102030", "fillOpacity": 1 }]
+    })
+}
+
+/// A white flex column board numbered `n`, 300 by 200 at (0, 0), whose texts
+/// hug their content in boxes Penpot stored larger than Chrome lays them out
+/// (US-054, Q49). Penpot's stored boxes, which every other shape follows:
+///
+/// - `n + 1` "Two lines", an auto-height text of two lines 20.296875 px apart
+///   (40.59375 px in all), at (0, 0), 300 by 46;
+/// - `n + 2` "Below", a rectangle at (0, 46), 300 by 10;
+/// - `n + 3` "Row", a fixed flex row at (0, 56), 300 by 20, holding `n + 4`
+///   "Hi", an auto-width text of one line that Chrome lays out about 15 px wide,
+///   at (0, 56), 40 by 20, and `n + 5` "After", a rectangle at (40, 56), 20 by
+///   20.
+///
+/// With each text pinned to Penpot's box, every shape is where Penpot put it.
+/// With the texts following Chrome, "Two lines" is 5.4 px shorter, which moves
+/// "Below", "Row", "Hi" and "After" up by as much, and "Hi" is about 25 px
+/// narrower, which moves "After" left by as much.
+pub fn text_drift_board(n: u32) -> S {
+    let style = |size: &str, height: &str| json!({ "fontSize": size, "lineHeight": height });
+    let two_lines = shape(n + 1, "text", "Two lines", [0.0, 0.0, 300.0, 46.0]).with(json!({
+        "growType": "auto-height",
+        "layoutItemHSizing": "fix",
+        "layoutItemVSizing": "auto",
+        "content": text_content(vec![
+            paragraph(vec![run("One", style("14", "1.45"))]),
+            paragraph(vec![run("Two", style("14", "1.45"))]),
+        ]),
+        "positionData": [
+            position_line(20.296875, "One", "14px"),
+            position_line(40.59375, "Two", "14px"),
+        ]
+    }));
+    let below = shape(n + 2, "rect", "Below", [0.0, 46.0, 300.0, 10.0]).with(fill("#ff0000"));
+    let hi = shape(n + 4, "text", "Hi", [0.0, 56.0, 40.0, 20.0]).with(json!({
+        "growType": "auto-width",
+        "layoutItemHSizing": "auto",
+        "layoutItemVSizing": "auto",
+        "content": text_content(vec![paragraph(vec![run("Hi", style("16", "1.2"))])]),
+        "positionData": [position_line(75.2, "Hi", "16px")]
+    }));
+    let after = shape(n + 5, "rect", "After", [40.0, 56.0, 20.0, 20.0]).with(fill("#0000ff"));
+    let row = shape(n + 3, "frame", "Row", [0.0, 56.0, 300.0, 20.0])
+        .with(flex("row"))
+        .with(json!({ "layoutItemHSizing": "fix", "layoutItemVSizing": "fix" }))
+        // Penpot lists the children of a layout last first.
+        .kids(vec![after, hi]);
+    shape(n, "frame", "Texts", [0.0, 0.0, 300.0, 200.0])
+        .with(fill("#ffffff"))
+        .with(flex("column"))
+        .kids(vec![row, below, two_lines])
 }
 
 /// What a run of `omni-penpot compare` wrote.

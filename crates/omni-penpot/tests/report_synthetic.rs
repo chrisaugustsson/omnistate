@@ -20,14 +20,21 @@
 //!   `data-boards` (every board of every file), `data-median-share` (the median
 //!   of the pixel scores of the boards that have one, the mean of the two middle
 //!   ones where there is an even number; empty or absent where no board has one),
-//!   `data-layout-mismatches` (the total number of layout mismatches) and
-//!   `data-unconverted` (the total number of unconverted shapes). Its text says
-//!   the same: the three whole numbers, and the median as a percentage with one
-//!   decimal (`1.0%` for 0.01);
+//!   `data-layout-mismatches` (the total number of structural mismatches),
+//!   `data-text-drift` (the total text drift) and `data-unconverted` (the total
+//!   number of unconverted shapes). Its text says the same: the whole numbers,
+//!   with the labels "Structural mismatches" and "Text drift", and the median as
+//!   a percentage with one decimal (`1.0%` for 0.01). These are the two layout
+//!   numbers of US-054 (Q49): a structural mismatch is a shape more than 2 px
+//!   from Penpot's box with each text pinned to Penpot's stored box, inside the
+//!   comparison only (`compare`'s `layout`); text drift counts the shapes more
+//!   than 2 px off in the design as imported, its texts following Chrome
+//!   (`compare`'s `textDrift`);
 //! - one element per board, with `data-file` (the export's file name),
 //!   `data-board-id`, `data-board` (the name), `data-pixel-share` (the pixel
 //!   score, empty or absent for a board without a PNG), `data-layout-mismatches`
-//!   and `data-unconverted` (the counts for the board). Its text has the name,
+//!   (structural), `data-text-drift` and `data-unconverted` (the counts for the
+//!   board). Its text has the name,
 //!   and the pixel score as a percentage with one decimal. The pixel score is
 //!   `compare`'s `share`, the share of compared pixels that differ: 0 is a
 //!   perfect match and lower is better;
@@ -37,7 +44,9 @@
 //!   each with alt text. A board without a PNG has no images and its text says
 //!   "layout comparison only";
 //! - one element with `data-role="mismatch"` per layout mismatch, with
-//!   `data-shape-id` and `data-off-by`, whose text has the shape's name; and one
+//!   `data-shape-id` and `data-off-by`, whose text has the shape's name; one
+//!   with `data-role="text-drift"` per shape of the text drift, in the same form;
+//!   and one
 //!   with `data-role="unconverted"` per unconverted shape, with `data-shape-id`,
 //!   whose text has the name and the reason;
 //! - the boards from worst to best over all files: first the boards that have a
@@ -466,6 +475,57 @@ fn the_layout_mismatches_of_a_board_are_listed_with_their_shapes() {
 }
 
 #[test]
+fn structural_mismatches_and_text_drift_are_two_numbers() {
+    let folder = write_folder(
+        "text-drift",
+        vec![Input {
+            name: "texts",
+            top_level: vec![text_drift_board(1)],
+            pngs: vec![],
+        }],
+    );
+    let report = report_ok(&folder, &temp_dir("report-out-text-drift"));
+    let board = report.board(&uid(1));
+    // With each text pinned to Penpot's box nothing is off.
+    assert_eq!(board.tag().number("data-layout-mismatches"), 0.0);
+    assert!(board.items("mismatch").is_empty());
+    // As imported, the texts follow Chrome and the shapes after them move.
+    assert_eq!(board.tag().number("data-text-drift"), 5.0);
+    let items = board.items("text-drift");
+    assert_eq!(
+        shape_ids(&items),
+        [uid(2), uid(3), uid(4), uid(5), uid(6)],
+        "{items:?}"
+    );
+    for (tag, text) in &items {
+        assert!(tag.number("data-off-by") > 2.0, "{tag:?}");
+        assert!(!text.trim().is_empty(), "the item names its shape");
+    }
+    let (_, two_lines) = items
+        .iter()
+        .find(|(tag, _)| tag.attr("data-shape-id") == Some(uid(2)))
+        .expect("the text drifts");
+    assert!(two_lines.contains("Two lines"), "{two_lines}");
+
+    let (summary, text) = report.summary();
+    assert_eq!(summary.number("data-layout-mismatches"), 0.0);
+    assert_eq!(summary.number("data-text-drift"), 5.0);
+    let lower = text.to_lowercase();
+    assert!(
+        lower.contains("structural mismatches"),
+        "the summary names the first number: {text}"
+    );
+    assert!(
+        lower.contains("text drift"),
+        "the summary names the second number: {text}"
+    );
+    assert!(
+        number_tokens(&text).contains(&"5".to_string()),
+        "the summary gives the text drift: {text}"
+    );
+}
+
+#[test]
 fn the_unconverted_shapes_of_a_board_are_listed_with_their_reasons() {
     let s = scenario();
     let big = s.report.board(&uid(40));
@@ -509,6 +569,9 @@ fn the_summary_at_the_top_has_the_counts_the_median_and_the_totals() {
         "{summary:?}"
     );
     assert_eq!(summary.number("data-layout-mismatches"), 3.0);
+    // No board has a text, so the design as imported is off where it is
+    // structurally off.
+    assert_eq!(summary.number("data-text-drift"), 3.0);
     assert_eq!(summary.number("data-unconverted"), 4.0);
 
     let numbers = number_tokens(&text);
@@ -535,11 +598,16 @@ fn the_summary_agrees_with_the_boards_below_it() {
         summary.number("data-layout-mismatches"),
         sum("data-layout-mismatches")
     );
+    assert_eq!(summary.number("data-text-drift"), sum("data-text-drift"));
     assert_eq!(summary.number("data-unconverted"), sum("data-unconverted"));
     let items = |role: &str| boards.iter().map(|b| b.items(role).len()).sum::<usize>();
     assert_eq!(
         items("mismatch") as f64,
         summary.number("data-layout-mismatches")
+    );
+    assert_eq!(
+        items("text-drift") as f64,
+        summary.number("data-text-drift")
     );
     assert_eq!(
         items("unconverted") as f64,

@@ -41,7 +41,12 @@
 //!   layout computes, both in page coordinates. A mismatch is `{ shapeId, name,
 //!   penpot: {x, y, width, height}, omnistate: {x, y, width, height}, offBy }`
 //!   with `offBy` the largest of the four differences, and is listed when that is
-//!   more than 2 px;
+//!   more than 2 px. These are the structural mismatches (US-054, Q49): inside
+//!   the comparison only, each text is pinned to the box Penpot stored for it,
+//!   so that Penpot's whole-pixel rounding of text boxes does not count;
+//! - `textDrift`: `{ compared, mismatches }` in the same form, measured on the
+//!   design as it is imported, with every text following Chrome. The converted
+//!   design never holds the pin: its texts keep their hug sizing;
 //! - `unconverted`: `[{ shapeId, name, reason }]`, the shapes of the board that
 //!   the converter left out whole (a report entry with no property), whose
 //!   boxes in Penpot's PNG are masked. A shape that was converted without one of
@@ -53,7 +58,8 @@ mod common;
 
 use std::fs;
 
-use serde_json::json;
+use omni_penpot::convert_file;
+use serde_json::{Value, json};
 
 use common::compare::*;
 use common::convert::*;
@@ -294,6 +300,107 @@ fn layout_lists_the_shapes_more_than_2_px_from_where_penpot_stored_them() {
     }
 }
 
+/// The shape ids of the mismatches of a layout comparison, sorted.
+fn mismatch_ids(comparison: &Value) -> Vec<String> {
+    let mut ids: Vec<String> = comparison["mismatches"]
+        .as_array()
+        .unwrap_or_else(|| panic!("no list of mismatches in {comparison}"))
+        .iter()
+        .map(|m| m["shapeId"].as_str().expect("an id").to_string())
+        .collect();
+    ids.sort();
+    ids
+}
+
+#[test]
+fn structural_mismatches_pin_texts_to_penpots_boxes_and_text_drift_follows_chrome() {
+    let file = write_export("compare-text-drift", vec![text_drift_board(1)]);
+    let outcome = compare_ok(&file, &temp_dir("compare-text-drift"));
+    let board = outcome.board(&uid(1));
+
+    // With each text pinned to Penpot's box, every shape is where Penpot put it.
+    let structural = &board["layout"];
+    assert_eq!(
+        field(structural, "compared"),
+        6.0,
+        "the board and its five shapes"
+    );
+    assert_eq!(
+        structural["mismatches"],
+        json!([]),
+        "with the texts pinned to Penpot's boxes nothing is off"
+    );
+
+    // As imported, the texts follow Chrome and everything after them moves.
+    let drift = &board["textDrift"];
+    assert!(
+        drift.is_object(),
+        "compare.json has the text drift of the board: {board:#}"
+    );
+    assert_eq!(
+        field(drift, "compared"),
+        6.0,
+        "the same shapes are compared"
+    );
+    assert_eq!(
+        mismatch_ids(drift),
+        [uid(2), uid(3), uid(4), uid(5), uid(6)],
+        "the texts and the shapes after them drift: {drift:#}"
+    );
+    let of = |name: &str| {
+        drift["mismatches"]
+            .as_array()
+            .expect("a list")
+            .iter()
+            .find(|m| m["name"] == name)
+            .unwrap_or_else(|| panic!("no text drift for {name}: {drift:#}"))
+            .clone()
+    };
+    let two_lines = of("Two lines");
+    assert_near(
+        field(&two_lines["penpot"], "height"),
+        46.0,
+        0.01,
+        "Penpot's box",
+    );
+    assert_near(
+        field(&two_lines["omnistate"], "height"),
+        2.0 * 20.296875,
+        0.01,
+        "two line pitches, as Chrome lays the text out",
+    );
+    let below = of("Below");
+    assert_near(field(&below["penpot"], "y"), 46.0, 0.01, "Penpot's box");
+    assert_near(
+        field(&below["omnistate"], "y"),
+        2.0 * 20.296875,
+        0.01,
+        "below the text as Chrome lays it out",
+    );
+    let hi = of("Hi");
+    assert!(
+        field(&hi["omnistate"], "width") < 39.0,
+        "the text is as wide as Chrome measures it, not Penpot's 40 px: {hi}"
+    );
+
+    // The pin is in the comparison only: the converted texts still hug.
+    let conversion =
+        convert_file(&file).unwrap_or_else(|error| panic!("cannot convert {file:?}: {error}"));
+    let root = board_node(common::convert::board(&conversion, "Texts"));
+    for (name, axis, min) in [
+        ("Two lines", "height", "minHeight"),
+        ("Hi", "width", "minWidth"),
+        ("Hi", "height", "minHeight"),
+    ] {
+        let json = json_of(node(root, name));
+        assert_sizing(&json[axis], Sz::Hug, &format!("{name} hugs its {axis}"));
+        assert!(
+            json.get(min).is_none(),
+            "{name}: the converted design holds no pin, no {min}: {json:#}"
+        );
+    }
+}
+
 #[test]
 fn boards_without_a_penpot_png_get_the_layout_comparison_only() {
     let outcome = compare_synthetic(
@@ -472,4 +579,17 @@ fn the_tolerance_is_documented() {
         text.contains("layout comparison only"),
         "the document says what a board without a PNG gets"
     );
+}
+
+#[test]
+fn the_structural_mismatches_and_the_text_drift_are_documented() {
+    let text = fs::read_to_string(repo_root().join("docs/penpot-compare.md"))
+        .unwrap_or_else(|error| panic!("docs/penpot-compare.md is not there: {error}"))
+        .to_lowercase();
+    for words in ["structural mismatches", "text drift", "textdrift", "pinned"] {
+        assert!(
+            text.contains(words),
+            "the document explains the two layout numbers and says {words:?}"
+        );
+    }
 }

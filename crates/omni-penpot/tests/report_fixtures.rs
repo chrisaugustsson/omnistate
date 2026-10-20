@@ -8,11 +8,17 @@
 //!   only.
 //! - Each file has a board "Unplaced" on each page with shapes outside its
 //!   boards (US-054): one in idag, two in ordrar.
-//! - With the converter fixes of US-054 the two files have at most 1,000 layout
-//!   mismatches over 2 px between them (46,030 before).
+//! - `make penpot-compare` reports two numbers (US-054, Q49). The structural
+//!   mismatches (`data-layout-mismatches`) are measured with each text pinned
+//!   to Penpot's stored box inside the comparison only; with the converter fixes
+//!   of US-054 the two files have at most 1,000 of them between them (46,030
+//!   layout mismatches before). The text drift (`data-text-drift`) is measured
+//!   with the texts following Chrome, as imported, and is reported without a
+//!   limit.
 //!
-//! The report of the whole folder is made once. Nothing here asks for a score:
-//! the page shows how far OmniState is from Penpot, it does not pass or fail.
+//! The report of the whole folder is made once. Nothing here asks for a pixel
+//! score: the page shows how far OmniState is from Penpot, it does not pass or
+//! fail.
 
 mod common;
 
@@ -199,6 +205,7 @@ fn the_summary_is_the_median_and_the_totals_of_the_boards() {
         summary.number("data-layout-mismatches"),
         sum("data-layout-mismatches")
     );
+    assert_eq!(summary.number("data-text-drift"), sum("data-text-drift"));
     assert_eq!(summary.number("data-unconverted"), sum("data-unconverted"));
 }
 
@@ -213,6 +220,11 @@ fn each_board_lists_as_many_mismatches_and_unconverted_shapes_as_it_counts() {
             "{name}"
         );
         assert_eq!(
+            board.items("text-drift").len() as f64,
+            board.tag().number("data-text-drift"),
+            "{name}"
+        );
+        assert_eq!(
             board.items("unconverted").len() as f64,
             board.tag().number("data-unconverted"),
             "{name}"
@@ -221,7 +233,7 @@ fn each_board_lists_as_many_mismatches_and_unconverted_shapes_as_it_counts() {
 }
 
 #[test]
-fn the_two_exports_have_at_most_1000_layout_mismatches() {
+fn the_two_exports_have_at_most_1000_structural_mismatches_and_report_their_text_drift() {
     let Some(run) = run() else { return };
     let folder = repo_root().join("fixtures/penpot");
     let files = ["tirebud-idag.penpot", "tirebud-ordrar.penpot"];
@@ -229,16 +241,31 @@ fn the_two_exports_have_at_most_1000_layout_mismatches() {
         eprintln!("SKIPPED: the mismatch target needs both TireBud exports in fixtures/penpot/");
         return;
     }
-    let mut per_file: BTreeMap<String, f64> = BTreeMap::new();
+    let mut per_file: BTreeMap<String, (f64, f64)> = BTreeMap::new();
     for board in run.report.boards() {
-        *per_file
+        let counts = per_file
             .entry(board.attr("data-file").expect("a file"))
-            .or_default() += board.tag().number("data-layout-mismatches");
+            .or_default();
+        counts.0 += board.tag().number("data-layout-mismatches");
+        counts.1 += board.tag().number("data-text-drift");
     }
-    let (summary, _) = run.report.summary();
-    let total = summary.number("data-layout-mismatches");
+    let (summary, text) = run.report.summary();
+    let structural = summary.number("data-layout-mismatches");
+    let drift = summary.number("data-text-drift");
     assert!(
-        total <= 1_000.0,
-        "`make penpot-compare` finds {total} layout mismatches over 2 px, more than 1,000: {per_file:?}"
+        structural <= 1_000.0,
+        "`make penpot-compare` finds {structural} structural mismatches over 2 px, with the \
+         texts pinned to Penpot's boxes, more than 1,000 (structural, drift): {per_file:?}"
     );
+    // The text drift has no limit; it is reported, as a whole number.
+    assert!(
+        drift >= 0.0 && drift.fract() == 0.0,
+        "the text drift is a count: {drift}"
+    );
+    let lower = text.to_lowercase();
+    assert!(
+        lower.contains("structural mismatches") && lower.contains("text drift"),
+        "the summary names both numbers: {text}"
+    );
+    eprintln!("structural mismatches {structural}, text drift {drift}: {per_file:?}");
 }
