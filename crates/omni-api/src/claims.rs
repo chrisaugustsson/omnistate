@@ -23,7 +23,8 @@
 use crate::AppState;
 use crate::changesets::parse_body;
 use crate::docs::{
-    AgentIdentity, DRAFT_ROW_COLUMNS, DocError, DraftRow, Tx, ensure_loaded, require_changeset,
+    AgentIdentity, DRAFT_ROW_COLUMNS, DocError, DraftRow, Tx, current_draft, ensure_loaded,
+    require_changeset,
 };
 use crate::live;
 use crate::session::{ApiError, ErrorBody};
@@ -492,6 +493,9 @@ pub async fn take_claim(
             .slot(&workspace_id, &draft.id)
             .lock_owned()
             .await;
+        let mut tx = state.workspace_tx(&workspace_id).await?;
+        let draft = current_draft(&mut tx, &draft.id).await?;
+        tx.commit().await.map_err(ApiError::database)?;
         ensure_loaded(&state, &workspace_id, &draft, &mut held).await?;
         if held
             .as_ref()

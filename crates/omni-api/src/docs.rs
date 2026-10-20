@@ -495,6 +495,20 @@ impl From<DraftRow> for DraftBody {
     }
 }
 
+/// The draft's row as it is now. A request reads the row before it waits for
+/// the draft's lock, and a rebase that held the lock meanwhile has rewritten
+/// the row, so a request takes the row again once it holds the lock.
+pub(crate) async fn current_draft(tx: &mut Tx, draft_id: &str) -> Result<DraftRow, ApiError> {
+    sqlx::query_as(&format!(
+        "SELECT {DRAFT_ROW_COLUMNS} FROM drafts d WHERE d.id = $1::uuid"
+    ))
+    .bind(draft_id)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(ApiError::database)?
+    .ok_or(ApiError::NotFound)
+}
+
 /// The draft that `changeset_id` has of `doc_id`, 404 when the change set, the
 /// doc or the draft is not there (or not in this project).
 pub(crate) async fn find_draft(
@@ -888,6 +902,9 @@ pub async fn read_draft(
 
     let slot = state.drafts.slot(&request.workspace_id, &draft.id);
     let mut held = slot.lock().await;
+    let mut tx = state.workspace_tx(&request.workspace_id).await?;
+    let draft = current_draft(&mut tx, &draft.id).await?;
+    tx.commit().await.map_err(ApiError::database)?;
     ensure_loaded(&state, &request.workspace_id, &draft, &mut held).await?;
     let html = held
         .as_ref()
@@ -1000,6 +1017,7 @@ async fn apply_batch(state: &AppState, edit: Edit) -> Result<Vec<OpResultBody>, 
     let slot = state.drafts.slot(&workspace_id, &draft.id);
     let mut held = slot.lock().await;
     let mut tx = state.workspace_tx(&workspace_id).await?;
+    let draft = current_draft(&mut tx, &draft.id).await?;
     if held.is_none() {
         *held = Some(load_state(state, &mut tx, &workspace_id, &draft).await?);
     }

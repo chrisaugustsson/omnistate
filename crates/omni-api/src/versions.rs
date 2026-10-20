@@ -13,7 +13,7 @@
 
 use crate::AppState;
 use crate::changesets::{clear_approval, parse_body};
-use crate::docs::{AgentIdentity, DraftRow, Tx, ensure_loaded, find_draft};
+use crate::docs::{AgentIdentity, DraftRow, Tx, current_draft, ensure_loaded, find_draft};
 use crate::live;
 use crate::session::{ApiError, ErrorBody};
 use crate::workspace::{AgentRequest, WorkspaceRequest, parse_uuid, sha256_hex};
@@ -441,14 +441,19 @@ pub async fn save_version(
     // The snapshot is taken under the draft's lock, so it holds whole batches
     // only: the ones that are committed.
     let slot = state.drafts.slot(&request.workspace_id, &draft.id);
-    let snapshot = {
+    let (draft, snapshot) = {
         let mut held = slot.lock().await;
+        // A rebase that held the lock meanwhile has rewritten the draft's row.
+        let mut tx = state.workspace_tx(&request.workspace_id).await?;
+        let draft = current_draft(&mut tx, &draft.id).await?;
+        tx.commit().await.map_err(ApiError::database)?;
         ensure_loaded(&state, &request.workspace_id, &draft, &mut held).await?;
         let doc = &held.as_ref().expect("the draft is loaded").doc;
-        Snapshot {
+        let snapshot = Snapshot {
             html: doc.to_html(),
             nodes: doc.index(),
-        }
+        };
+        (draft, snapshot)
     };
     let version = store_version(
         &state,

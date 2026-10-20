@@ -18,7 +18,9 @@
 
 use crate::AppState;
 use crate::changesets::{ChangesetBody, load_changeset, move_status};
-use crate::docs::{AgentIdentity, DRAFT_ROW_COLUMNS, DraftRow, DraftState, Tx, require_changeset};
+use crate::docs::{
+    AgentIdentity, DRAFT_ROW_COLUMNS, DraftRow, DraftState, Tx, ensure_loaded, require_changeset,
+};
 use crate::live;
 use crate::session::{ApiError, ErrorBody};
 use crate::versions::{
@@ -203,14 +205,32 @@ async fn rebase_doc(
     let base = load_doc(state, workspace_id, base_chunk.as_deref()).await?;
     let mainline = load_doc(state, workspace_id, mainline_chunk.as_deref()).await?;
     let mine = load_doc(state, workspace_id, changed.chunk.as_deref()).await?;
-    let rebased = EditDoc::rebase(&base, &mainline, &mine);
+    // A removed doc is a doc-level change: when one side removed the doc and
+    // the other changed anything in it, that is a conflict and the mainline
+    // state stays; otherwise the removal stands.
+    let (doc, conflict_nodes) = match (mainline_chunk.is_none(), changed.chunk.is_none()) {
+        (false, false) => {
+            let rebased = EditDoc::rebase(&base, &mainline, &mine);
+            (Some(rebased.doc), rebased.conflicts)
+        }
+        (true, true) => (None, Vec::new()),
+        (true, false) => (None, EditDoc::changed_from(&base, &mine)),
+        (false, true) => {
+            let theirs = EditDoc::changed_from(&base, &mainline);
+            let doc = if theirs.is_empty() {
+                None
+            } else {
+                Some(mainline.clone())
+            };
+            (doc, theirs)
+        }
+    };
 
-    let nodes = rebased.doc.index();
-    let removed = changed.chunk.is_none() && nodes.is_empty();
-    let snapshot = (!removed).then(|| Snapshot {
-        html: rebased.doc.to_html(),
-        nodes,
+    let snapshot = doc.as_ref().map(|doc| Snapshot {
+        html: doc.to_html(),
+        nodes: doc.index(),
     });
+    let removed = snapshot.is_none();
     let chunk = match &snapshot {
         Some(snapshot) => Some(store_chunk(state, workspace_id, &snapshot.html).await?),
         None => None,
@@ -235,8 +255,8 @@ async fn rebase_doc(
     )
     .await?;
 
-    let mut conflicts = Vec::with_capacity(rebased.conflicts.len());
-    for node in rebased.conflicts {
+    let mut conflicts = Vec::with_capacity(conflict_nodes.len());
+    for node in conflict_nodes {
         let mainline_html = mainline.node_html(node);
         let changeset_html = mine.node_html(node);
         let id: String = sqlx::query_scalar(
@@ -323,9 +343,10 @@ async fn rebase_doc(
 /// outdated version, which gives a new version of the change set. Without
 /// conflicts the approval is kept and the change set merges; with conflicts
 /// nothing merges, the approval is cleared and the change set is `open`, with
-/// each conflicting node as the mainline has it in the draft. Operations
-/// applied to a draft after its latest saved version are not part of the
-/// rebase.
+/// each conflicting node as the mainline has it in the draft. A removed doc is
+/// a doc-level change: removed on one side and changed on the other is a
+/// conflict that keeps the mainline state. A draft with operations after its
+/// latest saved version is not rebased (409 `unsaved_operations`).
 #[utoipa::path(
     post,
     path = "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/rebase",
@@ -343,7 +364,7 @@ async fn rebase_doc(
         (status = 401, description = "No valid API key or session", body = ErrorBody),
         (status = 403, description = "Called with a session; agents only", body = ErrorBody),
         (status = 404, description = "No such change set in this project and workspace", body = ErrorBody),
-        (status = 409, description = "The change set is not `needs_rebase`", body = ErrorBody),
+        (status = 409, description = "The change set is not `needs_rebase` (`invalid_transition`), or a draft has operations after its latest saved version (`unsaved_operations`); nothing changed", body = ErrorBody),
     )
 )]
 pub async fn rebase(
@@ -410,6 +431,26 @@ pub async fn rebase(
     .map_err(ApiError::database)?
     .into_iter()
     .collect();
+
+    // A rebase replaces the draft with the change set's latest saved version
+    // on the new mainline, so operations applied after that version would be
+    // lost: it refuses and leaves everything as it is.
+    for changed in &changed {
+        let Some(Some(mainline)) = mainlines.get(&changed.draft.doc_id) else {
+            continue;
+        };
+        if changed.draft.base_version_id.as_ref() == Some(mainline) {
+            continue;
+        }
+        let guard = held
+            .iter_mut()
+            .find(|(id, _)| *id == changed.draft.id)
+            .map(|(_, guard)| guard)
+            .expect("the draft is held");
+        if has_unsaved_operations(&state, &mut tx, workspace_id, changed, guard).await? {
+            return Err(ApiError::conflict("unsaved_operations"));
+        }
+    }
 
     let mut conflicts = Vec::new();
     let mut rebased: Vec<String> = Vec::new();
@@ -501,6 +542,41 @@ pub async fn rebase(
         changeset,
         conflicts,
     }))
+}
+
+/// Whether the draft has operations after its latest saved version, `changed`.
+/// A saved doc is compared with the draft in memory; a removal holds no content,
+/// so for that the log is read.
+async fn has_unsaved_operations(
+    state: &AppState,
+    tx: &mut Tx,
+    workspace_id: &str,
+    changed: &Changed,
+    held: &mut Option<DraftState>,
+) -> Result<bool, ApiError> {
+    let draft = &changed.draft;
+    if changed.chunk.is_some() {
+        ensure_loaded(state, workspace_id, draft, held).await?;
+        let html = read_chunk(
+            state,
+            workspace_id,
+            changed.chunk.as_deref().unwrap_or_default(),
+        )
+        .await?;
+        let draft_html = held.as_ref().map(|loaded| loaded.doc.to_html());
+        return Ok(draft_html.is_some_and(|draft_html| draft_html != html));
+    }
+    sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM draft_ops o, versions v \
+         WHERE o.draft_id = $1::uuid AND o.seq > $2 AND v.id = $3::uuid \
+           AND o.applied_at > v.created_at)",
+    )
+    .bind(&draft.id)
+    .bind(draft.content_after_seq)
+    .bind(&changed.version_id)
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(ApiError::database)
 }
 
 /// Fails with 404 when the change set is not in the project, and with 409

@@ -40,6 +40,19 @@ impl Shape {
             content: nodes.into_iter().map(|n| (n.id, n.content)).collect(),
         }
     }
+
+    /// The nearest sibling before the node that is one of `among`; `None` when
+    /// it is first among those.
+    fn follows(&self, id: &NodeId, among: &HashSet<NodeId>) -> Option<NodeId> {
+        let parent = self.parent[id];
+        self.order
+            .iter()
+            .filter(|sibling| self.parent[*sibling] == parent)
+            .take_while(|sibling| *sibling != id)
+            .filter(|sibling| among.contains(*sibling))
+            .last()
+            .copied()
+    }
 }
 
 /// What one side changed of the base's nodes.
@@ -111,6 +124,18 @@ fn reordered(base: &Shape, side: &Shape) -> HashSet<NodeId> {
 }
 
 impl EditDoc {
+    /// The nodes that `side` changed from `base`, as a comparison of versions
+    /// sees it: first those of the base that are removed, edited or placed
+    /// elsewhere, in the base's document order, then the nodes added, in the
+    /// side's. Empty when the two are the same doc.
+    pub fn changed_from(base: &EditDoc, side: &EditDoc) -> Vec<NodeId> {
+        let (b, s) = (Shape::of(base), Shape::of(side));
+        let changes = Changes::of(&b, &s);
+        let kept = b.order.iter().filter(|id| changes.touches(id));
+        let added = s.order.iter().filter(|id| !b.parent.contains_key(id));
+        kept.chain(added).copied().collect()
+    }
+
     /// Replays the changes that `changes` made from `base` onto `mainline`.
     /// All three hold the same doc at different versions: `base` is where the
     /// change set started, `changes` is the change set's latest version and
@@ -120,14 +145,28 @@ impl EditDoc {
         let mine = Changes::of(&b, &t);
         let theirs = Changes::of(&b, &m);
 
-        // Both sides changed the node, unless they came to the same state.
+        // Both sides changed the node, unless they came to the same state. A
+        // node that both sides placed differently, under the same parent, is
+        // in the same state only when it follows the same sibling.
+        let kept: HashSet<NodeId> = b
+            .order
+            .iter()
+            .filter(|id| t.parent.contains_key(id) && m.parent.contains_key(id))
+            .copied()
+            .collect();
         let mut conflicts: HashSet<NodeId> = b
             .order
             .iter()
             .filter(|id| mine.touches(id) && theirs.touches(id))
             .filter(|id| match (t.parent.get(id), m.parent.get(id)) {
                 (None, None) => false,
-                (Some(mine), Some(theirs)) => mine != theirs || t.content[id] != m.content[id],
+                (Some(mine_parent), Some(theirs_parent)) => {
+                    mine_parent != theirs_parent
+                        || t.content[id] != m.content[id]
+                        || (mine.place.contains(id)
+                            && theirs.place.contains(id)
+                            && t.follows(id, &kept) != m.follows(id, &kept))
+                }
                 _ => true,
             })
             .copied()
@@ -420,6 +459,22 @@ mod tests {
             ["b0000000", "c0000000", "a0000000", "d0000000"]
         );
         assert!(rebased.doc.to_html().contains("D2"));
+    }
+
+    #[test]
+    fn changed_from_lists_what_a_side_removed_edited_moved_and_added() {
+        let base = paragraphs(&[("a0000000", "A"), ("b0000000", "B"), ("c0000000", "C")]);
+        assert!(EditDoc::changed_from(&base, &base).is_empty());
+        let side = paragraphs(&[("c0000000", "C"), ("a0000000", "A2"), ("n0000000", "N")]);
+        assert_eq!(
+            EditDoc::changed_from(&base, &side),
+            [
+                id("a0000000"),
+                id("b0000000"),
+                id("c0000000"),
+                id("n0000000")
+            ]
+        );
     }
 
     #[test]
