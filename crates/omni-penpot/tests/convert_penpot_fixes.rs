@@ -19,6 +19,9 @@
 //!   box height for a text of one line, written as
 //!   `lineHeight = (pitch + 1/128) / fontSize` without rounding. A text with no
 //!   `positionData` keeps its own multiple (see convert_synthetic.rs).
+//! - A text box otherwise follows Chrome, not Penpot's whole-pixel rounding: a
+//!   text that hugs its content, in a layout or not, gets no min size from the
+//!   box Penpot stored, so it is as wide and tall as its content lays out.
 //! - Shapes that sit directly on a page, outside every board, go into a board
 //!   called "Unplaced" on that page, at the places Penpot gives them.
 //! - Prototype interactions (a shape's `interactions`), prototype flows (a
@@ -656,6 +659,99 @@ fn line_heights_are_the_line_pitch_penpot_laid_the_text_out_at() {
         conversion.report.entries.is_empty(),
         "{:#?}",
         conversion.report.entries
+    );
+}
+
+#[test]
+fn texts_that_hug_in_a_layout_follow_chrome_not_the_box_penpot_rounded_up() {
+    let style = |size: &str, height: &str| json!({ "fontSize": size, "lineHeight": height });
+    let hi = |n: u32, name: &str, bounds: [f64; 4]| {
+        // "Hi" in Inter 16 is about 15 px wide in Chrome; Penpot stored a box
+        // 40 px wide for it.
+        shape(n, "text", name, bounds).with(json!({
+            "growType": "auto-width",
+            "layoutItemHSizing": "auto",
+            "layoutItemVSizing": "auto",
+            "content": text_content(vec![paragraph(vec![run("Hi", style("16", "1.2"))])]),
+            "positionData": [line(bounds[1] + 19.2, "Hi", "16px")]
+        }))
+    };
+    let conversion = convert(
+        "fix-text-box-chrome",
+        vec![
+            shape(1, "frame", "Home", [0.0, 0.0, 600.0, 400.0]).kids(vec![
+                // The same text outside any layout: the width Chrome measures.
+                hi(2, "Loose Hi", [10.0, 300.0, 40.0, 20.0]),
+                flex_frame(3, "Row", "row", [0.0, 0.0, 300.0, 40.0], json!({})).kids(vec![
+                    // Penpot lists the children of a layout last first.
+                    shape(5, "rect", "After", [40.0, 0.0, 20.0, 20.0]),
+                    hi(4, "Hi", [0.0, 0.0, 40.0, 20.0]),
+                ]),
+                flex_frame(6, "Column", "column", [320.0, 0.0, 250.0, 200.0], json!({})).kids(
+                    vec![
+                        shape(8, "rect", "Below", [320.0, 41.0, 250.0, 10.0]),
+                        // Two lines 20.296875 px apart, 40.59375 px in all, in a
+                        // box Penpot rounded up to 41 px.
+                        shape(7, "text", "Two lines", [320.0, 0.0, 250.0, 41.0]).with(json!({
+                            "growType": "auto-height",
+                            "layoutItemHSizing": "fix",
+                            "layoutItemVSizing": "auto",
+                            "content": text_content(vec![
+                                paragraph(vec![run("One", style("14", "1.45"))]),
+                                paragraph(vec![run("Two", style("14", "1.45"))]),
+                            ]),
+                            "positionData": [
+                                line(0.0, "One", "14px"),
+                                line(20.296875, "Two", "14px"),
+                            ]
+                        })),
+                    ],
+                ),
+            ]),
+        ],
+    );
+    let design = board(&conversion, "Home");
+    let root = board_node(design);
+    for name in ["Hi", "Two lines"] {
+        let json = json_of(node(root, name));
+        for min in ["minWidth", "minHeight"] {
+            assert!(
+                json.get(min).is_none(),
+                "{name}: a text that hugs in a layout keeps no {min} from the box Penpot \
+                 rounded up, it follows its content as Chrome lays it out: {json:#}"
+            );
+        }
+    }
+
+    let laid_out = boxes(design);
+    let measured = f64::from(layout_box(&laid_out, "Loose Hi").width);
+    assert!(
+        measured < 39.0,
+        "outside a layout the text is as wide as its content, not Penpot's 40 px: {measured}"
+    );
+    assert_near(
+        f64::from(layout_box(&laid_out, "Hi").width),
+        measured,
+        0.01,
+        "a hugging text in a row is as wide as Chrome measures its content",
+    );
+    assert_near(
+        f64::from(layout_box(&laid_out, "After").x),
+        measured,
+        0.01,
+        "the next child follows the measured text, not Penpot's whole-pixel box",
+    );
+    assert_near(
+        f64::from(layout_box(&laid_out, "Two lines").height),
+        2.0 * 20.296875,
+        0.001,
+        "a hugging text in a column is two line pitches tall, not Penpot's 41 px",
+    );
+    assert_near(
+        f64::from(layout_box(&laid_out, "Below").y),
+        2.0 * 20.296875,
+        0.001,
+        "the next child follows the text's lines, not Penpot's whole-pixel box",
     );
 }
 
