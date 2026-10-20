@@ -1823,6 +1823,12 @@ fn the_lists_of_a_workspace_hold_nothing_of_the_other() {
             if !matches!(case.kind, Kind::Workspace) || entry.method != "GET" {
                 continue;
             }
+            // US-030: the seeded doc is an HTML doc and fill() names no board,
+            // so the board reads have a control of their own, against a
+            // design of the workspace (the_board_reads_of_a_workspace_...).
+            if entry.path.contains("/boards/") {
+                continue;
+            }
             let path = fill(&entry.path, own, own);
             for auth in credentials(entry.access, own) {
                 let what = format!("{} with {}", route_name(&entry.method, &path), auth.label());
@@ -2914,6 +2920,206 @@ fn the_component_calls_of_the_attacks_work_for_the_workspace_that_owns_the_recor
             "list the boards that use components",
         );
         assert_eq!(usage["project_id"], project, "{usage}");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Pages and boards (US-030)
+// ---------------------------------------------------------------------------
+
+const DRAFT_BOARD_ROUTE: &str = "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs/{doc_id}/boards/{board_id}";
+const BOARD_ROUTE: &str =
+    "/api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}/boards/{board_id}";
+
+#[test]
+fn the_board_routes_are_in_the_registry_and_the_suite_attacks_them() {
+    for path in [DRAFT_BOARD_ROUTE, BOARD_ROUTE] {
+        let entry = registry()
+            .into_iter()
+            .find(|r| r.method == "GET" && r.path == path)
+            .unwrap_or_else(|| panic!("the registry has no route GET {path}"));
+        assert_eq!(entry.access, Access::Both, "GET {path}");
+        assert!(
+            matches!(case_for(&entry).kind, Kind::Workspace),
+            "{path} is a workspace route that the suite attacks"
+        );
+    }
+}
+
+#[test]
+fn the_board_reads_of_a_workspace_show_its_own_board_and_nothing_of_the_other() {
+    // The control for the board routes, which the generic one skips: the
+    // owner's agent imports a design into a doc of its own, and the agent and
+    // the human read its board from the draft and, once it is saved and
+    // merged, from the mainline and the version. The other workspace's credentials on the same
+    // paths, and the owner's workspace with the other's IDs, are 404.
+    let (f, client) = ready();
+    let _guard = serial();
+    for (own, other) in [(&f.a, &f.b), (&f.b, &f.a)] {
+        let key = Auth::Key(&own.key);
+        let human = Auth::Session(&own.token);
+        let body = json!({ "name": unique("owner-boards") }).to_string();
+        let project = must(
+            call(
+                client,
+                "POST",
+                &format!("/api/v1/w/{}/projects", own.id),
+                &key,
+                Some(&body),
+            ),
+            201,
+            "create a project",
+        );
+        let project = project["project"]["id"].as_str().expect("an id");
+        let base = format!("/api/v1/w/{}/projects/{project}", own.id);
+        let body = json!({ "title": unique("owner-boards") }).to_string();
+        let created = must(
+            call(
+                client,
+                "POST",
+                &format!("{base}/changesets"),
+                &key,
+                Some(&body),
+            ),
+            201,
+            "create a change set",
+        );
+        let changeset = created["changeset"]["id"].as_str().expect("an id");
+        let body = json!({ "kind": "design", "module": "ui", "title": unique("owner-boards") })
+            .to_string();
+        let created = must(
+            call(
+                client,
+                "POST",
+                &format!("{base}/changesets/{changeset}/docs"),
+                &key,
+                Some(&body),
+            ),
+            201,
+            "start a design doc",
+        );
+        let doc = created["doc"]["id"].as_str().expect("an id");
+        let text = unique("owner-board-text");
+        let tags = format!(
+            "<Page name=\"Owner page\">\n  <Board name=\"Owner board\" x={{0}} y={{0}} width={{320}} height={{200}}>\n    <Text name=\"Owner text\" content=\"{text}\" fontFamily=\"Inter\" fontSize={{12}}/>\n  </Board>\n</Page>"
+        );
+        let placed = must(
+            call(
+                client,
+                "PUT",
+                &format!("{base}/changesets/{changeset}/docs/{doc}/design"),
+                &key,
+                Some(&json!({ "tags": tags }).to_string()),
+            ),
+            200,
+            "import the design",
+        );
+        let board = placed["pages"][0]["children"][0]["id"]
+            .as_str()
+            .unwrap_or_else(|| panic!("the import answers the board's ID: {placed}"))
+            .to_string();
+        let fill_board = |template: &str, workspace: &str| {
+            template
+                .replace("{workspace_id}", workspace)
+                .replace("{project_id}", project)
+                .replace("{changeset_id}", changeset)
+                .replace("{doc_id}", doc)
+                .replace("{board_id}", &board)
+        };
+        let check = |path: &str| {
+            for auth in [&key, &human] {
+                let what = format!("{} with {}", route_name("GET", path), auth.label());
+                let response = call(client, "GET", path, auth, None);
+                assert_eq!(response.status, 200, "{what}: {}", response.text());
+                let answer = response.json();
+                assert_eq!(answer["board_id"], board.as_str(), "{what}: {answer}");
+                assert_eq!(answer["doc_id"], doc, "{what}: {answer}");
+                let tags = answer["tags"].as_str().unwrap_or_default();
+                assert!(
+                    tags.contains(&text),
+                    "{what}: the answer holds the board's own content: {answer}"
+                );
+                for marker in other.markers() {
+                    assert!(
+                        !response.text().contains(marker),
+                        "{what} shows {marker} of the other workspace: {}",
+                        response.text()
+                    );
+                }
+            }
+            // The other workspace's credentials on the owner's real board.
+            for auth in [Auth::Key(&other.key), Auth::Session(&other.token)] {
+                let what = format!(
+                    "{} with {} of the other workspace",
+                    route_name("GET", path),
+                    auth.label()
+                );
+                let response = call(client, "GET", path, &auth, None);
+                assert_not_found_without_data(&response, own, &what);
+                assert!(
+                    !response.text().contains(&text),
+                    "{what}: {}",
+                    response.text()
+                );
+            }
+        };
+        check(&fill_board(DRAFT_BOARD_ROUTE, &own.id));
+
+        let saved = must(
+            call(
+                client,
+                "POST",
+                &format!("{base}/changesets/{changeset}/docs/{doc}/versions"),
+                &key,
+                Some("{}"),
+            ),
+            201,
+            "save a version",
+        );
+        let version = saved["version"]["id"].as_str().expect("an id").to_string();
+        must(
+            call(
+                client,
+                "POST",
+                &format!("{base}/changesets/{changeset}/submit"),
+                &key,
+                None,
+            ),
+            200,
+            "submit the change set",
+        );
+        let approved = must(
+            call(
+                client,
+                "POST",
+                &format!("{base}/changesets/{changeset}/approve"),
+                &human,
+                Some("{}"),
+            ),
+            200,
+            "the human approves",
+        );
+        assert_eq!(approved["changeset"]["status"], "merged", "{approved}");
+        check(&fill_board(BOARD_ROUTE, &own.id));
+        check(&format!(
+            "{}?version={version}",
+            fill_board(BOARD_ROUTE, &own.id)
+        ));
+
+        // The owner's key, with the owner's IDs under the other workspace.
+        for path in [
+            fill_board(DRAFT_BOARD_ROUTE, &other.id),
+            fill_board(BOARD_ROUTE, &other.id),
+        ] {
+            let response = call(client, "GET", &path, &key, None);
+            let what = format!("{} with the owner's key", route_name("GET", &path));
+            assert_not_found_without_data(&response, own, &what);
+            assert!(
+                !response.text().contains(&text),
+                "{what}: {}",
+                response.text()
+            );
+        }
     }
 }
 
