@@ -4,9 +4,11 @@
 //!
 //! - tirebud-idag.penpot has PNGs, in fixtures/penpot/tirebud-idag/, for its 15
 //!   boards (and for 8 texts on the page, which are no boards): every board gets
-//!   the pixel and the layout comparison, on a render the size of its PNG.
-//! - tirebud-ordrar.penpot has no PNGs and no folder: all of its 795 boards get
+//!   the pixel and the layout comparison, on a render the size of its PNG. The
+//!   board "Unplaced", which holds those 8 texts (US-054), has no PNG and gets
 //!   the layout comparison only.
+//! - tirebud-ordrar.penpot has no PNGs and no folder: all of its 795 boards,
+//!   and its two Unplaced boards, get the layout comparison only.
 //!
 //! Nothing here asks for a score: the project measures first and decides what to
 //! fix after reading the report.
@@ -64,6 +66,15 @@ fn boards(run: &Run) -> &Vec<Value> {
     run.report["boards"].as_array().expect("a list of boards")
 }
 
+/// The boards of the file, without the Unplaced board that holds the shapes
+/// outside them.
+fn file_boards(run: &Run) -> Vec<&Value> {
+    boards(run)
+        .iter()
+        .filter(|board| board["board"] != "Unplaced")
+        .collect()
+}
+
 /// A path that compare.json names, below the output directory.
 fn path_in(run: &Run, relative: &Value) -> PathBuf {
     let path = run.out.join(relative.as_str().expect("a path"));
@@ -74,9 +85,17 @@ fn path_in(run: &Run, relative: &Value) -> PathBuf {
 #[test]
 fn every_idag_board_is_rendered_at_the_size_of_its_penpot_png() {
     let Some(run) = idag() else { return };
-    assert_eq!(boards(run).len(), 15);
+    assert_eq!(boards(run).len(), 16);
+    let unplaced: Vec<&Value> = boards(run)
+        .iter()
+        .filter(|board| board["board"] == "Unplaced")
+        .collect();
+    assert_eq!(unplaced.len(), 1);
+    assert_eq!(unplaced[0]["layoutOnly"], true, "Penpot has no PNG of it");
+    assert!(field(&unplaced[0]["layout"], "compared") >= 8.0);
     let folder = repo_root().join("fixtures/penpot/tirebud-idag");
-    for board in boards(run) {
+    assert_eq!(file_boards(run).len(), 15);
+    for board in file_boards(run) {
         let name = board["board"].as_str().expect("a name");
         assert_eq!(board["layoutOnly"], false, "{name} has a PNG");
         let png = folder.join(format!("{}.png", name.replace(" / ", " _ ")));
@@ -98,7 +117,7 @@ fn every_idag_board_is_rendered_at_the_size_of_its_penpot_png() {
 fn every_idag_board_has_a_consistent_pixel_score() {
     let Some(run) = idag() else { return };
     tolerance(&run.report);
-    for board in boards(run) {
+    for board in file_boards(run) {
         let name = board["board"].as_str().expect("a name");
         let pixel = &board["pixel"];
         let (width, height) = (field(pixel, "width"), field(pixel, "height"));
@@ -184,7 +203,7 @@ fn idag_gives_the_same_files_on_a_second_run() {
     let out = temp_dir("compare-idag-again");
     let second = compare_ok(&file, &out);
     assert_eq!(first.report, second.report);
-    let board = &boards(first)[0]["pixel"];
+    let board = &file_boards(first)[0]["pixel"];
     for key in ["render", "diff"] {
         let relative = board[key].as_str().expect("a path");
         assert_eq!(
@@ -198,7 +217,8 @@ fn idag_gives_the_same_files_on_a_second_run() {
 #[test]
 fn every_ordrar_board_gets_the_layout_comparison_only() {
     let Some(run) = ordrar() else { return };
-    assert_eq!(boards(run).len(), 795);
+    assert_eq!(boards(run).len(), 797);
+    assert_eq!(file_boards(run).len(), 795);
     let mut compared = 0.0;
     for board in boards(run) {
         let name = board["board"].as_str().expect("a name");

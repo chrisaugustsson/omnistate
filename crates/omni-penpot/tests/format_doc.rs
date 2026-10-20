@@ -72,3 +72,26 @@ fn the_document_says_it_comes_from_observation_and_links_no_penpot_source() {
         "the format document links Penpot's source code"
     );
 }
+
+#[test]
+fn the_document_says_how_the_converter_maps_penpot_as_penpot_means_it() {
+    // US-054: the line pitch of texts, the Unplaced board, and what is listed
+    // in the report instead of converted.
+    let text = document();
+    for part in [
+        "positionData",
+        "1/128",
+        "Unplaced",
+        "interactions",
+        "flows",
+        "constraintsH",
+        "constraintsV",
+        "minWidth",
+        "justifySelf",
+    ] {
+        assert!(
+            text.contains(part),
+            "the format document does not mention `{part}`"
+        );
+    }
+}

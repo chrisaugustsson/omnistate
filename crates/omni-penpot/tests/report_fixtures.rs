@@ -6,6 +6,10 @@
 //!   its three images.
 //! - tirebud-ordrar.penpot has none, and 795 boards: each is layout comparison
 //!   only.
+//! - Each file has a board "Unplaced" on each page with shapes outside its
+//!   boards (US-054): one in idag, two in ordrar.
+//! - With the converter fixes of US-054 the two files have at most 1,000 layout
+//!   mismatches over 2 px between them (46,030 before).
 //!
 //! The report of the whole folder is made once. Nothing here asks for a score:
 //! the page shows how far OmniState is from Penpot, it does not pass or fail.
@@ -71,7 +75,7 @@ fn every_board_of_every_export_in_the_folder_is_on_the_page() {
     let Some(run) = run() else { return };
     let counts = per_file(run);
     let folder = repo_root().join("fixtures/penpot");
-    for (file, boards) in [("tirebud-idag.penpot", 15), ("tirebud-ordrar.penpot", 795)] {
+    for (file, boards) in [("tirebud-idag.penpot", 16), ("tirebud-ordrar.penpot", 797)] {
         if folder.join(file).is_file() {
             assert_eq!(
                 counts.get(file),
@@ -214,4 +218,27 @@ fn each_board_lists_as_many_mismatches_and_unconverted_shapes_as_it_counts() {
             "{name}"
         );
     }
+}
+
+#[test]
+fn the_two_exports_have_at_most_1000_layout_mismatches() {
+    let Some(run) = run() else { return };
+    let folder = repo_root().join("fixtures/penpot");
+    let files = ["tirebud-idag.penpot", "tirebud-ordrar.penpot"];
+    if !files.iter().all(|file| folder.join(file).is_file()) {
+        eprintln!("SKIPPED: the mismatch target needs both TireBud exports in fixtures/penpot/");
+        return;
+    }
+    let mut per_file: BTreeMap<String, f64> = BTreeMap::new();
+    for board in run.report.boards() {
+        *per_file
+            .entry(board.attr("data-file").expect("a file"))
+            .or_default() += board.tag().number("data-layout-mismatches");
+    }
+    let (summary, _) = run.report.summary();
+    let total = summary.number("data-layout-mismatches");
+    assert!(
+        total <= 1_000.0,
+        "`make penpot-compare` finds {total} layout mismatches over 2 px, more than 1,000: {per_file:?}"
+    );
 }

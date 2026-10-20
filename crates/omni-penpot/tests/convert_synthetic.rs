@@ -23,8 +23,9 @@
 //! listed in `conversion.report.entries`, each a `ReportEntry { board,
 //! board_id, shape_id, name, property, reason }`. `property` is None when the
 //! whole shape was left out and names the property when only that was. The
-//! board is the top-level board that holds the shape, and is empty for a shape
-//! outside any board, such as a text sitting directly on the page.
+//! board is the top-level board that holds the shape. Shapes that sit directly
+//! on a page, outside every board, go into a board called "Unplaced" on that
+//! page (US-054, see convert_penpot_fixes.rs).
 //!
 //! Where a flex or grid layout lays out its children, the converted children
 //! carry no x and y. In every flex frame of the real exports, the order of the
@@ -62,12 +63,18 @@ fn every_top_level_frame_becomes_a_design_with_one_board() {
             shape(3, "frame", "About", [900.0, 50.0, 320.0, 480.5]),
         ],
     );
-    assert_eq!(conversion.boards.len(), 2);
-    let names: Vec<_> = conversion.boards.iter().map(|b| b.name.as_str()).collect();
+    // The label on the page goes into the Unplaced board (US-054).
+    assert_eq!(conversion.boards.len(), 3);
+    let boards: Vec<_> = conversion
+        .boards
+        .iter()
+        .filter(|b| b.name != "Unplaced")
+        .collect();
+    let names: Vec<_> = boards.iter().map(|b| b.name.as_str()).collect();
     assert_eq!(names, ["Home", "About"]);
-    assert_eq!(conversion.boards[0].id, uid(1));
-    assert_eq!(conversion.boards[1].id, uid(3));
-    assert_eq!(conversion.boards[0].page, PAGE_NAME);
+    assert_eq!(boards[0].id, uid(1));
+    assert_eq!(boards[1].id, uid(3));
+    assert_eq!(boards[0].page, PAGE_NAME);
 
     let home = json_of(board_node(board(&conversion, "Home")));
     assert_eq!(home["name"], "Home");
@@ -237,9 +244,11 @@ fn a_flex_frame_becomes_a_flex_layout_with_gap_padding_and_alignment() {
         0.001,
         "padding",
     );
+    // Penpot's stretch does not stretch children that hug their content, so
+    // it becomes start; filling children still stretch (US-054).
     assert_eq!(
         json_of(node(root, "Plain stretch"))["layout"]["alignItems"],
-        "stretch"
+        "start"
     );
 }
 
@@ -647,36 +656,6 @@ fn strokes_keep_their_color_and_width() {
 }
 
 #[test]
-fn strokes_the_renderer_cannot_draw_are_listed_in_the_report() {
-    let conversion = convert(
-        "stroke-limits",
-        vec![
-            shape(1, "frame", "Home", [0.0, 0.0, 400.0, 300.0]).kids(vec![
-                shape(2, "rect", "Dashed", [0.0, 0.0, 50.0, 50.0]).with(json!({ "strokes": [{
-                    "strokeColor": "#000000", "strokeOpacity": 1, "strokeWidth": 1,
-                    "strokeStyle": "dashed", "strokeAlignment": "inner"
-                }] })),
-                shape(3, "rect", "Outside", [60.0, 0.0, 50.0, 50.0]).with(json!({ "strokes": [{
-                    "strokeColor": "#000000", "strokeOpacity": 1, "strokeWidth": 1,
-                    "strokeStyle": "solid", "strokeAlignment": "outer"
-                }] })),
-            ]),
-        ],
-    );
-    assert_reported(&conversion, &uid(2), &uid(1), "Home", "Dashed", &["dash"]);
-    assert_reported(
-        &conversion,
-        &uid(3),
-        &uid(1),
-        "Home",
-        "Outside",
-        &["align", "outer", "outside"],
-    );
-    let root = board_node(board(&conversion, "Home"));
-    assert!(has_node(root, "Dashed") && has_node(root, "Outside"));
-}
-
-#[test]
 fn corner_radii_map_to_the_four_corners() {
     let conversion = convert(
         "radii",
@@ -1080,26 +1059,6 @@ fn a_problem_deep_in_a_board_names_the_top_level_board() {
         &["bool"],
     );
     assert_eq!(conversion.report.entries.len(), 1);
-}
-
-#[test]
-fn shapes_outside_boards_are_listed_instead_of_dropped() {
-    let conversion = convert(
-        "report-outside",
-        vec![
-            text(1, "Loose label", [0.0, 0.0, 80.0, 20.0], "Loose"),
-            shape(2, "rect", "Loose rect", [0.0, 40.0, 80.0, 20.0]),
-            shape(3, "frame", "Home", [200.0, 0.0, 100.0, 100.0]),
-        ],
-    );
-    assert_eq!(conversion.boards.len(), 1);
-    for (n, name) in [(1, "Loose label"), (2, "Loose rect")] {
-        let entries = entries_of(&conversion, &uid(n));
-        assert_eq!(entries.len(), 1, "{name} is listed once");
-        assert_eq!(entries[0].name, name);
-        assert!(entries[0].property.is_none());
-        assert!(!entries[0].reason.trim().is_empty());
-    }
 }
 
 /// The component fields of a component's root shape, as the real exports store

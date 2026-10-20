@@ -281,7 +281,7 @@ fn write_temp_text(name: &str, text: &str) -> std::path::PathBuf {
 }
 
 #[test]
-fn idag_converts_to_15_designs_and_a_report() {
+fn idag_converts_to_16_designs_and_a_report() {
     let Some(file) = fixture("tirebud-idag.penpot") else {
         return;
     };
@@ -292,11 +292,12 @@ fn idag_converts_to_15_designs_and_a_report() {
         "{}",
         String::from_utf8_lossy(&result.stderr)
     );
-    assert_eq!(read_designs(&out).len(), 15);
-    assert_eq!(files_with_extension(&out.join("designs"), "json").len(), 15);
+    // 15 boards and the Unplaced board with the 8 texts outside them (US-054).
+    assert_eq!(read_designs(&out).len(), 16);
+    assert_eq!(files_with_extension(&out.join("designs"), "json").len(), 16);
     let entries = read_report(&out);
-    // At least the 8 texts that sit outside the boards.
-    assert!(entries.len() >= 8, "{} entries", entries.len());
+    // At least the 55 shapes with constraints and the 7 with interactions.
+    assert!(entries.len() >= 62, "{} entries", entries.len());
     for entry in &entries {
         for key in ["board", "boardId", "shapeId", "name", "reason"] {
             assert!(entry.get(key).is_some(), "{entry} has no `{key}`");

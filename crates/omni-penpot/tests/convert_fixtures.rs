@@ -3,8 +3,8 @@
 //! from the exports' own JSON, outside the crate.
 //!
 //! - Every top-level frame is a board and gets a design; the top-level shapes
-//!   that are not frames (texts, in both files) cannot be boards, so each is
-//!   listed in the report.
+//!   that are not frames (texts, in both files) go into a board called
+//!   "Unplaced" on their page (US-054).
 //! - Every shape inside a board becomes exactly one node: boards and nested
 //!   frames, groups and rects as boards and frames, circles and paths as
 //!   vectors, texts as texts. Neither file holds a shape type that is not
@@ -107,6 +107,16 @@ fn node_count(design: &Node) -> usize {
     nodes(design).len() - 1
 }
 
+/// The converted boards that are boards of the file, without the Unplaced
+/// boards that hold the shapes outside them.
+fn file_boards(conversion: &Conversion) -> Vec<&omni_penpot::ConvertedBoard> {
+    conversion
+        .boards
+        .iter()
+        .filter(|board| board.name != "Unplaced")
+        .collect()
+}
+
 /// Checks the things that hold for the designs of any export: one design per
 /// board in the order the reader gives them, each a page that holds its board
 /// at the board's own place, each valid, and one node per shape.
@@ -116,8 +126,12 @@ fn assert_boards_follow_the_file(conversion: &Conversion, file: &PenpotFile) {
         .iter()
         .flat_map(|page| page.boards().map(move |board| (page.name.as_str(), board)))
         .collect();
-    assert_eq!(conversion.boards.len(), boards.len());
-    for (converted, (page, shape)) in conversion.boards.iter().zip(&boards) {
+    let converted_boards = file_boards(conversion);
+    assert_eq!(converted_boards.len(), boards.len());
+    for board in &conversion.boards {
+        assert_validates(&board.design, &board.name);
+    }
+    for (converted, (page, shape)) in converted_boards.into_iter().zip(&boards) {
         assert_eq!(converted.id, shape.id);
         assert_eq!(converted.name, shape.name);
         assert_eq!(converted.page, *page);
@@ -150,9 +164,12 @@ fn idag_has_a_design_for_each_of_its_15_boards() {
     let (Some(conversion), Some(file)) = (idag(), idag_file()) else {
         return;
     };
-    assert_eq!(conversion.boards.len(), 15);
-    assert_eq!(conversion.boards[0].name, "Idag / Dag / Desktop");
-    assert_eq!(conversion.boards[0].page, "Idag");
+    // And one Unplaced board for the texts outside them (US-054).
+    assert_eq!(conversion.boards.len(), 16);
+    let boards = file_boards(conversion);
+    assert_eq!(boards.len(), 15);
+    assert_eq!(boards[0].name, "Idag / Dag / Desktop");
+    assert_eq!(boards[0].page, "Idag");
     assert_boards_follow_the_file(conversion, file);
 }
 
@@ -160,13 +177,14 @@ fn idag_has_a_design_for_each_of_its_15_boards() {
 fn idag_boards_hold_the_node_types_of_their_shapes() {
     let Some(conversion) = idag() else { return };
     let counts = count(conversion);
-    assert_eq!(counts.boards, 15);
+    // The 15 boards of the file and the Unplaced board (US-054).
+    assert_eq!(counts.boards, 16);
     // 981 frames, 87 groups and 181 rects, less the 15 boards, are frames.
     assert_eq!(counts.frames, 1234);
     // 84 circles and 294 paths.
     assert_eq!(counts.vectors, 378);
-    // 798 texts, less the 8 that sit outside the boards.
-    assert_eq!(counts.texts, 790);
+    // All 798 texts, the 8 that sit outside the boards in the Unplaced board.
+    assert_eq!(counts.texts, 798);
     assert_eq!(counts.images, 0);
 }
 
@@ -179,7 +197,7 @@ fn idag_flex_layouts_come_through() {
 }
 
 #[test]
-fn idag_lists_the_texts_outside_boards_in_the_report() {
+fn idag_puts_the_texts_outside_boards_into_the_unplaced_board() {
     let (Some(conversion), Some(file)) = (idag(), idag_file()) else {
         return;
     };
@@ -189,17 +207,34 @@ fn idag_lists_the_texts_outside_boards_in_the_report() {
         .filter(|shape| shape.kind != omni_penpot::ShapeKind::Frame)
         .collect();
     assert_eq!(loose.len(), 8);
+    let unplaced: Vec<_> = conversion
+        .boards
+        .iter()
+        .filter(|board| board.name == "Unplaced")
+        .collect();
+    assert_eq!(unplaced.len(), 1);
+    let names: Vec<&str> = board_node(&unplaced[0].design)
+        .children()
+        .iter()
+        .map(Node::name)
+        .collect();
+    let expected: Vec<&str> = loose.iter().map(|shape| shape.name.as_str()).collect();
+    assert_eq!(names, expected, "the loose texts, in their stacking order");
     for shape in loose {
-        let entries: Vec<_> = conversion
-            .report
-            .entries
-            .iter()
-            .filter(|entry| entry.shape_id == shape.id)
-            .collect();
-        assert_eq!(entries.len(), 1, "{:?} is listed once", shape.name);
-        assert_eq!(entries[0].name, shape.name);
-        assert!(entries[0].property.is_none());
-        assert!(!entries[0].reason.trim().is_empty());
+        assert!(
+            unplaced[0].shapes.iter().any(|found| found.id == shape.id),
+            "{:?} is converted",
+            shape.name
+        );
+        assert!(
+            conversion
+                .report
+                .entries
+                .iter()
+                .all(|entry| entry.shape_id != shape.id || entry.property.is_some()),
+            "{:?} is not left out",
+            shape.name
+        );
     }
 }
 
@@ -243,7 +278,9 @@ fn ordrar_has_a_valid_design_for_each_of_its_795_boards() {
         return;
     };
     assert_eq!(file.pages.len(), 5);
-    assert_eq!(conversion.boards.len(), 795);
+    // And an Unplaced board on each of the two pages with loose texts (US-054).
+    assert_eq!(conversion.boards.len(), 797);
+    assert_eq!(file_boards(conversion).len(), 795);
     assert_boards_follow_the_file(conversion, file);
 }
 
@@ -251,11 +288,13 @@ fn ordrar_has_a_valid_design_for_each_of_its_795_boards() {
 fn ordrar_boards_hold_the_node_types_and_layouts_of_their_shapes() {
     let Some(conversion) = ordrar() else { return };
     let counts = count(conversion);
-    assert_eq!(counts.boards, 795);
+    // The 795 boards of the file and two Unplaced boards (US-054).
+    assert_eq!(counts.boards, 797);
     // Frames, groups and rects, less the boards.
     assert_eq!(counts.frames, 63_209);
     assert_eq!(counts.vectors, 19_624);
-    assert_eq!(counts.texts, 27_148);
+    // With the 232 texts outside the boards, in the Unplaced boards.
+    assert_eq!(counts.texts, 27_380);
     assert_eq!(counts.images, 0);
     assert_eq!(counts.flex, 37_933);
     assert_eq!(counts.grid, 40);
@@ -273,25 +312,19 @@ fn ordrar_lists_what_it_leaves_out_and_nothing_else() {
         .map(|shape| shape.id.as_str())
         .collect();
     assert!(!ids.contains(ROOT_ID));
-    let mut loose = 0;
     for entry in &conversion.report.entries {
         assert!(!entry.reason.trim().is_empty(), "{entry:?} has no reason");
         assert!(
             ids.contains(entry.shape_id.as_str()),
             "{entry:?} names a shape that is not in the file"
         );
-        if entry.board_id.is_empty() {
-            loose += 1;
-            assert!(entry.property.is_none());
-        } else {
-            assert!(
-                entry.property.is_some(),
-                "{entry:?} drops a whole shape of a board, which has only convertible types"
-            );
-        }
+        // The 232 texts that sit directly on the pages are converted into the
+        // Unplaced boards now (US-054), so no shape is left out whole.
+        assert!(
+            entry.property.is_some(),
+            "{entry:?} drops a whole shape, but the file has only convertible types"
+        );
     }
-    // The 232 texts that sit directly on the pages.
-    assert_eq!(loose, 232);
 }
 
 /// The root shapes of components in the export at `path`: the shapes stored
