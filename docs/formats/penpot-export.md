@@ -50,8 +50,9 @@ rejected with a message that names the manifest.
 
 The pages of a file are the entries named `files/<file>/pages/<page>.json`, where
 the id sits directly after `pages/` and the name ends in `.json`. The file holds
-at least `id`, `name` and `index`, and sometimes `flows` (prototype flows, not
-read). The archive does not list the pages in their design order, and the ids do
+at least `id`, `name` and `index`, and sometimes `flows`, an object of
+prototype flows, each `{id, name, startingFrame}` with the id of the board the
+flow starts at. The converter reads the flows only to list them in the report. The archive does not list the pages in their design order, and the ids do
 not follow it either: the large export holds its five pages in an order that
 matches neither, so the crate sorts them by `index`, ascending, with the id as a
 tie breaker.
@@ -149,11 +150,19 @@ export when one turns up.
   such as a width of 76.99999809265137.
 - `layoutItemHSizing` and `layoutItemVSizing` take `fix`, `auto` (hug) and
   `fill`. They apply to a board and to children that flow in a flex or grid
-  layout. `layoutItemAbsolute: true` takes a child out of the flow; it keeps a
+  layout. A child that fills an axis may shrink below its content in Penpot,
+  whereas CSS keeps it at its content's minimum size, so the converter writes
+  `minWidth` or `minHeight` 0 on every fill axis, unless the shape has a min of
+  its own. `layoutItemAbsolute: true` takes a child out of the flow; it keeps a
   position relative to its parent. `layoutItemMinW` is seen; the other three
   bounds (`layoutItemMaxW`, `layoutItemMinH`, `layoutItemMaxH`) are ASSUMED.
 - Text sizes by `growType`: `auto-width` hugs both ways, `auto-height` keeps the
-  width and hugs the height, `fixed` keeps the box.
+  width and hugs the height, `fixed` keeps the box. Penpot rounds the boxes of
+  its texts up to whole pixels and its layouts add those boxes up, so a text
+  that hugs an axis inside a flex or grid layout also gets the stored size of
+  that axis as `minWidth` or `minHeight`. Without it the rounding adds up
+  through a column or a row of texts to more than a pixel or two. A text outside
+  a layout follows its content, as the browser measures it.
 - `showContent: false` means the frame clips its children. Most frames say
   `true` or nothing, and those are left unclipped.
 
@@ -162,7 +171,10 @@ export when one turns up.
 A frame with `layout: "flex"` has `layoutFlexDir` (`row`, `column`),
 `layoutWrapType`, `layoutGap` (`rowGap`, `columnGap`), `layoutPadding` (`p1` top,
 `p2` right, `p3` bottom, `p4` left), `layoutAlignItems`, `layoutJustifyContent`
-and `layoutAlignContent`. In every flex frame the `shapes` list runs in the
+and `layoutAlignContent`. Penpot's `stretch` for `layoutAlignItems` does not
+stretch a child that hugs its content on the cross axis, whereas CSS does, so
+the converter writes `start`; a child that fills the cross axis stretches
+anyway. In every flex frame the `shapes` list runs in the
 reverse of the visual order, for rows and columns alike, so the converter
 reverses it. Children taken out of the flow are placed after the others.
 
@@ -171,8 +183,17 @@ of `{type, value}` where `type` is `flex` (a share of the space), `auto` or
 `fixed` (a length; ASSUMED, not seen), and `layoutGridCells`, an object of
 cells with `column`, `row`, `columnSpan`, `rowSpan` (counted from 1) and the ids
 of the `shapes` in them. Every grid seen aligns its items to the center
-(`layoutAlignItems`) and start (`layoutJustifyItems`), which OmniState cannot
-express, so each such grid is listed in the report.
+(`layoutAlignItems`) and start (`layoutJustifyItems`). The converter writes them
+on each child as `alignSelf` and `justifySelf`. A cell's own `alignSelf` and
+`justifySelf` (`auto` in every cell seen; other values are ASSUMED) win over the
+grid's.
+
+### Margins
+
+`layoutItemMargin` is an object `{m1, m2, m3, m4}` for the top, right, bottom
+and left margin, with `layoutItemMarginType` `simple` or `multiple`. A side
+that is left out is 0, and a margin may be negative. The converter writes the
+non-zero sides as the child's `margin`, for a child that flows in a layout.
 
 ### Looks
 
@@ -182,7 +203,12 @@ express, so each such grid is listed in the report.
   `keepAspectRatio`, are ASSUMED. No shape seen has more than one fill, so the
   order of several is unknown; the converter keeps the list order.
 - `strokes`: `strokeColor`, `strokeOpacity`, `strokeWidth`, `strokeStyle` (`solid`,
-  `dashed`) and `strokeAlignment` (`inner`, `outer`).
+  `dashed`) and `strokeAlignment` (`inner`, `outer`; `center` is ASSUMED). A
+  dashed stroke becomes a `dash` of the same length and gap, six stroke widths
+  each (seen at a width of 2, 12 px of dash and 12 px of gap; other widths are
+  ASSUMED to scale). `outer` and `center` become `align` `outside` and `center`
+  on a frame or board; `inner` is the default. A vector's stroke is centered on
+  its path whatever Penpot says.
 - `shadow`: a list of `{style, hidden, color: {color, opacity}, offsetX, offsetY,
   blur, spread}`. `drop-shadow` is seen, `inner-shadow` is ASSUMED. `blur` on a
   shape (`type`, `value`, `hidden`) is ASSUMED.
@@ -202,6 +228,17 @@ characters. A text whose runs differ in style is listed as mixed and takes the
 style of its first run. The decorations `underline` and `line-through` are
 ASSUMED. The shape's own `fills` are empty for text.
 
+`positionData` holds the lines of the text as the browser that last laid it out
+put them: a list with one item per run per line, each with its `y`. The gap
+between the `y` of the first two distinct lines is the line pitch the text was
+laid out at. The browser rounded it, to whole pixels in `tirebud-idag.penpot`
+(14 px at 1.45 gave 20, not 20.3) and to 1/64 px in `tirebud-ordrar.penpot`
+(20.296875). The converter writes `lineHeight` as `(pitch + 1/128) / fontSize`,
+unrounded, so that layout, which snaps a line to 1/64 px, gets the pitch back
+exactly. A text of one line that hugs its content has no second line, and
+its stored box height is the pitch. A text with no `positionData`, or a fixed
+box of one line, keeps the multiple that Penpot stores.
+
 ### Paths and circles
 
 A `path`'s `content` is an SVG path string in absolute page coordinates, and
@@ -218,10 +255,31 @@ named after the media id.
 ### Left out, and reported
 
 Shapes of type `bool` and any unknown type (with the shapes inside them),
-shapes that sit directly on the page outside every board, masked groups
-(`maskedGroup`), blur, radial gradients, dashed strokes, stroke alignments other
-than `inner`, item margins (`layoutItemMargin`), rotation, flips, grid item
-alignment, mixed text styles, and text strokes and shadows.
+masked groups (`maskedGroup`), blur, radial gradients, strokes that are neither
+solid nor dashed, rotation, flips, mixed text styles, and text strokes and
+shadows.
+
+Prototypes and constraints are left out of v1 on purpose, but the shape around
+them is converted, so each is listed with a property:
+
+- `interactions` is a list on a shape (many shapes in the exports have an
+  empty one). A shape with a non-empty list is listed once as having prototype
+  links.
+- `flows` of a page are listed once each, for the board they start at, with the
+  name of the flow.
+- `constraintsH` and `constraintsV` are `left` and `top` unless the designer
+  changed them (`leftright`, `right`, `center`, `topbottom`, `bottom`, `scale`).
+  A shape with any other value is listed once as having constraints.
+
+### Shapes outside boards
+
+Shapes that sit directly on a page without being a frame (texts, in both
+exports, but also rects, groups and others) are converted into a board called
+"Unplaced" on the same page, in their stacking order. The board sits at the top
+left corner of their boxes and is as large as the boxes together, and each shape
+keeps its place on the page. A page without such shapes has no Unplaced board.
+The board has no Penpot id; it takes the id of its page. Penpot has no image of
+it, so it gets the layout comparison only.
 
 Component links are left out too. In `tirebud-ordrar.penpot` 10,005 shapes have
 `componentRoot` true, all of them frames inside boards (375 are boards

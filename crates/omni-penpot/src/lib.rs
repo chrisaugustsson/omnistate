@@ -117,6 +117,10 @@ struct RawPage {
     #[serde(default)]
     name: String,
     index: Option<u32>,
+    /// The prototype flows, read as they come: an object or a list of
+    /// `{id, name, startingFrame}`.
+    #[serde(default)]
+    flows: serde_json::Value,
 }
 
 /// The part of a shape's JSON the reader uses. Every other field is skipped.
@@ -173,6 +177,8 @@ struct PageHead {
     id: String,
     name: String,
     index: u32,
+    /// The page's prototype flows, as its file gives them.
+    flows: serde_json::Value,
 }
 
 /// Reads the `.penpot` export at `path`.
@@ -271,6 +277,7 @@ impl<R: Read + Seek> Reader<'_, R> {
                 id: raw.id.unwrap_or(page_id),
                 name: raw.name,
                 index: raw.index.unwrap_or(u32::MAX),
+                flows: raw.flows,
                 dir,
             });
         }

@@ -21,7 +21,9 @@ the export's name without `.penpot` (`fixtures/penpot/tirebud-idag/` for
 written ` _ `, and numbers boards of the same name `-2`, `-3` and so on, the
 last one in the stacking order keeping the bare name. A PNG that no board has,
 such as one of a text on the page, is ignored. Twins are counted among boards
-only, not among the loose shapes on the page.
+only, not among the loose shapes on the page. Those shapes are converted into a
+board called "Unplaced" (docs/formats/penpot-export.md), which Penpot has no PNG
+of, so it gets the layout comparison only.
 
 The board is drawn at 2x with its top left corner at the image's corner, on a
 canvas of the size of Penpot's PNG (which can be a pixel more than twice the

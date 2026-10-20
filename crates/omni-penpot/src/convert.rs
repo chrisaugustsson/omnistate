@@ -141,6 +141,10 @@ struct Pen {
     layout_item_min_h: L<f64>,
     layout_item_max_h: L<f64>,
     layout_item_margin: L<Value>,
+    interactions: L<Vec<Value>>,
+    constraints_h: L<String>,
+    constraints_v: L<String>,
+    position_data: L<Vec<Value>>,
     grow_type: L<String>,
     content: L<Value>,
     metadata: L<Value>,
@@ -180,6 +184,10 @@ struct Cell {
     row: i64,
     column_span: i64,
     row_span: i64,
+    /// The cell's own alignment of its items, down and across, when it is not
+    /// `auto`.
+    align_self: Option<String>,
+    justify_self: Option<String>,
 }
 
 /// What a shape needs to know about the frame it is in.
@@ -191,6 +199,10 @@ struct Parent {
     /// Whether the parent is the page itself, which the boards sit on.
     page: bool,
     cells: Vec<Cell>,
+    /// How a grid aligns its items down and across (`layoutAlignItems`,
+    /// `layoutJustifyItems`).
+    align_items: Option<String>,
+    justify_items: Option<String>,
 }
 
 /// The top-level board that holds a shape, which the report names.
@@ -312,8 +324,8 @@ const REPEATED: &str =
     "the shape is listed a second time, a loop in the file; it is not converted again";
 const MISSING: &str = "the shape is listed but the export has no file for it";
 const UNREADABLE: &str = "the shape's file could not be read";
-const LOOSE: &str =
-    "the shape sits directly on the page, outside any board; only top-level frames are converted";
+/// The name of the board that holds the shapes outside every board of a page.
+const UNPLACED: &str = "Unplaced";
 
 impl<R: Read + Seek> Converter<'_, R> {
     fn new_id(&mut self) -> String {
@@ -375,7 +387,11 @@ impl<R: Read + Seek> Converter<'_, R> {
             y: 0.0,
             page: true,
             cells: Vec::new(),
+            align_items: None,
+            justify_items: None,
         };
+        let first = boards.len();
+        let mut loose = Vec::new();
         for id in self.reader.top_level_ids(&head.dir)? {
             let pen = match self.load(&head.dir, &id, &mut seen)? {
                 Loaded::Shape(pen) => pen,
@@ -387,7 +403,7 @@ impl<R: Read + Seek> Converter<'_, R> {
             let shape_id = pen.id.0.clone().unwrap_or(id);
             let name = pen.name.0.clone().unwrap_or_default();
             if pen.kind.0.as_deref() != Some("frame") {
-                self.skip(&none, &shape_id, &name, LOOSE);
+                loose.push((shape_id, pen));
                 continue;
             }
             let board = Board {
@@ -399,17 +415,7 @@ impl<R: Read + Seek> Converter<'_, R> {
             else {
                 continue;
             };
-            let design = json!({
-                "id": self.new_id(),
-                "type": "page",
-                "name": head.name,
-                "children": [node],
-            });
-            let design = serde_json::from_value::<Node>(design).map_err(|error| {
-                ReadError(format!(
-                    "the design of the board {name:?} does not pass validation: {error}"
-                ))
-            })?;
+            let design = self.page_design(head, node, &name)?;
             boards.push(ConvertedBoard {
                 page: head.name.clone(),
                 id: shape_id,
@@ -420,7 +426,130 @@ impl<R: Read + Seek> Converter<'_, R> {
                 left_out: std::mem::take(&mut self.left_out),
             });
         }
+        if let Some(unplaced) = self.unplaced(head, loose, &mut seen)? {
+            boards.push(unplaced);
+        }
+        self.flows(head, &boards[first..]);
         Ok(())
+    }
+
+    /// The design of a page that holds the board `node` alone.
+    fn page_design(&mut self, head: &PageHead, node: Value, name: &str) -> Result<Node, ReadError> {
+        let design = json!({
+            "id": self.new_id(),
+            "type": "page",
+            "name": head.name,
+            "children": [node],
+        });
+        serde_json::from_value::<Node>(design).map_err(|error| {
+            ReadError(format!(
+                "the design of the board {name:?} does not pass validation: {error}"
+            ))
+        })
+    }
+
+    /// The board "Unplaced" that holds the shapes of a page that sit outside
+    /// every board, each at the place Penpot gives it. The board is as large as
+    /// their boxes together and sits at their top left corner. None if the page
+    /// has no such shape that converts.
+    fn unplaced(
+        &mut self,
+        head: &PageHead,
+        loose: Vec<(String, Box<Pen>)>,
+        seen: &mut HashSet<String>,
+    ) -> Result<Option<ConvertedBoard>, ReadError> {
+        if loose.is_empty() {
+            return Ok(None);
+        }
+        let boxes: Vec<Rect> = loose.iter().filter_map(|(_, pen)| bounds(pen)).collect();
+        let edge = |pick: fn(f64, f64) -> f64, side: fn(&Rect) -> f64| {
+            boxes.iter().map(side).reduce(pick).unwrap_or(0.0)
+        };
+        let (left, top) = (edge(f64::min, |r| r.x), edge(f64::min, |r| r.y));
+        let (right, bottom) = (
+            edge(f64::max, |r| r.x + r.width),
+            edge(f64::max, |r| r.y + r.height),
+        );
+        let area = Rect {
+            x: left,
+            y: top,
+            width: right - left,
+            height: bottom - top,
+        };
+        let board = Board {
+            id: head.id.clone(),
+            name: UNPLACED.to_string(),
+        };
+        let parent = Parent {
+            flow: Flow::None,
+            x: left,
+            y: top,
+            page: false,
+            cells: Vec::new(),
+            align_items: None,
+            justify_items: None,
+        };
+        let mut children = Vec::new();
+        for (id, pen) in loose {
+            if let Some(value) = self.convert(&head.dir, &id, *pen, &parent, &board, seen)? {
+                children.push(value);
+            }
+        }
+        let shapes = std::mem::take(&mut self.shapes);
+        let left_out = std::mem::take(&mut self.left_out);
+        if children.is_empty() {
+            return Ok(None);
+        }
+        let node = json!({
+            "id": self.new_id(),
+            "type": "board",
+            "name": UNPLACED,
+            "x": area.x,
+            "y": area.y,
+            "width": { "fixed": n(area.width.max(0.0)) },
+            "height": { "fixed": n(area.height.max(0.0)) },
+            "layout": { "mode": "none" },
+            "children": children,
+        });
+        Ok(Some(ConvertedBoard {
+            page: head.name.clone(),
+            id: board.id,
+            name: board.name,
+            bounds: Some(area),
+            design: self.page_design(head, node, UNPLACED)?,
+            shapes,
+            left_out,
+        }))
+    }
+
+    /// Lists the prototype flows of a page, each for its starting board.
+    fn flows(&mut self, head: &PageHead, boards: &[ConvertedBoard]) {
+        let flows: Vec<&Value> = match &head.flows {
+            Value::Object(found) => found.values().collect(),
+            Value::Array(found) => found.iter().collect(),
+            _ => Vec::new(),
+        };
+        for flow in flows {
+            let Some(start) = flow.get("startingFrame").and_then(Value::as_str) else {
+                continue;
+            };
+            let name = flow.get("name").and_then(Value::as_str).unwrap_or_default();
+            let board = boards
+                .iter()
+                .find(|board| board.id == start)
+                .map(|board| board.name.clone())
+                .unwrap_or_default();
+            self.entries.push(ReportEntry {
+                board: board.clone(),
+                board_id: start.to_string(),
+                shape_id: start.to_string(),
+                name: board,
+                property: Some("flows".to_string()),
+                reason: format!(
+                    "the prototype flow \"{name}\" starts at this board; flows are not converted"
+                ),
+            });
+        }
     }
 
     /// Converts one shape and, below it, the shapes inside it. Returns None
@@ -520,8 +649,8 @@ impl<R: Read + Seek> Converter<'_, R> {
         Ok(Some(value))
     }
 
-    /// Reports what no node can show: rotation, flips, blur, masks, margins,
-    /// component links.
+    /// Reports what no node can show: rotation, flips, blur, masks, component
+    /// links, prototype interactions and constraints.
     fn checks(&mut self, who: &Who, pen: &Pen, kind: &str) {
         if let Some(rotation) = pen.rotation.0.filter(|rotation| rotation.abs() > 0.01) {
             self.report(
@@ -570,17 +699,27 @@ impl<R: Read + Seek> Converter<'_, R> {
                 "masks are not supported; the masked group is drawn without its mask",
             );
         }
-        if let Some(margin) = &pen.layout_item_margin.0 {
-            let any = ["m1", "m2", "m3", "m4"]
-                .iter()
-                .any(|key| margin.get(key).and_then(Value::as_f64).unwrap_or(0.0) != 0.0);
-            if any {
-                self.report(
-                    who,
-                    Some("layoutItemMargin"),
-                    "margins of items in a layout are not supported",
-                );
-            }
+        if let Some(count) = pen
+            .interactions
+            .0
+            .as_ref()
+            .map(Vec::len)
+            .filter(|count| *count > 0)
+        {
+            self.report(
+                who,
+                Some("interactions"),
+                format!("the shape has {count} prototype interaction(s), links to other boards; prototype links are not converted"),
+            );
+        }
+        let horizontal = pen.constraints_h.0.as_deref().unwrap_or("left");
+        let vertical = pen.constraints_v.0.as_deref().unwrap_or("top");
+        if horizontal != "left" || vertical != "top" {
+            self.report(
+                who,
+                Some("constraints"),
+                format!("the constraints of the shape (horizontal {horizontal}, vertical {vertical}) are not converted; the shape keeps its place and size"),
+            );
         }
     }
 
@@ -624,7 +763,12 @@ impl<R: Read + Seek> Converter<'_, R> {
         }
         if absolute {
             node.insert("absolute".into(), json!(true));
-        } else if parent.flow == Flow::Grid {
+        } else if parent.flow != Flow::None {
+            if let Some(margin) = margin(pen) {
+                node.insert("margin".into(), margin);
+            }
+        }
+        if !absolute && parent.flow == Flow::Grid {
             let cell = parent
                 .cells
                 .iter()
@@ -638,6 +782,15 @@ impl<R: Read + Seek> Converter<'_, R> {
                     "gridRow".into(),
                     json!({ "start": cell.row, "span": cell.row_span }),
                 );
+            }
+            // A cell that aligns its own item wins over the grid.
+            let own = |key: fn(&Cell) -> &Option<String>| cell.and_then(|cell| key(cell).clone());
+            let down = own(|cell| &cell.align_self).or_else(|| parent.align_items.clone());
+            let across = own(|cell| &cell.justify_self).or_else(|| parent.justify_items.clone());
+            for (key, value) in [("alignSelf", down), ("justifySelf", across)] {
+                if let Some(value @ ("start" | "center" | "end" | "stretch")) = value.as_deref() {
+                    node.insert(key.into(), json!(value));
+                }
             }
         }
         node
@@ -684,6 +837,13 @@ impl<R: Read + Seek> Converter<'_, R> {
                 node.insert(key.into(), num(value));
             }
         }
+        // A child that fills an axis may shrink below its content, as in
+        // Penpot, unless Penpot gives it a min of its own.
+        for (axis, min) in [("width", "minWidth"), ("height", "minHeight")] {
+            if node.get(axis) == Some(&json!("fill")) && !node.contains_key(min) {
+                node.insert(min.into(), json!(0));
+            }
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -718,6 +878,8 @@ impl<R: Read + Seek> Converter<'_, R> {
             y: common.bounds.y,
             page: false,
             cells,
+            align_items: pen.layout_align_items.0.clone(),
+            justify_items: pen.layout_justify_items.0.clone(),
         };
         let mut children = Vec::new();
         for child in pen.shapes.0.as_deref().unwrap_or_default() {
@@ -790,10 +952,16 @@ impl<R: Read + Seek> Converter<'_, R> {
         };
         layout.insert("wrap".into(), json!(wrap));
         spacing(&mut layout, pen);
-        if let Some(align @ ("start" | "center" | "end" | "stretch" | "baseline")) =
-            pen.layout_align_items.0.as_deref()
-        {
-            layout.insert("alignItems".into(), json!(align));
+        // Penpot's stretch does not stretch a child that hugs its content, so
+        // it is start; a child that fills the cross axis stretches anyway.
+        match pen.layout_align_items.0.as_deref() {
+            Some("stretch") => {
+                layout.insert("alignItems".into(), json!("start"));
+            }
+            Some(align @ ("start" | "center" | "end" | "baseline")) => {
+                layout.insert("alignItems".into(), json!(align));
+            }
+            _ => {}
         }
         if let Some(
             justify @ ("start" | "center" | "end" | "space-between" | "space-around"
@@ -839,18 +1007,6 @@ impl<R: Read + Seek> Converter<'_, R> {
             }
         }
         spacing(&mut layout, pen);
-        let moved = |value: &Option<String>| matches!(value.as_deref(), Some("center" | "end"));
-        if moved(&pen.layout_align_items.0) || moved(&pen.layout_justify_items.0) {
-            self.report(
-                who,
-                Some("layoutAlignItems"),
-                format!(
-                    "aligning the items of a grid (align {}, justify {}) is not supported; items keep the default alignment",
-                    pen.layout_align_items.0.as_deref().unwrap_or("default"),
-                    pen.layout_justify_items.0.as_deref().unwrap_or("default"),
-                ),
-            );
-        }
         Value::Object(layout)
     }
 
@@ -1013,6 +1169,20 @@ impl<R: Read + Seek> Converter<'_, R> {
             _ => [None, None],
         };
         Self::size(&mut node, common, pen, parent, base);
+        if parent.flow != Flow::None && common.boxed && Self::sized_by_item(parent, pen) {
+            // Penpot's layout adds up the boxes it stored for its texts, which
+            // it rounded up to whole pixels; a text that hugs its content in a
+            // layout keeps at least that box, so that its siblings land where
+            // they did in Penpot. A text outside a layout follows its content.
+            for (axis, min, length) in [
+                ("width", "minWidth", common.bounds.width),
+                ("height", "minHeight", common.bounds.height),
+            ] {
+                if node.get(axis) == Some(&json!("hug")) && !node.contains_key(min) {
+                    node.insert(min.into(), num(length));
+                }
+            }
+        }
 
         let Some((first, first_paragraph)) = runs.first().copied() else {
             self.report(who, Some("content"), "the text has no characters or style");
@@ -1118,7 +1288,10 @@ impl<R: Read + Seek> Converter<'_, R> {
         {
             node.insert("fontStyle".into(), json!(style));
         }
-        if let Some(height) = get("lineHeight")
+        if let Some(pitch) = line_pitch(pen, common.bounds, grow).filter(|_| size > 0.0) {
+            // Exactly, so that layout snaps the line to the pitch.
+            node.insert("lineHeight".into(), json!((pitch + 1.0 / 128.0) / size));
+        } else if let Some(height) = get("lineHeight")
             .as_ref()
             .and_then(as_number)
             .filter(|height| *height >= 0.0)
@@ -1344,7 +1517,7 @@ impl<R: Read + Seek> Converter<'_, R> {
                 .get("strokeStyle")
                 .and_then(Value::as_str)
                 .unwrap_or("solid");
-            if style != "solid" {
+            if !matches!(style, "solid" | "dashed") {
                 self.report(
                     who,
                     Some("strokeStyle"),
@@ -1357,14 +1530,21 @@ impl<R: Read + Seek> Converter<'_, R> {
                 .get("strokeAlignment")
                 .and_then(Value::as_str)
                 .unwrap_or("inner");
-            // A stroke of a vector is centered on its path whatever Penpot says.
-            if look != Look::Vector && align != "inner" {
-                self.report(
-                    who,
-                    Some("strokeAlignment"),
-                    format!("the stroke alignment `{align}` is not supported; the stroke is drawn inside the shape"),
-                );
-            }
+            // A stroke of a vector is centered on its path whatever Penpot says,
+            // and a stroke of an image lies inside its edge.
+            let align = match (look, align) {
+                (Look::Frame, "outer") => Some("outside"),
+                (Look::Frame, "center") => Some("center"),
+                (Look::Image, "outer" | "center") => {
+                    self.report(
+                        who,
+                        Some("strokeAlignment"),
+                        format!("the stroke alignment `{align}` is not supported on images; the stroke is drawn inside the image"),
+                    );
+                    None
+                }
+                _ => None,
+            };
             if stroke.get("strokeColorGradient").is_some() || stroke.get("strokeImage").is_some() {
                 self.report(
                     who,
@@ -1382,7 +1562,19 @@ impl<R: Read + Seek> Converter<'_, R> {
                 .and_then(Value::as_str)
                 .and_then(|text| color(text, opacity))
             {
-                Some(color) => strokes.push(json!({ "color": color, "width": num(width) })),
+                Some(color) => {
+                    let mut line = json!({ "color": color, "width": num(width) });
+                    if let Some(align) = align {
+                        line["align"] = json!(align);
+                    }
+                    if style == "dashed" {
+                        // Penpot draws dashes and gaps six stroke widths long
+                        // (observed at width 2).
+                        line["dash"] =
+                            json!({ "length": num(width * 6.0), "gap": num(width * 6.0) });
+                    }
+                    strokes.push(line);
+                }
                 None => self.report(
                     who,
                     Some("strokes"),
@@ -1482,11 +1674,40 @@ fn grid_cells(pen: &Pen) -> Vec<Cell> {
                 row: int("row", 1).max(1),
                 column_span: int("columnSpan", 1).max(1),
                 row_span: int("rowSpan", 1).max(1),
+                align_self: own_alignment(cell, "alignSelf"),
+                justify_self: own_alignment(cell, "justifySelf"),
             }
         })
         .collect();
     found.sort_by_key(|cell| (cell.row, cell.column));
     found
+}
+
+/// How a grid cell aligns its own item, or None for `auto` or nothing.
+fn own_alignment(cell: &Value, key: &str) -> Option<String> {
+    cell.get(key)
+        .and_then(Value::as_str)
+        .filter(|value| *value != "auto")
+        .map(str::to_string)
+}
+
+/// The margin of a shape in a layout (`layoutItemMargin`: `m1` top, `m2` right,
+/// `m3` bottom, `m4` left), or None if all four sides are 0.
+fn margin(pen: &Pen) -> Option<Value> {
+    let margin = pen.layout_item_margin.0.as_ref()?;
+    let mut sides = Map::new();
+    for (key, side) in [
+        ("m1", "top"),
+        ("m2", "right"),
+        ("m3", "bottom"),
+        ("m4", "left"),
+    ] {
+        let value = margin.get(key).and_then(Value::as_f64).unwrap_or(0.0);
+        if n(value) != 0.0 {
+            sides.insert(side.into(), num(value));
+        }
+    }
+    (!sides.is_empty()).then_some(Value::Object(sides))
 }
 
 /// Sets the gap and padding of a flex or grid layout, as far as they are not 0.
@@ -1543,6 +1764,25 @@ fn opacity(pen: &Pen) -> Option<Value> {
 fn insert_list(node: &mut Map<String, Value>, key: &str, list: Vec<Value>) {
     if !list.is_empty() {
         node.insert(key.into(), Value::Array(list));
+    }
+}
+
+/// The distance between the lines of a text as Penpot's browser laid it out:
+/// the gap between the y of the first two lines of `positionData`, or for a
+/// text of one line whose box hugs it the height of the box. None when the file
+/// has no lines to go by.
+fn line_pitch(pen: &Pen, bounds: Rect, grow: &str) -> Option<f64> {
+    let mut lines: Vec<f64> = Vec::new();
+    for item in pen.position_data.0.as_deref().unwrap_or_default() {
+        let y = item.get("y").and_then(Value::as_f64)?;
+        if !lines.contains(&y) {
+            lines.push(y);
+        }
+    }
+    match lines.as_slice() {
+        [first, second, ..] => Some(second - first).filter(|pitch| *pitch > 0.0),
+        [_] if grow != "fixed" => Some(bounds.height).filter(|pitch| *pitch > 0.0),
+        _ => None,
     }
 }
 
