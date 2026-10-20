@@ -30,6 +30,7 @@ use crate::workspace::{AgentRequest, WorkspaceRequest, parse_uuid};
 use axum::Json;
 use axum::body::Bytes;
 use axum::extract::{Path, State};
+use omni_core::design::NodeId;
 use omni_core::ops::EditDoc;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -39,8 +40,8 @@ use utoipa::ToSchema;
 
 /// The columns of a conflict; `resolved_at` is ISO 8601 text in UTC.
 const CONFLICT_COLUMNS: &str = "id::text, changeset_id::text, doc_id::text, node, \
-     mainline_version_id::text, changeset_version_id::text, mainline_html, changeset_html, \
-     note, to_char(resolved_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"') \
+     kind, mainline_version_id::text, changeset_version_id::text, mainline_html, \
+     changeset_html, note, to_char(resolved_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"') \
      AS resolved_at";
 
 /// One side of a conflict: the version that its state of the node comes from
@@ -60,14 +61,54 @@ pub struct ConflictResolution {
     pub resolved_at: String,
 }
 
-/// A node that both the mainline and the change set changed, as a rebase
-/// recorded it.
+/// What kind of conflict a rebase recorded.
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ConflictKind {
+    /// Both the mainline and the change set changed the node. The draft keeps
+    /// the mainline state.
+    BothChanged,
+    /// The change set added the node and the rebase found no place for it in
+    /// the mainline doc (its parent is gone and no ancestor can hold it, or
+    /// the doc was removed). The draft does not have the node; the change
+    /// set's side holds it and the mainline side is empty.
+    Unplaced,
+}
+
+impl ConflictKind {
+    fn of(unplaced: bool) -> Self {
+        if unplaced {
+            Self::Unplaced
+        } else {
+            Self::BothChanged
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::BothChanged => "both_changed",
+            Self::Unplaced => "unplaced",
+        }
+    }
+
+    fn parse(text: &str) -> Self {
+        match text {
+            "unplaced" => Self::Unplaced,
+            _ => Self::BothChanged,
+        }
+    }
+}
+
+/// A node that a rebase could not merge, as it recorded it: one that both the
+/// mainline and the change set changed, or one the change set added that has
+/// no place on the mainline.
 #[derive(Serialize, ToSchema)]
 pub struct RecordedConflict {
     pub id: String,
     pub changeset_id: String,
     pub doc_id: String,
     pub node: String,
+    pub kind: ConflictKind,
     /// The node in the mainline version that the rebase found.
     pub mainline: ConflictSide,
     /// The node in the change set's latest version of the doc.
@@ -105,6 +146,7 @@ struct ConflictRow {
     changeset_id: String,
     doc_id: String,
     node: String,
+    kind: String,
     mainline_version_id: String,
     changeset_version_id: String,
     mainline_html: Option<String>,
@@ -124,6 +166,7 @@ impl From<ConflictRow> for RecordedConflict {
             changeset_id: row.changeset_id,
             doc_id: row.doc_id,
             node: row.node,
+            kind: ConflictKind::parse(&row.kind),
             mainline: ConflictSide {
                 version_id: row.mainline_version_id,
                 html: row.mainline_html,
@@ -208,13 +251,34 @@ async fn rebase_doc(
     // A removed doc is a doc-level change: when one side removed the doc and
     // the other changed anything in it, that is a conflict and the mainline
     // state stays; otherwise the removal stands.
+    let kinds = |nodes: Vec<NodeId>, unplaced: &[NodeId]| -> Vec<(NodeId, ConflictKind)> {
+        nodes
+            .into_iter()
+            .map(|node| {
+                let unplaced = unplaced.contains(&node);
+                (node, ConflictKind::of(unplaced))
+            })
+            .collect()
+    };
     let (doc, conflict_nodes) = match (mainline_chunk.is_none(), changed.chunk.is_none()) {
         (false, false) => {
             let rebased = EditDoc::rebase(&base, &mainline, &mine);
-            (Some(rebased.doc), rebased.conflicts)
+            let nodes = kinds(rebased.conflicts, &rebased.unplaced);
+            (Some(rebased.doc), nodes)
         }
         (true, true) => (None, Vec::new()),
-        (true, false) => (None, EditDoc::changed_from(&base, &mine)),
+        (true, false) => {
+            // The mainline removed the doc, so what the change set added has
+            // no place in it.
+            let in_base: Vec<NodeId> = base.index().iter().map(|n| n.id).collect();
+            let changed = EditDoc::changed_from(&base, &mine);
+            let added: Vec<NodeId> = changed
+                .iter()
+                .filter(|node| !in_base.contains(node))
+                .copied()
+                .collect();
+            (None, kinds(changed, &added))
+        }
         (false, true) => {
             let theirs = EditDoc::changed_from(&base, &mainline);
             let doc = if theirs.is_empty() {
@@ -222,7 +286,7 @@ async fn rebase_doc(
             } else {
                 Some(mainline.clone())
             };
-            (doc, theirs)
+            (doc, kinds(theirs, &[]))
         }
     };
 
@@ -256,19 +320,20 @@ async fn rebase_doc(
     .await?;
 
     let mut conflicts = Vec::with_capacity(conflict_nodes.len());
-    for node in conflict_nodes {
+    for (node, kind) in conflict_nodes {
         let mainline_html = mainline.node_html(node);
         let changeset_html = mine.node_html(node);
         let id: String = sqlx::query_scalar(
             "INSERT INTO conflicts (workspace_id, changeset_id, doc_id, node, \
-             mainline_version_id, changeset_version_id, mainline_html, changeset_html) \
-             VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5::uuid, $6::uuid, $7, $8) \
+             kind, mainline_version_id, changeset_version_id, mainline_html, changeset_html) \
+             VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5, $6::uuid, $7::uuid, $8, $9) \
              RETURNING id::text",
         )
         .bind(workspace_id)
         .bind(&draft.changeset_id)
         .bind(&draft.doc_id)
         .bind(node.to_string())
+        .bind(kind.as_str())
         .bind(mainline_version)
         .bind(&changed.version_id)
         .bind(&mainline_html)
@@ -286,6 +351,7 @@ async fn rebase_doc(
                 "changeset_id": draft.changeset_id,
                 "doc_id": draft.doc_id,
                 "node": node.to_string(),
+                "kind": kind.as_str(),
             }),
         )
         .await?;
@@ -294,6 +360,7 @@ async fn rebase_doc(
             changeset_id: draft.changeset_id.clone(),
             doc_id: draft.doc_id.clone(),
             node: node.to_string(),
+            kind,
             mainline: ConflictSide {
                 version_id: mainline_version.to_string(),
                 html: mainline_html,

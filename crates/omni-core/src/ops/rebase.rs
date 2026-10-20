@@ -22,6 +22,9 @@ pub struct Rebased {
     /// mainline has them: those of the base in its document order, then the
     /// nodes the change set added that found no place.
     pub conflicts: Vec<NodeId>,
+    /// The nodes the change set added that found no place: the tail of
+    /// `conflicts`, which the mainline never had a state of.
+    pub unplaced: Vec<NodeId>,
 }
 
 /// The nodes of a doc in document order with what a comparison reads of each.
@@ -215,10 +218,11 @@ impl EditDoc {
             .filter(|id| conflicts.contains(id))
             .copied()
             .collect();
-        listed.extend(unplaced);
+        listed.extend(unplaced.iter().copied());
         Rebased {
             doc,
             conflicts: listed,
+            unplaced,
         }
     }
 

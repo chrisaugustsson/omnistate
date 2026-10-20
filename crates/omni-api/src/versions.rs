@@ -439,21 +439,20 @@ pub async fn save_version(
     sent?;
 
     // The snapshot is taken under the draft's lock, so it holds whole batches
-    // only: the ones that are committed.
+    // only: the ones that are committed. The lock is held until the version is
+    // stored, so that a rebase cannot run in between and leave a version of
+    // the draft from before it in a change set that it has rebased.
     let slot = state.drafts.slot(&request.workspace_id, &draft.id);
-    let (draft, snapshot) = {
-        let mut held = slot.lock().await;
-        // A rebase that held the lock meanwhile has rewritten the draft's row.
-        let mut tx = state.workspace_tx(&request.workspace_id).await?;
-        let draft = current_draft(&mut tx, &draft.id).await?;
-        tx.commit().await.map_err(ApiError::database)?;
-        ensure_loaded(&state, &request.workspace_id, &draft, &mut held).await?;
-        let doc = &held.as_ref().expect("the draft is loaded").doc;
-        let snapshot = Snapshot {
-            html: doc.to_html(),
-            nodes: doc.index(),
-        };
-        (draft, snapshot)
+    let mut held = slot.lock().await;
+    // A rebase that held the lock meanwhile has rewritten the draft's row.
+    let mut tx = state.workspace_tx(&request.workspace_id).await?;
+    let draft = current_draft(&mut tx, &draft.id).await?;
+    tx.commit().await.map_err(ApiError::database)?;
+    ensure_loaded(&state, &request.workspace_id, &draft, &mut held).await?;
+    let doc = &held.as_ref().expect("the draft is loaded").doc;
+    let snapshot = Snapshot {
+        html: doc.to_html(),
+        nodes: doc.index(),
     };
     let version = store_version(
         &state,
@@ -506,6 +505,11 @@ pub async fn remove_doc(
     let draft = find_draft(&mut tx, &project_id, &changeset_id, &doc_id).await?;
     tx.commit().await.map_err(ApiError::database)?;
     sent?;
+    // Under the draft's lock, as a save is, so that a rebase either comes
+    // first (the removal then follows its version) or finds the change set
+    // moved out of `needs_rebase` by the removal.
+    let slot = state.drafts.slot(&request.workspace_id, &draft.id);
+    let _held = slot.lock().await;
     let version = store_version(
         &state,
         &request.workspace_id,

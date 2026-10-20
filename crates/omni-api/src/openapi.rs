@@ -17,7 +17,7 @@ use crate::docs::{
     InvalidOperationBody, MainlineHtmlResponse, OpResultBody,
 };
 use crate::rebase::{
-    ConflictResolution, ConflictSide, RebaseResponse, RecordedConflict,
+    ConflictKind, ConflictResolution, ConflictSide, RebaseResponse, RecordedConflict,
     RecordedConflictListResponse, RecordedConflictResponse, ResolveConflictRequest,
 };
 use crate::routes::{Access, registry};
@@ -130,6 +130,7 @@ use utoipa::OpenApi;
         DiffBody,
         DiffResponse,
         SaveVersionRequest,
+        ConflictKind,
         ConflictSide,
         ConflictResolution,
         RecordedConflict,
