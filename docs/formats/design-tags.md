@@ -205,7 +205,9 @@ override of a node that is not in the component, and a `content` override of a
 node that is not text. A draft resolves instances against its change set's
 draft of the design system, and outside a change set against the mainline
 design system; a saved design version records the design system version it
-used, and every view of that version uses it.
+used, and every view of that version uses it. A change set that has emptied
+its draft of a non-empty design system cannot save a design: the save is
+refused with a 409 `design_system_emptied`.
 
 ### Addresses
 

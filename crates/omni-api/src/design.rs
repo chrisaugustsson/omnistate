@@ -686,9 +686,10 @@ pub(crate) async fn view_of_version(
 /// Saves the change set's draft of the design system first when it has
 /// changes that no version holds, and returns the design system version that
 /// a design version of the change set records: the version that holds the
-/// draft as it is, or, without a draft or with an empty one, the mainline
-/// version (`None` when the project has no design system or it has no
-/// mainline version yet).
+/// draft as it is, or, without a draft, the mainline version (`None` when the
+/// project has no design system or it has no mainline version yet). A draft
+/// that is empty while the mainline version is not is refused with a 409
+/// `design_system_emptied`.
 pub(crate) async fn settle_design_system(
     state: &AppState,
     workspace_id: &str,
@@ -751,10 +752,16 @@ pub(crate) async fn settle_design_system(
     tx.commit().await.map_err(ApiError::database)?;
     ensure_loaded(state, workspace_id, &draft, &mut held).await?;
     let loaded = held.as_ref().expect("the draft is loaded");
-    // A draft with neither tokens nor components has nothing to save, so the
-    // design records the mainline version, as it would without a draft.
+    // A draft with neither tokens nor components has nothing to save. When
+    // the design system has no mainline version either, the design records
+    // none. Otherwise the draft removed what the mainline version holds, and
+    // a version cannot hold an empty draft, so the design cannot record
+    // either of them.
     let Some(snapshot) = loaded.snapshot() else {
-        return Ok(mainline);
+        if mainline.is_some() {
+            return Err(ApiError::conflict("design_system_emptied"));
+        }
+        return Ok(None);
     };
     let candidates = latest
         .into_iter()
