@@ -686,8 +686,9 @@ pub(crate) async fn view_of_version(
 /// Saves the change set's draft of the design system first when it has
 /// changes that no version holds, and returns the design system version that
 /// a design version of the change set records: the version that holds the
-/// draft as it is, or, without a draft, the mainline version (`None` when the
-/// project has no design system or it has no mainline version yet).
+/// draft as it is, or, without a draft or with an empty one, the mainline
+/// version (`None` when the project has no design system or it has no
+/// mainline version yet).
 pub(crate) async fn settle_design_system(
     state: &AppState,
     workspace_id: &str,
@@ -750,8 +751,10 @@ pub(crate) async fn settle_design_system(
     tx.commit().await.map_err(ApiError::database)?;
     ensure_loaded(state, workspace_id, &draft, &mut held).await?;
     let loaded = held.as_ref().expect("the draft is loaded");
+    // A draft with neither tokens nor components has nothing to save, so the
+    // design records the mainline version, as it would without a draft.
     let Some(snapshot) = loaded.snapshot() else {
-        return Err(ApiError::conflict("no_tokens"));
+        return Ok(mainline);
     };
     let candidates = latest
         .into_iter()
