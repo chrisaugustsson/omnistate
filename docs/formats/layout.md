@@ -21,8 +21,9 @@ every line height is explicit, in px.
 ## Elements
 
 Every node is one element (a `div`), and its children are the elements of its
-children, in order. Every element is `box-sizing: border-box`, with no margin
-and no border, so a node's `width` and `height` include its padding.
+children, in order. Every element is `box-sizing: border-box`, with no border
+and no margin unless the node sets a [`margin`](#margin-margin), so a node's
+`width` and `height` include its padding.
 
 Boards and frames are `position: relative`, which makes each one the
 containing block of its positioned children (see
@@ -111,6 +112,29 @@ Lines count from 1 at the start of the grid, or from -1 at its end: in a grid
 of three columns, line -1 is line 4 and line -2 is line 3. A child without a
 `start` goes into the next free cells. An absolute child is placed by its
 `x` and `y` only, so it ignores `gridColumn` and `gridRow`.
+
+### Grid self alignment
+
+A child of a grid may align itself in its grid area with `justifySelf`, across,
+and `alignSelf`, down, which are `justify-self` and `align-self`. Each is one
+of `start`, `center`, `end` or `stretch`, the CSS keywords of those names:
+
+| Property | CSS |
+| --- | --- |
+| `justifySelf` | `justify-self` |
+| `alignSelf` | `align-self` |
+
+A child that sets neither is aligned by its sizing: `fill` is `stretch`, and
+`hug` and a fixed size are `start`. A child that sets one gets exactly that,
+so a `hug` child with `"stretch"` fills the area, while a fixed size with
+`"stretch"` stays at the start of the area, as in CSS: `stretch` only grows a
+size that is `auto`. The area is what the child's [margin](#margin-margin)
+leaves of the grid cells it spans: `"center"` centers the margin box. An
+icon button of 24 × 24 px with `"justifySelf": "center"` and
+`"alignSelf": "center"` in a 40 × 40 px area sits 8 px from each side.
+
+Only the children of grids set them. An absolute child is placed by its `x`
+and `y` and ignores them, like `gridColumn` and `gridRow`.
 
 ## Sizing: `width` and `height`
 
@@ -278,6 +302,44 @@ take no space: their siblings and their parent's size ignore them. Children
 that flow in a flex or grid layout have no `x` and `y`: their layout places
 them.
 
+## Margin: `margin`
+
+Every node below a page may set a `margin`, whose sides `top`, `right`,
+`bottom` and `left` are `margin-top`, `margin-right`, `margin-bottom` and
+`margin-left`. Each side is a length in px, which may be negative as in CSS, and
+a side left out is 0.
+
+| Property | CSS |
+| --- | --- |
+| `margin.top` | `margin-top` |
+| `margin.right` | `margin-right` |
+| `margin.bottom` | `margin-bottom` |
+| `margin.left` | `margin-left` |
+
+It is CSS `margin` in every place a node can sit:
+
+- In a flex layout the margins take space around the item on the main axis
+  and the cross axis. They count in the line's size and in the container's size
+  where it hugs its items, the items that fill share what they leave, and a
+  `hug` item that the layout stretches stops short of them by its margins.
+  Margins never collapse. A negative margin pulls the item over its neighbors.
+- In a grid layout the margins sit inside the grid area, and the item's
+  [self alignment](#grid-self-alignment) works on what they leave. An item that
+  fills the area is inset by them.
+- A positioned node (a child of a `none` layout, or an `absolute` child of a
+  flex or grid layout) is placed at `left` and `top`, its `x` and `y`, plus its
+  margins, and one that fills an axis is `right: 0` or `bottom: 0` less its
+  margins: at `x` 0 in a parent 100 px wide, margins of 5 and 10 px give a
+  width of 85 px at 5 px.
+- A board sits on its page by its `x` and `y`, so a margin on a board is kept
+  but does not move it.
+
+For instance, Penpot's dot "Punkt" is an 8 × 8 frame with `"margin": {"top":
+5}` in a row with `"alignItems": "start"`: its box sits at y 5.
+
+A margin that is a token reference counts as 0 (see
+[Token references](#token-references)).
+
 ## Visibility: `visible`
 
 `"visible": false` is `display: none`. The node takes no space, and it and
@@ -381,7 +443,38 @@ weight is 400, and a font family is Inter.
 
 Fills, strokes, corner radii, shadows, opacity and `clip` never change a box.
 `clip` is `overflow: clip`, which clips without changing layout, and strokes
-take no space, so an export draws them without CSS borders.
+take no space, so an export draws them without CSS borders. That holds for
+strokes wherever they sit on the edge and however they are dashed, which the
+next section describes.
+
+### Strokes: `align` and `dash`
+
+A stroke is drawn from the CSS that a box with that border or outline gets,
+and no stroke ever changes a box.
+
+`align` says where a stroke of a frame or a board sits on the edge of its box:
+
+| `align` | CSS | Where |
+| --- | --- | --- |
+| `inside` (the default) | an `inset` border, or `box-shadow: inset 0 0 0 <width>` | From the edge inwards: the stroke covers `width` px of the box. |
+| `center` | no single CSS property: a border of half the width, half inside and half outside | Half of `width` inside the edge and half outside it. |
+| `outside` | `outline: <width>px solid` with `outline-offset: 0`, or `box-shadow: 0 0 0 <width>` | From the edge outwards. The box keeps its size. |
+
+The corner radii follow the stroke. A stroke inside the edge has the radius
+less its width and a stroke outside it has the radius plus its width, as
+`outline` and `box-shadow` spread draw them. A square corner stays square.
+Images and vectors have no `align`: the stroke of an image lies inside its
+edge and the stroke of a vector is centered on its path, as SVG `stroke` is.
+
+`dash` draws a stroke as dashes: `{"length": 4, "gap": 2}` is SVG
+`stroke-dasharray: 4 2`, with butt ends, along the middle of the stroke. Both
+are lengths of 0 or more. Around a box that line runs clockwise, and starts at
+the top-left corner after the corner radius, where an SVG `<rect>` starts,
+whatever `align` is: it is the edge for `center`, half the width inside the
+edge for `inside` and half the width outside it for `outside`. Along a vector it
+follows the path from where the path starts. A dash that is a token reference
+counts as left out (see [Token references](#token-references)), which draws a
+solid line.
 
 ## Export
 
@@ -398,6 +491,10 @@ change a box, so it leaves them out.
 
 - Every node is a `div` with its ID in `data-node` and its CSS in `style`. A
   text holds its content, escaped, and nothing else.
+- The four sides of a node's `margin` are written as `margin-top`,
+  `margin-right`, `margin-bottom` and `margin-left`, in px, except on a
+  board. A grid item's `justifySelf` and `alignSelf` are written as
+  `justify-self` and `align-self` in place of the ones its sizing gives.
 - The boards of a page are `position: absolute` at their `x` and `y`. The page
   is not exported, because its box is empty.
 - The bundled Inter loads through `@font-face` from a data URL, as a face for

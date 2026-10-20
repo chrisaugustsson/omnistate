@@ -1,6 +1,8 @@
 //! Style properties: fills, strokes, corner radii, shadows and text styles.
 
-use super::json::{Object, first_set, read_number, some, some_number, some_objects, write_number};
+use super::json::{
+    Object, first_set, read_number, some, some_number, some_object, some_objects, write_number,
+};
 use super::value::{AttachmentRef, Color, Length, TokenOr, non_negative, some_non_negative};
 use serde::{Deserialize, Serialize};
 
@@ -114,6 +116,39 @@ pub struct Stroke {
     pub color: TokenOr<Color>,
     #[serde(deserialize_with = "non_negative")]
     pub width: Length,
+    /// Where the stroke sits on the edge of a frame or a board. Left out, it
+    /// lies inside the edge.
+    #[serde(default, deserialize_with = "some")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub align: Option<StrokeAlign>,
+    /// Draws the stroke as dashes. Left out, the stroke is solid.
+    #[serde(default, deserialize_with = "some_object")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dash: Option<Dash>,
+}
+
+keywords! {
+    /// Where the stroke of a frame or a board sits on the edge of its box.
+    pub enum StrokeAlign {
+        /// Inside the edge, like a CSS `inset` border.
+        Inside = "inside",
+        /// Half inside the edge and half outside it.
+        Center = "center",
+        /// Outside the edge, like a CSS `outline`.
+        Outside = "outside",
+    }
+}
+
+/// The dashes of a stroke, as SVG `stroke-dasharray: <length> <gap>`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Dash {
+    /// The length of each dash.
+    #[serde(deserialize_with = "non_negative")]
+    pub length: Length,
+    /// The space between dashes.
+    #[serde(deserialize_with = "non_negative")]
+    pub gap: Length,
 }
 
 /// The radius of each corner of a box. A corner left out is square.

@@ -53,6 +53,10 @@ pub(super) fn item(node: &Node, flow: Flow) -> Style {
         },
         ..Style::default()
     };
+    // A board sits on its page by its `x` and `y`, whatever its margin is.
+    if !matches!(flow, Flow::Root) {
+        style.margin = margin(node.placement().margin.as_ref());
+    }
     let fills = |sizing: Option<&Sizing>| matches!(sizing, Some(Sizing::Fill));
     match flow {
         Flow::Root => {}
@@ -95,16 +99,19 @@ pub(super) fn item(node: &Node, flow: Flow) -> Style {
             }
         }
         Flow::Grid => {
-            let self_alignment = |sizing| {
-                if fills(sizing) {
-                    AlignSelf::STRETCH
-                } else {
-                    AlignSelf::START
-                }
-            };
-            style.justify_self = Some(self_alignment(sizes.width));
-            style.align_self = Some(self_alignment(sizes.height));
             let placement = node.placement();
+            let self_alignment = |own: Option<design::SelfAlignment>, sizing| match own {
+                Some(design::SelfAlignment::Start) => AlignSelf::START,
+                Some(design::SelfAlignment::Center) => AlignSelf::CENTER,
+                Some(design::SelfAlignment::End) => AlignSelf::END,
+                Some(design::SelfAlignment::Stretch) => AlignSelf::STRETCH,
+                // Without its own alignment, an item fills its area when it
+                // fills, and sits at the start of its area otherwise.
+                None if fills(sizing) => AlignSelf::STRETCH,
+                None => AlignSelf::START,
+            };
+            style.justify_self = Some(self_alignment(placement.justify_self, sizes.width));
+            style.align_self = Some(self_alignment(placement.align_self, sizes.height));
             if let Some(column) = &placement.grid_column {
                 style.grid_column = grid_lines(column);
             }
@@ -264,6 +271,19 @@ fn gap(gap: Option<&design::Gap>) -> Size<LengthPercentage> {
     Size {
         width: space(gap.and_then(|gap| gap.column.as_ref())),
         height: space(gap.and_then(|gap| gap.row.as_ref())),
+    }
+}
+
+/// CSS `margin`. A token reference counts as 0 until layout resolves tokens.
+fn margin(margin: Option<&design::Margin>) -> Rect<LengthPercentageAuto> {
+    let side = |side: fn(&design::Margin) -> Option<&Length>| {
+        length(margin.and_then(side).and_then(literal).unwrap_or(0.0))
+    };
+    Rect {
+        left: side(|margin| margin.left.as_ref()),
+        right: side(|margin| margin.right.as_ref()),
+        top: side(|margin| margin.top.as_ref()),
+        bottom: side(|margin| margin.bottom.as_ref()),
     }
 }
 

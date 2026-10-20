@@ -222,6 +222,36 @@ pub struct Padding {
     pub left: Option<Length>,
 }
 
+/// The space outside each edge of a node, as CSS `margin`. Unlike padding, a
+/// margin may be negative.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Margin {
+    #[serde(default, deserialize_with = "some")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub top: Option<Length>,
+    #[serde(default, deserialize_with = "some")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub right: Option<Length>,
+    #[serde(default, deserialize_with = "some")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bottom: Option<Length>,
+    #[serde(default, deserialize_with = "some")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub left: Option<Length>,
+}
+
+keywords! {
+    /// How a child of a grid aligns itself in its grid area, as CSS
+    /// `justify-self` (across) and `align-self` (down).
+    pub enum SelfAlignment {
+        Start = "start",
+        Center = "center",
+        End = "end",
+        Stretch = "stretch",
+    }
+}
+
 /// How a node sizes one axis.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Sizing {

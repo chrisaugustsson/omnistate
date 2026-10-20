@@ -338,7 +338,7 @@ impl LayoutTree {
     /// The max-content and min-content contributions of `item` to the width
     /// of its parent, when it is `height` px tall: its fixed width or the
     /// widths of its content, bounded by its min and max widths, and never
-    /// narrower than its padding.
+    /// narrower than its padding, with its horizontal margins around it.
     fn contribution(&mut self, item: NodeId, height: Option<f32>) -> [f32; 2] {
         let style = &self.node(item).style;
         let widths = match style.size.width.into_option() {
@@ -350,21 +350,29 @@ impl LayoutTree {
             .padding
             .resolve_or_zero(None, |_, _| 0.0)
             .horizontal_axis_sum();
-        widths.map(|width| bounded(width, style.min_size.width, style.max_size.width).max(padding))
+        let margin = style
+            .margin
+            .resolve_or_zero(None, |_, _| 0.0)
+            .horizontal_axis_sum();
+        widths.map(|width| {
+            bounded(width, style.min_size.width, style.max_size.width).max(padding) + margin
+        })
     }
 
     /// The height of `item` of the flex container `node` while its width is
     /// measured: its fixed height, or else `stretched_to`, the inner height of
-    /// a row that stretches it, either bounded by its min and max heights and
-    /// never smaller than its padding. `None` when its content decides its
-    /// height.
+    /// a row that stretches it, less its vertical margins, either bounded by
+    /// its min and max heights and never smaller than its padding. `None` when
+    /// its content decides its height.
     fn item_height(&self, node: NodeId, item: NodeId, stretched_to: Option<f32>) -> Option<f32> {
         let style = &self.node(item).style;
-        let height = style
-            .size
-            .height
-            .into_option()
-            .or(stretched_to.filter(|_| self.stretches(node, item, true)))?;
+        let margin = style
+            .margin
+            .resolve_or_zero(None, |_, _| 0.0)
+            .vertical_axis_sum();
+        let height = style.size.height.into_option().or(stretched_to
+            .filter(|_| self.stretches(node, item, true))
+            .map(|height| (height - margin).max(0.0)))?;
         let padding = style
             .padding
             .resolve_or_zero(None, |_, _| 0.0)

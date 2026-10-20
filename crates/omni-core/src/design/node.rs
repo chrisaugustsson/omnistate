@@ -2,7 +2,7 @@
 
 use super::id::NodeId;
 use super::json::{Number, Object, entry, first_set, some, some_number, some_object, some_objects};
-use super::layout::{GridPlacement, Layout, LayoutMode, Sizing};
+use super::layout::{GridPlacement, Layout, LayoutMode, Margin, SelfAlignment, Sizing};
 use super::path::PathData;
 use super::style::{Fill, FontStyle, ImageFit, Radius, Shadow, Stroke, TextAlign, TextDecoration};
 use super::value::{AttachmentRef, Color, FontFamily, Length, TokenOr, some_non_negative};
@@ -199,6 +199,14 @@ pub struct Placement {
     pub grid_column: Option<GridPlacement>,
     /// The rows of a grid layout the node is placed in.
     pub grid_row: Option<GridPlacement>,
+    /// The space outside each edge of the node, as CSS `margin`.
+    pub margin: Option<Margin>,
+    /// How a child of a grid aligns itself across its grid area, as CSS
+    /// `justify-self`.
+    pub justify_self: Option<SelfAlignment>,
+    /// How a child of a grid aligns itself down its grid area, as CSS
+    /// `align-self`.
+    pub align_self: Option<SelfAlignment>,
 }
 
 impl Placement {
@@ -232,6 +240,9 @@ impl Serialize for Node {
         entry(&mut map, "y", placement.y.map(Number).as_ref())?;
         entry(&mut map, "gridColumn", placement.grid_column.as_ref())?;
         entry(&mut map, "gridRow", placement.grid_row.as_ref())?;
+        entry(&mut map, "margin", placement.margin.as_ref())?;
+        entry(&mut map, "justifySelf", placement.justify_self.as_ref())?;
+        entry(&mut map, "alignSelf", placement.align_self.as_ref())?;
         match &self.data {
             NodeData::Page(page) => map.serialize_entry("children", &page.children)?,
             NodeData::Board(frame) | NodeData::Frame(frame) => {
@@ -350,6 +361,12 @@ struct RawNode {
     grid_column: Option<GridPlacement>,
     #[serde(default, deserialize_with = "some_object")]
     grid_row: Option<GridPlacement>,
+    #[serde(default, deserialize_with = "some_object")]
+    margin: Option<Margin>,
+    #[serde(default, deserialize_with = "some")]
+    justify_self: Option<SelfAlignment>,
+    #[serde(default, deserialize_with = "some")]
+    align_self: Option<SelfAlignment>,
     #[serde(default, deserialize_with = "some")]
     width: Option<Sizing>,
     #[serde(default, deserialize_with = "some")]
@@ -444,6 +461,9 @@ impl RawNode {
             y: self.y.take(),
             grid_column: self.grid_column.take(),
             grid_row: self.grid_row.take(),
+            margin: self.margin.take(),
+            justify_self: self.justify_self.take(),
+            align_self: self.align_self.take(),
         }
     }
 
@@ -498,6 +518,7 @@ impl RawNode {
 
     fn image(&mut self) -> Result<Image, String> {
         let kind = self.kind;
+        check_stroke_align(kind, self.strokes.as_deref())?;
         Ok(Image {
             size: self.size()?,
             image: required(kind, "image", self.image.take())?,
@@ -510,6 +531,7 @@ impl RawNode {
     }
 
     fn vector(&mut self) -> Result<Vector, String> {
+        check_stroke_align(self.kind, self.strokes.as_deref())?;
         Ok(Vector {
             size: self.size()?,
             path: required(self.kind, "path", self.path.take())?,
@@ -570,6 +592,9 @@ impl RawNode {
             ("y", self.y.is_some()),
             ("gridColumn", self.grid_column.is_some()),
             ("gridRow", self.grid_row.is_some()),
+            ("margin", self.margin.is_some()),
+            ("justifySelf", self.justify_self.is_some()),
+            ("alignSelf", self.align_self.is_some()),
             ("width", self.width.is_some()),
             ("height", self.height.is_some()),
             ("minWidth", self.min_width.is_some()),
@@ -606,6 +631,18 @@ fn required<T>(kind: NodeKind, key: &str, value: Option<T>) -> Result<T, String>
     value.ok_or_else(|| format!("{kind} nodes need `{key}`"))
 }
 
+/// Checks that the strokes of `kind` leave out `align`, which only the strokes
+/// of frames and boards set: a stroke of an image lies inside its edge, and
+/// the stroke of a vector is centered on its path.
+fn check_stroke_align(kind: NodeKind, strokes: Option<&[Stroke]>) -> Result<(), String> {
+    match strokes {
+        Some(strokes) if strokes.iter().any(|stroke| stroke.align.is_some()) => Err(format!(
+            "strokes of {kind} nodes have no `align`: only the strokes of frames and boards sit inside, centered on or outside their edge"
+        )),
+        _ => Ok(()),
+    }
+}
+
 /// Checks that a literal number lies in `range`. A token's value is checked
 /// where the token is defined.
 fn check_range(
@@ -624,7 +661,8 @@ fn check_range(
 
 /// Checks where `children` sit: pages hold only boards, boards sit only on
 /// pages, layout computes the position of children that flow in a flex or grid
-/// layout, and only the children of grids are placed on grid lines.
+/// layout, and only the children of grids are placed on grid lines and align
+/// themselves in their grid areas.
 fn check_children(
     parent: NodeId,
     kind: NodeKind,
@@ -668,6 +706,15 @@ fn check_children(
         if let Some(key) = grid_lines.filter(|_| mode != Some(LayoutMode::Grid)) {
             return Err(format!(
                 "`{id}` sets `{key}`, but only the children of grid layouts are placed on grid lines"
+            ));
+        }
+        let self_alignment = first_set([
+            ("justifySelf", placement.justify_self.is_some()),
+            ("alignSelf", placement.align_self.is_some()),
+        ]);
+        if let Some(key) = self_alignment.filter(|_| mode != Some(LayoutMode::Grid)) {
+            return Err(format!(
+                "`{id}` sets `{key}`, but only the children of grid layouts align themselves in their grid areas"
             ));
         }
     }

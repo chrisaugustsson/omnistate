@@ -3,9 +3,9 @@
 // renders the export in headless Chrome (chrome-boxes.mjs), and the layout
 // parity check of the renderer gate renders it in headed Chrome.
 //
-// The export holds layout and nothing else: fills, strokes, corner radii,
-// shadows, opacity and the color of text never change a box, so they are left
-// out, and `clip` is `overflow: clip`, which clips without changing layout.
+// The export holds layout and nothing else: fills, strokes (dashed, inside,
+// centered or outside the edge), corner radii, shadows, opacity and the color
+// of text never change a box, so they are left out, and `clip` is `overflow: clip`, which clips without changing layout.
 import { readFileSync } from 'node:fs';
 
 // The bundled fonts, which the renderer compiles in: the export loads the same
@@ -176,6 +176,14 @@ function placement(declarations, node, flow, width, height) {
   const fixedSize = (property, size) => {
     if (isFixed(size)) declarations.push(`${property}:${px(size.fixed)}`);
   };
+  // A margin sits outside the node's box in whatever places it. A board sits
+  // on its page by its `x` and `y`, so its margin is left out.
+  if (flow.kind !== 'root') {
+    for (const side of ['top', 'right', 'bottom', 'left']) {
+      const length = literal(node.margin?.[side]);
+      if (length !== undefined) declarations.push(`margin-${side}:${px(length)}`);
+    }
+  }
   switch (flow.kind) {
     case 'root':
       // A board sits at its `x` and `y` on its page. Nothing around it limits
@@ -205,8 +213,10 @@ function placement(declarations, node, flow, width, height) {
     case 'grid':
       fixedSize('width', width);
       fixedSize('height', height);
-      declarations.push(`justify-self:${width === 'fill' ? 'stretch' : 'start'}`);
-      declarations.push(`align-self:${height === 'fill' ? 'stretch' : 'start'}`);
+      // An item that fills its area stretches to it, and any other sits at the
+      // start of its area, unless it aligns itself.
+      declarations.push(`justify-self:${node.justifySelf ?? (width === 'fill' ? 'stretch' : 'start')}`);
+      declarations.push(`align-self:${node.alignSelf ?? (height === 'fill' ? 'stretch' : 'start')}`);
       if (node.gridColumn !== undefined) declarations.push(`grid-column:${gridLines(node.gridColumn)}`);
       if (node.gridRow !== undefined) declarations.push(`grid-row:${gridLines(node.gridRow)}`);
       break;
