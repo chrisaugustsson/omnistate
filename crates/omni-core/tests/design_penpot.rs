@@ -62,14 +62,14 @@ fn every_node_below_a_page_may_have_a_margin_on_each_side() {
             node["type"]
         );
     }
-    let board = with(&board("board001"), "/margin", every_side());
+    let board = with(&board("brd00001"), "/margin", every_side());
     assert_round_trips(&page("page0001", vec![board]));
 }
 
 #[test]
 fn the_punkt_dot_keeps_its_top_margin_of_5_px_in_its_row() {
     let dot = with(
-        &with(&frame("dot00001"), "/width", json!({"fixed": 8})),
+        &with(&frame("dt000001"), "/width", json!({"fixed": 8})),
         "/height",
         json!({"fixed": 8}),
     );
@@ -129,14 +129,14 @@ fn children_of_a_grid_align_themselves_with_justify_self_and_align_self() {
         "/alignSelf",
         json!("end"),
     );
-    let output = assert_round_trips(&grid_frame("grid0001", vec![label, button]));
+    let output = assert_round_trips(&grid_frame("grd00001", vec![label, button]));
     assert_eq!(output["children"][1]["justifySelf"], "center");
     assert_eq!(output["children"][1]["alignSelf"], "center");
 }
 
 #[test]
 fn self_alignment_keywords_are_start_center_end_and_stretch() {
-    let base = grid_frame("grid0001", vec![image("jpeg0001")]);
+    let base = grid_frame("grd00001", vec![image("jpeg0001")]);
     let keywords = strings(["start", "center", "end", "stretch"]);
     assert_distinct_values(&base, "/children/0/justifySelf", &keywords);
     assert_distinct_values(&base, "/children/0/alignSelf", &keywords);
@@ -221,7 +221,7 @@ fn frame_strokes_sit_inside_centered_on_or_outside_the_edge() {
         {"color": "#ffffff", "width": 1}
     ]);
     assert_round_trips(&stroked(both.clone()));
-    let board = with(&board("board001"), "/strokes", both);
+    let board = with(&board("brd00001"), "/strokes", both);
     assert_round_trips(&page("page0001", vec![board]));
     for align in ["middle", "inner", "border"] {
         assert_rejected(
