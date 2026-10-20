@@ -243,6 +243,8 @@ async fn check<T, E>(call: impl Future<Output = Result<T, E>>) -> bool {
 }
 
 pub fn router(state: AppState) -> Router {
+    // Claims end on time without a request (US-023).
+    claims::start_sweep(state.clone());
     Router::new()
         .route("/api/health", get(health))
         .route("/api/openapi.json", get(openapi::document))

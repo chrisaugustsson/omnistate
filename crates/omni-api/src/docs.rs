@@ -1057,9 +1057,13 @@ async fn apply_batch(state: &AppState, edit: Edit) -> Result<Vec<OpResultBody>, 
     match committed {
         Ok(()) => {
             held.as_mut().expect("the draft is loaded").next_seq += results.len() as i64;
-            drop(held);
+            // The holder's claims are renewed before the draft's lock is let
+            // go, and only the ones that are still live.
             if !results.is_empty() {
                 state.claims.touch(&workspace_id, &draft.id, &agent);
+            }
+            drop(held);
+            if !results.is_empty() {
                 state.live.announce(&workspace_id, &project_id);
             }
             Ok(results)

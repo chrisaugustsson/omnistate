@@ -4,18 +4,21 @@
 //! locked in the database: a claim is advisory and short, so claims are kept
 //! in memory, next to the drafts they belong to, and are gone after a restart.
 //!
-//! The identity of a claim's holder is the agent identity of its request (the
-//! `X-Omni-*` headers), not its API key. A claim lasts a TTL (10 minutes unless
-//! `AppState::with_claim_ttl` says otherwise) after the holder's last applied
-//! operation in the draft. Expiry is lazy: any request that looks at claims
-//! first ends the ones whose time is up, and that is when `claim.expired` is
-//! emitted.
+//! The identity of a claim's holder is the run and role of its request (the
+//! `X-Omni-Run` and `X-Omni-Role` headers), not its API key, model or harness.
+//! A claim lasts a TTL (10 minutes unless `AppState::with_claim_ttl` says
+//! otherwise) after the holder's last applied operation in the draft. Expiry
+//! does not wait for a request: a background sweep, started by the router,
+//! ends the claims whose time is up every second and emits `claim.expired`
+//! for them, and a request that looks at claims does the same first.
 //!
-//! The claims of a draft are only read or changed while the draft's slot is
-//! locked (see docs.rs), so a claim and an edit of the same draft never
-//! interleave. Taking, releasing and expiring write their live event in a
-//! transaction of their own, and the claim only changes in memory if that
-//! transaction committed.
+//! Taking a claim, releasing it and renewing it by an applied batch all happen
+//! while the draft's slot is locked (see docs.rs), so a claim and an edit of
+//! the same draft never interleave. Expiry only ends claims that are over
+//! already, so it needs no lock. Taking and releasing write their live event
+//! in a transaction of their own, and a claim only changes if that
+//! transaction committed (a failed release puts the claim back before the
+//! draft's lock is let go).
 
 use crate::AppState;
 use crate::changesets::parse_body;
@@ -39,6 +42,9 @@ use utoipa::ToSchema;
 
 /// How long a claim lasts without an operation from its holder.
 const DEFAULT_TTL: Duration = Duration::from_secs(10 * 60);
+
+/// How often the background sweep ends the claims whose time is up.
+const SWEEP_INTERVAL: Duration = Duration::from_secs(1);
 
 /// A claim as the API shows it.
 #[derive(Clone, Serialize, ToSchema)]
@@ -180,14 +186,16 @@ impl ClaimStore {
             .collect()
     }
 
-    /// An operation of `agent` was applied in the draft: its claims there last
-    /// another TTL.
+    /// An operation of `agent` was applied in the draft: its claims there that
+    /// are still live last another TTL. A claim whose time is up stays over,
+    /// even if nobody has ended it yet.
     pub(crate) fn touch(&self, workspace_id: &str, draft_id: &str, agent: &Value) {
         let now = SystemTime::now();
         for record in self.records().iter_mut() {
             if record.workspace_id == workspace_id
                 && record.draft_id == draft_id
-                && record.agent == *agent
+                && same_agent(&record.agent, agent)
+                && record.expires_at(self.ttl) > now
             {
                 record.last_op = now;
             }
@@ -209,12 +217,14 @@ impl ClaimStore {
         }
     }
 
-    fn take_expired(&self, workspace_id: &str) -> Vec<ClaimRecord> {
+    /// Takes the claims whose time is up out of the store: those of one
+    /// workspace, or of all.
+    fn take_expired(&self, workspace_id: Option<&str>) -> Vec<ClaimRecord> {
         let now = SystemTime::now();
         let mut records = self.records();
-        let (live, expired) = std::mem::take(&mut *records)
-            .into_iter()
-            .partition(|r| r.workspace_id != workspace_id || self.live(r, now));
+        let (live, expired) = std::mem::take(&mut *records).into_iter().partition(|r| {
+            workspace_id.is_some_and(|workspace| r.workspace_id != workspace) || self.live(r, now)
+        });
         *records = live;
         expired
     }
@@ -222,6 +232,12 @@ impl ClaimStore {
     fn restore(&self, claims: Vec<ClaimRecord>) {
         self.records().extend(claims);
     }
+}
+
+/// Whether two agent identities are the same agent: the same run and role.
+/// The model and harness are recorded but do not tell agents apart.
+pub(crate) fn same_agent(a: &Value, b: &Value) -> bool {
+    a["run"] == b["run"] && a["role"] == b["role"]
 }
 
 /// `<run>/<role>`, with `?` for what the agent did not declare.
@@ -286,7 +302,7 @@ pub(crate) fn blocked(
 ) -> Option<(usize, ClaimRecord)> {
     let others: Vec<&ClaimRecord> = claims
         .iter()
-        .filter(|claim| claim.agent != *agent && doc.contains(claim.node))
+        .filter(|claim| !same_agent(&claim.agent, agent) && doc.contains(claim.node))
         .collect();
     if others.is_empty() {
         return None;
@@ -322,7 +338,11 @@ fn overlaps(doc: &EditDoc, node: NodeId, claim: &ClaimRecord) -> bool {
 /// Ends the claims of the workspace whose time is up and emits `claim.expired`
 /// for each. A claim stays if its event cannot be written.
 pub(crate) async fn sweep(state: &AppState, workspace_id: &str) {
-    let expired = state.claims.take_expired(workspace_id);
+    let expired = state.claims.take_expired(Some(workspace_id));
+    expire(state, workspace_id, expired).await;
+}
+
+async fn expire(state: &AppState, workspace_id: &str, expired: Vec<ClaimRecord>) {
     if expired.is_empty() {
         return;
     }
@@ -334,6 +354,35 @@ pub(crate) async fn sweep(state: &AppState, workspace_id: &str) {
     }
 }
 
+/// Ends the claims of every workspace whose time is up.
+async fn sweep_all(state: &AppState) {
+    let mut expired = state.claims.take_expired(None);
+    while let Some(first) = expired.first() {
+        let workspace_id = first.workspace_id.clone();
+        let (here, rest) = expired
+            .into_iter()
+            .partition(|claim| claim.workspace_id == workspace_id);
+        expired = rest;
+        expire(state, &workspace_id, here).await;
+    }
+}
+
+/// Starts the background sweep, which ends claims on time whether or not any
+/// request comes in. It needs a Tokio runtime and does nothing without one.
+pub(crate) fn start_sweep(state: AppState) {
+    if tokio::runtime::Handle::try_current().is_err() {
+        return;
+    }
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(SWEEP_INTERVAL);
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            tick.tick().await;
+            sweep_all(&state).await;
+        }
+    });
+}
+
 /// Emits `event` for each claim in one transaction and announces it.
 async fn emit_all(
     state: &AppState,
@@ -343,14 +392,11 @@ async fn emit_all(
 ) -> Result<(), ApiError> {
     let mut tx = state.workspace_tx(workspace_id).await?;
     for claim in claims {
-        live::emit(
-            &mut tx,
-            workspace_id,
-            &claim.project_id,
-            event,
-            &claim.event_data(),
-        )
-        .await?;
+        let mut data = claim.event_data();
+        if event == "claim.expired" {
+            data["expires_at"] = json!(rfc3339(claim.expires_at(state.claims.ttl)));
+        }
+        live::emit(&mut tx, workspace_id, &claim.project_id, event, &data).await?;
     }
     tx.commit().await.map_err(ApiError::database)?;
     let mut projects: Vec<&str> = claims.iter().map(|c| c.project_id.as_str()).collect();
@@ -464,7 +510,7 @@ pub async fn take_claim(
     let live = state.claims.live_in_draft(&workspace_id, &draft.id);
     if let Some(mine) = live
         .iter()
-        .find(|claim| claim.node == node && claim.agent == agent)
+        .find(|claim| claim.node == node && same_agent(&claim.agent, &agent))
     {
         return Ok((
             StatusCode::OK,
@@ -475,7 +521,7 @@ pub async fn take_claim(
     }
     if let Some(theirs) = live
         .iter()
-        .find(|claim| claim.agent != agent && overlaps(doc, node, claim))
+        .find(|claim| !same_agent(&claim.agent, &agent) && overlaps(doc, node, claim))
     {
         return Err(state.claims.refusal(None, theirs.clone()));
     }
@@ -555,6 +601,24 @@ pub async fn release_claim(
     let agent = identity.to_json();
     sweep(&state, &workspace_id).await;
 
+    // The draft's lock is held until the release has committed or failed, so
+    // an operation sent meanwhile waits and then sees the claim as it ends up.
+    let draft_id = state
+        .claims
+        .records()
+        .iter()
+        .find(|r| {
+            r.workspace_id == workspace_id && r.changeset_id == changeset_id && r.node == node
+        })
+        .map(|r| r.draft_id.clone())
+        .ok_or(ApiError::NotFound)?;
+    let _held = state
+        .drafts
+        .slot(&workspace_id, &draft_id)
+        .lock_owned()
+        .await;
+    sweep(&state, &workspace_id).await;
+
     let record = {
         let mut records = state.claims.records();
         let at = records
@@ -563,7 +627,7 @@ pub async fn release_claim(
                 r.workspace_id == workspace_id && r.changeset_id == changeset_id && r.node == node
             })
             .ok_or(ApiError::NotFound)?;
-        if records[at].agent != agent {
+        if !same_agent(&records[at].agent, &agent) {
             return Err(state.claims.refusal(None, records[at].clone()));
         }
         records.remove(at)
