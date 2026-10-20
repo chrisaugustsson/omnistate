@@ -353,6 +353,8 @@ enum Shape {
     Length,
     /// A number or a token reference.
     Any,
+    /// A number between two limits, both included, or a token reference.
+    Within(f64, f64),
     Keyword(Keywords),
     Size,
     Sides(Sides),
@@ -422,12 +424,12 @@ static SPECS: &[Spec] = &[
     node("strokes", "strokes", Shape::Strokes),
     node("radius", "radius", Shape::Sides(Sides::Radius)),
     node("shadows", "shadows", Shape::Shadows),
-    node("opacity", "opacity", Shape::Any),
+    node("opacity", "opacity", Shape::Within(0.0, 1.0)),
     node("clip", "clip", Shape::Flag),
     node("content", "content", Shape::Text),
     node("fontFamily", "fontFamily", Shape::Family),
     node("fontSize", "fontSize", Shape::Length),
-    node("fontWeight", "fontWeight", Shape::Any),
+    node("fontWeight", "fontWeight", Shape::Within(1.0, 1000.0)),
     node("fontStyle", "fontStyle", Shape::Keyword(FONT_STYLE)),
     node("lineHeight", "lineHeight", Shape::Length),
     node("letterSpacing", "letterSpacing", Shape::Any),
@@ -477,6 +479,9 @@ fn how(spec: &Spec) -> String {
         ),
         Shape::Any => format!(
             "write a number, such as `{attr}={{16}}`, or a token reference such as `{attr}=\"$token.name\"`"
+        ),
+        Shape::Within(low, high) => format!(
+            "write a number from {low} to {high}, such as `{attr}={{{high}}}`, or a token reference such as `{attr}=\"$token.name\"`"
         ),
         Shape::Keyword(table) => {
             let words: Vec<String> = table.iter().map(|(word, _)| format!("`{word}`")).collect();
@@ -586,6 +591,17 @@ fn convert(spec: &Spec, value: Value) -> Result<Value, Problem> {
         Shape::Any => Length::deserialize(value.clone())
             .map(|_| value)
             .map_err(|error| from_text(spec, &error.to_string())),
+        Shape::Within(low, high) => {
+            Length::deserialize(value.clone())
+                .map_err(|error| from_text(spec, &error.to_string()))?;
+            match value.as_f64() {
+                Some(number) if !(low..=high).contains(&number) => Err(problem(
+                    format!("`{}` is {number}, which is outside its range", spec.attr),
+                    how(spec),
+                )),
+                _ => Ok(value),
+            }
+        }
         Shape::Keyword(table) => {
             let Value::String(word) = &value else {
                 return Err(expected(spec, &value));
