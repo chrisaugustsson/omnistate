@@ -667,14 +667,16 @@ fn check_reference(path: &str, reference: &Reference, tokens: &Tokens) -> Result
 /// Refuses a loop of references in any mode: a token that, through the tokens
 /// it refers to, refers back to itself.
 fn check_loops(references: &[(&str, ModeReferences)], modes: &[String]) -> Result<(), TokenError> {
-    for mode in modes {
+    // Each mode, then the $values alone, which tools without modes read.
+    let passes = modes.iter().map(|mode| Some(mode.as_str())).chain([None]);
+    for mode in passes {
         // What each token refers to in this mode: its mode value when it has
         // one, else its $value.
         let mut edges: HashMap<&str, Vec<&str>> = HashMap::new();
         for (path, values) in references {
             let chosen = values
                 .iter()
-                .find(|(of, _)| *of == Some(mode.as_str()))
+                .find(|(of, _)| mode.is_some() && *of == mode)
                 .or_else(|| values.iter().find(|(of, _)| of.is_none()));
             let targets = chosen
                 .map(|(_, found)| found.iter().map(|r| r.target.as_str()).collect())
@@ -694,13 +696,17 @@ fn check_loops(references: &[(&str, ModeReferences)], modes: &[String]) -> Resul
     Ok(())
 }
 
-fn loop_message(cycle: &[&str], mode: &str) -> String {
+fn loop_message(cycle: &[&str], mode: Option<&str>) -> String {
     let first = cycle[0];
+    let place = match mode {
+        Some(mode) => format!("in the {mode} mode"),
+        None => "through $value".to_string(),
+    };
     if cycle.len() == 1 {
-        format!("{first} refers to itself, in the {mode} mode")
+        format!("{first} refers to itself, {place}")
     } else {
         format!(
-            "{first} refers back to itself in the {mode} mode, through {}",
+            "{first} refers back to itself {place}, through {}",
             cycle[1..].join(" and ")
         )
     }

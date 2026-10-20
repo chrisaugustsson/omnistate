@@ -31,9 +31,10 @@ use axum::Json;
 use axum::body::Bytes;
 use axum::extract::{Path, State};
 use omni_core::design::NodeId;
+use omni_core::design::tokens::TokenTree;
 use omni_core::ops::EditDoc;
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 use std::collections::HashMap;
 use tokio::sync::OwnedMutexGuard;
 use utoipa::ToSchema;
@@ -226,28 +227,28 @@ async fn load_doc(
     })
 }
 
-/// Replays the change set's latest version of a doc onto the doc's mainline
-/// version: saves the result as a version of the change set, records the
-/// conflicts and bases the draft on the mainline. Returns the new version's ID
-/// and the conflicts.
-async fn rebase_doc(
+/// A node, or a token of a design system, that a rebase could not merge: its
+/// name, the kind of conflict and its state on each side (`None` where that
+/// side has no such node or token).
+struct Found {
+    node: String,
+    kind: ConflictKind,
+    mainline: Option<String>,
+    changeset: Option<String>,
+}
+
+/// Replays the change set's latest version of an HTML doc onto the doc's
+/// mainline version: the rebased doc (`None` for a removed one) and the nodes
+/// that could not be merged.
+async fn rebase_html(
     state: &AppState,
-    tx: &mut Tx,
-    ids: (&str, &str),
-    changed: &Changed,
-    mainline_version: &str,
-    agent: &Value,
-) -> Result<(String, Vec<RecordedConflict>), ApiError> {
-    let (workspace_id, project_id) = ids;
-    let draft = &changed.draft;
-    let base_chunk = match &draft.base_version_id {
-        Some(base) => chunk_of_version(tx, &draft.doc_id, base).await?,
-        None => None,
-    };
-    let mainline_chunk = chunk_of_version(tx, &draft.doc_id, mainline_version).await?;
-    let base = load_doc(state, workspace_id, base_chunk.as_deref()).await?;
-    let mainline = load_doc(state, workspace_id, mainline_chunk.as_deref()).await?;
-    let mine = load_doc(state, workspace_id, changed.chunk.as_deref()).await?;
+    workspace_id: &str,
+    chunks: [Option<&str>; 3],
+) -> Result<(Option<Snapshot>, Vec<Found>), ApiError> {
+    let [base_chunk, mainline_chunk, mine_chunk] = chunks;
+    let base = load_doc(state, workspace_id, base_chunk).await?;
+    let mainline = load_doc(state, workspace_id, mainline_chunk).await?;
+    let mine = load_doc(state, workspace_id, mine_chunk).await?;
     // A removed doc is a doc-level change: when one side removed the doc and
     // the other changed anything in it, that is a conflict and the mainline
     // state stays; otherwise the removal stands.
@@ -260,7 +261,7 @@ async fn rebase_doc(
             })
             .collect()
     };
-    let (doc, conflict_nodes) = match (mainline_chunk.is_none(), changed.chunk.is_none()) {
+    let (doc, conflict_nodes) = match (mainline_chunk.is_none(), mine_chunk.is_none()) {
         (false, false) => {
             let rebased = EditDoc::rebase(&base, &mainline, &mine);
             let nodes = kinds(rebased.conflicts, &rebased.unplaced);
@@ -289,11 +290,233 @@ async fn rebase_doc(
             (doc, kinds(theirs, &[]))
         }
     };
-
-    let snapshot = doc.as_ref().map(|doc| Snapshot {
+    let found = conflict_nodes
+        .into_iter()
+        .map(|(node, kind)| Found {
+            node: node.to_string(),
+            kind,
+            mainline: mainline.node_html(node),
+            changeset: mine.node_html(node),
+        })
+        .collect();
+    let snapshot = doc.map(|doc| Snapshot {
         html: doc.to_html(),
         nodes: doc.index(),
     });
+    Ok((snapshot, found))
+}
+
+/// The token tree that a design system's chunk holds as JSON, `null` for a
+/// version without content.
+async fn load_tokens(
+    state: &AppState,
+    workspace_id: &str,
+    chunk: Option<&str>,
+) -> Result<Value, ApiError> {
+    let Some(chunk) = chunk else {
+        return Ok(Value::Null);
+    };
+    let text = read_chunk(state, workspace_id, chunk).await?;
+    serde_json::from_str(&text).map_err(|e| {
+        eprintln!("omni-api: a saved token tree cannot be loaded for a rebase: {e}");
+        ApiError::Unavailable
+    })
+}
+
+/// Whether a part of a token tree is a token, which a rebase replays whole.
+fn is_token(value: &Value) -> bool {
+    value
+        .as_object()
+        .is_some_and(|object| object.contains_key("$value"))
+}
+
+fn token_name(path: &str) -> String {
+    if path.is_empty() {
+        "tokens".to_string()
+    } else {
+        path.to_string()
+    }
+}
+
+fn token_side(value: &Value) -> Option<String> {
+    (!value.is_null()).then(|| value.to_string())
+}
+
+/// The group that a part of a token tree is, `empty` where it is absent;
+/// `None` for a token or any other value.
+fn group_of<'a>(value: &'a Value, empty: &'a Map<String, Value>) -> Option<&'a Map<String, Value>> {
+    match value {
+        Value::Null => Some(empty),
+        Value::Object(object) if !is_token(value) => Some(object),
+        _ => None,
+    }
+}
+
+/// The three-way merge of a part of a token tree (`null` where it is absent):
+/// what only one side changed takes that side's state, a group that both
+/// sides changed is merged key by key, and a token (or any other value) that
+/// both changed differently is a conflict that keeps the mainline state.
+fn merge_tokens(
+    base: &Value,
+    mainline: &Value,
+    mine: &Value,
+    path: &str,
+    found: &mut Vec<Found>,
+) -> Value {
+    if mine == base || mainline == mine {
+        return mainline.clone();
+    }
+    if mainline == base {
+        return mine.clone();
+    }
+    let empty = Map::new();
+    if let (Some(base_group), Some(mainline_group), Some(mine_group)) = (
+        group_of(base, &empty),
+        group_of(mainline, &empty),
+        group_of(mine, &empty),
+    ) {
+        if !mainline.is_null() && !mine.is_null() {
+            let mut keys: Vec<&String> = mainline_group.keys().collect();
+            keys.extend(
+                mine_group
+                    .keys()
+                    .filter(|key| !mainline_group.contains_key(*key)),
+            );
+            let mut merged = Map::new();
+            for key in keys {
+                let at = if path.is_empty() {
+                    key.clone()
+                } else {
+                    format!("{path}.{key}")
+                };
+                let side = |group: &Map<String, Value>| group.get(key).cloned().unwrap_or_default();
+                let value = merge_tokens(
+                    &side(base_group),
+                    &side(mainline_group),
+                    &side(mine_group),
+                    &at,
+                    found,
+                );
+                if !value.is_null() {
+                    merged.insert(key.clone(), value);
+                }
+            }
+            return Value::Object(merged);
+        }
+    }
+    found.push(Found {
+        node: token_name(path),
+        kind: ConflictKind::BothChanged,
+        mainline: token_side(mainline),
+        changeset: token_side(mine),
+    });
+    mainline.clone()
+}
+
+/// The parts of a token tree that `side` changed from `base`: each token, or
+/// other value, that it added, changed or removed.
+fn token_changes(base: &Value, side: &Value, path: &str, out: &mut Vec<String>) {
+    if base == side {
+        return;
+    }
+    match (base, side) {
+        (Value::Object(b), Value::Object(s)) if !is_token(base) && !is_token(side) => {
+            let keys = b.keys().chain(s.keys().filter(|key| !b.contains_key(*key)));
+            for key in keys {
+                let at = if path.is_empty() {
+                    key.clone()
+                } else {
+                    format!("{path}.{key}")
+                };
+                let get = |group: &Map<String, Value>| group.get(key).cloned().unwrap_or_default();
+                token_changes(&get(b), &get(s), &at, out);
+            }
+        }
+        _ => out.push(token_name(path)),
+    }
+}
+
+/// Replays the change set's token changes onto the mainline token tree of a
+/// design system, token by token: a token that only the mainline changed
+/// keeps its mainline value, and one that both sides changed is a conflict
+/// that keeps it too. When the merged tree fails the checks (a replayed token
+/// refers to one that the mainline removed, say), the mainline tree stays and
+/// each token that the change set changed is a conflict.
+async fn rebase_tokens(
+    state: &AppState,
+    workspace_id: &str,
+    chunks: [Option<&str>; 3],
+) -> Result<(Option<Snapshot>, Vec<Found>), ApiError> {
+    let [base_chunk, mainline_chunk, mine_chunk] = chunks;
+    let base = load_tokens(state, workspace_id, base_chunk).await?;
+    let mainline = load_tokens(state, workspace_id, mainline_chunk).await?;
+    let mine = load_tokens(state, workspace_id, mine_chunk).await?;
+    let mut found = Vec::new();
+    let merged = merge_tokens(&base, &mainline, &mine, "", &mut found);
+    let tree = if merged.is_null() {
+        None
+    } else {
+        match TokenTree::from_json(&merged) {
+            Ok(tree) => Some(tree.to_json()),
+            Err(_) => {
+                let mut changes = Vec::new();
+                token_changes(&base, &mine, "", &mut changes);
+                for node in changes {
+                    if found.iter().any(|f| f.node == node) {
+                        continue;
+                    }
+                    let at = |tree: &Value| {
+                        let pointer = format!("/{}", node.replace('.', "/"));
+                        tree.pointer(&pointer).and_then(token_side)
+                    };
+                    found.push(Found {
+                        mainline: at(&mainline),
+                        changeset: at(&mine),
+                        node,
+                        kind: ConflictKind::BothChanged,
+                    });
+                }
+                (!mainline.is_null()).then(|| mainline.clone())
+            }
+        }
+    };
+    let snapshot = tree.map(|tree| Snapshot {
+        html: tree.to_string(),
+        nodes: Vec::new(),
+    });
+    Ok((snapshot, found))
+}
+
+/// Replays the change set's latest version of a doc onto the doc's mainline
+/// version: saves the result as a version of the change set, records the
+/// conflicts and bases the draft on the mainline. Returns the new version's ID
+/// and the conflicts. A design system's tokens are replayed token by token.
+async fn rebase_doc(
+    state: &AppState,
+    tx: &mut Tx,
+    ids: (&str, &str),
+    changed: &Changed,
+    mainline_version: &str,
+    agent: &Value,
+) -> Result<(String, Vec<RecordedConflict>), ApiError> {
+    let (workspace_id, project_id) = ids;
+    let draft = &changed.draft;
+    let base_chunk = match &draft.base_version_id {
+        Some(base) => chunk_of_version(tx, &draft.doc_id, base).await?,
+        None => None,
+    };
+    let mainline_chunk = chunk_of_version(tx, &draft.doc_id, mainline_version).await?;
+    let chunks = [
+        base_chunk.as_deref(),
+        mainline_chunk.as_deref(),
+        changed.chunk.as_deref(),
+    ];
+    let (snapshot, found) = if is_design_system(tx, &draft.doc_id).await? {
+        rebase_tokens(state, workspace_id, chunks).await?
+    } else {
+        rebase_html(state, workspace_id, chunks).await?
+    };
+
     let removed = snapshot.is_none();
     let chunk = match &snapshot {
         Some(snapshot) => Some(store_chunk(state, workspace_id, &snapshot.html).await?),
@@ -319,10 +542,14 @@ async fn rebase_doc(
     )
     .await?;
 
-    let mut conflicts = Vec::with_capacity(conflict_nodes.len());
-    for (node, kind) in conflict_nodes {
-        let mainline_html = mainline.node_html(node);
-        let changeset_html = mine.node_html(node);
+    let mut conflicts = Vec::with_capacity(found.len());
+    for Found {
+        node,
+        kind,
+        mainline: mainline_html,
+        changeset: changeset_html,
+    } in found
+    {
         let id: String = sqlx::query_scalar(
             "INSERT INTO conflicts (workspace_id, changeset_id, doc_id, node, \
              kind, mainline_version_id, changeset_version_id, mainline_html, changeset_html) \
@@ -332,7 +559,7 @@ async fn rebase_doc(
         .bind(workspace_id)
         .bind(&draft.changeset_id)
         .bind(&draft.doc_id)
-        .bind(node.to_string())
+        .bind(&node)
         .bind(kind.as_str())
         .bind(mainline_version)
         .bind(&changed.version_id)
@@ -350,7 +577,7 @@ async fn rebase_doc(
                 "conflict_id": id,
                 "changeset_id": draft.changeset_id,
                 "doc_id": draft.doc_id,
-                "node": node.to_string(),
+                "node": node,
                 "kind": kind.as_str(),
             }),
         )
@@ -359,7 +586,7 @@ async fn rebase_doc(
             id,
             changeset_id: draft.changeset_id.clone(),
             doc_id: draft.doc_id.clone(),
-            node: node.to_string(),
+            node,
             kind,
             mainline: ConflictSide {
                 version_id: mainline_version.to_string(),
@@ -630,8 +857,19 @@ async fn has_unsaved_operations(
             changed.chunk.as_deref().unwrap_or_default(),
         )
         .await?;
-        let draft_html = held.as_ref().map(|loaded| loaded.doc.to_html());
-        return Ok(draft_html.is_some_and(|draft_html| draft_html != html));
+        // A design system's version holds its token tree as JSON.
+        let draft_content = held.as_ref().map(|loaded| {
+            if loaded.design_system {
+                loaded
+                    .tokens
+                    .as_ref()
+                    .map(|tokens| tokens.to_json().to_string())
+                    .unwrap_or_default()
+            } else {
+                loaded.doc.to_html()
+            }
+        });
+        return Ok(draft_content.is_some_and(|content| content != html));
     }
     sqlx::query_scalar(
         "SELECT EXISTS (SELECT 1 FROM draft_ops o, versions v \
@@ -644,6 +882,17 @@ async fn has_unsaved_operations(
     .fetch_one(&mut **tx)
     .await
     .map_err(ApiError::database)
+}
+
+/// Whether the doc is a project's design system, whose versions hold a token
+/// tree rather than HTML.
+async fn is_design_system(tx: &mut Tx, doc_id: &str) -> Result<bool, ApiError> {
+    let kind: String = sqlx::query_scalar("SELECT kind FROM docs WHERE id = $1::uuid")
+        .bind(doc_id)
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(ApiError::database)?;
+    Ok(kind == "design-system")
 }
 
 /// Fails with 404 when the change set is not in the project, and with 409

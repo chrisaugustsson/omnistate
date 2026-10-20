@@ -123,6 +123,8 @@ files never use that form: `"$value": "$color.ink"` is refused.
 A reference that points at an unknown token, and a loop of references (a token
 that refers to itself, or two or more tokens that refer to each other) are
 refused, in every mode; the message names the token and, for a loop, the mode.
+The `$value`s alone must not loop either, even where a token on the loop has
+mode values that end every mode's chain.
 `TokenTree::resolve` follows the references of a token in one mode, composite
 fields included, and gives its value.
 
@@ -156,3 +158,14 @@ Every typography value has a definite `lineHeight`: a number, a multiple of the
 font size, also in each mode's value. A value without one, or with `"normal"`,
 is refused, so text that uses a typography token never falls back to the font's
 normal line height (Q44).
+
+## Rebasing
+
+A design system change set that is behind the mainline rebases like any other
+(`omni changeset rebase`). Its token changes since the draft's base, each token
+it added, changed or removed, are replayed onto the mainline tree, and a token
+that only the mainline changed keeps its mainline value. A token that both
+sides changed differently is a conflict named by its path (`color.surface`),
+with each side's token as JSON, and keeps its mainline value. When the merged
+tree fails the checks above, the mainline tree stays and every token that the
+change set changed is a conflict.
