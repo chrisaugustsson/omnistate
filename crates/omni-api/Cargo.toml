@@ -83,3 +83,7 @@ required-features = ["stack-tests"]
 [[test]]
 name = "rebase"
 required-features = ["stack-tests"]
+
+[[test]]
+name = "rebase_concurrency"
+required-features = ["stack-tests"]
