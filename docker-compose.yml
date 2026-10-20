@@ -86,6 +86,9 @@ services:
       dockerfile: docker/test.Dockerfile
     environment:
       OMNI_STACK_URL: http://proxy
+      # Linking several test binaries at once runs the Docker VM out of
+      # memory (ld killed with signal 9), so link one at a time.
+      CARGO_BUILD_JOBS: "1"
     volumes:
       - .:/workspace
       - test-target:/cargo-target
