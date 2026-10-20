@@ -1744,6 +1744,79 @@ fn saving_a_design_version_without_a_design_system_draft_records_the_mainline_on
 }
 
 #[test]
+fn a_design_system_of_components_without_tokens_is_saved_with_the_design_that_uses_it() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    let changeset = new_changeset(f, client, &project);
+    let design_system = create_doc(
+        f,
+        client,
+        &project,
+        &changeset,
+        "design-system",
+        "ui",
+        "Design system",
+    );
+    // Components only: the change set imports no tokens.
+    let icons = import_components(f, client, &project, &changeset, &icon_tags(&Ids::new()));
+    let ids = ids_in(&icons["components"]);
+    let design = create_doc(f, client, &project, &changeset, "design", "ui", "Icons");
+    import_design(
+        f,
+        client,
+        &project,
+        &changeset,
+        &design,
+        &format!(
+            r#"<Page name="Home">
+  <Board name="Toolbar" x={{0}} y={{0}} width={{375}} height={{64}} dir="row" gap={{8}}>
+    <Instance name="Cart button" component="{}"/>
+  </Board>
+</Page>
+"#,
+            id(&ids, "Cart")
+        ),
+    );
+    assert_eq!(versions_of(&design_system, &changeset), 0);
+
+    // The design save does not dead-end on the missing tokens: it saves the
+    // design system draft first and records that version.
+    let saved = save(f, client, &project, &changeset, &design);
+    let recorded = saved["design_system_version_id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("the version records its design system version: {saved}"))
+        .to_string();
+    assert_eq!(
+        versions_of(&design_system, &changeset),
+        1,
+        "the design system draft was saved first"
+    );
+    let design_system_version = read_version(f, client, &project, &recorded);
+    assert_eq!(design_system_version["doc_id"], design_system.as_str());
+    assert_eq!(design_system_version["changeset_id"], changeset.as_str());
+    let viewed = read_version(f, client, &project, &id_of(&saved));
+    assert_eq!(viewed["design_system_version_id"], recorded.as_str());
+    assert_eq!(
+        component_in(&viewed, "Cart")["id"],
+        id(&ids, "Cart").as_str(),
+        "the instance resolves against the recorded components: {viewed:#}"
+    );
+
+    // Both merge, and the design system's mainline is the recorded version.
+    let approved = merge(f, client, &project, &changeset);
+    let approved_versions = approved["approved_versions"]
+        .as_array()
+        .unwrap_or_else(|| panic!("the approval lists versions: {approved}"));
+    assert!(
+        approved_versions
+            .iter()
+            .any(|v| v["doc_id"] == design_system.as_str() && v["version_id"] == recorded.as_str()),
+        "{approved:#}"
+    );
+    assert_eq!(mainline_of(f, client, &project, &design_system), recorded);
+}
+
+#[test]
 fn viewers_and_comparisons_use_the_recorded_design_system_version() {
     let (f, client) = ready();
     let lib = library(f, client);
