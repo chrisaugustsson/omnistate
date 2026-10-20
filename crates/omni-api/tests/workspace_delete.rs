@@ -524,6 +524,26 @@ async fn fill_workspace(conn: &mut PgConnection, workspace: &str, membership: &s
             .await
             .expect("insert a node of the node index");
 
+            // US-030: one row of the chunk index, the tenant table `chunks`
+            // (tests/boards.rs pins its name and the columns without a
+            // default, `workspace_id` and `hash`). Seeded as soon as it
+            // exists, for the same reason as above.
+            let chunks_exist: bool =
+                sqlx::query_scalar("SELECT to_regclass('public.chunks') IS NOT NULL")
+                    .fetch_one(&mut *conn)
+                    .await
+                    .expect("look for the chunk index");
+            if chunks_exist {
+                sqlx::query(
+                    "INSERT INTO chunks (workspace_id, hash) \
+                     VALUES ($1::uuid, 'af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262')",
+                )
+                .bind(workspace)
+                .execute(&mut *conn)
+                .await
+                .expect("insert a chunk of the chunk index");
+            }
+
             // US-025: the approval of the change set, which records the
             // version. It may live in the existing tables; if it lives in the
             // tenant table `approvals` (tests/approve_merge.rs pins its name

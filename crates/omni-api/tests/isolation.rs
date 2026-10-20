@@ -17,12 +17,13 @@
 //!   `Global` (no workspace in the path, with the reason). The path may hold
 //!   `{project_id}`, `{changeset_id}`, `{key_id}`, `{attachment_id}`,
 //!   `{doc_id}`, `{version_id}`, `{other_version_id}` and `{conflict_id}`,
-//!   which the suite fills with the IDs of the seeded records; a path with another
-//!   placeholder, or a registry route without a case, fails the suite. A body
-//!   may hold `<claimed_node>`, which the suite fills with the section that the
-//!   record's workspace claimed (see below), so that an attack on the claim
-//!   routes names a node that really is claimed. The
-//!   seeded doc (US-022) was created in the open change set `{changeset_id}`,
+//!   which the suite fills with the IDs of the seeded records, and
+//!   `{board_id}`, which it fills with a node ID that no board has (US-030);
+//!   a path with another placeholder, or a registry route without a case,
+//!   fails the suite. A body may hold `<claimed_node>`, which the suite fills
+//!   with the section that the record's workspace claimed (see below), so
+//!   that an attack on the claim routes names a node that really is claimed.
+//!   The seeded doc (US-022) was created in the open change set `{changeset_id}`,
 //!   which has its draft, and has one applied operation; once the claim routes
 //!   exist (US-023), the draft also has a section that the workspace's agent
 //!   claimed, and once the version routes exist (US-024), the draft was saved
@@ -381,6 +382,18 @@ const CASES: &[Case] = &[
     case(
         "GET",
         "/api/v1/w/{workspace_id}/projects/{project_id}/components/usage",
+        None,
+        Kind::Workspace,
+    ),
+    case(
+        "GET",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs/{doc_id}/boards/{board_id}",
+        None,
+        Kind::Workspace,
+    ),
+    case(
+        "GET",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}/boards/{board_id}",
         None,
         Kind::Workspace,
     ),
@@ -1390,6 +1403,10 @@ fn fill(template: &str, workspace: &Side, record: &Side) -> String {
             "version_id" => &record.version_id,
             "other_version_id" => &record.other_version_id,
             "conflict_id" => &record.conflict_id,
+            // US-030: an attack on a board is refused at the workspace or the
+            // project, before any board is looked up, so a node ID that no
+            // board has stands in for one.
+            "board_id" => UNKNOWN_NODE,
             other => panic!(
                 "{template} has the placeholder {{{other}}}, for which the suite has no seeded \
                  ID: add it to Side and fill() in tests/isolation.rs"

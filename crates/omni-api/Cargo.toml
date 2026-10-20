@@ -22,14 +22,19 @@ utoipa = "5"
 serde = { version = "1", features = ["derive"] }
 omni-core = { path = "../omni-core" }
 
+[dev-dependencies]
+# tests/boards.rs checks that a chunk is named by the BLAKE3 hash of its bytes.
+blake3 = "1"
+
 [features]
 # The setup, key, deletion, change set, doc, claim, version, approval, rebase
 # and stack tests (tests/setup_login.rs, tests/api_keys.rs,
 # tests/workspace_delete.rs, tests/changesets.rs, tests/live_events.rs,
 # tests/isolation.rs, tests/attachments.rs, tests/docs.rs, tests/claims.rs,
 # tests/versions.rs, tests/approve_merge.rs, tests/rebase.rs, tests/tokens.rs,
-# tests/stack_auth.rs) talk to Postgres and the running Compose stack, so they
-# only build with this feature, which the Compose test container turns on.
+# tests/boards.rs, tests/stack_auth.rs) talk to Postgres and the running
+# Compose stack, so they only build with this feature, which the Compose test
+# container turns on.
 stack-tests = []
 
 [[test]]
@@ -94,4 +99,8 @@ required-features = ["stack-tests"]
 
 [[test]]
 name = "components"
+required-features = ["stack-tests"]
+
+[[test]]
+name = "boards"
 required-features = ["stack-tests"]
