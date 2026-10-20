@@ -1,0 +1,181 @@
+{
+  "id": "a0000001",
+  "type": "page",
+  "name": "Instances",
+  "children": [
+    {
+      "id": "a0000002",
+      "type": "board",
+      "name": "Checkout",
+      "x": 0,
+      "y": 0,
+      "width": {
+        "fixed": 760
+      },
+      "height": {
+        "fixed": 472
+      },
+      "layout": {
+        "mode": "none"
+      },
+      "fills": [
+        {
+          "type": "solid",
+          "color": "$color.surface"
+        }
+      ],
+      "clip": true,
+      "children": [
+        {
+          "id": "a0000011",
+          "type": "text",
+          "name": "Title",
+          "x": 32,
+          "y": 24,
+          "width": "hug",
+          "height": "hug",
+          "content": "Instances and tokens",
+          "fontFamily": "Inter",
+          "fontSize": 28,
+          "fontWeight": 700,
+          "lineHeight": 1.4,
+          "color": "$color.ink"
+        },
+        {
+          "id": "a0000012",
+          "type": "text",
+          "name": "Subtitle",
+          "x": 32,
+          "y": 64,
+          "width": "hug",
+          "height": "hug",
+          "content": "Every component below is an instance. Switch the mode to see the tokens change.",
+          "fontFamily": "Inter",
+          "fontSize": 14,
+          "fontWeight": 400,
+          "lineHeight": 1.4,
+          "color": "$color.muted"
+        },
+        {
+          "id": "a0000021",
+          "type": "instance",
+          "name": "Primary",
+          "x": 32,
+          "y": 112,
+          "component": "c0000003"
+        },
+        {
+          "id": "a0000022",
+          "type": "instance",
+          "name": "Secondary",
+          "x": 216,
+          "y": 112,
+          "component": "c0000003",
+          "props": {
+            "style": "secondary"
+          }
+        },
+        {
+          "id": "a0000023",
+          "type": "instance",
+          "name": "No icon",
+          "x": 400,
+          "y": 112,
+          "component": "c0000003",
+          "props": {
+            "showIcon": false,
+            "label": "Pay now"
+          }
+        },
+        {
+          "id": "a0000024",
+          "type": "instance",
+          "name": "Cancel",
+          "x": 584,
+          "y": 112,
+          "component": "c0000003",
+          "props": {
+            "style": "secondary",
+            "showIcon": false,
+            "label": "Cancel"
+          }
+        },
+        {
+          "id": "a0000031",
+          "type": "instance",
+          "name": "Heart",
+          "x": 32,
+          "y": 176,
+          "component": "c0000003",
+          "props": {
+            "icon": "c0000002",
+            "label": "Save"
+          }
+        },
+        {
+          "id": "a0000032",
+          "type": "instance",
+          "name": "Overridden",
+          "x": 216,
+          "y": 176,
+          "component": "c0000003",
+          "props": {
+            "label": "Notify me"
+          },
+          "overrides": {
+            "c0000033": {
+              "visible": true,
+              "fills": [
+                {
+                  "type": "solid",
+                  "color": "#22c55e"
+                }
+              ]
+            },
+            "c0000031": {
+              "visible": false
+            }
+          }
+        },
+        {
+          "id": "a0000033",
+          "type": "instance",
+          "name": "Badge",
+          "x": 400,
+          "y": 176,
+          "component": "c0000004",
+          "props": {
+            "style": "secondary",
+            "showBadge": true,
+            "label": "Inbox"
+          }
+        },
+        {
+          "id": "a0000041",
+          "type": "instance",
+          "name": "Summary",
+          "x": 32,
+          "y": 260,
+          "component": "c0000005"
+        },
+        {
+          "id": "a0000042",
+          "type": "instance",
+          "name": "Shipping",
+          "x": 392,
+          "y": 260,
+          "component": "c0000005",
+          "props": {
+            "title": "Shipping",
+            "featured": true
+          },
+          "overrides": {
+            "c0000032": {
+              "content": "Edit address"
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

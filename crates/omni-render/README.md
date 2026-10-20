@@ -105,8 +105,10 @@ frame, strokes inside the edge of boxes but centered on vectors, shadows as CSS
   to the rounded box when `clip` is set. Images paint like frames with one image,
   and vectors fill and stroke their SVG path, in pixels from the corner of their
   box.
-- Instances and token references are out of scope until US-032: an instance is
-  not drawn, and a color that is a token is not painted.
+- `paint::draw` itself does not resolve instances or token references: an
+  instance is not drawn, and a color that is a token is not painted. A
+  `Scene` made with a design system resolves both before it lays out and draws
+  (see "Instances and tokens").
 - The host supplies images (`Assets::add_image`, PNG or JPEG bytes for an
   `attachment:<id>`) and font files (`Assets::add_font`, for a family name). An
   image that was not supplied draws nothing. Text in a family that was not
@@ -329,8 +331,8 @@ The host page hears about changes through `Scene::take_events`, which gives an
 or the selected node actually changes, oldest first. `boundsOf`
 (`Scene::bounds_of`) gives the box of a node address in page coordinates. An
 address is `<id>`, or `<instanceId>/<componentNodeId>` for a node inside a
-component instance; the bounds of the latter wait for components to be resolved
-(US-032).
+component instance, which a scene made with a design system answers (see
+"Instances and tokens").
 
 The overlay is the outlines of the hovered and the selected node, labeled with
 the node's name: `Scene::overlay(&viewport)` gives their boxes in screen pixels
@@ -344,6 +346,86 @@ hears (JSON arrays), and `_omni_render_bounds_of` (the box of an address, in pag
 and in canvas pixels, as JSON). The stress page wires them to click, dblclick,
 pointermove and Escape listeners, draws the outlines in `#overlay`, and shows the
 selected node and its size.
+
+## Instances and tokens
+
+A design only names the components it places and the tokens it uses, so a
+`Scene` made with a design system, `Scene::with_system(page, assets,
+DesignSystem::from_json(&version)?)`, resolves both before it lays out and
+draws. `DesignSystem::from_json` reads a design system version as the API serves
+it: the DTCG token tree (`docs/formats/tokens.md`) with the design system's
+`component` nodes in a list under `$components`. A token tree that fails the
+token checks, and a `$components` that is not a list of components, are refused.
+`src/resolve.rs` does the work and gives back an ordinary page, so layout,
+painting and selection are the ones of every other page.
+
+- **Expanding an instance.** The instance becomes a frame with its own ID,
+  placement and sizes, and the component's size on each axis it leaves out, the
+  component's layout and style, and the component's layers as children. An
+  instance is drawn in the box that layout gives it, like any frame.
+- **Property values.** A property the instance leaves out has the component's
+  default. A boolean property shows or hides the layers bound to it
+  (`bind: {visible}`), a text property replaces the text of a text layer
+  (`bind: {content}`) and is laid out with it, and a slot property swaps the
+  component of an instance layer (`bind: {component}`), whose value is a
+  component's node ID. Hidden layers take no space and cannot be hit.
+- **Variants.** The components with the same name and the same variant
+  properties (names and values) are the variants of one set, and each one's
+  defaults are its own variant values. The instance shows the variant of its
+  component's set whose defaults equal the instance's variant values, the
+  component's own defaults for the ones it leaves out. A component with another
+  name is never in the set, whatever its properties. The component that the
+  instance names is shown when it matches, and when nothing does.
+- **Overrides.** The instance's `overrides` apply on top of the property values,
+  by the ID of the component node they name: `content` replaces a text, `fills`
+  the fills of a node (the color of a text), `visible` shows or hides a node, and
+  `component` swaps the component of an instance layer. They also reach the
+  nodes of components placed inside the component, and an override beats a
+  bound property.
+- **Tokens and modes.** Every token reference in the design and in the
+  components, for colors, lengths, opacities and shadows alike, is replaced by
+  the token's value in the scene's mode before layout, so a token can change the
+  layout as well as the colors (`$spacing.pad` as padding). The scene starts in
+  the design system's first mode, `Scene::set_mode` switches it, which lays the
+  page out and draws it again, and a mode that the design system does not list is
+  refused, leaving the scene in its current mode. The selection and the hovered
+  node stay where they are.
+- **Missing components and tokens.** An instance of a component that the design
+  system does not have, and a node with a token reference that it does not have,
+  are drawn as an error placeholder: a magenta-tinted box with a magenta edge in
+  the node's box (magenta text for a text), never outside it. `Scene::errors`
+  lists each with the node's address and what is missing, `Missing::Component` or
+  `Missing::Token`, and a page with nothing missing has none. A component that
+  holds itself is drawn as a placeholder too, 24 instances deep.
+- **Addresses.** A node inside an instance is `<instanceId>/<componentNodeId>`,
+  where the instance is the one on the page, also for a node inside an instance
+  inside an instance. `Scene::node_at`, the selection events, the overlay and
+  `Scene::bounds_of` all use it, so Cmd + click on the badge of a button selects
+  `<buttonInstanceId>/<badgeNodeId>`. The renderer gives every node inside an
+  instance an ID of its own while it draws, because instances of one component
+  share its node IDs; they never leave the scene. `Scene::hovered`, `selected`
+  and `context` give the component node's ID.
+- **Cost.** The page is converted to JSON and back when a scene is made with a
+  design system and whenever the mode changes. Scenes without a design system
+  skip it.
+
+The WebAssembly module exports `_omni_render_scene_set_system` (a design system
+version as JSON, for the loaded scene and every scene loaded after it),
+`_omni_render_scene_set_mode` (`false` for a mode that is not listed) and
+`_omni_render_scene_errors`, a JSON array with one entry for each missing
+thing: `[{"node": "<address>", "component": "<id>"}, {"node": "<address>",
+"token": "$color.surface"}]`.
+
+### The instances page
+
+`render-sandbox/instances.html` draws `render-sandbox/instances.json` with the
+design system `render-sandbox/instances-system.json` (buttons with a variant, a
+boolean, a text and a slot property, a card that holds a button, overrides) on a
+WebGL canvas through the module, in light and in dark mode, and shows the errors
+the module reports. It is the human check of this section: open it after `make
+render-wasm` (serve `render-sandbox/` with any static server) and look at both
+modes. The tests draw the same sample natively in both modes and require that
+nothing is missing.
 
 ## Layout
 

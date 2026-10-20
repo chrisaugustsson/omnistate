@@ -15,6 +15,7 @@ use crate::layout::{self, LayoutBox};
 use crate::paint::{self, Assets};
 use crate::sandbox::{self, SandboxScene};
 use crate::select::{Event, Modifiers, NodeAddress, Outline, OutlineKind};
+use crate::system::{DesignSystem, Missing};
 use crate::view::{Controls, Detail, FrameStats, Scene, Viewport};
 use serde_json::{Value, json};
 
@@ -39,6 +40,9 @@ thread_local! {
     /// What the page supplied for drawing: images and fonts, which stay until
     /// the page is closed.
     static ASSETS: RefCell<Assets> = RefCell::new(Assets::new());
+    /// The design system version that scenes resolve against, as the page
+    /// supplied it (`DesignSystem::from_json`).
+    static SYSTEM: RefCell<Option<Value>> = const { RefCell::new(None) };
     /// The scene of the stress page, once it has loaded one.
     static STAGE: RefCell<Option<Stage>> = const { RefCell::new(None) };
     /// The Skia context on the page's WebGL context. Frames reuse it, so that
@@ -103,14 +107,71 @@ pub fn layout_design(design_json: &str) -> Result<String, String> {
 pub fn scene_load(design_json: &str) -> Result<(), String> {
     let page: Node = serde_json::from_str(design_json).map_err(|error| error.to_string())?;
     let assets = ASSETS.take();
+    let system = SYSTEM
+        .with_borrow(|system| system.as_ref().map(DesignSystem::from_json))
+        .transpose()?;
+    let scene = match system {
+        Some(system) => Scene::with_system(page, assets, system),
+        None => Scene::new(page, assets),
+    };
     let stage = Stage {
-        scene: Scene::new(page, assets),
+        scene,
         controls: Controls::new(Viewport::new(1.0, 1.0)),
         fit_pending: true,
         stats: None,
     };
     STAGE.set(Some(stage));
     Ok(())
+}
+
+/// Reads `system_json`, a design system version (`DesignSystem::from_json`: a
+/// DTCG token tree with the components under `$components`), and makes the
+/// loaded scene and every scene loaded after it resolve their instances and
+/// token references against it, in its first mode.
+pub fn scene_set_system(system_json: &str) -> Result<(), String> {
+    let json: Value = serde_json::from_str(system_json).map_err(|error| error.to_string())?;
+    let system = DesignSystem::from_json(&json)?;
+    SYSTEM.set(Some(json));
+    STAGE.with_borrow_mut(|stage| {
+        if let Some(stage) = stage {
+            stage.scene.set_system(system);
+        }
+    });
+    Ok(())
+}
+
+/// Resolves the tokens of the loaded scene in `mode` from now on. Fails if no
+/// scene is loaded, or if the scene's design system has no such mode.
+pub fn scene_set_mode(mode: &str) -> Result<(), String> {
+    STAGE.with_borrow_mut(|stage| {
+        stage
+            .as_mut()
+            .ok_or("no scene is loaded")?
+            .scene
+            .set_mode(mode)
+    })
+}
+
+/// The nodes of the loaded scene that are drawn as error placeholders, as a
+/// JSON array: `[{"node": "<address>", "component": "<id>"}, {"node":
+/// "<address>", "token": "$color.surface"}]`.
+pub fn scene_errors() -> String {
+    let errors = with_stage(|scene, _| {
+        scene
+            .errors()
+            .iter()
+            .map(|error| match &error.missing {
+                Missing::Component(id) => {
+                    json!({"node": error.node.to_string(), "component": id.to_string()})
+                }
+                Missing::Token(token) => {
+                    json!({"node": error.node.to_string(), "token": token.as_str()})
+                }
+            })
+            .collect::<Vec<Value>>()
+    })
+    .unwrap_or_default();
+    Value::Array(errors).to_string()
 }
 
 /// Draws the scene in its current view on the default framebuffer of the

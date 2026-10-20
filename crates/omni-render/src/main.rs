@@ -28,6 +28,8 @@ mod exports {
         static EVENTS: RefCell<CString> = RefCell::new(CString::default());
         /// The result of the last `omni_render_overlay`.
         static OUTLINES: RefCell<CString> = RefCell::new(CString::default());
+        /// The result of the last `omni_render_scene_errors`.
+        static ERRORS: RefCell<CString> = RefCell::new(CString::default());
     }
 
     /// Takes the text or bytes at `ptr` and `len` from the page.
@@ -163,6 +165,50 @@ mod exports {
         // SAFETY: the caller promises the block is there.
         let result = unsafe { text(design, design_len) }.and_then(omni_render::web::scene_load);
         succeeded(result)
+    }
+
+    /// Reads the design system version, JSON in the format of
+    /// `omni_render::system::DesignSystem::from_json` (a DTCG token tree with
+    /// the components under `$components`), and makes the loaded scene and
+    /// every scene loaded after it resolve their instances and token
+    /// references against it, in its first mode. Returns whether it was a
+    /// design system version.
+    ///
+    /// # Safety
+    /// The pointer and length must be a block from `omni_render_alloc`.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn omni_render_scene_set_system(
+        system: *const u8,
+        system_len: usize,
+    ) -> bool {
+        // SAFETY: the caller promises the block is there.
+        let result =
+            unsafe { text(system, system_len) }.and_then(omni_render::web::scene_set_system);
+        succeeded(result)
+    }
+
+    /// Resolves the tokens of the loaded scene in the mode from now on.
+    /// Returns `false` if no scene is loaded or the design system has no such
+    /// mode.
+    ///
+    /// # Safety
+    /// The pointer and length must be a block from `omni_render_alloc`.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn omni_render_scene_set_mode(mode: *const u8, mode_len: usize) -> bool {
+        // SAFETY: the caller promises the block is there.
+        let result = unsafe { text(mode, mode_len) }.and_then(omni_render::web::scene_set_mode);
+        succeeded(result)
+    }
+
+    /// The nodes of the scene that are drawn as error placeholders, as a
+    /// NUL-ended JSON array that stays until the next call: `[{"node":
+    /// "<address>", "component": "<id>"}, {"node": "<address>", "token":
+    /// "$color.surface"}]`, one entry for each component or token that is
+    /// missing from the design system.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn omni_render_scene_errors() -> *const c_char {
+        ERRORS.set(CString::new(omni_render::web::scene_errors()).unwrap_or_default());
+        ERRORS.with_borrow(|errors| errors.as_ptr())
     }
 
     /// Draws the scene in its current view on the default framebuffer of the

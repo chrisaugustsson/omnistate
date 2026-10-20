@@ -24,9 +24,10 @@
 //! - Images fit like CSS `object-fit`, centered. An image that is magnified
 //!   keeps its pixels square, as CSS `image-rendering: pixelated` does, so a
 //!   small picture stays crisp; one that is reduced is filtered.
-//! - Values that are token references are not resolved here (US-032): a
-//!   fill, stroke or shadow whose color is a token is not drawn, and a token
-//!   for a length or an opacity is as if it were left out.
+//! - Values that are token references are not resolved here: a fill, stroke or
+//!   shadow whose color is a token is not drawn, and a token for a length or an
+//!   opacity is as if it were left out. A `view::Scene` made with a design
+//!   system resolves them, and expands instances, before it draws.
 
 use crate::layout::{self, LayoutBox, ShapedTexts};
 use crate::text::{Fonts, ShapedText, literal};
@@ -331,7 +332,8 @@ impl Painter<'_> {
             NodeData::Vector(vector) => self.group(node, vector.opacity.as_ref(), || {
                 self.vector(vector, rect);
             }),
-            // Instances wait for components and tokens (US-032).
+            // Instances are expanded into frames before drawing, by a scene
+            // that has a design system.
             NodeData::Instance(_) => {}
         }
     }

@@ -1,0 +1,563 @@
+{
+  "$description": "Sample design system for the instances page: light and dark mode.",
+  "$extensions": {
+    "omnistate": {
+      "modes": [
+        "light",
+        "dark"
+      ]
+    }
+  },
+  "color": {
+    "$type": "color",
+    "surface": {
+      "$value": "#ffffff",
+      "$extensions": {
+        "omnistate": {
+          "modes": {
+            "light": "#ffffff",
+            "dark": "#0f172a"
+          }
+        }
+      }
+    },
+    "panel": {
+      "$value": "#f1f5f9",
+      "$extensions": {
+        "omnistate": {
+          "modes": {
+            "light": "#f1f5f9",
+            "dark": "#1e293b"
+          }
+        }
+      }
+    },
+    "border": {
+      "$value": "#cbd5e1",
+      "$extensions": {
+        "omnistate": {
+          "modes": {
+            "light": "#cbd5e1",
+            "dark": "#334155"
+          }
+        }
+      }
+    },
+    "ink": {
+      "$value": "#0f172a",
+      "$extensions": {
+        "omnistate": {
+          "modes": {
+            "light": "#0f172a",
+            "dark": "#f8fafc"
+          }
+        }
+      }
+    },
+    "muted": {
+      "$value": "#475569",
+      "$extensions": {
+        "omnistate": {
+          "modes": {
+            "light": "#475569",
+            "dark": "#94a3b8"
+          }
+        }
+      }
+    },
+    "brand": {
+      "$value": "#2563eb",
+      "$extensions": {
+        "omnistate": {
+          "modes": {
+            "light": "#2563eb",
+            "dark": "#60a5fa"
+          }
+        }
+      }
+    },
+    "onBrand": {
+      "$value": "#ffffff",
+      "$extensions": {
+        "omnistate": {
+          "modes": {
+            "light": "#ffffff",
+            "dark": "#0f172a"
+          }
+        }
+      }
+    },
+    "accent": {
+      "$value": "#f59e0b",
+      "$extensions": {
+        "omnistate": {
+          "modes": {
+            "light": "#f59e0b",
+            "dark": "#fbbf24"
+          }
+        }
+      }
+    }
+  },
+  "spacing": {
+    "$type": "dimension",
+    "pad": {
+      "$value": "20px",
+      "$extensions": {
+        "omnistate": {
+          "modes": {
+            "light": "20px",
+            "dark": "28px"
+          }
+        }
+      }
+    }
+  },
+  "radius": {
+    "$type": "dimension",
+    "card": {
+      "$value": "12px",
+      "$extensions": {
+        "omnistate": {
+          "modes": {
+            "light": "12px",
+            "dark": "16px"
+          }
+        }
+      }
+    },
+    "control": {
+      "$value": "8px"
+    }
+  },
+  "$components": [
+    {
+      "id": "c0000001",
+      "type": "component",
+      "name": "Star",
+      "width": {
+        "fixed": 20
+      },
+      "height": {
+        "fixed": 20
+      },
+      "layout": {
+        "mode": "none"
+      },
+      "children": [
+        {
+          "id": "c0000011",
+          "type": "vector",
+          "name": "Star shape",
+          "x": 0,
+          "y": 0,
+          "width": {
+            "fixed": 20
+          },
+          "height": {
+            "fixed": 20
+          },
+          "path": "M10 1 L12.6 7.2 L19 7.6 L14 11.8 L15.6 18.4 L10 14.8 L4.4 18.4 L6 11.8 L1 7.6 L7.4 7.2 Z",
+          "fills": [
+            {
+              "type": "solid",
+              "color": "$color.accent"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "c0000002",
+      "type": "component",
+      "name": "Heart",
+      "width": {
+        "fixed": 20
+      },
+      "height": {
+        "fixed": 20
+      },
+      "layout": {
+        "mode": "none"
+      },
+      "children": [
+        {
+          "id": "c0000012",
+          "type": "vector",
+          "name": "Heart shape",
+          "x": 0,
+          "y": 0,
+          "width": {
+            "fixed": 20
+          },
+          "height": {
+            "fixed": 20
+          },
+          "path": "M10 17.5 C1 11 2 3.5 6.2 3.5 C8.2 3.5 9.4 4.8 10 5.8 C10.6 4.8 11.8 3.5 13.8 3.5 C18 3.5 19 11 10 17.5 Z",
+          "fills": [
+            {
+              "type": "solid",
+              "color": "$color.onBrand"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "c0000003",
+      "type": "component",
+      "name": "Button",
+      "width": {
+        "fixed": 160
+      },
+      "height": {
+        "fixed": 44
+      },
+      "layout": {
+        "mode": "none"
+      },
+      "fills": [
+        {
+          "type": "solid",
+          "color": "$color.brand"
+        }
+      ],
+      "radius": {
+        "topLeft": "$radius.control",
+        "topRight": "$radius.control",
+        "bottomRight": "$radius.control",
+        "bottomLeft": "$radius.control"
+      },
+      "props": {
+        "style": {
+          "type": "variant",
+          "values": [
+            "primary",
+            "secondary"
+          ],
+          "default": "primary"
+        },
+        "showIcon": {
+          "type": "boolean",
+          "default": true
+        },
+        "showBadge": {
+          "type": "boolean",
+          "default": false
+        },
+        "label": {
+          "type": "text",
+          "default": "Buy"
+        },
+        "icon": {
+          "type": "slot",
+          "default": "c0000001"
+        }
+      },
+      "children": [
+        {
+          "id": "c0000031",
+          "type": "instance",
+          "name": "Icon",
+          "x": 14,
+          "y": 12,
+          "component": "c0000001",
+          "bind": {
+            "visible": "showIcon",
+            "component": "icon"
+          }
+        },
+        {
+          "id": "c0000032",
+          "type": "text",
+          "name": "Label",
+          "x": 44,
+          "y": 12,
+          "width": "hug",
+          "height": "hug",
+          "content": "Buy",
+          "fontFamily": "Inter",
+          "fontSize": 16,
+          "fontWeight": 600,
+          "lineHeight": 1.25,
+          "color": "$color.onBrand",
+          "bind": {
+            "content": "label"
+          }
+        },
+        {
+          "id": "c0000033",
+          "type": "frame",
+          "name": "Badge",
+          "x": 140,
+          "y": 4,
+          "width": {
+            "fixed": 16
+          },
+          "height": {
+            "fixed": 16
+          },
+          "layout": {
+            "mode": "none"
+          },
+          "fills": [
+            {
+              "type": "solid",
+              "color": "$color.accent"
+            }
+          ],
+          "radius": {
+            "topLeft": 8,
+            "topRight": 8,
+            "bottomRight": 8,
+            "bottomLeft": 8
+          },
+          "visible": false,
+          "bind": {
+            "visible": "showBadge"
+          }
+        }
+      ]
+    },
+    {
+      "id": "c0000004",
+      "type": "component",
+      "name": "Button",
+      "width": {
+        "fixed": 160
+      },
+      "height": {
+        "fixed": 44
+      },
+      "layout": {
+        "mode": "none"
+      },
+      "fills": [
+        {
+          "type": "solid",
+          "color": "$color.panel"
+        }
+      ],
+      "radius": {
+        "topLeft": "$radius.control",
+        "topRight": "$radius.control",
+        "bottomRight": "$radius.control",
+        "bottomLeft": "$radius.control"
+      },
+      "props": {
+        "style": {
+          "type": "variant",
+          "values": [
+            "primary",
+            "secondary"
+          ],
+          "default": "secondary"
+        },
+        "showIcon": {
+          "type": "boolean",
+          "default": true
+        },
+        "showBadge": {
+          "type": "boolean",
+          "default": false
+        },
+        "label": {
+          "type": "text",
+          "default": "Buy"
+        },
+        "icon": {
+          "type": "slot",
+          "default": "c0000001"
+        }
+      },
+      "children": [
+        {
+          "id": "c0000041",
+          "type": "instance",
+          "name": "Icon",
+          "x": 14,
+          "y": 12,
+          "component": "c0000001",
+          "bind": {
+            "visible": "showIcon",
+            "component": "icon"
+          }
+        },
+        {
+          "id": "c0000042",
+          "type": "text",
+          "name": "Label",
+          "x": 44,
+          "y": 12,
+          "width": "hug",
+          "height": "hug",
+          "content": "Buy",
+          "fontFamily": "Inter",
+          "fontSize": 16,
+          "fontWeight": 600,
+          "lineHeight": 1.25,
+          "color": "$color.ink",
+          "bind": {
+            "content": "label"
+          }
+        },
+        {
+          "id": "c0000043",
+          "type": "frame",
+          "name": "Badge",
+          "x": 140,
+          "y": 4,
+          "width": {
+            "fixed": 16
+          },
+          "height": {
+            "fixed": 16
+          },
+          "layout": {
+            "mode": "none"
+          },
+          "fills": [
+            {
+              "type": "solid",
+              "color": "$color.accent"
+            }
+          ],
+          "radius": {
+            "topLeft": 8,
+            "topRight": 8,
+            "bottomRight": 8,
+            "bottomLeft": 8
+          },
+          "visible": false,
+          "bind": {
+            "visible": "showBadge"
+          }
+        }
+      ],
+      "strokes": [
+        {
+          "color": "$color.border",
+          "width": 1
+        }
+      ]
+    },
+    {
+      "id": "c0000005",
+      "type": "component",
+      "name": "Card",
+      "width": {
+        "fixed": 336
+      },
+      "height": {
+        "fixed": 188
+      },
+      "layout": {
+        "mode": "none"
+      },
+      "fills": [
+        {
+          "type": "solid",
+          "color": "$color.panel"
+        }
+      ],
+      "radius": {
+        "topLeft": "$radius.card",
+        "topRight": "$radius.card",
+        "bottomRight": "$radius.card",
+        "bottomLeft": "$radius.card"
+      },
+      "strokes": [
+        {
+          "color": "$color.border",
+          "width": 1
+        }
+      ],
+      "clip": true,
+      "props": {
+        "title": {
+          "type": "text",
+          "default": "Order summary"
+        },
+        "featured": {
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "children": [
+        {
+          "id": "c0000051",
+          "type": "frame",
+          "name": "Stripe",
+          "x": 0,
+          "y": 0,
+          "width": {
+            "fixed": 6
+          },
+          "height": {
+            "fixed": 188
+          },
+          "layout": {
+            "mode": "none"
+          },
+          "fills": [
+            {
+              "type": "solid",
+              "color": "$color.accent"
+            }
+          ],
+          "visible": false,
+          "bind": {
+            "visible": "featured"
+          }
+        },
+        {
+          "id": "c0000052",
+          "type": "text",
+          "name": "Title",
+          "x": 24,
+          "y": 20,
+          "width": "hug",
+          "height": "hug",
+          "content": "Order summary",
+          "fontFamily": "Inter",
+          "fontSize": 18,
+          "fontWeight": 600,
+          "lineHeight": 1.4,
+          "color": "$color.ink",
+          "bind": {
+            "content": "title"
+          }
+        },
+        {
+          "id": "c0000053",
+          "type": "text",
+          "name": "Body",
+          "x": 24,
+          "y": 54,
+          "width": {
+            "fixed": 288
+          },
+          "height": "hug",
+          "content": "Two items, free shipping, delivered in three days.",
+          "fontFamily": "Inter",
+          "fontSize": 14,
+          "fontWeight": 400,
+          "lineHeight": 1.4,
+          "color": "$color.muted"
+        },
+        {
+          "id": "c0000054",
+          "type": "instance",
+          "name": "Action",
+          "x": 24,
+          "y": 120,
+          "component": "c0000003",
+          "props": {
+            "label": "Continue",
+            "showIcon": false
+          }
+        }
+      ]
+    }
+  ]
+}

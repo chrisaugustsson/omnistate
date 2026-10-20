@@ -15,10 +15,13 @@
 //!   without shaping its text again. Zoomed far out, a board is drawn from a
 //!   small raster snapshot of it instead (see the README's "Level of detail").
 //!   It also keeps what the reviewer points at: the hovered and the selected
-//!   node (see the README's "Selection").
+//!   node (see the README's "Selection"). A scene made with a design system
+//!   draws the page with its instances expanded and its tokens resolved in the
+//!   scene's mode (see the README's "Instances and tokens").
 
 use crate::layout::{self, LayoutBox, ShapedTexts};
 use crate::paint::{self, Assets};
+use crate::resolve;
 use crate::select::{Event, Index, Modifiers, NodeAddress, Outline, OutlineKind};
 use crate::system::{DesignSystem, RenderError};
 use omni_core::design::{Node, NodeData, NodeId};
@@ -389,7 +392,14 @@ impl Board {
 
 /// A page laid out once, ready to be drawn in any viewport.
 pub struct Scene {
+    /// The page that is laid out and drawn: the page as given, or with a
+    /// design system, the page with its instances expanded and its tokens
+    /// resolved in the current mode.
     page: Node,
+    /// The page as given, when a design system resolves it.
+    source: Option<Node>,
+    system: Option<Resolving>,
+    errors: Vec<RenderError>,
     assets: Assets,
     boxes: HashMap<NodeId, LayoutBox>,
     /// The text nodes, shaped as layout measured them.
@@ -405,6 +415,21 @@ pub struct Scene {
     events: Vec<Event>,
 }
 
+/// The design system that a scene resolves its page against, and the mode it
+/// resolves tokens in.
+struct Resolving {
+    system: DesignSystem,
+    mode: String,
+}
+
+/// What laying out a page gives a scene.
+struct Laid {
+    boxes: HashMap<NodeId, LayoutBox>,
+    texts: ShapedTexts,
+    boards: Vec<Board>,
+    index: Index,
+}
+
 /// The boards of `page`: its children, or the node itself if it is not a page.
 fn board_nodes(page: &Node) -> &[Node] {
     match page.data() {
@@ -413,31 +438,46 @@ fn board_nodes(page: &Node) -> &[Node] {
     }
 }
 
+/// Lays `page` out. `addresses` names the nodes inside instances
+/// (`resolve::Resolved::addresses`).
+fn lay_out(page: &Node, assets: &Assets, addresses: &HashMap<NodeId, NodeAddress>) -> Laid {
+    let (boxes, texts) = layout::compute_shaped(page, assets.fonts());
+    let boards = board_nodes(page)
+        .iter()
+        .enumerate()
+        .filter_map(|(index, node)| {
+            Some(Board {
+                index,
+                id: *node.id(),
+                bounds: *boxes.get(node.id())?,
+                reach: paint::reach(node, &boxes)?,
+                picture: None,
+                snapshot: None,
+            })
+        })
+        .collect();
+    let index = Index::new(board_nodes(page), &boxes, addresses);
+    Laid {
+        boxes,
+        texts,
+        boards,
+        index,
+    }
+}
+
 impl Scene {
     pub fn new(page: Node, assets: Assets) -> Self {
-        let (boxes, texts) = layout::compute_shaped(&page, assets.fonts());
-        let boards = board_nodes(&page)
-            .iter()
-            .enumerate()
-            .filter_map(|(index, node)| {
-                Some(Board {
-                    index,
-                    id: *node.id(),
-                    bounds: *boxes.get(node.id())?,
-                    reach: paint::reach(node, &boxes)?,
-                    picture: None,
-                    snapshot: None,
-                })
-            })
-            .collect();
-        let index = Index::new(board_nodes(&page), &boxes);
+        let laid = lay_out(&page, &assets, &HashMap::new());
         Self {
             page,
+            source: None,
+            system: None,
+            errors: Vec::new(),
             assets,
-            boxes,
-            texts,
-            boards,
-            index,
+            boxes: laid.boxes,
+            texts: laid.texts,
+            boards: laid.boards,
+            index: laid.index,
             hovered: None,
             selected: None,
             events: Vec::new(),
@@ -446,19 +486,84 @@ impl Scene {
 
     /// A scene whose instances and token references resolve against
     /// `system`, in its first mode.
-    pub fn with_system(_page: Node, _assets: Assets, _system: DesignSystem) -> Self {
-        todo!("US-032")
+    pub fn with_system(page: Node, assets: Assets, system: DesignSystem) -> Self {
+        let mode = system.modes().first().cloned().unwrap_or_default();
+        let resolved = resolve::resolve(&page, &system, &mode);
+        let laid = lay_out(&resolved.page, &assets, &resolved.addresses);
+        Self {
+            page: resolved.page,
+            source: Some(page),
+            system: Some(Resolving { system, mode }),
+            errors: resolved.errors,
+            assets,
+            boxes: laid.boxes,
+            texts: laid.texts,
+            boards: laid.boards,
+            index: laid.index,
+            hovered: None,
+            selected: None,
+            events: Vec::new(),
+        }
+    }
+
+    /// Resolves the scene's instances and token references against `system`
+    /// from now on, in its first mode, in place of any design system it had.
+    pub fn set_system(&mut self, system: DesignSystem) {
+        let page = match self.source.take() {
+            Some(page) => page,
+            None => self.page.clone(),
+        };
+        let mode = system.modes().first().cloned().unwrap_or_default();
+        let resolved = resolve::resolve(&page, &system, &mode);
+        self.source = Some(page);
+        self.system = Some(Resolving { system, mode });
+        self.adopt(resolved);
     }
 
     /// Resolves token references in `mode` from now on. Fails, and keeps the
     /// current mode, if the design system has no such mode.
-    pub fn set_mode(&mut self, _mode: &str) -> Result<(), String> {
-        todo!("US-032")
+    pub fn set_mode(&mut self, mode: &str) -> Result<(), String> {
+        let (Some(resolving), Some(source)) = (&mut self.system, &self.source) else {
+            return Err("the scene has no design system, so it has no modes".to_string());
+        };
+        if !resolving.system.modes().iter().any(|listed| listed == mode) {
+            let modes: Vec<String> = resolving
+                .system
+                .modes()
+                .iter()
+                .map(|listed| format!("`{listed}`"))
+                .collect();
+            return Err(format!(
+                "`{mode}` is not a mode of the design system: it has {}",
+                modes.join(", ")
+            ));
+        }
+        let resolved = resolve::resolve(source, &resolving.system, mode);
+        resolving.mode = mode.to_string();
+        self.adopt(resolved);
+        Ok(())
+    }
+
+    /// Lays out and draws `resolved` from now on. The same nodes are there
+    /// whenever the design system or its mode changes, so the pointer and the
+    /// selection stay on them.
+    fn adopt(&mut self, resolved: resolve::Resolved) {
+        let laid = lay_out(&resolved.page, &self.assets, &resolved.addresses);
+        let hovered = self.hovered.map(|at| self.index.address(at));
+        let selected = self.selected.map(|at| self.index.address(at));
+        self.page = resolved.page;
+        self.errors = resolved.errors;
+        self.boxes = laid.boxes;
+        self.texts = laid.texts;
+        self.boards = laid.boards;
+        self.index = laid.index;
+        self.hovered = hovered.and_then(|address| self.index.lookup(&address));
+        self.selected = selected.and_then(|address| self.index.lookup(&address));
     }
 
     /// The nodes drawn as error placeholders, with what each was missing.
     pub fn errors(&self) -> &[RenderError] {
-        todo!("US-032")
+        &self.errors
     }
 
     /// The smallest rectangle that holds every board.
@@ -509,14 +614,11 @@ impl Scene {
         self.index.node_at(point).map(|at| self.index.address(at))
     }
 
-    /// The box, in page coordinates, of the node at `address`. An address
-    /// inside a component instance has none until components are resolved
-    /// (US-032).
+    /// The box, in page coordinates, of the node at `address`: a node ID, or
+    /// `<instanceId>/<componentNodeId>` for a node inside an instance, which
+    /// the scene has when it was made with a design system.
     pub fn bounds_of(&self, address: &NodeAddress) -> Option<LayoutBox> {
-        if address.instance().is_some() {
-            return None;
-        }
-        Some(self.index.rect(self.index.lookup(address.node())?))
+        Some(self.index.rect(self.index.lookup(address)?))
     }
 
     /// What a click, or the pointer moving with Ctrl or Cmd held for `deep`,

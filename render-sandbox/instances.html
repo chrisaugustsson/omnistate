@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+    <title>omni-render instances</title>
+    <style>
+      html,
+      body {
+        height: 100%;
+        margin: 0;
+        overflow: hidden;
+        background: #94a3b8;
+        color: #0f172a;
+        font: 13px/1.5 system-ui, sans-serif;
+      }
+
+      /* main-instances.js sizes the drawing buffer to this canvas. touch-action
+         keeps the browser from scrolling or zooming the page itself. */
+      #canvas {
+        position: fixed;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        touch-action: none;
+      }
+
+      /* Hover and selection outlines, drawn by main-instances.js from the
+         module's overlay, in the same pixels as the canvas under it. */
+      #overlay {
+        position: fixed;
+        inset: 0;
+        overflow: hidden;
+        pointer-events: none;
+      }
+
+      #overlay .outline {
+        position: absolute;
+        box-sizing: border-box;
+        border: 1.5px solid #3b82f6;
+      }
+
+      #overlay .outline.selection {
+        border-color: #db2777;
+        border-width: 2px;
+      }
+
+      #overlay .label {
+        position: absolute;
+        left: -2px;
+        bottom: 100%;
+        padding: 1px 6px;
+        border-radius: 3px 3px 0 0;
+        background: #3b82f6;
+        color: #fff;
+        font-size: 11px;
+        line-height: 16px;
+        white-space: nowrap;
+      }
+
+      #overlay .outline.selection .label {
+        background: #db2777;
+      }
+
+      #overlay .outline.inside .label {
+        bottom: auto;
+        top: 0;
+        border-radius: 0 0 3px 0;
+      }
+
+      #hud {
+        position: fixed;
+        top: 12px;
+        left: 12px;
+        max-width: 420px;
+        padding: 8px 12px;
+        border-radius: 6px;
+        background: rgb(255 255 255 / 0.92);
+        box-shadow: 0 1px 3px rgb(15 23 42 / 0.25);
+      }
+
+      #hud strong {
+        font-size: 14px;
+      }
+
+      #hud p {
+        margin: 4px 0 0;
+      }
+
+      #modes label {
+        margin-right: 12px;
+      }
+
+      #status,
+      #errors {
+        color: #475569;
+      }
+
+      #errors.failed {
+        color: #b91c1c;
+      }
+
+      code {
+        font-size: 12px;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="canvas"></canvas>
+    <div id="overlay"></div>
+    <div id="hud">
+      <p><strong>omni-render instances</strong></p>
+      <p>
+        <code>instances.json</code> places instances of the components of
+        <code>instances-system.json</code>. Check that the design looks right in light and in dark mode.
+      </p>
+      <p id="modes">Mode: loading…</p>
+      <p>
+        Zoom: <code>Ctrl</code>/<code>Cmd</code> + wheel. Pan: scroll. Select: click a node;
+        <code>Ctrl</code>/<code>Cmd</code> + click selects the deepest node, inside an instance too.
+      </p>
+      <p id="selection">Nothing selected.</p>
+      <p id="errors">Errors: none.</p>
+      <p id="status">Loading the renderer…</p>
+    </div>
+    <script type="module" src="./main-instances.js"></script>
+  </body>
+</html>

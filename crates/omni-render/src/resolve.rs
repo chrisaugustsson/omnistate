@@ -1,0 +1,567 @@
+//! Resolving a page against a design system (US-032): every instance becomes
+//! a frame holding its component's layers, and every token reference becomes
+//! the token's value in one mode. What comes out is an ordinary page, which
+//! layout and painting handle like any other, and the places where something
+//! was missing.
+//!
+//! Instances expand like this:
+//!
+//! - The component that the instance names is replaced by the variant of its
+//!   set that shows the instance's variant values (`DesignSystem::variant`).
+//! - The instance becomes a `frame` with the instance's ID, placement and
+//!   sizes, and with the component's size (on each axis the instance leaves
+//!   out), layout and style. Its children are the component's layers.
+//! - Each layer takes the component's property values, the instance's where it
+//!   sets them and the defaults where it does not (`bind`), and then the
+//!   instance's overrides, which win. A layer that is an instance expands the
+//!   same way, with the overrides of the outer instance applying to the nodes
+//!   of the inner component too.
+//! - A node inside an instance gets an ID of its own, because several
+//!   instances hold the same component node. `Resolved::addresses` says which
+//!   address (`<instanceId>/<componentNodeId>`) each one stands for. A node
+//!   inside an instance inside an instance is addressed from the instance of
+//!   the page.
+//!
+//! An instance of a component that the design system does not have, and a node
+//! with a token reference the design system does not have, are drawn as an
+//! error placeholder, a tinted box with a magenta edge, and listed in
+//! `Resolved::errors`.
+
+use crate::system::{ComponentDef, DesignSystem, Missing, RenderError};
+use omni_core::design::{Node, NodeAddress, NodeId, PropDef, TokenRef};
+use serde_json::{Map, Value, json};
+use std::collections::{HashMap, HashSet};
+
+/// How many instances may be inside one another before an instance is taken
+/// for a component that holds itself and drawn as a placeholder.
+const MAX_DEPTH: usize = 24;
+
+/// The color of the error placeholder's edge, and of the text of a node that
+/// is missing a token.
+const ERROR_COLOR: &str = "#ff00ff";
+/// The tint inside an error placeholder.
+const ERROR_TINT: &str = "#ff00ff66";
+/// The size of the placeholder of a missing component on an axis the instance
+/// leaves to its component.
+const ERROR_SIZE: f64 = 24.0;
+
+/// The keys of a node that hold no token reference: text and names, which may
+/// well start with `$`, and the parts that are resolved on their own.
+const NOT_TOKENS: &[&str] = &[
+    "id",
+    "type",
+    "name",
+    "content",
+    "path",
+    "image",
+    "component",
+    "props",
+    "overrides",
+    "bind",
+    "children",
+];
+
+const PLACEMENT: &[&str] = &[
+    "absolute",
+    "x",
+    "y",
+    "gridColumn",
+    "gridRow",
+    "margin",
+    "justifySelf",
+    "alignSelf",
+];
+
+const SIZES: &[&str] = &[
+    "width",
+    "height",
+    "minWidth",
+    "maxWidth",
+    "minHeight",
+    "maxHeight",
+];
+
+/// A page with its instances expanded and its tokens resolved.
+pub(crate) struct Resolved {
+    pub(crate) page: Node,
+    /// The address that each node inside an instance stands for, by the ID
+    /// the node has in `page`. Other nodes keep their IDs.
+    pub(crate) addresses: HashMap<NodeId, NodeAddress>,
+    pub(crate) errors: Vec<RenderError>,
+}
+
+/// A property value of an instance.
+#[derive(Clone)]
+enum Prop {
+    Text(String),
+    Flag(bool),
+}
+
+/// What the layers of a component inside an instance take.
+struct Inside {
+    /// The instance of the page that the layers are inside.
+    instance: NodeId,
+    props: HashMap<String, Prop>,
+    /// The overrides in force, by the ID of the node they change.
+    overrides: Map<String, Value>,
+    depth: usize,
+}
+
+/// Expands the instances of `page` and resolves its token references against
+/// `system` in `mode`.
+pub(crate) fn resolve(page: &Node, system: &DesignSystem, mode: &str) -> Resolved {
+    let source = serde_json::to_value(page).unwrap_or(Value::Null);
+    let mut resolver = Resolver {
+        system,
+        mode,
+        used: ids_of(page),
+        next: 0,
+        addresses: HashMap::new(),
+        errors: Vec::new(),
+    };
+    let resolved = resolver.node(source.clone(), None);
+    let page = match serde_json::from_value::<Node>(resolved.clone()) {
+        Ok(page) => page,
+        // A token whose value does not fit where it is used (a color for a
+        // padding) leaves the board unresolved rather than the page unread.
+        Err(_) => keep_readable(&source, resolved).unwrap_or_else(|| page.clone()),
+    };
+    Resolved {
+        page,
+        addresses: resolver.addresses,
+        errors: resolver.errors,
+    }
+}
+
+/// The IDs of `root` and everything below it.
+fn ids_of(root: &Node) -> HashSet<NodeId> {
+    let mut ids = HashSet::new();
+    let mut pending = vec![root];
+    while let Some(node) = pending.pop() {
+        ids.insert(*node.id());
+        pending.extend(node.children());
+    }
+    ids
+}
+
+/// `resolved` with each board that does not read as a design replaced by the
+/// board of `source`.
+fn keep_readable(source: &Value, mut resolved: Value) -> Option<Node> {
+    let boards = resolved.get_mut("children")?.as_array_mut()?;
+    let originals = source.get("children")?.as_array()?;
+    for (board, original) in boards.iter_mut().zip(originals) {
+        if serde_json::from_value::<Node>(board.clone()).is_err() {
+            *board = original.clone();
+        }
+    }
+    serde_json::from_value(resolved).ok()
+}
+
+struct Resolver<'a> {
+    system: &'a DesignSystem,
+    mode: &'a str,
+    /// The IDs of the page, which no ID made up for a node inside an instance
+    /// may repeat.
+    used: HashSet<NodeId>,
+    next: u64,
+    addresses: HashMap<NodeId, NodeAddress>,
+    errors: Vec<RenderError>,
+}
+
+impl Resolver<'_> {
+    /// An ID that no node of the page has.
+    fn fresh(&mut self) -> NodeId {
+        const ALPHABET: &[u8] = b"0123456789abcdefghjkmnpqrstvwxyz";
+        loop {
+            let mut text = [b'0'; 8];
+            let mut rest = self.next;
+            for digit in text.iter_mut().rev() {
+                *digit = ALPHABET[(rest % 32) as usize];
+                rest /= 32;
+            }
+            self.next += 1;
+            let id: NodeId = std::str::from_utf8(&text)
+                .ok()
+                .and_then(|text| text.parse().ok())
+                .expect("made-up node IDs are in the alphabet");
+            if self.used.insert(id) {
+                return id;
+            }
+        }
+    }
+
+    /// Resolves the node `value` and everything below it. `inside` is what
+    /// the node takes from the instance that it is a layer of, if it is one.
+    fn node(&mut self, mut value: Value, inside: Option<&Inside>) -> Value {
+        let Some(id) = value
+            .get("id")
+            .and_then(Value::as_str)
+            .and_then(|id| id.parse::<NodeId>().ok())
+        else {
+            return value;
+        };
+        let kind = kind_of(&value);
+        let address = NodeAddress::new(inside.map(|inside| inside.instance), id);
+        if let Some(inside) = inside {
+            bind(&mut value, &kind, inside);
+            apply_overrides(&mut value, &kind, &id, inside);
+        }
+        let out_id = if inside.is_some() {
+            let fresh = self.fresh();
+            self.addresses.insert(fresh, address.clone());
+            fresh
+        } else {
+            id
+        };
+        if kind == "instance" {
+            return self.instance(value, out_id, address, inside);
+        }
+        let children = value
+            .as_object_mut()
+            .and_then(|node| node.remove("children"));
+        if let Some(node) = value.as_object_mut() {
+            node.remove("bind");
+            node.insert("id".to_string(), json!(out_id));
+        }
+        self.tokens(&mut value, &address);
+        if let Some(Value::Array(children)) = children {
+            let children = children
+                .into_iter()
+                .map(|child| self.node(child, inside))
+                .collect();
+            value["children"] = Value::Array(children);
+        }
+        value
+    }
+
+    /// Expands the instance `value` into a frame with the ID `out_id`.
+    fn instance(
+        &mut self,
+        value: Value,
+        out_id: NodeId,
+        address: NodeAddress,
+        inside: Option<&Inside>,
+    ) -> Value {
+        let own = value
+            .get("id")
+            .and_then(Value::as_str)
+            .and_then(|id| id.parse::<NodeId>().ok())
+            .unwrap_or(out_id);
+        let component = value
+            .get("component")
+            .and_then(Value::as_str)
+            .and_then(|id| id.parse::<NodeId>().ok());
+        let depth = inside.map_or(0, |inside| inside.depth);
+        let base = component.and_then(|id| self.system.component(&id));
+        let (Some(_), Some(base), true) = (component, base, depth < MAX_DEPTH) else {
+            if let Some(component) = component {
+                self.errors.push(RenderError {
+                    node: address,
+                    missing: Missing::Component(component),
+                });
+            }
+            return placeholder(&value, out_id);
+        };
+
+        let given = value.get("props").and_then(Value::as_object);
+        let wanted: HashMap<String, String> = given
+            .into_iter()
+            .flatten()
+            .filter_map(|(name, value)| Some((name.clone(), value.as_str()?.to_string())))
+            .collect();
+        let chosen = self.system.variant(base, &wanted);
+        let props = property_values(chosen, given);
+
+        let mut overrides = value
+            .get("overrides")
+            .and_then(Value::as_object)
+            .cloned()
+            .unwrap_or_default();
+        if let Some(inside) = inside {
+            for (node, fields) in &inside.overrides {
+                let (Some(fields), Some(slot)) = (
+                    fields.as_object(),
+                    overrides
+                        .entry(node.clone())
+                        .or_insert_with(|| json!({}))
+                        .as_object_mut(),
+                ) else {
+                    continue;
+                };
+                for (field, setting) in fields {
+                    slot.insert(field.clone(), setting.clone());
+                }
+            }
+        }
+        let layers_inside = Inside {
+            instance: inside.map_or(own, |inside| inside.instance),
+            props,
+            overrides,
+            depth: depth + 1,
+        };
+
+        let mut frame = chosen.json.clone();
+        let layers = frame
+            .as_object_mut()
+            .and_then(|frame| frame.remove("children"));
+        if let Some(frame) = frame.as_object_mut() {
+            for key in PLACEMENT.iter().chain(["props", "bind"].iter()) {
+                frame.remove(*key);
+            }
+            frame.insert("type".to_string(), json!("frame"));
+            frame.insert("id".to_string(), json!(out_id));
+            for key in ["name", "visible"] {
+                if let Some(setting) = value.get(key) {
+                    frame.insert(key.to_string(), setting.clone());
+                }
+            }
+            for key in PLACEMENT.iter().chain(SIZES.iter()) {
+                if let Some(setting) = value.get(*key) {
+                    frame.insert((*key).to_string(), setting.clone());
+                }
+            }
+        }
+        // The component's own node can be overridden too.
+        for key in [base.id, chosen.id] {
+            apply_overrides(&mut frame, "frame", &key, &layers_inside);
+        }
+        self.tokens(&mut frame, &address);
+        let layers = layers
+            .and_then(|layers| match layers {
+                Value::Array(layers) => Some(layers),
+                _ => None,
+            })
+            .unwrap_or_default();
+        let layers = layers
+            .into_iter()
+            .map(|layer| self.node(layer, Some(&layers_inside)))
+            .collect();
+        frame["children"] = Value::Array(layers);
+        frame
+    }
+
+    /// Replaces the token references in the properties of `node` (not its
+    /// children) with the tokens' values in the mode. A node with a reference
+    /// that has no token is drawn as an error placeholder.
+    fn tokens(&mut self, node: &mut Value, address: &NodeAddress) {
+        let mut missing = Vec::new();
+        if let Some(properties) = node.as_object_mut() {
+            for (key, setting) in properties.iter_mut() {
+                if !NOT_TOKENS.contains(&key.as_str()) {
+                    self.resolve_in(setting, key, &mut missing);
+                }
+            }
+        }
+        if missing.is_empty() {
+            return;
+        }
+        mark_error(node);
+        for token in missing {
+            self.errors.push(RenderError {
+                node: address.clone(),
+                missing: Missing::Token(token),
+            });
+        }
+    }
+
+    fn resolve_in(&self, value: &mut Value, key: &str, missing: &mut Vec<TokenRef>) {
+        match value {
+            Value::String(text) if text.starts_with('$') => {
+                let Ok(reference) = text.parse::<TokenRef>() else {
+                    return;
+                };
+                match self.system.token(&reference, self.mode) {
+                    Some(resolved) => *value = design_value(resolved, key),
+                    None if !missing.contains(&reference) => missing.push(reference),
+                    None => {}
+                }
+            }
+            Value::Array(items) => {
+                for item in items {
+                    self.resolve_in(item, key, missing);
+                }
+            }
+            Value::Object(properties) => {
+                for (key, setting) in properties.iter_mut() {
+                    if !NOT_TOKENS.contains(&key.as_str()) {
+                        self.resolve_in(setting, key, missing);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn kind_of(node: &Value) -> String {
+    node.get("type")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string()
+}
+
+/// The values of the properties of `component` for an instance that gives
+/// `given`: the instance's value where it fits the property, and the
+/// property's default where not.
+fn property_values(
+    component: &ComponentDef,
+    given: Option<&Map<String, Value>>,
+) -> HashMap<String, Prop> {
+    component
+        .props
+        .iter()
+        .map(|(name, def)| {
+            let setting = given.and_then(|given| given.get(name));
+            let value = match def {
+                PropDef::Variant { values, default } => Prop::Text(
+                    setting
+                        .and_then(Value::as_str)
+                        .filter(|text| values.iter().any(|value| value == text))
+                        .unwrap_or(default.as_str())
+                        .to_string(),
+                ),
+                PropDef::Boolean { default } => {
+                    Prop::Flag(setting.and_then(Value::as_bool).unwrap_or(*default))
+                }
+                PropDef::Text { default } => Prop::Text(
+                    setting
+                        .and_then(Value::as_str)
+                        .unwrap_or(default.as_str())
+                        .to_string(),
+                ),
+                PropDef::Slot { default } => Prop::Text(
+                    setting
+                        .and_then(Value::as_str)
+                        .filter(|id| id.parse::<NodeId>().is_ok())
+                        .map_or_else(|| default.to_string(), str::to_string),
+                ),
+            };
+            (name.clone(), value)
+        })
+        .collect()
+}
+
+/// Gives the layer `node` of kind `kind` the property values it is bound to.
+fn bind(node: &mut Value, kind: &str, inside: &Inside) {
+    let Some(bound) = node.get("bind").and_then(Value::as_object).cloned() else {
+        return;
+    };
+    for (field, property) in &bound {
+        let Some(value) = property.as_str().and_then(|name| inside.props.get(name)) else {
+            continue;
+        };
+        match (field.as_str(), value, kind) {
+            ("visible", Prop::Flag(shown), _) => node["visible"] = json!(shown),
+            ("content", Prop::Text(text), "text") => node["content"] = json!(text),
+            ("component", Prop::Text(component), "instance") => {
+                node["component"] = json!(component);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Applies the override of the instance for the component node `id`, if it
+/// has one, to `node` of kind `kind`.
+fn apply_overrides(node: &mut Value, kind: &str, id: &NodeId, inside: &Inside) {
+    let Some(set) = inside.overrides.get(id.as_str()).and_then(Value::as_object) else {
+        return;
+    };
+    if let Some(shown) = set.get("visible").filter(|shown| shown.is_boolean()) {
+        node["visible"] = shown.clone();
+    }
+    if let (Some(text), "text") = (set.get("content").filter(|text| text.is_string()), kind) {
+        node["content"] = text.clone();
+    }
+    if let (Some(component), "instance") = (
+        set.get("component")
+            .filter(|component| component.is_string()),
+        kind,
+    ) {
+        node["component"] = component.clone();
+    }
+    if let Some(fills) = set.get("fills").and_then(Value::as_array) {
+        match kind {
+            "frame" | "board" | "vector" => node["fills"] = Value::Array(fills.clone()),
+            // A text takes the color of the first solid fill.
+            "text" => {
+                let solid = fills.iter().find_map(|fill| {
+                    (fill.get("type")? == "solid").then(|| fill.get("color").cloned())?
+                });
+                if let Some(color) = solid {
+                    node["color"] = color;
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// What `component` instance `value` is drawn as when its component is
+/// missing: an empty frame in the error look, in the instance's box.
+fn placeholder(value: &Value, out_id: NodeId) -> Value {
+    let mut frame = json!({
+        "id": out_id,
+        "type": "frame",
+        "name": value.get("name").cloned().unwrap_or(json!("")),
+        "visible": value.get("visible").cloned().unwrap_or(json!(true)),
+        "width": {"fixed": ERROR_SIZE},
+        "height": {"fixed": ERROR_SIZE},
+        "layout": {"mode": "none"},
+        "children": [],
+    });
+    for key in PLACEMENT.iter().chain(SIZES.iter()) {
+        if let Some(setting) = value.get(*key) {
+            frame[*key] = setting.clone();
+        }
+    }
+    mark_error(&mut frame);
+    frame
+}
+
+/// Gives `node` the error look: a tinted box with a magenta edge, or magenta
+/// text.
+fn mark_error(node: &mut Value) {
+    let edge = json!([{"color": ERROR_COLOR, "width": 2}]);
+    match kind_of(node).as_str() {
+        "text" => node["color"] = json!(ERROR_COLOR),
+        "frame" | "board" | "vector" => {
+            node["fills"] = json!([{"type": "solid", "color": ERROR_TINT}]);
+            node["strokes"] = edge;
+        }
+        "image" => node["strokes"] = edge,
+        _ => {}
+    }
+}
+
+/// The value of a token as a design writes it: a dimension in pixels is a
+/// number, a shadow token is a drop shadow, and a typography token used for a
+/// font family is its family.
+fn design_value(token: Value, key: &str) -> Value {
+    match token {
+        Value::String(text) => match pixels(&text) {
+            Some(number) => json!(number),
+            None => Value::String(text),
+        },
+        Value::Object(mut fields) if fields.contains_key("offsetX") => {
+            fields.insert("type".to_string(), json!("drop"));
+            for field in ["offsetX", "offsetY", "blur", "spread"] {
+                if let Some(Value::String(text)) = fields.get(field)
+                    && let Some(number) = pixels(text)
+                {
+                    fields.insert(field.to_string(), json!(number));
+                }
+            }
+            Value::Object(fields)
+        }
+        Value::Object(mut fields) if key == "fontFamily" => {
+            fields.remove("fontFamily").unwrap_or(Value::Null)
+        }
+        other => other,
+    }
+}
+
+/// The number in a dimension such as `16px`.
+fn pixels(text: &str) -> Option<f64> {
+    text.strip_suffix("px")?.trim().parse().ok()
+}

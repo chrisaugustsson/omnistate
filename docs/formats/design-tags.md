@@ -149,6 +149,16 @@ lists the four kinds. So is a `variant` default that is not one of its
 `values`, and a `slot` default that is not a node ID. In JSON a property is
 written the same way, and `props` is the `props` of the `component` node.
 
+Components with the same name and the same variant properties (the same names
+with the same `values`) are the variants of one set, and each one's defaults are
+its own variant values. An instance shows the variant of its component's set
+whose defaults equal the instance's values for the variant properties, with the
+component's own defaults where the instance leaves one out. A component with
+another name is never in the set, whatever properties it has, and the component
+the instance names is shown when it matches, and when nothing does. The
+renderer follows this (`crates/omni-render/README.md`, "Instances and tokens"),
+and so should the Penpot import (US-051) when it maps variant sets.
+
 ### Layers (`bind`)
 
 A layer of a component takes a property with `bind`, an object with some of
@@ -215,9 +225,10 @@ A node inside an instance is addressed as `<instanceId>/<componentNodeId>`:
 the ID of the instance, a `/`, and the ID of the component's node. Overrides
 are keyed by the component's node IDs, so each override key, joined to its
 instance's ID, is the address of the node it changes. Comments and the
-renderer address nodes this way too. `omni_core::design::NodeAddress` parses
-`<id>` and `<instanceId>/<componentNodeId>` and rejects anything deeper or
-malformed.
+renderer address nodes this way too: the renderer names a node inside an
+instance inside an instance by the instance on the page.
+`omni_core::design::NodeAddress` parses `<id>` and
+`<instanceId>/<componentNodeId>` and rejects anything deeper or malformed.
 
 ## Values
 

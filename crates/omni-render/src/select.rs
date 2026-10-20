@@ -93,7 +93,9 @@ impl Extent {
 
 /// A node of the index.
 struct Entry {
-    id: NodeId,
+    /// Where the node is: its ID, or the instance and the component node that
+    /// it stands for inside an instance.
+    address: NodeAddress,
     name: String,
     parent: Option<usize>,
     /// The board that holds the node, which is the node itself for a board.
@@ -111,22 +113,27 @@ struct Entry {
 /// stable for the life of the scene.
 pub(crate) struct Index {
     entries: Vec<Entry>,
-    by_id: HashMap<NodeId, usize>,
+    by_address: HashMap<NodeAddress, usize>,
     /// The boards, in page order.
     boards: Vec<usize>,
 }
 
 impl Index {
     /// Indexes `boards` and everything below them, with the `boxes` that
-    /// layout gave them.
-    pub(crate) fn new(boards: &[Node], boxes: &HashMap<NodeId, LayoutBox>) -> Self {
+    /// layout gave them. A node that `addresses` names is a node inside an
+    /// instance, and has that address; other nodes are addressed by their IDs.
+    pub(crate) fn new(
+        boards: &[Node],
+        boxes: &HashMap<NodeId, LayoutBox>,
+        addresses: &HashMap<NodeId, NodeAddress>,
+    ) -> Self {
         let mut index = Self {
             entries: Vec::new(),
-            by_id: HashMap::new(),
+            by_address: HashMap::new(),
             boards: Vec::new(),
         };
         for board in boards {
-            let at = index.add(board, None, boxes);
+            let at = index.add(board, None, boxes, addresses);
             index.boards.push(at);
         }
         index
@@ -137,6 +144,7 @@ impl Index {
         node: &Node,
         parent: Option<usize>,
         boxes: &HashMap<NodeId, LayoutBox>,
+        addresses: &HashMap<NodeId, NodeAddress>,
     ) -> usize {
         let at = self.entries.len();
         let rect = boxes.get(node.id()).copied().unwrap_or_default();
@@ -144,8 +152,12 @@ impl Index {
             node.data(),
             NodeData::Board(frame) | NodeData::Frame(frame) if frame.clip == Some(true)
         );
+        let address = addresses
+            .get(node.id())
+            .cloned()
+            .unwrap_or_else(|| NodeAddress::new(None, *node.id()));
         self.entries.push(Entry {
-            id: *node.id(),
+            address: address.clone(),
             name: node.name().to_string(),
             parent,
             board: parent.map_or(at, |parent| self.entries[parent].board),
@@ -154,12 +166,12 @@ impl Index {
             reach: Extent::of(rect),
             children: Vec::new(),
         });
-        self.by_id.insert(*node.id(), at);
+        self.by_address.insert(address, at);
 
         let mut reach = Extent::of(rect);
         let mut children = Vec::with_capacity(node.children().len());
         for child in node.children() {
-            let child_at = self.add(child, Some(at), boxes);
+            let child_at = self.add(child, Some(at), boxes, addresses);
             if !clips && child.visible() {
                 reach = reach.union(self.entries[child_at].reach);
             }
@@ -196,12 +208,14 @@ impl Index {
             .or(inside.then_some(at))
     }
 
-    pub(crate) fn lookup(&self, id: &NodeId) -> Option<usize> {
-        self.by_id.get(id).copied()
+    pub(crate) fn lookup(&self, address: &NodeAddress) -> Option<usize> {
+        self.by_address.get(address).copied()
     }
 
+    /// The ID of the node: for a node inside an instance, the ID of the node
+    /// of the component.
     pub(crate) fn id(&self, at: usize) -> NodeId {
-        self.entries[at].id
+        *self.entries[at].address.node()
     }
 
     pub(crate) fn name(&self, at: usize) -> &str {
@@ -242,6 +256,6 @@ impl Index {
 
     /// The address of the node.
     pub(crate) fn address(&self, at: usize) -> NodeAddress {
-        NodeAddress::new(None, self.entries[at].id)
+        self.entries[at].address.clone()
     }
 }
