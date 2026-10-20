@@ -13,6 +13,15 @@
 //! - A stroke is drawn inside the edge of a frame or an image, like a CSS
 //!   `inset` border, so it takes no space and follows the corner radii. The
 //!   stroke of a vector is centered on its path.
+//! - A frame's stroke may set `align` (US-053): `inside` is the default above,
+//!   `center` straddles the edge, half inside and half outside, and `outside`
+//!   lies around the box like a CSS `outline` (or a `box-shadow` spread),
+//!   whose corners follow the radii grown by the stroke width.
+//! - A stroke may be dashed (US-053): `"dash": {"length": <px>, "gap": <px>}`
+//!   is SVG `stroke-dasharray: <length> <gap>` with butt ends, along the line
+//!   that runs through the middle of the stroke. Around a box that line starts
+//!   at its top-left corner and runs clockwise, as an SVG `<rect>` does, and
+//!   along a vector it follows the path.
 //! - A frame's radii that are too large for its box are scaled down, as CSS
 //!   does. `clip` cuts children at the rounded box, not the frame's own shadow.
 //! - A shadow is a CSS `box-shadow`: a blur of `b` is a Gaussian of standard
@@ -679,6 +688,241 @@ fn a_stroke_follows_the_corner_radii() {
         RED,
         3,
         "the fill inside the stroke on the arc",
+    );
+}
+
+/// A 40 x 40 red frame at 80, 80 with one 4 px blue stroke that sets `align`.
+fn aligned_stroke(align: &str) -> Value {
+    one_box(
+        40.0,
+        40.0,
+        json!({
+            "fills": [solid("#ff0000")],
+            "strokes": [{"color": "#0000ff", "width": 4, "align": align}]
+        }),
+    )
+}
+
+#[test]
+fn a_frame_stroke_aligned_inside_lies_inside_the_edge() {
+    let pixels = render_200(&aligned_stroke("inside"));
+    assert_all_rgb(
+        &pixels,
+        &[
+            (80, 100),
+            (83, 100),
+            (116, 100),
+            (119, 100),
+            (100, 80),
+            (100, 119),
+        ],
+        BLUE,
+        "the 4 px stroke inside the edge, from 80 to 84 and from 116 to 120",
+    );
+    assert_all_rgb(
+        &pixels,
+        &[(84, 100), (115, 100)],
+        RED,
+        "the fill inside the stroke",
+    );
+    assert_all_rgb(
+        &pixels,
+        &[(79, 100), (120, 100), (100, 79), (100, 120)],
+        WHITE,
+        "outside the box",
+    );
+}
+
+#[test]
+fn a_frame_stroke_aligned_to_the_center_straddles_the_edge() {
+    let pixels = render_200(&aligned_stroke("center"));
+    assert_all_rgb(
+        &pixels,
+        &[
+            (78, 100),
+            (81, 100),
+            (118, 100),
+            (121, 100),
+            (100, 78),
+            (100, 81),
+            (100, 118),
+            (100, 121),
+        ],
+        BLUE,
+        "the 4 px stroke from 2 px outside the edge to 2 px inside it",
+    );
+    assert_all_rgb(
+        &pixels,
+        &[(82, 100), (117, 100), (100, 82), (100, 117)],
+        RED,
+        "the fill inside the stroke",
+    );
+    assert_all_rgb(
+        &pixels,
+        &[(77, 100), (122, 100), (100, 77), (100, 122)],
+        WHITE,
+        "beyond the half of the stroke outside the edge",
+    );
+    let frame_box = box_of(&lay_out(&aligned_stroke("center")), "bx000001");
+    assert_eq!(
+        [frame_box.x, frame_box.y, frame_box.width, frame_box.height],
+        [80.0, 80.0, 40.0, 40.0],
+        "a stroke takes no space wherever it sits"
+    );
+}
+
+#[test]
+fn a_frame_stroke_aligned_outside_lies_around_the_box_like_a_css_outline() {
+    let pixels = render_200(&aligned_stroke("outside"));
+    assert_all_rgb(
+        &pixels,
+        &[
+            (76, 100),
+            (79, 100),
+            (120, 100),
+            (123, 100),
+            (100, 76),
+            (100, 79),
+            (100, 120),
+            (100, 123),
+        ],
+        BLUE,
+        "the 4 px stroke outside the edge, from 76 to 80 and from 120 to 124",
+    );
+    assert_all_rgb(
+        &pixels,
+        &[(80, 100), (119, 100), (100, 80), (100, 119)],
+        RED,
+        "the fill, which the stroke leaves alone up to the edge",
+    );
+    assert_all_rgb(
+        &pixels,
+        &[(75, 100), (124, 100), (100, 75), (100, 124)],
+        WHITE,
+        "beyond the stroke",
+    );
+    let frame_box = box_of(&lay_out(&aligned_stroke("outside")), "bx000001");
+    assert_eq!(
+        [frame_box.x, frame_box.y, frame_box.width, frame_box.height],
+        [80.0, 80.0, 40.0, 40.0],
+        "a stroke outside the box takes no space either"
+    );
+}
+
+#[test]
+fn a_frame_stroke_outside_the_box_follows_the_radii_grown_by_its_width() {
+    let radius = json!({"topLeft": 30, "topRight": 30, "bottomRight": 30, "bottomLeft": 30});
+    let pixels = render_200(&one_box(
+        80.0,
+        80.0,
+        json!({
+            "fills": [solid("#ff0000")],
+            "strokes": [{"color": "#0000ff", "width": 4, "align": "outside"}],
+            "radius": radius
+        }),
+    ));
+    assert_rgb(
+        &pixels,
+        120,
+        77,
+        BLUE,
+        3,
+        "the stroke above the straight top edge",
+    );
+    // 46 px from the center of the arc at (110, 110), beyond the 34 px that
+    // the 30 px radius grown by the 4 px stroke reaches, where a square
+    // outline would be.
+    assert_rgb(&pixels, 77, 77, WHITE, 3, "outside the rounded outline");
+    // 33.2 px from the center of the arc: outside the rounded box, inside the
+    // 30..34 px band of the stroke.
+    assert_rgb(
+        &pixels,
+        86,
+        86,
+        BLUE,
+        3,
+        "the stroke around the arc at 45 degrees",
+    );
+}
+
+/// A box of 80 x 40 at 80, 80 without a fill and with one 2 px blue stroke,
+/// dashed 10 px on and 10 px off, that sets `align`.
+fn dashed_box(align: &str) -> Value {
+    one_box(
+        80.0,
+        40.0,
+        json!({
+            "strokes": [{
+                "color": "#0000ff",
+                "width": 2,
+                "align": align,
+                "dash": {"length": 10, "gap": 10}
+            }]
+        }),
+    )
+}
+
+#[test]
+fn a_dashed_stroke_inside_the_edge_starts_its_first_dash_at_the_top_left_corner() {
+    // The middle of the stroke runs 1 px inside the edge, from (81, 81): dashes
+    // from 81 to 91, 101 to 111 and 121 to 131 along the top, in the row of
+    // pixels from y 80 to 82.
+    let pixels = render_200(&dashed_box("inside"));
+    assert_all_rgb(&pixels, &[(86, 81), (106, 81), (126, 81)], BLUE, "a dash");
+    assert_all_rgb(&pixels, &[(96, 81), (116, 81)], WHITE, "a gap");
+}
+
+#[test]
+fn a_dashed_stroke_on_the_edge_starts_its_first_dash_at_the_top_left_corner() {
+    // The middle of the stroke is the edge, from (80, 80): dashes from 80 to
+    // 90, 100 to 110 and 120 to 130, from y 79 to 81.
+    let pixels = render_200(&dashed_box("center"));
+    assert_all_rgb(&pixels, &[(85, 80), (105, 80), (125, 80)], BLUE, "a dash");
+    assert_all_rgb(&pixels, &[(95, 80), (115, 80)], WHITE, "a gap");
+}
+
+#[test]
+fn a_dashed_stroke_outside_the_edge_starts_its_first_dash_at_the_top_left_corner() {
+    // The middle of the stroke runs 1 px outside the edge, from (79, 79):
+    // dashes from 79 to 89, 99 to 109 and 119 to 129, from y 78 to 80.
+    let pixels = render_200(&dashed_box("outside"));
+    assert_all_rgb(&pixels, &[(84, 79), (104, 79), (124, 79)], BLUE, "a dash");
+    assert_all_rgb(&pixels, &[(94, 79), (114, 79)], WHITE, "a gap");
+}
+
+#[test]
+fn a_dashed_stroke_without_an_align_lies_inside_the_edge() {
+    let design = one_box(
+        80.0,
+        40.0,
+        json!({"strokes": [{"color": "#0000ff", "width": 2, "dash": {"length": 10, "gap": 10}}]}),
+    );
+    let pixels = render_200(&design);
+    assert_all_rgb(&pixels, &[(86, 81), (106, 81)], BLUE, "a dash");
+    assert_all_rgb(&pixels, &[(96, 81), (116, 81)], WHITE, "a gap");
+}
+
+#[test]
+fn a_dashed_vector_stroke_follows_its_path_from_where_it_starts() {
+    let line = vector_node(
+        "vec00001",
+        80.0,
+        80.0,
+        "M0 20 L40 20",
+        json!({"strokes": [{"color": "#0000ff", "width": 6, "dash": {"length": 10, "gap": 10}}]}),
+    );
+    let pixels = render_200(&scene(200, 200, vec![line]));
+    assert_all_rgb(
+        &pixels,
+        &[(85, 100), (105, 100), (85, 98), (105, 102)],
+        BLUE,
+        "the dashes from 80 to 90 and from 100 to 110",
+    );
+    assert_all_rgb(
+        &pixels,
+        &[(95, 100), (115, 100)],
+        WHITE,
+        "the gaps from 90 to 100 and from 110 to 120",
     );
 }
 

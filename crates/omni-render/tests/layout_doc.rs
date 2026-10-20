@@ -324,3 +324,42 @@ fn the_html_of_the_docs_example_writes_its_line_height_in_px() {
         );
     }
 }
+
+#[test]
+fn the_doc_maps_margins_grid_self_alignment_and_stroke_dashes_and_alignment_to_css() {
+    // US-053 (decision Q48): every node may have a `margin` on each side, a
+    // child of a grid may set `justifySelf` and `alignSelf`, and a stroke may
+    // be dashed and, on a frame, sit inside, centered on or outside the edge.
+    // The doc names each new property and the CSS it maps to.
+    let doc = layout_doc();
+    for property in [
+        "margin",
+        "alignSelf",
+        "justifySelf",
+        "dash",
+        "align",
+        "inside",
+        "center",
+        "outside",
+    ] {
+        assert!(
+            doc.contains(&format!("`{property}`")),
+            "docs/formats/layout.md must say what CSS the design property or keyword `{property}` maps to, written as `{property}`"
+        );
+    }
+    for property in [
+        "margin-top",
+        "margin-right",
+        "margin-bottom",
+        "margin-left",
+        "justify-self",
+        "align-self",
+        "stroke-dasharray",
+        "outline",
+    ] {
+        assert!(
+            names(&doc, property),
+            "docs/formats/layout.md must name the CSS property `{property}` that a US-053 property maps to"
+        );
+    }
+}

@@ -6332,3 +6332,449 @@ pub fn unprotected_layout_rules() -> Vec<Case> {
     cases.push(row_in_a_grid_row_that_is_not_its_height());
     cases
 }
+
+// Margins and the self alignment of grid items (US-053, decision Q48).
+
+/// A copy of `json` with the margin `sides`, such as `{"top": 5}`: CSS
+/// `margin-top`, `margin-right`, `margin-bottom` and `margin-left`.
+fn margined(json: &Value, sides: Value) -> Value {
+    with(json, "margin", sides)
+}
+
+/// A copy of `json` aligned in its grid area by `justify_self` (across) and
+/// `align_self` (down), CSS `justify-self` and `align-self`.
+fn self_aligned(json: &Value, justify_self: &str, align_self: &str) -> Value {
+    with(
+        &with(json, "justifySelf", json!(justify_self)),
+        "alignSelf",
+        json!(align_self),
+    )
+}
+
+/// The event row of Penpot's "Händelse" component: a row that aligns its items
+/// at the start, 12 px apart, whose first item is the "Punkt" dot, 8 x 8 with
+/// a top margin of 5 px, next to the column of texts that fills the rest of the
+/// row and is 33 px tall.
+fn event_row() -> Value {
+    board(
+        "brd00001",
+        fixed(100.0),
+        json!("hug"),
+        flex(json!({"alignItems": "start", "gap": {"row": 12, "column": 12}})),
+        vec![
+            margined(
+                &frame(
+                    "dot00001",
+                    fixed(8.0),
+                    fixed(8.0),
+                    flex(json!({"alignItems": "center"})),
+                    Vec::new(),
+                ),
+                json!({"top": 5}),
+            ),
+            frame(
+                "frm00001",
+                json!("fill"),
+                json!("hug"),
+                flex(json!({"direction": "column"})),
+                vec![rect("a0000001", 40.0, 33.0)],
+            ),
+        ],
+    )
+}
+
+/// Every node may have a margin on each side, a length or a token reference,
+/// which is CSS `margin`: it takes space around the node in a flex or grid
+/// layout, never collapses, may be negative, and moves a positioned node away
+/// from its `x` and `y`. A token reference counts as left out (0) until
+/// layout resolves tokens.
+pub fn margins() -> Vec<Case> {
+    vec![
+        case(
+            "Penpot's Punkt: an 8 x 8 dot with a top margin of 5 px in a row that aligns its items at the start",
+            event_row(),
+            &[
+                ("brd00001", [0.0, 0.0, 100.0, 33.0]),
+                ("dot00001", [0.0, 5.0, 8.0, 8.0]),
+                ("frm00001", [20.0, 0.0, 80.0, 33.0]),
+                ("a0000001", [20.0, 0.0, 40.0, 33.0]),
+            ],
+        ),
+        case(
+            "margins on every side of the items of a row that hugs them",
+            board(
+                "brd00001",
+                json!("hug"),
+                json!("hug"),
+                flex(json!({})),
+                vec![
+                    margined(
+                        &rect("a0000001", 20.0, 20.0),
+                        json!({"top": 3, "right": 4, "bottom": 5, "left": 6}),
+                    ),
+                    margined(&rect("b0000001", 10.0, 10.0), json!({"left": 2})),
+                ],
+            ),
+            &[
+                ("brd00001", [0.0, 0.0, 42.0, 28.0]),
+                ("a0000001", [6.0, 3.0, 20.0, 20.0]),
+                ("b0000001", [32.0, 0.0, 10.0, 10.0]),
+            ],
+        ),
+        case(
+            "margins of the items of a column that centers them",
+            board(
+                "brd00001",
+                fixed(100.0),
+                fixed(100.0),
+                flex(json!({
+                    "direction": "column",
+                    "alignItems": "center",
+                    "justifyContent": "center"
+                })),
+                vec![
+                    margined(&rect("a0000001", 20.0, 20.0), json!({"top": 10})),
+                    margined(
+                        &rect("b0000001", 20.0, 20.0),
+                        json!({"bottom": 10, "left": 10}),
+                    ),
+                ],
+            ),
+            &[
+                ("a0000001", [40.0, 30.0, 20.0, 20.0]),
+                ("b0000001", [45.0, 50.0, 20.0, 20.0]),
+            ],
+        ),
+        case(
+            "a hug frame that a row stretches stops at its top and bottom margins",
+            board(
+                "brd00001",
+                fixed(100.0),
+                fixed(60.0),
+                flex(json!({})),
+                vec![margined(
+                    &hugging("frm00001", "a0000001", 20.0, 10.0),
+                    json!({"top": 5, "bottom": 7}),
+                )],
+            ),
+            &[
+                ("frm00001", [0.0, 5.0, 20.0, 48.0]),
+                ("a0000001", [0.0, 5.0, 20.0, 10.0]),
+            ],
+        ),
+        case(
+            "fill items share the space that their margins leave",
+            board(
+                "brd00001",
+                fixed(100.0),
+                fixed(20.0),
+                flex(json!({})),
+                vec![
+                    margined(
+                        &sized("a0000001", json!("fill"), fixed(20.0)),
+                        json!({"left": 10}),
+                    ),
+                    margined(
+                        &sized("b0000001", json!("fill"), fixed(20.0)),
+                        json!({"right": 6}),
+                    ),
+                ],
+            ),
+            &[
+                ("a0000001", [10.0, 0.0, 42.0, 20.0]),
+                ("b0000001", [52.0, 0.0, 42.0, 20.0]),
+            ],
+        ),
+        case(
+            "a negative margin pulls an item back over the one before it",
+            board(
+                "brd00001",
+                json!("hug"),
+                json!("hug"),
+                flex(json!({})),
+                vec![
+                    rect("a0000001", 30.0, 20.0),
+                    margined(&rect("b0000001", 20.0, 20.0), json!({"left": -10})),
+                ],
+            ),
+            &[
+                ("brd00001", [0.0, 0.0, 40.0, 20.0]),
+                ("b0000001", [20.0, 0.0, 20.0, 20.0]),
+            ],
+        ),
+        case(
+            "margins inside grid areas, around a filling item and a fixed one",
+            board(
+                "brd00001",
+                json!("hug"),
+                json!("hug"),
+                grid(json!({
+                    "columns": [{"fixed": 60}, {"fixed": 60}],
+                    "rows": [{"fixed": 40}]
+                })),
+                vec![
+                    margined(
+                        &filling("a0000001"),
+                        json!({"top": 4, "right": 4, "bottom": 4, "left": 4}),
+                    ),
+                    margined(&rect("b0000001", 20.0, 20.0), json!({"top": 6, "left": 8})),
+                ],
+            ),
+            &[
+                ("a0000001", [4.0, 4.0, 52.0, 32.0]),
+                ("b0000001", [68.0, 6.0, 20.0, 20.0]),
+            ],
+        ),
+        case(
+            "margins move positioned children away from their x and y and from the edge they fill to",
+            board(
+                "brd00001",
+                fixed(100.0),
+                fixed(80.0),
+                none(),
+                vec![
+                    margined(
+                        &at(&rect("a0000001", 20.0, 20.0), 10.0, 10.0),
+                        json!({"top": 5, "left": 7}),
+                    ),
+                    margined(
+                        &at(&sized("b0000001", json!("fill"), fixed(10.0)), 0.0, 40.0),
+                        json!({"right": 10, "left": 5}),
+                    ),
+                ],
+            ),
+            &[
+                ("a0000001", [17.0, 15.0, 20.0, 20.0]),
+                ("b0000001", [5.0, 40.0, 85.0, 10.0]),
+            ],
+        ),
+        case(
+            "a margin moves an absolute child of a row away from its x and y",
+            board(
+                "brd00001",
+                fixed(100.0),
+                fixed(80.0),
+                flex(json!({"padding": {"top": 10, "left": 10}})),
+                vec![
+                    rect("a0000001", 20.0, 20.0),
+                    margined(
+                        &absolute(&rect("b0000001", 20.0, 20.0), 20.0, 30.0),
+                        json!({"top": 3, "left": 4}),
+                    ),
+                ],
+            ),
+            &[
+                ("a0000001", [10.0, 10.0, 20.0, 20.0]),
+                ("b0000001", [24.0, 33.0, 20.0, 20.0]),
+            ],
+        ),
+        rounded_case(
+            "margins of a text, an image, a vector and an instance in a row",
+            board(
+                "brd00001",
+                json!("hug"),
+                json!("hug"),
+                flex(json!({"alignItems": "start"})),
+                vec![
+                    margined(
+                        &text("txt00001", "Hello", 16.0, 1.5),
+                        json!({"top": 2, "left": 3}),
+                    ),
+                    margined(
+                        &image("jpg00001", fixed(20.0), fixed(20.0)),
+                        json!({"left": 5}),
+                    ),
+                    margined(&vector("vec00001", 10.0), json!({"left": 5, "top": 4})),
+                    margined(&instance("btn00001"), json!({"left": 5, "bottom": 30})),
+                ],
+            ),
+            &[
+                ("brd00001", [0.0, 0.0, 86.5625, 30.0]),
+                ("txt00001", [3.0, 2.0, 38.5625, 24.0]),
+                ("jpg00001", [46.5625, 0.0, 20.0, 20.0]),
+                ("vec00001", [71.5625, 4.0, 10.0, 10.0]),
+                ("btn00001", [86.5625, 0.0, 0.0, 0.0]),
+            ],
+        ),
+        case(
+            "a token reference for a margin counts as left out",
+            board(
+                "brd00001",
+                json!("hug"),
+                json!("hug"),
+                flex(json!({})),
+                vec![margined(
+                    &rect("a0000001", 20.0, 20.0),
+                    json!({"top": "$space.sm", "left": 6}),
+                )],
+            ),
+            &[
+                ("brd00001", [0.0, 0.0, 26.0, 20.0]),
+                ("a0000001", [6.0, 0.0, 20.0, 20.0]),
+            ],
+        ),
+    ]
+}
+
+/// A 24 x 24 icon button: a frame that centers its 16 x 16 symbol.
+fn icon_button(id: &str, symbol: &str) -> Value {
+    frame(
+        id,
+        fixed(24.0),
+        fixed(24.0),
+        flex(json!({"alignItems": "center", "justifyContent": "center"})),
+        vec![rect(symbol, 16.0, 16.0)],
+    )
+}
+
+/// A grid of one `width` x `height` area holding `child`.
+fn one_area(width: f64, height: f64, child: Value) -> Value {
+    board(
+        "brd00001",
+        json!("hug"),
+        json!("hug"),
+        grid(json!({"columns": [{"fixed": width}], "rows": [{"fixed": height}]})),
+        vec![child],
+    )
+}
+
+/// A child of a grid sets its own alignment in its area with `justifySelf`
+/// (across) and `alignSelf` (down), CSS `justify-self` and `align-self`:
+/// `start`, `center`, `end` or `stretch`, which stretches an item that hugs
+/// and leaves a fixed size at the start, as in CSS.
+pub fn grid_self_alignment() -> Vec<Case> {
+    vec![
+        case(
+            "a centered icon button in the 40 x 40 area at the end of a toolbar",
+            board(
+                "brd00001",
+                fixed(200.0),
+                json!("hug"),
+                grid(json!({
+                    "columns": [{"fr": 1}, {"fixed": 40}],
+                    "rows": [{"fixed": 40}]
+                })),
+                vec![
+                    filling("a0000001"),
+                    self_aligned(&icon_button("btn00001", "sym00001"), "center", "center"),
+                ],
+            ),
+            &[
+                ("a0000001", [0.0, 0.0, 160.0, 40.0]),
+                ("btn00001", [168.0, 8.0, 24.0, 24.0]),
+                ("sym00001", [172.0, 12.0, 16.0, 16.0]),
+            ],
+        ),
+        case(
+            "a hug frame at the end of its area across and down",
+            one_area(
+                60.0,
+                40.0,
+                self_aligned(&hugging("frm00001", "a0000001", 20.0, 10.0), "end", "end"),
+            ),
+            &[("frm00001", [40.0, 30.0, 20.0, 10.0])],
+        ),
+        case(
+            "a hug frame at the start across and centered down",
+            one_area(
+                60.0,
+                40.0,
+                self_aligned(
+                    &hugging("frm00001", "a0000001", 20.0, 10.0),
+                    "start",
+                    "center",
+                ),
+            ),
+            &[("frm00001", [0.0, 15.0, 20.0, 10.0])],
+        ),
+        case(
+            "a hug frame stretched across its area and down",
+            one_area(
+                60.0,
+                40.0,
+                self_aligned(
+                    &hugging("frm00001", "a0000001", 20.0, 10.0),
+                    "stretch",
+                    "stretch",
+                ),
+            ),
+            &[
+                ("frm00001", [0.0, 0.0, 60.0, 40.0]),
+                ("a0000001", [0.0, 0.0, 20.0, 10.0]),
+            ],
+        ),
+        case(
+            "stretch leaves a fixed size at the start of its area",
+            one_area(
+                60.0,
+                40.0,
+                self_aligned(&rect("a0000001", 20.0, 10.0), "stretch", "stretch"),
+            ),
+            &[("a0000001", [0.0, 0.0, 20.0, 10.0])],
+        ),
+        case(
+            "a fixed box centered in what its left margin leaves of its area",
+            one_area(
+                60.0,
+                40.0,
+                margined(
+                    &self_aligned(&rect("a0000001", 20.0, 20.0), "center", "center"),
+                    json!({"left": 10}),
+                ),
+            ),
+            &[("a0000001", [25.0, 10.0, 20.0, 20.0])],
+        ),
+        case(
+            "a fixed box at the end of an area that spans two columns",
+            board(
+                "brd00001",
+                json!("hug"),
+                json!("hug"),
+                grid(json!({
+                    "columns": [{"fixed": 50}, {"fixed": 50}],
+                    "rows": [{"fixed": 30}, {"fixed": 30}],
+                    "gap": {"row": 10, "column": 10}
+                })),
+                vec![placed(
+                    &self_aligned(&rect("a0000001", 20.0, 10.0), "end", "center"),
+                    json!({"start": 1, "span": 2}),
+                    json!({"start": 2}),
+                )],
+            ),
+            &[("a0000001", [90.0, 50.0, 20.0, 10.0])],
+        ),
+    ]
+}
+
+/// Strokes take no space wherever they sit and however they are dashed, so a
+/// box with dashed strokes inside, on and outside its edge keeps its size.
+pub fn dashed_and_aligned_strokes_take_no_space() -> Vec<Case> {
+    let strokes = json!([
+        {"color": "#0f172a", "width": 6, "align": "outside", "dash": {"length": 4, "gap": 2}},
+        {"color": "#2563eb", "width": 3, "align": "center"},
+        {"color": "#ffffff", "width": 2, "align": "inside", "dash": {"length": 1, "gap": 1}}
+    ]);
+    vec![case(
+        "a hug row with dashed and aligned strokes around two boxes",
+        board(
+            "brd00001",
+            json!("hug"),
+            json!("hug"),
+            flex(json!({"gap": {"column": 4}})),
+            vec![
+                with(
+                    &hugging("frm00001", "a0000001", 20.0, 10.0),
+                    "strokes",
+                    strokes.clone(),
+                ),
+                with(&rect("b0000001", 30.0, 30.0), "strokes", strokes),
+            ],
+        ),
+        &[
+            ("brd00001", [0.0, 0.0, 54.0, 30.0]),
+            ("frm00001", [0.0, 0.0, 20.0, 30.0]),
+            ("a0000001", [0.0, 0.0, 20.0, 10.0]),
+            ("b0000001", [24.0, 0.0, 30.0, 30.0]),
+        ],
+    )]
+}

@@ -383,6 +383,22 @@ fn it_leaves_out_the_style_of_nodes_and_clips_without_changing_layout() {
 }
 
 #[test]
+fn it_exports_margins_as_css_margins() {
+    // US-053: a margin on each side is `margin-top`, `margin-right`,
+    // `margin-bottom` and `margin-left`, in px. Without them, Penpot's Punkt dot
+    // sits at y 0 instead of y 5, and every other case loses its margins.
+    check_cases("margins", &cases::margins());
+}
+
+#[test]
+fn it_exports_the_self_alignment_of_grid_items_as_justify_self_and_align_self() {
+    // US-053: `justifySelf` and `alignSelf` are written as `justify-self` and
+    // `align-self` in place of the ones that the item's sizing gives, so the
+    // icon button sits at the center of its 40 x 40 area instead of its start.
+    check_cases("grid-self-alignment", &cases::grid_self_alignment());
+}
+
+#[test]
 fn it_writes_the_content_of_texts_as_text_and_never_as_markup() {
     // Unescaped, "a&b <i>c</i> d" would be "a&b c d" in Chrome, 57.02 px wide
     // where the fourteen characters are 112.88 px.
