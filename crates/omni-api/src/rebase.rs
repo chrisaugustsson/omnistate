@@ -558,42 +558,41 @@ async fn rebase_tokens(
         split_components(load_tokens(state, workspace_id, mine_chunk).await?);
     let mut found = Vec::new();
     let merged = merge_tokens(&base, &mainline, &mine, "", &mut found);
-    let merged_components = match TokenTree::from_json(&merged) {
-        Ok(_) => merge_components(
+    // A design system of components only has an empty token tree.
+    let checked = design::has_no_tokens(&merged) || TokenTree::from_json(&merged).is_ok();
+    let merged_components = if checked {
+        merge_components(
             &base_components,
             &mainline_components,
             &mine_components,
             &mut found,
-        ),
-        Err(_) => mainline_components.clone(),
+        )
+    } else {
+        mainline_components.clone()
     };
     let tree = if merged.is_null() {
         None
+    } else if checked {
+        Some(with_components(merged.clone(), merged_components))
     } else {
-        match TokenTree::from_json(&merged) {
-            Ok(tree) => Some(with_components(tree.to_json(), merged_components)),
-            Err(_) => {
-                let mut changes = Vec::new();
-                token_changes(&base, &mine, "", &mut changes);
-                for node in changes {
-                    if found.iter().any(|f| f.node == node) {
-                        continue;
-                    }
-                    let at = |tree: &Value| {
-                        let pointer = format!("/{}", node.replace('.', "/"));
-                        tree.pointer(&pointer).and_then(token_side)
-                    };
-                    found.push(Found {
-                        mainline: at(&mainline),
-                        changeset: at(&mine),
-                        node,
-                        kind: ConflictKind::BothChanged,
-                    });
-                }
-                (!mainline.is_null())
-                    .then(|| with_components(mainline.clone(), mainline_components))
+        let mut changes = Vec::new();
+        token_changes(&base, &mine, "", &mut changes);
+        for node in changes {
+            if found.iter().any(|f| f.node == node) {
+                continue;
             }
+            let at = |tree: &Value| {
+                let pointer = format!("/{}", node.replace('.', "/"));
+                tree.pointer(&pointer).and_then(token_side)
+            };
+            found.push(Found {
+                mainline: at(&mainline),
+                changeset: at(&mine),
+                node,
+                kind: ConflictKind::BothChanged,
+            });
         }
+        (!mainline.is_null()).then(|| with_components(mainline.clone(), mainline_components))
     };
     let snapshot = tree.map(|tree| Snapshot {
         html: tree.to_string(),

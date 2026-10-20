@@ -479,7 +479,7 @@ pub async fn read_mainline_tokens(
     let tokens = match (&version_id, chunk) {
         (Some(version_id), Some(chunk)) => {
             let text = read_chunk(&state, &request.workspace_id, &chunk).await?;
-            Some(read_tokens(&text, &format!("version {version_id}"))?)
+            read_tokens(&text, &format!("version {version_id}"))?
         }
         _ => None,
     };

@@ -68,10 +68,10 @@ pub(crate) fn nodes_from(value: &Value) -> Result<Vec<Node>, String> {
         .collect()
 }
 
-/// The chunk of a design system version: its token tree, and its components
-/// under `$components` when it has any.
-pub(crate) fn design_system_text(tokens: &TokenTree, components: &[Node]) -> String {
-    let mut json = tokens.to_json();
+/// The chunk of a design system version: its token tree (an empty one when it
+/// has no tokens), and its components under `$components` when it has any.
+pub(crate) fn design_system_text(tokens: Option<&TokenTree>, components: &[Node]) -> String {
+    let mut json = tokens.map_or_else(|| json!({}), TokenTree::to_json);
     if !components.is_empty()
         && let Some(object) = json.as_object_mut()
     {
@@ -81,10 +81,11 @@ pub(crate) fn design_system_text(tokens: &TokenTree, components: &[Node]) -> Str
 }
 
 /// The tokens and the components that a saved design system version holds.
+/// The tokens are `None` for a design system of components only.
 pub(crate) fn read_design_system(
     text: &str,
     what: &str,
-) -> Result<(TokenTree, Vec<Node>), ApiError> {
+) -> Result<(Option<TokenTree>, Vec<Node>), ApiError> {
     let unavailable = |why: String| {
         eprintln!("omni-api: {what} holds no design system: {why}");
         ApiError::Unavailable
@@ -97,8 +98,17 @@ pub(crate) fn read_design_system(
         Some(value) => nodes_from(&value).map_err(unavailable)?,
         None => Vec::new(),
     };
+    if has_no_tokens(&json) {
+        return Ok((None, components));
+    }
     let tokens = TokenTree::from_json(&json).map_err(|e| unavailable(e.to_string()))?;
-    Ok((tokens, components))
+    Ok((Some(tokens), components))
+}
+
+/// Whether the token part of a design system's JSON is empty: a design
+/// system of components only.
+pub(crate) fn has_no_tokens(json: &Value) -> bool {
+    json.as_object().is_some_and(serde_json::Map::is_empty)
 }
 
 /// The chunk of a design version: its pages.

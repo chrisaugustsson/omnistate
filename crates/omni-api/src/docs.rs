@@ -355,12 +355,11 @@ pub(crate) struct DraftState {
 
 impl DraftState {
     /// What a version of the draft holds, with its node index. `None` for the
-    /// draft of a design system that has no tokens yet.
+    /// draft of a design system that has neither tokens nor components yet.
     pub(crate) fn snapshot(&self) -> Option<Snapshot> {
         if self.design_system {
-            let tokens = self.tokens.as_ref()?;
             Some(Snapshot {
-                html: design::design_system_text(tokens, &self.components),
+                html: self.content()?,
                 nodes: Vec::new(),
             })
         } else if self.design {
@@ -379,8 +378,13 @@ impl DraftState {
     /// The chunk text of a version of the draft as it is now.
     pub(crate) fn content(&self) -> Option<String> {
         if self.design_system {
-            let tokens = self.tokens.as_ref()?;
-            Some(design::design_system_text(tokens, &self.components))
+            if self.tokens.is_none() && self.components.is_empty() {
+                return None;
+            }
+            Some(design::design_system_text(
+                self.tokens.as_ref(),
+                &self.components,
+            ))
         } else if self.design {
             Some(design::pages_text(&self.pages))
         } else {
@@ -456,8 +460,9 @@ pub(crate) fn random_node_id() -> NodeId {
     id.parse().expect("the alphabet gives a node ID")
 }
 
-/// The token tree that a saved design system version holds.
-pub(crate) fn read_tokens(text: &str, what: &str) -> Result<TokenTree, ApiError> {
+/// The token tree that a saved design system version holds, `None` when it
+/// has components only.
+pub(crate) fn read_tokens(text: &str, what: &str) -> Result<Option<TokenTree>, ApiError> {
     design::read_design_system(text, what).map(|(tokens, _)| tokens)
 }
 
@@ -496,7 +501,7 @@ pub(crate) async fn load_state(
             if !html.is_empty() {
                 let what = format!("the base version {base} of draft {}", draft.id);
                 let (tree, nodes) = design::read_design_system(&html, &what)?;
-                tokens = Some(tree);
+                tokens = tree;
                 components = nodes;
             }
         } else if design {

@@ -456,7 +456,7 @@ pub(crate) async fn store_version(
         (status = 401, description = "No valid API key or session", body = ErrorBody),
         (status = 403, description = "Called with a session; agents only", body = ErrorBody),
         (status = 404, description = "The change set has no draft of this doc in this project and workspace", body = ErrorBody),
-        (status = 409, description = "The draft of a design system has no tokens yet (`no_tokens`): import them first", body = ErrorBody),
+        (status = 409, description = "The draft of a design system has neither tokens nor components yet (`no_tokens`): import them first", body = ErrorBody),
     )
 )]
 pub async fn save_version(
