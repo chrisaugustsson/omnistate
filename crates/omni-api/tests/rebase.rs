@@ -48,7 +48,22 @@
 //!   children elsewhere conflicts with nothing when the mainline changed
 //!   something else. When both sides reorder the same siblings, the change
 //!   set's reorder survives next to the mainline's or becomes a conflict; it
-//!   is never silently lost.
+//!   is never silently lost. The same node reordered differently on both
+//!   sides is a conflict and keeps its mainline place, unless both sides put
+//!   it in the same place.
+//! - Removing a doc (`POST /changesets/{id}/docs/{doc_id}/remove`) is a
+//!   doc-level change. When one side removed the doc and the other changed
+//!   anything in it since the base, the rebase records a conflict for the doc
+//!   and keeps the mainline state: a doc the mainline removed stays removed
+//!   in the draft (it has no nodes) and in what merges next, and a doc the
+//!   change set removed is the mainline version, every node of it, in the
+//!   draft. Otherwise the removal survives: a removed doc is never brought
+//!   back, and a removal is never lost.
+//! - A rebase never drops unsaved work: when a draft of the change set has
+//!   operations after its latest saved version, the rebase is 409 `{"error":
+//!   "unsaved_operations"}` and changes nothing.
+//! - An edit or a read of a draft that waits while a rebase rewrites it works
+//!   on the rebased draft, never on the one from before the rebase.
 //! - A Conflict is `{"id", "changeset_id", "doc_id", "node", "mainline":
 //!   Side, "changeset": Side, "resolution"}`, where a Side is `{"version_id",
 //!   "html"}`: the version that side's state comes from (the mainline version
@@ -91,6 +106,9 @@ use std::future::Future;
 use std::str::FromStr;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::mpsc;
+use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
 
 const TEST_DB: &str = "omni_us026_rebase";
 const TEST_BUCKET: &str = "omni-us026-rebase";
@@ -2110,4 +2128,532 @@ fn a_change_set_that_needs_a_rebase_can_be_abandoned() {
         s.ahead_version.as_str(),
         "nothing merged"
     );
+}
+
+#[test]
+fn the_same_node_reordered_differently_on_both_sides_is_a_conflict() {
+    // Base A B C D. The mainline moves A to the end (B C D A); the change set
+    // moves A behind C (B C A D).
+    let (f, client) = ready();
+    let x = fork(f, client, &["<p>A</p>", "<p>B</p>", "<p>C</p>", "<p>D</p>"]);
+    let [a, b, c, d] = <[String; 4]>::try_from(x.nodes.clone())
+        .unwrap_or_else(|ids| panic!("four nodes in document order: {ids:?}"));
+    let ahead_version = merge_ahead(f, client, &x, vec![move_to(&a, None, Some(&d))]);
+    fall_behind(f, client, &x, vec![move_to(&a, None, Some(&c))]);
+
+    let answer = rebase(f, client, &x.project, &x.behind);
+    let recorded = answer["conflicts"]
+        .as_array()
+        .unwrap_or_else(|| panic!("the rebase answers its conflicts: {answer}"))
+        .clone();
+    assert_eq!(
+        by_node(&recorded).keys().cloned().collect::<Vec<_>>(),
+        vec![a.clone()],
+        "A was reordered on both sides to different places: {answer}"
+    );
+    assert_eq!(answer["changeset"]["status"], "open", "{answer}");
+    assert_eq!(
+        mainline_of(f, client, &x.project, &x.doc),
+        ahead_version.as_str(),
+        "nothing merged"
+    );
+    assert_eq!(
+        node_ids(&draft_html(f, client, &x.project, &x.behind, &x.doc)),
+        vec![b, c, d, a],
+        "the conflicting node keeps its mainline place in the draft"
+    );
+}
+
+#[test]
+fn the_same_node_reordered_to_the_same_place_on_both_sides_rebases_cleanly() {
+    let (f, client) = ready();
+    let x = fork(f, client, &["<p>A</p>", "<p>B</p>", "<p>C</p>", "<p>D</p>"]);
+    let [a, b, c, d] = <[String; 4]>::try_from(x.nodes.clone())
+        .unwrap_or_else(|ids| panic!("four nodes in document order: {ids:?}"));
+    merge_ahead(f, client, &x, vec![move_to(&a, None, Some(&d))]);
+    fall_behind(f, client, &x, vec![move_to(&a, None, Some(&d))]);
+
+    let answer = rebase(f, client, &x.project, &x.behind);
+    assert_eq!(answer["conflicts"], json!([]), "{answer}");
+    assert_eq!(answer["changeset"]["status"], "merged", "{answer}");
+    assert_eq!(
+        node_ids(&mainline_html(f, client, &x.project, &x.doc)),
+        vec![b, c, d, a]
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Removed docs
+// ---------------------------------------------------------------------------
+
+/// Removes the doc in the change set; returns the version that marks it
+/// removed.
+fn remove_doc(f: &Fixture, client: &Client, project: &str, changeset: &str, doc: &str) -> String {
+    let version = must(
+        call(
+            client,
+            "POST",
+            &format!("{}/remove", draft_path(f, project, changeset, doc)),
+            &agent(f),
+            Some(&json!({})),
+        ),
+        201,
+        "remove the doc",
+    )["version"]
+        .clone();
+    assert_eq!(version["removed"], true, "{version}");
+    id_of(&version)
+}
+
+/// The ahead change set removes the doc and merges; returns the mainline
+/// version, the removal.
+fn merge_ahead_removal(f: &Fixture, client: &Client, x: &Fork) -> String {
+    let removal = remove_doc(f, client, &x.project, &x.ahead, &x.doc);
+    submit(f, client, &x.project, &x.ahead);
+    let merged = approve(f, client, &x.project, &x.ahead);
+    assert_eq!(merged["status"], "merged", "merge the removal: {merged}");
+    assert_eq!(mainline_of(f, client, &x.project, &x.doc), removal.as_str());
+    removal
+}
+
+/// The behind change set removes the doc and is approved on the old base.
+fn fall_behind_with_removal(f: &Fixture, client: &Client, x: &Fork) -> String {
+    let removal = remove_doc(f, client, &x.project, &x.behind, &x.doc);
+    submit(f, client, &x.project, &x.behind);
+    let approved = approve(f, client, &x.project, &x.behind);
+    assert_eq!(
+        approved["status"], "needs_rebase",
+        "set up a change set behind the mainline: {approved}"
+    );
+    removal
+}
+
+/// Whether the doc's mainline version marks it removed.
+fn mainline_removed(f: &Fixture, client: &Client, project: &str, doc: &str) -> bool {
+    let mainline = mainline_of(f, client, project, doc);
+    let mainline = mainline.as_str().expect("the doc has a mainline version");
+    version_of(f, client, project, mainline)["removed"]
+        .as_bool()
+        .unwrap_or_else(|| panic!("a version says whether it is a removal"))
+}
+
+/// Every conflict of the answer is one of the doc, with the mainline side
+/// from `mainline_version`; returns them.
+fn doc_conflicts(answer: &Value, doc: &str, mainline_version: &str) -> Vec<Value> {
+    let recorded = answer["conflicts"]
+        .as_array()
+        .unwrap_or_else(|| panic!("the rebase answers its conflicts: {answer}"))
+        .clone();
+    assert!(
+        !recorded.is_empty(),
+        "one side removed the doc and the other changed it: a conflict: {answer}"
+    );
+    for conflict in &recorded {
+        assert_eq!(conflict["doc_id"], doc, "{conflict}");
+        assert_eq!(
+            conflict["mainline"]["version_id"], mainline_version,
+            "{conflict}"
+        );
+    }
+    recorded
+}
+
+#[test]
+fn a_doc_the_mainline_removed_conflicts_with_a_change_set_that_added_to_it() {
+    // The change set only adds a paragraph; the mainline removed the doc.
+    let (f, client) = ready();
+    let x = fork(f, client, &["<p>A</p>", "<p>B</p>"]);
+    let b = x.nodes[1].clone();
+    let removal = merge_ahead_removal(f, client, &x);
+    fall_behind(
+        f,
+        client,
+        &x,
+        vec![json!({
+            "op": "insert",
+            "parent": null,
+            "position": { "after": b },
+            "content": "<p>Added by behind</p>"
+        })],
+    );
+
+    let answer = rebase(f, client, &x.project, &x.behind);
+    let recorded = doc_conflicts(&answer, &x.doc, &removal);
+    assert_eq!(answer["changeset"]["status"], "open", "{answer}");
+    assert_eq!(
+        mainline_of(f, client, &x.project, &x.doc),
+        removal.as_str(),
+        "nothing merged"
+    );
+    let html = draft_html(f, client, &x.project, &x.behind, &x.doc);
+    assert_eq!(
+        node_ids(&html),
+        Vec::<String>::new(),
+        "the draft keeps the mainline state, a removed doc: {html}"
+    );
+
+    // Resolved without another save, what merges keeps the doc removed.
+    for conflict in &recorded {
+        resolve(f, client, &x.project, &id_of(conflict), "Kept the removal");
+    }
+    submit(f, client, &x.project, &x.behind);
+    let merged = approve(f, client, &x.project, &x.behind);
+    assert_eq!(merged["status"], "merged", "{merged}");
+    assert!(
+        mainline_removed(f, client, &x.project, &x.doc),
+        "the removed doc is not brought back"
+    );
+}
+
+#[test]
+fn a_doc_the_mainline_removed_conflicts_with_a_change_set_that_edited_it() {
+    let (f, client) = ready();
+    let x = fork(f, client, &["<p>A</p>", "<p>B</p>"]);
+    let a = x.nodes[0].clone();
+    let removal = merge_ahead_removal(f, client, &x);
+    fall_behind(f, client, &x, vec![set_text(&a, "Alpha by behind")]);
+
+    let answer = rebase(f, client, &x.project, &x.behind);
+    let recorded = doc_conflicts(&answer, &x.doc, &removal);
+    assert_eq!(answer["changeset"]["status"], "open", "{answer}");
+    let html = draft_html(f, client, &x.project, &x.behind, &x.doc);
+    assert_eq!(
+        node_ids(&html),
+        Vec::<String>::new(),
+        "the draft keeps the mainline state, a removed doc: {html}"
+    );
+
+    // Resolved without another save, what merges is the removal, not an
+    // empty doc brought back.
+    for conflict in &recorded {
+        resolve(f, client, &x.project, &id_of(conflict), "Kept the removal");
+    }
+    submit(f, client, &x.project, &x.behind);
+    let merged = approve(f, client, &x.project, &x.behind);
+    assert_eq!(merged["status"], "merged", "{merged}");
+    assert!(
+        mainline_removed(f, client, &x.project, &x.doc),
+        "the removed doc is not brought back"
+    );
+}
+
+#[test]
+fn a_doc_the_change_set_removed_conflicts_with_mainline_changes_and_keeps_the_mainline_state() {
+    // Once the mainline edits a paragraph, once it only adds one.
+    let (f, client) = ready();
+    for edits_existing in [true, false] {
+        let x = fork(f, client, &["<p>A</p>", "<p>B</p>", "<p>C</p>"]);
+        let [a, b, c] = <[String; 3]>::try_from(x.nodes.clone())
+            .unwrap_or_else(|ids| panic!("three nodes in document order: {ids:?}"));
+        let ahead_version = if edits_existing {
+            merge_ahead(f, client, &x, vec![set_text(&b, "Beta by ahead")])
+        } else {
+            merge_ahead(
+                f,
+                client,
+                &x,
+                vec![insert_after(Some(&c), "Delta by ahead")],
+            )
+        };
+        let expected = node_ids(&mainline_html(f, client, &x.project, &x.doc));
+        fall_behind_with_removal(f, client, &x);
+
+        let answer = rebase(f, client, &x.project, &x.behind);
+        doc_conflicts(&answer, &x.doc, &ahead_version);
+        assert_eq!(answer["changeset"]["status"], "open", "{answer}");
+        assert_eq!(
+            mainline_of(f, client, &x.project, &x.doc),
+            ahead_version.as_str(),
+            "nothing merged"
+        );
+        let html = draft_html(f, client, &x.project, &x.behind, &x.doc);
+        assert_eq!(
+            node_ids(&html),
+            expected,
+            "the draft holds the whole mainline version, the paragraphs that \
+             neither side edited ({a}, {c}) too: {html}"
+        );
+        let text = if edits_existing {
+            "Beta by ahead"
+        } else {
+            "Delta by ahead"
+        };
+        assert!(html.contains(text), "the mainline's change stays: {html}");
+    }
+}
+
+#[test]
+fn a_removal_survives_a_rebase_when_the_other_side_changed_nothing_in_the_doc() {
+    let (f, client) = ready();
+
+    // The mainline removed the doc; the change set saved it without a change.
+    let x = fork(f, client, &["<p>A</p>", "<p>B</p>"]);
+    merge_ahead_removal(f, client, &x);
+    fall_behind(f, client, &x, vec![]);
+    let answer = rebase(f, client, &x.project, &x.behind);
+    assert_eq!(answer["conflicts"], json!([]), "{answer}");
+    assert_eq!(answer["changeset"]["status"], "merged", "{answer}");
+    assert!(
+        mainline_removed(f, client, &x.project, &x.doc),
+        "the mainline's removal is not undone by a change set that changed nothing"
+    );
+
+    // Both sides removed the doc.
+    let x = fork(f, client, &["<p>A</p>", "<p>B</p>"]);
+    merge_ahead_removal(f, client, &x);
+    fall_behind_with_removal(f, client, &x);
+    let answer = rebase(f, client, &x.project, &x.behind);
+    assert_eq!(answer["conflicts"], json!([]), "{answer}");
+    assert_eq!(answer["changeset"]["status"], "merged", "{answer}");
+    assert!(
+        mainline_removed(f, client, &x.project, &x.doc),
+        "the doc stays removed"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Unsaved work
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_rebase_with_unsaved_operations_is_refused_and_changes_nothing() {
+    let (f, client) = ready();
+    let s = clean_scene(f, client);
+    // The agent edits the draft after its latest saved version.
+    edit(
+        f,
+        client,
+        &s.project,
+        &s.behind,
+        &s.doc,
+        vec![insert_after(Some(&s.paragraphs[2]), "Unsaved by behind")],
+    );
+    let before = changeset_of(f, client, &s.project, &s.behind);
+    assert_eq!(before["status"], "needs_rebase", "{before}");
+
+    let response = rebase_response(f, client, &agent(f), &s.project, &s.behind);
+    assert_error(&response, 409, "unsaved_operations");
+
+    let after = changeset_of(f, client, &s.project, &s.behind);
+    assert_eq!(after["status"], "needs_rebase", "{after}");
+    assert_eq!(moves(&after), moves(&before), "the history is unchanged");
+    assert_eq!(
+        approved_versions(&after),
+        approved_versions(&before),
+        "the approval is unchanged"
+    );
+    assert_eq!(
+        mainline_of(f, client, &s.project, &s.doc),
+        s.ahead_version.as_str(),
+        "nothing merged"
+    );
+    assert_eq!(
+        conflicts_of(f, client, &s.project, &s.behind),
+        Vec::<Value>::new()
+    );
+    let draft = read_draft(f, client, &s.project, &s.behind, &s.doc);
+    assert_ne!(
+        draft["base_version_id"],
+        s.ahead_version.as_str(),
+        "the draft is not rebased: {draft}"
+    );
+    let html = draft["html"].as_str().expect("the draft's html");
+    assert!(
+        html.contains("Unsaved by behind") && html.contains("Beta by behind"),
+        "the unsaved work is still in the draft: {html}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Requests that wait on a rebase
+// ---------------------------------------------------------------------------
+
+/// A lock on a change set's row, held by another connection until it is
+/// released: a rebase of the change set then waits in its transaction while
+/// it holds its drafts.
+struct RowLock {
+    /// The backend that holds the lock.
+    pid: i32,
+    release: mpsc::Sender<()>,
+    thread: JoinHandle<()>,
+}
+
+impl RowLock {
+    fn on_changeset(changeset: &str) -> RowLock {
+        let (locked, is_locked) = mpsc::channel();
+        let (release, released) = mpsc::channel::<()>();
+        let changeset = changeset.to_string();
+        let thread = std::thread::spawn(move || {
+            block(async move {
+                let mut conn = admin_connection().await;
+                let pid: i32 = sqlx::query_scalar("select pg_backend_pid()")
+                    .fetch_one(&mut conn)
+                    .await
+                    .expect("the backend's pid");
+                let mut tx = conn.begin().await.expect("begin");
+                sqlx::query("select 1 from changesets where id = $1::uuid for update")
+                    .bind(&changeset)
+                    .execute(&mut *tx)
+                    .await
+                    .expect("lock the change set's row");
+                locked.send(pid).expect("report the lock");
+                // Dropped or sent, the lock goes.
+                let _ = released.recv();
+                tx.rollback().await.expect("release the lock");
+            })
+        });
+        let pid = is_locked.recv().expect("the change set's row is locked");
+        RowLock {
+            pid,
+            release,
+            thread,
+        }
+    }
+
+    /// Waits until another backend waits on this lock.
+    fn wait_for_a_waiter(&self) {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            let waiting: i64 = block(async {
+                let mut conn = admin_connection().await;
+                sqlx::query_scalar(
+                    "select count(*) from pg_stat_activity where $1 = any(pg_blocking_pids(pid))",
+                )
+                .bind(self.pid)
+                .fetch_one(&mut conn)
+                .await
+                .expect("read the waiting backends")
+            });
+            if waiting > 0 {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the rebase never waited on the change set's row"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    fn release(self) {
+        let _ = self.release.send(());
+        self.thread.join().expect("the lock's thread");
+    }
+}
+
+/// Starts the rebase of the conflicted scene's change set and holds it in its
+/// transaction, with its drafts locked; returns the lock and the rebase.
+fn rebase_on_hold(
+    f: &'static Fixture,
+    client: &'static Client,
+    s: &Scene,
+) -> (RowLock, JoinHandle<Value>) {
+    let lock = RowLock::on_changeset(&s.behind);
+    let (project, behind) = (s.project.clone(), s.behind.clone());
+    let rebasing = std::thread::spawn(move || rebase(f, client, &project, &behind));
+    lock.wait_for_a_waiter();
+    (lock, rebasing)
+}
+
+/// Gives a request time to reach the draft that the rebase holds, and checks
+/// that it waits there.
+fn waits_on_the_rebase<T>(request: &JoinHandle<T>, what: &str) {
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(
+        !request.is_finished(),
+        "the {what} waits while the rebase holds the draft"
+    );
+}
+
+#[test]
+fn a_read_that_waits_on_a_rebase_reads_the_rebased_draft() {
+    let (f, client) = ready();
+    let s = conflicted_scene(f, client);
+    let [p1, p3] = [s.paragraphs[0].clone(), s.paragraphs[2].clone()];
+    // The draft is in memory before the rebase.
+    let before = draft_html(f, client, &s.project, &s.behind, &s.doc);
+    assert!(before.contains("Alpha by behind"), "{before}");
+
+    let (lock, rebasing) = rebase_on_hold(f, client, &s);
+    let (project, behind, doc) = (s.project.clone(), s.behind.clone(), s.doc.clone());
+    let reading = std::thread::spawn(move || draft_html(f, client, &project, &behind, &doc));
+    waits_on_the_rebase(&reading, "read");
+    lock.release();
+
+    let answer = rebasing.join().expect("the rebase");
+    assert_eq!(answer["changeset"]["status"], "open", "{answer}");
+    let html = reading.join().expect("the read");
+    assert!(
+        html.contains("Alpha by ahead") && !html.contains("Alpha by behind"),
+        "the read shows the rebased draft, not the one from before: {html}"
+    );
+    assert!(!html.contains("Beta by behind"), "{html}");
+    assert_eq!(node_ids(&html), vec![p1.clone(), p3.clone()], "{html}");
+    let again = draft_html(f, client, &s.project, &s.behind, &s.doc);
+    assert_eq!(node_ids(&again), vec![p1, p3], "{again}");
+    assert!(again.contains("Alpha by ahead"), "{again}");
+}
+
+#[test]
+fn an_edit_that_waits_on_a_rebase_applies_to_the_rebased_draft() {
+    let (f, client) = ready();
+    let s = conflicted_scene(f, client);
+    let [p1, p3] = [s.paragraphs[0].clone(), s.paragraphs[2].clone()];
+
+    let (lock, rebasing) = rebase_on_hold(f, client, &s);
+    let (project, behind, doc) = (s.project.clone(), s.behind.clone(), s.doc.clone());
+    let editing = std::thread::spawn(move || {
+        edit(
+            f,
+            client,
+            &project,
+            &behind,
+            &doc,
+            vec![insert_after(None, "Late by behind")],
+        )
+    });
+    waits_on_the_rebase(&editing, "edit");
+    lock.release();
+
+    let answer = rebasing.join().expect("the rebase");
+    assert_eq!(answer["changeset"]["status"], "open", "{answer}");
+    let results = editing.join().expect("the edit");
+    let late = results[0]["node"]
+        .as_str()
+        .expect("the inserted node")
+        .to_string();
+
+    let html = draft_html(f, client, &s.project, &s.behind, &s.doc);
+    assert!(
+        html.contains("Alpha by ahead") && !html.contains("Alpha by behind"),
+        "the edit applied to the rebased draft, not the one from before: {html}"
+    );
+    assert!(!html.contains("Beta by behind"), "{html}");
+    assert_eq!(node_ids(&html), vec![late, p1, p3], "{html}");
+
+    // What the agent saves next holds the rebase and the edit.
+    let saved = save(f, client, &s.project, &s.behind, &s.doc);
+    let version = version_html(f, client, &s.project, &s.doc, &saved);
+    assert!(
+        version.contains("Alpha by ahead") && version.contains("Late by behind"),
+        "{version}"
+    );
+}
+
+/// A version of the doc as `GET /docs/{doc_id}/html?version=` answers it.
+fn version_html(f: &Fixture, client: &Client, project: &str, doc: &str, version: &str) -> String {
+    must(
+        call(
+            client,
+            "GET",
+            &format!("{}/html?version={version}", doc_path(f, project, doc)),
+            &agent(f),
+            None,
+        ),
+        200,
+        "read a version of the doc",
+    )["html"]
+        .as_str()
+        .expect("the version's html")
+        .to_string()
 }

@@ -151,3 +151,48 @@ fn a_reorder_on_each_side_keeps_both_or_conflicts() {
         );
     }
 }
+
+/// Paragraphs with the IDs in that order, each with its ID's first letter as
+/// its text, so that only the order differs between two of them.
+fn ordered(ids: &[&str]) -> EditDoc {
+    doc(&ids
+        .iter()
+        .map(|id| p(id, &id[..1].to_uppercase()))
+        .collect::<String>())
+}
+
+#[test]
+fn the_same_node_reordered_differently_on_both_sides_is_a_conflict() {
+    // Base A B C D. The mainline moves A to the end (B C D A); the change set
+    // moves A behind C (B C A D). Both moved A, to different places.
+    let base = ordered(&["a0000000", "b0000000", "c0000000", "d0000000"]);
+    let mainline = ordered(&["b0000000", "c0000000", "d0000000", "a0000000"]);
+    let changes = ordered(&["b0000000", "c0000000", "a0000000", "d0000000"]);
+    let rebased = EditDoc::rebase(&base, &mainline, &changes);
+    assert_eq!(
+        rebased.conflicts,
+        vec![id("a0000000")],
+        "A was reordered on both sides to different places"
+    );
+    assert_eq!(
+        order(&rebased.doc),
+        ["b0000000", "c0000000", "d0000000", "a0000000"],
+        "the conflicting node keeps its mainline place"
+    );
+}
+
+#[test]
+fn the_same_node_reordered_to_the_same_place_on_both_sides_is_no_conflict() {
+    let base = ordered(&["a0000000", "b0000000", "c0000000", "d0000000"]);
+    let both = ordered(&["b0000000", "c0000000", "d0000000", "a0000000"]);
+    let rebased = EditDoc::rebase(&base, &both, &both);
+    assert_eq!(
+        rebased.conflicts,
+        Vec::<NodeId>::new(),
+        "both sides put A in the same place"
+    );
+    assert_eq!(
+        order(&rebased.doc),
+        ["b0000000", "c0000000", "d0000000", "a0000000"]
+    );
+}
