@@ -9,7 +9,7 @@ decided after reading the result.
 
 `<dir>/compare.json` holds `tolerance` and `boards`, one entry per converted
 board in the order of `convert`. Each entry has `board`, `boardId`, `page`,
-`layoutOnly`, `note`, `pixel`, `layout` and `unconverted`. The images that
+`layoutOnly`, `note`, `pixel`, `layout`, `textDrift` and `unconverted`. The images that
 `pixel` names are in `<dir>/images/`, with paths relative to `<dir>`. The same
 inputs always give the same files.
 
@@ -54,14 +54,28 @@ box in Penpot's PNG is masked: those pixels are in `masked`, not in `compared`,
 and are never highlighted. A shape converted without one property (a blur, say)
 is drawn and compared, and is not masked.
 
-## Layout comparison
+## Layout comparison: two numbers
 
 For each converted shape of a board, the board included, Penpot's stored box
-(page coordinates) is set beside the box OmniState's layout computes. `compared`
-counts the shapes; `mismatches` lists those more than 2 px off in x, y, width or
-height, furthest first, with both boxes and `offBy`, the largest of the four
-differences. Hidden shapes, and shapes inside hidden ones, are not compared:
-nothing is drawn for them.
+(page coordinates) is set beside the box OmniState's layout computes. The
+comparison is made twice, and reports two numbers. Both are `{ compared,
+mismatches }`: `compared` counts the shapes; `mismatches` lists those more than
+2 px off in x, y, width or height, furthest first, with both boxes and `offBy`,
+the largest of the four differences. Hidden shapes, and shapes inside hidden
+ones, are not compared: nothing is drawn for them.
+
+**Structural mismatches** (`layout`). Each text is pinned to the box Penpot
+stored for it, inside the comparison only, before layout runs. Penpot rounds
+text boxes up to whole pixels and Chrome does not, so without the pin one text
+moves every shape after it. With the pin, what is left is a real layout error:
+a shape in another place or of another size for another reason. This is the
+number to drive down; the Penpot fixtures must have at most 1,000 between them.
+
+**Text drift** (`textDrift`). Measured on the design as it is imported, with
+every text following Chrome: the texts keep their hug sizing and are as wide and
+tall as their content lays out. It shows how far Penpot's text boxes move other
+shapes, and has no limit. The pin is never in the converted design; it exists
+only inside the comparison.
 
 A layout mismatch means an element is in another place or has another size. A
 board that matches in layout but differs in pixels has a drawing difference.
@@ -88,12 +102,12 @@ middle score of the boards that have a PNG, the mean of the two middle ones for
 an even number) and the totals of layout mismatches and unconverted shapes.
 Below it, the boards are sorted worst first: the boards that have a pixel score
 come first, the largest share of differing pixels first, and then the boards
-without a PNG, the most layout mismatches first. Ties keep the order of the
+without a PNG, the most structural mismatches first. Ties keep the order of the
 files and the boards.
 
 Each board shows Penpot's PNG, OmniState's render and the difference image side
 by side (click one to open it full size), its pixel score as a percentage (lower
-is better, 0.0% is a perfect match), the layout mismatches with both boxes and
+is better, 0.0% is a perfect match), the structural mismatches and the text drift with both boxes and
 how far off they are, and the unconverted shapes with the reason. A board with
 no PNG shows no images and says "Layout comparison only". Names and reasons come
 from the design and are escaped in the page.

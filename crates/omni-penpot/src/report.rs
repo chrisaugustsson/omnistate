@@ -8,7 +8,7 @@ use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::compare::{BoardComparison, TOLERANCE, compare_file};
+use crate::compare::{BoardComparison, Mismatch, TOLERANCE, compare_file};
 
 /// What a written report holds, for the command to print.
 #[derive(Debug, Clone, PartialEq)]
@@ -195,6 +195,10 @@ fn page(entries: &[Entry]) -> String {
         .iter()
         .map(|entry| entry.board.layout.mismatches.len())
         .sum();
+    let drift: usize = entries
+        .iter()
+        .map(|entry| entry.board.text_drift.mismatches.len())
+        .sum();
     let unconverted: usize = entries
         .iter()
         .map(|entry| entry.board.unconverted.len())
@@ -207,13 +211,16 @@ fn page(entries: &[Entry]) -> String {
         "<p class=\"lede\">Each board is drawn by OmniState at 2x and set beside Penpot's own PNG. \
 The difference image fades Penpot's PNG and paints every pixel that differs by more than {TOLERANCE} \
 in a channel magenta. Boards are sorted worst first: by the share of pixels that differ and, \
-for boards without a PNG, by the number of layout mismatches. Text differs a little everywhere, \
+for boards without a PNG, by the number of structural mismatches. Text differs a little everywhere, \
 because Penpot draws text in the browser; look for differences in solid areas, edges, shadows \
-and colors.</p>"
+and colors. Two numbers count shapes more than 2 px from where Penpot put them. Structural \
+mismatches are measured with each text pinned to the box Penpot stored for it, so they show real \
+layout errors. Text drift is measured on the design as imported, with texts following Chrome, and \
+shows how far the text boxes move things.</p>"
     );
     let _ = writeln!(
         html,
-        "<dl id=\"summary\" data-boards=\"{}\" data-median-share=\"{}\" data-layout-mismatches=\"{mismatches}\" data-unconverted=\"{unconverted}\">",
+        "<dl id=\"summary\" data-boards=\"{}\" data-median-share=\"{}\" data-layout-mismatches=\"{mismatches}\" data-text-drift=\"{drift}\" data-unconverted=\"{unconverted}\">",
         entries.len(),
         median.map_or_else(String::new, |median| median.to_string()),
     );
@@ -225,8 +232,9 @@ and colors.</p>"
     );
     let _ = writeln!(
         html,
-        "<div><dt>Layout mismatches</dt><dd>{mismatches}</dd></div>"
+        "<div><dt>Structural mismatches</dt><dd>{mismatches}</dd></div>"
     );
+    let _ = writeln!(html, "<div><dt>Text drift</dt><dd>{drift}</dd></div>");
     let _ = writeln!(
         html,
         "<div><dt>Unconverted shapes</dt><dd>{unconverted}</dd></div>"
@@ -244,22 +252,24 @@ fn board(html: &mut String, entry: &Entry) {
     let share = entry.share();
     let _ = writeln!(
         html,
-        "<article class=\"board\" data-file=\"{}\" data-board-id=\"{}\" data-board=\"{}\" data-pixel-share=\"{}\" data-layout-mismatches=\"{}\" data-unconverted=\"{}\">",
+        "<article class=\"board\" data-file=\"{}\" data-board-id=\"{}\" data-board=\"{}\" data-pixel-share=\"{}\" data-layout-mismatches=\"{}\" data-text-drift=\"{}\" data-unconverted=\"{}\">",
         esc(&entry.file),
         esc(&board.board_id),
         esc(&board.board),
         share.map_or_else(String::new, |share| share.to_string()),
         board.layout.mismatches.len(),
+        board.text_drift.mismatches.len(),
         board.unconverted.len()
     );
     let _ = writeln!(
         html,
-        "<h2>{}</h2>\n<p class=\"meta\">{} · page {} · pixel score <strong>{}</strong> · {} layout mismatches of {} shapes · {} unconverted shapes</p>",
+        "<h2>{}</h2>\n<p class=\"meta\">{} · page {} · pixel score <strong>{}</strong> · {} structural mismatches · {} text drift of {} shapes · {} unconverted shapes</p>",
         esc(&board.board),
         esc(&entry.file),
         esc(&board.page),
         share.map_or_else(|| "none".to_string(), percent),
         board.layout.mismatches.len(),
+        board.text_drift.mismatches.len(),
         board.layout.compared,
         board.unconverted.len()
     );
@@ -301,38 +311,20 @@ fn board(html: &mut String, entry: &Entry) {
         }
     }
 
-    let count = board.layout.mismatches.len();
-    let _ = writeln!(
+    mismatch_list(
         html,
-        "<details{}>\n<summary>Layout mismatches ({count})</summary>",
-        open_if_short(count)
+        &board.layout.mismatches,
+        "mismatch",
+        "Structural mismatches",
+        "Every shape is within 2 px of where Penpot put it, with the texts pinned to Penpot's boxes.",
     );
-    if count == 0 {
-        html.push_str("<p class=\"none\">Every shape is within 2 px of where Penpot put it.</p>\n");
-    } else {
-        html.push_str("<ul>\n");
-        for mismatch in &board.layout.mismatches {
-            let (p, o) = (&mismatch.penpot, &mismatch.omnistate);
-            let _ = writeln!(
-                html,
-                "<li data-role=\"mismatch\" data-shape-id=\"{}\" data-off-by=\"{}\"><span class=\"name\">{}</span> <span class=\"boxes\">Penpot {:.1}, {:.1}, {:.1} × {:.1}; OmniState {:.1}, {:.1}, {:.1} × {:.1}</span> <span class=\"off\">off by {:.1} px</span></li>",
-                esc(&mismatch.shape_id),
-                mismatch.off_by,
-                esc(&mismatch.name),
-                p.x,
-                p.y,
-                p.width,
-                p.height,
-                o.x,
-                o.y,
-                o.width,
-                o.height,
-                mismatch.off_by
-            );
-        }
-        html.push_str("</ul>\n");
-    }
-    html.push_str("</details>\n");
+    mismatch_list(
+        html,
+        &board.text_drift.mismatches,
+        "text-drift",
+        "Text drift",
+        "Every shape is within 2 px of where Penpot put it, with the texts following Chrome.",
+    );
 
     let count = board.unconverted.len();
     let _ = writeln!(
@@ -356,6 +348,43 @@ fn board(html: &mut String, entry: &Entry) {
         html.push_str("</ul>\n");
     }
     html.push_str("</details>\n</article>\n");
+}
+
+/// A folded list of the shapes that are more than 2 px from where Penpot put
+/// them, each item with the `data-role` `role`.
+fn mismatch_list(html: &mut String, mismatches: &[Mismatch], role: &str, title: &str, none: &str) {
+    let count = mismatches.len();
+    let _ = writeln!(
+        html,
+        "<details{}>\n<summary>{title} ({count})</summary>",
+        open_if_short(count)
+    );
+    if count == 0 {
+        let _ = writeln!(html, "<p class=\"none\">{none}</p>");
+    } else {
+        html.push_str("<ul>\n");
+        for mismatch in mismatches {
+            let (p, o) = (&mismatch.penpot, &mismatch.omnistate);
+            let _ = writeln!(
+                html,
+                "<li data-role=\"{role}\" data-shape-id=\"{}\" data-off-by=\"{}\"><span class=\"name\">{}</span> <span class=\"boxes\">Penpot {:.1}, {:.1}, {:.1} × {:.1}; OmniState {:.1}, {:.1}, {:.1} × {:.1}</span> <span class=\"off\">off by {:.1} px</span></li>",
+                esc(&mismatch.shape_id),
+                mismatch.off_by,
+                esc(&mismatch.name),
+                p.x,
+                p.y,
+                p.width,
+                p.height,
+                o.x,
+                o.y,
+                o.width,
+                o.height,
+                mismatch.off_by
+            );
+        }
+        html.push_str("</ul>\n");
+    }
+    html.push_str("</details>\n");
 }
 
 /// A list of 1 to 20 items is open on the page; longer lists are folded.

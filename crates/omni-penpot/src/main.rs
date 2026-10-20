@@ -214,20 +214,22 @@ fn board_json(board: &BoardComparison, name: &str, images: &Path) -> Result<Valu
         }
     };
     let rect = |rect: &omni_penpot::Rect| json!({ "x": rect.x, "y": rect.y, "width": rect.width, "height": rect.height });
-    let mismatches: Vec<Value> = board
-        .layout
-        .mismatches
-        .iter()
-        .map(|mismatch| {
-            json!({
-                "shapeId": mismatch.shape_id,
-                "name": mismatch.name,
-                "penpot": rect(&mismatch.penpot),
-                "omnistate": rect(&mismatch.omnistate),
-                "offBy": mismatch.off_by,
+    let layout = |layout: &omni_penpot::compare::LayoutComparison| {
+        let mismatches: Vec<Value> = layout
+            .mismatches
+            .iter()
+            .map(|mismatch| {
+                json!({
+                    "shapeId": mismatch.shape_id,
+                    "name": mismatch.name,
+                    "penpot": rect(&mismatch.penpot),
+                    "omnistate": rect(&mismatch.omnistate),
+                    "offBy": mismatch.off_by,
+                })
             })
-        })
-        .collect();
+            .collect();
+        json!({ "compared": layout.compared, "mismatches": mismatches })
+    };
     let unconverted: Vec<Value> = board
         .unconverted
         .iter()
@@ -242,7 +244,8 @@ fn board_json(board: &BoardComparison, name: &str, images: &Path) -> Result<Valu
         "layoutOnly": board.pixel.is_none(),
         "note": board.note,
         "pixel": pixel,
-        "layout": { "compared": board.layout.compared, "mismatches": mismatches },
+        "layout": layout(&board.layout),
+        "textDrift": layout(&board.text_drift),
         "unconverted": unconverted,
     }))
 }

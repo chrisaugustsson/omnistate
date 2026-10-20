@@ -1169,20 +1169,10 @@ impl<R: Read + Seek> Converter<'_, R> {
             _ => [None, None],
         };
         Self::size(&mut node, common, pen, parent, base);
-        if parent.flow != Flow::None && common.boxed && Self::sized_by_item(parent, pen) {
-            // Penpot's layout adds up the boxes it stored for its texts, which
-            // it rounded up to whole pixels; a text that hugs its content in a
-            // layout keeps at least that box, so that its siblings land where
-            // they did in Penpot. A text outside a layout follows its content.
-            for (axis, min, length) in [
-                ("width", "minWidth", common.bounds.width),
-                ("height", "minHeight", common.bounds.height),
-            ] {
-                if node.get(axis) == Some(&json!("hug")) && !node.contains_key(min) {
-                    node.insert(min.into(), num(length));
-                }
-            }
-        }
+        // A text that hugs its content follows Chrome, not the whole-pixel box
+        // Penpot stored for it: it gets no min size from that box, in a layout
+        // or not. The comparison pins texts to Penpot's boxes on its own
+        // (docs/penpot-compare.md).
 
         let Some((first, first_paragraph)) = runs.first().copied() else {
             self.report(who, Some("content"), "the text has no characters or style");

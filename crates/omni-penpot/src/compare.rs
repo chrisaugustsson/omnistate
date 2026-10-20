@@ -5,6 +5,12 @@
 //! at 2x and sets it beside Penpot's PNG; the layout comparison sets the box
 //! that Penpot stores for each shape beside the box that OmniState's layout
 //! computes. A board with no PNG gets the layout comparison only.
+//!
+//! The layout comparison is made twice (US-054, Q49). The structural mismatches
+//! pin each text to the box Penpot stored for it, inside the comparison only, so
+//! that Penpot's whole-pixel rounding of text boxes does not count; they show
+//! real layout errors. The text drift is measured on the design as imported,
+//! its texts following Chrome.
 
 use std::collections::HashMap;
 use std::fs;
@@ -13,6 +19,7 @@ use std::path::Path;
 use omni_core::design::{AttachmentRef, Node, NodeId};
 use omni_render::layout::{self, LayoutBox};
 use omni_render::paint::{self, Assets};
+use serde_json::{Value, json};
 use skia_safe::{
     AlphaType, ColorType, Data, EncodedImageFormat, Image, ImageInfo, gpu::DirectContext, images,
     surfaces,
@@ -55,7 +62,12 @@ pub struct BoardComparison {
     pub pixel: Option<PixelComparison>,
     /// Says why there is no pixel comparison, for a board that has none.
     pub note: Option<String>,
+    /// The structural mismatches: measured with each text pinned to Penpot's
+    /// box.
     pub layout: LayoutComparison,
+    /// The text drift: measured on the design as imported, its texts following
+    /// Chrome.
+    pub text_drift: LayoutComparison,
     /// The shapes left out of the conversion whole, which the pixel comparison
     /// masks.
     pub unconverted: Vec<Unconverted>,
@@ -154,7 +166,12 @@ pub fn compare_file(path: &Path) -> Result<Comparison, ReadError> {
     let mut boards = Vec::with_capacity(conversion.boards.len());
     for (board, file) in conversion.boards.iter().zip(&files) {
         let boxes = layout::compute(&board.design, assets.fonts());
-        let layout = compare_layout(board, &boxes);
+        let pinned = pin_texts(board);
+        let layout = match &pinned {
+            Some(design) => compare_layout(board, &layout::compute(design, assets.fonts())),
+            None => compare_layout(board, &boxes),
+        };
+        let text_drift = compare_layout(board, &boxes);
         let unconverted: Vec<&ReportEntry> =
             left_out.get(board.id.as_str()).cloned().unwrap_or_default();
         let (pixel, note) = match &folder {
@@ -190,6 +207,7 @@ pub fn compare_file(path: &Path) -> Result<Comparison, ReadError> {
             pixel,
             note,
             layout,
+            text_drift,
             unconverted: unconverted
                 .iter()
                 .map(|entry| Unconverted {
@@ -279,6 +297,54 @@ fn rect(millis: Millis) -> Rect {
         y,
         width,
         height,
+    }
+}
+
+/// A copy of the design of `board` with every text that is drawn fixed to the
+/// size of the box Penpot stored for it, or None when no text changes. The pin
+/// is for the comparison only: the converted design keeps its texts hugging.
+fn pin_texts(board: &ConvertedBoard) -> Option<Node> {
+    let stored: HashMap<&str, &Rect> = board
+        .shapes
+        .iter()
+        .map(|shape| (shape.node_id.as_str(), &shape.bounds))
+        .collect();
+    let mut json = serde_json::to_value(&board.design).ok()?;
+    let mut pinned = false;
+    pin_in(&mut json, &stored, &mut pinned);
+    if !pinned {
+        return None;
+    }
+    serde_json::from_value(json).ok()
+}
+
+fn pin_in(json: &mut Value, stored: &HashMap<&str, &Rect>, pinned: &mut bool) {
+    let Some(node) = json.as_object_mut() else {
+        return;
+    };
+    if node.get("visible") == Some(&Value::Bool(false)) {
+        return;
+    }
+    if node.get("type").and_then(Value::as_str) == Some("text")
+        && let Some(bounds) = node
+            .get("id")
+            .and_then(Value::as_str)
+            .and_then(|id| stored.get(id))
+    {
+        for (axis, min, max, length) in [
+            ("width", "minWidth", "maxWidth", bounds.width),
+            ("height", "minHeight", "maxHeight", bounds.height),
+        ] {
+            node.insert(axis.into(), json!({ "fixed": length.max(0.0) }));
+            node.remove(min);
+            node.remove(max);
+        }
+        *pinned = true;
+    }
+    if let Some(children) = node.get_mut("children").and_then(Value::as_array_mut) {
+        for child in children {
+            pin_in(child, stored, pinned);
+        }
     }
 }
 

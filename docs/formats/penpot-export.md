@@ -158,11 +158,12 @@ export when one turns up.
   bounds (`layoutItemMaxW`, `layoutItemMinH`, `layoutItemMaxH`) are ASSUMED.
 - Text sizes by `growType`: `auto-width` hugs both ways, `auto-height` keeps the
   width and hugs the height, `fixed` keeps the box. Penpot rounds the boxes of
-  its texts up to whole pixels and its layouts add those boxes up, so a text
-  that hugs an axis inside a flex or grid layout also gets the stored size of
-  that axis as `minWidth` or `minHeight`. Without it the rounding adds up
-  through a column or a row of texts to more than a pixel or two. A text outside
-  a layout follows its content, as the browser measures it.
+  its texts up to whole pixels, but a text that hugs an axis follows its content
+  as the browser measures it, in a layout or not: the stored size is not kept as
+  a `minWidth` or `minHeight`. The shapes after such a text move by the
+  difference; `make penpot-compare` reports that as text drift and measures the
+  structural mismatches with each text pinned to its stored box inside the
+  comparison (docs/penpot-compare.md).
 - `showContent: false` means the frame clips its children. Most frames say
   `true` or nothing, and those are left unclipped.
 
