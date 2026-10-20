@@ -9,6 +9,7 @@
 mod api_keys;
 mod attachments;
 pub mod auth;
+mod boards;
 mod changesets;
 mod claims;
 pub mod delete_workspace;
@@ -370,6 +371,14 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs/{doc_id}/design",
             put(design::import_design),
+        )
+        .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs/{doc_id}/boards/{board_id}",
+            get(boards::read_draft_board),
+        )
+        .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}/boards/{board_id}",
+            get(boards::read_board_of_version),
         )
         .route(
             "/api/v1/w/{workspace_id}/projects/{project_id}/components/usage",

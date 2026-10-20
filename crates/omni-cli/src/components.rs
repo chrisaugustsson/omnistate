@@ -11,7 +11,7 @@ use crate::json::Value;
 /// The alphabet of node IDs: Crockford's base32 in lowercase.
 const NODE_ID_ALPHABET: &str = "0123456789abcdefghjkmnpqrstvwxyz";
 
-fn is_node_id(text: &str) -> bool {
+pub(crate) fn is_node_id(text: &str) -> bool {
     text.len() == 8 && text.chars().all(|c| NODE_ID_ALPHABET.contains(c))
 }
 

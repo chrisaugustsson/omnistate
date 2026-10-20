@@ -5,6 +5,7 @@
 
 use crate::api_keys::{ApiKeyBody, CreatedKeyResponse, KeyListResponse, KeyResponse};
 use crate::attachments::{AttachmentBody, AttachmentResponse};
+use crate::boards::{BoardBody, Manifest, ManifestBoard, ManifestPage};
 use crate::changesets::{
     ApprovedVersion, ChangesetBody, ChangesetListResponse, ChangesetResponse,
     CreateChangesetRequest, CreateProjectRequest, HistoryEntry, ProjectBody, ProjectListResponse,
@@ -89,7 +90,9 @@ use utoipa::OpenApi;
         crate::tokens::read_mainline_tokens,
         crate::design::import_components,
         crate::design::import_design,
-        crate::design::component_usage
+        crate::design::component_usage,
+        crate::boards::read_draft_board,
+        crate::boards::read_board_of_version
     ),
     components(schemas(
         LoginRequest,
@@ -160,7 +163,11 @@ use utoipa::OpenApi;
         ImportedDesign,
         InvalidDesignBody,
         UsageBoard,
-        UsageResponse
+        UsageResponse,
+        BoardBody,
+        Manifest,
+        ManifestPage,
+        ManifestBoard
     ))
 )]
 struct ApiDoc;

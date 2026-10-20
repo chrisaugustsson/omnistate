@@ -4,14 +4,22 @@
 //! so the doc and every earlier version stay readable.
 //!
 //! A version records the doc's content once, as a chunk of RustFS named by the
-//! hash of its text (`ws/{workspace_id}/chunks/{chunk}`), and indexes its nodes
-//! in the tenant table `node_index`: the ID, type, parent and own-content
-//! fingerprint of each, in document order. The fingerprint hashes what the
-//! node itself holds, so a change to a child or a move leaves it alone, and
-//! comparing two versions is a comparison of two indexes. Both tables are
-//! append-only: the API role has no UPDATE privilege on them.
+//! BLAKE3 hash of its bytes (`ws/{workspace_id}/chunks/{chunk}`), and indexes
+//! its nodes in the tenant table `node_index`: the ID, type, parent and
+//! own-content fingerprint of each, in document order. The fingerprint hashes
+//! what the node itself holds, so a change to a child or a move leaves it
+//! alone, and comparing two versions is a comparison of two indexes. Every
+//! chunk has a row in the chunk index, the tenant table `chunks`, keyed by the
+//! workspace and the hash. All three tables are append-only: the API role has
+//! no UPDATE privilege on them.
+//!
+//! A design version is a manifest instead (src/boards.rs): its own chunk lists
+//! the chunks of its pages and boards, each stored and indexed like any other
+//! chunk, so that a page or a board that a later version does not change is
+//! shared with it.
 
 use crate::AppState;
+use crate::boards::{self, Manifest};
 use crate::changesets::{clear_approval, parse_body};
 use crate::design;
 use crate::docs::{AgentIdentity, DraftRow, Tx, current_draft, ensure_loaded, find_draft};
@@ -22,6 +30,7 @@ use axum::Json;
 use axum::body::Bytes;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
+use omni_core::hash::blake3_hex;
 use omni_core::ops::{IndexedNode, longest_increasing};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -32,7 +41,7 @@ use utoipa::ToSchema;
 const VERSION_COLUMNS: &str = "v.id::text AS id, v.doc_id::text AS doc_id, \
      v.changeset_id::text AS changeset_id, v.draft_id::text AS draft_id, v.removed, v.chunk, \
      v.agent::text AS agent, v.design_system_version_id::text AS design_system_version_id, \
-     d.kind AS doc_kind, \
+     v.manifest::text AS manifest, d.kind AS doc_kind, \
      to_char(v.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"') AS created_at";
 
 /// One node of a version's index.
@@ -66,6 +75,11 @@ pub struct VersionBody {
     /// For a design version, the version of the design system it was saved
     /// against, which every view of it uses; `null` for other versions.
     pub design_system_version_id: Option<String>,
+    /// For a design version, the chunk of each of its pages and boards, so
+    /// that a viewer can read one board and an unchanged board is the same
+    /// chunk in every version that has it; `null` for other versions.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub manifest: Option<Manifest>,
     /// The version's nodes in document order.
     pub nodes: Vec<NodeEntry>,
     /// A design version's pages as tags; only when the version is read by ID.
@@ -142,18 +156,15 @@ fn chunk_key(workspace_id: &str, chunk: &str) -> String {
     format!("ws/{workspace_id}/chunks/{chunk}")
 }
 
-/// Stores a doc's HTML as a chunk and returns its name, the hash of the text.
-/// The name follows from the content, so storing the same text again changes
-/// nothing: a chunk is never overwritten with other content.
-pub(crate) async fn store_chunk(
-    state: &AppState,
+/// Stores `text` as the chunk `chunk`, which is the BLAKE3 hash of the text.
+async fn put_chunk(
+    bucket: &s3::Bucket,
     workspace_id: &str,
-    html: &str,
-) -> Result<String, ApiError> {
-    let chunk = sha256_hex(html);
-    let stored = state
-        .bucket
-        .put_object(chunk_key(workspace_id, &chunk), html.as_bytes())
+    chunk: &str,
+    text: &str,
+) -> Result<(), ApiError> {
+    let stored = bucket
+        .put_object(chunk_key(workspace_id, chunk), text.as_bytes())
         .await
         .map_err(|e| {
             eprintln!("omni-api: cannot store chunk {chunk}: {e}");
@@ -166,6 +177,72 @@ pub(crate) async fn store_chunk(
         );
         return Err(ApiError::Unavailable);
     }
+    Ok(())
+}
+
+/// A chunk that a version lists besides its own: the page or board of a
+/// design, with the node index of the nodes it holds.
+pub(crate) struct Part {
+    /// The name of the chunk: the BLAKE3 hash of `text`.
+    pub(crate) hash: String,
+    pub(crate) text: String,
+    pub(crate) nodes: Vec<IndexedNode>,
+}
+
+impl Part {
+    pub(crate) fn new(text: String, nodes: Vec<IndexedNode>) -> Self {
+        Self {
+            hash: blake3_hex(text.as_bytes()),
+            text,
+            nodes,
+        }
+    }
+}
+
+/// Stores a version's chunks: its own, named by the hash of its text, and the
+/// parts it lists. A chunk is named by its content, so one that the chunk
+/// index lists is stored already and is not written again, and a chunk without
+/// a version is harmless. Returns the name of the version's own chunk.
+pub(crate) async fn store_snapshot(
+    state: &AppState,
+    workspace_id: &str,
+    snapshot: &Snapshot,
+) -> Result<String, ApiError> {
+    let chunk = blake3_hex(snapshot.html.as_bytes());
+    let mut texts: Vec<(&str, &str)> = vec![(chunk.as_str(), snapshot.html.as_str())];
+    texts.extend(
+        snapshot
+            .parts
+            .iter()
+            .map(|part| (part.hash.as_str(), part.text.as_str())),
+    );
+    let mut seen = HashSet::new();
+    texts.retain(|(hash, _)| seen.insert(*hash));
+    let names: Vec<&str> = texts.iter().map(|(hash, _)| *hash).collect();
+
+    let mut tx = state.workspace_tx(workspace_id).await?;
+    let known: HashSet<String> =
+        sqlx::query_scalar("SELECT hash FROM chunks WHERE hash = ANY($1::text[])")
+            .bind(&names)
+            .fetch_all(&mut *tx)
+            .await
+            .map_err(ApiError::database)?
+            .into_iter()
+            .collect();
+    tx.commit().await.map_err(ApiError::database)?;
+
+    let missing: Vec<(String, String)> = texts
+        .into_iter()
+        .filter(|(hash, _)| !known.contains(*hash))
+        .map(|(hash, text)| (hash.to_string(), text.to_string()))
+        .collect();
+    let bucket = state.bucket.clone();
+    let workspace = workspace_id.to_string();
+    boards::each_concurrently(missing, move |(hash, text)| {
+        let (bucket, workspace) = (bucket.clone(), workspace.clone());
+        async move { put_chunk(&bucket, &workspace, &hash, &text).await }
+    })
+    .await?;
     Ok(chunk)
 }
 
@@ -205,8 +282,18 @@ struct VersionRow {
     chunk: Option<String>,
     agent: String,
     design_system_version_id: Option<String>,
+    /// A design version's manifest as JSON text.
+    manifest: Option<String>,
     doc_kind: String,
     created_at: String,
+}
+
+impl VersionRow {
+    fn manifest(&self) -> Option<Manifest> {
+        self.manifest
+            .as_deref()
+            .and_then(|text| serde_json::from_str(text).ok())
+    }
 }
 
 /// The version `version_id`, 404 when it is not there or its doc is not in
@@ -260,8 +347,65 @@ async fn nodes_of(tx: &mut Tx, chunk: Option<&str>) -> Result<Vec<NodeEntry>, Ap
     .map_err(ApiError::database)
 }
 
+#[derive(sqlx::FromRow)]
+struct ChunkNode {
+    chunk: String,
+    #[sqlx(flatten)]
+    entry: NodeEntry,
+}
+
+/// The nodes of a design version in document order: each page, then the
+/// nodes of each of its boards, read from the node index of their chunks. A
+/// board's root has no parent in its chunk, so the page is its parent here.
+async fn manifest_nodes(tx: &mut Tx, manifest: &Manifest) -> Result<Vec<NodeEntry>, ApiError> {
+    let chunks: Vec<&str> = manifest
+        .pages
+        .iter()
+        .flat_map(|page| {
+            std::iter::once(page.chunk.as_str())
+                .chain(page.boards.iter().map(|board| board.chunk.as_str()))
+        })
+        .collect();
+    let rows: Vec<ChunkNode> = sqlx::query_as(
+        "SELECT chunk, node AS id, type AS kind, parent, fingerprint FROM node_index \
+         WHERE chunk = ANY($1::text[]) ORDER BY chunk, ordinal, node",
+    )
+    .bind(&chunks)
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(ApiError::database)?;
+    let mut by_chunk: HashMap<&str, Vec<&NodeEntry>> = HashMap::new();
+    for row in &rows {
+        by_chunk.entry(&row.chunk).or_default().push(&row.entry);
+    }
+    let mut nodes = Vec::with_capacity(rows.len());
+    let listed = |chunk: &str| by_chunk.get(chunk).cloned().unwrap_or_default();
+    for page in &manifest.pages {
+        nodes.extend(listed(&page.chunk).into_iter().cloned());
+        for board in &page.boards {
+            for (index, node) in listed(&board.chunk).into_iter().enumerate() {
+                let mut node = node.clone();
+                if index == 0 {
+                    node.parent = Some(page.id.clone());
+                }
+                nodes.push(node);
+            }
+        }
+    }
+    Ok(nodes)
+}
+
+/// The nodes of a version in document order.
+async fn nodes_of_version(tx: &mut Tx, row: &VersionRow) -> Result<Vec<NodeEntry>, ApiError> {
+    match row.manifest() {
+        Some(manifest) => manifest_nodes(tx, &manifest).await,
+        None => nodes_of(tx, row.chunk.as_deref()).await,
+    }
+}
+
 async fn version_body(tx: &mut Tx, row: VersionRow) -> Result<VersionBody, ApiError> {
-    let nodes = nodes_of(tx, row.chunk.as_deref()).await?;
+    let nodes = nodes_of_version(tx, &row).await?;
+    let manifest = row.manifest();
     Ok(VersionBody {
         id: row.id,
         doc_id: row.doc_id,
@@ -271,6 +415,7 @@ async fn version_body(tx: &mut Tx, row: VersionRow) -> Result<VersionBody, ApiEr
         created_at: row.created_at,
         agent: serde_json::from_str(&row.agent).unwrap_or(Value::Null),
         design_system_version_id: row.design_system_version_id,
+        manifest,
         nodes,
         tags: None,
         pages: None,
@@ -281,15 +426,96 @@ async fn version_body(tx: &mut Tx, row: VersionRow) -> Result<VersionBody, ApiEr
 // Saving ------------------------------------------------------------------------------
 
 /// What a version holds: the doc's HTML and its node index, or nothing for a
-/// removal.
+/// removal. A design version holds its manifest as `html` and the chunks it
+/// lists as `parts`, each with its own node index.
 pub(crate) struct Snapshot {
     pub(crate) html: String,
     pub(crate) nodes: Vec<IndexedNode>,
+    pub(crate) parts: Vec<Part>,
+    /// A design version's manifest, which `html` is the text of.
+    pub(crate) manifest: Option<Manifest>,
 }
 
-/// Inserts a version of the draft, and the node index of its chunk when that
-/// is new, in the caller's transaction; returns the version's ID. `chunk` and
-/// `snapshot` are both `None` for a removal.
+impl Snapshot {
+    /// A version whose content is the one chunk `html`.
+    pub(crate) fn new(html: String, nodes: Vec<IndexedNode>) -> Self {
+        Self {
+            html,
+            nodes,
+            parts: Vec::new(),
+            manifest: None,
+        }
+    }
+}
+
+/// Lists the chunks in the chunk index, and the nodes of those that were not
+/// in it, in the node index. A chunk that is listed has these very nodes
+/// indexed already: its name is the hash of the content they come from.
+async fn index_chunks(
+    tx: &mut Tx,
+    workspace_id: &str,
+    chunks: &[(&str, &[IndexedNode])],
+) -> Result<(), ApiError> {
+    let names: Vec<&str> = chunks.iter().map(|(chunk, _)| *chunk).collect();
+    let added: HashSet<String> = sqlx::query_scalar(
+        "INSERT INTO chunks (workspace_id, hash) \
+         SELECT $1::uuid, hash FROM unnest($2::text[]) AS c (hash) \
+         ON CONFLICT (workspace_id, hash) DO NOTHING \
+         RETURNING hash",
+    )
+    .bind(workspace_id)
+    .bind(&names)
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(ApiError::database)?
+    .into_iter()
+    .collect();
+    let mut indexed_chunks = Vec::new();
+    let mut ids = Vec::new();
+    let mut kinds = Vec::new();
+    let mut parents = Vec::new();
+    let mut fingerprints = Vec::new();
+    let mut ordinals = Vec::new();
+    let mut done = HashSet::new();
+    for (chunk, nodes) in chunks {
+        if !added.contains(*chunk) || !done.insert(*chunk) {
+            continue;
+        }
+        for (ordinal, node) in nodes.iter().enumerate() {
+            indexed_chunks.push(*chunk);
+            ids.push(node.id.to_string());
+            kinds.push(node.kind);
+            parents.push(node.parent.map(|parent| parent.to_string()));
+            fingerprints.push(sha256_hex(&node.content));
+            ordinals.push(ordinal as i32);
+        }
+    }
+    if ids.is_empty() {
+        return Ok(());
+    }
+    sqlx::query(
+        "INSERT INTO node_index (workspace_id, chunk, node, type, parent, fingerprint, ordinal) \
+         SELECT $1::uuid, chunk, node, type, parent, fingerprint, ordinal \
+         FROM unnest($2::text[], $3::text[], $4::text[], $5::text[], $6::text[], $7::int[]) \
+              AS n (chunk, node, type, parent, fingerprint, ordinal) \
+         ON CONFLICT (workspace_id, chunk, node) DO NOTHING",
+    )
+    .bind(workspace_id)
+    .bind(&indexed_chunks)
+    .bind(&ids)
+    .bind(&kinds)
+    .bind(&parents)
+    .bind(&fingerprints)
+    .bind(&ordinals)
+    .execute(&mut **tx)
+    .await
+    .map_err(ApiError::database)?;
+    Ok(())
+}
+
+/// Inserts a version of the draft, and the chunk index and node index of its
+/// chunks when they are new, in the caller's transaction; returns the version's
+/// ID. `chunk` and `snapshot` are both `None` for a removal.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn insert_version(
     tx: &mut Tx,
@@ -300,10 +526,14 @@ pub(crate) async fn insert_version(
     snapshot: Option<&Snapshot>,
     design_system_version: Option<&str>,
 ) -> Result<String, ApiError> {
+    let manifest = snapshot
+        .and_then(|snapshot| snapshot.manifest.as_ref())
+        .map(|manifest| serde_json::to_string(manifest).expect("a manifest serializes to JSON"));
     let id: String = sqlx::query_scalar(
         "INSERT INTO versions (workspace_id, doc_id, changeset_id, draft_id, removed, chunk, agent, \
-                               design_system_version_id) \
-         VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5, $6, $7::text::jsonb, $8::uuid) \
+                               design_system_version_id, manifest) \
+         VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5, $6, $7::text::jsonb, $8::uuid, \
+                 $9::text::jsonb) \
          RETURNING id::text",
     )
     .bind(workspace_id)
@@ -314,42 +544,19 @@ pub(crate) async fn insert_version(
     .bind(chunk)
     .bind(agent.to_string())
     .bind(design_system_version)
+    .bind(manifest)
     .fetch_one(&mut **tx)
     .await
     .map_err(ApiError::database)?;
     if let (Some(chunk), Some(snapshot)) = (chunk, snapshot) {
-        // A chunk that is indexed already has these very nodes: its name is
-        // the hash of the content they come from.
-        let ids: Vec<String> = snapshot.nodes.iter().map(|n| n.id.to_string()).collect();
-        let kinds: Vec<&str> = snapshot.nodes.iter().map(|n| n.kind).collect();
-        let parents: Vec<Option<String>> = snapshot
-            .nodes
-            .iter()
-            .map(|n| n.parent.map(|parent| parent.to_string()))
-            .collect();
-        let fingerprints: Vec<String> = snapshot
-            .nodes
-            .iter()
-            .map(|n| sha256_hex(&n.content))
-            .collect();
-        let ordinals: Vec<i32> = (0..snapshot.nodes.len() as i32).collect();
-        sqlx::query(
-            "INSERT INTO node_index (workspace_id, chunk, node, type, parent, fingerprint, ordinal) \
-             SELECT $1::uuid, $2, node, type, parent, fingerprint, ordinal \
-             FROM unnest($3::text[], $4::text[], $5::text[], $6::text[], $7::int[]) \
-                  AS n (node, type, parent, fingerprint, ordinal) \
-             ON CONFLICT (workspace_id, chunk, node) DO NOTHING",
-        )
-        .bind(workspace_id)
-        .bind(chunk)
-        .bind(&ids)
-        .bind(&kinds)
-        .bind(&parents)
-        .bind(&fingerprints)
-        .bind(&ordinals)
-        .execute(&mut **tx)
-        .await
-        .map_err(ApiError::database)?;
+        let mut chunks: Vec<(&str, &[IndexedNode])> = vec![(chunk, &snapshot.nodes)];
+        chunks.extend(
+            snapshot
+                .parts
+                .iter()
+                .map(|part| (part.hash.as_str(), part.nodes.as_slice())),
+        );
+        index_chunks(tx, workspace_id, &chunks).await?;
     }
     Ok(id)
 }
@@ -398,7 +605,7 @@ pub(crate) async fn store_version(
 ) -> Result<VersionBody, ApiError> {
     let removed = snapshot.is_none();
     let chunk = match &snapshot {
-        Some(snapshot) => Some(store_chunk(state, workspace_id, &snapshot.html).await?),
+        Some(snapshot) => Some(store_snapshot(state, workspace_id, snapshot).await?),
         None => None,
     };
     let mut tx = state.workspace_tx(workspace_id).await?;
@@ -456,7 +663,7 @@ pub(crate) async fn store_version(
         (status = 401, description = "No valid API key or session", body = ErrorBody),
         (status = 403, description = "Called with a session; agents only", body = ErrorBody),
         (status = 404, description = "The change set has no draft of this doc in this project and workspace", body = ErrorBody),
-        (status = 409, description = "The draft of a design system has neither tokens nor components yet (`no_tokens`): import them first", body = ErrorBody),
+        (status = 409, description = "The draft of a design system has neither tokens nor components yet (`no_tokens`): import them first; or the change set emptied a design system that has a mainline version, so a design cannot be saved against it (`design_system_emptied`)", body = ErrorBody),
     )
 )]
 pub async fn save_version(
@@ -667,8 +874,8 @@ pub async fn diff_versions(
     if first.doc_id != second.doc_id {
         return Err(ApiError::bad_request("invalid_request"));
     }
-    let before = nodes_of(&mut tx, first.chunk.as_deref()).await?;
-    let after = nodes_of(&mut tx, second.chunk.as_deref()).await?;
+    let before = nodes_of_version(&mut tx, &first).await?;
+    let after = nodes_of_version(&mut tx, &second).await?;
     tx.commit().await.map_err(ApiError::database)?;
     let (from_design_system, to_design_system) = (
         first.design_system_version_id.clone(),

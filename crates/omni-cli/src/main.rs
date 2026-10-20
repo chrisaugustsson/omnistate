@@ -11,6 +11,7 @@ mod claims;
 mod commands;
 mod components;
 mod config;
+mod design;
 mod docs;
 mod error;
 mod http;
@@ -68,6 +69,10 @@ Usage:
                                       unchangeable snapshot; prints the version's ID
   omni version diff <a> <b>           list the nodes added, removed, changed and moved from
                                       version <a> to version <b> of a doc
+  omni design read --doc <id> --board <id> [--changeset <id> | --version <v>]
+                                      print one board of a design doc in the tag format (a
+                                      rev on every tag for a draft); without options, the
+                                      mainline version
   omni component usage <component>    list every board of the project's designs that uses a
                                       component, from the mainline versions: an instance in a
                                       board, in another component's tree, or a slot value
@@ -105,7 +110,10 @@ Options (before or after the command):
                         standard input
   --note <text>         how a conflict was resolved (`omni changeset resolve`)
   --changeset <id>      the change set a doc, tokens, claim, release or wait command works in
-  --version <v>         the version that `omni doc read` or `omni tokens export` reads
+  --doc <id>            the design doc that `omni design read` reads
+  --board <id>          the board of that doc that `omni design read` prints
+  --version <v>         the version that `omni doc read`, `omni design read` or
+                        `omni tokens export` reads
   --out <path>          where `omni tokens export` writes: a file, or with --per-mode a directory
   --per-mode            `omni tokens export`: one file per mode
   --until <status>      the status `omni wait` waits for

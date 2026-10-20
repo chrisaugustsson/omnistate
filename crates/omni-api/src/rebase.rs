@@ -17,6 +17,7 @@
 //! operations and resolved each conflict with a note.
 
 use crate::AppState;
+use crate::boards;
 use crate::changesets::{ChangesetBody, load_changeset, move_status};
 use crate::design;
 use crate::docs::{
@@ -25,7 +26,7 @@ use crate::docs::{
 use crate::live;
 use crate::session::{ApiError, ErrorBody};
 use crate::versions::{
-    Snapshot, chunk_of_version, emit_version_saved, insert_version, read_chunk, store_chunk,
+    Snapshot, chunk_of_version, emit_version_saved, insert_version, read_chunk, store_snapshot,
 };
 use crate::workspace::{AgentRequest, WorkspaceRequest, parse_uuid};
 use axum::Json;
@@ -300,10 +301,7 @@ async fn rebase_html(
             changeset: mine.node_html(node),
         })
         .collect();
-    let snapshot = doc.map(|doc| Snapshot {
-        html: doc.to_html(),
-        nodes: doc.index(),
-    });
+    let snapshot = doc.map(|doc| Snapshot::new(doc.to_html(), doc.index()));
     Ok((snapshot, found))
 }
 
@@ -594,14 +592,12 @@ async fn rebase_tokens(
         }
         (!mainline.is_null()).then(|| with_components(mainline.clone(), mainline_components))
     };
-    let snapshot = tree.map(|tree| Snapshot {
-        html: tree.to_string(),
-        nodes: Vec::new(),
-    });
+    let snapshot = tree.map(|tree| Snapshot::new(tree.to_string(), Vec::new()));
     Ok((snapshot, found))
 }
 
-/// The pages of a design chunk as JSON, `None` for a version without content.
+/// The pages of a design version as JSON, `None` for a version without
+/// content.
 async fn load_pages(
     state: &AppState,
     workspace_id: &str,
@@ -610,17 +606,10 @@ async fn load_pages(
     let Some(chunk) = chunk else {
         return Ok(None);
     };
-    let text = read_chunk(state, workspace_id, chunk).await?;
-    let json: Value = serde_json::from_str(&text).map_err(|e| {
-        eprintln!("omni-api: a saved design cannot be loaded for a rebase: {e}");
-        ApiError::Unavailable
-    })?;
-    match json.get("pages") {
-        Some(Value::Array(pages)) => Ok(Some(pages.clone())),
-        _ => {
-            eprintln!("omni-api: a saved design has no pages");
-            Err(ApiError::Unavailable)
-        }
+    let pages = boards::read_pages(state, workspace_id, chunk, "a saved design").await?;
+    match design::nodes_json(&pages) {
+        Value::Array(pages) => Ok(Some(pages)),
+        _ => Err(ApiError::Unavailable),
     }
 }
 
@@ -783,11 +772,7 @@ async fn rebase_design(
             })?
         }
     };
-    let snapshot = Snapshot {
-        html: design::pages_text(&nodes),
-        nodes: design::index_pages(&nodes),
-    };
-    Ok((Some(snapshot), found))
+    Ok((Some(boards::snapshot_of(&nodes)), found))
 }
 
 /// Replays the change set's latest version of a doc onto the doc's mainline
@@ -822,7 +807,7 @@ async fn rebase_doc(
 
     let removed = snapshot.is_none();
     let chunk = match &snapshot {
-        Some(snapshot) => Some(store_chunk(state, workspace_id, &snapshot.html).await?),
+        Some(snapshot) => Some(store_snapshot(state, workspace_id, snapshot).await?),
         None => None,
     };
     // The rebased design keeps the design system version of the version it

@@ -11,7 +11,8 @@
 //! `design.imported` event. The draft in memory keeps the last import, and a
 //! draft that is not in memory is rebuilt from its base version and its log.
 //! A version of a design system is its token tree and its components as one
-//! chunk of JSON, and a version of a design doc its pages.
+//! chunk of JSON, and a version of a design doc a manifest of the chunks of
+//! its pages and boards (src/boards.rs).
 //!
 //! An instance resolves against the change set's draft of the design system,
 //! unsaved changes included, and a change set without one resolves against the
@@ -19,6 +20,7 @@
 //! it was saved against, and every view of it uses that version.
 
 use crate::AppState;
+use crate::boards;
 use crate::changesets::{parse_body, require_project};
 use crate::docs::{
     AgentIdentity, Tx, current_draft, ensure_draft, ensure_loaded, find_doc, load_state,
@@ -37,7 +39,6 @@ use axum::response::{IntoResponse, Response};
 use omni_core::design::tags::{self, TagNode};
 use omni_core::design::tokens::TokenTree;
 use omni_core::design::{Instance, Node, NodeData, NodeId, NodeKind, PropDef, PropDefs, PropValue};
-use omni_core::ops::IndexedNode;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -49,7 +50,7 @@ pub(crate) const COMPONENTS_KEY: &str = "$components";
 
 // The content of versions and drafts ---------------------------------------------------
 
-fn nodes_json(nodes: &[Node]) -> Value {
+pub(crate) fn nodes_json(nodes: &[Node]) -> Value {
     Value::Array(
         nodes
             .iter()
@@ -111,24 +112,6 @@ pub(crate) fn has_no_tokens(json: &Value) -> bool {
     json.as_object().is_some_and(serde_json::Map::is_empty)
 }
 
-/// The chunk of a design version: its pages.
-pub(crate) fn pages_text(pages: &[Node]) -> String {
-    json!({ "pages": nodes_json(pages) }).to_string()
-}
-
-/// The pages that a saved design version holds.
-pub(crate) fn read_pages(text: &str, what: &str) -> Result<Vec<Node>, ApiError> {
-    let unavailable = |why: String| {
-        eprintln!("omni-api: {what} holds no design: {why}");
-        ApiError::Unavailable
-    };
-    let json: Value = serde_json::from_str(text).map_err(|e| unavailable(e.to_string()))?;
-    let pages = json
-        .get("pages")
-        .ok_or_else(|| unavailable("it has no pages".to_string()))?;
-    nodes_from(pages).map_err(unavailable)
-}
-
 /// The components of an `import_components` operation of the log, `None` for
 /// any other operation.
 pub(crate) fn imported_components(op: &str) -> Option<Result<Vec<Node>, String>> {
@@ -147,31 +130,6 @@ pub(crate) fn imported_pages(op: &str) -> Option<Result<Vec<Node>, String>> {
         return None;
     }
     Some(nodes_from(&op.get_mut("pages")?.take()))
-}
-
-/// The node index of a design version: every node of its pages with its ID,
-/// type, parent and own content (everything but its children).
-pub(crate) fn index_pages(pages: &[Node]) -> Vec<IndexedNode> {
-    fn walk(node: &Node, parent: Option<NodeId>, out: &mut Vec<IndexedNode>) {
-        let mut own = serde_json::to_value(node).expect("a node serializes to JSON");
-        if let Some(object) = own.as_object_mut() {
-            object.remove("children");
-        }
-        out.push(IndexedNode {
-            id: *node.id(),
-            kind: node.kind().as_str(),
-            parent,
-            content: own.to_string(),
-        });
-        for child in node.children() {
-            walk(child, Some(*node.id()), out);
-        }
-    }
-    let mut out = Vec::new();
-    for page in pages {
-        walk(page, None, &mut out);
-    }
-    out
 }
 
 /// The nodes as tags, one tree after the other.
@@ -655,8 +613,8 @@ pub(crate) async fn view_of_version(
         "design" => {
             let pages = match chunk {
                 Some(chunk) => {
-                    let text = read_chunk(state, workspace_id, chunk).await?;
-                    read_pages(&text, &format!("version {version_id}"))?
+                    boards::read_pages(state, workspace_id, chunk, &format!("version {version_id}"))
+                        .await?
                 }
                 None => Vec::new(),
             };
@@ -1263,6 +1221,7 @@ async fn apply_design(state: &AppState, import: Import) -> Result<ImportedDesign
     match persisted {
         Ok(()) => {
             let loaded = held.as_mut().expect("the draft is loaded");
+            loaded.revisions = boards::next_revisions(&loaded.pages, &loaded.revisions, &pages);
             loaded.pages = pages;
             loaded.next_seq = seq + 1;
         }
@@ -1376,8 +1335,13 @@ pub async fn component_usage(
     let mut libraries: HashMap<String, Library> = HashMap::new();
     let mut boards = Vec::new();
     for design in docs {
-        let text = read_chunk(&state, workspace_id, &design.chunk).await?;
-        let pages = read_pages(&text, &format!("version {}", design.version_id))?;
+        let pages = boards::read_pages(
+            &state,
+            workspace_id,
+            &design.chunk,
+            &format!("version {}", design.version_id),
+        )
+        .await?;
         let library = match &design.design_system_version_id {
             Some(recorded) => {
                 if !libraries.contains_key(recorded) {

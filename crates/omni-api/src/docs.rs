@@ -13,6 +13,7 @@
 //! per draft orders the batches of agents that edit the same draft at once.
 
 use crate::AppState;
+use crate::boards;
 use crate::changesets::{non_blank, parse_body};
 use crate::claims::{self, ClaimBody};
 use crate::design;
@@ -340,7 +341,7 @@ impl<S: Send + Sync> FromRequestParts<S> for AgentIdentity {
 /// components of the last components import, kept in the log as `import_tokens`
 /// and `import_components` operations and in a version as one chunk of JSON.
 /// The draft of a design doc holds the pages of its last import, kept in the
-/// log as an `import_design` operation and in a version as one chunk of JSON.
+/// log as an `import_design` operation and in a version as a manifest of chunks.
 pub(crate) struct DraftState {
     pub(crate) doc: EditDoc,
     pub(crate) design_system: bool,
@@ -350,6 +351,10 @@ pub(crate) struct DraftState {
     pub(crate) components: Vec<Node>,
     /// The pages of a design draft, in order.
     pub(crate) pages: Vec<Node>,
+    /// The revision of each node of a design draft's pages: 1 for a node of
+    /// the version the draft started from or one an import added, and one
+    /// more for each later import that changed the node's own content.
+    pub(crate) revisions: HashMap<NodeId, u64>,
     pub(crate) next_seq: i64,
 }
 
@@ -358,20 +363,11 @@ impl DraftState {
     /// draft of a design system that has neither tokens nor components yet.
     pub(crate) fn snapshot(&self) -> Option<Snapshot> {
         if self.design_system {
-            Some(Snapshot {
-                html: self.content()?,
-                nodes: Vec::new(),
-            })
+            Some(Snapshot::new(self.content()?, Vec::new()))
         } else if self.design {
-            Some(Snapshot {
-                html: design::pages_text(&self.pages),
-                nodes: design::index_pages(&self.pages),
-            })
+            Some(boards::snapshot_of(&self.pages))
         } else {
-            Some(Snapshot {
-                html: self.doc.to_html(),
-                nodes: self.doc.index(),
-            })
+            Some(Snapshot::new(self.doc.to_html(), self.doc.index()))
         }
     }
 
@@ -386,7 +382,7 @@ impl DraftState {
                 &self.components,
             ))
         } else if self.design {
-            Some(design::pages_text(&self.pages))
+            Some(boards::content_of(&self.pages))
         } else {
             Some(self.doc.to_html())
         }
@@ -493,9 +489,9 @@ pub(crate) async fn load_state(
     let mut pages = Vec::new();
     if let Some(base) = start {
         let chunk = versions::chunk_of_version(tx, &draft.doc_id, base).await?;
-        let html = match chunk {
-            Some(chunk) => versions::read_chunk(state, workspace_id, &chunk).await?,
-            None => String::new(),
+        let html = match (&chunk, design) {
+            (Some(chunk), false) => versions::read_chunk(state, workspace_id, chunk).await?,
+            _ => String::new(),
         };
         if design_system {
             if !html.is_empty() {
@@ -505,9 +501,9 @@ pub(crate) async fn load_state(
                 components = nodes;
             }
         } else if design {
-            if !html.is_empty() {
+            if let Some(chunk) = &chunk {
                 let what = format!("the base version {base} of draft {}", draft.id);
-                pages = design::read_pages(&html, &what)?;
+                pages = boards::read_pages(state, workspace_id, chunk, &what).await?;
             }
         } else {
             doc = EditDoc::from_html(&html).map_err(|e| {
@@ -535,6 +531,7 @@ pub(crate) async fn load_state(
         );
         ApiError::Unavailable
     };
+    let mut revisions = boards::initial_revisions(&pages);
     let mut next_seq = draft.content_after_seq + 1;
     for (seq, op, created) in rows {
         if design_system {
@@ -552,7 +549,9 @@ pub(crate) async fn load_state(
             }
         }
         if design && let Some(imported) = design::imported_pages(&op) {
-            pages = imported.map_err(|e| corrupt(seq, &e))?;
+            let imported = imported.map_err(|e| corrupt(seq, &e))?;
+            revisions = boards::next_revisions(&pages, &revisions, &imported);
+            pages = imported;
             next_seq = seq + 1;
             continue;
         }
@@ -580,6 +579,7 @@ pub(crate) async fn load_state(
         tokens,
         components,
         pages,
+        revisions,
         next_seq,
     })
 }

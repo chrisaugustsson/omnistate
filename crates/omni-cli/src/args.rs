@@ -32,10 +32,14 @@ pub struct Args {
     /// the command.
     pub until: Option<String>,
     pub timeout: Option<String>,
-    /// `omni doc read --version <v>` and `omni tokens export --version <v>`:
-    /// the version to read. Everywhere else `--version` is the bare flag that
+    /// `omni doc read --version <v>`, `omni design read --version <v>` and
+    /// `omni tokens export --version <v>`: the version to read. Everywhere else `--version` is the bare flag that
     /// shows the version of omni.
     pub doc_version: Option<String>,
+    /// `omni design read --doc <id> --board <id>`: the design doc and the
+    /// board in it to read.
+    pub doc: Option<String>,
+    pub board: Option<String>,
     /// `omni tokens export --out <file or directory>`: where to write.
     pub out: Option<String>,
     /// `omni tokens export --per-mode`: one file per mode.
@@ -51,7 +55,7 @@ fn takes_a_version(words: &[String]) -> bool {
     let command: Vec<&str> = words.iter().map(String::as_str).collect();
     matches!(
         command.as_slice(),
-        ["doc", "read", ..] | ["tokens", "export", ..]
+        ["doc", "read", ..] | ["design", "read", ..] | ["tokens", "export", ..]
     )
 }
 
@@ -101,6 +105,8 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Args> {
             "--run" => &mut parsed.run,
             "--note" => &mut parsed.note,
             "--changeset" => &mut parsed.changeset,
+            "--doc" => &mut parsed.doc,
+            "--board" => &mut parsed.board,
             "--kind" => &mut parsed.kind,
             "--module" => &mut parsed.module,
             "--until" => &mut parsed.until,

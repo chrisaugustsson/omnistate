@@ -13,6 +13,7 @@ use crate::changesets;
 use crate::claims;
 use crate::components;
 use crate::config::{self, Stored};
+use crate::design;
 use crate::docs;
 use crate::error::{CliError, Result, bail};
 use crate::http::{self, Response, Server};
@@ -99,6 +100,10 @@ pub fn run(args: &Args) -> Result<()> {
         ["tokens", "export"] => tokens::export(args),
         ["tokens", ..] => bail!(
             "usage: omni tokens import <file> --changeset <id> | omni tokens export [--changeset <id> | --version <v>] [--out <file>] [--per-mode]"
+        ),
+        ["design", "read"] => design::read(args),
+        ["design", ..] => bail!(
+            "usage: omni design read --doc <id> --board <id> [--changeset <id> | --version <v>]"
         ),
         ["component", "usage"] => components::usage(args, None),
         ["component", "usage", component] => components::usage(args, Some(component)),
@@ -209,6 +214,28 @@ impl Agent {
                 .ok()
                 .is_some_and(|body| body.str_at("error") == Some(code));
         if named {
+            return Err(CliError::new(format!("{code}: {message}")));
+        }
+        checked(response)
+    }
+
+    /// Like `request`, but a response with the given status and error code is
+    /// the error `code: message`, for a command that can say what that answer
+    /// means for it. `explanations` holds `(status, code, message)`.
+    pub(crate) fn request_explaining(
+        &self,
+        method: &str,
+        path: &str,
+        explanations: &[(u16, &str, String)],
+    ) -> Result<Response> {
+        let response = http::send(&self.server, method, path, &self.headers, None)?;
+        let code = Value::parse(&response.text())
+            .ok()
+            .and_then(|body| body.str_at("error").map(str::to_string));
+        let explained = explanations.iter().find(|(status, wanted, _)| {
+            *status == response.status && code.as_deref() == Some(*wanted)
+        });
+        if let Some((_, code, message)) = explained {
             return Err(CliError::new(format!("{code}: {message}")));
         }
         checked(response)

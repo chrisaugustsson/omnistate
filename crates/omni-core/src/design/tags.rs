@@ -1814,14 +1814,25 @@ fn needs(parser: &Parser<'_>, at: usize, tag: &str, attr: &str) -> TagError {
 /// Prints `node` and its subtree in the tag format, one tag per node, with
 /// each node's `id`.
 pub fn print(node: &Node) -> String {
+    print_with(node, None)
+}
+
+/// The revision of a node, for [`print_with`].
+pub type Revision<'a> = &'a dyn Fn(&NodeId) -> Option<u64>;
+
+/// Prints `node` and its subtree like [`print`]. With `revision`, a tag also
+/// carries `rev={n}` after its `id`, the revision that `revision` gives the
+/// node: what an agent reads before it edits a draft. The tags of a saved
+/// version have none.
+pub fn print_with(node: &Node, revision: Option<Revision>) -> String {
     let json = serde_json::to_value(node).expect("a node serializes to JSON");
     let mut out = String::new();
-    write_node(&json, 0, &mut out);
+    write_node(&json, 0, revision, &mut out);
     out.truncate(out.trim_end().len());
     out
 }
 
-fn write_node(node: &Value, depth: usize, out: &mut String) {
+fn write_node(node: &Value, depth: usize, revision: Option<Revision>, out: &mut String) {
     let Some(map) = node.as_object() else {
         return;
     };
@@ -1843,6 +1854,14 @@ fn write_node(node: &Value, depth: usize, out: &mut String) {
             out.push(' ');
             out.push_str(&text);
         }
+        if *attr == "id"
+            && let Some(rev) = revision.and_then(|revision| {
+                let id = map.get("id")?.as_str()?.parse::<NodeId>().ok()?;
+                revision(&id)
+            })
+        {
+            out.push_str(&format!(" rev={{{rev}}}"));
+        }
     }
     let children = map
         .get("children")
@@ -1854,7 +1873,7 @@ fn write_node(node: &Value, depth: usize, out: &mut String) {
     }
     out.push_str(">\n");
     for child in children {
-        write_node(child, depth + 1, out);
+        write_node(child, depth + 1, revision, out);
     }
     out.push_str(&indent);
     out.push_str("</");
