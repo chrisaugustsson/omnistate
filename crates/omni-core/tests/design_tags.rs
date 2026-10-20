@@ -1007,6 +1007,23 @@ fn a_negative_padding_is_rejected() {
 }
 
 #[test]
+fn an_opacity_out_of_range_names_the_range() {
+    let source = "<Frame id=\"k3f9x2qa\" name=\"Card\" dir=\"col\">\n  <Frame name=\"Veil\" dir=\"row\" opacity={2}/>\n</Frame>";
+    assert_error(source, ("{2}", 0), &["opacity", "2"], &["0 to 1"]);
+}
+
+#[test]
+fn a_font_weight_out_of_range_names_the_range() {
+    let source = "<Frame id=\"k3f9x2qa\" name=\"Card\" dir=\"col\">\n  <Text name=\"Title\" content=\"Din varukorg\" fontFamily=\"Inter\"\n    fontSize={24} fontWeight={2000}/>\n</Frame>";
+    assert_error(
+        source,
+        ("{2000}", 0),
+        &["fontWeight", "2000"],
+        &["1 to 1000"],
+    );
+}
+
+#[test]
 fn an_invalid_id_is_rejected() {
     let source = "<Frame id=\"K3F9\" name=\"Card\" dir=\"col\"/>";
     assert_error(source, ("\"K3F9\"", 0), &["K3F9"], &[]);
