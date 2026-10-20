@@ -1024,6 +1024,18 @@ fn a_font_weight_out_of_range_names_the_range() {
 }
 
 #[test]
+fn an_opacity_below_the_range_names_the_range() {
+    let source = "<Frame id=\"k3f9x2qa\" name=\"Card\" dir=\"col\" opacity={-0.5}/>";
+    assert_error(source, ("{-0.5}", 0), &["opacity", "-0.5"], &["0 to 1"]);
+}
+
+#[test]
+fn a_font_weight_below_the_range_names_the_range() {
+    let source = "<Frame id=\"k3f9x2qa\" name=\"Card\" dir=\"col\">\n  <Text name=\"Title\" content=\"Din varukorg\" fontFamily=\"Inter\" fontSize={24} fontWeight={0}/>\n</Frame>";
+    assert_error(source, ("{0}", 0), &["fontWeight", "0"], &["1 to 1000"]);
+}
+
+#[test]
 fn an_invalid_id_is_rejected() {
     let source = "<Frame id=\"K3F9\" name=\"Card\" dir=\"col\"/>";
     assert_error(source, ("\"K3F9\"", 0), &["K3F9"], &[]);
