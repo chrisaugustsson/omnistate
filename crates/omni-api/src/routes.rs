@@ -165,6 +165,21 @@ pub fn registry() -> Vec<RouteEntry> {
             Access::Both,
         ),
         (
+            "PUT",
+            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/tokens",
+            Access::Agent,
+        ),
+        (
+            "GET",
+            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/tokens",
+            Access::Both,
+        ),
+        (
+            "GET",
+            "/api/v1/w/{workspace_id}/projects/{project_id}/tokens",
+            Access::Both,
+        ),
+        (
             "POST",
             "/api/v1/w/{workspace_id}/attachments",
             Access::Agent,

@@ -420,6 +420,7 @@ async fn store_version(
         (status = 401, description = "No valid API key or session", body = ErrorBody),
         (status = 403, description = "Called with a session; agents only", body = ErrorBody),
         (status = 404, description = "The change set has no draft of this doc in this project and workspace", body = ErrorBody),
+        (status = 409, description = "The draft of a design system has no tokens yet (`no_tokens`): import them first", body = ErrorBody),
     )
 )]
 pub async fn save_version(
@@ -449,10 +450,22 @@ pub async fn save_version(
     let draft = current_draft(&mut tx, &draft.id).await?;
     tx.commit().await.map_err(ApiError::database)?;
     ensure_loaded(&state, &request.workspace_id, &draft, &mut held).await?;
-    let doc = &held.as_ref().expect("the draft is loaded").doc;
-    let snapshot = Snapshot {
-        html: doc.to_html(),
-        nodes: doc.index(),
+    let loaded = held.as_ref().expect("the draft is loaded");
+    // A design system's version is its token tree as one chunk of JSON; the
+    // tokens are no nodes, so it has no node index.
+    let snapshot = if loaded.design_system {
+        let Some(tokens) = &loaded.tokens else {
+            return Err(ApiError::conflict("no_tokens"));
+        };
+        Snapshot {
+            html: tokens.to_json().to_string(),
+            nodes: Vec::new(),
+        }
+    } else {
+        Snapshot {
+            html: loaded.doc.to_html(),
+            nodes: loaded.doc.index(),
+        }
     };
     let version = store_version(
         &state,

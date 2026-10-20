@@ -15,6 +15,7 @@ mod error;
 mod http;
 mod identity;
 mod json;
+mod tokens;
 mod toml;
 mod versions;
 mod wait;
@@ -66,6 +67,15 @@ Usage:
                                       unchangeable snapshot; prints the version's ID
   omni version diff <a> <b>           list the nodes added, removed, changed and moved from
                                       version <a> to version <b> of a doc
+  omni tokens import <file> --changeset <id>
+                                      replace the whole design token tree (DTCG JSON, with a
+                                      value per mode) of the change set's draft of the design
+                                      system, in one all-or-nothing batch
+  omni tokens export [--changeset <id> | --version <v>] [--out <file>]
+                                      print the design tokens as DTCG JSON: the mainline
+                                      version, a change set's draft or a saved version
+  omni tokens export --per-mode --out <dir>
+                                      write one file per mode, <dir>/<mode>.tokens.json
   omni wait --changeset <id> --until approved|rejected|merged|needs_rebase [--timeout <s>]
                                       wait until the change set is approved (by the human),
                                       rejected, merged or needs a rebase; prints its status
@@ -90,7 +100,10 @@ Options (before or after the command):
                         description; for `doc edit`: the operations); - reads
                         standard input
   --note <text>         how a conflict was resolved (`omni changeset resolve`)
-  --changeset <id>      the change set a doc, claim, release or wait command works in
+  --changeset <id>      the change set a doc, tokens, claim, release or wait command works in
+  --version <v>         the version that `omni doc read` or `omni tokens export` reads
+  --out <path>          where `omni tokens export` writes: a file, or with --per-mode a directory
+  --per-mode            `omni tokens export`: one file per mode
   --until <status>      the status `omni wait` waits for
   --timeout <seconds>   how long `omni wait` waits; without it, as long as it takes
   --json                print the full JSON instead of short text

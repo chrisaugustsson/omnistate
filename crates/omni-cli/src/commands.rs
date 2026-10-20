@@ -1,6 +1,7 @@
 //! The commands: `login`, `key list|revoke`, `whoami`, `api` and `config show`;
 //! the project and change set commands are in `changesets`, the doc commands in
-//! `docs` and the version commands in `versions`.
+//! `docs`, the version commands in `versions` and the token commands in
+//! `tokens`.
 //!
 //! Standard output holds only the result of a command (short text, or the API's
 //! JSON with `--json`), so a script can parse it. Prompts, notices and errors go
@@ -16,6 +17,7 @@ use crate::error::{CliError, Result, bail};
 use crate::http::{self, Response, Server};
 use crate::identity::Identity;
 use crate::json::{Value, quote};
+use crate::tokens;
 use crate::versions;
 use crate::wait;
 use std::io::{BufRead, IsTerminal, Read, Write};
@@ -91,6 +93,12 @@ pub fn run(args: &Args) -> Result<()> {
         ["version", "diff", from] => versions::diff(args, Some(from), None),
         ["version", "diff", from, to] => versions::diff(args, Some(from), Some(to)),
         ["version", ..] => bail!("usage: omni version save|diff; see `omni --help`"),
+        ["tokens", "import"] => tokens::import(args, None),
+        ["tokens", "import", file] => tokens::import(args, Some(file)),
+        ["tokens", "export"] => tokens::export(args),
+        ["tokens", ..] => bail!(
+            "usage: omni tokens import <file> --changeset <id> | omni tokens export [--changeset <id> | --version <v>] [--out <file>] [--per-mode]"
+        ),
         ["wait"] => wait::run(args),
         ["wait", ..] => bail!("usage: omni wait --changeset <id> --until <status> [--timeout <s>]"),
         ["claim"] => claims::take(args, None),
@@ -251,6 +259,12 @@ fn api_error(response: &Response) -> CliError {
             "{code}: the server did not accept the credentials; run `omni login` to get a new key"
         ),
         (403, _) => format!("{code}: only the human can do this, in the web app; an agent cannot"),
+        (404, "no_design_system") => format!(
+            "{code}: this project has no design system doc; `omni doc create --changeset <id> --kind design-system --module ui --title <text>` starts one"
+        ),
+        (400, "unknown_mode") => format!(
+            "{code}: the design system does not list that mode; `omni tokens export` shows its modes"
+        ),
         (404, _) => format!(
             "{code}: there is no such workspace or record, or you cannot reach it; check `omni config show`"
         ),
@@ -291,6 +305,11 @@ fn refused_operation(body: &Value) -> Option<String> {
                 _ => format!("claimed: {message}"),
             })
         }
+        "invalid_tokens" => Some(format!(
+            "invalid_tokens: {}; nothing was imported",
+            body.str_at("message")
+                .unwrap_or("the token tree is refused")
+        )),
         "invalid_operation" => {
             let index = match body.get("index") {
                 Some(Value::Number(index)) => index.clone(),

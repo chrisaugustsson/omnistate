@@ -32,12 +32,27 @@ pub struct Args {
     /// the command.
     pub until: Option<String>,
     pub timeout: Option<String>,
-    /// `omni doc read --version <v>`: the version to read. Everywhere else
-    /// `--version` is the bare flag that shows the version of omni.
+    /// `omni doc read --version <v>` and `omni tokens export --version <v>`:
+    /// the version to read. Everywhere else `--version` is the bare flag that
+    /// shows the version of omni.
     pub doc_version: Option<String>,
+    /// `omni tokens export --out <file or directory>`: where to write.
+    pub out: Option<String>,
+    /// `omni tokens export --per-mode`: one file per mode.
+    pub per_mode: bool,
     pub json: bool,
     pub help: bool,
     pub version: bool,
+}
+
+/// Whether `--version` names a version to read for this command, instead of
+/// being the flag that shows the version of omni.
+fn takes_a_version(words: &[String]) -> bool {
+    let command: Vec<&str> = words.iter().map(String::as_str).collect();
+    matches!(
+        command.as_slice(),
+        ["doc", "read", ..] | ["tokens", "export", ..]
+    )
 }
 
 pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Args> {
@@ -61,13 +76,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Args> {
                 parsed.help = true;
                 continue;
             }
-            "--version"
-                if parsed
-                    .words
-                    .starts_with(&["doc".to_string(), "read".to_string()]) =>
-            {
-                &mut parsed.doc_version
-            }
+            "--version" if takes_a_version(&parsed.words) => &mut parsed.doc_version,
             "--version" | "-V" => {
                 parsed.version = true;
                 continue;
@@ -76,6 +85,11 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Args> {
                 parsed.json = true;
                 continue;
             }
+            "--per-mode" => {
+                parsed.per_mode = true;
+                continue;
+            }
+            "--out" => &mut parsed.out,
             "--as" => &mut parsed.agent,
             "--model" => &mut parsed.model,
             "--harness" => &mut parsed.harness,

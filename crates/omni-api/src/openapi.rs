@@ -24,6 +24,9 @@ use crate::routes::{Access, registry};
 use crate::session::{
     ErrorBody, LoginRequest, UserBody, UserResponse, WorkspaceBody, WorkspaceListResponse,
 };
+use crate::tokens::{
+    DraftTokensResponse, ImportTokensRequest, InvalidTokensBody, MainlineTokensResponse,
+};
 use crate::versions::{
     DiffBody, DiffResponse, MovedNode, NodeEntry, SaveVersionRequest, VersionBody, VersionResponse,
 };
@@ -76,7 +79,10 @@ use utoipa::OpenApi;
         crate::versions::save_version,
         crate::versions::remove_doc,
         crate::versions::show_version,
-        crate::versions::diff_versions
+        crate::versions::diff_versions,
+        crate::tokens::import_tokens,
+        crate::tokens::read_draft_tokens,
+        crate::tokens::read_mainline_tokens
     ),
     components(schemas(
         LoginRequest,
@@ -137,7 +143,11 @@ use utoipa::OpenApi;
         RebaseResponse,
         RecordedConflictResponse,
         RecordedConflictListResponse,
-        ResolveConflictRequest
+        ResolveConflictRequest,
+        ImportTokensRequest,
+        DraftTokensResponse,
+        MainlineTokensResponse,
+        InvalidTokensBody
     ))
 )]
 struct ApiDoc;

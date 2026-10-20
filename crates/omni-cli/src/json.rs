@@ -57,6 +57,43 @@ impl Value {
     pub fn str_at(&self, key: &str) -> Option<&str> {
         self.get(key).and_then(Value::as_str)
     }
+
+    /// The value written over several lines, indented by two spaces, for a
+    /// file that a person or an agent reads.
+    pub fn pretty(&self) -> String {
+        let mut out = String::new();
+        self.write_pretty(&mut out, 0);
+        out
+    }
+
+    fn write_pretty(&self, out: &mut String, depth: usize) {
+        let indent = |out: &mut String, depth: usize| out.push_str(&"  ".repeat(depth));
+        match self {
+            Value::Array(items) if !items.is_empty() => {
+                out.push_str("[\n");
+                for (i, item) in items.iter().enumerate() {
+                    indent(out, depth + 1);
+                    item.write_pretty(out, depth + 1);
+                    out.push_str(if i + 1 < items.len() { ",\n" } else { "\n" });
+                }
+                indent(out, depth);
+                out.push(']');
+            }
+            Value::Object(fields) if !fields.is_empty() => {
+                out.push_str("{\n");
+                for (i, (key, value)) in fields.iter().enumerate() {
+                    indent(out, depth + 1);
+                    out.push_str(&quote(key));
+                    out.push_str(": ");
+                    value.write_pretty(out, depth + 1);
+                    out.push_str(if i + 1 < fields.len() { ",\n" } else { "\n" });
+                }
+                indent(out, depth);
+                out.push('}');
+            }
+            other => out.push_str(&other.to_string()),
+        }
+    }
 }
 
 impl fmt::Display for Value {
@@ -308,6 +345,16 @@ mod tests {
             assert!(Value::parse(bad).is_err(), "{bad:?}");
         }
         assert!(Value::parse(&"[".repeat(200)).is_err());
+    }
+
+    #[test]
+    fn pretty_writing_reads_back_as_the_same_value() {
+        let text = r#"{"k":["a\n\"b\"",1,false,null,{"x":"é","e":{},"l":[]}]}"#;
+        let value = Value::parse(text).unwrap();
+        let pretty = value.pretty();
+        assert!(pretty.lines().count() > 5, "{pretty}");
+        assert_eq!(Value::parse(&pretty).unwrap(), value);
+        assert_eq!(Value::Object(Vec::new()).pretty(), "{}");
     }
 
     #[test]

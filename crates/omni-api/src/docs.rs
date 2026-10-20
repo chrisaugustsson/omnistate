@@ -27,6 +27,7 @@ use axum::http::StatusCode;
 use axum::http::request::Parts;
 use axum::response::{IntoResponse, Response};
 use omni_core::design::NodeId;
+use omni_core::design::tokens::TokenTree;
 use omni_core::ops::{ApplyError, Conflict, EditDoc, Operation};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -313,10 +314,15 @@ impl<S: Send + Sync> FromRequestParts<S> for AgentIdentity {
 // Drafts in memory -----------------------------------------------------------------
 
 /// A draft that is in memory: the doc under edit and the `seq` of the next
-/// operation of its log.
+/// operation of its log. The draft of a design system doc holds no blocks: its
+/// content is the token tree of the last import (`None` before one), kept in
+/// the log as an `import_tokens` operation and in a version as one chunk of
+/// JSON.
 pub(crate) struct DraftState {
     pub(crate) doc: EditDoc,
-    next_seq: i64,
+    pub(crate) design_system: bool,
+    pub(crate) tokens: Option<TokenTree>,
+    pub(crate) next_seq: i64,
 }
 
 pub(crate) type Slot = Arc<tokio::sync::Mutex<Option<DraftState>>>;
@@ -386,37 +392,60 @@ fn random_node_id() -> NodeId {
     id.parse().expect("the alphabet gives a node ID")
 }
 
+/// The token tree that a saved design system version holds.
+pub(crate) fn read_tokens(text: &str, what: &str) -> Result<TokenTree, ApiError> {
+    serde_json::from_str(text)
+        .map_err(|e| e.to_string())
+        .and_then(|json| TokenTree::from_json(&json).map_err(|e| e.to_string()))
+        .map_err(|e| {
+            eprintln!("omni-api: {what} holds no token tree: {e}");
+            ApiError::Unavailable
+        })
+}
+
 /// Rebuilds a draft from its base version and its log. The log holds the IDs
 /// that the server assigned, which the replay hands out again in the same order.
-async fn load_state(
+pub(crate) async fn load_state(
     state: &AppState,
     tx: &mut Tx,
     workspace_id: &str,
     draft: &DraftRow,
 ) -> Result<DraftState, ApiError> {
+    let kind: String = sqlx::query_scalar("SELECT kind FROM docs WHERE id = $1::uuid")
+        .bind(&draft.doc_id)
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(ApiError::database)?;
+    let design_system = kind == "design-system";
     // A rebased draft starts from the version the rebase saved, a draft that
     // was never rebased from its base.
     let start = draft
         .content_version_id
         .as_ref()
         .or(draft.base_version_id.as_ref());
-    let mut doc = match start {
-        None => EditDoc::from_html("").expect("an empty doc parses"),
-        Some(base) => {
-            let chunk = versions::chunk_of_version(tx, &draft.doc_id, base).await?;
-            let html = match chunk {
-                Some(chunk) => versions::read_chunk(state, workspace_id, &chunk).await?,
-                None => String::new(),
-            };
-            EditDoc::from_html(&html).map_err(|e| {
+    let mut doc = EditDoc::from_html("").expect("an empty doc parses");
+    let mut tokens = None;
+    if let Some(base) = start {
+        let chunk = versions::chunk_of_version(tx, &draft.doc_id, base).await?;
+        let html = match chunk {
+            Some(chunk) => versions::read_chunk(state, workspace_id, &chunk).await?,
+            None => String::new(),
+        };
+        if design_system {
+            if !html.is_empty() {
+                let what = format!("the base version {base} of draft {}", draft.id);
+                tokens = Some(read_tokens(&html, &what)?);
+            }
+        } else {
+            doc = EditDoc::from_html(&html).map_err(|e| {
                 eprintln!(
                     "omni-api: the base version {base} of draft {} cannot be loaded: {e}",
                     draft.id
                 );
                 ApiError::Unavailable
-            })?
+            })?;
         }
-    };
+    }
     let rows: Vec<(i64, String, Vec<String>)> = sqlx::query_as(
         "SELECT seq, op::text, created FROM draft_ops \
          WHERE draft_id = $1::uuid AND seq > $2 ORDER BY seq",
@@ -435,6 +464,15 @@ async fn load_state(
     };
     let mut next_seq = draft.content_after_seq + 1;
     for (seq, op, created) in rows {
+        if design_system {
+            if let Some(imported) = crate::tokens::imported_in(&op) {
+                tokens = Some(
+                    TokenTree::from_json(&imported).map_err(|e| corrupt(seq, &e.to_string()))?,
+                );
+                next_seq = seq + 1;
+                continue;
+            }
+        }
         let op: Operation = serde_json::from_str(&op).map_err(|e| corrupt(seq, &e.to_string()))?;
         let mut ids: VecDeque<NodeId> = created.iter().filter_map(|id| id.parse().ok()).collect();
         let mut ran_out = false;
@@ -452,7 +490,12 @@ async fn load_state(
         }
         next_seq = seq + 1;
     }
-    Ok(DraftState { doc, next_seq })
+    Ok(DraftState {
+        doc,
+        design_system,
+        tokens,
+        next_seq,
+    })
 }
 
 /// Loads the draft into its locked slot when it is not in memory.
@@ -614,6 +657,7 @@ fn valid_kind_and_module(kind: &str, module: &str) -> bool {
         (status = 401, description = "No valid API key or session", body = ErrorBody),
         (status = 403, description = "Called with a session; agents only", body = ErrorBody),
         (status = 404, description = "No such change set in this project and workspace", body = ErrorBody),
+        (status = 409, description = "The project has a design system doc already (`design_system_exists`)", body = ErrorBody),
     )
 )]
 pub async fn create_doc(
@@ -635,6 +679,22 @@ pub async fn create_doc(
     if !valid_kind_and_module(&kind, &module) {
         return Err(invalid());
     }
+    // A project has one design system doc, whichever change set started it and
+    // whether or not it merged. The unique index of the migration settles two
+    // requests that start one at once.
+    let design_system_exists = || ApiError::conflict("design_system_exists");
+    if kind == "design-system" {
+        let found: Option<(String,)> = sqlx::query_as(
+            "SELECT id::text FROM docs WHERE project_id = $1::uuid AND kind = 'design-system'",
+        )
+        .bind(&project_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(ApiError::database)?;
+        if found.is_some() {
+            return Err(design_system_exists());
+        }
+    }
     let row: DocRow = sqlx::query_as(&format!(
         "INSERT INTO docs (workspace_id, project_id, kind, module, title) \
          VALUES ($1::uuid, $2::uuid, $3, $4, $5) RETURNING {DOC_COLUMNS}"
@@ -646,7 +706,16 @@ pub async fn create_doc(
     .bind(&title)
     .fetch_one(&mut *tx)
     .await
-    .map_err(ApiError::database)?;
+    .map_err(|error| {
+        if error
+            .as_database_error()
+            .is_some_and(|e| e.is_unique_violation())
+        {
+            design_system_exists()
+        } else {
+            ApiError::database(error)
+        }
+    })?;
     let draft: DraftBody = sqlx::query_as(&format!(
         "INSERT INTO drafts (workspace_id, doc_id, changeset_id) \
          VALUES ($1::uuid, $2::uuid, $3::uuid) RETURNING {DRAFT_COLUMNS}"

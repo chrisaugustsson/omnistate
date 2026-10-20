@@ -20,6 +20,7 @@ mod rebase;
 pub mod routes;
 mod session;
 pub mod setup;
+mod tokens;
 mod versions;
 mod workspace;
 
@@ -352,6 +353,14 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/v1/w/{workspace_id}/projects/{project_id}/versions/{version_id}/diff/{other_version_id}",
             get(versions::diff_versions),
+        )
+        .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/tokens",
+            get(tokens::read_draft_tokens).put(tokens::import_tokens),
+        )
+        .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/tokens",
+            get(tokens::read_mainline_tokens),
         )
         .route(
             "/api/v1/w/{workspace_id}/attachments",

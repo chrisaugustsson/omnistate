@@ -2,14 +2,20 @@
 //! Design Tokens (DTCG) format, with one value per mode
 //! (docs/formats/tokens.md).
 
-use super::value::{AttachmentRef, TokenRef};
-use serde_json::Value;
+use super::value::{AttachmentRef, Color, FontFamily, TokenRef};
+use serde_json::{Map, Value};
+use std::collections::HashMap;
 use std::fmt;
+use std::str::FromStr;
 
 /// A checked token tree: every reference resolves, no reference loops, and
 /// every token has a value for each of the design system's modes.
 #[derive(Clone, Debug, PartialEq)]
-pub struct TokenTree(());
+pub struct TokenTree {
+    json: Value,
+    modes: Vec<String>,
+    font_files: Vec<AttachmentRef>,
+}
 
 /// Why a token tree was refused; the message names the token.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -17,36 +23,167 @@ pub struct TokenError {
     message: String,
 }
 
+/// The groups at the top of a tree and the type of the tokens each holds.
+const GROUPS: [(&str, TokenType); 5] = [
+    ("color", TokenType::Color),
+    ("spacing", TokenType::Dimension),
+    ("radius", TokenType::Dimension),
+    ("typography", TokenType::Typography),
+    ("shadow", TokenType::Shadow),
+];
+
+/// The deepest chain of references that `resolve` follows.
+const MAX_DEPTH: usize = 64;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TokenType {
+    Color,
+    Dimension,
+    Typography,
+    Shadow,
+}
+
+impl TokenType {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Color => "color",
+            Self::Dimension => "dimension",
+            Self::Typography => "typography",
+            Self::Shadow => "shadow",
+        }
+    }
+
+    fn from_name(name: &str) -> Option<Self> {
+        [Self::Color, Self::Dimension, Self::Typography, Self::Shadow]
+            .into_iter()
+            .find(|ty| ty.name() == name)
+    }
+}
+
+impl fmt::Display for TokenType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.name())
+    }
+}
+
+fn refuse<T>(message: String) -> Result<T, TokenError> {
+    Err(TokenError { message })
+}
+
+/// A reference that a value holds, with the type that the place needs.
+struct Reference {
+    target: String,
+    needs: TokenType,
+}
+
+/// A token of the tree, with what the checks need of it.
+struct Token<'a> {
+    ty: TokenType,
+    object: &'a Map<String, Value>,
+}
+
+type Tokens<'a> = HashMap<String, Token<'a>>;
+
 impl TokenTree {
     /// Reads and checks a DTCG token tree.
-    pub fn from_json(_json: &Value) -> Result<TokenTree, TokenError> {
-        todo!()
+    pub fn from_json(json: &Value) -> Result<TokenTree, TokenError> {
+        let Some(root) = json.as_object() else {
+            return refuse("a token file is a JSON object of token groups".to_string());
+        };
+        let modes = read_modes(root)?;
+        let mut tokens = Tokens::new();
+        for (name, child) in root {
+            match name.as_str() {
+                "$extensions" | "$description" => {}
+                name if name.starts_with('$') => {
+                    return refuse(format!(
+                        "`{name}` is not a property of a token file: the root has `$extensions` and `$description`, and the groups {}",
+                        group_names()
+                    ));
+                }
+                name => {
+                    let Some((_, ty)) = GROUPS.iter().find(|(group, _)| *group == name) else {
+                        return refuse(format!(
+                            "`{name}` is not a token group: tokens are grouped by type in {}",
+                            group_names()
+                        ));
+                    };
+                    let Some(group) = child.as_object() else {
+                        return refuse(format!("{name} is a group, so it is a JSON object"));
+                    };
+                    collect(name, group, *ty, *ty, &mut tokens)?;
+                }
+            }
+        }
+
+        let mut font_files = Vec::new();
+        let mut references: Vec<(&str, ModeReferences)> = Vec::new();
+        let mut paths: Vec<&String> = tokens.keys().collect();
+        paths.sort();
+        for path in paths {
+            let token = &tokens[path];
+            let checked = check_token(path, token, &modes, &mut font_files)?;
+            references.push((path.as_str(), checked));
+        }
+
+        for (path, values) in &references {
+            for (_, found) in values {
+                for reference in found {
+                    check_reference(path, reference, &tokens)?;
+                }
+            }
+        }
+        check_loops(&references, &modes)?;
+
+        Ok(TokenTree {
+            json: json.clone(),
+            modes,
+            font_files,
+        })
     }
 
     /// The tree as DTCG JSON, as it was read.
     pub fn to_json(&self) -> Value {
-        todo!()
+        self.json.clone()
     }
 
     /// The design system's modes, in the order the tree lists them.
     pub fn modes(&self) -> &[String] {
-        todo!()
+        &self.modes
     }
 
     /// The value of the token that a design refers to, such as
     /// `$color.surface`, in `mode`, with every reference followed.
-    pub fn resolve(&self, _token: &TokenRef, _mode: &str) -> Option<Value> {
-        todo!()
+    pub fn resolve(&self, token: &TokenRef, mode: &str) -> Option<Value> {
+        if !self.modes.iter().any(|listed| listed == mode) {
+            return None;
+        }
+        resolve_path(&self.json, token.path(), mode, 0)
     }
 
     /// The tree for one mode: each token's `$value` is its value in `mode`.
-    pub fn for_mode(&self, _mode: &str) -> Option<Value> {
-        todo!()
+    pub fn for_mode(&self, mode: &str) -> Option<Value> {
+        if !self.modes.iter().any(|listed| listed == mode) {
+            return None;
+        }
+        let mut json = self.json.clone();
+        let root = json.as_object_mut()?;
+        for (name, child) in root.iter_mut() {
+            if !name.starts_with('$') {
+                flatten(child, mode);
+            }
+        }
+        let omnistate = root
+            .get_mut("$extensions")?
+            .get_mut("omnistate")?
+            .as_object_mut()?;
+        omnistate.insert("modes".to_string(), Value::Array(vec![mode.into()]));
+        Some(json)
     }
 
     /// Every font file that the typography tokens use.
     pub fn font_files(&self) -> Vec<AttachmentRef> {
-        todo!()
+        self.font_files.clone()
     }
 }
 
@@ -57,3 +194,633 @@ impl fmt::Display for TokenError {
 }
 
 impl std::error::Error for TokenError {}
+
+// Reading -------------------------------------------------------------------------
+
+fn group_names() -> String {
+    let names: Vec<&str> = GROUPS.iter().map(|(name, _)| *name).collect();
+    names.join(", ")
+}
+
+/// Whether `name` can be written after `$` in a design: letters, digits, `-`
+/// and `_`.
+fn is_name(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+}
+
+fn is_property(name: &str) -> bool {
+    matches!(
+        name,
+        "$type" | "$description" | "$extensions" | "$deprecated"
+    )
+}
+
+/// The design system's modes, from `$extensions.omnistate.modes` at the root.
+fn read_modes(root: &Map<String, Value>) -> Result<Vec<String>, TokenError> {
+    let missing = || {
+        refuse(
+            "the design system lists no modes: list them at the root in $extensions.omnistate.modes, such as [\"light\", \"dark\"]"
+                .to_string(),
+        )
+    };
+    let Some(listed) = root
+        .get("$extensions")
+        .and_then(|extensions| extensions.get("omnistate"))
+        .and_then(|omnistate| omnistate.get("modes"))
+    else {
+        return missing();
+    };
+    let Some(listed) = listed.as_array() else {
+        return refuse(
+            "the modes in $extensions.omnistate.modes are an array of names, such as [\"light\", \"dark\"]"
+                .to_string(),
+        );
+    };
+    let mut modes: Vec<String> = Vec::new();
+    for mode in listed {
+        let Some(mode) = mode.as_str().filter(|mode| is_name(mode)) else {
+            return refuse(format!(
+                "{mode} is not a mode name: a mode is named with letters, digits, - and _, such as light"
+            ));
+        };
+        if modes.iter().any(|known| known == mode) {
+            return refuse(format!(
+                "the mode {mode} is listed twice in $extensions.omnistate.modes"
+            ));
+        }
+        modes.push(mode.to_string());
+    }
+    if modes.is_empty() {
+        return missing();
+    }
+    Ok(modes)
+}
+
+/// Walks a group, checking its names and types, and collects its tokens.
+fn collect<'a>(
+    path: &str,
+    group: &'a Map<String, Value>,
+    holds: TokenType,
+    inherited: TokenType,
+    tokens: &mut Tokens<'a>,
+) -> Result<(), TokenError> {
+    let mut inherited = inherited;
+    if let Some(ty) = group.get("$type") {
+        inherited = stated_type(path, ty, holds, "the group")?;
+    }
+    for (name, child) in group {
+        if name.starts_with('$') {
+            if !is_property(name) {
+                return refuse(format!(
+                    "{path} has `{name}`, which is no group property: a name that starts with $ is a DTCG property"
+                ));
+            }
+            continue;
+        }
+        if !is_name(name) {
+            return refuse(format!(
+                "`{name}` in {path} is not a token name: a design writes `${path}.{name}`, so names have letters, digits, - and _"
+            ));
+        }
+        let child_path = format!("{path}.{name}");
+        let Some(object) = child.as_object() else {
+            return refuse(format!(
+                "{child_path} is a token or a group, so it is a JSON object"
+            ));
+        };
+        if object.contains_key("$value") {
+            let ty = match object.get("$type") {
+                Some(ty) => stated_type(&child_path, ty, holds, "the token")?,
+                None => inherited,
+            };
+            tokens.insert(child_path, Token { ty, object });
+        } else {
+            collect(&child_path, object, holds, inherited, tokens)?;
+        }
+    }
+    Ok(())
+}
+
+/// The type that a token or group states with `$type`, which has to be the
+/// type of the group it is in.
+fn stated_type(
+    path: &str,
+    ty: &Value,
+    holds: TokenType,
+    what: &str,
+) -> Result<TokenType, TokenError> {
+    let Some(stated) = ty.as_str().and_then(TokenType::from_name) else {
+        return refuse(format!(
+            "{path} has the type {ty}, which is none of color, dimension, typography and shadow"
+        ));
+    };
+    if stated != holds {
+        return refuse(format!(
+            "{path} is {what} of type {stated}, but its group holds {holds} tokens"
+        ));
+    }
+    Ok(stated)
+}
+
+/// What one value of a token refers to, with the mode it is the value in
+/// (`None` for the `$value`).
+type ModeReferences<'a> = Vec<(Option<&'a str>, Vec<Reference>)>;
+
+/// Checks a token's properties, its value and its value in each mode; returns
+/// the references that those values hold.
+fn check_token<'a>(
+    path: &str,
+    token: &'a Token<'a>,
+    modes: &'a [String],
+    font_files: &mut Vec<AttachmentRef>,
+) -> Result<ModeReferences<'a>, TokenError> {
+    for name in token.object.keys() {
+        if name != "$value" && !is_property(name) {
+            return refuse(format!(
+                "{path} has `{name}`, which is no token property: a token has $value, $type, $description and $extensions"
+            ));
+        }
+    }
+    let mut found = Vec::new();
+    let mut references = Vec::new();
+    check_value(path, token.ty, &token.object["$value"], &mut references)?;
+    found.push((None, references));
+
+    if let Some(extensions) = token.object.get("$extensions") {
+        let Some(extensions) = extensions.as_object() else {
+            return refuse(format!("{path} has $extensions, which is a JSON object"));
+        };
+        if let Some(omnistate) = extensions.get("omnistate") {
+            let Some(omnistate) = omnistate.as_object() else {
+                return refuse(format!(
+                    "{path} has $extensions.omnistate, which is a JSON object"
+                ));
+            };
+            for (name, value) in omnistate {
+                match name.as_str() {
+                    "modes" => check_modes(path, token, value, modes, &mut found)?,
+                    "fontFiles" => check_font_files(path, token.ty, value, font_files)?,
+                    other => {
+                        return refuse(format!(
+                            "{path} has `{other}` in $extensions.omnistate; a token has `modes` and `fontFiles` there"
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    Ok(found)
+}
+
+fn check_modes<'a>(
+    path: &str,
+    token: &Token<'_>,
+    value: &Value,
+    modes: &'a [String],
+    found: &mut ModeReferences<'a>,
+) -> Result<(), TokenError> {
+    let Some(per_mode) = value.as_object() else {
+        return refuse(format!(
+            "{path} has $extensions.omnistate.modes, which is an object with a value for each mode"
+        ));
+    };
+    for name in per_mode.keys() {
+        if !modes.iter().any(|mode| mode == name) {
+            return refuse(format!(
+                "{path} has a value for the {name} mode, which the design system does not list (its modes are {})",
+                modes.join(", ")
+            ));
+        }
+    }
+    for mode in modes {
+        let Some(value) = per_mode.get(mode) else {
+            return refuse(format!(
+                "{path} has no value for the {mode} mode: a token with mode values has one for every mode"
+            ));
+        };
+        let mut references = Vec::new();
+        check_value(
+            &format!("{path} in the {mode} mode"),
+            token.ty,
+            value,
+            &mut references,
+        )?;
+        found.push((Some(mode), references));
+    }
+    Ok(())
+}
+
+fn check_font_files(
+    path: &str,
+    ty: TokenType,
+    value: &Value,
+    font_files: &mut Vec<AttachmentRef>,
+) -> Result<(), TokenError> {
+    if ty != TokenType::Typography {
+        return refuse(format!(
+            "{path} lists font files, but only typography tokens use them"
+        ));
+    }
+    let Some(files) = value.as_array() else {
+        return refuse(format!(
+            "{path} has fontFiles, which is an array of attachment:<id> entries"
+        ));
+    };
+    for file in files {
+        let file = file
+            .as_str()
+            .and_then(|text| AttachmentRef::from_str(text).ok());
+        let Some(file) = file else {
+            return refuse(format!(
+                "{path} has a font file that is no attachment: fontFiles entries are files uploaded to the workspace, written attachment:<id>"
+            ));
+        };
+        if !font_files.contains(&file) {
+            font_files.push(file);
+        }
+    }
+    Ok(())
+}
+
+/// The path that a whole string refers to when it is written `{color.surface}`.
+fn reference_in(text: &str) -> Option<&str> {
+    let path = text.strip_prefix('{')?.strip_suffix('}')?;
+    path.split('.').all(is_name).then_some(path)
+}
+
+/// Checks that `value` fits `ty` and collects the references in it.
+fn check_value(
+    path: &str,
+    ty: TokenType,
+    value: &Value,
+    references: &mut Vec<Reference>,
+) -> Result<(), TokenError> {
+    match ty {
+        TokenType::Color => check_color(path, value, references),
+        TokenType::Dimension => check_dimension(path, value, references).map(|_| ()),
+        TokenType::Typography => check_typography(path, value, references),
+        TokenType::Shadow => check_shadow(path, value, references),
+    }
+}
+
+fn check_color(
+    path: &str,
+    value: &Value,
+    references: &mut Vec<Reference>,
+) -> Result<(), TokenError> {
+    let text = value.as_str();
+    if let Some(target) = text.and_then(reference_in) {
+        references.push(Reference {
+            target: target.to_string(),
+            needs: TokenType::Color,
+        });
+        return Ok(());
+    }
+    match text {
+        Some(text) if Color::from_str(text).is_ok() => Ok(()),
+        Some(text) if text.starts_with('$') => refuse(format!(
+            "{path} has {value}, which is no color: a token file refers to another token in braces, as {{{}}}",
+            &text[1..]
+        )),
+        _ => refuse(format!(
+            "{path} has {value}, which is no color: write #rrggbb or #rrggbbaa, or refer to a color token as {{color.surface}}"
+        )),
+    }
+}
+
+/// The pixels of a dimension such as `16px`.
+fn pixels(text: &str) -> Option<f64> {
+    let number = text.strip_suffix("px")?;
+    let digits = number.strip_prefix('-').unwrap_or(number);
+    let (whole, fraction) = match digits.split_once('.') {
+        Some((whole, fraction)) => (whole, Some(fraction)),
+        None => (digits, None),
+    };
+    let all_digits = |part: &str| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit());
+    if !all_digits(whole) || fraction.is_some_and(|part| !all_digits(part)) {
+        return None;
+    }
+    number
+        .parse()
+        .ok()
+        .filter(|pixels: &f64| pixels.is_finite())
+}
+
+/// Checks a dimension, which is a length in pixels written `16px`, and
+/// returns the pixels of a literal.
+fn check_dimension(
+    path: &str,
+    value: &Value,
+    references: &mut Vec<Reference>,
+) -> Result<Option<f64>, TokenError> {
+    let text = value.as_str();
+    if let Some(target) = text.and_then(reference_in) {
+        references.push(Reference {
+            target: target.to_string(),
+            needs: TokenType::Dimension,
+        });
+        return Ok(None);
+    }
+    match text.and_then(pixels) {
+        Some(pixels) => Ok(Some(pixels)),
+        None => refuse(format!(
+            "{path} has {value}, which is no dimension: write a length in pixels such as \"16px\", or refer to a dimension token as {{spacing.md}}"
+        )),
+    }
+}
+
+/// The fields of a composite value; each is checked by the caller.
+fn fields_of<'a>(
+    path: &str,
+    value: &'a Value,
+    what: &str,
+    known: &[&str],
+) -> Result<&'a Map<String, Value>, TokenError> {
+    let Some(fields) = value.as_object() else {
+        return refuse(format!(
+            "{path} has {value}, which is no {what} value: write an object of {}",
+            known.join(", ")
+        ));
+    };
+    for name in fields.keys() {
+        if !known.contains(&name.as_str()) {
+            return refuse(format!(
+                "{path} has `{name}`, which is no field of a {what} value ({})",
+                known.join(", ")
+            ));
+        }
+    }
+    Ok(fields)
+}
+
+fn check_typography(
+    path: &str,
+    value: &Value,
+    references: &mut Vec<Reference>,
+) -> Result<(), TokenError> {
+    const FIELDS: [&str; 5] = [
+        "fontFamily",
+        "fontSize",
+        "fontWeight",
+        "lineHeight",
+        "letterSpacing",
+    ];
+    let fields = fields_of(path, value, "typography", &FIELDS)?;
+    for required in ["fontFamily", "fontSize", "lineHeight"] {
+        if !fields.contains_key(required) {
+            let why = if required == "lineHeight" {
+                ": a typography token always has a line height (a number, a multiple of the font size), so text never falls back to the font's normal line height"
+            } else {
+                ""
+            };
+            return refuse(format!("{path} has no {required}{why}"));
+        }
+    }
+    let family = fields["fontFamily"].as_str();
+    if family.is_none_or(|family| family.starts_with('{') || FontFamily::from_str(family).is_err())
+    {
+        return refuse(format!(
+            "{path} has the fontFamily {}, which is no font family: write its name, such as \"Inter\"",
+            fields["fontFamily"]
+        ));
+    }
+    let size = check_dimension(&format!("{path} fontSize"), &fields["fontSize"], references)?;
+    if size.is_some_and(|size| size < 0.0) {
+        return refuse(format!("{path} has a negative fontSize"));
+    }
+    if let Some(weight) = fields.get("fontWeight") {
+        if !weight
+            .as_f64()
+            .is_some_and(|weight| (1.0..=1000.0).contains(&weight))
+        {
+            return refuse(format!(
+                "{path} has the fontWeight {weight}, which is a number from 1 to 1000"
+            ));
+        }
+    }
+    if !fields["lineHeight"]
+        .as_f64()
+        .is_some_and(|height| height >= 0.0)
+    {
+        return refuse(format!(
+            "{path} has the lineHeight {}, which is no definite line height: write a number, a multiple of the font size, never \"normal\"",
+            fields["lineHeight"]
+        ));
+    }
+    if let Some(spacing) = fields.get("letterSpacing") {
+        check_dimension(&format!("{path} letterSpacing"), spacing, references)?;
+    }
+    Ok(())
+}
+
+fn check_shadow(
+    path: &str,
+    value: &Value,
+    references: &mut Vec<Reference>,
+) -> Result<(), TokenError> {
+    const FIELDS: [&str; 5] = ["color", "offsetX", "offsetY", "blur", "spread"];
+    let fields = fields_of(path, value, "shadow", &FIELDS)?;
+    for required in ["color", "offsetX", "offsetY", "blur"] {
+        if !fields.contains_key(required) {
+            return refuse(format!("{path} has no {required}"));
+        }
+    }
+    check_color(&format!("{path} color"), &fields["color"], references)?;
+    for name in ["offsetX", "offsetY", "blur", "spread"] {
+        let Some(field) = fields.get(name) else {
+            continue;
+        };
+        let pixels = check_dimension(&format!("{path} {name}"), field, references)?;
+        if name == "blur" && pixels.is_some_and(|blur| blur < 0.0) {
+            return refuse(format!("{path} has a negative blur"));
+        }
+    }
+    Ok(())
+}
+
+// References ----------------------------------------------------------------------
+
+fn check_reference(path: &str, reference: &Reference, tokens: &Tokens) -> Result<(), TokenError> {
+    let target = &reference.target;
+    let Some(found) = tokens.get(target) else {
+        let is_group = tokens
+            .keys()
+            .any(|token| token.starts_with(&format!("{target}.")));
+        return refuse(if is_group {
+            format!("{path} refers to {target}, which is a group, not a token")
+        } else {
+            format!("{path} refers to {target}, which is no token")
+        });
+    };
+    if found.ty != reference.needs {
+        return refuse(format!(
+            "{path} refers to {target}, a {} token, where a {} is needed",
+            found.ty, reference.needs
+        ));
+    }
+    Ok(())
+}
+
+/// Refuses a loop of references in any mode: a token that, through the tokens
+/// it refers to, refers back to itself.
+fn check_loops(references: &[(&str, ModeReferences)], modes: &[String]) -> Result<(), TokenError> {
+    for mode in modes {
+        // What each token refers to in this mode: its mode value when it has
+        // one, else its $value.
+        let mut edges: HashMap<&str, Vec<&str>> = HashMap::new();
+        for (path, values) in references {
+            let chosen = values
+                .iter()
+                .find(|(of, _)| *of == Some(mode.as_str()))
+                .or_else(|| values.iter().find(|(of, _)| of.is_none()));
+            let targets = chosen
+                .map(|(_, found)| found.iter().map(|r| r.target.as_str()).collect())
+                .unwrap_or_default();
+            edges.insert(*path, targets);
+        }
+        let mut done: HashMap<&str, bool> = HashMap::new();
+        let mut starts: Vec<&str> = edges.keys().copied().collect();
+        starts.sort_unstable();
+        for start in starts {
+            let mut chain = Vec::new();
+            if let Some(cycle) = find_loop(start, &edges, &mut done, &mut chain) {
+                return refuse(loop_message(&cycle, mode));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn loop_message(cycle: &[&str], mode: &str) -> String {
+    let first = cycle[0];
+    if cycle.len() == 1 {
+        format!("{first} refers to itself, in the {mode} mode")
+    } else {
+        format!(
+            "{first} refers back to itself in the {mode} mode, through {}",
+            cycle[1..].join(" and ")
+        )
+    }
+}
+
+/// Depth-first search for a loop from `at`; `done` holds the tokens known to
+/// lead to no loop (true) or to be on the chain being walked (false).
+fn find_loop<'a>(
+    at: &'a str,
+    edges: &HashMap<&'a str, Vec<&'a str>>,
+    done: &mut HashMap<&'a str, bool>,
+    chain: &mut Vec<&'a str>,
+) -> Option<Vec<&'a str>> {
+    match done.get(at) {
+        Some(true) => return None,
+        Some(false) => {
+            let from = chain.iter().position(|token| *token == at)?;
+            return Some(chain[from..].to_vec());
+        }
+        None => {}
+    }
+    done.insert(at, false);
+    chain.push(at);
+    for next in edges.get(at).into_iter().flatten() {
+        if let Some(cycle) = find_loop(next, edges, done, chain) {
+            return Some(cycle);
+        }
+    }
+    chain.pop();
+    done.insert(at, true);
+    None
+}
+
+// Resolving and writing a mode ------------------------------------------------------
+
+/// The token at `path`, an object with a `$value`.
+fn token_at<'a>(json: &'a Value, path: &str) -> Option<&'a Map<String, Value>> {
+    let mut at = json;
+    for name in path.split('.') {
+        at = at.as_object()?.get(name)?;
+    }
+    let token = at.as_object()?;
+    token.contains_key("$value").then_some(token)
+}
+
+fn resolve_path(json: &Value, path: &str, mode: &str, depth: usize) -> Option<Value> {
+    if depth > MAX_DEPTH
+        || path
+            .split('.')
+            .next()
+            .is_some_and(|top| top.starts_with('$'))
+    {
+        return None;
+    }
+    let token = token_at(json, path)?;
+    let value = token
+        .get("$extensions")
+        .and_then(|extensions| extensions.get("omnistate"))
+        .and_then(|omnistate| omnistate.get("modes"))
+        .and_then(|modes| modes.get(mode))
+        .or_else(|| token.get("$value"))?;
+    follow(json, value, mode, depth)
+}
+
+/// `value` with each `{token}` in it replaced by that token's value in `mode`.
+fn follow(json: &Value, value: &Value, mode: &str, depth: usize) -> Option<Value> {
+    match value {
+        Value::String(text) => match reference_in(text) {
+            Some(path) => resolve_path(json, path, mode, depth + 1),
+            None => Some(value.clone()),
+        },
+        Value::Object(fields) => {
+            let mut resolved = Map::new();
+            for (name, field) in fields {
+                resolved.insert(name.clone(), follow(json, field, mode, depth)?);
+            }
+            Some(Value::Object(resolved))
+        }
+        other => Some(other.clone()),
+    }
+}
+
+/// Rewrites every token under `node` to have its value in `mode` only.
+fn flatten(node: &mut Value, mode: &str) {
+    let Some(object) = node.as_object_mut() else {
+        return;
+    };
+    if object.contains_key("$value") {
+        let own = object
+            .get_mut("$extensions")
+            .and_then(|extensions| extensions.get_mut("omnistate"))
+            .and_then(Value::as_object_mut)
+            .and_then(|omnistate| omnistate.remove("modes"))
+            .and_then(|mut modes| modes.get_mut(mode).map(Value::take));
+        if let Some(own) = own {
+            object.insert("$value".to_string(), own);
+        }
+        drop_empty_extensions(object);
+        return;
+    }
+    for (name, child) in object.iter_mut() {
+        if !name.starts_with('$') {
+            flatten(child, mode);
+        }
+    }
+}
+
+/// Removes the `omnistate` object and `$extensions` once nothing is left in them.
+fn drop_empty_extensions(token: &mut Map<String, Value>) {
+    let Some(extensions) = token.get_mut("$extensions").and_then(Value::as_object_mut) else {
+        return;
+    };
+    if extensions
+        .get("omnistate")
+        .and_then(Value::as_object)
+        .is_some_and(Map::is_empty)
+    {
+        extensions.remove("omnistate");
+    }
+    if extensions.is_empty() {
+        token.remove("$extensions");
+    }
+}
