@@ -27,7 +27,9 @@
 //! - The instance's `overrides` apply on top, by the component node they
 //!   name: `content` replaces a text, `fills` the fills of a node, `visible`
 //!   shows or hides a node, and `component` swaps the component of an
-//!   instance layer.
+//!   instance layer, over the slot property it is bound to. The overrides of
+//!   an instance reach the nodes of the components of the instances inside
+//!   it too, by the inner component's node IDs, and only in that instance.
 //! - Token references (`$color.brand`, `$spacing.pad`) are resolved in the
 //!   scene's mode, in the design and in the components' layers alike, and
 //!   for layout as well as for drawing. `Scene::set_mode` switches the mode,
@@ -38,7 +40,10 @@
 //!   does not have) are drawn as a visible error placeholder in the node's
 //!   box, and `Scene::errors` lists each with the node's address and what is
 //!   missing (`Missing::Component`, `Missing::Token`), for the host page.
-//!   A page with nothing missing has no errors.
+//!   A page with nothing missing has no errors. A token whose value does not
+//!   fit where it is used (a color for a padding, a dimension for a fill) is
+//!   drawn as an error placeholder and listed with the node's address too,
+//!   and the other nodes, instances and tokens of the board resolve as usual.
 //! - `Scene::node_at` gives the address of the node it finds, and a node
 //!   inside an instance is `<instanceId>/<componentNodeId>`. `bounds_of` takes
 //!   such an address and gives the node's box in page coordinates. Selection
@@ -457,6 +462,226 @@ fn broken_page_json() -> Value {
 }
 
 // ---------------------------------------------------------------------------
+// A page of swapped slots and nested instances
+// ---------------------------------------------------------------------------
+//
+// The design system gets one more component, Toolbar, 160 x 60, light gray,
+// whose one layer, Bar, is an instance of Button at (20, 10). On a white
+// board, 400 x 300:
+//
+//   SWAPPED      (20, 20)    a Button, overrides: the Icon's component Heart
+//   SWAP_WINS    (160, 20)   a Button, icon: Heart, but overrides: the Icon's
+//                            component Cart
+//   TOOLBAR      (20, 100)   a Toolbar, no overrides
+//   TOOLBAR_DONE (200, 100)  a Toolbar, overrides: the Badge filled yellow,
+//                            the Icon's component Heart, the Label's content
+//                            "Pay now"
+//
+// The Button inside a Toolbar at (x, y) is at (x + 20, y + 10).
+
+const TOOLBAR_COMPONENT: &str = "cr000001";
+const BAR: &str = "cs000001";
+const SWAPPED: &str = "e0000020";
+const SWAP_WINS: &str = "e0000021";
+const TOOLBAR: &str = "e0000022";
+const TOOLBAR_DONE: &str = "e0000023";
+
+/// The design system with the components `extra` after its own.
+fn system_with(extra: Vec<Value>) -> DesignSystem {
+    let mut listed = components();
+    listed.extend(extra);
+    let json = with(&tokens(), "$components", Value::Array(listed));
+    DesignSystem::from_json(&json)
+        .unwrap_or_else(|error| panic!("the design system fixture must be read, but: {error}"))
+}
+
+/// A page with one board, 400 x 300 at the page origin, filled with `fill`.
+fn board_page(page: &str, board: &str, fill: &str, children: Vec<Value>) -> Value {
+    json!({
+        "id": page,
+        "type": "page",
+        "name": "Page",
+        "children": [{
+            "id": board,
+            "type": "board",
+            "name": "Board",
+            "x": 0,
+            "y": 0,
+            "width": fixed(WIDTH as f64),
+            "height": fixed(HEIGHT as f64),
+            "layout": {"mode": "none"},
+            "fills": solid(fill),
+            "children": children
+        }]
+    })
+}
+
+fn nested_scene() -> Scene {
+    let bar = json!({
+        "id": BAR,
+        "type": "instance",
+        "name": "Bar",
+        "component": BUTTON,
+        "x": 20,
+        "y": 10
+    });
+    let toolbar = with(
+        &component(TOOLBAR_COMPONENT, "Toolbar", 160.0, 60.0, "#e0e0e0"),
+        "children",
+        json!([bar]),
+    );
+    let toolbar_instance = |id: &str, x: f64, overrides: Value| {
+        let mut instance = json!({
+            "id": id,
+            "type": "instance",
+            "name": format!("Toolbar {id}"),
+            "component": TOOLBAR_COMPONENT,
+            "x": x,
+            "y": 100
+        });
+        if overrides != json!({}) {
+            instance = with(&instance, "overrides", overrides);
+        }
+        instance
+    };
+    let page = board_page(
+        "p0000003",
+        "a0000003",
+        "#ffffff",
+        vec![
+            instance(
+                SWAPPED,
+                20.0,
+                20.0,
+                json!({}),
+                json!({ICON: {"component": HEART}}),
+            ),
+            instance(
+                SWAP_WINS,
+                160.0,
+                20.0,
+                json!({"icon": HEART}),
+                json!({ICON: {"component": CART}}),
+            ),
+            toolbar_instance(TOOLBAR, 20.0, json!({})),
+            toolbar_instance(
+                TOOLBAR_DONE,
+                200.0,
+                json!({
+                    BADGE: {"fills": solid("#ffff00")},
+                    ICON: {"component": HEART},
+                    LABEL: {"content": "Pay now"}
+                }),
+            ),
+        ],
+    );
+    Scene::with_system(node(&page), Assets::new(), system_with(vec![toolbar]))
+}
+
+// ---------------------------------------------------------------------------
+// A page with tokens that do not fit where they are used
+// ---------------------------------------------------------------------------
+//
+// The design system gets one more component, Smudge, 60 x 30, white, whose
+// layer Smear (10, 5, 40 x 20) is filled with $spacing.pad, a dimension. On a
+// board filled with $color.surface, 400 x 300:
+//
+//   FINE        (20, 20)    a Button, no props and no overrides
+//   FINE_PAD    (160, 20)   a frame that hugs a 20 x 20 Swatch ($color.ink),
+//                           with a padding of $spacing.pad on every side
+//   COLOR_PAD   (20, 100)   a frame, 100 x 40, with no fill and a padding of
+//                           $color.brand, a color
+//   SIZE_FILL   (20, 180)   a frame, 100 x 40, filled with $spacing.pad
+//   SMUDGED     (160, 180)  an instance of Smudge
+
+const SMUDGE: &str = "cm000001";
+const SMEAR: &str = "cm000002";
+const FINE: &str = "e0000030";
+const FINE_PAD: &str = "f0000030";
+const FINE_SWATCH: &str = "f0000031";
+const COLOR_PAD: &str = "f0000032";
+const SIZE_FILL: &str = "f0000033";
+const SMUDGED: &str = "e0000031";
+
+fn mistyped_scene() -> Scene {
+    let smear = json!({
+        "id": SMEAR,
+        "type": "frame",
+        "name": "Smear",
+        "x": 10,
+        "y": 5,
+        "width": fixed(40.0),
+        "height": fixed(20.0),
+        "layout": {"mode": "none"},
+        "fills": solid("$spacing.pad")
+    });
+    let smudge = with(
+        &component(SMUDGE, "Smudge", 60.0, 30.0, "#ffffff"),
+        "children",
+        json!([smear]),
+    );
+    let padding =
+        |token: &str| json!({"top": token, "right": token, "bottom": token, "left": token});
+    let page = board_page(
+        "p0000004",
+        "a0000004",
+        "$color.surface",
+        vec![
+            instance(FINE, 20.0, 20.0, json!({}), json!({})),
+            json!({
+                "id": FINE_PAD,
+                "type": "frame",
+                "name": "Fine padding",
+                "x": 160,
+                "y": 20,
+                "width": "hug",
+                "height": "hug",
+                "layout": {"mode": "flex", "padding": padding("$spacing.pad")},
+                "children": [{
+                    "id": FINE_SWATCH,
+                    "type": "frame",
+                    "name": "Swatch",
+                    "width": fixed(20.0),
+                    "height": fixed(20.0),
+                    "layout": {"mode": "none"},
+                    "fills": solid("$color.ink")
+                }]
+            }),
+            json!({
+                "id": COLOR_PAD,
+                "type": "frame",
+                "name": "Color padding",
+                "x": 20,
+                "y": 100,
+                "width": fixed(100.0),
+                "height": fixed(40.0),
+                "layout": {"mode": "flex", "padding": padding("$color.brand")}
+            }),
+            json!({
+                "id": SIZE_FILL,
+                "type": "frame",
+                "name": "Size fill",
+                "x": 20,
+                "y": 180,
+                "width": fixed(100.0),
+                "height": fixed(40.0),
+                "layout": {"mode": "none"},
+                "fills": solid("$spacing.pad")
+            }),
+            json!({
+                "id": SMUDGED,
+                "type": "instance",
+                "name": "Smudged",
+                "component": SMUDGE,
+                "x": 160,
+                "y": 180
+            }),
+        ],
+    );
+    Scene::with_system(node(&page), Assets::new(), system_with(vec![smudge]))
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -723,6 +948,84 @@ fn overrides_change_the_nodes_of_the_component_they_name() {
     );
 }
 
+#[test]
+fn a_component_override_swaps_the_component_of_an_instance_layer() {
+    let mut scene = nested_scene();
+    let pixels = render(&mut scene);
+    assert_rgb(
+        &pixels,
+        icon(20, 20),
+        CYAN,
+        "overrides: the Icon's component Heart places the Heart in the Icon layer",
+    );
+    assert_rgb(
+        &pixels,
+        icon(160, 20),
+        GREEN,
+        "an override wins over the slot property: icon: Heart, but the Icon's component Cart",
+    );
+    assert_eq!(
+        scene.bounds_of(&inside(SWAPPED, ICON)),
+        Some(page_box(30.0, 30.0, 20.0, 20.0)),
+        "the swapped Icon takes the size of Heart"
+    );
+}
+
+#[test]
+fn overrides_reach_the_nodes_of_an_instance_inside_the_instance() {
+    let mut scene = nested_scene();
+    let pixels = render(&mut scene);
+    assert_rgb(
+        &pixels,
+        background(40, 110),
+        RED,
+        "the Button inside a Toolbar is drawn, with $color.brand",
+    );
+    assert_rgb(
+        &pixels,
+        badge(40, 110),
+        GRAY,
+        "the Badge of the Button inside the Toolbar with no overrides",
+    );
+    assert_rgb(
+        &pixels,
+        badge(220, 110),
+        YELLOW,
+        "a fills override of the Badge reaches the Button inside the Toolbar",
+    );
+    assert_rgb(
+        &pixels,
+        icon(220, 110),
+        CYAN,
+        "a component override of the Icon reaches the Button inside the Toolbar",
+    );
+    assert_rgb(
+        &pixels,
+        icon(40, 110),
+        GREEN,
+        "the overrides change only the Toolbar that has them",
+    );
+    assert_eq!(
+        scene.bounds_of(&inside(TOOLBAR_DONE, BADGE)),
+        Some(page_box(320.0, 110.0, 8.0, 8.0)),
+        "the Badge of the inner Button is addressed from the Toolbar on the page"
+    );
+    let plain = bounds(&scene, &inside(TOOLBAR, LABEL));
+    let done = bounds(&scene, &inside(TOOLBAR_DONE, LABEL));
+    assert!(
+        done.width > plain.width + 20.0,
+        "a content override lays the inner Label out with \"Pay now\", wider than \"Buy\" ({} px), but it is {} px wide",
+        plain.width,
+        done.width
+    );
+    assert_eq!(
+        (done.x, done.y),
+        (260.0, 120.0),
+        "the inner Label stays where the Button places it"
+    );
+    assert!(scene.errors().is_empty(), "nothing is missing");
+}
+
 // ---------------------------------------------------------------------------
 // Tokens and modes
 // ---------------------------------------------------------------------------
@@ -855,6 +1158,102 @@ fn a_missing_token_is_drawn_as_an_error_placeholder_and_reported() {
         assert!(
             scene.errors().contains(&expected),
             "the host page hears of {expected:?}, but the errors are {:?}",
+            scene.errors()
+        );
+    }
+}
+
+#[test]
+fn a_token_that_does_not_fit_where_it_is_used_is_drawn_as_an_error_placeholder_and_reported() {
+    let mut scene = mistyped_scene();
+    let pixels = render(&mut scene);
+    for (what, area) in [
+        (
+            "the frame with a padding of $color.brand",
+            [20, 100, 100, 40],
+        ),
+        ("the frame filled with $spacing.pad", [20, 180, 100, 40]),
+        (
+            "the Smear inside the instance of Smudge, filled with $spacing.pad",
+            [170, 185, 40, 20],
+        ),
+    ] {
+        let share = pixels.marked_share(area);
+        assert!(
+            share >= 0.05,
+            "{what} is visibly marked, but only {:.1}% of its box differs from white",
+            share * 100.0
+        );
+    }
+    for at in [(130, 120), (130, 200), (230, 200)] {
+        assert_rgb(
+            &pixels,
+            at,
+            WHITE,
+            "the placeholders stay in their boxes, on the board's $color.surface",
+        );
+    }
+    let reported = [addr(COLOR_PAD), addr(SIZE_FILL), inside(SMUDGED, SMEAR)];
+    for expected in &reported {
+        assert!(
+            scene.errors().iter().any(|error| &error.node == expected),
+            "the host page hears of {expected}, but the errors are {:?}",
+            scene.errors()
+        );
+    }
+    assert!(
+        scene
+            .errors()
+            .iter()
+            .all(|error| reported.contains(&error.node)),
+        "only the nodes whose tokens do not fit are reported, but the errors are {:?}",
+        scene.errors()
+    );
+}
+
+#[test]
+fn a_token_that_does_not_fit_leaves_the_rest_of_the_board_resolved() {
+    let mut scene = mistyped_scene();
+    let light = render(&mut scene);
+    assert_rgb(
+        &light,
+        background(20, 20),
+        RED,
+        "the Button's fill, $color.brand, on the same board",
+    );
+    assert_rgb(&light, icon(20, 20), GREEN, "the Button's Icon, Cart");
+    assert_rgb(&light, badge(20, 20), GRAY, "the Button's Badge");
+    assert_rgb(&light, (180, 40), BLACK, "the Swatch's $color.ink");
+    assert_eq!(
+        scene.bounds_of(&addr(FINE_SWATCH)),
+        Some(page_box(170.0, 30.0, 20.0, 20.0)),
+        "a padding of $spacing.pad, 10 px in light mode"
+    );
+    assert_eq!(
+        scene.bounds_of(&inside(FINE, BADGE)),
+        Some(page_box(120.0, 20.0, 8.0, 8.0)),
+        "the Button is expanded into its layers"
+    );
+
+    scene.set_mode("dark").expect("dark is a mode");
+    let dark = render(&mut scene);
+    assert_rgb(&dark, (390, 290), BLACK, "the board's $color.surface");
+    assert_rgb(
+        &dark,
+        background(20, 20),
+        BLUE,
+        "the Button's $color.brand in dark mode",
+    );
+    assert_rgb(&dark, (200, 60), WHITE, "the Swatch's $color.ink");
+    assert_eq!(
+        scene.bounds_of(&addr(FINE_SWATCH)),
+        Some(page_box(190.0, 50.0, 20.0, 20.0)),
+        "a padding of $spacing.pad, 30 px in dark mode"
+    );
+    for expected in [addr(COLOR_PAD), addr(SIZE_FILL), inside(SMUDGED, SMEAR)] {
+        assert!(
+            scene.errors().iter().any(|error| error.node == expected),
+            "{expected} is still reported in dark mode, but the errors are {:?}",
             scene.errors()
         );
     }
