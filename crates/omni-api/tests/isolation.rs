@@ -342,6 +342,26 @@ const CASES: &[Case] = &[
         Some(r#"{"note":"intruder"}"#),
         Kind::Workspace,
     ),
+    case(
+        "PUT",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/tokens",
+        Some(
+            r##"{"tokens":{"$extensions":{"omnistate":{"modes":["light"]}},"color":{"$type":"color","intruder":{"$value":"#000000"}}}}"##,
+        ),
+        Kind::Workspace,
+    ),
+    case(
+        "GET",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/tokens",
+        None,
+        Kind::Workspace,
+    ),
+    case(
+        "GET",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/tokens",
+        None,
+        Kind::Workspace,
+    ),
 ];
 
 /// The WebSocket routes that the suite attacks, as the paths of
@@ -2606,6 +2626,119 @@ fn the_rebase_and_conflict_calls_of_the_attacks_work_for_the_workspace_that_owns
         "resolve the conflict",
     );
     assert_eq!(resolved["conflict"]["id"], conflict.as_str(), "{resolved}");
+}
+
+// ---------------------------------------------------------------------------
+// Design tokens (US-028)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn the_token_routes_are_in_the_registry_and_the_suite_attacks_them() {
+    for (method, path, access) in [
+        (
+            "PUT",
+            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/tokens",
+            Access::Agent,
+        ),
+        (
+            "GET",
+            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/tokens",
+            Access::Both,
+        ),
+        (
+            "GET",
+            "/api/v1/w/{workspace_id}/projects/{project_id}/tokens",
+            Access::Both,
+        ),
+    ] {
+        let entry = registry()
+            .into_iter()
+            .find(|r| r.method == method && r.path == path)
+            .unwrap_or_else(|| panic!("the registry has no route {method} {path}"));
+        assert_eq!(entry.access, access, "{method} {path}");
+        assert!(
+            matches!(case_for(&entry).kind, Kind::Workspace),
+            "{path} is a workspace route that the suite attacks"
+        );
+    }
+}
+
+#[test]
+fn the_token_calls_of_the_attacks_work_for_the_workspace_that_owns_the_records() {
+    // The control for the token routes: the owner's agent starts a design
+    // system in a project of its own, imports the tokens of the case's body
+    // and reads them back, and the human reads them too.
+    let (f, client) = ready();
+    let _guard = serial();
+    let key = Auth::Key(&f.a.key);
+    let human = Auth::Session(&f.a.token);
+    let body = json!({ "name": unique("owner-tokens") }).to_string();
+    let project = must(
+        call(
+            client,
+            "POST",
+            &format!("/api/v1/w/{}/projects", f.a.id),
+            &key,
+            Some(&body),
+        ),
+        201,
+        "create a project",
+    );
+    let project = project["project"]["id"].as_str().expect("an id");
+    let base = format!("/api/v1/w/{}/projects/{project}", f.a.id);
+    let body = json!({ "title": unique("owner-tokens") }).to_string();
+    let created = must(
+        call(
+            client,
+            "POST",
+            &format!("{base}/changesets"),
+            &key,
+            Some(&body),
+        ),
+        201,
+        "create a change set",
+    );
+    let changeset = created["changeset"]["id"].as_str().expect("an id");
+    let body = json!({ "kind": "design-system", "module": "ui", "title": unique("owner-tokens") })
+        .to_string();
+    must(
+        call(
+            client,
+            "POST",
+            &format!("{base}/changesets/{changeset}/docs"),
+            &key,
+            Some(&body),
+        ),
+        201,
+        "start the design system doc",
+    );
+    let import = case_named(
+        "PUT",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/tokens",
+    );
+    let tokens = format!("{base}/changesets/{changeset}/tokens");
+    let imported = must(
+        call(client, "PUT", &tokens, &key, import.body),
+        200,
+        "import the tokens",
+    );
+    assert_eq!(imported["modes"], json!(["light"]), "{imported}");
+    for auth in [&key, &human] {
+        let read = must(
+            call(client, "GET", &tokens, auth, None),
+            200,
+            "read the draft's tokens",
+        );
+        assert_eq!(
+            read["tokens"]["color"]["intruder"]["$value"], "#000000",
+            "{read}"
+        );
+        must(
+            call(client, "GET", &format!("{base}/tokens"), auth, None),
+            200,
+            "read the mainline tokens",
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
