@@ -20,6 +20,7 @@ mod identity;
 mod import;
 mod json;
 mod posts;
+mod thread_wait;
 mod threads;
 mod tokens;
 mod toml;
@@ -112,6 +113,9 @@ Usage:
   omni thread phase <thread> --open|--sealed
                                       start the thread's next phase, open or sealed; a thread
                                       keeps taking phases after its change set merged
+  omni thread digest <thread>         list the posts you may read, one line each: type, author
+                                      role, summary and post ID (a sealed phase hides the
+                                      posts of others until you have posted in it)
   omni post <thread> --type <type> --summary <text> [--body-file <path>] [--attach <file>]...
             [--link <target>]... [--confidence <0-1>] [--replaces <post>]
                                       post to a thread: a note, finding, position, objection,
@@ -125,9 +129,23 @@ Usage:
                                       human posts directives; one that is new to you comes
                                       with the answer to your next request in the change set
                                       and is printed on standard error
+  omni post show <post>               print one whole post: type, author role, summary, ID and
+                                      the Markdown body; a post you may not read yet is
+                                      reported as not found
   omni wait --changeset <id> --until approved|rejected|merged|needs_rebase [--timeout <s>]
                                       wait until the change set is approved (by the human),
                                       rejected, merged or needs a rebase; prints its status
+  omni wait --thread <id> --until <condition> [--timeout <s>]
+                                      wait on a thread; the conditions are
+                                        posts:<n>            n different agent identities have
+                                                             posted in the current phase (the
+                                                             last one when the wait began)
+                                        roles:<pattern>[,<pattern>...]
+                                                             every role pattern has posted in
+                                                             the current phase (* is a wildcard)
+                                        phase-change         a later phase has started
+                                        decision:approved    the human approved the decision
+                                        decision:rejected    the human rejected the decision
   omni claim <node> --changeset <id>  claim a board or section of the change set's draft, so
                                       that no other agent changes it; a claim lasts 10 minutes
                                       after your last operation in the draft
@@ -169,7 +187,8 @@ Options (before or after the command):
                         `omni tokens export` reads
   --out <path>          where `omni tokens export` writes: a file, or with --per-mode a directory
   --per-mode            `omni tokens export`: one file per mode
-  --until <status>      the status `omni wait` waits for
+  --until <status>      the status or condition `omni wait` waits for
+  --thread <id>         the thread that `omni wait` waits on, instead of a change set
   --timeout <seconds>   how long `omni wait` waits; without it, as long as it takes
   --json                print the full JSON instead of short text
   -h, --help            show this help
@@ -191,7 +210,8 @@ Exit codes:
   1  the command failed: usage, login, network or API error (the message says which)
   2  `omni wait` timed out before its condition was met
   3  `omni wait`: the condition can no longer be met (the change set is abandoned, or
-     merged while you wait for rejected or needs_rebase)
+     merged while you wait for rejected or needs_rebase; for a thread, a later phase has
+     started while posts: or roles: is not met, or the decision has the other status)
 ";
 
 fn main() -> ExitCode {

@@ -31,8 +31,8 @@ use crate::session::{
 };
 use crate::threads::{
     CreateDirectiveRequest, CreatePostRequest, CreateThreadRequest, DigestEntry, DigestResponse,
-    PhaseBody, PostBody, PostResponse, SinglePostResponse, StartPhaseRequest, ThreadBody,
-    ThreadResponse,
+    PhaseBody, PostBody, PostResponse, PosterBody, SinglePostResponse, StartPhaseRequest,
+    ThreadBody, ThreadResponse,
 };
 use crate::tokens::{
     DraftTokensResponse, ImportTokensRequest, InvalidTokensBody, MainlineTokensResponse,
@@ -181,6 +181,7 @@ use utoipa::OpenApi;
         ManifestPage,
         ManifestBoard,
         PhaseBody,
+        PosterBody,
         ThreadBody,
         ThreadResponse,
         CreateThreadRequest,

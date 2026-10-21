@@ -118,7 +118,11 @@ pub fn run(args: &Args) -> Result<()> {
         ["thread", "create"] => threads::create(args),
         ["thread", "phase"] => threads::phase(args, None),
         ["thread", "phase", thread] => threads::phase(args, Some(thread)),
-        ["thread", ..] => bail!("usage: omni thread create|phase; see `omni --help`"),
+        ["thread", "digest"] => threads::digest(args, None),
+        ["thread", "digest", thread] => threads::digest(args, Some(thread)),
+        ["thread", ..] => bail!("usage: omni thread create|phase|digest; see `omni --help`"),
+        ["post", "show"] => posts::show(args, None),
+        ["post", "show", post] => posts::show(args, Some(post)),
         ["post"] => posts::run(args, None),
         ["post", thread] => posts::run(args, Some(thread)),
         ["post", ..] => {

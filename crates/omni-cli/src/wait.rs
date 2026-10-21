@@ -9,6 +9,7 @@ use crate::changesets::{changeset_id, changesets_path, project_id, summary};
 use crate::commands::{agent, say};
 use crate::error::{CliError, Result, bail};
 use crate::json::Value;
+use crate::thread_wait;
 use std::time::{Duration, Instant};
 
 const USAGE: &str = "omni wait --changeset <id> --until approved|rejected|merged|needs_rebase [--timeout <seconds>]";
@@ -47,6 +48,9 @@ fn timeout(text: &str) -> Result<Duration> {
 
 /// `omni wait --changeset <id> --until <status> [--timeout <seconds>]`
 pub fn run(args: &Args) -> Result<()> {
+    if let Some(thread) = args.thread.as_deref() {
+        return thread_wait::run(args, thread);
+    }
     let Some(changeset) = args.changeset.as_deref() else {
         bail!("this command needs --changeset <id>: {USAGE}");
     };

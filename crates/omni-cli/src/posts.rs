@@ -26,6 +26,18 @@ const TYPES: [&str; 7] = [
     "verdict",
 ];
 const MAX_SUMMARY_CHARS: usize = 200;
+const SHOW_USAGE: &str = "omni post show <post>";
+
+/// The role of a post's author: `human` for the human's posts.
+pub(crate) fn role(post: &Value) -> &str {
+    let author = post.get("author");
+    match author.and_then(|author| author.str_at("kind")) {
+        Some("human") => "human",
+        _ => author
+            .and_then(|author| author.str_at("role"))
+            .unwrap_or("agent"),
+    }
+}
 
 /// The `--link` target as the JSON object the API takes.
 fn link(target: &str) -> Result<String> {
@@ -222,5 +234,68 @@ pub fn run(args: &Args, thread: Option<&str>) -> Result<()> {
         Some(id) => say(id),
         None => bail!("the server's answer has no post ID; try again"),
     }
+    Ok(())
+}
+
+/// `omni post show <post>`: prints one whole post, the header line, who and
+/// where it is from, and the Markdown body. A post that the caller may not
+/// read yet is as unknown as one that does not exist.
+pub fn show(args: &Args, post: Option<&str>) -> Result<()> {
+    let Some(post) = post else {
+        bail!("this command needs the post's ID: {SHOW_USAGE}");
+    };
+    if !is_uuid(post) {
+        bail!("{post:?} is not a post ID: {SHOW_USAGE}");
+    }
+    let post = post.to_ascii_lowercase();
+
+    let agent = agent(args)?;
+    let project = project_id(args, &agent)?;
+    let not_found = format!("not_found: no post {post} that you can read in this project");
+    let response = agent.request_or_not_found(
+        "GET",
+        &format!(
+            "/api/v1/w/{}/projects/{project}/posts/{post}",
+            agent.workspace_id
+        ),
+        None,
+        &not_found,
+    )?;
+    let text = response.text();
+    if args.json {
+        say(text.trim_end());
+        return Ok(());
+    }
+    let answer = Value::parse(&text).map_err(|_| {
+        CliError::new("the server's answer about the post is not readable; is it an OmniState API?")
+    })?;
+    let shown = answer.get("post").unwrap_or(&answer);
+    say(&format!(
+        "{}  {}  {}",
+        shown.str_at("type").unwrap_or("?"),
+        role(shown),
+        shown.str_at("summary").unwrap_or_default()
+    ));
+    say(&format!("id: {}", shown.str_at("id").unwrap_or("?")));
+    if let Some(Value::Number(n)) = shown.get("phase") {
+        say(&format!("phase: {n}"));
+    }
+    if let Some(Value::Number(n)) = shown.get("confidence") {
+        say(&format!("confidence: {n}"));
+    }
+    if let Some(replaces) = shown.str_at("replaces") {
+        say(&format!("replaces: {replaces}"));
+    }
+    for field in ["links", "attachments"] {
+        for item in shown
+            .get(field)
+            .and_then(Value::as_array)
+            .unwrap_or_default()
+        {
+            say(&format!("{}: {item}", field.trim_end_matches('s')));
+        }
+    }
+    say("");
+    say(shown.str_at("body").unwrap_or_default());
     Ok(())
 }

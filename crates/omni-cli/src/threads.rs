@@ -11,6 +11,7 @@ use crate::json::{Value, quote};
 const CREATE_USAGE: &str =
     "omni thread create --changeset <id> --question <text> --criteria-file <path> [--sealed]";
 const PHASE_USAGE: &str = "omni thread phase <thread> --open|--sealed";
+const DIGEST_USAGE: &str = "omni thread digest <thread>";
 
 /// `open` or `sealed`: what a phase of the answer's thread is.
 fn kind(phase: &Value) -> &'static str {
@@ -140,5 +141,56 @@ fn answer(args: &Args, text: &str, line: impl Fn(&Value, &Value) -> String) -> R
         .and_then(<[Value]>::last)
         .ok_or_else(unreadable)?;
     say(&line(thread, phase));
+    Ok(())
+}
+
+/// `omni thread digest <thread>`: one line for each post the caller may read,
+/// oldest first: its type, its author's role, its summary and its ID. It reads
+/// nothing but the digest, the cheap view of a thread.
+pub fn digest(args: &Args, thread: Option<&str>) -> Result<()> {
+    let Some(thread) = thread else {
+        bail!("this command needs the thread's ID: {DIGEST_USAGE}");
+    };
+    if !is_uuid(thread) {
+        bail!("{thread:?} is not a thread ID: {DIGEST_USAGE}");
+    }
+    let thread = thread.to_ascii_lowercase();
+
+    let agent = agent(args)?;
+    let project = project_id(args, &agent)?;
+    let not_found = format!("not_found: no thread {thread} in this project");
+    let response = agent.request_or_not_found(
+        "GET",
+        &format!(
+            "/api/v1/w/{}/projects/{project}/threads/{thread}/digest",
+            agent.workspace_id
+        ),
+        None,
+        &not_found,
+    )?;
+    let text = response.text();
+    if args.json {
+        say(text.trim_end());
+        return Ok(());
+    }
+    let unreadable = || {
+        CliError::new(
+            "the server's answer about the thread is not readable; is it an OmniState API?",
+        )
+    };
+    let body = Value::parse(&text).map_err(|_| unreadable())?;
+    let posts = body
+        .get("posts")
+        .and_then(Value::as_array)
+        .ok_or_else(unreadable)?;
+    for post in posts {
+        say(&format!(
+            "{}  {}  {}  {}",
+            post.str_at("type").unwrap_or("?"),
+            crate::posts::role(post),
+            post.str_at("summary").unwrap_or_default(),
+            post.str_at("id").unwrap_or("?")
+        ));
+    }
     Ok(())
 }

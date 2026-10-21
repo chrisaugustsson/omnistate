@@ -32,6 +32,8 @@ pub struct Args {
     /// the command.
     pub until: Option<String>,
     pub timeout: Option<String>,
+    /// `omni wait --thread <id>`: wait on a thread instead of a change set.
+    pub thread: Option<String>,
     /// `omni doc read --version <v>`, `omni design read --version <v>` and
     /// `omni tokens export --version <v>`: the version to read. Everywhere else `--version` is the bare flag that
     /// shows the version of omni.
@@ -150,6 +152,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Args> {
             "--module" => &mut parsed.module,
             "--until" => &mut parsed.until,
             "--timeout" => &mut parsed.timeout,
+            "--thread" => &mut parsed.thread,
             // Rejecting is the human's, whatever options it is tried with:
             // the command itself explains that.
             _ if parsed

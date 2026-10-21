@@ -74,6 +74,19 @@ pub struct PhaseBody {
     /// not posted in it yet (US-034); an open phase does not.
     pub sealed: bool,
     pub started_at: String,
+    /// The distinct agent identities that have posted in this phase, in the
+    /// order of their first post there. Told to every caller, also in a
+    /// sealed phase: it says who has posted, never what (US-036). The human is
+    /// never in it.
+    #[sqlx(skip)]
+    pub posted_by: Vec<PosterBody>,
+}
+
+/// An agent identity that has posted in a phase.
+#[derive(Serialize, ToSchema, sqlx::FromRow)]
+pub struct PosterBody {
+    pub run: Option<String>,
+    pub role: Option<String>,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -89,6 +102,10 @@ pub struct ThreadBody {
     pub created_at: String,
     /// The phases, oldest first.
     pub phases: Vec<PhaseBody>,
+    /// The thread's current decision, with at least its `id` and `status`;
+    /// `null` while the thread has none (US-037 makes decisions).
+    #[schema(value_type = Option<Object>)]
+    pub decision: Option<Value>,
     /// The posts the caller may read, oldest first. Only in the answer to a
     /// read of the thread; an agent does not get what a sealed phase hides.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -428,13 +445,30 @@ async fn phases_of(
     tx: &mut Transaction<'static, Postgres>,
     thread_id: &str,
 ) -> Result<Vec<PhaseBody>, ApiError> {
-    sqlx::query_as(&format!(
+    let mut phases: Vec<PhaseBody> = sqlx::query_as(&format!(
         "SELECT {PHASE_COLUMNS} FROM thread_phases WHERE thread_id = $1::uuid ORDER BY number"
     ))
     .bind(thread_id)
     .fetch_all(&mut **tx)
     .await
-    .map_err(ApiError::database)
+    .map_err(ApiError::database)?;
+    // Whoever posted, whatever the viewer may read: the identities only.
+    let posters: Vec<(i32, Option<String>, Option<String>)> = sqlx::query_as(
+        "SELECT p.phase, p.author->>'run', p.author->>'role' FROM posts p \
+         WHERE p.thread_id = $1::uuid AND p.author->>'kind' = 'agent' \
+         GROUP BY p.phase, p.author->>'run', p.author->>'role' \
+         ORDER BY p.phase, min(p.created_at), min(p.id::text)",
+    )
+    .bind(thread_id)
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(ApiError::database)?;
+    for (number, run, role) in posters {
+        if let Some(phase) = phases.iter_mut().find(|phase| phase.number == number) {
+            phase.posted_by.push(PosterBody { run, role });
+        }
+    }
+    Ok(phases)
 }
 
 /// The thread as the API answers it, 404 unless the project has it. With
@@ -474,6 +508,7 @@ async fn load_thread(
         run_tag: row.run_tag,
         created_at: row.created_at,
         phases,
+        decision: None,
         posts: None,
     })
 }
