@@ -282,6 +282,12 @@ const CASES: &[Case] = &[
         Kind::Workspace,
     ),
     case(
+        "GET",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}/versions",
+        None,
+        Kind::Workspace,
+    ),
+    case(
         "POST",
         "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs/{doc_id}/open",
         None,

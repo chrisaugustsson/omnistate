@@ -34,9 +34,9 @@ blake3 = "1"
 # tests/versions.rs, tests/approve_merge.rs, tests/rebase.rs, tests/tokens.rs,
 # tests/boards.rs, tests/design_edits.rs, tests/threads.rs, tests/posts.rs,
 # tests/sealed_phases.rs, tests/thread_waits.rs, tests/decisions.rs,
-# tests/comments.rs, tests/project_home.rs, tests/stack_auth.rs) talk to
-# Postgres and the running Compose stack, so they only build with this feature,
-# which the Compose test container turns on.
+# tests/comments.rs, tests/project_home.rs, tests/doc_versions.rs,
+# tests/stack_auth.rs) talk to Postgres and the running Compose stack, so they
+# only build with this feature, which the Compose test container turns on.
 stack-tests = []
 
 [[test]]
@@ -137,4 +137,8 @@ required-features = ["stack-tests"]
 
 [[test]]
 name = "project_home"
+required-features = ["stack-tests"]
+
+[[test]]
+name = "doc_versions"
 required-features = ["stack-tests"]
