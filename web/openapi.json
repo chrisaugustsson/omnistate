@@ -2781,6 +2781,66 @@
         ],
         "type": "object"
       },
+      "VersionItem": {
+        "description": "A version in a doc's list: the version without its node index.",
+        "properties": {
+          "agent": {
+            "description": "`{\"run\", \"role\", \"model\", \"harness\"}`, as the agent declared them.",
+            "type": "object"
+          },
+          "changeset_id": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "doc_id": {
+            "type": "string"
+          },
+          "draft_id": {
+            "description": "The draft that was saved.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "removed": {
+            "description": "Whether this version marks the doc as removed.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "doc_id",
+          "changeset_id",
+          "removed",
+          "created_at",
+          "agent"
+        ],
+        "type": "object"
+      },
+      "VersionListResponse": {
+        "properties": {
+          "doc_id": {
+            "type": "string"
+          },
+          "versions": {
+            "description": "Every saved version of the doc in every change set, oldest first.",
+            "items": {
+              "$ref": "#/components/schemas/VersionItem"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "doc_id",
+          "versions"
+        ],
+        "type": "object"
+      },
       "VersionResponse": {
         "properties": {
           "version": {
@@ -7957,6 +8017,77 @@
         "summary": "A doc's mainline version as HTML with `data-node-id`, or the version named\nby `?version=` (a version has no `data-rev`). A doc that has no mainline\nversion gives no version and no HTML.",
         "tags": [
           "crate::docs"
+        ],
+        "x-omni-access": "both"
+      }
+    },
+    "/api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}/versions": {
+      "get": {
+        "operationId": "list_versions",
+        "parameters": [
+          {
+            "description": "The workspace's UUID",
+            "in": "path",
+            "name": "workspace_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The project's UUID",
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The doc's UUID",
+            "in": "path",
+            "name": "doc_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VersionListResponse"
+                }
+              }
+            },
+            "description": "The doc's versions, without their nodes"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No valid API key or session"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No such doc in this project and workspace"
+          }
+        },
+        "summary": "Every saved version of a doc, in every change set and the removal of the\ndoc included, oldest first.",
+        "tags": [
+          "crate::versions"
         ],
         "x-omni-access": "both"
       }

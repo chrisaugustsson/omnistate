@@ -782,6 +782,23 @@ export const VersionBodySchema = z.object({
 });
 export type VersionBody = z.infer<typeof VersionBodySchema>;
 
+export const VersionItemSchema = z.object({
+  agent: z.record(z.string(), z.unknown()),
+  changeset_id: z.string(),
+  created_at: z.string(),
+  doc_id: z.string(),
+  draft_id: z.string().nullable().optional(),
+  id: z.string(),
+  removed: z.boolean(),
+});
+export type VersionItem = z.infer<typeof VersionItemSchema>;
+
+export const VersionListResponseSchema = z.object({
+  doc_id: z.string(),
+  versions: z.array(VersionItemSchema),
+});
+export type VersionListResponse = z.infer<typeof VersionListResponseSchema>;
+
 export const VersionResponseSchema = z.object({
   version: VersionBodySchema,
 });
@@ -908,6 +925,8 @@ export const schemas = {
   UserBody: UserBodySchema,
   UserResponse: UserResponseSchema,
   VersionBody: VersionBodySchema,
+  VersionItem: VersionItemSchema,
+  VersionListResponse: VersionListResponseSchema,
   VersionResponse: VersionResponseSchema,
   WaitingBody: WaitingBodySchema,
   WhoamiResponse: WhoamiResponseSchema,
@@ -1368,6 +1387,13 @@ export const operations = {
   "GET /api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}/html": {
     responses: {
       "200": MainlineHtmlResponseSchema,
+      "401": ErrorBodySchema,
+      "404": ErrorBodySchema,
+    },
+  },
+  "GET /api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}/versions": {
+    responses: {
+      "200": VersionListResponseSchema,
       "401": ErrorBodySchema,
       "404": ErrorBodySchema,
     },

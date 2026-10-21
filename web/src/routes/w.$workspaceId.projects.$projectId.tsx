@@ -128,6 +128,7 @@ function WaitingList({ title, items }: { title: string; items: { id: string; tex
 }
 
 function Docs({ docs }: { docs: DocBody[] }) {
+  const { workspaceId, projectId } = Route.useParams();
   return (
     <Section id="docs" title="Docs">
       {docs.length === 0 && <Empty>The project has no docs yet.</Empty>}
@@ -143,7 +144,13 @@ function Docs({ docs }: { docs: DocBody[] }) {
             <ul className="mt-1 divide-y rounded-md border">
               {inModule.map((doc) => (
                 <li key={doc.id} className="px-4 py-2 text-sm">
-                  {doc.title}
+                  <Link
+                    to="/w/$workspaceId/projects/$projectId/docs/$docId"
+                    params={{ workspaceId, projectId, docId: doc.id }}
+                    className="underline-offset-4 hover:underline"
+                  >
+                    {doc.title}
+                  </Link>
                 </li>
               ))}
             </ul>

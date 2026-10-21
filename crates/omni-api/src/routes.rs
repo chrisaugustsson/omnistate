@@ -161,6 +161,11 @@ pub fn registry() -> Vec<RouteEntry> {
         ),
         (
             "GET",
+            "/api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}/versions",
+            Access::Both,
+        ),
+        (
+            "GET",
             "/api/v1/w/{workspace_id}/projects/{project_id}/versions/{version_id}",
             Access::Both,
         ),

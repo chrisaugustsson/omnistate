@@ -23,7 +23,9 @@ use crate::boards::{self, Manifest};
 use crate::changesets::{clear_approval, parse_body};
 use crate::comments;
 use crate::design;
-use crate::docs::{AgentIdentity, DraftRow, Tx, current_draft, ensure_loaded, find_draft};
+use crate::docs::{
+    AgentIdentity, DraftRow, Tx, current_draft, ensure_loaded, find_doc, find_draft,
+};
 use crate::live;
 use crate::session::{ApiError, ErrorBody};
 use crate::workspace::{AgentRequest, WorkspaceRequest, parse_uuid, sha256_hex};
@@ -101,6 +103,29 @@ pub struct VersionBody {
 #[derive(Serialize, ToSchema)]
 pub struct VersionResponse {
     pub version: VersionBody,
+}
+
+/// A version in a doc's list: the version without its node index.
+#[derive(Serialize, ToSchema)]
+pub struct VersionItem {
+    pub id: String,
+    pub doc_id: String,
+    pub changeset_id: String,
+    /// The draft that was saved.
+    pub draft_id: Option<String>,
+    /// Whether this version marks the doc as removed.
+    pub removed: bool,
+    pub created_at: String,
+    /// `{"run", "role", "model", "harness"}`, as the agent declared them.
+    #[schema(value_type = Object)]
+    pub agent: Value,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct VersionListResponse {
+    pub doc_id: String,
+    /// Every saved version of the doc in every change set, oldest first.
+    pub versions: Vec<VersionItem>,
 }
 
 /// A node whose place differs: it moved to another parent, or its order among
@@ -903,6 +928,59 @@ pub async fn show_version(
         version.components = Some(view.components);
     }
     Ok(Json(VersionResponse { version }))
+}
+
+/// Every saved version of a doc, in every change set and the removal of the
+/// doc included, oldest first.
+#[utoipa::path(
+    get,
+    path = "/api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}/versions",
+    params(
+        ("workspace_id" = String, Path, description = "The workspace's UUID"),
+        ("project_id" = String, Path, description = "The project's UUID"),
+        ("doc_id" = String, Path, description = "The doc's UUID"),
+    ),
+    responses(
+        (status = 200, description = "The doc's versions, without their nodes", body = VersionListResponse),
+        (status = 401, description = "No valid API key or session", body = ErrorBody),
+        (status = 404, description = "No such doc in this project and workspace", body = ErrorBody),
+    )
+)]
+pub async fn list_versions(
+    State(state): State<AppState>,
+    request: WorkspaceRequest,
+    Path((_, project_id, doc_id)): Path<(String, String, String)>,
+) -> Result<Json<VersionListResponse>, ApiError> {
+    let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
+    let doc_id = parse_uuid(&doc_id).ok_or(ApiError::NotFound)?;
+    let mut tx = state.workspace_tx(&request.workspace_id).await?;
+    let doc = find_doc(&mut tx, &project_id, &doc_id).await?;
+    let rows: Vec<VersionRow> = sqlx::query_as(&format!(
+        "SELECT {VERSION_COLUMNS} FROM versions v \
+         JOIN docs d ON d.workspace_id = v.workspace_id AND d.id = v.doc_id \
+         WHERE v.doc_id = $1::uuid ORDER BY v.created_at, v.id"
+    ))
+    .bind(&doc.id)
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(ApiError::database)?;
+    tx.commit().await.map_err(ApiError::database)?;
+    let versions = rows
+        .into_iter()
+        .map(|row| VersionItem {
+            id: row.id,
+            doc_id: row.doc_id,
+            changeset_id: row.changeset_id,
+            draft_id: row.draft_id,
+            removed: row.removed,
+            created_at: row.created_at,
+            agent: serde_json::from_str(&row.agent).unwrap_or(Value::Null),
+        })
+        .collect();
+    Ok(Json(VersionListResponse {
+        doc_id: doc.id,
+        versions,
+    }))
 }
 
 /// What differs between two versions of one doc, from the first to the second:

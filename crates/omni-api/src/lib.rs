@@ -362,6 +362,10 @@ pub fn router(state: AppState) -> Router {
             post(versions::remove_doc),
         )
         .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}/versions",
+            get(versions::list_versions),
+        )
+        .route(
             "/api/v1/w/{workspace_id}/projects/{project_id}/versions/{version_id}",
             get(versions::show_version),
         )

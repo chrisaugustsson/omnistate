@@ -47,7 +47,8 @@ use crate::tokens::{
     DraftTokensResponse, ImportTokensRequest, InvalidTokensBody, MainlineTokensResponse,
 };
 use crate::versions::{
-    DiffBody, DiffResponse, MovedNode, NodeEntry, SaveVersionRequest, VersionBody, VersionResponse,
+    DiffBody, DiffResponse, MovedNode, NodeEntry, SaveVersionRequest, VersionBody, VersionItem,
+    VersionListResponse, VersionResponse,
 };
 use crate::workspace::{ActorBody, WhoamiResponse};
 use axum::Json;
@@ -98,6 +99,7 @@ use utoipa::OpenApi;
         crate::claims::release_claim,
         crate::versions::save_version,
         crate::versions::remove_doc,
+        crate::versions::list_versions,
         crate::versions::show_version,
         crate::versions::diff_versions,
         crate::tokens::import_tokens,
@@ -181,6 +183,8 @@ use utoipa::OpenApi;
         NodeEntry,
         VersionBody,
         VersionResponse,
+        VersionItem,
+        VersionListResponse,
         MovedNode,
         DiffBody,
         DiffResponse,
