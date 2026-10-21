@@ -234,6 +234,11 @@ pub fn registry() -> Vec<RouteEntry> {
             "/api/v1/w/{workspace_id}/projects/{project_id}/threads/{thread_id}/posts",
             Access::Both,
         ),
+        (
+            "POST",
+            "/api/v1/w/{workspace_id}/projects/{project_id}/threads/{thread_id}/directives",
+            Access::Human,
+        ),
     ]
     .into_iter()
     .map(|(method, path, access)| RouteEntry {

@@ -312,6 +312,11 @@ impl AgentIdentity {
         self.run.as_deref()
     }
 
+    /// The role the agent declares, `None` when it declares none.
+    pub(crate) fn role(&self) -> Option<&str> {
+        self.role.as_deref()
+    }
+
     pub(crate) fn to_json(&self) -> Value {
         json!({
             "run": self.run,

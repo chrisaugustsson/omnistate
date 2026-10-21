@@ -19,6 +19,7 @@ mod http;
 mod identity;
 mod import;
 mod json;
+mod posts;
 mod threads;
 mod tokens;
 mod toml;
@@ -111,6 +112,19 @@ Usage:
   omni thread phase <thread> --open|--sealed
                                       start the thread's next phase, open or sealed; a thread
                                       keeps taking phases after its change set merged
+  omni post <thread> --type <type> --summary <text> [--body-file <path>] [--attach <file>]...
+            [--link <target>]... [--confidence <0-1>] [--replaces <post>]
+                                      post to a thread: a note, finding, position, objection,
+                                      support, question or verdict with a one-line summary
+                                      (at most 200 characters) and a Markdown body, read from
+                                      --body-file or standard input; prints the post's ID.
+                                      Each --attach uploads a file first; a --link is
+                                      post:<id>, attachment:<id>, node:<doc>/<address> or an
+                                      http(s) address; --replaces names your earlier post in
+                                      the thread. Posts are never edited or deleted. Only the
+                                      human posts directives; one that is new to you comes
+                                      with the answer to your next request in the change set
+                                      and is printed on standard error
   omni wait --changeset <id> --until approved|rejected|merged|needs_rebase [--timeout <s>]
                                       wait until the change set is approved (by the human),
                                       rejected, merged or needs a rebase; prints its status
@@ -139,6 +153,13 @@ Options (before or after the command):
                         the file with the thread's criteria, one per line
   --open, --sealed      whether a thread's first phase (`--sealed` only) or its next
                         phase (`omni thread phase`) is open or sealed
+  --type <type>         the type of the post that `omni post` makes
+  --summary <text>      the one-line summary of the post
+  --attach <file>       a file that `omni post` uploads and attaches (repeat for more)
+  --link <target>       what a post points to: post:<id>, attachment:<id>,
+                        node:<doc>/<address> or an http(s) address (repeat for more)
+  --confidence <n>      how sure the post is, from 0 to 1
+  --replaces <post>     your earlier post in the thread that this one replaces
   --note <text>         how a conflict was resolved (`omni changeset resolve`)
   --changeset <id>      the change set a doc, design edit, tokens, claim, release or wait command works in
   --doc <id>            the design doc that `omni design read` reads or `omni design edit` edits

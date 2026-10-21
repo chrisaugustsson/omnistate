@@ -14,6 +14,7 @@ mod changesets;
 mod claims;
 pub mod delete_workspace;
 mod design;
+mod directives;
 mod docs;
 mod live;
 mod openapi;
@@ -413,8 +414,16 @@ pub fn router(state: AppState) -> Router {
             "/api/v1/w/{workspace_id}/projects/{project_id}/threads/{thread_id}/posts",
             post(threads::create_post),
         )
+        .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/threads/{thread_id}/directives",
+            post(threads::create_directive),
+        )
         .route("/ws/w/{workspace_id}", get(live::socket))
         .fallback(not_found)
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            directives::attach,
+        ))
         .layer(middleware::from_fn(harden))
         .with_state(state)
 }

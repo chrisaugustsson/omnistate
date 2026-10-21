@@ -7,23 +7,26 @@
 //! and starting a later phase emits `phase.started`; the thread's first phase
 //! is announced by `thread.created` itself.
 //!
-//! The post route here is the smallest one that lets a thread take posts: it
-//! records a post in the thread's current phase. The rules of a post (types,
-//! sealed phases, what an agent may see) come with US-034.
+//! A thread takes posts (US-034): typed messages with a one-line summary and a
+//! Markdown body, recorded in the thread's current phase and never edited or
+//! deleted. Only the human posts directives, on a route of its own. What an
+//! agent may see of a sealed phase comes with the stories that read posts.
 
 use crate::AppState;
 use crate::changesets::{non_blank, parse_body};
 use crate::docs::AgentIdentity;
 use crate::live;
 use crate::session::{ApiError, ErrorBody};
-use crate::workspace::{Actor, AgentRequest, WorkspaceRequest, parse_uuid};
+use crate::workspace::{Actor, AgentRequest, HumanRequest, WorkspaceRequest, parse_uuid};
 use axum::Json;
 use axum::body::Bytes;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
+use omni_core::design::NodeId;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sqlx::{Postgres, Transaction};
+use std::str::FromStr;
 use utoipa::ToSchema;
 
 /// A timestamp column as ISO 8601 text in UTC.
@@ -39,6 +42,21 @@ macro_rules! timestamp {
 
 /// The longest summary of a post, in characters.
 const MAX_SUMMARY_CHARS: usize = 200;
+/// The post types, as written. `directive` is the human's.
+const POST_TYPES: [&str; 8] = [
+    "note",
+    "finding",
+    "position",
+    "objection",
+    "support",
+    "question",
+    "directive",
+    "verdict",
+];
+/// How many links, and how many attachments, one post may carry.
+const MAX_REFERENCES: usize = 100;
+/// The longest web address in a link, in characters.
+const MAX_URL_CHARS: usize = 2048;
 
 /// One phase of a thread.
 #[derive(Serialize, ToSchema, sqlx::FromRow)]
@@ -89,32 +107,123 @@ pub struct StartPhaseRequest {
 
 #[derive(Deserialize, ToSchema)]
 pub struct CreatePostRequest {
-    /// The kind of post; required.
+    /// The kind of post: `note`, `finding`, `position`, `objection`, `support`,
+    /// `question`, `directive` or `verdict`; required. Only the human posts a
+    /// `directive`.
     #[serde(rename = "type")]
     pub kind: Option<String>,
     /// One line of at most 200 characters; required.
     pub summary: Option<String>,
     /// The Markdown text; required.
     pub body: Option<String>,
+    /// What the post points to, in order: `{"kind": "post", "post_id"}` (a post
+    /// of the project), `{"kind": "url", "url"}` (an http or https address),
+    /// `{"kind": "node", "doc_id", "address"}` (a doc of the project and a
+    /// node address) and `{"kind": "attachment", "attachment_id"}`. Defaults
+    /// to none.
+    #[schema(value_type = Option<Vec<Object>>)]
+    pub links: Option<Vec<Value>>,
+    /// IDs of the workspace's attachments, in order. Defaults to none.
+    pub attachments: Option<Vec<String>>,
+    /// How sure the author is, from 0 to 1.
+    pub confidence: Option<f64>,
+    /// The earlier post of this thread by the same author (an agent's run and
+    /// role) that this one replaces. That post stays as it was.
+    pub replaces: Option<String>,
 }
 
-#[derive(Serialize, ToSchema, sqlx::FromRow)]
+#[derive(Deserialize, ToSchema)]
+pub struct CreateDirectiveRequest {
+    /// One line of at most 200 characters; required.
+    pub summary: Option<String>,
+    /// The Markdown text; required.
+    pub body: Option<String>,
+    /// As for a post.
+    #[schema(value_type = Option<Vec<Object>>)]
+    pub links: Option<Vec<Value>>,
+    /// As for a post.
+    pub attachments: Option<Vec<String>>,
+}
+
+#[derive(Serialize, ToSchema)]
 pub struct PostBody {
     pub id: String,
     pub thread_id: String,
     /// The number of the thread's phase that the post was made in.
     pub phase: i32,
     #[serde(rename = "type")]
-    #[sqlx(rename = "type")]
     pub kind: String,
+    /// `{"kind": "agent", "run", "role", "model", "harness"}` for an agent
+    /// (each `null` when the request did not say), or `{"kind": "human",
+    /// "user_id"}`.
+    #[schema(value_type = Object)]
+    pub author: Value,
     pub summary: String,
+    /// The Markdown as it was sent.
     pub body: String,
+    /// The body rendered to HTML with raw HTML switched off, links only to
+    /// http, https and mailto, and images only from `attachment:<id>`.
+    pub body_html: String,
+    #[schema(value_type = Vec<Object>)]
+    pub links: Vec<Value>,
+    pub attachments: Vec<String>,
+    pub confidence: Option<f64>,
+    pub replaces: Option<String>,
     pub created_at: String,
 }
 
 #[derive(Serialize, ToSchema)]
 pub struct PostResponse {
     pub post: PostBody,
+}
+
+#[derive(sqlx::FromRow)]
+pub(crate) struct PostRow {
+    id: String,
+    thread_id: String,
+    phase: i32,
+    #[sqlx(rename = "type")]
+    kind: String,
+    author: String,
+    summary: String,
+    body: String,
+    links: String,
+    attachments: String,
+    confidence: Option<f64>,
+    replaces: Option<String>,
+    created_at: String,
+}
+
+impl PostRow {
+    /// The post as the API answers it, its body rendered.
+    pub(crate) fn into_body(self) -> Result<PostBody, ApiError> {
+        let unreadable = |what: &str, error: serde_json::Error| {
+            eprintln!(
+                "omni-api: the {what} of post {} are unreadable: {error}",
+                self.id
+            );
+            ApiError::Unavailable
+        };
+        let author = serde_json::from_str(&self.author).map_err(|e| unreadable("author", e))?;
+        let links = serde_json::from_str(&self.links).map_err(|e| unreadable("links", e))?;
+        let attachments =
+            serde_json::from_str(&self.attachments).map_err(|e| unreadable("attachments", e))?;
+        Ok(PostBody {
+            id: self.id,
+            thread_id: self.thread_id,
+            phase: self.phase,
+            kind: self.kind,
+            author,
+            summary: self.summary,
+            body_html: omni_core::markdown::render(&self.body),
+            body: self.body,
+            links,
+            attachments,
+            confidence: self.confidence,
+            replaces: self.replaces,
+            created_at: self.created_at,
+        })
+    }
 }
 
 #[derive(sqlx::FromRow)]
@@ -140,8 +249,9 @@ const PHASE_COLUMNS: &str = concat!(
     " AS started_at"
 );
 
-const POST_COLUMNS: &str = concat!(
-    "id::text, thread_id::text, phase, type, summary, body, ",
+pub(crate) const POST_COLUMNS: &str = concat!(
+    "id::text, thread_id::text, phase, type, author::text, summary, body, links::text, \
+     attachments::text, confidence, replaces::text, ",
     timestamp!("created_at"),
     " AS created_at"
 );
@@ -393,6 +503,277 @@ pub async fn start_phase(
     Ok((StatusCode::CREATED, Json(ThreadResponse { thread })))
 }
 
+/// Who writes a post.
+enum Author {
+    Agent(AgentIdentity),
+    Human(String),
+}
+
+impl Author {
+    fn json(&self) -> Value {
+        match self {
+            Self::Agent(identity) => {
+                let mut author = identity.to_json();
+                author["kind"] = json!("agent");
+                author
+            }
+            Self::Human(user_id) => json!({ "kind": "human", "user_id": user_id }),
+        }
+    }
+}
+
+/// A post whose fields have the right form; what it points to is still to be
+/// looked up.
+struct Checked {
+    kind: String,
+    summary: String,
+    body: String,
+    links: Vec<Value>,
+    attachments: Vec<String>,
+    confidence: Option<f64>,
+    replaces: Option<String>,
+}
+
+fn invalid() -> ApiError {
+    ApiError::bad_request("invalid_request")
+}
+
+/// A web address that a link may point to: http or https.
+fn web_address(url: &str) -> bool {
+    let lower = url.to_ascii_lowercase();
+    ["http://", "https://"]
+        .iter()
+        .any(|scheme| lower.starts_with(scheme) && lower.len() > scheme.len())
+        && url.chars().count() <= MAX_URL_CHARS
+        && !url.chars().any(|c| c.is_control() || c.is_whitespace())
+}
+
+/// A node address: a node ID, or `<instanceId>/<componentNodeId>`. Only its
+/// form is checked, since the node may be in any version.
+fn node_address(address: &str) -> bool {
+    let mut parts = address.split('/');
+    let (first, second) = (parts.next(), parts.next());
+    first.is_some_and(|id| NodeId::from_str(id).is_ok())
+        && second.is_none_or(|id| NodeId::from_str(id).is_ok())
+        && parts.next().is_none()
+}
+
+/// The link in the form it is kept in, `None` when it is not one of the four
+/// kinds with exactly their fields.
+fn checked_link(link: &Value) -> Option<Value> {
+    let object = link.as_object()?;
+    let text = |key: &str| object.get(key)?.as_str();
+    match (text("kind")?, object.len()) {
+        ("post", 2) => Some(json!({ "kind": "post", "post_id": parse_uuid(text("post_id")?)? })),
+        ("url", 2) => {
+            let url = text("url")?;
+            web_address(url).then(|| json!({ "kind": "url", "url": url }))
+        }
+        ("node", 3) => {
+            let doc_id = parse_uuid(text("doc_id")?)?;
+            let address = text("address")?;
+            node_address(address)
+                .then(|| json!({ "kind": "node", "doc_id": doc_id, "address": address }))
+        }
+        ("attachment", 2) => Some(
+            json!({ "kind": "attachment", "attachment_id": parse_uuid(text("attachment_id")?)? }),
+        ),
+        _ => None,
+    }
+}
+
+fn check(new: CreatePostRequest) -> Result<Checked, ApiError> {
+    let kind = new
+        .kind
+        .filter(|kind| POST_TYPES.contains(&kind.as_str()))
+        .ok_or_else(invalid)?;
+    let summary = non_blank(new.summary)
+        .filter(|summary| {
+            summary.chars().count() <= MAX_SUMMARY_CHARS
+                && !summary.contains(['\n', '\r', '\u{85}', '\u{2028}', '\u{2029}'])
+        })
+        .ok_or_else(invalid)?;
+    let body = new.body.ok_or_else(invalid)?;
+    let links = new.links.unwrap_or_default();
+    let attachments = new.attachments.unwrap_or_default();
+    if links.len() > MAX_REFERENCES || attachments.len() > MAX_REFERENCES {
+        return Err(invalid());
+    }
+    let links = links
+        .iter()
+        .map(|link| checked_link(link).ok_or_else(invalid))
+        .collect::<Result<Vec<_>, _>>()?;
+    let attachments = attachments
+        .iter()
+        .map(|id| parse_uuid(id).ok_or_else(invalid))
+        .collect::<Result<Vec<_>, _>>()?;
+    let confidence = match new.confidence {
+        Some(confidence) if !(0.0..=1.0).contains(&confidence) => return Err(invalid()),
+        confidence => confidence,
+    };
+    let replaces = new
+        .replaces
+        .map(|id| parse_uuid(&id).ok_or_else(invalid))
+        .transpose()?;
+    Ok(Checked {
+        kind,
+        summary,
+        body,
+        links,
+        attachments,
+        confidence,
+        replaces,
+    })
+}
+
+/// Whether the one-column query `sql` finds a row for the ID (and the project,
+/// when it is given).
+async fn found(
+    tx: &mut Transaction<'static, Postgres>,
+    sql: &str,
+    id: &str,
+    project_id: Option<&str>,
+) -> Result<bool, ApiError> {
+    let query = sqlx::query_scalar(sql).bind(id);
+    let query = match project_id {
+        Some(project_id) => query.bind(project_id),
+        None => query,
+    };
+    query.fetch_one(&mut **tx).await.map_err(ApiError::database)
+}
+
+const POST_IN_PROJECT: &str = "SELECT EXISTS (SELECT 1 FROM posts p \
+     JOIN threads t ON t.workspace_id = p.workspace_id AND t.id = p.thread_id \
+     WHERE p.id = $1::uuid AND t.project_id = $2::uuid)";
+const DOC_IN_PROJECT: &str =
+    "SELECT EXISTS (SELECT 1 FROM docs WHERE id = $1::uuid AND project_id = $2::uuid)";
+const ATTACHMENT_IN_WORKSPACE: &str =
+    "SELECT EXISTS (SELECT 1 FROM attachments WHERE id = $1::uuid)";
+
+/// Checks that what the post points to exists: the posts and docs in its
+/// project, the attachments in its workspace, and the post it replaces in its
+/// thread by the same author.
+async fn check_references(
+    tx: &mut Transaction<'static, Postgres>,
+    project_id: &str,
+    thread_id: &str,
+    author: &Author,
+    post: &Checked,
+) -> Result<(), ApiError> {
+    for link in &post.links {
+        let target = match link["kind"].as_str() {
+            Some("post") => Some((POST_IN_PROJECT, &link["post_id"], Some(project_id))),
+            Some("node") => Some((DOC_IN_PROJECT, &link["doc_id"], Some(project_id))),
+            Some("attachment") => Some((ATTACHMENT_IN_WORKSPACE, &link["attachment_id"], None)),
+            // A web address names nothing of ours.
+            _ => None,
+        };
+        if let Some((sql, id, project)) = target {
+            let id = id.as_str().ok_or_else(invalid)?;
+            if !found(tx, sql, id, project).await? {
+                return Err(invalid());
+            }
+        }
+    }
+    for id in &post.attachments {
+        if !found(tx, ATTACHMENT_IN_WORKSPACE, id, None).await? {
+            return Err(invalid());
+        }
+    }
+    if let Some(replaces) = &post.replaces {
+        let same_author: bool = match author {
+            Author::Agent(identity) => sqlx::query_scalar(
+                "SELECT EXISTS (SELECT 1 FROM posts WHERE id = $1::uuid AND thread_id = $2::uuid \
+                     AND author->>'kind' = 'agent' \
+                     AND author->>'run' IS NOT DISTINCT FROM $3::text \
+                     AND author->>'role' IS NOT DISTINCT FROM $4::text)",
+            )
+            .bind(replaces)
+            .bind(thread_id)
+            .bind(identity.run())
+            .bind(identity.role())
+            .fetch_one(&mut **tx)
+            .await,
+            Author::Human(user_id) => sqlx::query_scalar(
+                "SELECT EXISTS (SELECT 1 FROM posts WHERE id = $1::uuid AND thread_id = $2::uuid \
+                     AND author->>'kind' = 'human' AND author->>'user_id' = $3::text)",
+            )
+            .bind(replaces)
+            .bind(thread_id)
+            .bind(user_id)
+            .fetch_one(&mut **tx)
+            .await,
+        }
+        .map_err(ApiError::database)?;
+        if !same_author {
+            return Err(invalid());
+        }
+    }
+    Ok(())
+}
+
+/// Records a post in the thread's current phase and emits `post.created`. The
+/// thread takes posts whatever the status of its change set.
+async fn record_post(
+    state: &AppState,
+    workspace_id: &str,
+    project_id: &str,
+    thread_id: &str,
+    author: Author,
+    new: Result<CreatePostRequest, ApiError>,
+) -> Result<(StatusCode, Json<PostResponse>), ApiError> {
+    let mut tx = state.workspace_tx(workspace_id).await?;
+    let thread = load_thread(&mut tx, project_id, thread_id, Some("FOR SHARE")).await?;
+    let post = check(new?)?;
+    check_references(&mut tx, project_id, thread_id, &author, &post).await?;
+    let phase = thread.phases.last().map_or(1, |phase| phase.number);
+    let row: PostRow = sqlx::query_as(&format!(
+        "INSERT INTO posts (workspace_id, thread_id, phase, type, summary, body, author, \
+                            links, attachments, confidence, replaces) \
+         VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7::text::jsonb, $8::text::jsonb, \
+                 $9::text::jsonb, $10, $11::uuid) RETURNING {POST_COLUMNS}"
+    ))
+    .bind(workspace_id)
+    .bind(thread_id)
+    .bind(phase)
+    .bind(&post.kind)
+    .bind(&post.summary)
+    .bind(&post.body)
+    .bind(author.json().to_string())
+    .bind(json!(post.links).to_string())
+    .bind(json!(post.attachments).to_string())
+    .bind(post.confidence)
+    .bind(&post.replaces)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(ApiError::database)?;
+    live::emit(
+        &mut tx,
+        workspace_id,
+        project_id,
+        "post.created",
+        &json!({
+            "post_id": row.id,
+            "thread_id": thread_id,
+            "changeset_id": thread.changeset_id,
+            "phase": phase,
+            "type": post.kind,
+        }),
+    )
+    .await?;
+    let post = row.into_body()?;
+    tx.commit().await.map_err(ApiError::database)?;
+    state.live.announce(workspace_id, project_id);
+    Ok((StatusCode::CREATED, Json(PostResponse { post })))
+}
+
+/// Whether a request body asks for a post of type `directive`.
+fn asks_for_a_directive(body: &Bytes) -> bool {
+    serde_json::from_slice::<Value>(body)
+        .ok()
+        .is_some_and(|body| body["type"] == "directive")
+}
+
 /// Records a post in the thread's current phase, as the agent or the human
 /// that calls. The thread takes posts whatever the status of its change set.
 #[utoipa::path(
@@ -410,8 +791,9 @@ pub async fn start_phase(
     request_body = CreatePostRequest,
     responses(
         (status = 201, description = "The new post", body = PostResponse),
-        (status = 400, description = "The type, summary or body is missing, or the summary is blank or longer than 200 characters", body = ErrorBody),
+        (status = 400, description = "The type, summary, body, links, attachments, confidence or replaced post is missing or not valid", body = ErrorBody),
         (status = 401, description = "No valid API key or session", body = ErrorBody),
+        (status = 403, description = "An API key posted a `directive`; only the human does", body = ErrorBody),
         (status = 404, description = "No such thread in this project and workspace", body = ErrorBody),
     )
 )]
@@ -422,42 +804,69 @@ pub async fn create_post(
     Path((_, project_id, thread_id)): Path<(String, String, String)>,
     body: Bytes,
 ) -> Result<(StatusCode, Json<PostResponse>), ApiError> {
+    let author = match request.actor {
+        Actor::Agent if asks_for_a_directive(&body) => return Err(ApiError::Forbidden),
+        Actor::Agent => Author::Agent(identity),
+        Actor::Human { user_id, .. } => Author::Human(user_id),
+    };
     let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
     let thread_id = parse_uuid(&thread_id).ok_or(ApiError::NotFound)?;
     let new = parse_body::<CreatePostRequest>(&body);
-    let workspace_id = request.workspace_id;
-    let author: Value = match request.actor {
-        Actor::Agent => {
-            let mut author = identity.to_json();
-            author["kind"] = json!("agent");
-            author
-        }
-        Actor::Human { user_id, .. } => json!({ "kind": "human", "user_id": user_id }),
-    };
-    let mut tx = state.workspace_tx(&workspace_id).await?;
-    let thread = load_thread(&mut tx, &project_id, &thread_id, Some("FOR SHARE")).await?;
-    let new = new?;
-    let kind = non_blank(new.kind);
-    let summary = non_blank(new.summary)
-        .filter(|summary| summary.chars().count() <= MAX_SUMMARY_CHARS && !summary.contains('\n'));
-    let (Some(kind), Some(summary), Some(text)) = (kind, summary, new.body) else {
-        return Err(ApiError::bad_request("invalid_request"));
-    };
-    let phase = thread.phases.last().map_or(1, |phase| phase.number);
-    let post: PostBody = sqlx::query_as(&format!(
-        "INSERT INTO posts (workspace_id, thread_id, phase, type, summary, body, author) \
-         VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7::text::jsonb) RETURNING {POST_COLUMNS}"
-    ))
-    .bind(&workspace_id)
-    .bind(&thread_id)
-    .bind(phase)
-    .bind(&kind)
-    .bind(&summary)
-    .bind(&text)
-    .bind(author.to_string())
-    .fetch_one(&mut *tx)
+    record_post(
+        &state,
+        &request.workspace_id,
+        &project_id,
+        &thread_id,
+        author,
+        new,
+    )
     .await
-    .map_err(ApiError::database)?;
-    tx.commit().await.map_err(ApiError::database)?;
-    Ok((StatusCode::CREATED, Json(PostResponse { post })))
+}
+
+/// Records a directive of the human in the thread's current phase. Every agent
+/// request inside the thread's change set is answered with the directives that
+/// the agent has not been given yet.
+#[utoipa::path(
+    post,
+    path = "/api/v1/w/{workspace_id}/projects/{project_id}/threads/{thread_id}/directives",
+    params(
+        ("workspace_id" = String, Path, description = "The workspace's UUID"),
+        ("project_id" = String, Path, description = "The project's UUID"),
+        ("thread_id" = String, Path, description = "The thread's UUID"),
+    ),
+    request_body = CreateDirectiveRequest,
+    responses(
+        (status = 201, description = "The new post, of type `directive`", body = PostResponse),
+        (status = 400, description = "The summary or body is missing or not valid", body = ErrorBody),
+        (status = 401, description = "No valid session", body = ErrorBody),
+        (status = 403, description = "Called with an API key; human only", body = ErrorBody),
+        (status = 404, description = "No such thread in this project and workspace", body = ErrorBody),
+    )
+)]
+pub async fn create_directive(
+    State(state): State<AppState>,
+    request: HumanRequest,
+    Path((_, project_id, thread_id)): Path<(String, String, String)>,
+    body: Bytes,
+) -> Result<(StatusCode, Json<PostResponse>), ApiError> {
+    let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
+    let thread_id = parse_uuid(&thread_id).ok_or(ApiError::NotFound)?;
+    let new = parse_body::<CreateDirectiveRequest>(&body).map(|directive| CreatePostRequest {
+        kind: Some("directive".to_string()),
+        summary: directive.summary,
+        body: directive.body,
+        links: directive.links,
+        attachments: directive.attachments,
+        confidence: None,
+        replaces: None,
+    });
+    record_post(
+        &state,
+        &request.workspace_id,
+        &project_id,
+        &thread_id,
+        Author::Human(request.user_id),
+        new,
+    )
+    .await
 }

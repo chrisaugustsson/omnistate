@@ -5,6 +5,7 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
 serde = { version = "1", features = ["derive"] }
 # The renderer, the API and the CLI read designs with serde_json. Its
 # float_roundtrip feature reads each number back as the exact double it was

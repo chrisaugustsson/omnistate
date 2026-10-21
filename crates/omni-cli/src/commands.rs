@@ -20,6 +20,7 @@ use crate::http::{self, Response, Server};
 use crate::identity::Identity;
 use crate::import;
 use crate::json::{Value, quote};
+use crate::posts;
 use crate::threads;
 use crate::tokens;
 use crate::versions;
@@ -118,6 +119,11 @@ pub fn run(args: &Args) -> Result<()> {
         ["thread", "phase"] => threads::phase(args, None),
         ["thread", "phase", thread] => threads::phase(args, Some(thread)),
         ["thread", ..] => bail!("usage: omni thread create|phase; see `omni --help`"),
+        ["post"] => posts::run(args, None),
+        ["post", thread] => posts::run(args, Some(thread)),
+        ["post", ..] => {
+            bail!("usage: omni post <thread> --type <type> --summary <text>; see `omni --help`")
+        }
         ["wait"] => wait::run(args),
         ["wait", ..] => bail!("usage: omni wait --changeset <id> --until <status> [--timeout <s>]"),
         ["claim"] => claims::take(args, None),
@@ -268,7 +274,11 @@ impl Agent {
         if body.is_some() {
             headers.push(("Content-Type".to_string(), "application/json".to_string()));
         }
-        http::send(&self.server, method, path, &headers, body)
+        let response = http::send(&self.server, method, path, &headers, body)?;
+        if response.is_success() {
+            show_directives(&response);
+        }
+        Ok(response)
     }
 
     /// Like `request`, but a 404 is the error `not_found`, for a command that
@@ -316,9 +326,40 @@ pub(crate) fn checked(response: Response) -> Result<Response> {
         eprintln!("notice: {notice}");
     }
     if response.is_success() {
+        show_directives(&response);
         Ok(response)
     } else {
         Err(api_error(&response))
+    }
+}
+
+/// Prints the directives of the human that the API gave with an answer, on
+/// standard error so that standard output stays the result of the command: one
+/// line with the summary, then the Markdown body indented.
+fn show_directives(response: &Response) {
+    const FIELD: &[u8] = b"\"directives\"";
+    if !response
+        .body
+        .windows(FIELD.len())
+        .any(|window| window == FIELD)
+    {
+        return;
+    }
+    let Ok(body) = Value::parse(&response.text()) else {
+        return;
+    };
+    for directive in body
+        .get("directives")
+        .and_then(Value::as_array)
+        .unwrap_or_default()
+    {
+        eprintln!(
+            "directive from the human: {}",
+            directive.str_at("summary").unwrap_or("?")
+        );
+        for line in directive.str_at("body").unwrap_or_default().lines() {
+            eprintln!("  {line}");
+        }
     }
 }
 

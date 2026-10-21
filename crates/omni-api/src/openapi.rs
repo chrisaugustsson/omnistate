@@ -30,8 +30,8 @@ use crate::session::{
     ErrorBody, LoginRequest, UserBody, UserResponse, WorkspaceBody, WorkspaceListResponse,
 };
 use crate::threads::{
-    CreatePostRequest, CreateThreadRequest, PhaseBody, PostBody, PostResponse, StartPhaseRequest,
-    ThreadBody, ThreadResponse,
+    CreateDirectiveRequest, CreatePostRequest, CreateThreadRequest, PhaseBody, PostBody,
+    PostResponse, StartPhaseRequest, ThreadBody, ThreadResponse,
 };
 use crate::tokens::{
     DraftTokensResponse, ImportTokensRequest, InvalidTokensBody, MainlineTokensResponse,
@@ -49,7 +49,7 @@ use utoipa::OpenApi;
 #[openapi(
     info(
         title = "OmniState API",
-        description = "The HTTP API behind the OmniState web app and the `omni` command line."
+        description = "The HTTP API behind the OmniState web app and the `omni` command line. An agent request that succeeds inside a change set (a path under `/changesets/{changeset_id}` or `/threads/{thread_id}`) is answered with a `directives` list next to its usual fields: the human's directive posts that the agent identity (run and role) has not been given yet, oldest first. The field is left out when there are none."
     ),
     paths(
         crate::health,
@@ -100,7 +100,8 @@ use utoipa::OpenApi;
         crate::threads::create_thread,
         crate::threads::show_thread,
         crate::threads::start_phase,
-        crate::threads::create_post
+        crate::threads::create_post,
+        crate::threads::create_directive
     ),
     components(schemas(
         LoginRequest,
@@ -182,6 +183,7 @@ use utoipa::OpenApi;
         CreateThreadRequest,
         StartPhaseRequest,
         CreatePostRequest,
+        CreateDirectiveRequest,
         PostBody,
         PostResponse
     ))

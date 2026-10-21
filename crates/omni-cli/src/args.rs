@@ -50,6 +50,14 @@ pub struct Args {
     pub criteria_file: Option<String>,
     pub open: bool,
     pub sealed: bool,
+    /// `omni post <thread> --type <t> --summary <text> [--attach <file>]...
+    /// [--link <target>]... [--confidence <n>] [--replaces <post>]`.
+    pub post_type: Option<String>,
+    pub summary: Option<String>,
+    pub attach: Vec<String>,
+    pub link: Vec<String>,
+    pub confidence: Option<String>,
+    pub replaces: Option<String>,
     pub json: bool,
     pub help: bool,
     pub version: bool,
@@ -107,6 +115,21 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Args> {
                 parsed.sealed = true;
                 continue;
             }
+            "--attach" | "--link" => {
+                let Some(value) = inline.or_else(|| args.next()) else {
+                    bail!("{arg} needs a value; see `omni --help`");
+                };
+                if name == "--attach" {
+                    parsed.attach.push(value);
+                } else {
+                    parsed.link.push(value);
+                }
+                continue;
+            }
+            "--type" => &mut parsed.post_type,
+            "--summary" => &mut parsed.summary,
+            "--confidence" => &mut parsed.confidence,
+            "--replaces" => &mut parsed.replaces,
             "--question" => &mut parsed.question,
             "--criteria-file" => &mut parsed.criteria_file,
             "--out" => &mut parsed.out,
@@ -238,6 +261,37 @@ mod tests {
                 .unwrap()
                 .version
         );
+    }
+
+    #[test]
+    fn post_options_take_values_and_attach_and_link_repeat() {
+        let parsed = parse_strs(&[
+            "post",
+            "t",
+            "--type",
+            "note",
+            "--summary=S",
+            "--attach",
+            "a.png",
+            "--link",
+            "post:p",
+            "--attach=b.txt",
+            "--link",
+            "https://example.com",
+            "--confidence",
+            "0.5",
+            "--replaces",
+            "r",
+        ])
+        .unwrap();
+        assert_eq!(parsed.words, ["post", "t"]);
+        assert_eq!(parsed.post_type.as_deref(), Some("note"));
+        assert_eq!(parsed.summary.as_deref(), Some("S"));
+        assert_eq!(parsed.attach, ["a.png", "b.txt"]);
+        assert_eq!(parsed.link, ["post:p", "https://example.com"]);
+        assert_eq!(parsed.confidence.as_deref(), Some("0.5"));
+        assert_eq!(parsed.replaces.as_deref(), Some("r"));
+        assert!(parse_strs(&["post", "--attach"]).is_err());
     }
 
     #[test]

@@ -50,6 +50,7 @@ impl FromRequestParts<AppState> for WorkspaceRequest {
 pub struct HumanRequest {
     pub workspace_id: String,
     pub membership_id: String,
+    pub user_id: String,
 }
 
 impl FromRequestParts<AppState> for HumanRequest {
@@ -61,9 +62,13 @@ impl FromRequestParts<AppState> for HumanRequest {
     ) -> Result<Self, Self::Rejection> {
         let request = resolve(parts, state, true).await?;
         match request.actor {
-            Actor::Human { membership_id, .. } => Ok(Self {
+            Actor::Human {
+                membership_id,
+                user_id,
+            } => Ok(Self {
                 workspace_id: request.workspace_id,
                 membership_id,
+                user_id,
             }),
             Actor::Agent => Err(ApiError::Forbidden),
         }
