@@ -646,6 +646,39 @@ async fn fill_workspace(conn: &mut PgConnection, workspace: &str, membership: &s
         .execute(&mut *conn)
         .await
         .expect("insert a post");
+
+        // US-034: a directive of the human and the record that an agent
+        // identity was given it. The receipts are seeded as soon as their
+        // table exists (tests/posts.rs pins its name and the columns without a
+        // default), for the same reason as above.
+        let receipts_exist: bool =
+            sqlx::query_scalar("SELECT to_regclass('public.directive_receipts') IS NOT NULL")
+                .fetch_one(&mut *conn)
+                .await
+                .expect("look for the directive receipts table");
+        if receipts_exist {
+            let post_id: String = sqlx::query_scalar(
+                "INSERT INTO posts (workspace_id, thread_id, phase, type, summary, body, author) \
+                 VALUES ($1::uuid, $2::uuid, 1, 'directive', 'deletion test', 'deletion test', $3::jsonb) \
+                 RETURNING id::text",
+            )
+            .bind(workspace)
+            .bind(&thread_id)
+            .bind(r#"{"kind":"human","user_id":null}"#)
+            .fetch_one(&mut *conn)
+            .await
+            .expect("insert a directive");
+            sqlx::query(
+                "INSERT INTO directive_receipts (workspace_id, post_id, agent) \
+                 VALUES ($1::uuid, $2::uuid, $3::jsonb)",
+            )
+            .bind(workspace)
+            .bind(&post_id)
+            .bind(r#"{"run":"run-1","role":"writer"}"#)
+            .execute(&mut *conn)
+            .await
+            .expect("insert a directive receipt");
+        }
     }
 }
 

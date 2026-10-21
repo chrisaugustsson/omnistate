@@ -4,4 +4,5 @@
 pub mod design;
 pub mod hash;
 pub mod html_doc;
+pub mod markdown;
 pub mod ops;

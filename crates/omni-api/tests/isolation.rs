@@ -37,7 +37,9 @@
 //!   under it, which left it `open` again with the conflict `{conflict_id}`.
 //!   Once the thread routes exist (US-033), `{changeset_id}` also has the
 //!   thread `{thread_id}`, which the workspace's agent started, moved on to a
-//!   sealed second phase and posted in.
+//!   sealed second phase and posted in. Once the directive route exists
+//!   (US-034), the human also posted a directive in it, which the workspace's
+//!   agent was given with its next request in the change set.
 //! - Workspace A's credentials against workspace B's workspace and IDs, and
 //!   against B's IDs under A's own workspace, are always 404
 //!   `{"error": "not_found"}` with nothing of B in the body, and the answer is
@@ -425,6 +427,12 @@ const CASES: &[Case] = &[
         Some(r#"{"type":"question","summary":"intruder","body":"intruder"}"#),
         Kind::Workspace,
     ),
+    case(
+        "POST",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/threads/{thread_id}/directives",
+        Some(r#"{"summary":"intruder","body":"intruder"}"#),
+        Kind::Workspace,
+    ),
 ];
 
 /// The WebSocket routes that the suite attacks, as the paths of
@@ -720,6 +728,15 @@ fn has_thread_routes() -> bool {
         r.method == "POST"
             && r.path
                 == "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/threads"
+    })
+}
+
+/// Whether the router has the directive route (US-034) yet.
+fn has_directive_route() -> bool {
+    registry().iter().any(|r| {
+        r.method == "POST"
+            && r.path
+                == "/api/v1/w/{workspace_id}/projects/{project_id}/threads/{thread_id}/directives"
     })
 }
 
@@ -1438,6 +1455,42 @@ fn fixture() -> &'static Fixture {
                     201,
                     "post in the thread",
                 );
+                // US-034: a directive of the human in the thread, which the
+                // agent is given with its next request in the change set, so
+                // whatever records that has rows of the workspace.
+                if has_directive_route() {
+                    let body = json!({
+                        "summary": unique(&format!("{name}-directive")),
+                        "body": unique(&format!("{name}-directive-body"))
+                    })
+                    .to_string();
+                    must(
+                        call(
+                            client,
+                            "POST",
+                            &format!("{threads}/{thread}/directives"),
+                            &human,
+                            Some(&body),
+                        ),
+                        201,
+                        "the human posts a directive",
+                    );
+                    let shown = must(
+                        call(
+                            client,
+                            "GET",
+                            &format!("{changesets}/{changeset_id}"),
+                            &agent,
+                            None,
+                        ),
+                        200,
+                        "show the change set to the agent",
+                    );
+                    assert!(
+                        shown["directives"].as_array().is_some_and(|d| d.len() == 1),
+                        "the agent is given the directive: {shown}"
+                    );
+                }
                 (thread.to_string(), question)
             } else {
                 (String::new(), String::new())
@@ -3342,6 +3395,70 @@ fn the_thread_calls_of_the_attacks_work_for_the_workspace_that_owns_the_records(
             "{seeded}"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// Directives (US-034)
+// ---------------------------------------------------------------------------
+
+const DIRECTIVES_ROUTE: &str =
+    "/api/v1/w/{workspace_id}/projects/{project_id}/threads/{thread_id}/directives";
+
+#[test]
+fn the_directive_route_is_a_human_route_that_the_suite_attacks() {
+    let entry = registry()
+        .into_iter()
+        .find(|r| r.method == "POST" && r.path == DIRECTIVES_ROUTE)
+        .unwrap_or_else(|| panic!("the registry has no route POST {DIRECTIVES_ROUTE}"));
+    assert_eq!(entry.access, Access::Human, "POST {DIRECTIVES_ROUTE}");
+    assert!(
+        matches!(case_for(&entry).kind, Kind::Workspace),
+        "POST {DIRECTIVES_ROUTE} is a workspace route that the suite attacks"
+    );
+}
+
+#[test]
+fn the_directive_call_of_the_attacks_works_for_the_workspace_that_owns_the_records() {
+    // The control for the directive route: the owner's human posts a
+    // directive with the body of the case in the seeded thread, and the
+    // owner's agent is given it with its next request in the change set.
+    let (f, client) = ready();
+    let _guard = serial();
+    let key = Auth::Key(&f.a.key);
+    let human = Auth::Session(&f.a.token);
+    let posted = must(
+        call(
+            client,
+            "POST",
+            &fill(DIRECTIVES_ROUTE, &f.a, &f.a),
+            &human,
+            case_named("POST", DIRECTIVES_ROUTE).body,
+        ),
+        201,
+        "the human posts a directive",
+    );
+    assert_eq!(posted["post"]["type"], "directive", "{posted}");
+    let shown = must(
+        call(
+            client,
+            "GET",
+            &fill(
+                "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}",
+                &f.a,
+                &f.a,
+            ),
+            &key,
+            None,
+        ),
+        200,
+        "show the change set to the agent",
+    );
+    let given: Vec<&Value> = shown["directives"]
+        .as_array()
+        .map(|d| d.iter().collect())
+        .unwrap_or_default();
+    assert_eq!(given.len(), 1, "the agent is given the directive: {shown}");
+    assert_eq!(given[0]["id"], posted["post"]["id"], "{shown}");
 }
 
 // ---------------------------------------------------------------------------
