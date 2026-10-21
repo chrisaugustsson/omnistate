@@ -205,3 +205,150 @@ fn the_document_describes_the_login_operation_from_its_handler() {
         );
     }
 }
+
+/// Every live event the API emits, by name (`<entity>.<action>`): the
+/// `changeset.<status>` events of every status and the events of US-017 on.
+const LIVE_EVENTS: [&str; 30] = [
+    "changeset.open",
+    "changeset.in_review",
+    "changeset.approved",
+    "changeset.rejected",
+    "changeset.merged",
+    "changeset.needs_rebase",
+    "changeset.abandoned",
+    "claim.taken",
+    "claim.released",
+    "claim.expired",
+    "comment.created",
+    "comment.replied",
+    "comment.status_changed",
+    "components.imported",
+    "conflict.recorded",
+    "conflict.resolved",
+    "decision.proposed",
+    "decision.superseded",
+    "decision.approved",
+    "decision.rejected",
+    "design.imported",
+    "doc.created",
+    "draft.opened",
+    "draft.rebased",
+    "op.applied",
+    "phase.started",
+    "post.created",
+    "thread.created",
+    "tokens.imported",
+    "version.saved",
+];
+
+/// Every string that a schema (following `$ref`s into the document's
+/// components) allows as an `enum` member or a `const`.
+fn allowed_strings(
+    document: &Value,
+    schema: &Value,
+    seen: &mut BTreeSet<String>,
+) -> BTreeSet<String> {
+    let mut found = BTreeSet::new();
+    match schema {
+        Value::Object(map) => {
+            if let Some(reference) = map.get("$ref").and_then(Value::as_str)
+                && seen.insert(reference.to_string())
+            {
+                let target = document
+                    .pointer(reference.trim_start_matches('#'))
+                    .unwrap_or_else(|| panic!("{reference} is not in the document"));
+                found.extend(allowed_strings(document, target, seen));
+            }
+            if let Some(Value::String(constant)) = map.get("const") {
+                found.insert(constant.clone());
+            }
+            if let Some(Value::Array(members)) = map.get("enum") {
+                found.extend(members.iter().filter_map(Value::as_str).map(str::to_string));
+            }
+            for (key, value) in map {
+                if !matches!(key.as_str(), "$ref" | "const" | "enum") {
+                    found.extend(allowed_strings(document, value, seen));
+                }
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                found.extend(allowed_strings(document, item, seen));
+            }
+        }
+        _ => {}
+    }
+    found
+}
+
+fn component<'a>(document: &'a Value, name: &str) -> &'a Value {
+    let schema = &document["components"]["schemas"][name];
+    assert!(
+        schema.is_object(),
+        "the OpenAPI document has no component schema {name}, which the web app's generated types need"
+    );
+    schema
+}
+
+// US-039: the web app generates its types for the live updates from the
+// document too, so the messages of the socket are schemas of the document:
+// `LiveClientMessage` (what a client sends: a subscribe) and
+// `LiveServerMessage` (what the server sends: subscribed, event, error), and
+// the event message names every event the API emits.
+#[test]
+fn the_document_describes_the_messages_of_the_live_socket() {
+    let server = TestServer::start(&offline_config());
+    let document = openapi(&server);
+
+    let client = component(&document, "LiveClientMessage");
+    let client_strings = allowed_strings(&document, client, &mut BTreeSet::new());
+    assert!(
+        client_strings.contains("subscribe"),
+        "LiveClientMessage allows the type `subscribe`: {client}"
+    );
+
+    let server_message = component(&document, "LiveServerMessage");
+    let strings = allowed_strings(&document, server_message, &mut BTreeSet::new());
+    for message_type in ["subscribed", "event", "error"] {
+        assert!(
+            strings.contains(message_type),
+            "LiveServerMessage allows the type `{message_type}`: {server_message}"
+        );
+    }
+    let missing: Vec<_> = LIVE_EVENTS
+        .iter()
+        .filter(|event| !strings.contains(**event))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "LiveServerMessage names every live event the API emits; missing: {missing:?}"
+    );
+}
+
+/// The copy of the OpenAPI document that the web app generates its TypeScript
+/// types and Zod schemas from.
+fn web_document_path() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../web/openapi.json")
+}
+
+// US-039: the web app's copy of the document is the one the API serves, so a
+// change to the API that is not regenerated into the web app fails the build.
+#[test]
+fn the_web_app_has_the_current_openapi_document() {
+    let server = TestServer::start(&offline_config());
+    let document = openapi(&server);
+    let path = web_document_path();
+    let text = std::fs::read_to_string(&path).unwrap_or_else(|error| {
+        panic!(
+            "the web app's copy of the OpenAPI document, {}, cannot be read: {error}",
+            path.display()
+        )
+    });
+    let copy: Value = serde_json::from_str(&text)
+        .unwrap_or_else(|error| panic!("{} is not JSON: {error}", path.display()));
+    assert!(
+        copy == document,
+        "{} is out of date: regenerate it and the web app's types from the API's document",
+        path.display()
+    );
+}
