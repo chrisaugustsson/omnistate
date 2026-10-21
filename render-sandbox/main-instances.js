@@ -71,8 +71,15 @@ function showErrors() {
   const list = JSON.parse(renderer.UTF8ToString(renderer._omni_render_scene_errors()));
   errors.classList.toggle('failed', list.length > 0);
   errors.textContent = list.length
-    ? `Errors: ${list.map((e) => `${e.node} is missing ${e.component ?? e.token}`).join('; ')}.`
+    ? `Errors: ${list.map(describe).join('; ')}.`
     : 'Errors: none.';
+}
+
+function describe(error) {
+  if (error.property) {
+    return `${error.node}: ${error.token} does not fit its ${error.property}`;
+  }
+  return `${error.node} is missing ${error.component ?? error.token}`;
 }
 
 function boundsOf(address) {

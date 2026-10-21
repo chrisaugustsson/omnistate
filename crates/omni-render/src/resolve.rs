@@ -22,10 +22,11 @@
 //!   inside an instance inside an instance is addressed from the instance of
 //!   the page.
 //!
-//! An instance of a component that the design system does not have, and a node
-//! with a token reference the design system does not have, are drawn as an
-//! error placeholder, a tinted box with a magenta edge, and listed in
-//! `Resolved::errors`.
+//! An instance of a component that the design system does not have, a node
+//! with a token reference the design system does not have, and a node with a
+//! token whose value does not fit where it is used (a color for a padding) are
+//! drawn as an error placeholder, a tinted box with a magenta edge, and listed
+//! in `Resolved::errors`. The rest of the board resolves as usual.
 
 use crate::system::{ComponentDef, DesignSystem, Missing, RenderError};
 use omni_core::design::{Node, NodeAddress, NodeId, PropDef, TokenRef};
@@ -122,8 +123,9 @@ pub(crate) fn resolve(page: &Node, system: &DesignSystem, mode: &str) -> Resolve
     let resolved = resolver.node(source.clone(), None);
     let page = match serde_json::from_value::<Node>(resolved.clone()) {
         Ok(page) => page,
-        // A token whose value does not fit where it is used (a color for a
-        // padding) leaves the board unresolved rather than the page unread.
+        // Each node's tokens are checked as they are resolved, so this is a
+        // last resort: a board that still does not read is drawn unresolved
+        // rather than leaving the page unread.
         Err(_) => keep_readable(&source, resolved).unwrap_or_else(|| page.clone()),
     };
     Resolved {
@@ -342,55 +344,151 @@ impl Resolver<'_> {
 
     /// Replaces the token references in the properties of `node` (not its
     /// children) with the tokens' values in the mode. A node with a reference
-    /// that has no token is drawn as an error placeholder.
+    /// that has no token, or with a token whose value does not fit where it is
+    /// used (a color for a padding), is drawn as an error placeholder, and the
+    /// reference is left in place.
     fn tokens(&mut self, node: &mut Value, address: &NodeAddress) {
         let mut missing = Vec::new();
+        let mut resolved = Vec::new();
         if let Some(properties) = node.as_object_mut() {
             for (key, setting) in properties.iter_mut() {
                 if !NOT_TOKENS.contains(&key.as_str()) {
-                    self.resolve_in(setting, key, &mut missing);
+                    let pointer = format!("/{}", escape(key));
+                    self.resolve_in(setting, key, &pointer, &mut missing, &mut resolved);
                 }
             }
         }
-        if missing.is_empty() {
+        let mut errors: Vec<Missing> = missing.into_iter().map(Missing::Token).collect();
+        if !resolved.is_empty() && !reads(node) {
+            for (reference, property) in unfit(node, resolved) {
+                let error = Missing::Unfit {
+                    token: reference,
+                    property,
+                };
+                if !errors.contains(&error) {
+                    errors.push(error);
+                }
+            }
+        }
+        if errors.is_empty() {
             return;
         }
         mark_error(node);
-        for token in missing {
+        for missing in errors {
             self.errors.push(RenderError {
                 node: address.clone(),
-                missing: Missing::Token(token),
+                missing,
             });
         }
     }
 
-    fn resolve_in(&self, value: &mut Value, key: &str, missing: &mut Vec<TokenRef>) {
+    /// Resolves the token references in `value`, the setting `key` of a node
+    /// at `pointer` (a JSON pointer into the node), and notes each one it
+    /// replaced in `resolved`.
+    fn resolve_in(
+        &self,
+        value: &mut Value,
+        key: &str,
+        pointer: &str,
+        missing: &mut Vec<TokenRef>,
+        resolved: &mut Vec<Replaced>,
+    ) {
         match value {
             Value::String(text) if text.starts_with('$') => {
                 let Ok(reference) = text.parse::<TokenRef>() else {
                     return;
                 };
                 match self.system.token(&reference, self.mode) {
-                    Some(resolved) => *value = design_value(resolved, key),
+                    Some(token) => {
+                        let token = design_value(token, key);
+                        let text = std::mem::replace(value, token.clone());
+                        resolved.push(Replaced {
+                            pointer: pointer.to_string(),
+                            reference,
+                            text,
+                            token,
+                        });
+                    }
                     None if !missing.contains(&reference) => missing.push(reference),
                     None => {}
                 }
             }
             Value::Array(items) => {
-                for item in items {
-                    self.resolve_in(item, key, missing);
+                for (at, item) in items.iter_mut().enumerate() {
+                    let pointer = format!("{pointer}/{at}");
+                    self.resolve_in(item, key, &pointer, missing, resolved);
                 }
             }
             Value::Object(properties) => {
                 for (key, setting) in properties.iter_mut() {
                     if !NOT_TOKENS.contains(&key.as_str()) {
-                        self.resolve_in(setting, key, missing);
+                        let pointer = format!("{pointer}/{}", escape(key));
+                        self.resolve_in(setting, key, &pointer, missing, resolved);
                     }
                 }
             }
             _ => {}
         }
     }
+}
+
+/// A token reference in a node that was replaced by the token's value.
+struct Replaced {
+    /// Where in the node, as a JSON pointer.
+    pointer: String,
+    reference: TokenRef,
+    /// The reference as the node wrote it.
+    text: Value,
+    /// The token's value as the node takes it.
+    token: Value,
+}
+
+/// Whether `node`, without its children, reads as a design node.
+fn reads(node: &Value) -> bool {
+    serde_json::from_value::<Node>(node.clone()).is_ok()
+}
+
+/// Puts back the references of `resolved` in `node` whose token values do not
+/// fit where they are used, and gives each with the property of the node it
+/// is in. When `node` does not read even with all its references in place,
+/// it is left as it is and nothing is given.
+fn unfit(node: &mut Value, resolved: Vec<Replaced>) -> Vec<(TokenRef, String)> {
+    let put = |node: &mut Value, pointer: &str, setting: Value| {
+        node.pointer_mut(pointer)
+            .map(|slot| std::mem::replace(slot, setting))
+    };
+    for replaced in &resolved {
+        put(node, &replaced.pointer, replaced.text.clone());
+    }
+    if !reads(node) {
+        for replaced in resolved {
+            put(node, &replaced.pointer, replaced.token);
+        }
+        return Vec::new();
+    }
+    let mut unfit = Vec::new();
+    for replaced in resolved {
+        let Some(text) = put(node, &replaced.pointer, replaced.token) else {
+            continue;
+        };
+        if !reads(node) {
+            put(node, &replaced.pointer, text);
+            let property = replaced
+                .pointer
+                .split('/')
+                .nth(1)
+                .unwrap_or_default()
+                .replace("~1", "/")
+                .replace("~0", "~");
+            unfit.push((replaced.reference, property));
+        }
+    }
+    unfit
+}
+
+/// `key` as a step of a JSON pointer.
+fn escape(key: &str) -> String {
+    key.replace('~', "~0").replace('/', "~1")
 }
 
 fn kind_of(node: &Value) -> String {

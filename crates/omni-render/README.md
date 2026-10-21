@@ -395,7 +395,10 @@ painting and selection are the ones of every other page.
   are drawn as an error placeholder: a magenta-tinted box with a magenta edge in
   the node's box (magenta text for a text), never outside it. `Scene::errors`
   lists each with the node's address and what is missing, `Missing::Component` or
-  `Missing::Token`, and a page with nothing missing has none. A component that
+  `Missing::Token`, and a page with nothing missing has none. A token whose value
+  does not fit where it is used (a color for a padding, a dimension for a fill)
+  is drawn and listed the same way, as `Missing::Unfit` with the node's property,
+  and the rest of the board resolves as usual. A component that
   holds itself is drawn as a placeholder too, 24 instances deep.
 - **Addresses.** A node inside an instance is `<instanceId>/<componentNodeId>`,
   where the instance is the one on the page, also for a node inside an instance

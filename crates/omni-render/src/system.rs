@@ -156,6 +156,9 @@ pub enum Missing {
     Component(NodeId),
     /// The token that a value refers to is not in the design system.
     Token(TokenRef),
+    /// The token that a value refers to has a value that does not fit where
+    /// it is used, such as a color for a padding, in `property` of the node.
+    Unfit { token: TokenRef, property: String },
 }
 
 /// An error that drawing a design reports to the host page: the node that was

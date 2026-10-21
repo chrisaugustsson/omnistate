@@ -154,7 +154,9 @@ pub fn scene_set_mode(mode: &str) -> Result<(), String> {
 
 /// The nodes of the loaded scene that are drawn as error placeholders, as a
 /// JSON array: `[{"node": "<address>", "component": "<id>"}, {"node":
-/// "<address>", "token": "$color.surface"}]`.
+/// "<address>", "token": "$color.surface"}]`. A token whose value does not
+/// fit where it is used also names the node's property: `{"node":
+/// "<address>", "token": "$color.brand", "property": "layout"}`.
 pub fn scene_errors() -> String {
     let errors = with_stage(|scene, _| {
         scene
@@ -167,6 +169,11 @@ pub fn scene_errors() -> String {
                 Missing::Token(token) => {
                     json!({"node": error.node.to_string(), "token": token.as_str()})
                 }
+                Missing::Unfit { token, property } => json!({
+                    "node": error.node.to_string(),
+                    "token": token.as_str(),
+                    "property": property,
+                }),
             })
             .collect::<Vec<Value>>()
     })
