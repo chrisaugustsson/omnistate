@@ -1399,7 +1399,11 @@ fn a_second_import_keeps_the_design_system_that_the_project_has() {
 
     let draft = design_draft(f, &home, &second);
     let kassa = page(&draft["pages"], "Kassa");
-    let board = find(kassa, "Kassa").expect("the board Kassa");
+    // The page is named Kassa too, so look the board up among its children.
+    let board = kassa["children"]
+        .as_array()
+        .and_then(|boards| boards.iter().find_map(|child| find(child, "Kassa")))
+        .expect("the board Kassa");
     assert_eq!(board["fills"][0]["color"], "$color.border", "{board}");
     let copy = find(board, "Köpknapp").expect("the copy Köpknapp");
     assert_eq!(copy["type"], "instance", "{copy}");
