@@ -19,6 +19,7 @@ mod http;
 mod identity;
 mod import;
 mod json;
+mod threads;
 mod tokens;
 mod toml;
 mod versions;
@@ -103,6 +104,13 @@ Usage:
                                       system doc, the images as attachments; saves a
                                       version of each doc and prints the change set and a
                                       report of what could not be imported
+  omni thread create --changeset <id> --question <text> --criteria-file <path> [--sealed]
+                                      start a thread, a question to work out in a change set;
+                                      each line of the criteria file is one criterion, and the
+                                      first phase is open unless --sealed; prints its ID
+  omni thread phase <thread> --open|--sealed
+                                      start the thread's next phase, open or sealed; a thread
+                                      keeps taking phases after its change set merged
   omni wait --changeset <id> --until approved|rejected|merged|needs_rebase [--timeout <s>]
                                       wait until the change set is approved (by the human),
                                       rejected, merged or needs a rebase; prints its status
@@ -126,6 +134,11 @@ Options (before or after the command):
   --body-file <path>    send this file as the request body (for a change set: its
                         description; for `doc edit` and `design edit`: the operations); -
                         reads standard input
+  --question <text>     the question that `omni thread create` starts a thread with
+  --criteria-file <path>
+                        the file with the thread's criteria, one per line
+  --open, --sealed      whether a thread's first phase (`--sealed` only) or its next
+                        phase (`omni thread phase`) is open or sealed
   --note <text>         how a conflict was resolved (`omni changeset resolve`)
   --changeset <id>      the change set a doc, design edit, tokens, claim, release or wait command works in
   --doc <id>            the design doc that `omni design read` reads or `omni design edit` edits

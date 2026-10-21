@@ -20,6 +20,7 @@ use crate::http::{self, Response, Server};
 use crate::identity::Identity;
 use crate::import;
 use crate::json::{Value, quote};
+use crate::threads;
 use crate::tokens;
 use crate::versions;
 use crate::wait;
@@ -113,6 +114,10 @@ pub fn run(args: &Args) -> Result<()> {
         ["import", "penpot"] => import::penpot(args, None),
         ["import", "penpot", file] => import::penpot(args, Some(file)),
         ["import", ..] => bail!("usage: omni import penpot <file.penpot> --project <id>"),
+        ["thread", "create"] => threads::create(args),
+        ["thread", "phase"] => threads::phase(args, None),
+        ["thread", "phase", thread] => threads::phase(args, Some(thread)),
+        ["thread", ..] => bail!("usage: omni thread create|phase; see `omni --help`"),
         ["wait"] => wait::run(args),
         ["wait", ..] => bail!("usage: omni wait --changeset <id> --until <status> [--timeout <s>]"),
         ["claim"] => claims::take(args, None),

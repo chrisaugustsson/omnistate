@@ -307,6 +307,11 @@ pub(crate) struct AgentIdentity {
 const MAX_IDENTITY_CHARS: usize = 200;
 
 impl AgentIdentity {
+    /// The run the agent declares, `None` when it declares none.
+    pub(crate) fn run(&self) -> Option<&str> {
+        self.run.as_deref()
+    }
+
     pub(crate) fn to_json(&self) -> Value {
         json!({
             "run": self.run,

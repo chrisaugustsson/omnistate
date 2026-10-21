@@ -29,6 +29,10 @@ use crate::routes::{Access, registry};
 use crate::session::{
     ErrorBody, LoginRequest, UserBody, UserResponse, WorkspaceBody, WorkspaceListResponse,
 };
+use crate::threads::{
+    CreatePostRequest, CreateThreadRequest, PhaseBody, PostBody, PostResponse, StartPhaseRequest,
+    ThreadBody, ThreadResponse,
+};
 use crate::tokens::{
     DraftTokensResponse, ImportTokensRequest, InvalidTokensBody, MainlineTokensResponse,
 };
@@ -92,7 +96,11 @@ use utoipa::OpenApi;
         crate::design::import_design,
         crate::design::component_usage,
         crate::boards::read_draft_board,
-        crate::boards::read_board_of_version
+        crate::boards::read_board_of_version,
+        crate::threads::create_thread,
+        crate::threads::show_thread,
+        crate::threads::start_phase,
+        crate::threads::create_post
     ),
     components(schemas(
         LoginRequest,
@@ -167,7 +175,15 @@ use utoipa::OpenApi;
         BoardBody,
         Manifest,
         ManifestPage,
-        ManifestBoard
+        ManifestBoard,
+        PhaseBody,
+        ThreadBody,
+        ThreadResponse,
+        CreateThreadRequest,
+        StartPhaseRequest,
+        CreatePostRequest,
+        PostBody,
+        PostResponse
     ))
 )]
 struct ApiDoc;

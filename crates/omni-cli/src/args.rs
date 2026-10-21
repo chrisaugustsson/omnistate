@@ -44,6 +44,12 @@ pub struct Args {
     pub out: Option<String>,
     /// `omni tokens export --per-mode`: one file per mode.
     pub per_mode: bool,
+    /// `omni thread create --question <text> --criteria-file <path> --sealed`
+    /// and `omni thread phase <thread> --open|--sealed`.
+    pub question: Option<String>,
+    pub criteria_file: Option<String>,
+    pub open: bool,
+    pub sealed: bool,
     pub json: bool,
     pub help: bool,
     pub version: bool,
@@ -93,6 +99,16 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Args> {
                 parsed.per_mode = true;
                 continue;
             }
+            "--open" => {
+                parsed.open = true;
+                continue;
+            }
+            "--sealed" => {
+                parsed.sealed = true;
+                continue;
+            }
+            "--question" => &mut parsed.question,
+            "--criteria-file" => &mut parsed.criteria_file,
             "--out" => &mut parsed.out,
             "--as" => &mut parsed.agent,
             "--model" => &mut parsed.model,

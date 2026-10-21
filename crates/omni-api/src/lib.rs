@@ -22,6 +22,7 @@ mod rebase;
 pub mod routes;
 mod session;
 pub mod setup;
+mod threads;
 mod tokens;
 mod versions;
 mod workspace;
@@ -395,6 +396,22 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/v1/w/{workspace_id}/attachments/{attachment_id}",
             get(attachments::download),
+        )
+        .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/threads",
+            post(threads::create_thread),
+        )
+        .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/threads/{thread_id}",
+            get(threads::show_thread),
+        )
+        .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/threads/{thread_id}/phases",
+            post(threads::start_phase),
+        )
+        .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/threads/{thread_id}/posts",
+            post(threads::create_post),
         )
         .route("/ws/w/{workspace_id}", get(live::socket))
         .fallback(not_found)
