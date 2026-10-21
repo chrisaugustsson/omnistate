@@ -98,6 +98,13 @@ pub struct VersionBody {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schema(value_type = Option<Vec<Object>>)]
     pub components: Option<Vec<Value>>,
+    /// For a design version, the whole token tree of the design system version
+    /// it recorded, in every mode (`null` for a design system of components
+    /// only); the design viewer hands it to the renderer with `components`.
+    /// Only when the version is read by ID.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<Object>)]
+    pub tokens: Option<Value>,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -475,6 +482,7 @@ async fn version_body(tx: &mut Tx, row: VersionRow) -> Result<VersionBody, ApiEr
         tags: None,
         pages: None,
         components: None,
+        tokens: None,
     })
 }
 
@@ -926,6 +934,7 @@ pub async fn show_version(
         version.tags = view.tags;
         version.pages = view.pages;
         version.components = Some(view.components);
+        version.tokens = view.tokens;
     }
     Ok(Json(VersionResponse { version }))
 }

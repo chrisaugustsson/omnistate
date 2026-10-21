@@ -14,7 +14,7 @@ use skia_safe::{
 use crate::layout::{self, LayoutBox};
 use crate::paint::{self, Assets};
 use crate::sandbox::{self, SandboxScene};
-use crate::select::{Event, Modifiers, NodeAddress, Outline, OutlineKind};
+use crate::select::{Event, Layer, Modifiers, NodeAddress, Outline, OutlineKind};
 use crate::system::{DesignSystem, Missing};
 use crate::view::{Controls, Detail, FrameStats, Scene, Viewport};
 use serde_json::{Value, json};
@@ -262,6 +262,35 @@ pub fn select_double_click(x: f32, y: f32) {
 /// The Escape key.
 pub fn select_escape() {
     with_stage(|scene, _| scene.escape());
+}
+
+/// Selects the node at `address` (`<id>` or `<instanceId>/<componentNodeId>`),
+/// as the design viewer's layers panel does; empty text clears the selection.
+/// `Ok(false)` if no scene is loaded or the address names no node.
+pub fn select_node(address: &str) -> Result<bool, String> {
+    let address: Option<NodeAddress> = if address.is_empty() {
+        None
+    } else {
+        Some(address.parse().map_err(|error| format!("{error}"))?)
+    };
+    Ok(with_stage(|scene, _| scene.select_address(address.as_ref())).unwrap_or(false))
+}
+
+fn layer_json(layer: &Layer) -> Value {
+    json!({
+        "address": layer.address.to_string(),
+        "name": layer.name,
+        "type": layer.kind,
+        "children": layer.children.iter().map(layer_json).collect::<Vec<Value>>(),
+    })
+}
+
+/// The boards of the loaded scene with every node below them, as a JSON array:
+/// `[{"address": "<address>", "name": "Cart", "type": "board", "children":
+/// [...]}]`. Empty if no scene is loaded.
+pub fn scene_layers() -> String {
+    let layers = with_stage(|scene, _| scene.layers()).unwrap_or_default();
+    Value::Array(layers.iter().map(layer_json).collect()).to_string()
 }
 
 fn box_json(rect: LayoutBox) -> Value {

@@ -12,6 +12,8 @@ EMSDK_PYTHON = $(firstword $(wildcard $(EMSDK)/python/*/bin/python3))
 WASM_TARGET := wasm32-unknown-emscripten
 WASM_OUT := $(or $(CARGO_TARGET_DIR),target)/$(WASM_TARGET)/release
 SANDBOX_BUILD := render-sandbox/build
+# Where the web app's design viewer loads the renderer from (served as /render/).
+WEB_RENDER := web/public/render
 
 .PHONY: lint test web-deps web-api render-wasm chrome-boxes stress-file nodes-boxes bench-render check-layout penpot-compare bench-ops
 
@@ -48,13 +50,16 @@ test: web-deps
 	docker compose up --build --wait --detach proxy
 	docker compose run --rm test
 
-# Builds omni-render for the browser into render-sandbox/build/.
+# Builds omni-render for the browser into render-sandbox/build/, and copies it
+# to web/public/render/ for the web app's design viewer.
 render-wasm: $(EMCC)
 	EMSDK="$(EMSDK)" EMSDK_PYTHON="$(EMSDK_PYTHON)" CARGO_TARGET_WASM32_UNKNOWN_EMSCRIPTEN_LINKER="$(EMCC)" \
 		$(CARGO) build --release --target $(WASM_TARGET) -p omni-render --bin omni-render
 	mkdir -p $(SANDBOX_BUILD)
 	cp $(WASM_OUT)/omni-render.js $(SANDBOX_BUILD)/omni_render.js
 	cp $(WASM_OUT)/omni_render.wasm $(SANDBOX_BUILD)/omni_render.wasm
+	mkdir -p $(WEB_RENDER)
+	cp $(SANDBOX_BUILD)/omni_render.js $(SANDBOX_BUILD)/omni_render.wasm $(WEB_RENDER)/
 
 # Prints the box of every node of the design in FILE as headless Chrome lays it
 # out at a device pixel ratio of 2: one JSON object on standard output, the boxes

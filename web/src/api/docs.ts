@@ -5,6 +5,7 @@ import {
   type ClaimBody,
   type CommentBody,
   type DocBody,
+  type VersionBody,
   type VersionItem,
 } from "./generated";
 
@@ -12,6 +13,7 @@ const base = (workspaceId: string, projectId: string) => `/api/v1/w/${workspaceI
 
 const doc = operations["GET /api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}"];
 const versions = operations["GET /api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}/versions"];
+const version = operations["GET /api/v1/w/{workspace_id}/projects/{project_id}/versions/{version_id}"];
 const html = operations["GET /api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}/html"];
 const draft = operations["GET /api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs/{doc_id}"];
 const changesets = operations["GET /api/v1/w/{workspace_id}/projects/{project_id}/changesets"];
@@ -32,6 +34,14 @@ export async function loadVersions(workspaceId: string, projectId: string, docId
     response: versions.responses["200"],
   });
   return loaded.versions;
+}
+
+/** A saved version by its ID; a design version holds its pages, components and tokens. */
+export async function loadVersion(workspaceId: string, projectId: string, versionId: string): Promise<VersionBody> {
+  const loaded = await callApi("GET", `${base(workspaceId, projectId)}/versions/${versionId}`, {
+    response: version.responses["200"],
+  });
+  return loaded.version;
 }
 
 /** The HTML of a version of the doc, or of its mainline version; empty when there is none. */

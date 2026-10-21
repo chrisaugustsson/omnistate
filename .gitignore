@@ -5,6 +5,7 @@ tasks/
 target/
 node_modules/
 render-sandbox/build/
+web/public/render/
 
 # Emscripten SDK installed by `make render-wasm`
 .emsdk/

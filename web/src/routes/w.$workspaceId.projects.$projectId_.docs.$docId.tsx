@@ -7,10 +7,12 @@ import {
   loadDoc,
   loadDocComments,
   loadDraftHtml,
+  loadVersion,
   loadVersionHtml,
   loadVersions,
 } from "@/api/docs";
 import type { ChangesetBody, ClaimBody, CommentBody, DocBody, VersionItem } from "@/api/generated";
+import { createDesignRenderer, type DesignRenderer, type Layer } from "@/design/renderer";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
@@ -32,8 +34,11 @@ import {
 // shown (the mainline version first) or the live draft of a change set, which
 // is loaded again on every operation an agent applies. Comments attach to the
 // selected block and the version shown.
+//
+// A design doc is shown by the design viewer instead (further down): the
+// renderer's canvas with a page list and a layers panel.
 export const Route = createFileRoute("/w/$workspaceId/projects/$projectId_/docs/$docId")({
-  component: DocViewer,
+  component: DocPage,
 });
 
 const TEXTAREA_CLASS =
@@ -73,6 +78,8 @@ function useReloading<T>(load: () => Promise<T>) {
   }, [reload]);
   return { value, failed, reload };
 }
+
+type Reloading<T> = ReturnType<typeof useReloading<T>>;
 
 function holderOfComment(author: Record<string, unknown>): string {
   return author.kind === "human" ? "Reviewer" : `${String(author.run)}/${String(author.role)}`;
@@ -115,9 +122,50 @@ function choicesOf(doc: DocBody, versions: VersionItem[], changesets: ChangesetB
   return [...ordered.map((version) => ({ value: version.id, label: label(version) })), ...drafts];
 }
 
-function DocViewer() {
+function DocPage() {
   const { workspaceId, projectId, docId } = Route.useParams();
   const doc = useReloading(useCallback(() => loadDoc(workspaceId, projectId, docId), [workspaceId, projectId, docId]));
+  if (doc.value?.kind === "design") {
+    return <DesignViewer workspaceId={workspaceId} projectId={projectId} docId={docId} doc={doc} />;
+  }
+  if (!doc.value) {
+    return (
+      <main className="mx-auto max-w-7xl space-y-6 p-6">
+        <BackLink workspaceId={workspaceId} projectId={projectId} />
+        {doc.failed && (
+          <Alert variant="destructive">
+            <AlertDescription>The doc could not be loaded. Try again in a moment.</AlertDescription>
+          </Alert>
+        )}
+      </main>
+    );
+  }
+  return <HtmlDocViewer workspaceId={workspaceId} projectId={projectId} docId={docId} doc={doc} />;
+}
+
+function BackLink({ workspaceId, projectId }: { workspaceId: string; projectId: string }) {
+  return (
+    <Link
+      to="/w/$workspaceId/projects/$projectId"
+      params={{ workspaceId, projectId }}
+      className="text-sm text-muted-foreground underline-offset-4 hover:underline"
+    >
+      Back to the project
+    </Link>
+  );
+}
+
+function HtmlDocViewer({
+  workspaceId,
+  projectId,
+  docId,
+  doc,
+}: {
+  workspaceId: string;
+  projectId: string;
+  docId: string;
+  doc: Reloading<DocBody>;
+}) {
   const versions = useReloading(
     useCallback(() => loadVersions(workspaceId, projectId, docId), [workspaceId, projectId, docId]),
   );
@@ -210,13 +258,7 @@ function DocViewer() {
 
   return (
     <main className="mx-auto max-w-7xl space-y-6 p-6">
-      <Link
-        to="/w/$workspaceId/projects/$projectId"
-        params={{ workspaceId, projectId }}
-        className="text-sm text-muted-foreground underline-offset-4 hover:underline"
-      >
-        Back to the project
-      </Link>
+      <BackLink workspaceId={workspaceId} projectId={projectId} />
       {doc.failed && (
         <Alert variant="destructive">
           <AlertDescription>The doc could not be loaded. Try again in a moment.</AlertDescription>
@@ -496,5 +538,178 @@ function Comparison({
       </dt>
       <dd>{textOf(now)}</dd>
     </dl>
+  );
+}
+
+// The design viewer ------------------------------------------------------------------------
+
+/** A layer and its depth, in the order the tree lists them. */
+type Row = { layer: Layer; level: number };
+
+function rowsOf(layers: Layer[], level = 1): Row[] {
+  return layers.flatMap((layer) => [{ layer, level }, ...rowsOf(layer.children, level + 1)]);
+}
+
+/**
+ * The reviewer's view of a design doc: its mainline version on the renderer's
+ * canvas, a list of its pages and a layers panel whose selection follows the
+ * canvas, and the other way around. The version holds the pages, the
+ * components its instances use and the tokens of the design system version it
+ * recorded, which the renderer resolves the page against.
+ */
+function DesignViewer({
+  workspaceId,
+  projectId,
+  docId,
+  doc,
+}: {
+  workspaceId: string;
+  projectId: string;
+  docId: string;
+  doc: Reloading<DocBody>;
+}) {
+  const mainline = doc.value?.mainline_version_id ?? null;
+  // A saved version never changes, so it is loaded again only for another one.
+  const version = useReloading(
+    useCallback(
+      () => (mainline ? loadVersion(workspaceId, projectId, mainline) : Promise.resolve(null)),
+      [workspaceId, projectId, mainline],
+    ),
+  );
+  const [chosen, setChosen] = useState<string | null>(null);
+  const [renderer, setRenderer] = useState<DesignRenderer | null>(null);
+  const [failure, setFailure] = useState<string | null>(null);
+  const [layers, setLayers] = useState<Layer[]>([]);
+  const [selected, setSelected] = useState<string | null>(null);
+  const canvas = useRef<HTMLCanvasElement>(null);
+
+  const pages = useMemo(() => version.value?.pages ?? [], [version.value]);
+  const page = useMemo(() => pages.find((candidate) => candidate.id === chosen) ?? pages[0] ?? null, [pages, chosen]);
+  const system = useMemo(
+    () => (version.value ? { ...version.value.tokens, $components: version.value.components ?? [] } : null),
+    [version.value],
+  );
+
+  useEffect(() => {
+    const element = canvas.current;
+    if (!element) return;
+    let cancelled = false;
+    let made: DesignRenderer | null = null;
+    createDesignRenderer(element).then(
+      (created) => {
+        if (cancelled) {
+          created.destroy();
+          return;
+        }
+        made = created;
+        setRenderer(created);
+      },
+      (error: unknown) => {
+        if (!cancelled) setFailure(error instanceof Error ? error.message : "The renderer could not start.");
+      },
+    );
+    return () => {
+      cancelled = true;
+      made?.destroy();
+      setRenderer(null);
+    };
+  }, []);
+
+  // A node selected on the canvas is the selected layer.
+  useEffect(() => renderer?.onSelect(setSelected), [renderer]);
+
+  useEffect(() => {
+    if (!renderer || !page || !system) return;
+    try {
+      renderer.show(page, system);
+      setLayers(renderer.layers());
+      setSelected(null);
+      setFailure(null);
+    } catch (error) {
+      setFailure(error instanceof Error ? error.message : "The design could not be drawn.");
+    }
+  }, [renderer, page, system]);
+
+  useProjectEvents(projectId, (event) => {
+    const { doc_id: eventDoc } = event.data;
+    if (typeof eventDoc === "string" && eventDoc !== docId) return;
+    if (!event.event.startsWith("comment.")) doc.reload();
+  });
+
+  function choose(address: string | null) {
+    setSelected(address);
+    renderer?.select(address);
+  }
+
+  const rows = useMemo(() => rowsOf(layers), [layers]);
+
+  return (
+    <main className="mx-auto max-w-7xl space-y-6 p-6">
+      <BackLink workspaceId={workspaceId} projectId={projectId} />
+      {doc.failed && (
+        <Alert variant="destructive">
+          <AlertDescription>The doc could not be loaded. Try again in a moment.</AlertDescription>
+        </Alert>
+      )}
+      {doc.value && <h1 className="text-2xl font-semibold">{doc.value.title}</h1>}
+      {version.failed && (
+        <Alert variant="destructive">
+          <AlertDescription>The design could not be loaded. Try again in a moment.</AlertDescription>
+        </Alert>
+      )}
+      {failure && (
+        <Alert variant="destructive">
+          <AlertDescription>{failure}</AlertDescription>
+        </Alert>
+      )}
+      {doc.value && !mainline && <p className="text-sm text-muted-foreground">This doc has no saved version yet.</p>}
+      <div className="grid gap-6 lg:grid-cols-[14rem_minmax(0,1fr)_18rem]">
+        <nav aria-label="Pages" className="space-y-2">
+          <h2 className="text-lg font-semibold">Pages</h2>
+          <ul className="space-y-1">
+            {pages.map((candidate) => (
+              <li key={String(candidate.id)}>
+                <Button
+                  type="button"
+                  variant={candidate === page ? "secondary" : "ghost"}
+                  className="w-full justify-start"
+                  aria-current={candidate === page ? "page" : undefined}
+                  onClick={() => setChosen(String(candidate.id))}
+                >
+                  {String(candidate.name ?? candidate.id)}
+                </Button>
+              </li>
+            ))}
+          </ul>
+        </nav>
+        <div className="relative h-[75vh] overflow-hidden rounded-md border bg-muted/30">
+          <canvas ref={canvas} aria-label="Design canvas" className="size-full touch-none" />
+        </div>
+        <Panel id="layers" title="Layers">
+          <div role="tree" aria-label="Layers of the page" className="max-h-[70vh] overflow-auto text-sm">
+            {rows.map(({ layer, level }) => (
+              <div
+                key={layer.address}
+                role="treeitem"
+                tabIndex={0}
+                aria-level={level}
+                aria-selected={layer.address === selected}
+                style={{ paddingLeft: `${level * 0.75}rem` }}
+                className="cursor-pointer rounded-sm py-1 pr-2 outline-none hover:bg-accent focus-visible:ring-[3px] focus-visible:ring-ring/50 aria-selected:bg-accent aria-selected:font-medium"
+                onClick={() => choose(layer.address)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    choose(layer.address);
+                  }
+                }}
+              >
+                {layer.name} <span className="text-xs text-muted-foreground">{layer.type}</span>
+              </div>
+            ))}
+          </div>
+        </Panel>
+      </div>
+    </main>
   );
 }

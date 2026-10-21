@@ -28,6 +28,8 @@ mod exports {
         static EVENTS: RefCell<CString> = RefCell::new(CString::default());
         /// The result of the last `omni_render_overlay`.
         static OUTLINES: RefCell<CString> = RefCell::new(CString::default());
+        /// The result of the last `omni_render_scene_layers`.
+        static LAYERS: RefCell<CString> = RefCell::new(CString::default());
         /// The result of the last `omni_render_scene_errors`.
         static ERRORS: RefCell<CString> = RefCell::new(CString::default());
     }
@@ -317,6 +319,39 @@ mod exports {
     #[unsafe(no_mangle)]
     pub extern "C" fn omni_render_select_escape() {
         omni_render::web::select_escape();
+    }
+
+    /// The boards of the scene with every node below them, as a NUL-ended JSON
+    /// array that stays until the next call: `[{"address": "<address>",
+    /// "name": "Cart", "type": "board", "children": [...]}]`, nodes inside
+    /// instances addressed `<instanceId>/<componentNodeId>`.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn omni_render_scene_layers() -> *const c_char {
+        LAYERS.set(CString::new(omni_render::web::scene_layers()).unwrap_or_default());
+        LAYERS.with_borrow(|layers| layers.as_ptr())
+    }
+
+    /// Selects the node at the address (`<id>` or
+    /// `<instanceId>/<componentNodeId>`), as a click in the layers panel does;
+    /// empty text clears the selection. Returns `false` if the address names no
+    /// node of the scene (`omni_render_error` has the reason if it is not an
+    /// address).
+    ///
+    /// # Safety
+    /// The pointer and length must be a block from `omni_render_alloc`.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn omni_render_select_node(
+        address: *const u8,
+        address_len: usize,
+    ) -> bool {
+        // SAFETY: the caller promises the block is there.
+        match unsafe { text(address, address_len) }.and_then(omni_render::web::select_node) {
+            Ok(selected) => selected,
+            Err(reason) => {
+                fail(&reason);
+                false
+            }
+        }
     }
 
     /// The bounds of the node at the address (`<id>` or

@@ -779,6 +779,7 @@ export const VersionBodySchema = z.object({
   pages: z.array(z.record(z.string(), z.unknown())).nullable().optional(),
   removed: z.boolean(),
   tags: z.string().nullable().optional(),
+  tokens: z.record(z.string(), z.unknown()).nullable().optional(),
 });
 export type VersionBody = z.infer<typeof VersionBodySchema>;
 

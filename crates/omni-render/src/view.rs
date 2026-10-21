@@ -29,7 +29,7 @@ use skia_safe::{
     AlphaType, Canvas, ColorType, FilterMode, Image, ImageInfo, MipmapMode, Paint, Picture,
     PictureRecorder, Rect, SamplingOptions, surfaces,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// The smallest zoom, so that the whole stress file fits in view.
 pub const MIN_ZOOM: f32 = 0.01;
@@ -439,8 +439,14 @@ fn board_nodes(page: &Node) -> &[Node] {
 }
 
 /// Lays `page` out. `addresses` names the nodes inside instances
-/// (`resolve::Resolved::addresses`).
-fn lay_out(page: &Node, assets: &Assets, addresses: &HashMap<NodeId, NodeAddress>) -> Laid {
+/// (`resolve::Resolved::addresses`), and `instances` the instances that
+/// were expanded into frames (`resolve::Resolved::instances`).
+fn lay_out(
+    page: &Node,
+    assets: &Assets,
+    addresses: &HashMap<NodeId, NodeAddress>,
+    instances: &HashSet<NodeId>,
+) -> Laid {
     let (boxes, texts) = layout::compute_shaped(page, assets.fonts());
     let boards = board_nodes(page)
         .iter()
@@ -456,7 +462,7 @@ fn lay_out(page: &Node, assets: &Assets, addresses: &HashMap<NodeId, NodeAddress
             })
         })
         .collect();
-    let index = Index::new(board_nodes(page), &boxes, addresses);
+    let index = Index::new(board_nodes(page), &boxes, addresses, instances);
     Laid {
         boxes,
         texts,
@@ -467,7 +473,7 @@ fn lay_out(page: &Node, assets: &Assets, addresses: &HashMap<NodeId, NodeAddress
 
 impl Scene {
     pub fn new(page: Node, assets: Assets) -> Self {
-        let laid = lay_out(&page, &assets, &HashMap::new());
+        let laid = lay_out(&page, &assets, &HashMap::new(), &HashSet::new());
         Self {
             page,
             source: None,
@@ -489,7 +495,12 @@ impl Scene {
     pub fn with_system(page: Node, assets: Assets, system: DesignSystem) -> Self {
         let mode = system.modes().first().cloned().unwrap_or_default();
         let resolved = resolve::resolve(&page, &system, &mode);
-        let laid = lay_out(&resolved.page, &assets, &resolved.addresses);
+        let laid = lay_out(
+            &resolved.page,
+            &assets,
+            &resolved.addresses,
+            &resolved.instances,
+        );
         Self {
             page: resolved.page,
             source: Some(page),
@@ -548,7 +559,12 @@ impl Scene {
     /// whenever the design system or its mode changes, so the pointer and the
     /// selection stay on them.
     fn adopt(&mut self, resolved: resolve::Resolved) {
-        let laid = lay_out(&resolved.page, &self.assets, &resolved.addresses);
+        let laid = lay_out(
+            &resolved.page,
+            &self.assets,
+            &resolved.addresses,
+            &resolved.instances,
+        );
         let hovered = self.hovered.map(|at| self.index.address(at));
         let selected = self.selected.map(|at| self.index.address(at));
         self.page = resolved.page;
@@ -651,14 +667,22 @@ impl Scene {
     /// The boards of the page in order, each with every node below it, as
     /// the layers panel of the design viewer lists them (US-043).
     pub fn layers(&self) -> Vec<Layer> {
-        todo!("US-043: the layers of the scene")
+        self.index.layers()
     }
 
     /// Selects the node at `address`, as the layers panel does (US-043), or
     /// clears the selection for `None`. Returns `false` and changes nothing
     /// when the address names no node of the scene.
     pub fn select_address(&mut self, address: Option<&NodeAddress>) -> bool {
-        todo!("US-043: select {address:?}")
+        let Some(address) = address else {
+            self.select(None);
+            return true;
+        };
+        let Some(at) = self.index.lookup(address) else {
+            return false;
+        };
+        self.select(Some(at));
+        true
     }
 
     /// The pointer moved to the screen point `screen` of `viewport`.

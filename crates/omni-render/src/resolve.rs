@@ -88,6 +88,9 @@ pub(crate) struct Resolved {
     /// The address that each node inside an instance stands for, by the ID
     /// the node has in `page`. Other nodes keep their IDs.
     pub(crate) addresses: HashMap<NodeId, NodeAddress>,
+    /// The nodes of `page` that were instances, by their IDs in `page`, where
+    /// they are frames.
+    pub(crate) instances: HashSet<NodeId>,
     pub(crate) errors: Vec<RenderError>,
 }
 
@@ -118,6 +121,7 @@ pub(crate) fn resolve(page: &Node, system: &DesignSystem, mode: &str) -> Resolve
         used: ids_of(page),
         next: 0,
         addresses: HashMap::new(),
+        instances: HashSet::new(),
         errors: Vec::new(),
     };
     let resolved = resolver.node(source.clone(), None);
@@ -131,6 +135,7 @@ pub(crate) fn resolve(page: &Node, system: &DesignSystem, mode: &str) -> Resolve
     Resolved {
         page,
         addresses: resolver.addresses,
+        instances: resolver.instances,
         errors: resolver.errors,
     }
 }
@@ -167,6 +172,7 @@ struct Resolver<'a> {
     used: HashSet<NodeId>,
     next: u64,
     addresses: HashMap<NodeId, NodeAddress>,
+    instances: HashSet<NodeId>,
     errors: Vec<RenderError>,
 }
 
@@ -216,6 +222,7 @@ impl Resolver<'_> {
             id
         };
         if kind == "instance" {
+            self.instances.insert(out_id);
             return self.instance(value, out_id, address, inside);
         }
         let children = value

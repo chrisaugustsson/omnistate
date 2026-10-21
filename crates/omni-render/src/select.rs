@@ -5,7 +5,7 @@
 //! index of node boxes that answers which node is at a point.
 
 use omni_core::design::{Node, NodeData, NodeId};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::layout::LayoutBox;
 
@@ -113,6 +113,8 @@ struct Entry {
     /// it stands for inside an instance.
     address: NodeAddress,
     name: String,
+    /// The node's type as the design has it.
+    kind: &'static str,
     parent: Option<usize>,
     /// The board that holds the node, which is the node itself for a board.
     board: usize,
@@ -138,10 +140,13 @@ impl Index {
     /// Indexes `boards` and everything below them, with the `boxes` that
     /// layout gave them. A node that `addresses` names is a node inside an
     /// instance, and has that address; other nodes are addressed by their IDs.
+    /// A node that `instances` names is an instance that was expanded into a
+    /// frame.
     pub(crate) fn new(
         boards: &[Node],
         boxes: &HashMap<NodeId, LayoutBox>,
         addresses: &HashMap<NodeId, NodeAddress>,
+        instances: &HashSet<NodeId>,
     ) -> Self {
         let mut index = Self {
             entries: Vec::new(),
@@ -149,7 +154,7 @@ impl Index {
             boards: Vec::new(),
         };
         for board in boards {
-            let at = index.add(board, None, boxes, addresses);
+            let at = index.add(board, None, boxes, addresses, instances);
             index.boards.push(at);
         }
         index
@@ -161,6 +166,7 @@ impl Index {
         parent: Option<usize>,
         boxes: &HashMap<NodeId, LayoutBox>,
         addresses: &HashMap<NodeId, NodeAddress>,
+        instances: &HashSet<NodeId>,
     ) -> usize {
         let at = self.entries.len();
         let rect = boxes.get(node.id()).copied().unwrap_or_default();
@@ -175,6 +181,11 @@ impl Index {
         self.entries.push(Entry {
             address: address.clone(),
             name: node.name().to_string(),
+            kind: if instances.contains(node.id()) {
+                "instance"
+            } else {
+                node.kind().as_str()
+            },
             parent,
             board: parent.map_or(at, |parent| self.entries[parent].board),
             visible: node.visible(),
@@ -187,7 +198,7 @@ impl Index {
         let mut reach = Extent::of(rect);
         let mut children = Vec::with_capacity(node.children().len());
         for child in node.children() {
-            let child_at = self.add(child, Some(at), boxes, addresses);
+            let child_at = self.add(child, Some(at), boxes, addresses, instances);
             if !clips && child.visible() {
                 reach = reach.union(self.entries[child_at].reach);
             }
@@ -268,6 +279,25 @@ impl Index {
             at = parent;
         }
         None
+    }
+
+    /// The boards with every node below them, as layers.
+    pub(crate) fn layers(&self) -> Vec<Layer> {
+        self.boards.iter().map(|&board| self.layer(board)).collect()
+    }
+
+    fn layer(&self, at: usize) -> Layer {
+        let entry = &self.entries[at];
+        Layer {
+            address: entry.address.clone(),
+            name: entry.name.clone(),
+            kind: entry.kind.to_string(),
+            children: entry
+                .children
+                .iter()
+                .map(|&child| self.layer(child))
+                .collect(),
+        }
     }
 
     /// The address of the node.

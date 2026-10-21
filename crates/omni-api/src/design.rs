@@ -474,6 +474,19 @@ pub(crate) async fn components_of(
     workspace_id: &str,
     version_id: &str,
 ) -> Result<Library, ApiError> {
+    Ok(tokens_and_components_of(state, workspace_id, version_id)
+        .await?
+        .1)
+}
+
+/// The tokens and the components of the design system version `version_id`;
+/// none of either for a version without content, and no tokens for a design
+/// system of components only.
+async fn tokens_and_components_of(
+    state: &AppState,
+    workspace_id: &str,
+    version_id: &str,
+) -> Result<(Option<TokenTree>, Library), ApiError> {
     let mut tx = state.workspace_tx(workspace_id).await?;
     let found: Option<(Option<String>,)> =
         sqlx::query_as("SELECT chunk FROM versions WHERE id = $1::uuid")
@@ -483,11 +496,11 @@ pub(crate) async fn components_of(
             .map_err(ApiError::database)?;
     tx.commit().await.map_err(ApiError::database)?;
     let Some((Some(chunk),)) = found else {
-        return Ok(Library::default());
+        return Ok((None, Library::default()));
     };
     let text = read_chunk(state, workspace_id, &chunk).await?;
-    let (_, components) = read_design_system(&text, &format!("version {version_id}"))?;
-    Ok(Library::new(components))
+    let (tokens, components) = read_design_system(&text, &format!("version {version_id}"))?;
+    Ok((tokens, Library::new(components)))
 }
 
 /// The design system that the change set's design resolves against: its
@@ -601,6 +614,8 @@ pub(crate) struct VersionView {
     pub(crate) tags: Option<String>,
     pub(crate) pages: Option<Vec<Value>>,
     pub(crate) components: Vec<Value>,
+    /// The recorded design system version's token tree, in every mode.
+    pub(crate) tokens: Option<Value>,
 }
 
 pub(crate) async fn view_of_version(
@@ -620,15 +635,16 @@ pub(crate) async fn view_of_version(
                 }
                 None => Vec::new(),
             };
-            let library = match design_system_version_id {
-                Some(recorded) => components_of(state, workspace_id, recorded).await?,
-                None => Library::default(),
+            let (tokens, library) = match design_system_version_id {
+                Some(recorded) => tokens_and_components_of(state, workspace_id, recorded).await?,
+                None => (None, Library::default()),
             };
             let used = used_by(&pages, &library);
             Ok(Some(VersionView {
                 tags: Some(tags_of(&pages)),
                 pages: Some(nodes_values(&pages)),
                 components: nodes_values(&library.only(&used)),
+                tokens: tokens.map(|tokens| tokens.to_json()),
             }))
         }
         "design-system" => {
@@ -637,6 +653,7 @@ pub(crate) async fn view_of_version(
                 tags: None,
                 pages: None,
                 components: nodes_values(&library.0),
+                tokens: None,
             }))
         }
         _ => Ok(None),

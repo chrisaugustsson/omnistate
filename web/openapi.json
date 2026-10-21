@@ -2768,6 +2768,13 @@
               "string",
               "null"
             ]
+          },
+          "tokens": {
+            "description": "For a design version, the whole token tree of the design system version\nit recorded, in every mode (`null` for a design system of components\nonly); the design viewer hands it to the renderer with `components`.\nOnly when the version is read by ID.",
+            "type": [
+              "object",
+              "null"
+            ]
           }
         },
         "required": [
