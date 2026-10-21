@@ -131,8 +131,8 @@ fields included, and gives its value.
 ## Modes
 
 The root lists the design system's modes in `$extensions.omnistate.modes`, an
-array of at least one distinct name made of letters, digits, `-` and `_`:
-`["light", "dark"]`, or one mode per brand. The order is kept.
+array of at least one distinct name made of letters (of any script), digits, `-` and
+`_`: `["light", "dark"]`, `["Mörkt", "Ljust"]`, or one mode per brand. The order is kept.
 
 A token that has one value in every mode states it as `$value`. A token that
 has a value per mode also states its value in each mode in the object

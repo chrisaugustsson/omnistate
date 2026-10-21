@@ -1,8 +1,9 @@
 //! `omni`, the command line agents use to talk to the OmniState API.
 //!
-//! It is a single binary with no dependencies beyond the standard library, so it
-//! starts in a millisecond or two. `--version` and `--help` answer before the
-//! config file or the network are looked at.
+//! It is a single binary that talks to the API over plain HTTP with the
+//! standard library, so it starts in a millisecond or two. Its only dependency
+//! is the Penpot reader of `omni-penpot`, for `omni import penpot`. `--version`
+//! and `--help` answer before the config file or the network are looked at.
 
 mod args;
 mod attach;
@@ -16,6 +17,7 @@ mod docs;
 mod error;
 mod http;
 mod identity;
+mod import;
 mod json;
 mod tokens;
 mod toml;
@@ -93,6 +95,14 @@ Usage:
                                       version, a change set's draft or a saved version
   omni tokens export --per-mode --out <dir>
                                       write one file per mode, <dir>/<mode>.tokens.json
+  omni import penpot <file.penpot> --project <id>
+                                      import a Penpot export (made with 'Export file + libraries')
+                                      through a new change set: the pages and boards as a
+                                      design doc, the components, design tokens (themes
+                                      become modes), colors and typographies as the design
+                                      system doc, the images as attachments; saves a
+                                      version of each doc and prints the change set and a
+                                      report of what could not be imported
   omni wait --changeset <id> --until approved|rejected|merged|needs_rebase [--timeout <s>]
                                       wait until the change set is approved (by the human),
                                       rejected, merged or needs a rebase; prints its status

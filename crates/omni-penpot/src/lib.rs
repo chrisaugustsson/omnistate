@@ -2,9 +2,11 @@
 //! converts their boards into OmniState designs and compares those with Penpot's
 //! own rendering, and writes the page that sets the two side by side.
 
+#[cfg(feature = "compare")]
 pub mod compare;
 mod convert;
 pub mod import;
+#[cfg(feature = "compare")]
 pub mod report;
 
 pub use convert::{

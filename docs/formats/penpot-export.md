@@ -291,3 +291,60 @@ but no `componentRoot`. The converter draws a component's shapes as the plain
 shapes they are and lists each root once, with property `componentId` and a
 reason that names the component, so a report reader can see which parts of a
 board come from components. The shapes inside a root get no entry of their own.
+
+## Importing (`omni import penpot`)
+
+`omni import penpot <file.penpot> --project <id>` (US-051) imports an export
+made with "Export file + libraries" through a new change set. The reader and the
+converter above do the work, so every rule of "What the converter takes from a
+shape" applies (line pitch, filling children, hugging texts, the board Unplaced).
+`omni_penpot::import::import_file` gives the whole import as data: `pages` (the
+design doc), `design_system` (the design system doc), `attachments` and `report`.
+`omni_penpot::compare::compare_import` compares the imported boards with
+Penpot's PNGs, in the mode of Penpot's active theme.
+
+What the export holds, and what it becomes:
+
+| Penpot | OmniState |
+| --- | --- |
+| Pages, in their `index` order | One `page` node each, named as the page, holding its boards |
+| Boards and the shapes in them | As converted: boards, frames, texts, vectors and images |
+| `components/*.json` | One `component` node each in the design system doc, converted from the main instance. Named `name`, or `path / name` when it has a path |
+| Variants of one set (`variantId`, `variantProperties`) | Components that share the set's name and carry a `variant` property for each Penpot property, listing every value of the set, each with its own value as default |
+| A copy of a component (`componentId`, `shapeRef`) | An `instance` of that component. An untouched copy has no overrides |
+| A nested copy inside a component | An `instance` inside the component's tree |
+| `touched` on a copy: `text-content-text`, `fill-group`, `visibility-group`, `swap-slot-<id>` | Overrides: `content`, `fills`, `visible`, `component`, keyed by the node of the component whose Penpot shape the layer copies (`shapeRef`) |
+| `tokens.json` themes (`$themes`) | The modes of the token tree, named as the themes and in their order |
+| Color, spacing and border radius tokens | `color`, `spacing` and `radius` tokens with their Penpot path. A token of a set that every theme enables has one value, a token of a set that one theme enables has that theme's value in its mode. `rgba(r, g, b, a)` becomes `#rrggbbaa`, a number becomes `16px`, and a reference to another token is followed and written out as its value |
+| `appliedTokens` `fill` and `strokeColor` | The fill, the stroke and the text's color stay references: `$color.surface` |
+| Library colors (`colors/`) | `color.library.<path>.<name>` tokens, the same in every mode |
+| Library typographies (`typographies/`) | `typography.<path>.<name>` tokens |
+| Images | Attachments; the design refers to them as `attachment:<id>` |
+
+The main instances of components stay on their pages as the plain shapes they
+are (a page of components keeps its look), and the component is converted from
+the same shapes. A board that is itself a copy stays a board, because a page
+holds only boards; its own copies inside are instances.
+
+An instance holds only text, fills, visibility and swapped components, so what
+else a copy changes on a layer (position or size, name, strokes, shadows, text
+style, layout, a swapped component the design system cannot place) is listed
+once per layer with the property `overrides`. A change to a layer inside a
+nested instance cannot be keyed and is listed too.
+
+Anything that cannot be imported is in the report, never dropped silently: the
+entries of the converter, each with the page it is on, and entries without a
+shape for tokens, colors and typographies. The tokens of a type with no group in
+OmniState's tree (font sizes, weights and families, sizing, opacity and so on)
+are listed by their Penpot path; a token that fails to resolve is listed with
+the reason.
+
+The command reads the export before it sends anything, so a file that is no
+export leaves no change set behind. It uploads the images, starts the design
+system doc unless the project has one (the tokens and components replace the
+draft's), puts the components in as often as it takes for the instances inside
+them to name components the server has given IDs (the server assigns every
+node ID), starts the design doc, puts the pages in, and saves a version of each
+doc. The change set stays `open`. `--json` prints `changeset_id`,
+`design_doc_id`, `design_system_doc_id`, the two version IDs and the whole
+`report`.

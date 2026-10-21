@@ -4,13 +4,24 @@ version.workspace = true
 edition.workspace = true
 publish.workspace = true
 
+[features]
+# The comparison with Penpot's PNGs and its report draw the boards with the
+# renderer, which links Skia. `omni import penpot` (omni-cli) needs only the
+# reader, the converter and the import, so it turns this off.
+default = ["compare"]
+compare = ["dep:omni-render", "dep:skia-safe"]
+
+[[bin]]
+name = "omni-penpot"
+path = "src/main.rs"
+required-features = ["compare"]
+
 [dependencies]
 omni-core = { path = "../omni-core" }
 # The comparison draws the converted boards with the renderer, and reads and
 # writes PNGs with the codec it links: the version and features omni-render pins.
-omni-render = { path = "../omni-render" }
-skia-safe = { version = "0.153.3", features = ["gl", "textlayout"] }
+omni-render = { path = "../omni-render", optional = true }
+skia-safe = { version = "0.153.3", features = ["gl", "textlayout"], optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 zip = { version = "9", default-features = false, features = ["deflate"] }
-

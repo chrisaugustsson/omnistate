@@ -3,8 +3,9 @@
 //! the request; its base name travels percent-encoded in `X-Omni-Filename`.
 
 use crate::args::Args;
-use crate::commands::{agent, say};
+use crate::commands::{Agent, agent, say};
 use crate::error::{CliError, Result, bail};
+use crate::http::Response;
 use crate::json::Value;
 use std::path::Path;
 
@@ -29,19 +30,7 @@ pub fn run(args: &Args, file: &str) -> Result<()> {
         .unwrap_or_else(|| file.to_string());
 
     let agent = agent(args)?;
-    let headers = [
-        (
-            "Content-Type".to_string(),
-            "application/octet-stream".to_string(),
-        ),
-        ("X-Omni-Filename".to_string(), percent_encode(&name)),
-    ];
-    let response = agent.request_with(
-        "POST",
-        &format!("/api/v1/w/{}/attachments", agent.workspace_id),
-        &headers,
-        Some(&bytes),
-    )?;
+    let response = send(&agent, &name, &bytes)?;
     let text = response.text();
     if args.json {
         say(text.trim_end());
@@ -60,6 +49,26 @@ pub fn run(args: &Args, file: &str) -> Result<()> {
     }
     Ok(())
 }
+
+/// Uploads `bytes` as a file named `name`.
+pub(crate) fn send(agent: &Agent, name: &str, bytes: &[u8]) -> Result<Response> {
+    let headers = [
+        (
+            "Content-Type".to_string(),
+            "application/octet-stream".to_string(),
+        ),
+        ("X-Omni-Filename".to_string(), percent_encode(name)),
+    ];
+    agent.request_with(
+        "POST",
+        &format!("/api/v1/w/{}/attachments", agent.workspace_id),
+        &headers,
+        Some(bytes),
+    )
+}
+
+/// The largest file the API takes, in bytes.
+pub(crate) const MAX_UPLOAD: usize = MAX_BYTES as usize;
 
 /// The text with every byte but the unreserved characters as `%XX`, so a name
 /// with a space, a line break or a letter outside ASCII fits in a header.

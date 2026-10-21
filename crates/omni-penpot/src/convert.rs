@@ -17,6 +17,11 @@ use zip::ZipArchive;
 
 use crate::{PageHead, ROOT_ID, RawBox, ReadError, Reader, Rect, open_archive};
 
+mod linked;
+
+use linked::Linked;
+pub(crate) use linked::run as import_run;
+
 /// What converting one `.penpot` file gives.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Conversion {
@@ -91,6 +96,17 @@ pub struct ReportEntry {
 /// The alphabet of node ids, as omni-core defines it.
 const ID_ALPHABET: &[u8] = b"0123456789abcdefghjkmnpqrstvwxyz";
 
+/// The node ID that is the number `number` in the alphabet of node IDs.
+pub(crate) fn node_id(number: u64) -> String {
+    let mut left = number;
+    let mut id = [b'0'; 8];
+    for slot in id.iter_mut().rev() {
+        *slot = ID_ALPHABET[(left % 32) as usize];
+        left /= 32;
+    }
+    String::from_utf8_lossy(&id).to_string()
+}
+
 /// What a shape file may say that the converter uses. Every field reads
 /// leniently: a field of the wrong type counts as left out.
 #[derive(Deserialize, Default)]
@@ -151,6 +167,10 @@ struct Pen {
     component_id: L<String>,
     component_root: L<bool>,
     main_instance: L<bool>,
+    parent_id: L<String>,
+    shape_ref: L<String>,
+    touched: L<Vec<String>>,
+    applied_tokens: L<Value>,
 }
 
 /// A value that reads as `None` when it is not a `T`.
@@ -258,6 +278,17 @@ struct Converter<'a, R: Read + Seek> {
     shapes: Vec<ConvertedShape>,
     /// The boxes of the shapes left out whole so far in that board.
     left_out: HashMap<String, Rect>,
+    /// The components, token links and nodes of an import (US-051); None for a
+    /// plain conversion, which draws component links as the plain shapes they
+    /// are.
+    linked: Option<Linked>,
+    /// The name of the page being converted, and the page each entry of
+    /// `entries` is about.
+    page_name: String,
+    entry_pages: Vec<String>,
+    /// The node each shape of the component being converted became, by the
+    /// Penpot id of the shape, with the type of the node.
+    refs: Option<HashMap<String, (String, String)>>,
 }
 
 /// Reads the `.penpot` export at `path` and converts its boards.
@@ -281,6 +312,10 @@ pub fn convert_file(path: &Path) -> Result<Conversion, ReadError> {
         next_id: 0,
         shapes: Vec::new(),
         left_out: HashMap::new(),
+        linked: None,
+        page_name: String::new(),
+        entry_pages: Vec::new(),
+        refs: None,
     };
     let mut boards = Vec::new();
     for head in &heads {
@@ -330,16 +365,11 @@ const UNPLACED: &str = "Unplaced";
 impl<R: Read + Seek> Converter<'_, R> {
     fn new_id(&mut self) -> String {
         self.next_id += 1;
-        let mut left = self.next_id;
-        let mut id = [b'0'; 8];
-        for slot in id.iter_mut().rev() {
-            *slot = ID_ALPHABET[(left % 32) as usize];
-            left /= 32;
-        }
-        String::from_utf8_lossy(&id).to_string()
+        node_id(self.next_id)
     }
 
     fn report(&mut self, who: &Who, property: Option<&str>, reason: impl Into<String>) {
+        self.entry_pages.push(self.page_name.clone());
         self.entries.push(ReportEntry {
             board: who.board.name.clone(),
             board_id: who.board.id.clone(),
@@ -376,6 +406,7 @@ impl<R: Read + Seek> Converter<'_, R> {
     }
 
     fn page(&mut self, head: &PageHead, boards: &mut Vec<ConvertedBoard>) -> Result<(), ReadError> {
+        self.page_name = head.name.clone();
         let mut seen = HashSet::from([ROOT_ID.to_string()]);
         let none = Board {
             id: String::new(),
@@ -539,6 +570,7 @@ impl<R: Read + Seek> Converter<'_, R> {
                 .find(|board| board.id == start)
                 .map(|board| board.name.clone())
                 .unwrap_or_default();
+            self.entry_pages.push(self.page_name.clone());
             self.entries.push(ReportEntry {
                 board: board.clone(),
                 board_id: start.to_string(),
@@ -613,6 +645,25 @@ impl<R: Read + Seek> Converter<'_, R> {
             hidden: pen.hidden.0.unwrap_or(false),
         };
         self.checks(&who, &pen, &kind);
+        if self.linked.is_some()
+            && pen.component_id.0.is_some()
+            && pen.main_instance.0 != Some(true)
+        {
+            if parent.page {
+                // A page holds boards only, so a board that is a copy stays
+                // the plain board it is, and its own copies are instances.
+                if self.links_component(&pen) {
+                    let component = pen.component_id.0.as_deref().unwrap_or_default();
+                    self.report(
+                        &who,
+                        Some("componentId"),
+                        format!("the board is a copy of component {component}; a board cannot be an instance, so it is drawn as the plain shapes it holds"),
+                    );
+                }
+            } else if let Some(instance) = self.instance(dir, &common, &pen, parent, board, seen)? {
+                return Ok(Some(instance));
+            }
+        }
         let value = match kind.as_str() {
             "frame" | "group" | "rect" => {
                 self.frame(dir, &common, &pen, &kind, parent, board, seen)?
@@ -679,7 +730,7 @@ impl<R: Read + Seek> Converter<'_, R> {
                 );
             }
         }
-        if pen.component_root.0 == Some(true) {
+        if pen.component_root.0 == Some(true) && !self.links_component(pen) {
             let component = pen.component_id.0.as_deref().unwrap_or("with no id");
             let role = if pen.main_instance.0 == Some(true) {
                 "main instance"
@@ -740,6 +791,9 @@ impl<R: Read + Seek> Converter<'_, R> {
                 node_id: node_id.clone(),
                 bounds: common.bounds,
             });
+        }
+        if let Some(refs) = self.refs.as_mut() {
+            refs.insert(common.id.clone(), (node_id.clone(), kind.to_string()));
         }
         node.insert("id".into(), json!(node_id));
         node.insert("type".into(), json!(kind));
@@ -916,9 +970,11 @@ impl<R: Read + Seek> Converter<'_, R> {
             Flow::Grid => self.grid_layout(&who, pen),
         };
         node.insert("layout".into(), layout);
-        let fills = self.fills(&who, pen, common.bounds);
+        let mut fills = self.fills(&who, pen, common.bounds);
+        self.link_fills(pen, &mut fills);
         insert_list(&mut node, "fills", fills);
-        let strokes = self.strokes(&who, pen, Look::Frame);
+        let mut strokes = self.strokes(&who, pen, Look::Frame);
+        self.link_strokes(pen, &mut strokes);
         insert_list(&mut node, "strokes", strokes);
         if let Some(radius) = radius(pen) {
             node.insert("radius".into(), radius);
@@ -1038,9 +1094,11 @@ impl<R: Read + Seek> Converter<'_, R> {
         let mut node = self.base("vector", common, pen, parent);
         Self::size(&mut node, common, pen, parent, [None, None]);
         node.insert("path".into(), json!(path));
-        let fills = self.fills(who, pen, common.bounds);
+        let mut fills = self.fills(who, pen, common.bounds);
+        self.link_fills(pen, &mut fills);
         insert_list(&mut node, "fills", fills);
-        let strokes = self.strokes(who, pen, Look::Vector);
+        let mut strokes = self.strokes(who, pen, Look::Vector);
+        self.link_strokes(pen, &mut strokes);
         insert_list(&mut node, "strokes", strokes);
         let shadows = self.shadows(who, pen);
         insert_list(&mut node, "shadows", shadows);
@@ -1075,7 +1133,8 @@ impl<R: Read + Seek> Converter<'_, R> {
         Self::size(&mut node, common, pen, parent, [None, None]);
         node.insert("image".into(), json!(reference));
         node.insert("fit".into(), json!("cover"));
-        let strokes = self.strokes(who, pen, Look::Image);
+        let mut strokes = self.strokes(who, pen, Look::Image);
+        self.link_strokes(pen, &mut strokes);
         insert_list(&mut node, "strokes", strokes);
         if let Some(radius) = radius(pen) {
             node.insert("radius".into(), radius);
@@ -1216,25 +1275,8 @@ impl<R: Read + Seek> Converter<'_, R> {
             );
         }
 
-        let mut lines = Vec::new();
-        for paragraph in &paragraphs {
-            let line: String = paragraph
-                .get("children")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-                .filter_map(|run| run.get("text").and_then(Value::as_str))
-                .collect();
-            lines.push(line);
-        }
-        let mut content = lines.join("\n");
+        let content = text_string(&paragraphs, first, first_paragraph);
         let get = |key: &str| attr(first, first_paragraph, key);
-        match get("textTransform").as_ref().and_then(Value::as_str) {
-            Some("uppercase") => content = content.to_uppercase(),
-            Some("lowercase") => content = content.to_lowercase(),
-            Some("capitalize") => content = capitalize(&content),
-            _ => {}
-        }
         node.insert("content".into(), json!(content));
 
         let family = get("fontFamily")
@@ -1315,6 +1357,9 @@ impl<R: Read + Seek> Converter<'_, R> {
             if let Some(color) = self.text_color(who, fill) {
                 node.insert("color".into(), json!(color));
             }
+        }
+        if let Some(link) = self.token_link(pen, "fill") {
+            node.insert("color".into(), json!(link));
         }
         if let Some(opacity) = opacity(pen) {
             node.insert("opacity".into(), opacity);
@@ -1774,6 +1819,51 @@ fn line_pitch(pen: &Pen, bounds: Rect, grow: &str) -> Option<f64> {
         [_] if grow != "fixed" => Some(bounds.height).filter(|pitch| *pitch > 0.0),
         _ => None,
     }
+}
+
+/// The characters of a text: its paragraphs joined with a newline, with the
+/// `textTransform` of the first run applied.
+fn text_string(paragraphs: &[&Value], first: &Value, first_paragraph: &Value) -> String {
+    let lines: Vec<String> = paragraphs
+        .iter()
+        .map(|paragraph| {
+            paragraph
+                .get("children")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|run| run.get("text").and_then(Value::as_str))
+                .collect()
+        })
+        .collect();
+    let content = lines.join("\n");
+    let transform = first
+        .get("textTransform")
+        .or_else(|| first_paragraph.get("textTransform"))
+        .filter(|value| !value.is_null())
+        .and_then(Value::as_str);
+    match transform {
+        Some("uppercase") => content.to_uppercase(),
+        Some("lowercase") => content.to_lowercase(),
+        Some("capitalize") => capitalize(&content),
+        _ => content,
+    }
+}
+
+/// The characters of the text shape `pen`, None when it has no runs.
+fn text_of(pen: &Pen) -> Option<String> {
+    let mut paragraphs = Vec::new();
+    if let Some(content) = &pen.content.0 {
+        collect_paragraphs(content, &mut paragraphs);
+    }
+    let (first, first_paragraph) = paragraphs.iter().find_map(|paragraph| {
+        let run = paragraph
+            .get("children")
+            .and_then(Value::as_array)?
+            .first()?;
+        Some((run, *paragraph))
+    })?;
+    Some(text_string(&paragraphs, first, first_paragraph))
 }
 
 /// The paragraphs of a text's content: the `paragraph` nodes of its tree.

@@ -19,13 +19,14 @@ use std::path::Path;
 use omni_core::design::{AttachmentRef, Node, NodeId};
 use omni_render::layout::{self, LayoutBox};
 use omni_render::paint::{self, Assets};
+use omni_render::system::DesignSystem;
 use serde_json::{Value, json};
 use skia_safe::{
     AlphaType, ColorType, Data, EncodedImageFormat, Image, ImageInfo, gpu::DirectContext, images,
     surfaces,
 };
 
-use crate::{ConvertedBoard, ReadError, Rect, ReportEntry, convert_file};
+use crate::{Attachment, ConvertedBoard, ReadError, Rect, ReportEntry, convert_file, import};
 
 /// The largest difference in a channel (red, green, blue or alpha, each 0 to
 /// 255) between two pixels that still counts as the same.
@@ -140,12 +141,62 @@ pub struct Unconverted {
 /// `.penpot`.
 pub fn compare_file(path: &Path) -> Result<Comparison, ReadError> {
     let conversion = convert_file(path)?;
+    Ok(compare_boards(
+        path,
+        &conversion.boards,
+        &conversion.attachments,
+        &conversion.report.entries,
+    ))
+}
+
+/// Imports the export at `path` (US-051) and compares each imported board with
+/// Penpot's PNG of it, as [`compare_file`] does for the converted boards: the
+/// instances and token references of the board are drawn as the imported
+/// design system resolves them, in the mode of Penpot's active theme.
+pub fn compare_import(path: &Path) -> Result<Comparison, ReadError> {
+    let built = import::build(path)?;
+    let system = DesignSystem::from_json(&built.import.design_system).map_err(|error| {
+        ReadError(format!(
+            "the design system imported from {} is refused: {error}",
+            path.display()
+        ))
+    })?;
+    let mode = built
+        .import
+        .mode
+        .clone()
+        .or_else(|| system.modes().first().cloned())
+        .unwrap_or_default();
+    let boards: Vec<ConvertedBoard> = built
+        .boards
+        .iter()
+        .map(|board| ConvertedBoard {
+            design: system.resolve(&board.design, &mode).0,
+            ..board.clone()
+        })
+        .collect();
+    Ok(compare_boards(
+        path,
+        &boards,
+        &built.import.attachments,
+        &built.entries,
+    ))
+}
+
+/// Compares each of `boards`, whose conversion left `entries` out, with the
+/// PNG of it beside the export at `path`.
+fn compare_boards(
+    path: &Path,
+    boards_converted: &[ConvertedBoard],
+    attachments: &[Attachment],
+    entries: &[ReportEntry],
+) -> Comparison {
     let folder = path.with_extension("");
     let folder = folder.is_dir().then_some(folder);
 
     let mut assets = Assets::new();
     load_fonts(&mut assets, path);
-    for attachment in &conversion.attachments {
+    for attachment in attachments {
         // An image that cannot be loaded is not drawn, which shows in the diff.
         if let Ok(reference) = format!("attachment:{}", attachment.id).parse::<AttachmentRef>() {
             let _ = assets.add_image(&reference, &attachment.bytes);
@@ -153,18 +204,18 @@ pub fn compare_file(path: &Path) -> Result<Comparison, ReadError> {
     }
 
     let mut left_out: HashMap<&str, Vec<&ReportEntry>> = HashMap::new();
-    for entry in &conversion.report.entries {
+    for entry in entries {
         if entry.property.is_none() && !entry.board_id.is_empty() {
             left_out.entry(&entry.board_id).or_default().push(entry);
         }
     }
 
     let files = match &folder {
-        Some(_) => png_names(&conversion.boards),
-        None => vec![String::new(); conversion.boards.len()],
+        Some(_) => png_names(boards_converted),
+        None => vec![String::new(); boards_converted.len()],
     };
-    let mut boards = Vec::with_capacity(conversion.boards.len());
-    for (board, file) in conversion.boards.iter().zip(&files) {
+    let mut boards = Vec::with_capacity(boards_converted.len());
+    for (board, file) in boards_converted.iter().zip(&files) {
         let boxes = layout::compute(&board.design, assets.fonts());
         let pinned = pin_texts(board);
         let layout = match &pinned {
@@ -218,16 +269,7 @@ pub fn compare_file(path: &Path) -> Result<Comparison, ReadError> {
                 .collect(),
         });
     }
-    Ok(Comparison { boards })
-}
-
-/// Imports the export at `path` (US-051) and compares each imported board with
-/// Penpot's PNG of it, as [`compare_file`] does for the converted boards: the
-/// instances and token references of the board are drawn as the imported
-/// design system resolves them, in the mode of Penpot's active theme.
-pub fn compare_import(path: &Path) -> Result<Comparison, ReadError> {
-    let _ = path;
-    todo!("US-051: compare the imported boards with Penpot's PNGs")
+    Comparison { boards }
 }
 
 /// Supplies the fonts in the `fonts` folder beside the export: each subfolder

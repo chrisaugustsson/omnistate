@@ -45,6 +45,10 @@ use std::time::Duration;
 /// How long a health check waits for Postgres or RustFS before it reports an error.
 const CHECK_TIMEOUT: Duration = Duration::from_secs(2);
 
+/// The largest body of an import of components or of a design, in bytes: a
+/// design imported from a Penpot file (US-051) is many megabytes of tags.
+const IMPORT_MAX_BYTES: usize = 64 * 1024 * 1024;
+
 /// Where the API listens and the services it talks to, read from the environment.
 pub struct Config {
     pub bind: String,
@@ -366,11 +370,11 @@ pub fn router(state: AppState) -> Router {
         )
         .route(
             "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/components",
-            put(design::import_components),
+            put(design::import_components).layer(DefaultBodyLimit::max(IMPORT_MAX_BYTES)),
         )
         .route(
             "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs/{doc_id}/design",
-            put(design::import_design),
+            put(design::import_design).layer(DefaultBodyLimit::max(IMPORT_MAX_BYTES)),
         )
         .route(
             "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs/{doc_id}/boards/{board_id}",

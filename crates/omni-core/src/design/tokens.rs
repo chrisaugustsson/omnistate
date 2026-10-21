@@ -211,6 +211,15 @@ fn is_name(name: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
 }
 
+/// Whether `name` can name a mode: letters (of any script), digits, `-` and
+/// `_`, as Penpot's theme names `Mörkt` and `Ljust` need.
+fn is_mode_name(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+}
+
 fn is_property(name: &str) -> bool {
     matches!(
         name,
@@ -241,7 +250,7 @@ fn read_modes(root: &Map<String, Value>) -> Result<Vec<String>, TokenError> {
     };
     let mut modes: Vec<String> = Vec::new();
     for mode in listed {
-        let Some(mode) = mode.as_str().filter(|mode| is_name(mode)) else {
+        let Some(mode) = mode.as_str().filter(|mode| is_mode_name(mode)) else {
             return refuse(format!(
                 "{mode} is not a mode name: a mode is named with letters, digits, - and _, such as light"
             ));

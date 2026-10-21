@@ -82,8 +82,8 @@ fn project_path(agent: &Agent, project: &str) -> String {
 fn file_name_of(mode: &str) -> Result<String> {
     let safe = !mode.is_empty()
         && mode
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_');
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '-' || c == '_');
     if !safe {
         bail!(
             "the server named a mode {mode:?}, which is not a mode name; is it an OmniState API?"

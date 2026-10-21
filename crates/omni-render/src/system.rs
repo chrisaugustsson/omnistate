@@ -103,6 +103,14 @@ impl DesignSystem {
         self.tokens.modes()
     }
 
+    /// `page` with its instances expanded and its token references resolved in
+    /// `mode`: an ordinary page that layout and painting handle like any
+    /// other, and the nodes that were drawn as error placeholders.
+    pub fn resolve(&self, page: &Node, mode: &str) -> (Node, Vec<RenderError>) {
+        let resolved = crate::resolve::resolve(page, self, mode);
+        (resolved.page, resolved.errors)
+    }
+
     /// The value of `token` in `mode`, with its references followed.
     pub(crate) fn token(&self, token: &TokenRef, mode: &str) -> Option<Value> {
         self.tokens.resolve(token, mode)

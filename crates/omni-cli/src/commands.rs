@@ -1,7 +1,7 @@
 //! The commands: `login`, `key list|revoke`, `whoami`, `api` and `config show`;
 //! the project and change set commands are in `changesets`, the doc commands in
-//! `docs`, the version commands in `versions` and the token commands in
-//! `tokens`.
+//! `docs`, the version commands in `versions`, the token commands in `tokens`
+//! and the Penpot import in `import`.
 //!
 //! Standard output holds only the result of a command (short text, or the API's
 //! JSON with `--json`), so a script can parse it. Prompts, notices and errors go
@@ -18,6 +18,7 @@ use crate::docs;
 use crate::error::{CliError, Result, bail};
 use crate::http::{self, Response, Server};
 use crate::identity::Identity;
+use crate::import;
 use crate::json::{Value, quote};
 use crate::tokens;
 use crate::versions;
@@ -109,6 +110,9 @@ pub fn run(args: &Args) -> Result<()> {
         ["component", "usage"] => components::usage(args, None),
         ["component", "usage", component] => components::usage(args, Some(component)),
         ["component", ..] => bail!("usage: omni component usage <component>"),
+        ["import", "penpot"] => import::penpot(args, None),
+        ["import", "penpot", file] => import::penpot(args, Some(file)),
+        ["import", ..] => bail!("usage: omni import penpot <file.penpot> --project <id>"),
         ["wait"] => wait::run(args),
         ["wait", ..] => bail!("usage: omni wait --changeset <id> --until <status> [--timeout <s>]"),
         ["claim"] => claims::take(args, None),
@@ -247,6 +251,21 @@ impl Agent {
         checked(response)
     }
 
+    /// Like `request`, but the answer is returned whatever its status (see
+    /// `checked`), for a command that decides what a refusal means.
+    pub(crate) fn request_any(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<&[u8]>,
+    ) -> Result<Response> {
+        let mut headers = self.headers.clone();
+        if body.is_some() {
+            headers.push(("Content-Type".to_string(), "application/json".to_string()));
+        }
+        http::send(&self.server, method, path, &headers, body)
+    }
+
     /// Like `request`, but a 404 is the error `not_found`, for a command that
     /// knows what a missing record means.
     pub(crate) fn request_or_not_found(
@@ -287,7 +306,7 @@ impl Agent {
 }
 
 /// Shows the response's notices and turns an error status into an error.
-fn checked(response: Response) -> Result<Response> {
+pub(crate) fn checked(response: Response) -> Result<Response> {
     for notice in response.headers_named("x-omni-notice") {
         eprintln!("notice: {notice}");
     }
