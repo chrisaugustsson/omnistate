@@ -595,6 +595,58 @@ async fn fill_workspace(conn: &mut PgConnection, workspace: &str, membership: &s
             }
         }
     }
+
+    // US-033: a thread of the change set, a phase of it and a post in it.
+    // Seeded as soon as the tables exist (tests/threads.rs pins their names
+    // and the columns without a default; phases may live in `threads`, so
+    // `thread_phases` is seeded only if it exists), for the same reason as
+    // above.
+    let threads_exist: bool = sqlx::query_scalar(
+        "SELECT to_regclass('public.threads') IS NOT NULL \
+         AND to_regclass('public.posts') IS NOT NULL",
+    )
+    .fetch_one(&mut *conn)
+    .await
+    .expect("look for the thread tables");
+    if threads_exist {
+        let thread_id: String = sqlx::query_scalar(
+            "INSERT INTO threads (workspace_id, project_id, changeset_id, question, criteria) \
+             VALUES ($1::uuid, $2::uuid, $3::uuid, 'deletion test', '[\"deletion test\"]'::jsonb) \
+             RETURNING id::text",
+        )
+        .bind(workspace)
+        .bind(&project_id)
+        .bind(&changeset_id)
+        .fetch_one(&mut *conn)
+        .await
+        .expect("insert a thread");
+        let phases_exist: bool =
+            sqlx::query_scalar("SELECT to_regclass('public.thread_phases') IS NOT NULL")
+                .fetch_one(&mut *conn)
+                .await
+                .expect("look for the thread phases table");
+        if phases_exist {
+            sqlx::query(
+                "INSERT INTO thread_phases (workspace_id, thread_id, number, sealed) \
+                 VALUES ($1::uuid, $2::uuid, 2, true)",
+            )
+            .bind(workspace)
+            .bind(&thread_id)
+            .execute(&mut *conn)
+            .await
+            .expect("insert a thread phase");
+        }
+        sqlx::query(
+            "INSERT INTO posts (workspace_id, thread_id, phase, type, summary, body, author) \
+             VALUES ($1::uuid, $2::uuid, 1, 'note', 'deletion test', 'deletion test', $3::jsonb)",
+        )
+        .bind(workspace)
+        .bind(&thread_id)
+        .bind(r#"{"run":"run-1","role":"writer","model":null,"harness":null}"#)
+        .execute(&mut *conn)
+        .await
+        .expect("insert a post");
+    }
 }
 
 async fn put_objects(keys: Vec<String>) {

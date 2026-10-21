@@ -39,8 +39,8 @@ const API_ROLE: &str = "omni_api";
 const GLOBAL_TABLES: [&str; 3] = ["users", "login_identities", "sessions"];
 const TENANT_TABLES: [&str; 3] = ["workspaces", "memberships", "api_keys"];
 /// The tenant tables whose rows are never changed: the API role may not UPDATE
-/// them (US-024), and the chunk index of US-030.
-const APPEND_ONLY_TABLES: [&str; 4] = ["draft_ops", "versions", "node_index", "chunks"];
+/// them (US-024), the chunk index of US-030 and the forum's posts (US-033).
+const APPEND_ONLY_TABLES: [&str; 5] = ["draft_ops", "versions", "node_index", "chunks", "posts"];
 const POLICY_EXPRESSION: &str = "NULLIF(current_setting('app.workspace_id', true), '')::uuid";
 /// A UUIDv4, which the database must refuse as a record ID.
 const V4_ID: &str = "f47ac10b-58cc-4372-a567-0e02b2c3d479";

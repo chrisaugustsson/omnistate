@@ -16,7 +16,8 @@
 //!   `Workspace` (its path holds `{workspace_id}`, and the suite attacks it) or
 //!   `Global` (no workspace in the path, with the reason). The path may hold
 //!   `{project_id}`, `{changeset_id}`, `{key_id}`, `{attachment_id}`,
-//!   `{doc_id}`, `{version_id}`, `{other_version_id}` and `{conflict_id}`,
+//!   `{doc_id}`, `{version_id}`, `{other_version_id}`, `{conflict_id}` and
+//!   `{thread_id}`,
 //!   which the suite fills with the IDs of the seeded records, and
 //!   `{board_id}`, which it fills with a node ID that no board has (US-030);
 //!   a path with another placeholder, or a registry route without a case,
@@ -34,6 +35,9 @@
 //!   the rebase route exists (US-026), `{changeset_id}` was also submitted,
 //!   approved and rebased with a conflict on a doc whose mainline moved on
 //!   under it, which left it `open` again with the conflict `{conflict_id}`.
+//!   Once the thread routes exist (US-033), `{changeset_id}` also has the
+//!   thread `{thread_id}`, which the workspace's agent started, moved on to a
+//!   sealed second phase and posted in.
 //! - Workspace A's credentials against workspace B's workspace and IDs, and
 //!   against B's IDs under A's own workspace, are always 404
 //!   `{"error": "not_found"}` with nothing of B in the body, and the answer is
@@ -397,6 +401,30 @@ const CASES: &[Case] = &[
         None,
         Kind::Workspace,
     ),
+    case(
+        "POST",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/threads",
+        Some(r#"{"question":"intruder","criteria":["intruder"]}"#),
+        Kind::Workspace,
+    ),
+    case(
+        "GET",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/threads/{thread_id}",
+        None,
+        Kind::Workspace,
+    ),
+    case(
+        "POST",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/threads/{thread_id}/phases",
+        Some(r#"{"sealed":true}"#),
+        Kind::Workspace,
+    ),
+    case(
+        "POST",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/threads/{thread_id}/posts",
+        Some(r#"{"type":"question","summary":"intruder","body":"intruder"}"#),
+        Kind::Workspace,
+    ),
 ];
 
 /// The WebSocket routes that the suite attacks, as the paths of
@@ -686,6 +714,15 @@ fn has_rebase_route() -> bool {
     })
 }
 
+/// Whether the router has the thread routes (US-033) yet.
+fn has_thread_routes() -> bool {
+    registry().iter().any(|r| {
+        r.method == "POST"
+            && r.path
+                == "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/threads"
+    })
+}
+
 /// The `data-rev` of the block with `data-node-id="{node}"` in a draft's HTML.
 fn rev_of(html: &str, node: &str) -> u64 {
     let at = html
@@ -926,6 +963,11 @@ struct Side {
     /// The conflict that a rebase left in `changeset_id` (US-026): empty
     /// until the rebase route exists.
     conflict_id: String,
+    /// A thread of `changeset_id` that the workspace's agent started, moved
+    /// on to a sealed second phase and posted in (US-033), and its question,
+    /// which nothing else holds: empty until the thread routes exist.
+    thread_id: String,
+    thread_question: String,
 }
 
 impl Side {
@@ -955,6 +997,8 @@ impl Side {
             other_version_id: same(),
             merged_changeset_id: same(),
             conflict_id: same(),
+            thread_id: same(),
+            thread_question: String::new(),
         }
     }
 
@@ -982,6 +1026,8 @@ impl Side {
             &self.other_version_id,
             &self.merged_changeset_id,
             &self.conflict_id,
+            &self.thread_id,
+            &self.thread_question,
         ]
         .into_iter()
         .map(String::as_str)
@@ -1343,6 +1389,59 @@ fn fixture() -> &'static Fixture {
             } else {
                 String::new()
             };
+            // US-033: a thread of the open change set, moved on to a sealed
+            // second phase, with a post, so whatever holds threads, phases and
+            // posts has rows of the workspace. Seeded as soon as the registry
+            // has the thread routes.
+            let (thread_id, thread_question) = if has_thread_routes() {
+                let question = unique(&format!("{name}-question"));
+                let body = json!({ "question": question, "criteria": [unique(&format!("{name}-criterion"))] })
+                    .to_string();
+                let created = must(
+                    call(
+                        client,
+                        "POST",
+                        &format!("{changesets}/{changeset_id}/threads"),
+                        &agent,
+                        Some(&body),
+                    ),
+                    201,
+                    "start a thread",
+                );
+                let thread = created["thread"]["id"].as_str().expect("an id");
+                let threads = format!("/api/v1/w/{workspace}/projects/{project_id}/threads");
+                must(
+                    call(
+                        client,
+                        "POST",
+                        &format!("{threads}/{thread}/phases"),
+                        &agent,
+                        Some(r#"{"sealed":true}"#),
+                    ),
+                    201,
+                    "start the thread's second phase",
+                );
+                let body = json!({
+                    "type": "position",
+                    "summary": unique(&format!("{name}-summary")),
+                    "body": unique(&format!("{name}-post"))
+                })
+                .to_string();
+                must(
+                    call(
+                        client,
+                        "POST",
+                        &format!("{threads}/{thread}/posts"),
+                        &agent,
+                        Some(&body),
+                    ),
+                    201,
+                    "post in the thread",
+                );
+                (thread.to_string(), question)
+            } else {
+                (String::new(), String::new())
+            };
             Side {
                 id: workspace,
                 email: format!("{name}@example.test"),
@@ -1369,6 +1468,8 @@ fn fixture() -> &'static Fixture {
                 other_version_id,
                 merged_changeset_id,
                 conflict_id,
+                thread_id,
+                thread_question,
             }
         });
         let a = sides.next().expect("workspace A");
@@ -1403,6 +1504,7 @@ fn fill(template: &str, workspace: &Side, record: &Side) -> String {
             "version_id" => &record.version_id,
             "other_version_id" => &record.other_version_id,
             "conflict_id" => &record.conflict_id,
+            "thread_id" => &record.thread_id,
             // US-030: an attack on a board is refused at the workspace or the
             // project, before any board is looked up, so a node ID that no
             // board has stands in for one.
@@ -3120,6 +3222,125 @@ fn the_board_reads_of_a_workspace_show_its_own_board_and_nothing_of_the_other() 
                 response.text()
             );
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Threads and phases (US-033)
+// ---------------------------------------------------------------------------
+
+const THREAD_ROUTES: [(&str, &str); 4] = [
+    (
+        "POST",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/threads",
+    ),
+    (
+        "GET",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/threads/{thread_id}",
+    ),
+    (
+        "POST",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/threads/{thread_id}/phases",
+    ),
+    (
+        "POST",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/threads/{thread_id}/posts",
+    ),
+];
+
+#[test]
+fn the_thread_routes_are_in_the_registry_and_the_suite_attacks_them() {
+    for (method, path) in THREAD_ROUTES {
+        let entry = registry()
+            .into_iter()
+            .find(|r| r.method == method && r.path == path)
+            .unwrap_or_else(|| panic!("the registry has no route {method} {path}"));
+        assert!(
+            matches!(case_for(&entry).kind, Kind::Workspace),
+            "{method} {path} is a workspace route that the suite attacks"
+        );
+    }
+
+    let (f, _) = ready();
+    for side in [&f.a, &f.b] {
+        assert!(
+            !side.thread_id.is_empty(),
+            "the suite seeded no thread for {}",
+            side.id
+        );
+    }
+}
+
+#[test]
+fn the_thread_calls_of_the_attacks_work_for_the_workspace_that_owns_the_records() {
+    // The control for the thread routes: the owner's agent starts a thread
+    // with the body of the case, starts its next phase and posts in it, and
+    // both the agent and the human read it, all in the owner's workspace.
+    let (f, client) = ready();
+    let _guard = serial();
+    let key = Auth::Key(&f.a.key);
+    let human = Auth::Session(&f.a.token);
+    let path = |template: &str| fill(template, &f.a, &f.a);
+
+    let (method, template) = THREAD_ROUTES[0];
+    let created = must(
+        call(
+            client,
+            method,
+            &path(template),
+            &key,
+            case_named(method, template).body,
+        ),
+        201,
+        "start a thread",
+    );
+    let thread = created["thread"]["id"].as_str().expect("an id");
+    let threads = format!("/api/v1/w/{}/projects/{}/threads", f.a.id, f.a.project_id);
+
+    let (method, template) = THREAD_ROUTES[2];
+    must(
+        call(
+            client,
+            method,
+            &format!("{threads}/{thread}/phases"),
+            &key,
+            case_named(method, template).body,
+        ),
+        201,
+        "start the next phase",
+    );
+    let (method, template) = THREAD_ROUTES[3];
+    for auth in [&key, &human] {
+        must(
+            call(
+                client,
+                method,
+                &format!("{threads}/{thread}/posts"),
+                auth,
+                case_named(method, template).body,
+            ),
+            201,
+            "post in the thread",
+        );
+    }
+    for auth in [&key, &human] {
+        let shown = must(
+            call(client, "GET", &format!("{threads}/{thread}"), auth, None),
+            200,
+            "show the thread",
+        );
+        assert_eq!(shown["thread"]["id"], thread, "{shown}");
+    }
+    for auth in [&key, &human] {
+        let seeded = must(
+            call(client, "GET", &path(THREAD_ROUTES[1].1), auth, None),
+            200,
+            "show the seeded thread",
+        );
+        assert_eq!(
+            seeded["thread"]["question"], f.a.thread_question,
+            "{seeded}"
+        );
     }
 }
 
