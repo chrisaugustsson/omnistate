@@ -8,10 +8,13 @@ use crate::attachments::{AttachmentBody, AttachmentResponse};
 use crate::boards::{BoardBody, Manifest, ManifestBoard, ManifestPage};
 use crate::changesets::{
     ApprovedVersion, ChangesetBody, ChangesetListResponse, ChangesetResponse,
-    CreateChangesetRequest, CreateProjectRequest, HistoryEntry, ProjectBody, ProjectListResponse,
-    ProjectResponse, RejectRequest,
+    CreateChangesetRequest, CreateProjectRequest, HistoryEntry, LinkedDecision, ProjectBody,
+    ProjectListResponse, ProjectResponse, RejectRequest,
 };
 use crate::claims::{ClaimBody, ClaimRequest, ClaimResponse, ClaimedBody};
+use crate::decisions::{
+    DecisionBody, DecisionFile, DecisionOption, DecisionResponse, Dissent, RejectDecisionRequest,
+};
 use crate::design::{
     ImportTagsRequest, ImportedComponents, ImportedDesign, InvalidDesignBody, UsageBoard,
     UsageResponse,
@@ -104,7 +107,12 @@ use utoipa::OpenApi;
         crate::threads::show_post,
         crate::threads::start_phase,
         crate::threads::create_post,
-        crate::threads::create_directive
+        crate::threads::create_directive,
+        crate::decisions::propose,
+        crate::decisions::show,
+        crate::decisions::approve,
+        crate::decisions::reject,
+        crate::decisions::link
     ),
     components(schemas(
         LoginRequest,
@@ -127,6 +135,7 @@ use utoipa::OpenApi;
         RejectRequest,
         HistoryEntry,
         ApprovedVersion,
+        LinkedDecision,
         ChangesetBody,
         ChangesetResponse,
         ChangesetListResponse,
@@ -192,7 +201,13 @@ use utoipa::OpenApi;
         PostResponse,
         DigestEntry,
         DigestResponse,
-        SinglePostResponse
+        SinglePostResponse,
+        DecisionOption,
+        Dissent,
+        DecisionFile,
+        DecisionBody,
+        DecisionResponse,
+        RejectDecisionRequest
     ))
 )]
 struct ApiDoc;

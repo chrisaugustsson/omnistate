@@ -12,6 +12,7 @@ pub mod auth;
 mod boards;
 mod changesets;
 mod claims;
+mod decisions;
 pub mod delete_workspace;
 mod design;
 mod directives;
@@ -425,6 +426,26 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/v1/w/{workspace_id}/projects/{project_id}/threads/{thread_id}/directives",
             post(threads::create_directive),
+        )
+        .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/threads/{thread_id}/decisions",
+            post(decisions::propose),
+        )
+        .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/decisions/{decision_id}",
+            get(decisions::show),
+        )
+        .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/decisions/{decision_id}/approve",
+            post(decisions::approve),
+        )
+        .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/decisions/{decision_id}/reject",
+            post(decisions::reject),
+        )
+        .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/decisions/{decision_id}",
+            post(decisions::link),
         )
         .route("/ws/w/{workspace_id}", get(live::socket))
         .fallback(not_found)

@@ -96,6 +96,16 @@ pub struct ApprovedVersion {
     pub version_id: String,
 }
 
+/// A decision that a change set carries out (US-037), with its status now.
+#[derive(Serialize, ToSchema, sqlx::FromRow)]
+pub struct LinkedDecision {
+    pub id: String,
+    pub thread_id: String,
+    /// `proposed`, `approved`, `rejected` or `superseded`. The change set
+    /// cannot be approved while one linked decision is not `approved`.
+    pub status: String,
+}
+
 #[derive(Serialize, ToSchema)]
 pub struct ChangesetBody {
     pub id: String,
@@ -112,6 +122,9 @@ pub struct ChangesetBody {
     /// for each doc that has one, removals included. Empty while the change
     /// set has no approval (saving a version clears it).
     pub approved_versions: Vec<ApprovedVersion>,
+    /// The decisions the change set carries out, in the order they were
+    /// linked; empty while it has none.
+    pub decisions: Vec<LinkedDecision>,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -130,6 +143,14 @@ struct ListedEntry {
     changeset_id: String,
     #[sqlx(flatten)]
     entry: HistoryEntry,
+}
+
+/// A linked decision with the change set it belongs to, for the list.
+#[derive(sqlx::FromRow)]
+struct ListedDecision {
+    changeset_id: String,
+    #[sqlx(flatten)]
+    decision: LinkedDecision,
 }
 
 /// An approved version with the change set it belongs to, for the list.
@@ -156,6 +177,7 @@ impl ChangesetRow {
         self,
         history: Vec<HistoryEntry>,
         approved_versions: Vec<ApprovedVersion>,
+        decisions: Vec<LinkedDecision>,
     ) -> ChangesetBody {
         ChangesetBody {
             id: self.id,
@@ -167,6 +189,7 @@ impl ChangesetRow {
             created_at: self.created_at,
             history,
             approved_versions,
+            decisions,
         }
     }
 }
@@ -176,6 +199,11 @@ const CHANGESET_COLUMNS: &str = concat!(
     timestamp!("created_at"),
     " AS created_at"
 );
+
+const LINKED_COLUMNS: &str = "d.id::text AS id, d.thread_id::text AS thread_id, d.status";
+
+const LINKED_JOIN: &str =
+    "JOIN decisions d ON d.workspace_id = cd.workspace_id AND d.id = cd.decision_id";
 
 const HISTORY_COLUMNS: &str = concat!(
     "from_status, to_status, actor, reason, ",
@@ -315,7 +343,22 @@ async fn approved_of(
     .map_err(ApiError::database)
 }
 
-/// One change set as the API answers it: the row, its history and its approval.
+async fn decisions_of(
+    tx: &mut Transaction<'static, Postgres>,
+    changeset_id: &str,
+) -> Result<Vec<LinkedDecision>, ApiError> {
+    sqlx::query_as(&format!(
+        "SELECT {LINKED_COLUMNS} FROM changeset_decisions cd {LINKED_JOIN} \
+         WHERE cd.changeset_id = $1::uuid ORDER BY cd.created_at, cd.id"
+    ))
+    .bind(changeset_id)
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(ApiError::database)
+}
+
+/// One change set as the API answers it: the row, its history, its approval
+/// and the decisions it carries out.
 pub(crate) async fn load_changeset(
     tx: &mut Transaction<'static, Postgres>,
     changeset_id: &str,
@@ -329,7 +372,8 @@ pub(crate) async fn load_changeset(
     .map_err(ApiError::database)?;
     let history = history_of(tx, changeset_id).await?;
     let approved = approved_of(tx, changeset_id).await?;
-    Ok(row.into_body(history, approved))
+    let decisions = decisions_of(tx, changeset_id).await?;
+    Ok(row.into_body(history, approved, decisions))
 }
 
 /// One move of a change set along the lifecycle, as the history keeps it.
@@ -449,7 +493,7 @@ pub async fn create_changeset(
     Ok((
         StatusCode::CREATED,
         Json(ChangesetResponse {
-            changeset: row.into_body(history, Vec::new()),
+            changeset: row.into_body(history, Vec::new(), Vec::new()),
         }),
     ))
 }
@@ -504,6 +548,16 @@ pub async fn list_changesets(
     .fetch_all(&mut *tx)
     .await
     .map_err(ApiError::database)?;
+    let linked: Vec<ListedDecision> = sqlx::query_as(&format!(
+        "SELECT cd.changeset_id::text AS changeset_id, {LINKED_COLUMNS} \
+         FROM changeset_decisions cd {LINKED_JOIN} \
+         WHERE cd.changeset_id IN (SELECT id FROM changesets WHERE project_id = $1::uuid) \
+         ORDER BY cd.created_at, cd.id"
+    ))
+    .bind(&project_id)
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(ApiError::database)?;
     tx.commit().await.map_err(ApiError::database)?;
     let mut histories: HashMap<String, Vec<HistoryEntry>> = HashMap::new();
     for listed in entries {
@@ -519,12 +573,20 @@ pub async fn list_changesets(
             .or_default()
             .push(listed.approved);
     }
+    let mut decisions: HashMap<String, Vec<LinkedDecision>> = HashMap::new();
+    for listed in linked {
+        decisions
+            .entry(listed.changeset_id)
+            .or_default()
+            .push(listed.decision);
+    }
     let changesets = rows
         .into_iter()
         .map(|row| {
             let history = histories.remove(&row.id).unwrap_or_default();
             let approved = approved.remove(&row.id).unwrap_or_default();
-            row.into_body(history, approved)
+            let decisions = decisions.remove(&row.id).unwrap_or_default();
+            row.into_body(history, approved, decisions)
         })
         .collect();
     Ok(Json(ChangesetListResponse { changesets }))
@@ -564,9 +626,10 @@ pub async fn show_changeset(
     .ok_or(ApiError::NotFound)?;
     let history = history_of(&mut tx, &row.id).await?;
     let approved = approved_of(&mut tx, &row.id).await?;
+    let decisions = decisions_of(&mut tx, &row.id).await?;
     tx.commit().await.map_err(ApiError::database)?;
     Ok(Json(ChangesetResponse {
-        changeset: row.into_body(history, approved),
+        changeset: row.into_body(history, approved, decisions),
     }))
 }
 
@@ -811,7 +874,7 @@ struct MergeCandidate {
         (status = 401, description = "No valid session", body = ErrorBody),
         (status = 403, description = "Called with an API key; human only", body = ErrorBody),
         (status = 404, description = "No such change set in this project and workspace", body = ErrorBody),
-        (status = 409, description = "The change set is not `in_review`", body = ErrorBody),
+        (status = 409, description = "The change set is not `in_review`, or a decision it is linked to is not `approved` (`decision_not_approved`, with the `decision_id`)", body = ErrorBody),
     )
 )]
 pub async fn approve(
@@ -837,6 +900,25 @@ pub async fn approve(
     .ok_or(ApiError::NotFound)?;
     if status != "in_review" {
         return Err(ApiError::conflict("invalid_transition"));
+    }
+    // The decision comes first (Q5): the doc changes are approved only once
+    // every decision they carry out is. The first one that is not is named.
+    let undecided: Option<String> = sqlx::query_scalar(&format!(
+        "SELECT d.id::text FROM changeset_decisions cd {LINKED_JOIN} \
+         WHERE cd.changeset_id = $1::uuid AND d.status <> 'approved' \
+         ORDER BY cd.created_at, cd.id LIMIT 1"
+    ))
+    .bind(&changeset_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(ApiError::database)?;
+    if let Some(decision_id) = undecided {
+        return Err(ApiError::Naming(
+            StatusCode::CONFLICT,
+            "decision_not_approved",
+            "decision_id",
+            decision_id,
+        ));
     }
 
     // The latest version saved for each doc, in doc order.

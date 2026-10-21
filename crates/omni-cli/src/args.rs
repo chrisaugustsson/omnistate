@@ -60,6 +60,8 @@ pub struct Args {
     pub link: Vec<String>,
     pub confidence: Option<String>,
     pub replaces: Option<String>,
+    /// `omni decision propose <thread> --file <decision.json>`.
+    pub file: Option<String>,
     pub json: bool,
     pub help: bool,
     pub version: bool,
@@ -132,6 +134,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Args> {
             "--summary" => &mut parsed.summary,
             "--confidence" => &mut parsed.confidence,
             "--replaces" => &mut parsed.replaces,
+            "--file" => &mut parsed.file,
             "--question" => &mut parsed.question,
             "--criteria-file" => &mut parsed.criteria_file,
             "--out" => &mut parsed.out,

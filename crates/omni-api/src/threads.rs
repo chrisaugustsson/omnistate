@@ -21,6 +21,7 @@
 
 use crate::AppState;
 use crate::changesets::{non_blank, parse_body};
+use crate::decisions::current_decision;
 use crate::docs::AgentIdentity;
 use crate::live;
 use crate::session::{ApiError, ErrorBody};
@@ -102,8 +103,10 @@ pub struct ThreadBody {
     pub created_at: String,
     /// The phases, oldest first.
     pub phases: Vec<PhaseBody>,
-    /// The thread's current decision, with at least its `id` and `status`;
-    /// `null` while the thread has none (US-037 makes decisions).
+    /// The thread's current decision (US-037): the newest, which is not
+    /// superseded, as the decision routes answer it, so with at least its `id`
+    /// and `status`; `null` while the thread has none. An agent gets only the
+    /// posts of it that it may read.
     #[schema(value_type = Option<Object>)]
     pub decision: Option<Value>,
     /// The posts the caller may read, oldest first. Only in the answer to a
@@ -261,25 +264,26 @@ impl Viewer {
         }
     }
 
+    /// The human, who reads everything.
+    pub(crate) fn human() -> Self {
+        Self {
+            human: true,
+            run: None,
+            role: None,
+        }
+    }
+
     pub(crate) fn of(actor: &Actor, identity: &AgentIdentity) -> Self {
         match actor {
             Actor::Agent => Self::agent(identity),
-            Actor::Human { .. } => Self {
-                human: true,
-                run: None,
-                role: None,
-            },
+            Actor::Human { .. } => Self::human(),
         }
     }
 
     fn of_author(author: &Author) -> Self {
         match author {
             Author::Agent(identity) => Self::agent(identity),
-            Author::Human(_) => Self {
-                human: true,
-                run: None,
-                role: None,
-            },
+            Author::Human(_) => Self::human(),
         }
     }
 }
@@ -475,7 +479,7 @@ async fn phases_of(
 /// `lock`, the thread's row is locked until the transaction ends, so of
 /// several requests that start a phase or post one at a time, each sees the
 /// phases the others made.
-async fn load_thread(
+pub(crate) async fn load_thread(
     tx: &mut Transaction<'static, Postgres>,
     project_id: &str,
     thread_id: &str,
@@ -650,6 +654,7 @@ pub async fn show_thread(
     let viewer = Viewer::of(&request.actor, &identity);
     let mut tx = state.workspace_tx(&request.workspace_id).await?;
     let mut thread = load_thread(&mut tx, &project_id, &thread_id, None).await?;
+    thread.decision = current_decision(&mut tx, &viewer, &thread_id).await?;
     let rows: Vec<PostRow> = bind_viewer(
         sqlx::query_as(&format!(
             "SELECT {POST_COLUMNS} FROM posts p WHERE p.thread_id = $1::uuid AND {} \
@@ -814,6 +819,7 @@ pub async fn show_post(
 pub async fn start_phase(
     State(state): State<AppState>,
     request: AgentRequest,
+    identity: AgentIdentity,
     Path((_, project_id, thread_id)): Path<(String, String, String)>,
     body: Bytes,
 ) -> Result<(StatusCode, Json<ThreadResponse>), ApiError> {
@@ -841,7 +847,8 @@ pub async fn start_phase(
         }),
     )
     .await?;
-    let thread = load_thread(&mut tx, &project_id, &thread_id, None).await?;
+    let mut thread = load_thread(&mut tx, &project_id, &thread_id, None).await?;
+    thread.decision = current_decision(&mut tx, &Viewer::agent(&identity), &thread_id).await?;
     tx.commit().await.map_err(ApiError::database)?;
     state.live.announce(&workspace_id, &project_id);
     Ok((StatusCode::CREATED, Json(ThreadResponse { thread })))

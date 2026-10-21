@@ -13,6 +13,7 @@ use crate::changesets;
 use crate::claims;
 use crate::components;
 use crate::config::{self, Stored};
+use crate::decisions;
 use crate::design;
 use crate::docs;
 use crate::error::{CliError, Result, bail};
@@ -70,12 +71,17 @@ pub fn run(args: &Args) -> Result<()> {
         ["changeset", "resolve"] => bail!(
             "`omni changeset resolve` needs the conflict's ID; `omni changeset conflicts <id>` lists them"
         ),
+        ["changeset", "link-decision", changeset, decision] => {
+            decisions::link(args, Some(changeset), Some(decision))
+        }
+        ["changeset", "link-decision", changeset] => decisions::link(args, Some(changeset), None),
+        ["changeset", "link-decision"] => decisions::link(args, None, None),
         ["changeset", "reject", ..] => bail!(
             "rejecting a change set is the human's decision and is made in the web app; an agent cannot"
         ),
         ["changeset", ..] => {
             bail!(
-                "usage: omni changeset create|list|show|submit|reopen|abandon|rebase|conflicts|resolve; see `omni --help`"
+                "usage: omni changeset create|list|show|submit|reopen|abandon|rebase|conflicts|resolve|link-decision; see `omni --help`"
             )
         }
         ["doc", "create"] => docs::create(args),
@@ -121,6 +127,11 @@ pub fn run(args: &Args) -> Result<()> {
         ["thread", "digest"] => threads::digest(args, None),
         ["thread", "digest", thread] => threads::digest(args, Some(thread)),
         ["thread", ..] => bail!("usage: omni thread create|phase|digest; see `omni --help`"),
+        ["decision", "propose"] => decisions::propose(args, None),
+        ["decision", "propose", thread] => decisions::propose(args, Some(thread)),
+        ["decision", "show"] => decisions::show(args, None),
+        ["decision", "show", id] => decisions::show(args, Some(id)),
+        ["decision", ..] => bail!("usage: omni decision propose|show; see `omni --help`"),
         ["post", "show"] => posts::show(args, None),
         ["post", "show", post] => posts::show(args, Some(post)),
         ["post"] => posts::run(args, None),

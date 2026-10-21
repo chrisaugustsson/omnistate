@@ -78,6 +78,10 @@ pub enum ApiError {
     /// The request is refused with a status of its own and a stable code, such
     /// as 409 `invalid_transition`.
     Refused(StatusCode, &'static str),
+    /// As `Refused`, and the body names a record next to the code, such as 409
+    /// `decision_not_approved` with its `decision_id`: the status, the code,
+    /// the name of the field and the record's ID.
+    Naming(StatusCode, &'static str, &'static str, String),
     Unavailable,
 }
 
@@ -101,15 +105,22 @@ impl ApiError {
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        let (status, code) = match self {
-            Self::InvalidCredentials => (StatusCode::UNAUTHORIZED, "invalid_credentials"),
-            Self::Unauthorized => (StatusCode::UNAUTHORIZED, "unauthorized"),
-            Self::Forbidden => (StatusCode::FORBIDDEN, "forbidden"),
-            Self::NotFound => (StatusCode::NOT_FOUND, "not_found"),
-            Self::Refused(status, code) => (status, code),
-            Self::Unavailable => (StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
+        let (status, body) = match self {
+            Self::InvalidCredentials => (
+                StatusCode::UNAUTHORIZED,
+                json!({ "error": "invalid_credentials" }),
+            ),
+            Self::Unauthorized => (StatusCode::UNAUTHORIZED, json!({ "error": "unauthorized" })),
+            Self::Forbidden => (StatusCode::FORBIDDEN, json!({ "error": "forbidden" })),
+            Self::NotFound => (StatusCode::NOT_FOUND, json!({ "error": "not_found" })),
+            Self::Refused(status, code) => (status, json!({ "error": code })),
+            Self::Naming(status, code, field, id) => (status, json!({ "error": code, field: id })),
+            Self::Unavailable => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                json!({ "error": "unavailable" }),
+            ),
         };
-        (status, Json(json!({ "error": code }))).into_response()
+        (status, Json(body)).into_response()
     }
 }
 

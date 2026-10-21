@@ -232,6 +232,20 @@ pub fn show(args: &Args, id: &str) -> Result<()> {
             say(&format!("  {line}"));
         }
     }
+    let decisions = changeset
+        .get("decisions")
+        .and_then(Value::as_array)
+        .unwrap_or_default();
+    if !decisions.is_empty() {
+        say("decisions:");
+        for decision in decisions {
+            say(&format!(
+                "  {}  {}",
+                decision.str_at("id").unwrap_or("?"),
+                decision.str_at("status").unwrap_or("?")
+            ));
+        }
+    }
     say("history:");
     for entry in changeset
         .get("history")

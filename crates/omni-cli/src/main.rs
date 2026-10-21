@@ -12,6 +12,7 @@ mod claims;
 mod commands;
 mod components;
 mod config;
+mod decisions;
 mod design;
 mod docs;
 mod error;
@@ -132,6 +133,22 @@ Usage:
   omni post show <post>               print one whole post: type, author role, summary, ID and
                                       the Markdown body; a post you may not read yet is
                                       reported as not found
+  omni decision propose <thread> --file <decision.json>
+                                      propose the decision that ends a thread, from a JSON
+                                      file (docs/formats/decision.md has the schema): the
+                                      chosen direction, the options with their scores and why
+                                      each lost, assumptions, open questions, dissent and the
+                                      posts it relies on; prints its ID and status. A new
+                                      proposal supersedes the thread's earlier decision. Only
+                                      the human approves or rejects a decision, in the web app
+  omni decision show <thread|decision>
+                                      print a decision with its status and any rejection
+                                      reason: the one with this ID, or the thread's current
+                                      decision
+  omni changeset link-decision <changeset> <decision>
+                                      link a change set to a decision it carries out; the
+                                      change set cannot be approved until every linked
+                                      decision is
   omni wait --changeset <id> --until approved|rejected|merged|needs_rebase [--timeout <s>]
                                       wait until the change set is approved (by the human),
                                       rejected, merged or needs a rebase; prints its status
@@ -178,6 +195,7 @@ Options (before or after the command):
                         node:<doc>/<address> or an http(s) address (repeat for more)
   --confidence <n>      how sure the post is, from 0 to 1
   --replaces <post>     your earlier post in the thread that this one replaces
+  --file <path>         the decision file that `omni decision propose` sends
   --note <text>         how a conflict was resolved (`omni changeset resolve`)
   --changeset <id>      the change set a doc, design edit, tokens, claim, release or wait command works in
   --doc <id>            the design doc that `omni design read` reads or `omni design edit` edits
