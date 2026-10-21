@@ -15,6 +15,10 @@ async fn run() -> Result<(), String> {
         None => serve().await,
         Some("setup") => first_run_setup(&args[1..]).await,
         Some("delete-workspace") => delete_workspace(&args[1..]).await,
+        Some("openapi") => {
+            print_openapi();
+            Ok(())
+        }
         Some(other) => Err(format!("unknown command {other}")),
     }
 }
@@ -36,6 +40,16 @@ async fn first_run_setup(args: &[String]) -> Result<(), String> {
         setup_args.email, setup_args.workspace
     );
     Ok(())
+}
+
+/// Prints the OpenAPI document, as the running API serves it at
+/// `/api/openapi.json`. `make web-api` writes it to web/openapi.json.
+fn print_openapi() {
+    let document = omni_api::openapi::build();
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&document).expect("the OpenAPI document as JSON")
+    );
 }
 
 /// Erases a workspace: every row of it and its whole RustFS folder. It runs

@@ -13,7 +13,7 @@ WASM_TARGET := wasm32-unknown-emscripten
 WASM_OUT := $(or $(CARGO_TARGET_DIR),target)/$(WASM_TARGET)/release
 SANDBOX_BUILD := render-sandbox/build
 
-.PHONY: lint test web-deps render-wasm chrome-boxes stress-file nodes-boxes bench-render check-layout penpot-compare bench-ops
+.PHONY: lint test web-deps web-api render-wasm chrome-boxes stress-file nodes-boxes bench-render check-layout penpot-compare bench-ops
 
 # The last clippy run covers the WebAssembly-only code of omni-render.
 lint: web-deps
@@ -26,6 +26,15 @@ lint: web-deps
 # Installs the web app's dependencies from pnpm-lock.yaml (a no-op when they are current).
 web-deps:
 	pnpm install --frozen-lockfile
+
+# Writes the OpenAPI document the API serves (web/openapi.json) and the
+# TypeScript types and Zod schemas that the web app generates from it
+# (web/src/api/generated.ts). Run it after changing a route or a body; the API's
+# openapi tests and the web app's tests fail while either file is out of date.
+web-api: web-deps
+	$(CARGO) run --quiet -p omni-api -- openapi > web/openapi.json.tmp
+	mv web/openapi.json.tmp web/openapi.json
+	pnpm --filter omni-web generate
 
 # The integration tests run in the test container inside the Compose network:
 # the stack is (re)built and started first, and left running afterwards. The

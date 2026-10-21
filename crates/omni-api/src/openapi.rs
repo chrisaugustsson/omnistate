@@ -28,6 +28,7 @@ use crate::docs::{
     DraftBody, DraftHtmlResponse, DraftResponse, DraftWithHtml, EditRequest, EditResponse,
     InvalidOperationBody, MainlineHtmlResponse, OpResultBody,
 };
+use crate::live::{LiveClientMessage, LiveErrorCode, LiveEventName, LiveServerMessage};
 use crate::rebase::{
     ConflictKind, ConflictResolution, ConflictSide, RebaseResponse, RecordedConflict,
     RecordedConflictListResponse, RecordedConflictResponse, ResolveConflictRequest,
@@ -132,6 +133,10 @@ use utoipa::OpenApi;
         WorkspaceBody,
         WorkspaceListResponse,
         ErrorBody,
+        LiveClientMessage,
+        LiveServerMessage,
+        LiveEventName,
+        LiveErrorCode,
         WhoamiResponse,
         ActorBody,
         ApiKeyBody,
@@ -239,7 +244,7 @@ fn access_name(access: Access) -> &'static str {
     }
 }
 
-fn build() -> Value {
+pub fn build() -> Value {
     let mut document = serde_json::to_value(ApiDoc::openapi()).expect("the OpenAPI document");
     for route in registry() {
         let operation = document

@@ -38,12 +38,134 @@ use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::http::header::{HOST, ORIGIN};
 use axum::http::request::Parts;
 use axum::response::Response;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sqlx::{Postgres, Transaction};
 use std::collections::HashMap;
 use std::time::Duration;
 use tokio::sync::broadcast;
 use tokio::sync::broadcast::error::RecvError;
+use utoipa::ToSchema;
+
+/// The message a client sends over the socket. It exists to put the protocol
+/// in the OpenAPI document, from which the web app generates its types and Zod
+/// schemas; the socket parses the text frames itself (`parse_subscribe`).
+#[derive(Deserialize, ToSchema)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum LiveClientMessage {
+    /// Starts (or resumes) the events of one project.
+    Subscribe {
+        /// The project's UUID.
+        project_id: String,
+        /// The newest sequence number the client already has. Left out, only
+        /// the events from now on are sent.
+        after: Option<i64>,
+    },
+}
+
+/// A message the server sends over the socket (see the module documentation
+/// for the protocol).
+#[derive(Serialize, ToSchema)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum LiveServerMessage {
+    /// The answer to a subscribe, before the events it asked for.
+    Subscribed {
+        /// The project's UUID.
+        project_id: String,
+        /// The newest sequence number of the project at the time.
+        last_seq: i64,
+    },
+    /// One event of a project. `seq` counts the events of the project, one at
+    /// a time.
+    Event {
+        seq: i64,
+        event: LiveEventName,
+        /// The project's UUID.
+        project_id: String,
+        /// When the event happened, ISO 8601 in UTC.
+        at: String,
+        /// What the event is about; its fields depend on the event.
+        #[schema(value_type = Object)]
+        data: Value,
+    },
+    /// A mistake of the client; the socket stays open.
+    Error { error: LiveErrorCode },
+}
+
+/// Why a message of the client was not served.
+#[derive(Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum LiveErrorCode {
+    NotFound,
+    InvalidRequest,
+    Unavailable,
+}
+
+/// Every event the API emits, as `<entity>.<action>`. The `changeset.*` events
+/// are named after the status the change set moved to.
+#[derive(Serialize, ToSchema)]
+pub enum LiveEventName {
+    #[serde(rename = "changeset.open")]
+    ChangesetOpen,
+    #[serde(rename = "changeset.in_review")]
+    ChangesetInReview,
+    #[serde(rename = "changeset.approved")]
+    ChangesetApproved,
+    #[serde(rename = "changeset.rejected")]
+    ChangesetRejected,
+    #[serde(rename = "changeset.merged")]
+    ChangesetMerged,
+    #[serde(rename = "changeset.needs_rebase")]
+    ChangesetNeedsRebase,
+    #[serde(rename = "changeset.abandoned")]
+    ChangesetAbandoned,
+    #[serde(rename = "claim.taken")]
+    ClaimTaken,
+    #[serde(rename = "claim.released")]
+    ClaimReleased,
+    #[serde(rename = "claim.expired")]
+    ClaimExpired,
+    #[serde(rename = "comment.created")]
+    CommentCreated,
+    #[serde(rename = "comment.replied")]
+    CommentReplied,
+    #[serde(rename = "comment.status_changed")]
+    CommentStatusChanged,
+    #[serde(rename = "components.imported")]
+    ComponentsImported,
+    #[serde(rename = "conflict.recorded")]
+    ConflictRecorded,
+    #[serde(rename = "conflict.resolved")]
+    ConflictResolved,
+    #[serde(rename = "decision.proposed")]
+    DecisionProposed,
+    #[serde(rename = "decision.superseded")]
+    DecisionSuperseded,
+    #[serde(rename = "decision.approved")]
+    DecisionApproved,
+    #[serde(rename = "decision.rejected")]
+    DecisionRejected,
+    #[serde(rename = "design.imported")]
+    DesignImported,
+    #[serde(rename = "doc.created")]
+    DocCreated,
+    #[serde(rename = "draft.opened")]
+    DraftOpened,
+    #[serde(rename = "draft.rebased")]
+    DraftRebased,
+    #[serde(rename = "op.applied")]
+    OpApplied,
+    #[serde(rename = "phase.started")]
+    PhaseStarted,
+    #[serde(rename = "post.created")]
+    PostCreated,
+    #[serde(rename = "thread.created")]
+    ThreadCreated,
+    #[serde(rename = "tokens.imported")]
+    TokensImported,
+    #[serde(rename = "version.saved")]
+    VersionSaved,
+}
 
 /// How many events a socket reads from the table at a time.
 const BATCH: i64 = 500;
@@ -117,7 +239,7 @@ pub(crate) async fn emit(
 
 /// Opens the socket of a workspace. Authentication and the workspace check
 /// happen before the upgrade, so a refusal is a plain 401 or 404.
-pub async fn socket(
+pub(crate) async fn socket(
     State(state): State<AppState>,
     origin: OriginCheck,
     request: WorkspaceRequest,
