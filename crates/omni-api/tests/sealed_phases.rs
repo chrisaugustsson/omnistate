@@ -1,0 +1,1358 @@
+//! US-035: sealed phases, through every read path of the API. Run with
+//! `--features stack-tests` in the Compose test container, which reaches
+//! Postgres at `postgres:5432` and RustFS at `rustfs:9000`.
+//!
+//! The tests migrate a scratch database, seed a workspace with one member
+//! (alice) and a live session, mint an API key through the API, create a
+//! scratch RustFS bucket and serve the API's router on a local port. Several
+//! agents share the key and tell themselves apart by their identity headers.
+//! The tests speak WebSocket to the API with the small client of
+//! tests/live_events.rs.
+//!
+//! The contract these tests pin down (all paths are under
+//! `/api/v1/w/{workspace_id}/projects/{project_id}`; threads, phases and posts
+//! are those of US-033 and US-034, tests/threads.rs and tests/posts.rs, and
+//! live events those of US-017, tests/live_events.rs):
+//!
+//! - An agent identity is the run and role of a request (`X-Omni-Run` and
+//!   `X-Omni-Role`), as for claims and `replaces`; its model and harness do
+//!   not count. A WebSocket opened with an API key takes the identity from the
+//!   same headers of its handshake.
+//! - A post is visible to an agent identity when the human wrote it, when the
+//!   identity wrote it, when its phase is not the thread's current phase (an
+//!   earlier phase, whatever phase followed it), when its phase is open, or
+//!   when the identity has posted in that phase itself. Every other post (one
+//!   by another agent in the current, sealed phase) is hidden from it. Nothing
+//!   is cached: the next read after the agent posted, or after the next phase
+//!   started, shows what was hidden. The human sees every post.
+//! - Every read path keeps to this, for an agent:
+//!   - `GET /threads/{thread_id}` (both) answers `{"thread": Thread}`, where
+//!     the Thread of US-033 also has `posts`: the posts the caller may see,
+//!     oldest first, each a Post of US-034.
+//!   - `GET /threads/{thread_id}/digest` (both) answers `{"posts": [...]}`: one
+//!     entry per post the caller may see, oldest first, each with at least
+//!     `{"id", "phase", "type", "author", "summary"}` and without the body
+//!     (`body` and `body_html` are left out). An unknown thread is 404.
+//!   - `GET /posts/{post_id}` (both) answers 200 `{"post": Post}`. A post the
+//!     caller may not see is 404 `{"error": "not_found"}`, the very answer for
+//!     a post that does not exist or is of another project.
+//!   - Links: a post that links to a post its author may not see is refused
+//!     like a link to a post that does not exist (400 `invalid_request`,
+//!     nothing recorded). In what an agent reads (the thread and single post
+//!     reads), a `{"kind": "post"}` link to a post it may not see is left out
+//!     of `links`; its other links stay, in order.
+//!   - Live events: no event that names a post the agent may not see (its
+//!     `post_id`) reaches the agent's socket, neither live nor when it resumes
+//!     with `after`. Once the post is visible to the agent, resuming from
+//!     before it replays its `post.created`. The human's socket gets every
+//!     event.
+//!   - `omni wait --thread` (US-036) reads through these routes, so its
+//!     results keep to the same rule.
+//!
+//!   A hidden post's ID, summary and body appear nowhere in an answer to the
+//!   agent. Which identities have posted may still be told (US-036 waits for
+//!   roles); these tests do not pin that either way.
+//! - The story adds no tenant table: what an agent may see follows from the
+//!   posts and phases of US-033 and US-034.
+
+mod common;
+
+use common::{Client, Response, TestServer, cookie};
+use omni_api::Config;
+use omni_api::routes::{Access, registry};
+use s3::creds::Credentials;
+use s3::{Bucket, BucketConfiguration, Region};
+use serde_json::{Value, json};
+use sqlx::Connection;
+use sqlx::postgres::{PgConnectOptions, PgConnection};
+use std::future::Future;
+use std::io::{ErrorKind, Read, Write};
+use std::net::TcpStream;
+use std::str::FromStr;
+use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::time::{Duration, Instant};
+
+const TEST_DB: &str = "omni_us035_sealed_phases";
+const TEST_BUCKET: &str = "omni-us035-sealed-phases";
+/// An ID that no row has.
+const UNKNOWN_ID: &str = "01900000-0000-7000-8000-000000000000";
+const THREAD_ROUTE: &str = "/api/v1/w/{workspace_id}/projects/{project_id}/threads/{thread_id}";
+const DIGEST_ROUTE: &str =
+    "/api/v1/w/{workspace_id}/projects/{project_id}/threads/{thread_id}/digest";
+const POST_ROUTE: &str = "/api/v1/w/{workspace_id}/projects/{project_id}/posts/{post_id}";
+/// The handshake key of RFC 6455's example, whose accept value is fixed.
+const HANDSHAKE_KEY: &str = "dGhlIHNhbXBsZSBub25jZQ==";
+const HANDSHAKE_ACCEPT: &str = "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=";
+/// How long a test waits for something that must happen.
+const PATIENCE: Duration = Duration::from_secs(5);
+/// How long a test waits to be sure that something does not happen.
+const QUIET: Duration = Duration::from_millis(1500);
+
+// ---------------------------------------------------------------------------
+// Plumbing
+// ---------------------------------------------------------------------------
+
+fn block<F: Future>(future: F) -> F::Output {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime")
+        .block_on(future)
+}
+
+fn admin_url() -> String {
+    std::env::var("OMNI_ADMIN_DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://omni:omni-dev@postgres:5432/omni".to_string())
+}
+
+fn admin_options() -> PgConnectOptions {
+    PgConnectOptions::from_str(&admin_url()).expect("OMNI_ADMIN_DATABASE_URL")
+}
+
+fn api_password() -> String {
+    // The password that the stack's API gives omni_api (docker-compose.yml). The
+    // role is cluster-wide, so the scratch database must use the same one.
+    std::env::var("OMNI_API_DB_PASSWORD").unwrap_or_else(|_| "omni-api-dev".to_string())
+}
+
+fn s3_endpoint() -> String {
+    std::env::var("OMNI_S3_ENDPOINT").unwrap_or_else(|_| "http://rustfs:9000".to_string())
+}
+
+fn s3_access_key() -> String {
+    std::env::var("OMNI_S3_ACCESS_KEY").unwrap_or_else(|_| "omni-dev".to_string())
+}
+
+fn s3_secret_key() -> String {
+    std::env::var("OMNI_S3_SECRET_KEY").unwrap_or_else(|_| "omni-dev-secret".to_string())
+}
+
+fn config() -> Config {
+    let admin = admin_options();
+    let url = admin_url();
+    let (server, _database) = url.rsplit_once('/').expect("OMNI_ADMIN_DATABASE_URL");
+    Config {
+        bind: "127.0.0.1:0".to_string(),
+        database_url: format!(
+            "postgres://omni_api:{}@{}:{}/{TEST_DB}",
+            api_password(),
+            admin.get_host(),
+            admin.get_port()
+        ),
+        admin_database_url: format!("{server}/{TEST_DB}"),
+        api_db_password: api_password(),
+        s3_endpoint: s3_endpoint(),
+        s3_access_key: s3_access_key(),
+        s3_secret_key: s3_secret_key(),
+        s3_bucket: TEST_BUCKET.to_string(),
+    }
+}
+
+async fn ensure_bucket() {
+    let region = Region::Custom {
+        region: "us-east-1".to_string(),
+        endpoint: s3_endpoint(),
+    };
+    let credentials = Credentials::new(
+        Some(&s3_access_key()),
+        Some(&s3_secret_key()),
+        None,
+        None,
+        None,
+    )
+    .expect("storage credentials");
+    let bucket = Bucket::new(TEST_BUCKET, region.clone(), credentials.clone())
+        .expect("bucket settings")
+        .with_path_style();
+    if !bucket.exists().await.unwrap_or(false) {
+        Bucket::create_with_path_style(
+            TEST_BUCKET,
+            region,
+            credentials,
+            BucketConfiguration::default(),
+        )
+        .await
+        .unwrap_or_else(|e| panic!("cannot create the scratch bucket: {e}"));
+    }
+}
+
+async fn admin_connection() -> PgConnection {
+    PgConnection::connect_with(&admin_options().database(TEST_DB))
+        .await
+        .expect("connect to the scratch database as the admin role")
+}
+
+struct Fixture {
+    workspace: String,
+    alice_token: String,
+    key: String,
+    server: TestServer,
+}
+
+fn session_token(name: &str) -> String {
+    format!("us035-session-{name}-0123456789abcdef0123456789abcdef0123456789abcdef")
+}
+
+fn fixture() -> &'static Fixture {
+    static FIXTURE: OnceLock<Fixture> = OnceLock::new();
+    FIXTURE.get_or_init(|| {
+        block(async {
+            let mut admin = PgConnection::connect_with(&admin_options())
+                .await
+                .unwrap_or_else(|e| panic!("cannot connect to Postgres as the admin role: {e}"));
+            sqlx::query(&format!("DROP DATABASE IF EXISTS {TEST_DB} WITH (FORCE)"))
+                .execute(&mut admin)
+                .await
+                .expect("drop the scratch database");
+            sqlx::query(&format!("CREATE DATABASE {TEST_DB}"))
+                .execute(&mut admin)
+                .await
+                .expect("create the scratch database");
+            omni_api::migrate(&config(), 30)
+                .await
+                .expect("apply the migrations to the scratch database");
+            ensure_bucket().await;
+        });
+        let workspace = block(async {
+            let mut conn = admin_connection().await;
+            let mut text = async |sql: &str, binds: &[&str]| -> String {
+                let mut query = sqlx::query_scalar::<_, String>(sql);
+                for bind in binds {
+                    query = query.bind(*bind);
+                }
+                query.fetch_one(&mut conn).await.expect("seed")
+            };
+            let workspace = text(
+                "insert into workspaces (name) values ('Alpha') returning id::text",
+                &[],
+            )
+            .await;
+            let user = text(
+                "insert into users (email) values ('alice@example.test') returning id::text",
+                &[],
+            )
+            .await;
+            text(
+                "insert into sessions (user_id, token_hash, expires_at) \
+                 values ($1::uuid, sha256(convert_to($2, 'UTF8')), now() + interval '1 day') \
+                 returning id::text",
+                &[&user, &session_token("alice")],
+            )
+            .await;
+            text(
+                "insert into memberships (workspace_id, user_id) \
+                 values ($1::uuid, $2::uuid) returning id::text",
+                &[&workspace, &user],
+            )
+            .await;
+            workspace
+        });
+        let server = TestServer::start(&config());
+        let response = call(
+            &server.client,
+            "POST",
+            &format!("/api/v1/w/{workspace}/api-keys"),
+            &Auth::Session(&session_token("alice")),
+            Some(&json!({})),
+        );
+        assert_eq!(response.status, 201, "mint a key: {}", response.text());
+        let key = response.json()["secret"]
+            .as_str()
+            .expect("the new key has a secret")
+            .to_string();
+        Fixture {
+            workspace,
+            alice_token: session_token("alice"),
+            key,
+            server,
+        }
+    })
+}
+
+fn ready() -> (&'static Fixture, &'static Client) {
+    let fixture = fixture();
+    (fixture, &fixture.server.client)
+}
+
+/// Who sends a request: an agent (the API key with a run and role) or the
+/// human (a session cookie).
+#[derive(Clone, Copy)]
+enum Auth<'a> {
+    Agent {
+        key: &'a str,
+        run: &'a str,
+        role: &'a str,
+    },
+    Session(&'a str),
+}
+
+impl Auth<'_> {
+    fn headers(&self) -> Vec<(&'static str, String)> {
+        match self {
+            Auth::Agent { key, run, role } => vec![
+                ("Authorization", format!("Bearer {key}")),
+                ("X-Omni-Run", run.to_string()),
+                ("X-Omni-Role", role.to_string()),
+                ("X-Omni-Model", "test-model".to_string()),
+                ("X-Omni-Harness", "test-harness".to_string()),
+            ],
+            Auth::Session(token) => vec![("Cookie", cookie(token))],
+        }
+    }
+}
+
+fn agent_as<'a>(f: &'a Fixture, run: &'a str, role: &'a str) -> Auth<'a> {
+    Auth::Agent {
+        key: &f.key,
+        run,
+        role,
+    }
+}
+
+/// The agent that starts threads and phases: `run-1/moderator`.
+fn moderator(f: &Fixture) -> Auth<'_> {
+    agent_as(f, "run-1", "moderator")
+}
+
+/// The agent whose posts the others must not see too early: `run-1/critic`.
+fn critic(f: &Fixture) -> Auth<'_> {
+    agent_as(f, "run-1", "critic")
+}
+
+/// The agent that reads: `run-1/scout`.
+fn scout(f: &Fixture) -> Auth<'_> {
+    agent_as(f, "run-1", "scout")
+}
+
+fn human(f: &Fixture) -> Auth<'_> {
+    Auth::Session(&f.alice_token)
+}
+
+fn call(client: &Client, method: &str, path: &str, auth: &Auth, body: Option<&Value>) -> Response {
+    let owned = auth.headers();
+    let headers: Vec<(&str, &str)> = owned.iter().map(|(n, v)| (*n, v.as_str())).collect();
+    let body = body.map(Value::to_string);
+    client.request(method, path, &headers, body.as_deref())
+}
+
+fn must(response: Response, status: u16, what: &str) -> Value {
+    assert_eq!(response.status, status, "{what}: {}", response.text());
+    response.json()
+}
+
+fn unique(label: &str) -> String {
+    static COUNTER: AtomicU32 = AtomicU32::new(0);
+    format!("{label}-{}", COUNTER.fetch_add(1, Ordering::Relaxed))
+}
+
+fn id_of(value: &Value) -> String {
+    value["id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("there is an `id`: {value}"))
+        .to_string()
+}
+
+fn project_base(f: &Fixture, project: &str) -> String {
+    format!("/api/v1/w/{}/projects/{project}", f.workspace)
+}
+
+fn thread_path(f: &Fixture, project: &str, thread: &str) -> String {
+    format!("{}/threads/{thread}", project_base(f, project))
+}
+
+fn post_path(f: &Fixture, project: &str, post: &str) -> String {
+    format!("{}/posts/{post}", project_base(f, project))
+}
+
+fn new_project(f: &Fixture, client: &Client) -> String {
+    id_of(
+        &must(
+            call(
+                client,
+                "POST",
+                &format!("/api/v1/w/{}/projects", f.workspace),
+                &moderator(f),
+                Some(&json!({ "name": unique("sealed-project") })),
+            ),
+            201,
+            "create a project",
+        )["project"],
+    )
+}
+
+/// A project with a change set and a thread whose first phase is sealed or
+/// open: (project, thread).
+fn thread_in_new_project(f: &Fixture, client: &Client, sealed: bool) -> (String, String) {
+    let project = new_project(f, client);
+    let changeset = id_of(
+        &must(
+            call(
+                client,
+                "POST",
+                &format!("{}/changesets", project_base(f, &project)),
+                &moderator(f),
+                Some(&json!({ "title": unique("change"), "run_tag": "run-1" })),
+            ),
+            201,
+            "create a change set",
+        )["changeset"],
+    );
+    let thread = id_of(
+        &must(
+            call(
+                client,
+                "POST",
+                &format!(
+                    "{}/changesets/{changeset}/threads",
+                    project_base(f, &project)
+                ),
+                &moderator(f),
+                Some(&json!({
+                    "question": unique("Which hero layout?"),
+                    "criteria": ["Readable at 320 px"],
+                    "sealed": sealed
+                })),
+            ),
+            201,
+            "start a thread",
+        )["thread"],
+    );
+    (project, thread)
+}
+
+fn start_phase(f: &Fixture, client: &Client, project: &str, thread: &str, sealed: bool) {
+    must(
+        call(
+            client,
+            "POST",
+            &format!("{}/phases", thread_path(f, project, thread)),
+            &moderator(f),
+            Some(&json!({ "sealed": sealed })),
+        ),
+        201,
+        "start the next phase",
+    );
+}
+
+/// What a test knows of a post it made: its ID and the texts that must not
+/// show to an agent that may not see it.
+#[derive(Clone)]
+struct Made {
+    id: String,
+    summary: String,
+    body: String,
+}
+
+/// Posts a note as `auth` with a unique summary and body; `extra` is merged
+/// into the request (e.g. `links`).
+fn post_with(
+    f: &Fixture,
+    client: &Client,
+    auth: &Auth,
+    project: &str,
+    thread: &str,
+    label: &str,
+    extra: Value,
+) -> Made {
+    let summary = unique(&format!("{label} summary"));
+    let body = unique(&format!("{label} body"));
+    let mut request = json!({ "type": "position", "summary": summary, "body": body });
+    if let Value::Object(extra) = extra {
+        for (name, value) in extra {
+            request[name] = value;
+        }
+    }
+    let posted = must(
+        call(
+            client,
+            "POST",
+            &format!("{}/posts", thread_path(f, project, thread)),
+            auth,
+            Some(&request),
+        ),
+        201,
+        &format!("post {request}"),
+    );
+    Made {
+        id: id_of(&posted["post"]),
+        summary,
+        body,
+    }
+}
+
+fn post(
+    f: &Fixture,
+    client: &Client,
+    auth: &Auth,
+    project: &str,
+    thread: &str,
+    label: &str,
+) -> Made {
+    post_with(f, client, auth, project, thread, label, json!({}))
+}
+
+fn read_thread(f: &Fixture, client: &Client, auth: &Auth, project: &str, thread: &str) -> Response {
+    call(client, "GET", &thread_path(f, project, thread), auth, None)
+}
+
+fn read_digest(f: &Fixture, client: &Client, auth: &Auth, project: &str, thread: &str) -> Response {
+    call(
+        client,
+        "GET",
+        &format!("{}/digest", thread_path(f, project, thread)),
+        auth,
+        None,
+    )
+}
+
+fn read_post(f: &Fixture, client: &Client, auth: &Auth, project: &str, post: &str) -> Response {
+    call(client, "GET", &post_path(f, project, post), auth, None)
+}
+
+/// The posts of a thread read, as the caller sees them.
+fn thread_posts(answer: &Value) -> Vec<Value> {
+    answer["thread"]["posts"]
+        .as_array()
+        .unwrap_or_else(|| panic!("the thread has a list of `posts`: {answer}"))
+        .clone()
+}
+
+/// The IDs of the posts of a thread read, oldest first.
+fn seen_in_thread(
+    f: &Fixture,
+    client: &Client,
+    auth: &Auth,
+    project: &str,
+    thread: &str,
+) -> Vec<String> {
+    let answer = must(
+        read_thread(f, client, auth, project, thread),
+        200,
+        "read the thread",
+    );
+    thread_posts(&answer).iter().map(id_of).collect()
+}
+
+/// The entries of a digest.
+fn digest_posts(answer: &Value) -> Vec<Value> {
+    answer["posts"]
+        .as_array()
+        .unwrap_or_else(|| panic!("the digest has a list of `posts`: {answer}"))
+        .clone()
+}
+
+fn ids_of(made: &[&Made]) -> Vec<String> {
+    made.iter().map(|m| m.id.clone()).collect()
+}
+
+/// Neither the ID, the summary nor the body of `hidden` is anywhere in `text`.
+fn assert_nothing_of(text: &str, hidden: &Made, what: &str) {
+    for (name, marker) in [
+        ("ID", &hidden.id),
+        ("summary", &hidden.summary),
+        ("body", &hidden.body),
+    ] {
+        assert!(
+            !text.contains(marker.as_str()),
+            "{what}: the {name} of a hidden post shows: {text}"
+        );
+    }
+}
+
+fn assert_not_found(response: &Response, what: &str) {
+    assert_eq!(response.status, 404, "{what}: {}", response.text());
+    assert_eq!(
+        response.json(),
+        json!({ "error": "not_found" }),
+        "{what}: the answer carries the code and nothing else"
+    );
+}
+
+/// How many posts the thread has, as the admin role sees them.
+fn posts_in(thread: &str) -> i64 {
+    block(async {
+        let mut conn = admin_connection().await;
+        sqlx::query_scalar("select count(*) from posts where thread_id = $1::uuid")
+            .bind(thread)
+            .fetch_one(&mut conn)
+            .await
+            .unwrap_or_else(|e| panic!("count the thread's posts: {e}"))
+    })
+}
+
+// ---------------------------------------------------------------------------
+// A small WebSocket client (as in tests/live_events.rs)
+// ---------------------------------------------------------------------------
+
+/// What a read of the stream found.
+enum Arrived {
+    Data(Vec<u8>),
+    Timeout,
+    Eof,
+}
+
+/// What the next look at the socket found.
+enum Frame {
+    Message(Value),
+    Silence,
+    Closed,
+}
+
+struct Ws {
+    stream: TcpStream,
+    buffer: Vec<u8>,
+}
+
+impl Ws {
+    /// Opens the socket of the workspace as `auth`, which must work.
+    fn open(client: &Client, workspace: &str, auth: &Auth) -> Ws {
+        let path = format!("/ws/w/{workspace}");
+        let stream = TcpStream::connect(("127.0.0.1", client.port())).expect("connect");
+        let mut ws = Ws {
+            stream,
+            buffer: Vec::new(),
+        };
+        let mut head = format!(
+            "GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nUpgrade: websocket\r\n\
+             Connection: Upgrade\r\nSec-WebSocket-Key: {HANDSHAKE_KEY}\r\n\
+             Sec-WebSocket-Version: 13\r\n"
+        );
+        for (name, value) in auth.headers() {
+            head.push_str(&format!("{name}: {value}\r\n"));
+        }
+        head.push_str("\r\n");
+        ws.stream
+            .write_all(head.as_bytes())
+            .expect("send handshake");
+
+        let deadline = Instant::now() + PATIENCE;
+        let split = loop {
+            if let Some(at) = ws.buffer.windows(4).position(|w| w == b"\r\n\r\n") {
+                break at;
+            }
+            match ws.read_some(deadline) {
+                Arrived::Data(bytes) => ws.buffer.extend(bytes),
+                _ => panic!(
+                    "no complete handshake answer for {path}: {:?}",
+                    String::from_utf8_lossy(&ws.buffer)
+                ),
+            }
+        };
+        let head = String::from_utf8_lossy(&ws.buffer[..split]).into_owned();
+        assert!(
+            head.starts_with("HTTP/1.1 101"),
+            "the socket should open: {head}"
+        );
+        assert!(
+            head.contains(HANDSHAKE_ACCEPT),
+            "the accept value of the handshake: {head}"
+        );
+        ws.buffer.drain(..split + 4);
+        ws
+    }
+
+    /// Reads whatever arrives before `deadline`.
+    fn read_some(&mut self, deadline: Instant) -> Arrived {
+        let wait = deadline
+            .saturating_duration_since(Instant::now())
+            .max(Duration::from_millis(1));
+        self.stream
+            .set_read_timeout(Some(wait))
+            .expect("set the read timeout");
+        let mut chunk = [0u8; 8192];
+        match self.stream.read(&mut chunk) {
+            Ok(0) => Arrived::Eof,
+            Ok(n) => Arrived::Data(chunk[..n].to_vec()),
+            Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
+                Arrived::Timeout
+            }
+            Err(_) => Arrived::Eof,
+        }
+    }
+
+    /// One complete frame off the front of the buffer, as (opcode, payload).
+    fn take_frame(&mut self) -> Option<(u8, Vec<u8>)> {
+        let b = &self.buffer;
+        if b.len() < 2 {
+            return None;
+        }
+        let opcode = b[0] & 0x0f;
+        let masked = b[1] & 0x80 != 0;
+        let mut length = (b[1] & 0x7f) as usize;
+        let mut at = 2;
+        if length == 126 {
+            if b.len() < 4 {
+                return None;
+            }
+            length = u16::from_be_bytes([b[2], b[3]]) as usize;
+            at = 4;
+        } else if length == 127 {
+            if b.len() < 10 {
+                return None;
+            }
+            length = u64::from_be_bytes(b[2..10].try_into().unwrap()) as usize;
+            at = 10;
+        }
+        let mask = if masked {
+            if b.len() < at + 4 {
+                return None;
+            }
+            let mask = [b[at], b[at + 1], b[at + 2], b[at + 3]];
+            at += 4;
+            Some(mask)
+        } else {
+            None
+        };
+        if b.len() < at + length {
+            return None;
+        }
+        let mut payload = b[at..at + length].to_vec();
+        if let Some(mask) = mask {
+            for (i, byte) in payload.iter_mut().enumerate() {
+                *byte ^= mask[i % 4];
+            }
+        }
+        self.buffer.drain(..at + length);
+        Some((opcode, payload))
+    }
+
+    fn send_frame(&mut self, opcode: u8, payload: &[u8]) {
+        let mask = [0x12u8, 0x34, 0x56, 0x78];
+        let mut frame = vec![0x80 | opcode];
+        match payload.len() {
+            n if n < 126 => frame.push(0x80 | n as u8),
+            n if n <= u16::MAX as usize => {
+                frame.push(0x80 | 126);
+                frame.extend((n as u16).to_be_bytes());
+            }
+            n => {
+                frame.push(0x80 | 127);
+                frame.extend((n as u64).to_be_bytes());
+            }
+        }
+        frame.extend(mask);
+        frame.extend(payload.iter().enumerate().map(|(i, b)| b ^ mask[i % 4]));
+        self.stream.write_all(&frame).expect("send a frame");
+    }
+
+    fn send(&mut self, message: &Value) {
+        self.send_frame(1, message.to_string().as_bytes());
+    }
+
+    /// The next message from the server, waiting at most `wait`.
+    fn next(&mut self, wait: Duration) -> Frame {
+        let deadline = Instant::now() + wait;
+        loop {
+            while let Some((opcode, payload)) = self.take_frame() {
+                match opcode {
+                    1 => {
+                        let text = String::from_utf8_lossy(&payload).into_owned();
+                        let message = serde_json::from_str(&text)
+                            .unwrap_or_else(|e| panic!("a text frame is JSON ({e}): {text}"));
+                        return Frame::Message(message);
+                    }
+                    8 => return Frame::Closed,
+                    9 => self.send_frame(10, &payload),
+                    _ => {}
+                }
+            }
+            match self.read_some(deadline) {
+                Arrived::Data(bytes) => self.buffer.extend(bytes),
+                Arrived::Timeout => {
+                    if Instant::now() >= deadline {
+                        return Frame::Silence;
+                    }
+                }
+                Arrived::Eof => return Frame::Closed,
+            }
+        }
+    }
+
+    /// The next `event` message within `wait`; other messages are skipped.
+    fn next_event(&mut self, wait: Duration) -> Option<Value> {
+        let deadline = Instant::now() + wait;
+        loop {
+            match self.next(deadline.saturating_duration_since(Instant::now())) {
+                Frame::Message(m) if m["type"] == "event" => return Some(m),
+                Frame::Message(_) => {}
+                Frame::Silence | Frame::Closed => return None,
+            }
+        }
+    }
+
+    /// Every event that arrives until the socket has been quiet for `QUIET`.
+    fn drain(&mut self) -> Vec<Value> {
+        let mut found = Vec::new();
+        while let Some(event) = self.next_event(QUIET) {
+            found.push(event);
+        }
+        found
+    }
+
+    /// Subscribes and waits for the acknowledgement, which comes before any event.
+    fn subscribe(&mut self, project: &str, after: Option<i64>) {
+        let mut message = json!({ "type": "subscribe", "project_id": project });
+        if let Some(after) = after {
+            message["after"] = json!(after);
+        }
+        self.send(&message);
+        match self.next(PATIENCE) {
+            Frame::Message(ack) => assert_eq!(ack["type"], "subscribed", "{ack}"),
+            Frame::Silence => panic!("the server did not acknowledge the subscription"),
+            Frame::Closed => panic!("the server closed the socket"),
+        }
+    }
+}
+
+/// Opens a socket as `auth` and subscribes to the project, after `after` when
+/// given.
+fn follow(f: &Fixture, client: &Client, auth: &Auth, project: &str, after: Option<i64>) -> Ws {
+    let mut ws = Ws::open(client, &f.workspace, auth);
+    ws.subscribe(project, after);
+    ws
+}
+
+/// Whether one of `events` names the post.
+fn names_post(events: &[Value], post: &str) -> bool {
+    events.iter().any(|e| e.to_string().contains(post))
+}
+
+/// The `post.created` events among `events`, as their post IDs.
+fn created_posts(events: &[Value]) -> Vec<String> {
+    events
+        .iter()
+        .filter(|e| e["event"] == "post.created")
+        .filter_map(|e| e["data"]["post_id"].as_str().map(str::to_string))
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
+// The routes
+// ---------------------------------------------------------------------------
+
+#[test]
+fn the_read_routes_are_in_the_registry_for_agents_and_the_human() {
+    for (method, path) in [
+        ("GET", THREAD_ROUTE),
+        ("GET", DIGEST_ROUTE),
+        ("GET", POST_ROUTE),
+    ] {
+        let entry = registry()
+            .into_iter()
+            .find(|r| r.method == method && r.path == path)
+            .unwrap_or_else(|| panic!("the registry has no route {method} {path}"));
+        assert_eq!(entry.access, Access::Both, "{method} {path}");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// What an agent sees in a sealed phase
+// ---------------------------------------------------------------------------
+
+#[test]
+fn in_a_sealed_phase_an_agent_sees_earlier_phases_its_own_and_the_humans_posts_only() {
+    let (f, client) = ready();
+    let (project, thread) = thread_in_new_project(f, client, false);
+    let earlier = post(f, client, &critic(f), &project, &thread, "critic phase 1");
+    start_phase(f, client, &project, &thread, true);
+    let hidden = post(f, client, &critic(f), &project, &thread, "critic phase 2");
+    let humans = post(f, client, &human(f), &project, &thread, "human phase 2");
+
+    let answer = read_thread(f, client, &scout(f), &project, &thread);
+    let text = answer.text();
+    let answer = must(answer, 200, "the scout reads the thread");
+    let seen: Vec<String> = thread_posts(&answer).iter().map(id_of).collect();
+    assert_eq!(
+        seen,
+        ids_of(&[&earlier, &humans]),
+        "the scout sees the earlier phase's post and the human's, oldest first"
+    );
+    assert_nothing_of(&text, &hidden, "the scout's thread read");
+
+    assert_eq!(
+        seen_in_thread(f, client, &critic(f), &project, &thread),
+        ids_of(&[&earlier, &hidden, &humans]),
+        "the critic sees its own post of the sealed phase"
+    );
+}
+
+#[test]
+fn an_agent_identity_is_its_run_and_role() {
+    let (f, client) = ready();
+    let (project, thread) = thread_in_new_project(f, client, true);
+    let architect = agent_as(f, "run-1", "architect");
+    let own = post(f, client, &architect, &project, &thread, "architect");
+
+    for (auth, who) in [
+        (
+            agent_as(f, "run-1", "critic"),
+            "the same run with another role",
+        ),
+        (
+            agent_as(f, "run-2", "architect"),
+            "the same role in another run",
+        ),
+    ] {
+        let response = read_thread(f, client, &auth, &project, &thread);
+        let text = response.text();
+        let answer = must(response, 200, who);
+        assert!(
+            thread_posts(&answer).is_empty(),
+            "{who} sees nothing: {answer}"
+        );
+        assert_nothing_of(&text, &own, who);
+    }
+    // Another model or harness is still the same identity.
+    let bearer = format!("Bearer {}", f.key);
+    let response = client.request(
+        "GET",
+        &thread_path(f, &project, &thread),
+        &[
+            ("Authorization", bearer.as_str()),
+            ("X-Omni-Run", "run-1"),
+            ("X-Omni-Role", "architect"),
+            ("X-Omni-Model", "another-model"),
+            ("X-Omni-Harness", "another-harness"),
+        ],
+        None,
+    );
+    let answer = must(
+        response,
+        200,
+        "the architect reads with another model and harness",
+    );
+    assert_eq!(
+        thread_posts(&answer).iter().map(id_of).collect::<Vec<_>>(),
+        ids_of(&[&own]),
+        "the model and harness do not count: {answer}"
+    );
+    assert_eq!(
+        seen_in_thread(f, client, &architect, &project, &thread),
+        ids_of(&[&own]),
+        "the architect sees its own post"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// When hidden posts show
+// ---------------------------------------------------------------------------
+
+#[test]
+fn once_the_agent_has_posted_in_the_phase_it_sees_the_hidden_posts_on_its_next_read() {
+    let (f, client) = ready();
+    let (project, thread) = thread_in_new_project(f, client, true);
+    let first = post(f, client, &critic(f), &project, &thread, "critic");
+    let second = post(f, client, &moderator(f), &project, &thread, "moderator");
+    assert!(
+        seen_in_thread(f, client, &scout(f), &project, &thread).is_empty(),
+        "before it posts, the scout sees nothing of the sealed phase"
+    );
+
+    let own = post(f, client, &scout(f), &project, &thread, "scout");
+    assert_eq!(
+        seen_in_thread(f, client, &scout(f), &project, &thread),
+        ids_of(&[&first, &second, &own]),
+        "after it posted, the scout sees every post of the phase"
+    );
+    // A later post of another agent in the same phase shows at once.
+    let later = post(f, client, &critic(f), &project, &thread, "critic again");
+    assert_eq!(
+        seen_in_thread(f, client, &scout(f), &project, &thread),
+        ids_of(&[&first, &second, &own, &later]),
+    );
+    // An agent that has not posted still sees nothing of the phase.
+    assert!(
+        seen_in_thread(
+            f,
+            client,
+            &agent_as(f, "run-1", "builder"),
+            &project,
+            &thread
+        )
+        .is_empty(),
+        "another agent that has not posted"
+    );
+}
+
+#[test]
+fn a_sealed_phase_followed_by_an_open_phase_shows_its_posts_to_every_agent() {
+    let (f, client) = ready();
+    let (project, thread) = thread_in_new_project(f, client, true);
+    let sealed = post(f, client, &critic(f), &project, &thread, "critic sealed");
+    assert!(seen_in_thread(f, client, &scout(f), &project, &thread).is_empty());
+
+    start_phase(f, client, &project, &thread, false);
+    assert_eq!(
+        seen_in_thread(f, client, &scout(f), &project, &thread),
+        ids_of(&[&sealed]),
+        "the sealed phase's post shows once an open phase follows it"
+    );
+    let open = post(f, client, &critic(f), &project, &thread, "critic open");
+    assert_eq!(
+        seen_in_thread(f, client, &scout(f), &project, &thread),
+        ids_of(&[&sealed, &open]),
+        "a post of an open phase shows to an agent that has not posted in it"
+    );
+}
+
+#[test]
+fn a_sealed_phase_followed_by_another_sealed_phase_shows_its_posts_as_an_earlier_phase() {
+    let (f, client) = ready();
+    let (project, thread) = thread_in_new_project(f, client, true);
+    let first = post(f, client, &critic(f), &project, &thread, "critic phase 1");
+    start_phase(f, client, &project, &thread, true);
+    let second = post(f, client, &critic(f), &project, &thread, "critic phase 2");
+
+    let response = read_thread(f, client, &scout(f), &project, &thread);
+    let text = response.text();
+    assert_eq!(
+        thread_posts(&must(response, 200, "the scout reads"))
+            .iter()
+            .map(id_of)
+            .collect::<Vec<_>>(),
+        ids_of(&[&first]),
+        "the earlier sealed phase is open to read, the current one is not"
+    );
+    assert_nothing_of(&text, &second, "the scout's thread read");
+}
+
+// ---------------------------------------------------------------------------
+// The human
+// ---------------------------------------------------------------------------
+
+#[test]
+fn the_human_always_sees_every_post() {
+    let (f, client) = ready();
+    let (project, thread) = thread_in_new_project(f, client, true);
+    let critics = post(f, client, &critic(f), &project, &thread, "critic");
+    let moderators = post(f, client, &moderator(f), &project, &thread, "moderator");
+    let all = ids_of(&[&critics, &moderators]);
+
+    assert_eq!(
+        seen_in_thread(f, client, &human(f), &project, &thread),
+        all,
+        "the thread read"
+    );
+    let digest = must(
+        read_digest(f, client, &human(f), &project, &thread),
+        200,
+        "the human reads the digest",
+    );
+    assert_eq!(
+        digest_posts(&digest).iter().map(id_of).collect::<Vec<_>>(),
+        all,
+        "the digest"
+    );
+    for made in [&critics, &moderators] {
+        let read = must(
+            read_post(f, client, &human(f), &project, &made.id),
+            200,
+            "the human reads one post",
+        );
+        assert_eq!(read["post"]["id"], made.id.as_str(), "{read}");
+        assert_eq!(read["post"]["summary"], made.summary.as_str(), "{read}");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Every read path
+// ---------------------------------------------------------------------------
+
+#[test]
+fn the_digest_lists_only_the_posts_the_agent_may_see_without_their_bodies() {
+    let (f, client) = ready();
+    let (project, thread) = thread_in_new_project(f, client, true);
+    let hidden = post(f, client, &critic(f), &project, &thread, "critic");
+    let humans = post(f, client, &human(f), &project, &thread, "human");
+
+    let response = read_digest(f, client, &scout(f), &project, &thread);
+    let text = response.text();
+    let digest = must(response, 200, "the scout reads the digest");
+    let entries = digest_posts(&digest);
+    assert_eq!(
+        entries.iter().map(id_of).collect::<Vec<_>>(),
+        ids_of(&[&humans]),
+        "the digest holds the human's post only: {digest}"
+    );
+    let entry = &entries[0];
+    assert_eq!(entry["summary"], humans.summary.as_str(), "{entry}");
+    assert_eq!(entry["type"], "position", "{entry}");
+    assert_eq!(entry["phase"], 1, "{entry}");
+    assert_eq!(entry["author"]["kind"], "human", "{entry}");
+    assert!(
+        entry.get("body").is_none() && entry.get("body_html").is_none(),
+        "a digest carries summaries, not bodies: {entry}"
+    );
+    assert!(
+        !text.contains(&humans.body),
+        "no body in the digest: {text}"
+    );
+    assert_nothing_of(&text, &hidden, "the scout's digest");
+
+    let own = post(f, client, &scout(f), &project, &thread, "scout");
+    let digest = must(
+        read_digest(f, client, &scout(f), &project, &thread),
+        200,
+        "the scout reads the digest after posting",
+    );
+    assert_eq!(
+        digest_posts(&digest).iter().map(id_of).collect::<Vec<_>>(),
+        ids_of(&[&hidden, &humans, &own]),
+        "after posting, the digest holds every post"
+    );
+    assert_eq!(
+        digest_posts(&digest)[0]["summary"],
+        hidden.summary.as_str(),
+        "{digest}"
+    );
+
+    let unknown = read_digest(f, client, &scout(f), &project, UNKNOWN_ID);
+    assert_not_found(&unknown, "the digest of an unknown thread");
+}
+
+#[test]
+fn a_single_post_read_of_a_hidden_post_is_answered_like_one_that_does_not_exist() {
+    let (f, client) = ready();
+    let (project, thread) = thread_in_new_project(f, client, true);
+    let hidden = post(f, client, &critic(f), &project, &thread, "critic");
+    let humans = post(f, client, &human(f), &project, &thread, "human");
+
+    let refused = read_post(f, client, &scout(f), &project, &hidden.id);
+    assert_not_found(&refused, "the scout reads the critic's hidden post");
+    assert_nothing_of(&refused.text(), &hidden, "the refusal");
+    let unknown = read_post(f, client, &scout(f), &project, UNKNOWN_ID);
+    assert_eq!(
+        (refused.status, refused.body.clone()),
+        (unknown.status, unknown.body.clone()),
+        "a hidden post is answered like a post that does not exist"
+    );
+
+    // The author and the human read it, and the human's post shows to all.
+    for (auth, who) in [(critic(f), "the critic"), (human(f), "the human")] {
+        let read = must(read_post(f, client, &auth, &project, &hidden.id), 200, who);
+        assert_eq!(read["post"]["id"], hidden.id.as_str(), "{who}: {read}");
+        assert_eq!(read["post"]["body"], hidden.body.as_str(), "{who}: {read}");
+    }
+    let read = must(
+        read_post(f, client, &scout(f), &project, &humans.id),
+        200,
+        "the scout reads the human's post",
+    );
+    assert_eq!(read["post"]["summary"], humans.summary.as_str(), "{read}");
+
+    post(f, client, &scout(f), &project, &thread, "scout");
+    let read = must(
+        read_post(f, client, &scout(f), &project, &hidden.id),
+        200,
+        "the scout reads the critic's post after posting",
+    );
+    assert_eq!(read["post"]["summary"], hidden.summary.as_str(), "{read}");
+
+    // A post of another project is not found under this one.
+    let (other_project, _) = thread_in_new_project(f, client, false);
+    assert_not_found(
+        &read_post(f, client, &human(f), &other_project, &hidden.id),
+        "a post read under another project",
+    );
+}
+
+#[test]
+fn a_post_that_links_to_a_post_its_author_may_not_see_is_refused_like_a_link_to_no_post() {
+    let (f, client) = ready();
+    let (project, thread) = thread_in_new_project(f, client, true);
+    let hidden = post(f, client, &critic(f), &project, &thread, "critic");
+    let before = posts_in(&thread);
+
+    let link = |post: &str| {
+        json!({
+            "type": "objection",
+            "summary": unique("A reply"),
+            "body": "I disagree.",
+            "links": [{ "kind": "post", "post_id": post }]
+        })
+    };
+    let path = format!("{}/posts", thread_path(f, &project, &thread));
+    let refused = call(client, "POST", &path, &scout(f), Some(&link(&hidden.id)));
+    assert_eq!(refused.status, 400, "{}", refused.text());
+    assert_eq!(refused.json(), json!({ "error": "invalid_request" }));
+    let unknown = call(client, "POST", &path, &scout(f), Some(&link(UNKNOWN_ID)));
+    assert_eq!(
+        (refused.status, refused.body.clone()),
+        (unknown.status, unknown.body.clone()),
+        "a link to a hidden post is refused like a link to no post"
+    );
+    assert_eq!(posts_in(&thread), before, "nothing was recorded");
+
+    // Once the scout has posted in the phase, it may link to the post.
+    post(f, client, &scout(f), &project, &thread, "scout");
+    let linked = must(
+        call(client, "POST", &path, &scout(f), Some(&link(&hidden.id))),
+        201,
+        "the scout links to the critic's post after posting",
+    );
+    assert_eq!(linked["post"]["links"][0]["post_id"], hidden.id.as_str());
+}
+
+#[test]
+fn a_link_to_a_hidden_post_is_left_out_of_what_the_agent_reads() {
+    let (f, client) = ready();
+    let (project, thread) = thread_in_new_project(f, client, true);
+    let hidden = post(f, client, &critic(f), &project, &thread, "critic");
+    let source = json!({ "kind": "url", "url": "https://example.test/hero" });
+    let pointer = json!({ "kind": "post", "post_id": hidden.id });
+    let humans = post_with(
+        f,
+        client,
+        &human(f),
+        &project,
+        &thread,
+        "human links",
+        json!({ "links": [pointer, source] }),
+    );
+
+    let links_in_thread = |auth: &Auth| -> (Value, String) {
+        let response = read_thread(f, client, auth, &project, &thread);
+        let text = response.text();
+        let answer = must(response, 200, "read the thread");
+        let post = thread_posts(&answer)
+            .into_iter()
+            .find(|p| id_of(p) == humans.id)
+            .unwrap_or_else(|| panic!("the human's post shows: {answer}"));
+        (post["links"].clone(), text)
+    };
+    let links_in_post = |auth: &Auth| -> (Value, String) {
+        let response = read_post(f, client, auth, &project, &humans.id);
+        let text = response.text();
+        (
+            must(response, 200, "read the human's post")["post"]["links"].clone(),
+            text,
+        )
+    };
+
+    for read in [
+        &links_in_thread as &dyn Fn(&Auth) -> (Value, String),
+        &links_in_post as &dyn Fn(&Auth) -> (Value, String),
+    ] {
+        let (links, text) = read(&scout(f));
+        assert_eq!(
+            links,
+            json!([source]),
+            "the link to the hidden post is left out, the web source stays"
+        );
+        assert_nothing_of(&text, &hidden, "the scout's read of the human's links");
+        let (links, _) = read(&human(f));
+        assert_eq!(links, json!([pointer, source]), "the human sees both links");
+    }
+
+    post(f, client, &scout(f), &project, &thread, "scout");
+    for read in [
+        &links_in_thread as &dyn Fn(&Auth) -> (Value, String),
+        &links_in_post as &dyn Fn(&Auth) -> (Value, String),
+    ] {
+        let (links, _) = read(&scout(f));
+        assert_eq!(
+            links,
+            json!([pointer, source]),
+            "after posting, the scout sees the link too"
+        );
+    }
+}
+
+#[test]
+fn live_events_of_hidden_posts_do_not_reach_the_agent() {
+    let (f, client) = ready();
+    let (project, thread) = thread_in_new_project(f, client, true);
+    let mut scouts = follow(f, client, &scout(f), &project, None);
+    let mut critics = follow(f, client, &critic(f), &project, None);
+    let mut humans = follow(f, client, &human(f), &project, None);
+
+    let hidden = post(f, client, &critic(f), &project, &thread, "critic");
+    let human_post = post(f, client, &human(f), &project, &thread, "human");
+
+    let to_human = humans.drain();
+    assert_eq!(
+        created_posts(&to_human),
+        ids_of(&[&hidden, &human_post]),
+        "the human's socket gets every post.created"
+    );
+    let to_critic = critics.drain();
+    assert_eq!(
+        created_posts(&to_critic),
+        ids_of(&[&hidden, &human_post]),
+        "the critic's socket gets its own post and the human's"
+    );
+    let to_scout = scouts.drain();
+    assert_eq!(
+        created_posts(&to_scout),
+        ids_of(&[&human_post]),
+        "the scout's socket gets the human's post only"
+    );
+    assert!(
+        !names_post(&to_scout, &hidden.id),
+        "no event names the hidden post: {to_scout:?}"
+    );
+
+    let own = post(f, client, &scout(f), &project, &thread, "scout");
+    let to_scout = scouts.drain();
+    assert!(
+        created_posts(&to_scout).contains(&own.id),
+        "the scout's socket gets its own post: {to_scout:?}"
+    );
+    let later = post(f, client, &critic(f), &project, &thread, "critic again");
+    let to_scout = scouts.drain();
+    assert_eq!(
+        created_posts(&to_scout),
+        ids_of(&[&later]),
+        "once the scout has posted, the critic's next post reaches it"
+    );
+}
+
+#[test]
+fn resuming_replays_a_hidden_posts_event_only_once_the_agent_may_see_it() {
+    let (f, client) = ready();
+    let (project, thread) = thread_in_new_project(f, client, true);
+    let hidden = post(f, client, &critic(f), &project, &thread, "critic");
+    let humans = post(f, client, &human(f), &project, &thread, "human");
+
+    let replayed = follow(f, client, &scout(f), &project, Some(0)).drain();
+    assert!(
+        replayed.iter().any(|e| e["event"] == "thread.created"),
+        "the replay holds the project's other events: {replayed:?}"
+    );
+    assert_eq!(
+        created_posts(&replayed),
+        ids_of(&[&humans]),
+        "resuming before posting replays the human's post only"
+    );
+    assert!(
+        !names_post(&replayed, &hidden.id),
+        "no replayed event names the hidden post: {replayed:?}"
+    );
+    let replayed = follow(f, client, &human(f), &project, Some(0)).drain();
+    assert_eq!(
+        created_posts(&replayed),
+        ids_of(&[&hidden, &humans]),
+        "the human's replay holds every post"
+    );
+
+    let own = post(f, client, &scout(f), &project, &thread, "scout");
+    let replayed = follow(f, client, &scout(f), &project, Some(0)).drain();
+    assert_eq!(
+        created_posts(&replayed),
+        ids_of(&[&hidden, &humans, &own]),
+        "after posting, resuming from before replays the critic's post too"
+    );
+    let replayed = follow(f, client, &agent_as(f, "run-2", "scout"), &project, Some(0)).drain();
+    assert!(
+        !names_post(&replayed, &hidden.id),
+        "an identity that has not posted still gets no event of it: {replayed:?}"
+    );
+
+    start_phase(f, client, &project, &thread, false);
+    let replayed = follow(f, client, &agent_as(f, "run-2", "scout"), &project, Some(0)).drain();
+    assert!(
+        created_posts(&replayed).contains(&hidden.id),
+        "once an open phase follows, every agent's replay holds it: {replayed:?}"
+    );
+}

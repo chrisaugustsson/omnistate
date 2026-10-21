@@ -16,8 +16,8 @@
 //!   `Workspace` (its path holds `{workspace_id}`, and the suite attacks it) or
 //!   `Global` (no workspace in the path, with the reason). The path may hold
 //!   `{project_id}`, `{changeset_id}`, `{key_id}`, `{attachment_id}`,
-//!   `{doc_id}`, `{version_id}`, `{other_version_id}`, `{conflict_id}` and
-//!   `{thread_id}`,
+//!   `{doc_id}`, `{version_id}`, `{other_version_id}`, `{conflict_id}`,
+//!   `{thread_id}` and `{post_id}`,
 //!   which the suite fills with the IDs of the seeded records, and
 //!   `{board_id}`, which it fills with a node ID that no board has (US-030);
 //!   a path with another placeholder, or a registry route without a case,
@@ -37,7 +37,9 @@
 //!   under it, which left it `open` again with the conflict `{conflict_id}`.
 //!   Once the thread routes exist (US-033), `{changeset_id}` also has the
 //!   thread `{thread_id}`, which the workspace's agent started, moved on to a
-//!   sealed second phase and posted in. Once the directive route exists
+//!   sealed second phase and posted in; that post, which the workspace's
+//!   agent (the API key without identity headers) wrote, is `{post_id}`, and
+//!   its summary is text that nothing else holds. Once the directive route exists
 //!   (US-034), the human also posted a directive in it, which the workspace's
 //!   agent was given with its next request in the change set.
 //! - Workspace A's credentials against workspace B's workspace and IDs, and
@@ -431,6 +433,18 @@ const CASES: &[Case] = &[
         "POST",
         "/api/v1/w/{workspace_id}/projects/{project_id}/threads/{thread_id}/directives",
         Some(r#"{"summary":"intruder","body":"intruder"}"#),
+        Kind::Workspace,
+    ),
+    case(
+        "GET",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/threads/{thread_id}/digest",
+        None,
+        Kind::Workspace,
+    ),
+    case(
+        "GET",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/posts/{post_id}",
+        None,
         Kind::Workspace,
     ),
 ];
@@ -985,6 +999,11 @@ struct Side {
     /// which nothing else holds: empty until the thread routes exist.
     thread_id: String,
     thread_question: String,
+    /// The post that the workspace's agent made in the thread's sealed second
+    /// phase (US-035), and its summary, which nothing else holds: empty
+    /// until the thread routes exist.
+    post_id: String,
+    post_summary: String,
 }
 
 impl Side {
@@ -1016,6 +1035,8 @@ impl Side {
             conflict_id: same(),
             thread_id: same(),
             thread_question: String::new(),
+            post_id: same(),
+            post_summary: String::new(),
         }
     }
 
@@ -1045,6 +1066,8 @@ impl Side {
             &self.conflict_id,
             &self.thread_id,
             &self.thread_question,
+            &self.post_id,
+            &self.post_summary,
         ]
         .into_iter()
         .map(String::as_str)
@@ -1410,7 +1433,7 @@ fn fixture() -> &'static Fixture {
             // second phase, with a post, so whatever holds threads, phases and
             // posts has rows of the workspace. Seeded as soon as the registry
             // has the thread routes.
-            let (thread_id, thread_question) = if has_thread_routes() {
+            let (thread_id, thread_question, post_id, post_summary) = if has_thread_routes() {
                 let question = unique(&format!("{name}-question"));
                 let body = json!({ "question": question, "criteria": [unique(&format!("{name}-criterion"))] })
                     .to_string();
@@ -1438,13 +1461,14 @@ fn fixture() -> &'static Fixture {
                     201,
                     "start the thread's second phase",
                 );
+                let post_summary = unique(&format!("{name}-summary"));
                 let body = json!({
                     "type": "position",
-                    "summary": unique(&format!("{name}-summary")),
+                    "summary": post_summary,
                     "body": unique(&format!("{name}-post"))
                 })
                 .to_string();
-                must(
+                let posted = must(
                     call(
                         client,
                         "POST",
@@ -1455,6 +1479,7 @@ fn fixture() -> &'static Fixture {
                     201,
                     "post in the thread",
                 );
+                let post_id = posted["post"]["id"].as_str().expect("an id").to_string();
                 // US-034: a directive of the human in the thread, which the
                 // agent is given with its next request in the change set, so
                 // whatever records that has rows of the workspace.
@@ -1491,9 +1516,9 @@ fn fixture() -> &'static Fixture {
                         "the agent is given the directive: {shown}"
                     );
                 }
-                (thread.to_string(), question)
+                (thread.to_string(), question, post_id, post_summary)
             } else {
-                (String::new(), String::new())
+                (String::new(), String::new(), String::new(), String::new())
             };
             Side {
                 id: workspace,
@@ -1523,6 +1548,8 @@ fn fixture() -> &'static Fixture {
                 conflict_id,
                 thread_id,
                 thread_question,
+                post_id,
+                post_summary,
             }
         });
         let a = sides.next().expect("workspace A");
@@ -1558,6 +1585,7 @@ fn fill(template: &str, workspace: &Side, record: &Side) -> String {
             "other_version_id" => &record.other_version_id,
             "conflict_id" => &record.conflict_id,
             "thread_id" => &record.thread_id,
+            "post_id" => &record.post_id,
             // US-030: an attack on a board is refused at the workspace or the
             // project, before any board is looked up, so a node ID that no
             // board has stands in for one.
@@ -3459,6 +3487,81 @@ fn the_directive_call_of_the_attacks_works_for_the_workspace_that_owns_the_recor
         .unwrap_or_default();
     assert_eq!(given.len(), 1, "the agent is given the directive: {shown}");
     assert_eq!(given[0]["id"], posted["post"]["id"], "{shown}");
+}
+
+// ---------------------------------------------------------------------------
+// Reading posts (US-035)
+// ---------------------------------------------------------------------------
+
+const POST_READ_ROUTES: [(&str, &str); 2] = [
+    (
+        "GET",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/threads/{thread_id}/digest",
+    ),
+    (
+        "GET",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/posts/{post_id}",
+    ),
+];
+
+#[test]
+fn the_post_read_routes_are_in_the_registry_and_the_suite_attacks_them() {
+    for (method, path) in POST_READ_ROUTES {
+        let entry = registry()
+            .into_iter()
+            .find(|r| r.method == method && r.path == path)
+            .unwrap_or_else(|| panic!("the registry has no route {method} {path}"));
+        assert_eq!(entry.access, Access::Both, "{method} {path}");
+        assert!(
+            matches!(case_for(&entry).kind, Kind::Workspace),
+            "{method} {path} is a workspace route that the suite attacks"
+        );
+    }
+
+    let (f, _) = ready();
+    for side in [&f.a, &f.b] {
+        assert!(
+            !side.post_id.is_empty(),
+            "the suite seeded no post for {}",
+            side.id
+        );
+    }
+}
+
+#[test]
+fn the_post_read_calls_of_the_attacks_work_for_the_workspace_that_owns_the_records() {
+    // The control for the post reads: the owner's agent, which wrote the
+    // seeded post, and the owner's human read the thread's digest and the
+    // post itself in the owner's workspace.
+    let (f, client) = ready();
+    let _guard = serial();
+    let key = Auth::Key(&f.a.key);
+    let human = Auth::Session(&f.a.token);
+    let (digest, single) = (POST_READ_ROUTES[0].1, POST_READ_ROUTES[1].1);
+    for auth in [&key, &human] {
+        let listed = must(
+            call(client, "GET", &fill(digest, &f.a, &f.a), auth, None),
+            200,
+            "read the seeded thread's digest",
+        );
+        let posts = listed["posts"]
+            .as_array()
+            .unwrap_or_else(|| panic!("the digest lists posts: {listed}"));
+        assert!(
+            posts
+                .iter()
+                .any(|p| p["id"] == f.a.post_id.as_str()
+                    && p["summary"] == f.a.post_summary.as_str()),
+            "the digest holds the seeded post: {listed}"
+        );
+        let read = must(
+            call(client, "GET", &fill(single, &f.a, &f.a), auth, None),
+            200,
+            "read the seeded post",
+        );
+        assert_eq!(read["post"]["id"], f.a.post_id.as_str(), "{read}");
+        assert_eq!(read["post"]["summary"], f.a.post_summary.as_str(), "{read}");
+    }
 }
 
 // ---------------------------------------------------------------------------
