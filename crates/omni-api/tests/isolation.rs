@@ -17,13 +17,15 @@
 //!   `Global` (no workspace in the path, with the reason). The path may hold
 //!   `{project_id}`, `{changeset_id}`, `{key_id}`, `{attachment_id}`,
 //!   `{doc_id}`, `{version_id}`, `{other_version_id}`, `{conflict_id}`,
-//!   `{thread_id}`, `{post_id}` and `{decision_id}`,
+//!   `{thread_id}`, `{post_id}`, `{decision_id}` and `{comment_id}`,
 //!   which the suite fills with the IDs of the seeded records, and
 //!   `{board_id}`, which it fills with a node ID that no board has (US-030);
 //!   a path with another placeholder, or a registry route without a case,
 //!   fails the suite. A body may hold `<claimed_node>`, which the suite fills
 //!   with the section that the record's workspace claimed (see below), so
-//!   that an attack on the claim routes names a node that really is claimed.
+//!   that an attack on the claim routes names a node that really is claimed,
+//!   `<comment_node>`, the node of `{version_id}` that the seeded comment is
+//!   pinned to, and `<other_version_id>`, the record's `{other_version_id}`.
 //!   The seeded doc (US-022) was created in the open change set `{changeset_id}`,
 //!   which has its draft, and has one applied operation; once the claim routes
 //!   exist (US-023), the draft also has a section that the workspace's agent
@@ -45,7 +47,11 @@
 //!   decision routes exist (US-037), the workspace's agent also proposed the
 //!   decision `{decision_id}` for that thread, relying on `{post_id}`, whose
 //!   direction is text that nothing else holds, and linked `{changeset_id}` to
-//!   it; the decision is still `proposed`.
+//!   it; the decision is still `proposed`. Once the comment routes exist
+//!   (US-038), the human also commented on the paragraph of `{version_id}`
+//!   (the comment `{comment_id}`, whose text nothing else holds), the
+//!   workspace's agent replied to it and marked it addressed in
+//!   `{other_version_id}`.
 //! - Workspace A's credentials against workspace B's workspace and IDs, and
 //!   against B's IDs under A's own workspace, are always 404
 //!   `{"error": "not_found"}` with nothing of B in the body, and the answer is
@@ -483,6 +489,48 @@ const CASES: &[Case] = &[
         None,
         Kind::Workspace,
     ),
+    case(
+        "POST",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/versions/{version_id}/comments",
+        Some(r#"{"node":"<comment_node>","text":"intruder"}"#),
+        Kind::Workspace,
+    ),
+    case(
+        "GET",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/comments",
+        None,
+        Kind::Workspace,
+    ),
+    case(
+        "GET",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/comments/{comment_id}",
+        None,
+        Kind::Workspace,
+    ),
+    case(
+        "POST",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/comments/{comment_id}/replies",
+        Some(r#"{"text":"intruder"}"#),
+        Kind::Workspace,
+    ),
+    case(
+        "POST",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/comments/{comment_id}/addressed",
+        Some(r#"{"version_id":"<other_version_id>"}"#),
+        Kind::Workspace,
+    ),
+    case(
+        "POST",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/comments/{comment_id}/resolve",
+        Some("{}"),
+        Kind::Workspace,
+    ),
+    case(
+        "POST",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/comments/{comment_id}/reopen",
+        Some("{}"),
+        Kind::Workspace,
+    ),
 ];
 
 /// The WebSocket routes that the suite attacks, as the paths of
@@ -799,6 +847,15 @@ fn has_decision_routes() -> bool {
     })
 }
 
+/// Whether the router has the comment routes (US-038) yet.
+fn has_comment_routes() -> bool {
+    registry().iter().any(|r| {
+        r.method == "POST"
+            && r.path
+                == "/api/v1/w/{workspace_id}/projects/{project_id}/versions/{version_id}/comments"
+    })
+}
+
 /// The `data-rev` of the block with `data-node-id="{node}"` in a draft's HTML.
 fn rev_of(html: &str, node: &str) -> u64 {
     let at = html
@@ -1054,6 +1111,13 @@ struct Side {
     /// else holds: empty until the decision routes exist.
     decision_id: String,
     decision_direction: String,
+    /// The comment that the human made on the paragraph of `version_id`, to
+    /// which the workspace's agent replied and which it marked addressed in
+    /// `other_version_id` (US-038), the paragraph's node and the comment's
+    /// text, which nothing else holds: empty until the comment routes exist.
+    comment_id: String,
+    comment_node: String,
+    comment_text: String,
 }
 
 impl Side {
@@ -1089,6 +1153,9 @@ impl Side {
             post_summary: String::new(),
             decision_id: same(),
             decision_direction: String::new(),
+            comment_id: same(),
+            comment_node: UNKNOWN_NODE.to_string(),
+            comment_text: String::new(),
         }
     }
 
@@ -1122,6 +1189,8 @@ impl Side {
             &self.post_summary,
             &self.decision_id,
             &self.decision_direction,
+            &self.comment_id,
+            &self.comment_text,
         ]
         .into_iter()
         .map(String::as_str)
@@ -1646,6 +1715,77 @@ fn fixture() -> &'static Fixture {
                     String::new(),
                 )
             };
+            // US-038: the human's comment on the paragraph of the first saved
+            // version, the agent's reply to it and its mark that the second
+            // version addressed it, so whatever holds comments and replies
+            // has rows of the workspace. Seeded as soon as the registry has
+            // the comment routes.
+            let (comment_id, comment_node, comment_text) = if has_comment_routes()
+                && has_version_routes()
+            {
+                let base = format!("/api/v1/w/{workspace}/projects/{project_id}");
+                let version = must(
+                    call(
+                        client,
+                        "GET",
+                        &format!("{base}/versions/{version_id}"),
+                        &agent,
+                        None,
+                    ),
+                    200,
+                    "read the first saved version",
+                );
+                let node = version["version"]["nodes"]
+                    .as_array()
+                    .and_then(|nodes| nodes.iter().find(|n| n["type"] == "paragraph"))
+                    .and_then(|n| n["id"].as_str())
+                    .unwrap_or_else(|| panic!("the version has a paragraph: {version}"))
+                    .to_string();
+                let text = unique(&format!("{name}-comment"));
+                let body = json!({ "node": node, "text": text }).to_string();
+                let made = must(
+                    call(
+                        client,
+                        "POST",
+                        &format!("{base}/versions/{version_id}/comments"),
+                        &human,
+                        Some(&body),
+                    ),
+                    201,
+                    "the human comments on the paragraph",
+                );
+                let comment = made["comment"]["id"]
+                    .as_str()
+                    .expect("an id")
+                    .to_string();
+                let body = json!({ "text": unique(&format!("{name}-reply")) }).to_string();
+                must(
+                    call(
+                        client,
+                        "POST",
+                        &format!("{base}/comments/{comment}/replies"),
+                        &agent,
+                        Some(&body),
+                    ),
+                    201,
+                    "the agent replies to the comment",
+                );
+                let body = json!({ "version_id": other_version_id }).to_string();
+                must(
+                    call(
+                        client,
+                        "POST",
+                        &format!("{base}/comments/{comment}/addressed"),
+                        &agent,
+                        Some(&body),
+                    ),
+                    200,
+                    "the agent marks the comment addressed",
+                );
+                (comment, node, text)
+            } else {
+                (String::new(), String::new(), String::new())
+            };
             Side {
                 id: workspace,
                 email: format!("{name}@example.test"),
@@ -1678,6 +1818,9 @@ fn fixture() -> &'static Fixture {
                 post_summary,
                 decision_id,
                 decision_direction,
+                comment_id,
+                comment_node,
+                comment_text,
             }
         });
         let a = sides.next().expect("workspace A");
@@ -1715,6 +1858,7 @@ fn fill(template: &str, workspace: &Side, record: &Side) -> String {
             "thread_id" => &record.thread_id,
             "post_id" => &record.post_id,
             "decision_id" => &record.decision_id,
+            "comment_id" => &record.comment_id,
             // US-030: an attack on a board is refused at the workspace or the
             // project, before any board is looked up, so a node ID that no
             // board has stands in for one.
@@ -1732,10 +1876,15 @@ fn fill(template: &str, workspace: &Side, record: &Side) -> String {
 
 /// Whether the path names a record besides the workspace.
 /// The body of `case` for calls about the records of `record`: its
-/// `<claimed_node>` is the section that `record`'s workspace claimed.
+/// `<claimed_node>` is the section that `record`'s workspace claimed, its
+/// `<comment_node>` the node of `record`'s seeded comment and its
+/// `<other_version_id>` `record`'s second saved version.
 fn body_of(case: &Case, record: &Side) -> Option<String> {
-    case.body
-        .map(|body| body.replace("<claimed_node>", &record.claimed_node))
+    case.body.map(|body| {
+        body.replace("<claimed_node>", &record.claimed_node)
+            .replace("<comment_node>", &record.comment_node)
+            .replace("<other_version_id>", &record.other_version_id)
+    })
 }
 
 fn names_a_record(template: &str) -> bool {
@@ -3876,6 +4025,180 @@ fn the_decision_calls_of_the_attacks_work_for_the_workspace_that_owns_the_record
         "reject the decision",
     );
     assert_eq!(rejected["decision"]["status"], "rejected", "{rejected}");
+}
+
+// ---------------------------------------------------------------------------
+// Comments (US-038)
+// ---------------------------------------------------------------------------
+
+const COMMENT_ROUTES: [(&str, &str, Access); 7] = [
+    (
+        "POST",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/versions/{version_id}/comments",
+        Access::Both,
+    ),
+    (
+        "GET",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/comments",
+        Access::Both,
+    ),
+    (
+        "GET",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/comments/{comment_id}",
+        Access::Both,
+    ),
+    (
+        "POST",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/comments/{comment_id}/replies",
+        Access::Both,
+    ),
+    (
+        "POST",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/comments/{comment_id}/addressed",
+        Access::Agent,
+    ),
+    (
+        "POST",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/comments/{comment_id}/resolve",
+        Access::Human,
+    ),
+    (
+        "POST",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/comments/{comment_id}/reopen",
+        Access::Human,
+    ),
+];
+
+#[test]
+fn the_comment_routes_are_in_the_registry_and_the_suite_attacks_them() {
+    for (method, path, access) in COMMENT_ROUTES {
+        let entry = registry()
+            .into_iter()
+            .find(|r| r.method == method && r.path == path)
+            .unwrap_or_else(|| panic!("the registry has no route {method} {path}"));
+        assert_eq!(entry.access, access, "{method} {path}");
+        assert!(
+            matches!(case_for(&entry).kind, Kind::Workspace),
+            "{method} {path} is a workspace route that the suite attacks"
+        );
+    }
+
+    let (f, _) = ready();
+    for side in [&f.a, &f.b] {
+        assert!(
+            !side.comment_id.is_empty(),
+            "the suite seeded no comment for {}",
+            side.id
+        );
+    }
+}
+
+#[test]
+fn the_comment_calls_of_the_attacks_work_for_the_workspace_that_owns_the_records() {
+    // The control for the comment routes: in the owner's workspace, the
+    // owner's human comments with the body of the case, both the agent and
+    // the human reply with the body of the case and read the comment, the
+    // seeded comment and the list, the agent marks the new comment addressed
+    // with the body of the case, and the human resolves and reopens it with
+    // the bodies of the cases.
+    let (f, client) = ready();
+    let _guard = serial();
+    let key = Auth::Key(&f.a.key);
+    let human = Auth::Session(&f.a.token);
+    let path = |template: &str| fill(template, &f.a, &f.a);
+    let body = |index: usize| {
+        let (method, template, _) = COMMENT_ROUTES[index];
+        body_of(case_named(method, template), &f.a)
+    };
+    let project = format!("/api/v1/w/{}/projects/{}", f.a.id, f.a.project_id);
+
+    let made = must(
+        call(
+            client,
+            "POST",
+            &path(COMMENT_ROUTES[0].1),
+            &human,
+            body(0).as_deref(),
+        ),
+        201,
+        "comment on the seeded version",
+    );
+    let comment = made["comment"]["id"].as_str().expect("an id");
+    for auth in [&key, &human] {
+        must(
+            call(
+                client,
+                "POST",
+                &format!("{project}/comments/{comment}/replies"),
+                auth,
+                body(3).as_deref(),
+            ),
+            201,
+            "reply to the comment",
+        );
+        let read = must(
+            call(
+                client,
+                "GET",
+                &format!("{project}/comments/{comment}"),
+                auth,
+                None,
+            ),
+            200,
+            "read the comment",
+        );
+        assert_eq!(read["comment"]["id"], comment, "{read}");
+        let seeded = must(
+            call(client, "GET", &path(COMMENT_ROUTES[2].1), auth, None),
+            200,
+            "read the seeded comment",
+        );
+        assert_eq!(
+            seeded["comment"]["text"],
+            f.a.comment_text.as_str(),
+            "{seeded}"
+        );
+        let listed = must(
+            call(client, "GET", &path(COMMENT_ROUTES[1].1), auth, None),
+            200,
+            "list the comments",
+        );
+        assert!(
+            listed["comments"].as_array().is_some_and(|list| {
+                list.iter().any(|c| c["id"] == comment)
+                    && list.iter().any(|c| c["id"] == f.a.comment_id.as_str())
+            }),
+            "{listed}"
+        );
+    }
+    let marked = must(
+        call(
+            client,
+            "POST",
+            &format!("{project}/comments/{comment}/addressed"),
+            &key,
+            body(4).as_deref(),
+        ),
+        200,
+        "mark the comment addressed",
+    );
+    assert_eq!(marked["comment"]["status"], "addressed", "{marked}");
+    for (index, status) in [(5, "resolved"), (6, "open")] {
+        let (_, template, _) = COMMENT_ROUTES[index];
+        let action = template.rsplit('/').next().expect("the action");
+        let acted = must(
+            call(
+                client,
+                "POST",
+                &format!("{project}/comments/{comment}/{action}"),
+                &human,
+                body(index).as_deref(),
+            ),
+            200,
+            &format!("the human acts on the comment: {action}"),
+        );
+        assert_eq!(acted["comment"]["status"], status, "{acted}");
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -593,6 +593,48 @@ async fn fill_workspace(conn: &mut PgConnection, workspace: &str, membership: &s
                 .await
                 .expect("insert a conflict");
             }
+
+            // US-038: a comment on a node of the version and a reply to it.
+            // Both are seeded as soon as their tables exist
+            // (tests/comments.rs pins their names and the columns without a
+            // default), for the same reason as above.
+            let comments_exist: bool =
+                sqlx::query_scalar("SELECT to_regclass('public.comments') IS NOT NULL")
+                    .fetch_one(&mut *conn)
+                    .await
+                    .expect("look for the comments table");
+            if comments_exist {
+                let comment_id: String = sqlx::query_scalar(
+                    "INSERT INTO comments (workspace_id, version_id, node, author, body) \
+                     VALUES ($1::uuid, $2::uuid, 'k3f9x2qa', $3::jsonb, 'deletion test') \
+                     RETURNING id::text",
+                )
+                .bind(workspace)
+                .bind(&version_id)
+                .bind(
+                    r#"{"kind":"agent","run":"run-1","role":"critic","model":null,"harness":null}"#,
+                )
+                .fetch_one(&mut *conn)
+                .await
+                .expect("insert a comment");
+                let replies_exist: bool =
+                    sqlx::query_scalar("SELECT to_regclass('public.comment_replies') IS NOT NULL")
+                        .fetch_one(&mut *conn)
+                        .await
+                        .expect("look for the comment replies table");
+                if replies_exist {
+                    sqlx::query(
+                        "INSERT INTO comment_replies (workspace_id, comment_id, author, body) \
+                         VALUES ($1::uuid, $2::uuid, $3::jsonb, 'deletion test')",
+                    )
+                    .bind(workspace)
+                    .bind(&comment_id)
+                    .bind(r#"{"kind":"agent","run":"run-1","role":"writer","model":null,"harness":null}"#)
+                    .execute(&mut *conn)
+                    .await
+                    .expect("insert a reply to a comment");
+                }
+            }
         }
     }
 
