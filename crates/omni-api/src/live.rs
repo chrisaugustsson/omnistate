@@ -19,9 +19,19 @@
 //!
 //! The socket is opened with the same caller check as the HTTP routes of the
 //! workspace (`workspace::WorkspaceRequest`), before the upgrade.
+//!
+//! What a socket may see follows the caller (US-035). An event that names a
+//! post (`data.post_id`) goes only to a caller that may read that post, the
+//! human always and an agent identity (`X-Omni-Run`, `X-Omni-Role` of the
+//! handshake) by the rule of sealed phases (`threads::visible`). The rule is
+//! applied when events are read, for live ones and for those of a resume
+//! alike, so a hidden post shows up in the replay of a later subscription once
+//! the agent may read it.
 
 use crate::AppState;
+use crate::docs::AgentIdentity;
 use crate::session::ApiError;
+use crate::threads::{Viewer, bind_viewer, visible};
 use crate::workspace::{Actor, WorkspaceRequest, parse_uuid};
 use axum::extract::State;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
@@ -111,6 +121,7 @@ pub async fn socket(
     State(state): State<AppState>,
     origin: OriginCheck,
     request: WorkspaceRequest,
+    identity: AgentIdentity,
     upgrade: WebSocketUpgrade,
 ) -> Result<Response, ApiError> {
     // A browser sends the session cookie with a socket from any site, so the
@@ -119,8 +130,9 @@ pub async fn socket(
     if matches!(request.actor, Actor::Human { .. }) && !origin.same_host {
         return Err(ApiError::Forbidden);
     }
+    let viewer = Viewer::of(&request.actor, &identity);
     let workspace_id = request.workspace_id;
-    Ok(upgrade.on_upgrade(move |socket| run(socket, state, workspace_id)))
+    Ok(upgrade.on_upgrade(move |socket| run(socket, state, workspace_id, viewer)))
 }
 
 /// Whether the `Origin` header of the request, if any, names the host that the
@@ -155,7 +167,7 @@ impl axum::extract::FromRequestParts<AppState> for OriginCheck {
 
 /// Serves one socket until it closes. `subscriptions` maps each subscribed
 /// project to the newest sequence number already sent for it.
-async fn run(mut socket: WebSocket, state: AppState, workspace_id: String) {
+async fn run(mut socket: WebSocket, state: AppState, workspace_id: String, viewer: Viewer) {
     let mut announcements = state.live.sender.subscribe();
     let mut poll = tokio::time::interval(POLL_EVERY);
     let mut subscriptions: HashMap<String, i64> = HashMap::new();
@@ -163,7 +175,7 @@ async fn run(mut socket: WebSocket, state: AppState, workspace_id: String) {
         let sent = tokio::select! {
             message = socket.recv() => match message {
                 Some(Ok(Message::Text(text))) => {
-                    handle_text(&mut socket, &state, &workspace_id, &mut subscriptions, &text).await
+                    handle_text(&mut socket, &state, &workspace_id, &viewer, &mut subscriptions, &text).await
                 }
                 Some(Ok(Message::Binary(_))) => send_error(&mut socket, "invalid_request").await,
                 Some(Ok(Message::Close(_))) | Some(Err(_)) | None => return,
@@ -173,19 +185,19 @@ async fn run(mut socket: WebSocket, state: AppState, workspace_id: String) {
             announced = announcements.recv() => match announced {
                 Ok((announced_in, project_id)) => {
                     if announced_in == workspace_id && subscriptions.contains_key(&project_id) {
-                        deliver(&mut socket, &state, &workspace_id, &project_id, &mut subscriptions).await
+                        deliver(&mut socket, &state, &workspace_id, &viewer, &project_id, &mut subscriptions).await
                     } else {
                         Ok(())
                     }
                 }
                 // Announcements were missed: look at every project.
                 Err(RecvError::Lagged(_)) => {
-                    deliver_all(&mut socket, &state, &workspace_id, &mut subscriptions).await
+                    deliver_all(&mut socket, &state, &workspace_id, &viewer, &mut subscriptions).await
                 }
                 Err(RecvError::Closed) => return,
             },
             _ = poll.tick() => {
-                deliver_all(&mut socket, &state, &workspace_id, &mut subscriptions).await
+                deliver_all(&mut socket, &state, &workspace_id, &viewer, &mut subscriptions).await
             }
         };
         if sent.is_err() {
@@ -199,6 +211,7 @@ async fn handle_text(
     socket: &mut WebSocket,
     state: &AppState,
     workspace_id: &str,
+    viewer: &Viewer,
     subscriptions: &mut HashMap<String, i64>,
     text: &str,
 ) -> Result<(), ()> {
@@ -219,7 +232,15 @@ async fn handle_text(
     // is treated as caught up.
     let from = after.map_or(last_seq, |after| after.min(last_seq));
     subscriptions.insert(project_id.clone(), from);
-    deliver(socket, state, workspace_id, &project_id, subscriptions).await
+    deliver(
+        socket,
+        state,
+        workspace_id,
+        viewer,
+        &project_id,
+        subscriptions,
+    )
+    .await
 }
 
 /// A subscribe message as (project ID, after); `None` for anything else.
@@ -273,6 +294,7 @@ async fn deliver(
     socket: &mut WebSocket,
     state: &AppState,
     workspace_id: &str,
+    viewer: &Viewer,
     project_id: &str,
     subscriptions: &mut HashMap<String, i64>,
 ) -> Result<(), ()> {
@@ -280,7 +302,7 @@ async fn deliver(
         let Some(&sent_up_to) = subscriptions.get(project_id) else {
             return Ok(());
         };
-        let events = match read_events(state, workspace_id, project_id, sent_up_to).await {
+        let events = match read_events(state, workspace_id, viewer, project_id, sent_up_to).await {
             Ok(events) => events,
             // The next announcement or poll tries again.
             Err(_) => return Ok(()),
@@ -312,11 +334,20 @@ async fn deliver_all(
     socket: &mut WebSocket,
     state: &AppState,
     workspace_id: &str,
+    viewer: &Viewer,
     subscriptions: &mut HashMap<String, i64>,
 ) -> Result<(), ()> {
     let projects: Vec<String> = subscriptions.keys().cloned().collect();
     for project_id in projects {
-        deliver(socket, state, workspace_id, &project_id, subscriptions).await?;
+        deliver(
+            socket,
+            state,
+            workspace_id,
+            viewer,
+            &project_id,
+            subscriptions,
+        )
+        .await?;
     }
     Ok(())
 }
@@ -324,17 +355,26 @@ async fn deliver_all(
 async fn read_events(
     state: &AppState,
     workspace_id: &str,
+    viewer: &Viewer,
     project_id: &str,
     after: i64,
 ) -> Result<Vec<StoredEvent>, ApiError> {
     let mut tx = state.workspace_tx(workspace_id).await?;
-    let events = sqlx::query_as(&format!(
-        "SELECT seq, event, data::text AS data, {AT} AS at FROM live_events \
-         WHERE project_id = $1::uuid AND seq > $2 ORDER BY seq LIMIT $3"
-    ))
-    .bind(project_id)
-    .bind(after)
-    .bind(BATCH)
+    // An event that names a post goes to the callers that may read the post.
+    let events = bind_viewer(
+        sqlx::query_as(&format!(
+            "SELECT e.seq, e.event, e.data::text AS data, {AT} AS at FROM live_events e \
+             WHERE e.project_id = $1::uuid AND e.seq > $2 \
+               AND (e.data->>'post_id' IS NULL OR EXISTS (\
+                   SELECT 1 FROM posts p WHERE p.id::text = e.data->>'post_id' AND {})) \
+             ORDER BY e.seq LIMIT $3",
+            visible("p", 4)
+        ))
+        .bind(project_id)
+        .bind(after)
+        .bind(BATCH),
+        viewer,
+    )
     .fetch_all(&mut *tx)
     .await
     .map_err(ApiError::database)?;

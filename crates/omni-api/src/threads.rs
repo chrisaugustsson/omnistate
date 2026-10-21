@@ -9,8 +9,15 @@
 //!
 //! A thread takes posts (US-034): typed messages with a one-line summary and a
 //! Markdown body, recorded in the thread's current phase and never edited or
-//! deleted. Only the human posts directives, on a route of its own. What an
-//! agent may see of a sealed phase comes with the stories that read posts.
+//! deleted. Only the human posts directives, on a route of its own.
+//!
+//! Sealed phases (US-035): an agent identity (run and role) may read a post
+//! when the human wrote it, when its phase is not the thread's current one,
+//! when its phase is open, or when the identity has posted in that phase; the
+//! human reads every post. The rule is one SQL predicate, `visible`, which
+//! every read path uses: the thread, the digest, a single post, the links of
+//! a post and the live events of a socket. Nothing is cached, so the next read
+//! after the agent posted or a phase started shows what was hidden.
 
 use crate::AppState;
 use crate::changesets::{non_blank, parse_body};
@@ -82,6 +89,10 @@ pub struct ThreadBody {
     pub created_at: String,
     /// The phases, oldest first.
     pub phases: Vec<PhaseBody>,
+    /// The posts the caller may read, oldest first. Only in the answer to a
+    /// read of the thread; an agent does not get what a sealed phase hides.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub posts: Option<Vec<PostBody>>,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -175,6 +186,162 @@ pub struct PostBody {
 #[derive(Serialize, ToSchema)]
 pub struct PostResponse {
     pub post: PostBody,
+}
+
+/// A post in a digest: what it is, without its text.
+#[derive(Serialize, ToSchema)]
+pub struct DigestEntry {
+    pub id: String,
+    pub phase: i32,
+    #[serde(rename = "type")]
+    pub kind: String,
+    /// As for a post.
+    #[schema(value_type = Object)]
+    pub author: Value,
+    pub summary: String,
+    pub created_at: String,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct DigestResponse {
+    pub project_id: String,
+    pub thread_id: String,
+    /// The posts the caller may read, oldest first.
+    pub posts: Vec<DigestEntry>,
+}
+
+/// A post read on its own, with the project it belongs to.
+#[derive(Serialize, ToSchema)]
+pub struct SinglePostResponse {
+    pub project_id: String,
+    pub post: PostBody,
+}
+
+#[derive(sqlx::FromRow)]
+struct DigestRow {
+    id: String,
+    phase: i32,
+    #[sqlx(rename = "type")]
+    kind: String,
+    author: String,
+    summary: String,
+    created_at: String,
+}
+
+/// Who reads posts: the human, who reads every post, or an agent identity.
+pub(crate) struct Viewer {
+    human: bool,
+    run: Option<String>,
+    role: Option<String>,
+}
+
+impl Viewer {
+    pub(crate) fn agent(identity: &AgentIdentity) -> Self {
+        Self {
+            human: false,
+            run: identity.run().map(str::to_string),
+            role: identity.role().map(str::to_string),
+        }
+    }
+
+    pub(crate) fn of(actor: &Actor, identity: &AgentIdentity) -> Self {
+        match actor {
+            Actor::Agent => Self::agent(identity),
+            Actor::Human { .. } => Self {
+                human: true,
+                run: None,
+                role: None,
+            },
+        }
+    }
+
+    fn of_author(author: &Author) -> Self {
+        match author {
+            Author::Agent(identity) => Self::agent(identity),
+            Author::Human(_) => Self {
+                human: true,
+                run: None,
+                role: None,
+            },
+        }
+    }
+}
+
+/// The SQL condition that the viewer may read the post of the alias `post`. It
+/// takes three parameters, from `$first` on: whether the viewer is the human
+/// (bool), the run and the role (text, each may be null). Bind them with
+/// `bind_viewer`.
+pub(crate) fn visible(post: &str, first: usize) -> String {
+    let (human, run, role) = (first, first + 1, first + 2);
+    format!(
+        "(${human}::bool \
+         OR {post}.author->>'kind' = 'human' \
+         OR {post}.phase < (SELECT max(ph.number) FROM thread_phases ph \
+             WHERE ph.workspace_id = {post}.workspace_id AND ph.thread_id = {post}.thread_id) \
+         OR NOT COALESCE((SELECT ph.sealed FROM thread_phases ph \
+             WHERE ph.workspace_id = {post}.workspace_id AND ph.thread_id = {post}.thread_id \
+               AND ph.number = {post}.phase), true) \
+         OR EXISTS (SELECT 1 FROM posts mine \
+             WHERE mine.workspace_id = {post}.workspace_id AND mine.thread_id = {post}.thread_id \
+               AND mine.phase = {post}.phase AND mine.author->>'kind' = 'agent' \
+               AND mine.author->>'run' IS NOT DISTINCT FROM ${run}::text \
+               AND mine.author->>'role' IS NOT DISTINCT FROM ${role}::text))"
+    )
+}
+
+/// Binds the three parameters of `visible`.
+pub(crate) fn bind_viewer<'q, O>(
+    query: sqlx::query::QueryAs<'q, Postgres, O, sqlx::postgres::PgArguments>,
+    viewer: &'q Viewer,
+) -> sqlx::query::QueryAs<'q, Postgres, O, sqlx::postgres::PgArguments> {
+    query
+        .bind(viewer.human)
+        .bind(viewer.run.as_deref())
+        .bind(viewer.role.as_deref())
+}
+
+/// Leaves out of the links of the posts the links to posts that the viewer may
+/// not read, so a link does not give away that a hidden post exists.
+pub(crate) async fn hide_unseen_links(
+    tx: &mut Transaction<'static, Postgres>,
+    viewer: &Viewer,
+    posts: &mut [PostBody],
+) -> Result<(), ApiError> {
+    if viewer.human {
+        return Ok(());
+    }
+    let targets: Vec<String> = posts
+        .iter()
+        .flat_map(|post| post.links.iter())
+        .filter(|link| link["kind"] == "post")
+        .filter_map(|link| link["post_id"].as_str().map(str::to_string))
+        .collect();
+    if targets.is_empty() {
+        return Ok(());
+    }
+    let seen: Vec<String> = bind_viewer(
+        sqlx::query_as::<_, (String,)>(&format!(
+            "SELECT p.id::text FROM posts p WHERE p.id = ANY($1::text[]::uuid[]) AND {}",
+            visible("p", 2)
+        ))
+        .bind(&targets),
+        viewer,
+    )
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(ApiError::database)?
+    .into_iter()
+    .map(|(id,)| id)
+    .collect();
+    for post in posts {
+        post.links.retain(|link| {
+            link["kind"] != "post"
+                || link["post_id"]
+                    .as_str()
+                    .is_some_and(|id| seen.iter().any(|seen| seen == id))
+        });
+    }
+    Ok(())
 }
 
 #[derive(sqlx::FromRow)]
@@ -307,6 +474,7 @@ async fn load_thread(
         run_tag: row.run_tag,
         created_at: row.created_at,
         phases,
+        posts: None,
     })
 }
 
@@ -421,7 +589,7 @@ pub async fn create_thread(
     Ok((StatusCode::CREATED, Json(ThreadResponse { thread })))
 }
 
-/// One thread with its phases.
+/// One thread with its phases and the posts the caller may read.
 #[utoipa::path(
     get,
     path = "/api/v1/w/{workspace_id}/projects/{project_id}/threads/{thread_id}",
@@ -439,14 +607,155 @@ pub async fn create_thread(
 pub async fn show_thread(
     State(state): State<AppState>,
     request: WorkspaceRequest,
+    identity: AgentIdentity,
     Path((_, project_id, thread_id)): Path<(String, String, String)>,
 ) -> Result<Json<ThreadResponse>, ApiError> {
     let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
     let thread_id = parse_uuid(&thread_id).ok_or(ApiError::NotFound)?;
+    let viewer = Viewer::of(&request.actor, &identity);
     let mut tx = state.workspace_tx(&request.workspace_id).await?;
-    let thread = load_thread(&mut tx, &project_id, &thread_id, None).await?;
+    let mut thread = load_thread(&mut tx, &project_id, &thread_id, None).await?;
+    let rows: Vec<PostRow> = bind_viewer(
+        sqlx::query_as(&format!(
+            "SELECT {POST_COLUMNS} FROM posts p WHERE p.thread_id = $1::uuid AND {} \
+             ORDER BY p.created_at, p.id",
+            visible("p", 2)
+        ))
+        .bind(&thread_id),
+        &viewer,
+    )
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(ApiError::database)?;
+    let mut posts = rows
+        .into_iter()
+        .map(PostRow::into_body)
+        .collect::<Result<Vec<_>, _>>()?;
+    hide_unseen_links(&mut tx, &viewer, &mut posts).await?;
+    thread.posts = Some(posts);
     tx.commit().await.map_err(ApiError::database)?;
     Ok(Json(ThreadResponse { thread }))
+}
+
+/// The posts of a thread that the caller may read, as summaries without their
+/// text, oldest first.
+#[utoipa::path(
+    get,
+    path = "/api/v1/w/{workspace_id}/projects/{project_id}/threads/{thread_id}/digest",
+    params(
+        ("workspace_id" = String, Path, description = "The workspace's UUID"),
+        ("project_id" = String, Path, description = "The project's UUID"),
+        ("thread_id" = String, Path, description = "The thread's UUID"),
+        ("X-Omni-Run" = Option<String>, Header, description = "The agent's run"),
+        ("X-Omni-Role" = Option<String>, Header, description = "The agent's role"),
+    ),
+    responses(
+        (status = 200, description = "The posts the caller may read", body = DigestResponse),
+        (status = 401, description = "No valid API key or session", body = ErrorBody),
+        (status = 404, description = "No such thread in this project and workspace", body = ErrorBody),
+    )
+)]
+pub async fn digest(
+    State(state): State<AppState>,
+    request: WorkspaceRequest,
+    identity: AgentIdentity,
+    Path((_, project_id, thread_id)): Path<(String, String, String)>,
+) -> Result<Json<DigestResponse>, ApiError> {
+    let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
+    let thread_id = parse_uuid(&thread_id).ok_or(ApiError::NotFound)?;
+    let viewer = Viewer::of(&request.actor, &identity);
+    let mut tx = state.workspace_tx(&request.workspace_id).await?;
+    load_thread(&mut tx, &project_id, &thread_id, None).await?;
+    let rows: Vec<DigestRow> = bind_viewer(
+        sqlx::query_as(&format!(
+            "SELECT p.id::text AS id, p.phase, p.type, p.author::text AS author, p.summary, {} \
+                 AS created_at \
+             FROM posts p WHERE p.thread_id = $1::uuid AND {} ORDER BY p.created_at, p.id",
+            timestamp!("p.created_at"),
+            visible("p", 2)
+        ))
+        .bind(&thread_id),
+        &viewer,
+    )
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(ApiError::database)?;
+    tx.commit().await.map_err(ApiError::database)?;
+    let posts = rows
+        .into_iter()
+        .map(|row| {
+            let author = serde_json::from_str(&row.author).map_err(|error| {
+                eprintln!(
+                    "omni-api: the author of post {} is unreadable: {error}",
+                    row.id
+                );
+                ApiError::Unavailable
+            })?;
+            Ok(DigestEntry {
+                id: row.id,
+                phase: row.phase,
+                kind: row.kind,
+                author,
+                summary: row.summary,
+                created_at: row.created_at,
+            })
+        })
+        .collect::<Result<Vec<_>, ApiError>>()?;
+    Ok(Json(DigestResponse {
+        project_id,
+        thread_id,
+        posts,
+    }))
+}
+
+/// One post of a project. A post that the caller may not read is answered
+/// exactly like one that does not exist.
+#[utoipa::path(
+    get,
+    path = "/api/v1/w/{workspace_id}/projects/{project_id}/posts/{post_id}",
+    params(
+        ("workspace_id" = String, Path, description = "The workspace's UUID"),
+        ("project_id" = String, Path, description = "The project's UUID"),
+        ("post_id" = String, Path, description = "The post's UUID"),
+        ("X-Omni-Run" = Option<String>, Header, description = "The agent's run"),
+        ("X-Omni-Role" = Option<String>, Header, description = "The agent's role"),
+    ),
+    responses(
+        (status = 200, description = "The post", body = SinglePostResponse),
+        (status = 401, description = "No valid API key or session", body = ErrorBody),
+        (status = 404, description = "No such post in this project and workspace, or the caller may not read it yet", body = ErrorBody),
+    )
+)]
+pub async fn show_post(
+    State(state): State<AppState>,
+    request: WorkspaceRequest,
+    identity: AgentIdentity,
+    Path((_, project_id, post_id)): Path<(String, String, String)>,
+) -> Result<Json<SinglePostResponse>, ApiError> {
+    let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
+    let post_id = parse_uuid(&post_id).ok_or(ApiError::NotFound)?;
+    let viewer = Viewer::of(&request.actor, &identity);
+    let mut tx = state.workspace_tx(&request.workspace_id).await?;
+    let row: PostRow = bind_viewer(
+        sqlx::query_as(&format!(
+            "SELECT {POST_COLUMNS} FROM posts p WHERE p.id = $1::uuid \
+               AND EXISTS (SELECT 1 FROM threads t WHERE t.workspace_id = p.workspace_id \
+                           AND t.id = p.thread_id AND t.project_id = $2::uuid) AND {}",
+            visible("p", 3)
+        ))
+        .bind(&post_id)
+        .bind(&project_id),
+        &viewer,
+    )
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(ApiError::database)?
+    .ok_or(ApiError::NotFound)?;
+    let mut posts = [row.into_body()?];
+    hide_unseen_links(&mut tx, &viewer, &mut posts).await?;
+    tx.commit().await.map_err(ApiError::database)?;
+    let [post] = posts;
+    Ok(Json(SinglePostResponse { project_id, post }))
 }
 
 /// Starts the thread's next phase, which becomes the current one.
@@ -642,9 +951,6 @@ async fn found(
     query.fetch_one(&mut **tx).await.map_err(ApiError::database)
 }
 
-const POST_IN_PROJECT: &str = "SELECT EXISTS (SELECT 1 FROM posts p \
-     JOIN threads t ON t.workspace_id = p.workspace_id AND t.id = p.thread_id \
-     WHERE p.id = $1::uuid AND t.project_id = $2::uuid)";
 const DOC_IN_PROJECT: &str =
     "SELECT EXISTS (SELECT 1 FROM docs WHERE id = $1::uuid AND project_id = $2::uuid)";
 const ATTACHMENT_IN_WORKSPACE: &str =
@@ -661,8 +967,31 @@ async fn check_references(
     post: &Checked,
 ) -> Result<(), ApiError> {
     for link in &post.links {
+        if link["kind"] == "post" {
+            // A post that the author may not read is refused like no post.
+            let viewer = Viewer::of_author(author);
+            let id = link["post_id"].as_str().ok_or_else(invalid)?;
+            let readable: bool = bind_viewer(
+                sqlx::query_as::<_, (bool,)>(&format!(
+                    "SELECT EXISTS (SELECT 1 FROM posts p \
+                     JOIN threads t ON t.workspace_id = p.workspace_id AND t.id = p.thread_id \
+                     WHERE p.id = $1::uuid AND t.project_id = $2::uuid AND {})",
+                    visible("p", 3)
+                ))
+                .bind(id)
+                .bind(project_id),
+                &viewer,
+            )
+            .fetch_one(&mut **tx)
+            .await
+            .map_err(ApiError::database)?
+            .0;
+            if !readable {
+                return Err(invalid());
+            }
+            continue;
+        }
         let target = match link["kind"].as_str() {
-            Some("post") => Some((POST_IN_PROJECT, &link["post_id"], Some(project_id))),
             Some("node") => Some((DOC_IN_PROJECT, &link["doc_id"], Some(project_id))),
             Some("attachment") => Some((ATTACHMENT_IN_WORKSPACE, &link["attachment_id"], None)),
             // A web address names nothing of ours.

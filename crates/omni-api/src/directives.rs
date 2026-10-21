@@ -14,7 +14,7 @@
 use crate::AppState;
 use crate::docs::AgentIdentity;
 use crate::session::ApiError;
-use crate::threads::{POST_COLUMNS, PostRow};
+use crate::threads::{POST_COLUMNS, PostRow, Viewer, hide_unseen_links};
 use crate::workspace::parse_uuid;
 use axum::body::{Body, to_bytes};
 use axum::extract::{FromRequestParts, Request, State};
@@ -151,7 +151,7 @@ async fn with_directives(
             return Err((response, Failure::Database));
         }
     };
-    let directives = match rows
+    let mut directives = match rows
         .into_iter()
         .map(PostRow::into_body)
         .collect::<Result<Vec<_>, ApiError>>()
@@ -159,6 +159,14 @@ async fn with_directives(
         Ok(directives) => directives,
         Err(_) => return Err((response, Failure::Database)),
     };
+    // A link of a directive to a post that a sealed phase hides from the agent
+    // is left out, as in every other read.
+    if hide_unseen_links(&mut tx, &Viewer::agent(identity), &mut directives)
+        .await
+        .is_err()
+    {
+        return Err((response, Failure::Database));
+    }
 
     let (mut parts, body) = response.into_parts();
     let bytes = match to_bytes(body, usize::MAX).await {

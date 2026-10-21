@@ -407,6 +407,14 @@ pub fn router(state: AppState) -> Router {
             get(threads::show_thread),
         )
         .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/threads/{thread_id}/digest",
+            get(threads::digest),
+        )
+        .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/posts/{post_id}",
+            get(threads::show_post),
+        )
+        .route(
             "/api/v1/w/{workspace_id}/projects/{project_id}/threads/{thread_id}/phases",
             post(threads::start_phase),
         )

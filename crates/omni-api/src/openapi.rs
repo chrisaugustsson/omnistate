@@ -30,8 +30,9 @@ use crate::session::{
     ErrorBody, LoginRequest, UserBody, UserResponse, WorkspaceBody, WorkspaceListResponse,
 };
 use crate::threads::{
-    CreateDirectiveRequest, CreatePostRequest, CreateThreadRequest, PhaseBody, PostBody,
-    PostResponse, StartPhaseRequest, ThreadBody, ThreadResponse,
+    CreateDirectiveRequest, CreatePostRequest, CreateThreadRequest, DigestEntry, DigestResponse,
+    PhaseBody, PostBody, PostResponse, SinglePostResponse, StartPhaseRequest, ThreadBody,
+    ThreadResponse,
 };
 use crate::tokens::{
     DraftTokensResponse, ImportTokensRequest, InvalidTokensBody, MainlineTokensResponse,
@@ -99,6 +100,8 @@ use utoipa::OpenApi;
         crate::boards::read_board_of_version,
         crate::threads::create_thread,
         crate::threads::show_thread,
+        crate::threads::digest,
+        crate::threads::show_post,
         crate::threads::start_phase,
         crate::threads::create_post,
         crate::threads::create_directive
@@ -185,7 +188,10 @@ use utoipa::OpenApi;
         CreatePostRequest,
         CreateDirectiveRequest,
         PostBody,
-        PostResponse
+        PostResponse,
+        DigestEntry,
+        DigestResponse,
+        SinglePostResponse
     ))
 )]
 struct ApiDoc;
