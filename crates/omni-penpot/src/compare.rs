@@ -221,6 +221,15 @@ pub fn compare_file(path: &Path) -> Result<Comparison, ReadError> {
     Ok(Comparison { boards })
 }
 
+/// Imports the export at `path` (US-051) and compares each imported board with
+/// Penpot's PNG of it, as [`compare_file`] does for the converted boards: the
+/// instances and token references of the board are drawn as the imported
+/// design system resolves them, in the mode of Penpot's active theme.
+pub fn compare_import(path: &Path) -> Result<Comparison, ReadError> {
+    let _ = path;
+    todo!("US-051: compare the imported boards with Penpot's PNGs")
+}
+
 /// Supplies the fonts in the `fonts` folder beside the export: each subfolder
 /// is a font family, named as the designs name it, holding its TrueType or
 /// OpenType files. A file that is not a font is skipped; text in a family

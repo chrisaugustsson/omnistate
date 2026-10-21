@@ -4,6 +4,7 @@
 
 pub mod compare;
 mod convert;
+pub mod import;
 pub mod report;
 
 pub use convert::{
