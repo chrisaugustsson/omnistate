@@ -15,6 +15,7 @@ import { Route as LoginRouteImport } from './routes/login'
 import { Route as WWorkspaceIdRouteImport } from './routes/w.$workspaceId'
 import { Route as WWorkspaceIdIndexRouteImport } from './routes/w.$workspaceId.index'
 import { Route as WWorkspaceIdProjectsProjectIdRouteImport } from './routes/w.$workspaceId.projects.$projectId'
+import { Route as WWorkspaceIdProjectsProjectIdThreadsThreadIdRouteImport } from './routes/w.$workspaceId.projects.$projectId_.threads.$threadId'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -47,6 +48,12 @@ const WWorkspaceIdProjectsProjectIdRoute =
     path: '/projects/$projectId',
     getParentRoute: () => WWorkspaceIdRoute,
   } as any)
+const WWorkspaceIdProjectsProjectIdThreadsThreadIdRoute =
+  WWorkspaceIdProjectsProjectIdThreadsThreadIdRouteImport.update({
+    id: '/projects/$projectId_/threads/$threadId',
+    path: '/projects/$projectId/threads/$threadId',
+    getParentRoute: () => WWorkspaceIdRoute,
+  } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
@@ -55,6 +62,7 @@ export interface FileRoutesByFullPath {
   '/w/$workspaceId': typeof WWorkspaceIdRouteWithChildren
   '/w/$workspaceId/': typeof WWorkspaceIdIndexRoute
   '/w/$workspaceId/projects/$projectId': typeof WWorkspaceIdProjectsProjectIdRoute
+  '/w/$workspaceId/projects/$projectId/threads/$threadId': typeof WWorkspaceIdProjectsProjectIdThreadsThreadIdRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -62,6 +70,7 @@ export interface FileRoutesByTo {
   '/login': typeof LoginRoute
   '/w/$workspaceId': typeof WWorkspaceIdIndexRoute
   '/w/$workspaceId/projects/$projectId': typeof WWorkspaceIdProjectsProjectIdRoute
+  '/w/$workspaceId/projects/$projectId/threads/$threadId': typeof WWorkspaceIdProjectsProjectIdThreadsThreadIdRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -71,6 +80,7 @@ export interface FileRoutesById {
   '/w/$workspaceId': typeof WWorkspaceIdRouteWithChildren
   '/w/$workspaceId/': typeof WWorkspaceIdIndexRoute
   '/w/$workspaceId/projects/$projectId': typeof WWorkspaceIdProjectsProjectIdRoute
+  '/w/$workspaceId/projects/$projectId_/threads/$threadId': typeof WWorkspaceIdProjectsProjectIdThreadsThreadIdRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -81,6 +91,7 @@ export interface FileRouteTypes {
     | '/w/$workspaceId'
     | '/w/$workspaceId/'
     | '/w/$workspaceId/projects/$projectId'
+    | '/w/$workspaceId/projects/$projectId/threads/$threadId'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -88,6 +99,7 @@ export interface FileRouteTypes {
     | '/login'
     | '/w/$workspaceId'
     | '/w/$workspaceId/projects/$projectId'
+    | '/w/$workspaceId/projects/$projectId/threads/$threadId'
   id:
     | '__root__'
     | '/'
@@ -96,6 +108,7 @@ export interface FileRouteTypes {
     | '/w/$workspaceId'
     | '/w/$workspaceId/'
     | '/w/$workspaceId/projects/$projectId'
+    | '/w/$workspaceId/projects/$projectId_/threads/$threadId'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -149,17 +162,27 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof WWorkspaceIdProjectsProjectIdRouteImport
       parentRoute: typeof WWorkspaceIdRoute
     }
+    '/w/$workspaceId/projects/$projectId_/threads/$threadId': {
+      id: '/w/$workspaceId/projects/$projectId_/threads/$threadId'
+      path: '/projects/$projectId/threads/$threadId'
+      fullPath: '/w/$workspaceId/projects/$projectId/threads/$threadId'
+      preLoaderRoute: typeof WWorkspaceIdProjectsProjectIdThreadsThreadIdRouteImport
+      parentRoute: typeof WWorkspaceIdRoute
+    }
   }
 }
 
 interface WWorkspaceIdRouteChildren {
   WWorkspaceIdIndexRoute: typeof WWorkspaceIdIndexRoute
   WWorkspaceIdProjectsProjectIdRoute: typeof WWorkspaceIdProjectsProjectIdRoute
+  WWorkspaceIdProjectsProjectIdThreadsThreadIdRoute: typeof WWorkspaceIdProjectsProjectIdThreadsThreadIdRoute
 }
 
 const WWorkspaceIdRouteChildren: WWorkspaceIdRouteChildren = {
   WWorkspaceIdIndexRoute: WWorkspaceIdIndexRoute,
   WWorkspaceIdProjectsProjectIdRoute: WWorkspaceIdProjectsProjectIdRoute,
+  WWorkspaceIdProjectsProjectIdThreadsThreadIdRoute:
+    WWorkspaceIdProjectsProjectIdThreadsThreadIdRoute,
 }
 
 const WWorkspaceIdRouteWithChildren = WWorkspaceIdRoute._addFileChildren(

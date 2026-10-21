@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { createFileRoute } from "@tanstack/react-router";
+import { Link, createFileRoute } from "@tanstack/react-router";
 import { loadHome } from "@/api/home";
 import type { DocBody, HomeResponse } from "@/api/generated";
 import { Alert, AlertDescription } from "@/components/ui/alert";
@@ -173,13 +173,20 @@ function ChangeSets({ home }: { home: HomeResponse }) {
 }
 
 function Threads({ home }: { home: HomeResponse }) {
+  const { workspaceId, projectId } = Route.useParams();
   return (
     <Section id="threads" title="Threads">
       {home.threads.length === 0 && <Empty>The project has no threads yet.</Empty>}
       <ul className="divide-y rounded-md border empty:hidden">
         {home.threads.map((thread) => (
           <li key={thread.id} className="px-4 py-2 text-sm">
-            {thread.question}
+            <Link
+              to="/w/$workspaceId/projects/$projectId/threads/$threadId"
+              params={{ workspaceId, projectId, threadId: thread.id }}
+              className="underline-offset-4 hover:underline"
+            >
+              {thread.question}
+            </Link>
           </li>
         ))}
       </ul>
