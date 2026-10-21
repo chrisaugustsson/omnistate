@@ -28,6 +28,12 @@
 //!   design refers to them as `attachment:<id>`.
 //! - A file that is not a Penpot export fails with one line on standard error
 //!   that names the file, and leaves no change set behind.
+//! - An import into a project whose design system doc already has a mainline
+//!   version (a second import, after the first merged) adds its tokens and
+//!   components to that design system and keeps the ones it already has.
+//! - fixtures/penpot/tirebud-ordrar.penpot, the export with components,
+//!   variants and swaps, imports through the API with every page, board,
+//!   component, copy and override that the converter makes of it, and merges.
 
 mod common;
 
@@ -447,9 +453,16 @@ fn flatten(shape: Shape, parent: &str, out: &mut Vec<Value>) {
     }
 }
 
-/// The archive entries of a page with `top_level` directly on it.
-fn page_entries(id: &str, name: &str, index: u32, top_level: Vec<Shape>) -> Vec<(String, Vec<u8>)> {
-    let dir = format!("files/{FILE_ID}/pages/{id}");
+/// The archive entries of a page of the file `file` with `top_level` directly
+/// on it.
+fn page_entries(
+    file: &str,
+    id: &str,
+    name: &str,
+    index: u32,
+    top_level: Vec<Shape>,
+) -> Vec<(String, Vec<u8>)> {
+    let dir = format!("files/{file}/pages/{id}");
     let mut entries = vec![(
         format!("{dir}.json"),
         json!({ "id": id, "name": name, "index": index })
@@ -553,7 +566,13 @@ fn export_bytes() -> Vec<u8> {
             badge_main(6, C_ACCENT, "Accent", "#01B597", 100.0),
         ]),
     ]);
-    entries.extend(page_entries(PAGE_K, "Komponenter", 0, vec![markers]));
+    entries.extend(page_entries(
+        FILE_ID,
+        PAGE_K,
+        "Komponenter",
+        0,
+        vec![markers],
+    ));
     let copy = shape(
         12,
         "frame",
@@ -619,7 +638,7 @@ fn export_bytes() -> Vec<u8> {
         "Utkast",
         json!({}),
     );
-    entries.extend(page_entries(PAGE_S, "Start", 1, vec![hem, note]));
+    entries.extend(page_entries(FILE_ID, PAGE_S, "Start", 1, vec![hem, note]));
     let tokens = json!({
         "Bas": { "space": { "4": { "$value": "16", "$type": "spacing", "$description": "" } } },
         "Mörkt": { "color": {
@@ -687,6 +706,154 @@ fn export_bytes() -> Vec<u8> {
 fn write_export(home: &Scratch) -> PathBuf {
     let path = home.join("butik.penpot");
     std::fs::write(&path, export_bytes()).expect("write the export");
+    path
+}
+
+const FILE_KASSA: &str = "f0000000-0000-4000-8000-000000000052";
+const PAGE_KASSA: &str = "a0000000-0000-4000-8000-00000000005c";
+const C_KNAPP: &str = "c0000000-0000-4000-8000-000000000053";
+
+/// A second synthetic export, of another file of the same product: the
+/// component Knapp on the board Knappar, and the board Kassa, filled with the
+/// token `color.border`, holding the copy Köpknapp whose Label says "Betala".
+/// Its tokens have the same themes as the first export's and the same
+/// `color.surface`, but a new token `color.border` and no `color.text`.
+fn kassa_export_bytes() -> Vec<u8> {
+    let mut entries: Vec<(String, Vec<u8>)> = vec![
+        (
+            "manifest.json".to_string(),
+            json!({
+                "type": "penpot/export-files",
+                "version": 1,
+                "generatedBy": "penpot/2.19.0-RC1",
+                "referer": "penpot",
+                "files": [{ "id": FILE_KASSA, "name": "Kassa", "features": ["components/v2", "variants/v1", "design-tokens/v1"] }],
+                "relations": []
+            })
+            .to_string()
+            .into_bytes(),
+        ),
+        (
+            format!("files/{FILE_KASSA}.json"),
+            json!({ "id": FILE_KASSA, "name": "Kassa", "version": 67 })
+                .to_string()
+                .into_bytes(),
+        ),
+    ];
+    let buttons = shape(
+        30,
+        "frame",
+        "Knappar",
+        [0.0, 0.0, 200.0, 100.0],
+        json!({ "fills": solid("#131316") }),
+    )
+    .kids(vec![
+        shape(
+            31,
+            "frame",
+            "Knapp",
+            [10.0, 10.0, 120.0, 40.0],
+            json!({
+                "fills": solid("#01B597"),
+                "componentRoot": true,
+                "mainInstance": true,
+                "componentId": C_KNAPP,
+                "componentFile": FILE_KASSA,
+                "touched": []
+            }),
+        )
+        .kids(vec![text(
+            32,
+            "Label",
+            [18.0, 22.0, 104.0, 16.0],
+            "Köp",
+            json!({}),
+        )]),
+    ]);
+    let checkout = shape(
+        33,
+        "frame",
+        "Kassa",
+        [300.0, 0.0, 400.0, 300.0],
+        json!({ "fills": solid("#3F3F46"), "appliedTokens": { "fill": "color.border" } }),
+    )
+    .kids(vec![
+        shape(
+            34,
+            "frame",
+            "Köpknapp",
+            [320.0, 20.0, 120.0, 40.0],
+            json!({
+                "fills": solid("#01B597"),
+                "componentRoot": true,
+                "componentId": C_KNAPP,
+                "componentFile": FILE_KASSA,
+                "shapeRef": uid(31),
+                "touched": []
+            }),
+        )
+        .kids(vec![text(
+            35,
+            "Label",
+            [328.0, 32.0, 104.0, 16.0],
+            "Betala",
+            json!({ "shapeRef": uid(32), "touched": ["text-content-text"] }),
+        )]),
+    ]);
+    entries.extend(page_entries(
+        FILE_KASSA,
+        PAGE_KASSA,
+        "Kassa",
+        0,
+        vec![buttons, checkout],
+    ));
+    let tokens = json!({
+        "Bas": { "space": { "4": { "$value": "16", "$type": "spacing", "$description": "" } } },
+        "Mörkt": { "color": {
+            "surface": { "$value": "#1C1C21", "$type": "color", "$description": "" },
+            "border": { "$value": "#3F3F46", "$type": "color", "$description": "" }
+        } },
+        "Ljust": { "color": {
+            "surface": { "$value": "#FFFFFF", "$type": "color", "$description": "" },
+            "border": { "$value": "#E4E4E7", "$type": "color", "$description": "" }
+        } },
+        "$themes": [
+            { "id": "f1000000-0000-4000-8000-000000000051", "name": "Mörkt", "group": "Tema",
+              "description": "", "isSource": false,
+              "selectedTokenSets": { "Mörkt": "enabled", "Bas": "enabled" } },
+            { "id": "f1000000-0000-4000-8000-000000000052", "name": "Ljust", "group": "Tema",
+              "description": "", "isSource": false,
+              "selectedTokenSets": { "Ljust": "enabled", "Bas": "enabled" } }
+        ],
+        "$metadata": {
+            "tokenSetOrder": ["Bas", "Mörkt", "Ljust"],
+            "activeThemes": ["Tema/Mörkt"],
+            "activeSets": ["Mörkt", "Bas"]
+        }
+    });
+    entries.push((
+        format!("files/{FILE_KASSA}/tokens.json"),
+        tokens.to_string().into_bytes(),
+    ));
+    entries.push((
+        format!("files/{FILE_KASSA}/components/{C_KNAPP}.json"),
+        json!({
+            "id": C_KNAPP,
+            "name": "Knapp",
+            "path": "",
+            "mainInstanceId": uid(31),
+            "mainInstancePage": PAGE_KASSA
+        })
+        .to_string()
+        .into_bytes(),
+    ));
+    stored_zip(&entries)
+}
+
+/// Writes the second synthetic export into `home` and returns its path.
+fn write_kassa_export(home: &Scratch) -> PathBuf {
+    let path = home.join("kassa.penpot");
+    std::fs::write(&path, kassa_export_bytes()).expect("write the export");
     path
 }
 
@@ -1126,4 +1293,316 @@ fn the_tirebud_idag_export_imports() {
     for name in ["Idag / Dag / Desktop", "Idag / Dag / Telefon", "Unplaced"] {
         assert!(boards.contains(&name), "{name} in {boards:?}");
     }
+}
+
+/// Submits the imported change set if it is still open, has the human approve
+/// it and checks that it merged.
+fn merge(f: &Fixture, home: &Scratch, imported: &Imported) {
+    if status(home, imported) == "open" {
+        let submitted = run(
+            home,
+            &[
+                "changeset",
+                "submit",
+                &imported.changeset,
+                "--project",
+                &imported.project,
+            ],
+        );
+        assert_eq!(submitted.code, 0, "submit: {}", submitted.stderr);
+    }
+    let approved = as_human(
+        f,
+        "POST",
+        &format!(
+            "/api/v1/w/{}/projects/{}/changesets/{}/approve",
+            f.workspace, imported.project, imported.changeset
+        ),
+        &json!({}),
+    );
+    assert_eq!(
+        approved.status,
+        200,
+        "the human approves: {:?}",
+        String::from_utf8_lossy(&approved.body)
+    );
+    assert_eq!(status(home, imported), "merged", "{}", approved.json());
+}
+
+/// The components of the design system version that the import saved.
+fn saved_components(f: &Fixture, home: &Scratch, imported: &Imported) -> Vec<Value> {
+    let version = imported.answer["design_system_version_id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("the import saved the design system: {}", imported.answer));
+    get(f, home, &imported.project, &format!("/versions/{version}"))["version"]["components"]
+        .as_array()
+        .unwrap_or_else(|| panic!("the version {version} lists its components"))
+        .clone()
+}
+
+/// The values of the token at `path` in each mode of a token tree.
+fn token_modes<'a>(tokens: &'a Value, path: &[&str]) -> &'a Value {
+    let mut token = &tokens["tokens"];
+    for part in path {
+        token = &token[*part];
+    }
+    &token["$extensions"]["omnistate"]["modes"]
+}
+
+#[test]
+fn a_second_import_keeps_the_design_system_that_the_project_has() {
+    let f = fixture();
+    let home = agent_home(f);
+    let project = new_project(&home);
+    let first = import(&home, &project, &write_export(&home));
+    merge(f, &home, &first);
+
+    // The design system doc now has a mainline version; the second import adds
+    // to it and takes nothing of it away.
+    let second = import(&home, &project, &write_kassa_export(&home));
+    assert_eq!(
+        second.design_system_doc, first.design_system_doc,
+        "a project has one design system doc"
+    );
+    let tokens = get(
+        f,
+        &home,
+        &project,
+        &format!("/changesets/{}/tokens", second.changeset),
+    );
+    assert_eq!(tokens["modes"], json!(["Mörkt", "Ljust"]), "{tokens}");
+    let kept = token_modes(&tokens, &["color", "text"]);
+    assert_eq!(
+        (lowercase(&kept["Mörkt"]), lowercase(&kept["Ljust"])),
+        ("#f4f4f5".to_string(), "#18181b".to_string()),
+        "the token color.text of the first import stays: {tokens}"
+    );
+    let added = token_modes(&tokens, &["color", "border"]);
+    assert_eq!(
+        (lowercase(&added["Mörkt"]), lowercase(&added["Ljust"])),
+        ("#3f3f46".to_string(), "#e4e4e7".to_string()),
+        "the token color.border of the second import: {tokens}"
+    );
+
+    let components = saved_components(f, &home, &second);
+    let named = |name: &str| {
+        components
+            .iter()
+            .filter(|component| component["name"] == name)
+            .count()
+    };
+    assert_eq!(
+        (named("Badge"), named("Knapp")),
+        (2, 1),
+        "the two Badge variants of the first import stay beside Knapp: {components:?}"
+    );
+
+    let draft = design_draft(f, &home, &second);
+    let kassa = page(&draft["pages"], "Kassa");
+    let board = find(kassa, "Kassa").expect("the board Kassa");
+    assert_eq!(board["fills"][0]["color"], "$color.border", "{board}");
+    let copy = find(board, "Köpknapp").expect("the copy Köpknapp");
+    assert_eq!(copy["type"], "instance", "{copy}");
+    assert!(
+        components
+            .iter()
+            .any(|known| known["id"] == copy["component"] && known["name"] == "Knapp"),
+        "{copy} places Knapp: {components:?}"
+    );
+
+    merge(f, &home, &second);
+    let mainline = get(f, &home, &project, "/tokens");
+    for path in [["color", "text"], ["color", "border"], ["color", "surface"]] {
+        assert!(
+            token_modes(&mainline, &path)["Ljust"].is_string(),
+            "{path:?} is on the mainline: {mainline}"
+        );
+    }
+    let system = get(
+        f,
+        &home,
+        &project,
+        &format!("/docs/{}", first.design_system_doc),
+    );
+    let version = system["doc"]["mainline_version_id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("the design system has a mainline version: {system}"));
+    let on_mainline =
+        &get(f, &home, &project, &format!("/versions/{version}"))["version"]["components"];
+    let names: Vec<&str> = on_mainline
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|component| component["name"].as_str())
+        .collect();
+    assert_eq!(
+        (
+            names.iter().filter(|name| **name == "Badge").count(),
+            names.iter().filter(|name| **name == "Knapp").count()
+        ),
+        (2, 1),
+        "the merged design system: {names:?}"
+    );
+}
+
+/// Every node of type `kind` in `value` and below it.
+fn nodes_of<'a>(value: &'a Value, kind: &str, found: &mut Vec<&'a Value>) {
+    if value["type"] == kind {
+        found.push(value);
+    }
+    for child in value["children"].as_array().into_iter().flatten() {
+        nodes_of(child, kind, found);
+    }
+}
+
+/// The override kinds and how many overrides the instances in `pages` have.
+fn overrides_of(instances: &[&Value]) -> (std::collections::BTreeSet<String>, usize) {
+    let mut kinds = std::collections::BTreeSet::new();
+    let mut count = 0;
+    for instance in instances {
+        for change in instance["overrides"]
+            .as_object()
+            .into_iter()
+            .flat_map(|overrides| overrides.values())
+        {
+            count += 1;
+            for field in change.as_object().into_iter().flat_map(|c| c.keys()) {
+                kinds.insert(field.clone());
+            }
+        }
+    }
+    (kinds, count)
+}
+
+#[test]
+fn the_tirebud_ordrar_export_imports_with_its_components_and_merges() {
+    let path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/penpot/tirebud-ordrar.penpot");
+    if !path.is_file() {
+        eprintln!("SKIPPED: fixtures/penpot/tirebud-ordrar.penpot is not there");
+        return;
+    }
+    // What the converter makes of the export, to compare the API's drafts with.
+    let library = omni_penpot::import::import_file(&path).expect("the converter reads ordrar");
+    let library_pages: Vec<Value> = library
+        .pages
+        .iter()
+        .map(|page| serde_json::to_value(page).expect("a page as JSON"))
+        .collect();
+    let mut library_instances = Vec::new();
+    for page in &library_pages {
+        nodes_of(page, "instance", &mut library_instances);
+    }
+    let (library_kinds, library_overrides) = overrides_of(&library_instances);
+    assert_eq!(
+        library_kinds,
+        ["component", "content", "fills", "visible"]
+            .map(String::from)
+            .into_iter()
+            .collect(),
+        "text, fills, visibility and swapped components"
+    );
+
+    let f = fixture();
+    let home = agent_home(f);
+    let project = new_project(&home);
+    let imported = import(&home, &project, &path);
+    let report = imported.answer["report"].as_array().expect("a report");
+    assert_eq!(
+        report.len(),
+        library.report.len(),
+        "the report lists all the converter leaves out"
+    );
+    let tokens = get(
+        f,
+        &home,
+        &project,
+        &format!("/changesets/{}/tokens", imported.changeset),
+    );
+    assert_eq!(tokens["modes"], json!(["Mörkt", "Ljust"]));
+
+    let components = saved_components(f, &home, &imported);
+    assert_eq!(
+        components.len(),
+        library.component_count(),
+        "every component of the export"
+    );
+    let variants = |all: &[Value]| {
+        all.iter()
+            .filter(|component| {
+                component["props"]
+                    .as_object()
+                    .is_some_and(|props| props.values().any(|def| def["type"] == "variant"))
+            })
+            .count()
+    };
+    assert_eq!(
+        variants(&components),
+        variants(
+            library.design_system["$components"]
+                .as_array()
+                .expect("the converter's components")
+        ),
+        "the variants keep their properties"
+    );
+    let known: std::collections::HashSet<&str> = components
+        .iter()
+        .filter_map(|component| component["id"].as_str())
+        .collect();
+
+    let draft = design_draft(f, &home, &imported);
+    let pages = draft["pages"].as_array().expect("pages");
+    assert_eq!(
+        pages
+            .iter()
+            .map(|page| (page["name"].clone(), board_names(page).len()))
+            .collect::<Vec<_>>(),
+        library_pages
+            .iter()
+            .map(|page| (page["name"].clone(), board_names(page).len()))
+            .collect::<Vec<_>>(),
+        "every page with every board"
+    );
+    let mut instances = Vec::new();
+    for page in pages {
+        nodes_of(page, "instance", &mut instances);
+    }
+    assert_eq!(instances.len(), library_instances.len(), "every copy");
+    let (kinds, overrides) = overrides_of(&instances);
+    assert_eq!(kinds, library_kinds);
+    assert_eq!(overrides, library_overrides, "every override of the copies");
+    for instance in &instances {
+        let component = instance["component"].as_str().unwrap_or("");
+        assert!(
+            known.contains(component),
+            "{} places a component of the design system",
+            instance["id"]
+        );
+        for change in instance["overrides"]
+            .as_object()
+            .into_iter()
+            .flat_map(|overrides| overrides.values())
+        {
+            if let Some(swapped) = change.get("component") {
+                assert!(
+                    known.contains(swapped.as_str().unwrap_or("")),
+                    "{} swaps in a component of the design system: {change}",
+                    instance["id"]
+                );
+            }
+        }
+    }
+
+    merge(f, &home, &imported);
+    let doc = get(
+        f,
+        &home,
+        &project,
+        &format!("/docs/{}", imported.design_doc),
+    );
+    let version = doc["doc"]["mainline_version_id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("the design doc has a mainline version: {doc}"));
+    let version = &get(f, &home, &project, &format!("/versions/{version}"))["version"];
+    assert!(version["design_system_version_id"].is_string(), "{version}");
 }
