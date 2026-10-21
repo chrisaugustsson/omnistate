@@ -1462,6 +1462,45 @@
         ],
         "type": "object"
       },
+      "HomeResponse": {
+        "properties": {
+          "changesets": {
+            "description": "Every change set of the project, oldest first, with its status.",
+            "items": {
+              "$ref": "#/components/schemas/ChangesetBody"
+            },
+            "type": "array"
+          },
+          "docs": {
+            "description": "Every doc of the project, oldest first, as `GET /docs/{doc_id}` answers it.",
+            "items": {
+              "$ref": "#/components/schemas/DocBody"
+            },
+            "type": "array"
+          },
+          "project_id": {
+            "type": "string"
+          },
+          "threads": {
+            "description": "Every thread of the project, oldest first, without its posts.",
+            "items": {
+              "$ref": "#/components/schemas/ThreadBody"
+            },
+            "type": "array"
+          },
+          "waiting": {
+            "$ref": "#/components/schemas/WaitingBody"
+          }
+        },
+        "required": [
+          "project_id",
+          "docs",
+          "changesets",
+          "threads",
+          "waiting"
+        ],
+        "type": "object"
+      },
       "ImportTagsRequest": {
         "properties": {
           "tags": {
@@ -2750,6 +2789,46 @@
         },
         "required": [
           "version"
+        ],
+        "type": "object"
+      },
+      "WaitingBody": {
+        "description": "What waits for the human, each list oldest first.",
+        "properties": {
+          "changesets": {
+            "description": "The change sets whose status is `in_review`.",
+            "items": {
+              "$ref": "#/components/schemas/ChangesetBody"
+            },
+            "type": "array"
+          },
+          "comments": {
+            "description": "The comments whose status is `addressed`.",
+            "items": {
+              "$ref": "#/components/schemas/CommentBody"
+            },
+            "type": "array"
+          },
+          "decisions": {
+            "description": "The decisions whose status is `proposed`.",
+            "items": {
+              "$ref": "#/components/schemas/DecisionBody"
+            },
+            "type": "array"
+          },
+          "questions": {
+            "description": "The `question` posts of agents that no post of the human links to as a\nreply, in every phase.",
+            "items": {
+              "$ref": "#/components/schemas/PostBody"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "decisions",
+          "changesets",
+          "comments",
+          "questions"
         ],
         "type": "object"
       },
@@ -7880,6 +7959,78 @@
           "crate::docs"
         ],
         "x-omni-access": "both"
+      }
+    },
+    "/api/v1/w/{workspace_id}/projects/{project_id}/home": {
+      "get": {
+        "operationId": "show",
+        "parameters": [
+          {
+            "description": "The workspace's UUID",
+            "in": "path",
+            "name": "workspace_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The project's UUID",
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HomeResponse"
+                }
+              }
+            },
+            "description": "The project's home"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No valid session"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Called with an API key; human only"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No such project in this workspace"
+          }
+        },
+        "summary": "The project's home: its docs, change sets and threads, and what waits for\nthe human. Only the human reads it.",
+        "tags": [
+          "crate::home"
+        ],
+        "x-omni-access": "human"
       }
     },
     "/api/v1/w/{workspace_id}/projects/{project_id}/posts/{post_id}": {

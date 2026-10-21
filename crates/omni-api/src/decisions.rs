@@ -335,6 +335,30 @@ async fn load_decision(
     Ok(decision)
 }
 
+/// The decisions of a project that are `proposed`, oldest first, as `viewer`
+/// reads them.
+pub(crate) async fn proposed_of_project(
+    tx: &mut Transaction<'static, Postgres>,
+    viewer: &Viewer,
+    project_id: &str,
+) -> Result<Vec<DecisionBody>, ApiError> {
+    let rows: Vec<DecisionRow> = sqlx::query_as(&format!(
+        "{} ORDER BY d.created_at, d.id",
+        select("t.project_id = $1::uuid AND d.status = 'proposed'")
+    ))
+    .bind(project_id)
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(ApiError::database)?;
+    let mut decisions = Vec::with_capacity(rows.len());
+    for row in rows {
+        let mut decision = row.into_body()?;
+        hide_unseen_posts(tx, viewer, &mut decision).await?;
+        decisions.push(decision);
+    }
+    Ok(decisions)
+}
+
 /// The thread's current decision as `viewer` reads it, as the JSON of a
 /// `DecisionBody`: the one that is not superseded, `None` while the thread has
 /// none.

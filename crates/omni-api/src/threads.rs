@@ -517,6 +517,54 @@ pub(crate) async fn load_thread(
     })
 }
 
+/// The threads of a project, oldest first, each as `show_thread` answers the
+/// human but without its posts.
+pub(crate) async fn threads_of_project(
+    tx: &mut Transaction<'static, Postgres>,
+    project_id: &str,
+) -> Result<Vec<ThreadBody>, ApiError> {
+    let ids: Vec<(String,)> = sqlx::query_as(
+        "SELECT id::text FROM threads WHERE project_id = $1::uuid ORDER BY created_at, id",
+    )
+    .bind(project_id)
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(ApiError::database)?;
+    let viewer = Viewer::human();
+    let mut threads = Vec::with_capacity(ids.len());
+    for (id,) in ids {
+        let mut thread = load_thread(tx, project_id, &id, None).await?;
+        thread.decision = current_decision(tx, &viewer, &id).await?;
+        threads.push(thread);
+    }
+    Ok(threads)
+}
+
+/// The questions that agents asked in a project, oldest first, in every phase
+/// (the human reads sealed phases too), until a post of the human links to the
+/// question with `{"kind": "post", "post_id"}`.
+pub(crate) async fn unanswered_questions(
+    tx: &mut Transaction<'static, Postgres>,
+    project_id: &str,
+) -> Result<Vec<PostBody>, ApiError> {
+    let rows: Vec<PostRow> = sqlx::query_as(&format!(
+        "SELECT {POST_COLUMNS} FROM posts p \
+         WHERE p.type = 'question' AND p.author->>'kind' = 'agent' \
+           AND EXISTS (SELECT 1 FROM threads t WHERE t.workspace_id = p.workspace_id \
+                       AND t.id = p.thread_id AND t.project_id = $1::uuid) \
+           AND NOT EXISTS (SELECT 1 FROM posts r WHERE r.workspace_id = p.workspace_id \
+                           AND r.author->>'kind' = 'human' \
+                           AND r.links @> jsonb_build_array(jsonb_build_object( \
+                               'kind', 'post', 'post_id', p.id::text))) \
+         ORDER BY p.created_at, p.id"
+    ))
+    .bind(project_id)
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(ApiError::database)?;
+    rows.into_iter().map(PostRow::into_body).collect()
+}
+
 async fn insert_phase(
     tx: &mut Transaction<'static, Postgres>,
     workspace_id: &str,

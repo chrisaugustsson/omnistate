@@ -14,6 +14,7 @@ import { Route as HealthRouteImport } from './routes/health'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as WWorkspaceIdRouteImport } from './routes/w.$workspaceId'
 import { Route as WWorkspaceIdIndexRouteImport } from './routes/w.$workspaceId.index'
+import { Route as WWorkspaceIdProjectsProjectIdRouteImport } from './routes/w.$workspaceId.projects.$projectId'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -40,6 +41,12 @@ const WWorkspaceIdIndexRoute = WWorkspaceIdIndexRouteImport.update({
   path: '/',
   getParentRoute: () => WWorkspaceIdRoute,
 } as any)
+const WWorkspaceIdProjectsProjectIdRoute =
+  WWorkspaceIdProjectsProjectIdRouteImport.update({
+    id: '/projects/$projectId',
+    path: '/projects/$projectId',
+    getParentRoute: () => WWorkspaceIdRoute,
+  } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
@@ -47,12 +54,14 @@ export interface FileRoutesByFullPath {
   '/login': typeof LoginRoute
   '/w/$workspaceId': typeof WWorkspaceIdRouteWithChildren
   '/w/$workspaceId/': typeof WWorkspaceIdIndexRoute
+  '/w/$workspaceId/projects/$projectId': typeof WWorkspaceIdProjectsProjectIdRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/health': typeof HealthRoute
   '/login': typeof LoginRoute
   '/w/$workspaceId': typeof WWorkspaceIdIndexRoute
+  '/w/$workspaceId/projects/$projectId': typeof WWorkspaceIdProjectsProjectIdRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -61,12 +70,24 @@ export interface FileRoutesById {
   '/login': typeof LoginRoute
   '/w/$workspaceId': typeof WWorkspaceIdRouteWithChildren
   '/w/$workspaceId/': typeof WWorkspaceIdIndexRoute
+  '/w/$workspaceId/projects/$projectId': typeof WWorkspaceIdProjectsProjectIdRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/health' | '/login' | '/w/$workspaceId' | '/w/$workspaceId/'
+  fullPaths:
+    | '/'
+    | '/health'
+    | '/login'
+    | '/w/$workspaceId'
+    | '/w/$workspaceId/'
+    | '/w/$workspaceId/projects/$projectId'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/health' | '/login' | '/w/$workspaceId'
+  to:
+    | '/'
+    | '/health'
+    | '/login'
+    | '/w/$workspaceId'
+    | '/w/$workspaceId/projects/$projectId'
   id:
     | '__root__'
     | '/'
@@ -74,6 +95,7 @@ export interface FileRouteTypes {
     | '/login'
     | '/w/$workspaceId'
     | '/w/$workspaceId/'
+    | '/w/$workspaceId/projects/$projectId'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -120,15 +142,24 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof WWorkspaceIdIndexRouteImport
       parentRoute: typeof WWorkspaceIdRoute
     }
+    '/w/$workspaceId/projects/$projectId': {
+      id: '/w/$workspaceId/projects/$projectId'
+      path: '/projects/$projectId'
+      fullPath: '/w/$workspaceId/projects/$projectId'
+      preLoaderRoute: typeof WWorkspaceIdProjectsProjectIdRouteImport
+      parentRoute: typeof WWorkspaceIdRoute
+    }
   }
 }
 
 interface WWorkspaceIdRouteChildren {
   WWorkspaceIdIndexRoute: typeof WWorkspaceIdIndexRoute
+  WWorkspaceIdProjectsProjectIdRoute: typeof WWorkspaceIdProjectsProjectIdRoute
 }
 
 const WWorkspaceIdRouteChildren: WWorkspaceIdRouteChildren = {
   WWorkspaceIdIndexRoute: WWorkspaceIdIndexRoute,
+  WWorkspaceIdProjectsProjectIdRoute: WWorkspaceIdProjectsProjectIdRoute,
 }
 
 const WWorkspaceIdRouteWithChildren = WWorkspaceIdRoute._addFileChildren(

@@ -438,6 +438,68 @@ export const ErrorBodySchema = z.object({
 });
 export type ErrorBody = z.infer<typeof ErrorBodySchema>;
 
+export const PosterBodySchema = z.object({
+  role: z.string().nullable().optional(),
+  run: z.string().nullable().optional(),
+});
+export type PosterBody = z.infer<typeof PosterBodySchema>;
+
+export const PhaseBodySchema = z.object({
+  number: z.number().int(),
+  posted_by: z.array(PosterBodySchema),
+  sealed: z.boolean(),
+  started_at: z.string(),
+});
+export type PhaseBody = z.infer<typeof PhaseBodySchema>;
+
+export const PostBodySchema = z.object({
+  attachments: z.array(z.string()),
+  author: z.record(z.string(), z.unknown()),
+  body: z.string(),
+  body_html: z.string(),
+  confidence: z.number().nullable().optional(),
+  created_at: z.string(),
+  id: z.string(),
+  links: z.array(z.record(z.string(), z.unknown())),
+  phase: z.number().int(),
+  replaces: z.string().nullable().optional(),
+  summary: z.string(),
+  thread_id: z.string(),
+  type: z.string(),
+});
+export type PostBody = z.infer<typeof PostBodySchema>;
+
+export const ThreadBodySchema = z.object({
+  changeset_id: z.string(),
+  created_at: z.string(),
+  criteria: z.array(z.string()),
+  decision: z.record(z.string(), z.unknown()).nullable().optional(),
+  id: z.string(),
+  phases: z.array(PhaseBodySchema),
+  posts: z.array(PostBodySchema).nullable().optional(),
+  project_id: z.string(),
+  question: z.string(),
+  run_tag: z.string().nullable().optional(),
+});
+export type ThreadBody = z.infer<typeof ThreadBodySchema>;
+
+export const WaitingBodySchema = z.object({
+  changesets: z.array(ChangesetBodySchema),
+  comments: z.array(CommentBodySchema),
+  decisions: z.array(DecisionBodySchema),
+  questions: z.array(PostBodySchema),
+});
+export type WaitingBody = z.infer<typeof WaitingBodySchema>;
+
+export const HomeResponseSchema = z.object({
+  changesets: z.array(ChangesetBodySchema),
+  docs: z.array(DocBodySchema),
+  project_id: z.string(),
+  threads: z.array(ThreadBodySchema),
+  waiting: WaitingBodySchema,
+});
+export type HomeResponse = z.infer<typeof HomeResponseSchema>;
+
 export const ImportTagsRequestSchema = z.object({
   tags: z.string().nullable().optional(),
 });
@@ -570,37 +632,6 @@ export const ManifestSchema = z.object({
 });
 export type Manifest = z.infer<typeof ManifestSchema>;
 
-export const PosterBodySchema = z.object({
-  role: z.string().nullable().optional(),
-  run: z.string().nullable().optional(),
-});
-export type PosterBody = z.infer<typeof PosterBodySchema>;
-
-export const PhaseBodySchema = z.object({
-  number: z.number().int(),
-  posted_by: z.array(PosterBodySchema),
-  sealed: z.boolean(),
-  started_at: z.string(),
-});
-export type PhaseBody = z.infer<typeof PhaseBodySchema>;
-
-export const PostBodySchema = z.object({
-  attachments: z.array(z.string()),
-  author: z.record(z.string(), z.unknown()),
-  body: z.string(),
-  body_html: z.string(),
-  confidence: z.number().nullable().optional(),
-  created_at: z.string(),
-  id: z.string(),
-  links: z.array(z.record(z.string(), z.unknown())),
-  phase: z.number().int(),
-  replaces: z.string().nullable().optional(),
-  summary: z.string(),
-  thread_id: z.string(),
-  type: z.string(),
-});
-export type PostBody = z.infer<typeof PostBodySchema>;
-
 export const PostResponseSchema = z.object({
   post: PostBodySchema,
 });
@@ -695,20 +726,6 @@ export const StartPhaseRequestSchema = z.object({
   sealed: z.boolean().nullable().optional(),
 });
 export type StartPhaseRequest = z.infer<typeof StartPhaseRequestSchema>;
-
-export const ThreadBodySchema = z.object({
-  changeset_id: z.string(),
-  created_at: z.string(),
-  criteria: z.array(z.string()),
-  decision: z.record(z.string(), z.unknown()).nullable().optional(),
-  id: z.string(),
-  phases: z.array(PhaseBodySchema),
-  posts: z.array(PostBodySchema).nullable().optional(),
-  project_id: z.string(),
-  question: z.string(),
-  run_tag: z.string().nullable().optional(),
-});
-export type ThreadBody = z.infer<typeof ThreadBodySchema>;
 
 export const ThreadResponseSchema = z.object({
   thread: ThreadBodySchema,
@@ -840,6 +857,7 @@ export const schemas = {
   EditResponse: EditResponseSchema,
   ErrorBody: ErrorBodySchema,
   HistoryEntry: HistoryEntrySchema,
+  HomeResponse: HomeResponseSchema,
   ImportTagsRequest: ImportTagsRequestSchema,
   ImportTokensRequest: ImportTokensRequestSchema,
   ImportedComponents: ImportedComponentsSchema,
@@ -891,6 +909,7 @@ export const schemas = {
   UserResponse: UserResponseSchema,
   VersionBody: VersionBodySchema,
   VersionResponse: VersionResponseSchema,
+  WaitingBody: WaitingBodySchema,
   WhoamiResponse: WhoamiResponseSchema,
   WorkspaceBody: WorkspaceBodySchema,
   WorkspaceListResponse: WorkspaceListResponseSchema,
@@ -1350,6 +1369,14 @@ export const operations = {
     responses: {
       "200": MainlineHtmlResponseSchema,
       "401": ErrorBodySchema,
+      "404": ErrorBodySchema,
+    },
+  },
+  "GET /api/v1/w/{workspace_id}/projects/{project_id}/home": {
+    responses: {
+      "200": HomeResponseSchema,
+      "401": ErrorBodySchema,
+      "403": ErrorBodySchema,
       "404": ErrorBodySchema,
     },
   },

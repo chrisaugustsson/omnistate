@@ -28,6 +28,7 @@ use crate::docs::{
     DraftBody, DraftHtmlResponse, DraftResponse, DraftWithHtml, EditRequest, EditResponse,
     InvalidOperationBody, MainlineHtmlResponse, OpResultBody,
 };
+use crate::home::{HomeResponse, WaitingBody};
 use crate::live::{LiveClientMessage, LiveErrorCode, LiveEventName, LiveServerMessage};
 use crate::rebase::{
     ConflictKind, ConflictResolution, ConflictSide, RebaseResponse, RecordedConflict,
@@ -71,6 +72,7 @@ use utoipa::OpenApi;
         crate::api_keys::list,
         crate::api_keys::create,
         crate::api_keys::revoke,
+        crate::home::show,
         crate::changesets::list_projects,
         crate::changesets::create_project,
         crate::changesets::list_changesets,
@@ -231,7 +233,9 @@ use utoipa::OpenApi;
         CommentListResponse,
         CreateCommentRequest,
         ReplyRequest,
-        AddressedRequest
+        AddressedRequest,
+        WaitingBody,
+        HomeResponse
     ))
 )]
 struct ApiDoc;

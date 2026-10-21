@@ -826,6 +826,30 @@ async fn drafts_of(tx: &mut Tx, doc_id: &str) -> Result<Vec<DraftBody>, ApiError
     .map_err(ApiError::database)
 }
 
+/// The docs of a project, oldest first, each as `show_doc` answers it. Callers
+/// sweep the expired claims first.
+pub(crate) async fn docs_of_project(
+    state: &AppState,
+    tx: &mut Tx,
+    workspace_id: &str,
+    project_id: &str,
+) -> Result<Vec<DocBody>, ApiError> {
+    let rows: Vec<DocRow> = sqlx::query_as(&format!(
+        "SELECT {DOC_COLUMNS} FROM docs WHERE project_id = $1::uuid ORDER BY created_at, id"
+    ))
+    .bind(project_id)
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(ApiError::database)?;
+    let mut docs = Vec::with_capacity(rows.len());
+    for row in rows {
+        let drafts = drafts_of(tx, &row.id).await?;
+        let claims = state.claims.live_of_doc(workspace_id, &row.id);
+        docs.push(doc_body(row, drafts, claims));
+    }
+    Ok(docs)
+}
+
 fn doc_body(row: DocRow, drafts: Vec<DraftBody>, claims: Vec<ClaimBody>) -> DocBody {
     DocBody {
         id: row.id,

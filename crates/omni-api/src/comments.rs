@@ -642,6 +642,18 @@ pub async fn list(
     }))
 }
 
+/// The comments of a project that are marked `addressed`, oldest first.
+pub(crate) async fn addressed_of_project(
+    tx: &mut Tx,
+    project_id: &str,
+) -> Result<Vec<CommentBody>, ApiError> {
+    let filter = Filter::default()
+        .and("d.project_id = {}::uuid", project_id)
+        .and_that("c.status = 'addressed'");
+    let rows = fetch_rows(tx, filter, "").await?;
+    bodies(tx, rows).await
+}
+
 // Statuses ------------------------------------------------------------------------------
 
 /// What happens to a comment's status.

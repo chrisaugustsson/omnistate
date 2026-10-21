@@ -77,7 +77,7 @@ pub struct RejectRequest {
 
 /// One status change of a change set. The entry that creates it has no
 /// `from_status`.
-#[derive(Serialize, ToSchema, sqlx::FromRow)]
+#[derive(Clone, Serialize, ToSchema, sqlx::FromRow)]
 pub struct HistoryEntry {
     pub from_status: Option<String>,
     pub to_status: String,
@@ -90,14 +90,14 @@ pub struct HistoryEntry {
 }
 
 /// The version of a doc that the human approved.
-#[derive(Serialize, ToSchema, sqlx::FromRow)]
+#[derive(Clone, Serialize, ToSchema, sqlx::FromRow)]
 pub struct ApprovedVersion {
     pub doc_id: String,
     pub version_id: String,
 }
 
 /// A decision that a change set carries out (US-037), with its status now.
-#[derive(Serialize, ToSchema, sqlx::FromRow)]
+#[derive(Clone, Serialize, ToSchema, sqlx::FromRow)]
 pub struct LinkedDecision {
     pub id: String,
     pub thread_id: String,
@@ -106,7 +106,7 @@ pub struct LinkedDecision {
     pub status: String,
 }
 
-#[derive(Serialize, ToSchema)]
+#[derive(Clone, Serialize, ToSchema)]
 pub struct ChangesetBody {
     pub id: String,
     pub project_id: String,
@@ -520,12 +520,22 @@ pub async fn list_changesets(
     let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
     let mut tx = state.workspace_tx(&request.workspace_id).await?;
     require_project(&mut tx, &project_id).await?;
+    let changesets = changesets_of_project(&mut tx, &project_id).await?;
+    tx.commit().await.map_err(ApiError::database)?;
+    Ok(Json(ChangesetListResponse { changesets }))
+}
+
+/// The change sets of a project, oldest first, whatever their status.
+pub(crate) async fn changesets_of_project(
+    tx: &mut Transaction<'static, Postgres>,
+    project_id: &str,
+) -> Result<Vec<ChangesetBody>, ApiError> {
     let rows: Vec<ChangesetRow> = sqlx::query_as(&format!(
         "SELECT {CHANGESET_COLUMNS} FROM changesets WHERE project_id = $1::uuid \
          ORDER BY created_at, id"
     ))
-    .bind(&project_id)
-    .fetch_all(&mut *tx)
+    .bind(project_id)
+    .fetch_all(&mut **tx)
     .await
     .map_err(ApiError::database)?;
     let entries: Vec<ListedEntry> = sqlx::query_as(&format!(
@@ -534,8 +544,8 @@ pub async fn list_changesets(
          WHERE changeset_id IN (SELECT id FROM changesets WHERE project_id = $1::uuid) \
          ORDER BY created_at, id"
     ))
-    .bind(&project_id)
-    .fetch_all(&mut *tx)
+    .bind(project_id)
+    .fetch_all(&mut **tx)
     .await
     .map_err(ApiError::database)?;
     let approvals: Vec<ListedApproval> = sqlx::query_as(
@@ -544,8 +554,8 @@ pub async fn list_changesets(
          WHERE NOT cleared AND changeset_id IN (SELECT id FROM changesets WHERE project_id = $1::uuid) \
          ORDER BY created_at, id",
     )
-    .bind(&project_id)
-    .fetch_all(&mut *tx)
+    .bind(project_id)
+    .fetch_all(&mut **tx)
     .await
     .map_err(ApiError::database)?;
     let linked: Vec<ListedDecision> = sqlx::query_as(&format!(
@@ -554,11 +564,10 @@ pub async fn list_changesets(
          WHERE cd.changeset_id IN (SELECT id FROM changesets WHERE project_id = $1::uuid) \
          ORDER BY cd.created_at, cd.id"
     ))
-    .bind(&project_id)
-    .fetch_all(&mut *tx)
+    .bind(project_id)
+    .fetch_all(&mut **tx)
     .await
     .map_err(ApiError::database)?;
-    tx.commit().await.map_err(ApiError::database)?;
     let mut histories: HashMap<String, Vec<HistoryEntry>> = HashMap::new();
     for listed in entries {
         histories
@@ -580,7 +589,7 @@ pub async fn list_changesets(
             .or_default()
             .push(listed.decision);
     }
-    let changesets = rows
+    let changesets: Vec<ChangesetBody> = rows
         .into_iter()
         .map(|row| {
             let history = histories.remove(&row.id).unwrap_or_default();
@@ -589,7 +598,7 @@ pub async fn list_changesets(
             row.into_body(history, approved, decisions)
         })
         .collect();
-    Ok(Json(ChangesetListResponse { changesets }))
+    Ok(changesets)
 }
 
 /// One change set with its status history.
