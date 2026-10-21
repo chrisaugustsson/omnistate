@@ -22,7 +22,7 @@
 use crate::layout::{self, LayoutBox, ShapedTexts};
 use crate::paint::{self, Assets};
 use crate::resolve;
-use crate::select::{Event, Index, Modifiers, NodeAddress, Outline, OutlineKind};
+use crate::select::{Event, Index, Layer, Modifiers, NodeAddress, Outline, OutlineKind};
 use crate::system::{DesignSystem, RenderError};
 use omni_core::design::{Node, NodeData, NodeId};
 use skia_safe::{
@@ -646,6 +646,19 @@ impl Scene {
             let address = selected.map(|at| self.index.address(at));
             self.events.push(Event::Select(address));
         }
+    }
+
+    /// The boards of the page in order, each with every node below it, as
+    /// the layers panel of the design viewer lists them (US-043).
+    pub fn layers(&self) -> Vec<Layer> {
+        todo!("US-043: the layers of the scene")
+    }
+
+    /// Selects the node at `address`, as the layers panel does (US-043), or
+    /// clears the selection for `None`. Returns `false` and changes nothing
+    /// when the address names no node of the scene.
+    pub fn select_address(&mut self, address: Option<&NodeAddress>) -> bool {
+        todo!("US-043: select {address:?}")
     }
 
     /// The pointer moved to the screen point `screen` of `viewport`.

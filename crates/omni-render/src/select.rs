@@ -47,6 +47,22 @@ pub struct Outline {
     pub rect: LayoutBox,
 }
 
+/// A node of a page as the design viewer's layers panel lists it: a board
+/// and everything below it, nodes inside instances included, by their
+/// addresses.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Layer {
+    /// The node's ID, or `<instanceId>/<componentNodeId>` for a node inside
+    /// an instance.
+    pub address: NodeAddress,
+    pub name: String,
+    /// The node's type as the design has it: `board`, `frame`, `text`,
+    /// `image`, `vector` or `instance`.
+    pub kind: String,
+    /// The node's children in document order.
+    pub children: Vec<Layer>,
+}
+
 /// A rectangle of the page, in the half-open sense of a hit: it holds its
 /// left and top edges and not its right and bottom ones.
 #[derive(Clone, Copy)]

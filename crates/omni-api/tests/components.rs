@@ -61,7 +61,10 @@
 //!   /versions/{version_id}` answers `design_system_version_id` (`null` for
 //!   other docs) and, for a design version, `"tags"`, `"pages"` and
 //!   `"components"` resolved from the recorded version, whatever the
-//!   mainline is now. A comparison (`GET /versions/{a}/diff/{b}`) names the
+//!   mainline is now, and `"tokens"`: the recorded design system version's
+//!   whole token tree in every mode (`null` for a design system of components
+//!   only), which the design viewer (US-043) hands the renderer with the
+//!   components. A comparison (`GET /versions/{a}/diff/{b}`) names the
 //!   design system version of each side, `from_design_system_version_id` and
 //!   `to_design_system_version_id`.
 //! - `GET /components/usage?component=<id>` (both) lists every board of the
@@ -463,13 +466,17 @@ fn tokens() -> Value {
 }
 
 fn import_tokens(f: &Fixture, client: &Client, project: &str, changeset: &str) {
+    import_token_tree(f, client, project, changeset, &tokens());
+}
+
+fn import_token_tree(f: &Fixture, client: &Client, project: &str, changeset: &str, tree: &Value) {
     must(
         call(
             client,
             "PUT",
             &format!("{}/tokens", changeset_path(f, project, changeset)),
             &agent(f),
-            Some(&json!({ "tokens": tokens() })),
+            Some(&json!({ "tokens": tree })),
         ),
         200,
         "import the tokens",
@@ -2085,6 +2092,91 @@ fn viewers_and_comparisons_use_the_recorded_design_system_version() {
     )["version"]
         .clone();
     assert_eq!(style_values(&component_in(&seen, "Button")), json!(STYLES));
+}
+
+/// The light and dark values of `color.surface` in a token tree.
+fn surface_modes(tree: &Value) -> Value {
+    tree["color"]["surface"]["$extensions"]["omnistate"]["modes"].clone()
+}
+
+#[test]
+fn a_design_version_carries_the_tokens_of_its_recorded_design_system_version() {
+    let (f, client) = ready();
+    let lib = library(f, client);
+    let ids = &lib.ids;
+
+    // A later change set darkens the dark surface and merges.
+    let retoken = new_changeset(f, client, &lib.project);
+    let mut darker = tokens();
+    darker["color"]["surface"]["$extensions"]["omnistate"]["modes"]["dark"] = json!("#020617");
+    import_token_tree(f, client, &lib.project, &retoken, &darker);
+    let newer = id_of(&save(f, client, &lib.project, &retoken, &lib.design_system));
+    merge(f, client, &lib.project, &retoken);
+    assert_eq!(
+        mainline_of(f, client, &lib.project, &lib.design_system),
+        newer
+    );
+
+    // The shop's first version still has the tokens it was saved with, in
+    // every mode.
+    let first = read_version(f, client, &lib.project, &lib.shop_version);
+    assert!(
+        first["tokens"].is_object(),
+        "a design version read by ID carries the token tree of its design system version: {first:#}"
+    );
+    assert_eq!(
+        first["tokens"]["$extensions"]["omnistate"]["modes"],
+        json!(["light", "dark"]),
+        "{first:#}"
+    );
+    assert_eq!(
+        surface_modes(&first["tokens"]),
+        json!({"light": "#ffffff", "dark": "#0f172a"}),
+        "{first:#}"
+    );
+
+    // A version saved now has the newer tokens.
+    let changeset = new_changeset(f, client, &lib.project);
+    open_draft(f, client, &lib.project, &changeset, &lib.shop);
+    import_design(
+        f,
+        client,
+        &lib.project,
+        &changeset,
+        &lib.shop,
+        &shop_tags(ids, &pay_button(ids, "primary")),
+    );
+    let second = save(f, client, &lib.project, &changeset, &lib.shop);
+    assert_eq!(second["design_system_version_id"], newer.as_str());
+    let viewed = read_version(f, client, &lib.project, &id_of(&second));
+    assert_eq!(
+        surface_modes(&viewed["tokens"]),
+        json!({"light": "#ffffff", "dark": "#020617"}),
+        "{viewed:#}"
+    );
+
+    // The human's design viewer reads the same.
+    let seen = must(
+        call(
+            client,
+            "GET",
+            &format!(
+                "{}/versions/{}",
+                project_base(f, &lib.project),
+                lib.shop_version
+            ),
+            &human(f),
+            None,
+        ),
+        200,
+        "the human reads the version",
+    )["version"]
+        .clone();
+    assert_eq!(
+        surface_modes(&seen["tokens"]),
+        json!({"light": "#ffffff", "dark": "#0f172a"}),
+        "{seen:#}"
+    );
 }
 
 #[test]
