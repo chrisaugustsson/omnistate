@@ -8,6 +8,7 @@
 //! instances stay on their pages as the plain shapes they are. The rules of
 //! the converter (docs/formats/penpot-export.md) apply to every shape.
 
+mod merge;
 pub(crate) mod tokens;
 
 use std::collections::{HashMap, HashSet};

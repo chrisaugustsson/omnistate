@@ -5,7 +5,10 @@
 //!
 //! - the images of the export, uploaded as workspace attachments,
 //! - the design system doc: the design tokens (Penpot's themes are the modes)
-//!   and the components, started in the change set unless the project has one,
+//!   and the components, started in the change set unless the project has one.
+//!   When it has one with a mainline version, the import adds to it: its
+//!   tokens and components stay, and a token of the same path takes the
+//!   export's value,
 //! - the design doc: the pages and boards, with the copies of components as
 //!   instances,
 //!
@@ -117,9 +120,10 @@ pub fn penpot(args: &Args, file: Option<&str>) -> Result<()> {
         ids.attachment(&attachment.id, &uploaded);
     }
 
+    let components = import.component_count();
     let mut design_system = None;
-    if import.has_tokens() || import.component_count() > 0 {
-        match send_design_system(&agent, &base, &changeset, &import, &mut ids)? {
+    if import.has_tokens() || components > 0 {
+        match send_design_system(&agent, &base, &changeset, &mut import, &mut ids)? {
             Sent::Doc(doc) => design_system = Some(doc),
             Sent::Waiting => {
                 import = import.without_design_system(WAITING).map_err(read_error)?;
@@ -168,7 +172,7 @@ pub fn penpot(args: &Args, file: Option<&str>) -> Result<()> {
     say(&format!(
         "{} pages, {boards} boards, {} components, {} attachments",
         import.pages.len(),
-        import.component_count(),
+        components,
         import.attachments.len()
     ));
     if let Some(doc) = &design {
@@ -205,12 +209,14 @@ enum Sent {
 }
 
 /// The design system doc: the project's, or one started in the change set,
-/// with the tokens and the components of the import in its draft.
+/// with the tokens and the components of the import in its draft. When the
+/// project's design system has a mainline version, `import` becomes the
+/// import onto it, so that the draft keeps what that version holds.
 fn send_design_system(
     agent: &Agent,
     base: &str,
     changeset: &str,
-    import: &Import,
+    import: &mut Import,
     ids: &mut Ids,
 ) -> Result<Sent> {
     let known = agent.request(
@@ -237,6 +243,14 @@ fn send_design_system(
             )?
         }
     };
+    let mainline = agent.request("GET", &format!("{base}/tokens"), None)?;
+    let mainline = mainline.text();
+    if let Some(version) = parsed(&mainline, "the tokens")?.str_at("version_id") {
+        let read = agent.request("GET", &format!("{base}/versions/{version}"), None)?;
+        *import = import
+            .onto_design_system(&mainline, &read.text(), ids)
+            .map_err(read_error)?;
+    }
     let tokens = agent.request_any(
         "PUT",
         &format!("{base}/changesets/{changeset}/tokens"),

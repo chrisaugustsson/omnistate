@@ -300,6 +300,20 @@ converter above do the work, so every rule of "What the converter takes from a
 shape" applies (line pitch, filling children, hugging texts, the board Unplaced).
 `omni_penpot::import::import_file` gives the whole import as data: `pages` (the
 design doc), `design_system` (the design system doc), `attachments` and `report`.
+
+An import into a project whose design system doc already has a mainline version
+(a second import, after the first merged) adds to that version, because putting
+tokens or components into a draft replaces all of them. The command reads the
+mainline tokens and components first. Its tokens join the design system's, and a
+token of the same path takes the export's value; a token where the design system
+has a group of that path, or the other way round, is not imported and is in the
+report. The modes are the design system's, then those of the export's themes
+that it lacks (an export with one theme or none adds no mode); a token with a
+value per mode takes its `$value` in a mode it has no value for, and the report
+names it. Should the joined tree be refused, the design system's tokens stay as
+they are and the report says why. The design system's components are sent first
+with their IDs, so they and the instances that place them stay as they are, and
+the export's components follow as new ones.
 `omni_penpot::compare::compare_import` compares the imported boards with
 Penpot's PNGs, in the mode of Penpot's active theme.
 
@@ -341,8 +355,7 @@ the reason.
 
 The command reads the export before it sends anything, so a file that is no
 export leaves no change set behind. It uploads the images, starts the design
-system doc unless the project has one (the tokens and components replace the
-draft's), puts the components in as often as it takes for the instances inside
+system doc unless the project has one, puts the components in as often as it takes for the instances inside
 them to name components the server has given IDs (the server assigns every
 node ID), starts the design doc, puts the pages in, and saves a version of each
 doc. The change set stays `open`. `--json` prints `changeset_id`,
