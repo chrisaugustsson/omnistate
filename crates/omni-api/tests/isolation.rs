@@ -17,7 +17,7 @@
 //!   `Global` (no workspace in the path, with the reason). The path may hold
 //!   `{project_id}`, `{changeset_id}`, `{key_id}`, `{attachment_id}`,
 //!   `{doc_id}`, `{version_id}`, `{other_version_id}`, `{conflict_id}`,
-//!   `{thread_id}` and `{post_id}`,
+//!   `{thread_id}`, `{post_id}` and `{decision_id}`,
 //!   which the suite fills with the IDs of the seeded records, and
 //!   `{board_id}`, which it fills with a node ID that no board has (US-030);
 //!   a path with another placeholder, or a registry route without a case,
@@ -41,7 +41,11 @@
 //!   agent (the API key without identity headers) wrote, is `{post_id}`, and
 //!   its summary is text that nothing else holds. Once the directive route exists
 //!   (US-034), the human also posted a directive in it, which the workspace's
-//!   agent was given with its next request in the change set.
+//!   agent was given with its next request in the change set. Once the
+//!   decision routes exist (US-037), the workspace's agent also proposed the
+//!   decision `{decision_id}` for that thread, relying on `{post_id}`, whose
+//!   direction is text that nothing else holds, and linked `{changeset_id}` to
+//!   it; the decision is still `proposed`.
 //! - Workspace A's credentials against workspace B's workspace and IDs, and
 //!   against B's IDs under A's own workspace, are always 404
 //!   `{"error": "not_found"}` with nothing of B in the body, and the answer is
@@ -447,6 +451,38 @@ const CASES: &[Case] = &[
         None,
         Kind::Workspace,
     ),
+    case(
+        "POST",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/threads/{thread_id}/decisions",
+        Some(
+            r#"{"direction":"intruder","chosen":"intruder","criteria":["intruder"],"options":[{"name":"intruder","scores":{"intruder":1},"lost_because":null}],"assumptions":[],"open_questions":[],"dissent":[],"posts":[]}"#,
+        ),
+        Kind::Workspace,
+    ),
+    case(
+        "GET",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/decisions/{decision_id}",
+        None,
+        Kind::Workspace,
+    ),
+    case(
+        "POST",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/decisions/{decision_id}/approve",
+        Some("{}"),
+        Kind::Workspace,
+    ),
+    case(
+        "POST",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/decisions/{decision_id}/reject",
+        Some(r#"{"reason":"intruder"}"#),
+        Kind::Workspace,
+    ),
+    case(
+        "POST",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/decisions/{decision_id}",
+        None,
+        Kind::Workspace,
+    ),
 ];
 
 /// The WebSocket routes that the suite attacks, as the paths of
@@ -754,6 +790,15 @@ fn has_directive_route() -> bool {
     })
 }
 
+/// Whether the router has the decision routes (US-037) yet.
+fn has_decision_routes() -> bool {
+    registry().iter().any(|r| {
+        r.method == "POST"
+            && r.path
+                == "/api/v1/w/{workspace_id}/projects/{project_id}/threads/{thread_id}/decisions"
+    })
+}
+
 /// The `data-rev` of the block with `data-node-id="{node}"` in a draft's HTML.
 fn rev_of(html: &str, node: &str) -> u64 {
     let at = html
@@ -1004,6 +1049,11 @@ struct Side {
     /// until the thread routes exist.
     post_id: String,
     post_summary: String,
+    /// The decision that the workspace's agent proposed for the thread and
+    /// linked `changeset_id` to (US-037), and its direction, which nothing
+    /// else holds: empty until the decision routes exist.
+    decision_id: String,
+    decision_direction: String,
 }
 
 impl Side {
@@ -1037,6 +1087,8 @@ impl Side {
             thread_question: String::new(),
             post_id: same(),
             post_summary: String::new(),
+            decision_id: same(),
+            decision_direction: String::new(),
         }
     }
 
@@ -1068,6 +1120,8 @@ impl Side {
             &self.thread_question,
             &self.post_id,
             &self.post_summary,
+            &self.decision_id,
+            &self.decision_direction,
         ]
         .into_iter()
         .map(String::as_str)
@@ -1433,7 +1487,7 @@ fn fixture() -> &'static Fixture {
             // second phase, with a post, so whatever holds threads, phases and
             // posts has rows of the workspace. Seeded as soon as the registry
             // has the thread routes.
-            let (thread_id, thread_question, post_id, post_summary) = if has_thread_routes() {
+            let (thread_id, thread_question, post_id, post_summary, decision_id, decision_direction) = if has_thread_routes() {
                 let question = unique(&format!("{name}-question"));
                 let body = json!({ "question": question, "criteria": [unique(&format!("{name}-criterion"))] })
                     .to_string();
@@ -1516,9 +1570,81 @@ fn fixture() -> &'static Fixture {
                         "the agent is given the directive: {shown}"
                     );
                 }
-                (thread.to_string(), question, post_id, post_summary)
+                // US-037: a decision for the thread, relying on the agent's
+                // post, and the open change set linked to it, so whatever
+                // holds decisions and their links has rows of the workspace.
+                // Seeded as soon as the registry has the decision routes.
+                let (decision_id, decision_direction) = if has_decision_routes() {
+                    let direction = unique(&format!("{name}-direction"));
+                    let body = json!({
+                        "direction": direction,
+                        "chosen": "Split hero",
+                        "criteria": ["Readable at 320 px"],
+                        "options": [
+                            {
+                                "name": "Split hero",
+                                "scores": { "Readable at 320 px": 8 },
+                                "lost_because": null
+                            },
+                            {
+                                "name": "Carousel",
+                                "scores": { "Readable at 320 px": 4 },
+                                "lost_because": "It hides two of the three messages."
+                            }
+                        ],
+                        "assumptions": [],
+                        "open_questions": [],
+                        "dissent": [],
+                        "posts": [post_id]
+                    })
+                    .to_string();
+                    let proposed = must(
+                        call(
+                            client,
+                            "POST",
+                            &format!("{threads}/{thread}/decisions"),
+                            &agent,
+                            Some(&body),
+                        ),
+                        201,
+                        "propose a decision",
+                    );
+                    let decision = proposed["decision"]["id"]
+                        .as_str()
+                        .expect("an id")
+                        .to_string();
+                    must(
+                        call(
+                            client,
+                            "POST",
+                            &format!("{changesets}/{changeset_id}/decisions/{decision}"),
+                            &agent,
+                            None,
+                        ),
+                        200,
+                        "link the change set to the decision",
+                    );
+                    (decision, direction)
+                } else {
+                    (String::new(), String::new())
+                };
+                (
+                    thread.to_string(),
+                    question,
+                    post_id,
+                    post_summary,
+                    decision_id,
+                    decision_direction,
+                )
             } else {
-                (String::new(), String::new(), String::new(), String::new())
+                (
+                    String::new(),
+                    String::new(),
+                    String::new(),
+                    String::new(),
+                    String::new(),
+                    String::new(),
+                )
             };
             Side {
                 id: workspace,
@@ -1550,6 +1676,8 @@ fn fixture() -> &'static Fixture {
                 thread_question,
                 post_id,
                 post_summary,
+                decision_id,
+                decision_direction,
             }
         });
         let a = sides.next().expect("workspace A");
@@ -1586,6 +1714,7 @@ fn fill(template: &str, workspace: &Side, record: &Side) -> String {
             "conflict_id" => &record.conflict_id,
             "thread_id" => &record.thread_id,
             "post_id" => &record.post_id,
+            "decision_id" => &record.decision_id,
             // US-030: an attack on a board is refused at the workspace or the
             // project, before any board is looked up, so a node ID that no
             // board has stands in for one.
@@ -3562,6 +3691,191 @@ fn the_post_read_calls_of_the_attacks_work_for_the_workspace_that_owns_the_recor
         assert_eq!(read["post"]["id"], f.a.post_id.as_str(), "{read}");
         assert_eq!(read["post"]["summary"], f.a.post_summary.as_str(), "{read}");
     }
+}
+
+// ---------------------------------------------------------------------------
+// Decisions (US-037)
+// ---------------------------------------------------------------------------
+
+const DECISION_ROUTES: [(&str, &str, Access); 5] = [
+    (
+        "POST",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/threads/{thread_id}/decisions",
+        Access::Agent,
+    ),
+    (
+        "GET",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/decisions/{decision_id}",
+        Access::Both,
+    ),
+    (
+        "POST",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/decisions/{decision_id}/approve",
+        Access::Human,
+    ),
+    (
+        "POST",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/decisions/{decision_id}/reject",
+        Access::Human,
+    ),
+    (
+        "POST",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/decisions/{decision_id}",
+        Access::Agent,
+    ),
+];
+
+#[test]
+fn the_decision_routes_are_in_the_registry_and_the_suite_attacks_them() {
+    for (method, path, access) in DECISION_ROUTES {
+        let entry = registry()
+            .into_iter()
+            .find(|r| r.method == method && r.path == path)
+            .unwrap_or_else(|| panic!("the registry has no route {method} {path}"));
+        assert_eq!(entry.access, access, "{method} {path}");
+        assert!(
+            matches!(case_for(&entry).kind, Kind::Workspace),
+            "{method} {path} is a workspace route that the suite attacks"
+        );
+    }
+
+    let (f, _) = ready();
+    for side in [&f.a, &f.b] {
+        assert!(
+            !side.decision_id.is_empty(),
+            "the suite seeded no decision for {}",
+            side.id
+        );
+    }
+}
+
+#[test]
+fn the_decision_calls_of_the_attacks_work_for_the_workspace_that_owns_the_records() {
+    // The control for the decision routes: in the owner's workspace, the
+    // owner's agent proposes a decision with the body of the case for a new
+    // thread of the seeded change set and links the change set to it, both
+    // the agent and the human read it and the seeded decision, and the human
+    // approves it with the body of the case; a second proposal is rejected
+    // with the body of the case.
+    let (f, client) = ready();
+    let _guard = serial();
+    let key = Auth::Key(&f.a.key);
+    let human = Auth::Session(&f.a.token);
+    let path = |template: &str| fill(template, &f.a, &f.a);
+    let body = |method: &str, template: &str| case_named(method, template).body;
+
+    let (method, template) = THREAD_ROUTES[0];
+    let created = must(
+        call(
+            client,
+            method,
+            &path(template),
+            &key,
+            body(method, template),
+        ),
+        201,
+        "start a thread",
+    );
+    let thread = created["thread"]["id"].as_str().expect("an id");
+    let project = format!("/api/v1/w/{}/projects/{}", f.a.id, f.a.project_id);
+    let (propose, _, _) = DECISION_ROUTES[0];
+    let propose_body = body(propose, DECISION_ROUTES[0].1);
+    let proposed = must(
+        call(
+            client,
+            propose,
+            &format!("{project}/threads/{thread}/decisions"),
+            &key,
+            propose_body,
+        ),
+        201,
+        "propose a decision",
+    );
+    let decision = proposed["decision"]["id"].as_str().expect("an id");
+    for auth in [&key, &human] {
+        let read = must(
+            call(
+                client,
+                "GET",
+                &format!("{project}/decisions/{decision}"),
+                auth,
+                None,
+            ),
+            200,
+            "read the decision",
+        );
+        assert_eq!(read["decision"]["id"], decision, "{read}");
+        let seeded = must(
+            call(client, "GET", &path(DECISION_ROUTES[1].1), auth, None),
+            200,
+            "read the seeded decision",
+        );
+        assert_eq!(
+            seeded["decision"]["direction"],
+            f.a.decision_direction.as_str(),
+            "{seeded}"
+        );
+    }
+    let (method, template, _) = DECISION_ROUTES[4];
+    let linked = must(
+        call(
+            client,
+            method,
+            &format!(
+                "{project}/changesets/{}/decisions/{decision}",
+                f.a.changeset_id
+            ),
+            &key,
+            body(method, template),
+        ),
+        200,
+        "link the change set to the decision",
+    );
+    assert!(
+        linked["changeset"]["decisions"]
+            .as_array()
+            .is_some_and(|list| list.iter().any(|d| d["id"] == decision)),
+        "{linked}"
+    );
+    let (method, template, _) = DECISION_ROUTES[2];
+    let approved = must(
+        call(
+            client,
+            method,
+            &format!("{project}/decisions/{decision}/approve"),
+            &human,
+            body(method, template),
+        ),
+        200,
+        "approve the decision",
+    );
+    assert_eq!(approved["decision"]["status"], "approved", "{approved}");
+
+    let proposed = must(
+        call(
+            client,
+            propose,
+            &format!("{project}/threads/{thread}/decisions"),
+            &key,
+            propose_body,
+        ),
+        201,
+        "propose a second decision",
+    );
+    let second = proposed["decision"]["id"].as_str().expect("an id");
+    let (method, template, _) = DECISION_ROUTES[3];
+    let rejected = must(
+        call(
+            client,
+            method,
+            &format!("{project}/decisions/{second}/reject"),
+            &human,
+            body(method, template),
+        ),
+        200,
+        "reject the decision",
+    );
+    assert_eq!(rejected["decision"]["status"], "rejected", "{rejected}");
 }
 
 // ---------------------------------------------------------------------------

@@ -679,6 +679,48 @@ async fn fill_workspace(conn: &mut PgConnection, workspace: &str, membership: &s
             .await
             .expect("insert a directive receipt");
         }
+
+        // US-037: a decision for the thread and the change set's link to it.
+        // Both are seeded as soon as their tables exist (tests/decisions.rs
+        // pins their names and the columns without a default), for the same
+        // reason as above.
+        let decisions_exist: bool =
+            sqlx::query_scalar("SELECT to_regclass('public.decisions') IS NOT NULL")
+                .fetch_one(&mut *conn)
+                .await
+                .expect("look for the decisions table");
+        if decisions_exist {
+            let decision_id: String = sqlx::query_scalar(
+                "INSERT INTO decisions (workspace_id, thread_id, content, author) \
+                 VALUES ($1::uuid, $2::uuid, $3::jsonb, $4::jsonb) RETURNING id::text",
+            )
+            .bind(workspace)
+            .bind(&thread_id)
+            .bind(
+                r#"{"direction":"deletion test","chosen":"deletion test","criteria":["deletion test"],"options":[{"name":"deletion test","scores":{"deletion test":1},"lost_because":null}],"assumptions":[],"open_questions":[],"dissent":[],"posts":[]}"#,
+            )
+            .bind(r#"{"kind":"agent","run":"run-1","role":"writer","model":null,"harness":null}"#)
+            .fetch_one(&mut *conn)
+            .await
+            .expect("insert a decision");
+            let links_exist: bool =
+                sqlx::query_scalar("SELECT to_regclass('public.changeset_decisions') IS NOT NULL")
+                    .fetch_one(&mut *conn)
+                    .await
+                    .expect("look for the change set decisions table");
+            if links_exist {
+                sqlx::query(
+                    "INSERT INTO changeset_decisions (workspace_id, changeset_id, decision_id) \
+                     VALUES ($1::uuid, $2::uuid, $3::uuid)",
+                )
+                .bind(workspace)
+                .bind(&changeset_id)
+                .bind(&decision_id)
+                .execute(&mut *conn)
+                .await
+                .expect("insert a change set's link to a decision");
+            }
+        }
     }
 }
 
