@@ -12,6 +12,7 @@ pub mod auth;
 mod boards;
 mod changesets;
 mod claims;
+mod comments;
 mod decisions;
 pub mod delete_workspace;
 mod design;
@@ -446,6 +447,34 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/decisions/{decision_id}",
             post(decisions::link),
+        )
+        .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/versions/{version_id}/comments",
+            post(comments::create),
+        )
+        .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/comments",
+            get(comments::list),
+        )
+        .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/comments/{comment_id}",
+            get(comments::show),
+        )
+        .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/comments/{comment_id}/replies",
+            post(comments::reply),
+        )
+        .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/comments/{comment_id}/addressed",
+            post(comments::addressed),
+        )
+        .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/comments/{comment_id}/resolve",
+            post(comments::resolve),
+        )
+        .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/comments/{comment_id}/reopen",
+            post(comments::reopen),
         )
         .route("/ws/w/{workspace_id}", get(live::socket))
         .fallback(not_found)

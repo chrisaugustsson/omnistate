@@ -10,6 +10,7 @@ mod attach;
 mod changesets;
 mod claims;
 mod commands;
+mod comments;
 mod components;
 mod config;
 mod decisions;
@@ -67,12 +68,17 @@ Usage:
                                       apply a batch of operations (a JSON array, from
                                       --body-file or standard input) to the draft; prints
                                       each node's new revision and the IDs of new nodes
-  omni doc remove <doc> --changeset <id>
+  omni doc remove <doc> --changeset <id> [--remove-commented]
                                       remove a doc in a change set: saves a version that
-                                      marks it removed; the doc and its history stay
-  omni version save <doc> --changeset <id>
+                                      marks it removed; the doc and its history stay. Open
+                                      comments on its nodes need --remove-commented, as for
+                                      `omni version save`
+  omni version save <doc> --changeset <id> [--remove-commented]
                                       save the change set's draft of a doc as a version, an
-                                      unchangeable snapshot; prints the version's ID
+                                      unchangeable snapshot; prints the version's ID. A save
+                                      that removes a node with open comments is refused (exit
+                                      code 4) and lists those comments; --remove-commented
+                                      saves anyway, and the comments stay, marked as removed
   omni version diff <a> <b>           list the nodes added, removed, changed and moved from
                                       version <a> to version <b> of a doc
   omni design read --doc <id> --board <id> [--changeset <id> | --version <v>]
@@ -149,6 +155,19 @@ Usage:
                                       link a change set to a decision it carries out; the
                                       change set cannot be approved until every linked
                                       decision is
+  omni comment list [--doc <id> | --changeset <id>] [--status open|addressed|resolved]
+                                      list the project's comments, one line each: ID, status,
+                                      node address, text; a comment whose node changed in a
+                                      later version says [changed], one whose node was removed
+                                      says [removed]. --doc narrows to one doc, --changeset to
+                                      one change set's review
+  omni comment reply <comment> [--body-file <path>]
+                                      reply to a comment; the text is read from --body-file or
+                                      standard input
+  omni comment addressed <comment> --version <v>
+                                      mark a comment addressed, naming the later version of
+                                      its doc that fixes it. The human resolves and reopens
+                                      comments, in the web app
   omni wait --changeset <id> --until approved|rejected|merged|needs_rebase [--timeout <s>]
                                       wait until the change set is approved (by the human),
                                       rejected, merged or needs a rebase; prints its status
@@ -201,8 +220,12 @@ Options (before or after the command):
   --doc <id>            the design doc that `omni design read` reads or `omni design edit` edits
   --board <id>          the board of that doc that `omni design read` prints, or that a
                         `omni design edit` batch stays inside
+  --status <status>     the comments that `omni comment list` shows: open, addressed or
+                        resolved
+  --remove-commented    `omni version save` and `omni doc remove`: go on although the
+                        version removes nodes that have open comments
   --version <v>         the version that `omni doc read`, `omni design read` or
-                        `omni tokens export` reads
+                        `omni tokens export` reads, or that `omni comment addressed` names
   --out <path>          where `omni tokens export` writes: a file, or with --per-mode a directory
   --per-mode            `omni tokens export`: one file per mode
   --until <status>      the status or condition `omni wait` waits for
@@ -230,6 +253,8 @@ Exit codes:
   3  `omni wait`: the condition can no longer be met (the change set is abandoned, or
      merged while you wait for rejected or needs_rebase; for a thread, a later phase has
      started while posts: or roles: is not met, or the decision has the other status)
+  4  `omni version save` or `omni doc remove` was refused because it would remove nodes
+     that have open comments; they are listed on standard error (--remove-commented)
 ";
 
 fn main() -> ExitCode {

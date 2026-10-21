@@ -35,8 +35,10 @@ pub struct Args {
     /// `omni wait --thread <id>`: wait on a thread instead of a change set.
     pub thread: Option<String>,
     /// `omni doc read --version <v>`, `omni design read --version <v>` and
-    /// `omni tokens export --version <v>`: the version to read. Everywhere else `--version` is the bare flag that
-    /// shows the version of omni.
+    /// `omni tokens export --version <v>`: the version to read; for `omni
+    /// comment addressed --version <v>`, the version that fixes the comment.
+    /// Everywhere else `--version` is the bare flag that shows the version of
+    /// omni.
     pub doc_version: Option<String>,
     /// `omni design read --doc <id> --board <id>`: the design doc and the
     /// board in it to read.
@@ -62,6 +64,11 @@ pub struct Args {
     pub replaces: Option<String>,
     /// `omni decision propose <thread> --file <decision.json>`.
     pub file: Option<String>,
+    /// `omni comment list --status open|addressed|resolved`.
+    pub status: Option<String>,
+    /// `omni version save --remove-commented`: save even though the version
+    /// removes nodes that have open comments.
+    pub remove_commented: bool,
     pub json: bool,
     pub help: bool,
     pub version: bool,
@@ -73,7 +80,10 @@ fn takes_a_version(words: &[String]) -> bool {
     let command: Vec<&str> = words.iter().map(String::as_str).collect();
     matches!(
         command.as_slice(),
-        ["doc", "read", ..] | ["design", "read", ..] | ["tokens", "export", ..]
+        ["doc", "read", ..]
+            | ["design", "read", ..]
+            | ["tokens", "export", ..]
+            | ["comment", "addressed", ..]
     )
 }
 
@@ -119,6 +129,10 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Args> {
                 parsed.sealed = true;
                 continue;
             }
+            "--remove-commented" => {
+                parsed.remove_commented = true;
+                continue;
+            }
             "--attach" | "--link" => {
                 let Some(value) = inline.or_else(|| args.next()) else {
                     bail!("{arg} needs a value; see `omni --help`");
@@ -135,6 +149,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Args> {
             "--confidence" => &mut parsed.confidence,
             "--replaces" => &mut parsed.replaces,
             "--file" => &mut parsed.file,
+            "--status" => &mut parsed.status,
             "--question" => &mut parsed.question,
             "--criteria-file" => &mut parsed.criteria_file,
             "--out" => &mut parsed.out,

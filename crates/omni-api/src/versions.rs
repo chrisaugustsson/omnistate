@@ -21,6 +21,7 @@
 use crate::AppState;
 use crate::boards::{self, Manifest};
 use crate::changesets::{clear_approval, parse_body};
+use crate::comments;
 use crate::design;
 use crate::docs::{AgentIdentity, DraftRow, Tx, current_draft, ensure_loaded, find_draft};
 use crate::live;
@@ -147,8 +148,15 @@ pub struct DiffResponse {
 }
 
 /// What saving a version takes: nothing, but the body must be a JSON object.
+/// A version that drops a node with an open comment is refused unless the body
+/// says `remove_commented`.
 #[derive(Deserialize, ToSchema)]
-pub struct SaveVersionRequest {}
+pub struct SaveVersionRequest {
+    /// Save even though the version removes nodes that have open comments (the
+    /// comments stay, marked as removed). Left out or `false`, such a save is
+    /// refused with 409 `commented_nodes_removed`.
+    pub remove_commented: Option<bool>,
+}
 
 // Chunks in RustFS ------------------------------------------------------------------
 
@@ -273,18 +281,18 @@ pub(crate) async fn read_chunk(
 // Looking things up ------------------------------------------------------------------
 
 #[derive(sqlx::FromRow)]
-struct VersionRow {
-    id: String,
-    doc_id: String,
+pub(crate) struct VersionRow {
+    pub(crate) id: String,
+    pub(crate) doc_id: String,
     changeset_id: String,
     draft_id: Option<String>,
     removed: bool,
-    chunk: Option<String>,
+    pub(crate) chunk: Option<String>,
     agent: String,
-    design_system_version_id: Option<String>,
+    pub(crate) design_system_version_id: Option<String>,
     /// A design version's manifest as JSON text.
     manifest: Option<String>,
-    doc_kind: String,
+    pub(crate) doc_kind: String,
     created_at: String,
 }
 
@@ -298,7 +306,7 @@ impl VersionRow {
 
 /// The version `version_id`, 404 when it is not there or its doc is not in
 /// this project.
-async fn find_version(
+pub(crate) async fn find_version(
     tx: &mut Tx,
     project_id: &str,
     version_id: &str,
@@ -396,11 +404,33 @@ async fn manifest_nodes(tx: &mut Tx, manifest: &Manifest) -> Result<Vec<NodeEntr
 }
 
 /// The nodes of a version in document order.
-async fn nodes_of_version(tx: &mut Tx, row: &VersionRow) -> Result<Vec<NodeEntry>, ApiError> {
+pub(crate) async fn nodes_of_version(
+    tx: &mut Tx,
+    row: &VersionRow,
+) -> Result<Vec<NodeEntry>, ApiError> {
     match row.manifest() {
         Some(manifest) => manifest_nodes(tx, &manifest).await,
         None => nodes_of(tx, row.chunk.as_deref()).await,
     }
+}
+
+/// The nodes of the version `version_id` in document order, 404 when the
+/// workspace has no such version.
+pub(crate) async fn nodes_of_version_id(
+    tx: &mut Tx,
+    version_id: &str,
+) -> Result<Vec<NodeEntry>, ApiError> {
+    let row: VersionRow = sqlx::query_as(&format!(
+        "SELECT {VERSION_COLUMNS} FROM versions v \
+         JOIN docs d ON d.workspace_id = v.workspace_id AND d.id = v.doc_id \
+         WHERE v.id = $1::uuid"
+    ))
+    .bind(version_id)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(ApiError::database)?
+    .ok_or(ApiError::NotFound)?;
+    nodes_of_version(tx, &row).await
 }
 
 async fn version_body(tx: &mut Tx, row: VersionRow) -> Result<VersionBody, ApiError> {
@@ -437,6 +467,15 @@ pub(crate) struct Snapshot {
 }
 
 impl Snapshot {
+    /// The IDs of every node that a version of this snapshot indexes.
+    pub(crate) fn node_ids(&self) -> HashSet<String> {
+        self.nodes
+            .iter()
+            .chain(self.parts.iter().flat_map(|part| part.nodes.iter()))
+            .map(|node| node.id.to_string())
+            .collect()
+    }
+
     /// A version whose content is the one chunk `html`.
     pub(crate) fn new(html: String, nodes: Vec<IndexedNode>) -> Self {
         Self {
@@ -663,7 +702,7 @@ pub(crate) async fn store_version(
         (status = 401, description = "No valid API key or session", body = ErrorBody),
         (status = 403, description = "Called with a session; agents only", body = ErrorBody),
         (status = 404, description = "The change set has no draft of this doc in this project and workspace", body = ErrorBody),
-        (status = 409, description = "The draft of a design system has neither tokens nor components yet (`no_tokens`): import them first; or the change set emptied a design system that has a mainline version, so a design cannot be saved against it (`design_system_emptied`)", body = ErrorBody),
+        (status = 409, description = "The draft of a design system has neither tokens nor components yet (`no_tokens`): import them first; or the change set emptied a design system that has a mainline version, so a design cannot be saved against it (`design_system_emptied`); or the version removes nodes that have open comments (`commented_nodes_removed`, with the `comments` that name them) and the body does not say `remove_commented: true`", body = ErrorBody),
     )
 )]
 pub async fn save_version(
@@ -685,7 +724,7 @@ pub async fn save_version(
         .await
         .map_err(ApiError::database)?;
     tx.commit().await.map_err(ApiError::database)?;
-    sent?;
+    let remove_commented = sent?.remove_commented == Some(true);
 
     // A design version records the design system version it uses, which is
     // saved first when the change set's draft of it has changes that no
@@ -721,6 +760,17 @@ pub async fn save_version(
     let Some(snapshot) = loaded.snapshot() else {
         return Err(ApiError::conflict("no_tokens"));
     };
+    // The comments on nodes that this version drops are looked at under the
+    // draft's lock, with the draft that the version is made of.
+    comments::refuse_commented_removals(
+        &state,
+        &request.workspace_id,
+        &project_id,
+        &draft,
+        &snapshot.node_ids(),
+        remove_commented,
+    )
+    .await?;
     let version = store_version(
         &state,
         &request.workspace_id,
@@ -756,6 +806,7 @@ pub async fn save_version(
         (status = 401, description = "No valid API key or session", body = ErrorBody),
         (status = 403, description = "Called with a session; agents only", body = ErrorBody),
         (status = 404, description = "The change set has no draft of this doc in this project and workspace", body = ErrorBody),
+        (status = 409, description = "The doc has nodes with open comments (`commented_nodes_removed`, with the `comments` that name them) and the body does not say `remove_commented: true`", body = ErrorBody),
     )
 )]
 pub async fn remove_doc(
@@ -772,12 +823,26 @@ pub async fn remove_doc(
     let mut tx = state.workspace_tx(&request.workspace_id).await?;
     let draft = find_draft(&mut tx, &project_id, &changeset_id, &doc_id).await?;
     tx.commit().await.map_err(ApiError::database)?;
-    sent?;
+    let remove_commented = sent?.remove_commented == Some(true);
     // Under the draft's lock, as a save is, so that a rebase either comes
     // first (the removal then follows its version) or finds the change set
     // moved out of `needs_rebase` by the removal.
     let slot = state.drafts.slot(&request.workspace_id, &draft.id);
     let _held = slot.lock().await;
+    // A removal drops every node of the doc, so it needs the same go-ahead. A
+    // rebase that held the lock meanwhile has rewritten the draft's row.
+    let mut tx = state.workspace_tx(&request.workspace_id).await?;
+    let current = current_draft(&mut tx, &draft.id).await?;
+    tx.commit().await.map_err(ApiError::database)?;
+    comments::refuse_commented_removals(
+        &state,
+        &request.workspace_id,
+        &project_id,
+        &current,
+        &HashSet::new(),
+        remove_commented,
+    )
+    .await?;
     let version = store_version(
         &state,
         &request.workspace_id,

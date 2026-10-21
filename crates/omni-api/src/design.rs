@@ -643,6 +643,47 @@ pub(crate) async fn view_of_version(
     }
 }
 
+/// The component that the instance `instance` places, looked for in every
+/// node of the pages.
+fn component_of_instance(nodes: &[Node], instance: &str) -> Option<NodeId> {
+    nodes.iter().find_map(|node| {
+        match node.data() {
+            NodeData::Instance(placed) if node.id().as_str() == instance => {
+                return Some(placed.component);
+            }
+            _ => {}
+        }
+        component_of_instance(node.children(), instance)
+    })
+}
+
+/// Whether `inner` is a node of the component that the instance `instance` of
+/// the design version `version_id` places, as the design system version that the
+/// design version recorded defines the component: the second half of the node
+/// address `<instanceId>/<componentNodeId>` of a comment (US-038).
+pub(crate) async fn instance_holds(
+    state: &AppState,
+    workspace_id: &str,
+    version_id: &str,
+    chunk: Option<&str>,
+    design_system_version_id: Option<&str>,
+    instance: &str,
+    inner: &str,
+) -> Result<bool, ApiError> {
+    let (Some(chunk), Some(recorded)) = (chunk, design_system_version_id) else {
+        return Ok(false);
+    };
+    let pages =
+        boards::read_pages(state, workspace_id, chunk, &format!("version {version_id}")).await?;
+    let Some(placed) = component_of_instance(&pages, instance) else {
+        return Ok(false);
+    };
+    let library = components_of(state, workspace_id, recorded).await?;
+    Ok(library
+        .get(&placed)
+        .is_some_and(|component| tree_of(component).keys().any(|id| id.as_str() == inner)))
+}
+
 /// Saves the change set's draft of the design system first when it has
 /// changes that no version holds, and returns the design system version that
 /// a design version of the change set records: the version that holds the

@@ -11,6 +11,7 @@ use crate::args::Args;
 use crate::attach;
 use crate::changesets;
 use crate::claims;
+use crate::comments;
 use crate::components;
 use crate::config::{self, Stored};
 use crate::decisions;
@@ -132,6 +133,14 @@ pub fn run(args: &Args) -> Result<()> {
         ["decision", "show"] => decisions::show(args, None),
         ["decision", "show", id] => decisions::show(args, Some(id)),
         ["decision", ..] => bail!("usage: omni decision propose|show; see `omni --help`"),
+        ["comment", "list"] => comments::list(args),
+        ["comment", "reply"] => comments::reply(args, None),
+        ["comment", "reply", comment] => comments::reply(args, Some(comment)),
+        ["comment", "addressed"] => comments::addressed(args, None),
+        ["comment", "addressed", comment] => comments::addressed(args, Some(comment)),
+        ["comment", "resolve", ..] => comments::human_only("resolving"),
+        ["comment", "reopen", ..] => comments::human_only("reopening"),
+        ["comment", ..] => bail!("usage: omni comment list|reply|addressed; see `omni --help`"),
         ["post", "show"] => posts::show(args, None),
         ["post", "show", post] => posts::show(args, Some(post)),
         ["post"] => posts::run(args, None),
@@ -387,6 +396,11 @@ fn api_error(response: &Response) -> CliError {
         .unwrap_or_else(|| format!("http_{}", response.status));
     let status = response.status;
     if let Some(body) = &body {
+        if status == 409 && code == "commented_nodes_removed" {
+            return commented_nodes_removed(body);
+        }
+    }
+    if let Some(body) = &body {
         if let Some(message) = refused_operation(body) {
             return CliError::new(message);
         }
@@ -413,6 +427,35 @@ fn api_error(response: &Response) -> CliError {
         ),
         _ => format!("{code}: the server answered HTTP {status}"),
     })
+}
+
+/// The exit code of a save that the API refused because it would remove nodes
+/// that have open comments.
+const COMMENTED_CODE: u8 = 4;
+
+/// A save refused for removing commented nodes: each comment of the answer is
+/// listed on standard error (its ID, its node and the first line of its text),
+/// and the error says how to save anyway.
+fn commented_nodes_removed(body: &Value) -> CliError {
+    for comment in body
+        .get("comments")
+        .and_then(Value::as_array)
+        .unwrap_or_default()
+    {
+        eprintln!(
+            "open comment {} on node {}: {}",
+            comment.str_at("id").unwrap_or("?"),
+            comment.str_at("node").unwrap_or("?"),
+            comment
+                .str_at("text")
+                .and_then(|text| text.lines().next())
+                .unwrap_or_default()
+        );
+    }
+    CliError::with_code(
+        COMMENTED_CODE,
+        "commented_nodes_removed: the version would remove nodes that have the open comments listed above; fix the draft, or save again with --remove-commented to remove them anyway (the comments stay, marked as removed)",
+    )
 }
 
 /// The line for an edit that the API refused: a conflict names the node and

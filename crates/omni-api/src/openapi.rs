@@ -12,6 +12,10 @@ use crate::changesets::{
     ProjectListResponse, ProjectResponse, RejectRequest,
 };
 use crate::claims::{ClaimBody, ClaimRequest, ClaimResponse, ClaimedBody};
+use crate::comments::{
+    AddressedRequest, CommentBody, CommentListResponse, CommentResponse, CreateCommentRequest,
+    ReplyBody, ReplyRequest, SingleCommentResponse,
+};
 use crate::decisions::{
     DecisionBody, DecisionFile, DecisionOption, DecisionResponse, Dissent, RejectDecisionRequest,
 };
@@ -112,7 +116,14 @@ use utoipa::OpenApi;
         crate::decisions::show,
         crate::decisions::approve,
         crate::decisions::reject,
-        crate::decisions::link
+        crate::decisions::link,
+        crate::comments::create,
+        crate::comments::list,
+        crate::comments::show,
+        crate::comments::reply,
+        crate::comments::addressed,
+        crate::comments::resolve,
+        crate::comments::reopen
     ),
     components(schemas(
         LoginRequest,
@@ -207,7 +218,15 @@ use utoipa::OpenApi;
         DecisionFile,
         DecisionBody,
         DecisionResponse,
-        RejectDecisionRequest
+        RejectDecisionRequest,
+        ReplyBody,
+        CommentBody,
+        CommentResponse,
+        SingleCommentResponse,
+        CommentListResponse,
+        CreateCommentRequest,
+        ReplyRequest,
+        AddressedRequest
     ))
 )]
 struct ApiDoc;

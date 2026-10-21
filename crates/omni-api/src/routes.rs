@@ -274,6 +274,41 @@ pub fn registry() -> Vec<RouteEntry> {
             "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/decisions/{decision_id}",
             Access::Agent,
         ),
+        (
+            "POST",
+            "/api/v1/w/{workspace_id}/projects/{project_id}/versions/{version_id}/comments",
+            Access::Both,
+        ),
+        (
+            "GET",
+            "/api/v1/w/{workspace_id}/projects/{project_id}/comments",
+            Access::Both,
+        ),
+        (
+            "GET",
+            "/api/v1/w/{workspace_id}/projects/{project_id}/comments/{comment_id}",
+            Access::Both,
+        ),
+        (
+            "POST",
+            "/api/v1/w/{workspace_id}/projects/{project_id}/comments/{comment_id}/replies",
+            Access::Both,
+        ),
+        (
+            "POST",
+            "/api/v1/w/{workspace_id}/projects/{project_id}/comments/{comment_id}/addressed",
+            Access::Agent,
+        ),
+        (
+            "POST",
+            "/api/v1/w/{workspace_id}/projects/{project_id}/comments/{comment_id}/resolve",
+            Access::Human,
+        ),
+        (
+            "POST",
+            "/api/v1/w/{workspace_id}/projects/{project_id}/comments/{comment_id}/reopen",
+            Access::Human,
+        ),
     ]
     .into_iter()
     .map(|(method, path, access)| RouteEntry {

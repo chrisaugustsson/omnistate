@@ -82,6 +82,10 @@ pub enum ApiError {
     /// `decision_not_approved` with its `decision_id`: the status, the code,
     /// the name of the field and the record's ID.
     Naming(StatusCode, &'static str, &'static str, String),
+    /// As `Naming`, and the field holds any JSON, such as the comments that
+    /// stop a save (409 `commented_nodes_removed`): the status, the code, the
+    /// name of the field and its value.
+    Listing(StatusCode, &'static str, &'static str, serde_json::Value),
     Unavailable,
 }
 
@@ -115,6 +119,9 @@ impl IntoResponse for ApiError {
             Self::NotFound => (StatusCode::NOT_FOUND, json!({ "error": "not_found" })),
             Self::Refused(status, code) => (status, json!({ "error": code })),
             Self::Naming(status, code, field, id) => (status, json!({ "error": code, field: id })),
+            Self::Listing(status, code, field, value) => {
+                (status, json!({ "error": code, field: value }))
+            }
             Self::Unavailable => (
                 StatusCode::SERVICE_UNAVAILABLE,
                 json!({ "error": "unavailable" }),
