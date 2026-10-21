@@ -1,0 +1,1284 @@
+//! US-040: the project home, through the API. Run with `--features
+//! stack-tests` in the Compose test container, which reaches Postgres at
+//! `postgres:5432` and RustFS at `rustfs:9000`.
+//!
+//! The tests migrate a scratch database, seed a workspace with one member
+//! (alice) and a live session, mint an API key through the API, create a
+//! scratch RustFS bucket and serve the API's router on a local port. Several
+//! agents share the key and tell themselves apart by their identity headers.
+//! The web app's side is web/src/project-home.test.tsx.
+//!
+//! The contract these tests pin down (all paths are under
+//! `/api/v1/w/{workspace_id}/projects/{project_id}`; change sets are those of
+//! US-016 and US-025, docs and versions those of US-022 and US-024, threads
+//! and posts those of US-033 to US-035, decisions those of US-037 and comments
+//! those of US-038):
+//!
+//! - `GET /home` (human) answers the reviewer's page of the project in one
+//!   call: 200 `{"project_id", "docs", "changesets", "threads", "waiting"}`.
+//!   An API key is 403 `{"error": "forbidden"}` (the page is the human's, and
+//!   an agent must not read past a sealed phase through it); an unknown
+//!   project is 404 `{"error": "not_found"}`.
+//! - `docs` lists every doc of the project, oldest first, each the Doc that
+//!   `GET /docs/{doc_id}` answers (so with its `module`, `kind`, `title` and
+//!   `mainline_version_id`, which is `null` while its first version has not
+//!   merged). The web app groups them by module.
+//! - `changesets` lists every change set of the project, oldest first, each
+//!   the Changeset that `GET /changesets/{changeset_id}` answers the human,
+//!   with its `status`.
+//! - `threads` lists every thread of the project, oldest first, each with at
+//!   least the `id`, `changeset_id` and `question` of the Thread that `GET
+//!   /threads/{thread_id}` answers.
+//! - `waiting` is what waits for the human, each list oldest first:
+//!   - `decisions`: the decisions whose status is `proposed`, each the
+//!     Decision that `GET /decisions/{decision_id}` answers the human. One
+//!     that the human approved or rejected, or that a later proposal
+//!     superseded, is not listed.
+//!   - `changesets`: the change sets whose status is `in_review`, each as in
+//!     `changesets`.
+//!   - `comments`: the comments whose status is `addressed`, each the Comment
+//!     that `GET /comments/{comment_id}` answers. A resolved or reopened one
+//!     is not listed.
+//!   - `questions`: the posts of type `question` that an agent wrote, in any
+//!     phase (the human sees sealed phases too), each the Post that `GET
+//!     /posts/{post_id}` answers the human, until a post of the human links to
+//!     it as a reply: a post with `{"kind": "post", "post_id"}` naming it in
+//!     its `links`, made with the posts route or the directives route. An
+//!     agent's post that links to it does not take it off the list, and the
+//!     human's own questions are never listed.
+//!
+//!   Nothing of another project is listed anywhere.
+//! - Every change that moves an item onto or off these lists already emits
+//!   its event on the project's live channel (`decision.*`, `changeset.*`,
+//!   `comment.status_changed`, `post.created`); the web app reloads the home
+//!   on the project's events.
+
+mod common;
+
+use common::{Client, Response, TestServer, cookie};
+use omni_api::Config;
+use omni_api::routes::{Access, registry};
+use s3::creds::Credentials;
+use s3::{Bucket, BucketConfiguration, Region};
+use serde_json::{Value, json};
+use sqlx::Connection;
+use sqlx::postgres::{PgConnectOptions, PgConnection};
+use std::future::Future;
+use std::str::FromStr;
+use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU32, Ordering};
+
+const TEST_DB: &str = "omni_us040_project_home";
+const TEST_BUCKET: &str = "omni-us040-project-home";
+/// An ID that no row has.
+const UNKNOWN_ID: &str = "01900000-0000-7000-8000-000000000000";
+const HOME_ROUTE: &str = "/api/v1/w/{workspace_id}/projects/{project_id}/home";
+
+// ---------------------------------------------------------------------------
+// Plumbing
+// ---------------------------------------------------------------------------
+
+fn block<F: Future>(future: F) -> F::Output {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime")
+        .block_on(future)
+}
+
+fn admin_url() -> String {
+    std::env::var("OMNI_ADMIN_DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://omni:omni-dev@postgres:5432/omni".to_string())
+}
+
+fn admin_options() -> PgConnectOptions {
+    PgConnectOptions::from_str(&admin_url()).expect("OMNI_ADMIN_DATABASE_URL")
+}
+
+fn api_password() -> String {
+    // The password that the stack's API gives omni_api (docker-compose.yml). The
+    // role is cluster-wide, so the scratch database must use the same one.
+    std::env::var("OMNI_API_DB_PASSWORD").unwrap_or_else(|_| "omni-api-dev".to_string())
+}
+
+fn s3_endpoint() -> String {
+    std::env::var("OMNI_S3_ENDPOINT").unwrap_or_else(|_| "http://rustfs:9000".to_string())
+}
+
+fn s3_access_key() -> String {
+    std::env::var("OMNI_S3_ACCESS_KEY").unwrap_or_else(|_| "omni-dev".to_string())
+}
+
+fn s3_secret_key() -> String {
+    std::env::var("OMNI_S3_SECRET_KEY").unwrap_or_else(|_| "omni-dev-secret".to_string())
+}
+
+fn config() -> Config {
+    let admin = admin_options();
+    let url = admin_url();
+    let (server, _database) = url.rsplit_once('/').expect("OMNI_ADMIN_DATABASE_URL");
+    Config {
+        bind: "127.0.0.1:0".to_string(),
+        database_url: format!(
+            "postgres://omni_api:{}@{}:{}/{TEST_DB}",
+            api_password(),
+            admin.get_host(),
+            admin.get_port()
+        ),
+        admin_database_url: format!("{server}/{TEST_DB}"),
+        api_db_password: api_password(),
+        s3_endpoint: s3_endpoint(),
+        s3_access_key: s3_access_key(),
+        s3_secret_key: s3_secret_key(),
+        s3_bucket: TEST_BUCKET.to_string(),
+    }
+}
+
+async fn ensure_bucket() {
+    let region = Region::Custom {
+        region: "us-east-1".to_string(),
+        endpoint: s3_endpoint(),
+    };
+    let credentials = Credentials::new(
+        Some(&s3_access_key()),
+        Some(&s3_secret_key()),
+        None,
+        None,
+        None,
+    )
+    .expect("storage credentials");
+    let bucket = Bucket::new(TEST_BUCKET, region.clone(), credentials.clone())
+        .expect("bucket settings")
+        .with_path_style();
+    if !bucket.exists().await.unwrap_or(false) {
+        Bucket::create_with_path_style(
+            TEST_BUCKET,
+            region,
+            credentials,
+            BucketConfiguration::default(),
+        )
+        .await
+        .unwrap_or_else(|e| panic!("cannot create the scratch bucket: {e}"));
+    }
+}
+
+async fn admin_connection() -> PgConnection {
+    PgConnection::connect_with(&admin_options().database(TEST_DB))
+        .await
+        .expect("connect to the scratch database as the admin role")
+}
+
+struct Fixture {
+    workspace: String,
+    alice_token: String,
+    key: String,
+    server: TestServer,
+}
+
+fn session_token(name: &str) -> String {
+    format!("us040-session-{name}-0123456789abcdef0123456789abcdef0123456789abcdef")
+}
+
+fn fixture() -> &'static Fixture {
+    static FIXTURE: OnceLock<Fixture> = OnceLock::new();
+    FIXTURE.get_or_init(|| {
+        block(async {
+            let mut admin = PgConnection::connect_with(&admin_options())
+                .await
+                .unwrap_or_else(|e| panic!("cannot connect to Postgres as the admin role: {e}"));
+            sqlx::query(&format!("DROP DATABASE IF EXISTS {TEST_DB} WITH (FORCE)"))
+                .execute(&mut admin)
+                .await
+                .expect("drop the scratch database");
+            sqlx::query(&format!("CREATE DATABASE {TEST_DB}"))
+                .execute(&mut admin)
+                .await
+                .expect("create the scratch database");
+            omni_api::migrate(&config(), 30)
+                .await
+                .expect("apply the migrations to the scratch database");
+            ensure_bucket().await;
+        });
+        let workspace = block(async {
+            let mut conn = admin_connection().await;
+            let mut text = async |sql: &str, binds: &[&str]| -> String {
+                let mut query = sqlx::query_scalar::<_, String>(sql);
+                for bind in binds {
+                    query = query.bind(*bind);
+                }
+                query.fetch_one(&mut conn).await.expect("seed")
+            };
+            let workspace = text(
+                "insert into workspaces (name) values ('Alpha') returning id::text",
+                &[],
+            )
+            .await;
+            let user = text(
+                "insert into users (email) values ('alice@example.test') returning id::text",
+                &[],
+            )
+            .await;
+            text(
+                "insert into sessions (user_id, token_hash, expires_at) \
+                 values ($1::uuid, sha256(convert_to($2, 'UTF8')), now() + interval '1 day') \
+                 returning id::text",
+                &[&user, &session_token("alice")],
+            )
+            .await;
+            text(
+                "insert into memberships (workspace_id, user_id) \
+                 values ($1::uuid, $2::uuid) returning id::text",
+                &[&workspace, &user],
+            )
+            .await;
+            workspace
+        });
+        let server = TestServer::start(&config());
+        let response = call(
+            &server.client,
+            "POST",
+            &format!("/api/v1/w/{workspace}/api-keys"),
+            &Auth::Session(&session_token("alice")),
+            Some(&json!({})),
+        );
+        assert_eq!(response.status, 201, "mint a key: {}", response.text());
+        let key = response.json()["secret"]
+            .as_str()
+            .expect("the new key has a secret")
+            .to_string();
+        Fixture {
+            workspace,
+            alice_token: session_token("alice"),
+            key,
+            server,
+        }
+    })
+}
+
+fn ready() -> (&'static Fixture, &'static Client) {
+    let fixture = fixture();
+    (fixture, &fixture.server.client)
+}
+
+/// Who sends a request: an agent (the API key with a run and role) or the
+/// human (a session cookie).
+#[derive(Clone, Copy)]
+enum Auth<'a> {
+    Agent {
+        key: &'a str,
+        run: &'a str,
+        role: &'a str,
+    },
+    Session(&'a str),
+}
+
+impl Auth<'_> {
+    fn headers(&self) -> Vec<(&'static str, String)> {
+        match self {
+            Auth::Agent { key, run, role } => vec![
+                ("Authorization", format!("Bearer {key}")),
+                ("X-Omni-Run", run.to_string()),
+                ("X-Omni-Role", role.to_string()),
+                ("X-Omni-Model", "test-model".to_string()),
+                ("X-Omni-Harness", "test-harness".to_string()),
+            ],
+            Auth::Session(token) => vec![("Cookie", cookie(token))],
+        }
+    }
+}
+
+/// The agent that writes docs, starts threads and proposes decisions:
+/// `run-1/author`.
+fn author(f: &Fixture) -> Auth<'_> {
+    Auth::Agent {
+        key: &f.key,
+        run: "run-1",
+        role: "author",
+    }
+}
+
+/// Another agent, which posts in the threads: `run-1/critic`.
+fn critic(f: &Fixture) -> Auth<'_> {
+    Auth::Agent {
+        key: &f.key,
+        run: "run-1",
+        role: "critic",
+    }
+}
+
+fn human(f: &Fixture) -> Auth<'_> {
+    Auth::Session(&f.alice_token)
+}
+
+fn call(client: &Client, method: &str, path: &str, auth: &Auth, body: Option<&Value>) -> Response {
+    let owned = auth.headers();
+    let headers: Vec<(&str, &str)> = owned.iter().map(|(n, v)| (*n, v.as_str())).collect();
+    let body = body.map(Value::to_string);
+    client.request(method, path, &headers, body.as_deref())
+}
+
+fn must(response: Response, status: u16, what: &str) -> Value {
+    assert_eq!(response.status, status, "{what}: {}", response.text());
+    response.json()
+}
+
+fn assert_error(response: &Response, status: u16, code: &str, what: &str) {
+    assert_eq!(response.status, status, "{what}: {}", response.text());
+    assert_eq!(
+        response.json(),
+        json!({ "error": code }),
+        "{what}: the error body carries the code and nothing else"
+    );
+}
+
+fn unique(label: &str) -> String {
+    static COUNTER: AtomicU32 = AtomicU32::new(0);
+    format!("{label}-{}", COUNTER.fetch_add(1, Ordering::Relaxed))
+}
+
+fn id_of(value: &Value) -> String {
+    value["id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("there is an `id`: {value}"))
+        .to_string()
+}
+
+fn project_base(f: &Fixture, project: &str) -> String {
+    format!("/api/v1/w/{}/projects/{project}", f.workspace)
+}
+
+fn changeset_path(f: &Fixture, project: &str, changeset: &str) -> String {
+    format!("{}/changesets/{changeset}", project_base(f, project))
+}
+
+fn thread_path(f: &Fixture, project: &str, thread: &str) -> String {
+    format!("{}/threads/{thread}", project_base(f, project))
+}
+
+/// What `auth` reads at `path` under the project, which must answer 200.
+fn read(f: &Fixture, client: &Client, auth: &Auth, project: &str, path: &str) -> Value {
+    must(
+        call(
+            client,
+            "GET",
+            &format!("{}{path}", project_base(f, project)),
+            auth,
+            None,
+        ),
+        200,
+        &format!("read {path}"),
+    )
+}
+
+// ---------------------------------------------------------------------------
+// The home
+// ---------------------------------------------------------------------------
+
+fn home_response(f: &Fixture, client: &Client, auth: &Auth, project: &str) -> Response {
+    call(
+        client,
+        "GET",
+        &format!("{}/home", project_base(f, project)),
+        auth,
+        None,
+    )
+}
+
+/// The project's home as the human reads it.
+fn home(f: &Fixture, client: &Client, project: &str) -> Value {
+    let answer = must(
+        home_response(f, client, &human(f), project),
+        200,
+        "the human reads the project home",
+    );
+    assert_eq!(answer["project_id"], project, "{answer}");
+    answer
+}
+
+/// The list at `pointer` (such as `/docs` or `/waiting/decisions`) of a home.
+fn list_at(home: &Value, pointer: &str) -> Vec<Value> {
+    home.pointer(pointer)
+        .and_then(Value::as_array)
+        .unwrap_or_else(|| panic!("the home has a list at {pointer}: {home}"))
+        .clone()
+}
+
+/// The IDs of the list at `pointer` of a home, in order.
+fn ids_at(home: &Value, pointer: &str) -> Vec<String> {
+    list_at(home, pointer).iter().map(id_of).collect()
+}
+
+/// The item with `id` of the list at `pointer` of a home.
+fn item_at(home: &Value, pointer: &str, id: &str) -> Value {
+    list_at(home, pointer)
+        .into_iter()
+        .find(|item| item["id"] == id)
+        .unwrap_or_else(|| panic!("{pointer} of the home lists {id}: {home}"))
+}
+
+// ---------------------------------------------------------------------------
+// Projects, change sets and docs
+// ---------------------------------------------------------------------------
+
+fn new_project(f: &Fixture, client: &Client) -> String {
+    id_of(
+        &must(
+            call(
+                client,
+                "POST",
+                &format!("/api/v1/w/{}/projects", f.workspace),
+                &author(f),
+                Some(&json!({ "name": unique("home-project") })),
+            ),
+            201,
+            "create a project",
+        )["project"],
+    )
+}
+
+fn new_changeset(f: &Fixture, client: &Client, project: &str) -> String {
+    id_of(
+        &must(
+            call(
+                client,
+                "POST",
+                &format!("{}/changesets", project_base(f, project)),
+                &author(f),
+                Some(&json!({ "title": unique("change"), "run_tag": "run-1" })),
+            ),
+            201,
+            "create a change set",
+        )["changeset"],
+    )
+}
+
+fn create_doc(
+    f: &Fixture,
+    client: &Client,
+    project: &str,
+    changeset: &str,
+    kind: &str,
+    module: &str,
+) -> String {
+    id_of(
+        &must(
+            call(
+                client,
+                "POST",
+                &format!("{}/docs", changeset_path(f, project, changeset)),
+                &author(f),
+                Some(&json!({ "kind": kind, "module": module, "title": unique("Doc") })),
+            ),
+            201,
+            "create a doc",
+        )["doc"],
+    )
+}
+
+/// Inserts one paragraph into the change set's draft of the HTML doc `doc`;
+/// returns the new node's ID.
+fn insert_paragraph(
+    f: &Fixture,
+    client: &Client,
+    project: &str,
+    changeset: &str,
+    doc: &str,
+) -> String {
+    let edited = must(
+        call(
+            client,
+            "POST",
+            &format!("{}/docs/{doc}/ops", changeset_path(f, project, changeset)),
+            &author(f),
+            Some(&json!({ "ops": [{
+                "op": "insert",
+                "parent": null,
+                "position": { "after": null },
+                "content": format!("<p>{}</p>", unique("The hero is split"))
+            }] })),
+        ),
+        200,
+        "edit the draft",
+    );
+    edited["results"][0]["node"]
+        .as_str()
+        .unwrap_or_else(|| panic!("an insert names its node: {edited}"))
+        .to_string()
+}
+
+/// Saves the change set's draft of `doc`; returns the version's ID.
+fn save(f: &Fixture, client: &Client, project: &str, changeset: &str, doc: &str) -> String {
+    id_of(
+        &must(
+            call(
+                client,
+                "POST",
+                &format!(
+                    "{}/docs/{doc}/versions",
+                    changeset_path(f, project, changeset)
+                ),
+                &author(f),
+                Some(&json!({})),
+            ),
+            201,
+            "save a version",
+        )["version"],
+    )
+}
+
+/// A change set of `project` with one saved version of a new PRD doc, still
+/// open: (change set, doc, paragraph node, version).
+fn changeset_with_version(
+    f: &Fixture,
+    client: &Client,
+    project: &str,
+) -> (String, String, String, String) {
+    let changeset = new_changeset(f, client, project);
+    let doc = create_doc(f, client, project, &changeset, "html", "prd");
+    let node = insert_paragraph(f, client, project, &changeset, &doc);
+    let version = save(f, client, project, &changeset, &doc);
+    (changeset, doc, node, version)
+}
+
+/// `auth` moves the change set on with `action` (`submit`, `approve`,
+/// `reject`, `reopen`); returns the status it has after that.
+fn act_on_changeset(
+    f: &Fixture,
+    client: &Client,
+    auth: &Auth,
+    project: &str,
+    changeset: &str,
+    action: &str,
+    body: Option<&Value>,
+) -> String {
+    let answer = must(
+        call(
+            client,
+            "POST",
+            &format!("{}/{action}", changeset_path(f, project, changeset)),
+            auth,
+            body,
+        ),
+        200,
+        &format!("{action} the change set"),
+    );
+    answer["changeset"]["status"]
+        .as_str()
+        .unwrap_or_else(|| panic!("the change set has a status: {answer}"))
+        .to_string()
+}
+
+fn submit(f: &Fixture, client: &Client, project: &str, changeset: &str) {
+    let status = act_on_changeset(f, client, &author(f), project, changeset, "submit", None);
+    assert_eq!(status, "in_review");
+}
+
+/// The human approves the change set, which merges it.
+fn approve_changeset(f: &Fixture, client: &Client, project: &str, changeset: &str) {
+    let status = act_on_changeset(
+        f,
+        client,
+        &human(f),
+        project,
+        changeset,
+        "approve",
+        Some(&json!({})),
+    );
+    assert_eq!(status, "merged");
+}
+
+fn reject_changeset(f: &Fixture, client: &Client, project: &str, changeset: &str) {
+    let status = act_on_changeset(
+        f,
+        client,
+        &human(f),
+        project,
+        changeset,
+        "reject",
+        Some(&json!({ "reason": "The hero needs a dark variant." })),
+    );
+    assert_eq!(status, "rejected");
+}
+
+fn reopen_changeset(f: &Fixture, client: &Client, project: &str, changeset: &str) {
+    let status = act_on_changeset(f, client, &author(f), project, changeset, "reopen", None);
+    assert_eq!(status, "open");
+}
+
+// ---------------------------------------------------------------------------
+// Threads, posts and decisions
+// ---------------------------------------------------------------------------
+
+/// The author starts a thread in the change set; returns its ID.
+fn new_thread(
+    f: &Fixture,
+    client: &Client,
+    project: &str,
+    changeset: &str,
+    sealed: bool,
+) -> String {
+    id_of(
+        &must(
+            call(
+                client,
+                "POST",
+                &format!("{}/threads", changeset_path(f, project, changeset)),
+                &author(f),
+                Some(&json!({
+                    "question": unique("Which hero layout?"),
+                    "criteria": ["Readable at 320 px", "Fits above the fold"],
+                    "sealed": sealed
+                })),
+            ),
+            201,
+            "start a thread",
+        )["thread"],
+    )
+}
+
+/// `auth` posts a post of `kind` that links to `links` in the thread; returns
+/// the post's ID.
+fn post(
+    f: &Fixture,
+    client: &Client,
+    auth: &Auth,
+    project: &str,
+    thread: &str,
+    kind: &str,
+    links: &[&str],
+) -> String {
+    let links: Vec<Value> = links
+        .iter()
+        .map(|id| json!({ "kind": "post", "post_id": id }))
+        .collect();
+    id_of(
+        &must(
+            call(
+                client,
+                "POST",
+                &format!("{}/posts", thread_path(f, project, thread)),
+                auth,
+                Some(&json!({
+                    "type": kind,
+                    "summary": unique(&format!("A {kind}")),
+                    "body": unique("What the post says"),
+                    "links": links
+                })),
+            ),
+            201,
+            &format!("post a {kind}"),
+        )["post"],
+    )
+}
+
+/// The human gives a directive in the thread that links to `links`; returns
+/// the post's ID.
+fn directive(f: &Fixture, client: &Client, project: &str, thread: &str, links: &[&str]) -> String {
+    let links: Vec<Value> = links
+        .iter()
+        .map(|id| json!({ "kind": "post", "post_id": id }))
+        .collect();
+    id_of(
+        &must(
+            call(
+                client,
+                "POST",
+                &format!("{}/directives", thread_path(f, project, thread)),
+                &human(f),
+                Some(&json!({
+                    "summary": unique("Use the split hero"),
+                    "body": "Go with the split hero; the photo fails contrast.",
+                    "links": links
+                })),
+            ),
+            201,
+            "give a directive",
+        )["post"],
+    )
+}
+
+/// The author proposes a decision for the thread; returns its ID.
+fn propose(f: &Fixture, client: &Client, project: &str, thread: &str) -> String {
+    let body = json!({
+        "direction": unique("Use the split hero: copy on the left, product shot on the right"),
+        "chosen": "Split hero",
+        "criteria": ["Readable at 320 px"],
+        "options": [
+            { "name": "Split hero", "scores": { "Readable at 320 px": 8 }, "lost_because": null },
+            {
+                "name": "Full-bleed photo",
+                "scores": { "Readable at 320 px": 5 },
+                "lost_because": "Text over the photo fails contrast at 320 px."
+            }
+        ],
+        "assumptions": [],
+        "open_questions": [],
+        "dissent": [],
+        "posts": []
+    });
+    id_of(
+        &must(
+            call(
+                client,
+                "POST",
+                &format!("{}/decisions", thread_path(f, project, thread)),
+                &author(f),
+                Some(&body),
+            ),
+            201,
+            "propose a decision",
+        )["decision"],
+    )
+}
+
+/// The human approves or rejects the decision.
+fn decide(f: &Fixture, client: &Client, project: &str, decision: &str, action: &str) {
+    let body = if action == "reject" {
+        json!({ "reason": "The photo is off-brand." })
+    } else {
+        json!({})
+    };
+    must(
+        call(
+            client,
+            "POST",
+            &format!("{}/decisions/{decision}/{action}", project_base(f, project)),
+            &human(f),
+            Some(&body),
+        ),
+        200,
+        &format!("the human acts on the decision: {action}"),
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Comments
+// ---------------------------------------------------------------------------
+
+/// The human comments on `node` of `version`; returns the comment's ID.
+fn comment(f: &Fixture, client: &Client, project: &str, version: &str, node: &str) -> String {
+    id_of(
+        &must(
+            call(
+                client,
+                "POST",
+                &format!("{}/versions/{version}/comments", project_base(f, project)),
+                &human(f),
+                Some(&json!({ "node": node, "text": unique("Make the copy shorter") })),
+            ),
+            201,
+            "comment on a node",
+        )["comment"],
+    )
+}
+
+/// `auth` acts on the comment with `action` and `body`.
+fn act_on_comment(
+    f: &Fixture,
+    client: &Client,
+    auth: &Auth,
+    project: &str,
+    comment: &str,
+    action: &str,
+    body: &Value,
+) {
+    let status = if action == "replies" { 201 } else { 200 };
+    must(
+        call(
+            client,
+            "POST",
+            &format!("{}/comments/{comment}/{action}", project_base(f, project)),
+            auth,
+            Some(body),
+        ),
+        status,
+        &format!("act on the comment: {action}"),
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The route
+// ---------------------------------------------------------------------------
+
+#[test]
+fn the_home_route_is_a_human_route_in_the_registry() {
+    let entry = registry()
+        .into_iter()
+        .find(|r| r.method == "GET" && r.path == HOME_ROUTE)
+        .unwrap_or_else(|| panic!("the registry has no route GET {HOME_ROUTE}"));
+    assert_eq!(entry.access, Access::Human, "GET {HOME_ROUTE}");
+}
+
+#[test]
+fn an_api_key_is_refused_the_home_and_an_unknown_project_is_not_found() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    let (changeset, _, _, _) = changeset_with_version(f, client, &project);
+    let thread = new_thread(f, client, &project, &changeset, true);
+    post(f, client, &critic(f), &project, &thread, "question", &[]);
+
+    assert_error(
+        &home_response(f, client, &author(f), &project),
+        403,
+        "forbidden",
+        "an API key reads the project home",
+    );
+    assert_error(
+        &home_response(f, client, &human(f), UNKNOWN_ID),
+        404,
+        "not_found",
+        "the human reads the home of a project that does not exist",
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Docs, change sets and threads
+// ---------------------------------------------------------------------------
+
+#[test]
+fn the_home_lists_every_doc_of_the_project_with_its_module() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+
+    // A PRD doc that merged, and docs of the other modules whose first version
+    // has not merged yet.
+    let (merged, prd, _, _) = changeset_with_version(f, client, &project);
+    submit(f, client, &project, &merged);
+    approve_changeset(f, client, &project, &merged);
+    let open = new_changeset(f, client, &project);
+    let architecture = create_doc(f, client, &project, &open, "html", "architecture");
+    let db = create_doc(f, client, &project, &open, "html", "db");
+    let ui = create_doc(f, client, &project, &open, "design", "ui");
+
+    // Another project's doc is not this project's.
+    let elsewhere = new_project(f, client);
+    let (_, foreign, _, _) = changeset_with_version(f, client, &elsewhere);
+
+    let home = home(f, client, &project);
+    assert_eq!(
+        ids_at(&home, "/docs"),
+        vec![prd.clone(), architecture.clone(), db.clone(), ui.clone()],
+        "every doc of the project, oldest first, and nothing else: {home}"
+    );
+    assert!(!home.to_string().contains(&foreign), "{home}");
+    for (doc, module) in [
+        (&prd, "prd"),
+        (&architecture, "architecture"),
+        (&db, "db"),
+        (&ui, "ui"),
+    ] {
+        let listed = item_at(&home, "/docs", doc);
+        assert_eq!(listed["module"], module, "{listed}");
+        assert_eq!(
+            listed,
+            read(f, client, &human(f), &project, &format!("/docs/{doc}"))["doc"],
+            "the home lists the doc as its read answers it"
+        );
+    }
+    assert!(
+        item_at(&home, "/docs", &prd)["mainline_version_id"].is_string(),
+        "the merged doc has its mainline version: {home}"
+    );
+    assert!(
+        item_at(&home, "/docs", &ui)["mainline_version_id"].is_null(),
+        "a doc whose first version has not merged has none: {home}"
+    );
+}
+
+#[test]
+fn the_home_lists_every_change_set_with_its_status_oldest_first() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    let open = new_changeset(f, client, &project);
+    let (in_review, _, _, _) = changeset_with_version(f, client, &project);
+    submit(f, client, &project, &in_review);
+    let (rejected, _, _, _) = changeset_with_version(f, client, &project);
+    submit(f, client, &project, &rejected);
+    reject_changeset(f, client, &project, &rejected);
+    let (merged, _, _, _) = changeset_with_version(f, client, &project);
+    submit(f, client, &project, &merged);
+    approve_changeset(f, client, &project, &merged);
+    let elsewhere = new_project(f, client);
+    let foreign = new_changeset(f, client, &elsewhere);
+
+    let home = home(f, client, &project);
+    assert_eq!(
+        ids_at(&home, "/changesets"),
+        vec![
+            open.clone(),
+            in_review.clone(),
+            rejected.clone(),
+            merged.clone()
+        ],
+        "every change set of the project, oldest first: {home}"
+    );
+    assert!(!home.to_string().contains(&foreign), "{home}");
+    for (changeset, status) in [
+        (&open, "open"),
+        (&in_review, "in_review"),
+        (&rejected, "rejected"),
+        (&merged, "merged"),
+    ] {
+        let listed = item_at(&home, "/changesets", changeset);
+        assert_eq!(listed["status"], status, "{listed}");
+        assert_eq!(
+            listed,
+            read(
+                f,
+                client,
+                &human(f),
+                &project,
+                &format!("/changesets/{changeset}")
+            )["changeset"],
+            "the home lists the change set as its read answers the human"
+        );
+    }
+}
+
+#[test]
+fn the_home_lists_every_thread_of_the_project() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    let (merged, _, _, _) = changeset_with_version(f, client, &project);
+    let first = new_thread(f, client, &project, &merged, false);
+    submit(f, client, &project, &merged);
+    approve_changeset(f, client, &project, &merged);
+    let open = new_changeset(f, client, &project);
+    let second = new_thread(f, client, &project, &open, true);
+    let third = new_thread(f, client, &project, &open, false);
+    let elsewhere = new_project(f, client);
+    let foreign_changeset = new_changeset(f, client, &elsewhere);
+    let foreign = new_thread(f, client, &elsewhere, &foreign_changeset, false);
+
+    let home = home(f, client, &project);
+    assert_eq!(
+        ids_at(&home, "/threads"),
+        vec![first.clone(), second.clone(), third.clone()],
+        "every thread of the project, those of a merged change set too, oldest first: {home}"
+    );
+    assert!(!home.to_string().contains(&foreign), "{home}");
+    for thread in [&first, &second, &third] {
+        let listed = item_at(&home, "/threads", thread);
+        let read = read(
+            f,
+            client,
+            &human(f),
+            &project,
+            &format!("/threads/{thread}"),
+        )["thread"]
+            .clone();
+        for field in ["id", "changeset_id", "question"] {
+            assert_eq!(listed[field], read[field], "{field} of {listed}");
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Waiting for the human
+// ---------------------------------------------------------------------------
+
+#[test]
+fn decisions_wait_for_the_human_while_they_are_proposed() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    let changeset = new_changeset(f, client, &project);
+    let approving = new_thread(f, client, &project, &changeset, false);
+    let rejecting = new_thread(f, client, &project, &changeset, false);
+    let superseding = new_thread(f, client, &project, &changeset, false);
+    let to_approve = propose(f, client, &project, &approving);
+    let to_reject = propose(f, client, &project, &rejecting);
+    let superseded = propose(f, client, &project, &superseding);
+    let elsewhere = new_project(f, client);
+    let foreign_changeset = new_changeset(f, client, &elsewhere);
+    let foreign_thread = new_thread(f, client, &elsewhere, &foreign_changeset, false);
+    let foreign = propose(f, client, &elsewhere, &foreign_thread);
+
+    let first = home(f, client, &project);
+    assert_eq!(
+        ids_at(&first, "/waiting/decisions"),
+        vec![to_approve.clone(), to_reject.clone(), superseded.clone()],
+        "the proposed decisions of the project wait, oldest first: {first}"
+    );
+    assert!(!first.to_string().contains(&foreign), "{first}");
+    assert_eq!(
+        item_at(&first, "/waiting/decisions", &to_approve),
+        read(
+            f,
+            client,
+            &human(f),
+            &project,
+            &format!("/decisions/{to_approve}")
+        )["decision"],
+        "the home lists the decision as its read answers the human"
+    );
+
+    decide(f, client, &project, &to_approve, "approve");
+    decide(f, client, &project, &to_reject, "reject");
+    let successor = propose(f, client, &project, &superseding);
+
+    let after = home(f, client, &project);
+    assert_eq!(
+        ids_at(&after, "/waiting/decisions"),
+        vec![successor.clone()],
+        "approved, rejected and superseded decisions no longer wait; the new proposal does: {after}"
+    );
+}
+
+#[test]
+fn change_sets_wait_for_the_human_while_they_are_in_review() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    let (open, _, _, _) = changeset_with_version(f, client, &project);
+    let (approving, _, _, _) = changeset_with_version(f, client, &project);
+    let (rejecting, _, _, _) = changeset_with_version(f, client, &project);
+    for changeset in [&approving, &rejecting] {
+        submit(f, client, &project, changeset);
+    }
+
+    let first = home(f, client, &project);
+    assert_eq!(
+        ids_at(&first, "/waiting/changesets"),
+        vec![approving.clone(), rejecting.clone()],
+        "the change sets in review wait, oldest first, and the open one does not: {first}"
+    );
+    assert_eq!(
+        item_at(&first, "/waiting/changesets", &approving),
+        read(
+            f,
+            client,
+            &human(f),
+            &project,
+            &format!("/changesets/{approving}")
+        )["changeset"],
+        "the home lists the change set as its read answers the human"
+    );
+
+    approve_changeset(f, client, &project, &approving);
+    reject_changeset(f, client, &project, &rejecting);
+    let decided = home(f, client, &project);
+    assert_eq!(
+        ids_at(&decided, "/waiting/changesets"),
+        Vec::<String>::new(),
+        "merged and rejected change sets no longer wait: {decided}"
+    );
+
+    reopen_changeset(f, client, &project, &rejecting);
+    submit(f, client, &project, &rejecting);
+    submit(f, client, &project, &open);
+    let again = home(f, client, &project);
+    assert_eq!(
+        ids_at(&again, "/waiting/changesets"),
+        vec![open.clone(), rejecting.clone()],
+        "a change set submitted again waits again: {again}"
+    );
+}
+
+#[test]
+fn comments_wait_for_the_human_while_they_are_marked_addressed() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    let (changeset, doc, node, v1) = changeset_with_version(f, client, &project);
+    let open = comment(f, client, &project, &v1, &node);
+    let resolving = comment(f, client, &project, &v1, &node);
+    let reopening = comment(f, client, &project, &v1, &node);
+    let replied = comment(f, client, &project, &v1, &node);
+    insert_paragraph(f, client, &project, &changeset, &doc);
+    let v2 = save(f, client, &project, &changeset, &doc);
+    for addressed in [&resolving, &reopening, &replied] {
+        act_on_comment(
+            f,
+            client,
+            &author(f),
+            &project,
+            addressed,
+            "addressed",
+            &json!({ "version_id": v2 }),
+        );
+    }
+
+    let first = home(f, client, &project);
+    assert_eq!(
+        ids_at(&first, "/waiting/comments"),
+        vec![resolving.clone(), reopening.clone(), replied.clone()],
+        "the comments marked addressed wait, oldest first, and the open one does not: {first}"
+    );
+    assert!(
+        !ids_at(&first, "/waiting/comments").contains(&open),
+        "{first}"
+    );
+    assert_eq!(
+        item_at(&first, "/waiting/comments", &resolving),
+        read(
+            f,
+            client,
+            &human(f),
+            &project,
+            &format!("/comments/{resolving}")
+        )["comment"],
+        "the home lists the comment as its read answers it"
+    );
+
+    act_on_comment(
+        f,
+        client,
+        &human(f),
+        &project,
+        &resolving,
+        "resolve",
+        &json!({}),
+    );
+    act_on_comment(
+        f,
+        client,
+        &human(f),
+        &project,
+        &reopening,
+        "reopen",
+        &json!({}),
+    );
+    act_on_comment(
+        f,
+        client,
+        &critic(f),
+        &project,
+        &replied,
+        "replies",
+        &json!({ "text": "Shorter now." }),
+    );
+    let after = home(f, client, &project);
+    assert_eq!(
+        ids_at(&after, "/waiting/comments"),
+        vec![replied.clone()],
+        "resolved and reopened comments no longer wait; a reply leaves an addressed one waiting: {after}"
+    );
+}
+
+#[test]
+fn agents_questions_wait_until_a_human_post_links_to_them_as_a_reply() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    let changeset = new_changeset(f, client, &project);
+    let open_thread = new_thread(f, client, &project, &changeset, false);
+    let sealed_thread = new_thread(f, client, &project, &changeset, true);
+
+    let question = post(
+        f,
+        client,
+        &critic(f),
+        &project,
+        &open_thread,
+        "question",
+        &[],
+    );
+    // In a sealed phase that no other agent has posted in: the human sees it.
+    let sealed = post(
+        f,
+        client,
+        &critic(f),
+        &project,
+        &sealed_thread,
+        "question",
+        &[],
+    );
+    let position = post(
+        f,
+        client,
+        &critic(f),
+        &project,
+        &open_thread,
+        "position",
+        &[],
+    );
+    let own = post(
+        f,
+        client,
+        &human(f),
+        &project,
+        &open_thread,
+        "question",
+        &[],
+    );
+    let elsewhere = new_project(f, client);
+    let foreign_changeset = new_changeset(f, client, &elsewhere);
+    let foreign_thread = new_thread(f, client, &elsewhere, &foreign_changeset, false);
+    let foreign = post(
+        f,
+        client,
+        &critic(f),
+        &elsewhere,
+        &foreign_thread,
+        "question",
+        &[],
+    );
+
+    let first = home(f, client, &project);
+    assert_eq!(
+        ids_at(&first, "/waiting/questions"),
+        vec![question.clone(), sealed.clone()],
+        "the agents' questions wait, oldest first; other posts and the human's own question do not: {first}"
+    );
+    for not_waiting in [&position, &own, &foreign] {
+        assert!(
+            !ids_at(&first, "/waiting/questions").contains(not_waiting),
+            "{first}"
+        );
+    }
+    assert_eq!(
+        item_at(&first, "/waiting/questions", &sealed),
+        read(f, client, &human(f), &project, &format!("/posts/{sealed}"))["post"],
+        "the home lists the question as the post's read answers the human"
+    );
+
+    // An agent's answer, and a human post that links to another post, are no
+    // reply of the human to the question.
+    post(
+        f,
+        client,
+        &author(f),
+        &project,
+        &open_thread,
+        "note",
+        &[&question],
+    );
+    post(
+        f,
+        client,
+        &human(f),
+        &project,
+        &open_thread,
+        "note",
+        &[&position],
+    );
+    let unanswered = home(f, client, &project);
+    assert_eq!(
+        ids_at(&unanswered, "/waiting/questions"),
+        vec![question.clone(), sealed.clone()],
+        "no human post links to either question yet: {unanswered}"
+    );
+
+    // The human replies with a post that links to the question.
+    post(
+        f,
+        client,
+        &human(f),
+        &project,
+        &open_thread,
+        "note",
+        &[&question],
+    );
+    let replied = home(f, client, &project);
+    assert_eq!(
+        ids_at(&replied, "/waiting/questions"),
+        vec![sealed.clone()],
+        "a human post that links to the question takes it off the list: {replied}"
+    );
+
+    // A directive that links to the question is a reply too.
+    directive(f, client, &project, &sealed_thread, &[&sealed]);
+    let answered = home(f, client, &project);
+    assert_eq!(
+        ids_at(&answered, "/waiting/questions"),
+        Vec::<String>::new(),
+        "a directive that links to the question takes it off the list: {answered}"
+    );
+}
