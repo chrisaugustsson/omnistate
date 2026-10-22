@@ -7,6 +7,17 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 
+# Keep debug builds small. On macOS the default split-debuginfo=unpacked leaves
+# every build's .o files in target/debug/deps for the debugger, and they were
+# never cleaned up (700,000 files, about 40 GB). Panic messages keep their file
+# and line either way.
+[profile.dev]
+debug = "line-tables-only"
+split-debuginfo = "off"
+
+[profile.dev.package."*"]
+debug = false
+
 # Taffy 0.15.0 with the patches that the layout of docs/formats/layout.md needs
 # to give Chrome's boxes (see vendor/taffy/src/compute/grid/track_sizing.rs).
 [patch.crates-io]
