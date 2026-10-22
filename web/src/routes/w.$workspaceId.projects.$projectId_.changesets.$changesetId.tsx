@@ -4,6 +4,7 @@ import { ApiError } from "@/api/client";
 import { loadVersion, loadVersionHtml } from "@/api/docs";
 import type { DecisionBody, RecordedConflict, ReviewedDoc, ReviewResponse, VersionBody } from "@/api/generated";
 import { approveChangeset, loadConflicts, loadReview, rejectChangeset } from "@/api/review";
+import { createAssetLoader } from "@/design/assets";
 import { createDesignRenderer, type DesignRenderer } from "@/design/renderer";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -393,13 +394,21 @@ function DesignChanges({ workspaceId, projectId, doc }: { workspaceId: string; p
       )}
       <div className="grid gap-4 lg:grid-cols-2">
         <DesignCanvas
+          workspaceId={workspaceId}
           label="Base"
           empty={doc.base_version_id === null ? "The doc is new, so it has no base." : "Loading"}
           source={base.body}
           pageId={pageId}
           marks={marks.base}
         />
-        <DesignCanvas label="New version" empty="Loading" source={current.body} pageId={pageId} marks={marks.current} />
+        <DesignCanvas
+          workspaceId={workspaceId}
+          label="New version"
+          empty="Loading"
+          source={current.body}
+          pageId={pageId}
+          marks={marks.current}
+        />
       </div>
     </div>
   );
@@ -407,12 +416,14 @@ function DesignChanges({ workspaceId, projectId, doc }: { workspaceId: string; p
 
 /** One side of a design change: a version drawn on its own canvas, with its changed nodes outlined. */
 function DesignCanvas({
+  workspaceId,
   label,
   empty,
   source,
   pageId,
   marks,
 }: {
+  workspaceId: string;
   label: string;
   empty: string;
   source: VersionBody | null;
@@ -454,16 +465,26 @@ function DesignCanvas({
 
   const page = useMemo(() => (source?.pages ?? []).find((candidate) => String(candidate.id) === pageId) ?? null, [source, pageId]);
   const system = useMemo(() => (source ? { ...source.tokens, $components: source.components ?? [] } : null), [source]);
+  const assets = useMemo(() => (renderer ? createAssetLoader(renderer, workspaceId) : null), [renderer, workspaceId]);
   useEffect(() => {
-    if (!renderer || !page || !system) return;
-    try {
-      renderer.show(page, system);
-      setDrawn((count) => count + 1);
-      setFailure(null);
-    } catch (error) {
-      setFailure(error instanceof Error ? error.message : "The design could not be drawn.");
-    }
-  }, [renderer, page, system]);
+    if (!renderer || !assets || !page || !system) return;
+    let cancelled = false;
+    // The page is shown once its images and fonts are with the renderer. One
+    // that fails to load is named in the canvas's message, and the rest still draws.
+    void assets.load(page, system).then((problems) => {
+      if (cancelled) return;
+      try {
+        renderer.show(page, system);
+        setDrawn((count) => count + 1);
+        setFailure(problems.length > 0 ? problems.join(" ") : null);
+      } catch (error) {
+        setFailure([...problems, error instanceof Error ? error.message : "The design could not be drawn."].join(" "));
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [renderer, assets, page, system]);
 
   const highlights = page && renderer ? marks.flatMap((mark) => highlightOf(renderer, mark)) : [];
   const message = failure ?? (source === null ? empty : page === null ? "This version has no such page." : null);

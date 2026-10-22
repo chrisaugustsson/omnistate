@@ -20,6 +20,7 @@ import {
   type Layer,
   type Property,
 } from "@/design/renderer";
+import { createAssetLoader } from "@/design/assets";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
@@ -853,25 +854,36 @@ function DesignViewer({
   // A node selected on the canvas is the selected layer.
   useEffect(() => renderer?.onSelect(setSelected), [renderer]);
 
+  const assets = useMemo(() => (renderer ? createAssetLoader(renderer, workspaceId) : null), [renderer, workspaceId]);
+
   useEffect(() => {
-    if (!renderer || !page || !system) return;
-    try {
-      renderer.show(page, system);
-      // A page is shown in the first mode, so the chosen mode is set again.
-      if (modeRef.current && modeRef.current !== modes[0]) renderer.setMode(modeRef.current);
-      const shownLayers = renderer.layers();
-      // The selection stays while its node is still there, as when a live draft changes.
-      const kept = selectedRef.current;
-      const stays = kept !== null && rowsOf(shownLayers).some((row) => row.layer.address === kept);
-      if (stays) renderer.select(kept);
-      setDrawn((count) => count + 1);
-      setLayers(shownLayers);
-      setSelected(stays ? kept : null);
-      setFailure(null);
-    } catch (error) {
-      setFailure(error instanceof Error ? error.message : "The design could not be drawn.");
-    }
-  }, [renderer, page, system, modes]);
+    if (!renderer || !assets || !page || !system) return;
+    let cancelled = false;
+    // The page is shown once its images and fonts are with the renderer. One
+    // that fails to load is named in the error line, and the rest still draws.
+    void assets.load(page, system).then((problems) => {
+      if (cancelled) return;
+      try {
+        renderer.show(page, system);
+        // A page is shown in the first mode, so the chosen mode is set again.
+        if (modeRef.current && modeRef.current !== modes[0]) renderer.setMode(modeRef.current);
+        const shownLayers = renderer.layers();
+        // The selection stays while its node is still there, as when a live draft changes.
+        const kept = selectedRef.current;
+        const stays = kept !== null && rowsOf(shownLayers).some((row) => row.layer.address === kept);
+        if (stays) renderer.select(kept);
+        setDrawn((count) => count + 1);
+        setLayers(shownLayers);
+        setSelected(stays ? kept : null);
+        setFailure(problems.length > 0 ? problems.join(" ") : null);
+      } catch (error) {
+        setFailure([...problems, error instanceof Error ? error.message : "The design could not be drawn."].join(" "));
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [renderer, assets, page, system, modes]);
 
   // A link to a node: its page is shown, then it is selected.
   useEffect(() => {

@@ -3,7 +3,9 @@
 //! and converter of the `omni-penpot` crate, so a file that is no export fails
 //! before anything is sent. Then the change set gets
 //!
-//! - the images of the export, uploaded as workspace attachments,
+//! - the images of the export, uploaded as workspace attachments, and the font
+//!   files beside it (`fonts/<family>/`) of the families its texts use, which
+//!   the typography tokens list as their font files (US-057),
 //! - the design system doc: the design tokens (Penpot's themes are the modes)
 //!   and the components, started in the change set unless the project has one.
 //!   When it has one with a mainline version, the import adds to it: its
@@ -74,7 +76,7 @@ pub fn penpot(args: &Args, file: Option<&str>) -> Result<()> {
     for attachment in &import.attachments {
         if attachment.bytes.len() > attach::MAX_UPLOAD {
             bail!(
-                "the image {} of {file} is larger than 20 MB, the limit for an attachment; nothing was imported",
+                "the image or font file {} of {file} is larger than 20 MB, the limit for an attachment; nothing was imported",
                 attachment.id
             );
         }
@@ -254,7 +256,7 @@ fn send_design_system(
     let tokens = agent.request_any(
         "PUT",
         &format!("{base}/changesets/{changeset}/tokens"),
-        Some(body_of("tokens", &import.token_tree_json()).as_bytes()),
+        Some(body_of("tokens", &import.token_tree_json(ids)).as_bytes()),
     )?;
     let refused = parsed(&tokens.text(), "the tokens");
     if tokens.status == 409

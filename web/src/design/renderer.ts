@@ -36,9 +36,22 @@ export type Inspection = {
 
 export type DesignRenderer = {
   /**
+   * Supplies the image that `attachment` (`attachment:<id>`) names, from its
+   * PNG or JPEG bytes. It stays with the renderer until it is destroyed.
+   * Throws when the renderer cannot read the bytes.
+   */
+  addImage(attachment: string, bytes: Uint8Array): void;
+  /**
+   * Supplies a font file (TrueType or OpenType) for text in `family`; it
+   * stays until the renderer is destroyed. Throws when the renderer cannot
+   * read it.
+   */
+  addFont(family: string, bytes: Uint8Array): void;
+  /**
    * Shows `page` (one of a version's `pages`, as the API gives it), resolving
    * its instances and token references against `system`: the version's token
-   * tree with its components under `$components`.
+   * tree with its components under `$components`. The page is laid out and
+   * drawn with the images and fonts supplied before this call.
    */
   show(page: unknown, system: unknown): void;
   /** The shown page's boards with every node below them. */
@@ -85,6 +98,8 @@ type OmniRender = {
   _omni_render_alloc(length: number): number;
   _omni_render_free(pointer: number, length: number): void;
   _omni_render_error(): number;
+  _omni_render_add_image(attachment: number, attachmentLength: number, data: number, dataLength: number): boolean;
+  _omni_render_add_font(family: number, familyLength: number, data: number, dataLength: number): boolean;
   _omni_render_scene_load(pointer: number, length: number): boolean;
   _omni_render_scene_set_system(pointer: number, length: number): boolean;
   _omni_render_scene_set_mode(pointer: number, length: number): boolean;
@@ -126,8 +141,7 @@ export async function createDesignRenderer(canvas: HTMLCanvasElement): Promise<D
   const module = await (await moduleFactory())();
   const encoder = new TextEncoder();
   const failure = () => new Error(module.UTF8ToString(module._omni_render_error()));
-  const withText = <T>(text: string, use: (pointer: number, length: number) => T): T => {
-    const bytes = encoder.encode(text);
+  const withBytes = <T>(bytes: Uint8Array, use: (pointer: number, length: number) => T): T => {
     const pointer = module._omni_render_alloc(bytes.length);
     // HEAPU8 is looked up after the allocation, which may grow the memory.
     module.HEAPU8.set(bytes, pointer);
@@ -137,6 +151,8 @@ export async function createDesignRenderer(canvas: HTMLCanvasElement): Promise<D
       module._omni_render_free(pointer, bytes.length);
     }
   };
+  const withText = <T>(text: string, use: (pointer: number, length: number) => T): T =>
+    withBytes(encoder.encode(text), use);
 
   // omni-render draws on the default framebuffer of the current WebGL
   // context: WebGL 2 with an alpha channel, an 8-bit stencil buffer and no
@@ -334,6 +350,18 @@ export async function createDesignRenderer(canvas: HTMLCanvasElement): Promise<D
   frame = requestAnimationFrame(loop);
 
   return {
+    addImage(attachment, bytes) {
+      const added = withText(attachment, (name, nameLength) =>
+        withBytes(bytes, (data, dataLength) => module._omni_render_add_image(name, nameLength, data, dataLength)),
+      );
+      if (!added) throw failure();
+    },
+    addFont(family, bytes) {
+      const added = withText(family, (name, nameLength) =>
+        withBytes(bytes, (data, dataLength) => module._omni_render_add_font(name, nameLength, data, dataLength)),
+      );
+      if (!added) throw failure();
+    },
     show(page, system) {
       const ok = withText(JSON.stringify(system), (pointer, length) => module._omni_render_scene_set_system(pointer, length));
       if (!ok) throw failure();

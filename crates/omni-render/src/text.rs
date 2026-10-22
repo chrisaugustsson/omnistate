@@ -47,7 +47,9 @@ const LINE_HEIGHT_UNITS_PER_PX: f64 = 64.0;
 /// characters that the spacing sets apart.
 const FEATURES_OFF_WITH_LETTER_SPACING: [&str; 3] = ["liga", "clig", "calt"];
 
-/// The fonts that text is shaped and measured with.
+/// The fonts that text is shaped and measured with. A clone shares the
+/// registered typefaces with the original.
+#[derive(Clone)]
 pub struct Fonts {
     /// The registry of the typefaces that were supplied, which `collection`
     /// looks families up in.

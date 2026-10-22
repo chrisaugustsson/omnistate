@@ -334,6 +334,7 @@ What the export holds, and what it becomes:
 | Library colors (`colors/`) | `color.library.<path>.<name>` tokens, the same in every mode |
 | Library typographies (`typographies/`) | `typography.<path>.<name>` tokens |
 | Images | Attachments; the design refers to them as `attachment:<id>` |
+| Font files in `fonts/<family>/` beside the export, for each family a text uses | Attachments (`.ttf`, `.otf`), listed in `$extensions.omnistate.fontFiles` of every typography token of that family. Other files and unused families are not imported. The design viewer draws the text in them |
 
 The main instances of components stay on their pages as the plain shapes they
 are (a page of components keeps its look), and the component is converted from

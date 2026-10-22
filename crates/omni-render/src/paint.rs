@@ -50,7 +50,9 @@ const TEXT_BAR_ALPHA: f32 = 0.35;
 
 /// What the host supplies for drawing: the images that `attachment:<id>`
 /// references name, and font files. The bundled Inter is always there, and
-/// stands in for every font family that the host did not supply.
+/// stands in for every font family that the host did not supply. A clone has
+/// the same images and shares the registered fonts.
+#[derive(Clone)]
 pub struct Assets {
     fonts: Fonts,
     images: HashMap<AttachmentRef, Image>,

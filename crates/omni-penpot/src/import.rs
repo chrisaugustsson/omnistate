@@ -11,10 +11,12 @@
 mod merge;
 pub(crate) mod tokens;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
+use std::fs;
 use std::path::Path;
 
 use omni_core::design::{Node, tags};
+use omni_core::hash::blake3_hex;
 use serde_json::{Map, Value, json};
 
 use crate::convert::{self, node_id};
@@ -29,7 +31,9 @@ pub struct Import {
     /// The design system doc: a DTCG token tree (docs/formats/tokens.md) with
     /// the components under `$components`, as a design system version holds it.
     pub design_system: Value,
-    /// The images that the pages and components refer to as `attachment:<id>`.
+    /// The images that the pages and components refer to as `attachment:<id>`,
+    /// and the font files of the families the texts use, which the typography
+    /// tokens list in `$extensions.omnistate.fontFiles` (see [`font_files`]).
     pub attachments: Vec<Attachment>,
     /// Everything that could not be imported.
     pub report: Vec<ImportEntry>,
@@ -118,6 +122,21 @@ pub(crate) fn build(path: &Path) -> Result<Built, ReadError> {
         root.insert("$components".into(), Value::Array(read.components));
     }
 
+    // The fonts beside the export, for the families the texts use.
+    let mut attachments = read.attachments;
+    let mut families = BTreeSet::new();
+    for page in &pages {
+        if let Ok(value) = serde_json::to_value(page) {
+            text_families(&value, &mut families);
+        }
+    }
+    if let Some(components) = design_system.get("$components") {
+        text_families(components, &mut families);
+    }
+    let fonts = font_files(path, &families);
+    list_font_files(&mut design_system, &fonts);
+    attachments.extend(fonts.into_values().flatten());
+
     let mut report = Vec::new();
     let mut seen = HashSet::new();
     for (page, entry) in &read.entries {
@@ -157,13 +176,129 @@ pub(crate) fn build(path: &Path) -> Result<Built, ReadError> {
         import: Import {
             pages,
             design_system,
-            attachments: read.attachments,
+            attachments,
             report,
             mode: read.tokens.active,
         },
         boards,
         entries: read.entries.into_iter().map(|(_, entry)| entry).collect(),
     })
+}
+
+// Fonts ---------------------------------------------------------------------------------
+
+/// The font families that texts below `node` are set in.
+fn text_families(node: &Value, families: &mut BTreeSet<String>) {
+    match node {
+        Value::Array(items) => items.iter().for_each(|item| text_families(item, families)),
+        Value::Object(object) => {
+            if object.get("type").and_then(Value::as_str) == Some("text")
+                && let Some(family) = object.get("fontFamily").and_then(Value::as_str)
+            {
+                families.insert(family.to_string());
+            }
+            object
+                .values()
+                .for_each(|value| text_families(value, families));
+        }
+        _ => {}
+    }
+}
+
+/// The font files beside the export at `export`, for the `families` that texts
+/// use: each subfolder of `fonts/` next to the export is a family, named as the
+/// designs name it, holding its TrueType or OpenType files (as the comparison
+/// reads them). Files of other kinds, such as a license, and the folders of
+/// families that no text uses are not imported. Each file is an attachment
+/// whose ID is made from its family, name and bytes, so that importing the
+/// same files twice names them alike.
+fn font_files(export: &Path, families: &BTreeSet<String>) -> HashMap<String, Vec<Attachment>> {
+    let mut found = HashMap::new();
+    let Some(fonts) = export.parent().map(|dir| dir.join("fonts")) else {
+        return found;
+    };
+    for family in families {
+        let Ok(files) = fs::read_dir(fonts.join(family)) else {
+            continue;
+        };
+        let mut files: Vec<_> = files.flatten().map(|entry| entry.path()).collect();
+        files.sort();
+        let mut attachments = Vec::new();
+        for file in files {
+            let extension = file
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .map(str::to_lowercase)
+                .filter(|ext| ext == "ttf" || ext == "otf");
+            let (Some(extension), Ok(bytes)) = (extension, fs::read(&file)) else {
+                continue;
+            };
+            let name = file.file_name().and_then(|name| name.to_str());
+            let mut seed = format!("{family}\0{}\0", name.unwrap_or_default()).into_bytes();
+            seed.extend(&bytes);
+            attachments.push(Attachment {
+                id: uuid_of(&blake3_hex(&seed)),
+                extension,
+                bytes,
+            });
+        }
+        if !attachments.is_empty() {
+            found.insert(family.clone(), attachments);
+        }
+    }
+    found
+}
+
+/// A UUID (version 4 layout) from the first 128 bits of a hex hash.
+fn uuid_of(hex: &str) -> String {
+    format!(
+        "{}-{}-4{}-8{}-{}",
+        &hex[..8],
+        &hex[8..12],
+        &hex[13..16],
+        &hex[17..20],
+        &hex[20..32]
+    )
+}
+
+/// Lists the font files of each family in `$extensions.omnistate.fontFiles` of
+/// every typography token in that family.
+fn list_font_files(tree: &mut Value, fonts: &HashMap<String, Vec<Attachment>>) {
+    if fonts.is_empty() {
+        return;
+    }
+    let Some(object) = tree.as_object_mut() else {
+        return;
+    };
+    let family = object
+        .get("$value")
+        .and_then(|value| value.get("fontFamily"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    if object.contains_key("$value") {
+        if let Some(files) = family.and_then(|family| fonts.get(&family)) {
+            let listed: Vec<Value> = files
+                .iter()
+                .map(|file| json!(format!("attachment:{}", file.id)))
+                .collect();
+            let extensions = object
+                .entry("$extensions")
+                .or_insert_with(|| json!({}))
+                .as_object_mut();
+            if let Some(extensions) = extensions {
+                let omnistate = extensions.entry("omnistate").or_insert_with(|| json!({}));
+                if let Some(omnistate) = omnistate.as_object_mut() {
+                    omnistate.insert("fontFiles".into(), Value::Array(listed));
+                }
+            }
+        }
+        return;
+    }
+    for (name, child) in object.iter_mut() {
+        if !name.starts_with('$') {
+            list_font_files(child, fonts);
+        }
+    }
 }
 
 // Without a design system -----------------------------------------------------------------
@@ -459,9 +594,12 @@ impl Import {
         tree
     }
 
-    /// The token tree as JSON text, the `tokens` of the request.
-    pub fn token_tree_json(&self) -> String {
-        self.token_tree().to_string()
+    /// The token tree as JSON text, the `tokens` of the request, with the font
+    /// files of its typography tokens named as the server named them.
+    pub fn token_tree_json(&self, ids: &Ids) -> String {
+        let mut tree = self.token_tree();
+        rename_font_files(&mut tree, ids);
+        tree.to_string()
     }
 
     /// Whether the design system has tokens at all.
@@ -642,6 +780,28 @@ fn attachments_of_value(value: &mut Value, ids: &Ids) {
             if let Some(fills) = object.get_mut("fills") {
                 attachments_of_value(fills, ids);
             }
+        }
+        _ => {}
+    }
+}
+
+/// Renames the `fontFiles` of the tokens below `value`.
+fn rename_font_files(value: &mut Value, ids: &Ids) {
+    match value {
+        Value::Array(items) => items
+            .iter_mut()
+            .for_each(|item| rename_font_files(item, ids)),
+        Value::Object(object) => {
+            if let Some(Value::Array(files)) = object.get_mut("fontFiles") {
+                for file in files {
+                    if let Value::String(reference) = file {
+                        rename(reference, ids);
+                    }
+                }
+            }
+            object
+                .values_mut()
+                .for_each(|child| rename_font_files(child, ids));
         }
         _ => {}
     }

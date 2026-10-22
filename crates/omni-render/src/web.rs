@@ -104,13 +104,14 @@ pub fn layout_design(design_json: &str) -> Result<String, String> {
 }
 
 /// Loads `design_json`, a page, into the scene that `scene_draw` draws, with
-/// the images and fonts that the page has supplied so far. The view is fitted
-/// to its boards at the first frame. Fails if the page nests more than
+/// the images and fonts that the page has supplied so far, which stay for
+/// every scene loaded after them. The view is fitted to its boards at the
+/// first frame. Fails if the page nests more than
 /// `MAX_NESTING` levels deep once its instances are expanded (see
 /// [`nesting`]); the scene is loaded all the same, without the deeper nodes.
 pub fn scene_load(design_json: &str) -> Result<(), String> {
     let page = nesting::read(design_json)?;
-    let assets = ASSETS.take();
+    let assets = ASSETS.with_borrow(Assets::clone);
     let system = SYSTEM
         .with_borrow(|system| system.as_ref().map(DesignSystem::from_json))
         .transpose()?;
