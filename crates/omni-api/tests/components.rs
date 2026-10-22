@@ -83,6 +83,13 @@
 //!   is no node ID 400 `invalid_request`. Drafts are not listed.
 //! - The three routes are in the route registry: the imports as `agent`, the
 //!   usage as `both`.
+//! - US-058: the outline of a design version (`GET
+//!   /versions/{version_id}?view=outline`, tests/boards.rs), which the design
+//!   viewer reads before the boards it shows, carries the same
+//!   `design_system_version_id` and `tokens` as the whole read, and in
+//!   `components` every component that the whole read lists, defined the same
+//!   (it may list more of the recorded design system version), so that a board
+//!   read later resolves its instances against it.
 
 mod common;
 
@@ -2423,4 +2430,72 @@ fn usage_of_an_unknown_component_is_refused() {
         400,
         "invalid_request",
     );
+}
+
+// ---------------------------------------------------------------------------
+// US-058: the outline that the design viewer reads first
+// ---------------------------------------------------------------------------
+
+#[test]
+fn the_outline_of_a_design_version_carries_its_design_system_as_the_whole_read_does() {
+    let (f, client) = ready();
+    let lib = library(f, client);
+    let whole = read_version(f, client, &lib.project, &lib.shop_version);
+    let response = call(
+        client,
+        "GET",
+        &format!(
+            "{}/versions/{}?view=outline",
+            project_base(f, &lib.project),
+            lib.shop_version
+        ),
+        &human(f),
+        None,
+    );
+    let text = response.text();
+    let outline = must(response, 200, "the viewer reads the version's outline")["version"].clone();
+    assert!(
+        outline["outline"].is_array(),
+        "the answer is the outline: {outline:#}"
+    );
+    assert!(
+        outline.get("pages").is_none_or(Value::is_null),
+        "the outline has no pages body: {outline:#}"
+    );
+    assert_eq!(
+        outline["design_system_version_id"],
+        lib.design_system_version.as_str()
+    );
+    assert_eq!(
+        outline["tokens"], whole["tokens"],
+        "the recorded design system version's tokens"
+    );
+    let listed = outline["components"]
+        .as_array()
+        .unwrap_or_else(|| panic!("the outline lists components: {outline:#}"));
+    let used = whole["components"]
+        .as_array()
+        .expect("the whole read lists components");
+    assert!(
+        !used.is_empty(),
+        "the shop's instances use components: {whole:#}"
+    );
+    for component in used {
+        assert!(
+            listed.contains(component),
+            "the outline defines {} as the whole read does: {outline:#}",
+            component["name"]
+        );
+    }
+    // The instances themselves are inside boards, so not in the outline.
+    for name in ["Pay button", "Product card", "Footer"] {
+        let node = lib
+            .nodes
+            .get(name)
+            .unwrap_or_else(|| panic!("the shop has {name}: {:?}", lib.nodes));
+        assert!(
+            !text.contains(node.as_str()),
+            "the outline holds nothing of {name}, which is inside a board: {text}"
+        );
+    }
 }

@@ -49,6 +49,20 @@
 //!   doc that has no mainline version 409 `{"error": "no_mainline_version"}`,
 //!   and a version that is not one of the doc's 404 `{"error": "not_found"}`.
 //! - Both routes are in the route registry as `both`.
+//!
+//! US-058: the design viewer and the change set review read a version board by
+//! board, never its whole body at once:
+//!
+//! - `GET /versions/{version_id}?view=outline` of a design version answers the
+//!   version without `pages` and `tags`, and with `"outline"`: its pages in
+//!   order, each page as its own JSON with its boards in order under
+//!   `children`, every board as its own JSON (its name, box, layout and
+//!   fills) without its children. The `manifest` is the whole read's, and
+//!   nothing below a board (no ID, no content) is in the answer, so `nodes`
+//!   lists no node below a board either.
+//! - The board of a version (`GET /docs/{doc_id}/boards/{board_id}`, with or
+//!   without `?version=`) also answers `"node"`: the board and its subtree as
+//!   JSON, as the whole read's `pages` hold it.
 
 mod common;
 
@@ -1342,4 +1356,189 @@ fn reading_a_board_of_what_is_no_design_or_has_no_such_version_is_refused() {
         400,
         "not_a_design",
     );
+}
+
+// ---------------------------------------------------------------------------
+// US-058: reading a version board by board
+// ---------------------------------------------------------------------------
+
+fn outline_response(
+    f: &Fixture,
+    client: &Client,
+    auth: &Auth,
+    project: &str,
+    version: &str,
+) -> Response {
+    call(
+        client,
+        "GET",
+        &format!(
+            "{}/versions/{version}?view=outline",
+            project_base(f, project)
+        ),
+        auth,
+        None,
+    )
+}
+
+/// A node's JSON without its children.
+fn own_json(node: &Value) -> Value {
+    let mut own = node.clone();
+    if let Some(object) = own.as_object_mut() {
+        object.remove("children");
+    }
+    own
+}
+
+fn children_of(node: &Value) -> Vec<Value> {
+    node["children"].as_array().cloned().unwrap_or_default()
+}
+
+/// The board `board` of the whole read of a version.
+fn whole_board(version: &Value, board: &str) -> Value {
+    version["pages"]
+        .as_array()
+        .unwrap_or_else(|| panic!("the whole read has pages: {version:#}"))
+        .iter()
+        .flat_map(children_of)
+        .find(|node| node["id"] == board)
+        .unwrap_or_else(|| panic!("the whole read has the board {board}: {version:#}"))
+}
+
+#[test]
+fn the_outline_of_a_design_version_lists_its_pages_and_boards_without_their_content() {
+    let (f, client) = ready();
+    let d = new_design(f, client);
+    let saved = save(f, client, &d.project, &d.changeset, &d.doc);
+    let version_id = id_of(&saved);
+    let whole = read_version(f, client, &d.project, &version_id);
+
+    let response = outline_response(f, client, &agent(f), &d.project, &version_id);
+    let text = response.text();
+    let outline = must(response, 200, "read the version's outline")["version"].clone();
+    assert_eq!(outline["id"], version_id.as_str(), "{outline:#}");
+    assert!(
+        outline.get("pages").is_none_or(Value::is_null),
+        "the outline has no pages body: {outline:#}"
+    );
+    assert!(
+        outline.get("tags").is_none_or(Value::is_null),
+        "the outline has no tags: {outline:#}"
+    );
+    assert_eq!(
+        outline["manifest"], whole["manifest"],
+        "the outline carries the version's manifest"
+    );
+
+    let pages = outline["outline"]
+        .as_array()
+        .unwrap_or_else(|| panic!("the answer has an `outline` of pages: {outline:#}"))
+        .clone();
+    let whole_pages = whole["pages"]
+        .as_array()
+        .expect("the whole read's pages")
+        .clone();
+    assert_eq!(
+        pages.iter().map(id_of).collect::<Vec<_>>(),
+        [id(&d.ids, "Checkout"), id(&d.ids, "Account")],
+        "the pages in order: {outline:#}"
+    );
+    for (page, whole_page) in pages.iter().zip(&whole_pages) {
+        assert_eq!(
+            own_json(page),
+            own_json(whole_page),
+            "a page of the outline is the page's own JSON, its name included"
+        );
+        let boards = children_of(page);
+        let whole_boards = children_of(whole_page);
+        assert_eq!(
+            boards.iter().map(id_of).collect::<Vec<_>>(),
+            whole_boards.iter().map(id_of).collect::<Vec<_>>(),
+            "every board of the page, in order"
+        );
+        for (board, whole_board) in boards.iter().zip(&whole_boards) {
+            assert!(
+                children_of(board).is_empty(),
+                "a board of the outline is a placeholder without its children: {board}"
+            );
+            assert_eq!(
+                own_json(board),
+                own_json(whole_board),
+                "a board of the outline has the board's own name, box, layout and fills"
+            );
+        }
+    }
+
+    // Nothing below a board is in the answer, `nodes` included.
+    for name in ["Summary", "Total", "Shipping", "Pay", "Hello"] {
+        assert!(
+            !text.contains(&id(&d.ids, name)),
+            "the outline holds no ID of {name}, which is below a board: {text}"
+        );
+    }
+    for content in [TOTAL, "Frakt ingår", "Betala nu", HELLO] {
+        assert!(
+            !text.contains(content),
+            "the outline holds no content of a board ({content:?}): {text}"
+        );
+    }
+}
+
+#[test]
+fn the_human_reads_the_outline_too() {
+    let (f, client) = ready();
+    let d = new_design(f, client);
+    let saved = save(f, client, &d.project, &d.changeset, &d.doc);
+    let outline = must(
+        outline_response(f, client, &human(f), &d.project, &id_of(&saved)),
+        200,
+        "the viewer's session reads the outline",
+    )["version"]
+        .clone();
+    assert_eq!(
+        outline["outline"].as_array().map(Vec::len),
+        Some(2),
+        "the outline lists both pages: {outline:#}"
+    );
+}
+
+#[test]
+fn a_board_of_a_version_answers_its_subtree_as_json() {
+    let (f, client) = ready();
+    let d = new_design(f, client);
+    let saved = save(f, client, &d.project, &d.changeset, &d.doc);
+    let version_id = id_of(&saved);
+    let whole = read_version(f, client, &d.project, &version_id);
+    let query = format!("?version={version_id}");
+
+    for (board, page) in [
+        ("Cart", "Checkout"),
+        ("Payment", "Checkout"),
+        ("Profile", "Account"),
+    ] {
+        let board_id = id(&d.ids, board);
+        let body = must(
+            board_response(f, client, &human(f), &d.project, &d.doc, &board_id, &query),
+            200,
+            "read a board of the version",
+        );
+        assert_eq!(body["page_id"], id(&d.ids, page).as_str(), "{body}");
+        assert_eq!(
+            body["node"],
+            whole_board(&whole, &board_id),
+            "the board {board} and its subtree as JSON, as the whole read holds it: {body:#}"
+        );
+    }
+
+    // The mainline's board answers its node too.
+    merge(f, client, &d.project, &d.changeset);
+    let mainline = mainline_of(f, client, &d.project, &d.doc);
+    assert_eq!(mainline, version_id);
+    let cart = id(&d.ids, "Cart");
+    let body = must(
+        board_response(f, client, &agent(f), &d.project, &d.doc, &cart, ""),
+        200,
+        "read a board of the mainline",
+    );
+    assert_eq!(body["node"], whole_board(&whole, &cart), "{body:#}");
 }

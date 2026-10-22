@@ -42,6 +42,7 @@ import { RouterProvider, createMemoryHistory } from "@tanstack/react-router";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { getRouter } from "./router";
+import { answerDesignRead } from "./testing/design-boards";
 
 type Entry =
   | { kind: "image"; name: string; bytes: number[] }
@@ -76,6 +77,7 @@ vi.mock("@/design/renderer", () => {
     createDesignRenderer: async (canvas: HTMLCanvasElement) => {
       const instance = { canvas, log: [] as Entry[], destroyed: false };
       fake.instances.push(instance);
+      let lastPage: { children?: { id: string }[] } | undefined;
       return {
         addImage(attachment: string, bytes: Uint8Array) {
           const data = plain(bytes);
@@ -88,7 +90,12 @@ vi.mock("@/design/renderer", () => {
           instance.log.push({ kind: "font", name: family, bytes: data });
         },
         show(page: unknown) {
+          lastPage = page as typeof lastPage;
           instance.log.push({ kind: "show", page: String((page as { id?: string }).id) });
+        },
+        // US-058's boards in view (src/design-boards.test.tsx): every board of the page shown.
+        visibleBoards() {
+          return (lastPage?.children ?? []).map((board) => String(board.id));
         },
         layers() {
           return [];
@@ -354,6 +361,9 @@ function fakeApi({
     const method = (init?.method ?? (input instanceof Request ? input.method : "GET")).toUpperCase();
     api.calls.push({ method, path });
 
+    // US-058: a version's outline and its boards, one by one.
+    const read = answerDesignRead(API, method, url, (id) => (id === V1 || id === V2 ? version(id) : null));
+    if (read) return json(read.status, read.body);
     if (method === "GET" && path.startsWith(ATTACHMENTS)) {
       const id = path.slice(ATTACHMENTS.length);
       if (failing.includes(id)) return json(500, { error: "internal" });

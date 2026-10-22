@@ -59,6 +59,7 @@ import { RouterProvider, createMemoryHistory } from "@tanstack/react-router";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { getRouter } from "./router";
+import { answerDesignRead } from "./testing/design-boards";
 
 type Layer = { address: string; name: string; type: string; children: Layer[] };
 type Shown = { page: unknown; system: unknown };
@@ -119,6 +120,12 @@ vi.mock("@/design/renderer", () => ({
       },
       onView() {
         return () => {};
+      },
+      // US-058's boards in view (src/design-boards.test.tsx): every board of the page shown.
+      visibleBoards() {
+        const last = instance.shown[instance.shown.length - 1];
+        const boards = (last?.page as { children?: { id: string }[] } | undefined)?.children ?? [];
+        return boards.map((board) => String(board.id));
       },
       // US-057's images and fonts (src/design-assets.test.tsx); this design has none.
       addImage() {},
@@ -375,6 +382,16 @@ function fakeApi() {
       boards: page.children.map((board) => ({ id: board.id, chunk: "1".repeat(64) })),
     })),
   };
+  const version = {
+    ...item,
+    design_system_version_id: DS_V1,
+    manifest,
+    nodes: [],
+    tags: "<Page name=\"Mobile\"/>",
+    pages: PAGES,
+    components: COMPONENTS,
+    tokens: TOKENS,
+  };
 
   const fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const raw = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
@@ -383,6 +400,9 @@ function fakeApi() {
     const method = (init?.method ?? (input instanceof Request ? input.method : "GET")).toUpperCase();
     api.calls.push({ method, path });
 
+    // US-058: the version's outline and its boards, one by one.
+    const read = answerDesignRead(API, method, url, (id) => (id === V1 ? version : null));
+    if (read) return json(read.status, read.body);
     switch (`${method} ${path}`) {
       case "GET /api/v1/auth/me":
         return json(200, { user: USER });
@@ -410,18 +430,7 @@ function fakeApi() {
       case `GET ${API}/comments`:
         return json(200, { project_id: PROJECT_ID, comments: [] });
       case `GET ${API}/versions/${V1}`:
-        return json(200, {
-          version: {
-            ...item,
-            design_system_version_id: DS_V1,
-            manifest,
-            nodes: [],
-            tags: "<Page name=\"Mobile\"/>",
-            pages: PAGES,
-            components: COMPONENTS,
-            tokens: TOKENS,
-          },
-        });
+        return json(200, { version });
       default:
         return json(404, { error: "not_found" });
     }
@@ -488,6 +497,21 @@ async function findShown(pageId: string): Promise<Shown> {
     const last = renderer.shown[renderer.shown.length - 1];
     expect(last, "the page showed a page of the design on the renderer").toBeTruthy();
     expect((last.page as { id?: string }).id).toBe(pageId);
+    return last;
+  });
+}
+
+/**
+ * Waits until the renderer's last shown page is `page` with all its boards
+ * loaded: the page shows its boards as placeholders until it has read them
+ * (US-058, src/design-boards.test.tsx).
+ */
+async function findShownWhole(page: unknown): Promise<Shown> {
+  const renderer = await findRenderer();
+  return waitFor(() => {
+    const last = renderer.shown[renderer.shown.length - 1];
+    expect(last, "the page showed a page of the design on the renderer").toBeTruthy();
+    expect(last.page, "the page with every board loaded").toEqual(page);
     return last;
   });
 }
@@ -582,7 +606,7 @@ describe("the design on the renderer's canvas", () => {
 
   test("the first page of the mainline version is shown, resolved against the version's design system", async () => {
     renderAt(DOC_PATH);
-    const shown = await findShown(MOBILE);
+    const shown = await findShownWhole(PAGES[0]);
     expect(shown.page, "the page as the version holds it, with its boards").toEqual(PAGES[0]);
     expect(
       api.calls.some((call) => call.method === "GET" && call.path === `${API}/versions/${V1}`),
@@ -619,13 +643,13 @@ describe("the page list", () => {
     await findShown(MOBILE);
     await findPagesPanel();
     fireEvent.click(pageButton("Desktop"));
-    const shown = await findShown(DESKTOP);
+    const shown = await findShownWhole(PAGES[1]);
     expect(shown.page).toEqual(PAGES[1]);
     await waitFor(() => expect(isCurrent(pageButton("Desktop"))).toBe(true));
     expect(isCurrent(pageButton("Mobile"))).toBe(false);
 
     fireEvent.click(pageButton("Mobile"));
-    expect((await findShown(MOBILE)).page).toEqual(PAGES[0]);
+    expect((await findShownWhole(PAGES[0])).page).toEqual(PAGES[0]);
   });
 
   test("choosing a page lists that page's layers", async () => {

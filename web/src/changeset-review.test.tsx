@@ -68,6 +68,7 @@ import { RouterProvider, createMemoryHistory } from "@tanstack/react-router";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { getRouter } from "./router";
+import { answerDesignRead } from "./testing/design-boards";
 
 type Box = { x: number; y: number; width: number; height: number };
 type JsonNode = { id?: string; name?: string; type?: string; content?: string; children?: JsonNode[] };
@@ -132,6 +133,10 @@ vi.mock("@/design/renderer", () => {
         onView(listener: () => void) {
           instance.viewListeners.add(listener);
           return () => instance.viewListeners.delete(listener);
+        },
+        // US-058's boards in view (src/design-boards.test.tsx): every board of the page shown.
+        visibleBoards() {
+          return ((lastPage()?.children ?? []) as { id?: string }[]).map((board) => String(board.id));
         },
         // US-057's images and fonts (src/design-assets.test.tsx); this design has none.
         addImage() {},
@@ -482,6 +487,11 @@ function fakeApi({ undecided }: { undecided: boolean }) {
     }
     api.calls.push({ method, path, body });
 
+    // US-058: a version's outline and its boards, one by one.
+    const read = answerDesignRead(API, method, url, (id) =>
+      id === DESIGN_BASE || id === DESIGN_NEW ? designVersion(id) : null,
+    );
+    if (read) return json(read.status, read.body);
     switch (`${method} ${path}`) {
       case "GET /api/v1/auth/me":
         return json(200, { user: USER });

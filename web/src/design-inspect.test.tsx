@@ -59,6 +59,7 @@ import { RouterProvider, createMemoryHistory } from "@tanstack/react-router";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { getRouter } from "./router";
+import { answerDesignRead } from "./testing/design-boards";
 
 type Layer = { address: string; name: string; type: string; children: Layer[] };
 type TokenUse = { token: string; value: unknown };
@@ -149,6 +150,12 @@ vi.mock("@/design/renderer", () => ({
       },
       onView() {
         return () => {};
+      },
+      // US-058's boards in view (src/design-boards.test.tsx): every board of the page shown.
+      visibleBoards() {
+        const last = instance.shown[instance.shown.length - 1];
+        const boards = (last?.page as { children?: { id: string }[] } | undefined)?.children ?? [];
+        return boards.map((board) => String(board.id));
       },
       // US-057's images and fonts (src/design-assets.test.tsx); this design has none.
       addImage() {},
@@ -507,6 +514,16 @@ function fakeApi() {
       boards: page.children.map((board) => ({ id: board.id, chunk: "1".repeat(64) })),
     })),
   };
+  const version = {
+    ...item,
+    design_system_version_id: DS_V1,
+    manifest,
+    nodes: [],
+    tags: '<Page name="Mobile"/>',
+    pages: PAGES,
+    components: COMPONENTS,
+    tokens: TOKENS,
+  };
 
   const fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const raw = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
@@ -514,6 +531,9 @@ function fakeApi() {
     const path = url.pathname;
     const method = (init?.method ?? (input instanceof Request ? input.method : "GET")).toUpperCase();
 
+    // US-058: the version's outline and its boards, one by one.
+    const read = answerDesignRead(API, method, url, (id) => (id === V1 ? version : null));
+    if (read) return json(read.status, read.body);
     switch (`${method} ${path}`) {
       case "GET /api/v1/auth/me":
         return json(200, { user: USER });
@@ -530,18 +550,7 @@ function fakeApi() {
       case `GET ${API}/comments`:
         return json(200, { project_id: PROJECT_ID, comments: [] });
       case `GET ${API}/versions/${V1}`:
-        return json(200, {
-          version: {
-            ...item,
-            design_system_version_id: DS_V1,
-            manifest,
-            nodes: [],
-            tags: '<Page name="Mobile"/>',
-            pages: PAGES,
-            components: COMPONENTS,
-            tokens: TOKENS,
-          },
-        });
+        return json(200, { version });
       default:
         return json(404, { error: "not_found" });
     }
