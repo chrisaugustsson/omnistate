@@ -140,5 +140,9 @@ name = "project_home"
 required-features = ["stack-tests"]
 
 [[test]]
+name = "changeset_review"
+required-features = ["stack-tests"]
+
+[[test]]
 name = "doc_versions"
 required-features = ["stack-tests"]

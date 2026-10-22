@@ -543,6 +543,12 @@ const CASES: &[Case] = &[
         None,
         Kind::Workspace,
     ),
+    case(
+        "GET",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/review",
+        None,
+        Kind::Workspace,
+    ),
 ];
 
 /// The WebSocket routes that the suite attacks, as the paths of
@@ -4261,6 +4267,60 @@ fn the_home_call_of_the_attacks_shows_the_owner_its_own_records() {
         assert!(
             !home.to_string().contains(marker),
             "the home shows {marker} of the other workspace: {home}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The change set review (US-046)
+// ---------------------------------------------------------------------------
+
+const REVIEW_ROUTE: &str =
+    "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/review";
+
+#[test]
+fn the_review_route_is_a_human_route_that_the_suite_attacks() {
+    let entry = registry()
+        .into_iter()
+        .find(|r| r.method == "GET" && r.path == REVIEW_ROUTE)
+        .unwrap_or_else(|| panic!("the registry has no route GET {REVIEW_ROUTE}"));
+    assert_eq!(entry.access, Access::Human, "GET {REVIEW_ROUTE}");
+    assert!(
+        matches!(case_for(&entry).kind, Kind::Workspace),
+        "GET {REVIEW_ROUTE} is a workspace route that the suite attacks"
+    );
+}
+
+#[test]
+fn the_review_call_of_the_attacks_shows_the_owner_its_own_change_set() {
+    // The control for the review route: the owner's human reads the review of
+    // the seeded change set, which lists the seeded doc at its latest saved
+    // version, and nothing of the other workspace.
+    let (f, client) = ready();
+    let _guard = serial();
+    let human = Auth::Session(&f.a.token);
+    let review = must(
+        call(client, "GET", &fill(REVIEW_ROUTE, &f.a, &f.a), &human, None),
+        200,
+        "the human reads the change set review",
+    );
+    assert_eq!(
+        review["changeset"]["id"],
+        f.a.changeset_id.as_str(),
+        "{review}"
+    );
+    let doc = review["docs"]
+        .as_array()
+        .unwrap_or_else(|| panic!("the review lists `docs`: {review}"))
+        .iter()
+        .find(|doc| doc["doc_id"] == f.a.doc_id.as_str())
+        .cloned()
+        .unwrap_or_else(|| panic!("the review lists the seeded doc: {review}"));
+    assert_eq!(doc["version_id"], f.a.other_version_id.as_str(), "{doc}");
+    for marker in f.b.markers() {
+        assert!(
+            !review.to_string().contains(marker),
+            "the review shows {marker} of the other workspace: {review}"
         );
     }
 }
