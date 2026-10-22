@@ -167,6 +167,9 @@ pub enum Missing {
     /// The token that a value refers to has a value that does not fit where
     /// it is used, such as a color for a padding, in `property` of the node.
     Unfit { token: TokenRef, property: String },
+    /// The node holds nodes deeper than `nesting::MAX_NESTING` levels below
+    /// the page once instances are expanded, which are not drawn.
+    Nesting,
 }
 
 /// An error that drawing a design reports to the host page: the node that was

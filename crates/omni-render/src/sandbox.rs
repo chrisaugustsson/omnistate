@@ -2,7 +2,6 @@
 //! solid background with one filled rectangle and one line of text, and the
 //! layout boxes that the second page compares between builds.
 
-use omni_core::design::Node;
 use skia_safe::{
     AlphaType, Canvas, Color, ColorType, Font, ImageInfo, Paint, font::Edging, surfaces,
 };
@@ -125,7 +124,7 @@ fn color([red, green, blue]: Rgb) -> Color {
 /// the WebAssembly build both write it, so that the test page can measure how
 /// far apart they lay the same design out.
 pub fn layout_json(design_json: &str, fonts: &Fonts) -> Result<String, String> {
-    let design: Node = serde_json::from_str(design_json).map_err(|error| error.to_string())?;
+    let design = crate::nesting::read(design_json)?;
     let boxes = layout::compute(&design, fonts)
         .into_iter()
         .map(|(id, layout_box)| {

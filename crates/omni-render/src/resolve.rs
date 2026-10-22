@@ -31,6 +31,7 @@
 mod details;
 
 use crate::inspect::{InstanceInspection, OverrideInspection, PropValue};
+use crate::nesting::MAX_NESTING;
 use crate::system::{ComponentDef, DesignSystem, Missing, RenderError};
 use omni_core::design::{Node, NodeAddress, NodeId, PropDef, TokenRef};
 use serde_json::{Map, Value, json};
@@ -132,7 +133,7 @@ pub(crate) fn resolve(page: &Node, system: &DesignSystem, mode: &str) -> Resolve
         details: Details::default(),
         errors: Vec::new(),
     };
-    let resolved = resolver.node(source.clone(), None);
+    let resolved = resolver.node(source.clone(), None, 0);
     let page = match serde_json::from_value::<Node>(resolved.clone()) {
         Ok(page) => page,
         // Each node's tokens are checked as they are resolved, so this is a
@@ -209,8 +210,11 @@ impl Resolver<'_> {
     }
 
     /// Resolves the node `value` and everything below it. `inside` is what
-    /// the node takes from the instance that it is a layer of, if it is one.
-    fn node(&mut self, mut value: Value, inside: Option<&Inside>) -> Value {
+    /// the node takes from the instance that it is a layer of, if it is one,
+    /// and `level` is how many levels below the page the node is (the page is
+    /// level 0). Nodes below level `MAX_NESTING` are left out, and the node
+    /// that held them is drawn as an error placeholder (`too_deep`).
+    fn node(&mut self, mut value: Value, inside: Option<&Inside>, level: usize) -> Value {
         let Some(id) = value
             .get("id")
             .and_then(Value::as_str)
@@ -233,7 +237,7 @@ impl Resolver<'_> {
         };
         if kind == "instance" {
             self.instances.insert(out_id);
-            return self.instance(value, out_id, address, inside);
+            return self.instance(value, out_id, address, inside, level);
         }
         let children = value
             .as_object_mut()
@@ -244,13 +248,28 @@ impl Resolver<'_> {
         }
         self.tokens(&mut value, &address);
         if let Some(Value::Array(children)) = children {
-            let children = children
-                .into_iter()
-                .map(|child| self.node(child, inside))
-                .collect();
+            let children = if children.is_empty() || level < MAX_NESTING {
+                children
+                    .into_iter()
+                    .map(|child| self.node(child, inside, level + 1))
+                    .collect()
+            } else {
+                self.too_deep(&mut value, address);
+                Vec::new()
+            };
             value["children"] = Value::Array(children);
         }
         value
+    }
+
+    /// Draws `node`, which holds nodes deeper than `MAX_NESTING` levels, as
+    /// an error placeholder, and notes that what it holds is left out.
+    fn too_deep(&mut self, node: &mut Value, address: NodeAddress) {
+        mark_error(node);
+        self.errors.push(RenderError {
+            node: address,
+            missing: Missing::Nesting,
+        });
     }
 
     /// Expands the instance `value` into a frame with the ID `out_id`.
@@ -260,6 +279,7 @@ impl Resolver<'_> {
         out_id: NodeId,
         address: NodeAddress,
         inside: Option<&Inside>,
+        level: usize,
     ) -> Value {
         let own = value
             .get("id")
@@ -356,10 +376,15 @@ impl Resolver<'_> {
                 _ => None,
             })
             .unwrap_or_default();
-        let layers = layers
-            .into_iter()
-            .map(|layer| self.node(layer, Some(&layers_inside)))
-            .collect();
+        let layers = if layers.is_empty() || level < MAX_NESTING {
+            layers
+                .into_iter()
+                .map(|layer| self.node(layer, Some(&layers_inside), level + 1))
+                .collect()
+        } else {
+            self.too_deep(&mut frame, address);
+            Vec::new()
+        };
         frame["children"] = Value::Array(layers);
         frame
     }

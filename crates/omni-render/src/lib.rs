@@ -3,6 +3,7 @@
 
 pub mod inspect;
 pub mod layout;
+pub mod nesting;
 pub mod paint;
 mod resolve;
 pub mod sandbox;

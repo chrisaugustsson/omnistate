@@ -2,7 +2,7 @@
 
 use std::cell::RefCell;
 
-use omni_core::design::{AttachmentRef, Node};
+use omni_core::design::AttachmentRef;
 use skia_safe::{
     Canvas, Color, ColorType, PixelGeometry, SurfaceProps, SurfacePropsFlags,
     gpu::{
@@ -13,6 +13,7 @@ use skia_safe::{
 
 use crate::inspect::{Inspection, Property};
 use crate::layout::{self, LayoutBox};
+use crate::nesting::{self, MAX_NESTING};
 use crate::paint::{self, Assets};
 use crate::sandbox::{self, SandboxScene};
 use crate::select::{Event, Layer, Modifiers, NodeAddress, Outline, OutlineKind};
@@ -81,7 +82,7 @@ pub fn draw_design(
     height: i32,
     pixel_ratio: f32,
 ) -> Result<(), String> {
-    let design: Node = serde_json::from_str(design_json).map_err(|error| error.to_string())?;
+    let design = nesting::read(design_json)?;
     let drawn = ASSETS.with_borrow(|assets| {
         let boxes = layout::compute(&design, assets.fonts());
         on_canvas(width, height, pixel_ratio, false, |canvas| {
@@ -104,9 +105,11 @@ pub fn layout_design(design_json: &str) -> Result<String, String> {
 
 /// Loads `design_json`, a page, into the scene that `scene_draw` draws, with
 /// the images and fonts that the page has supplied so far. The view is fitted
-/// to its boards at the first frame.
+/// to its boards at the first frame. Fails if the page nests more than
+/// `MAX_NESTING` levels deep once its instances are expanded (see
+/// [`nesting`]); the scene is loaded all the same, without the deeper nodes.
 pub fn scene_load(design_json: &str) -> Result<(), String> {
-    let page: Node = serde_json::from_str(design_json).map_err(|error| error.to_string())?;
+    let page = nesting::read(design_json)?;
     let assets = ASSETS.take();
     let system = SYSTEM
         .with_borrow(|system| system.as_ref().map(DesignSystem::from_json))
@@ -121,35 +124,51 @@ pub fn scene_load(design_json: &str) -> Result<(), String> {
         fit_pending: true,
         stats: None,
     };
+    let nested = nested_too_deep(&stage.scene);
     STAGE.set(Some(stage));
-    Ok(())
+    nested
+}
+
+/// Fails if `scene` holds nodes deeper than `MAX_NESTING` levels below its
+/// page once its instances are expanded. Resolving left them out, so the scene
+/// is safe to draw, but it is not the whole design.
+fn nested_too_deep(scene: &Scene) -> Result<(), String> {
+    match scene
+        .errors()
+        .iter()
+        .find(|error| error.missing == Missing::Nesting)
+    {
+        Some(error) => Err(nesting::too_deep(Some(&error.node.to_string()))),
+        None => Ok(()),
+    }
 }
 
 /// Reads `system_json`, a design system version (`DesignSystem::from_json`: a
 /// DTCG token tree with the components under `$components`), and makes the
 /// loaded scene and every scene loaded after it resolve their instances and
-/// token references against it, in its first mode.
+/// token references against it, in its first mode. Fails, as `scene_load`
+/// does, if the loaded scene then nests too deeply.
 pub fn scene_set_system(system_json: &str) -> Result<(), String> {
     let json: Value = serde_json::from_str(system_json).map_err(|error| error.to_string())?;
     let system = DesignSystem::from_json(&json)?;
     SYSTEM.set(Some(json));
-    STAGE.with_borrow_mut(|stage| {
-        if let Some(stage) = stage {
+    STAGE.with_borrow_mut(|stage| match stage {
+        Some(stage) => {
             stage.scene.set_system(system);
+            nested_too_deep(&stage.scene)
         }
-    });
-    Ok(())
+        None => Ok(()),
+    })
 }
 
 /// Resolves the tokens of the loaded scene in `mode` from now on. Fails if no
-/// scene is loaded, or if the scene's design system has no such mode.
+/// scene is loaded, if the scene's design system has no such mode, or, as
+/// `scene_load` does, if the scene then nests too deeply.
 pub fn scene_set_mode(mode: &str) -> Result<(), String> {
     STAGE.with_borrow_mut(|stage| {
-        stage
-            .as_mut()
-            .ok_or("no scene is loaded")?
-            .scene
-            .set_mode(mode)
+        let scene = &mut stage.as_mut().ok_or("no scene is loaded")?.scene;
+        scene.set_mode(mode)?;
+        nested_too_deep(scene)
     })
 }
 
@@ -157,7 +176,9 @@ pub fn scene_set_mode(mode: &str) -> Result<(), String> {
 /// JSON array: `[{"node": "<address>", "component": "<id>"}, {"node":
 /// "<address>", "token": "$color.surface"}]`. A token whose value does not
 /// fit where it is used also names the node's property: `{"node":
-/// "<address>", "token": "$color.brand", "property": "layout"}`.
+/// "<address>", "token": "$color.brand", "property": "layout"}`, and a node
+/// whose children lie deeper than `MAX_NESTING` levels names the limit:
+/// `{"node": "<address>", "nesting": 128}`.
 pub fn scene_errors() -> String {
     let errors = with_stage(|scene, _| {
         scene
@@ -175,6 +196,9 @@ pub fn scene_errors() -> String {
                     "token": token.as_str(),
                     "property": property,
                 }),
+                Missing::Nesting => {
+                    json!({"node": error.node.to_string(), "nesting": MAX_NESTING})
+                }
             })
             .collect::<Vec<Value>>()
     })
