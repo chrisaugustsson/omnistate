@@ -25,8 +25,12 @@
 //! human always and an agent identity (`X-Omni-Run`, `X-Omni-Role` of the
 //! handshake) by the rule of sealed phases (`threads::visible`). The rule is
 //! applied when events are read, for live ones and for those of a resume
-//! alike, so a hidden post shows up in the replay of a later subscription once
-//! the agent may read it.
+//! alike. An event that was withheld is not lost: the socket remembers its
+//! sequence number and sends it, once, as soon as the agent may read the post
+//! (it posted in the phase, or a later phase started). A resume does the same
+//! for the events at or below its `after` that the client cannot have got,
+//! those of posts that the agent was not allowed to read at the time of the
+//! event `after` (`withheld_before`).
 
 use crate::AppState;
 use crate::docs::AgentIdentity;
@@ -41,7 +45,7 @@ use axum::response::Response;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sqlx::{Postgres, Transaction};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::time::Duration;
 use tokio::sync::broadcast;
 use tokio::sync::broadcast::error::RecvError;
@@ -287,12 +291,21 @@ impl axum::extract::FromRequestParts<AppState> for OriginCheck {
     }
 }
 
+/// What a socket has done for one subscribed project.
+struct Subscription {
+    /// The newest sequence number looked at, sent or withheld.
+    sent_up_to: i64,
+    /// The sequence numbers of the events below `sent_up_to` that were
+    /// withheld because the viewer might not read their post yet.
+    withheld: BTreeSet<i64>,
+}
+
 /// Serves one socket until it closes. `subscriptions` maps each subscribed
-/// project to the newest sequence number already sent for it.
+/// project to what the socket has done for it.
 async fn run(mut socket: WebSocket, state: AppState, workspace_id: String, viewer: Viewer) {
     let mut announcements = state.live.sender.subscribe();
     let mut poll = tokio::time::interval(POLL_EVERY);
-    let mut subscriptions: HashMap<String, i64> = HashMap::new();
+    let mut subscriptions: HashMap<String, Subscription> = HashMap::new();
     loop {
         let sent = tokio::select! {
             message = socket.recv() => match message {
@@ -334,7 +347,7 @@ async fn handle_text(
     state: &AppState,
     workspace_id: &str,
     viewer: &Viewer,
-    subscriptions: &mut HashMap<String, i64>,
+    subscriptions: &mut HashMap<String, Subscription>,
     text: &str,
 ) -> Result<(), ()> {
     let Some((project_id, after)) = parse_subscribe(text) else {
@@ -353,7 +366,22 @@ async fn handle_text(
     // A client that is ahead of the project (a number from another database)
     // is treated as caught up.
     let from = after.map_or(last_seq, |after| after.min(last_seq));
-    subscriptions.insert(project_id.clone(), from);
+    // A resume also sends the events below `from` that the client cannot have
+    // got because their post was hidden from it then.
+    let withheld = match after {
+        Some(_) => match withheld_before(state, workspace_id, viewer, &project_id, from).await {
+            Ok(withheld) => withheld,
+            Err(_) => return send_error(socket, "unavailable").await,
+        },
+        None => BTreeSet::new(),
+    };
+    subscriptions.insert(
+        project_id.clone(),
+        Subscription {
+            sent_up_to: from,
+            withheld,
+        },
+    );
     deliver(
         socket,
         state,
@@ -408,45 +436,68 @@ struct StoredEvent {
     event: String,
     data: String,
     at: String,
+    /// Whether the event is above the newest one looked at (a withheld one that
+    /// is read again is not).
+    fresh: bool,
+    /// Whether the viewer may read the post that the event names, if any.
+    visible: bool,
 }
 
 /// Sends every event of the project that the socket has not got yet, oldest
-/// first, and remembers the newest one sent.
+/// first, and remembers the newest one looked at. An event that the viewer may
+/// not read yet is remembered as withheld and sent once, when it may.
 async fn deliver(
     socket: &mut WebSocket,
     state: &AppState,
     workspace_id: &str,
     viewer: &Viewer,
     project_id: &str,
-    subscriptions: &mut HashMap<String, i64>,
+    subscriptions: &mut HashMap<String, Subscription>,
 ) -> Result<(), ()> {
     loop {
-        let Some(&sent_up_to) = subscriptions.get(project_id) else {
+        let Some(subscription) = subscriptions.get_mut(project_id) else {
             return Ok(());
         };
-        let events = match read_events(state, workspace_id, viewer, project_id, sent_up_to).await {
+        let withheld: Vec<i64> = subscription.withheld.iter().copied().collect();
+        let events = match read_events(
+            state,
+            workspace_id,
+            viewer,
+            project_id,
+            subscription.sent_up_to,
+            &withheld,
+        )
+        .await
+        {
             Ok(events) => events,
             // The next announcement or poll tries again.
             Err(_) => return Ok(()),
         };
-        let count = events.len();
+        let fresh = events.iter().filter(|stored| stored.fresh).count();
         for stored in events {
-            let data = serde_json::from_str(&stored.data).unwrap_or(Value::Null);
-            send(
-                socket,
-                &json!({
-                    "type": "event",
-                    "seq": stored.seq,
-                    "event": stored.event,
-                    "project_id": project_id,
-                    "at": stored.at,
-                    "data": data,
-                }),
-            )
-            .await?;
-            subscriptions.insert(project_id.to_string(), stored.seq);
+            if stored.visible {
+                let data = serde_json::from_str(&stored.data).unwrap_or(Value::Null);
+                send(
+                    socket,
+                    &json!({
+                        "type": "event",
+                        "seq": stored.seq,
+                        "event": stored.event,
+                        "project_id": project_id,
+                        "at": stored.at,
+                        "data": data,
+                    }),
+                )
+                .await?;
+                subscription.withheld.remove(&stored.seq);
+            } else if stored.fresh {
+                subscription.withheld.insert(stored.seq);
+            }
+            if stored.fresh {
+                subscription.sent_up_to = stored.seq;
+            }
         }
-        if (count as i64) < BATCH {
+        if (fresh as i64) < BATCH {
             return Ok(());
         }
     }
@@ -457,7 +508,7 @@ async fn deliver_all(
     state: &AppState,
     workspace_id: &str,
     viewer: &Viewer,
-    subscriptions: &mut HashMap<String, i64>,
+    subscriptions: &mut HashMap<String, Subscription>,
 ) -> Result<(), ()> {
     let projects: Vec<String> = subscriptions.keys().cloned().collect();
     for project_id in projects {
@@ -474,34 +525,97 @@ async fn deliver_all(
     Ok(())
 }
 
+/// The events of the project above `after`, and those of `withheld` that the
+/// viewer may read by now, oldest first. An event that names a post is visible
+/// to the callers that may read the post.
 async fn read_events(
     state: &AppState,
     workspace_id: &str,
     viewer: &Viewer,
     project_id: &str,
     after: i64,
+    withheld: &[i64],
 ) -> Result<Vec<StoredEvent>, ApiError> {
     let mut tx = state.workspace_tx(workspace_id).await?;
-    // An event that names a post goes to the callers that may read the post.
-    let events = bind_viewer(
+    let events: Vec<StoredEvent> = bind_viewer(
         sqlx::query_as(&format!(
-            "SELECT e.seq, e.event, e.data::text AS data, {AT} AS at FROM live_events e \
-             WHERE e.project_id = $1::uuid AND e.seq > $2 \
-               AND (e.data->>'post_id' IS NULL OR EXISTS (\
-                   SELECT 1 FROM posts p WHERE p.id::text = e.data->>'post_id' AND {})) \
-             ORDER BY e.seq LIMIT $3",
-            visible("p", 4)
+            "WITH candidates AS (\
+                 (SELECT * FROM live_events WHERE project_id = $1::uuid AND seq > $2 \
+                  ORDER BY seq LIMIT $3) \
+                 UNION ALL \
+                 (SELECT * FROM live_events WHERE project_id = $1::uuid AND seq = ANY($4)) \
+             ) \
+             SELECT e.seq, e.event, e.data::text AS data, {AT} AS at, e.seq > $2 AS fresh, \
+                 (e.data->>'post_id' IS NULL OR EXISTS (\
+                     SELECT 1 FROM posts p WHERE p.workspace_id = e.workspace_id \
+                       AND p.id = (e.data->>'post_id')::uuid AND {})) AS visible \
+             FROM candidates e ORDER BY e.seq",
+            visible("p", 5)
         ))
         .bind(project_id)
         .bind(after)
-        .bind(BATCH),
+        .bind(BATCH)
+        .bind(withheld),
         viewer,
     )
     .fetch_all(&mut *tx)
     .await
     .map_err(ApiError::database)?;
     tx.commit().await.map_err(ApiError::database)?;
-    Ok(events)
+    // A withheld event that is still hidden is not sent again.
+    Ok(events
+        .into_iter()
+        .filter(|stored| stored.fresh || stored.visible)
+        .collect())
+}
+
+/// The events at or below `from` that a client resuming from `from` cannot
+/// have got: those that name a post the viewer might not read when the event
+/// `from` happened. A post was readable then if the human wrote it, its phase
+/// is open, a later phase had started, or the viewer had posted in its phase.
+/// Anything else is withheld until `deliver` finds the post readable.
+async fn withheld_before(
+    state: &AppState,
+    workspace_id: &str,
+    viewer: &Viewer,
+    project_id: &str,
+    from: i64,
+) -> Result<BTreeSet<i64>, ApiError> {
+    let mut tx = state.workspace_tx(workspace_id).await?;
+    let seqs: Vec<(i64,)> = bind_viewer(
+        sqlx::query_as(
+            "WITH resumed AS (\
+                 SELECT created_at FROM live_events WHERE project_id = $1::uuid AND seq = $2\
+             ) \
+             SELECT e.seq FROM live_events e \
+             WHERE e.project_id = $1::uuid AND e.seq <= $2 AND e.data->>'post_id' IS NOT NULL \
+               AND NOT EXISTS (\
+                   SELECT 1 FROM posts p, resumed r WHERE p.workspace_id = e.workspace_id \
+                     AND p.id = (e.data->>'post_id')::uuid \
+                     AND ($3::bool \
+                       OR p.author->>'kind' = 'human' \
+                       OR NOT COALESCE((SELECT ph.sealed FROM thread_phases ph \
+                           WHERE ph.workspace_id = p.workspace_id AND ph.thread_id = p.thread_id \
+                             AND ph.number = p.phase), true) \
+                       OR EXISTS (SELECT 1 FROM thread_phases ph \
+                           WHERE ph.workspace_id = p.workspace_id AND ph.thread_id = p.thread_id \
+                             AND ph.number > p.phase AND ph.started_at <= r.created_at) \
+                       OR EXISTS (SELECT 1 FROM posts mine \
+                           WHERE mine.workspace_id = p.workspace_id AND mine.thread_id = p.thread_id \
+                             AND mine.phase = p.phase AND mine.author->>'kind' = 'agent' \
+                             AND mine.created_at <= r.created_at \
+                             AND mine.author->>'run' IS NOT DISTINCT FROM $4::text \
+                             AND mine.author->>'role' IS NOT DISTINCT FROM $5::text)))",
+        )
+        .bind(project_id)
+        .bind(from),
+        viewer,
+    )
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(ApiError::database)?;
+    tx.commit().await.map_err(ApiError::database)?;
+    Ok(seqs.into_iter().map(|(seq,)| seq).collect())
 }
 
 async fn send(socket: &mut WebSocket, message: &Value) -> Result<(), ()> {

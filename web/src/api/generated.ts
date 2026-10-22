@@ -1449,6 +1449,7 @@ export const operations = {
   "GET /api/v1/w/{workspace_id}/projects/{project_id}/posts/{post_id}": {
     responses: {
       "200": SinglePostResponseSchema,
+      "400": ErrorBodySchema,
       "401": ErrorBodySchema,
       "404": ErrorBodySchema,
     },
@@ -1456,6 +1457,7 @@ export const operations = {
   "GET /api/v1/w/{workspace_id}/projects/{project_id}/threads/{thread_id}": {
     responses: {
       "200": ThreadResponseSchema,
+      "400": ErrorBodySchema,
       "401": ErrorBodySchema,
       "404": ErrorBodySchema,
     },
@@ -1473,6 +1475,7 @@ export const operations = {
   "GET /api/v1/w/{workspace_id}/projects/{project_id}/threads/{thread_id}/digest": {
     responses: {
       "200": DigestResponseSchema,
+      "400": ErrorBodySchema,
       "401": ErrorBodySchema,
       "404": ErrorBodySchema,
     },

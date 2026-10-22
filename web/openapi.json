@@ -8439,6 +8439,16 @@
             },
             "description": "The post"
           },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "An agent request without both `X-Omni-Run` and `X-Omni-Role`"
+          },
           "401": {
             "content": {
               "application/json": {
@@ -8497,6 +8507,30 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "description": "The agent's run",
+            "in": "header",
+            "name": "X-Omni-Run",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "description": "The agent's role",
+            "in": "header",
+            "name": "X-Omni-Role",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -8509,6 +8543,16 @@
               }
             },
             "description": "The thread"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "An agent request without both `X-Omni-Run` and `X-Omni-Role`"
           },
           "401": {
             "content": {
@@ -8753,6 +8797,16 @@
               }
             },
             "description": "The posts the caller may read"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "An agent request without both `X-Omni-Run` and `X-Omni-Role`"
           },
           "401": {
             "content": {
@@ -9093,7 +9147,7 @@
                 }
               }
             },
-            "description": "The type, summary, body, links, attachments, confidence or replaced post is missing or not valid"
+            "description": "The type, summary, body, links, attachments, confidence or replaced post is missing or not valid, or the agent sent no `X-Omni-Run` and `X-Omni-Role`"
           },
           "401": {
             "content": {

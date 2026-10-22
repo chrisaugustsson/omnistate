@@ -310,6 +310,18 @@ pub(crate) fn visible(post: &str, first: usize) -> String {
     )
 }
 
+/// An agent that reads or writes posts must say who it is, its run and its
+/// role: two callers without an identity would share one view of a sealed
+/// phase. The human needs none.
+fn require_identity(actor: &Actor, identity: &AgentIdentity) -> Result<(), ApiError> {
+    match actor {
+        Actor::Agent if identity.run().is_none() || identity.role().is_none() => {
+            Err(ApiError::bad_request("identity_required"))
+        }
+        _ => Ok(()),
+    }
+}
+
 /// Binds the three parameters of `visible`.
 pub(crate) fn bind_viewer<'q, O>(
     query: sqlx::query::QueryAs<'q, Postgres, O, sqlx::postgres::PgArguments>,
@@ -684,9 +696,12 @@ pub async fn create_thread(
         ("workspace_id" = String, Path, description = "The workspace's UUID"),
         ("project_id" = String, Path, description = "The project's UUID"),
         ("thread_id" = String, Path, description = "The thread's UUID"),
+        ("X-Omni-Run" = Option<String>, Header, description = "The agent's run"),
+        ("X-Omni-Role" = Option<String>, Header, description = "The agent's role"),
     ),
     responses(
         (status = 200, description = "The thread", body = ThreadResponse),
+        (status = 400, description = "An agent request without both `X-Omni-Run` and `X-Omni-Role`", body = ErrorBody),
         (status = 401, description = "No valid API key or session", body = ErrorBody),
         (status = 404, description = "No such thread in this project and workspace", body = ErrorBody),
     )
@@ -697,6 +712,7 @@ pub async fn show_thread(
     identity: AgentIdentity,
     Path((_, project_id, thread_id)): Path<(String, String, String)>,
 ) -> Result<Json<ThreadResponse>, ApiError> {
+    require_identity(&request.actor, &identity)?;
     let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
     let thread_id = parse_uuid(&thread_id).ok_or(ApiError::NotFound)?;
     let viewer = Viewer::of(&request.actor, &identity);
@@ -739,6 +755,7 @@ pub async fn show_thread(
     ),
     responses(
         (status = 200, description = "The posts the caller may read", body = DigestResponse),
+        (status = 400, description = "An agent request without both `X-Omni-Run` and `X-Omni-Role`", body = ErrorBody),
         (status = 401, description = "No valid API key or session", body = ErrorBody),
         (status = 404, description = "No such thread in this project and workspace", body = ErrorBody),
     )
@@ -749,6 +766,7 @@ pub async fn digest(
     identity: AgentIdentity,
     Path((_, project_id, thread_id)): Path<(String, String, String)>,
 ) -> Result<Json<DigestResponse>, ApiError> {
+    require_identity(&request.actor, &identity)?;
     let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
     let thread_id = parse_uuid(&thread_id).ok_or(ApiError::NotFound)?;
     let viewer = Viewer::of(&request.actor, &identity);
@@ -810,6 +828,7 @@ pub async fn digest(
     ),
     responses(
         (status = 200, description = "The post", body = SinglePostResponse),
+        (status = 400, description = "An agent request without both `X-Omni-Run` and `X-Omni-Role`", body = ErrorBody),
         (status = 401, description = "No valid API key or session", body = ErrorBody),
         (status = 404, description = "No such post in this project and workspace, or the caller may not read it yet", body = ErrorBody),
     )
@@ -820,6 +839,7 @@ pub async fn show_post(
     identity: AgentIdentity,
     Path((_, project_id, post_id)): Path<(String, String, String)>,
 ) -> Result<Json<SinglePostResponse>, ApiError> {
+    require_identity(&request.actor, &identity)?;
     let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
     let post_id = parse_uuid(&post_id).ok_or(ApiError::NotFound)?;
     let viewer = Viewer::of(&request.actor, &identity);
@@ -1210,7 +1230,7 @@ fn asks_for_a_directive(body: &Bytes) -> bool {
     request_body = CreatePostRequest,
     responses(
         (status = 201, description = "The new post", body = PostResponse),
-        (status = 400, description = "The type, summary, body, links, attachments, confidence or replaced post is missing or not valid", body = ErrorBody),
+        (status = 400, description = "The type, summary, body, links, attachments, confidence or replaced post is missing or not valid, or the agent sent no `X-Omni-Run` and `X-Omni-Role`", body = ErrorBody),
         (status = 401, description = "No valid API key or session", body = ErrorBody),
         (status = 403, description = "An API key posted a `directive`; only the human does", body = ErrorBody),
         (status = 404, description = "No such thread in this project and workspace", body = ErrorBody),
@@ -1223,6 +1243,7 @@ pub async fn create_post(
     Path((_, project_id, thread_id)): Path<(String, String, String)>,
     body: Bytes,
 ) -> Result<(StatusCode, Json<PostResponse>), ApiError> {
+    require_identity(&request.actor, &identity)?;
     let author = match request.actor {
         Actor::Agent if asks_for_a_directive(&body) => return Err(ApiError::Forbidden),
         Actor::Agent => Author::Agent(identity),
