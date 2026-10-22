@@ -23,19 +23,19 @@
 //! What a socket may see follows the caller (US-035). An event that names a
 //! post (`data.post_id`) goes only to a caller that may read that post, the
 //! human always and an agent identity (`X-Omni-Run`, `X-Omni-Role` of the
-//! handshake) by the rule of sealed phases (`threads::visible`). The rule is
-//! applied when events are read, for live ones and for those of a resume
-//! alike. An event that was withheld is not lost: the socket remembers its
-//! sequence number and sends it, once, as soon as the agent may read the post
-//! (it posted in the phase, or a later phase started). A resume does the same
-//! for the events at or below its `after` that the client cannot have got,
-//! those of posts that the agent was not allowed to read at the time of the
-//! event `after` (`withheld_before`).
+//! handshake, both required of an API key) by the rule of sealed phases
+//! (`threads::visible`). The rule is applied when events are read, for live
+//! ones and for those of a resume alike. An event that was withheld is not
+//! lost: the socket remembers its sequence number and sends it, once, as soon
+//! as the agent may read the post (it posted in the phase, or a later phase
+//! started). A resume does the same for the events at or below its `after`
+//! that the client cannot have got, those of posts that the agent was not
+//! allowed to read at the time of the event `after` (`withheld_before`).
 
 use crate::AppState;
 use crate::docs::AgentIdentity;
 use crate::session::ApiError;
-use crate::threads::{Viewer, bind_viewer, visible};
+use crate::threads::{Viewer, bind_viewer, require_identity, visible};
 use crate::workspace::{Actor, WorkspaceRequest, parse_uuid};
 use axum::extract::State;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
@@ -242,7 +242,8 @@ pub(crate) async fn emit(
 }
 
 /// Opens the socket of a workspace. Authentication and the workspace check
-/// happen before the upgrade, so a refusal is a plain 401 or 404.
+/// happen before the upgrade, so a refusal is a plain 401 or 404, or 400 for an
+/// agent without a run and a role.
 pub(crate) async fn socket(
     State(state): State<AppState>,
     origin: OriginCheck,
@@ -256,6 +257,7 @@ pub(crate) async fn socket(
     if matches!(request.actor, Actor::Human { .. }) && !origin.same_host {
         return Err(ApiError::Forbidden);
     }
+    require_identity(&request.actor, &identity)?;
     let viewer = Viewer::of(&request.actor, &identity);
     let workspace_id = request.workspace_id;
     Ok(upgrade.on_upgrade(move |socket| run(socket, state, workspace_id, viewer)))

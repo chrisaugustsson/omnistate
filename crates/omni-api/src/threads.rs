@@ -313,7 +313,7 @@ pub(crate) fn visible(post: &str, first: usize) -> String {
 /// An agent that reads or writes posts must say who it is, its run and its
 /// role: two callers without an identity would share one view of a sealed
 /// phase. The human needs none.
-fn require_identity(actor: &Actor, identity: &AgentIdentity) -> Result<(), ApiError> {
+pub(crate) fn require_identity(actor: &Actor, identity: &AgentIdentity) -> Result<(), ApiError> {
     match actor {
         Actor::Agent if identity.run().is_none() || identity.role().is_none() => {
             Err(ApiError::bad_request("identity_required"))
