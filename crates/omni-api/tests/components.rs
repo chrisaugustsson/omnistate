@@ -51,7 +51,10 @@
 //!   "source": "draft" | "mainline", "draft_id", "version_id"}` (the draft's
 //!   ID for `draft`, the mainline version's for `mainline`) and
 //!   `"components"`, the JSON of the components its instances use, as
-//!   resolved.
+//!   resolved, and `"tokens"`: the whole token tree of that design system
+//!   (the draft's, unsaved changes included, or the mainline version's), which
+//!   the design viewer's live draft view (US-045) hands the renderer with the
+//!   components.
 //! - Saving a version of a design doc (`POST
 //!   /changesets/{changeset_id}/docs/{doc_id}/versions`) records the design
 //!   system version it uses, as `"design_system_version_id"` of the version:
@@ -2176,6 +2179,80 @@ fn a_design_version_carries_the_tokens_of_its_recorded_design_system_version() {
         surface_modes(&seen["tokens"]),
         json!({"light": "#ffffff", "dark": "#0f172a"}),
         "{seen:#}"
+    );
+}
+
+#[test]
+fn a_design_draft_carries_the_tokens_of_the_design_system_it_resolves_against() {
+    let (f, client) = ready();
+    let lib = library(f, client);
+    let ids = &lib.ids;
+
+    // A change set that darkens the dark surface in its design system draft:
+    // the live draft of the shop is drawn with those tokens (US-045).
+    let retoken = new_changeset(f, client, &lib.project);
+    let mut darker = tokens();
+    darker["color"]["surface"]["$extensions"]["omnistate"]["modes"]["dark"] = json!("#020617");
+    import_token_tree(f, client, &lib.project, &retoken, &darker);
+    open_draft(f, client, &lib.project, &retoken, &lib.shop);
+    import_design(
+        f,
+        client,
+        &lib.project,
+        &retoken,
+        &lib.shop,
+        &shop_tags(ids, &pay_button(ids, "primary")),
+    );
+    let draft = read_draft(f, client, &lib.project, &retoken, &lib.shop);
+    assert_eq!(draft["design_system"]["source"], "draft", "{draft:#}");
+    assert!(
+        draft["tokens"].is_object(),
+        "a design draft carries the token tree that its instances resolve against: {draft:#}"
+    );
+    assert_eq!(
+        draft["tokens"]["$extensions"]["omnistate"]["modes"],
+        json!(["light", "dark"]),
+        "{draft:#}"
+    );
+    assert_eq!(
+        surface_modes(&draft["tokens"]),
+        json!({"light": "#ffffff", "dark": "#020617"}),
+        "the change set's design system draft, unsaved changes included"
+    );
+
+    // A change set without a design system draft draws with the mainline
+    // tokens, and the human's live draft view reads the same.
+    let changeset = new_changeset(f, client, &lib.project);
+    open_draft(f, client, &lib.project, &changeset, &lib.shop);
+    import_design(
+        f,
+        client,
+        &lib.project,
+        &changeset,
+        &lib.shop,
+        &shop_tags(ids, &pay_button(ids, "primary")),
+    );
+    let seen = must(
+        call(
+            client,
+            "GET",
+            &format!(
+                "{}/docs/{}",
+                changeset_path(f, &lib.project, &changeset),
+                lib.shop
+            ),
+            &human(f),
+            None,
+        ),
+        200,
+        "the human reads the live draft",
+    )["draft"]
+        .clone();
+    assert_eq!(seen["design_system"]["source"], "mainline", "{seen:#}");
+    assert_eq!(
+        surface_modes(&seen["tokens"]),
+        json!({"light": "#ffffff", "dark": "#0f172a"}),
+        "the mainline design system's tokens: {seen:#}"
     );
 }
 

@@ -112,6 +112,14 @@ vi.mock("@/design/renderer", () => ({
       inspect() {
         return null;
       },
+      // US-045's comment pins (src/design-review.test.tsx); this test does
+      // not look at them.
+      boxOf() {
+        return null;
+      },
+      onView() {
+        return () => {};
+      },
       destroy() {
         instance.destroyed = true;
       },
