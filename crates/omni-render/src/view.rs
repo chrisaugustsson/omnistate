@@ -657,8 +657,15 @@ impl Scene {
     /// pixels from its top-left corner: where the design viewer pins the
     /// node's comments (US-045). `None` when the address names no node.
     pub fn screen_box_of(&self, address: &NodeAddress, viewport: &Viewport) -> Option<LayoutBox> {
-        let _ = (address, viewport);
-        todo!("US-045: the box of a node on the screen")
+        let page = self.bounds_of(address)?;
+        let (x, y) = viewport.to_screen((page.x, page.y));
+        let zoom = viewport.zoom();
+        Some(LayoutBox {
+            x,
+            y,
+            width: page.width * zoom,
+            height: page.height * zoom,
+        })
     }
 
     /// What a click, or the pointer moving with Ctrl or Cmd held for `deep`,

@@ -139,6 +139,12 @@ pub struct DraftWithHtml {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schema(value_type = Option<Vec<Object>>)]
     pub components: Option<Vec<Value>>,
+    /// The token tree of the design system that a design doc's instances
+    /// resolve against: the change set's draft of it, unsaved changes
+    /// included, else the mainline version's. Absent when it has none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<Object>)]
+    pub tokens: Option<Value>,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -1234,14 +1240,15 @@ pub async fn read_draft(
         ),
         None => None,
     };
-    let (tags, pages, design_system, components) = match view {
+    let (tags, pages, design_system, components, tokens) = match view {
         Some(view) => (
             Some(view.tags),
             Some(view.pages),
             Some(view.design_system),
             Some(view.components),
+            view.tokens,
         ),
-        None => (None, None, None, None),
+        None => (None, None, None, None, None),
     };
     Ok(Json(DraftHtmlResponse {
         draft: DraftWithHtml {
@@ -1251,6 +1258,7 @@ pub async fn read_draft(
             pages,
             design_system,
             components,
+            tokens,
         },
     }))
 }

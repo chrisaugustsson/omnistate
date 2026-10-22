@@ -5,6 +5,7 @@ import {
   type ClaimBody,
   type CommentBody,
   type DocBody,
+  type DraftWithHtml,
   type VersionBody,
   type VersionItem,
 } from "./generated";
@@ -58,6 +59,22 @@ export async function loadVersionHtml(
   return loaded.html;
 }
 
+/**
+ * A change set's draft of the doc, as the agents have it now: the HTML of an
+ * HTML doc, the pages, components and tokens of a design.
+ */
+export async function loadDraft(
+  workspaceId: string,
+  projectId: string,
+  changesetId: string,
+  docId: string,
+): Promise<DraftWithHtml> {
+  const loaded = await callApi("GET", `${base(workspaceId, projectId)}/changesets/${changesetId}/docs/${docId}`, {
+    response: draft.responses["200"],
+  });
+  return loaded.draft;
+}
+
 /** The HTML of a change set's draft of the doc, as the agents have it now. */
 export async function loadDraftHtml(
   workspaceId: string,
@@ -65,10 +82,7 @@ export async function loadDraftHtml(
   changesetId: string,
   docId: string,
 ): Promise<string> {
-  const loaded = await callApi("GET", `${base(workspaceId, projectId)}/changesets/${changesetId}/docs/${docId}`, {
-    response: draft.responses["200"],
-  });
-  return loaded.draft.html;
+  return (await loadDraft(workspaceId, projectId, changesetId, docId)).html;
 }
 
 /** The change sets of a project. */

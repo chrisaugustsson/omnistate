@@ -53,8 +53,19 @@ export type DesignRenderer = {
   setMode(mode: string): void;
   /** The node at `address` in the current mode, or `null` when no node has that address. */
   inspect(address: string): Inspection | null;
+  /**
+   * The box of the node at `address` on the canvas, in CSS pixels from the
+   * canvas's top-left corner, as the current zoom and pan show it; `null`
+   * when the page shown has no node at that address.
+   */
+  boxOf(address: string): { x: number; y: number; width: number; height: number } | null;
   /** Calls `listener` when the reviewer selects a node on the canvas; returns the function that stops it. */
   onSelect(listener: (address: string | null) => void): () => void;
+  /**
+   * Calls `listener` whenever the view changes: a zoom, a pan, a resize or
+   * another page shown. Returns the function that stops it.
+   */
+  onView(listener: () => void): () => void;
   destroy(): void;
 };
 
@@ -78,6 +89,7 @@ type OmniRender = {
   _omni_render_scene_set_system(pointer: number, length: number): boolean;
   _omni_render_scene_set_mode(pointer: number, length: number): boolean;
   _omni_render_inspect(pointer: number, length: number): number;
+  _omni_render_node_box(pointer: number, length: number): number;
   _omni_render_scene_draw(width: number, height: number, pixelRatio: number): boolean;
   _omni_render_scene_layers(): number;
   _omni_render_select_node(pointer: number, length: number): boolean;
@@ -140,6 +152,7 @@ export async function createDesignRenderer(canvas: HTMLCanvasElement): Promise<D
   canvas.insertAdjacentElement("afterend", overlay);
 
   const listeners = new Set<(address: string | null) => void>();
+  const viewListeners = new Set<() => void>();
   let loaded = false;
   let dirty = true;
   let frame = 0;
@@ -189,6 +202,9 @@ export async function createDesignRenderer(canvas: HTMLCanvasElement): Promise<D
     }
     if (!module._omni_render_scene_draw(canvas.width, canvas.height, ratio)) throw failure();
     drawOverlay();
+    // Every frame drawn is a view that may have changed (zoom, pan, resize,
+    // another page), and the comment pins sit on the new one.
+    for (const listener of Array.from(viewListeners)) listener();
   }
 
   function requestFrame() {
@@ -347,10 +363,21 @@ export async function createDesignRenderer(canvas: HTMLCanvasElement): Promise<D
       const text = withText(address, (pointer, length) => module._omni_render_inspect(pointer, length));
       return text ? readJson<Inspection>(text) : null;
     },
+    boxOf(address) {
+      if (!loaded) return null;
+      const text = withText(address, (pointer, length) => module._omni_render_node_box(pointer, length));
+      return text ? readJson<{ x: number; y: number; width: number; height: number }>(text) : null;
+    },
     onSelect(listener) {
       listeners.add(listener);
       return () => {
         listeners.delete(listener);
+      };
+    },
+    onView(listener) {
+      viewListeners.add(listener);
+      return () => {
+        viewListeners.delete(listener);
       };
     },
     destroy() {
@@ -370,6 +397,7 @@ export async function createDesignRenderer(canvas: HTMLCanvasElement): Promise<D
       window.removeEventListener("blur", onBlur);
       overlay.remove();
       listeners.clear();
+      viewListeners.clear();
     },
   };
 }

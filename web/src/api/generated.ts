@@ -391,6 +391,7 @@ export const DraftWithHtmlSchema = z.intersection(DraftBodySchema, z.object({
   html: z.string(),
   pages: z.array(z.record(z.string(), z.unknown())).nullable().optional(),
   tags: z.string().nullable().optional(),
+  tokens: z.record(z.string(), z.unknown()).nullable().optional(),
 }));
 export type DraftWithHtml = z.infer<typeof DraftWithHtmlSchema>;
 

@@ -6,12 +6,13 @@ import {
   loadChangesets,
   loadDoc,
   loadDocComments,
+  loadDraft,
   loadDraftHtml,
   loadVersion,
   loadVersionHtml,
   loadVersions,
 } from "@/api/docs";
-import type { ChangesetBody, ClaimBody, CommentBody, DocBody, VersionItem } from "@/api/generated";
+import type { ChangesetBody, ClaimBody, CommentBody, DocBody, VersionBody, VersionItem } from "@/api/generated";
 import {
   createDesignRenderer,
   type DesignRenderer,
@@ -43,9 +44,17 @@ import {
 //
 // A design doc is shown by the design viewer instead (further down): the
 // renderer's canvas with a page list, a layers panel, an inspect panel for the
-// selected node and a switch between the design system's token modes.
+// selected node, a switch between the design system's token modes, comment
+// pins on the canvas, a version picker and the live draft of a change set.
+//
+// The `node` search parameter is a node address that a link from a post opens:
+// the viewer selects it (a design shows the page that holds it first) and
+// opens its comments.
 export const Route = createFileRoute("/w/$workspaceId/projects/$projectId_/docs/$docId")({
   component: DocPage,
+  validateSearch: (search: Record<string, unknown>): { node?: string } => ({
+    node: typeof search.node === "string" && search.node ? search.node : undefined,
+  }),
 });
 
 const TEXTAREA_CLASS =
@@ -129,11 +138,30 @@ function choicesOf(doc: DocBody, versions: VersionItem[], changesets: ChangesetB
   return [...ordered.map((version) => ({ value: version.id, label: label(version) })), ...drafts];
 }
 
+/** The version picker's options, and what the picked option shows: a saved version or a live draft. */
+function usePicked(
+  doc: DocBody | null,
+  versions: VersionItem[] | null,
+  changesets: ChangesetBody[] | null,
+  chosen: string | null,
+) {
+  const choices = useMemo(
+    () => (doc && versions ? choicesOf(doc, versions, changesets) : []),
+    [doc, versions, changesets],
+  );
+  const fallback = doc?.mainline_version_id ?? choices[0]?.value ?? null;
+  const picked = chosen !== null && (choices.length === 0 || choices.some((c) => c.value === chosen)) ? chosen : fallback;
+  const draft = picked?.startsWith(DRAFT_PREFIX) ? doc?.drafts.find((d) => DRAFT_PREFIX + d.id === picked) : null;
+  const versionId = picked && !picked.startsWith(DRAFT_PREFIX) ? picked : null;
+  return { choices, picked, draft, versionId };
+}
+
 function DocPage() {
   const { workspaceId, projectId, docId } = Route.useParams();
+  const { node } = Route.useSearch();
   const doc = useReloading(useCallback(() => loadDoc(workspaceId, projectId, docId), [workspaceId, projectId, docId]));
   if (doc.value?.kind === "design") {
-    return <DesignViewer workspaceId={workspaceId} projectId={projectId} docId={docId} doc={doc} />;
+    return <DesignViewer workspaceId={workspaceId} projectId={projectId} docId={docId} doc={doc} node={node} />;
   }
   if (!doc.value) {
     return (
@@ -147,7 +175,7 @@ function DocPage() {
       </main>
     );
   }
-  return <HtmlDocViewer workspaceId={workspaceId} projectId={projectId} docId={docId} doc={doc} />;
+  return <HtmlDocViewer workspaceId={workspaceId} projectId={projectId} docId={docId} doc={doc} node={node} />;
 }
 
 function BackLink({ workspaceId, projectId }: { workspaceId: string; projectId: string }) {
@@ -167,11 +195,13 @@ function HtmlDocViewer({
   projectId,
   docId,
   doc,
+  node,
 }: {
   workspaceId: string;
   projectId: string;
   docId: string;
   doc: Reloading<DocBody>;
+  node: string | undefined;
 }) {
   const versions = useReloading(
     useCallback(() => loadVersions(workspaceId, projectId, docId), [workspaceId, projectId, docId]),
@@ -181,17 +211,15 @@ function HtmlDocViewer({
     useCallback(() => loadDocComments(workspaceId, projectId, docId), [workspaceId, projectId, docId]),
   );
   const [chosen, setChosen] = useState<string | null>(null);
-  const [selected, setSelected] = useState<string | null>(null);
+  const [selected, setSelected] = useState<string | null>(node ?? null);
   const [versionHtml, setVersionHtml] = useState<Record<string, string>>({});
 
-  const choices = useMemo(
-    () => (doc.value && versions.value ? choicesOf(doc.value, versions.value, changesets.value) : []),
-    [doc.value, versions.value, changesets.value],
-  );
-  const fallback = doc.value?.mainline_version_id ?? choices[0]?.value ?? null;
-  const picked = chosen !== null && (choices.length === 0 || choices.some((c) => c.value === chosen)) ? chosen : fallback;
-  const draft = picked?.startsWith(DRAFT_PREFIX) ? doc.value?.drafts.find((d) => DRAFT_PREFIX + d.id === picked) : null;
-  const versionId = picked && !picked.startsWith(DRAFT_PREFIX) ? picked : null;
+  // A link to another block of the doc selects that block.
+  useEffect(() => {
+    if (node) setSelected(node);
+  }, [node]);
+
+  const { choices, picked, draft, versionId } = usePicked(doc.value, versions.value, changesets.value, chosen);
 
   // The draft: loaded when it is picked and again on every operation applied to it.
   const draftChangeset = draft?.changeset_id;
@@ -304,15 +332,18 @@ function HtmlDocViewer({
               onSelect={setSelected}
             />
             <aside className="space-y-6">
-              {draft && <ClaimsPanel claims={shownClaims} />}
+              {draft && <ClaimsPanel claims={shownClaims} noun="block" />}
               <CommentsPanel
                 workspaceId={workspaceId}
                 projectId={projectId}
                 selected={selected}
                 comments={commentsOnSelected}
                 versionId={versionId}
-                shownHtml={shownHtml}
-                versionHtml={versionHtml}
+                noun="block"
+                compare={(comment) => ({
+                  then: blockTextOf(versionHtml[comment.version_id], selected),
+                  now: blockTextOf(shownHtml, selected),
+                })}
                 versionLabels={Object.fromEntries(choices.map((choice) => [choice.value, choice.label]))}
                 onPosted={comments.reload}
               />
@@ -405,7 +436,16 @@ function Panel({ id, title, children }: { id: string; title: string; children: R
   );
 }
 
-function ClaimsPanel({ claims }: { claims: ClaimBody[] }) {
+function ClaimsPanel({
+  claims,
+  noun,
+  nameOf,
+}: {
+  claims: ClaimBody[];
+  noun: string;
+  /** The name of a claimed node; its ID when unknown. */
+  nameOf?: (node: string) => string | undefined;
+}) {
   return (
     <Panel id="claims" title="Claims">
       {claims.length === 0 && <p className="text-sm text-muted-foreground">No agent holds a claim.</p>}
@@ -413,7 +453,10 @@ function ClaimsPanel({ claims }: { claims: ClaimBody[] }) {
         {claims.map((claim) => (
           <li key={claim.id} className="px-3 py-2 text-sm">
             <span className="font-medium">{holderOf(claim)}</span>
-            <span className="text-muted-foreground"> holds block {claim.node}</span>
+            <span className="text-muted-foreground">
+              {" "}
+              holds {noun} {nameOf?.(claim.node) ?? claim.node}
+            </span>
           </li>
         ))}
       </ul>
@@ -427,8 +470,8 @@ function CommentsPanel({
   selected,
   comments,
   versionId,
-  shownHtml,
-  versionHtml,
+  noun,
+  compare,
   versionLabels,
   onPosted,
 }: {
@@ -437,8 +480,10 @@ function CommentsPanel({
   selected: string | null;
   comments: CommentBody[];
   versionId: string | null;
-  shownHtml: string | null;
-  versionHtml: Record<string, string>;
+  /** What a comment is on: a block of a doc, a node of a design. */
+  noun: string;
+  /** The selected node as it was on the version a comment was made on, and as it is on the version shown. */
+  compare: (comment: CommentBody) => { then: string; now: string };
   versionLabels: Record<string, string>;
   onPosted: () => void;
 }) {
@@ -465,9 +510,9 @@ function CommentsPanel({
 
   return (
     <Panel id="comments" title="Comments">
-      {!selected && <p className="text-sm text-muted-foreground">Select a block of the doc to see its comments.</p>}
+      {!selected && <p className="text-sm text-muted-foreground">Select a {noun} to see its comments.</p>}
       {selected && comments.length === 0 && (
-        <p className="text-sm text-muted-foreground">No comments on this block yet.</p>
+        <p className="text-sm text-muted-foreground">No comments on this {noun} yet.</p>
       )}
       <ul className="space-y-3 empty:hidden">
         {comments.map((comment) => (
@@ -480,10 +525,9 @@ function CommentsPanel({
             {comment.version_id !== versionId && selected && (
               <Comparison
                 comment={comment}
-                node={selected}
+                noun={noun}
                 label={versionLabels[comment.version_id]}
-                then={versionHtml[comment.version_id]}
-                now={shownHtml}
+                {...compare(comment)}
               />
             )}
             {comment.replies.map((reply) => (
@@ -520,32 +564,38 @@ function CommentsPanel({
   );
 }
 
-/** A comment made on another version than the one shown: the block as it was then, next to the block now. */
+/** A comment made on another version than the one shown: the node as it was then, next to the node now. */
 function Comparison({
   comment,
-  node,
+  noun,
   label,
   then,
   now,
 }: {
   comment: CommentBody;
-  node: string;
+  noun: string;
   label: string | undefined;
-  then: string | undefined;
-  now: string | null;
+  then: string;
+  now: string;
 }) {
-  const textOf = (html: string | null | undefined) =>
-    html === undefined || html === null ? "Loading" : (blockText(html, node) ?? "The block is not in this version.");
   return (
     <dl className="grid gap-1 rounded-md bg-muted/50 p-2 text-xs">
-      <dt className="font-medium">Made on {label ?? "an older version"}, the block read</dt>
-      <dd>{textOf(then)}</dd>
+      <dt className="font-medium">
+        Made on {label ?? "an older version"}, the {noun} read
+      </dt>
+      <dd>{then}</dd>
       <dt className="font-medium">
         Now{comment.node_status === "removed" ? " (removed since)" : ""}
       </dt>
-      <dd>{textOf(now)}</dd>
+      <dd>{now}</dd>
     </dl>
   );
+}
+
+/** The text of a block of an HTML version, or why there is none. */
+function blockTextOf(html: string | null | undefined, node: string | null): string {
+  if (html === undefined || html === null) return "Loading";
+  return (node ? blockText(html, node) : null) ?? "The block is not in this version.";
 }
 
 // The design viewer ------------------------------------------------------------------------
@@ -672,54 +722,215 @@ function InspectPanel({ inspection }: { inspection: Inspection | null }) {
   );
 }
 
+type JsonNode = Record<string, unknown>;
+
+/** The node with the ID `id` among `nodes` and what is below them. */
+function findNode(nodes: JsonNode[], id: string): JsonNode | null {
+  for (const node of nodes) {
+    if (node.id === id) return node;
+    const below = Array.isArray(node.children) ? findNode(node.children as JsonNode[], id) : null;
+    if (below) return below;
+  }
+  return null;
+}
+
+/** What a version of a design holds: its pages, the components its instances use and its tokens. */
+type DesignSource = Pick<VersionBody, "pages" | "components" | "tokens">;
+
 /**
- * The reviewer's view of a design doc: its mainline version on the renderer's
- * canvas, a list of its pages and a layers panel whose selection follows the
- * canvas, and the other way around. The version holds the pages, the
- * components its instances use and the tokens of the design system version it
- * recorded, which the renderer resolves the page against.
+ * The node at `address` as the source holds it: a node ID, or
+ * `<instanceId>/<componentNodeId>` for a node inside an instance, which is a
+ * node of the instance's component.
+ */
+function nodeAt(source: DesignSource | null | undefined, address: string): JsonNode | null {
+  if (!source) return null;
+  const segments = address.split("/");
+  if (segments.length === 1) return findNode(source.pages ?? [], address);
+  if (!findNode(source.pages ?? [], segments[0])) return null;
+  return findNode(source.components ?? [], segments[segments.length - 1]);
+}
+
+const NODE_ENVELOPE = new Set(["id", "type", "name", "children"]);
+
+/** A node as the comparison writes it: a text's content, else its type, name and own fields. */
+function describeNode(node: JsonNode | null): string {
+  if (!node) return "The node is not in this version.";
+  if (typeof node.content === "string") return node.content;
+  const fields = Object.entries(node)
+    .filter(([key]) => !NODE_ENVELOPE.has(key))
+    .map(([key, value]) => `${key}: ${showValue(value)}`);
+  const head = `${String(node.type)} ${String(node.name ?? "")}`.trim();
+  return fields.length > 0 ? `${head}: ${fields.join(", ")}` : head;
+}
+
+/** Whether `page` holds a node with the ID `id`. */
+function holds(page: JsonNode, id: string): boolean {
+  return findNode([page], id) !== null;
+}
+
+/** Loads each saved version asked for once; a saved version never changes. */
+function useVersionBodies(workspaceId: string, projectId: string, ids: string[]) {
+  const [bodies, setBodies] = useState<Record<string, VersionBody>>({});
+  const [failed, setFailed] = useState(false);
+  const requested = useRef(new Set<string>());
+  useEffect(() => {
+    requested.current = new Set();
+    setBodies({});
+  }, [workspaceId, projectId]);
+  useEffect(() => {
+    for (const id of ids) {
+      if (requested.current.has(id)) continue;
+      requested.current.add(id);
+      loadVersion(workspaceId, projectId, id).then(
+        (loaded) => {
+          setBodies((previous) => ({ ...previous, [id]: loaded }));
+          setFailed(false);
+        },
+        () => {
+          requested.current.delete(id);
+          setFailed(true);
+        },
+      );
+    }
+  }, [ids, workspaceId, projectId]);
+  return { bodies, failed };
+}
+
+/**
+ * Buttons over the canvas, one on each commented node, that sit on the node's
+ * box and follow it as the view changes (zooming, panning, another page).
+ */
+function CommentPins({
+  renderer,
+  pins,
+  selected,
+  onPick,
+}: {
+  renderer: DesignRenderer | null;
+  pins: { address: string; name: string; count: number }[];
+  selected: string | null;
+  onPick: (address: string) => void;
+}) {
+  const [, setView] = useState(0);
+  useEffect(() => renderer?.onView(() => setView((count) => count + 1)), [renderer]);
+  if (!renderer) return null;
+  return (
+    <div className="pointer-events-none absolute inset-0 overflow-hidden">
+      {pins.map((pin) => {
+        let box: ReturnType<DesignRenderer["boxOf"]>;
+        try {
+          box = renderer.boxOf(pin.address);
+        } catch {
+          return null;
+        }
+        if (!box) return null;
+        return (
+          <button
+            key={pin.address}
+            type="button"
+            aria-label={`${pin.count} ${pin.count === 1 ? "comment" : "comments"} on ${pin.name}`}
+            aria-pressed={pin.address === selected}
+            // The pin's centre is the top-right corner of its node's box.
+            style={{ left: box.x + box.width, top: box.y }}
+            className="pointer-events-auto absolute flex h-6 min-w-6 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full bg-primary px-1.5 text-xs font-medium text-primary-foreground ring-2 ring-background aria-pressed:ring-ring"
+            onClick={() => onPick(pin.address)}
+          >
+            {pin.count}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+/**
+ * The reviewer's view of a design doc: a version of it (the mainline version
+ * at first) or a live draft on the renderer's canvas, a list of its pages and
+ * a layers panel whose selection follows the canvas, and the other way
+ * around. A version holds the pages, the components its instances use and the
+ * tokens of the design system version it recorded, which the renderer
+ * resolves the page against; a live draft holds the same, as the agents have
+ * it now, and is loaded again on every operation applied to it.
+ *
+ * Comments pin on node addresses: a button over the canvas on each commented
+ * node, and a Comments panel for the selected node, in which a new comment
+ * attaches to the selected address and the version shown. A comment made on
+ * another version shows the node as it was then next to the node now.
  */
 function DesignViewer({
   workspaceId,
   projectId,
   docId,
   doc,
+  node,
 }: {
   workspaceId: string;
   projectId: string;
   docId: string;
   doc: Reloading<DocBody>;
+  node: string | undefined;
 }) {
-  const mainline = doc.value?.mainline_version_id ?? null;
-  // A saved version never changes, so it is loaded again only for another one.
-  const version = useReloading(
-    useCallback(
-      () => (mainline ? loadVersion(workspaceId, projectId, mainline) : Promise.resolve(null)),
-      [workspaceId, projectId, mainline],
-    ),
+  const versions = useReloading(
+    useCallback(() => loadVersions(workspaceId, projectId, docId), [workspaceId, projectId, docId]),
   );
+  const changesets = useReloading(useCallback(() => loadChangesets(workspaceId, projectId), [workspaceId, projectId]));
+  const comments = useReloading(
+    useCallback(() => loadDocComments(workspaceId, projectId, docId), [workspaceId, projectId, docId]),
+  );
+  const [chosenVersion, setChosenVersion] = useState<string | null>(null);
   const [chosen, setChosen] = useState<string | null>(null);
   const [renderer, setRenderer] = useState<DesignRenderer | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
   const [layers, setLayers] = useState<Layer[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
+  // The node a link opened, until it is selected.
+  const [target, setTarget] = useState<string | null>(node ?? null);
   const [chosenMode, setChosenMode] = useState<string | null>(null);
   // Counts the times the renderer drew a page or another mode, so that the inspect panel asks again.
   const [drawn, setDrawn] = useState(0);
   const canvas = useRef<HTMLCanvasElement>(null);
 
-  const modes = useMemo(() => modesOf(version.value?.tokens), [version.value]);
+  const { choices, draft, versionId } = usePicked(doc.value, versions.value, changesets.value, chosenVersion);
+  const picked = draft ? DRAFT_PREFIX + draft.id : versionId;
+
+  // The draft: loaded when it is picked and again on every operation applied to it.
+  const draftChangeset = draft?.changeset_id;
+  const loadLiveDraft = useCallback(
+    () => (draftChangeset ? loadDraft(workspaceId, projectId, draftChangeset, docId) : Promise.resolve(null)),
+    [workspaceId, projectId, draftChangeset, docId],
+  );
+  const liveDraft = useReloading(loadLiveDraft);
+
+  // The version shown, and the versions that comments on the selected node were made on.
+  const commentsOnSelected = useMemo(
+    () => (comments.value ?? []).filter((comment) => comment.node === selected),
+    [comments.value, selected],
+  );
+  const wanted = useMemo(() => {
+    const ids = new Set<string>();
+    if (versionId) ids.add(versionId);
+    for (const comment of commentsOnSelected) ids.add(comment.version_id);
+    return Array.from(ids);
+  }, [versionId, commentsOnSelected]);
+  const { bodies, failed: versionFailed } = useVersionBodies(workspaceId, projectId, wanted);
+  const source: DesignSource | null = draft ? liveDraft.value : versionId ? (bodies[versionId] ?? null) : null;
+
+  const modes = useMemo(() => modesOf(source?.tokens), [source]);
   const mode = chosenMode !== null && modes.includes(chosenMode) ? chosenMode : (modes[0] ?? null);
   const modeRef = useRef(mode);
   useEffect(() => {
     modeRef.current = mode;
   });
+  const selectedRef = useRef(selected);
+  useEffect(() => {
+    selectedRef.current = selected;
+  });
 
-  const pages = useMemo(() => version.value?.pages ?? [], [version.value]);
+  const pages = useMemo(() => source?.pages ?? [], [source]);
   const page = useMemo(() => pages.find((candidate) => candidate.id === chosen) ?? pages[0] ?? null, [pages, chosen]);
   const system = useMemo(
-    () => (version.value ? { ...version.value.tokens, $components: version.value.components ?? [] } : null),
-    [version.value],
+    () => (source ? { ...source.tokens, $components: source.components ?? [] } : null),
+    [source],
   );
 
   useEffect(() => {
@@ -756,19 +967,52 @@ function DesignViewer({
       renderer.show(page, system);
       // A page is shown in the first mode, so the chosen mode is set again.
       if (modeRef.current && modeRef.current !== modes[0]) renderer.setMode(modeRef.current);
+      const shownLayers = renderer.layers();
+      // The selection stays while its node is still there, as when a live draft changes.
+      const kept = selectedRef.current;
+      const stays = kept !== null && rowsOf(shownLayers).some((row) => row.layer.address === kept);
+      if (stays) renderer.select(kept);
       setDrawn((count) => count + 1);
-      setLayers(renderer.layers());
-      setSelected(null);
+      setLayers(shownLayers);
+      setSelected(stays ? kept : null);
       setFailure(null);
     } catch (error) {
       setFailure(error instanceof Error ? error.message : "The design could not be drawn.");
     }
   }, [renderer, page, system, modes]);
 
+  // A link to a node: its page is shown, then it is selected.
+  useEffect(() => {
+    setTarget(node ?? null);
+  }, [node]);
+  useEffect(() => {
+    if (!target) return;
+    const holder = pages.find((candidate) => holds(candidate, target.split("/")[0]));
+    if (holder && holder !== page) setChosen(String(holder.id));
+  }, [target, pages, page]);
+  useEffect(() => {
+    if (!renderer || !target || !rowsOf(layers).some((row) => row.layer.address === target)) return;
+    setSelected(target);
+    renderer.select(target);
+    setTarget(null);
+  }, [renderer, target, layers]);
+
   useProjectEvents(projectId, (event) => {
     const { doc_id: eventDoc } = event.data;
     if (typeof eventDoc === "string" && eventDoc !== docId) return;
-    if (!event.event.startsWith("comment.")) doc.reload();
+    const name = event.event;
+    if (name === "op.applied") {
+      if (draftChangeset) liveDraft.reload();
+    } else if (name.startsWith("comment.")) {
+      comments.reload();
+    } else if (name.startsWith("claim.")) {
+      doc.reload();
+    } else {
+      doc.reload();
+      versions.reload();
+      changesets.reload();
+      if (draftChangeset) liveDraft.reload();
+    }
   });
 
   function choose(address: string | null) {
@@ -799,6 +1043,21 @@ function DesignViewer({
     }
   }, [renderer, selected, drawn]);
 
+  // One pin on each node of the page shown that has comments, on any version.
+  const pins = useMemo(() => {
+    const names = new Map(rows.map(({ layer }) => [layer.address, layer.name]));
+    const counts = new Map<string, number>();
+    for (const comment of comments.value ?? []) {
+      if (names.has(comment.node)) counts.set(comment.node, (counts.get(comment.node) ?? 0) + 1);
+    }
+    return Array.from(counts, ([address, count]) => ({ address, count, name: names.get(address) ?? address }));
+  }, [rows, comments.value]);
+
+  const shownClaims = useMemo(
+    () => (draft ? (doc.value?.claims ?? []).filter((claim) => claim.draft_id === draft.id) : []),
+    [draft, doc.value],
+  );
+
   return (
     <main className="mx-auto max-w-7xl space-y-6 p-6">
       <BackLink workspaceId={workspaceId} projectId={projectId} />
@@ -810,26 +1069,43 @@ function DesignViewer({
       {doc.value && (
         <header className="flex flex-wrap items-end justify-between gap-4">
           <h1 className="text-2xl font-semibold">{doc.value.title}</h1>
-          {mode !== null && (
-            <div className="w-40 space-y-1">
-              <Label htmlFor="mode-switch">Mode</Label>
+          <div className="flex flex-wrap items-end gap-4">
+            <div className="w-80 max-w-full space-y-1">
+              <Label htmlFor="version-picker">Version</Label>
               <select
-                id="mode-switch"
+                id="version-picker"
                 className={SELECT_CLASS}
-                value={mode}
-                onChange={(event) => chooseMode(event.target.value)}
+                value={picked ?? ""}
+                onChange={(event) => setChosenVersion(event.target.value)}
               >
-                {modes.map((listed) => (
-                  <option key={listed} value={listed}>
-                    {listed}
+                {choices.map((choice) => (
+                  <option key={choice.value} value={choice.value}>
+                    {choice.label}
                   </option>
                 ))}
               </select>
             </div>
-          )}
+            {mode !== null && (
+              <div className="w-40 space-y-1">
+                <Label htmlFor="mode-switch">Mode</Label>
+                <select
+                  id="mode-switch"
+                  className={SELECT_CLASS}
+                  value={mode}
+                  onChange={(event) => chooseMode(event.target.value)}
+                >
+                  {modes.map((listed) => (
+                    <option key={listed} value={listed}>
+                      {listed}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+          </div>
         </header>
       )}
-      {version.failed && (
+      {(versionFailed || liveDraft.failed) && (
         <Alert variant="destructive">
           <AlertDescription>The design could not be loaded. Try again in a moment.</AlertDescription>
         </Alert>
@@ -839,7 +1115,7 @@ function DesignViewer({
           <AlertDescription>{failure}</AlertDescription>
         </Alert>
       )}
-      {doc.value && !mainline && <p className="text-sm text-muted-foreground">This doc has no saved version yet.</p>}
+      {doc.value && !picked && <p className="text-sm text-muted-foreground">This doc has no saved version yet.</p>}
       <div className="grid gap-6 lg:grid-cols-[14rem_minmax(0,1fr)_18rem]">
         <nav aria-label="Pages" className="space-y-2">
           <h2 className="text-lg font-semibold">Pages</h2>
@@ -861,8 +1137,19 @@ function DesignViewer({
         </nav>
         <div className="relative h-[75vh] overflow-hidden rounded-md border bg-muted/30">
           <canvas ref={canvas} aria-label="Design canvas" className="size-full touch-none" />
+          <CommentPins renderer={renderer} pins={pins} selected={selected} onPick={choose} />
         </div>
         <div className="space-y-6">
+          {draft && (
+            <ClaimsPanel
+              claims={shownClaims}
+              noun="board"
+              nameOf={(claimed) => {
+                const found = findNode(pages, claimed);
+                return typeof found?.name === "string" ? found.name : undefined;
+              }}
+            />
+          )}
           <Panel id="layers" title="Layers">
             <div role="tree" aria-label="Layers of the page" className="max-h-[70vh] overflow-auto text-sm">
               {rows.map(({ layer, level }) => (
@@ -887,6 +1174,22 @@ function DesignViewer({
               ))}
             </div>
           </Panel>
+          <CommentsPanel
+            workspaceId={workspaceId}
+            projectId={projectId}
+            selected={selected}
+            comments={commentsOnSelected}
+            versionId={versionId}
+            noun="node"
+            compare={(comment) => ({
+              then: bodies[comment.version_id]
+                ? describeNode(nodeAt(bodies[comment.version_id], selected ?? ""))
+                : "Loading",
+              now: source ? describeNode(nodeAt(source, selected ?? "")) : "Loading",
+            })}
+            versionLabels={Object.fromEntries(choices.map((choice) => [choice.value, choice.label]))}
+            onPosted={comments.reload}
+          />
           <InspectPanel inspection={inspection} />
         </div>
       </div>

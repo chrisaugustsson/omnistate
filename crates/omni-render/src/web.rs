@@ -306,15 +306,22 @@ pub fn bounds_of(address: &str) -> Result<Option<String>, String> {
     let address: NodeAddress = address.parse().map_err(|error| format!("{error}"))?;
     Ok(with_stage(|scene, viewport| {
         let page = scene.bounds_of(&address)?;
-        let (x, y) = viewport.to_screen((page.x, page.y));
-        let zoom = viewport.zoom();
-        let screen = LayoutBox {
-            x,
-            y,
-            width: page.width * zoom,
-            height: page.height * zoom,
-        };
+        let screen = scene.screen_box_of(&address, viewport)?;
         Some(json!({"page": box_json(page), "screen": box_json(screen)}).to_string())
+    })
+    .flatten())
+}
+
+/// The box of the node at `address` on the canvas at the current view, as
+/// JSON `{"x", "y", "width", "height"}` in CSS pixels from the canvas's
+/// top-left corner: where the design viewer pins the node's comments.
+/// `Ok(None)` if no scene is loaded or the address names no node.
+pub fn node_box(address: &str) -> Result<Option<String>, String> {
+    let address: NodeAddress = address.parse().map_err(|error| format!("{error}"))?;
+    Ok(with_stage(|scene, viewport| {
+        scene
+            .screen_box_of(&address, viewport)
+            .map(|rect| box_json(rect).to_string())
     })
     .flatten())
 }

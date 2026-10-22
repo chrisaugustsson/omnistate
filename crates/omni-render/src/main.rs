@@ -24,6 +24,8 @@ mod exports {
         static STATS: RefCell<CString> = RefCell::new(CString::default());
         /// The result of the last `omni_render_bounds_of`.
         static BOUNDS: RefCell<CString> = RefCell::new(CString::default());
+        /// The result of the last `omni_render_node_box`.
+        static NODE_BOX: RefCell<CString> = RefCell::new(CString::default());
         /// The result of the last `omni_render_inspect`.
         static INSPECTION: RefCell<CString> = RefCell::new(CString::default());
         /// The result of the last `omni_render_take_events`.
@@ -376,6 +378,35 @@ mod exports {
             Ok(Some(bounds)) => {
                 BOUNDS.set(CString::new(bounds).unwrap_or_default());
                 BOUNDS.with_borrow(|bounds| bounds.as_ptr())
+            }
+            Ok(None) => std::ptr::null(),
+            Err(reason) => {
+                fail(&reason);
+                std::ptr::null()
+            }
+        }
+    }
+
+    /// The box of the node at the address (`<id>` or
+    /// `<instanceId>/<componentNodeId>`) on the canvas at the current view, as
+    /// a NUL-ended JSON object that stays until the next call: `{"x": 20,
+    /// "y": 20, "width": 120, "height": 40}`, in CSS pixels from the canvas's
+    /// top-left corner. Null if the address names no node or is not an address
+    /// (`omni_render_error` has the reason in that case).
+    ///
+    /// # Safety
+    /// The pointer and length must be a block from `omni_render_alloc`.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn omni_render_node_box(
+        address: *const u8,
+        address_len: usize,
+    ) -> *const c_char {
+        // SAFETY: the caller promises the block is there.
+        let found = unsafe { text(address, address_len) }.and_then(omni_render::web::node_box);
+        match found {
+            Ok(Some(found)) => {
+                NODE_BOX.set(CString::new(found).unwrap_or_default());
+                NODE_BOX.with_borrow(|found| found.as_ptr())
             }
             Ok(None) => std::ptr::null(),
             Err(reason) => {

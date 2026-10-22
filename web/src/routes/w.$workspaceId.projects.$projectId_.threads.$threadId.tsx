@@ -150,6 +150,33 @@ function authorName(author: Record<string, unknown>): string {
   return typeof author.role === "string" && author.role ? author.role : "agent";
 }
 
+/** The nodes a post points at, as links that open the node in the doc's viewer. */
+function NodeLinks({ post }: { post: PostBody }) {
+  const { workspaceId, projectId } = Route.useParams();
+  const nodes = post.links.flatMap((link) =>
+    link.kind === "node" && typeof link.doc_id === "string" && typeof link.address === "string"
+      ? [{ docId: link.doc_id, address: link.address }]
+      : [],
+  );
+  if (nodes.length === 0) return null;
+  return (
+    <ul className="flex flex-wrap gap-x-4 gap-y-1">
+      {nodes.map(({ docId, address }) => (
+        <li key={`${docId}/${address}`}>
+          <Link
+            to="/w/$workspaceId/projects/$projectId/docs/$docId"
+            params={{ workspaceId, projectId, docId }}
+            search={{ node: address }}
+            className="font-mono text-xs text-muted-foreground underline underline-offset-4 hover:text-foreground"
+          >
+            Node {address}
+          </Link>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 function Phases({
   thread,
   summariesOnly,
@@ -188,6 +215,7 @@ function Phases({
                     // The API has already made the body safe: Markdown without raw HTML.
                     <div className="space-y-2 text-muted-foreground" dangerouslySetInnerHTML={{ __html: post.body_html }} />
                   )}
+                  <NodeLinks post={post} />
                 </li>
               ))}
           </ul>

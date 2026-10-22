@@ -440,6 +440,8 @@ pub(crate) enum Source {
 pub(crate) struct Resolved {
     pub(crate) source: Source,
     pub(crate) library: Library,
+    /// The design system's token tree; none when it has none.
+    pub(crate) tokens: Option<TokenTree>,
 }
 
 impl Resolved {
@@ -526,6 +528,7 @@ pub(crate) async fn resolve(
         return Ok(Resolved {
             source: Source::Nothing { doc_id: None },
             library: Library::default(),
+            tokens: None,
         });
     };
     let draft_id: Option<String> = sqlx::query_scalar(
@@ -551,17 +554,21 @@ pub(crate) async fn resolve(
             .as_ref()
             .map(|loaded| loaded.components.clone())
             .unwrap_or_default();
+        let tokens = held.as_ref().and_then(|loaded| loaded.tokens.clone());
         return Ok(Resolved {
             source: Source::Draft { doc_id, draft_id },
             library: Library::new(components),
+            tokens,
         });
     }
     match mainline {
         Some(version_id) => {
-            let library = components_of(state, workspace_id, &version_id).await?;
+            let (tokens, library) =
+                tokens_and_components_of(state, workspace_id, &version_id).await?;
             Ok(Resolved {
                 source: Source::Mainline { doc_id, version_id },
                 library,
+                tokens,
             })
         }
         None => Ok(Resolved {
@@ -569,18 +576,20 @@ pub(crate) async fn resolve(
                 doc_id: Some(doc_id),
             },
             library: Library::default(),
+            tokens: None,
         }),
     }
 }
 
 /// What a design doc's draft adds to the read of a draft: its pages as tags
 /// and JSON, the design system it resolves against and the components its
-/// instances use, as resolved.
+/// instances use, as resolved, and its tokens.
 pub(crate) struct DraftView {
     pub(crate) tags: String,
     pub(crate) pages: Vec<Value>,
     pub(crate) design_system: Value,
     pub(crate) components: Vec<Value>,
+    pub(crate) tokens: Option<Value>,
 }
 
 pub(crate) async fn view_of_draft(
@@ -597,6 +606,7 @@ pub(crate) async fn view_of_draft(
         pages: nodes_values(pages),
         design_system: resolved.to_json(),
         components: nodes_values(&resolved.library.only(&used)),
+        tokens: resolved.tokens.as_ref().map(TokenTree::to_json),
     })
 }
 

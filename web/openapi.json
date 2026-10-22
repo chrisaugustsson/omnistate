@@ -1370,6 +1370,13 @@
                   "string",
                   "null"
                 ]
+              },
+              "tokens": {
+                "description": "The token tree of the design system that a design doc's instances\nresolve against: the change set's draft of it, unsaved changes\nincluded, else the mainline version's. Absent when it has none.",
+                "type": [
+                  "object",
+                  "null"
+                ]
               }
             },
             "required": [
