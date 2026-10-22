@@ -34,7 +34,9 @@
 // A placeholder is drawn as a light neutral grey box (#e4e4e7) with the
 // board's ID, name, place, size and rounding, not the board's own fills, so
 // that a board not loaded yet is not taken for a dark design. (The API gives
-// a board that hugs its content the size of that content in the outline.)
+// a board that hugs its content the size of that content in the outline.) It
+// has the layout `{"mode": "none"}`: the renderer refuses a board without a
+// layout, and a board without children needs no other.
 //
 // The app is rendered with its own router on a memory history, the browser's
 // fetch is replaced by a fake of the API, and the browser's WebSocket by a fake
@@ -439,8 +441,8 @@ function wholeBoard(version: string, id: string): JsonNode {
 
 /**
  * Whether `entry` is the placeholder of the board `id` of `version`: the
- * board's ID, name, place and size, none of its content, and a light grey
- * fill in place of its own look.
+ * board's ID, name, place and size, none of its content, the layout every
+ * board needs, and a light grey fill in place of its own look.
  */
 function expectPlaceholder(entry: JsonNode | undefined, version: string, id: string) {
   expect(entry, `the board ${id} is on the page`).toBeTruthy();
@@ -455,6 +457,7 @@ function expectPlaceholder(entry: JsonNode | undefined, version: string, id: str
     y: whole.y,
     width: whole.width,
     height: whole.height,
+    layout: { mode: "none" },
     fills: [{ type: "solid", color: "#e4e4e7" }],
   });
 }
