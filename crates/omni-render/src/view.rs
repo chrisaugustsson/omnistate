@@ -19,6 +19,7 @@
 //!   draws the page with its instances expanded and its tokens resolved in the
 //!   scene's mode (see the README's "Instances and tokens").
 
+use crate::inspect::Inspection;
 use crate::layout::{self, LayoutBox, ShapedTexts};
 use crate::paint::{self, Assets};
 use crate::resolve;
@@ -683,6 +684,14 @@ impl Scene {
         };
         self.select(Some(at));
         true
+    }
+
+    /// The node at `address` as the inspect panel of the design viewer shows
+    /// it (US-044): its properties as the scene draws them, with their tokens
+    /// resolved in the current mode, and for an instance what it stores.
+    /// `None` when the address names no node of the scene.
+    pub fn inspect(&self, address: &NodeAddress) -> Option<Inspection> {
+        todo!("US-044: inspect {address}")
     }
 
     /// The pointer moved to the screen point `screen` of `viewport`.

@@ -106,6 +106,12 @@ vi.mock("@/design/renderer", () => ({
         instance.listeners.add(listener);
         return () => instance.listeners.delete(listener);
       },
+      // US-044's mode switch and inspect panel (src/design-inspect.test.tsx);
+      // this test does not look at them.
+      setMode() {},
+      inspect() {
+        return null;
+      },
       destroy() {
         instance.destroyed = true;
       },
