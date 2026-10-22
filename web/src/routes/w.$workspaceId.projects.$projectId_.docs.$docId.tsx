@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
-import { Link, createFileRoute } from "@tanstack/react-router";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { createFileRoute } from "@tanstack/react-router";
 import {
   createComment,
   holderOf,
@@ -23,9 +23,33 @@ import {
 } from "@/design/renderer";
 import { createAssetLoader } from "@/design/assets";
 import { BoardCache, findPageHolding, pageWithBoards, showBoardwise } from "@/design/boards";
-import { Alert, AlertDescription } from "@/components/ui/alert";
+import {
+  FileText,
+  Files,
+  Layers as LayersIcon,
+  Lock,
+  MessageSquare,
+  MousePointerClick,
+  PenTool,
+  Send,
+  SlidersHorizontal,
+} from "lucide-react";
+import { AgentChip } from "@/components/agent-chip";
+import { StatusBadge } from "@/components/status-badge";
 import { Button } from "@/components/ui/button";
-import { Label } from "@/components/ui/label";
+import {
+  FloatingAlert,
+  FloatingAlerts,
+  LiveIndicator,
+  PaneEmpty,
+  PaneLabel,
+  PaneSection,
+  ToolbarSelect,
+  ViewerToolbar,
+} from "@/components/viewer/chrome";
+import { LayerIcon, MonoValue, PropertyTable, TokenChip } from "@/components/viewer/design";
+import { timeAgo } from "@/lib/format";
+import { cn } from "@/lib/utils";
 import { useReloading, type Reloading } from "@/lib/reloading";
 import { useProjectEvents } from "@/live/context";
 import { ViewerFrame } from "@/viewer/frame";
@@ -56,9 +80,7 @@ export const Route = createFileRoute("/w/$workspaceId/projects/$projectId_/docs/
 });
 
 const TEXTAREA_CLASS =
-  "min-h-20 w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-xs outline-none placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50";
-const SELECT_CLASS =
-  "h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-xs outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50";
+  "block min-h-20 w-full resize-none bg-transparent px-3 pt-2.5 pb-1 text-[13px] leading-relaxed outline-none placeholder:text-muted-foreground";
 
 const DRAFT_PREFIX = "draft:";
 
@@ -130,29 +152,49 @@ function DocPage() {
   }
   if (!doc.value) {
     return (
-      <main className="mx-auto max-w-7xl space-y-6 p-6">
-        <BackLink workspaceId={workspaceId} projectId={projectId} />
-        {doc.failed && (
-          <Alert variant="destructive">
-            <AlertDescription>The doc could not be loaded. Try again in a moment.</AlertDescription>
-          </Alert>
-        )}
+      <main className="flex min-h-full flex-col">
+        <ViewerToolbar workspaceId={workspaceId} projectId={projectId} title={null} />
+        <div className="relative flex-1 bg-canvas">
+          <FloatingAlerts>
+            {doc.failed && <FloatingAlert>The doc could not be loaded. Try again in a moment.</FloatingAlert>}
+          </FloatingAlerts>
+        </div>
       </main>
     );
   }
   return <HtmlDocViewer workspaceId={workspaceId} projectId={projectId} docId={docId} doc={doc} node={node} />;
 }
 
-function BackLink({ workspaceId, projectId }: { workspaceId: string; projectId: string }) {
+/** The version picker: the versions, the mainline first, and the live drafts. */
+function VersionPicker({
+  choices,
+  picked,
+  onPick,
+}: {
+  choices: Choice[];
+  picked: string | null;
+  onPick: (value: string) => void;
+}) {
   return (
-    <Link
-      to="/w/$workspaceId/projects/$projectId"
-      params={{ workspaceId, projectId }}
-      className="text-sm text-muted-foreground underline-offset-4 hover:underline"
+    <ToolbarSelect
+      id="version-picker"
+      label="Version"
+      className="w-full sm:w-72"
+      value={picked ?? ""}
+      onChange={(event) => onPick(event.target.value)}
     >
-      Back to the project
-    </Link>
+      {choices.map((choice) => (
+        <option key={choice.value} value={choice.value}>
+          {choice.label}
+        </option>
+      ))}
+    </ToolbarSelect>
   );
+}
+
+/** The holders of the claims shown, as the live indicator names them. */
+function holdersOf(claims: ClaimBody[]): string[] {
+  return claims.map((claim) => holderOf(claim));
 }
 
 function HtmlDocViewer({
@@ -257,77 +299,64 @@ function HtmlDocViewer({
   }, [shownHtml, comments.value]);
 
   return (
-    <main className="mx-auto max-w-7xl space-y-6 p-6">
-      <BackLink workspaceId={workspaceId} projectId={projectId} />
-      {doc.failed && (
-        <Alert variant="destructive">
-          <AlertDescription>The doc could not be loaded. Try again in a moment.</AlertDescription>
-        </Alert>
-      )}
-      {doc.value && (
-        <>
-          <header className="flex flex-wrap items-end justify-between gap-4">
-            <h1 className="text-2xl font-semibold">{doc.value.title}</h1>
-            <div className="w-full max-w-md space-y-1">
-              <Label htmlFor="version-picker">Version</Label>
-              <select
-                id="version-picker"
-                className={SELECT_CLASS}
-                value={picked ?? ""}
-                onChange={(event) => setChosen(event.target.value)}
-              >
-                {choices.map((choice) => (
-                  <option key={choice.value} value={choice.value}>
-                    {choice.label}
-                  </option>
-                ))}
-              </select>
+    <main className="flex min-h-full flex-col lg:h-full lg:min-h-[560px]">
+      <ViewerToolbar
+        workspaceId={workspaceId}
+        projectId={projectId}
+        icon={<FileText />}
+        title={doc.value?.title ?? null}
+        status={draft && <LiveIndicator holders={holdersOf(shownClaims)} />}
+      >
+        {doc.value && <VersionPicker choices={choices} picked={picked} onPick={setChosen} />}
+      </ViewerToolbar>
+      <div className="flex min-h-0 flex-1 flex-col lg:grid lg:grid-cols-[minmax(0,1fr)_20rem]">
+        <div className="relative flex min-h-0 flex-col bg-canvas px-3 py-4 sm:px-6 sm:py-6 lg:px-8">
+          <FloatingAlerts>
+            {doc.failed && <FloatingAlert>The doc could not be loaded. Try again in a moment.</FloatingAlert>}
+          </FloatingAlerts>
+          {doc.value && choices.length === 0 && versions.value && (
+            <div className="mx-auto mb-4 w-full max-w-[56rem]">
+              <PaneEmpty icon={<FileText />}>This doc has no saved version yet.</PaneEmpty>
             </div>
-          </header>
-          {choices.length === 0 && versions.value && (
-            <p className="text-sm text-muted-foreground">This doc has no saved version yet.</p>
           )}
-          <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_22rem]">
-            <ViewerFrame
-              workspaceId={workspaceId}
-              html={shownHtml}
-              pins={pins}
-              selected={selected}
-              claims={shownClaims}
-              onSelect={setSelected}
-            />
-            <aside className="space-y-6">
-              {draft && <ClaimsPanel claims={shownClaims} noun="block" />}
-              <CommentsPanel
+          {doc.value && (
+            <div className="mx-auto flex h-[78vh] min-h-0 w-full max-w-[56rem] flex-col overflow-hidden rounded-xl bg-white shadow-panel ring-1 ring-black/[0.04] lg:h-auto lg:flex-1">
+              <ViewerFrame
                 workspaceId={workspaceId}
-                projectId={projectId}
+                html={shownHtml}
+                pins={pins}
                 selected={selected}
-                comments={commentsOnSelected}
-                versionId={versionId}
-                noun="block"
-                compare={(comment) => ({
-                  then: blockTextOf(versionHtml[comment.version_id], selected),
-                  now: blockTextOf(shownHtml, selected),
-                })}
-                versionLabels={Object.fromEntries(choices.map((choice) => [choice.value, choice.label]))}
-                onPosted={comments.reload}
+                claims={shownClaims}
+                onSelect={setSelected}
+                className="block min-h-0 w-full flex-1 bg-white"
               />
-            </aside>
-          </div>
-        </>
-      )}
+            </div>
+          )}
+        </div>
+        {doc.value && (
+          <aside
+            aria-label="Review"
+            className="border-t bg-background lg:min-h-0 lg:overflow-y-auto lg:border-t-0 lg:border-l"
+          >
+            {draft && <ClaimsPanel claims={shownClaims} noun="block" />}
+            <CommentsPanel
+              workspaceId={workspaceId}
+              projectId={projectId}
+              selected={selected}
+              comments={commentsOnSelected}
+              versionId={versionId}
+              noun="block"
+              compare={(comment) => ({
+                then: blockTextOf(versionHtml[comment.version_id], selected),
+                now: blockTextOf(shownHtml, selected),
+              })}
+              versionLabels={Object.fromEntries(choices.map((choice) => [choice.value, choice.label]))}
+              onPosted={comments.reload}
+            />
+          </aside>
+        )}
+      </div>
     </main>
-  );
-}
-
-function Panel({ id, title, children }: { id: string; title: string; children: ReactNode }) {
-  return (
-    <section aria-labelledby={id} className="space-y-3">
-      <h2 id={id} className="text-lg font-semibold">
-        {title}
-      </h2>
-      {children}
-    </section>
   );
 }
 
@@ -342,20 +371,24 @@ function ClaimsPanel({
   nameOf?: (node: string) => string | undefined;
 }) {
   return (
-    <Panel id="claims" title="Claims">
-      {claims.length === 0 && <p className="text-sm text-muted-foreground">No agent holds a claim.</p>}
-      <ul className="divide-y rounded-md border empty:hidden">
+    <PaneSection id="claims" title="Claims" aside={claims.length > 0 ? claims.length : undefined}>
+      {claims.length === 0 && <PaneEmpty icon={<Lock />}>No agent holds a claim.</PaneEmpty>}
+      <ul className="space-y-1 empty:hidden">
         {claims.map((claim) => (
-          <li key={claim.id} className="px-3 py-2 text-sm">
-            <span className="font-medium">{holderOf(claim)}</span>
+          <li
+            key={claim.id}
+            className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1 rounded-lg bg-signal-soft/60 px-2.5 py-2 text-[12.5px] ring-1 ring-signal/15 ring-inset"
+          >
+            <Lock aria-hidden className="size-3 shrink-0 text-signal" />
+            <AgentChip name={holderOf(claim)} />
             <span className="text-muted-foreground">
               {" "}
-              holds {noun} {nameOf?.(claim.node) ?? claim.node}
+              holds {noun} <span className="font-medium text-foreground">{nameOf?.(claim.node) ?? claim.node}</span>
             </span>
           </li>
         ))}
       </ul>
-    </Panel>
+    </PaneSection>
   );
 }
 
@@ -404,19 +437,34 @@ function CommentsPanel({
   }
 
   return (
-    <Panel id="comments" title="Comments">
-      {!selected && <p className="text-sm text-muted-foreground">Select a {noun} to see its comments.</p>}
-      {selected && comments.length === 0 && (
-        <p className="text-sm text-muted-foreground">No comments on this {noun} yet.</p>
+    <PaneSection
+      id="comments"
+      title="Comments"
+      aside={
+        selected ? (
+          <span className="max-w-32 truncate font-mono text-[10.5px]" title={selected}>
+            {selected}
+          </span>
+        ) : undefined
+      }
+    >
+      {!selected && (
+        <PaneEmpty icon={<MousePointerClick />}>Select a {noun} to see its comments.</PaneEmpty>
       )}
-      <ul className="space-y-3 empty:hidden">
+      {selected && comments.length === 0 && (
+        <PaneEmpty icon={<MessageSquare />}>No comments on this {noun} yet.</PaneEmpty>
+      )}
+      <ul className="space-y-2 empty:hidden">
         {comments.map((comment) => (
-          <li key={comment.id} className="space-y-2 rounded-md border p-3 text-sm">
-            <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
-              <span>{holderOfComment(comment.author)}</span>
-              <span className="rounded-full border px-2 py-0.5">{comment.status}</span>
+          <li key={comment.id} className="space-y-2 rounded-lg border bg-card p-3 text-[13px]">
+            <div className="flex items-center justify-between gap-2">
+              <AgentChip name={holderOfComment(comment.author)} />
+              <div className="flex shrink-0 items-center gap-1.5">
+                <span className="text-[11px] text-muted-foreground">{timeAgo(comment.created_at)}</span>
+                <StatusBadge status={comment.status} className="py-0 text-[11px]" />
+              </div>
             </div>
-            <p>{comment.text}</p>
+            <p className="leading-relaxed break-words whitespace-pre-wrap">{comment.text}</p>
             {comment.version_id !== versionId && selected && (
               <Comparison
                 comment={comment}
@@ -425,37 +473,55 @@ function CommentsPanel({
                 {...compare(comment)}
               />
             )}
-            {comment.replies.map((reply) => (
-              <p key={reply.id} className="border-l-2 pl-2 text-muted-foreground">
-                {reply.text}
-              </p>
-            ))}
+            {comment.replies.length > 0 && (
+              <ul className="space-y-2 border-l-2 pl-2.5">
+                {comment.replies.map((reply) => (
+                  <li key={reply.id} className="space-y-0.5">
+                    <AgentChip name={holderOfComment(reply.author)} />
+                    <p className="leading-relaxed break-words whitespace-pre-wrap text-muted-foreground">
+                      {reply.text}
+                    </p>
+                  </li>
+                ))}
+              </ul>
+            )}
           </li>
         ))}
       </ul>
       {selected && versionId && (
-        <form onSubmit={submit} className="space-y-2">
-          <Label htmlFor="new-comment">Comment</Label>
+        <form
+          onSubmit={submit}
+          className="mt-3 overflow-hidden rounded-lg border bg-background shadow-xs transition-shadow focus-within:border-ring focus-within:ring-[3px] focus-within:ring-ring/20"
+        >
+          <label htmlFor="new-comment" className="sr-only">
+            Comment
+          </label>
           <textarea
             id="new-comment"
             className={TEXTAREA_CLASS}
+            placeholder={`Comment on this ${noun}…`}
             value={text}
             onChange={(event) => setText(event.target.value)}
           />
           {failed && (
-            <Alert variant="destructive">
-              <AlertDescription>The comment could not be saved.</AlertDescription>
-            </Alert>
+            <p role="alert" className="px-3 pb-1 text-[12px] text-destructive">
+              The comment could not be saved.
+            </p>
           )}
-          <Button type="submit" disabled={posting || !text.trim()}>
-            Comment
-          </Button>
+          <div className="flex items-center justify-end gap-2 px-2 pb-2">
+            <Button type="submit" size="sm" className="h-7 gap-1.5 px-2.5 text-[12px]" disabled={posting || !text.trim()}>
+              <Send aria-hidden className="size-3" />
+              Comment
+            </Button>
+          </div>
         </form>
       )}
       {selected && !versionId && (
-        <p className="text-sm text-muted-foreground">A live draft cannot be commented on. Pick a saved version.</p>
+        <p className="mt-3 flex items-start gap-2 rounded-lg bg-signal-soft/60 px-3 py-2 text-[12px] leading-snug text-muted-foreground">
+          A live draft cannot be commented on. Pick a saved version.
+        </p>
       )}
-    </Panel>
+    </PaneSection>
   );
 }
 
@@ -474,15 +540,15 @@ function Comparison({
   now: string;
 }) {
   return (
-    <dl className="grid gap-1 rounded-md bg-muted/50 p-2 text-xs">
-      <dt className="font-medium">
+    <dl className="grid gap-1 rounded-md bg-muted p-2 text-[12px] leading-snug">
+      <dt className="text-[11px] font-medium text-muted-foreground">
         Made on {label ?? "an older version"}, the {noun} read
       </dt>
-      <dd>{then}</dd>
-      <dt className="font-medium">
+      <dd className="break-words text-muted-foreground">{then}</dd>
+      <dt className="mt-1 text-[11px] font-medium text-muted-foreground">
         Now{comment.node_status === "removed" ? " (removed since)" : ""}
       </dt>
-      <dd>{now}</dd>
+      <dd className="break-words">{now}</dd>
     </dl>
   );
 }
@@ -516,41 +582,22 @@ function showValue(value: unknown): string {
 
 const NUMBER_FORMAT = new Intl.NumberFormat("en", { maximumFractionDigits: 2 });
 
-function InspectTable({
-  label,
-  rows,
-}: {
-  label: string;
-  rows: { name: string; cells: ReactNode }[];
-}) {
-  return (
-    <table aria-label={label} className="w-full text-left text-xs">
-      <caption className="pb-1 text-left text-sm font-medium">{label}</caption>
-      <tbody className="divide-y">
-        {rows.map((row) => (
-          <tr key={row.name} className="align-top">
-            <th scope="row" className="py-1 pr-2 font-medium whitespace-nowrap">
-              {row.name}
-            </th>
-            <td className="py-1 break-all">{row.cells}</td>
-          </tr>
-        ))}
-      </tbody>
-    </table>
-  );
-}
-
 function PropertyCells({ property, laidOut }: { property: Property; laidOut?: number }) {
   return (
-    <>
-      <span className="font-mono">{showValue(property.value)}</span>
-      {laidOut !== undefined && <span className="text-muted-foreground"> ({NUMBER_FORMAT.format(laidOut)} px)</span>}
+    <span className="flex min-w-0 flex-col gap-1">
+      <span className="flex min-w-0 flex-wrap items-baseline gap-x-1.5">
+        <MonoValue text={showValue(property.value)} />
+        {laidOut !== undefined && (
+          <span className="font-mono text-[11px] text-muted-foreground"> ({NUMBER_FORMAT.format(laidOut)} px)</span>
+        )}
+      </span>
       {property.tokens.map((used) => (
-        <span key={used.token} className="block text-muted-foreground">
-          <span className="font-mono">{used.token}</span> <span className="font-mono">{showValue(used.value)}</span>
+        <span key={used.token} className="flex min-w-0 flex-wrap items-center gap-1.5">
+          <TokenChip name={used.token} />{" "}
+          <MonoValue text={showValue(used.value)} className="text-[11px] text-muted-foreground" />
         </span>
       ))}
-    </>
+    </span>
   );
 }
 
@@ -558,7 +605,7 @@ function PropertyCells({ property, laidOut }: { property: Property; laidOut?: nu
 function InspectPanel({ inspection }: { inspection: Inspection | null }) {
   const group = (label: string, properties: Property[], laidOut?: (name: string) => number | undefined) =>
     properties.length > 0 && (
-      <InspectTable
+      <PropertyTable
         label={label}
         rows={properties.map((property) => ({
           name: property.name,
@@ -568,13 +615,20 @@ function InspectPanel({ inspection }: { inspection: Inspection | null }) {
     );
   const instance = inspection?.instance;
   return (
-    <Panel id="inspect" title="Inspect">
-      {!inspection && <p className="text-sm text-muted-foreground">Select a layer to inspect it.</p>}
+    <PaneSection id="inspect" title="Inspect" aside={inspection?.mode ? <span className="font-mono">{inspection.mode}</span> : undefined}>
+      {!inspection && <PaneEmpty icon={<SlidersHorizontal />}>Select a layer to inspect it.</PaneEmpty>}
       {inspection && (
         <div className="space-y-4">
-          <p className="text-sm font-medium">
-            {inspection.name} <span className="text-xs font-normal text-muted-foreground">{inspection.type}</span>
-          </p>
+          <div className="flex min-w-0 items-center gap-2 rounded-lg bg-muted px-2.5 py-2">
+            <LayerIcon type={inspection.type} className="text-muted-foreground" />
+            <p className="min-w-0 flex-1 truncate text-[13px] font-medium">
+              {inspection.name}{" "}
+              <span className="font-mono text-[10.5px] font-normal text-muted-foreground">{inspection.type}</span>
+            </p>
+            <span className="shrink-0 font-mono text-[10.5px] text-muted-foreground tabular-nums">
+              {NUMBER_FORMAT.format(inspection.box.width)} × {NUMBER_FORMAT.format(inspection.box.height)}
+            </span>
+          </div>
           {group("Layout", inspection.layout)}
           {group("Size", inspection.size, (name) =>
             name === "width" ? inspection.box.width : name === "height" ? inspection.box.height : undefined,
@@ -582,38 +636,46 @@ function InspectPanel({ inspection }: { inspection: Inspection | null }) {
           {group("Style", inspection.style)}
           {group("Text", inspection.text)}
           {instance && (
-            <InspectTable
+            <PropertyTable
               label="Component"
               rows={[
-                { name: "component", cells: <span className="font-mono">{instance.componentName}</span> },
+                {
+                  name: "component",
+                  cells: (
+                    <span className="inline-flex items-center gap-1.5 font-mono text-violet-700 dark:text-violet-300">
+                      <LayerIcon type="component" className="size-3" />
+                      {instance.componentName}
+                    </span>
+                  ),
+                },
                 ...instance.props.map((prop) => ({
                   name: prop.name,
                   cells: (
-                    <>
-                      <span className="font-mono">{showValue(prop.value)}</span>
-                      <span className="text-muted-foreground">
+                    <span className="flex min-w-0 flex-wrap items-baseline gap-x-1.5">
+                      <MonoValue text={showValue(prop.value)} />
+                      <span className="text-[11px] text-muted-foreground">
                         {" "}
                         {prop.kind}
                         {prop.set ? "" : ", default"}
                       </span>
-                    </>
+                    </span>
                   ),
                 })),
               ]}
             />
           )}
           {instance && instance.overrides.length > 0 && (
-            <InspectTable
+            <PropertyTable
               label="Overrides"
               rows={instance.overrides.map((override) => ({
                 name: override.name,
-                cells: <span className="font-mono">{showValue(override.fields)}</span>,
+                cells: <MonoValue text={showValue(override.fields)} />,
               }))}
             />
           )}
         </div>
       )}
-    </Panel>
+    </PaneSection>
   );
 }
 
@@ -740,7 +802,7 @@ function CommentPins({
             aria-pressed={pin.address === selected}
             // The pin's centre is the top-right corner of its node's box.
             style={{ left: box.x + box.width, top: box.y }}
-            className="pointer-events-auto absolute flex h-6 min-w-6 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full bg-primary px-1.5 text-xs font-medium text-primary-foreground ring-2 ring-background aria-pressed:ring-ring"
+            className="pointer-events-auto absolute flex h-6 min-w-6 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full rounded-bl-[4px] bg-signal px-1.5 text-[11px] font-semibold text-signal-foreground tabular-nums shadow-[0_2px_6px_-1px_oklch(0.2_0.01_60/30%)] ring-2 ring-background transition-transform hover:scale-110 focus-visible:outline-none aria-pressed:scale-110 aria-pressed:ring-signal/35 aria-pressed:ring-4"
             onClick={() => onPick(pin.address)}
           >
             {pin.count}
@@ -1102,87 +1164,147 @@ function DesignViewer({
   );
 
   return (
-    <main className="mx-auto max-w-7xl space-y-6 p-6">
-      <BackLink workspaceId={workspaceId} projectId={projectId} />
-      {doc.failed && (
-        <Alert variant="destructive">
-          <AlertDescription>The doc could not be loaded. Try again in a moment.</AlertDescription>
-        </Alert>
-      )}
-      {doc.value && (
-        <header className="flex flex-wrap items-end justify-between gap-4">
-          <h1 className="text-2xl font-semibold">{doc.value.title}</h1>
-          <div className="flex flex-wrap items-end gap-4">
-            <div className="w-80 max-w-full space-y-1">
-              <Label htmlFor="version-picker">Version</Label>
-              <select
-                id="version-picker"
-                className={SELECT_CLASS}
-                value={picked ?? ""}
-                onChange={(event) => setChosenVersion(event.target.value)}
+    <main className="flex min-h-full flex-col lg:h-full lg:min-h-[560px]">
+      <ViewerToolbar
+        workspaceId={workspaceId}
+        projectId={projectId}
+        icon={<PenTool />}
+        title={doc.value?.title ?? null}
+        status={draft && <LiveIndicator holders={holdersOf(shownClaims)} />}
+      >
+        {doc.value && (
+          <>
+            <VersionPicker choices={choices} picked={picked} onPick={setChosenVersion} />
+            {mode !== null && (
+              <ToolbarSelect
+                id="mode-switch"
+                label="Mode"
+                className="w-full sm:w-40"
+                value={mode}
+                onChange={(event) => chooseMode(event.target.value)}
               >
-                {choices.map((choice) => (
-                  <option key={choice.value} value={choice.value}>
-                    {choice.label}
+                {modes.map((listed) => (
+                  <option key={listed} value={listed}>
+                    {listed}
                   </option>
                 ))}
-              </select>
-            </div>
-            {mode !== null && (
-              <div className="w-40 space-y-1">
-                <Label htmlFor="mode-switch">Mode</Label>
-                <select
-                  id="mode-switch"
-                  className={SELECT_CLASS}
-                  value={mode}
-                  onChange={(event) => chooseMode(event.target.value)}
-                >
-                  {modes.map((listed) => (
-                    <option key={listed} value={listed}>
-                      {listed}
-                    </option>
-                  ))}
-                </select>
-              </div>
+              </ToolbarSelect>
             )}
-          </div>
-        </header>
-      )}
-      {(versionFailed || liveDraft.failed) && (
-        <Alert variant="destructive">
-          <AlertDescription>The design could not be loaded. Try again in a moment.</AlertDescription>
-        </Alert>
-      )}
-      {failure && (
-        <Alert variant="destructive">
-          <AlertDescription>{failure}</AlertDescription>
-        </Alert>
-      )}
-      {doc.value && !picked && <p className="text-sm text-muted-foreground">This doc has no saved version yet.</p>}
-      <div className="grid gap-6 lg:grid-cols-[14rem_minmax(0,1fr)_18rem]">
-        <nav aria-label="Pages" className="space-y-2">
-          <h2 className="text-lg font-semibold">Pages</h2>
-          <ul className="space-y-1">
-            {pages.map((candidate) => (
-              <li key={String(candidate.id)}>
-                <Button
-                  type="button"
-                  variant={candidate === page ? "secondary" : "ghost"}
-                  className="w-full justify-start"
-                  aria-current={candidate === page ? "page" : undefined}
-                  onClick={() => setChosen(String(candidate.id))}
-                >
-                  {String(candidate.name ?? candidate.id)}
-                </Button>
-              </li>
-            ))}
-          </ul>
-        </nav>
-        <div className="relative h-[75vh] overflow-hidden rounded-md border bg-muted/30">
-          <canvas ref={canvas} aria-label="Design canvas" className="size-full touch-none" />
+          </>
+        )}
+      </ViewerToolbar>
+      <div className="flex min-h-0 flex-1 flex-col md:grid md:grid-cols-2 lg:grid-cols-[13.5rem_minmax(0,1fr)_17rem] xl:grid-cols-[15.5rem_minmax(0,1fr)_19rem]">
+        <div
+          className="relative order-1 h-[62vh] min-h-80 overflow-hidden bg-muted md:col-span-2 lg:order-2 lg:col-span-1 lg:h-auto lg:min-h-0"
+          style={{
+            backgroundImage: "radial-gradient(circle at 1px 1px, oklch(0.5 0.012 60 / 0.22) 1px, transparent 0)",
+            backgroundSize: "16px 16px",
+          }}
+        >
+          <canvas ref={canvas} aria-label="Design canvas" className="absolute inset-0 size-full touch-none" />
           <CommentPins renderer={renderer} pins={pins} selected={selected} onPick={choose} />
+          {doc.value && !picked && (
+            <div className="pointer-events-none absolute inset-0 flex items-center justify-center p-6">
+              <p className="rounded-xl bg-background/90 px-4 py-3 text-[13px] text-muted-foreground shadow-panel">
+                This doc has no saved version yet.
+              </p>
+            </div>
+          )}
+          <FloatingAlerts>
+            {doc.failed && <FloatingAlert>The doc could not be loaded. Try again in a moment.</FloatingAlert>}
+            {(versionFailed || liveDraft.failed) && (
+              <FloatingAlert>The design could not be loaded. Try again in a moment.</FloatingAlert>
+            )}
+            {failure && <FloatingAlert>{failure}</FloatingAlert>}
+          </FloatingAlerts>
         </div>
-        <div className="space-y-6">
+        <aside
+          aria-label="Pages and layers"
+          className="order-2 flex flex-col border-t bg-background lg:order-1 lg:min-h-0 lg:border-t-0 lg:border-r"
+        >
+          <nav aria-label="Pages" className="shrink-0 border-b lg:max-h-[40%] lg:overflow-y-auto">
+            <PaneLabel title="Pages" aside={pages.length > 0 ? pages.length : undefined} />
+            <ul className="space-y-px px-1.5 pb-2">
+              {pages.map((candidate) => (
+                <li key={String(candidate.id)}>
+                  <button
+                    type="button"
+                    className="flex h-7 w-full items-center gap-2 rounded-md px-2 text-left text-[12.5px] text-muted-foreground transition-colors outline-none hover:bg-accent hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring/40 aria-[current=page]:bg-accent aria-[current=page]:font-medium aria-[current=page]:text-foreground"
+                    aria-current={candidate === page ? "page" : undefined}
+                    onClick={() => setChosen(String(candidate.id))}
+                  >
+                    <Files aria-hidden className="size-3.5 shrink-0 opacity-60" />
+                    <span className="truncate">{String(candidate.name ?? candidate.id)}</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </nav>
+          <section aria-labelledby="layers" className="flex min-h-0 flex-1 flex-col">
+            <PaneLabel id="layers" title="Layers" aside={rows.length > 0 ? rows.length : undefined} />
+            <div
+              role="tree"
+              aria-label="Layers of the page"
+              className="max-h-96 min-h-0 flex-1 overflow-auto px-1.5 pb-3 text-[12.5px] lg:max-h-none"
+            >
+              {rows.length === 0 && (
+                <div className="px-1.5">
+                  <PaneEmpty icon={<LayersIcon />}>The page's layers show here once it is drawn.</PaneEmpty>
+                </div>
+              )}
+              {rows.map(({ layer, level }) => {
+                const inside = layer.address.includes("/");
+                const component = layer.type === "instance" || layer.type === "component";
+                return (
+                  <div
+                    key={layer.address}
+                    role="treeitem"
+                    tabIndex={0}
+                    aria-level={level}
+                    aria-selected={layer.address === selected}
+                    style={{ paddingLeft: `${0.5 + (level - 1) * 0.875}rem` }}
+                    className={cn(
+                      "group relative flex h-7 cursor-pointer items-center gap-1.5 rounded-md pr-2 outline-none hover:bg-accent focus-visible:ring-[3px] focus-visible:ring-ring/40 aria-selected:bg-signal-soft aria-selected:text-signal",
+                      level === 1 && "font-medium",
+                      inside && "text-violet-700 dark:text-violet-300",
+                    )}
+                    onClick={() => choose(layer.address)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        choose(layer.address);
+                      }
+                    }}
+                  >
+                    {Array.from({ length: level - 1 }, (_, guide) => (
+                      <span
+                        key={guide}
+                        aria-hidden
+                        className="absolute inset-y-0 w-px bg-border group-aria-selected:bg-signal/20"
+                        style={{ left: `${0.5 + guide * 0.875 + 0.4}rem` }}
+                      />
+                    ))}
+                    <LayerIcon
+                      type={layer.type}
+                      className={cn(
+                        "text-muted-foreground group-aria-selected:text-signal",
+                        (component || inside) && "text-violet-600 dark:text-violet-300",
+                      )}
+                    />
+                    <span className={cn("min-w-0 flex-1 truncate", inside && "italic")}>{layer.name}</span>{" "}
+                    <span className="shrink-0 font-mono text-[10px] text-muted-foreground/70 opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100 group-aria-selected:text-signal/70 group-aria-selected:opacity-100">
+                      {layer.type}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          </section>
+        </aside>
+        <aside
+          aria-label="Review"
+          className="order-3 border-t bg-background md:border-l lg:min-h-0 lg:overflow-y-auto lg:border-t-0"
+        >
           {draft && (
             <ClaimsPanel
               claims={shownClaims}
@@ -1193,30 +1315,6 @@ function DesignViewer({
               }}
             />
           )}
-          <Panel id="layers" title="Layers">
-            <div role="tree" aria-label="Layers of the page" className="max-h-[70vh] overflow-auto text-sm">
-              {rows.map(({ layer, level }) => (
-                <div
-                  key={layer.address}
-                  role="treeitem"
-                  tabIndex={0}
-                  aria-level={level}
-                  aria-selected={layer.address === selected}
-                  style={{ paddingLeft: `${level * 0.75}rem` }}
-                  className="cursor-pointer rounded-sm py-1 pr-2 outline-none hover:bg-accent focus-visible:ring-[3px] focus-visible:ring-ring/50 aria-selected:bg-accent aria-selected:font-medium"
-                  onClick={() => choose(layer.address)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter" || event.key === " ") {
-                      event.preventDefault();
-                      choose(layer.address);
-                    }
-                  }}
-                >
-                  {layer.name} <span className="text-xs text-muted-foreground">{layer.type}</span>
-                </div>
-              ))}
-            </div>
-          </Panel>
           <CommentsPanel
             workspaceId={workspaceId}
             projectId={projectId}
@@ -1232,7 +1330,7 @@ function DesignViewer({
             onPosted={comments.reload}
           />
           <InspectPanel inspection={inspection} />
-        </div>
+        </aside>
       </div>
     </main>
   );

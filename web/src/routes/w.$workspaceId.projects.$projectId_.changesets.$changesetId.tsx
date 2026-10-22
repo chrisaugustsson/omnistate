@@ -1,5 +1,23 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link, createFileRoute } from "@tanstack/react-router";
+import {
+  AlertTriangle,
+  ArrowLeft,
+  Check,
+  CheckCircle2,
+  ChevronDown,
+  ChevronRight,
+  CircleDashed,
+  CircleDot,
+  FileText,
+  GitMerge,
+  GitPullRequestArrow,
+  PenTool,
+  Scale,
+  X,
+  XCircle,
+  type LucideIcon,
+} from "lucide-react";
 import { ApiError } from "@/api/client";
 import { loadBoard, loadVersionHtml, loadVersionOutline } from "@/api/docs";
 import type { DecisionBody, RecordedConflict, ReviewedDoc, ReviewResponse, VersionBody } from "@/api/generated";
@@ -7,10 +25,16 @@ import { approveChangeset, loadConflicts, loadReview, rejectChangeset } from "@/
 import { createAssetLoader } from "@/design/assets";
 import { BoardCache, showBoardwise } from "@/design/boards";
 import { createDesignRenderer, type DesignRenderer } from "@/design/renderer";
+import { AgentAvatar } from "@/components/agent-chip";
+import { Eyebrow, PageHeader } from "@/components/page-header";
+import { StatusBadge, statusWords } from "@/components/status-badge";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
+import { timeAgo } from "@/lib/format";
 import { useReloading } from "@/lib/reloading";
+import { cn } from "@/lib/utils";
 import { useProjectEvents } from "@/live/context";
 import { ViewerFrame, type BlockChange } from "@/viewer/frame";
 import { blockText } from "@/viewer/html";
@@ -31,20 +55,27 @@ export const Route = createFileRoute("/w/$workspaceId/projects/$projectId_/chang
 });
 
 const TEXTAREA_CLASS =
-  "min-h-24 w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-xs outline-none placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50";
+  "min-h-24 w-full rounded-lg border border-input bg-background px-3 py-2 text-sm shadow-xs outline-none placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50";
 const SELECT_CLASS =
-  "h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-xs outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50";
+  "h-8 w-full appearance-none rounded-md border border-input bg-background py-1 pr-8 pl-3 text-[13px] font-medium shadow-xs outline-none hover:bg-accent/50 focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50";
 
 /** The classes of a highlight over a canvas, by the kind of change. */
 const HIGHLIGHT_CLASS = {
-  added: "border-green-600 bg-green-600/15",
-  changed: "border-amber-500 bg-amber-500/15",
-  removed: "border-red-600 bg-red-600/15",
+  added: "border-emerald-600 bg-emerald-500/15",
+  changed: "border-amber-500 bg-amber-400/15",
+  removed: "border-red-600 bg-red-500/15",
 };
 
-function statusWords(status: string): string {
-  return status.replace(/_/g, " ");
-}
+/** The colours of the kinds of change: a dot, and the number in a doc's header. */
+const CHANGE_TONE = {
+  added: { dot: "bg-emerald-500", text: "text-emerald-700 dark:text-emerald-400", sign: "+" },
+  changed: { dot: "bg-amber-500", text: "text-amber-700 dark:text-amber-400", sign: "~" },
+  removed: { dot: "bg-red-500", text: "text-red-700 dark:text-red-400", sign: "−" },
+};
+
+/** A dotted drafting-table background for the design canvases. */
+const CANVAS_BG =
+  "bg-muted bg-[radial-gradient(circle,_color-mix(in_oklab,var(--muted-foreground)_28%,transparent)_1px,_transparent_1.2px)] [background-size:14px_14px]";
 
 function ChangesetReview() {
   const { workspaceId, projectId, changesetId } = Route.useParams();
@@ -63,98 +94,190 @@ function ChangesetReview() {
   const loaded = review.value;
 
   return (
-    <main className="mx-auto max-w-7xl space-y-8 p-6">
+    <main className="mx-auto max-w-7xl px-5 py-8 md:px-10 md:py-12">
       <Link
         to="/w/$workspaceId/projects/$projectId"
         params={{ workspaceId, projectId }}
-        className="text-sm text-muted-foreground underline-offset-4 hover:underline"
+        className="group inline-flex items-center gap-1.5 rounded-md text-[13px] text-muted-foreground transition-colors hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-none"
       >
+        <ArrowLeft className="size-3.5 transition-transform group-hover:-translate-x-0.5" />
         Back to the project
       </Link>
       {review.failed && (
-        <Alert variant="destructive">
+        <Alert variant="destructive" className="mt-6">
           <AlertDescription>The change set could not be loaded. Try again in a moment.</AlertDescription>
         </Alert>
       )}
       {loaded && (
         <>
           <Header review={loaded} />
-          <Decisions workspaceId={workspaceId} projectId={projectId} decisions={loaded.decisions} />
-          <Verdict
-            workspaceId={workspaceId}
-            projectId={projectId}
-            review={loaded}
-            onChanged={reloadReview}
-          />
-          <Docs workspaceId={workspaceId} projectId={projectId} docs={loaded.docs} />
-          <Conflicts docs={loaded.docs} conflicts={conflicts.value} failed={conflicts.failed} />
+          <div className="mt-10 grid gap-10 lg:grid-cols-[minmax(0,1fr)_18rem] lg:gap-12">
+            <div className="min-w-0 space-y-10">
+              <MergeBox workspaceId={workspaceId} projectId={projectId} review={loaded} onChanged={reloadReview} />
+              <Conflicts docs={loaded.docs} conflicts={conflicts.value} failed={conflicts.failed} />
+            </div>
+            <History review={loaded} />
+          </div>
+          <div className="mt-14">
+            <Docs workspaceId={workspaceId} projectId={projectId} docs={loaded.docs} />
+          </div>
         </>
       )}
+      {!loaded && !review.failed && <ReviewSkeleton />}
     </main>
   );
 }
 
-function Section({ id, title, children }: { id: string; title: string; children: ReactNode }) {
+function ReviewSkeleton() {
   return (
-    <section aria-labelledby={id} className="space-y-3">
-      <h2 id={id} className="text-lg font-semibold">
-        {title}
-      </h2>
+    <div className="mt-6 space-y-6" aria-hidden>
+      <div className="h-10 w-2/3 animate-pulse rounded-lg bg-muted" />
+      <div className="h-4 w-1/2 animate-pulse rounded bg-muted" />
+      <div className="h-48 animate-pulse rounded-xl bg-muted" />
+    </div>
+  );
+}
+
+function Section({
+  id,
+  title,
+  count,
+  aside,
+  children,
+}: {
+  id: string;
+  title: string;
+  count?: number;
+  aside?: ReactNode;
+  children: ReactNode;
+}) {
+  return (
+    <section aria-labelledby={id} className="space-y-4">
+      <div className="flex flex-wrap items-baseline justify-between gap-x-6 gap-y-2">
+        <div className="flex items-baseline gap-2.5">
+          <h2 id={id} className="text-[15px] font-semibold tracking-tight">
+            {title}
+          </h2>
+          {count !== undefined && <span className="text-sm text-muted-foreground tabular-nums">{count}</span>}
+        </div>
+        {aside}
+      </div>
       {children}
     </section>
   );
 }
 
+function Empty({ children }: { children: ReactNode }) {
+  return (
+    <p className="rounded-xl border border-dashed px-4 py-6 text-center text-sm text-muted-foreground">{children}</p>
+  );
+}
+
 function Header({ review }: { review: ReviewResponse }) {
-  const { changeset } = review;
-  const rejection = [...changeset.history].reverse().find((entry) => entry.to_status === "rejected")?.reason;
+  const { changeset, docs, decisions } = review;
   return (
-    <header className="space-y-2">
-      <div className="flex flex-wrap items-center gap-3">
-        <h1 className="text-2xl font-semibold">{changeset.title}</h1>
-        <span className="rounded-full border px-2 py-0.5 text-xs text-muted-foreground">
-          {statusWords(changeset.status)}
+    <PageHeader
+      className="mt-5"
+      eyebrow={
+        <span className="inline-flex items-center gap-1.5 tracking-[0.08em] uppercase">
+          <GitPullRequestArrow className="size-3.5" />
+          Change set
         </span>
-      </div>
-      {changeset.description && <p className="text-sm text-muted-foreground">{changeset.description}</p>}
-      {changeset.status === "rejected" && rejection && <p className="text-sm">Reason: {rejection}</p>}
-    </header>
+      }
+      title={changeset.title}
+      badge={<StatusBadge status={changeset.status} />}
+      description={
+        <div className="space-y-3">
+          {changeset.description && <p>{changeset.description}</p>}
+          <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[13px]">
+            <span>Opened {timeAgo(changeset.created_at)}</span>
+            {changeset.run_tag && (
+              <>
+                <span aria-hidden className="text-muted-foreground/40">
+                  ·
+                </span>
+                <span className="rounded-md bg-secondary px-1.5 py-0.5 font-mono text-[11px] text-foreground/80 ring-1 ring-border ring-inset">
+                  {changeset.run_tag}
+                </span>
+              </>
+            )}
+            <span aria-hidden className="text-muted-foreground/40">
+              ·
+            </span>
+            <span>
+              {docs.length} {docs.length === 1 ? "doc" : "docs"}
+            </span>
+            <span aria-hidden className="text-muted-foreground/40">
+              ·
+            </span>
+            <span>
+              {decisions.length} {decisions.length === 1 ? "decision" : "decisions"}
+            </span>
+          </p>
+        </div>
+      }
+    />
   );
 }
 
-// Decisions and the verdict -----------------------------------------------------------------
+// The merge box: its state, the linked decisions and the verdict ----------------------------
 
-function Decisions({
-  workspaceId,
-  projectId,
-  decisions,
-}: {
-  workspaceId: string;
-  projectId: string;
-  decisions: DecisionBody[];
-}) {
-  return (
-    <Section id="decisions" title="Decisions">
-      {decisions.length === 0 && <p className="text-sm text-muted-foreground">No decision is linked.</p>}
-      <ul className="divide-y rounded-md border empty:hidden">
-        {decisions.map((decision) => (
-          <li key={decision.id} className="flex items-center justify-between gap-3 px-4 py-2 text-sm">
-            <Link
-              to="/w/$workspaceId/projects/$projectId/threads/$threadId"
-              params={{ workspaceId, projectId, threadId: decision.thread_id }}
-              className="underline-offset-4 hover:underline"
-            >
-              {decision.direction}
-            </Link>
-            <span className="rounded-full border px-2 py-0.5 text-xs text-muted-foreground">{decision.status}</span>
-          </li>
-        ))}
-      </ul>
-    </Section>
-  );
+type MergeState = { icon: LucideIcon; tone: string; title: ReactNode; detail?: ReactNode };
+
+/** What the merge box says at its top, by the change set's status and its linked decisions. */
+function mergeState(review: ReviewResponse, blockedId: string): MergeState {
+  const { changeset, decisions } = review;
+  if (changeset.status === "in_review") {
+    const waiting = decisions.filter((decision) => decision.status !== "approved");
+    const undecided = waiting[0];
+    if (undecided) {
+      return {
+        icon: CircleDot,
+        tone: "bg-signal-soft text-signal",
+        title: (
+          <span className="text-signal">
+            Waiting for {waiting.length} {waiting.length === 1 ? "decision" : "decisions"}
+          </span>
+        ),
+        detail: <span id={blockedId}>Approve opens once this decision is approved: {undecided.direction}</span>,
+      };
+    }
+    return {
+      icon: CheckCircle2,
+      tone: "bg-emerald-50 text-emerald-700 dark:bg-emerald-400/10 dark:text-emerald-300",
+      title: <span className="text-emerald-700 dark:text-emerald-400">Ready to approve</span>,
+      detail:
+        decisions.length > 0
+          ? "Every linked decision is approved. Approving takes the whole change set into the project."
+          : "Approving takes the whole change set into the project.",
+    };
+  }
+  if (changeset.status === "merged") {
+    return {
+      icon: GitMerge,
+      tone: "bg-violet-50 text-violet-700 dark:bg-violet-400/10 dark:text-violet-300",
+      title: "Merged",
+      detail: "The change set was approved and is part of the project.",
+    };
+  }
+  if (changeset.status === "rejected") {
+    const rejection = [...changeset.history].reverse().find((entry) => entry.to_status === "rejected")?.reason;
+    return {
+      icon: XCircle,
+      tone: "bg-red-50 text-red-700 dark:bg-red-400/10 dark:text-red-300",
+      title: "Rejected",
+      detail: rejection ? `Reason: ${rejection}` : "The change set was sent back to its agents.",
+    };
+  }
+  return {
+    icon: CircleDashed,
+    tone: "bg-secondary text-muted-foreground ring-1 ring-border ring-inset",
+    title: <span className="capitalize">{statusWords(changeset.status)}</span>,
+    detail: "Agents are still working on this change set; it is not in review yet.",
+  };
 }
 
-function Verdict({
+function MergeBox({
   workspaceId,
   projectId,
   review,
@@ -165,11 +288,93 @@ function Verdict({
   review: ReviewResponse;
   onChanged: () => void;
 }) {
+  const blockedId = useId();
+  const state = mergeState(review, blockedId);
+  const Icon = state.icon;
+  return (
+    <div className="overflow-hidden rounded-xl border bg-card shadow-xs">
+      <div className="flex items-start gap-3 px-5 py-4">
+        <span className={cn("flex size-9 shrink-0 items-center justify-center rounded-full", state.tone)}>
+          <Icon className="size-[18px]" />
+        </span>
+        <div className="min-w-0 space-y-0.5 pt-0.5">
+          <p className="text-[15px] leading-snug font-semibold tracking-tight">{state.title}</p>
+          {state.detail && <p className="text-[13px] leading-relaxed text-muted-foreground">{state.detail}</p>}
+        </div>
+      </div>
+      <Decisions workspaceId={workspaceId} projectId={projectId} decisions={review.decisions} />
+      <Verdict
+        workspaceId={workspaceId}
+        projectId={projectId}
+        review={review}
+        blockedId={blockedId}
+        onChanged={onChanged}
+      />
+    </div>
+  );
+}
+
+function Decisions({
+  workspaceId,
+  projectId,
+  decisions,
+}: {
+  workspaceId: string;
+  projectId: string;
+  decisions: DecisionBody[];
+}) {
+  const headingId = useId();
+  return (
+    <section aria-labelledby={headingId} className="border-t">
+      <h2 id={headingId} className="px-5 pt-3.5 pb-1.5 text-[11px] font-medium tracking-[0.08em] text-muted-foreground uppercase">
+        Decisions
+      </h2>
+      {decisions.length === 0 && <p className="px-5 pb-4 text-sm text-muted-foreground">No decision is linked.</p>}
+      <ul className="divide-y divide-border/70 pb-1.5 empty:hidden">
+        {decisions.map((decision) => {
+          const approved = decision.status === "approved";
+          return (
+            <li key={decision.id} className="group relative flex items-center gap-3 px-5 py-2.5 text-sm transition-colors hover:bg-accent/60">
+              {approved ? (
+                <Check className="size-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
+              ) : (
+                <Scale className="size-4 shrink-0 text-signal" />
+              )}
+              <Link
+                to="/w/$workspaceId/projects/$projectId/threads/$threadId"
+                params={{ workspaceId, projectId, threadId: decision.thread_id }}
+                className="min-w-0 flex-1 leading-snug font-medium text-foreground after:absolute after:inset-0 focus-visible:underline focus-visible:outline-none"
+              >
+                {decision.direction}
+              </Link>
+              <StatusBadge status={decision.status} />
+              <ChevronRight className="size-4 shrink-0 text-muted-foreground/50 transition-transform group-hover:translate-x-0.5 group-hover:text-foreground" />
+            </li>
+          );
+        })}
+      </ul>
+    </section>
+  );
+}
+
+function Verdict({
+  workspaceId,
+  projectId,
+  review,
+  blockedId,
+  onChanged,
+}: {
+  workspaceId: string;
+  projectId: string;
+  review: ReviewResponse;
+  /** The ID of the line that names the decision that is not approved. */
+  blockedId: string;
+  onChanged: () => void;
+}) {
   const [rejecting, setRejecting] = useState(false);
   const [reason, setReason] = useState("");
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
-  const blockedId = useId();
   const reasonId = useId();
   const { changeset } = review;
   if (changeset.status !== "in_review") return null;
@@ -196,18 +401,21 @@ function Verdict({
   }
 
   return (
-    <section aria-label="Verdict" className="space-y-3 rounded-md border p-4">
+    <section aria-label="Verdict" className="space-y-3 border-t bg-muted/50 px-5 py-4">
       {failure && (
         <Alert variant="destructive">
           <AlertDescription>{failure}</AlertDescription>
         </Alert>
       )}
       {rejecting && (
-        <div className="space-y-1">
-          <Label htmlFor={reasonId}>Reason</Label>
+        <div className="space-y-1.5">
+          <Label htmlFor={reasonId} className="text-[13px]">
+            Reason
+          </Label>
           <textarea
             id={reasonId}
             className={TEXTAREA_CLASS}
+            placeholder="Tell the agents what to change before this can go in."
             value={reason}
             onChange={(event) => setReason(event.target.value)}
           />
@@ -219,6 +427,7 @@ function Verdict({
           aria-describedby={undecided ? blockedId : undefined}
           onClick={() => act(() => approveChangeset(workspaceId, projectId, changeset.id))}
         >
+          <Check className="size-4" />
           Approve
         </Button>
         {rejecting ? (
@@ -236,15 +445,48 @@ function Verdict({
           </>
         ) : (
           <Button variant="outline" disabled={busy} onClick={() => setRejecting(true)}>
+            <X className="size-4" />
             Reject
           </Button>
         )}
       </div>
-      {undecided && (
-        <p id={blockedId} className="text-sm text-muted-foreground">
-          Waiting for the decision to be approved: {undecided.direction}
-        </p>
-      )}
+    </section>
+  );
+}
+
+// History --------------------------------------------------------------------------------------
+
+function History({ review }: { review: ReviewResponse }) {
+  const entries = [...review.changeset.history].reverse();
+  const headingId = useId();
+  return (
+    <section aria-labelledby={headingId} className="space-y-3 lg:pt-1">
+      <Eyebrow>
+        <h2 id={headingId}>History</h2>
+      </Eyebrow>
+      {entries.length === 0 && <p className="text-sm text-muted-foreground">No change of status yet.</p>}
+      <ol className="relative space-y-4 empty:hidden">
+        {entries.map((entry, index) => {
+          const who = entry.actor === "human" ? "You" : entry.actor;
+          return (
+            <li key={`${entry.at}-${index}`} className="relative flex gap-3 text-[13px]">
+              {index < entries.length - 1 && (
+                <span aria-hidden className="absolute top-6 bottom-[-1rem] left-2.5 w-px bg-border" />
+              )}
+              <AgentAvatar name={who} className="relative" />
+              <div className="min-w-0 space-y-1 pt-px">
+                <p className="leading-snug">
+                  <span className="font-medium">{who}</span>{" "}
+                  <span className="text-muted-foreground">set it to</span>{" "}
+                  <span className="font-medium">{statusWords(entry.to_status)}</span>
+                </p>
+                {entry.reason && <p className="text-muted-foreground">{entry.reason}</p>}
+                <p className="text-xs text-muted-foreground/80">{timeAgo(entry.at)}</p>
+              </div>
+            </li>
+          );
+        })}
+      </ol>
     </section>
   );
 }
@@ -278,42 +520,92 @@ function marksOf(doc: ReviewedDoc): { current: Mark[]; base: Mark[] } {
   return { current, base };
 }
 
+/** The colour key of the highlights: a dot and a word for each kind of change. */
+function Legend({ kinds = ["added", "changed", "removed"] }: { kinds?: Mark["change"][] }) {
+  return (
+    <span className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+      {kinds.map((kind) => (
+        <span key={kind} className="inline-flex items-center gap-1.5 capitalize">
+          <span aria-hidden className={cn("size-2 rounded-full", CHANGE_TONE[kind].dot)} />
+          {kind}
+        </span>
+      ))}
+    </span>
+  );
+}
+
 function Docs({ workspaceId, projectId, docs }: { workspaceId: string; projectId: string; docs: ReviewedDoc[] }) {
   return (
-    <Section id="docs" title="Docs">
-      <p className="text-sm text-muted-foreground">
-        Green marks what the change set adds, amber what it changes and red what it removes.
-      </p>
-      {docs.length === 0 && <p className="text-sm text-muted-foreground">The change set has not saved a version of any doc.</p>}
-      <ul className="space-y-6 empty:hidden">
-        {docs.map((doc) => (
-          <li key={doc.doc_id} className="space-y-3 rounded-md border p-4">
-            <div className="space-y-1">
-              <h3 className="text-base font-medium">{doc.title}</h3>
-              <Summary doc={doc} />
-            </div>
-            {doc.removed ? (
-              <p className="text-sm text-muted-foreground">The change set removes this doc.</p>
-            ) : doc.kind === "design" ? (
-              <DesignChanges workspaceId={workspaceId} projectId={projectId} doc={doc} />
-            ) : doc.kind === "html" ? (
-              <HtmlChanges workspaceId={workspaceId} projectId={projectId} doc={doc} />
-            ) : null}
-          </li>
-        ))}
+    <Section id="docs" title="Docs" count={docs.length} aside={docs.length > 0 && <Legend />}>
+      {docs.length === 0 && <Empty>The change set has not saved a version of any doc.</Empty>}
+      <ul className="space-y-8 empty:hidden">
+        {docs.map((doc) => {
+          const design = doc.kind === "design";
+          return (
+            <li key={doc.doc_id} className="overflow-hidden rounded-xl border bg-card shadow-xs">
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b bg-muted/40 px-4 py-3">
+                <span
+                  className={cn(
+                    "flex size-8 shrink-0 items-center justify-center rounded-lg",
+                    design
+                      ? "bg-violet-50 text-violet-700 dark:bg-violet-400/10 dark:text-violet-300"
+                      : "bg-background text-muted-foreground ring-1 ring-border ring-inset",
+                  )}
+                >
+                  {design ? <PenTool className="size-4" /> : <FileText className="size-4" />}
+                </span>
+                <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2.5 gap-y-1">
+                  <h3 className="truncate text-[15px] font-semibold tracking-tight">{doc.title}</h3>
+                  <span className="font-mono text-[11px] text-muted-foreground uppercase">{doc.module}</span>
+                  {doc.removed ? (
+                    <Badge variant="red">Removed doc</Badge>
+                  ) : (
+                    doc.base_version_id === null && <Badge variant="green">New doc</Badge>
+                  )}
+                </div>
+                <Summary doc={doc} />
+              </div>
+              <div className="p-4">
+                {doc.removed ? (
+                  <p className="text-sm text-muted-foreground">The change set removes this doc.</p>
+                ) : design ? (
+                  <DesignChanges workspaceId={workspaceId} projectId={projectId} doc={doc} />
+                ) : doc.kind === "html" ? (
+                  <HtmlChanges workspaceId={workspaceId} projectId={projectId} doc={doc} />
+                ) : null}
+              </div>
+            </li>
+          );
+        })}
       </ul>
     </Section>
   );
 }
 
+/** A doc's node changes as counts: green added, amber changed, red removed, like a diff's +/- line. */
 function Summary({ doc }: { doc: ReviewedDoc }) {
   const { added, changed, moved, removed } = doc.changes;
-  const parts = [`${added.length} added`, `${changed.length} changed`, `${removed.length} removed`];
-  if (moved.length > 0) parts.push(`${moved.length} moved`);
+  const counts: [Mark["change"], number][] = [
+    ["added", added.length],
+    ["changed", changed.length],
+    ["removed", removed.length],
+  ];
   return (
-    <p className="text-sm text-muted-foreground">
-      {parts.join(", ")}
-      {doc.base_version_id === null && !doc.removed ? " (a new doc)" : ""}
+    <p className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+      {counts.map(([kind, count]) => (
+        <span key={kind} className={cn("inline-flex items-baseline gap-1", count === 0 && "opacity-50")}>
+          <span className={cn("font-mono text-[13px] font-medium tabular-nums", count > 0 && CHANGE_TONE[kind].text)}>
+            {CHANGE_TONE[kind].sign}
+            {count}
+          </span>{" "}
+          {kind}
+        </span>
+      ))}
+      {moved.length > 0 && (
+        <span className="inline-flex items-baseline gap-1">
+          <span className="font-mono text-[13px] font-medium tabular-nums">{moved.length}</span> moved
+        </span>
+      )}
     </p>
   );
 }
@@ -387,21 +679,31 @@ function DesignChanges({ workspaceId, projectId, doc }: { workspaceId: string; p
         </Alert>
       )}
       {pageList.length > 1 && (
-        <div className="w-64 space-y-1">
-          <Label htmlFor={selectId}>Page</Label>
-          <select id={selectId} className={SELECT_CLASS} value={pageId} onChange={(event) => setChosen(event.target.value)}>
-            {pageList.map((page) => (
-              <option key={page.id} value={page.id}>
-                {page.name}
-              </option>
-            ))}
-          </select>
+        <div className="flex items-center gap-2.5">
+          <Label htmlFor={selectId} className="text-[11px] font-medium tracking-[0.08em] text-muted-foreground uppercase">
+            Page
+          </Label>
+          <div className="relative w-56">
+            <select id={selectId} className={SELECT_CLASS} value={pageId} onChange={(event) => setChosen(event.target.value)}>
+              {pageList.map((page) => (
+                <option key={page.id} value={page.id}>
+                  {page.name}
+                </option>
+              ))}
+            </select>
+            <ChevronDown
+              aria-hidden
+              className="pointer-events-none absolute top-1/2 right-2.5 size-3.5 -translate-y-1/2 text-muted-foreground"
+            />
+          </div>
         </div>
       )}
-      <div className="grid gap-4 lg:grid-cols-2">
+      <div className="grid gap-3 lg:grid-cols-2">
         <DesignCanvas
           workspaceId={workspaceId}
           label="Base"
+          note="Before"
+          kinds={["removed"]}
           empty={doc.base_version_id === null ? "The doc is new, so it has no base." : "Loading"}
           source={base.body}
           boards={base.boards}
@@ -411,6 +713,8 @@ function DesignChanges({ workspaceId, projectId, doc }: { workspaceId: string; p
         <DesignCanvas
           workspaceId={workspaceId}
           label="New version"
+          note="After"
+          kinds={["added", "changed"]}
           empty="Loading"
           source={current.body}
           boards={current.boards}
@@ -426,6 +730,8 @@ function DesignChanges({ workspaceId, projectId, doc }: { workspaceId: string; p
 function DesignCanvas({
   workspaceId,
   label,
+  note,
+  kinds,
   empty,
   source,
   boards,
@@ -434,6 +740,10 @@ function DesignCanvas({
 }: {
   workspaceId: string;
   label: string;
+  /** A word beside the label, in the pane's header. */
+  note: string;
+  /** The kinds of change this side outlines, named in its header. */
+  kinds: Mark["change"][];
   empty: string;
   /** The version's outline. */
   source: VersionBody | null;
@@ -519,19 +829,41 @@ function DesignCanvas({
   }, [renderer, assets, page, system, boards]);
 
   const highlights = page && renderer ? marks.flatMap((mark) => highlightOf(renderer, mark)) : [];
-  const message = failure ?? (source === null ? empty : page === null ? "This version has no such page." : null);
+  // Until the version is there, or when it has no such page, the canvas says why it is empty.
+  const notice = source === null ? empty : page === null ? "This version has no such page." : null;
 
   return (
-    <section aria-labelledby={headingId} className="space-y-2">
-      <h4 id={headingId} className="text-sm font-medium">
-        {label}
-      </h4>
-      <div className="relative h-[60vh] overflow-hidden rounded-md border bg-muted/30">
+    <section aria-labelledby={headingId} className="overflow-hidden rounded-lg border bg-background">
+      <div className="flex items-center justify-between gap-3 border-b px-3 py-2">
+        <div className="flex items-baseline gap-2">
+          <h4 id={headingId} className="text-[13px] font-semibold">
+            {label}
+          </h4>
+          <span className="text-xs text-muted-foreground">{note}</span>
+        </div>
+        <span className="flex items-center gap-3">
+          {marks.length > 0 && (
+            <span className="font-mono text-[11px] text-muted-foreground tabular-nums">
+              {marks.length} {marks.length === 1 ? "mark" : "marks"}
+            </span>
+          )}
+          <Legend kinds={kinds} />
+        </span>
+      </div>
+      <div className={cn("relative h-[60vh] overflow-hidden", CANVAS_BG)}>
         <canvas ref={canvas} aria-label={`${label} canvas`} className="size-full touch-none" />
         <div className="pointer-events-none absolute inset-0 overflow-hidden">{highlights}</div>
-        {message && (
-          <p className="absolute inset-0 flex items-center justify-center bg-muted/60 p-4 text-center text-sm text-muted-foreground">
-            {message}
+        {!failure && notice && (
+          <div className="absolute inset-0 flex items-center justify-center p-6">
+            <p className="max-w-xs rounded-lg border bg-background/90 px-3 py-2 text-center text-[13px] text-muted-foreground shadow-xs backdrop-blur-sm">
+              {notice}
+            </p>
+          </div>
+        )}
+        {failure && (
+          <p className="absolute inset-x-3 bottom-3 flex items-start gap-2 rounded-lg border border-red-600/20 bg-background/95 px-3 py-2 text-[13px] text-red-800 shadow-xs backdrop-blur-sm dark:text-red-300">
+            <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
+            <span className="min-w-0 break-words">{failure}</span>
           </p>
         )}
       </div>
@@ -590,30 +922,48 @@ function HtmlChanges({ workspaceId, projectId, doc }: { workspaceId: string; pro
     .filter((block) => block.text);
 
   return (
-    <div className="space-y-3">
+    <div className="space-y-4">
       {html.failed && (
         <Alert variant="destructive">
           <AlertDescription>The doc could not be loaded. Try again in a moment.</AlertDescription>
         </Alert>
       )}
-      <ViewerFrame
-        workspaceId={workspaceId}
-        html={html.value}
-        pins={NO_PINS}
-        selected={null}
-        claims={NO_CLAIMS}
-        changes={changes}
-        onSelect={ignore}
-        className="h-[50vh] w-full rounded-md border bg-white"
-        title={`${doc.title}, the version under review`}
-      />
+      <div className="overflow-hidden rounded-lg border">
+        <div className="flex items-center justify-between gap-3 border-b bg-background px-3 py-2">
+          <span className="text-[13px] font-semibold">Version under review</span>
+          <Legend kinds={["added", "changed"]} />
+        </div>
+        <div className="bg-muted/60 p-3">
+          <ViewerFrame
+            workspaceId={workspaceId}
+            html={html.value}
+            pins={NO_PINS}
+            selected={null}
+            claims={NO_CLAIMS}
+            changes={changes}
+            onSelect={ignore}
+            className="h-[50vh] w-full rounded-md bg-white shadow-xs ring-1 ring-border"
+            title={`${doc.title}, the version under review`}
+          />
+        </div>
+      </div>
       {gone.length > 0 && (
-        <div className="space-y-1">
-          <h4 className="text-sm font-medium">Removed blocks</h4>
-          <ul className="list-disc pl-5 text-sm text-red-700 dark:text-red-400">
+        <div className="space-y-2">
+          <Eyebrow>
+            <h4>Removed blocks</h4>
+          </Eyebrow>
+          <ul className="space-y-1.5">
             {gone.map((block) => (
-              <li key={block.node} className="line-through">
-                {block.text}
+              <li
+                key={block.node}
+                className="flex items-start gap-3 rounded-r-md border-l-2 border-red-500 bg-red-50/70 px-3 py-2 text-[13px] dark:bg-red-400/10"
+              >
+                <span className="shrink-0 pt-px font-mono text-[11px] text-red-700/70 dark:text-red-300/70">
+                  {block.node}
+                </span>
+                <span className="min-w-0 text-red-800 line-through decoration-red-400/70 dark:text-red-300">
+                  {block.text}
+                </span>
               </li>
             ))}
           </ul>
@@ -639,30 +989,52 @@ function Conflicts({
   failed: boolean;
 }) {
   const titleOf = (docId: string) => docs.find((doc) => doc.doc_id === docId)?.title ?? docId;
+  const open = (conflicts ?? []).filter((conflict) => !conflict.resolution).length;
   return (
-    <Section id="conflicts" title="Conflicts">
+    <Section
+      id="conflicts"
+      title="Conflicts"
+      count={conflicts && conflicts.length > 0 ? conflicts.length : undefined}
+      aside={
+        open > 0 && (
+          <span className="text-xs text-amber-700 dark:text-amber-400">
+            {open} still {open === 1 ? "needs" : "need"} a resolution
+          </span>
+        )
+      }
+    >
       {failed && (
         <Alert variant="destructive">
           <AlertDescription>The conflicts could not be loaded. Try again in a moment.</AlertDescription>
         </Alert>
       )}
-      {conflicts && conflicts.length === 0 && (
-        <p className="text-sm text-muted-foreground">No rebase of this change set found a conflict.</p>
-      )}
-      <ul className="divide-y rounded-md border empty:hidden">
+      {conflicts && conflicts.length === 0 && <Empty>No rebase of this change set found a conflict.</Empty>}
+      <ul className="divide-y divide-amber-600/15 overflow-hidden rounded-xl border border-amber-600/25 bg-amber-50/60 empty:hidden dark:border-amber-400/20 dark:bg-amber-400/5">
         {(conflicts ?? []).map((conflict) => (
-          <li key={conflict.id} className="space-y-1 px-4 py-2 text-sm">
-            <p>
-              <code>{conflict.node}</code>{" "}
-              <span className="text-muted-foreground">
-                in {titleOf(conflict.doc_id)} ({String(conflict.kind).replace(/_/g, " ")})
-              </span>
-            </p>
+          <li key={conflict.id} className="flex items-start gap-3 px-4 py-3 text-sm">
             {conflict.resolution ? (
-              <p>Resolved: {conflict.resolution.note}</p>
+              <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
             ) : (
-              <p className="text-amber-700 dark:text-amber-400">unresolved</p>
+              <AlertTriangle className="mt-0.5 size-4 shrink-0 text-amber-600 dark:text-amber-400" />
             )}
+            <div className="min-w-0 flex-1 space-y-1">
+              <p className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                <code className="rounded bg-background/80 px-1.5 py-0.5 font-mono text-[12px] ring-1 ring-amber-600/20 ring-inset">
+                  {conflict.node}
+                </code>{" "}
+                <span className="text-muted-foreground">
+                  in <span className="text-foreground">{titleOf(conflict.doc_id)}</span> (
+                  {String(conflict.kind).replace(/_/g, " ")})
+                </span>
+              </p>
+              {conflict.resolution ? (
+                <p className="text-[13px] text-foreground/80">Resolved: {conflict.resolution.note}</p>
+              ) : (
+                <p>
+                  <Badge variant="amber">unresolved</Badge>
+                </p>
+              )}
+            </div>
           </li>
         ))}
       </ul>
