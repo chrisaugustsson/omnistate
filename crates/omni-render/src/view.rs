@@ -484,6 +484,21 @@ fn lay_out(
     }
 }
 
+/// The box that `board`, a board of a page with all its content, is laid out
+/// in on its page, its instances expanded against `system` when there is one
+/// (in its first mode). A board that hugs its content gets the size of that
+/// content here, which its own JSON does not say: the API gives the
+/// placeholders of a design's outline this box, so that a board not yet read
+/// takes its real room on the canvas (US-058). `None` when `board` has no box.
+pub fn board_box(board: Node, assets: &Assets, system: Option<&DesignSystem>) -> Option<LayoutBox> {
+    let id = *board.id();
+    let scene = match system {
+        Some(system) => Scene::with_system(board, assets.clone(), system.clone()),
+        None => Scene::new(board, assets.clone()),
+    };
+    scene.boxes.get(&id).copied()
+}
+
 impl Scene {
     pub fn new(page: Node, assets: Assets) -> Self {
         let laid = lay_out(&page, &assets, &HashMap::new(), &HashSet::new());

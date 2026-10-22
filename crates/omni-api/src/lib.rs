@@ -22,6 +22,7 @@ mod home;
 pub mod live;
 pub mod openapi;
 pub mod password;
+mod placeholders;
 mod rebase;
 mod review;
 pub mod routes;

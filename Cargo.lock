@@ -1397,6 +1397,7 @@ dependencies = [
  "axum",
  "blake3",
  "omni-core",
+ "omni-render",
  "rust-s3",
  "serde",
  "serde_json",

@@ -89,9 +89,11 @@ pub struct VersionBody {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tags: Option<String>,
     /// A design version's pages in order, each as its own JSON with its boards
-    /// under `children`, and each board as its own JSON without its children;
-    /// only when read by ID with `?view=outline`, which leaves out `pages` and
-    /// `tags`, and lists no node below a board in `nodes`.
+    /// under `children`, and each board as its own JSON without its children,
+    /// a width or height that is not fixed given as the fixed size of the
+    /// board's laid-out content; only when read by ID with `?view=outline`,
+    /// which leaves out `pages` and `tags`, and lists no node below a board in
+    /// `nodes`.
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schema(value_type = Option<Vec<Object>>)]
     pub outline: Option<Vec<Value>>,

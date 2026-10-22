@@ -27,6 +27,7 @@ use crate::docs::{
     random_node_id, require_changeset,
 };
 use crate::live;
+use crate::placeholders::Sizing;
 use crate::session::{ApiError, ErrorBody};
 use crate::tokens::design_system_of;
 use crate::versions::{chunk_of_version, read_chunk, store_version};
@@ -687,21 +688,26 @@ pub(crate) async fn outline_of_version(
     chunk: Option<&str>,
     design_system_version_id: Option<&str>,
 ) -> Result<VersionOutline, ApiError> {
-    let outline = match chunk {
-        Some(chunk) => {
-            boards::read_outline(state, workspace_id, chunk, &format!("version {version_id}"))
-                .await?
-        }
-        None => Vec::new(),
-    };
     let (tokens, library) = match design_system_version_id {
         Some(recorded) => tokens_and_components_of(state, workspace_id, recorded).await?,
         None => (None, Library::default()),
     };
+    let components = nodes_values(&library.0);
+    let tokens = tokens.map(|tokens| tokens.to_json());
+    // The placeholders are laid out against the design system the viewer
+    // resolves the boards against.
+    let sizing = Sizing::new(design_system_version_id, tokens.as_ref(), &components).await;
+    let outline = match chunk {
+        Some(chunk) => {
+            let what = format!("version {version_id}");
+            boards::read_outline(state, workspace_id, chunk, &what, &sizing).await?
+        }
+        None => Vec::new(),
+    };
     Ok(VersionOutline {
         outline,
-        components: nodes_values(&library.0),
-        tokens: tokens.map(|tokens| tokens.to_json()),
+        components,
+        tokens,
     })
 }
 

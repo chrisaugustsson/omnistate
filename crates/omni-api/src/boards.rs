@@ -22,6 +22,7 @@
 use crate::AppState;
 use crate::design::nodes_from;
 use crate::docs::{current_draft, ensure_loaded, find_doc, find_draft};
+use crate::placeholders::{self, Sizing};
 use crate::session::{ApiError, ErrorBody};
 use crate::versions::{Part, Snapshot, chunk_of_version, read_chunk};
 use crate::workspace::{WorkspaceRequest, parse_uuid};
@@ -34,6 +35,7 @@ use omni_core::ops::IndexedNode;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use utoipa::ToSchema;
 
 /// How many chunks are written or read at the same time.
@@ -337,28 +339,50 @@ pub(crate) async fn read_pages(
 
 /// The pages of a design version as the viewer reads them first: each page
 /// as its own JSON with its boards under `children`, and each board as its own
-/// JSON without its children. The boards' chunks are read `CONCURRENCY` at a
-/// time and each is cut down as soon as it is read, so the version's whole body
-/// is never held at once.
+/// JSON without its children, the placeholder that the viewer draws until it
+/// reads the board. A placeholder whose width or height is not fixed has the
+/// box that the board's content gives it, laid out against `sizing`
+/// (`placeholders.rs`). The boards' chunks are read `CONCURRENCY` at a time
+/// and each is cut down as soon as it is read, so the version's whole body is
+/// never held at once.
 pub(crate) async fn read_outline(
     state: &AppState,
     workspace_id: &str,
     chunk: &str,
     what: &str,
+    sizing: &Sizing,
 ) -> Result<Vec<Value>, ApiError> {
     let text = read_chunk(state, workspace_id, chunk).await?;
     let Ok(manifest) = serde_json::from_str::<Manifest>(&text) else {
         let pages = read_whole_pages(&text, what)?;
-        return Ok(pages
-            .iter()
-            .map(|page| {
-                let mut json = own_json(page);
-                let boards = page.children().iter().map(own_json).collect();
-                json["children"] = Value::Array(boards);
-                json
-            })
-            .collect());
+        let mut outline = Vec::with_capacity(pages.len());
+        for page in &pages {
+            let boards = page.children();
+            let texts = boards
+                .iter()
+                .map(|board| serde_json::to_string(board).expect("a node serializes to JSON"))
+                .collect();
+            let sizes = placeholders::boxes_of(sizing, texts).await;
+            let mut json = own_json(page);
+            let placeholders = boards
+                .iter()
+                .zip(sizes)
+                .map(|(board, size)| {
+                    let mut placeholder = own_json(board);
+                    placeholders::apply(&mut placeholder, size);
+                    placeholder
+                })
+                .collect();
+            json["children"] = Value::Array(placeholders);
+            outline.push(json);
+        }
+        return Ok(outline);
     };
+    let boards: HashSet<String> = manifest
+        .pages
+        .iter()
+        .flat_map(|page| page.boards.iter().map(|board| board.chunk.clone()))
+        .collect();
     let names: Vec<String> = manifest
         .pages
         .iter()
@@ -370,13 +394,18 @@ pub(crate) async fn read_outline(
         .collect();
     let (state, workspace) = (state.clone(), workspace_id.to_string());
     let what = what.to_string();
+    let (boards, sizing) = (Arc::new(boards), sizing.clone());
     let own = each_concurrently(names.clone(), move |name| {
         let (state, workspace, what) = (state.clone(), workspace.clone(), what.clone());
+        let (boards, sizing) = (boards.clone(), sizing.clone());
         async move {
             let text = read_chunk(&state, &workspace, &name).await?;
             let mut json: Value = serde_json::from_str(&text).map_err(|e| unavailable(&what, e))?;
             if let Some(object) = json.as_object_mut() {
                 object.remove("children");
+            }
+            if boards.contains(&name) {
+                placeholders::size_placeholder(&sizing, &name, text, &mut json).await;
             }
             Ok(json)
         }

@@ -16,6 +16,14 @@
 		reverse_proxy api:8080
 	}
 
+	# The design renderer (web/public/render/, built by `make render-wasm`) is
+	# served at a fixed URL, and a browser that kept an older build without
+	# asking would load a module that lacks the functions the page calls. The
+	# browser asks every time, and gets 304 while it is current. (`>` sets the
+	# header on whatever the web app answers.)
+	@render path /render/*
+	header @render >Cache-Control "no-cache"
+
 	handle {
 		reverse_proxy web:3000
 	}

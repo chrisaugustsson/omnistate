@@ -8,6 +8,7 @@ use serde_json::Value;
 use std::collections::HashMap;
 
 /// A design system version: its token tree and its components.
+#[derive(Clone)]
 pub struct DesignSystem {
     tokens: TokenTree,
     components: Vec<ComponentDef>,
@@ -16,6 +17,7 @@ pub struct DesignSystem {
 
 /// A component of the design system, with its node in the JSON form that
 /// instances expand from.
+#[derive(Clone)]
 pub(crate) struct ComponentDef {
     pub(crate) id: NodeId,
     pub(crate) name: String,

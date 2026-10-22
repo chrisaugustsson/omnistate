@@ -21,6 +21,9 @@ subtle = "2"
 utoipa = "5"
 serde = { version = "1", features = ["derive"] }
 omni-core = { path = "../omni-core" }
+# Lays out the boards of a design outline, so that each placeholder has the
+# box of its content (src/placeholders.rs).
+omni-render = { path = "../omni-render" }
 
 [dev-dependencies]
 # tests/boards.rs checks that a chunk is named by the BLAKE3 hash of its bytes.

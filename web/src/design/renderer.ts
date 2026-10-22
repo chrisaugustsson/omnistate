@@ -130,6 +130,44 @@ type OmniRender = {
   _omni_render_view_space(held: boolean): void;
 };
 
+/** Every function of the module that the viewer calls, so that a module without one is caught when it loads. */
+const FUNCTIONS: Record<Extract<keyof OmniRender, `_omni_render_${string}`>, true> = {
+  _omni_render_alloc: true,
+  _omni_render_free: true,
+  _omni_render_error: true,
+  _omni_render_add_image: true,
+  _omni_render_add_font: true,
+  _omni_render_scene_load: true,
+  _omni_render_scene_set_system: true,
+  _omni_render_scene_set_mode: true,
+  _omni_render_inspect: true,
+  _omni_render_node_box: true,
+  _omni_render_scene_draw: true,
+  _omni_render_scene_layers: true,
+  _omni_render_visible_boards: true,
+  _omni_render_select_node: true,
+  _omni_render_select_pointer_move: true,
+  _omni_render_select_click: true,
+  _omni_render_select_double_click: true,
+  _omni_render_select_escape: true,
+  _omni_render_take_events: true,
+  _omni_render_overlay: true,
+  _omni_render_view_wheel: true,
+  _omni_render_view_pointer_down: true,
+  _omni_render_view_pointer_move: true,
+  _omni_render_view_pointer_up: true,
+  _omni_render_view_space: true,
+};
+
+/**
+ * The functions that the viewer calls and `module` lacks: a renderer built
+ * before them, such as an older build that the browser kept in its cache.
+ */
+export function missingFunctions(module: object): string[] {
+  const found = module as Record<string, unknown>;
+  return Object.keys(FUNCTIONS).filter((name) => typeof found[name] !== "function");
+}
+
 let factory: Promise<() => Promise<OmniRender>> | null = null;
 
 function moduleFactory() {
@@ -148,6 +186,13 @@ export async function createDesignRenderer(canvas: HTMLCanvasElement): Promise<D
   // Skia keeps its GPU context for the page's WebGL context, so every
   // renderer has a module instance of its own.
   const module = await (await moduleFactory())();
+  const missing = missingFunctions(module);
+  if (missing.length > 0) {
+    throw new Error(
+      `The design renderer at /render/ is out of date: it has no ${missing.join(", ")}. ` +
+        "Reload the page without the browser's cache, or rebuild the renderer with make render-wasm.",
+    );
+  }
   const encoder = new TextEncoder();
   const failure = () => new Error(module.UTF8ToString(module._omni_render_error()));
   const withBytes = <T>(bytes: Uint8Array, use: (pointer: number, length: number) => T): T => {

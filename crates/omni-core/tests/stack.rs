@@ -145,6 +145,22 @@ fn proxy_serves_the_web_app_at_the_root() {
 }
 
 #[test]
+fn the_design_renderer_is_revalidated_on_every_load() {
+    // The renderer's module and .wasm have fixed URLs; a browser that reused
+    // an older build from its cache without asking ran a module that lacked
+    // the functions the page calls (US-058's visibleBoards).
+    for path in ["/render/omni_render.js", "/render/omni_render.wasm"] {
+        let response = get(path);
+        assert_eq!(
+            response.header("cache-control"),
+            Some("no-cache"),
+            "GET {path} through the proxy (status {})",
+            response.status
+        );
+    }
+}
+
+#[test]
 fn web_app_health_route_returns_200_through_the_proxy() {
     let response = get("/health");
     assert_eq!(response.status, 200, "GET /health through the proxy");

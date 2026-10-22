@@ -2874,7 +2874,7 @@
             "type": "array"
           },
           "outline": {
-            "description": "A design version's pages in order, each as its own JSON with its boards\nunder `children`, and each board as its own JSON without its children;\nonly when read by ID with `?view=outline`, which leaves out `pages` and\n`tags`, and lists no node below a board in `nodes`.",
+            "description": "A design version's pages in order, each as its own JSON with its boards\nunder `children`, and each board as its own JSON without its children,\na width or height that is not fixed given as the fixed size of the\nboard's laid-out content; only when read by ID with `?view=outline`,\nwhich leaves out `pages` and `tags`, and lists no node below a board in\n`nodes`.",
             "items": {
               "type": "object"
             },

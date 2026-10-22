@@ -10,5 +10,8 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     cargo build --release --locked -p omni-api && cp target/release/omni-api /omni-api
 
 FROM debian:bookworm-slim
+# The renderer that lays out the placeholders of design outlines (omni-render,
+# Skia) links FontConfig and FreeType.
+RUN apt-get update && apt-get install -y --no-install-recommends libfontconfig1 libfreetype6 && rm -rf /var/lib/apt/lists/*
 COPY --from=build /omni-api /usr/local/bin/omni-api
 CMD ["omni-api"]

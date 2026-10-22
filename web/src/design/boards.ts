@@ -98,6 +98,34 @@ export function pageWithBoards(page: Json, cache: BoardCache): Json {
   return { ...page, children: boards.map((board) => cache.get(String(board.id)) ?? board) };
 }
 
+/**
+ * The fill of a board that is not loaded yet: a light neutral grey, so that a
+ * placeholder is not taken for the design itself (a dark board fill would
+ * make it look like a black design).
+ */
+export const PLACEHOLDER_FILL = "#e4e4e7";
+
+/**
+ * What the renderer draws for `board`, a board of the outline that is not
+ * loaded yet: a box with the board's ID, name, place and size (the API gives a
+ * board that hugs its content the size of that content) and its rounding, so
+ * that its label and its room on the canvas are the board's, filled with
+ * `PLACEHOLDER_FILL` instead of the board's own look.
+ */
+export function placeholderOf(board: Json): Json {
+  const kept: Json = { fills: [{ type: "solid", color: PLACEHOLDER_FILL }] };
+  for (const key of ["id", "type", "name", "x", "y", "width", "height", "visible", "radius"]) {
+    if (key in board) kept[key] = board[key];
+  }
+  return kept;
+}
+
+/** The page as the renderer draws it: the boards in `cache` loaded, the others as placeholders. */
+function pageToDraw(page: Json, cache: BoardCache): Json {
+  const boards = Array.isArray(page.children) ? (page.children as Json[]) : [];
+  return { ...page, children: boards.map((board) => cache.get(String(board.id)) ?? placeholderOf(board)) };
+}
+
 export type BoardwiseOptions = {
   renderer: DesignRenderer;
   /** The page as the version's outline has it: every board a placeholder. */
@@ -127,7 +155,7 @@ export function showBoardwise(options: BoardwiseOptions): () => void {
 
   function show() {
     if (stopped) return;
-    renderer.show(pageWithBoards(page, cache), system);
+    renderer.show(pageToDraw(page, cache), system);
     onShown();
   }
 
@@ -148,14 +176,24 @@ export function showBoardwise(options: BoardwiseOptions): () => void {
     if (boardIds.has(id)) showSoon();
   });
 
+  // What went wrong asking the renderer for the boards in view, said once.
+  let viewFailure: string | null = null;
+
   function refresh() {
     if (stopped) return;
     let visible: string[];
     try {
       visible = renderer.visibleBoards();
-    } catch {
+    } catch (error) {
+      // No board can be read without it, so this is never kept quiet.
+      const message = `The boards in view could not be found, so none is loaded${error instanceof Error && error.message ? ` (${error.message})` : ""}.`;
+      if (message !== viewFailure) {
+        viewFailure = message;
+        onFailure(message);
+      }
       return;
     }
+    viewFailure = null;
     const wanted = visible.filter((id) => boardIds.has(id)).slice(0, MOST_IN_VIEW);
     for (const id of wanted) {
       if (cache.get(id) || cache.hasFailed(id) || waiting.has(id)) continue;

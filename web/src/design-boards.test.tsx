@@ -26,7 +26,15 @@
 // listeners of `onView`), reads each board in view that it has not read yet,
 // and shows the page again with the loaded boards in place of their
 // placeholders; the renderer keeps its view when the same page is shown
-// again. Boards out of view are not read.
+// again. Boards out of view are not read. When the renderer cannot answer
+// (an older build of its module, kept in the browser's cache, has no
+// `_omni_render_visible_boards`), the page says so in its error line: no
+// board could ever be read.
+//
+// A placeholder is drawn as a light neutral grey box (#e4e4e7) with the
+// board's ID, name, place, size and rounding, not the board's own fills, so
+// that a board not loaded yet is not taken for a dark design. (The API gives
+// a board that hugs its content the size of that content in the outline.)
 //
 // The app is rendered with its own router on a memory history, the browser's
 // fetch is replaced by a fake of the API, and the browser's WebSocket by a fake
@@ -51,6 +59,12 @@ const fake = vi.hoisted(() => {
     visible: null as string[] | null,
     /** How often `visibleBoards` was asked. */
     asked: 0,
+    /**
+     * Whether the renderer's module is an older build without
+     * `_omni_render_visible_boards`, as a browser that kept it in its cache
+     * loads it: `visibleBoards` then throws what the real renderer throws.
+     */
+    stale: false,
   };
 });
 
@@ -72,6 +86,7 @@ vi.mock("@/design/renderer", () => ({
       },
       visibleBoards() {
         fake.asked += 1;
+        if (fake.stale) throw new TypeError("module._omni_render_visible_boards is not a function");
         const boards = (lastPage()?.children ?? []).map((board) => String(board.id));
         return fake.visible === null ? boards : boards.filter((id) => fake.visible!.includes(id));
       },
@@ -422,12 +437,26 @@ function wholeBoard(version: string, id: string): JsonNode {
   throw new Error(`no board ${id} in ${version}`);
 }
 
-/** Whether `entry` is the placeholder of the board `id` of `version`: its own JSON, none of its content. */
+/**
+ * Whether `entry` is the placeholder of the board `id` of `version`: the
+ * board's ID, name, place and size, none of its content, and a light grey
+ * fill in place of its own look.
+ */
 function expectPlaceholder(entry: JsonNode | undefined, version: string, id: string) {
   expect(entry, `the board ${id} is on the page`).toBeTruthy();
   const children = Array.isArray(entry!.children) ? entry!.children : [];
   expect(children, `the board ${id} is a placeholder without its content`).toEqual([]);
-  expect(own(entry!), `the placeholder of ${id} has the board's own name, box and fills`).toEqual(own(wholeBoard(version, id)));
+  const whole = wholeBoard(version, id);
+  expect(own(entry!), `the placeholder of ${id} has the board's name and box, filled light grey`).toEqual({
+    id: whole.id,
+    type: whole.type,
+    name: whole.name,
+    x: whole.x,
+    y: whole.y,
+    width: whole.width,
+    height: whole.height,
+    fills: [{ type: "solid", color: "#e4e4e7" }],
+  });
 }
 
 /** Waits until the renderer's last shown page is `page` with the board `id` of `version` loaded. */
@@ -465,6 +494,7 @@ beforeEach(() => {
   fake.instances.length = 0;
   fake.visible = null;
   fake.asked = 0;
+  fake.stale = false;
   vi.stubGlobal("WebSocket", FakeWebSocket);
   window.scrollTo = vi.fn() as unknown as typeof window.scrollTo;
 });
@@ -513,6 +543,22 @@ describe("the design viewer", () => {
     await loaded(renderer, ORDRAR, V1, ORDER_1);
     expectPlaceholder(boardIn(lastShown(renderer), ORDER_2), V1, ORDER_2);
     expectPlaceholder(boardIn(lastShown(renderer), ORDER_3), V1, ORDER_3);
+  });
+
+  test("a renderer that cannot say which boards are in view is reported in the error line, never kept quiet", async () => {
+    api = fakeApi();
+    fake.stale = true;
+    renderAt(DOC_PATH);
+    const renderer = await viewerRenderer();
+    await waitFor(() => expect(lastShown(renderer)?.id, "the page Ordrar is shown with its placeholders").toBe(ORDRAR), {
+      timeout: 3000,
+    });
+    const alert = await screen.findByRole("alert", {}, { timeout: 3000 });
+    expect(alert.textContent).toMatch(/boards in view could not be found/i);
+    expect(alert.textContent).toContain("_omni_render_visible_boards is not a function");
+    await settle();
+    expect(boardReads(api), "no board can be read").toEqual([]);
+    expect(screen.getAllByRole("alert"), "said once, however often the view changes").toHaveLength(1);
   });
 
   test("reads only the boards in view, each from the version's board route", async () => {

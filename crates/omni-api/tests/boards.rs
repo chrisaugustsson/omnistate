@@ -57,7 +57,10 @@
 //!   version without `pages` and `tags`, and with `"outline"`: its pages in
 //!   order, each page as its own JSON with its boards in order under
 //!   `children`, every board as its own JSON (its name, box, layout and
-//!   fills) without its children. The `manifest` is the whole read's, and
+//!   fills) without its children. A width or height that is not fixed (a
+//!   board that hugs its content) is the fixed size that the board is laid
+//!   out in with its content, so that its placeholder takes the board's room
+//!   on the canvas; fixed sizes are as stored. The `manifest` is the whole read's, and
 //!   nothing below a board (no ID, no content) is in the answer, so `nodes`
 //!   lists no node below a board either.
 //! - The board of a version (`GET /docs/{doc_id}/boards/{board_id}`, with or
@@ -1480,6 +1483,55 @@ fn the_outline_of_a_design_version_lists_its_pages_and_boards_without_their_cont
         assert!(
             !text.contains(content),
             "the outline holds no content of a board ({content:?}): {text}"
+        );
+    }
+}
+
+#[test]
+fn a_placeholder_of_a_board_that_hugs_its_content_has_the_box_of_that_content() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    let changeset = new_changeset(f, client, &project);
+    let doc = create_doc(f, client, &project, &changeset, "design", "ui");
+    // Status hugs its width: 12 + 60 + 12 = 84 wide, 32 tall as fixed.
+    // Outline hugs both: 10 + 120 + 10 = 140 wide, 10 + 40 + 8 + 30 + 10 = 98 tall.
+    let tags = r##"<Page name="Ordrar">
+  <Board name="Status" x={2000} y={0} width="hug" height={32} dir="row" pad={{left: 12, right: 12}}>
+    <Frame name="Dot" width={60} height={20}/>
+  </Board>
+  <Board name="Outline" x={0} y={300000} width="hug" height="hug" dir="col" gap={8} pad={10}>
+    <Frame name="Head" width={120} height={40}/>
+    <Frame name="Body" width={80} height={30}/>
+  </Board>
+</Page>
+"##;
+    import_design(f, client, &project, &changeset, &doc, tags);
+    let version_id = id_of(&save(f, client, &project, &changeset, &doc));
+    let whole = read_version(f, client, &project, &version_id);
+    let outline = must(
+        outline_response(f, client, &agent(f), &project, &version_id),
+        200,
+        "read the version's outline",
+    )["version"]
+        .clone();
+    let boards = children_of(&outline["outline"][0]);
+    let whole_boards = children_of(&whole["pages"][0]);
+    assert_eq!(boards.len(), 2, "{outline:#}");
+    for (board, whole_board, width, height) in [
+        (&boards[0], &whole_boards[0], 84, 32),
+        (&boards[1], &whole_boards[1], 140, 98),
+    ] {
+        assert_eq!(board["width"], json!({"fixed": width}), "{board}");
+        assert_eq!(board["height"], json!({"fixed": height}), "{board}");
+        let mut rest = own_json(board);
+        let mut whole_rest = own_json(whole_board);
+        for key in ["width", "height"] {
+            rest.as_object_mut().map(|object| object.remove(key));
+            whole_rest.as_object_mut().map(|object| object.remove(key));
+        }
+        assert_eq!(
+            rest, whole_rest,
+            "the placeholder is otherwise the board's own JSON: its place, name and fills"
         );
     }
 }
