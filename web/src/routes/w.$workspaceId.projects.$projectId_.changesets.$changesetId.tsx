@@ -96,12 +96,12 @@ function ChangesetReview() {
   return (
     <main className="mx-auto max-w-7xl px-5 py-8 md:px-10 md:py-12">
       <Link
-        to="/w/$workspaceId/projects/$projectId"
+        to="/w/$workspaceId/projects/$projectId/changesets"
         params={{ workspaceId, projectId }}
         className="group inline-flex items-center gap-1.5 rounded-md text-[13px] text-muted-foreground transition-colors hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-none"
       >
         <ArrowLeft className="size-3.5 transition-transform group-hover:-translate-x-0.5" />
-        Back to the project
+        Change sets
       </Link>
       {review.failed && (
         <Alert variant="destructive" className="mt-6">

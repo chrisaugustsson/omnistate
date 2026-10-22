@@ -74,12 +74,12 @@ function ThreadView() {
       <PageHeader
         eyebrow={
           <Link
-            to="/w/$workspaceId/projects/$projectId"
+            to="/w/$workspaceId/projects/$projectId/threads"
             params={{ workspaceId, projectId }}
             className="group inline-flex items-center gap-1.5 text-[11px] tracking-[0.08em] uppercase transition-colors hover:text-foreground"
           >
             <ArrowLeft className="size-3.5 transition-transform group-hover:-translate-x-0.5" />
-            Back to the project
+            Threads
           </Link>
         }
         title={thread?.question ?? (failed ? "Thread" : "")}

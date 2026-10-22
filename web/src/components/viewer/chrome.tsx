@@ -31,13 +31,13 @@ export function ViewerToolbar({
   return (
     <header className="sticky top-0 z-30 flex min-h-12 shrink-0 flex-wrap items-center gap-x-3 gap-y-2 border-b bg-background/95 px-3 py-2 backdrop-blur supports-[backdrop-filter]:bg-background/80 lg:static">
       <Link
-        to="/w/$workspaceId/projects/$projectId"
+        to="/w/$workspaceId/projects/$projectId/docs"
         params={{ workspaceId, projectId }}
-        aria-label="Back to the project"
+        aria-label="Back to the docs"
         className="-ml-1 flex h-8 shrink-0 items-center gap-1.5 rounded-md px-2 text-[13px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-none"
       >
         <ArrowLeft className="size-4" />
-        <span className="hidden sm:inline">Project</span>
+        <span className="hidden sm:inline">Docs</span>
       </Link>
       <span aria-hidden className="h-4 w-px shrink-0 bg-border" />
       <div className="flex min-w-0 flex-1 basis-48 items-center gap-2">

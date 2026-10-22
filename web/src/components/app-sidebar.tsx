@@ -1,12 +1,19 @@
-import { useCallback, useState, type ReactNode } from "react";
-import { Link, useNavigate, useParams } from "@tanstack/react-router";
-import { FileText, GitPullRequestArrow, Inbox, LayoutGrid, LogOut, MessagesSquare } from "lucide-react";
+import { useState, type ReactNode } from "react";
+import { Link, useNavigate, useParams, useRouterState } from "@tanstack/react-router";
+import {
+  FileText,
+  GitPullRequestArrow,
+  Inbox,
+  LayoutDashboard,
+  LayoutGrid,
+  LogOut,
+  MessagesSquare,
+} from "lucide-react";
 import { logOut } from "@/api/auth";
-import { loadProjects } from "@/api/home";
 import { AgentAvatar } from "@/components/agent-chip";
 import { Button } from "@/components/ui/button";
-import { useHome } from "@/lib/use-home";
-import { useReloading } from "@/lib/reloading";
+import { waitingCount } from "@/components/project/items";
+import { useHome, useProjectName } from "@/lib/use-home";
 import { cn } from "@/lib/utils";
 
 type Workspace = { id: string; name: string };
@@ -41,62 +48,69 @@ function Count({ value, signal }: { value?: number; signal?: boolean }) {
   );
 }
 
-/** The navigation of one project: its home and the sections of the home, with counts. */
+/** The sections of a project, each a page of its own; the detail pages belong to theirs. */
+const SECTIONS = [
+  { section: "", label: "Overview", icon: LayoutDashboard, to: "/w/$workspaceId/projects/$projectId" },
+  { section: "inbox", label: "Inbox", icon: Inbox, to: "/w/$workspaceId/projects/$projectId/inbox" },
+  { section: "docs", label: "Docs", icon: FileText, to: "/w/$workspaceId/projects/$projectId/docs" },
+  {
+    section: "changesets",
+    label: "Change sets",
+    icon: GitPullRequestArrow,
+    to: "/w/$workspaceId/projects/$projectId/changesets",
+  },
+  { section: "threads", label: "Threads", icon: MessagesSquare, to: "/w/$workspaceId/projects/$projectId/threads" },
+] as const;
+
+/** The section of the project that `pathname` is in: "" for the overview, else its first segment. */
+function sectionOf(pathname: string, projectId: string): string {
+  const rest = pathname.split(`/projects/${projectId}`)[1] ?? "";
+  return rest.split("/").filter(Boolean)[0] ?? "";
+}
+
+/** The navigation of one project: its sections, with counts, the current one marked. */
 function ProjectNav({ workspaceId, projectId }: { workspaceId: string; projectId: string }) {
   const { home } = useHome(workspaceId, projectId);
-  const loadAll = useCallback(() => loadProjects(workspaceId), [workspaceId]);
-  const { value: projects } = useReloading(loadAll);
-  const name = projects?.find((project) => project.id === projectId)?.name;
-  const waiting = home
-    ? home.waiting.decisions.length +
-      home.waiting.changesets.length +
-      home.waiting.comments.length +
-      home.waiting.questions.length
-    : undefined;
-  const params = { workspaceId, projectId };
-  const to = "/w/$workspaceId/projects/$projectId" as const;
+  const name = useProjectName(workspaceId, projectId);
+  const pathname = useRouterState({ select: (state) => state.location.pathname });
+  const current = sectionOf(pathname, projectId);
+  const counts: Record<string, number | undefined> = {
+    inbox: home ? waitingCount(home) : undefined,
+    docs: home?.docs.length,
+    changesets: home?.changesets.length,
+    threads: home?.threads.length,
+  };
 
   return (
     <div className="space-y-1">
-      <div className="flex h-7 items-center gap-2 px-2 text-[11px] font-medium tracking-[0.08em] text-muted-foreground uppercase">
-        Project
-      </div>
-      <Link
-        to={to}
-        params={params}
-        className={cn(itemClass, "text-foreground")}
-        activeOptions={{ exact: true, includeHash: false }}
-        activeProps={{ className: "bg-sidebar-accent" }}
-      >
+      <div className="flex h-7 items-center gap-2 px-2">
         <span
           aria-hidden
           className="flex size-4 items-center justify-center rounded-[5px] bg-signal text-[9px] font-semibold text-signal-foreground"
         >
           {(name ?? "P").slice(0, 1).toUpperCase()}
         </span>
-        <span className="truncate">{name ?? "Overview"}</span>
-      </Link>
-      <div className="ml-[15px] space-y-0.5 border-l border-border pl-2">
-        <Link to={to} params={params} hash="waiting" className={itemClass}>
-          <Inbox />
-          Inbox
-          <Count value={waiting} signal />
-        </Link>
-        <Link to={to} params={params} hash="docs" className={itemClass}>
-          <FileText />
-          Docs
-          <Count value={home?.docs.length} />
-        </Link>
-        <Link to={to} params={params} hash="changesets" className={itemClass}>
-          <GitPullRequestArrow />
-          Change sets
-          <Count value={home?.changesets.length} />
-        </Link>
-        <Link to={to} params={params} hash="threads" className={itemClass}>
-          <MessagesSquare />
-          Threads
-          <Count value={home?.threads.length} />
-        </Link>
+        <span className="truncate text-[11px] font-medium tracking-[0.08em] text-muted-foreground uppercase">
+          {name ?? "Project"}
+        </span>
+      </div>
+      <div className="space-y-0.5">
+        {SECTIONS.map(({ section, label, icon: Icon, to }) => {
+          const active = current === section;
+          return (
+            <Link
+              key={section || "overview"}
+              to={to}
+              params={{ workspaceId, projectId }}
+              aria-current={active ? "page" : undefined}
+              className={cn(itemClass, active && "bg-sidebar-accent text-foreground [&>svg]:text-foreground")}
+            >
+              <Icon />
+              {label}
+              <Count value={counts[section]} signal={section === "inbox"} />
+            </Link>
+          );
+        })}
       </div>
     </div>
   );
