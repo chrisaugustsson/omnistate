@@ -24,6 +24,8 @@ mod exports {
         static STATS: RefCell<CString> = RefCell::new(CString::default());
         /// The result of the last `omni_render_bounds_of`.
         static BOUNDS: RefCell<CString> = RefCell::new(CString::default());
+        /// The result of the last `omni_render_inspect`.
+        static INSPECTION: RefCell<CString> = RefCell::new(CString::default());
         /// The result of the last `omni_render_take_events`.
         static EVENTS: RefCell<CString> = RefCell::new(CString::default());
         /// The result of the last `omni_render_overlay`.
@@ -374,6 +376,43 @@ mod exports {
             Ok(Some(bounds)) => {
                 BOUNDS.set(CString::new(bounds).unwrap_or_default());
                 BOUNDS.with_borrow(|bounds| bounds.as_ptr())
+            }
+            Ok(None) => std::ptr::null(),
+            Err(reason) => {
+                fail(&reason);
+                std::ptr::null()
+            }
+        }
+    }
+
+    /// The node at the address (`<id>` or `<instanceId>/<componentNodeId>`) as
+    /// the inspect panel shows it, as a NUL-ended JSON object that stays until
+    /// the next call: `{"address": "<address>", "name": "Buy", "type":
+    /// "instance", "mode": "light", "box": {"x": 20, "y": 20, "width": 120,
+    /// "height": 40}, "layout": [{"name": "x", "value": 20, "tokens": []}],
+    /// "size": [...], "style": [{"name": "fills", "value": [{"type": "solid",
+    /// "color": "#ff0000"}], "tokens": [{"token": "$color.brand", "value":
+    /// "#ff0000"}]}], "text": [], "instance": {"component": "<id>",
+    /// "componentName": "Button", "props": [{"name": "label", "kind": "text",
+    /// "value": "Pay now", "set": true}], "overrides": [{"node": "<id>",
+    /// "name": "Label", "fields": {...}}]}}`, with `"instance": null` for any
+    /// other node and `"mode": null` for a scene without a design system.
+    /// Null if the address names no node or is not an address
+    /// (`omni_render_error` has the reason in that case).
+    ///
+    /// # Safety
+    /// The pointer and length must be a block from `omni_render_alloc`.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn omni_render_inspect(
+        address: *const u8,
+        address_len: usize,
+    ) -> *const c_char {
+        // SAFETY: the caller promises the block is there.
+        let inspection = unsafe { text(address, address_len) }.and_then(omni_render::web::inspect);
+        match inspection {
+            Ok(Some(inspection)) => {
+                INSPECTION.set(CString::new(inspection).unwrap_or_default());
+                INSPECTION.with_borrow(|inspection| inspection.as_ptr())
             }
             Ok(None) => std::ptr::null(),
             Err(reason) => {

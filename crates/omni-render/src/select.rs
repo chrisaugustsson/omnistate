@@ -112,6 +112,9 @@ struct Entry {
     /// Where the node is: its ID, or the instance and the component node that
     /// it stands for inside an instance.
     address: NodeAddress,
+    /// The node's ID in the indexed page, which a node inside an instance
+    /// has of its own.
+    node: NodeId,
     name: String,
     /// The node's type as the design has it.
     kind: &'static str,
@@ -180,6 +183,7 @@ impl Index {
             .unwrap_or_else(|| NodeAddress::new(None, *node.id()));
         self.entries.push(Entry {
             address: address.clone(),
+            node: *node.id(),
             name: node.name().to_string(),
             kind: if instances.contains(node.id()) {
                 "instance"
@@ -243,6 +247,17 @@ impl Index {
     /// of the component.
     pub(crate) fn id(&self, at: usize) -> NodeId {
         *self.entries[at].address.node()
+    }
+
+    /// The ID of the node in the indexed page: for a node inside an instance,
+    /// the ID made up for it there.
+    pub(crate) fn page_id(&self, at: usize) -> NodeId {
+        self.entries[at].node
+    }
+
+    /// The type of the node as the design has it.
+    pub(crate) fn kind(&self, at: usize) -> &'static str {
+        self.entries[at].kind
     }
 
     pub(crate) fn name(&self, at: usize) -> &str {

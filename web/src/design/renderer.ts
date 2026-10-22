@@ -9,6 +9,31 @@
 
 export type Layer = { address: string; name: string; type: string; children: Layer[] };
 
+export type TokenUse = { token: string; value: unknown };
+export type Property = { name: string; value: unknown; tokens: TokenUse[] };
+
+/** A node as the inspect panel shows it (omni-render's `_omni_render_inspect`). */
+export type Inspection = {
+  address: string;
+  name: string;
+  type: string;
+  /** The mode the tokens are resolved in; `null` for a design without a design system. */
+  mode: string | null;
+  /** The node's laid-out box in page coordinates. */
+  box: { x: number; y: number; width: number; height: number };
+  layout: Property[];
+  size: Property[];
+  style: Property[];
+  text: Property[];
+  /** For an instance: its component, property values and overrides. */
+  instance: null | {
+    component: string;
+    componentName: string;
+    props: { name: string; kind: string; value: unknown; set: boolean }[];
+    overrides: { node: string; name: string; fields: Record<string, unknown> }[];
+  };
+};
+
 export type DesignRenderer = {
   /**
    * Shows `page` (one of a version's `pages`, as the API gives it), resolving
@@ -20,6 +45,14 @@ export type DesignRenderer = {
   layers(): Layer[];
   /** Selects the node at `address` on the canvas; `null` clears the selection. */
   select(address: string | null): void;
+  /**
+   * Resolves the shown page's tokens in `mode` from now on and draws it again.
+   * `show` resolves a page in the first mode of its design system, so call
+   * this again after showing another page in another mode.
+   */
+  setMode(mode: string): void;
+  /** The node at `address` in the current mode, or `null` when no node has that address. */
+  inspect(address: string): Inspection | null;
   /** Calls `listener` when the reviewer selects a node on the canvas; returns the function that stops it. */
   onSelect(listener: (address: string | null) => void): () => void;
   destroy(): void;
@@ -43,6 +76,8 @@ type OmniRender = {
   _omni_render_error(): number;
   _omni_render_scene_load(pointer: number, length: number): boolean;
   _omni_render_scene_set_system(pointer: number, length: number): boolean;
+  _omni_render_scene_set_mode(pointer: number, length: number): boolean;
+  _omni_render_inspect(pointer: number, length: number): number;
   _omni_render_scene_draw(width: number, height: number, pixelRatio: number): boolean;
   _omni_render_scene_layers(): number;
   _omni_render_select_node(pointer: number, length: number): boolean;
@@ -301,6 +336,16 @@ export async function createDesignRenderer(canvas: HTMLCanvasElement): Promise<D
       // The caller knows about this selection, so it is not announced.
       module._omni_render_take_events();
       drawOverlay();
+    },
+    setMode(mode) {
+      if (!loaded) return;
+      if (!withText(mode, (pointer, length) => module._omni_render_scene_set_mode(pointer, length))) throw failure();
+      requestFrame();
+    },
+    inspect(address) {
+      if (!loaded) return null;
+      const text = withText(address, (pointer, length) => module._omni_render_inspect(pointer, length));
+      return text ? readJson<Inspection>(text) : null;
     },
     onSelect(listener) {
       listeners.add(listener);

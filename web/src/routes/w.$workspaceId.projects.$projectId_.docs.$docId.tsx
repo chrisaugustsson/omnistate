@@ -12,7 +12,13 @@ import {
   loadVersions,
 } from "@/api/docs";
 import type { ChangesetBody, ClaimBody, CommentBody, DocBody, VersionItem } from "@/api/generated";
-import { createDesignRenderer, type DesignRenderer, type Layer } from "@/design/renderer";
+import {
+  createDesignRenderer,
+  type DesignRenderer,
+  type Inspection,
+  type Layer,
+  type Property,
+} from "@/design/renderer";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
@@ -36,7 +42,8 @@ import {
 // selected block and the version shown.
 //
 // A design doc is shown by the design viewer instead (further down): the
-// renderer's canvas with a page list and a layers panel.
+// renderer's canvas with a page list, a layers panel, an inspect panel for the
+// selected node and a switch between the design system's token modes.
 export const Route = createFileRoute("/w/$workspaceId/projects/$projectId_/docs/$docId")({
   component: DocPage,
 });
@@ -550,6 +557,121 @@ function rowsOf(layers: Layer[], level = 1): Row[] {
   return layers.flatMap((layer) => [{ layer, level }, ...rowsOf(layer.children, level + 1)]);
 }
 
+/** The modes of a design system version's token tree, in order. */
+function modesOf(tokens: Record<string, unknown> | null | undefined): string[] {
+  const extensions = tokens?.$extensions as { omnistate?: { modes?: unknown } } | undefined;
+  const modes = extensions?.omnistate?.modes;
+  return Array.isArray(modes) ? modes.filter((mode): mode is string => typeof mode === "string") : [];
+}
+
+/** A property value as the inspect panel writes it. */
+function showValue(value: unknown): string {
+  return typeof value === "string" ? value : JSON.stringify(value);
+}
+
+const NUMBER_FORMAT = new Intl.NumberFormat("en", { maximumFractionDigits: 2 });
+
+function InspectTable({
+  label,
+  rows,
+}: {
+  label: string;
+  rows: { name: string; cells: ReactNode }[];
+}) {
+  return (
+    <table aria-label={label} className="w-full text-left text-xs">
+      <caption className="pb-1 text-left text-sm font-medium">{label}</caption>
+      <tbody className="divide-y">
+        {rows.map((row) => (
+          <tr key={row.name} className="align-top">
+            <th scope="row" className="py-1 pr-2 font-medium whitespace-nowrap">
+              {row.name}
+            </th>
+            <td className="py-1 break-all">{row.cells}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
+function PropertyCells({ property, laidOut }: { property: Property; laidOut?: number }) {
+  return (
+    <>
+      <span className="font-mono">{showValue(property.value)}</span>
+      {laidOut !== undefined && <span className="text-muted-foreground"> ({NUMBER_FORMAT.format(laidOut)} px)</span>}
+      {property.tokens.map((used) => (
+        <span key={used.token} className="block text-muted-foreground">
+          <span className="font-mono">{used.token}</span> <span className="font-mono">{showValue(used.value)}</span>
+        </span>
+      ))}
+    </>
+  );
+}
+
+/** Every property of the selected node, with the tokens it uses and their values in the current mode. */
+function InspectPanel({ inspection }: { inspection: Inspection | null }) {
+  const group = (label: string, properties: Property[], laidOut?: (name: string) => number | undefined) =>
+    properties.length > 0 && (
+      <InspectTable
+        label={label}
+        rows={properties.map((property) => ({
+          name: property.name,
+          cells: <PropertyCells property={property} laidOut={laidOut?.(property.name)} />,
+        }))}
+      />
+    );
+  const instance = inspection?.instance;
+  return (
+    <Panel id="inspect" title="Inspect">
+      {!inspection && <p className="text-sm text-muted-foreground">Select a layer to inspect it.</p>}
+      {inspection && (
+        <div className="space-y-4">
+          <p className="text-sm font-medium">
+            {inspection.name} <span className="text-xs font-normal text-muted-foreground">{inspection.type}</span>
+          </p>
+          {group("Layout", inspection.layout)}
+          {group("Size", inspection.size, (name) =>
+            name === "width" ? inspection.box.width : name === "height" ? inspection.box.height : undefined,
+          )}
+          {group("Style", inspection.style)}
+          {group("Text", inspection.text)}
+          {instance && (
+            <InspectTable
+              label="Component"
+              rows={[
+                { name: "component", cells: <span className="font-mono">{instance.componentName}</span> },
+                ...instance.props.map((prop) => ({
+                  name: prop.name,
+                  cells: (
+                    <>
+                      <span className="font-mono">{showValue(prop.value)}</span>
+                      <span className="text-muted-foreground">
+                        {" "}
+                        {prop.kind}
+                        {prop.set ? "" : ", default"}
+                      </span>
+                    </>
+                  ),
+                })),
+              ]}
+            />
+          )}
+          {instance && instance.overrides.length > 0 && (
+            <InspectTable
+              label="Overrides"
+              rows={instance.overrides.map((override) => ({
+                name: override.name,
+                cells: <span className="font-mono">{showValue(override.fields)}</span>,
+              }))}
+            />
+          )}
+        </div>
+      )}
+    </Panel>
+  );
+}
+
 /**
  * The reviewer's view of a design doc: its mainline version on the renderer's
  * canvas, a list of its pages and a layers panel whose selection follows the
@@ -581,7 +703,17 @@ function DesignViewer({
   const [failure, setFailure] = useState<string | null>(null);
   const [layers, setLayers] = useState<Layer[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
+  const [chosenMode, setChosenMode] = useState<string | null>(null);
+  // Counts the times the renderer drew a page or another mode, so that the inspect panel asks again.
+  const [drawn, setDrawn] = useState(0);
   const canvas = useRef<HTMLCanvasElement>(null);
+
+  const modes = useMemo(() => modesOf(version.value?.tokens), [version.value]);
+  const mode = chosenMode !== null && modes.includes(chosenMode) ? chosenMode : (modes[0] ?? null);
+  const modeRef = useRef(mode);
+  useEffect(() => {
+    modeRef.current = mode;
+  });
 
   const pages = useMemo(() => version.value?.pages ?? [], [version.value]);
   const page = useMemo(() => pages.find((candidate) => candidate.id === chosen) ?? pages[0] ?? null, [pages, chosen]);
@@ -622,13 +754,16 @@ function DesignViewer({
     if (!renderer || !page || !system) return;
     try {
       renderer.show(page, system);
+      // A page is shown in the first mode, so the chosen mode is set again.
+      if (modeRef.current && modeRef.current !== modes[0]) renderer.setMode(modeRef.current);
+      setDrawn((count) => count + 1);
       setLayers(renderer.layers());
       setSelected(null);
       setFailure(null);
     } catch (error) {
       setFailure(error instanceof Error ? error.message : "The design could not be drawn.");
     }
-  }, [renderer, page, system]);
+  }, [renderer, page, system, modes]);
 
   useProjectEvents(projectId, (event) => {
     const { doc_id: eventDoc } = event.data;
@@ -641,7 +776,28 @@ function DesignViewer({
     renderer?.select(address);
   }
 
+  function chooseMode(next: string) {
+    try {
+      renderer?.setMode(next);
+      setFailure(null);
+    } catch (error) {
+      setFailure(error instanceof Error ? error.message : "The design could not be drawn in that mode.");
+      return;
+    }
+    setChosenMode(next);
+    setDrawn((count) => count + 1);
+  }
+
   const rows = useMemo(() => rowsOf(layers), [layers]);
+  const inspection = useMemo(() => {
+    // `drawn` says the renderer drew again, which changes what it answers.
+    if (!renderer || !selected || drawn < 0) return null;
+    try {
+      return renderer.inspect(selected);
+    } catch {
+      return null;
+    }
+  }, [renderer, selected, drawn]);
 
   return (
     <main className="mx-auto max-w-7xl space-y-6 p-6">
@@ -651,7 +807,28 @@ function DesignViewer({
           <AlertDescription>The doc could not be loaded. Try again in a moment.</AlertDescription>
         </Alert>
       )}
-      {doc.value && <h1 className="text-2xl font-semibold">{doc.value.title}</h1>}
+      {doc.value && (
+        <header className="flex flex-wrap items-end justify-between gap-4">
+          <h1 className="text-2xl font-semibold">{doc.value.title}</h1>
+          {mode !== null && (
+            <div className="w-40 space-y-1">
+              <Label htmlFor="mode-switch">Mode</Label>
+              <select
+                id="mode-switch"
+                className={SELECT_CLASS}
+                value={mode}
+                onChange={(event) => chooseMode(event.target.value)}
+              >
+                {modes.map((listed) => (
+                  <option key={listed} value={listed}>
+                    {listed}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+        </header>
+      )}
       {version.failed && (
         <Alert variant="destructive">
           <AlertDescription>The design could not be loaded. Try again in a moment.</AlertDescription>
@@ -685,30 +862,33 @@ function DesignViewer({
         <div className="relative h-[75vh] overflow-hidden rounded-md border bg-muted/30">
           <canvas ref={canvas} aria-label="Design canvas" className="size-full touch-none" />
         </div>
-        <Panel id="layers" title="Layers">
-          <div role="tree" aria-label="Layers of the page" className="max-h-[70vh] overflow-auto text-sm">
-            {rows.map(({ layer, level }) => (
-              <div
-                key={layer.address}
-                role="treeitem"
-                tabIndex={0}
-                aria-level={level}
-                aria-selected={layer.address === selected}
-                style={{ paddingLeft: `${level * 0.75}rem` }}
-                className="cursor-pointer rounded-sm py-1 pr-2 outline-none hover:bg-accent focus-visible:ring-[3px] focus-visible:ring-ring/50 aria-selected:bg-accent aria-selected:font-medium"
-                onClick={() => choose(layer.address)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter" || event.key === " ") {
-                    event.preventDefault();
-                    choose(layer.address);
-                  }
-                }}
-              >
-                {layer.name} <span className="text-xs text-muted-foreground">{layer.type}</span>
-              </div>
-            ))}
-          </div>
-        </Panel>
+        <div className="space-y-6">
+          <Panel id="layers" title="Layers">
+            <div role="tree" aria-label="Layers of the page" className="max-h-[70vh] overflow-auto text-sm">
+              {rows.map(({ layer, level }) => (
+                <div
+                  key={layer.address}
+                  role="treeitem"
+                  tabIndex={0}
+                  aria-level={level}
+                  aria-selected={layer.address === selected}
+                  style={{ paddingLeft: `${level * 0.75}rem` }}
+                  className="cursor-pointer rounded-sm py-1 pr-2 outline-none hover:bg-accent focus-visible:ring-[3px] focus-visible:ring-ring/50 aria-selected:bg-accent aria-selected:font-medium"
+                  onClick={() => choose(layer.address)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      choose(layer.address);
+                    }
+                  }}
+                >
+                  {layer.name} <span className="text-xs text-muted-foreground">{layer.type}</span>
+                </div>
+              ))}
+            </div>
+          </Panel>
+          <InspectPanel inspection={inspection} />
+        </div>
       </div>
     </main>
   );

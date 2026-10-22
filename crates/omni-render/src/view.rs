@@ -22,7 +22,7 @@
 use crate::inspect::Inspection;
 use crate::layout::{self, LayoutBox, ShapedTexts};
 use crate::paint::{self, Assets};
-use crate::resolve;
+use crate::resolve::{self, Details, Facts};
 use crate::select::{Event, Index, Layer, Modifiers, NodeAddress, Outline, OutlineKind};
 use crate::system::{DesignSystem, RenderError};
 use omni_core::design::{Node, NodeData, NodeId};
@@ -401,6 +401,8 @@ pub struct Scene {
     source: Option<Node>,
     system: Option<Resolving>,
     errors: Vec<RenderError>,
+    /// What resolving noted of the nodes, for the inspect panel.
+    details: Details,
     assets: Assets,
     boxes: HashMap<NodeId, LayoutBox>,
     /// The text nodes, shaped as layout measured them.
@@ -437,6 +439,16 @@ fn board_nodes(page: &Node) -> &[Node] {
         NodeData::Page(page) => &page.children,
         _ => std::slice::from_ref(page),
     }
+}
+
+/// The node `id` in `root` or below it.
+fn find_node<'a>(root: &'a Node, id: &NodeId) -> Option<&'a Node> {
+    if root.id() == id {
+        return Some(root);
+    }
+    root.children()
+        .iter()
+        .find_map(|child| find_node(child, id))
 }
 
 /// Lays `page` out. `addresses` names the nodes inside instances
@@ -480,6 +492,7 @@ impl Scene {
             source: None,
             system: None,
             errors: Vec::new(),
+            details: Details::default(),
             assets,
             boxes: laid.boxes,
             texts: laid.texts,
@@ -507,6 +520,7 @@ impl Scene {
             source: Some(page),
             system: Some(Resolving { system, mode }),
             errors: resolved.errors,
+            details: resolved.details,
             assets,
             boxes: laid.boxes,
             texts: laid.texts,
@@ -570,6 +584,7 @@ impl Scene {
         let selected = self.selected.map(|at| self.index.address(at));
         self.page = resolved.page;
         self.errors = resolved.errors;
+        self.details = resolved.details;
         self.boxes = laid.boxes;
         self.texts = laid.texts;
         self.boards = laid.boards;
@@ -691,7 +706,21 @@ impl Scene {
     /// resolved in the current mode, and for an instance what it stores.
     /// `None` when the address names no node of the scene.
     pub fn inspect(&self, address: &NodeAddress) -> Option<Inspection> {
-        todo!("US-044: inspect {address}")
+        let at = self.index.lookup(address)?;
+        let id = self.index.page_id(at);
+        let node = board_nodes(&self.page)
+            .iter()
+            .find_map(|board| find_node(board, &id))?;
+        Some(self.details.inspect(
+            node,
+            Facts {
+                address: address.clone(),
+                name: self.index.name(at).to_string(),
+                kind: self.index.kind(at).to_string(),
+                mode: self.system.as_ref().map(|resolving| resolving.mode.clone()),
+                bounds: self.index.rect(at),
+            },
+        ))
     }
 
     /// The pointer moved to the screen point `screen` of `viewport`.

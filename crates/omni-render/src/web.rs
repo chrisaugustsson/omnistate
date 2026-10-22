@@ -11,6 +11,7 @@ use skia_safe::{
     },
 };
 
+use crate::inspect::{Inspection, Property};
 use crate::layout::{self, LayoutBox};
 use crate::paint::{self, Assets};
 use crate::sandbox::{self, SandboxScene};
@@ -314,6 +315,76 @@ pub fn bounds_of(address: &str) -> Result<Option<String>, String> {
             height: page.height * zoom,
         };
         Some(json!({"page": box_json(page), "screen": box_json(screen)}).to_string())
+    })
+    .flatten())
+}
+
+fn property_json(property: &Property) -> Value {
+    json!({
+        "name": property.name,
+        "value": property.value,
+        "tokens": property
+            .tokens
+            .iter()
+            .map(|used| json!({"token": used.token, "value": used.value}))
+            .collect::<Vec<Value>>(),
+    })
+}
+
+fn inspection_json(inspection: &Inspection) -> Value {
+    let group =
+        |properties: &[Property]| Value::Array(properties.iter().map(property_json).collect());
+    let instance = inspection
+        .instance
+        .as_ref()
+        .map_or(Value::Null, |instance| {
+            json!({
+                "component": instance.component.to_string(),
+                "componentName": instance.component_name,
+                "props": instance
+                    .props
+                    .iter()
+                    .map(|prop| json!({
+                        "name": prop.name,
+                        "kind": prop.kind,
+                        "value": prop.value,
+                        "set": prop.set,
+                    }))
+                    .collect::<Vec<Value>>(),
+                "overrides": instance
+                    .overrides
+                    .iter()
+                    .map(|over| json!({
+                        "node": over.node.to_string(),
+                        "name": over.name,
+                        "fields": over.fields,
+                    }))
+                    .collect::<Vec<Value>>(),
+            })
+        });
+    json!({
+        "address": inspection.address.to_string(),
+        "name": inspection.name,
+        "type": inspection.kind,
+        "mode": inspection.mode,
+        "box": box_json(inspection.bounds),
+        "layout": group(&inspection.layout),
+        "size": group(&inspection.size),
+        "style": group(&inspection.style),
+        "text": group(&inspection.text),
+        "instance": instance,
+    })
+}
+
+/// The node at `address` (`<id>` or `<instanceId>/<componentNodeId>`) as the
+/// inspect panel shows it, as JSON (see `omni_render_inspect`). `Ok(None)` if
+/// no scene is loaded or the address names no node.
+pub fn inspect(address: &str) -> Result<Option<String>, String> {
+    let address: NodeAddress = address.parse().map_err(|error| format!("{error}"))?;
+    Ok(with_stage(|scene, _| {
+        scene
+            .inspect(&address)
+            .map(|inspection| inspection_json(&inspection).to_string())
     })
     .flatten())
 }

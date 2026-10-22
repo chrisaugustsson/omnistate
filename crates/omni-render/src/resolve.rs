@@ -28,10 +28,15 @@
 //! drawn as an error placeholder, a tinted box with a magenta edge, and listed
 //! in `Resolved::errors`. The rest of the board resolves as usual.
 
+mod details;
+
+use crate::inspect::{InstanceInspection, OverrideInspection, PropValue};
 use crate::system::{ComponentDef, DesignSystem, Missing, RenderError};
 use omni_core::design::{Node, NodeAddress, NodeId, PropDef, TokenRef};
 use serde_json::{Map, Value, json};
 use std::collections::{HashMap, HashSet};
+
+pub(crate) use details::{Details, Facts, UsedToken};
 
 /// How many instances may be inside one another before an instance is taken
 /// for a component that holds itself and drawn as a placeholder.
@@ -91,6 +96,8 @@ pub(crate) struct Resolved {
     /// The nodes of `page` that were instances, by their IDs in `page`, where
     /// they are frames.
     pub(crate) instances: HashSet<NodeId>,
+    /// What the inspect panel shows of the nodes, by their IDs in `page`.
+    pub(crate) details: Details,
     pub(crate) errors: Vec<RenderError>,
 }
 
@@ -122,6 +129,7 @@ pub(crate) fn resolve(page: &Node, system: &DesignSystem, mode: &str) -> Resolve
         next: 0,
         addresses: HashMap::new(),
         instances: HashSet::new(),
+        details: Details::default(),
         errors: Vec::new(),
     };
     let resolved = resolver.node(source.clone(), None);
@@ -136,6 +144,7 @@ pub(crate) fn resolve(page: &Node, system: &DesignSystem, mode: &str) -> Resolve
         page,
         addresses: resolver.addresses,
         instances: resolver.instances,
+        details: resolver.details,
         errors: resolver.errors,
     }
 }
@@ -173,6 +182,7 @@ struct Resolver<'a> {
     next: u64,
     addresses: HashMap<NodeId, NodeAddress>,
     instances: HashSet<NodeId>,
+    details: Details,
     errors: Vec<RenderError>,
 }
 
@@ -280,6 +290,11 @@ impl Resolver<'_> {
             .collect();
         let chosen = self.system.variant(base, &wanted);
         let props = property_values(chosen, given);
+        let stored = value.get("overrides").and_then(Value::as_object);
+        self.details.instances.insert(
+            out_id,
+            instance_inspection(base, chosen, &props, given, stored),
+        );
 
         let mut overrides = value
             .get("overrides")
@@ -365,6 +380,14 @@ impl Resolver<'_> {
                 }
             }
         }
+        let used: Vec<UsedToken> = resolved
+            .iter()
+            .map(|replaced| UsedToken {
+                pointer: replaced.pointer.clone(),
+                reference: replaced.reference.clone(),
+                value: replaced.token.clone(),
+            })
+            .collect();
         let mut errors: Vec<Missing> = missing.into_iter().map(Missing::Token).collect();
         if !resolved.is_empty() && !reads(node) {
             for (reference, property) in unfit(node, resolved) {
@@ -378,6 +401,13 @@ impl Resolver<'_> {
             }
         }
         if errors.is_empty() {
+            let id = node
+                .get("id")
+                .and_then(Value::as_str)
+                .and_then(|id| id.parse::<NodeId>().ok());
+            if let (Some(id), false) = (id, used.is_empty()) {
+                self.details.tokens.insert(id, used);
+            }
             return;
         }
         mark_error(node);
@@ -544,6 +574,77 @@ fn property_values(
             (name.clone(), value)
         })
         .collect()
+}
+
+/// What the instance that shows `chosen`, a variant of `base`, stores: the
+/// value of each property of the component (`props` are the ones the
+/// instance gets) and the instance's own `overrides`.
+fn instance_inspection(
+    base: &ComponentDef,
+    chosen: &ComponentDef,
+    props: &HashMap<String, Prop>,
+    given: Option<&Map<String, Value>>,
+    overrides: Option<&Map<String, Value>>,
+) -> InstanceInspection {
+    let props = chosen
+        .props
+        .iter()
+        .filter_map(|(name, def)| {
+            let value = match props.get(name)? {
+                Prop::Text(text) => json!(text),
+                Prop::Flag(flag) => json!(flag),
+            };
+            let kind = match def {
+                PropDef::Variant { .. } => "variant",
+                PropDef::Boolean { .. } => "boolean",
+                PropDef::Text { .. } => "text",
+                PropDef::Slot { .. } => "slot",
+            };
+            Some(PropValue {
+                name: name.clone(),
+                kind: kind.to_string(),
+                set: given.and_then(|given| given.get(name)) == Some(&value),
+                value,
+            })
+        })
+        .collect();
+    let overrides = overrides
+        .into_iter()
+        .flatten()
+        .filter_map(|(node, fields)| {
+            Some(OverrideInspection {
+                name: layer_name(&chosen.json, node)
+                    .or_else(|| layer_name(&base.json, node))
+                    .unwrap_or_default(),
+                node: node.parse().ok()?,
+                fields: fields.as_object()?.clone(),
+            })
+        })
+        .collect();
+    InstanceInspection {
+        component: base.id,
+        component_name: base.name.clone(),
+        props,
+        overrides,
+    }
+}
+
+/// The name of the node `id` in the component `layer`, or of a node below it.
+fn layer_name(layer: &Value, id: &str) -> Option<String> {
+    let name = || {
+        layer
+            .get("name")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    };
+    if layer.get("id").and_then(Value::as_str) == Some(id) {
+        return name();
+    }
+    layer
+        .get("children")?
+        .as_array()?
+        .iter()
+        .find_map(|child| layer_name(child, id))
 }
 
 /// Gives the layer `node` of kind `kind` the property values it is bound to.
