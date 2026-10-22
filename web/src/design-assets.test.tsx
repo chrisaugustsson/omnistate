@@ -154,7 +154,6 @@ const BYTES: Record<string, number[]> = {
   [LOGO]: [...PNG_MAGIC, 2],
   [ICON]: [...PNG_MAGIC, 3],
   [HERO]: [...PNG_MAGIC, 4],
-  [MISSING]: [...PNG_MAGIC, 5],
   [GEIST_REGULAR]: [...TTF_MAGIC, 11],
   [GEIST_BOLD]: [...TTF_MAGIC, 12],
   [GEIST_MONO]: [...TTF_MAGIC, 13],
