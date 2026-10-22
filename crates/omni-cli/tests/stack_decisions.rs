@@ -16,6 +16,11 @@
 //! later proposal supersedes it; `omni changeset link-decision` links a change
 //! set to it; and `omni wait --until decision:approved` (US-036) ends when the
 //! human approves it, and with exit 3 when the human rejects it.
+//!
+//! US-056: a decision proposed in a sealed phase is shown by `omni decision
+//! show` only to an agent that has posted in that phase. To any other agent,
+//! showing it by ID fails exactly as for an ID that is neither a decision nor
+//! a thread, and showing the thread's decision prints `no decision`.
 
 mod common;
 
@@ -37,6 +42,8 @@ const KEY_PREFIX: &str = "omniustest37";
 /// How long after the wait starts the human acts.
 const LATER: Duration = Duration::from_millis(1500);
 const MODERATOR: &str = "run-7/moderator";
+/// An ID that no row has.
+const UNKNOWN_ID: &str = "01900000-0000-7000-8000-000000000000";
 /// The API's session cookie (crates/omni-api/src/session.rs).
 const SESSION_COOKIE: &str = "omni_session";
 
@@ -223,6 +230,12 @@ struct Forum {
 /// A new project with a change set and an open thread, made by the moderator
 /// from the command line.
 fn new_forum(home: &Scratch) -> Forum {
+    forum_with(home, false)
+}
+
+/// A new project with a change set and a thread whose first phase is sealed
+/// or open, made by the moderator from the command line.
+fn forum_with(home: &Scratch, sealed: bool) -> Forum {
     let project = unique("decision-site");
     let created = run_as(home, MODERATOR, &["project", "create", &project]);
     assert_eq!(created.code, 0, "project create: {}", created.stderr);
@@ -246,23 +259,23 @@ fn new_forum(home: &Scratch) -> Forum {
     let criteria = home.join(&format!("{}.txt", unique("criteria")));
     std::fs::write(&criteria, "Readable at 320 px\nFits above the fold\n")
         .expect("write the criteria file");
-    let out = run_as(
-        home,
-        MODERATOR,
-        &[
-            "thread",
-            "create",
-            "--project",
-            &project,
-            "--changeset",
-            changeset["id"].as_str().expect("the change set's id"),
-            "--question",
-            "Which hero layout?",
-            "--criteria-file",
-            criteria.to_str().expect("a UTF-8 path"),
-            "--json",
-        ],
-    );
+    let mut args = vec![
+        "thread",
+        "create",
+        "--project",
+        &project,
+        "--changeset",
+        changeset["id"].as_str().expect("the change set's id"),
+        "--question",
+        "Which hero layout?",
+        "--criteria-file",
+        criteria.to_str().expect("a UTF-8 path"),
+        "--json",
+    ];
+    if sealed {
+        args.push("--sealed");
+    }
+    let out = run_as(home, MODERATOR, &args);
     assert_eq!(out.code, 0, "thread create: {}", out.stderr);
     Forum {
         project,
@@ -280,11 +293,16 @@ fn new_forum(home: &Scratch) -> Forum {
 
 /// A critic posts a position; returns the post's ID.
 fn post(home: &Scratch, forum: &Forum) -> String {
+    post_as(home, forum, "run-7/critic-a")
+}
+
+/// The agent `who` posts a position; returns the post's ID.
+fn post_as(home: &Scratch, forum: &Forum, who: &str) -> String {
     let file = home.join(&format!("{}.md", unique("body")));
     std::fs::write(&file, "The split hero reads best at 320 px.").expect("write the body");
     let out = run_as(
         home,
-        "run-7/critic-a",
+        who,
         &[
             "post",
             &forum.thread,
@@ -299,7 +317,7 @@ fn post(home: &Scratch, forum: &Forum) -> String {
             "--json",
         ],
     );
-    assert_eq!(out.code, 0, "the critic posts: {}", out.stderr);
+    assert_eq!(out.code, 0, "{who} posts: {}", out.stderr);
     out.json()["post"]["id"]
         .as_str()
         .expect("the post's id")
@@ -605,4 +623,78 @@ fn a_rejection_ends_a_wait_for_approval_with_3() {
     let lines = waited.stderr_lines();
     assert_eq!(lines.len(), 1, "{:?}", waited.stderr);
     assert!(lines[0].contains("rejected"), "{:?}", lines[0]);
+}
+
+#[test]
+fn a_decision_of_a_sealed_phase_is_shown_only_to_an_agent_that_posted_in_it() {
+    let f = fixture();
+    let home = agent_home(f);
+    let forum = forum_with(&home, true);
+    let relied_on = post_as(&home, &forum, MODERATOR);
+    let (decision, direction) = propose(&home, &forum, &[&relied_on]);
+    let scout = "run-7/scout";
+    let show_as = |who: &str, id: &str| {
+        run_as(
+            &home,
+            who,
+            &["decision", "show", id, "--project", &forum.project],
+        )
+    };
+
+    // The scout has not posted in the sealed phase.
+    let hidden = show_as(scout, &decision);
+    let unknown = show_as(scout, UNKNOWN_ID);
+    assert_ne!(unknown.code, 0, "an unknown ID fails: {}", unknown.stdout);
+    assert_eq!(
+        hidden.code, unknown.code,
+        "the hidden decision fails like an unknown ID: {} / {}",
+        hidden.stderr, unknown.stderr
+    );
+    assert_eq!(
+        hidden.stderr.replace(&decision, "<id>"),
+        unknown.stderr.replace(UNKNOWN_ID, "<id>"),
+        "the hidden decision fails with the message of an unknown ID"
+    );
+    for text in [&hidden.stdout, &hidden.stderr] {
+        assert!(!text.contains(&direction), "the direction shows: {text}");
+    }
+    let by_thread = show_as(scout, &forum.thread);
+    assert_eq!(
+        by_thread.code, 0,
+        "show the thread's decision: {}",
+        by_thread.stderr
+    );
+    assert!(
+        by_thread.stdout.contains("no decision"),
+        "the thread reads as one without a decision: {:?}",
+        by_thread.stdout
+    );
+    for marker in [&decision, &direction] {
+        assert!(
+            !by_thread.stdout.contains(marker.as_str()),
+            "the hidden decision shows: {:?}",
+            by_thread.stdout
+        );
+    }
+
+    // Once the scout has posted in the phase, it is shown, by ID and by thread.
+    post_as(&home, &forum, scout);
+    let by_id = show_as(scout, &decision);
+    assert_eq!(by_id.code, 0, "show the decision: {}", by_id.stderr);
+    assert_contains_all(
+        &by_id.stdout,
+        &[&decision, "proposed", &direction],
+        "the decision",
+    );
+    let by_thread = show_as(scout, &forum.thread);
+    assert_eq!(
+        by_thread.code, 0,
+        "show the thread's decision: {}",
+        by_thread.stderr
+    );
+    assert_contains_all(
+        &by_thread.stdout,
+        &[&decision, &direction],
+        "the thread's decision",
+    );
 }

@@ -70,7 +70,10 @@
 //! - What an agent reads of a decision keeps to the sealed phases (US-035):
 //!   in the decision and thread reads, an ID in `posts` that names a post the
 //!   reader may not see is left out, and the hidden post's ID appears nowhere
-//!   in the answer. The human sees every ID.
+//!   in the answer. The human sees every ID. A decision proposed in a sealed
+//!   phase is itself hidden from an agent that has not posted in that phase
+//!   (US-056, tests/sealed_phases.rs): its read is 404 and the thread's
+//!   `decision` is `null`.
 //! - `POST /changesets/{changeset_id}/decisions/{decision_id}` (agent) links
 //!   the change set to a decision of the project that it carries out (from
 //!   any thread of the project): 200 `{"changeset": Changeset}`. Every
@@ -1385,7 +1388,7 @@ fn two_proposals_at_once_leave_one_current_decision() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn an_agent_reads_no_post_of_a_decision_that_it_may_not_see() {
+fn an_agent_reads_neither_a_sealed_decision_nor_its_posts_before_posting_in_the_phase() {
     let (f, client) = ready();
     let project = new_project(f, client);
     let changeset = new_changeset(f, client, &project);
@@ -1410,7 +1413,8 @@ fn an_agent_reads_no_post_of_a_decision_that_it_may_not_see() {
     let id = id_of(&proposed);
 
     // The moderator has not posted in the sealed phase: neither post is its
-    // to see.
+    // to see, nor the decision proposed there (US-056), which reads like no
+    // decision.
     let decision = call(
         client,
         "GET",
@@ -1418,6 +1422,8 @@ fn an_agent_reads_no_post_of_a_decision_that_it_may_not_see() {
         &moderator(f),
         None,
     );
+    let decision_text = decision.text();
+    assert_error(&decision, 404, "not_found", "the decision read");
     let thread_read = call(
         client,
         "GET",
@@ -1425,27 +1431,21 @@ fn an_agent_reads_no_post_of_a_decision_that_it_may_not_see() {
         &moderator(f),
         None,
     );
-    for (response, what) in [
-        (decision, "the decision read"),
-        (thread_read, "the thread read"),
+    let thread_text = thread_read.text();
+    let answer = must(thread_read, 200, "the thread read");
+    assert_eq!(
+        answer["thread"]["decision"],
+        Value::Null,
+        "the thread read: {answer}"
+    );
+    for (text, what) in [
+        (decision_text, "the decision read"),
+        (thread_text, "the thread read"),
     ] {
-        let text = response.text();
-        let answer = must(response, 200, what);
-        let read = if what == "the decision read" {
-            answer["decision"].clone()
-        } else {
-            answer["thread"]["decision"].clone()
-        };
-        assert_eq!(read["id"], id.as_str(), "{what}: {answer}");
-        assert_eq!(
-            read["posts"],
-            json!([]),
-            "{what}: hidden posts are left out"
-        );
-        for hidden in [&by_critic, &by_scout] {
+        for hidden in [&by_critic, &by_scout, &id] {
             assert!(
                 !text.contains(hidden.as_str()),
-                "{what}: the ID of a hidden post shows: {text}"
+                "{what}: a hidden ID shows: {text}"
             );
         }
     }
