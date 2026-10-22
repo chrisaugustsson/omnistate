@@ -107,7 +107,7 @@ pub async fn show(
     .await
     .map_err(ApiError::database)?;
     found.ok_or(ApiError::NotFound)?;
-    let changeset = load_changeset(&mut tx, &changeset_id).await?;
+    let changeset = load_changeset(&mut tx, &Viewer::human(), &changeset_id).await?;
     let rows: Vec<ReviewedRow> = sqlx::query_as(
         "SELECT d.id::text AS doc_id, d.kind, d.module, d.title, \
                 dr.base_version_id::text AS base_version_id, \

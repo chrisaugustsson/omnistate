@@ -15,6 +15,14 @@
 //! with `{decision_id, thread_id, changeset_id, status}`. What an agent reads
 //! of a decision keeps to the sealed phases (US-035): the IDs of posts that it
 //! may not read are left out of `posts`.
+//!
+//! A decision belongs to the phase its thread was in when it was proposed. One
+//! proposed in a sealed phase is sealed too (US-056, Q50): an agent identity
+//! that has not posted in that phase reads it nowhere, and it looks exactly
+//! like no decision (404 by ID, `null` on the thread, left out of a change
+//! set's `decisions`, no live event) until the identity posts there or a later
+//! phase starts. The human reads every decision, and so does every agent one of
+//! an open phase.
 
 use crate::AppState;
 use crate::changesets::ChangesetResponse;
@@ -22,7 +30,7 @@ use crate::changesets::{load_changeset, non_blank, parse_body};
 use crate::docs::AgentIdentity;
 use crate::live;
 use crate::session::{ApiError, ErrorBody};
-use crate::threads::{Viewer, bind_viewer, load_thread, visible};
+use crate::threads::{Viewer, bind_viewer, load_thread, visible, visible_decision};
 use crate::workspace::{AgentRequest, HumanRequest, WorkspaceRequest, parse_uuid};
 use axum::Json;
 use axum::body::Bytes;
@@ -316,20 +324,26 @@ async fn hide_unseen_posts(
 }
 
 /// The decision with this ID in the project as `viewer` reads it, 404 when the
-/// project has none.
+/// project has none or the viewer may not read it yet.
 pub(crate) async fn load_decision(
     tx: &mut Transaction<'static, Postgres>,
     viewer: &Viewer,
     project_id: &str,
     decision_id: &str,
 ) -> Result<DecisionBody, ApiError> {
-    let row: DecisionRow = sqlx::query_as(&select("d.id = $1::uuid AND t.project_id = $2::uuid"))
+    let row: DecisionRow = bind_viewer(
+        sqlx::query_as(&select(&format!(
+            "d.id = $1::uuid AND t.project_id = $2::uuid AND {}",
+            visible_decision("d", 3)
+        )))
         .bind(decision_id)
-        .bind(project_id)
-        .fetch_optional(&mut **tx)
-        .await
-        .map_err(ApiError::database)?
-        .ok_or(ApiError::NotFound)?;
+        .bind(project_id),
+        viewer,
+    )
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(ApiError::database)?
+    .ok_or(ApiError::NotFound)?;
     let mut decision = row.into_body()?;
     hide_unseen_posts(tx, viewer, &mut decision).await?;
     Ok(decision)
@@ -342,11 +356,17 @@ pub(crate) async fn proposed_of_project(
     viewer: &Viewer,
     project_id: &str,
 ) -> Result<Vec<DecisionBody>, ApiError> {
-    let rows: Vec<DecisionRow> = sqlx::query_as(&format!(
-        "{} ORDER BY d.created_at, d.id",
-        select("t.project_id = $1::uuid AND d.status = 'proposed'")
-    ))
-    .bind(project_id)
+    let rows: Vec<DecisionRow> = bind_viewer(
+        sqlx::query_as(&format!(
+            "{} ORDER BY d.created_at, d.id",
+            select(&format!(
+                "t.project_id = $1::uuid AND d.status = 'proposed' AND {}",
+                visible_decision("d", 2)
+            ))
+        ))
+        .bind(project_id),
+        viewer,
+    )
     .fetch_all(&mut **tx)
     .await
     .map_err(ApiError::database)?;
@@ -361,16 +381,20 @@ pub(crate) async fn proposed_of_project(
 
 /// The thread's current decision as `viewer` reads it, as the JSON of a
 /// `DecisionBody`: the one that is not superseded, `None` while the thread has
-/// none.
+/// none or the viewer may not read it yet.
 pub(crate) async fn current_decision(
     tx: &mut Transaction<'static, Postgres>,
     viewer: &Viewer,
     thread_id: &str,
 ) -> Result<Option<Value>, ApiError> {
-    let row: Option<DecisionRow> = sqlx::query_as(&select(
-        "d.thread_id = $1::uuid AND d.status <> 'superseded'",
-    ))
-    .bind(thread_id)
+    let row: Option<DecisionRow> = bind_viewer(
+        sqlx::query_as(&select(&format!(
+            "d.thread_id = $1::uuid AND d.status <> 'superseded' AND {}",
+            visible_decision("d", 2)
+        )))
+        .bind(thread_id),
+        viewer,
+    )
     .fetch_optional(&mut **tx)
     .await
     .map_err(ApiError::database)?;
@@ -428,6 +452,9 @@ pub async fn propose(
     let file = check(new?)?;
     let viewer = Viewer::agent(&identity);
     require_readable_posts(&mut tx, &viewer, &thread_id, &file.posts).await?;
+    // The decision belongs to the phase the thread is in now; the lock on the
+    // thread keeps a new phase out until the decision is stored.
+    let phase = thread.phases.last().map_or(1, |phase| phase.number);
 
     let superseded: Vec<(String,)> = sqlx::query_as(
         "UPDATE decisions SET status = 'superseded' \
@@ -440,11 +467,12 @@ pub async fn propose(
     let mut author = identity.to_json();
     author["kind"] = json!("agent");
     let decision_id: String = sqlx::query_scalar(
-        "INSERT INTO decisions (workspace_id, thread_id, content, author) \
-         VALUES ($1::uuid, $2::uuid, $3::text::jsonb, $4::text::jsonb) RETURNING id::text",
+        "INSERT INTO decisions (workspace_id, thread_id, phase, content, author) \
+         VALUES ($1::uuid, $2::uuid, $3, $4::text::jsonb, $5::text::jsonb) RETURNING id::text",
     )
     .bind(&workspace_id)
     .bind(&thread_id)
+    .bind(phase)
     .bind(json!(file).to_string())
     .bind(author.to_string())
     .fetch_one(&mut *tx)
@@ -470,7 +498,10 @@ pub async fn propose(
         &data,
     )
     .await?;
-    let decision = load_decision(&mut tx, &viewer, &project_id, &decision_id).await?;
+    // The proposer is told what it proposed even if it has not posted in a
+    // sealed phase, where a later read of the decision is 404 until it does.
+    let mut decision = load_decision(&mut tx, &Viewer::human(), &project_id, &decision_id).await?;
+    hide_unseen_posts(&mut tx, &viewer, &mut decision).await?;
     tx.commit().await.map_err(ApiError::database)?;
     state.live.announce(&workspace_id, &project_id);
     Ok((StatusCode::CREATED, Json(DecisionResponse { decision })))
@@ -490,7 +521,7 @@ pub async fn propose(
     responses(
         (status = 200, description = "The decision; an agent gets only the posts it may read", body = DecisionResponse),
         (status = 401, description = "No valid API key or session", body = ErrorBody),
-        (status = 404, description = "No such decision in this project and workspace", body = ErrorBody),
+        (status = 404, description = "No such decision in this project and workspace, or one that the agent may not read yet (proposed in a sealed phase in which it has not posted)", body = ErrorBody),
     )
 )]
 pub async fn show(
@@ -638,17 +669,20 @@ pub async fn reject(
         ("project_id" = String, Path, description = "The project's UUID"),
         ("changeset_id" = String, Path, description = "The change set's UUID"),
         ("decision_id" = String, Path, description = "The decision's UUID, of any thread of the project"),
+        ("X-Omni-Run" = Option<String>, Header, description = "The agent's run"),
+        ("X-Omni-Role" = Option<String>, Header, description = "The agent's role"),
     ),
     responses(
         (status = 200, description = "The change set with its linked decisions; linking a decision again changes nothing", body = ChangesetResponse),
         (status = 401, description = "No valid API key or session", body = ErrorBody),
         (status = 403, description = "Called with a session; agents only", body = ErrorBody),
-        (status = 404, description = "No such change set or decision in this project and workspace", body = ErrorBody),
+        (status = 404, description = "No such change set or decision in this project and workspace, or a decision that the agent may not read yet (a sealed phase)", body = ErrorBody),
     )
 )]
 pub async fn link(
     State(state): State<AppState>,
     request: AgentRequest,
+    identity: AgentIdentity,
     Path((_, project_id, changeset_id, decision_id)): Path<(String, String, String, String)>,
 ) -> Result<Json<ChangesetResponse>, ApiError> {
     let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
@@ -667,13 +701,19 @@ pub async fn link(
     .await
     .map_err(ApiError::database)?;
     found.ok_or(ApiError::NotFound)?;
-    let found: Option<(String,)> = sqlx::query_as(
-        "SELECT d.id::text FROM decisions d \
-         JOIN threads t ON t.workspace_id = d.workspace_id AND t.id = d.thread_id \
-         WHERE d.id = $1::uuid AND t.project_id = $2::uuid",
+    // A decision that the agent may not read yet is no decision to it.
+    let viewer = Viewer::agent(&identity);
+    let found: Option<(String,)> = bind_viewer(
+        sqlx::query_as(&format!(
+            "SELECT d.id::text FROM decisions d \
+             JOIN threads t ON t.workspace_id = d.workspace_id AND t.id = d.thread_id \
+             WHERE d.id = $1::uuid AND t.project_id = $2::uuid AND {}",
+            visible_decision("d", 3)
+        ))
+        .bind(&decision_id)
+        .bind(&project_id),
+        &viewer,
     )
-    .bind(&decision_id)
-    .bind(&project_id)
     .fetch_optional(&mut *tx)
     .await
     .map_err(ApiError::database)?;
@@ -689,7 +729,7 @@ pub async fn link(
     .execute(&mut *tx)
     .await
     .map_err(ApiError::database)?;
-    let changeset = load_changeset(&mut tx, &changeset_id).await?;
+    let changeset = load_changeset(&mut tx, &viewer, &changeset_id).await?;
     tx.commit().await.map_err(ApiError::database)?;
     Ok(Json(ChangesetResponse { changeset }))
 }

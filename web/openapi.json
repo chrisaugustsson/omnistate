@@ -3841,6 +3841,30 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "description": "The agent's run",
+            "in": "header",
+            "name": "X-Omni-Run",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "description": "The agent's role",
+            "in": "header",
+            "name": "X-Omni-Role",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -3852,7 +3876,7 @@
                 }
               }
             },
-            "description": "The project's change sets, abandoned ones included"
+            "description": "The project's change sets, abandoned ones included; an agent gets only the linked decisions it may read"
           },
           "401": {
             "content": {
@@ -4002,6 +4026,30 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "description": "The agent's run",
+            "in": "header",
+            "name": "X-Omni-Run",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "description": "The agent's role",
+            "in": "header",
+            "name": "X-Omni-Role",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -4013,7 +4061,7 @@
                 }
               }
             },
-            "description": "The change set"
+            "description": "The change set; an agent gets only the linked decisions it may read"
           },
           "401": {
             "content": {
@@ -4073,6 +4121,30 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "description": "The agent's run",
+            "in": "header",
+            "name": "X-Omni-Run",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "description": "The agent's role",
+            "in": "header",
+            "name": "X-Omni-Role",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -4084,7 +4156,7 @@
                 }
               }
             },
-            "description": "The change set, now `abandoned`"
+            "description": "The change set, now `abandoned`; with the linked decisions the agent may read"
           },
           "401": {
             "content": {
@@ -4822,6 +4894,30 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "description": "The agent's run",
+            "in": "header",
+            "name": "X-Omni-Run",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "description": "The agent's role",
+            "in": "header",
+            "name": "X-Omni-Role",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -4863,7 +4959,7 @@
                 }
               }
             },
-            "description": "No such change set or decision in this project and workspace"
+            "description": "No such change set or decision in this project and workspace, or a decision that the agent may not read yet (a sealed phase)"
           }
         },
         "summary": "Links a change set to a decision that it carries out. The change set cannot\nbe approved while a linked decision is not approved.",
@@ -6225,6 +6321,30 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "description": "The agent's run",
+            "in": "header",
+            "name": "X-Omni-Run",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "description": "The agent's role",
+            "in": "header",
+            "name": "X-Omni-Role",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -6236,7 +6356,7 @@
                 }
               }
             },
-            "description": "The change set, `open` again"
+            "description": "The change set, `open` again; with the linked decisions the agent may read"
           },
           "401": {
             "content": {
@@ -6397,6 +6517,30 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "description": "The agent's run",
+            "in": "header",
+            "name": "X-Omni-Run",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "description": "The agent's role",
+            "in": "header",
+            "name": "X-Omni-Role",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -6408,7 +6552,7 @@
                 }
               }
             },
-            "description": "The change set, now `in_review`"
+            "description": "The change set, now `in_review`; with the linked decisions the agent may read"
           },
           "401": {
             "content": {
@@ -7757,7 +7901,7 @@
                 }
               }
             },
-            "description": "No such decision in this project and workspace"
+            "description": "No such decision in this project and workspace, or one that the agent may not read yet (proposed in a sealed phase in which it has not posted)"
           }
         },
         "summary": "One decision of a project, a superseded one included.",

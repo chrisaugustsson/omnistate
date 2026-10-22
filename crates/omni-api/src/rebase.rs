@@ -25,6 +25,7 @@ use crate::docs::{
 };
 use crate::live;
 use crate::session::{ApiError, ErrorBody};
+use crate::threads::Viewer;
 use crate::versions::{
     Snapshot, chunk_of_version, emit_version_saved, insert_version, read_chunk, store_snapshot,
 };
@@ -1120,7 +1121,7 @@ pub async fn rebase(
         "agent",
     )
     .await?;
-    let changeset = load_changeset(&mut tx, &changeset_id).await?;
+    let changeset = load_changeset(&mut tx, &Viewer::agent(&identity), &changeset_id).await?;
     tx.commit().await.map_err(ApiError::database)?;
 
     for (draft_id, guard) in &mut held {

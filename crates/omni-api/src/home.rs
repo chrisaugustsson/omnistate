@@ -76,7 +76,7 @@ pub async fn show(
     let mut tx = state.workspace_tx(&request.workspace_id).await?;
     require_project(&mut tx, &project_id).await?;
     let docs = docs_of_project(&state, &mut tx, &request.workspace_id, &project_id).await?;
-    let changesets = changesets_of_project(&mut tx, &project_id).await?;
+    let changesets = changesets_of_project(&mut tx, &Viewer::human(), &project_id).await?;
     let threads = threads_of_project(&mut tx, &project_id).await?;
     let decisions = proposed_of_project(&mut tx, &Viewer::human(), &project_id).await?;
     let comments = addressed_of_project(&mut tx, &project_id).await?;

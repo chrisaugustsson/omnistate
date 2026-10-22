@@ -10,10 +10,16 @@
 //! The server, not a request, makes both of those moves, so its history entries
 //! carry the actor `system`. The agent rebases such a change set (`rebase`
 //! module, US-026) and cannot submit one that has an unresolved conflict.
+//!
+//! The `decisions` of a change set that an agent reads leave out the decisions
+//! it may not read yet (US-056): one proposed in a sealed phase in which the
+//! agent identity has not posted is not listed, and the others keep their order.
 
 use crate::AppState;
+use crate::docs::AgentIdentity;
 use crate::live;
 use crate::session::{ApiError, ErrorBody};
+use crate::threads::{Viewer, bind_viewer, visible_decision};
 use crate::workspace::{AgentRequest, HumanRequest, WorkspaceRequest, parse_uuid};
 use axum::Json;
 use axum::body::Bytes;
@@ -345,13 +351,18 @@ async fn approved_of(
 
 async fn decisions_of(
     tx: &mut Transaction<'static, Postgres>,
+    viewer: &Viewer,
     changeset_id: &str,
 ) -> Result<Vec<LinkedDecision>, ApiError> {
-    sqlx::query_as(&format!(
-        "SELECT {LINKED_COLUMNS} FROM changeset_decisions cd {LINKED_JOIN} \
-         WHERE cd.changeset_id = $1::uuid ORDER BY cd.created_at, cd.id"
-    ))
-    .bind(changeset_id)
+    bind_viewer(
+        sqlx::query_as(&format!(
+            "SELECT {LINKED_COLUMNS} FROM changeset_decisions cd {LINKED_JOIN} \
+             WHERE cd.changeset_id = $1::uuid AND {} ORDER BY cd.created_at, cd.id",
+            visible_decision("d", 2)
+        ))
+        .bind(changeset_id),
+        viewer,
+    )
     .fetch_all(&mut **tx)
     .await
     .map_err(ApiError::database)
@@ -361,6 +372,7 @@ async fn decisions_of(
 /// and the decisions it carries out.
 pub(crate) async fn load_changeset(
     tx: &mut Transaction<'static, Postgres>,
+    viewer: &Viewer,
     changeset_id: &str,
 ) -> Result<ChangesetBody, ApiError> {
     let row: ChangesetRow = sqlx::query_as(&format!(
@@ -372,7 +384,7 @@ pub(crate) async fn load_changeset(
     .map_err(ApiError::database)?;
     let history = history_of(tx, changeset_id).await?;
     let approved = approved_of(tx, changeset_id).await?;
-    let decisions = decisions_of(tx, changeset_id).await?;
+    let decisions = decisions_of(tx, viewer, changeset_id).await?;
     Ok(row.into_body(history, approved, decisions))
 }
 
@@ -505,9 +517,11 @@ pub async fn create_changeset(
     params(
         ("workspace_id" = String, Path, description = "The workspace's UUID"),
         ("project_id" = String, Path, description = "The project's UUID"),
+        ("X-Omni-Run" = Option<String>, Header, description = "The agent's run"),
+        ("X-Omni-Role" = Option<String>, Header, description = "The agent's role"),
     ),
     responses(
-        (status = 200, description = "The project's change sets, abandoned ones included", body = ChangesetListResponse),
+        (status = 200, description = "The project's change sets, abandoned ones included; an agent gets only the linked decisions it may read", body = ChangesetListResponse),
         (status = 401, description = "No valid API key or session", body = ErrorBody),
         (status = 404, description = "No such project in this workspace", body = ErrorBody),
     )
@@ -515,12 +529,14 @@ pub async fn create_changeset(
 pub async fn list_changesets(
     State(state): State<AppState>,
     request: WorkspaceRequest,
+    identity: AgentIdentity,
     Path((_, project_id)): Path<(String, String)>,
 ) -> Result<Json<ChangesetListResponse>, ApiError> {
     let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
     let mut tx = state.workspace_tx(&request.workspace_id).await?;
     require_project(&mut tx, &project_id).await?;
-    let changesets = changesets_of_project(&mut tx, &project_id).await?;
+    let viewer = Viewer::of(&request.actor, &identity);
+    let changesets = changesets_of_project(&mut tx, &viewer, &project_id).await?;
     tx.commit().await.map_err(ApiError::database)?;
     Ok(Json(ChangesetListResponse { changesets }))
 }
@@ -528,6 +544,7 @@ pub async fn list_changesets(
 /// The change sets of a project, oldest first, whatever their status.
 pub(crate) async fn changesets_of_project(
     tx: &mut Transaction<'static, Postgres>,
+    viewer: &Viewer,
     project_id: &str,
 ) -> Result<Vec<ChangesetBody>, ApiError> {
     let rows: Vec<ChangesetRow> = sqlx::query_as(&format!(
@@ -558,13 +575,18 @@ pub(crate) async fn changesets_of_project(
     .fetch_all(&mut **tx)
     .await
     .map_err(ApiError::database)?;
-    let linked: Vec<ListedDecision> = sqlx::query_as(&format!(
-        "SELECT cd.changeset_id::text AS changeset_id, {LINKED_COLUMNS} \
-         FROM changeset_decisions cd {LINKED_JOIN} \
-         WHERE cd.changeset_id IN (SELECT id FROM changesets WHERE project_id = $1::uuid) \
-         ORDER BY cd.created_at, cd.id"
-    ))
-    .bind(project_id)
+    let linked: Vec<ListedDecision> = bind_viewer(
+        sqlx::query_as(&format!(
+            "SELECT cd.changeset_id::text AS changeset_id, {LINKED_COLUMNS} \
+             FROM changeset_decisions cd {LINKED_JOIN} \
+             WHERE cd.changeset_id IN (SELECT id FROM changesets WHERE project_id = $1::uuid) \
+               AND {} \
+             ORDER BY cd.created_at, cd.id",
+            visible_decision("d", 2)
+        ))
+        .bind(project_id),
+        viewer,
+    )
     .fetch_all(&mut **tx)
     .await
     .map_err(ApiError::database)?;
@@ -609,9 +631,11 @@ pub(crate) async fn changesets_of_project(
         ("workspace_id" = String, Path, description = "The workspace's UUID"),
         ("project_id" = String, Path, description = "The project's UUID"),
         ("changeset_id" = String, Path, description = "The change set's UUID"),
+        ("X-Omni-Run" = Option<String>, Header, description = "The agent's run"),
+        ("X-Omni-Role" = Option<String>, Header, description = "The agent's role"),
     ),
     responses(
-        (status = 200, description = "The change set", body = ChangesetResponse),
+        (status = 200, description = "The change set; an agent gets only the linked decisions it may read", body = ChangesetResponse),
         (status = 401, description = "No valid API key or session", body = ErrorBody),
         (status = 404, description = "No such change set in this project and workspace", body = ErrorBody),
     )
@@ -619,6 +643,7 @@ pub(crate) async fn changesets_of_project(
 pub async fn show_changeset(
     State(state): State<AppState>,
     request: WorkspaceRequest,
+    identity: AgentIdentity,
     Path((_, project_id, changeset_id)): Path<(String, String, String)>,
 ) -> Result<Json<ChangesetResponse>, ApiError> {
     let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
@@ -635,7 +660,8 @@ pub async fn show_changeset(
     .ok_or(ApiError::NotFound)?;
     let history = history_of(&mut tx, &row.id).await?;
     let approved = approved_of(&mut tx, &row.id).await?;
-    let decisions = decisions_of(&mut tx, &row.id).await?;
+    let viewer = Viewer::of(&request.actor, &identity);
+    let decisions = decisions_of(&mut tx, &viewer, &row.id).await?;
     tx.commit().await.map_err(ApiError::database)?;
     Ok(Json(ChangesetResponse {
         changeset: row.into_body(history, approved, decisions),
@@ -675,13 +701,15 @@ impl Action {
 /// emitted from here (through `insert_history`).
 async fn transition(
     state: &AppState,
+    viewer: &Viewer,
     workspace_id: &str,
     project_id: &str,
     changeset_id: &str,
     action: Action,
-    actor: &str,
     reason: Option<&str>,
 ) -> Result<Json<ChangesetResponse>, ApiError> {
+    // The history names who moved the change set: an agent or the human.
+    let actor = if viewer.is_human() { "human" } else { "agent" };
     let project_id = parse_uuid(project_id).ok_or(ApiError::NotFound)?;
     let changeset_id = parse_uuid(changeset_id).ok_or(ApiError::NotFound)?;
     let mut tx = state.workspace_tx(workspace_id).await?;
@@ -728,7 +756,7 @@ async fn transition(
         reason,
     };
     insert_history(&mut tx, workspace_id, change).await?;
-    let changeset = load_changeset(&mut tx, &changeset_id).await?;
+    let changeset = load_changeset(&mut tx, viewer, &changeset_id).await?;
     tx.commit().await.map_err(ApiError::database)?;
     state.live.announce(workspace_id, &project_id);
     Ok(Json(ChangesetResponse { changeset }))
@@ -786,9 +814,11 @@ pub(crate) async fn clear_approval(
         ("workspace_id" = String, Path, description = "The workspace's UUID"),
         ("project_id" = String, Path, description = "The project's UUID"),
         ("changeset_id" = String, Path, description = "The change set's UUID"),
+        ("X-Omni-Run" = Option<String>, Header, description = "The agent's run"),
+        ("X-Omni-Role" = Option<String>, Header, description = "The agent's role"),
     ),
     responses(
-        (status = 200, description = "The change set, now `in_review`", body = ChangesetResponse),
+        (status = 200, description = "The change set, now `in_review`; with the linked decisions the agent may read", body = ChangesetResponse),
         (status = 401, description = "No valid API key or session", body = ErrorBody),
         (status = 403, description = "Called with a session; agents only", body = ErrorBody),
         (status = 404, description = "No such change set in this project and workspace", body = ErrorBody),
@@ -798,15 +828,16 @@ pub(crate) async fn clear_approval(
 pub async fn submit(
     State(state): State<AppState>,
     request: AgentRequest,
+    identity: AgentIdentity,
     Path((_, project_id, changeset_id)): Path<(String, String, String)>,
 ) -> Result<Json<ChangesetResponse>, ApiError> {
     transition(
         &state,
+        &Viewer::agent(&identity),
         &request.workspace_id,
         &project_id,
         &changeset_id,
         Action::Submit,
-        "agent",
         None,
     )
     .await
@@ -844,11 +875,11 @@ pub async fn reject(
         .and_then(|rejection| non_blank(rejection.reason));
     transition(
         &state,
+        &Viewer::human(),
         &request.workspace_id,
         &project_id,
         &changeset_id,
         Action::Reject,
-        "human",
         reason.as_deref(),
     )
     .await
@@ -1009,7 +1040,7 @@ pub async fn approve(
     )
     .await?;
 
-    let changeset = load_changeset(&mut tx, &changeset_id).await?;
+    let changeset = load_changeset(&mut tx, &Viewer::human(), &changeset_id).await?;
     tx.commit().await.map_err(ApiError::database)?;
     state.live.announce(workspace_id, &project_id);
     Ok(Json(ChangesetResponse { changeset }))
@@ -1051,9 +1082,11 @@ pub(crate) async fn move_status(
         ("workspace_id" = String, Path, description = "The workspace's UUID"),
         ("project_id" = String, Path, description = "The project's UUID"),
         ("changeset_id" = String, Path, description = "The change set's UUID"),
+        ("X-Omni-Run" = Option<String>, Header, description = "The agent's run"),
+        ("X-Omni-Role" = Option<String>, Header, description = "The agent's role"),
     ),
     responses(
-        (status = 200, description = "The change set, `open` again", body = ChangesetResponse),
+        (status = 200, description = "The change set, `open` again; with the linked decisions the agent may read", body = ChangesetResponse),
         (status = 401, description = "No valid API key or session", body = ErrorBody),
         (status = 403, description = "Called with a session; agents only", body = ErrorBody),
         (status = 404, description = "No such change set in this project and workspace", body = ErrorBody),
@@ -1063,15 +1096,16 @@ pub(crate) async fn move_status(
 pub async fn reopen(
     State(state): State<AppState>,
     request: AgentRequest,
+    identity: AgentIdentity,
     Path((_, project_id, changeset_id)): Path<(String, String, String)>,
 ) -> Result<Json<ChangesetResponse>, ApiError> {
     transition(
         &state,
+        &Viewer::agent(&identity),
         &request.workspace_id,
         &project_id,
         &changeset_id,
         Action::Reopen,
-        "agent",
         None,
     )
     .await
@@ -1085,9 +1119,11 @@ pub async fn reopen(
         ("workspace_id" = String, Path, description = "The workspace's UUID"),
         ("project_id" = String, Path, description = "The project's UUID"),
         ("changeset_id" = String, Path, description = "The change set's UUID"),
+        ("X-Omni-Run" = Option<String>, Header, description = "The agent's run"),
+        ("X-Omni-Role" = Option<String>, Header, description = "The agent's role"),
     ),
     responses(
-        (status = 200, description = "The change set, now `abandoned`", body = ChangesetResponse),
+        (status = 200, description = "The change set, now `abandoned`; with the linked decisions the agent may read", body = ChangesetResponse),
         (status = 401, description = "No valid API key or session", body = ErrorBody),
         (status = 403, description = "Called with a session; agents only", body = ErrorBody),
         (status = 404, description = "No such change set in this project and workspace", body = ErrorBody),
@@ -1097,15 +1133,16 @@ pub async fn reopen(
 pub async fn abandon(
     State(state): State<AppState>,
     request: AgentRequest,
+    identity: AgentIdentity,
     Path((_, project_id, changeset_id)): Path<(String, String, String)>,
 ) -> Result<Json<ChangesetResponse>, ApiError> {
     transition(
         &state,
+        &Viewer::agent(&identity),
         &request.workspace_id,
         &project_id,
         &changeset_id,
         Action::Abandon,
-        "agent",
         None,
     )
     .await

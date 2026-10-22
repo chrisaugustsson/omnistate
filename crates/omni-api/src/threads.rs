@@ -17,7 +17,9 @@
 //! human reads every post. The rule is one SQL predicate, `visible`, which
 //! every read path uses: the thread, the digest, a single post, the links of
 //! a post and the live events of a socket. Nothing is cached, so the next read
-//! after the agent posted or a phase started shows what was hidden.
+//! after the agent posted or a phase started shows what was hidden. A decision
+//! proposed in a sealed phase is sealed too (US-056): `visible_decision` is
+//! the same rule applied to the phase the decision was proposed in.
 
 use crate::AppState;
 use crate::changesets::{non_blank, parse_body};
@@ -264,6 +266,10 @@ impl Viewer {
         }
     }
 
+    pub(crate) fn is_human(&self) -> bool {
+        self.human
+    }
+
     /// The human, who reads everything.
     pub(crate) fn human() -> Self {
         Self {
@@ -293,20 +299,41 @@ impl Viewer {
 /// (bool), the run and the role (text, each may be null). Bind them with
 /// `bind_viewer`.
 pub(crate) fn visible(post: &str, first: usize) -> String {
-    let (human, run, role) = (first, first + 1, first + 2);
+    let human = first;
     format!(
         "(${human}::bool \
          OR {post}.author->>'kind' = 'human' \
-         OR {post}.phase < (SELECT max(ph.number) FROM thread_phases ph \
-             WHERE ph.workspace_id = {post}.workspace_id AND ph.thread_id = {post}.thread_id) \
+         OR {})",
+        phase_readable(post, first)
+    )
+}
+
+/// The SQL condition that the viewer may read the decision of the alias
+/// `decision` (US-056, Q50): a decision belongs to the phase it was proposed
+/// in and follows the rule of the posts of that phase, except that no decision
+/// is the human's. The parameters are those of `visible`.
+pub(crate) fn visible_decision(decision: &str, first: usize) -> String {
+    let human = first;
+    format!("(${human}::bool OR {})", phase_readable(decision, first))
+}
+
+/// The part of the rule of sealed phases that depends on the phase of the row
+/// of the alias `row` (a post or a decision, both have `workspace_id`,
+/// `thread_id` and `phase`): the phase is not the current one, it is open, or
+/// the viewer has posted in it.
+fn phase_readable(row: &str, first: usize) -> String {
+    let (run, role) = (first + 1, first + 2);
+    format!(
+        "{row}.phase < (SELECT max(ph.number) FROM thread_phases ph \
+             WHERE ph.workspace_id = {row}.workspace_id AND ph.thread_id = {row}.thread_id) \
          OR NOT COALESCE((SELECT ph.sealed FROM thread_phases ph \
-             WHERE ph.workspace_id = {post}.workspace_id AND ph.thread_id = {post}.thread_id \
-               AND ph.number = {post}.phase), true) \
+             WHERE ph.workspace_id = {row}.workspace_id AND ph.thread_id = {row}.thread_id \
+               AND ph.number = {row}.phase), true) \
          OR EXISTS (SELECT 1 FROM posts mine \
-             WHERE mine.workspace_id = {post}.workspace_id AND mine.thread_id = {post}.thread_id \
-               AND mine.phase = {post}.phase AND mine.author->>'kind' = 'agent' \
+             WHERE mine.workspace_id = {row}.workspace_id AND mine.thread_id = {row}.thread_id \
+               AND mine.phase = {row}.phase AND mine.author->>'kind' = 'agent' \
                AND mine.author->>'run' IS NOT DISTINCT FROM ${run}::text \
-               AND mine.author->>'role' IS NOT DISTINCT FROM ${role}::text))"
+               AND mine.author->>'role' IS NOT DISTINCT FROM ${role}::text)"
     )
 }
 

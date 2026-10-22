@@ -35,7 +35,7 @@
 use crate::AppState;
 use crate::docs::AgentIdentity;
 use crate::session::ApiError;
-use crate::threads::{Viewer, bind_viewer, require_identity, visible};
+use crate::threads::{Viewer, bind_viewer, require_identity, visible, visible_decision};
 use crate::workspace::{Actor, WorkspaceRequest, parse_uuid};
 use axum::extract::State;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
@@ -528,8 +528,8 @@ async fn deliver_all(
 }
 
 /// The events of the project above `after`, and those of `withheld` that the
-/// viewer may read by now, oldest first. An event that names a post is visible
-/// to the callers that may read the post.
+/// viewer may read by now, oldest first. An event that names a post or a
+/// decision is visible to the callers that may read it.
 async fn read_events(
     state: &AppState,
     workspace_id: &str,
@@ -548,11 +548,15 @@ async fn read_events(
                  (SELECT * FROM live_events WHERE project_id = $1::uuid AND seq = ANY($4)) \
              ) \
              SELECT e.seq, e.event, e.data::text AS data, {AT} AS at, e.seq > $2 AS fresh, \
-                 (e.data->>'post_id' IS NULL OR EXISTS (\
+                 ((e.data->>'post_id' IS NULL OR EXISTS (\
                      SELECT 1 FROM posts p WHERE p.workspace_id = e.workspace_id \
-                       AND p.id = (e.data->>'post_id')::uuid AND {})) AS visible \
+                       AND p.id = (e.data->>'post_id')::uuid AND {})) \
+                  AND (e.data->>'decision_id' IS NULL OR EXISTS (\
+                     SELECT 1 FROM decisions d WHERE d.workspace_id = e.workspace_id \
+                       AND d.id = (e.data->>'decision_id')::uuid AND {}))) AS visible \
              FROM candidates e ORDER BY e.seq",
-            visible("p", 5)
+            visible("p", 5),
+            visible_decision("d", 5)
         ))
         .bind(project_id)
         .bind(after)
@@ -572,10 +576,12 @@ async fn read_events(
 }
 
 /// The events at or below `from` that a client resuming from `from` cannot
-/// have got: those that name a post the viewer might not read when the event
-/// `from` happened. A post was readable then if the human wrote it, its phase
-/// is open, a later phase had started, or the viewer had posted in its phase.
-/// Anything else is withheld until `deliver` finds the post readable.
+/// have got: those that name a post or a decision the viewer might not read
+/// when the event `from` happened. A post was readable then if the human wrote
+/// it, its phase is open, a later phase had started, or the viewer had posted
+/// in its phase; a decision, by the same rule, if the phase it was proposed in
+/// is open, a later phase had started, or the viewer had posted in it. Anything
+/// else is withheld until `deliver` finds it readable.
 async fn withheld_before(
     state: &AppState,
     workspace_id: &str,
@@ -590,8 +596,8 @@ async fn withheld_before(
                  SELECT created_at FROM live_events WHERE project_id = $1::uuid AND seq = $2\
              ) \
              SELECT e.seq FROM live_events e \
-             WHERE e.project_id = $1::uuid AND e.seq <= $2 AND e.data->>'post_id' IS NOT NULL \
-               AND NOT EXISTS (\
+             WHERE e.project_id = $1::uuid AND e.seq <= $2 AND (\
+               (e.data->>'post_id' IS NOT NULL AND NOT EXISTS (\
                    SELECT 1 FROM posts p, resumed r WHERE p.workspace_id = e.workspace_id \
                      AND p.id = (e.data->>'post_id')::uuid \
                      AND ($3::bool \
@@ -607,7 +613,23 @@ async fn withheld_before(
                              AND mine.phase = p.phase AND mine.author->>'kind' = 'agent' \
                              AND mine.created_at <= r.created_at \
                              AND mine.author->>'run' IS NOT DISTINCT FROM $4::text \
-                             AND mine.author->>'role' IS NOT DISTINCT FROM $5::text)))",
+                             AND mine.author->>'role' IS NOT DISTINCT FROM $5::text)))) \
+               OR (e.data->>'decision_id' IS NOT NULL AND NOT EXISTS (\
+                   SELECT 1 FROM decisions d, resumed r WHERE d.workspace_id = e.workspace_id \
+                     AND d.id = (e.data->>'decision_id')::uuid \
+                     AND ($3::bool \
+                       OR NOT COALESCE((SELECT ph.sealed FROM thread_phases ph \
+                           WHERE ph.workspace_id = d.workspace_id AND ph.thread_id = d.thread_id \
+                             AND ph.number = d.phase), true) \
+                       OR EXISTS (SELECT 1 FROM thread_phases ph \
+                           WHERE ph.workspace_id = d.workspace_id AND ph.thread_id = d.thread_id \
+                             AND ph.number > d.phase AND ph.started_at <= r.created_at) \
+                       OR EXISTS (SELECT 1 FROM posts mine \
+                           WHERE mine.workspace_id = d.workspace_id AND mine.thread_id = d.thread_id \
+                             AND mine.phase = d.phase AND mine.author->>'kind' = 'agent' \
+                             AND mine.created_at <= r.created_at \
+                             AND mine.author->>'run' IS NOT DISTINCT FROM $4::text \
+                             AND mine.author->>'role' IS NOT DISTINCT FROM $5::text)))))",
         )
         .bind(project_id)
         .bind(from),
