@@ -51,9 +51,17 @@ export type DesignRenderer = {
    * Shows `page` (one of a version's `pages`, as the API gives it), resolving
    * its instances and token references against `system`: the version's token
    * tree with its components under `$components`. The page is laid out and
-   * drawn with the images and fonts supplied before this call.
+   * drawn with the images and fonts supplied before this call. Showing the
+   * page that is shown again (with more of its boards loaded) keeps the zoom,
+   * the pan and the selection.
    */
   show(page: unknown, system: unknown): void;
+  /**
+   * The IDs of the shown page's boards that the current view shows, in page
+   * order: the boards a viewer reads when they come into view. A page that was
+   * just shown is drawn first, so that the answer is for its first view.
+   */
+  visibleBoards(): string[];
   /** The shown page's boards with every node below them. */
   layers(): Layer[];
   /** Selects the node at `address` on the canvas; `null` clears the selection. */
@@ -107,6 +115,7 @@ type OmniRender = {
   _omni_render_node_box(pointer: number, length: number): number;
   _omni_render_scene_draw(width: number, height: number, pixelRatio: number): boolean;
   _omni_render_scene_layers(): number;
+  _omni_render_visible_boards(): number;
   _omni_render_select_node(pointer: number, length: number): boolean;
   _omni_render_select_pointer_move(x: number, y: number, ctrl: boolean, meta: boolean): void;
   _omni_render_select_click(x: number, y: number, ctrl: boolean, meta: boolean): void;
@@ -370,6 +379,15 @@ export async function createDesignRenderer(canvas: HTMLCanvasElement): Promise<D
       }
       loaded = true;
       requestFrame();
+    },
+    visibleBoards() {
+      if (!loaded) return [];
+      // A page shown a moment ago has no view yet: draw it, so that the view is fitted to it.
+      if (dirty) {
+        dirty = false;
+        drawFrame();
+      }
+      return readJson<string[]>(module._omni_render_visible_boards());
     },
     layers() {
       return loaded ? readJson<Layer[]>(module._omni_render_scene_layers()) : [];

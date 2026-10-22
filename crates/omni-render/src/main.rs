@@ -32,6 +32,8 @@ mod exports {
         static EVENTS: RefCell<CString> = RefCell::new(CString::default());
         /// The result of the last `omni_render_overlay`.
         static OUTLINES: RefCell<CString> = RefCell::new(CString::default());
+        /// The result of the last `omni_render_visible_boards`.
+        static VISIBLE: RefCell<CString> = RefCell::new(CString::default());
         /// The result of the last `omni_render_scene_layers`.
         static LAYERS: RefCell<CString> = RefCell::new(CString::default());
         /// The result of the last `omni_render_scene_errors`.
@@ -333,6 +335,15 @@ mod exports {
     pub extern "C" fn omni_render_scene_layers() -> *const c_char {
         LAYERS.set(CString::new(omni_render::web::scene_layers()).unwrap_or_default());
         LAYERS.with_borrow(|layers| layers.as_ptr())
+    }
+
+    /// The IDs of the loaded scene's boards that its view shows, in page order,
+    /// as a JSON array of text: `["b0000001", "b0000002"]`. Valid until the
+    /// next call.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn omni_render_visible_boards() -> *const c_char {
+        VISIBLE.set(CString::new(omni_render::web::visible_boards()).unwrap_or_default());
+        VISIBLE.with_borrow(|boards| boards.as_ptr())
     }
 
     /// Selects the node at the address (`<id>` or

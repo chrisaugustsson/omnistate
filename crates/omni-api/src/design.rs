@@ -670,6 +670,41 @@ pub(crate) async fn view_of_version(
     }
 }
 
+/// What the design viewer reads of a design version first: its pages with
+/// their boards as placeholders, and the design system version it recorded.
+pub(crate) struct VersionOutline {
+    pub(crate) outline: Vec<Value>,
+    /// Every component of the recorded design system version, so that a board
+    /// read later resolves its instances against it.
+    pub(crate) components: Vec<Value>,
+    pub(crate) tokens: Option<Value>,
+}
+
+pub(crate) async fn outline_of_version(
+    state: &AppState,
+    workspace_id: &str,
+    version_id: &str,
+    chunk: Option<&str>,
+    design_system_version_id: Option<&str>,
+) -> Result<VersionOutline, ApiError> {
+    let outline = match chunk {
+        Some(chunk) => {
+            boards::read_outline(state, workspace_id, chunk, &format!("version {version_id}"))
+                .await?
+        }
+        None => Vec::new(),
+    };
+    let (tokens, library) = match design_system_version_id {
+        Some(recorded) => tokens_and_components_of(state, workspace_id, recorded).await?,
+        None => (None, Library::default()),
+    };
+    Ok(VersionOutline {
+        outline,
+        components: nodes_values(&library.0),
+        tokens: tokens.map(|tokens| tokens.to_json()),
+    })
+}
+
 /// The component that the instance `instance` places, looked for in every
 /// node of the pages.
 fn component_of_instance(nodes: &[Node], instance: &str) -> Option<NodeId> {

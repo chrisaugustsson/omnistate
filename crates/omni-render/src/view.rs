@@ -791,6 +791,11 @@ impl Scene {
         self.selected.map(|at| self.index.id(at))
     }
 
+    /// The address of the selected node.
+    pub fn selected_address(&self) -> Option<NodeAddress> {
+        self.selected.map(|at| self.index.address(at))
+    }
+
     /// The node whose children a click selects among: the parent of the
     /// selection, or the board when a board is selected. `None` while nothing
     /// is selected.

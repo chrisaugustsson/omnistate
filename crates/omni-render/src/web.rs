@@ -2,7 +2,7 @@
 
 use std::cell::RefCell;
 
-use omni_core::design::AttachmentRef;
+use omni_core::design::{AttachmentRef, NodeId};
 use skia_safe::{
     Canvas, Color, ColorType, PixelGeometry, SurfaceProps, SurfacePropsFlags,
     gpu::{
@@ -31,6 +31,9 @@ const STENCIL_BITS: usize = 8;
 /// and what the last frame did.
 struct Stage {
     scene: Scene,
+    /// The ID of the page the scene shows, so that showing it again (with more
+    /// of its boards loaded) keeps the view.
+    page: NodeId,
     controls: Controls,
     /// The view is fitted to the boards at the first frame, when the size of
     /// the canvas is known.
@@ -106,11 +109,14 @@ pub fn layout_design(design_json: &str) -> Result<String, String> {
 /// Loads `design_json`, a page, into the scene that `scene_draw` draws, with
 /// the images and fonts that the page has supplied so far, which stay for
 /// every scene loaded after them. The view is fitted to its boards at the
-/// first frame. Fails if the page nests more than
+/// first frame, unless the scene replaces one of the same page (a page shown
+/// again with more of its boards loaded), which keeps its view and its
+/// selection. Fails if the page nests more than
 /// `MAX_NESTING` levels deep once its instances are expanded (see
 /// [`nesting`]); the scene is loaded all the same, without the deeper nodes.
 pub fn scene_load(design_json: &str) -> Result<(), String> {
     let page = nesting::read(design_json)?;
+    let page_id = *page.id();
     let assets = ASSETS.with_borrow(Assets::clone);
     let system = SYSTEM
         .with_borrow(|system| system.as_ref().map(DesignSystem::from_json))
@@ -119,12 +125,23 @@ pub fn scene_load(design_json: &str) -> Result<(), String> {
         Some(system) => Scene::with_system(page, assets, system),
         None => Scene::new(page, assets),
     };
-    let stage = Stage {
+    let mut stage = Stage {
         scene,
+        page: page_id,
         controls: Controls::new(Viewport::new(1.0, 1.0)),
         fit_pending: true,
         stats: None,
     };
+    if let Some(shown) = STAGE.take()
+        && shown.page == page_id
+    {
+        let selected = shown.scene.selected_address();
+        stage.controls = shown.controls;
+        stage.fit_pending = shown.fit_pending;
+        stage.scene.select_address(selected.as_ref());
+        // The page that asked for the scene knows this selection.
+        stage.scene.take_events();
+    }
     let nested = nested_too_deep(&stage.scene);
     STAGE.set(Some(stage));
     nested
@@ -160,6 +177,20 @@ pub fn scene_set_system(system_json: &str) -> Result<(), String> {
         }
         None => Ok(()),
     })
+}
+
+/// The IDs of the boards of the loaded scene that its view shows, in page order,
+/// as a JSON array. The view is the one of the last frame, so a page that has
+/// not been drawn yet still has its first view. Empty if no scene is loaded.
+pub fn visible_boards() -> String {
+    let boards = with_stage(|scene, viewport| scene.visible_boards(viewport)).unwrap_or_default();
+    Value::Array(
+        boards
+            .iter()
+            .map(|id| Value::String(id.to_string()))
+            .collect(),
+    )
+    .to_string()
 }
 
 /// Resolves the tokens of the loaded scene in `mode` from now on. Fails if no

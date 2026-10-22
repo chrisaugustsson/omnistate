@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link, createFileRoute } from "@tanstack/react-router";
 import { ApiError } from "@/api/client";
-import { loadVersion, loadVersionHtml } from "@/api/docs";
+import { loadBoard, loadVersionHtml, loadVersionOutline } from "@/api/docs";
 import type { DecisionBody, RecordedConflict, ReviewedDoc, ReviewResponse, VersionBody } from "@/api/generated";
 import { approveChangeset, loadConflicts, loadReview, rejectChangeset } from "@/api/review";
 import { createAssetLoader } from "@/design/assets";
+import { BoardCache, showBoardwise } from "@/design/boards";
 import { createDesignRenderer, type DesignRenderer } from "@/design/renderer";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -325,17 +326,21 @@ function holds(root: JsonNode, id: string): boolean {
   return Array.isArray(root.children) && (root.children as JsonNode[]).some((child) => holds(child, id));
 }
 
-/** Loads a saved version once; a saved version never changes. */
-function useVersion(workspaceId: string, projectId: string, versionId: string | null) {
-  const [version, setVersion] = useState<{ id: string; body: VersionBody } | null>(null);
+/**
+ * Loads a saved design version's outline once; a saved version never changes.
+ * Its boards are read one by one, by the cache this gives with the outline.
+ */
+function useVersion(workspaceId: string, projectId: string, docId: string, versionId: string | null) {
+  const [version, setVersion] = useState<{ id: string; body: VersionBody; boards: BoardCache } | null>(null);
   const [failed, setFailed] = useState(false);
   useEffect(() => {
     if (!versionId) return;
     let cancelled = false;
     setFailed(false);
-    loadVersion(workspaceId, projectId, versionId).then(
+    loadVersionOutline(workspaceId, projectId, versionId).then(
       (body) => {
-        if (!cancelled) setVersion({ id: versionId, body });
+        const boards = new BoardCache((board) => loadBoard(workspaceId, projectId, docId, versionId, board));
+        if (!cancelled) setVersion({ id: versionId, body, boards });
       },
       () => {
         if (!cancelled) setFailed(true);
@@ -344,18 +349,19 @@ function useVersion(workspaceId: string, projectId: string, versionId: string | 
     return () => {
       cancelled = true;
     };
-  }, [workspaceId, projectId, versionId]);
-  return { body: version && version.id === versionId ? version.body : null, failed };
+  }, [workspaceId, projectId, docId, versionId]);
+  const loaded = version && version.id === versionId ? version : null;
+  return { body: loaded?.body ?? null, boards: loaded?.boards ?? null, failed };
 }
 
 function DesignChanges({ workspaceId, projectId, doc }: { workspaceId: string; projectId: string; doc: ReviewedDoc }) {
-  const base = useVersion(workspaceId, projectId, doc.base_version_id ?? null);
-  const current = useVersion(workspaceId, projectId, doc.version_id);
+  const base = useVersion(workspaceId, projectId, doc.doc_id, doc.base_version_id ?? null);
+  const current = useVersion(workspaceId, projectId, doc.doc_id, doc.version_id);
   const marks = useMemo(() => marksOf(doc), [doc]);
   const [chosen, setChosen] = useState<string | null>(null);
 
-  const currentPages = useMemo(() => current.body?.pages ?? [], [current.body]);
-  const basePages = useMemo(() => base.body?.pages ?? [], [base.body]);
+  const currentPages = useMemo(() => current.body?.outline ?? [], [current.body]);
+  const basePages = useMemo(() => base.body?.outline ?? [], [base.body]);
   const pageList = useMemo(() => {
     const listed = new Map<string, string>();
     for (const page of [...currentPages, ...basePages]) {
@@ -398,6 +404,7 @@ function DesignChanges({ workspaceId, projectId, doc }: { workspaceId: string; p
           label="Base"
           empty={doc.base_version_id === null ? "The doc is new, so it has no base." : "Loading"}
           source={base.body}
+          boards={base.boards}
           pageId={pageId}
           marks={marks.base}
         />
@@ -406,6 +413,7 @@ function DesignChanges({ workspaceId, projectId, doc }: { workspaceId: string; p
           label="New version"
           empty="Loading"
           source={current.body}
+          boards={current.boards}
           pageId={pageId}
           marks={marks.current}
         />
@@ -420,13 +428,16 @@ function DesignCanvas({
   label,
   empty,
   source,
+  boards,
   pageId,
   marks,
 }: {
   workspaceId: string;
   label: string;
   empty: string;
+  /** The version's outline. */
   source: VersionBody | null;
+  boards: BoardCache | null;
   pageId: string;
   marks: Mark[];
 }) {
@@ -463,28 +474,49 @@ function DesignCanvas({
   }, []);
   useEffect(() => renderer?.onView(() => setDrawn((count) => count + 1)), [renderer]);
 
-  const page = useMemo(() => (source?.pages ?? []).find((candidate) => String(candidate.id) === pageId) ?? null, [source, pageId]);
+  const page = useMemo(() => (source?.outline ?? []).find((candidate) => String(candidate.id) === pageId) ?? null, [source, pageId]);
   const system = useMemo(() => (source ? { ...source.tokens, $components: source.components ?? [] } : null), [source]);
   const assets = useMemo(() => (renderer ? createAssetLoader(renderer, workspaceId) : null), [renderer, workspaceId]);
   useEffect(() => {
-    if (!renderer || !assets || !page || !system) return;
+    if (!renderer || !assets || !page || !system || !boards) return;
     let cancelled = false;
-    // The page is shown once its images and fonts are with the renderer. One
-    // that fails to load is named in the canvas's message, and the rest still draws.
-    void assets.load(page, system).then((problems) => {
+    let stopBoards: (() => void) | null = null;
+    // What went wrong so far, named in the canvas's message; the rest still draws.
+    const problems: string[] = [];
+    const report = () => setFailure(problems.length > 0 ? problems.join(" ") : null);
+    // The page is shown once its images and fonts are with the renderer, with
+    // its boards as placeholders; the boards in view are read and put in their place.
+    void assets.load(page, system).then((loaded) => {
       if (cancelled) return;
+      problems.push(...loaded);
       try {
-        renderer.show(page, system);
-        setDrawn((count) => count + 1);
-        setFailure(problems.length > 0 ? problems.join(" ") : null);
+        stopBoards = showBoardwise({
+          renderer,
+          page,
+          system,
+          cache: boards,
+          prepare: async (board) => {
+            problems.push(...(await assets.load(board, system)));
+          },
+          onShown: () => {
+            setDrawn((count) => count + 1);
+            report();
+          },
+          onFailure: (message) => {
+            problems.push(message);
+            report();
+          },
+        });
       } catch (error) {
-        setFailure([...problems, error instanceof Error ? error.message : "The design could not be drawn."].join(" "));
+        problems.push(error instanceof Error ? error.message : "The design could not be drawn.");
+        report();
       }
     });
     return () => {
       cancelled = true;
+      stopBoards?.();
     };
-  }, [renderer, assets, page, system]);
+  }, [renderer, assets, page, system, boards]);
 
   const highlights = page && renderer ? marks.flatMap((mark) => highlightOf(renderer, mark)) : [];
   const message = failure ?? (source === null ? empty : page === null ? "This version has no such page." : null);

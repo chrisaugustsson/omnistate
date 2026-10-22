@@ -15,6 +15,7 @@ const base = (workspaceId: string, projectId: string) => `/api/v1/w/${workspaceI
 const doc = operations["GET /api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}"];
 const versions = operations["GET /api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}/versions"];
 const version = operations["GET /api/v1/w/{workspace_id}/projects/{project_id}/versions/{version_id}"];
+const board = operations["GET /api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}/boards/{board_id}"];
 const html = operations["GET /api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}/html"];
 const draft = operations["GET /api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs/{doc_id}"];
 const changesets = operations["GET /api/v1/w/{workspace_id}/projects/{project_id}/changesets"];
@@ -43,6 +44,35 @@ export async function loadVersion(workspaceId: string, projectId: string, versio
     response: version.responses["200"],
   });
   return loaded.version;
+}
+
+/**
+ * A saved design version as its outline: its pages with their boards as
+ * placeholders (`outline`), the components and the tokens of the design system
+ * it recorded, and no board content. The boards come one by one from
+ * `loadBoard`, so a big design is never read whole.
+ */
+export async function loadVersionOutline(workspaceId: string, projectId: string, versionId: string): Promise<VersionBody> {
+  const loaded = await callApi("GET", `${base(workspaceId, projectId)}/versions/${versionId}?view=outline`, {
+    response: version.responses["200"],
+  });
+  return loaded.version;
+}
+
+/** One board of a version of a design doc, with everything below it, as JSON. */
+export async function loadBoard(
+  workspaceId: string,
+  projectId: string,
+  docId: string,
+  versionId: string,
+  boardId: string,
+): Promise<Record<string, unknown>> {
+  const loaded = await callApi(
+    "GET",
+    `${base(workspaceId, projectId)}/docs/${docId}/boards/${boardId}?version=${encodeURIComponent(versionId)}`,
+    { response: board.responses["200"] },
+  );
+  return loaded.node;
 }
 
 /** The HTML of a version of the doc, or of its mainline version; empty when there is none. */

@@ -69,7 +69,7 @@ pub struct Manifest {
 
 impl Manifest {
     /// Every chunk of the manifest, each once, pages before their boards.
-    fn chunks(&self) -> Vec<&str> {
+    pub(crate) fn chunks(&self) -> Vec<&str> {
         let mut seen = HashSet::new();
         let mut chunks = Vec::new();
         for page in &self.pages {
@@ -335,6 +335,76 @@ pub(crate) async fn read_pages(
     nodes_from(&Value::Array(pages)).map_err(|e| unavailable(what, e))
 }
 
+/// The pages of a design version as the viewer reads them first: each page
+/// as its own JSON with its boards under `children`, and each board as its own
+/// JSON without its children. The boards' chunks are read `CONCURRENCY` at a
+/// time and each is cut down as soon as it is read, so the version's whole body
+/// is never held at once.
+pub(crate) async fn read_outline(
+    state: &AppState,
+    workspace_id: &str,
+    chunk: &str,
+    what: &str,
+) -> Result<Vec<Value>, ApiError> {
+    let text = read_chunk(state, workspace_id, chunk).await?;
+    let Ok(manifest) = serde_json::from_str::<Manifest>(&text) else {
+        let pages = read_whole_pages(&text, what)?;
+        return Ok(pages
+            .iter()
+            .map(|page| {
+                let mut json = own_json(page);
+                let boards = page.children().iter().map(own_json).collect();
+                json["children"] = Value::Array(boards);
+                json
+            })
+            .collect());
+    };
+    let names: Vec<String> = manifest
+        .pages
+        .iter()
+        .flat_map(|page| {
+            std::iter::once(page.chunk.clone()).chain(page.boards.iter().map(|b| b.chunk.clone()))
+        })
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect();
+    let (state, workspace) = (state.clone(), workspace_id.to_string());
+    let what = what.to_string();
+    let own = each_concurrently(names.clone(), move |name| {
+        let (state, workspace, what) = (state.clone(), workspace.clone(), what.clone());
+        async move {
+            let text = read_chunk(&state, &workspace, &name).await?;
+            let mut json: Value = serde_json::from_str(&text).map_err(|e| unavailable(&what, e))?;
+            if let Some(object) = json.as_object_mut() {
+                object.remove("children");
+            }
+            Ok(json)
+        }
+    })
+    .await?;
+    let own: HashMap<String, Value> = names.into_iter().zip(own).collect();
+    let find = |chunk: &str| -> Result<Value, ApiError> {
+        own.get(chunk)
+            .cloned()
+            .ok_or_else(|| unavailable("a version", format!("the chunk {chunk} was not read")))
+    };
+    let mut pages = Vec::with_capacity(manifest.pages.len());
+    for entry in &manifest.pages {
+        let mut page = find(&entry.chunk)?;
+        let boards = entry
+            .boards
+            .iter()
+            .map(|board| find(&board.chunk))
+            .collect::<Result<Vec<_>, _>>()?;
+        match page.as_object_mut() {
+            Some(object) => object.insert("children".to_string(), Value::Array(boards)),
+            None => return Err(unavailable("a version", "a page chunk is no object")),
+        };
+        pages.push(page);
+    }
+    Ok(pages)
+}
+
 /// The pages of a version in the older form, `{"pages": [...]}` in one chunk.
 fn read_whole_pages(text: &str, what: &str) -> Result<Vec<Node>, ApiError> {
     let json: Value = serde_json::from_str(text).map_err(|e| unavailable(what, e))?;
@@ -394,6 +464,11 @@ pub struct BoardBody {
     /// without its page. For a draft, every tag carries `rev={n}`, the
     /// node's revision; a version's tags carry none.
     pub tags: String,
+    /// The same board and subtree as JSON nodes, as the whole read of the
+    /// version holds it under `pages`: the form the design viewer hands to the
+    /// renderer.
+    #[schema(value_type = Object)]
+    pub node: Value,
 }
 
 fn unknown_board() -> ApiError {
@@ -477,6 +552,7 @@ pub async fn read_draft_board(
         changeset_id: Some(changeset_id),
         draft_id: Some(draft.id),
         tags,
+        node: serde_json::to_value(node).expect("a node serializes to JSON"),
     }))
 }
 
@@ -535,6 +611,7 @@ pub async fn read_board_of_version(
         changeset_id: None,
         draft_id: None,
         tags: tags::print(&node),
+        node: serde_json::to_value(&node).expect("a node serializes to JSON"),
     }))
 }
 

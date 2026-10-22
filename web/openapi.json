@@ -160,6 +160,10 @@
               "null"
             ]
           },
+          "node": {
+            "description": "The same board and subtree as JSON nodes, as the whole read of the\nversion holds it under `pages`: the form the design viewer hands to the\nrenderer.",
+            "type": "object"
+          },
           "page_id": {
             "description": "The page that holds the board.",
             "type": "string"
@@ -180,7 +184,8 @@
           "doc_id",
           "page_id",
           "board_id",
-          "tags"
+          "tags",
+          "node"
         ],
         "type": "object"
       },
@@ -2867,6 +2872,16 @@
               "$ref": "#/components/schemas/NodeEntry"
             },
             "type": "array"
+          },
+          "outline": {
+            "description": "A design version's pages in order, each as its own JSON with its boards\nunder `children`, and each board as its own JSON without its children;\nonly when read by ID with `?view=outline`, which leaves out `pages` and\n`tags`, and lists no node below a board in `nodes`.",
+            "items": {
+              "type": "object"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
           },
           "pages": {
             "description": "A design version's pages as JSON nodes; only when read by ID.",
@@ -9451,6 +9466,15 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "description": "`outline` for a design version's outline instead of its whole body",
+            "in": "query",
+            "name": "view",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -9485,7 +9509,7 @@
             "description": "No such version in this project and workspace"
           }
         },
-        "summary": "A saved version with its node index.",
+        "summary": "A saved version with its node index. A design version is read whole, with\nits pages as tags and JSON, or, with `?view=outline`, as its outline: its\npages with their boards as placeholders and the design system it recorded,\nand no board content, so that a big design is read board by board\n(`GET .../docs/{doc_id}/boards/{board_id}?version=`).",
         "tags": [
           "crate::versions"
         ],

@@ -31,7 +31,7 @@ use crate::session::{ApiError, ErrorBody};
 use crate::workspace::{AgentRequest, WorkspaceRequest, parse_uuid, sha256_hex};
 use axum::Json;
 use axum::body::Bytes;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use omni_core::hash::blake3_hex;
 use omni_core::ops::{IndexedNode, longest_increasing};
@@ -88,6 +88,13 @@ pub struct VersionBody {
     /// A design version's pages as tags; only when the version is read by ID.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tags: Option<String>,
+    /// A design version's pages in order, each as its own JSON with its boards
+    /// under `children`, and each board as its own JSON without its children;
+    /// only when read by ID with `?view=outline`, which leaves out `pages` and
+    /// `tags`, and lists no node below a board in `nodes`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<Vec<Object>>)]
+    pub outline: Option<Vec<Value>>,
     /// A design version's pages as JSON nodes; only when read by ID.
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schema(value_type = Option<Vec<Object>>)]
@@ -467,8 +474,12 @@ pub(crate) async fn nodes_of_version_id(
 
 async fn version_body(tx: &mut Tx, row: VersionRow) -> Result<VersionBody, ApiError> {
     let nodes = nodes_of_version(tx, &row).await?;
+    Ok(body_with_nodes(row, nodes))
+}
+
+fn body_with_nodes(row: VersionRow, nodes: Vec<NodeEntry>) -> VersionBody {
     let manifest = row.manifest();
-    Ok(VersionBody {
+    VersionBody {
         id: row.id,
         doc_id: row.doc_id,
         changeset_id: row.changeset_id,
@@ -480,10 +491,59 @@ async fn version_body(tx: &mut Tx, row: VersionRow) -> Result<VersionBody, ApiEr
         manifest,
         nodes,
         tags: None,
+        outline: None,
         pages: None,
         components: None,
         tokens: None,
-    })
+    }
+}
+
+/// A design version's nodes as its outline lists them: the pages and the boards
+/// only, which are the roots of the chunks of its manifest.
+async fn outline_nodes(tx: &mut Tx, row: &VersionRow) -> Result<Vec<NodeEntry>, ApiError> {
+    let Some(manifest) = row.manifest() else {
+        // A version from before designs were split into chunks: keep what is
+        // at most a board deep.
+        let nodes = nodes_of_version(tx, row).await?;
+        let pages: HashSet<String> = nodes
+            .iter()
+            .filter(|node| node.parent.is_none())
+            .map(|node| node.id.clone())
+            .collect();
+        return Ok(nodes
+            .into_iter()
+            .filter(|node| {
+                node.parent
+                    .as_ref()
+                    .is_none_or(|parent| pages.contains(parent))
+            })
+            .collect());
+    };
+    let chunks: Vec<&str> = manifest.chunks();
+    let rows: Vec<ChunkNode> = sqlx::query_as(
+        "SELECT chunk, node AS id, type AS kind, parent, fingerprint FROM node_index \
+         WHERE chunk = ANY($1::text[]) AND ordinal = 0",
+    )
+    .bind(&chunks)
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(ApiError::database)?;
+    let roots: HashMap<&str, &NodeEntry> = rows
+        .iter()
+        .map(|row| (row.chunk.as_str(), &row.entry))
+        .collect();
+    let mut nodes = Vec::new();
+    for page in &manifest.pages {
+        nodes.extend(roots.get(page.chunk.as_str()).map(|node| (*node).clone()));
+        for board in &page.boards {
+            if let Some(node) = roots.get(board.chunk.as_str()) {
+                let mut node = (*node).clone();
+                node.parent = Some(page.id.clone());
+                nodes.push(node);
+            }
+        }
+    }
+    Ok(nodes)
 }
 
 // Saving ------------------------------------------------------------------------------
@@ -891,7 +951,11 @@ pub async fn remove_doc(
 
 // Reading and comparing -----------------------------------------------------------------
 
-/// A saved version with its node index.
+/// A saved version with its node index. A design version is read whole, with
+/// its pages as tags and JSON, or, with `?view=outline`, as its outline: its
+/// pages with their boards as placeholders and the design system it recorded,
+/// and no board content, so that a big design is read board by board
+/// (`GET .../docs/{doc_id}/boards/{board_id}?version=`).
 #[utoipa::path(
     get,
     path = "/api/v1/w/{workspace_id}/projects/{project_id}/versions/{version_id}",
@@ -899,6 +963,7 @@ pub async fn remove_doc(
         ("workspace_id" = String, Path, description = "The workspace's UUID"),
         ("project_id" = String, Path, description = "The project's UUID"),
         ("version_id" = String, Path, description = "The version's UUID"),
+        ("view" = Option<String>, Query, description = "`outline` for a design version's outline instead of its whole body"),
     ),
     responses(
         (status = 200, description = "The version", body = VersionResponse),
@@ -910,6 +975,7 @@ pub async fn show_version(
     State(state): State<AppState>,
     request: WorkspaceRequest,
     Path((_, project_id, version_id)): Path<(String, String, String)>,
+    Query(query): Query<HashMap<String, String>>,
 ) -> Result<Json<VersionResponse>, ApiError> {
     let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
     let version_id = parse_uuid(&version_id).ok_or(ApiError::NotFound)?;
@@ -917,6 +983,23 @@ pub async fn show_version(
     let row = find_version(&mut tx, &project_id, &version_id).await?;
     let kind = row.doc_kind.clone();
     let chunk = row.chunk.clone();
+    if kind == "design" && query.get("view").map(String::as_str) == Some("outline") {
+        let nodes = outline_nodes(&mut tx, &row).await?;
+        let mut version = body_with_nodes(row, nodes);
+        tx.commit().await.map_err(ApiError::database)?;
+        let view = design::outline_of_version(
+            &state,
+            &request.workspace_id,
+            &version.id,
+            chunk.as_deref(),
+            version.design_system_version_id.as_deref(),
+        )
+        .await?;
+        version.outline = Some(view.outline);
+        version.components = Some(view.components);
+        version.tokens = view.tokens;
+        return Ok(Json(VersionResponse { version }));
+    }
     let mut version = version_body(&mut tx, row).await?;
     tx.commit().await.map_err(ApiError::database)?;
     // A design version is shown with the design system version it recorded,

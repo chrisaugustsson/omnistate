@@ -7,9 +7,10 @@ import {
   loadDoc,
   loadDocComments,
   loadDraft,
+  loadBoard,
   loadDraftHtml,
-  loadVersion,
   loadVersionHtml,
+  loadVersionOutline,
   loadVersions,
 } from "@/api/docs";
 import type { ChangesetBody, ClaimBody, CommentBody, DocBody, VersionBody, VersionItem } from "@/api/generated";
@@ -21,6 +22,7 @@ import {
   type Property,
 } from "@/design/renderer";
 import { createAssetLoader } from "@/design/assets";
+import { BoardCache, findPageHolding, pageWithBoards, showBoardwise } from "@/design/boards";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
@@ -627,8 +629,17 @@ function findNode(nodes: JsonNode[], id: string): JsonNode | null {
   return null;
 }
 
-/** What a version of a design holds: its pages, the components its instances use and its tokens. */
+/**
+ * What a design holds: its pages, the components its instances use and its
+ * tokens. A saved version's pages are its outline, with every board a
+ * placeholder, and its boards are in the version's `BoardCache`.
+ */
 type DesignSource = Pick<VersionBody, "pages" | "components" | "tokens">;
+
+/** A version's outline as a source: its pages are the outline. */
+function outlineSource(body: VersionBody): DesignSource {
+  return { pages: body.outline ?? [], components: body.components, tokens: body.tokens };
+}
 
 /**
  * The node at `address` as the source holds it: a node ID, or
@@ -661,7 +672,11 @@ function holds(page: JsonNode, id: string): boolean {
   return findNode([page], id) !== null;
 }
 
-/** Loads each saved version asked for once; a saved version never changes. */
+/**
+ * Loads the outline of each saved version asked for once; a saved version
+ * never changes. A design version is read as its outline (its pages with their
+ * boards as placeholders), never whole: its boards come one by one.
+ */
 function useVersionBodies(workspaceId: string, projectId: string, ids: string[]) {
   const [bodies, setBodies] = useState<Record<string, VersionBody>>({});
   const [failed, setFailed] = useState(false);
@@ -674,7 +689,7 @@ function useVersionBodies(workspaceId: string, projectId: string, ids: string[])
     for (const id of ids) {
       if (requested.current.has(id)) continue;
       requested.current.add(id);
-      loadVersion(workspaceId, projectId, id).then(
+      loadVersionOutline(workspaceId, projectId, id).then(
         (loaded) => {
           setBodies((previous) => ({ ...previous, [id]: loaded }));
           setFailed(false);
@@ -806,7 +821,30 @@ function DesignViewer({
     return Array.from(ids);
   }, [versionId, commentsOnSelected]);
   const { bodies, failed: versionFailed } = useVersionBodies(workspaceId, projectId, wanted);
-  const source: DesignSource | null = draft ? liveDraft.value : versionId ? (bodies[versionId] ?? null) : null;
+  const live = draft !== null && draft !== undefined;
+  const shownBody = !live && versionId ? (bodies[versionId] ?? null) : null;
+  const source: DesignSource | null = useMemo(
+    () => (live ? liveDraft.value : shownBody ? outlineSource(shownBody) : null),
+    [live, liveDraft.value, shownBody],
+  );
+
+  // The boards read of each saved version, so that a board is read once however
+  // often its page is shown.
+  const boardCaches = useRef(new Map<string, BoardCache>());
+  useEffect(() => {
+    boardCaches.current = new Map();
+  }, [workspaceId, projectId, docId]);
+  const cacheOf = useCallback(
+    (version: string) => {
+      let cache = boardCaches.current.get(version);
+      if (!cache) {
+        cache = new BoardCache((board) => loadBoard(workspaceId, projectId, docId, version, board));
+        boardCaches.current.set(version, cache);
+      }
+      return cache;
+    },
+    [workspaceId, projectId, docId],
+  );
 
   const modes = useMemo(() => modesOf(source?.tokens), [source]);
   const mode = chosenMode !== null && modes.includes(chosenMode) ? chosenMode : (modes[0] ?? null);
@@ -859,31 +897,63 @@ function DesignViewer({
   useEffect(() => {
     if (!renderer || !assets || !page || !system) return;
     let cancelled = false;
-    // The page is shown once its images and fonts are with the renderer. One
-    // that fails to load is named in the error line, and the rest still draws.
-    void assets.load(page, system).then((problems) => {
+    let stopBoards: (() => void) | null = null;
+    // What went wrong so far: an image or a board that could not be loaded is
+    // named in the error line, and the rest still draws.
+    const problems: string[] = [];
+    const report = () => setFailure(problems.length > 0 ? problems.join(" ") : null);
+    const shown = () => {
+      // A page is shown in the first mode, so the chosen mode is set again.
+      if (modeRef.current && modeRef.current !== modes[0]) renderer.setMode(modeRef.current);
+      const shownLayers = renderer.layers();
+      // The selection stays while its node is still there, as when a live draft changes.
+      const kept = selectedRef.current;
+      const stays = kept !== null && rowsOf(shownLayers).some((row) => row.layer.address === kept);
+      if (stays) renderer.select(kept);
+      setDrawn((count) => count + 1);
+      setLayers(shownLayers);
+      setSelected(stays ? kept : null);
+      report();
+    };
+    const failed = (error: unknown) => {
+      problems.push(error instanceof Error ? error.message : "The design could not be drawn.");
+      report();
+    };
+    // The page is shown once its images and fonts are with the renderer.
+    void assets.load(page, system).then((loaded) => {
       if (cancelled) return;
+      problems.push(...loaded);
       try {
-        renderer.show(page, system);
-        // A page is shown in the first mode, so the chosen mode is set again.
-        if (modeRef.current && modeRef.current !== modes[0]) renderer.setMode(modeRef.current);
-        const shownLayers = renderer.layers();
-        // The selection stays while its node is still there, as when a live draft changes.
-        const kept = selectedRef.current;
-        const stays = kept !== null && rowsOf(shownLayers).some((row) => row.layer.address === kept);
-        if (stays) renderer.select(kept);
-        setDrawn((count) => count + 1);
-        setLayers(shownLayers);
-        setSelected(stays ? kept : null);
-        setFailure(problems.length > 0 ? problems.join(" ") : null);
+        if (live || !versionId) {
+          // A live draft is the agents' working copy, read whole.
+          renderer.show(page, system);
+          shown();
+        } else {
+          // A saved version shows its boards as placeholders, and reads those in view.
+          stopBoards = showBoardwise({
+            renderer,
+            page,
+            system,
+            cache: cacheOf(versionId),
+            prepare: async (board) => {
+              problems.push(...(await assets.load(board, system)));
+            },
+            onShown: shown,
+            onFailure: (message) => {
+              problems.push(message);
+              report();
+            },
+          });
+        }
       } catch (error) {
-        setFailure([...problems, error instanceof Error ? error.message : "The design could not be drawn."].join(" "));
+        failed(error);
       }
     });
     return () => {
       cancelled = true;
+      stopBoards?.();
     };
-  }, [renderer, assets, page, system, modes]);
+  }, [renderer, assets, page, system, modes, live, versionId, cacheOf]);
 
   // A link to a node: its page is shown, then it is selected.
   useEffect(() => {
@@ -894,6 +964,27 @@ function DesignViewer({
     const holder = pages.find((candidate) => holds(candidate, target.split("/")[0]));
     if (holder && holder !== page) setChosen(String(holder.id));
   }, [target, pages, page]);
+  // A node inside a board is on the page whose board holds it, which the boards say: they are read until one does.
+  useEffect(() => {
+    if (!target || live || !versionId || !assets || !system || pages.length === 0) return;
+    const id = target.split("/")[0];
+    if (pages.some((candidate) => holds(candidate, id))) return;
+    let cancelled = false;
+    void findPageHolding(
+      cacheOf(versionId),
+      pages,
+      id,
+      async (board) => {
+        await assets.load(board, system);
+      },
+      () => cancelled,
+    ).then((holder) => {
+      if (!cancelled && holder && holder !== page) setChosen(String(holder.id));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [target, live, versionId, assets, system, pages, page, cacheOf]);
   useEffect(() => {
     if (!renderer || !target || !rowsOf(layers).some((row) => row.layer.address === target)) return;
     setSelected(target);
@@ -934,6 +1025,54 @@ function DesignViewer({
     }
     setChosenMode(next);
     setDrawn((count) => count + 1);
+  }
+
+  // The shown version with the boards read so far in place of their placeholders.
+  const nowSource = useMemo(() => {
+    if (!source || live || !versionId) return source;
+    const cache = cacheOf(versionId);
+    // `drawn` says that more boards were put on the canvas.
+    return drawn < 0 ? source : { ...source, pages: (source.pages ?? []).map((entry) => pageWithBoards(entry, cache)) };
+  }, [source, live, versionId, cacheOf, drawn]);
+
+  // A comment made on another version compares the node with the same board of that version.
+  const boardOfSelected = useMemo(() => {
+    const id = selected?.split("/")[0];
+    if (!id || !nowSource) return null;
+    for (const entry of nowSource.pages ?? []) {
+      const board = (Array.isArray(entry.children) ? (entry.children as JsonNode[]) : []).find((candidate) =>
+        holds(candidate, id),
+      );
+      if (board) return String(board.id);
+    }
+    return null;
+  }, [selected, nowSource]);
+  const [olderBoards, setOlderBoards] = useState<Record<string, JsonNode | null>>({});
+  const askedOlder = useRef(new Set<string>());
+  useEffect(() => {
+    askedOlder.current = new Set();
+    setOlderBoards({});
+  }, [workspaceId, projectId, docId]);
+  useEffect(() => {
+    if (!boardOfSelected) return;
+    for (const comment of commentsOnSelected) {
+      const key = `${comment.version_id}/${boardOfSelected}`;
+      if (comment.version_id === versionId || askedOlder.current.has(key)) continue;
+      askedOlder.current.add(key);
+      loadBoard(workspaceId, projectId, docId, comment.version_id, boardOfSelected).then(
+        (board) => setOlderBoards((previous) => ({ ...previous, [key]: board })),
+        () => setOlderBoards((previous) => ({ ...previous, [key]: null })),
+      );
+    }
+  }, [boardOfSelected, commentsOnSelected, versionId, workspaceId, projectId, docId]);
+  function thenOf(version: string): string {
+    const body = bodies[version];
+    if (!body) return "Loading";
+    if (!boardOfSelected) return "The earlier node cannot be shown.";
+    const key = `${version}/${boardOfSelected}`;
+    if (!(key in olderBoards)) return "Loading";
+    const board = olderBoards[key];
+    return describeNode(board ? nodeAt({ pages: [board], components: body.components }, selected ?? "") : null);
   }
 
   const rows = useMemo(() => rowsOf(layers), [layers]);
@@ -1086,10 +1225,8 @@ function DesignViewer({
             versionId={versionId}
             noun="node"
             compare={(comment) => ({
-              then: bodies[comment.version_id]
-                ? describeNode(nodeAt(bodies[comment.version_id], selected ?? ""))
-                : "Loading",
-              now: source ? describeNode(nodeAt(source, selected ?? "")) : "Loading",
+              then: thenOf(comment.version_id),
+              now: nowSource ? describeNode(nodeAt(nowSource, selected ?? "")) : "Loading",
             })}
             versionLabels={Object.fromEntries(choices.map((choice) => [choice.value, choice.label]))}
             onPosted={comments.reload}
