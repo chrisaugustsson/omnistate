@@ -34,12 +34,20 @@
 //!   node ID of the layer in the component it shows. An untouched copy has no
 //!   overrides.
 //! - Images become attachments that the design refers to as `attachment:<id>`.
+//! - Fonts (US-057): the files of each font family that the texts use, found
+//!   beside the export in `fonts/<family>/` (TrueType or OpenType, as the
+//!   comparison reads them), become attachments too, and every typography
+//!   token of that family lists them in `$extensions.omnistate.fontFiles`
+//!   (docs/formats/tokens.md). A family no text uses, and a file that is no
+//!   font, are not imported.
 //! - `report`: everything that could not be imported, with its page, board,
 //!   shape and reason. Nothing is dropped silently.
 
 mod common;
 
 use std::collections::BTreeSet;
+use std::fs;
+use std::path::PathBuf;
 
 use omni_core::design::NodeKind;
 use omni_penpot::convert_file;
@@ -50,8 +58,8 @@ use omni_render::view::Scene;
 use serde_json::{Value, json};
 
 use common::convert::{
-    PNG, attachment_refs, board_node, flex, paragraph, run, shape, text_content, uid, write_export,
-    write_export_with,
+    FILE_ID, PNG, attachment_refs, board_node, flex, paragraph, run, shape, text_content, uid,
+    write_export, write_export_with,
 };
 use common::import::*;
 
@@ -628,4 +636,169 @@ fn a_file_that_is_not_an_export_is_an_error() {
         error.to_string().contains("import-not-an-export.penpot"),
         "{error}"
     );
+}
+
+/// A real font file, which stands for Geist in the exports these tests write.
+const FONT: &[u8] = include_bytes!("../../omni-render/fonts/Inter-Regular.ttf");
+
+/// The bytes of a font file of its own: [`FONT`] with `tag` after its tables,
+/// which font readers ignore.
+fn font_file(tag: u8) -> Vec<u8> {
+    let mut bytes = FONT.to_vec();
+    bytes.extend([tag; 4]);
+    bytes
+}
+
+/// An export whose board Typsnitt holds the text Brödtext in Geist and the
+/// text Kod in Geist Mono, with the library typographies Body (Geist) and
+/// Kod (Geist Mono), written into a directory of its own with the folder
+/// `fonts` beside it: `fonts/Geist/` holds a font file and a license text,
+/// `fonts/Geist Mono/` a font file, and `fonts/Oanvänd/` the font file of a
+/// family that no text uses. Returns the export's path and the three font
+/// files' bytes (Geist, Geist Mono, unused).
+fn font_export(test: &str) -> (PathBuf, Vec<u8>, Vec<u8>, Vec<u8>) {
+    let dir = std::env::temp_dir().join(format!("omni-penpot-fonts-{}-{test}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).expect("the export's directory can be created");
+    let in_family = |n: u32, name: &str, y: f64, content: &str, family: &str| {
+        shape(n, "text", name, [10.0, y, 200.0, 24.0]).with(json!({
+            "growType": "fixed",
+            "content": text_content(vec![paragraph(vec![run(
+                content,
+                json!({ "fontFamily": family, "fontId": format!("gfont-{}", family.to_lowercase().replace(' ', "-")) })
+            )])])
+        }))
+    };
+    let board = shape(80, "frame", "Typsnitt", [0.0, 0.0, 300.0, 200.0])
+        .with(json!({ "fills": solid("#FFFFFF") }))
+        .kids(vec![
+            in_family(81, "Brödtext", 10.0, "Dina däck", "Geist"),
+            in_family(82, "Kod", 50.0, "ABC 123", "Geist Mono"),
+        ]);
+    let mut entries = common::export_entries(
+        FILE_ID,
+        "TireBud - Typsnitt",
+        &[page_of(PAGE_S, "Start", 0, vec![board])],
+    );
+    entries.extend(token_entries(&tokens_json()));
+    entries.extend(library_entries());
+    let kod = "b2000000-0000-4000-8000-000000000002";
+    entries.push((
+        format!("files/{FILE_ID}/typographies/{kod}.json"),
+        json!({
+            "lineHeight": "1.4",
+            "path": "TireBud",
+            "fontStyle": "normal",
+            "fontId": "gfont-geist-mono",
+            "fontSize": "14",
+            "fontWeight": "400",
+            "name": "Kod",
+            "modifiedAt": "2026-10-02T10:37:00.964Z",
+            "fontVariantId": "regular",
+            "id": kod,
+            "letterSpacing": "0",
+            "fontFamily": "Geist Mono",
+            "textTransform": "none"
+        })
+        .to_string()
+        .into_bytes(),
+    ));
+    let path = dir.join("typsnitt.penpot");
+    fs::write(&path, common::stored_zip(&entries)).expect("the export can be written");
+
+    let (geist, mono, unused) = (font_file(1), font_file(2), font_file(3));
+    for (family, file, bytes) in [
+        ("Geist", "Geist-Regular.ttf", &geist),
+        ("Geist Mono", "GeistMono-Regular.ttf", &mono),
+        ("Oanvänd", "Oanvand-Regular.ttf", &unused),
+    ] {
+        let folder = dir.join("fonts").join(family);
+        fs::create_dir_all(&folder).expect("the font folder can be created");
+        fs::write(folder.join(file), bytes).expect("the font file can be written");
+    }
+    fs::write(dir.join("fonts/Geist/OFL.txt"), LICENSE).expect("the license can be written");
+    (path, geist, mono, unused)
+}
+
+const LICENSE: &[u8] = b"SIL Open Font License, Version 1.1";
+
+#[test]
+fn fonts_beside_the_export_become_font_files_of_the_typography_tokens() {
+    let (path, geist, mono, unused) = font_export("typography");
+    let import = import(&path);
+
+    let attachment_of = |bytes: &[u8], family: &str| {
+        let found: Vec<_> = import
+            .attachments
+            .iter()
+            .filter(|attachment| attachment.bytes == bytes)
+            .collect();
+        assert_eq!(
+            found.len(),
+            1,
+            "the font file of {family} is one attachment of the import: {:?}",
+            import
+                .attachments
+                .iter()
+                .map(|attachment| (
+                    &attachment.id,
+                    &attachment.extension,
+                    attachment.bytes.len()
+                ))
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(found[0].extension, "ttf", "{family}");
+        found[0].id.clone()
+    };
+    let geist_id = attachment_of(&geist, "Geist");
+    let mono_id = attachment_of(&mono, "Geist Mono");
+    assert!(
+        !import
+            .attachments
+            .iter()
+            .any(|attachment| attachment.bytes == unused || attachment.bytes == LICENSE),
+        "a family that no text uses, and a file that is no font, are not imported"
+    );
+
+    // The tree, with its font files, passes OmniState's checks.
+    let tree = token_tree(&import);
+    let all = tokens_of(&import.design_system);
+    for (family, id) in [("Geist", &geist_id), ("Geist Mono", &mono_id)] {
+        let typographies: Vec<&(String, Value)> = all
+            .iter()
+            .filter(|(path, _)| path.starts_with("typography."))
+            .filter(|(path, _)| {
+                resolve(&tree, path, "Mörkt").is_some_and(|value| value["fontFamily"] == family)
+            })
+            .collect();
+        assert!(
+            !typographies.is_empty(),
+            "a typography token for {family}: {all:?}"
+        );
+        for (path, token) in typographies {
+            let files = token["$extensions"]["omnistate"]["fontFiles"]
+                .as_array()
+                .unwrap_or_else(|| panic!("{path} lists its font files: {token}"));
+            assert!(
+                files.contains(&json!(format!("attachment:{id}"))),
+                "{path} lists the font file of {family}, attachment:{id}: {token}"
+            );
+        }
+    }
+    let mut listed = Vec::new();
+    for (_, token) in &all {
+        listed.extend(attachment_refs(
+            &token["$extensions"]["omnistate"]["fontFiles"],
+        ));
+    }
+    for reference in listed {
+        let id = reference.strip_prefix("attachment:").expect("a reference");
+        assert!(
+            import
+                .attachments
+                .iter()
+                .any(|attachment| attachment.id == id),
+            "{reference} is an attachment of the import"
+        );
+    }
 }

@@ -31,6 +31,11 @@
 //! - An import into a project whose design system doc already has a mainline
 //!   version (a second import, after the first merged) adds its tokens and
 //!   components to that design system and keeps the ones it already has.
+//! - The fonts its texts use, when their files sit beside the export in
+//!   `fonts/<family>/` (US-057), are uploaded as workspace attachments too, and
+//!   the design system's typography tokens of that family list them as
+//!   `attachment:<id>` in `$extensions.omnistate.fontFiles`, where the design
+//!   viewer finds them.
 //! - fixtures/penpot/tirebud-ordrar.penpot, the export with components,
 //!   variants and swaps, imports through the API with every page, board,
 //!   component, copy and override that the converter makes of it, and merges.
@@ -706,6 +711,83 @@ fn export_bytes() -> Vec<u8> {
 fn write_export(home: &Scratch) -> PathBuf {
     let path = home.join("butik.penpot");
     std::fs::write(&path, export_bytes()).expect("write the export");
+    path
+}
+
+/// A real font file, which stands for Geist in the export with fonts.
+const FONT: &[u8] = include_bytes!("../../omni-render/fonts/Inter-Regular.ttf");
+
+/// An export whose board Typsnitt holds the text Brödtext in Geist, with the
+/// library typography Body in Geist, written into its own folder in `home`
+/// with `fonts/Geist/Geist-Regular.ttf` ([`FONT`]) beside it.
+fn write_font_export(home: &Scratch) -> PathBuf {
+    let mut entries: Vec<(String, Vec<u8>)> = vec![
+        (
+            "manifest.json".to_string(),
+            json!({
+                "type": "penpot/export-files",
+                "version": 1,
+                "generatedBy": "penpot/2.19.0-RC1",
+                "referer": "penpot",
+                "files": [{ "id": FILE_ID, "name": "Typsnitt", "features": ["components/v2", "variants/v1", "design-tokens/v1"] }],
+                "relations": []
+            })
+            .to_string()
+            .into_bytes(),
+        ),
+        (
+            format!("files/{FILE_ID}.json"),
+            json!({ "id": FILE_ID, "name": "Typsnitt", "version": 67 }).to_string().into_bytes(),
+        ),
+    ];
+    let mut body_text = text(
+        31,
+        "Brödtext",
+        [20.0, 20.0, 200.0, 24.0],
+        "Dina däck",
+        json!({}),
+    );
+    // The paragraph and its run are in Geist.
+    let paragraph = &mut body_text.json["content"]["children"][0]["children"][0];
+    paragraph["fontFamily"] = json!("Geist");
+    paragraph["fontId"] = json!("gfont-geist");
+    paragraph["children"][0]["fontFamily"] = json!("Geist");
+    paragraph["children"][0]["fontId"] = json!("gfont-geist");
+    let board = shape(
+        30,
+        "frame",
+        "Typsnitt",
+        [0.0, 0.0, 300.0, 100.0],
+        json!({ "fills": solid("#FFFFFF") }),
+    )
+    .kids(vec![body_text]);
+    entries.extend(page_entries(FILE_ID, PAGE_S, "Start", 0, vec![board]));
+    let body = "b2000000-0000-4000-8000-000000000051";
+    entries.push((
+        format!("files/{FILE_ID}/typographies/{body}.json"),
+        json!({
+            "lineHeight": "1.2",
+            "path": "TireBud",
+            "fontStyle": "normal",
+            "fontId": "gfont-geist",
+            "fontSize": "16",
+            "fontWeight": "400",
+            "name": "Body",
+            "modifiedAt": "2026-10-02T10:37:00.964Z",
+            "fontVariantId": "regular",
+            "id": body,
+            "letterSpacing": "0",
+            "fontFamily": "Geist",
+            "textTransform": "none"
+        })
+        .to_string()
+        .into_bytes(),
+    ));
+    let dir = home.join("typsnitt");
+    std::fs::create_dir_all(dir.join("fonts/Geist")).expect("the font folder");
+    std::fs::write(dir.join("fonts/Geist/Geist-Regular.ttf"), FONT).expect("write the font file");
+    let path = dir.join("typsnitt.penpot");
+    std::fs::write(&path, stored_zip(&entries)).expect("write the export");
     path
 }
 
@@ -1609,4 +1691,64 @@ fn the_tirebud_ordrar_export_imports_with_its_components_and_merges() {
         .unwrap_or_else(|| panic!("the design doc has a mainline version: {doc}"));
     let version = &get(f, &home, &project, &format!("/versions/{version}"))["version"];
     assert!(version["design_system_version_id"].is_string(), "{version}");
+}
+
+#[test]
+fn fonts_beside_the_export_become_font_files_of_its_typography_tokens() {
+    let f = fixture();
+    let home = agent_home(f);
+    let project = new_project(&home);
+    let imported = import(&home, &project, &write_font_export(&home));
+    let tokens = get(
+        f,
+        &home,
+        &project,
+        &format!("/changesets/{}/tokens", imported.changeset),
+    );
+    let mut typographies = Vec::new();
+    typographies_in(&tokens["tokens"], &mut typographies);
+    let geist: Vec<&Value> = typographies
+        .into_iter()
+        .filter(|token| token["$value"]["fontFamily"] == "Geist")
+        .collect();
+    assert!(!geist.is_empty(), "a typography token in Geist: {tokens}");
+    for token in geist {
+        let files = token["$extensions"]["omnistate"]["fontFiles"]
+            .as_array()
+            .unwrap_or_else(|| panic!("the token lists its font files: {token}"));
+        assert_eq!(files.len(), 1, "{token}");
+        let mut ids = Vec::new();
+        attachment_ids(&files[0], &mut ids);
+        assert_eq!(ids.len(), 1, "an attachment:<id>: {token}");
+        let served = fetch_as_agent(
+            f,
+            &format!("/api/v1/w/{}/attachments/{}", f.workspace, ids[0]),
+        );
+        assert_eq!(
+            served.status,
+            200,
+            "{:?}",
+            String::from_utf8_lossy(&served.body)
+        );
+        assert_eq!(
+            served.body, FONT,
+            "the font file beside the export, byte for byte"
+        );
+    }
+}
+
+/// Every typography token below `node` of a DTCG tree.
+fn typographies_in<'a>(node: &'a Value, found: &mut Vec<&'a Value>) {
+    let Some(map) = node.as_object() else { return };
+    if map.contains_key("$value") {
+        if node["$value"]["fontFamily"].is_string() {
+            found.push(node);
+        }
+        return;
+    }
+    for (name, child) in map {
+        if !name.starts_with('$') {
+            typographies_in(child, found);
+        }
+    }
 }

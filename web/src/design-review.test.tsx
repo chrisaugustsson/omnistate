@@ -182,6 +182,9 @@ vi.mock("@/design/renderer", () => {
           instance.viewListeners.add(listener);
           return () => instance.viewListeners.delete(listener);
         },
+        // US-057's images and fonts (src/design-assets.test.tsx); this design has none.
+        addImage() {},
+        addFont() {},
         destroy() {
           instance.destroyed = true;
         },

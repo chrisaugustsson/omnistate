@@ -150,6 +150,9 @@ vi.mock("@/design/renderer", () => ({
       onView() {
         return () => {};
       },
+      // US-057's images and fonts (src/design-assets.test.tsx); this design has none.
+      addImage() {},
+      addFont() {},
       destroy() {
         instance.destroyed = true;
       },
