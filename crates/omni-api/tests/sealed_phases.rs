@@ -54,6 +54,27 @@
 //!   roles); these tests do not pin that either way.
 //! - The story adds no tenant table: what an agent may see follows from the
 //!   posts and phases of US-033 and US-034.
+//!
+//! The follow-ups of US-055:
+//!
+//! - A live event that was withheld from an agent's open socket is delivered
+//!   to it, once, as soon as its post becomes visible to the agent (it posted
+//!   in the phase, or a later phase started), even though the socket already
+//!   got events with higher sequence numbers. A resume from the newest
+//!   sequence number the agent had got before then includes it too. Neither
+//!   pins where in the stream it arrives.
+//! - Agent requests that read or write posts (the thread read, the digest,
+//!   the single post read and posting) need both `X-Omni-Run` and
+//!   `X-Omni-Role`; an API key without both is answered 400, so agents
+//!   without an identity never share one view of a sealed phase. The error
+//!   code is not pinned. The human needs no identity.
+//! - A directive of the human that links to a post hidden from the agent
+//!   gives away neither the link nor the post's ID in any answer to the
+//!   agent: the thread read, the `directives` of a change set request, the
+//!   single post read, the digest and the live events.
+//! - The live-event filter compares the post IDs as UUIDs within the
+//!   workspace, so it can use the index of posts: no `::text` cast on a post
+//!   ID in `src/live.rs`.
 
 mod common;
 
@@ -285,6 +306,13 @@ enum Auth<'a> {
         role: &'a str,
     },
     Session(&'a str),
+    /// The API key with a run, a role, both or neither: an identity is only
+    /// complete with both.
+    Partial {
+        key: &'a str,
+        run: Option<&'a str>,
+        role: Option<&'a str>,
+    },
 }
 
 impl Auth<'_> {
@@ -298,6 +326,18 @@ impl Auth<'_> {
                 ("X-Omni-Harness", "test-harness".to_string()),
             ],
             Auth::Session(token) => vec![("Cookie", cookie(token))],
+            Auth::Partial { key, run, role } => {
+                let mut headers = vec![("Authorization", format!("Bearer {key}"))];
+                if let Some(run) = run {
+                    headers.push(("X-Omni-Run", run.to_string()));
+                }
+                if let Some(role) = role {
+                    headers.push(("X-Omni-Role", role.to_string()));
+                }
+                headers.push(("X-Omni-Model", "test-model".to_string()));
+                headers.push(("X-Omni-Harness", "test-harness".to_string()));
+                headers
+            }
         }
     }
 }
@@ -827,6 +867,24 @@ fn created_posts(events: &[Value]) -> Vec<String> {
         .collect()
 }
 
+/// How many of the `post.created` events among `events` are of the post.
+fn times_created(events: &[Value], post: &str) -> usize {
+    created_posts(events)
+        .iter()
+        .filter(|id| *id == post)
+        .count()
+}
+
+/// The newest sequence number among `events`, the number a client resumes
+/// from.
+fn newest_seq(events: &[Value]) -> i64 {
+    events
+        .iter()
+        .filter_map(|e| e["seq"].as_i64())
+        .max()
+        .unwrap_or_else(|| panic!("there are events with a `seq`: {events:?}"))
+}
+
 // ---------------------------------------------------------------------------
 // The routes
 // ---------------------------------------------------------------------------
@@ -1292,12 +1350,32 @@ fn live_events_of_hidden_posts_do_not_reach_the_agent() {
         !names_post(&to_scout, &hidden.id),
         "no event names the hidden post: {to_scout:?}"
     );
+    // The socket already has the human's post, whose sequence number is above
+    // the hidden post's.
+    let resume_from = newest_seq(&to_scout);
 
     let own = post(f, client, &scout(f), &project, &thread, "scout");
     let to_scout = scouts.drain();
     assert!(
         created_posts(&to_scout).contains(&own.id),
         "the scout's socket gets its own post: {to_scout:?}"
+    );
+    assert_eq!(
+        times_created(&to_scout, &hidden.id),
+        1,
+        "once the scout has posted, the withheld event of the critic's post \
+         reaches its open socket, once: {to_scout:?}"
+    );
+    let replayed = follow(f, client, &scout(f), &project, Some(resume_from)).drain();
+    assert_eq!(
+        times_created(&replayed, &hidden.id),
+        1,
+        "a resume from the scout's last sequence number includes the critic's \
+         post: {replayed:?}"
+    );
+    assert!(
+        created_posts(&replayed).contains(&own.id),
+        "the resume includes the scout's own post: {replayed:?}"
     );
     let later = post(f, client, &critic(f), &project, &thread, "critic again");
     let to_scout = scouts.drain();
@@ -1354,5 +1432,295 @@ fn resuming_replays_a_hidden_posts_event_only_once_the_agent_may_see_it() {
     assert!(
         created_posts(&replayed).contains(&hidden.id),
         "once an open phase follows, every agent's replay holds it: {replayed:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// US-055: the follow-ups
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_withheld_live_event_reaches_the_agent_once_a_later_phase_starts() {
+    let (f, client) = ready();
+    let (project, thread) = thread_in_new_project(f, client, true);
+    let mut scouts = follow(f, client, &scout(f), &project, None);
+
+    let hidden = post(f, client, &critic(f), &project, &thread, "critic");
+    let humans = post(f, client, &human(f), &project, &thread, "human");
+    let to_scout = scouts.drain();
+    assert_eq!(
+        created_posts(&to_scout),
+        ids_of(&[&humans]),
+        "before the next phase, the scout's socket gets the human's post only"
+    );
+    let resume_from = newest_seq(&to_scout);
+
+    // Whatever phase follows, the earlier one's posts are visible.
+    start_phase(f, client, &project, &thread, true);
+    let to_scout = scouts.drain();
+    assert!(
+        to_scout.iter().any(|e| e["event"] == "phase.started"),
+        "the scout's socket gets the new phase: {to_scout:?}"
+    );
+    assert_eq!(
+        times_created(&to_scout, &hidden.id),
+        1,
+        "once a later phase started, the withheld event of the critic's post \
+         reaches the scout's open socket, once: {to_scout:?}"
+    );
+
+    let replayed = follow(f, client, &scout(f), &project, Some(resume_from)).drain();
+    assert_eq!(
+        times_created(&replayed, &hidden.id),
+        1,
+        "a resume from the scout's last sequence number includes the critic's \
+         post: {replayed:?}"
+    );
+
+    // Nothing is delivered twice: the next event is the next one only.
+    let later = post(f, client, &critic(f), &project, &thread, "critic phase 2");
+    let to_scout = scouts.drain();
+    assert!(
+        !names_post(&to_scout, &hidden.id),
+        "the critic's first post is not delivered again: {to_scout:?}"
+    );
+    assert!(
+        !names_post(&to_scout, &later.id),
+        "the critic's post of the new sealed phase is hidden again: {to_scout:?}"
+    );
+}
+
+#[test]
+fn agent_requests_that_read_or_write_posts_need_a_run_and_a_role() {
+    let (f, client) = ready();
+    let (project, thread) = thread_in_new_project(f, client, true);
+    let hidden = post(f, client, &critic(f), &project, &thread, "critic");
+    let humans = post(f, client, &human(f), &project, &thread, "human");
+
+    // Two agents without an identity would share one view of the phase: once
+    // one of them posted, the other would read what the critic wrote.
+    let first = Auth::Partial {
+        key: &f.key,
+        run: None,
+        role: None,
+    };
+    let second = Auth::Partial {
+        key: &f.key,
+        run: None,
+        role: None,
+    };
+    let run_only = Auth::Partial {
+        key: &f.key,
+        run: Some("run-1"),
+        role: None,
+    };
+    let role_only = Auth::Partial {
+        key: &f.key,
+        run: None,
+        role: Some("scout"),
+    };
+    let path = format!("{}/posts", thread_path(f, &project, &thread));
+    let before = posts_in(&thread);
+    for (auth, who) in [
+        (&first, "the first agent without an identity"),
+        (&second, "the second agent without an identity"),
+        (&run_only, "an agent with a run and no role"),
+        (&role_only, "an agent with a role and no run"),
+    ] {
+        let request = json!({
+            "type": "position",
+            "summary": unique("An unidentified position"),
+            "body": "Mine."
+        });
+        let posted = call(client, "POST", &path, auth, Some(&request));
+        assert_eq!(posted.status, 400, "{who} posts: {}", posted.text());
+        assert_eq!(posts_in(&thread), before, "{who}: nothing was recorded");
+
+        for (response, what) in [
+            (
+                read_thread(f, client, auth, &project, &thread),
+                "reads the thread",
+            ),
+            (
+                read_digest(f, client, auth, &project, &thread),
+                "reads the digest",
+            ),
+            (
+                read_post(f, client, auth, &project, &humans.id),
+                "reads the human's post",
+            ),
+            (
+                read_post(f, client, auth, &project, &hidden.id),
+                "reads the critic's post",
+            ),
+        ] {
+            let text = response.text();
+            assert_eq!(response.status, 400, "{who} {what}: {text}");
+            assert!(
+                response.json()["error"].is_string(),
+                "{who} {what}: the answer is an error: {text}"
+            );
+            assert_nothing_of(&text, &hidden, &format!("{who} {what}"));
+        }
+    }
+
+    // With both, an agent reads and posts as before, and the human needs none.
+    assert_eq!(
+        seen_in_thread(f, client, &scout(f), &project, &thread),
+        ids_of(&[&humans]),
+        "the scout, with a run and a role"
+    );
+    post(f, client, &scout(f), &project, &thread, "scout");
+    assert_eq!(
+        seen_in_thread(f, client, &human(f), &project, &thread).len(),
+        3,
+        "the human reads every post without an identity"
+    );
+}
+
+#[test]
+fn a_directive_link_to_a_post_hidden_from_the_agent_shows_nowhere_in_its_answers() {
+    let (f, client) = ready();
+    let (project, thread) = thread_in_new_project(f, client, true);
+    let changeset = must(
+        read_thread(f, client, &human(f), &project, &thread),
+        200,
+        "the human reads the thread",
+    )["thread"]["changeset_id"]
+        .as_str()
+        .expect("the thread has a change set")
+        .to_string();
+    let mut scouts = follow(f, client, &scout(f), &project, None);
+    let hidden = post(f, client, &critic(f), &project, &thread, "critic");
+
+    let pointer = json!({ "kind": "post", "post_id": hidden.id });
+    let source = json!({ "kind": "url", "url": "https://example.test/brief" });
+    let directive = id_of(
+        &must(
+            call(
+                client,
+                "POST",
+                &format!("{}/directives", thread_path(f, &project, &thread)),
+                &human(f),
+                Some(&json!({
+                    "summary": unique("Weigh the critic's point"),
+                    "body": "Answer the critic before you decide.",
+                    "links": [pointer, source]
+                })),
+            ),
+            201,
+            "the human posts a directive that links to the critic's post",
+        )["post"],
+    );
+    let given_to = |answer: &Value, who: &str| -> Value {
+        let given = answer["directives"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{who} is given the directive: {answer}"));
+        let entry = given
+            .iter()
+            .find(|d| id_of(d) == directive)
+            .unwrap_or_else(|| panic!("{who} is given the directive: {answer}"));
+        entry["links"].clone()
+    };
+
+    // The thread read, which also gives the scout the directive.
+    let response = read_thread(f, client, &scout(f), &project, &thread);
+    let text = response.text();
+    let answer = must(response, 200, "the scout reads the thread");
+    assert_eq!(
+        given_to(&answer, "the scout"),
+        json!([source]),
+        "the given directive keeps the web source only"
+    );
+    let shown = thread_posts(&answer)
+        .into_iter()
+        .find(|p| id_of(p) == directive)
+        .unwrap_or_else(|| panic!("the directive shows in the thread: {answer}"));
+    assert_eq!(shown["links"], json!([source]), "{shown}");
+    assert_nothing_of(&text, &hidden, "the scout's thread read");
+
+    // A change set request of another agent, which is given it there.
+    let builder = agent_as(f, "run-1", "builder");
+    let response = call(
+        client,
+        "GET",
+        &format!("{}/changesets/{changeset}", project_base(f, &project)),
+        &builder,
+        None,
+    );
+    let text = response.text();
+    let answer = must(response, 200, "the builder reads the change set");
+    assert_eq!(given_to(&answer, "the builder"), json!([source]));
+    assert_nothing_of(&text, &hidden, "the builder's change set read");
+
+    // The single post read and the digest.
+    let response = read_post(f, client, &builder, &project, &directive);
+    let text = response.text();
+    let answer = must(response, 200, "the builder reads the directive");
+    assert_eq!(answer["post"]["links"], json!([source]), "{answer}");
+    assert_nothing_of(&text, &hidden, "the builder's read of the directive");
+    let response = read_digest(f, client, &builder, &project, &thread);
+    let text = response.text();
+    must(response, 200, "the builder reads the digest");
+    assert!(
+        text.contains(&directive),
+        "the digest lists the directive: {text}"
+    );
+    assert_nothing_of(&text, &hidden, "the builder's digest");
+
+    // The live events.
+    let to_scout = scouts.drain();
+    assert!(
+        created_posts(&to_scout).contains(&directive),
+        "the scout's socket gets the directive: {to_scout:?}"
+    );
+    assert_nothing_of(
+        &serde_json::to_string(&to_scout).expect("events as JSON"),
+        &hidden,
+        "the scout's live events",
+    );
+
+    // The human sees the link.
+    let read = must(
+        read_post(f, client, &human(f), &project, &directive),
+        200,
+        "the human reads the directive",
+    );
+    assert_eq!(read["post"]["links"], json!([pointer, source]), "{read}");
+}
+
+/// `src/live.rs` without its comments.
+fn live_source() -> String {
+    include_str!("../src/live.rs")
+        .lines()
+        .map(|line| line.split_once("//").map_or(line, |(code, _)| code))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[test]
+fn the_live_event_filter_compares_post_ids_as_uuids_within_the_workspace() {
+    let source = live_source();
+    let start = source
+        .find("async fn read_events")
+        .expect("src/live.rs reads the events with `read_events`");
+    let body = &source[start..];
+    let body = &body[..body.find("\n}\n").map_or(body.len(), |end| end)];
+    assert!(
+        !body.contains("id::text"),
+        "the filter casts no post ID to text, so it can use the index of \
+         posts:\n{body}"
+    );
+    assert!(
+        body.contains("'post_id')::uuid") || body.contains("'post_id' AS uuid"),
+        "the filter reads the event's post ID as a UUID:\n{body}"
+    );
+    let posts = body
+        .find("FROM posts")
+        .map(|at| &body[at..])
+        .unwrap_or_else(|| panic!("the filter looks the post up in posts:\n{body}"));
+    assert!(
+        posts.contains("workspace_id"),
+        "the filter looks the post up within the event's workspace:\n{body}"
     );
 }
