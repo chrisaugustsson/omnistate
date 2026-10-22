@@ -259,10 +259,20 @@ enum Auth<'a> {
 impl Auth<'_> {
     fn headers(&self) -> Vec<(&'static str, String)> {
         let key = |secret: &str| ("Authorization", format!("Bearer {secret}"));
+        // An agent declares its run and role, which its socket needs, since
+        // the events name posts (US-055).
+        let identity = || {
+            vec![
+                ("X-Omni-Run", "run-1".to_string()),
+                ("X-Omni-Role", "agent".to_string()),
+            ]
+        };
         match self {
-            Auth::Key(secret) => vec![key(secret)],
+            Auth::Key(secret) => [vec![key(secret)], identity()].concat(),
             Auth::Session(token) => vec![("Cookie", cookie(token))],
-            Auth::KeyAndSession(secret, token) => vec![key(secret), ("Cookie", cookie(token))],
+            Auth::KeyAndSession(secret, token) => {
+                [vec![key(secret), ("Cookie", cookie(token))], identity()].concat()
+            }
             Auth::Nobody => vec![],
         }
     }

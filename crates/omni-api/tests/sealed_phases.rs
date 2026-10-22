@@ -67,7 +67,10 @@
 //!   the single post read and posting) need both `X-Omni-Run` and
 //!   `X-Omni-Role`; an API key without both is answered 400, so agents
 //!   without an identity never share one view of a sealed phase. The error
-//!   code is not pinned. The human needs no identity.
+//!   code is not pinned. The human needs no identity. The workspace socket,
+//!   whose events name posts, is such a read too: a handshake with an API key
+//!   and without both headers is answered 400 instead of switching protocols.
+//!   Decisions are left to US-056.
 //! - A directive of the human that links to a post hidden from the agent
 //!   gives away neither the link nor the post's ID in any answer to the
 //!   agent: the thread read, the `directives` of a change set request, the
@@ -647,6 +650,15 @@ struct Ws {
 impl Ws {
     /// Opens the socket of the workspace as `auth`, which must work.
     fn open(client: &Client, workspace: &str, auth: &Auth) -> Ws {
+        match Ws::try_open(client, workspace, auth) {
+            Ok(ws) => ws,
+            Err(head) => panic!("the socket should open: {head}"),
+        }
+    }
+
+    /// Opens the socket of the workspace as `auth`, or gives the head and
+    /// body of the answer when the server does not switch protocols.
+    fn try_open(client: &Client, workspace: &str, auth: &Auth) -> Result<Ws, String> {
         let path = format!("/ws/w/{workspace}");
         let stream = TcpStream::connect(("127.0.0.1", client.port())).expect("connect");
         let mut ws = Ws {
@@ -680,16 +692,20 @@ impl Ws {
             }
         };
         let head = String::from_utf8_lossy(&ws.buffer[..split]).into_owned();
-        assert!(
-            head.starts_with("HTTP/1.1 101"),
-            "the socket should open: {head}"
-        );
+        if !head.starts_with("HTTP/1.1 101") {
+            // Whatever of the body arrives soon is enough to tell the error.
+            let deadline = Instant::now() + Duration::from_millis(500);
+            while let Arrived::Data(bytes) = ws.read_some(deadline) {
+                ws.buffer.extend(bytes);
+            }
+            return Err(String::from_utf8_lossy(&ws.buffer).into_owned());
+        }
         assert!(
             head.contains(HANDSHAKE_ACCEPT),
             "the accept value of the handshake: {head}"
         );
         ws.buffer.drain(..split + 4);
-        ws
+        Ok(ws)
     }
 
     /// Reads whatever arrives before `deadline`.
@@ -1575,6 +1591,73 @@ fn agent_requests_that_read_or_write_posts_need_a_run_and_a_role() {
         seen_in_thread(f, client, &human(f), &project, &thread).len(),
         3,
         "the human reads every post without an identity"
+    );
+}
+
+#[test]
+fn an_agent_socket_needs_a_run_and_a_role() {
+    let (f, client) = ready();
+    let (project, thread) = thread_in_new_project(f, client, true);
+
+    // Two agents without an identity would share one view of the phase on
+    // their sockets as well: once one of them posted, the other would get the
+    // events of what the critic wrote.
+    let first = Auth::Partial {
+        key: &f.key,
+        run: None,
+        role: None,
+    };
+    let second = Auth::Partial {
+        key: &f.key,
+        run: None,
+        role: None,
+    };
+    let run_only = Auth::Partial {
+        key: &f.key,
+        run: Some("run-1"),
+        role: None,
+    };
+    let role_only = Auth::Partial {
+        key: &f.key,
+        run: None,
+        role: Some("scout"),
+    };
+    for (auth, who) in [
+        (&first, "the first agent without an identity"),
+        (&second, "the second agent without an identity"),
+        (&run_only, "an agent with a run and no role"),
+        (&role_only, "an agent with a role and no run"),
+    ] {
+        match Ws::try_open(client, &f.workspace, auth) {
+            Ok(mut ws) => {
+                ws.subscribe(&project, None);
+                let hidden = post(f, client, &critic(f), &project, &thread, "critic");
+                let events = ws.drain();
+                panic!(
+                    "{who} opened the socket (the critic's post {} reached it: {}): {events:?}",
+                    hidden.id,
+                    names_post(&events, &hidden.id)
+                );
+            }
+            Err(answer) => {
+                assert!(
+                    answer.starts_with("HTTP/1.1 400"),
+                    "{who} is refused before the upgrade with a 400: {answer}"
+                );
+            }
+        }
+    }
+
+    // With both, an agent opens its socket as before, and the human needs none.
+    let mut scouts = follow(f, client, &scout(f), &project, None);
+    let mut humans = follow(f, client, &human(f), &project, None);
+    let hidden = post(f, client, &critic(f), &project, &thread, "critic");
+    let to_human = humans.drain();
+    assert_eq!(times_created(&to_human, &hidden.id), 1, "{to_human:?}");
+    let to_scout = scouts.drain();
+    assert!(
+        !names_post(&to_scout, &hidden.id),
+        "the scout does not get the critic's post: {to_scout:?}"
     );
 }
 
