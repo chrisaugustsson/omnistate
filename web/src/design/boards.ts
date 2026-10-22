@@ -110,10 +110,12 @@ export const PLACEHOLDER_FILL = "#e4e4e7";
  * loaded yet: a box with the board's ID, name, place and size (the API gives a
  * board that hugs its content the size of that content) and its rounding, so
  * that its label and its room on the canvas are the board's, filled with
- * `PLACEHOLDER_FILL` instead of the board's own look.
+ * `PLACEHOLDER_FILL` instead of the board's own look. Its layout is `none`:
+ * the renderer refuses a board without a layout, and a board with no children
+ * needs no other.
  */
 export function placeholderOf(board: Json): Json {
-  const kept: Json = { fills: [{ type: "solid", color: PLACEHOLDER_FILL }] };
+  const kept: Json = { layout: { mode: "none" }, fills: [{ type: "solid", color: PLACEHOLDER_FILL }] };
   for (const key of ["id", "type", "name", "x", "y", "width", "height", "visible", "radius"]) {
     if (key in board) kept[key] = board[key];
   }
