@@ -317,7 +317,7 @@ async fn hide_unseen_posts(
 
 /// The decision with this ID in the project as `viewer` reads it, 404 when the
 /// project has none.
-async fn load_decision(
+pub(crate) async fn load_decision(
     tx: &mut Transaction<'static, Postgres>,
     viewer: &Viewer,
     project_id: &str,

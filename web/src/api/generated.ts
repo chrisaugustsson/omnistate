@@ -706,6 +706,33 @@ export const ResolveConflictRequestSchema = z.object({
 });
 export type ResolveConflictRequest = z.infer<typeof ResolveConflictRequestSchema>;
 
+export const ReviewChangesSchema = z.object({
+  added: z.array(NodeEntrySchema),
+  changed: z.array(NodeEntrySchema),
+  moved: z.array(MovedNodeSchema),
+  removed: z.array(NodeEntrySchema),
+});
+export type ReviewChanges = z.infer<typeof ReviewChangesSchema>;
+
+export const ReviewedDocSchema = z.object({
+  base_version_id: z.string().nullable().optional(),
+  changes: ReviewChangesSchema,
+  doc_id: z.string(),
+  kind: z.string(),
+  module: z.string(),
+  removed: z.boolean(),
+  title: z.string(),
+  version_id: z.string(),
+});
+export type ReviewedDoc = z.infer<typeof ReviewedDocSchema>;
+
+export const ReviewResponseSchema = z.object({
+  changeset: ChangesetBodySchema,
+  decisions: z.array(DecisionBodySchema),
+  docs: z.array(ReviewedDocSchema),
+});
+export type ReviewResponse = z.infer<typeof ReviewResponseSchema>;
+
 export const SaveVersionRequestSchema = z.object({
   remove_commented: z.boolean().nullable().optional(),
 });
@@ -916,6 +943,9 @@ export const schemas = {
   ReplyBody: ReplyBodySchema,
   ReplyRequest: ReplyRequestSchema,
   ResolveConflictRequest: ResolveConflictRequestSchema,
+  ReviewChanges: ReviewChangesSchema,
+  ReviewResponse: ReviewResponseSchema,
+  ReviewedDoc: ReviewedDocSchema,
   SaveVersionRequest: SaveVersionRequestSchema,
   SingleCommentResponse: SingleCommentResponseSchema,
   SinglePostResponse: SinglePostResponseSchema,
@@ -1231,6 +1261,14 @@ export const operations = {
       "403": ErrorBodySchema,
       "404": ErrorBodySchema,
       "409": ErrorBodySchema,
+    },
+  },
+  "GET /api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/review": {
+    responses: {
+      "200": ReviewResponseSchema,
+      "401": ErrorBodySchema,
+      "403": ErrorBodySchema,
+      "404": ErrorBodySchema,
     },
   },
   "POST /api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/submit": {

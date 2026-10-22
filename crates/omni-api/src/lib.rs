@@ -23,6 +23,7 @@ pub mod live;
 pub mod openapi;
 pub mod password;
 mod rebase;
+mod review;
 pub mod routes;
 mod session;
 pub mod setup;
@@ -288,6 +289,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}",
             get(changesets::show_changeset),
+        )
+        .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/review",
+            get(review::show),
         )
         .route(
             "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/submit",

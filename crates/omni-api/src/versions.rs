@@ -1041,7 +1041,7 @@ pub async fn diff_versions(
 
 /// The differences between the nodes of two versions, each list in the document
 /// order of the version it is read from.
-fn compare(
+pub(crate) fn compare(
     doc_id: String,
     from: String,
     to: String,

@@ -162,13 +162,20 @@ function Docs({ docs }: { docs: DocBody[] }) {
 }
 
 function ChangeSets({ home }: { home: HomeResponse }) {
+  const { workspaceId, projectId } = Route.useParams();
   return (
     <Section id="changesets" title="Change sets">
       {home.changesets.length === 0 && <Empty>The project has no change sets yet.</Empty>}
       <ul className="divide-y rounded-md border empty:hidden">
         {home.changesets.map((changeset) => (
           <li key={changeset.id} className="flex items-center justify-between gap-3 px-4 py-2 text-sm">
-            <span>{changeset.title}</span>{" "}
+            <Link
+              to="/w/$workspaceId/projects/$projectId/changesets/$changesetId"
+              params={{ workspaceId, projectId, changesetId: changeset.id }}
+              className="underline-offset-4 hover:underline"
+            >
+              {changeset.title}
+            </Link>{" "}
             <span className="rounded-full border px-2 py-0.5 text-xs text-muted-foreground">
               {statusWords(changeset.status)}
             </span>

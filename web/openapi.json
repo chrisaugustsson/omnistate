@@ -2464,6 +2464,119 @@
         },
         "type": "object"
       },
+      "ReviewChanges": {
+        "description": "The node changes of one doc, as the diff route lists them.",
+        "properties": {
+          "added": {
+            "description": "The nodes only the new version has; all of them for a new doc.",
+            "items": {
+              "$ref": "#/components/schemas/NodeEntry"
+            },
+            "type": "array"
+          },
+          "changed": {
+            "description": "The nodes of both whose own content differs, as in the new version.",
+            "items": {
+              "$ref": "#/components/schemas/NodeEntry"
+            },
+            "type": "array"
+          },
+          "moved": {
+            "description": "The nodes of both whose place differs.",
+            "items": {
+              "$ref": "#/components/schemas/MovedNode"
+            },
+            "type": "array"
+          },
+          "removed": {
+            "description": "The nodes only the base has; all of them for a removal.",
+            "items": {
+              "$ref": "#/components/schemas/NodeEntry"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "added",
+          "removed",
+          "changed",
+          "moved"
+        ],
+        "type": "object"
+      },
+      "ReviewResponse": {
+        "properties": {
+          "changeset": {
+            "$ref": "#/components/schemas/ChangesetBody"
+          },
+          "decisions": {
+            "description": "The decisions linked to the change set, in the order they were linked,\nwith their status now.",
+            "items": {
+              "$ref": "#/components/schemas/DecisionBody"
+            },
+            "type": "array"
+          },
+          "docs": {
+            "description": "Every doc with a version saved in the change set, oldest doc first.",
+            "items": {
+              "$ref": "#/components/schemas/ReviewedDoc"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "changeset",
+          "docs",
+          "decisions"
+        ],
+        "type": "object"
+      },
+      "ReviewedDoc": {
+        "description": "One doc that the change set changes.",
+        "properties": {
+          "base_version_id": {
+            "description": "The version that the change set's draft is based on: the mainline\nversion it was opened from or last rebased onto; `null` for a doc that\nthe change set created.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "changes": {
+            "$ref": "#/components/schemas/ReviewChanges"
+          },
+          "doc_id": {
+            "type": "string"
+          },
+          "kind": {
+            "description": "`html`, `design` or `design-system`.",
+            "type": "string"
+          },
+          "module": {
+            "type": "string"
+          },
+          "removed": {
+            "description": "Whether that version removes the doc.",
+            "type": "boolean"
+          },
+          "title": {
+            "type": "string"
+          },
+          "version_id": {
+            "description": "The latest version of the doc saved in the change set, the one that an\napproval covers.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "doc_id",
+          "kind",
+          "module",
+          "title",
+          "version_id",
+          "removed",
+          "changes"
+        ],
+        "type": "object"
+      },
       "SaveVersionRequest": {
         "description": "What saving a version takes: nothing, but the body must be a JSON object.\nA version that drops a node with an open comment is refused unless the body\nsays `remove_commented`.",
         "properties": {
@@ -6171,6 +6284,87 @@
           "crate::changesets"
         ],
         "x-omni-access": "agent"
+      }
+    },
+    "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/review": {
+      "get": {
+        "operationId": "show",
+        "parameters": [
+          {
+            "description": "The workspace's UUID",
+            "in": "path",
+            "name": "workspace_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The project's UUID",
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The change set's UUID",
+            "in": "path",
+            "name": "changeset_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewResponse"
+                }
+              }
+            },
+            "description": "The change set review"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No valid session"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Called with an API key; human only"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No such change set in this project and workspace"
+          }
+        },
+        "summary": "The review of a change set: the docs it changes and how, and its linked\ndecisions. Only the human reads it.",
+        "tags": [
+          "crate::review"
+        ],
+        "x-omni-access": "human"
       }
     },
     "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/submit": {

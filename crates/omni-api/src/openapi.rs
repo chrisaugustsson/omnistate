@@ -34,6 +34,7 @@ use crate::rebase::{
     ConflictKind, ConflictResolution, ConflictSide, RebaseResponse, RecordedConflict,
     RecordedConflictListResponse, RecordedConflictResponse, ResolveConflictRequest,
 };
+use crate::review::{ReviewChanges, ReviewResponse, ReviewedDoc};
 use crate::routes::{Access, registry};
 use crate::session::{
     ErrorBody, LoginRequest, UserBody, UserResponse, WorkspaceBody, WorkspaceListResponse,
@@ -79,6 +80,7 @@ use utoipa::OpenApi;
         crate::changesets::list_changesets,
         crate::changesets::create_changeset,
         crate::changesets::show_changeset,
+        crate::review::show,
         crate::changesets::submit,
         crate::changesets::reject,
         crate::changesets::approve,
@@ -239,6 +241,9 @@ use utoipa::OpenApi;
         ReplyRequest,
         AddressedRequest,
         WaitingBody,
+        ReviewChanges,
+        ReviewedDoc,
+        ReviewResponse,
         HomeResponse
     ))
 )]

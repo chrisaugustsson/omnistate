@@ -70,6 +70,11 @@ pub fn registry() -> Vec<RouteEntry> {
             Access::Both,
         ),
         (
+            "GET",
+            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/review",
+            Access::Human,
+        ),
+        (
             "POST",
             "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/submit",
             Access::Agent,

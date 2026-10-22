@@ -30,6 +30,9 @@ body { position: relative; padding: 1.5rem 3.5rem 4rem; }
   outline-offset: 2px;
   background-image: linear-gradient(rgba(9, 105, 218, 0.14), rgba(9, 105, 218, 0.14));
 }
+.omni-doc [data-node-id].is-added { background-color: rgba(26, 127, 55, 0.2); }
+.omni-doc [data-node-id].is-changed { background-color: rgba(212, 167, 44, 0.3); }
+.omni-doc [data-node-id].is-removed { background-color: rgba(207, 34, 46, 0.2); text-decoration: line-through; }
 .omni-mermaid svg { max-width: 100%; height: auto; }
 #pins { position: absolute; top: 0; left: 0; width: 0; height: 0; }
 .omni-pin {

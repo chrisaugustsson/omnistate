@@ -11,13 +11,15 @@
 // - to the page: `viewer.ready` once the script runs, and `viewer.select` with
 //   the node ID of the innermost block that the reviewer clicked;
 // - from the page: `viewer.show` with the doc's `html`, the `pins`
-//   (`[{ node, count }]`), the `selected` node and the live `claims`.
+//   (`[{ node, count }]`), the `selected` node, the live `claims` and, for a
+//   change set's review, the `changes` (`[{ node, change }]`, `change` being
+//   `added`, `changed` or `removed`), which the frame marks block by block.
 export const FRAME_SCRIPT = String.raw`(function () {
   "use strict";
   var page = window.parent;
   var doc = document.getElementById("doc");
   var pinLayer = document.getElementById("pins");
-  var shown = { html: null, pins: [], selected: null, claims: [] };
+  var shown = { html: null, pins: [], selected: null, claims: [], changes: [] };
   var hovered = null;
   var drawn = {};
   var counter = 0;
@@ -126,6 +128,15 @@ export const FRAME_SCRIPT = String.raw`(function () {
       block.classList.remove("is-selected", "is-claimed");
       block.removeAttribute("title");
     });
+    Array.prototype.forEach.call(doc.querySelectorAll(".is-added, .is-changed, .is-removed"), function (block) {
+      block.classList.remove("is-added", "is-changed", "is-removed");
+    });
+    shown.changes.forEach(function (entry) {
+      var block = entry && find(entry.node);
+      if (block && (entry.change === "added" || entry.change === "changed" || entry.change === "removed")) {
+        block.classList.add("is-" + entry.change);
+      }
+    });
     var selected = shown.selected && find(shown.selected);
     if (selected) selected.classList.add("is-selected");
     shown.claims.forEach(function (claim) {
@@ -141,6 +152,7 @@ export const FRAME_SCRIPT = String.raw`(function () {
     shown.pins = Array.isArray(message.pins) ? message.pins : [];
     shown.selected = typeof message.selected === "string" ? message.selected : null;
     shown.claims = Array.isArray(message.claims) ? message.claims : [];
+    shown.changes = Array.isArray(message.changes) ? message.changes : [];
     if (typeof message.html === "string" && message.html !== shown.html) {
       shown.html = message.html;
       doc.replaceChildren.apply(doc, Array.from(parse(message.html).childNodes));

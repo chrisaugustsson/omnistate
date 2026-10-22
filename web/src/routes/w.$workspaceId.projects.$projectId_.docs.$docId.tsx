@@ -23,15 +23,10 @@ import {
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
+import { useReloading, type Reloading } from "@/lib/reloading";
 import { useProjectEvents } from "@/live/context";
-import { viewerDocument } from "@/viewer/document";
-import {
-  attachmentIds,
-  blockIds,
-  blockText,
-  loadAttachmentImage,
-  withAttachmentImages,
-} from "@/viewer/html";
+import { ViewerFrame } from "@/viewer/frame";
+import { blockIds, blockText } from "@/viewer/html";
 
 // The doc viewer is where the reviewer reads an HTML doc and comments on its
 // blocks. The doc is shown in a sandboxed frame (src/viewer/document.ts) that
@@ -63,39 +58,6 @@ const SELECT_CLASS =
   "h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-xs outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50";
 
 const DRAFT_PREFIX = "draft:";
-
-/** Loads a value, and again after each call of `reload`; an answer that is no longer the newest is dropped. */
-function useReloading<T>(load: () => Promise<T>) {
-  const [value, setValue] = useState<T | null>(null);
-  const [failed, setFailed] = useState(false);
-  const newest = useRef(0);
-
-  const reload = useCallback(() => {
-    newest.current += 1;
-    const mine = newest.current;
-    load().then(
-      (loaded) => {
-        if (mine !== newest.current) return;
-        setValue(loaded);
-        setFailed(false);
-      },
-      () => {
-        if (mine === newest.current) setFailed(true);
-      },
-    );
-  }, [load]);
-
-  useEffect(() => {
-    setValue(null);
-    reload();
-    return () => {
-      newest.current += 1;
-    };
-  }, [reload]);
-  return { value, failed, reload };
-}
-
-type Reloading<T> = ReturnType<typeof useReloading<T>>;
 
 function holderOfComment(author: Record<string, unknown>): string {
   return author.kind === "human" ? "Reviewer" : `${String(author.run)}/${String(author.role)}`;
@@ -352,76 +314,6 @@ function HtmlDocViewer({
         </>
       )}
     </main>
-  );
-}
-
-/** The sandboxed frame that shows the doc, and the messages between it and the page. */
-function ViewerFrame({
-  workspaceId,
-  html,
-  pins,
-  selected,
-  claims,
-  onSelect,
-}: {
-  workspaceId: string;
-  html: string | null;
-  pins: { node: string; count: number }[];
-  selected: string | null;
-  claims: ClaimBody[];
-  onSelect: (node: string) => void;
-}) {
-  const frame = useRef<HTMLIFrameElement>(null);
-  const [ready, setReady] = useState(0);
-  const srcDoc = useMemo(() => viewerDocument({ workspaceId, origin: window.location.origin }), [workspaceId]);
-  const onSelectRef = useRef(onSelect);
-  useEffect(() => {
-    onSelectRef.current = onSelect;
-  });
-
-  // Images of attachments are read with the reviewer's session and given to
-  // the frame as data: URLs, because the frame's own requests carry no session.
-  const [images, setImages] = useState<Record<string, string>>({});
-  const requested = useRef(new Set<string>());
-  useEffect(() => {
-    for (const id of html ? attachmentIds(html) : []) {
-      if (requested.current.has(id)) continue;
-      requested.current.add(id);
-      loadAttachmentImage(workspaceId, id).then(
-        (url) => setImages((previous) => ({ ...previous, [id]: url })),
-        () => requested.current.delete(id),
-      );
-    }
-  }, [html, workspaceId]);
-  const shown = useMemo(() => (html === null ? null : withAttachmentImages(html, images)), [html, images]);
-
-  useEffect(() => {
-    const onMessage = (event: MessageEvent) => {
-      if (!frame.current || event.source !== frame.current.contentWindow) return;
-      const message = event.data as { type?: unknown; node?: unknown } | null;
-      if (message?.type === "viewer.ready") setReady((count) => count + 1);
-      else if (message?.type === "viewer.select" && typeof message.node === "string") {
-        onSelectRef.current(message.node);
-      }
-    };
-    window.addEventListener("message", onMessage);
-    return () => window.removeEventListener("message", onMessage);
-  }, []);
-
-  useEffect(() => {
-    if (shown === null || !ready) return;
-    // The frame's origin is opaque, so "*" is the only target a page can name.
-    frame.current?.contentWindow?.postMessage({ type: "viewer.show", html: shown, pins, selected, claims }, "*");
-  }, [shown, pins, selected, claims, ready]);
-
-  return (
-    <iframe
-      ref={frame}
-      title="Doc"
-      sandbox="allow-scripts"
-      srcDoc={srcDoc}
-      className="h-[75vh] w-full rounded-md border bg-white"
-    />
   );
 }
 
