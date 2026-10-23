@@ -405,7 +405,7 @@ fn create_doc(
     project: &str,
     changeset: &str,
     kind: &str,
-    module: &str,
+    pillar: &str,
 ) -> String {
     id_of(
         &must(
@@ -414,7 +414,7 @@ fn create_doc(
                 "POST",
                 &format!("{}/docs", changeset_path(f, project, changeset)),
                 &agent(f),
-                Some(&json!({ "kind": kind, "module": module, "title": unique("doc") })),
+                Some(&json!({ "kind": kind, "pillar": pillar, "title": unique("doc") })),
             ),
             201,
             "create a doc",
@@ -1353,7 +1353,7 @@ fn reading_a_board_of_what_is_no_design_or_has_no_such_version_is_refused() {
     );
 
     // An HTML doc has no boards.
-    let html = create_doc(f, client, &d.project, &d.changeset, "html", "prd");
+    let html = create_doc(f, client, &d.project, &d.changeset, "html", "spec");
     assert_error(
         &draft_board_response(f, client, &d.project, &d.changeset, &html, &cart),
         400,

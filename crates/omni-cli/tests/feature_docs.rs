@@ -1,10 +1,10 @@
-//! US-061: `omni doc list`, tested as the built `omni` against a mock HTTP
-//! server. None of these tests needs Postgres.
+//! US-061 and US-101: `omni doc list`, tested as the built `omni` against a
+//! mock HTTP server. None of these tests needs Postgres.
 //!
 //! The contract these tests pin down (the rest is the green step's choice):
 //!
 //! - `omni doc list` sends `GET .../projects/{project_id}/docs` and prints one
-//!   line per doc, `<id>  <scope>  <kind>  <module>  <title>` (two spaces
+//!   line per doc, `<id>  <scope>  <kind>  <pillar>  <title>` (two spaces
 //!   between the fields), where the scope is `project` for a global doc or the
 //!   name of the doc's feature. `--json` prints the API's answer.
 //! - `--feature <name or id>` sends `GET .../docs?feature=<id>` (a name is
@@ -12,6 +12,10 @@
 //!   `--global` sends `GET .../docs?feature=global`. A feature name the project
 //!   does not have is a one-line error that names it, and no list is asked
 //!   for.
+//! - `--pillar <pillar>` lists only the docs of that pillar, one of `spec`,
+//!   `ui`, `architecture`, `db` and `research` (with or without `--feature`);
+//!   the API's `GET .../docs?pillar=<pillar>` filters the same way. Any other
+//!   pillar is a one-line error that lists the five and asks for no list.
 //! - `omni --help` names `omni doc list`.
 
 mod common;
@@ -25,6 +29,8 @@ const SEARCH: &str = "01900000-0000-7000-8000-0000000000f2";
 const GLOBAL_DOC: &str = "01900000-0000-7000-8000-0000000000d1";
 const CHECKOUT_DOC: &str = "01900000-0000-7000-8000-0000000000d2";
 const SEARCH_DOC: &str = "01900000-0000-7000-8000-0000000000d3";
+const CHECKOUT_SPEC_DOC: &str = "01900000-0000-7000-8000-0000000000d4";
+const SEARCH_RESEARCH_DOC: &str = "01900000-0000-7000-8000-0000000000d5";
 
 fn projects_path() -> String {
     format!("/api/v1/w/{WORKSPACE}/projects")
@@ -49,13 +55,13 @@ fn feature_json(id: &str, name: &str) -> Value {
     })
 }
 
-fn doc_json(id: &str, feature: Value, kind: &str, module: &str, title: &str) -> Value {
+fn doc_json(id: &str, feature: Value, kind: &str, pillar: &str, title: &str) -> Value {
     json!({
         "id": id,
         "project_id": PROJECT,
         "feature_id": feature,
         "kind": kind,
-        "module": module,
+        "pillar": pillar,
         "title": title,
         "created_at": "2026-10-23T10:00:00.000000Z",
         "mainline_version_id": null,
@@ -66,7 +72,7 @@ fn doc_json(id: &str, feature: Value, kind: &str, module: &str, title: &str) -> 
 
 fn all_docs() -> Vec<Value> {
     vec![
-        doc_json(GLOBAL_DOC, Value::Null, "html", "prd", "Brand PRD"),
+        doc_json(GLOBAL_DOC, Value::Null, "html", "spec", "Brand PRD"),
         doc_json(
             CHECKOUT_DOC,
             json!(CHECKOUT),
@@ -75,13 +81,28 @@ fn all_docs() -> Vec<Value> {
             "Checkout architecture",
         ),
         doc_json(SEARCH_DOC, json!(SEARCH), "design", "ui", "Search screens"),
+        doc_json(
+            CHECKOUT_SPEC_DOC,
+            json!(CHECKOUT),
+            "html",
+            "spec",
+            "Checkout spec",
+        ),
+        doc_json(
+            SEARCH_RESEARCH_DOC,
+            json!(SEARCH),
+            "html",
+            "research",
+            "Search interviews",
+        ),
     ]
 }
 
 /// An API that knows the project `brand-site` with the features "Checkout"
-/// and "Search", and three docs: a global PRD, Checkout's architecture and
-/// Search's design. The list answers `?feature=<id>` and `?feature=global`
-/// with the matching docs only.
+/// and "Search", and five docs: a global spec, Checkout's architecture,
+/// Search's design, Checkout's spec and Search's research. The list answers
+/// `?feature=<id>`, `?feature=global` and `?pillar=<pillar>` (alone or
+/// together) with the matching docs only.
 fn mock() -> MockServer {
     MockServer::start(|request| {
         let path = request.path.as_str();
@@ -119,15 +140,33 @@ fn mock() -> MockServer {
             let listed: Vec<Value> = all_docs().into_iter().filter(|d| keep(d)).collect();
             Reply::json(200, &json!({ "docs": listed }))
         };
-        match rest {
-            "" => only(&|_| true),
-            "?feature=global" => only(&|d| d["feature_id"].is_null()),
-            rest if rest.starts_with("?feature=") => {
-                let feature = &rest["?feature=".len()..];
-                only(&|d| d["feature_id"] == feature)
+        let query = match rest {
+            "" => "",
+            rest if rest.starts_with('?') => &rest[1..],
+            _ => return Reply::json(404, &json!({ "error": "not_found" })),
+        };
+        let mut feature = None;
+        let mut pillar = None;
+        for pair in query.split('&').filter(|p| !p.is_empty()) {
+            match pair.split_once('=') {
+                Some(("feature", value)) => feature = Some(value.to_string()),
+                Some(("pillar", value)) => pillar = Some(value.to_string()),
+                _ => return Reply::json(400, &json!({ "error": "invalid_request" })),
             }
-            _ => Reply::json(404, &json!({ "error": "not_found" })),
         }
+        if let Some(pillar) = &pillar
+            && !["spec", "ui", "architecture", "db", "research"].contains(&pillar.as_str())
+        {
+            return Reply::json(400, &json!({ "error": "invalid_request" }));
+        }
+        only(&|d| {
+            let in_scope = match feature.as_deref() {
+                None => true,
+                Some("global") => d["feature_id"].is_null(),
+                Some(id) => d["feature_id"] == id,
+            };
+            in_scope && pillar.as_deref().is_none_or(|p| d["pillar"] == p)
+        })
     })
 }
 
@@ -191,7 +230,7 @@ fn doc_lists(server: &MockServer) -> usize {
 }
 
 fn global_line() -> String {
-    format!("{GLOBAL_DOC}  project  html  prd  Brand PRD")
+    format!("{GLOBAL_DOC}  project  html  spec  Brand PRD")
 }
 
 fn checkout_line() -> String {
@@ -202,8 +241,16 @@ fn search_line() -> String {
     format!("{SEARCH_DOC}  Search  design  ui  Search screens")
 }
 
+fn checkout_spec_line() -> String {
+    format!("{CHECKOUT_SPEC_DOC}  Checkout  html  spec  Checkout spec")
+}
+
+fn search_research_line() -> String {
+    format!("{SEARCH_RESEARCH_DOC}  Search  html  research  Search interviews")
+}
+
 #[test]
-fn doc_list_prints_the_scope_kind_module_and_title_of_each_doc() {
+fn doc_list_prints_the_scope_kind_pillar_and_title_of_each_doc() {
     let server = mock();
     let home = logged_in(&server.url);
     let out = run(&home, &["doc", "list", "--project", PROJECT]);
@@ -216,8 +263,14 @@ fn doc_list_prints_the_scope_kind_module_and_title_of_each_doc() {
     );
     assert_eq!(
         non_empty_lines(&out.stdout),
-        [global_line(), checkout_line(), search_line()],
-        "one `<id>  <scope>  <kind>  <module>  <title>` line per doc"
+        [
+            global_line(),
+            checkout_line(),
+            search_line(),
+            checkout_spec_line(),
+            search_research_line()
+        ],
+        "one `<id>  <scope>  <kind>  <pillar>  <title>` line per doc"
     );
 
     let json = run(&home, &["doc", "list", "--project", PROJECT, "--json"]);
@@ -250,7 +303,7 @@ fn doc_list_filters_by_feature_or_global() {
         );
         assert_eq!(
             non_empty_lines(&out.stdout),
-            [checkout_line()],
+            [checkout_line(), checkout_spec_line()],
             "--feature {feature} lists that feature's docs"
         );
     }
@@ -296,6 +349,75 @@ fn doc_list_of_an_unknown_feature_is_one_line_and_lists_nothing() {
     assert_eq!(
         doc_lists(&server),
         before,
+        "no list is asked for: {:?}",
+        server.requests()
+    );
+}
+
+#[test]
+fn doc_list_with_a_pillar_lists_only_that_pillars_docs() {
+    let server = mock();
+    let home = logged_in(&server.url);
+    for (pillar, lines) in [
+        ("spec", vec![global_line(), checkout_spec_line()]),
+        ("research", vec![search_research_line()]),
+        ("ui", vec![search_line()]),
+        ("db", vec![]),
+    ] {
+        let out = run(
+            &home,
+            &["doc", "list", "--pillar", pillar, "--project", PROJECT],
+        );
+        assert_eq!(out.code, 0, "--pillar {pillar}: {}", out.stderr);
+        assert_eq!(
+            non_empty_lines(&out.stdout)
+                .into_iter()
+                .filter(|line| line.starts_with("01900000-"))
+                .collect::<Vec<_>>(),
+            lines,
+            "--pillar {pillar} lists only that pillar's docs: {:?}",
+            out.stdout
+        );
+    }
+
+    let out = run(
+        &home,
+        &[
+            "doc",
+            "list",
+            "--pillar",
+            "spec",
+            "--feature",
+            "Checkout",
+            "--project",
+            PROJECT,
+        ],
+    );
+    assert_eq!(out.code, 0, "--pillar with --feature: {}", out.stderr);
+    assert_eq!(
+        non_empty_lines(&out.stdout),
+        [checkout_spec_line()],
+        "--pillar spec --feature Checkout lists Checkout's spec docs"
+    );
+}
+
+#[test]
+fn doc_list_refuses_a_pillar_that_is_not_one_of_the_five() {
+    let server = mock();
+    let home = logged_in(&server.url);
+    for pillar in ["other", "prd"] {
+        let out = run(
+            &home,
+            &["doc", "list", "--pillar", pillar, "--project", PROJECT],
+        );
+        assert_one_line_error(
+            &out,
+            &[pillar, "spec", "ui", "architecture", "db", "research"],
+        );
+    }
+    assert_eq!(
+        doc_lists(&server),
+        0,
         "no list is asked for: {:?}",
         server.requests()
     );

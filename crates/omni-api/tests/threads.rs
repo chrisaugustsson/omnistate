@@ -575,7 +575,7 @@ fn merge(f: &Fixture, client: &Client, project: &str, changeset: &str) {
                 "POST",
                 &format!("{path}/docs"),
                 &agent(f),
-                Some(&json!({ "kind": "html", "module": "prd", "title": unique("Plan") })),
+                Some(&json!({ "kind": "html", "pillar": "spec", "title": unique("Plan") })),
             ),
             201,
             "create a doc",

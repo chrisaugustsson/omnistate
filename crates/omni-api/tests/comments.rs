@@ -458,7 +458,7 @@ fn create_doc(
     project: &str,
     changeset: &str,
     kind: &str,
-    module: &str,
+    pillar: &str,
 ) -> String {
     id_of(
         &must(
@@ -467,7 +467,7 @@ fn create_doc(
                 "POST",
                 &format!("{}/docs", changeset_path(f, project, changeset)),
                 &author(f),
-                Some(&json!({ "kind": kind, "module": module, "title": unique("Doc") })),
+                Some(&json!({ "kind": kind, "pillar": pillar, "title": unique("Doc") })),
             ),
             201,
             "create a doc",
@@ -664,7 +664,7 @@ struct Paper {
 
 fn paper_in(f: &Fixture, client: &Client, project: &str) -> Paper {
     let changeset = new_changeset(f, client, project);
-    let doc = create_doc(f, client, project, &changeset, "html", "prd");
+    let doc = create_doc(f, client, project, &changeset, "html", "spec");
     let results = edit(
         f,
         client,

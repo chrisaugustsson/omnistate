@@ -79,7 +79,7 @@ fn doc_json() -> Value {
         "id": DOC,
         "project_id": PROJECT,
         "kind": "html",
-        "module": "prd",
+        "pillar": "spec",
         "title": "Checkout PRD",
         "created_at": "2026-10-15T10:00:00.000000Z",
         "mainline_version_id": MAINLINE,

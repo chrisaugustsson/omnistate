@@ -11,16 +11,24 @@
 //! docs/formats/html-docs.md and the operations are those of
 //! docs/formats/operations.md):
 //!
-//! - `POST /changesets/{changeset_id}/docs` (agent) takes `{"kind", "module",
+//! - `POST /changesets/{changeset_id}/docs` (agent) takes `{"kind", "pillar",
 //!   "title"}` and starts a new doc in that change set: 201 `{"doc": Doc,
-//!   "draft": Draft}`. `kind` is `html`, `design` or `design-system`, `module`
-//!   is `prd`, `architecture`, `db` or `ui`, and `title` is not blank; anything
-//!   else is 400 `{"error": "invalid_request"}` and creates nothing. The doc's
-//!   first version comes through the change set (Q18): the new doc has no
-//!   mainline version, and the change set has its draft, which is empty and
-//!   based on no version. Creating a doc emits `doc.created` with `data`
-//!   `{"doc_id", "changeset_id", "kind", "module", "title"}`.
-//! - A Doc is `{"id" (UUIDv7), "project_id", "kind", "module", "title",
+//!   "draft": Draft}`. `kind` is `html`, `design` or `design-system`, `pillar`
+//!   is one of the five pillars `spec`, `ui`, `architecture`, `db` and
+//!   `research` (US-101; the old `module` field and its value `prd` are gone),
+//!   and `title` is not blank; anything else is 400 `{"error":
+//!   "invalid_request"}` and creates nothing. An HTML doc goes in any pillar; a
+//!   `design` or `design-system` doc outside `ui` is 422 and creates nothing.
+//!   The doc's first version comes through the change set (Q18): the new doc
+//!   has no mainline version, and the change set has its draft, which is empty
+//!   and based on no version. Creating a doc emits `doc.created` with `data`
+//!   `{"doc_id", "changeset_id", "kind", "pillar", "title"}`.
+//! - `GET /docs?pillar=<pillar>` (both) lists only that pillar's docs; a
+//!   pillar that is not one of the five is 400 `invalid_request`.
+//! - The migration of US-101 renames the `docs` column `module` to `pillar`,
+//!   turns `prd` into `spec` and keeps the other values, and the column only
+//!   accepts the five pillar names.
+//! - A Doc is `{"id" (UUIDv7), "project_id", "kind", "pillar", "title",
 //!   "created_at", "mainline_version_id", "drafts", "claims"}`:
 //!   `mainline_version_id` is `null` until a version is merged, `drafts` lists
 //!   the doc's drafts (one per change set) and `claims` its claims (US-023; an
@@ -427,7 +435,7 @@ fn create_doc_response(
     )
 }
 
-/// Creates an HTML PRD doc in the change set; returns the whole answer.
+/// Creates an HTML Spec doc in the change set; returns the whole answer.
 fn create_doc(f: &Fixture, client: &Client, project: &str, changeset: &str) -> Value {
     must(
         create_doc_response(
@@ -435,7 +443,7 @@ fn create_doc(f: &Fixture, client: &Client, project: &str, changeset: &str) -> V
             client,
             project,
             changeset,
-            &json!({ "kind": "html", "module": "prd", "title": unique("Checkout PRD") }),
+            &json!({ "kind": "html", "pillar": "spec", "title": unique("Checkout PRD") }),
         ),
         201,
         "create a doc",
@@ -685,7 +693,7 @@ fn a_new_doc_starts_in_its_change_set_without_a_mainline_version() {
             client,
             &project,
             &changeset,
-            &json!({ "kind": "html", "module": "prd", "title": title }),
+            &json!({ "kind": "html", "pillar": "spec", "title": title }),
         ),
         201,
         "create a doc",
@@ -694,7 +702,11 @@ fn a_new_doc_starts_in_its_change_set_without_a_mainline_version() {
     assert_uuid_v7(&doc["id"]);
     assert_eq!(doc["project_id"], project.as_str(), "{doc}");
     assert_eq!(doc["kind"], "html", "{doc}");
-    assert_eq!(doc["module"], "prd", "{doc}");
+    assert_eq!(doc["pillar"], "spec", "{doc}");
+    assert!(
+        doc.get("module").is_none(),
+        "the pillar replaces the old module: {doc}"
+    );
     assert_eq!(doc["title"], title.as_str(), "{doc}");
     assert!(doc["created_at"].is_string(), "{doc}");
     assert_eq!(
@@ -729,45 +741,114 @@ fn a_new_doc_starts_in_its_change_set_without_a_mainline_version() {
     assert_eq!(mainline["html"], "", "{mainline}");
 }
 
+// US-101: the five pillars.
 #[test]
-fn every_kind_and_module_can_start_a_doc() {
+fn an_html_doc_starts_in_each_of_the_five_pillars() {
     let (f, client) = ready();
     let (project, changeset) = project_with_changeset(f, client);
-    for (kind, module) in [
-        ("html", "prd"),
-        ("html", "architecture"),
-        ("html", "db"),
-        ("design", "ui"),
-        ("design-system", "ui"),
-    ] {
+    for pillar in ["spec", "ui", "architecture", "db", "research"] {
         let answer = must(
             create_doc_response(
                 f,
                 client,
                 &project,
                 &changeset,
-                &json!({ "kind": kind, "module": module, "title": unique(module) }),
+                &json!({ "kind": "html", "pillar": pillar, "title": unique(pillar) }),
             ),
             201,
-            &format!("create a {kind} doc in {module}"),
+            &format!("create an html doc in {pillar}"),
         );
-        assert_eq!(answer["doc"]["kind"], kind, "{answer}");
-        assert_eq!(answer["doc"]["module"], module, "{answer}");
+        assert_eq!(answer["doc"]["kind"], "html", "{answer}");
+        assert_eq!(answer["doc"]["pillar"], pillar, "{answer}");
         assert_eq!(answer["draft"]["changeset_id"], changeset.as_str());
+        let shown = must(
+            call(
+                client,
+                "GET",
+                &doc_path(f, &project, &id_of(&answer["doc"])),
+                &agent(f),
+                None,
+            ),
+            200,
+            "show the doc",
+        );
+        assert_eq!(shown["doc"]["pillar"], pillar, "{shown}");
     }
 }
 
 #[test]
-fn a_doc_needs_a_known_kind_and_module_and_a_title() {
+fn design_docs_start_in_the_ui_pillar() {
+    let (f, client) = ready();
+    let (project, changeset) = project_with_changeset(f, client);
+    for kind in ["design", "design-system"] {
+        let answer = must(
+            create_doc_response(
+                f,
+                client,
+                &project,
+                &changeset,
+                &json!({ "kind": kind, "pillar": "ui", "title": unique(kind) }),
+            ),
+            201,
+            &format!("create a {kind} doc in ui"),
+        );
+        assert_eq!(answer["doc"]["kind"], kind, "{answer}");
+        assert_eq!(answer["doc"]["pillar"], "ui", "{answer}");
+    }
+}
+
+#[test]
+fn design_docs_outside_the_ui_pillar_are_422_and_create_nothing() {
+    let (f, client) = ready();
+    let (project, changeset) = project_with_changeset(f, client);
+    for kind in ["design", "design-system"] {
+        for pillar in ["spec", "architecture", "db", "research"] {
+            let response = create_doc_response(
+                f,
+                client,
+                &project,
+                &changeset,
+                &json!({ "kind": kind, "pillar": pillar, "title": unique(kind) }),
+            );
+            assert_eq!(
+                response.status,
+                422,
+                "a {kind} doc in {pillar}: {}",
+                response.text()
+            );
+            assert!(
+                response.json()["error"].is_string(),
+                "the refusal names its reason: {}",
+                response.text()
+            );
+        }
+    }
+    let docs: i64 = block(async {
+        let mut conn = admin_connection().await;
+        sqlx::query_scalar("select count(*) from docs where project_id = $1::uuid")
+            .bind(&project)
+            .fetch_one(&mut conn)
+            .await
+            .expect("count the project's docs")
+    });
+    assert_eq!(docs, 0, "a refused doc is not stored");
+}
+
+#[test]
+fn a_doc_needs_a_known_kind_and_pillar_and_a_title() {
     let (f, client) = ready();
     let (project, changeset) = project_with_changeset(f, client);
     for body in [
-        json!({ "kind": "pdf", "module": "prd", "title": "T" }),
-        json!({ "kind": "html", "module": "marketing", "title": "T" }),
-        json!({ "kind": "html", "module": "prd", "title": "   " }),
-        json!({ "module": "prd", "title": "T" }),
+        json!({ "kind": "pdf", "pillar": "spec", "title": "T" }),
+        json!({ "kind": "html", "pillar": "marketing", "title": "T" }),
+        json!({ "kind": "html", "pillar": "other", "title": "T" }),
+        // The old module value and the old field are no pillar.
+        json!({ "kind": "html", "pillar": "prd", "title": "T" }),
+        json!({ "kind": "html", "module": "spec", "title": "T" }),
+        json!({ "kind": "html", "pillar": "spec", "title": "   " }),
+        json!({ "pillar": "spec", "title": "T" }),
         json!({ "kind": "html", "title": "T" }),
-        json!({ "kind": "html", "module": "prd" }),
+        json!({ "kind": "html", "pillar": "spec" }),
     ] {
         let response = create_doc_response(f, client, &project, &changeset, &body);
         assert_error(&response, 400, "invalid_request");
@@ -794,7 +875,7 @@ fn a_doc_starts_only_in_a_change_set_of_its_project() {
             client,
             &project,
             changeset,
-            &json!({ "kind": "html", "module": "prd", "title": "T" }),
+            &json!({ "kind": "html", "pillar": "spec", "title": "T" }),
         );
         assert_error(&response, 404, "not_found");
     }
@@ -816,7 +897,7 @@ fn creating_a_doc_emits_doc_created() {
         events[0]
     );
     assert_eq!(events[0]["kind"], "html", "{}", events[0]);
-    assert_eq!(events[0]["module"], "prd", "{}", events[0]);
+    assert_eq!(events[0]["pillar"], "spec", "{}", events[0]);
     assert_eq!(events[0]["title"], answer["doc"]["title"], "{}", events[0]);
 }
 
@@ -1004,7 +1085,7 @@ fn showing_a_doc_gives_its_metadata_mainline_drafts_and_claims() {
             "show the doc",
         )["doc"]
             .clone();
-        for field in ["id", "project_id", "kind", "module", "title", "created_at"] {
+        for field in ["id", "project_id", "kind", "pillar", "title", "created_at"] {
             assert_eq!(shown[field], created["doc"][field], "{field}: {shown}");
         }
         assert_eq!(shown["mainline_version_id"], Value::Null, "{shown}");
@@ -1513,6 +1594,255 @@ fn every_applied_operation_emits_op_applied() {
     );
     assert_eq!(response.status, 409, "{}", response.text());
     assert_eq!(events_of(&project, "op.applied").len(), 3);
+}
+
+// ---------------------------------------------------------------------------
+// US-101: the docs of a pillar, and the migration to pillars
+// ---------------------------------------------------------------------------
+
+/// The titles of the docs that `GET .../docs<query>` lists.
+fn listed_titles(f: &Fixture, client: &Client, project: &str, query: &str) -> Vec<String> {
+    let answer = must(
+        call(
+            client,
+            "GET",
+            &format!("{}/docs{query}", project_base(f, project)),
+            &agent(f),
+            None,
+        ),
+        200,
+        &format!("list the docs{query}"),
+    );
+    answer["docs"]
+        .as_array()
+        .unwrap_or_else(|| panic!("a list of docs: {answer}"))
+        .iter()
+        .map(|doc| doc["title"].as_str().expect("a title").to_string())
+        .collect()
+}
+
+#[test]
+fn the_docs_of_one_pillar_are_listed_with_the_pillar_filter() {
+    let (f, client) = ready();
+    let (project, changeset) = project_with_changeset(f, client);
+    let mut titles = Vec::new();
+    for (kind, pillar, title) in [
+        ("html", "spec", "Checkout spec"),
+        ("html", "research", "Interview notes"),
+        ("design", "ui", "Checkout screens"),
+        ("html", "spec", "Refund spec"),
+        ("html", "db", "Orders schema"),
+    ] {
+        let title = unique(title);
+        must(
+            create_doc_response(
+                f,
+                client,
+                &project,
+                &changeset,
+                &json!({ "kind": kind, "pillar": pillar, "title": title }),
+            ),
+            201,
+            &format!("create a {kind} doc in {pillar}"),
+        );
+        titles.push(title);
+    }
+    assert_eq!(
+        listed_titles(f, client, &project, "?pillar=spec"),
+        [titles[0].clone(), titles[3].clone()],
+        "only the Spec docs, oldest first"
+    );
+    assert_eq!(
+        listed_titles(f, client, &project, "?pillar=research"),
+        [titles[1].clone()],
+        "only the Research docs"
+    );
+    assert_eq!(
+        listed_titles(f, client, &project, "?pillar=architecture"),
+        Vec::<String>::new(),
+        "a pillar without docs lists none"
+    );
+    assert_eq!(
+        listed_titles(f, client, &project, "").len(),
+        5,
+        "without the filter every doc is listed"
+    );
+    for pillar in ["other", "prd"] {
+        let response = call(
+            client,
+            "GET",
+            &format!("{}/docs?pillar={pillar}", project_base(f, &project)),
+            &agent(f),
+            None,
+        );
+        assert_error(&response, 400, "invalid_request");
+    }
+}
+
+/// The version of the last migration before US-101; the pillar migration
+/// comes after it.
+const LAST_MIGRATION_WITH_MODULES: i64 = 20261024000000;
+const PILLARS_DB: &str = "omni_us101_pillars";
+
+fn migrations_dir() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations")
+}
+
+#[test]
+fn the_pillar_migration_renames_module_maps_prd_to_spec_and_accepts_only_the_five_pillars() {
+    use sqlx::migrate::Migrator;
+    block(async {
+        let mut admin = PgConnection::connect_with(&admin_options())
+            .await
+            .unwrap_or_else(|e| panic!("cannot connect to Postgres as the admin role: {e}"));
+        sqlx::query(&format!(
+            "DROP DATABASE IF EXISTS {PILLARS_DB} WITH (FORCE)"
+        ))
+        .execute(&mut admin)
+        .await
+        .expect("drop the scratch database");
+        sqlx::query(&format!("CREATE DATABASE {PILLARS_DB}"))
+            .execute(&mut admin)
+            .await
+            .expect("create the scratch database");
+        let mut conn = PgConnection::connect_with(&admin_options().database(PILLARS_DB))
+            .await
+            .expect("connect to the scratch database");
+
+        // The schema as it was before US-101, with a doc of every old module.
+        let all = Migrator::new(migrations_dir())
+            .await
+            .expect("read migrations/");
+        let mut before = Migrator::new(migrations_dir())
+            .await
+            .expect("read migrations/");
+        before.migrations = all
+            .iter()
+            .filter(|m| m.version <= LAST_MIGRATION_WITH_MODULES)
+            .cloned()
+            .collect::<Vec<_>>()
+            .into();
+        assert!(
+            all.iter().any(|m| m.version > LAST_MIGRATION_WITH_MODULES),
+            "a new migration comes after {LAST_MIGRATION_WITH_MODULES}"
+        );
+        before
+            .run(&mut conn)
+            .await
+            .unwrap_or_else(|e| panic!("applying the migrations before US-101 failed: {e}"));
+        let workspace: String = sqlx::query_scalar(
+            "insert into workspaces (name) values ('Pillars') returning id::text",
+        )
+        .fetch_one(&mut conn)
+        .await
+        .expect("seed a workspace");
+        let project: String = sqlx::query_scalar(
+            "insert into projects (workspace_id, name) values ($1::uuid, 'shop') returning id::text",
+        )
+        .bind(&workspace)
+        .fetch_one(&mut conn)
+        .await
+        .expect("seed a project");
+        for (kind, module) in [
+            ("html", "prd"),
+            ("html", "architecture"),
+            ("html", "db"),
+            ("design", "ui"),
+        ] {
+            sqlx::query(
+                "insert into docs (workspace_id, project_id, kind, module, title) \
+                 values ($1::uuid, $2::uuid, $3, $4, $4)",
+            )
+            .bind(&workspace)
+            .bind(&project)
+            .bind(kind)
+            .bind(module)
+            .execute(&mut conn)
+            .await
+            .unwrap_or_else(|e| panic!("seed a {module} doc: {e}"));
+        }
+
+        all.run(&mut conn)
+            .await
+            .unwrap_or_else(|e| panic!("applying the pillar migration failed: {e}"));
+
+        let columns: Vec<String> = sqlx::query_scalar(
+            "select column_name::text from information_schema.columns \
+             where table_schema = 'public' and table_name = 'docs'",
+        )
+        .fetch_all(&mut conn)
+        .await
+        .expect("read the columns of docs");
+        assert!(
+            columns.iter().any(|c| c == "pillar"),
+            "docs has the column pillar: {columns:?}"
+        );
+        assert!(
+            !columns.iter().any(|c| c == "module"),
+            "docs has no column module any more: {columns:?}"
+        );
+
+        // The title of each seeded doc is its old module.
+        let pillars: Vec<(String, String)> = sqlx::query_as(
+            "select title, pillar::text from docs where project_id = $1::uuid order by title",
+        )
+        .bind(&project)
+        .fetch_all(&mut conn)
+        .await
+        .expect("read the docs' pillars");
+        assert_eq!(
+            pillars,
+            [
+                ("architecture".to_string(), "architecture".to_string()),
+                ("db".to_string(), "db".to_string()),
+                ("prd".to_string(), "spec".to_string()),
+                ("ui".to_string(), "ui".to_string()),
+            ],
+            "prd becomes spec and the other modules keep their names"
+        );
+
+        for pillar in ["spec", "ui", "architecture", "db", "research"] {
+            sqlx::query(
+                "insert into docs (workspace_id, project_id, kind, pillar, title) \
+                 values ($1::uuid, $2::uuid, 'html', $3, $3)",
+            )
+            .bind(&workspace)
+            .bind(&project)
+            .bind(pillar)
+            .execute(&mut conn)
+            .await
+            .unwrap_or_else(|e| panic!("the column accepts the pillar {pillar}: {e}"));
+        }
+        for pillar in ["prd", "other", "Spec", ""] {
+            let refused = sqlx::query(
+                "insert into docs (workspace_id, project_id, kind, pillar, title) \
+                 values ($1::uuid, $2::uuid, 'html', $3, 'refused')",
+            )
+            .bind(&workspace)
+            .bind(&project)
+            .bind(pillar)
+            .execute(&mut conn)
+            .await;
+            let error = refused
+                .err()
+                .unwrap_or_else(|| panic!("the column accepts {pillar:?}, which is no pillar"));
+            assert_eq!(
+                error
+                    .as_database_error()
+                    .and_then(|e| e.code().map(|c| c.into_owned()))
+                    .as_deref(),
+                Some("23514"),
+                "{pillar:?} is refused by a check constraint: {error}"
+            );
+        }
+        drop(conn);
+        sqlx::query(&format!(
+            "DROP DATABASE IF EXISTS {PILLARS_DB} WITH (FORCE)"
+        ))
+        .execute(&mut admin)
+        .await
+        .expect("drop the scratch database");
+    });
 }
 
 // ---------------------------------------------------------------------------

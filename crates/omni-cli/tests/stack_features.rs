@@ -338,7 +338,7 @@ fn doc_list_prints_the_scope_of_each_doc_from_the_command_line() {
     };
     let global = changeset(&["--global"]);
     let checkout = changeset(&["--feature", "Checkout"]);
-    let doc = |changeset: &str, kind: &str, module: &str, title: &str| {
+    let doc = |changeset: &str, kind: &str, pillar: &str, title: &str| {
         let out = run(
             &home,
             &[
@@ -348,8 +348,8 @@ fn doc_list_prints_the_scope_of_each_doc_from_the_command_line() {
                 changeset,
                 "--kind",
                 kind,
-                "--module",
-                module,
+                "--pillar",
+                pillar,
                 "--title",
                 title,
                 "--project",
@@ -360,7 +360,7 @@ fn doc_list_prints_the_scope_of_each_doc_from_the_command_line() {
         assert_eq!(out.code, 0, "doc create {title}: {}", out.stderr);
         out.json()["doc"]["id"].as_str().expect("an id").to_string()
     };
-    let prd = doc(&global, "html", "prd", "Brand PRD");
+    let prd = doc(&global, "html", "spec", "Brand PRD");
     let architecture = doc(&checkout, "html", "architecture", "Checkout architecture");
 
     let listed = run(&home, &["doc", "list", "--project", &project]);
@@ -368,7 +368,7 @@ fn doc_list_prints_the_scope_of_each_doc_from_the_command_line() {
     assert_eq!(
         non_empty_lines(&listed.stdout),
         [
-            format!("{prd}  project  html  prd  Brand PRD"),
+            format!("{prd}  project  html  spec  Brand PRD"),
             format!("{architecture}  Checkout  html  architecture  Checkout architecture"),
         ],
         "the docs in creation order with their scope"

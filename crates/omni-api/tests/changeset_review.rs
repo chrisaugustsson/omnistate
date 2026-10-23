@@ -24,7 +24,7 @@
 //!   version saved in the change set (removals included), oldest doc first. A
 //!   doc that the change set only opened (a draft without a saved version) is
 //!   not listed, nor is a doc that only other change sets change. Each item is
-//!   `{"doc_id", "kind", "module", "title", "base_version_id", "version_id",
+//!   `{"doc_id", "kind", "pillar", "title", "base_version_id", "version_id",
 //!   "removed", "changes"}`:
 //!   - `base_version_id`: the version that the change set's draft of the doc
 //!     is based on (the mainline version it was opened from or last rebased
@@ -398,7 +398,7 @@ fn create_doc(f: &Fixture, client: &Client, project: &str, changeset: &str) -> S
                 "POST",
                 &format!("{}/docs", changeset_path(f, project, changeset)),
                 &author(f),
-                Some(&json!({ "kind": "html", "module": "prd", "title": unique("Checkout PRD") })),
+                Some(&json!({ "kind": "html", "pillar": "spec", "title": unique("Checkout PRD") })),
             ),
             201,
             "create a doc",
@@ -905,7 +905,7 @@ fn the_review_lists_each_doc_with_a_saved_version_oldest_doc_first() {
     let item = doc_item(&answer, &older);
     assert_eq!(item["title"], doc["doc"]["title"], "{item}");
     assert_eq!(item["kind"], "html", "{item}");
-    assert_eq!(item["module"], "prd", "{item}");
+    assert_eq!(item["pillar"], "spec", "{item}");
 }
 
 #[test]

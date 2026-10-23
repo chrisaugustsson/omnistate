@@ -553,7 +553,7 @@ fn new_doc(f: &Fixture, client: &Client, project: &str, changeset: &str) -> (Str
                 f.workspace
             ),
             &holder(f),
-            Some(&json!({ "kind": "html", "module": "prd", "title": unique("Checkout PRD") })),
+            Some(&json!({ "kind": "html", "pillar": "spec", "title": unique("Checkout PRD") })),
         ),
         201,
         "create a doc",

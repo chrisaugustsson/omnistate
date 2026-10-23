@@ -428,7 +428,7 @@ fn create_doc(
     project: &str,
     changeset: &str,
     kind: &str,
-    module: &str,
+    pillar: &str,
     title: &str,
 ) -> String {
     id_of(
@@ -438,7 +438,7 @@ fn create_doc(
                 "POST",
                 &format!("{}/docs", changeset_path(f, project, changeset)),
                 &agent(f),
-                Some(&json!({ "kind": kind, "module": module, "title": title })),
+                Some(&json!({ "kind": kind, "pillar": pillar, "title": title })),
             ),
             201,
             "create a doc",
@@ -1523,7 +1523,7 @@ fn a_design_import_refuses_instances_that_do_not_fit_their_component() {
         403,
         "forbidden",
     );
-    let html = create_doc(f, client, &lib.project, &changeset, "html", "prd", "PRD");
+    let html = create_doc(f, client, &lib.project, &changeset, "html", "spec", "PRD");
     assert_error(
         &design_response(f, client, &agent(f), &lib.project, &changeset, &html, &tags),
         400,

@@ -439,8 +439,8 @@ async fn fill_workspace(conn: &mut PgConnection, workspace: &str, membership: &s
     .expect("look for the doc tables");
     if docs_exist {
         let doc_id: String = sqlx::query_scalar(
-            "INSERT INTO docs (workspace_id, project_id, kind, module, title) \
-             VALUES ($1::uuid, $2::uuid, 'html', 'prd', 'deletion test') RETURNING id::text",
+            "INSERT INTO docs (workspace_id, project_id, kind, pillar, title) \
+             VALUES ($1::uuid, $2::uuid, 'html', 'spec', 'deletion test') RETURNING id::text",
         )
         .bind(workspace)
         .bind(&project_id)

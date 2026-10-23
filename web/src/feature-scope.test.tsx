@@ -105,13 +105,13 @@ function feature(id: string, name: string, description: string, status: string) 
   return { id, project_id: PROJECT_ID, name, description, status, created_at: AT };
 }
 
-function doc(featureId: string | null, kind: string, module: string, title: string) {
+function doc(featureId: string | null, kind: string, pillar: string, title: string) {
   return {
     id: newId(),
     project_id: PROJECT_ID,
     feature_id: featureId,
     kind,
-    module,
+    pillar,
     title,
     created_at: AT,
     mainline_version_id: null,
@@ -161,7 +161,7 @@ function reviewed(of: Doc, fresh = false) {
     doc_id: of.id,
     feature_id: of.feature_id,
     kind: of.kind,
-    module: of.module,
+    pillar: of.pillar,
     title: of.title,
     base_version_id: fresh ? null : newId(),
     version_id: newId(),
@@ -187,11 +187,11 @@ function seeded() {
   const wishlist = feature(WISHLIST, "Wishlist", "Shoppers save products for later.", "active");
   const loyalty = feature(LOYALTY, "Loyalty points", "Earn points on every order.", "done");
 
-  const shopPrd = doc(null, "html", "prd", "Shop PRD");
+  const shopPrd = doc(null, "html", "spec", "Shop PRD");
   const designSystem = doc(null, "design-system", "ui", "Design system");
-  const savedPrd = doc(WISHLIST, "html", "prd", "Saved items PRD");
+  const savedPrd = doc(WISHLIST, "html", "spec", "Saved items PRD");
   const savedScreens = doc(WISHLIST, "design", "ui", "Saved items screens");
-  const pointsPrd = doc(LOYALTY, "html", "prd", "Points PRD");
+  const pointsPrd = doc(LOYALTY, "html", "spec", "Points PRD");
 
   const shareSaved = changeset(WISHLIST, "Share saved lists", "in_review");
   const draftSaved = changeset(WISHLIST, "Draft saved items", "in_review");

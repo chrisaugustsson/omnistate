@@ -380,7 +380,7 @@ fn create_doc(f: &Fixture, client: &Client, project: &str, changeset: &str) -> S
                 "POST",
                 &format!("{}/docs", changeset_path(f, project, changeset)),
                 &agent(f),
-                Some(&json!({ "kind": "html", "module": "prd", "title": unique("Checkout PRD") })),
+                Some(&json!({ "kind": "html", "pillar": "spec", "title": unique("Checkout PRD") })),
             ),
             201,
             "create a doc",

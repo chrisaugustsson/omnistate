@@ -742,7 +742,7 @@ fn changeset_in_review(f: &Fixture, client: &Client, project: &str) -> String {
                 "POST",
                 &format!("{base}/docs"),
                 &moderator(f),
-                Some(&json!({ "kind": "html", "module": "prd", "title": unique("Hero PRD") })),
+                Some(&json!({ "kind": "html", "pillar": "spec", "title": unique("Hero PRD") })),
             ),
             201,
             "create a doc",

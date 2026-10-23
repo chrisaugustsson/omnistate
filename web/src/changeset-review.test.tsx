@@ -11,7 +11,7 @@
 //
 // - GET /changesets/<id>/review (crates/omni-api/tests/changeset_review.rs):
 //   `{changeset, docs, decisions}`. `docs` lists each doc the change set
-//   changes, oldest first, as `{doc_id, kind, module, title, base_version_id,
+//   changes, oldest first, as `{doc_id, kind, pillar, title, base_version_id,
 //   version_id, removed, changes: {added, removed, changed, moved}}`, the
 //   node changes from the base version to the version under review.
 //   `decisions` are the linked decisions, each the full Decision.
@@ -300,7 +300,7 @@ function reviewedDocs() {
     {
       doc_id: DESIGN_DOC,
       kind: "design",
-      module: "ui",
+      pillar: "ui",
       title: DESIGN_TITLE,
       base_version_id: DESIGN_BASE,
       version_id: DESIGN_NEW,
@@ -315,7 +315,7 @@ function reviewedDocs() {
     {
       doc_id: HTML_DOC,
       kind: "html",
-      module: "prd",
+      pillar: "spec",
       title: HTML_TITLE,
       base_version_id: HTML_BASE,
       version_id: HTML_NEW,
@@ -455,11 +455,11 @@ function fakeApi({ undecided }: { undecided: boolean }) {
     };
   };
   const htmlOf: Record<string, string> = { [HTML_BASE]: HTML_BASE_HTML, [HTML_NEW]: HTML_NEW_HTML };
-  const docBody = (id: string, kind: string, module: string, title: string, mainline: string) => ({
+  const docBody = (id: string, kind: string, pillar: string, title: string, mainline: string) => ({
     id,
     project_id: PROJECT_ID,
     kind,
-    module,
+    pillar,
     title,
     created_at: AT,
     mainline_version_id: mainline,
@@ -468,7 +468,7 @@ function fakeApi({ undecided }: { undecided: boolean }) {
   });
   const docs = () => [
     docBody(DESIGN_DOC, "design", "ui", DESIGN_TITLE, DESIGN_BASE),
-    docBody(HTML_DOC, "html", "prd", HTML_TITLE, HTML_BASE),
+    docBody(HTML_DOC, "html", "spec", HTML_TITLE, HTML_BASE),
   ];
 
   const fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {

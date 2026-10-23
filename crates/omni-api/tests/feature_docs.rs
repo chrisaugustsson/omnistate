@@ -404,14 +404,14 @@ fn create_doc_response(
     project: &str,
     changeset: &str,
     kind: &str,
-    module: &str,
+    pillar: &str,
 ) -> Response {
     call(
         client,
         "POST",
         &format!("{}/docs", changeset_path(f, project, changeset)),
         &agent(f),
-        Some(&json!({ "kind": kind, "module": module, "title": unique(module) })),
+        Some(&json!({ "kind": kind, "pillar": pillar, "title": unique(pillar) })),
     )
 }
 
@@ -422,10 +422,10 @@ fn create_doc(
     project: &str,
     changeset: &str,
     kind: &str,
-    module: &str,
+    pillar: &str,
 ) -> Value {
     must(
-        create_doc_response(f, client, project, changeset, kind, module),
+        create_doc_response(f, client, project, changeset, kind, pillar),
         201,
         "create a doc",
     )
@@ -502,7 +502,7 @@ fn merge(f: &Fixture, client: &Client, project: &str, changeset: &str) {
 /// one), with a paragraph, saved and merged; returns the doc's ID.
 fn merged_doc(f: &Fixture, client: &Client, project: &str, feature: Option<&str>) -> String {
     let changeset = new_changeset(f, client, project, feature);
-    let doc = id_of(&create_doc(f, client, project, &changeset, "html", "prd")["doc"]);
+    let doc = id_of(&create_doc(f, client, project, &changeset, "html", "spec")["doc"]);
     add_paragraph(f, client, project, &changeset, &doc, "Pay in one step.");
     save(f, client, project, &changeset, &doc);
     merge(f, client, project, &changeset);
@@ -649,15 +649,15 @@ fn a_doc_takes_the_feature_of_the_change_set_that_creates_it() {
     let global = new_changeset(f, client, &project, None);
 
     for (changeset, expected) in [(&in_feature, json!(feature)), (&global, Value::Null)] {
-        for (kind, module) in [
-            ("html", "prd"),
+        for (kind, pillar) in [
+            ("html", "spec"),
             ("html", "architecture"),
             ("html", "db"),
             ("design", "ui"),
         ] {
-            let created = create_doc(f, client, &project, changeset, kind, module);
+            let created = create_doc(f, client, &project, changeset, kind, pillar);
             let doc = &created["doc"];
-            assert_feature_id(doc, &expected, &format!("a new {kind} {module} doc"));
+            assert_feature_id(doc, &expected, &format!("a new {kind} {pillar} doc"));
             assert_eq!(
                 created["draft"]["changeset_id"],
                 changeset.as_str(),
@@ -714,8 +714,8 @@ fn the_docs_table_ties_a_doc_to_a_feature_of_its_own_project() {
     let own = new_feature(f, client, &project, "Checkout");
     let foreign = new_feature(f, client, &other, "Checkout");
     let workspace = f.workspace.as_str();
-    let insert = "insert into docs (workspace_id, project_id, kind, module, title, feature_id) \
-                  values ($1::uuid, $2::uuid, 'html', 'prd', 'Direct', $3::uuid)";
+    let insert = "insert into docs (workspace_id, project_id, kind, pillar, title, feature_id) \
+                  values ($1::uuid, $2::uuid, 'html', 'spec', 'Direct', $3::uuid)";
     assert!(
         accepted(insert, &[workspace, &project, &own]),
         "a doc may belong to a feature of its project"
@@ -730,8 +730,8 @@ fn the_docs_table_ties_a_doc_to_a_feature_of_its_own_project() {
     );
     assert!(
         accepted(
-            "insert into docs (workspace_id, project_id, kind, module, title) \
-             values ($1::uuid, $2::uuid, 'html', 'prd', 'Global')",
+            "insert into docs (workspace_id, project_id, kind, pillar, title) \
+             values ($1::uuid, $2::uuid, 'html', 'spec', 'Global')",
             &[workspace, &project]
         ),
         "a doc without a feature is global"
@@ -1144,8 +1144,8 @@ fn the_doc_list_has_every_doc_of_the_project_and_filters_by_feature_or_global() 
     let global = new_changeset(f, client, &project, None);
     let in_checkout = new_changeset(f, client, &project, Some(&checkout));
     let in_search = new_changeset(f, client, &project, Some(&search));
-    let first = id_of(&create_doc(f, client, &project, &global, "html", "prd")["doc"]);
-    let second = id_of(&create_doc(f, client, &project, &in_checkout, "html", "prd")["doc"]);
+    let first = id_of(&create_doc(f, client, &project, &global, "html", "spec")["doc"]);
+    let second = id_of(&create_doc(f, client, &project, &in_checkout, "html", "spec")["doc"]);
     let third = id_of(&create_doc(f, client, &project, &in_search, "design", "ui")["doc"]);
     let fourth = id_of(&create_doc(f, client, &project, &global, "html", "architecture")["doc"]);
 
@@ -1166,7 +1166,7 @@ fn the_doc_list_has_every_doc_of_the_project_and_filters_by_feature_or_global() 
             for field in [
                 "project_id",
                 "kind",
-                "module",
+                "pillar",
                 "title",
                 "mainline_version_id",
             ] {
@@ -1501,7 +1501,7 @@ fn a_change_set_open_in_a_feature_keeps_its_lifecycle_after_the_feature_is_done(
     let project = new_project(f, client);
     let feature = new_feature(f, client, &project, "Checkout");
     let changeset = new_changeset(f, client, &project, Some(&feature));
-    let doc = id_of(&create_doc(f, client, &project, &changeset, "html", "prd")["doc"]);
+    let doc = id_of(&create_doc(f, client, &project, &changeset, "html", "spec")["doc"]);
     add_paragraph(f, client, &project, &changeset, &doc, "Pay in one step.");
     save(f, client, &project, &changeset, &doc);
 
@@ -1559,7 +1559,7 @@ fn every_read_of_a_done_features_records_answers_as_before() {
     let project = new_project(f, client);
     let feature = new_feature(f, client, &project, "Checkout");
     let changeset = new_changeset(f, client, &project, Some(&feature));
-    let doc = id_of(&create_doc(f, client, &project, &changeset, "html", "prd")["doc"]);
+    let doc = id_of(&create_doc(f, client, &project, &changeset, "html", "spec")["doc"]);
     let node = paragraph_node(f, client, &project, &changeset, &doc, "Pay in one step.");
     let version = id_of(&save(f, client, &project, &changeset, &doc));
     let base = project_base(f, &project);

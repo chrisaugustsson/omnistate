@@ -20,9 +20,9 @@
 //!   an agent must not read past a sealed phase through it); an unknown
 //!   project is 404 `{"error": "not_found"}`.
 //! - `docs` lists every doc of the project, oldest first, each the Doc that
-//!   `GET /docs/{doc_id}` answers (so with its `module`, `kind`, `title` and
+//!   `GET /docs/{doc_id}` answers (so with its `pillar`, `kind`, `title` and
 //!   `mainline_version_id`, which is `null` while its first version has not
-//!   merged). The web app groups them by module.
+//!   merged). The web app groups them by pillar.
 //! - `changesets` lists every change set of the project, oldest first, each
 //!   the Changeset that `GET /changesets/{changeset_id}` answers the human,
 //!   with its `status`.
@@ -485,7 +485,7 @@ fn create_doc(
     project: &str,
     changeset: &str,
     kind: &str,
-    module: &str,
+    pillar: &str,
 ) -> String {
     id_of(
         &must(
@@ -494,7 +494,7 @@ fn create_doc(
                 "POST",
                 &format!("{}/docs", changeset_path(f, project, changeset)),
                 &author(f),
-                Some(&json!({ "kind": kind, "module": module, "title": unique("Doc") })),
+                Some(&json!({ "kind": kind, "pillar": pillar, "title": unique("Doc") })),
             ),
             201,
             "create a doc",
@@ -572,7 +572,7 @@ fn changeset_with_version_in(
     feature: Option<&str>,
 ) -> (String, String, String, String) {
     let changeset = new_changeset_in(f, client, project, feature);
-    let doc = create_doc(f, client, project, &changeset, "html", "prd");
+    let doc = create_doc(f, client, project, &changeset, "html", "spec");
     let node = insert_paragraph(f, client, project, &changeset, &doc);
     let version = save(f, client, project, &changeset, &doc);
     (changeset, doc, node, version)
@@ -874,11 +874,11 @@ fn an_api_key_is_refused_the_home_and_an_unknown_project_is_not_found() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn the_home_lists_every_doc_of_the_project_with_its_module() {
+fn the_home_lists_every_doc_of_the_project_with_its_pillar() {
     let (f, client) = ready();
     let project = new_project(f, client);
 
-    // A PRD doc that merged, and docs of the other modules whose first version
+    // A Spec doc that merged, and docs of other pillars whose first version
     // has not merged yet.
     let (merged, prd, _, _) = changeset_with_version(f, client, &project);
     submit(f, client, &project, &merged);
@@ -899,14 +899,14 @@ fn the_home_lists_every_doc_of_the_project_with_its_module() {
         "every doc of the project, oldest first, and nothing else: {home}"
     );
     assert!(!home.to_string().contains(&foreign), "{home}");
-    for (doc, module) in [
-        (&prd, "prd"),
+    for (doc, pillar) in [
+        (&prd, "spec"),
         (&architecture, "architecture"),
         (&db, "db"),
         (&ui, "ui"),
     ] {
         let listed = item_at(&home, "/docs", doc);
-        assert_eq!(listed["module"], module, "{listed}");
+        assert_eq!(listed["pillar"], pillar, "{listed}");
         assert_eq!(
             listed,
             read(f, client, &human(f), &project, &format!("/docs/{doc}"))["doc"],
@@ -1499,7 +1499,7 @@ fn the_home_lists_the_features_in_creation_order_with_their_counts() {
 
     // The second feature: one open change set with one doc.
     let second_open = new_changeset_in(f, client, &project, Some(&second));
-    create_doc(f, client, &project, &second_open, "html", "prd");
+    create_doc(f, client, &project, &second_open, "html", "spec");
 
     // The third has nothing and is done.
     finish_feature(f, client, &project, &finished);

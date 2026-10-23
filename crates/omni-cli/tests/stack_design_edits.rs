@@ -292,7 +292,7 @@ fn new_design(f: &Fixture, home: &Scratch) -> Design {
             &changeset,
             "--kind",
             "design",
-            "--module",
+            "--pillar",
             "ui",
             "--title",
             "Checkout screens",

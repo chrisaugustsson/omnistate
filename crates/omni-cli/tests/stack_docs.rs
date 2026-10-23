@@ -218,8 +218,8 @@ fn project_with_doc(home: &Scratch) -> (String, String, Value) {
             &changeset,
             "--kind",
             "html",
-            "--module",
-            "prd",
+            "--pillar",
+            "spec",
             "--title",
             "Checkout PRD",
             "--json",
@@ -276,6 +276,71 @@ fn printed_ids(text: &str) -> Vec<String> {
         }
     }
     found
+}
+
+// US-101: a doc goes in one of the five pillars, and the list filters by
+// pillar, through the real API.
+#[test]
+fn an_agent_starts_docs_in_pillars_and_lists_one_pillar() {
+    let f = fixture();
+    let home = agent_home(f);
+    let (project, changeset, created) = project_with_doc(&home);
+    assert_eq!(created["doc"]["pillar"], "spec", "{created}");
+    let p = ["--project", project.as_str()];
+    let create = |kind: &str, pillar: &str, title: &str| -> Out {
+        run(
+            &home,
+            &[
+                &[
+                    "doc",
+                    "create",
+                    "--changeset",
+                    &changeset,
+                    "--kind",
+                    kind,
+                    "--pillar",
+                    pillar,
+                    "--title",
+                    title,
+                    "--json",
+                ][..],
+                &p,
+            ]
+            .concat(),
+        )
+    };
+    let research = create("html", "research", "Interview notes");
+    assert_eq!(research.code, 0, "{}", research.stderr);
+    assert_eq!(
+        research.json()["doc"]["pillar"],
+        "research",
+        "{}",
+        research.stdout
+    );
+    let screens = create("design", "ui", "Checkout screens");
+    assert_eq!(screens.code, 0, "{}", screens.stderr);
+
+    // A design outside the ui pillar is refused by the API or the CLI.
+    let refused = create("design", "spec", "Misplaced screens");
+    assert_ne!(refused.code, 0, "a design in spec: {}", refused.stdout);
+
+    let listed = run(
+        &home,
+        &[&["doc", "list", "--pillar", "spec"][..], &p].concat(),
+    );
+    assert_eq!(listed.code, 0, "{}", listed.stderr);
+    let lines = non_empty_lines(&listed.stdout);
+    assert_eq!(lines.len(), 1, "only the Spec doc: {:?}", listed.stdout);
+    assert!(lines[0].contains("Checkout PRD"), "{:?}", listed.stdout);
+
+    let listed = run(
+        &home,
+        &[&["doc", "list", "--pillar", "research"][..], &p].concat(),
+    );
+    assert_eq!(listed.code, 0, "{}", listed.stderr);
+    let lines = non_empty_lines(&listed.stdout);
+    assert_eq!(lines.len(), 1, "only the Research doc: {:?}", listed.stdout);
+    assert!(lines[0].contains("Interview notes"), "{:?}", listed.stdout);
 }
 
 #[test]

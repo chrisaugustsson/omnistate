@@ -270,7 +270,7 @@ const CASES: &[Case] = &[
     case(
         "POST",
         "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs",
-        Some(r#"{"kind":"html","module":"prd","title":"intruder doc"}"#),
+        Some(r#"{"kind":"html","pillar":"spec","title":"intruder doc"}"#),
         Kind::Workspace,
     ),
     case(
@@ -1009,7 +1009,7 @@ fn seed_conflict(
 
     // A doc with one paragraph on the mainline.
     let first = changeset();
-    let body = json!({ "kind": "html", "module": "prd", "title": unique(&format!("{label}-rebased-doc")) })
+    let body = json!({ "kind": "html", "pillar": "spec", "title": unique(&format!("{label}-rebased-doc")) })
         .to_string();
     let created = must(
         call(
@@ -1474,7 +1474,7 @@ fn fixture() -> &'static Fixture {
             let (doc_id, doc_title, doc_text, claimed_node) = if has_doc_routes() {
                 let doc_title = unique(&format!("{name}-doc"));
                 let body =
-                    json!({ "kind": "html", "module": "prd", "title": doc_title }).to_string();
+                    json!({ "kind": "html", "pillar": "spec", "title": doc_title }).to_string();
                 let created = must(
                     call(
                         client,
@@ -1597,7 +1597,7 @@ fn fixture() -> &'static Fixture {
             let merged_changeset_id = if has_approve_route() {
                 let merged = changeset();
                 let path = format!("{changesets}/{merged}");
-                let body = json!({ "kind": "html", "module": "prd", "title": unique(&format!("{name}-merged-doc")) })
+                let body = json!({ "kind": "html", "pillar": "spec", "title": unique(&format!("{name}-merged-doc")) })
                     .to_string();
                 let created = must(
                     call(client, "POST", &format!("{path}/docs"), &agent, Some(&body)),
@@ -3090,7 +3090,8 @@ fn the_approve_call_of_the_attacks_works_for_the_workspace_that_owns_the_records
     );
     let changeset = created["changeset"]["id"].as_str().expect("an id");
     let path = format!("{changesets}/{changeset}");
-    let body = json!({ "kind": "html", "module": "prd", "title": unique("owner-doc") }).to_string();
+    let body =
+        json!({ "kind": "html", "pillar": "spec", "title": unique("owner-doc") }).to_string();
     let created = must(
         call(client, "POST", &format!("{path}/docs"), &key, Some(&body)),
         201,
@@ -3316,7 +3317,7 @@ fn the_token_calls_of_the_attacks_work_for_the_workspace_that_owns_the_records()
         "create a change set",
     );
     let changeset = created["changeset"]["id"].as_str().expect("an id");
-    let body = json!({ "kind": "design-system", "module": "ui", "title": unique("owner-tokens") })
+    let body = json!({ "kind": "design-system", "pillar": "ui", "title": unique("owner-tokens") })
         .to_string();
     must(
         call(
@@ -3432,7 +3433,7 @@ fn the_component_calls_of_the_attacks_work_for_the_workspace_that_owns_the_recor
     let changeset = created["changeset"]["id"].as_str().expect("an id");
     let mut docs = Vec::new();
     for (kind, title) in [("design-system", "owner-ds"), ("design", "owner-design")] {
-        let body = json!({ "kind": kind, "module": "ui", "title": unique(title) }).to_string();
+        let body = json!({ "kind": kind, "pillar": "ui", "title": unique(title) }).to_string();
         let created = must(
             call(
                 client,
@@ -3557,7 +3558,7 @@ fn the_board_reads_of_a_workspace_show_its_own_board_and_nothing_of_the_other() 
             "create a change set",
         );
         let changeset = created["changeset"]["id"].as_str().expect("an id");
-        let body = json!({ "kind": "design", "module": "ui", "title": unique("owner-boards") })
+        let body = json!({ "kind": "design", "pillar": "ui", "title": unique("owner-boards") })
             .to_string();
         let created = must(
             call(

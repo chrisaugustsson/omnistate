@@ -11,9 +11,9 @@
 // questions}}, each item the body that the API's own read of it answers (Doc,
 // Changeset, Thread, Decision, Comment, Post). The page shows:
 //
-// - a section named "Docs" in which each module that has docs is a group
-//   (a section or group named "PRD", "Architecture", "DB" or "UI") listing the
-//   titles of that module's docs;
+// - a section named "Docs" in which each pillar that has docs is a group
+//   (a section or group named "Spec", "UI", "Architecture", "DB" or
+//   "Research", US-101) listing the titles of that pillar's docs;
 // - a section named "Change sets" listing each change set's title with its
 //   status, one list item (or table row) per change set;
 // - a section named "Threads" listing each thread's question;
@@ -45,12 +45,12 @@ function newId() {
   return `0192d7a0-3333-7000-8000-${counter.toString(16).padStart(12, "0")}`;
 }
 
-function doc(module: string, title: string) {
+function doc(pillar: string, title: string) {
   return {
     id: newId(),
     project_id: PROJECT_ID,
-    kind: module === "ui" ? "design" : "html",
-    module,
+    kind: pillar === "ui" ? "design" : "html",
+    pillar,
     title,
     created_at: AT,
     mainline_version_id: null,
@@ -146,12 +146,13 @@ function question(threadId: string, summary: string) {
   };
 }
 
-/** A project with docs of three modules, change sets of four statuses, two threads and one item of each kind waiting. */
+/** A project with docs of four pillars, change sets of four statuses, two threads and one item of each kind waiting. */
 function seededHome() {
-  const prdHero = doc("prd", "Hero PRD");
-  const prdCheckout = doc("prd", "Checkout PRD");
+  const prdHero = doc("spec", "Hero PRD");
+  const prdCheckout = doc("spec", "Checkout PRD");
   const dbSchema = doc("db", "Orders schema");
   const uiDesign = doc("ui", "Storefront design");
+  const interviews = doc("research", "Shopper interviews");
   const open = changeset("Draft the footer", "open");
   const inReview = changeset("Rework the hero", "in_review");
   const rejected = changeset("Carousel hero", "rejected");
@@ -160,7 +161,7 @@ function seededHome() {
   const footerThread = thread(open.id, "Should the footer hold the newsletter form?");
   return {
     project_id: PROJECT_ID,
-    docs: [prdHero, prdCheckout, dbSchema, uiDesign],
+    docs: [prdHero, prdCheckout, dbSchema, uiDesign, interviews],
     changesets: [open, inReview, rejected, merged],
     threads: [heroThread, footerThread],
     waiting: {
@@ -316,16 +317,21 @@ describe("the project home", () => {
     await section(DOCS);
   });
 
-  test("the docs are listed grouped by module", async () => {
+  test("the docs are listed grouped by pillar", async () => {
     fakeApi(seededHome());
     renderAt(HOME_PATH);
     const docs = await section(DOCS);
 
-    const prd = await section(/^prd\b/i, docs);
-    expect(within(prd).getByText("Hero PRD")).toBeTruthy();
-    expect(within(prd).getByText("Checkout PRD")).toBeTruthy();
-    expect(within(prd).queryByText("Orders schema")).toBeNull();
-    expect(within(prd).queryByText("Storefront design")).toBeNull();
+    const spec = await section(/^spec\b/i, docs);
+    expect(within(spec).getByText("Hero PRD")).toBeTruthy();
+    expect(within(spec).getByText("Checkout PRD")).toBeTruthy();
+    expect(within(spec).queryByText("Orders schema")).toBeNull();
+    expect(within(spec).queryByText("Storefront design")).toBeNull();
+    expect(within(spec).queryByText("Shopper interviews")).toBeNull();
+
+    const research = await section(/^research\b/i, docs);
+    expect(within(research).getByText("Shopper interviews")).toBeTruthy();
+    expect(within(research).queryByText("Hero PRD")).toBeNull();
 
     const db = await section(/^(db|database)\b/i, docs);
     expect(within(db).getByText("Orders schema")).toBeTruthy();
@@ -338,7 +344,7 @@ describe("the project home", () => {
     expect(
       within(docs).queryByRole("region", { name: /^architecture\b/i }) ??
         within(docs).queryByRole("group", { name: /^architecture\b/i }),
-      "a module without docs has no group",
+      "a pillar without docs has no group",
     ).toBeNull();
   });
 

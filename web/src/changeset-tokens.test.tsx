@@ -70,7 +70,7 @@ function reviewedSystem(baseVersion: string | null) {
   return {
     doc_id: SYSTEM_DOC,
     kind: "design-system",
-    module: "ui",
+    pillar: "ui",
     title: "Design system",
     base_version_id: baseVersion,
     version_id: SYSTEM_NEW,

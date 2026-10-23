@@ -520,7 +520,7 @@ fn new_design(f: &Fixture, client: &Client) -> Design {
                 "POST",
                 &format!("{base}/changesets/{changeset}/docs"),
                 &holder(f),
-                Some(&json!({ "kind": "design", "module": "ui", "title": unique("design") })),
+                Some(&json!({ "kind": "design", "pillar": "ui", "title": unique("design") })),
             ),
             201,
             "create a design doc",

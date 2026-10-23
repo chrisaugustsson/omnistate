@@ -8,10 +8,12 @@
 //! found as for `omni changeset`, from `--project` or `.omni.toml`):
 //!
 //! - `omni doc create --changeset <id> --kind html|design|design-system
-//!   --module prd|architecture|db|ui --title <text>` sends `POST
-//!   /changesets/{changeset}/docs` with `{"kind", "module", "title"}` and prints
-//!   the new doc's ID and title. A missing change set or title, or a kind or
-//!   module outside those lists, is a one-line error that sends nothing.
+//!   --pillar spec|ui|architecture|db|research --title <text>` sends `POST
+//!   /changesets/{changeset}/docs` with `{"kind", "pillar", "title"}` and prints
+//!   the new doc's ID and title. A missing change set, pillar or title, or a
+//!   kind outside that list, is a one-line error that sends nothing; so is a
+//!   pillar that is not one of the five (the error lists the five pillar
+//!   names) and the old `--module` option (the error names `--pillar`, US-101).
 //! - `omni doc open <doc> --changeset <id>` sends `POST
 //!   /changesets/{changeset}/docs/{doc}/open` and prints the draft's ID.
 //! - `omni doc read <doc>` prints the mainline version's HTML, from `GET
@@ -22,7 +24,7 @@
 //!   Both options at once are an error that sends nothing; a doc without a
 //!   mainline version (`"version_id": null`) is a one-line error that says so.
 //! - `omni doc show <doc>` sends `GET /docs/{doc}` and prints the doc's title,
-//!   kind, module, mainline version (or that there is none), its drafts with
+//!   kind, pillar, mainline version (or that there is none), its drafts with
 //!   their change sets, and its claims.
 //! - `omni doc edit <doc> --changeset <id>` reads a batch of operations (a JSON
 //!   array) from `--body-file <path>`, or standard input without it or with
@@ -65,12 +67,12 @@ fn draft_json(id: &str, doc: &str, base_version: Option<&str>) -> Value {
     json!({ "id": id, "doc_id": doc, "changeset_id": CHANGESET, "base_version_id": base_version })
 }
 
-fn doc_json(id: &str, title: &str, kind: &str, module: &str, mainline: Option<&str>) -> Value {
+fn doc_json(id: &str, title: &str, kind: &str, pillar: &str, mainline: Option<&str>) -> Value {
     json!({
         "id": id,
         "project_id": PROJECT,
         "kind": kind,
-        "module": module,
+        "pillar": pillar,
         "title": title,
         "created_at": "2026-10-15T10:00:00.000000Z",
         "mainline_version_id": mainline,
@@ -109,7 +111,7 @@ fn mock() -> MockServer {
                         NEW_DOC,
                         body["title"].as_str().unwrap_or("?"),
                         body["kind"].as_str().unwrap_or("?"),
-                        body["module"].as_str().unwrap_or("?"),
+                        body["pillar"].as_str().unwrap_or("?"),
                         None
                     ),
                     "draft": draft_json(NEW_DRAFT, NEW_DOC, None)
@@ -152,11 +154,11 @@ fn mock() -> MockServer {
             }
             ("GET", r) if r == format!("/docs/{DOC}") => Reply::json(
                 200,
-                &json!({ "doc": doc_json(DOC, "Checkout PRD", "html", "prd", Some(MAINLINE)) }),
+                &json!({ "doc": doc_json(DOC, "Checkout PRD", "html", "research", Some(MAINLINE)) }),
             ),
             ("GET", r) if r == format!("/docs/{NEW_DOC}") => Reply::json(
                 200,
-                &json!({ "doc": doc_json(NEW_DOC, "New PRD", "html", "prd", None) }),
+                &json!({ "doc": doc_json(NEW_DOC, "New PRD", "html", "spec", None) }),
             ),
             ("GET", r) if r == format!("/docs/{DOC}/html") => Reply::json(
                 200,
@@ -264,8 +266,8 @@ fn doc_create_starts_a_doc_in_the_change_set() {
             CHANGESET,
             "--kind",
             "html",
-            "--module",
-            "prd",
+            "--pillar",
+            "spec",
             "--title",
             "Checkout PRD",
         ],
@@ -280,7 +282,11 @@ fn doc_create_starts_a_doc_in_the_change_set() {
     assert_agent_request(&posts[0]);
     let body = body_of(&posts[0]);
     assert_eq!(body["kind"], "html", "{body}");
-    assert_eq!(body["module"], "prd", "{body}");
+    assert_eq!(body["pillar"], "spec", "{body}");
+    assert!(
+        body.get("module").is_none(),
+        "the pillar replaces the old module: {body}"
+    );
     assert_eq!(body["title"], "Checkout PRD", "{body}");
     assert!(
         out.stdout.contains(NEW_DOC) && out.stdout.contains("Checkout PRD"),
@@ -303,7 +309,7 @@ fn doc_create_starts_a_doc_in_the_change_set() {
             CHANGESET,
             "--kind",
             "design-system",
-            "--module",
+            "--pillar",
             "ui",
             "--title",
             "Tokens",
@@ -318,16 +324,19 @@ fn doc_create_starts_a_doc_in_the_change_set() {
 }
 
 #[test]
-fn doc_create_takes_every_kind_and_module() {
+fn doc_create_takes_every_pillar() {
     let server = mock();
     let home = logged_in(&server.url);
-    for (kind, module) in [
-        ("html", "prd"),
+    let combinations = [
+        ("html", "spec"),
+        ("html", "ui"),
         ("html", "architecture"),
         ("html", "db"),
+        ("html", "research"),
         ("design", "ui"),
         ("design-system", "ui"),
-    ] {
+    ];
+    for (kind, pillar) in combinations {
         let out = run(
             &home,
             &[
@@ -337,15 +346,56 @@ fn doc_create_takes_every_kind_and_module() {
                 CHANGESET,
                 "--kind",
                 kind,
-                "--module",
-                module,
+                "--pillar",
+                pillar,
                 "--title",
                 "T",
             ],
         );
-        assert_eq!(out.code, 0, "{kind} {module}: {}", out.stderr);
+        assert_eq!(out.code, 0, "{kind} {pillar}: {}", out.stderr);
     }
-    assert_eq!(server.requests().len(), 5, "{:?}", server.requests());
+    let posts = requests_to(
+        &server,
+        "POST",
+        &format!("{}/changesets/{CHANGESET}/docs", base()),
+    );
+    assert_eq!(posts.len(), combinations.len(), "{:?}", server.requests());
+    for (post, (kind, pillar)) in posts.iter().zip(combinations) {
+        let body = body_of(post);
+        assert_eq!(body["kind"], kind, "{body}");
+        assert_eq!(body["pillar"], pillar, "{body}");
+    }
+}
+
+#[test]
+fn doc_create_puts_a_doc_in_the_research_pillar() {
+    let server = mock();
+    let home = logged_in(&server.url);
+    let out = run(
+        &home,
+        &[
+            "doc",
+            "create",
+            "--changeset",
+            CHANGESET,
+            "--kind",
+            "html",
+            "--pillar",
+            "research",
+            "--title",
+            "Interview notes",
+            "--json",
+        ],
+    );
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    let posts = requests_to(
+        &server,
+        "POST",
+        &format!("{}/changesets/{CHANGESET}/docs", base()),
+    );
+    assert_eq!(posts.len(), 1, "{:?}", server.requests());
+    assert_eq!(body_of(&posts[0])["pillar"], "research");
+    assert_eq!(out.json()["doc"]["pillar"], "research", "{}", out.stdout);
 }
 
 #[test]
@@ -357,8 +407,8 @@ fn doc_create_refuses_bad_options_before_sending_anything() {
         CHANGESET,
         "--kind",
         "html",
-        "--module",
-        "prd",
+        "--pillar",
+        "spec",
         "--title",
         "T",
     ];
@@ -376,7 +426,7 @@ fn doc_create_refuses_bad_options_before_sending_anything() {
     for (flag, needle) in [
         ("--changeset", "changeset"),
         ("--kind", "kind"),
-        ("--module", "module"),
+        ("--pillar", "pillar"),
         ("--title", "title"),
     ] {
         let out = run(&home, &without(flag));
@@ -385,9 +435,59 @@ fn doc_create_refuses_bad_options_before_sending_anything() {
     let mut bad_kind = without("--kind");
     bad_kind.extend(["--kind", "pdf"]);
     assert_one_line_error(&run(&home, &bad_kind), &["pdf"]);
-    let mut bad_module = without("--module");
-    bad_module.extend(["--module", "marketing"]);
-    assert_one_line_error(&run(&home, &bad_module), &["marketing"]);
+    assert_nothing_sent(&server);
+}
+
+#[test]
+fn doc_create_refuses_a_pillar_that_is_not_one_of_the_five() {
+    let server = mock();
+    let home = logged_in(&server.url);
+    for pillar in ["other", "prd", "marketing"] {
+        let out = run(
+            &home,
+            &[
+                "doc",
+                "create",
+                "--changeset",
+                CHANGESET,
+                "--kind",
+                "html",
+                "--pillar",
+                pillar,
+                "--title",
+                "T",
+            ],
+        );
+        assert_one_line_error(
+            &out,
+            &[pillar, "spec", "ui", "architecture", "db", "research"],
+        );
+    }
+    assert_nothing_sent(&server);
+}
+
+#[test]
+fn doc_create_refuses_the_old_module_option_and_names_pillar() {
+    let server = mock();
+    let home = logged_in(&server.url);
+    for module in ["prd", "spec"] {
+        let out = run(
+            &home,
+            &[
+                "doc",
+                "create",
+                "--changeset",
+                CHANGESET,
+                "--kind",
+                "html",
+                "--module",
+                module,
+                "--title",
+                "T",
+            ],
+        );
+        assert_one_line_error(&out, &["--module", "--pillar"]);
+    }
     assert_nothing_sent(&server);
 }
 
@@ -566,7 +666,7 @@ fn doc_show_prints_the_metadata_mainline_version_drafts_and_claims() {
         DOC,
         "Checkout PRD",
         "html",
-        "prd",
+        "research",
         MAINLINE,
         DRAFT,
         CHANGESET,
@@ -605,7 +705,7 @@ fn doc_show_prints_the_metadata_mainline_version_drafts_and_claims() {
     assert_eq!(json.code, 0, "{}", json.stderr);
     assert_eq!(
         json.json(),
-        json!({ "doc": doc_json(DOC, "Checkout PRD", "html", "prd", Some(MAINLINE)) })
+        json!({ "doc": doc_json(DOC, "Checkout PRD", "html", "research", Some(MAINLINE)) })
     );
 }
 

@@ -304,7 +304,7 @@ function fakeApi({
     id: DOC_ID,
     project_id: PROJECT_ID,
     kind: "design",
-    module: "ui",
+    pillar: "ui",
     title: DOC_TITLE,
     created_at: AT,
     mainline_version_id: V1,
@@ -398,7 +398,7 @@ function fakeApi({
             {
               doc_id: DOC_ID,
               kind: "design",
-              module: "ui",
+              pillar: "ui",
               title: DOC_TITLE,
               base_version_id: V1,
               version_id: V2,

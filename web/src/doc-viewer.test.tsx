@@ -186,7 +186,7 @@ function fakeApi() {
     id: DOC_ID,
     project_id: PROJECT_ID,
     kind: "html",
-    module: "prd",
+    pillar: "spec",
     title: DOC_TITLE,
     created_at: AT,
     mainline_version_id: V2,

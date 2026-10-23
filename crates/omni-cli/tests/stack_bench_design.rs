@@ -246,7 +246,7 @@ fn a_300_node_board_inserts_in_under_500_ms_and_single_operations_take_under_50_
             &changeset,
             "--kind",
             "design",
-            "--module",
+            "--pillar",
             "ui",
             "--title",
             "Big screens",

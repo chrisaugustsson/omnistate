@@ -63,13 +63,13 @@ function feature(id: string, name: string, description: string, status: string) 
   return { id, project_id: PROJECT_ID, name, description, status, created_at: AT };
 }
 
-function doc(featureId: string | null, module: string, title: string) {
+function doc(featureId: string | null, pillar: string, title: string) {
   return {
     id: newId(),
     project_id: PROJECT_ID,
     feature_id: featureId,
-    kind: module === "ui" ? "design" : "html",
-    module,
+    kind: pillar === "ui" ? "design" : "html",
+    pillar,
     title,
     created_at: AT,
     mainline_version_id: null,
@@ -180,12 +180,12 @@ function seeded() {
   const giftCards = feature(GIFT_CARDS, "Gift cards", "Buy and redeem vouchers.", "active");
   const loyalty = feature(LOYALTY, "Loyalty points", "Earn points on every order.", "done");
 
-  const storefrontPrd = doc(null, "prd", "Storefront PRD");
+  const storefrontPrd = doc(null, "spec", "Storefront PRD");
   const ordersSchema = doc(null, "db", "Orders schema");
-  const savedPrd = doc(WISHLIST, "prd", "Saved items PRD");
+  const savedPrd = doc(WISHLIST, "spec", "Saved items PRD");
   const savedScreens = doc(WISHLIST, "ui", "Saved items screens");
-  const voucherPrd = doc(GIFT_CARDS, "prd", "Voucher PRD");
-  const pointsPrd = doc(LOYALTY, "prd", "Points PRD");
+  const voucherPrd = doc(GIFT_CARDS, "spec", "Voucher PRD");
+  const pointsPrd = doc(LOYALTY, "spec", "Points PRD");
 
   const footer = changeset(null, "Tidy the footer", "open");
   const hero = changeset(null, "Rework the hero", "in_review");

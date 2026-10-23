@@ -396,7 +396,7 @@ fn create_doc_response(
         "POST",
         &format!("{}/docs", changeset_path(f, project, changeset)),
         &agent(f),
-        Some(&json!({ "kind": kind, "module": "ui", "title": unique(kind) })),
+        Some(&json!({ "kind": kind, "pillar": "ui", "title": unique(kind) })),
     )
 }
 
