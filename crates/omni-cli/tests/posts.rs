@@ -108,22 +108,6 @@ fn post_json(body: &Value) -> Value {
     })
 }
 
-fn thread_json() -> Value {
-    json!({
-        "id": THREAD,
-        "project_id": PROJECT,
-        "changeset_id": CHANGESET,
-        "question": "Which hero layout?",
-        "criteria": ["Readable"],
-        "run_tag": "run-7",
-        "created_at": "2026-10-21T10:00:00.000000Z",
-        "phases": [
-            { "number": 1, "sealed": false, "started_at": "2026-10-21T10:00:00.000000Z" },
-            { "number": 2, "sealed": true, "started_at": "2026-10-21T10:02:00.000000Z" }
-        ]
-    })
-}
-
 fn changeset_json() -> Value {
     json!({
         "id": CHANGESET,
@@ -145,7 +129,7 @@ fn changeset_json() -> Value {
     })
 }
 
-/// An API that takes posts and phases in `THREAD`, shows `CHANGESET` and
+/// An API that takes posts in `THREAD`, shows `CHANGESET` and
 /// takes uploads; it knows no other thread. With `directives`, every answer
 /// in the change set carries the directive.
 fn mock(directives: bool) -> MockServer {
@@ -185,9 +169,6 @@ fn mock(directives: bool) -> MockServer {
         match (method, rest) {
             ("POST", r) if r == format!("/threads/{THREAD}/posts") => {
                 Reply::json(201, &with_directives(json!({ "post": post_json(&body) })))
-            }
-            ("POST", r) if r == format!("/threads/{THREAD}/phases") => {
-                Reply::json(201, &with_directives(json!({ "thread": thread_json() })))
             }
             ("GET", r) if r == format!("/changesets/{CHANGESET}") => Reply::json(
                 200,
@@ -643,16 +624,6 @@ fn assert_directive_on_stderr(out: &Out, what: &str) {
 fn the_directives_of_an_answer_go_to_standard_error() {
     let server = mock(true);
     let home = logged_in(&server.url);
-
-    let out = run(&home, &["thread", "phase", THREAD, "--sealed"]);
-    assert_directive_on_stderr(&out, "omni thread phase");
-    assert!(
-        non_empty_lines(&out.stdout)
-            .iter()
-            .any(|l| l.contains('2') && l.contains("sealed")),
-        "the phase is still printed: {:?}",
-        out.stdout
-    );
 
     let out = run(&home, &["changeset", "show", CHANGESET]);
     assert_directive_on_stderr(&out, "omni changeset show");

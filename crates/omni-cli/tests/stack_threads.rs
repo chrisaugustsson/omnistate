@@ -385,7 +385,11 @@ fn in_a_sealed_thread_read_and_wait_show_an_agent_no_other_agents_posts_until_it
     );
     let seen = read(&home, "run-7/critic-a", &project, &thread);
     assert_all_of(&seen, &a, "critic-a reads its own post");
-    assert_nothing_of(&seen, &b, "critic-a's thread read");
+    assert_all_of(
+        &seen,
+        &b,
+        "critic-a has posted, so it reads critic-b's later post too",
+    );
 
     let own = post(&home, MODERATOR, &project, &thread);
     let out = wait_posts(&home, MODERATOR, &project, &thread, "3", "10");

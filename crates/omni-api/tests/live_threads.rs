@@ -1175,11 +1175,14 @@ fn in_a_sealed_thread_an_agent_that_has_not_posted_reads_no_other_agents_posts()
 
     assert_eq!(
         seen_in_thread(f, client, &critic(f), &project, &thread),
-        ids_of(&[&by_critic]),
-        "the critic reads its own post, not the scout's, which came later"
+        ids_of(&[&by_critic, &by_scout]),
+        "the critic has posted, so it reads its own post and the scout's later one"
     );
-    let critics = read_thread(f, client, &critic(f), &project, &thread).to_string();
-    assert_nothing_of(&critics, &by_scout, "the critic's thread read");
+    let scouts = read_thread(f, client, &scout(f), &project, &thread).to_string();
+    assert!(
+        scouts.contains(&by_critic.id),
+        "the scout has posted, so its thread read shows the critic's post: {scouts}"
+    );
     assert_eq!(
         seen_in_thread(f, client, &human(f), &project, &thread),
         ids_of(&[&by_critic, &by_scout]),
