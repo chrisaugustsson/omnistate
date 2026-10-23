@@ -45,8 +45,12 @@ Usage:
                                       prints its ID and name
   omni feature list                   list the project's features: ID, status and name
   omni feature show <name|id>         show a feature
-  omni changeset create --title <t>   create a change set [--description <d>] [--run <tag>]
-  omni changeset list                 list the project's change sets
+  omni changeset create --title <t>   create a change set [--description <d>] [--run <tag>];
+                                      in the feature of --feature or .omni.toml, or at project
+                                      level with --global
+  omni changeset list                 list the project's change sets: ID, status, scope (project
+                                      or the feature's name) and title; --feature <name|id> or
+                                      --global list one scope only
   omni changeset show <id>            show a change set with its status history
   omni changeset submit <id>          send an open change set to review
   omni changeset reopen <id>          reopen a rejected change set
@@ -204,6 +208,11 @@ Options (before or after the command):
   --harness <name>      the harness that runs the agent (fallback: OMNI_HARNESS)
   --server <url>        the API address (fallback: OMNI_SERVER, then the config file)
   --project <name|id>   the project to work in (fallback: project in .omni.toml)
+  --feature <name|id>   the feature that `omni changeset create` opens a change set in
+                        (fallback: feature in .omni.toml); `omni changeset list` shows its
+                        change sets only
+  --global              `omni changeset create` opens a project-level change set, whatever
+                        .omni.toml says; `omni changeset list` shows those only
   --body-file <path>    send this file as the request body (for a change set: its
                         description; for `doc edit` and `design edit`: the operations); -
                         reads standard input
@@ -247,7 +256,8 @@ Output:
 
 Files:
   ~/.config/omni/config.toml   written by `omni login` (mode 600): server, workspace_id, api_key, email
-  .omni.toml                   in a project directory: project = \"name\", the default project there
+  .omni.toml                   in a project directory: project = \"name\", the default project there,
+                               and optionally feature = \"name\", the default feature there
 
 Rejecting and approving are the human's, in the web app; an agent cannot do them.
 

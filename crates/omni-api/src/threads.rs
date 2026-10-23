@@ -97,6 +97,8 @@ pub struct ThreadBody {
     pub id: String,
     pub project_id: String,
     pub changeset_id: String,
+    /// The feature of the thread's change set; `null` at project level.
+    pub feature_id: Option<String>,
     pub question: String,
     /// The decision criteria, in the order the agent gave them.
     pub criteria: Vec<String>,
@@ -458,6 +460,7 @@ struct ThreadRow {
     id: String,
     project_id: String,
     changeset_id: String,
+    feature_id: Option<String>,
     question: String,
     criteria: String,
     run_tag: Option<String>,
@@ -465,7 +468,10 @@ struct ThreadRow {
 }
 
 const THREAD_COLUMNS: &str = concat!(
-    "id::text, project_id::text, changeset_id::text, question, criteria::text, run_tag, ",
+    "id::text, project_id::text, changeset_id::text, ",
+    "(SELECT c.feature_id::text FROM changesets c \
+      WHERE c.workspace_id = threads.workspace_id AND c.id = threads.changeset_id) AS feature_id, ",
+    "question, criteria::text, run_tag, ",
     timestamp!("created_at"),
     " AS created_at"
 );
@@ -546,6 +552,7 @@ pub(crate) async fn load_thread(
         id: row.id,
         project_id: row.project_id,
         changeset_id: row.changeset_id,
+        feature_id: row.feature_id,
         question: row.question,
         criteria,
         run_tag: row.run_tag,
@@ -659,15 +666,15 @@ pub async fn create_thread(
     let new = parse_body::<CreateThreadRequest>(&body);
     let workspace_id = request.workspace_id;
     let mut tx = state.workspace_tx(&workspace_id).await?;
-    let found: Option<(String,)> = sqlx::query_as(
-        "SELECT id::text FROM changesets WHERE id = $1::uuid AND project_id = $2::uuid",
+    let found: Option<(Option<String>,)> = sqlx::query_as(
+        "SELECT feature_id::text FROM changesets WHERE id = $1::uuid AND project_id = $2::uuid",
     )
     .bind(&changeset_id)
     .bind(&project_id)
     .fetch_optional(&mut *tx)
     .await
     .map_err(ApiError::database)?;
-    found.ok_or(ApiError::NotFound)?;
+    let (feature_id,) = found.ok_or(ApiError::NotFound)?;
     let new = new?;
     let question =
         non_blank(new.question).ok_or_else(|| ApiError::bad_request("invalid_request"))?;
@@ -703,6 +710,7 @@ pub async fn create_thread(
         &json!({
             "thread_id": thread_id,
             "changeset_id": changeset_id,
+            "feature_id": feature_id,
             "question": question,
             "phase": 1,
             "sealed": sealed,

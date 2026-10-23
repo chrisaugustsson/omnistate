@@ -78,6 +78,7 @@ export const ChangesetBodySchema = z.object({
   created_at: z.string(),
   decisions: z.array(LinkedDecisionSchema),
   description: z.string(),
+  feature_id: z.string().nullable().optional(),
   history: z.array(HistoryEntrySchema),
   id: z.string(),
   project_id: z.string(),
@@ -196,6 +197,7 @@ export type ConflictSide = z.infer<typeof ConflictSideSchema>;
 
 export const CreateChangesetRequestSchema = z.object({
   description: z.string().nullable().optional(),
+  feature_id: z.string().nullable().optional(),
   run_tag: z.string().nullable().optional(),
   title: z.string().nullable().optional(),
 });
@@ -502,6 +504,7 @@ export const ThreadBodySchema = z.object({
   created_at: z.string(),
   criteria: z.array(z.string()),
   decision: z.record(z.string(), z.unknown()).nullable().optional(),
+  feature_id: z.string().nullable().optional(),
   id: z.string(),
   phases: z.array(PhaseBodySchema),
   posts: z.array(PostBodySchema).nullable().optional(),
@@ -1098,6 +1101,7 @@ export const operations = {
   "GET /api/v1/w/{workspace_id}/projects/{project_id}/changesets": {
     responses: {
       "200": ChangesetListResponseSchema,
+      "400": ErrorBodySchema,
       "401": ErrorBodySchema,
       "404": ErrorBodySchema,
     },
@@ -1110,6 +1114,7 @@ export const operations = {
       "401": ErrorBodySchema,
       "403": ErrorBodySchema,
       "404": ErrorBodySchema,
+      "422": ErrorBodySchema,
     },
   },
   "GET /api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}": {

@@ -116,6 +116,59 @@ pub(crate) fn project_id(args: &Args, agent: &Agent) -> Result<String> {
         })
 }
 
+/// The features of a project, as the API lists them.
+fn project_features(agent: &Agent, project_id: &str) -> Result<Vec<Value>> {
+    let path = format!("{}/{project_id}/features", projects_path(agent));
+    let response = agent.request("GET", &path, None)?;
+    let body = parsed(&response.text(), "the features")?;
+    Ok(body
+        .get("features")
+        .and_then(Value::as_array)
+        .unwrap_or_default()
+        .to_vec())
+}
+
+/// The ID of the feature a name or ID given by the user stands for: an ID is
+/// used as it is, a name is looked up (ignoring case) in the project's features.
+fn resolve_feature(agent: &Agent, project_id: &str, given: &str) -> Result<String> {
+    if is_uuid(given) {
+        return Ok(given.to_ascii_lowercase());
+    }
+    project_features(agent, project_id)?
+        .iter()
+        .find(|feature| {
+            feature
+                .str_at("name")
+                .is_some_and(|name| name.eq_ignore_ascii_case(given.trim()))
+        })
+        .and_then(|feature| feature.str_at("id"))
+        .map(str::to_string)
+        .ok_or_else(|| {
+            CliError::new(format!(
+                "no feature named {given:?}; `omni feature list` shows the features"
+            ))
+        })
+}
+
+/// The ID of the feature `omni changeset create` works in: `--feature`, else
+/// the feature of `.omni.toml`, else none (project level). `--global` means
+/// none whatever `.omni.toml` says.
+fn creation_feature(args: &Args, agent: &Agent, project_id: &str) -> Result<Option<String>> {
+    if args.global {
+        if args.feature.is_some() {
+            bail!("give --feature or --global, not both");
+        }
+        return Ok(None);
+    }
+    let given = match args.feature.clone() {
+        Some(feature) => Some(feature),
+        None => config::feature()?,
+    };
+    given
+        .map(|given| resolve_feature(agent, project_id, &given))
+        .transpose()
+}
+
 // Change sets -------------------------------------------------------------------
 
 pub(crate) fn changesets_path(agent: &Agent, project_id: &str) -> String {
@@ -156,9 +209,13 @@ pub fn create(args: &Args) -> Result<()> {
         })?),
         (None, None) => None,
     };
+    let agent = agent(args)?;
+    let project = project_id(args, &agent)?;
+    let feature = creation_feature(args, &agent, &project)?;
     let mut fields = vec![("title", title.to_string())];
     fields.extend(description.map(|text| ("description", text)));
     fields.extend(args.run.clone().map(|tag| ("run_tag", tag)));
+    fields.extend(feature.map(|id| ("feature_id", id)));
     let body = format!(
         "{{{}}}",
         fields
@@ -167,9 +224,6 @@ pub fn create(args: &Args) -> Result<()> {
             .collect::<Vec<_>>()
             .join(",")
     );
-
-    let agent = agent(args)?;
-    let project = project_id(args, &agent)?;
     let response = agent.request(
         "POST",
         &changesets_path(&agent, &project),
@@ -181,7 +235,19 @@ pub fn create(args: &Args) -> Result<()> {
 pub fn list(args: &Args) -> Result<()> {
     let agent = agent(args)?;
     let project = project_id(args, &agent)?;
-    let response = agent.request("GET", &changesets_path(&agent, &project), None)?;
+    let mut path = changesets_path(&agent, &project);
+    match (&args.feature, args.global) {
+        (Some(_), true) => bail!("give --feature or --global, not both"),
+        (Some(given), false) => {
+            path.push_str(&format!(
+                "?feature={}",
+                resolve_feature(&agent, &project, given)?
+            ));
+        }
+        (None, true) => path.push_str("?feature=global"),
+        (None, false) => {}
+    }
+    let response = agent.request("GET", &path, None)?;
     let text = response.text();
     if args.json {
         print_json(&text);
@@ -195,8 +261,31 @@ pub fn list(args: &Args) -> Result<()> {
     if changesets.is_empty() {
         say("no change sets");
     }
+    // The names of the features are only looked up when a change set is in one.
+    let features = if changesets
+        .iter()
+        .any(|changeset| changeset.str_at("feature_id").is_some())
+    {
+        project_features(&agent, &project).unwrap_or_default()
+    } else {
+        Vec::new()
+    };
     for changeset in changesets {
-        say(&summary(changeset));
+        let scope = match changeset.str_at("feature_id") {
+            None => "project",
+            Some(id) => features
+                .iter()
+                .find(|feature| feature.str_at("id") == Some(id))
+                .and_then(|feature| feature.str_at("name"))
+                .unwrap_or(id),
+        };
+        let field = |name: &str| changeset.str_at(name).unwrap_or("?");
+        say(&format!(
+            "{}  {}  {scope}  {}",
+            field("id"),
+            field("status"),
+            field("title")
+        ));
     }
     Ok(())
 }

@@ -16,6 +16,11 @@ pub struct Args {
     /// `--project <name or id>`: the project a command works in, instead of
     /// the one in `.omni.toml`.
     pub project: Option<String>,
+    /// `--feature <name or id>`: the feature a change set command works in,
+    /// instead of the one in `.omni.toml`; `--global` works at project level
+    /// whatever `.omni.toml` says.
+    pub feature: Option<String>,
+    pub global: bool,
     /// `--title`, `--description` and `--run` describe a change set.
     pub title: Option<String>,
     pub description: Option<String>,
@@ -129,6 +134,10 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Args> {
                 parsed.sealed = true;
                 continue;
             }
+            "--global" => {
+                parsed.global = true;
+                continue;
+            }
             "--remove-commented" => {
                 parsed.remove_commented = true;
                 continue;
@@ -159,6 +168,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Args> {
             "--server" => &mut parsed.server,
             "--body-file" => &mut parsed.body_file,
             "--project" => &mut parsed.project,
+            "--feature" => &mut parsed.feature,
             "--title" => &mut parsed.title,
             "--description" => &mut parsed.description,
             "--run" => &mut parsed.run,
@@ -238,6 +248,16 @@ mod tests {
         assert_eq!(parsed.description.as_deref(), Some("D"));
         assert_eq!(parsed.run.as_deref(), Some("r-1"));
         assert_eq!(parsed.project.as_deref(), Some("p"));
+    }
+
+    #[test]
+    fn feature_takes_a_value_and_global_is_a_flag() {
+        let parsed = parse_strs(&["changeset", "list", "--feature=Checkout"]).unwrap();
+        assert_eq!(parsed.feature.as_deref(), Some("Checkout"));
+        assert!(!parsed.global);
+        let parsed = parse_strs(&["changeset", "create", "--global"]).unwrap();
+        assert!(parsed.global);
+        assert!(parse_strs(&["changeset", "list", "--feature"]).is_err());
     }
 
     #[test]

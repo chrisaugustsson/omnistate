@@ -23,7 +23,7 @@ use crate::threads::{Viewer, bind_viewer, visible_decision};
 use crate::workspace::{AgentRequest, HumanRequest, WorkspaceRequest, parse_uuid};
 use axum::Json;
 use axum::body::Bytes;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -73,6 +73,9 @@ pub struct CreateChangesetRequest {
     pub description: Option<String>,
     /// The run (such as a UI research run) that the change set belongs to.
     pub run_tag: Option<String>,
+    /// The feature to open the change set in; it must be one of the project's.
+    /// Without it the change set is project level.
+    pub feature_id: Option<String>,
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -116,6 +119,9 @@ pub struct LinkedDecision {
 pub struct ChangesetBody {
     pub id: String,
     pub project_id: String,
+    /// The feature the change set belongs to; `null` for a project-level
+    /// change set. Fixed at creation.
+    pub feature_id: Option<String>,
     pub title: String,
     pub description: String,
     /// `open`, `in_review`, `approved`, `rejected`, `needs_rebase`, `merged` or `abandoned`.
@@ -171,6 +177,7 @@ struct ListedApproval {
 struct ChangesetRow {
     id: String,
     project_id: String,
+    feature_id: Option<String>,
     title: String,
     description: String,
     status: String,
@@ -188,6 +195,7 @@ impl ChangesetRow {
         ChangesetBody {
             id: self.id,
             project_id: self.project_id,
+            feature_id: self.feature_id,
             title: self.title,
             description: self.description,
             status: self.status,
@@ -201,7 +209,7 @@ impl ChangesetRow {
 }
 
 const CHANGESET_COLUMNS: &str = concat!(
-    "id::text, project_id::text, title, description, status, run_tag, ",
+    "id::text, project_id::text, feature_id::text, title, description, status, run_tag, ",
     timestamp!("created_at"),
     " AS created_at"
 );
@@ -428,8 +436,15 @@ async fn insert_history(
     .execute(&mut **tx)
     .await
     .map_err(ApiError::database)?;
+    let feature_id: Option<String> =
+        sqlx::query_scalar("SELECT feature_id::text FROM changesets WHERE id = $1::uuid")
+            .bind(changeset_id)
+            .fetch_one(&mut **tx)
+            .await
+            .map_err(ApiError::database)?;
     let mut data = json!({
         "changeset_id": changeset_id,
+        "feature_id": feature_id,
         "from_status": from,
         "status": to,
         "actor": actor,
@@ -448,7 +463,22 @@ async fn insert_history(
     Ok(())
 }
 
-/// Creates a change set, `open`, in a project.
+fn feature_not_in_project() -> ApiError {
+    ApiError::Refused(StatusCode::UNPROCESSABLE_ENTITY, "feature_not_in_project")
+}
+
+/// Which change sets of a project a list asks for.
+#[derive(Clone, Copy)]
+pub(crate) enum Scope<'a> {
+    /// Every change set of the project.
+    Project,
+    /// Only the project-level ones.
+    Global,
+    /// Only the ones of this feature (a UUID).
+    Feature(&'a str),
+}
+
+/// Creates a change set, `open`, in a project, or in one of its features.
 #[utoipa::path(
     post,
     path = "/api/v1/w/{workspace_id}/projects/{project_id}/changesets",
@@ -463,6 +493,7 @@ async fn insert_history(
         (status = 401, description = "No valid API key or session", body = ErrorBody),
         (status = 403, description = "Called with a session; agents only", body = ErrorBody),
         (status = 404, description = "No such project in this workspace", body = ErrorBody),
+        (status = 422, description = "`feature_id` is not a feature of this project", body = ErrorBody),
     )
 )]
 pub async fn create_changeset(
@@ -478,12 +509,28 @@ pub async fn create_changeset(
     let new = new?;
     let title = non_blank(new.title).ok_or_else(|| ApiError::bad_request("invalid_request"))?;
     let run_tag = non_blank(new.run_tag);
+    let feature_id = match new.feature_id {
+        None => None,
+        Some(id) => {
+            let id = parse_uuid(&id).ok_or_else(feature_not_in_project)?;
+            let found: Option<(String,)> = sqlx::query_as(
+                "SELECT id::text FROM features WHERE id = $1::uuid AND project_id = $2::uuid",
+            )
+            .bind(&id)
+            .bind(&project_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(ApiError::database)?;
+            Some(found.ok_or_else(feature_not_in_project)?.0)
+        }
+    };
     let row: ChangesetRow = sqlx::query_as(&format!(
-        "INSERT INTO changesets (workspace_id, project_id, title, description, run_tag) \
-         VALUES ($1::uuid, $2::uuid, $3, $4, $5) RETURNING {CHANGESET_COLUMNS}"
+        "INSERT INTO changesets (workspace_id, project_id, feature_id, title, description, run_tag) \
+         VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5, $6) RETURNING {CHANGESET_COLUMNS}"
     ))
     .bind(&request.workspace_id)
     .bind(&project_id)
+    .bind(feature_id)
     .bind(&title)
     .bind(new.description.unwrap_or_default())
     .bind(run_tag)
@@ -517,11 +564,13 @@ pub async fn create_changeset(
     params(
         ("workspace_id" = String, Path, description = "The workspace's UUID"),
         ("project_id" = String, Path, description = "The project's UUID"),
+        ("feature" = Option<String>, Query, description = "A feature's UUID lists that feature's change sets only; `global` lists the project-level ones only; without it, every change set of the project"),
         ("X-Omni-Run" = Option<String>, Header, description = "The agent's run"),
         ("X-Omni-Role" = Option<String>, Header, description = "The agent's role"),
     ),
     responses(
         (status = 200, description = "The project's change sets, abandoned ones included; an agent gets only the linked decisions it may read", body = ChangesetListResponse),
+        (status = 400, description = "`feature` is neither `global` nor a UUID", body = ErrorBody),
         (status = 401, description = "No valid API key or session", body = ErrorBody),
         (status = 404, description = "No such project in this workspace", body = ErrorBody),
     )
@@ -531,12 +580,25 @@ pub async fn list_changesets(
     request: WorkspaceRequest,
     identity: AgentIdentity,
     Path((_, project_id)): Path<(String, String)>,
+    Query(query): Query<HashMap<String, String>>,
 ) -> Result<Json<ChangesetListResponse>, ApiError> {
     let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
+    let feature = match query.get("feature").map(String::as_str) {
+        None => None,
+        Some("global") => Some(None),
+        Some(id) => Some(Some(
+            parse_uuid(id).ok_or_else(|| ApiError::bad_request("invalid_request"))?,
+        )),
+    };
+    let scope = match &feature {
+        None => Scope::Project,
+        Some(None) => Scope::Global,
+        Some(Some(id)) => Scope::Feature(id),
+    };
     let mut tx = state.workspace_tx(&request.workspace_id).await?;
     require_project(&mut tx, &project_id).await?;
     let viewer = Viewer::of(&request.actor, &identity);
-    let changesets = changesets_of_project(&mut tx, &viewer, &project_id).await?;
+    let changesets = changesets_in_scope(&mut tx, &viewer, &project_id, scope).await?;
     tx.commit().await.map_err(ApiError::database)?;
     Ok(Json(ChangesetListResponse { changesets }))
 }
@@ -547,31 +609,60 @@ pub(crate) async fn changesets_of_project(
     viewer: &Viewer,
     project_id: &str,
 ) -> Result<Vec<ChangesetBody>, ApiError> {
+    changesets_in_scope(tx, viewer, project_id, Scope::Project).await
+}
+
+/// The SQL condition that a row of `changesets` is in the scope: `all` and
+/// `feature` are the numbers of a boolean and a nullable uuid parameter.
+fn in_scope(all: usize, feature: usize) -> String {
+    format!("(${all}::bool OR feature_id IS NOT DISTINCT FROM ${feature}::uuid)")
+}
+
+/// The change sets of a project in the scope, oldest first, whatever their status.
+pub(crate) async fn changesets_in_scope(
+    tx: &mut Transaction<'static, Postgres>,
+    viewer: &Viewer,
+    project_id: &str,
+    scope: Scope<'_>,
+) -> Result<Vec<ChangesetBody>, ApiError> {
+    let all = matches!(scope, Scope::Project);
+    let feature = match scope {
+        Scope::Feature(id) => Some(id),
+        _ => None,
+    };
+    let filter = in_scope(2, 3);
     let rows: Vec<ChangesetRow> = sqlx::query_as(&format!(
-        "SELECT {CHANGESET_COLUMNS} FROM changesets WHERE project_id = $1::uuid \
+        "SELECT {CHANGESET_COLUMNS} FROM changesets WHERE project_id = $1::uuid AND {filter} \
          ORDER BY created_at, id"
     ))
     .bind(project_id)
+    .bind(all)
+    .bind(feature)
     .fetch_all(&mut **tx)
     .await
     .map_err(ApiError::database)?;
     let entries: Vec<ListedEntry> = sqlx::query_as(&format!(
         "SELECT changeset_id::text AS changeset_id, {HISTORY_COLUMNS} \
          FROM changeset_status_history \
-         WHERE changeset_id IN (SELECT id FROM changesets WHERE project_id = $1::uuid) \
+         WHERE changeset_id IN (SELECT id FROM changesets WHERE project_id = $1::uuid AND {filter}) \
          ORDER BY created_at, id"
     ))
     .bind(project_id)
+    .bind(all)
+    .bind(feature)
     .fetch_all(&mut **tx)
     .await
     .map_err(ApiError::database)?;
-    let approvals: Vec<ListedApproval> = sqlx::query_as(
+    let approvals: Vec<ListedApproval> = sqlx::query_as(&format!(
         "SELECT changeset_id::text AS changeset_id, doc_id::text AS doc_id, \
          version_id::text AS version_id FROM approvals \
-         WHERE NOT cleared AND changeset_id IN (SELECT id FROM changesets WHERE project_id = $1::uuid) \
-         ORDER BY created_at, id",
-    )
+         WHERE NOT cleared AND changeset_id IN \
+             (SELECT id FROM changesets WHERE project_id = $1::uuid AND {filter}) \
+         ORDER BY created_at, id"
+    ))
     .bind(project_id)
+    .bind(all)
+    .bind(feature)
     .fetch_all(&mut **tx)
     .await
     .map_err(ApiError::database)?;
@@ -579,14 +670,18 @@ pub(crate) async fn changesets_of_project(
         sqlx::query_as(&format!(
             "SELECT cd.changeset_id::text AS changeset_id, {LINKED_COLUMNS} \
              FROM changeset_decisions cd {LINKED_JOIN} \
-             WHERE cd.changeset_id IN (SELECT id FROM changesets WHERE project_id = $1::uuid) \
+             WHERE cd.changeset_id IN \
+                 (SELECT id FROM changesets WHERE project_id = $1::uuid AND {}) \
                AND {} \
              ORDER BY cd.created_at, cd.id",
+            in_scope(5, 6),
             visible_decision("d", 2)
         ))
         .bind(project_id),
         viewer,
     )
+    .bind(all)
+    .bind(feature)
     .fetch_all(&mut **tx)
     .await
     .map_err(ApiError::database)?;

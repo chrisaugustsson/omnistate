@@ -211,6 +211,13 @@
           "description": {
             "type": "string"
           },
+          "feature_id": {
+            "description": "The feature the change set belongs to; `null` for a project-level\nchange set. Fixed at creation.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "history": {
             "description": "The status changes, oldest first.",
             "items": {
@@ -584,6 +591,13 @@
         "properties": {
           "description": {
             "description": "Defaults to the empty text.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "feature_id": {
+            "description": "The feature to open the change set in; it must be one of the project's.\nWithout it the change set is project level.",
             "type": [
               "string",
               "null"
@@ -2737,6 +2751,13 @@
               "null"
             ]
           },
+          "feature_id": {
+            "description": "The feature of the thread's change set; `null` at project level.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "id": {
             "type": "string"
           },
@@ -3935,6 +3956,15 @@
             }
           },
           {
+            "description": "A feature's UUID lists that feature's change sets only; `global` lists the project-level ones only; without it, every change set of the project",
+            "in": "query",
+            "name": "feature",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "description": "The agent's run",
             "in": "header",
             "name": "X-Omni-Run",
@@ -3969,6 +3999,16 @@
               }
             },
             "description": "The project's change sets, abandoned ones included; an agent gets only the linked decisions it may read"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "`feature` is neither `global` nor a UUID"
           },
           "401": {
             "content": {
@@ -4079,9 +4119,19 @@
               }
             },
             "description": "No such project in this workspace"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "`feature_id` is not a feature of this project"
           }
         },
-        "summary": "Creates a change set, `open`, in a project.",
+        "summary": "Creates a change set, `open`, in a project, or in one of its features.",
         "tags": [
           "crate::changesets"
         ],

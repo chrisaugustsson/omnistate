@@ -1,6 +1,7 @@
 //! The two files the CLI reads: `~/.config/omni/config.toml`, which `omni login`
 //! writes (mode 600, because it holds the API key), and `.omni.toml`, which a
-//! project directory uses to set the default project for commands run in it.
+//! project directory uses to set the default project and feature for commands
+//! run in it.
 
 use crate::error::{CliError, Result, bail};
 use crate::toml;
@@ -104,6 +105,18 @@ pub fn save(stored: &Stored) -> Result<PathBuf> {
 /// The default project: `project` in the nearest `.omni.toml`, looking in the
 /// current directory and then in each parent.
 pub fn project() -> Result<Option<String>> {
+    omni_toml("project", "project = \"my-project\"")
+}
+
+/// The default feature: `feature` in the nearest `.omni.toml`, found as the
+/// project is.
+pub fn feature() -> Result<Option<String>> {
+    omni_toml("feature", "feature = \"my-feature\"")
+}
+
+/// The value of `key` in the nearest `.omni.toml`; `example` is the line the
+/// error shows for a file that is not valid.
+fn omni_toml(key: &str, example: &str) -> Result<Option<String>> {
     let Ok(mut dir) = std::env::current_dir() else {
         return Ok(None);
     };
@@ -113,13 +126,13 @@ pub fn project() -> Result<Option<String>> {
             Ok(text) => {
                 let pairs = toml::parse(&text).map_err(|e| {
                     CliError::new(format!(
-                        "{} is not valid ({e}); it should hold a line like project = \"my-project\"",
+                        "{} is not valid ({e}); it should hold a line like {example}",
                         file.display()
                     ))
                 })?;
                 return Ok(pairs
                     .into_iter()
-                    .find(|(key, _)| key == "project")
+                    .find(|(name, _)| name == key)
                     .map(|(_, value)| value));
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
