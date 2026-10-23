@@ -1,22 +1,24 @@
-//! US-038: `omni comment list|reply|addressed` and `omni version save
-//! --remove-commented` against the real API. Run with `--features
-//! stack-tests` in the Compose test container, which reaches Postgres at
-//! `postgres:5432` and RustFS at `rustfs:9000`.
+//! US-106: `omni comment list` and `omni comment reply` on live docs against
+//! the real API. Run with `--features stack-tests` in the Compose test
+//! container, which reaches Postgres at `postgres:5432` and RustFS at
+//! `rustfs:9000`.
 //!
 //! The tests migrate a scratch database, seed a workspace with an API key and
 //! a member (alice) with a live session, create a scratch RustFS bucket and
 //! serve the API's router on a local port against both. The built `omni`
-//! runs against that address with the key in its config file; the human's
-//! steps (commenting on a node of a saved version), which no command does,
-//! are plain HTTP requests with alice's session cookie. The CLI's contract is
-//! in tests/comments.rs, the API's in crates/omni-api/tests/comments.rs.
+//! runs against that address with the key in its config file and writes the
+//! docs straight to their heads (no change set); the human's steps
+//! (commenting on a node of a doc's head, replying, deleting a comment), which
+//! no command does, are plain HTTP requests with alice's session cookie. The
+//! CLI's contract is in tests/comments.rs, the API's in
+//! crates/omni-api/tests/comments.rs.
 //!
-//! What these tests add is the round trip: a comment the human pins to a node
-//! is listed by `omni comment list` for its change set and doc, an agent's
-//! reply and its `addressed` mark reach the API and show in the list, a node
-//! changed by a later version shows as `changed`, and `omni version save`
-//! refuses to drop a commented node, naming the comment, until
-//! `--remove-commented` is given.
+//! What these tests add is the round trip: the comments the human pins to
+//! nodes of a live doc are listed by `omni comment list` with their doc, node,
+//! text and replies, oldest first; `omni comment reply <id> <text>` reaches
+//! the API and makes the comment wait on the human; `--doc` and `--feature`
+//! narrow the list; and a comment the human deleted is no longer listed and
+//! cannot be replied to.
 
 mod common;
 
@@ -32,8 +34,8 @@ use std::str::FromStr;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-const TEST_DB: &str = "omni_us038_cli";
-const TEST_BUCKET: &str = "omni-us038-cli";
+const TEST_DB: &str = "omni_us106_cli";
+const TEST_BUCKET: &str = "omni-us106-cli";
 const KEY_PREFIX: &str = "omniustest38";
 const AUTHOR: &str = "run-7/author";
 /// The API's session cookie (crates/omni-api/src/session.rs).
@@ -122,7 +124,7 @@ fn fixture() -> &'static Fixture {
                 .expect("apply the migrations to the scratch database");
         });
         let secret = format!("{KEY_PREFIX}_{}", "0123456789abcdef".repeat(4));
-        let session = format!("us038-cli-session-{}", "0123456789abcdef".repeat(3));
+        let session = format!("us106-cli-session-{}", "0123456789abcdef".repeat(3));
         let workspace = block(async {
             let mut conn = admin_connection().await;
             let mut text = async |sql: &str, binds: &[&str]| -> String {
@@ -221,80 +223,29 @@ fn unique(label: &str) -> String {
     format!("{label}-{}", COUNTER.fetch_add(1, Ordering::Relaxed))
 }
 
-/// An HTML doc that the author started from the command line in a new
-/// project's open change set, with two paragraphs, saved as `v1`.
+/// A live HTML doc that the author created from the command line in a new
+/// project, at the app level or in a feature, with two paragraphs.
 struct Paper {
     /// The project's name, for `--project`.
     project: String,
     project_id: String,
-    changeset: String,
     doc: String,
-    v1: String,
     a: String,
     b: String,
 }
 
 impl Paper {
-    fn edit(&self, home: &Scratch, ops: Value) -> Value {
-        let out = run_with(
-            home,
-            &[
-                "doc",
-                "edit",
-                &self.doc,
-                "--changeset",
-                &self.changeset,
-                "--project",
-                &self.project,
-                "--json",
-            ],
-            ops.to_string().as_bytes(),
-        );
-        assert_eq!(out.code, 0, "doc edit: {}", out.stderr);
-        out.json()
-    }
-
-    /// `omni version save` with `extra` arguments.
-    fn save(&self, home: &Scratch, extra: &[&str]) -> Out {
+    /// `omni comment <args> --project <project>`.
+    fn comment(&self, home: &Scratch, args: &[&str]) -> Out {
         run(
             home,
-            &[
-                &[
-                    "version",
-                    "save",
-                    &self.doc,
-                    "--changeset",
-                    &self.changeset,
-                    "--project",
-                    &self.project,
-                ][..],
-                extra,
-            ]
-            .concat(),
-        )
-    }
-
-    fn saved(&self, home: &Scratch, extra: &[&str]) -> String {
-        let out = self.save(home, &[extra, &["--json"]].concat());
-        assert_eq!(out.code, 0, "version save: {}", out.stderr);
-        out.json()["version"]["id"]
-            .as_str()
-            .unwrap_or_else(|| panic!("a version id: {}", out.stdout))
-            .to_string()
-    }
-
-    /// `omni comment <args> --project <project>`.
-    fn comment(&self, home: &Scratch, args: &[&str], stdin: &[u8]) -> Out {
-        run_with(
-            home,
             &[&["comment"][..], args, &["--project", &self.project]].concat(),
-            stdin,
         )
     }
 
     /// The comments that `omni comment list <args> --json` prints.
     fn listed(&self, home: &Scratch, args: &[&str]) -> Vec<Value> {
-        let out = self.comment(home, &[&["list"][..], args, &["--json"]].concat(), b"");
+        let out = self.comment(home, &[&["list"][..], args, &["--json"]].concat());
         assert_eq!(out.code, 0, "comment list {args:?}: {}", out.stderr);
         out.json()["comments"]
             .as_array()
@@ -303,92 +254,81 @@ impl Paper {
     }
 }
 
-fn new_paper(home: &Scratch) -> Paper {
+fn new_project(home: &Scratch) -> String {
     let project = unique("comment-site");
     let created = run(home, &["project", "create", &project]);
     assert_eq!(created.code, 0, "project create: {}", created.stderr);
+    project
+}
+
+/// A live doc in `project` (in `feature` when given, else at the app level)
+/// with two paragraphs written straight to its head.
+fn new_paper(home: &Scratch, project: &str, feature: Option<&str>) -> Paper {
+    let scope = match feature {
+        Some(feature) => vec!["--feature", feature],
+        None => vec!["--global"],
+    };
     let out = run(
         home,
         &[
-            "changeset",
-            "create",
-            "--project",
-            &project,
-            "--title",
-            "Hero PRD",
-            "--json",
-        ],
-    );
-    assert_eq!(out.code, 0, "changeset create: {}", out.stderr);
-    let changeset = out.json()["changeset"].clone();
-    let changeset_id = changeset["id"].as_str().expect("an id").to_string();
-    let out = run(
-        home,
-        &[
-            "doc",
-            "create",
-            "--project",
-            &project,
-            "--changeset",
-            &changeset_id,
-            "--kind",
-            "html",
-            "--pillar",
-            "spec",
-            "--title",
-            "Hero PRD",
-            "--json",
-        ],
+            &[
+                "doc",
+                "create",
+                "--project",
+                project,
+                "--kind",
+                "html",
+                "--pillar",
+                "spec",
+                "--title",
+                "Hero spec",
+                "--json",
+            ][..],
+            &scope,
+        ]
+        .concat(),
     );
     assert_eq!(out.code, 0, "doc create: {}", out.stderr);
-    let doc = out.json()["doc"]["id"]
-        .as_str()
-        .expect("the doc's id")
-        .to_string();
-    let mut paper = Paper {
-        project,
-        project_id: changeset["project_id"]
-            .as_str()
-            .expect("the change set's project")
-            .to_string(),
-        changeset: changeset_id,
-        doc,
-        v1: String::new(),
-        a: String::new(),
-        b: String::new(),
-    };
-    let answer = paper.edit(
+    let doc = out.json()["doc"].clone();
+    let doc_id = doc["id"].as_str().expect("the doc's id").to_string();
+    let ops = json!([
+        { "op": "insert", "parent": null, "position": { "after": null }, "content": "<p>The hero is split.</p>" },
+        { "op": "insert", "parent": null, "position": { "after": null }, "content": "<p>The copy sits on the left.</p>" }
+    ]);
+    let out = run_with(
         home,
-        json!([
-            { "op": "insert", "parent": null, "position": { "after": null }, "content": "<p>The hero is split.</p>" },
-            { "op": "insert", "parent": null, "position": { "after": null }, "content": "<p>The copy sits on the left.</p>" }
-        ]),
+        &["doc", "edit", &doc_id, "--project", project, "--json"],
+        ops.to_string().as_bytes(),
     );
+    assert_eq!(out.code, 0, "doc edit: {}", out.stderr);
+    let answer = out.json();
     let node = |i: usize| {
         answer["results"][i]["node"]
             .as_str()
             .unwrap_or_else(|| panic!("an insert names its node: {answer}"))
             .to_string()
     };
-    paper.a = node(0);
-    paper.b = node(1);
-    paper.v1 = paper.saved(home, &[]);
-    paper
+    Paper {
+        project: project.to_string(),
+        project_id: doc["project_id"]
+            .as_str()
+            .expect("the doc's project")
+            .to_string(),
+        doc: doc_id,
+        a: node(0),
+        b: node(1),
+    }
 }
 
-/// The human comments `text` on `node` of `version`, as a plain HTTP request
-/// with alice's session cookie; returns the comment's ID.
-fn human_comments(f: &Fixture, paper: &Paper, version: &str, node: &str, text: &str) -> String {
+/// A request of the human's, as plain HTTP with alice's session cookie;
+/// returns the status and the body.
+fn human_request(f: &Fixture, method: &str, path: &str, body: Option<&Value>) -> (u16, String) {
     let authority = f.url.trim_start_matches("http://");
-    let path = format!(
-        "/api/v1/w/{}/projects/{}/versions/{version}/comments",
-        f.workspace, paper.project_id
-    );
-    let body = json!({ "node": node, "text": text }).to_string();
+    let body = body.map(Value::to_string).unwrap_or_default();
     let mut stream = TcpStream::connect(authority).expect("connect to the API");
     write!(
         stream,
-        "POST {path} HTTP/1.1\r\nHost: {authority}\r\nCookie: {SESSION_COOKIE}={}\r\n\
+        "{method} {path} HTTP/1.1\r\nHost: {authority}\r\nCookie: {SESSION_COOKIE}={}\r\n\
          Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         f.session,
         body.len()
@@ -405,6 +345,22 @@ fn human_comments(f: &Fixture, paper: &Paper, version: &str, node: &str, text: &
         .split_once("\r\n\r\n")
         .map(|(_, body)| body.to_string())
         .unwrap_or_default();
+    (status, body)
+}
+
+fn project_path(f: &Fixture, paper: &Paper) -> String {
+    format!("/api/v1/w/{}/projects/{}", f.workspace, paper.project_id)
+}
+
+/// The human pins `text` to `node` of the paper's head; returns the comment's
+/// ID.
+fn human_comments(f: &Fixture, paper: &Paper, node: &str, text: &str) -> String {
+    let (status, body) = human_request(
+        f,
+        "POST",
+        &format!("{}/docs/{}/comments", project_path(f, paper), paper.doc),
+        Some(&json!({ "node": node, "text": text })),
+    );
     assert_eq!(status, 201, "the human comments: {body}");
     let comment: Value =
         serde_json::from_str(&body).unwrap_or_else(|e| panic!("a JSON answer ({e}): {body}"));
@@ -414,112 +370,153 @@ fn human_comments(f: &Fixture, paper: &Paper, version: &str, node: &str, text: &
         .to_string()
 }
 
+fn human_replies(f: &Fixture, paper: &Paper, comment: &str, text: &str) {
+    let (status, body) = human_request(
+        f,
+        "POST",
+        &format!("{}/comments/{comment}/replies", project_path(f, paper)),
+        Some(&json!({ "text": text })),
+    );
+    assert_eq!(status, 201, "the human replies: {body}");
+}
+
+fn human_deletes(f: &Fixture, paper: &Paper, comment: &str) {
+    let (status, body) = human_request(
+        f,
+        "DELETE",
+        &format!("{}/comments/{comment}", project_path(f, paper)),
+        None,
+    );
+    assert_eq!(status, 204, "the human deletes the comment: {body}");
+}
+
 fn find<'a>(comments: &'a [Value], id: &str) -> Option<&'a Value> {
     comments.iter().find(|c| c["id"] == id)
 }
 
+fn ids(comments: &[Value]) -> Vec<String> {
+    comments
+        .iter()
+        .map(|c| c["id"].as_str().expect("an id").to_string())
+        .collect()
+}
+
 #[test]
-fn an_agent_lists_replies_to_and_addresses_the_humans_comment() {
+fn an_agent_lists_the_humans_comments_on_a_live_doc_and_replies() {
     let f = fixture();
     let home = agent_home(f);
-    let paper = new_paper(&home);
-    let text = unique("The copy runs too long at 320 px");
-    let comment = human_comments(f, &paper, &paper.v1, &paper.b, &text);
+    let project = new_project(&home);
+    let paper = new_paper(&home, &project, None);
+    let first_text = unique("The copy runs too long at 320 px");
+    let second_text = unique("Say who the hero is for");
+    let first = human_comments(f, &paper, &paper.b, &first_text);
+    let second = human_comments(f, &paper, &paper.a, &second_text);
+    human_replies(f, &paper, &first, "Is that clear?");
 
-    let out = paper.comment(&home, &["list", "--changeset", &paper.changeset], b"");
-    assert_eq!(out.code, 0, "comment list: {}", out.stderr);
-    let line = non_empty_lines(&out.stdout)
-        .into_iter()
-        .find(|l| l.contains(&comment))
-        .unwrap_or_else(|| panic!("the comment is listed: {:?}", out.stdout));
-    for needle in ["open", paper.b.as_str(), text.as_str()] {
-        assert!(line.contains(needle), "{needle:?} in {line:?}");
-    }
-
-    let out = paper.comment(
-        &home,
-        &["reply", &comment],
-        b"Shortened in the next version.",
-    );
+    let out = paper.comment(&home, &["reply", &first, "Shortened to one line."]);
     assert_eq!(out.code, 0, "comment reply: {}", out.stderr);
-    let listed = paper.listed(&home, &["--doc", &paper.doc]);
-    let read = find(&listed, &comment).unwrap_or_else(|| panic!("listed: {listed:?}"));
-    assert_eq!(
-        read["replies"][0]["text"].as_str().map(str::trim),
-        Some("Shortened in the next version."),
-        "{read}"
-    );
-    assert_eq!(read["replies"][0]["author"]["role"], "author", "{read}");
 
-    paper.edit(
-        &home,
-        json!([{ "op": "set", "node": paper.b, "rev": 1, "properties": { "html": "Copy left." } }]),
-    );
-    let v2 = paper.saved(&home, &[]);
-    let out = paper.comment(&home, &["addressed", &comment, "--version", &v2], b"");
-    assert_eq!(out.code, 0, "comment addressed: {}", out.stderr);
-
-    let open = paper.listed(
-        &home,
-        &["--changeset", &paper.changeset, "--status", "open"],
-    );
-    assert!(
-        find(&open, &comment).is_none(),
-        "an addressed comment is no longer open: {open:?}"
-    );
-    let addressed = paper.listed(
-        &home,
-        &["--changeset", &paper.changeset, "--status", "addressed"],
-    );
-    let read = find(&addressed, &comment).unwrap_or_else(|| panic!("listed: {addressed:?}"));
-    assert_eq!(read["status"], "addressed", "{read}");
-    assert_eq!(read["addressed_in"], v2.as_str(), "{read}");
-    assert_eq!(read["node_status"], "changed", "{read}");
-
-    let out = paper.comment(&home, &["list", "--doc", &paper.doc], b"");
+    let out = paper.comment(&home, &["list"]);
     assert_eq!(out.code, 0, "comment list: {}", out.stderr);
-    let line = non_empty_lines(&out.stdout)
-        .into_iter()
-        .find(|l| l.contains(&comment))
-        .unwrap_or_else(|| panic!("the comment is listed: {:?}", out.stdout));
+    let text = &out.stdout;
+    let at = |needle: &str| {
+        text.find(needle)
+            .unwrap_or_else(|| panic!("the list shows {needle:?}: {text:?}"))
+    };
+    let order = [
+        at(&first),
+        at(&first_text),
+        at("Is that clear?"),
+        at("Shortened to one line."),
+        at(&second),
+        at(&second_text),
+    ];
     assert!(
-        line.contains("changed"),
-        "the node changed since the comment: {line:?}"
+        order.windows(2).all(|pair| pair[0] < pair[1]),
+        "the comments with their replies, oldest first: {text:?}"
+    );
+    let first_part = &text[order[0]..order[4]];
+    for needle in [paper.doc.as_str(), paper.b.as_str()] {
+        assert!(
+            first_part.contains(needle),
+            "the first comment shows {needle:?}: {first_part:?}"
+        );
+    }
+    assert!(
+        first_part.contains("waiting on you"),
+        "an agent replied last, so it waits: {first_part:?}"
+    );
+    let second_part = &text[order[4]..];
+    assert!(
+        second_part.contains(&paper.a) && !second_part.contains("waiting on you"),
+        "{second_part:?}"
+    );
+
+    let listed = paper.listed(&home, &["--doc", &paper.doc]);
+    assert_eq!(ids(&listed), [first.clone(), second.clone()], "{listed:?}");
+    let read = find(&listed, &first).expect("the first comment");
+    let replies = read["replies"].as_array().expect("replies");
+    assert_eq!(replies.len(), 2, "{read}");
+    assert_eq!(replies[1]["text"], "Shortened to one line.", "{read}");
+    assert_eq!(replies[1]["author"]["kind"], "agent", "{read}");
+    assert_eq!(replies[1]["author"]["role"], "author", "{read}");
+    assert_eq!(read["waiting_on_you"], true, "{read}");
+}
+
+#[test]
+fn the_list_narrows_to_a_feature_by_its_name() {
+    let f = fixture();
+    let home = agent_home(f);
+    let project = new_project(&home);
+    let feature = unique("Checkout");
+    let out = run(
+        &home,
+        &["feature", "create", &feature, "--project", &project],
+    );
+    assert_eq!(out.code, 0, "feature create: {}", out.stderr);
+    let app = new_paper(&home, &project, None);
+    let in_feature = new_paper(&home, &project, Some(&feature));
+    let on_app = human_comments(f, &app, &app.a, "On the app level.");
+    let on_feature = human_comments(f, &in_feature, &in_feature.a, "In the feature.");
+
+    assert_eq!(
+        ids(&app.listed(&home, &[])),
+        [on_app.clone(), on_feature.clone()],
+        "the project's comments"
+    );
+    assert_eq!(
+        ids(&app.listed(&home, &["--feature", &feature])),
+        [on_feature.clone()],
+        "the feature's comments"
+    );
+    assert_eq!(
+        ids(&app.listed(&home, &["--doc", &app.doc])),
+        [on_app.clone()],
+        "one doc's comments"
     );
 }
 
 #[test]
-fn saving_a_version_that_removes_a_commented_node_needs_remove_commented() {
+fn a_comment_the_human_deleted_is_no_longer_listed_and_takes_no_reply() {
     let f = fixture();
     let home = agent_home(f);
-    let paper = new_paper(&home);
-    let comment = human_comments(f, &paper, &paper.v1, &paper.a, "Say who the hero is for");
-    paper.edit(
-        &home,
-        json!([{ "op": "delete", "node": paper.a, "rev": 1 }]),
-    );
+    let project = new_project(&home);
+    let paper = new_paper(&home, &project, None);
+    let kept = human_comments(f, &paper, &paper.a, "Keep me.");
+    let deleted = human_comments(f, &paper, &paper.b, "Delete me.");
+    human_deletes(f, &paper, &deleted);
 
-    let out = paper.save(&home, &[]);
-    assert_ne!(out.code, 0, "the save is refused: {:?}", out.stdout);
-    assert_eq!(out.stdout, "", "nothing on standard output");
-    for needle in ["--remove-commented", comment.as_str(), paper.a.as_str()] {
-        assert!(
-            out.stderr.contains(needle),
-            "standard error names {needle:?}: {:?}",
-            out.stderr
-        );
-    }
-    let before = paper.listed(&home, &["--doc", &paper.doc]);
-    assert_eq!(
-        find(&before, &comment).map(|c| c["node_status"].clone()),
-        Some(json!("current")),
-        "nothing was saved, so v1 is still the newest version: {before:?}"
+    assert_eq!(ids(&paper.listed(&home, &[])), [kept.clone()]);
+    let out = paper.comment(&home, &["list"]);
+    assert_eq!(out.code, 0, "comment list: {}", out.stderr);
+    assert!(
+        out.stdout.contains(&kept)
+            && !out.stdout.contains(&deleted)
+            && !out.stdout.contains("Delete me."),
+        "{:?}",
+        out.stdout
     );
-
-    let saved = paper.saved(&home, &["--remove-commented"]);
-    let after = paper.listed(&home, &["--doc", &paper.doc]);
-    let read = find(&after, &comment).unwrap_or_else(|| panic!("the comment stays: {after:?}"));
-    assert_eq!(read["node_status"], "removed", "{read}");
-    assert_eq!(read["compared_to"], saved.as_str(), "{read}");
-    assert_eq!(read["status"], "open", "{read}");
+    let out = paper.comment(&home, &["reply", &deleted, "Too late?"]);
+    assert_ne!(out.code, 0, "{:?}", out.stdout);
+    assert!(out.stderr.contains("not_found"), "{:?}", out.stderr);
 }

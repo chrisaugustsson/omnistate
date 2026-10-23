@@ -207,7 +207,8 @@ fn the_document_describes_the_login_operation_from_its_handler() {
 }
 
 /// Every live event the API emits, by name (`<entity>.<action>`): the
-/// `changeset.<status>` events of every status and the events of US-017 on.
+/// `changeset.<status>` events of every status and the events of US-017 on
+/// (US-106 replaced `comment.status_changed` with `comment.deleted`).
 const LIVE_EVENTS: [&str; 34] = [
     "changeset.open",
     "changeset.in_review",
@@ -220,8 +221,8 @@ const LIVE_EVENTS: [&str; 34] = [
     "claim.released",
     "claim.expired",
     "comment.created",
+    "comment.deleted",
     "comment.replied",
-    "comment.status_changed",
     "components.imported",
     "conflict.recorded",
     "conflict.resolved",

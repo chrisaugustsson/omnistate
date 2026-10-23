@@ -1,46 +1,33 @@
-//! US-038: `omni comment list`, `omni comment reply`, `omni comment
-//! addressed` and `omni version save --remove-commented`, tested as the built
-//! binary against a mock HTTP server. None of these tests needs Postgres; the
-//! API's contract is in crates/omni-api/tests/comments.rs, and the round trip
-//! against the API is in tests/stack_comments.rs.
+//! US-106: `omni comment list` and `omni comment reply` on comments that the
+//! human pins to nodes of live docs, tested as the built binary against a
+//! mock HTTP server. None of these tests needs Postgres; the API's contract is
+//! in crates/omni-api/tests/comments.rs, and the round trip against the API is
+//! in tests/stack_comments.rs. (`omni version save --remove-commented` keeps
+//! its US-038 tests here until US-107 removes it.)
 //!
 //! The contract these tests pin down (the rest is the green step's choice; all
 //! paths are under `/api/v1/w/{workspace}/projects/{project_id}`, the project
 //! found as for `omni changeset`, from `--project` or `.omni.toml`):
 //!
-//! - `omni comment list` sends `GET /comments` and only reads. `--doc <id>`
-//!   asks for one doc's comments (`?doc=<id>`), `--changeset <id>` for one
-//!   change set's (`?changeset=<id>`), and without either it lists the whole
-//!   project's; `--status open|addressed|resolved` adds `status=<status>`.
-//!   `--doc` and `--changeset` together, and a status that is none of the
-//!   three, are a one-line error that names the options or the status and
-//!   sends nothing. It prints one line per comment on standard output, with
-//!   the comment's ID, its status, its node address and its text (the first
-//!   line of it); a comment whose node changed in a later version says
-//!   `changed` on its line and one whose node was removed says `removed`,
-//!   and a comment whose node is current says neither. `--json` prints the
-//!   API's JSON.
-//! - `omni comment reply <id>` reads the reply's text from `--body-file
-//!   <path|->` or, without it, from standard input, and sends `POST
-//!   /comments/{id}/replies` with `{"text"}`. It prints a line naming the
-//!   comment. A missing ID or a blank text is a one-line error that sends
-//!   nothing; an unknown comment (404) is a one-line error with `not_found`.
-//! - `omni comment addressed <id> --version <v>` sends `POST
-//!   /comments/{id}/addressed` with `{"version_id": <v>}` and prints a line
-//!   naming the comment and `addressed`. A missing ID or `--version` is a
-//!   one-line error that names what is missing and sends nothing; an answer
-//!   of 409 is a one-line error with its code (`invalid_transition`).
-//! - Resolving and reopening are the human's (FR-4): `omni comment resolve
-//!   <id>` and `omni comment reopen <id>` are a one-line error that sends
-//!   nothing.
-//! - `omni version save <doc> --changeset <id>` sends a body whose
-//!   `remove_commented` is not `true`; with `--remove-commented` it sends
-//!   `{"remove_commented": true}`. When the API answers 409
-//!   `commented_nodes_removed`, the command exits with a documented non-zero
-//!   code, prints nothing on standard output, and lists on standard error
-//!   every comment of the answer (its ID, its node and its text) and that
-//!   `--remove-commented` saves anyway.
-//! - `omni --help` lists the three comment commands and `--remove-commented`.
+//! - `omni comment list [--doc <id>] [--feature <name or id>]` sends `GET
+//!   /comments` and only reads. `--doc <id>` adds `doc=<id>`; `--feature`
+//!   adds `feature=<id>`, a name being looked up (ignoring case) in `GET
+//!   /features` as for `omni doc list`, and a name that no feature has is a
+//!   one-line error that sends no `GET /comments`. It prints every comment in
+//!   the order of the answer (oldest first), each with its ID, its doc's ID,
+//!   its node address and its text, followed by the text of each of its
+//!   replies, oldest first, before the next comment starts. A comment whose
+//!   `waiting_on_you` is `true` says `waiting on you`, and no other does.
+//!   `--json` prints the API's JSON.
+//! - `omni comment reply <id> <text>` sends `POST /comments/{id}/replies` with
+//!   `{"text": <text>}` and prints a line naming the comment; `--json` prints
+//!   the API's answer. A missing ID or a blank text is a one-line error that
+//!   sends nothing; an unknown comment (404) is a one-line error with
+//!   `not_found`.
+//! - Comments have no status: `omni comment addressed`, `omni comment
+//!   resolve` and `omni comment reopen` are a one-line error that sends
+//!   nothing, and `omni --help` lists `omni comment list` and `omni comment
+//!   reply` but none of them.
 //! - Every command is an agent request with the agent identity headers, and
 //!   errors are one line on standard error, as in US-015 (tests/common/mod.rs).
 
@@ -53,55 +40,105 @@ use std::collections::BTreeMap;
 const PROJECT: &str = "01900000-0000-7000-8000-0000000000b1";
 const CHANGESET: &str = "01900000-0000-7000-8000-0000000000c1";
 const DOC: &str = "01900000-0000-7000-8000-0000000000d1";
+const OTHER_DOC: &str = "01900000-0000-7000-8000-0000000000d3";
 /// A doc whose save the API refuses: its draft removed commented nodes.
 const COMMENTED_DOC: &str = "01900000-0000-7000-8000-0000000000d2";
-const V1: &str = "01900000-0000-7000-8000-0000000000f1";
-const V2: &str = "01900000-0000-7000-8000-0000000000f2";
 const NEW_VERSION: &str = "01900000-0000-7000-8000-0000000000f3";
-/// An open comment whose node is current.
-const OPEN: &str = "01900000-0000-7000-8000-0000000000a1";
-/// An addressed comment whose node changed in a later version.
-const CHANGED: &str = "01900000-0000-7000-8000-0000000000a2";
-/// An open comment whose node was removed.
-const REMOVED: &str = "01900000-0000-7000-8000-0000000000a3";
-/// A resolved comment, which the API refuses to mark addressed.
-const RESOLVED: &str = "01900000-0000-7000-8000-0000000000a4";
+const CHECKOUT: &str = "01900000-0000-7000-8000-0000000000e1";
+/// The oldest comment: an agent replied, then the human.
+const FIRST: &str = "01900000-0000-7000-8000-0000000000a1";
+/// An agent replied last: it waits on the human.
+const SECOND: &str = "01900000-0000-7000-8000-0000000000a2";
+/// The newest comment, without replies.
+const THIRD: &str = "01900000-0000-7000-8000-0000000000a3";
 const UNKNOWN_ID: &str = "01900000-0000-7000-8000-0000000000e9";
-const NODE_OPEN: &str = "k3f9x2qa";
-const NODE_CHANGED: &str = "b7m2c4dd";
-const NODE_REMOVED: &str = "r9t5w1ee";
-const OPEN_TEXT: &str = "The hero copy runs too long at 320 px";
-const CHANGED_TEXT: &str = "Use the brand blue for the button";
-const REMOVED_TEXT: &str = "Is this paragraph needed at all?";
+const NODE_FIRST: &str = "k3f9x2qa";
+const NODE_SECOND: &str = "b7m2c4dd/r9t5w1ee";
+const NODE_THIRD: &str = "h4p8n6zz";
+const FIRST_TEXT: &str = "The hero copy runs too long at 320 px";
+const SECOND_TEXT: &str = "Use the brand blue for this button label";
+const THIRD_TEXT: &str = "Is this paragraph needed at all?";
+const FIRST_AGENT_REPLY: &str = "Shortened it to one line.";
+const FIRST_HUMAN_REPLY: &str = "Shorter still, please.";
+const SECOND_AGENT_REPLY: &str = "The label now uses color.brand.";
 
 fn base() -> String {
     format!("/api/v1/w/{WORKSPACE}/projects/{PROJECT}")
 }
 
-fn comment_json(id: &str, node: &str, text: &str, status: &str, node_status: &str) -> Value {
+fn agent_author() -> Value {
+    json!({ "kind": "agent", "run": "run-7", "role": "author", "model": null, "harness": null })
+}
+
+fn human_author() -> Value {
+    json!({ "kind": "human", "user_id": "01900000-0000-7000-8000-0000000000aa" })
+}
+
+fn reply_json(id: &str, author: Value, text: &str) -> Value {
+    json!({
+        "id": id,
+        "author": author,
+        "text": text,
+        "created_at": "2026-10-23T10:05:00.000000Z"
+    })
+}
+
+fn comment_json(
+    id: &str,
+    doc: &str,
+    node: &str,
+    text: &str,
+    replies: Vec<Value>,
+    waiting: bool,
+) -> Value {
     json!({
         "id": id,
         "project_id": PROJECT,
-        "doc_id": DOC,
-        "version_id": V1,
+        "doc_id": doc,
         "node": node,
-        "changeset_id": CHANGESET,
-        "author": { "kind": "human", "user_id": "01900000-0000-7000-8000-0000000000aa" },
+        "feature_id": null,
+        "author": human_author(),
         "text": text,
-        "status": status,
-        "addressed_in": if status == "addressed" { json!(V2) } else { Value::Null },
-        "replies": [],
-        "node_status": node_status,
-        "compared_to": V2,
-        "created_at": "2026-10-21T10:00:00.000000Z"
+        "replies": replies,
+        "waiting_on_you": waiting,
+        "created_at": "2026-10-23T10:00:00.000000Z"
     })
 }
 
 fn all_comments() -> Value {
     json!([
-        comment_json(OPEN, NODE_OPEN, OPEN_TEXT, "open", "current"),
-        comment_json(CHANGED, NODE_CHANGED, CHANGED_TEXT, "addressed", "changed"),
-        comment_json(REMOVED, NODE_REMOVED, REMOVED_TEXT, "open", "removed"),
+        comment_json(
+            FIRST,
+            DOC,
+            NODE_FIRST,
+            FIRST_TEXT,
+            vec![
+                reply_json(
+                    "01900000-0000-7000-8000-0000000000b5",
+                    agent_author(),
+                    FIRST_AGENT_REPLY
+                ),
+                reply_json(
+                    "01900000-0000-7000-8000-0000000000b6",
+                    human_author(),
+                    FIRST_HUMAN_REPLY
+                ),
+            ],
+            false,
+        ),
+        comment_json(
+            SECOND,
+            OTHER_DOC,
+            NODE_SECOND,
+            SECOND_TEXT,
+            vec![reply_json(
+                "01900000-0000-7000-8000-0000000000b7",
+                agent_author(),
+                SECOND_AGENT_REPLY
+            )],
+            true,
+        ),
+        comment_json(THIRD, DOC, NODE_THIRD, THIRD_TEXT, vec![], false),
     ])
 }
 
@@ -136,9 +173,9 @@ fn split_query(path: &str) -> (String, BTreeMap<String, String>) {
     }
 }
 
-/// An API that knows the comments `OPEN`, `CHANGED`, `REMOVED` and
-/// `RESOLVED`, saves versions of `DOC` and refuses to save `COMMENTED_DOC`
-/// without `remove_commented`.
+/// An API that knows the comments `FIRST`, `SECOND` and `THIRD` and the
+/// feature Checkout, saves versions of `DOC` and refuses to save
+/// `COMMENTED_DOC` without `remove_commented`.
 fn mock() -> MockServer {
     MockServer::start(move |request| {
         let (path, _) = split_query(&request.path);
@@ -158,27 +195,34 @@ fn mock() -> MockServer {
         };
         let body: Value = serde_json::from_slice(&request.body).unwrap_or(Value::Null);
         match (method, rest) {
+            ("GET", "/features") => Reply::json(
+                200,
+                &json!({ "features": [{
+                    "id": CHECKOUT,
+                    "project_id": PROJECT,
+                    "name": "Checkout",
+                    "description": "Pay on one page",
+                    "created_at": "2026-10-20T10:00:00.000000Z"
+                }] }),
+            ),
             ("GET", "/comments") => Reply::json(
                 200,
                 &json!({ "project_id": PROJECT, "comments": all_comments() }),
             ),
-            ("POST", r) if r == format!("/comments/{OPEN}/replies") => {
-                let mut comment = comment_json(OPEN, NODE_OPEN, OPEN_TEXT, "open", "current");
-                comment["replies"] = json!([{
-                    "id": "01900000-0000-7000-8000-0000000000b9",
-                    "author": { "kind": "agent", "run": "run-7", "role": "author", "model": null, "harness": null },
-                    "text": body["text"],
-                    "created_at": "2026-10-21T10:05:00.000000Z"
-                }]);
+            ("POST", r) if r == format!("/comments/{THIRD}/replies") => {
+                let comment = comment_json(
+                    THIRD,
+                    DOC,
+                    NODE_THIRD,
+                    THIRD_TEXT,
+                    vec![reply_json(
+                        "01900000-0000-7000-8000-0000000000b9",
+                        agent_author(),
+                        body["text"].as_str().unwrap_or_default(),
+                    )],
+                    true,
+                );
                 Reply::json(201, &json!({ "comment": comment }))
-            }
-            ("POST", r) if r == format!("/comments/{OPEN}/addressed") => {
-                let mut comment = comment_json(OPEN, NODE_OPEN, OPEN_TEXT, "addressed", "current");
-                comment["addressed_in"] = body["version_id"].clone();
-                Reply::json(200, &json!({ "comment": comment }))
-            }
-            ("POST", r) if r == format!("/comments/{RESOLVED}/addressed") => {
-                Reply::json(409, &json!({ "error": "invalid_transition" }))
             }
             ("POST", r) if r == format!("/changesets/{CHANGESET}/docs/{DOC}/versions") => {
                 Reply::json(201, &version_json(NEW_VERSION))
@@ -194,8 +238,8 @@ fn mock() -> MockServer {
                         &json!({
                             "error": "commented_nodes_removed",
                             "comments": [
-                                comment_json(OPEN, NODE_OPEN, OPEN_TEXT, "open", "current"),
-                                comment_json(REMOVED, NODE_REMOVED, REMOVED_TEXT, "open", "current"),
+                                comment_json(FIRST, COMMENTED_DOC, NODE_FIRST, FIRST_TEXT, vec![], false),
+                                comment_json(THIRD, COMMENTED_DOC, NODE_THIRD, THIRD_TEXT, vec![], false),
                             ]
                         }),
                     )
@@ -219,14 +263,6 @@ fn run(home: &Scratch, args: &[&str]) -> Out {
         .run()
 }
 
-fn run_with_stdin(home: &Scratch, args: &[&str], stdin: &[u8]) -> Out {
-    omni(&home.path)
-        .args(args)
-        .args(&["--project", PROJECT, "--as", "run-7/author"])
-        .stdin(stdin)
-        .run()
-}
-
 /// The requests other than the project lookup.
 fn requests(server: &MockServer) -> Vec<Recorded> {
     server
@@ -237,6 +273,15 @@ fn requests(server: &MockServer) -> Vec<Recorded> {
                 .starts_with(&format!("/api/v1/w/{WORKSPACE}/projects?"))
         })
         .filter(|r| r.path != format!("/api/v1/w/{WORKSPACE}/projects"))
+        .collect()
+}
+
+/// The requests for the comments, leaving out the project and feature
+/// lookups.
+fn comment_requests(server: &MockServer) -> Vec<Recorded> {
+    requests(server)
+        .into_iter()
+        .filter(|r| split_query(&r.path).0 != format!("{}/features", base()))
         .collect()
 }
 
@@ -299,12 +344,18 @@ fn only_request(server: &MockServer) -> Recorded {
     sent[0].clone()
 }
 
+/// Where `needle` starts in `text`.
+fn position(text: &str, needle: &str) -> usize {
+    text.find(needle)
+        .unwrap_or_else(|| panic!("the output has {needle:?}: {text:?}"))
+}
+
 // ---------------------------------------------------------------------------
 // omni comment list
 // ---------------------------------------------------------------------------
 
 #[test]
-fn list_asks_for_the_projects_comments_and_prints_one_line_each() {
+fn list_shows_each_comments_doc_node_text_and_replies_oldest_first() {
     let server = mock();
     let home = logged_in(&server.url);
     let out = run(&home, &["comment", "list"]);
@@ -314,87 +365,106 @@ fn list_asks_for_the_projects_comments_and_prints_one_line_each() {
     assert_eq!(sent.method, "GET");
     let (path, query) = split_query(&sent.path);
     assert_eq!(path, format!("{}/comments", base()));
-    assert!(
-        !query.contains_key("doc") && !query.contains_key("changeset"),
-        "the whole project: {query:?}"
-    );
+    assert!(query.is_empty(), "the whole project: {query:?}");
 
-    let lines = non_empty_lines(&out.stdout);
-    assert_eq!(lines.len(), 3, "one line per comment: {:?}", out.stdout);
-    let line = |id: &str| -> &str {
-        lines
-            .iter()
-            .copied()
-            .find(|l| l.contains(id))
-            .unwrap_or_else(|| panic!("a line for {id}: {:?}", out.stdout))
-    };
+    let text = &out.stdout;
     assert_contains_all(
-        line(OPEN),
-        &["open", NODE_OPEN, OPEN_TEXT],
-        "the open comment",
+        text,
+        &[DOC, OTHER_DOC, NODE_FIRST, NODE_SECOND, NODE_THIRD],
+        "the list",
     );
-    assert_contains_all(
-        line(CHANGED),
-        &["addressed", NODE_CHANGED, CHANGED_TEXT, "changed"],
-        "the comment on a changed node",
+    // Each comment, then its replies, oldest first, then the next comment.
+    let order = [
+        FIRST,
+        FIRST_TEXT,
+        FIRST_AGENT_REPLY,
+        FIRST_HUMAN_REPLY,
+        SECOND,
+        SECOND_TEXT,
+        SECOND_AGENT_REPLY,
+        THIRD,
+        THIRD_TEXT,
+    ];
+    let positions: Vec<usize> = order.iter().map(|needle| position(text, needle)).collect();
+    assert!(
+        positions.windows(2).all(|pair| pair[0] < pair[1]),
+        "every comment with its replies, oldest first: {text:?}"
     );
-    assert_contains_all(
-        line(REMOVED),
-        &["open", NODE_REMOVED, REMOVED_TEXT, "removed"],
-        "the comment on a removed node",
+    // Each comment's part of the output names its own doc and node.
+    let first = &text[positions[0]..positions[4]];
+    let second = &text[positions[4]..positions[7]];
+    let third = &text[positions[7]..];
+    assert_contains_all(first, &[DOC, NODE_FIRST], "the first comment");
+    assert_contains_all(second, &[OTHER_DOC, NODE_SECOND], "the second comment");
+    assert_contains_all(third, &[DOC, NODE_THIRD], "the third comment");
+}
+
+#[test]
+fn list_says_waiting_on_you_only_for_a_comment_an_agent_replied_to_last() {
+    let server = mock();
+    let home = logged_in(&server.url);
+    let out = run(&home, &["comment", "list"]);
+    assert_eq!(out.code, 0, "comment list: {}", out.stderr);
+    let text = &out.stdout;
+    let (first, second, third) = (
+        position(text, FIRST),
+        position(text, SECOND),
+        position(text, THIRD),
     );
     assert!(
-        !line(OPEN).contains("changed") && !line(OPEN).contains("removed"),
-        "a comment on a current node is not marked: {:?}",
-        line(OPEN)
+        text[second..third].contains("waiting on you"),
+        "the comment an agent replied to last waits: {text:?}"
+    );
+    assert!(
+        !text[first..second].contains("waiting on you")
+            && !text[third..].contains("waiting on you"),
+        "no other comment says so: {text:?}"
     );
 }
 
 #[test]
-fn list_narrows_to_a_doc_or_a_change_set_and_a_status() {
+fn list_narrows_to_a_doc_or_a_feature_by_name_or_id() {
     let server = mock();
     let home = logged_in(&server.url);
     for (args, name, value) in [
         (vec!["comment", "list", "--doc", DOC], "doc", DOC),
         (
-            vec!["comment", "list", "--changeset", CHANGESET],
-            "changeset",
-            CHANGESET,
+            vec!["comment", "list", "--feature", "checkout"],
+            "feature",
+            CHECKOUT,
+        ),
+        (
+            vec!["comment", "list", "--feature", CHECKOUT],
+            "feature",
+            CHECKOUT,
         ),
     ] {
         let out = run(&home, &args);
         assert_eq!(out.code, 0, "{args:?}: {}", out.stderr);
-        let sent = requests(&server);
-        let (path, query) = split_query(&sent.last().expect("a request").path);
+        let sent = comment_requests(&server);
+        let last = sent.last().expect("a request");
+        assert_agent_request(last);
+        let (path, query) = split_query(&last.path);
         assert_eq!(path, format!("{}/comments", base()), "{args:?}");
         assert_eq!(query.get(name).map(String::as_str), Some(value), "{args:?}");
     }
+    assert!(
+        requests(&server).iter().all(|r| r.method == "GET"),
+        "list only reads"
+    );
+}
 
-    let out = run(
-        &home,
-        &[
-            "comment",
-            "list",
-            "--changeset",
-            CHANGESET,
-            "--status",
-            "open",
-        ],
+#[test]
+fn list_of_a_feature_that_does_not_exist_is_one_line_and_asks_for_no_comments() {
+    let server = mock();
+    let home = logged_in(&server.url);
+    let out = run(&home, &["comment", "list", "--feature", "Search"]);
+    assert_one_line_error(&out, &["Search"]);
+    assert!(
+        comment_requests(&server).is_empty(),
+        "no comments were asked for: {:?}",
+        requests(&server)
     );
-    assert_eq!(out.code, 0, "{}", out.stderr);
-    let sent = requests(&server);
-    let (_, query) = split_query(&sent.last().expect("a request").path);
-    assert_eq!(
-        query.get("changeset").map(String::as_str),
-        Some(CHANGESET),
-        "{query:?}"
-    );
-    assert_eq!(
-        query.get("status").map(String::as_str),
-        Some("open"),
-        "{query:?}"
-    );
-    assert!(sent.iter().all(|r| r.method == "GET"), "list only reads");
 }
 
 #[test]
@@ -409,67 +479,44 @@ fn list_with_json_prints_the_apis_answer() {
     );
 }
 
-#[test]
-fn list_refuses_a_doc_and_a_change_set_together_and_a_status_that_is_none() {
-    let server = mock();
-    let home = logged_in(&server.url);
-    let out = run(
-        &home,
-        &["comment", "list", "--doc", DOC, "--changeset", CHANGESET],
-    );
-    assert_one_line_error(&out, &["--doc", "--changeset"]);
-    let out = run(&home, &["comment", "list", "--status", "done"]);
-    assert_one_line_error(&out, &["done"]);
-    assert!(requests(&server).is_empty(), "nothing was sent");
-}
-
 // ---------------------------------------------------------------------------
 // omni comment reply
 // ---------------------------------------------------------------------------
 
 #[test]
-fn reply_sends_the_text_from_a_file_or_standard_input() {
+fn reply_sends_the_text_given_after_the_id() {
     let server = mock();
     let home = logged_in(&server.url);
-    let file = home.join("reply.md");
-    std::fs::write(&file, "On phones the copy stacks above the shot.\n").expect("write the reply");
     let out = run(
         &home,
         &[
             "comment",
             "reply",
-            OPEN,
-            "--body-file",
-            file.to_str().expect("a UTF-8 path"),
+            THIRD,
+            "It is: it says who the hero is for.",
         ],
     );
     assert_eq!(out.code, 0, "comment reply: {}", out.stderr);
     assert!(
-        out.stdout.contains(OPEN),
+        out.stdout.contains(THIRD),
         "names the comment: {:?}",
         out.stdout
     );
     let sent = only_request(&server);
     assert_eq!(sent.method, "POST");
-    assert_eq!(sent.path, format!("{}/comments/{OPEN}/replies", base()));
+    assert_eq!(sent.path, format!("{}/comments/{THIRD}/replies", base()));
     assert_eq!(
-        body_of(&sent)["text"].as_str().map(str::trim),
-        Some("On phones the copy stacks above the shot."),
-        "{:?}",
-        body_of(&sent)
+        body_of(&sent),
+        json!({ "text": "It is: it says who the hero is for." })
     );
 
-    let out = run_with_stdin(
-        &home,
-        &["comment", "reply", OPEN],
-        b"Fixed in the next version.",
-    );
-    assert_eq!(out.code, 0, "comment reply from stdin: {}", out.stderr);
-    let sent = requests(&server);
-    assert_eq!(sent.len(), 2, "{sent:?}");
+    let out = run(&home, &["comment", "reply", THIRD, "Done.", "--json"]);
+    assert_eq!(out.code, 0, "{}", out.stderr);
     assert_eq!(
-        body_of(&sent[1])["text"].as_str().map(str::trim),
-        Some("Fixed in the next version.")
+        out.json()["comment"]["replies"][0]["text"],
+        "Done.",
+        "{}",
+        out.stdout
     );
 }
 
@@ -477,9 +524,9 @@ fn reply_sends_the_text_from_a_file_or_standard_input() {
 fn reply_needs_an_id_and_a_text() {
     let server = mock();
     let home = logged_in(&server.url);
-    let out = run_with_stdin(&home, &["comment", "reply"], b"Hello");
+    let out = run(&home, &["comment", "reply"]);
     assert_one_line_error(&out, &["omni comment reply"]);
-    let out = run_with_stdin(&home, &["comment", "reply", OPEN], b"  \n ");
+    let out = run(&home, &["comment", "reply", THIRD, "  \n "]);
     assert_one_line_error(&out, &["text"]);
     assert!(requests(&server).is_empty(), "nothing was sent");
 }
@@ -488,66 +535,54 @@ fn reply_needs_an_id_and_a_text() {
 fn reply_to_an_unknown_comment_is_one_line_with_not_found() {
     let server = mock();
     let home = logged_in(&server.url);
-    let out = run_with_stdin(&home, &["comment", "reply", UNKNOWN_ID], b"Hello");
+    let out = run(&home, &["comment", "reply", UNKNOWN_ID, "Hello"]);
     assert_one_line_error(&out, &["not_found"]);
 }
 
 // ---------------------------------------------------------------------------
-// omni comment addressed
+// No statuses
 // ---------------------------------------------------------------------------
 
 #[test]
-fn addressed_names_the_version_that_fixes_the_comment() {
+fn the_status_commands_are_gone_and_send_nothing() {
     let server = mock();
     let home = logged_in(&server.url);
-    let out = run(&home, &["comment", "addressed", OPEN, "--version", V2]);
-    assert_eq!(out.code, 0, "comment addressed: {}", out.stderr);
-    assert_contains_all(&out.stdout, &[OPEN, "addressed"], "the output");
-    let sent = only_request(&server);
-    assert_eq!(sent.method, "POST");
-    assert_eq!(sent.path, format!("{}/comments/{OPEN}/addressed", base()));
-    assert_eq!(body_of(&sent), json!({ "version_id": V2 }));
-
-    let out = run(
-        &home,
-        &["comment", "addressed", OPEN, "--version", V2, "--json"],
-    );
-    assert_eq!(out.code, 0, "{}", out.stderr);
-    assert_eq!(out.json()["comment"]["addressed_in"], V2, "{}", out.stdout);
-}
-
-#[test]
-fn addressed_needs_an_id_and_a_version() {
-    let server = mock();
-    let home = logged_in(&server.url);
-    let out = run(&home, &["comment", "addressed", OPEN]);
-    assert_one_line_error(&out, &["--version"]);
-    let out = run(&home, &["comment", "addressed", "--version", V2]);
-    assert_one_line_error(&out, &["omni comment addressed"]);
-    assert!(requests(&server).is_empty(), "nothing was sent");
-}
-
-#[test]
-fn addressed_that_the_api_refuses_is_one_line_with_its_error_code() {
-    let server = mock();
-    let home = logged_in(&server.url);
-    let out = run(&home, &["comment", "addressed", RESOLVED, "--version", V2]);
-    assert_one_line_error(&out, &["invalid_transition"]);
-}
-
-#[test]
-fn resolving_and_reopening_are_the_humans_and_send_nothing() {
-    let server = mock();
-    let home = logged_in(&server.url);
-    for action in ["resolve", "reopen"] {
-        let out = run(&home, &["comment", action, OPEN]);
-        assert_one_line_error(&out, &["human"]);
+    for args in [
+        vec!["comment", "addressed", FIRST, "--version", NEW_VERSION],
+        vec!["comment", "resolve", FIRST],
+        vec!["comment", "reopen", FIRST],
+    ] {
+        let out = run(&home, &args);
+        assert_one_line_error(&out, &[]);
     }
     assert!(requests(&server).is_empty(), "nothing was sent");
 }
 
+#[test]
+fn help_lists_list_and_reply_and_no_status_command() {
+    let home = Scratch::new("help");
+    let help = omni(&home.path).args(&["--help"]).run();
+    assert_eq!(help.code, 0, "{}", help.stderr);
+    assert_contains_all(
+        &help.stdout,
+        &["omni comment list", "omni comment reply"],
+        "omni --help",
+    );
+    for gone in [
+        "omni comment addressed",
+        "omni comment resolve",
+        "omni comment reopen",
+    ] {
+        assert!(
+            !help.stdout.contains(gone),
+            "omni --help no longer lists {gone:?}: {:?}",
+            help.stdout
+        );
+    }
+}
+
 // ---------------------------------------------------------------------------
-// omni version save --remove-commented
+// omni version save --remove-commented (US-038, until US-107)
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -601,12 +636,12 @@ fn version_save_that_would_remove_commented_nodes_lists_those_comments() {
         &out.stderr,
         &[
             "--remove-commented",
-            OPEN,
-            NODE_OPEN,
-            OPEN_TEXT,
-            REMOVED,
-            NODE_REMOVED,
-            REMOVED_TEXT,
+            FIRST,
+            NODE_FIRST,
+            FIRST_TEXT,
+            THIRD,
+            NODE_THIRD,
+            THIRD_TEXT,
         ],
         "standard error",
     );
@@ -623,25 +658,4 @@ fn version_save_that_would_remove_commented_nodes_lists_those_comments() {
         ],
     );
     assert_eq!(out.code, 0, "with --remove-commented: {}", out.stderr);
-}
-
-// ---------------------------------------------------------------------------
-// Help
-// ---------------------------------------------------------------------------
-
-#[test]
-fn help_lists_the_comment_commands_and_remove_commented() {
-    let home = Scratch::new("help");
-    let help = omni(&home.path).args(&["--help"]).run();
-    assert_eq!(help.code, 0, "{}", help.stderr);
-    assert_contains_all(
-        &help.stdout,
-        &[
-            "omni comment list",
-            "omni comment reply",
-            "omni comment addressed",
-            "--remove-commented",
-        ],
-        "omni --help",
-    );
 }

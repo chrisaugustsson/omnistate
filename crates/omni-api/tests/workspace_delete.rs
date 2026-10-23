@@ -617,7 +617,8 @@ async fn fill_workspace(conn: &mut PgConnection, workspace: &str, membership: &s
                 .expect("insert a conflict");
             }
 
-            // US-038: a comment on a node of the version and a reply to it.
+            // US-038: a comment on a node of the version (of the doc, after
+            // US-106) and a reply to it.
             // Both are seeded as soon as their tables exist
             // (tests/comments.rs pins their names and the columns without a
             // default), for the same reason as above.
@@ -627,19 +628,40 @@ async fn fill_workspace(conn: &mut PgConnection, workspace: &str, membership: &s
                     .await
                     .expect("look for the comments table");
             if comments_exist {
-                let comment_id: String = sqlx::query_scalar(
-                    "INSERT INTO comments (workspace_id, version_id, node, author, body) \
-                     VALUES ($1::uuid, $2::uuid, 'k3f9x2qa', $3::jsonb, 'deletion test') \
-                     RETURNING id::text",
-                )
-                .bind(workspace)
-                .bind(&version_id)
-                .bind(
-                    r#"{"kind":"agent","run":"run-1","role":"critic","model":null,"harness":null}"#,
+                // US-106: a comment belongs to a doc and a node of its head
+                // once the table has `doc_id`; before that, to a version.
+                let on_docs: bool = sqlx::query_scalar(
+                    "SELECT EXISTS (SELECT 1 FROM information_schema.columns \
+                     WHERE table_schema = 'public' AND table_name = 'comments' \
+                       AND column_name = 'doc_id')",
                 )
                 .fetch_one(&mut *conn)
                 .await
-                .expect("insert a comment");
+                .expect("look for the comments' doc column");
+                let (sql, record) = if on_docs {
+                    (
+                        "INSERT INTO comments (workspace_id, doc_id, node, author, body) \
+                         VALUES ($1::uuid, $2::uuid, 'k3f9x2qa', $3::jsonb, 'deletion test') \
+                         RETURNING id::text",
+                        &doc_id,
+                    )
+                } else {
+                    (
+                        "INSERT INTO comments (workspace_id, version_id, node, author, body) \
+                         VALUES ($1::uuid, $2::uuid, 'k3f9x2qa', $3::jsonb, 'deletion test') \
+                         RETURNING id::text",
+                        &version_id,
+                    )
+                };
+                let comment_id: String = sqlx::query_scalar(sql)
+                    .bind(workspace)
+                    .bind(record)
+                    .bind(
+                        r#"{"kind":"agent","run":"run-1","role":"critic","model":null,"harness":null}"#,
+                    )
+                    .fetch_one(&mut *conn)
+                    .await
+                    .expect("insert a comment");
                 let replies_exist: bool =
                     sqlx::query_scalar("SELECT to_regclass('public.comment_replies') IS NOT NULL")
                         .fetch_one(&mut *conn)

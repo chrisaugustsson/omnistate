@@ -36,9 +36,11 @@
 //!     superseded, is not listed.
 //!   - `changesets`: the change sets whose status is `in_review`, each as in
 //!     `changesets`.
-//!   - `comments`: the comments whose status is `addressed`, each the Comment
-//!     that `GET /comments/{comment_id}` answers. A resolved or reopened one
-//!     is not listed.
+//!   - `comments`: the comments whose latest reply is an agent's (US-106:
+//!     comments have no status any more, and their `waiting_on_you` is
+//!     `true`), each the Comment that `GET /comments/{comment_id}` answers. A
+//!     comment without replies, one whose latest reply is the human's and one
+//!     that the human deleted are not listed.
 //!   - `questions`: the posts of type `question` that an agent wrote, in any
 //!     phase (the human sees sealed phases too), each the Post that `GET
 //!     /posts/{post_id}` answers the human, until a post of the human links to
@@ -50,7 +52,7 @@
 //!   Nothing of another project is listed anywhere.
 //! - Every change that moves an item onto or off these lists already emits
 //!   its event on the project's live channel (`decision.*`, `changeset.*`,
-//!   `comment.status_changed`, `post.created`); the web app reloads the home
+//!   `comment.replied`, `comment.deleted`, `post.created`); the web app reloads the home
 //!   on the project's events.
 //!
 //! US-063 ties the home to the project's features (Q51; features are those of
@@ -810,27 +812,42 @@ fn comment(f: &Fixture, client: &Client, project: &str, version: &str, node: &st
     )
 }
 
-/// `auth` acts on the comment with `action` and `body`.
-fn act_on_comment(
+/// `auth` replies `text` to the comment.
+fn reply_to_comment(
     f: &Fixture,
     client: &Client,
     auth: &Auth,
     project: &str,
     comment: &str,
-    action: &str,
-    body: &Value,
+    text: &str,
 ) {
-    let status = if action == "replies" { 201 } else { 200 };
     must(
         call(
             client,
             "POST",
-            &format!("{}/comments/{comment}/{action}", project_base(f, project)),
+            &format!("{}/comments/{comment}/replies", project_base(f, project)),
             auth,
-            Some(body),
+            Some(&json!({ "text": text })),
         ),
-        status,
-        &format!("act on the comment: {action}"),
+        201,
+        "reply to the comment",
+    );
+}
+
+/// The human deletes the comment (US-106).
+fn delete_comment(f: &Fixture, client: &Client, project: &str, comment: &str) {
+    let response = call(
+        client,
+        "DELETE",
+        &format!("{}/comments/{comment}", project_base(f, project)),
+        &human(f),
+        None,
+    );
+    assert_eq!(
+        response.status,
+        204,
+        "delete the comment: {}",
+        response.text()
     );
 }
 
@@ -1112,82 +1129,55 @@ fn change_sets_wait_for_the_human_while_they_are_in_review() {
 }
 
 #[test]
-fn comments_wait_for_the_human_while_they_are_marked_addressed() {
+fn comments_wait_for_the_human_while_an_agent_replied_last() {
     let (f, client) = ready();
     let project = new_project(f, client);
-    let (changeset, doc, node, v1) = changeset_with_version(f, client, &project);
-    let open = comment(f, client, &project, &v1, &node);
-    let resolving = comment(f, client, &project, &v1, &node);
-    let reopening = comment(f, client, &project, &v1, &node);
-    let replied = comment(f, client, &project, &v1, &node);
-    insert_paragraph(f, client, &project, &changeset, &doc);
-    let v2 = save(f, client, &project, &changeset, &doc);
-    for addressed in [&resolving, &reopening, &replied] {
-        act_on_comment(
-            f,
-            client,
-            &author(f),
-            &project,
-            addressed,
-            "addressed",
-            &json!({ "version_id": v2 }),
-        );
+    let (_, _, node, v1) = changeset_with_version(f, client, &project);
+    let unanswered = comment(f, client, &project, &v1, &node);
+    let answered = comment(f, client, &project, &v1, &node);
+    let answered_back = comment(f, client, &project, &v1, &node);
+    let deleting = comment(f, client, &project, &v1, &node);
+    for replied in [&answered, &answered_back, &deleting] {
+        reply_to_comment(f, client, &author(f), &project, replied, "Shorter now.");
     }
 
     let first = home(f, client, &project);
     assert_eq!(
         ids_at(&first, "/waiting/comments"),
-        vec![resolving.clone(), reopening.clone(), replied.clone()],
-        "the comments marked addressed wait, oldest first, and the open one does not: {first}"
+        vec![answered.clone(), answered_back.clone(), deleting.clone()],
+        "the comments an agent replied to last wait, oldest first, and the unanswered one does not: {first}"
     );
     assert!(
-        !ids_at(&first, "/waiting/comments").contains(&open),
+        !ids_at(&first, "/waiting/comments").contains(&unanswered),
         "{first}"
     );
     assert_eq!(
-        item_at(&first, "/waiting/comments", &resolving),
+        item_at(&first, "/waiting/comments", &answered),
         read(
             f,
             client,
             &human(f),
             &project,
-            &format!("/comments/{resolving}")
+            &format!("/comments/{answered}")
         )["comment"],
         "the home lists the comment as its read answers it"
     );
 
-    act_on_comment(
+    reply_to_comment(
         f,
         client,
         &human(f),
         &project,
-        &resolving,
-        "resolve",
-        &json!({}),
+        &answered_back,
+        "Still long.",
     );
-    act_on_comment(
-        f,
-        client,
-        &human(f),
-        &project,
-        &reopening,
-        "reopen",
-        &json!({}),
-    );
-    act_on_comment(
-        f,
-        client,
-        &critic(f),
-        &project,
-        &replied,
-        "replies",
-        &json!({ "text": "Shorter now." }),
-    );
+    delete_comment(f, client, &project, &deleting);
+    reply_to_comment(f, client, &critic(f), &project, &unanswered, "Shortened.");
     let after = home(f, client, &project);
     assert_eq!(
         ids_at(&after, "/waiting/comments"),
-        vec![replied.clone()],
-        "resolved and reopened comments no longer wait; a reply leaves an addressed one waiting: {after}"
+        vec![unanswered.clone(), answered.clone()],
+        "a comment the human answered or deleted no longer waits; one an agent answered now does: {after}"
     );
 }
 
@@ -1565,22 +1555,12 @@ fn one_of_each_waiting(
     project: &str,
     feature: Option<&str>,
 ) -> (String, String, String, String) {
-    let (changeset, doc, node, v1) = changeset_with_version_in(f, client, project, feature);
+    let (changeset, _, node, v1) = changeset_with_version_in(f, client, project, feature);
     let thread = new_thread(f, client, project, &changeset, false);
     let question = post(f, client, &critic(f), project, &thread, "question", &[]);
     let decision = propose(f, client, project, &thread);
     let comment = comment(f, client, project, &v1, &node);
-    insert_paragraph(f, client, project, &changeset, &doc);
-    let v2 = save(f, client, project, &changeset, &doc);
-    act_on_comment(
-        f,
-        client,
-        &author(f),
-        project,
-        &comment,
-        "addressed",
-        &json!({ "version_id": v2 }),
-    );
+    reply_to_comment(f, client, &author(f), project, &comment, "Shorter now.");
     submit(f, client, project, &changeset);
     (decision, changeset, comment, question)
 }
@@ -1639,17 +1619,7 @@ fn a_comment_takes_its_feature_from_its_doc() {
     let node = insert_paragraph(f, client, &project, &changeset, &global);
     let v1 = save(f, client, &project, &changeset, &global);
     let on_global = comment(f, client, &project, &v1, &node);
-    insert_paragraph(f, client, &project, &changeset, &global);
-    let v2 = save(f, client, &project, &changeset, &global);
-    act_on_comment(
-        f,
-        client,
-        &author(f),
-        &project,
-        &on_global,
-        "addressed",
-        &json!({ "version_id": v2 }),
-    );
+    reply_to_comment(f, client, &author(f), &project, &on_global, "Shorter now.");
 
     let home = home(f, client, &project);
     assert_eq!(
@@ -1658,9 +1628,9 @@ fn a_comment_takes_its_feature_from_its_doc() {
         "{home}"
     );
     assert_eq!(
-        item_at(&home, "/waiting/comments", &on_global)["changeset_id"],
-        changeset,
-        "the comment is on a version of the feature's change set: {home}"
+        item_at(&home, "/waiting/comments", &on_global)["doc_id"],
+        global,
+        "the comment is on the global doc: {home}"
     );
     assert_feature_of(&home, "/waiting/comments", &on_global, &Value::Null);
     assert_eq!(

@@ -50,9 +50,9 @@
 //!   direction is text that nothing else holds, and linked `{changeset_id}` to
 //!   it; the decision is still `proposed`. Once the comment routes exist
 //!   (US-038), the human also commented on the paragraph of `{version_id}`
-//!   (the comment `{comment_id}`, whose text nothing else holds), the
-//!   workspace's agent replied to it and marked it addressed in
-//!   `{other_version_id}`. Once the feature routes exist (US-059), the
+//!   (the comment `{comment_id}`, whose text nothing else holds) and the
+//!   workspace's agent replied to it (and, while comments had a status,
+//!   marked it addressed in `{other_version_id}`; US-106 removed statuses). Once the feature routes exist (US-059), the
 //!   workspace's agent also created the feature `{feature_id}` in
 //!   `{project_id}`, whose name is text that nothing else holds. The doc list
 //!   (US-061) lists `{doc_id}` among the project's docs. Once the scope-level
@@ -545,20 +545,14 @@ const CASES: &[Case] = &[
     ),
     case(
         "POST",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/comments/{comment_id}/addressed",
-        Some(r#"{"version_id":"<other_version_id>"}"#),
+        "/api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}/comments",
+        Some(r#"{"node":"<comment_node>","text":"intruder"}"#),
         Kind::Workspace,
     ),
     case(
-        "POST",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/comments/{comment_id}/resolve",
-        Some("{}"),
-        Kind::Workspace,
-    ),
-    case(
-        "POST",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/comments/{comment_id}/reopen",
-        Some("{}"),
+        "DELETE",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/comments/{comment_id}",
+        None,
         Kind::Workspace,
     ),
     case(
@@ -964,6 +958,13 @@ fn has_comment_routes() -> bool {
             && r.path
                 == "/api/v1/w/{workspace_id}/projects/{project_id}/versions/{version_id}/comments"
     })
+}
+
+/// Whether the registry has the route `method path`.
+fn has_route(method: &str, path: &str) -> bool {
+    registry()
+        .iter()
+        .any(|r| r.method == method && r.path == path)
 }
 
 /// Whether the router has the feature routes (US-059) yet.
@@ -1952,18 +1953,25 @@ fn fixture() -> &'static Fixture {
                     201,
                     "the agent replies to the comment",
                 );
-                let body = json!({ "version_id": other_version_id }).to_string();
-                must(
-                    call(
-                        client,
-                        "POST",
-                        &format!("{base}/comments/{comment}/addressed"),
-                        &agent,
-                        Some(&body),
-                    ),
-                    200,
-                    "the agent marks the comment addressed",
-                );
+                // Comments have no status after US-106; mark it addressed
+                // only while the route exists.
+                if has_route(
+                    "POST",
+                    "/api/v1/w/{workspace_id}/projects/{project_id}/comments/{comment_id}/addressed",
+                ) {
+                    let body = json!({ "version_id": other_version_id }).to_string();
+                    must(
+                        call(
+                            client,
+                            "POST",
+                            &format!("{base}/comments/{comment}/addressed"),
+                            &agent,
+                            Some(&body),
+                        ),
+                        200,
+                        "the agent marks the comment addressed",
+                    );
+                }
                 (comment, node, text)
             } else {
                 (String::new(), String::new(), String::new())
@@ -4307,7 +4315,7 @@ fn the_decision_calls_of_the_attacks_work_for_the_workspace_that_owns_the_record
 // Comments (US-038)
 // ---------------------------------------------------------------------------
 
-const COMMENT_ROUTES: [(&str, &str, Access); 7] = [
+const COMMENT_ROUTES: [(&str, &str, Access); 6] = [
     (
         "POST",
         "/api/v1/w/{workspace_id}/projects/{project_id}/versions/{version_id}/comments",
@@ -4328,19 +4336,15 @@ const COMMENT_ROUTES: [(&str, &str, Access); 7] = [
         "/api/v1/w/{workspace_id}/projects/{project_id}/comments/{comment_id}/replies",
         Access::Both,
     ),
+    // US-106: comments on the live head, and the human's delete.
     (
         "POST",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/comments/{comment_id}/addressed",
-        Access::Agent,
+        "/api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}/comments",
+        Access::Both,
     ),
     (
-        "POST",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/comments/{comment_id}/resolve",
-        Access::Human,
-    ),
-    (
-        "POST",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/comments/{comment_id}/reopen",
+        "DELETE",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/comments/{comment_id}",
         Access::Human,
     ),
 ];
@@ -4372,11 +4376,12 @@ fn the_comment_routes_are_in_the_registry_and_the_suite_attacks_them() {
 #[test]
 fn the_comment_calls_of_the_attacks_work_for_the_workspace_that_owns_the_records() {
     // The control for the comment routes: in the owner's workspace, the
-    // owner's human comments with the body of the case, both the agent and
-    // the human reply with the body of the case and read the comment, the
-    // seeded comment and the list, the agent marks the new comment addressed
-    // with the body of the case, and the human resolves and reopens it with
-    // the bodies of the cases.
+    // owner's human comments on the seeded version with the body of the case,
+    // both the agent and the human reply with the body of the case and read
+    // the comment, the seeded comment and the list; the agent comments on a
+    // paragraph of a live doc's head with the body of the case (its node put
+    // in for `<comment_node>`), and the human deletes that comment with the
+    // call of the case.
     let (f, client) = ready();
     let _guard = serial();
     let key = Auth::Key(&f.a.key);
@@ -4447,34 +4452,83 @@ fn the_comment_calls_of_the_attacks_work_for_the_workspace_that_owns_the_records
             "{listed}"
         );
     }
-    let marked = must(
+
+    // A live doc of the owner's with one paragraph in its head.
+    let created = must(
         call(
             client,
             "POST",
-            &format!("{project}/comments/{comment}/addressed"),
+            &format!("{project}/docs"),
             &key,
-            body(4).as_deref(),
+            Some(
+                &json!({ "kind": "html", "pillar": "spec", "title": unique("owner-live-doc") })
+                    .to_string(),
+            ),
+        ),
+        201,
+        "create a doc without a change set",
+    );
+    let live = created["doc"]["id"].as_str().expect("an id").to_string();
+    let edited = must(
+        call(
+            client,
+            "POST",
+            &format!("{project}/docs/{live}/ops"),
+            &key,
+            Some(
+                &json!({ "ops": [{
+                    "op": "insert",
+                    "parent": null,
+                    "position": { "after": null },
+                    "content": "<p>The owner's paragraph.</p>"
+                }] })
+                .to_string(),
+            ),
         ),
         200,
-        "mark the comment addressed",
+        "write a paragraph to the live doc's head",
     );
-    assert_eq!(marked["comment"]["status"], "addressed", "{marked}");
-    for (index, status) in [(5, "resolved"), (6, "open")] {
-        let (_, template, _) = COMMENT_ROUTES[index];
-        let action = template.rsplit('/').next().expect("the action");
-        let acted = must(
-            call(
-                client,
-                "POST",
-                &format!("{project}/comments/{comment}/{action}"),
-                &human,
-                body(index).as_deref(),
-            ),
-            200,
-            &format!("the human acts on the comment: {action}"),
-        );
-        assert_eq!(acted["comment"]["status"], status, "{acted}");
-    }
+    let node = edited["results"][0]["node"].as_str().expect("a node");
+    let (_, template, _) = COMMENT_ROUTES[4];
+    let live_body = case_named("POST", template)
+        .body
+        .map(|b| b.replace("<comment_node>", node));
+    let pinned = must(
+        call(
+            client,
+            "POST",
+            &format!("{project}/docs/{live}/comments"),
+            &key,
+            live_body.as_deref(),
+        ),
+        201,
+        "comment on the live doc's head",
+    );
+    let pinned = pinned["comment"]["id"].as_str().expect("an id");
+    let response = call(
+        client,
+        "DELETE",
+        &format!("{project}/comments/{pinned}"),
+        &human,
+        None,
+    );
+    assert_eq!(
+        response.status,
+        204,
+        "delete the comment: {}",
+        response.text()
+    );
+    must(
+        call(
+            client,
+            "GET",
+            &format!("{project}/comments/{comment}"),
+            &human,
+            None,
+        ),
+        200,
+        "the other comment is still there",
+    );
 }
 
 // ---------------------------------------------------------------------------
