@@ -54,7 +54,8 @@
 //!   workspace's agent replied to it and marked it addressed in
 //!   `{other_version_id}`. Once the feature routes exist (US-059), the
 //!   workspace's agent also created the feature `{feature_id}` in
-//!   `{project_id}`, whose name is text that nothing else holds.
+//!   `{project_id}`, whose name is text that nothing else holds. The doc list
+//!   (US-061) lists `{doc_id}` among the project's docs.
 //! - Workspace A's credentials against workspace B's workspace and IDs, and
 //!   against B's IDs under A's own workspace, are always 404
 //!   `{"error": "not_found"}` with nothing of B in the body, and the answer is
@@ -567,6 +568,12 @@ const CASES: &[Case] = &[
     case(
         "GET",
         "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}",
+        None,
+        Kind::Workspace,
+    ),
+    case(
+        "GET",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/docs",
         None,
         Kind::Workspace,
     ),
@@ -4507,6 +4514,57 @@ fn the_feature_calls_of_the_attacks_work_for_the_workspace_that_owns_the_records
             seeded["feature"]["name"],
             f.a.feature_name.as_str(),
             "{seeded}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The doc list (US-061)
+// ---------------------------------------------------------------------------
+
+const DOCS_ROUTE: &str = "/api/v1/w/{workspace_id}/projects/{project_id}/docs";
+
+#[test]
+fn the_doc_list_route_is_in_the_registry_and_the_suite_attacks_it() {
+    let entry = registry()
+        .into_iter()
+        .find(|r| r.method == "GET" && r.path == DOCS_ROUTE)
+        .unwrap_or_else(|| panic!("the registry has no route GET {DOCS_ROUTE}"));
+    assert_eq!(entry.access, Access::Both, "GET {DOCS_ROUTE}");
+    assert!(
+        matches!(case_for(&entry).kind, Kind::Workspace),
+        "GET {DOCS_ROUTE} is a workspace route that the suite attacks"
+    );
+}
+
+#[test]
+fn the_doc_list_of_the_attacks_works_for_the_workspace_that_owns_the_records() {
+    // The control for the doc list: in the owner's workspace, the agent and
+    // the human list the project's docs, which include the seeded doc and
+    // none of the other workspace's.
+    let (f, client) = ready();
+    let _guard = serial();
+    let key = Auth::Key(&f.a.key);
+    let human = Auth::Session(&f.a.token);
+    for auth in [&key, &human] {
+        let listed = must(
+            call(client, "GET", &fill(DOCS_ROUTE, &f.a, &f.a), auth, None),
+            200,
+            "list the docs",
+        );
+        let ids: Vec<&str> = listed["docs"]
+            .as_array()
+            .unwrap_or_else(|| panic!("a list of docs: {listed}"))
+            .iter()
+            .filter_map(|item| item["id"].as_str())
+            .collect();
+        assert!(
+            ids.contains(&f.a.doc_id.as_str()),
+            "the list has the seeded doc: {listed}"
+        );
+        assert!(
+            !ids.contains(&f.b.doc_id.as_str()),
+            "the list has no doc of the other workspace: {listed}"
         );
     }
 }

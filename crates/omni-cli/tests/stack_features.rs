@@ -292,3 +292,97 @@ fn a_feature_is_created_listed_and_shown_from_the_command_line() {
     assert_eq!(shown.code, 0, "{}", shown.stderr);
     assert_eq!(shown.json()["feature"]["id"], wish_list.as_str());
 }
+
+// US-061: `omni doc list` against the real API: a doc takes the scope of the
+// change set that creates it, and the list prints it.
+#[test]
+fn doc_list_prints_the_scope_of_each_doc_from_the_command_line() {
+    let f = fixture();
+    let home = agent_home(f);
+    let project = unique("shop");
+    let created = run(&home, &["project", "create", &project]);
+    assert_eq!(created.code, 0, "project create: {}", created.stderr);
+    let created = run(
+        &home,
+        &["feature", "create", "Checkout", "--project", &project],
+    );
+    assert_eq!(created.code, 0, "feature create: {}", created.stderr);
+
+    let changeset = |extra: &[&str]| {
+        let out = run(
+            &home,
+            &[
+                &[
+                    "changeset",
+                    "create",
+                    "--title",
+                    "Docs",
+                    "--project",
+                    &project,
+                    "--json",
+                ][..],
+                extra,
+            ]
+            .concat(),
+        );
+        assert_eq!(out.code, 0, "changeset create {extra:?}: {}", out.stderr);
+        out.json()["changeset"]["id"]
+            .as_str()
+            .expect("an id")
+            .to_string()
+    };
+    let global = changeset(&["--global"]);
+    let checkout = changeset(&["--feature", "Checkout"]);
+    let doc = |changeset: &str, kind: &str, module: &str, title: &str| {
+        let out = run(
+            &home,
+            &[
+                "doc",
+                "create",
+                "--changeset",
+                changeset,
+                "--kind",
+                kind,
+                "--module",
+                module,
+                "--title",
+                title,
+                "--project",
+                &project,
+                "--json",
+            ],
+        );
+        assert_eq!(out.code, 0, "doc create {title}: {}", out.stderr);
+        out.json()["doc"]["id"].as_str().expect("an id").to_string()
+    };
+    let prd = doc(&global, "html", "prd", "Brand PRD");
+    let architecture = doc(&checkout, "html", "architecture", "Checkout architecture");
+
+    let listed = run(&home, &["doc", "list", "--project", &project]);
+    assert_eq!(listed.code, 0, "doc list: {}", listed.stderr);
+    assert_eq!(
+        non_empty_lines(&listed.stdout),
+        [
+            format!("{prd}  project  html  prd  Brand PRD"),
+            format!("{architecture}  Checkout  html  architecture  Checkout architecture"),
+        ],
+        "the docs in creation order with their scope"
+    );
+    for (filter, expected) in [
+        (&["--feature", "Checkout"][..], &architecture),
+        (&["--global"][..], &prd),
+    ] {
+        let out = run(
+            &home,
+            &[&["doc", "list", "--project", &project][..], filter].concat(),
+        );
+        assert_eq!(out.code, 0, "doc list {filter:?}: {}", out.stderr);
+        let lines = non_empty_lines(&out.stdout);
+        assert_eq!(lines.len(), 1, "doc list {filter:?}: {:?}", out.stdout);
+        assert!(
+            lines[0].starts_with(expected.as_str()),
+            "doc list {filter:?} lists {expected}: {:?}",
+            lines[0]
+        );
+    }
+}

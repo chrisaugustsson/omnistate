@@ -422,3 +422,36 @@ fn the_document_describes_the_feature_of_change_sets_and_threads() {
         "GET .../changesets documents the query parameter `feature`: {list}"
     );
 }
+
+// US-061: a doc belongs to the project or one of its features, so the doc
+// body carries `feature_id`, and the project's docs are listed with the
+// `feature` filter.
+#[test]
+fn the_document_describes_the_feature_of_docs_and_the_doc_list() {
+    let docs = "/api/v1/w/{workspace_id}/projects/{project_id}/docs";
+    let routes = registry();
+    let entry = find(&routes, "GET", docs)
+        .unwrap_or_else(|| panic!("the registry has no entry for GET {docs}"));
+    assert_eq!(entry.access, Access::Both, "GET {docs}");
+
+    let server = TestServer::start(&offline_config());
+    let document = openapi(&server);
+    let body = component(&document, "DocBody");
+    assert!(
+        body["properties"]["feature_id"].is_object(),
+        "DocBody has the field feature_id: {body}"
+    );
+    let list = component(&document, "DocListResponse");
+    assert!(
+        list["properties"]["docs"].is_object(),
+        "DocListResponse has the field docs: {list}"
+    );
+    let get = &document["paths"][docs]["get"];
+    let parameters = get["parameters"].as_array().cloned().unwrap_or_default();
+    assert!(
+        parameters
+            .iter()
+            .any(|p| p["name"] == "feature" && p["in"] == "query"),
+        "GET .../docs documents the query parameter `feature`: {get}"
+    );
+}
