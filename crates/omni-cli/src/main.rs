@@ -125,13 +125,14 @@ Usage:
                                       system's head, a change set's draft or a saved version
   omni tokens export --per-mode --out <dir>
                                       write one file per mode, <dir>/<mode>.tokens.json
-  omni import penpot <file.penpot> --project <id>
+  omni import penpot <file.penpot> --project <id> [--feature <name>]
                                       import a Penpot export (made with 'Export file + libraries')
-                                      through a new change set: the pages and boards as a
-                                      design doc, the components, design tokens (themes
-                                      become modes), colors and typographies as the design
-                                      system doc, the images as attachments; saves a
-                                      version of each doc and prints the change set and a
+                                      straight into the project, with no change set: the
+                                      pages and boards as a design doc (in the feature's UI
+                                      pillar with --feature), the components, design tokens
+                                      (themes become modes), colors and typographies as the
+                                      app-level design system, added to the one the project
+                                      has, the images as attachments; prints the docs and a
                                       report of what could not be imported
   omni thread create --changeset <id> --question <text> --criteria-file <path> [--sealed]
                                       start a thread, a question to work out in a change set;

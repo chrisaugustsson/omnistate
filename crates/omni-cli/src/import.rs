@@ -1,32 +1,32 @@
-//! `omni import penpot <file.penpot> --project <id>`: imports a Penpot export
-//! through a new change set (US-051). The export is read first, with the reader
-//! and converter of the `omni-penpot` crate, so a file that is no export fails
-//! before anything is sent. Then the change set gets
+//! `omni import penpot <file.penpot> --project <id> [--feature <name>]`:
+//! imports a Penpot export straight into the project (US-105), with no change
+//! set, as an agent's own edits are written. The export is read first, with the
+//! reader and converter of the `omni-penpot` crate, so a file that is no export
+//! fails before anything is sent. Then the project gets
 //!
 //! - the images of the export, uploaded as workspace attachments, and the font
 //!   files beside it (`fonts/<family>/`) of the families its texts use, which
 //!   the typography tokens list as their font files (US-057),
-//! - the design system doc: the design tokens (Penpot's themes are the modes)
-//!   and the components, started in the change set unless the project has one.
-//!   When it has one with a mainline version, the import adds to it: its
-//!   tokens and components stay, and a token of the same path takes the
-//!   export's value,
+//! - the design system doc, at the app level: the design tokens (Penpot's
+//!   themes are the modes) and the components, written to its head. The doc is
+//!   started unless the project has one; when it has one, the import adds to
+//!   it: its tokens and components stay with their IDs, and a token of the same
+//!   path takes the export's value,
 //! - the design doc: the pages and boards, with the copies of components as
-//!   instances,
+//!   instances, in the UI pillar of the feature when there is `--feature`, else
+//!   at the app level.
 //!
-//! and a saved version of each doc. The change set is left `open`: the agent
-//! submits it, and the human approves it and merges it like any other change.
 //! Whatever cannot be imported is in the report, which `--json` prints whole.
 
 use std::path::Path;
 
 use omni_penpot::ReadError;
-use omni_penpot::import::{Ids, Import, ImportEntry, import_file};
+use omni_penpot::import::{Ids, Import, ImportEntry, PageTags, import_file};
 
 use crate::args::Args;
 use crate::attach;
-use crate::changesets::{changesets_path, project_id};
-use crate::commands::{Agent, agent, checked, say};
+use crate::changesets::{creation_feature, project_id};
+use crate::commands::{Agent, agent, say};
 use crate::error::{CliError, Result, bail};
 use crate::json::{Value, quote};
 
@@ -34,9 +34,9 @@ use crate::json::{Value, quote};
 /// instances in them, which wait for the IDs of the components they place.
 const MAX_PASSES: usize = 8;
 
-/// What the report says when the project's design system cannot take the
-/// import.
-const WAITING: &str = "the project's design system doc has no mainline version yet, because the change set that started it is not merged, so this change set cannot hold the tokens, colors, typographies and components; they are not imported, the copies of components are plain frames and the token links plain colors. Merge that change set and import again to get them";
+/// How many bytes of tags one batch of boards holds at most. A request body is
+/// limited, and every batch makes the API read and write the design's head.
+const BATCH_BYTES: usize = 1_000_000;
 
 /// How many entries of the report the short output lists.
 const SHOWN: usize = 10;
@@ -66,9 +66,9 @@ fn body_of(field: &str, value: &str) -> String {
     format!("{{{}:{value}}}", quote(field))
 }
 
-/// `omni import penpot <file.penpot> --project <id>`
+/// `omni import penpot <file.penpot> --project <id> [--feature <name>]`
 pub fn penpot(args: &Args, file: Option<&str>) -> Result<()> {
-    const USAGE: &str = "omni import penpot <file.penpot> --project <id>";
+    const USAGE: &str = "omni import penpot <file.penpot> --project <id> [--feature <name>]";
     let Some(file) = file else {
         bail!("this command needs the Penpot export to import, a .penpot file: {USAGE}");
     };
@@ -84,30 +84,11 @@ pub fn penpot(args: &Args, file: Option<&str>) -> Result<()> {
 
     let agent = agent(args)?;
     let project = project_id(args, &agent)?;
+    let feature = creation_feature(args, &agent, &project)?;
     let title = Path::new(file).file_name().map_or_else(
         || file.to_string(),
         |name| name.to_string_lossy().into_owned(),
     );
-    let mut fields = vec![("title", format!("Import of {title}"))];
-    fields.extend(args.run.clone().map(|tag| ("run_tag", tag)));
-    let body = format!(
-        "{{{}}}",
-        fields
-            .iter()
-            .map(|(name, value)| format!("{}:{}", quote(name), quote(value)))
-            .collect::<Vec<_>>()
-            .join(",")
-    );
-    let created = agent.request(
-        "POST",
-        &changesets_path(&agent, &project),
-        Some(body.as_bytes()),
-    )?;
-    let changeset = id_of(
-        &parsed(&created.text(), "the new change set")?,
-        "changeset",
-        "the new change set",
-    )?;
     let base = format!("/api/v1/w/{}/projects/{project}", agent.workspace_id);
 
     let mut ids = Ids::default();
@@ -125,51 +106,30 @@ pub fn penpot(args: &Args, file: Option<&str>) -> Result<()> {
     let components = import.component_count();
     let mut design_system = None;
     if import.has_tokens() || components > 0 {
-        match send_design_system(&agent, &base, &changeset, &mut import, &mut ids)? {
-            Sent::Doc(doc) => design_system = Some(doc),
-            Sent::Waiting => {
-                import = import.without_design_system(WAITING).map_err(read_error)?;
-            }
-        }
+        design_system = Some(send_design_system(&agent, &base, &mut import, &mut ids)?);
     }
     let design = if import.pages.is_empty() {
         None
     } else {
         Some(send_design(
-            &agent, &base, &changeset, &import, &ids, &title,
+            &agent,
+            &base,
+            feature.as_deref(),
+            &import,
+            &ids,
+            &title,
         )?)
     };
 
-    // The design system first, so that the design records its saved version.
-    let mut versions = Vec::new();
-    for doc in design_system.iter().chain(design.iter()) {
-        let response = agent.request(
-            "POST",
-            &format!("{base}/changesets/{changeset}/docs/{doc}/versions"),
-            Some(b"{}"),
-        )?;
-        versions.push(id_of(
-            &parsed(&response.text(), "the saved version")?,
-            "version",
-            "the saved version",
-        )?);
-    }
-    let mut versions = versions.into_iter();
-    let design_system_version = design_system.as_ref().and_then(|_| versions.next());
-    let design_version = design.as_ref().and_then(|_| versions.next());
-
     if args.json {
         say(&json_output(
-            &changeset,
             design.as_deref(),
             design_system.as_deref(),
-            design_version.as_deref(),
-            design_system_version.as_deref(),
             &import.report,
         ));
         return Ok(());
     }
-    say(&format!("imported {title} into change set {changeset}"));
+    say(&format!("imported {title}"));
     let boards: usize = import.pages.iter().map(|page| page.children().len()).sum();
     say(&format!(
         "{} pages, {boards} boards, {} components, {} attachments",
@@ -197,47 +157,35 @@ pub fn penpot(args: &Args, file: Option<&str>) -> Result<()> {
             say(&format!("  and {} more", import.report.len() - SHOWN));
         }
     }
-    say("the change set is open: `omni changeset submit` sends it to review");
     Ok(())
 }
 
-/// What came of the design system.
-enum Sent {
-    /// The design system doc, with the import in its draft.
-    Doc(String),
-    /// The project's design system doc has no mainline version, so only the
-    /// change set that started it has a draft of it.
-    Waiting,
-}
-
-/// The design system doc: the project's, or one started in the change set,
-/// with the tokens and the components of the import in its draft. When the
-/// project's design system has a mainline version, `import` becomes the
-/// import onto it, so that the draft keeps what that version holds.
+/// The project's design system doc, started when it has none, with the tokens
+/// and the components of the import written to its head. When the project's
+/// design system already holds tokens or components, `import` becomes the
+/// import onto it, so that the head keeps what it holds. Returns the doc's ID.
 fn send_design_system(
     agent: &Agent,
     base: &str,
-    changeset: &str,
     import: &mut Import,
     ids: &mut Ids,
-) -> Result<Sent> {
-    let known = agent.request(
-        "GET",
-        &format!("{base}/changesets/{changeset}/tokens"),
-        None,
-    )?;
-    let doc = match parsed(&known.text(), "the tokens")?.str_at("doc_id") {
-        Some(doc) => doc.to_string(),
+) -> Result<String> {
+    let known = agent.request("GET", &format!("{base}/tokens"), None)?;
+    let known = known.text();
+    let doc = match parsed(&known, "the tokens")?.str_at("doc_id") {
+        Some(doc) => {
+            let head = agent.request("GET", &format!("{base}/docs/{doc}/html"), None)?;
+            *import = import
+                .onto_design_system_head(&known, &head.text(), ids)
+                .map_err(read_error)?;
+            doc.to_string()
+        }
         None => {
             let body = format!(
                 "{{\"kind\":\"design-system\",\"pillar\":\"ui\",\"title\":{}}}",
                 quote("Design system")
             );
-            let response = agent.request(
-                "POST",
-                &format!("{base}/changesets/{changeset}/docs"),
-                Some(body.as_bytes()),
-            )?;
+            let response = agent.request("POST", &format!("{base}/docs"), Some(body.as_bytes()))?;
             id_of(
                 &parsed(&response.text(), "the new doc")?,
                 "doc",
@@ -245,81 +193,152 @@ fn send_design_system(
             )?
         }
     };
-    let mainline = agent.request("GET", &format!("{base}/tokens"), None)?;
-    let mainline = mainline.text();
-    if let Some(version) = parsed(&mainline, "the tokens")?.str_at("version_id") {
-        let read = agent.request("GET", &format!("{base}/versions/{version}"), None)?;
-        *import = import
-            .onto_design_system(&mainline, &read.text(), ids)
-            .map_err(read_error)?;
-    }
-    let tokens = agent.request_any(
+    agent.request(
         "PUT",
-        &format!("{base}/changesets/{changeset}/tokens"),
+        &format!("{base}/tokens"),
         Some(body_of("tokens", &import.token_tree_json(ids)).as_bytes()),
     )?;
-    let refused = parsed(&tokens.text(), "the tokens");
-    if tokens.status == 409
-        && refused
-            .ok()
-            .is_some_and(|answer| answer.str_at("error") == Some("no_mainline_version"))
-    {
-        return Ok(Sent::Waiting);
-    }
-    checked(tokens)?;
     if import.component_count() == 0 {
-        return Ok(Sent::Doc(doc));
+        return Ok(doc);
     }
     for _ in 0..MAX_PASSES {
         let rendered = import.component_tags(ids).map_err(read_error)?;
         let response = agent.request(
             "PUT",
-            &format!("{base}/changesets/{changeset}/components"),
+            &format!("{base}/components"),
             Some(body_of("tags", &quote(&rendered.tags)).as_bytes()),
         )?;
         import
             .learn_components(ids, &rendered, &response.text())
             .map_err(read_error)?;
         if rendered.complete {
-            return Ok(Sent::Doc(doc));
+            return Ok(doc);
         }
     }
     bail!(
-        "the components nest too deep to be sent in {MAX_PASSES} steps; the tokens are in the change set, but its components are not complete"
+        "the components nest too deep to be sent in {MAX_PASSES} steps; the tokens are in the design system, but its components are not complete"
     )
 }
 
-/// Starts the design doc in the change set and puts the pages into its draft.
-/// Returns the doc's ID.
+/// Starts the design doc, at the app level or in the feature, and writes the
+/// pages into its head. Returns the doc's ID.
 fn send_design(
     agent: &Agent,
     base: &str,
-    changeset: &str,
+    feature: Option<&str>,
     import: &Import,
     ids: &Ids,
     title: &str,
 ) -> Result<String> {
+    let parts = import.design_parts(ids).map_err(read_error)?;
     let body = format!(
         "{{\"kind\":\"design\",\"pillar\":\"ui\",\"title\":{}}}",
         quote(title)
     );
-    let response = agent.request(
-        "POST",
-        &format!("{base}/changesets/{changeset}/docs"),
-        Some(body.as_bytes()),
-    )?;
+    let path = match feature {
+        Some(feature) => format!("{base}/features/{feature}/docs"),
+        None => format!("{base}/docs"),
+    };
+    let response = agent.request("POST", &path, Some(body.as_bytes()))?;
     let doc = id_of(
         &parsed(&response.text(), "the new doc")?,
         "doc",
         "the new doc",
     )?;
-    let tags = import.design_tags(ids).map_err(read_error)?;
-    agent.request(
-        "PUT",
-        &format!("{base}/changesets/{changeset}/docs/{doc}/design"),
-        Some(body_of("tags", &quote(&tags)).as_bytes()),
-    )?;
+
+    // A new design starts with one empty page, which the import's pages replace.
+    let head = agent.request("GET", &format!("{base}/docs/{doc}/html"), None)?;
+    let head = parsed(&head.text(), "the new doc's head")?;
+    let empty = head
+        .get("pages")
+        .and_then(Value::as_array)
+        .and_then(|pages| pages.first())
+        .and_then(|page| page.str_at("id"))
+        .map(str::to_string)
+        .ok_or_else(|| {
+            CliError::new(
+                "the server's answer about the new design has no page; is it an OmniState API?",
+            )
+        })?;
+    let ops = format!("{base}/docs/{doc}/ops");
+    let mut after = None;
+    for part in &parts {
+        let page = send_page(agent, &ops, part, after.as_deref())?;
+        after = Some(page);
+    }
+    let delete = format!(
+        "[{{\"op\":\"delete\",\"node\":{},\"rev\":1}}]",
+        quote(&empty)
+    );
+    send_ops(agent, &ops, &delete)?;
     Ok(doc)
+}
+
+/// Inserts the page after `after` (the first page when it is none) and its
+/// boards into it, in batches of about [`BATCH_BYTES`]. Returns the page's ID.
+fn send_page(agent: &Agent, ops: &str, part: &PageTags, after: Option<&str>) -> Result<String> {
+    let insert = |parent: Option<&str>, after: Option<&str>, tags: &str| {
+        format!(
+            "{{\"op\":\"insert\",\"parent\":{},\"position\":{{\"after\":{}}},\"content\":{}}}",
+            parent.map_or_else(|| "null".to_string(), quote),
+            after.map_or_else(|| "null".to_string(), quote),
+            quote(tags)
+        )
+    };
+    let created = send_ops(
+        agent,
+        ops,
+        &format!("[{}]", insert(None, after, &part.page)),
+    )?;
+    let page = node_of(&created, 0)?;
+
+    // Operations that go after the same board land in reverse order of
+    // sending (docs/formats/operations.md, insert), so a batch lists its
+    // boards backwards, all after the last board of the batch before.
+    let mut last: Option<String> = None;
+    let mut rest = part.boards.as_slice();
+    while !rest.is_empty() {
+        let mut size = 0;
+        let mut count = 0;
+        for tags in rest {
+            if count > 0 && size + tags.len() > BATCH_BYTES {
+                break;
+            }
+            size += tags.len();
+            count += 1;
+        }
+        let (batch, later) = rest.split_at(count);
+        let inserts: Vec<String> = batch
+            .iter()
+            .rev()
+            .map(|tags| insert(Some(&page), last.as_deref(), tags))
+            .collect();
+        let created = send_ops(agent, ops, &format!("[{}]", inserts.join(",")))?;
+        last = Some(node_of(&created, 0)?);
+        rest = later;
+    }
+    Ok(page)
+}
+
+/// Sends a batch of operations to the doc's head; returns the answer.
+fn send_ops(agent: &Agent, ops: &str, batch: &str) -> Result<Value> {
+    let response = agent.request("POST", ops, Some(body_of("ops", batch).as_bytes()))?;
+    parsed(&response.text(), "the operations")
+}
+
+/// The node the `index`th operation of an answer made or changed.
+fn node_of(answer: &Value, index: usize) -> Result<String> {
+    answer
+        .get("results")
+        .and_then(Value::as_array)
+        .and_then(|results| results.get(index))
+        .and_then(|result| result.str_at("node"))
+        .map(str::to_string)
+        .ok_or_else(|| {
+            CliError::new(
+                "the server's answer about the operations has no node; is it an OmniState API?",
+            )
+        })
 }
 
 /// One line about an entry of the report.
@@ -346,11 +365,8 @@ fn optional(value: Option<&str>) -> String {
 }
 
 fn json_output(
-    changeset: &str,
     design: Option<&str>,
     design_system: Option<&str>,
-    design_version: Option<&str>,
-    design_system_version: Option<&str>,
     report: &[ImportEntry],
 ) -> String {
     let entries: Vec<String> = report
@@ -369,12 +385,9 @@ fn json_output(
         })
         .collect();
     format!(
-        "{{\"changeset_id\":{},\"design_doc_id\":{},\"design_system_doc_id\":{},\"design_version_id\":{},\"design_system_version_id\":{},\"report\":[{}]}}",
-        quote(changeset),
+        "{{\"design_doc_id\":{},\"design_system_doc_id\":{},\"report\":[{}]}}",
         optional(design),
         optional(design_system),
-        optional(design_version),
-        optional(design_system_version),
         entries.join(",")
     )
 }

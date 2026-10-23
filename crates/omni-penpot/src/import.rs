@@ -572,6 +572,14 @@ impl Ids {
     }
 }
 
+/// A page as tags: the page itself and then each of its boards.
+pub struct PageTags {
+    /// The `<Page>` tag, with no children.
+    pub page: String,
+    /// One tag tree for each board of the page, in order.
+    pub boards: Vec<String>,
+}
+
 /// Components or pages as tags, ready to be sent.
 pub struct Rendered {
     pub tags: String,
@@ -680,6 +688,38 @@ impl Import {
         // Every node of a page is new.
         let all: HashSet<String> = unknown;
         print(&sent, &all)
+    }
+
+    /// The pages one by one, each as its own tag without the boards and the
+    /// tag of every board, so that a page can be sent in several requests. The
+    /// tags carry no IDs, as in [`Import::design_tags`].
+    pub fn design_parts(&self, ids: &Ids) -> Result<Vec<PageTags>, ReadError> {
+        let mut parts = Vec::with_capacity(self.pages.len());
+        for page in &self.pages {
+            let value = serde_json::to_value(page)
+                .map_err(|error| ReadError(format!("a page cannot be written: {error}")))?;
+            let mut unknown = HashSet::new();
+            let mut complete = true;
+            let Some(mut node) = render(&value, ids, &mut unknown, &mut complete) else {
+                continue;
+            };
+            let boards = match node
+                .as_object_mut()
+                .and_then(|page| page.insert("children".into(), json!([])))
+            {
+                Some(Value::Array(boards)) => boards,
+                _ => Vec::new(),
+            };
+            let mut tags = Vec::with_capacity(boards.len());
+            for board in boards {
+                tags.push(print(&[board], &unknown)?);
+            }
+            parts.push(PageTags {
+                page: print(&[node], &unknown)?,
+                boards: tags,
+            });
+        }
+        Ok(parts)
     }
 }
 

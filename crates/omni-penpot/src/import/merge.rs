@@ -222,6 +222,29 @@ fn answer_of(text: &str, what: &str) -> Result<Value, ReadError> {
 }
 
 impl Import {
+    /// The import onto the design system's head, which holds the tokens and
+    /// the components in one text (`GET .../docs/{id}/html`, whose `html` is
+    /// the token tree with the components under `$components`). `tokens` is the
+    /// answer about the tokens (`GET .../tokens`) and `head` the head read, both
+    /// as JSON text. Otherwise as [`Import::onto_design_system`].
+    pub fn onto_design_system_head(
+        &self,
+        tokens: &str,
+        head: &str,
+        ids: &mut Ids,
+    ) -> Result<Import, ReadError> {
+        let head = answer_of(head, "the design system's head")?;
+        let text = head["html"].as_str().unwrap_or_default();
+        let tree = if text.trim().is_empty() {
+            json!({})
+        } else {
+            answer_of(text, "the design system's head")?
+        };
+        let components = tree["$components"].as_array().cloned().unwrap_or_default();
+        let version = json!({ "version": { "components": components } });
+        self.onto_design_system(tokens, &version.to_string(), ids)
+    }
+
     /// The import onto the design system that the project already has, so
     /// that sending it keeps what that design system holds. `tokens` is the
     /// server's answer about the mainline tokens (`GET .../tokens`) and

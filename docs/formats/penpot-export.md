@@ -294,17 +294,20 @@ board come from components. The shapes inside a root get no entry of their own.
 
 ## Importing (`omni import penpot`)
 
-`omni import penpot <file.penpot> --project <id>` (US-051) imports an export
-made with "Export file + libraries" through a new change set. The reader and the
+`omni import penpot <file.penpot> --project <id> [--feature <name>]` (US-051,
+US-105) imports an export made with "Export file + libraries" straight into the
+project, with no change set. The design doc lands at the app level, or in the
+UI pillar of the feature with `--feature`; the design system doc is always the
+app level's. The reader and the
 converter above do the work, so every rule of "What the converter takes from a
 shape" applies (line pitch, filling children, hugging texts, the board Unplaced).
 `omni_penpot::import::import_file` gives the whole import as data: `pages` (the
 design doc), `design_system` (the design system doc), `attachments` and `report`.
 
-An import into a project whose design system doc already has a mainline version
-(a second import, after the first merged) adds to that version, because putting
-tokens or components into a draft replaces all of them. The command reads the
-mainline tokens and components first. Its tokens join the design system's, and a
+An import into a project whose design system doc already has tokens or
+components (a second import, or a design system an agent made) adds to its head,
+because putting tokens or components replaces all of them. The command reads the
+head's tokens and components first. Its tokens join the design system's, and a
 token of the same path takes the export's value; a token where the design system
 has a group of that path, or the other way round, is not imported and is in the
 report. The modes are the design system's, then those of the export's themes
@@ -355,10 +358,11 @@ are listed by their Penpot path; a token that fails to resolve is listed with
 the reason.
 
 The command reads the export before it sends anything, so a file that is no
-export leaves no change set behind. It uploads the images, starts the design
-system doc unless the project has one, puts the components in as often as it takes for the instances inside
-them to name components the server has given IDs (the server assigns every
-node ID), starts the design doc, puts the pages in, and saves a version of each
-doc. The change set stays `open`. `--json` prints `changeset_id`,
-`design_doc_id`, `design_system_doc_id`, the two version IDs and the whole
-`report`.
+export leaves no doc behind. It uploads the images, starts the design system
+doc unless the project has one, writes the tokens to its head, puts the
+components in as often as it takes for the instances inside them to name
+components the server has given IDs (the server assigns every node ID), starts
+the design doc, and inserts the pages into its head: each page, then its boards
+in batches of about a megabyte, and last it removes the page the new design
+started with. `--json` prints `design_doc_id`, `design_system_doc_id` and the
+whole `report`.

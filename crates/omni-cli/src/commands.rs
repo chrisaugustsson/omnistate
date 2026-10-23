@@ -133,7 +133,9 @@ pub fn run(args: &Args) -> Result<()> {
         ["component", ..] => bail!("usage: omni component usage <component>"),
         ["import", "penpot"] => import::penpot(args, None),
         ["import", "penpot", file] => import::penpot(args, Some(file)),
-        ["import", ..] => bail!("usage: omni import penpot <file.penpot> --project <id>"),
+        ["import", ..] => {
+            bail!("usage: omni import penpot <file.penpot> --project <id> [--feature <name>]")
+        }
         ["thread", "create"] => threads::create(args),
         ["thread", "phase"] => threads::phase(args, None),
         ["thread", "phase", thread] => threads::phase(args, Some(thread)),
