@@ -44,7 +44,8 @@
 //!   "needs_rebase", "actor": "system"}`, and each move emits its live event
 //!   (US-017): `changeset.approved`, then `changeset.merged` or
 //!   `changeset.needs_rebase`, with `data` `{"changeset_id", "from_status",
-//!   "status", "actor"}`.
+//!   "status", "actor", "feature_id"}` (`feature_id` null at project level,
+//!   US-060).
 //! - The approval may live in the existing tables; if it lives in a tenant
 //!   table `approvals`, the columns without a default are `workspace_id`,
 //!   `changeset_id`, `doc_id` and `version_id` (tests/workspace_delete.rs and
@@ -880,7 +881,8 @@ fn approving_and_merging_emit_their_live_events_in_order() {
             "changeset_id": changeset,
             "from_status": "in_review",
             "status": "approved",
-            "actor": "human"
+            "actor": "human",
+            "feature_id": null
         })],
         "one changeset.approved event"
     );
@@ -891,7 +893,8 @@ fn approving_and_merging_emit_their_live_events_in_order() {
             "changeset_id": changeset,
             "from_status": "approved",
             "status": "merged",
-            "actor": "system"
+            "actor": "system",
+            "feature_id": null
         })],
         "one changeset.merged event"
     );
@@ -1068,7 +1071,8 @@ fn an_outdated_base_moves_the_change_set_to_needs_rebase_and_merges_nothing() {
             "changeset_id": behind,
             "from_status": "approved",
             "status": "needs_rebase",
-            "actor": "system"
+            "actor": "system",
+            "feature_id": null
         })],
         "one changeset.needs_rebase event"
     );

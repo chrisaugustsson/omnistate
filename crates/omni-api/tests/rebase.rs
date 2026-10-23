@@ -1230,7 +1230,8 @@ fn a_rebase_without_conflicts_keeps_the_approval_and_merges() {
             "changeset_id": s.behind,
             "from_status": "needs_rebase",
             "status": "merged",
-            "actor": "agent"
+            "actor": "agent",
+            "feature_id": null
         })],
         "one changeset.merged event"
     );
@@ -1351,7 +1352,8 @@ fn a_rebase_with_conflicts_clears_the_approval_and_reopens_the_change_set() {
             "changeset_id": s.behind,
             "from_status": "needs_rebase",
             "status": "open",
-            "actor": "agent"
+            "actor": "agent",
+            "feature_id": null
         })],
         "one changeset.open event for the rebase"
     );
