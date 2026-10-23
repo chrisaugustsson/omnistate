@@ -17,15 +17,16 @@
 //!   `Global` (no workspace in the path, with the reason). The path may hold
 //!   `{project_id}`, `{changeset_id}`, `{key_id}`, `{attachment_id}`,
 //!   `{doc_id}`, `{version_id}`, `{other_version_id}`, `{conflict_id}`,
-//!   `{thread_id}`, `{post_id}`, `{decision_id}` and `{comment_id}`,
-//!   which the suite fills with the IDs of the seeded records, and
-//!   `{board_id}`, which it fills with a node ID that no board has (US-030);
-//!   a path with another placeholder, or a registry route without a case,
-//!   fails the suite. A body may hold `<claimed_node>`, which the suite fills
-//!   with the section that the record's workspace claimed (see below), so
-//!   that an attack on the claim routes names a node that really is claimed,
-//!   `<comment_node>`, the node of `{version_id}` that the seeded comment is
-//!   pinned to, and `<other_version_id>`, the record's `{other_version_id}`.
+//!   `{thread_id}`, `{post_id}`, `{decision_id}`, `{comment_id}` and
+//!   `{feature_id}`, which the suite fills with the IDs of the seeded
+//!   records, and `{board_id}`, which it fills with a node ID that no board
+//!   has (US-030); a path with another placeholder, or a registry route
+//!   without a case, fails the suite. A body may hold `<claimed_node>`,
+//!   which the suite fills with the section that the record's workspace
+//!   claimed (see below), so that an attack on the claim routes names a node
+//!   that really is claimed, `<comment_node>`, the node of `{version_id}`
+//!   that the seeded comment is pinned to, and `<other_version_id>`, the
+//!   record's `{other_version_id}`.
 //!   The seeded doc (US-022) was created in the open change set `{changeset_id}`,
 //!   which has its draft, and has one applied operation; once the claim routes
 //!   exist (US-023), the draft also has a section that the workspace's agent
@@ -51,7 +52,9 @@
 //!   (US-038), the human also commented on the paragraph of `{version_id}`
 //!   (the comment `{comment_id}`, whose text nothing else holds), the
 //!   workspace's agent replied to it and marked it addressed in
-//!   `{other_version_id}`.
+//!   `{other_version_id}`. Once the feature routes exist (US-059), the
+//!   workspace's agent also created the feature `{feature_id}` in
+//!   `{project_id}`, whose name is text that nothing else holds.
 //! - Workspace A's credentials against workspace B's workspace and IDs, and
 //!   against B's IDs under A's own workspace, are always 404
 //!   `{"error": "not_found"}` with nothing of B in the body, and the answer is
@@ -549,6 +552,24 @@ const CASES: &[Case] = &[
         None,
         Kind::Workspace,
     ),
+    case(
+        "POST",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/features",
+        Some(r#"{"name":"intruder","description":"intruder"}"#),
+        Kind::Workspace,
+    ),
+    case(
+        "GET",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/features",
+        None,
+        Kind::Workspace,
+    ),
+    case(
+        "GET",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}",
+        None,
+        Kind::Workspace,
+    ),
 ];
 
 /// The WebSocket routes that the suite attacks, as the paths of
@@ -886,6 +907,13 @@ fn has_comment_routes() -> bool {
     })
 }
 
+/// Whether the router has the feature routes (US-059) yet.
+fn has_feature_routes() -> bool {
+    registry().iter().any(|r| {
+        r.method == "POST" && r.path == "/api/v1/w/{workspace_id}/projects/{project_id}/features"
+    })
+}
+
 /// The `data-rev` of the block with `data-node-id="{node}"` in a draft's HTML.
 fn rev_of(html: &str, node: &str) -> u64 {
     let at = html
@@ -1148,6 +1176,11 @@ struct Side {
     comment_id: String,
     comment_node: String,
     comment_text: String,
+    /// The feature that the workspace's agent created in `project_id`
+    /// (US-059), and its name, which nothing else holds: empty until the
+    /// feature routes exist.
+    feature_id: String,
+    feature_name: String,
 }
 
 impl Side {
@@ -1186,6 +1219,8 @@ impl Side {
             comment_id: same(),
             comment_node: UNKNOWN_NODE.to_string(),
             comment_text: String::new(),
+            feature_id: same(),
+            feature_name: String::new(),
         }
     }
 
@@ -1221,6 +1256,8 @@ impl Side {
             &self.decision_direction,
             &self.comment_id,
             &self.comment_text,
+            &self.feature_id,
+            &self.feature_name,
         ]
         .into_iter()
         .map(String::as_str)
@@ -1375,6 +1412,28 @@ fn fixture() -> &'static Fixture {
                 200,
                 "reject",
             );
+            // US-059: a feature of the project, so the features table has rows
+            // of the workspace. Seeded as soon as the registry has the feature
+            // routes.
+            let (feature_id, feature_name) = if has_feature_routes() {
+                let feature_name = unique(&format!("{name}-feature"));
+                let body = json!({ "name": feature_name }).to_string();
+                let created = must(
+                    call(
+                        client,
+                        "POST",
+                        &format!("/api/v1/w/{workspace}/projects/{project_id}/features"),
+                        &agent,
+                        Some(&body),
+                    ),
+                    201,
+                    "create a feature",
+                );
+                let id = created["feature"]["id"].as_str().expect("an id");
+                (id.to_string(), feature_name)
+            } else {
+                (String::new(), String::new())
+            };
             // US-019: a file of the workspace's own. The attachment routes are
             // seeded as soon as the registry has them; the table behind them
             // would otherwise make the checks below fail on a tenant table
@@ -1851,6 +1910,8 @@ fn fixture() -> &'static Fixture {
                 comment_id,
                 comment_node,
                 comment_text,
+                feature_id,
+                feature_name,
             }
         });
         let a = sides.next().expect("workspace A");
@@ -1889,6 +1950,7 @@ fn fill(template: &str, workspace: &Side, record: &Side) -> String {
             "post_id" => &record.post_id,
             "decision_id" => &record.decision_id,
             "comment_id" => &record.comment_id,
+            "feature_id" => &record.feature_id,
             // US-030: an attack on a board is refused at the workspace or the
             // project, before any board is looked up, so a node ID that no
             // board has stands in for one.
@@ -4333,6 +4395,118 @@ fn the_review_call_of_the_attacks_shows_the_owner_its_own_change_set() {
         assert!(
             !review.to_string().contains(marker),
             "the review shows {marker} of the other workspace: {review}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Features (US-059)
+// ---------------------------------------------------------------------------
+
+const FEATURE_ROUTES: [(&str, &str, Access); 3] = [
+    (
+        "POST",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/features",
+        Access::Agent,
+    ),
+    (
+        "GET",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/features",
+        Access::Both,
+    ),
+    (
+        "GET",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}",
+        Access::Both,
+    ),
+];
+
+#[test]
+fn the_feature_routes_are_in_the_registry_and_the_suite_attacks_them() {
+    for (method, path, access) in FEATURE_ROUTES {
+        let entry = registry()
+            .into_iter()
+            .find(|r| r.method == method && r.path == path)
+            .unwrap_or_else(|| panic!("the registry has no route {method} {path}"));
+        assert_eq!(entry.access, access, "{method} {path}");
+        assert!(
+            matches!(case_for(&entry).kind, Kind::Workspace),
+            "{method} {path} is a workspace route that the suite attacks"
+        );
+    }
+
+    let (f, _) = ready();
+    for side in [&f.a, &f.b] {
+        assert!(
+            !side.feature_id.is_empty(),
+            "the suite seeded no feature for {}",
+            side.id
+        );
+    }
+}
+
+#[test]
+fn the_feature_calls_of_the_attacks_work_for_the_workspace_that_owns_the_records() {
+    // The control for the feature routes: in the owner's workspace, the
+    // owner's agent creates a feature with the body of the case, and both the
+    // agent and the human list the project's features, in creation order, and
+    // read the new one and the seeded one.
+    let (f, client) = ready();
+    let _guard = serial();
+    let key = Auth::Key(&f.a.key);
+    let human = Auth::Session(&f.a.token);
+    let path = |template: &str| fill(template, &f.a, &f.a);
+
+    let (method, template, _) = FEATURE_ROUTES[0];
+    let body = case_named(method, template)
+        .body
+        .map(|b| b.replace("intruder", &unique("owner")));
+    let created = must(
+        call(client, method, &path(template), &key, body.as_deref()),
+        201,
+        "create a feature",
+    );
+    let feature = created["feature"]["id"].as_str().expect("an id");
+    let project = format!("/api/v1/w/{}/projects/{}", f.a.id, f.a.project_id);
+    for auth in [&key, &human] {
+        let listed = must(
+            call(client, "GET", &path(FEATURE_ROUTES[1].1), auth, None),
+            200,
+            "list the features",
+        );
+        let ids: Vec<&str> = listed["features"]
+            .as_array()
+            .unwrap_or_else(|| panic!("a list of features: {listed}"))
+            .iter()
+            .filter_map(|item| item["id"].as_str())
+            .collect();
+        let seeded = ids.iter().position(|id| *id == f.a.feature_id);
+        let new = ids.iter().position(|id| *id == feature);
+        assert!(
+            seeded.is_some() && new.is_some() && seeded < new,
+            "the list has the seeded feature before the new one: {listed}"
+        );
+        let read = must(
+            call(
+                client,
+                "GET",
+                &format!("{project}/features/{feature}"),
+                auth,
+                None,
+            ),
+            200,
+            "read the feature",
+        );
+        assert_eq!(read["feature"]["id"], feature, "{read}");
+        let seeded = must(
+            call(client, "GET", &path(FEATURE_ROUTES[2].1), auth, None),
+            200,
+            "read the seeded feature",
+        );
+        assert_eq!(
+            seeded["feature"]["name"],
+            f.a.feature_name.as_str(),
+            "{seeded}"
         );
     }
 }

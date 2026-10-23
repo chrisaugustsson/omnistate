@@ -1,0 +1,681 @@
+//! US-059: features, the level between a project and its change sets (Q51).
+//! Run with `--features stack-tests` in the Compose test container, which
+//! reaches Postgres at `postgres:5432`.
+//!
+//! The tests migrate a scratch database, seed a workspace with one member
+//! (alice) and a live session, mint an API key through the API and serve the
+//! API's router on a local port against that database.
+//!
+//! The contract these tests pin down (all paths are under
+//! `/api/v1/w/{workspace_id}/projects/{project_id}`):
+//!
+//! - `POST /features` (agent) takes `{"name", "description"}` and answers 201
+//!   `{"feature": Feature}`. `name` is required: missing, blank or not a
+//!   string is 400 `{"error": "invalid_request"}` and creates nothing.
+//!   `description` is optional and defaults to `""`. A session (the human) is
+//!   403 `{"error": "forbidden"}`.
+//! - A Feature (`FeatureBody`) is `{"id" (UUIDv7), "project_id", "name",
+//!   "description", "status", "created_at"}`. A new feature is `active`.
+//! - Feature names are unique in their project, ignoring case: a second
+//!   feature named "checkout" next to "Checkout" is 409 `{"error":
+//!   "name_taken"}` and creates nothing. Another project may use the name.
+//! - `GET /features` (both) answers `{"features": [Feature, ...]}`, the
+//!   project's features in the order they were created. `GET
+//!   /features/{feature_id}` (both) answers `{"feature": Feature}`.
+//! - An unknown project, an unknown feature, a feature of another project and
+//!   an ID that is not a UUID are 404 `{"error": "not_found"}`.
+//! - Creating a feature emits `feature.created` on the project's live channel
+//!   with `data` that has at least `{"feature_id", "name"}`. A refused request
+//!   emits nothing.
+//! - Features live in the tenant table `features` (migrations/README.md):
+//!   `id`, `workspace_id`, `project_id`, `name` (not blank), `description`
+//!   (default `''`), `status` (`active` or `done`, default `active`) and
+//!   `created_at`, with a composite foreign key to `projects`, `UNIQUE
+//!   (workspace_id, project_id, id)` and a unique index on `(workspace_id,
+//!   project_id, lower(name))`. tests/workspace_delete.rs and the isolation
+//!   suite seed it.
+
+mod common;
+
+use common::{Client, Response, TestServer, cookie};
+use omni_api::Config;
+use omni_api::routes::{Access, registry};
+use serde_json::{Value, json};
+use sqlx::Connection;
+use sqlx::postgres::{PgConnectOptions, PgConnection};
+use std::future::Future;
+use std::str::FromStr;
+use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU32, Ordering};
+
+const TEST_DB: &str = "omni_us059_features";
+/// An ID that no row has.
+const UNKNOWN_ID: &str = "01900000-0000-7000-8000-000000000000";
+const FEATURES_ROUTE: &str = "/api/v1/w/{workspace_id}/projects/{project_id}/features";
+const FEATURE_ROUTE: &str = "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}";
+
+// ---------------------------------------------------------------------------
+// Plumbing
+// ---------------------------------------------------------------------------
+
+fn block<F: Future>(future: F) -> F::Output {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime")
+        .block_on(future)
+}
+
+fn admin_url() -> String {
+    std::env::var("OMNI_ADMIN_DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://omni:omni-dev@postgres:5432/omni".to_string())
+}
+
+fn admin_options() -> PgConnectOptions {
+    PgConnectOptions::from_str(&admin_url()).expect("OMNI_ADMIN_DATABASE_URL")
+}
+
+fn api_password() -> String {
+    // The password that the stack's API gives omni_api (docker-compose.yml). The
+    // role is cluster-wide, so the scratch database must use the same one.
+    std::env::var("OMNI_API_DB_PASSWORD").unwrap_or_else(|_| "omni-api-dev".to_string())
+}
+
+fn config() -> Config {
+    let admin = admin_options();
+    let url = admin_url();
+    let (server, _database) = url.rsplit_once('/').expect("OMNI_ADMIN_DATABASE_URL");
+    Config {
+        bind: "127.0.0.1:0".to_string(),
+        database_url: format!(
+            "postgres://omni_api:{}@{}:{}/{TEST_DB}",
+            api_password(),
+            admin.get_host(),
+            admin.get_port()
+        ),
+        admin_database_url: format!("{server}/{TEST_DB}"),
+        api_db_password: api_password(),
+        // Nothing here reaches RustFS: features only use Postgres.
+        s3_endpoint: "http://127.0.0.1:1".to_string(),
+        s3_access_key: "none".to_string(),
+        s3_secret_key: "none".to_string(),
+        s3_bucket: "omni".to_string(),
+    }
+}
+
+async fn admin_connection() -> PgConnection {
+    PgConnection::connect_with(&admin_options().database(TEST_DB))
+        .await
+        .expect("connect to the scratch database as the admin role")
+}
+
+struct Fixture {
+    workspace: String,
+    alice_token: String,
+    key: String,
+    server: TestServer,
+}
+
+fn session_token(name: &str) -> String {
+    format!("us059-session-{name}-0123456789abcdef0123456789abcdef0123456789abcdef")
+}
+
+fn fixture() -> &'static Fixture {
+    static FIXTURE: OnceLock<Fixture> = OnceLock::new();
+    FIXTURE.get_or_init(|| {
+        block(async {
+            let mut admin = PgConnection::connect_with(&admin_options())
+                .await
+                .unwrap_or_else(|e| panic!("cannot connect to Postgres as the admin role: {e}"));
+            sqlx::query(&format!("DROP DATABASE IF EXISTS {TEST_DB} WITH (FORCE)"))
+                .execute(&mut admin)
+                .await
+                .expect("drop the scratch database");
+            sqlx::query(&format!("CREATE DATABASE {TEST_DB}"))
+                .execute(&mut admin)
+                .await
+                .expect("create the scratch database");
+            omni_api::migrate(&config(), 30)
+                .await
+                .expect("apply the migrations to the scratch database");
+        });
+        let workspace = block(async {
+            let mut conn = admin_connection().await;
+            let mut text = async |sql: &str, binds: &[&str]| -> String {
+                let mut query = sqlx::query_scalar::<_, String>(sql);
+                for bind in binds {
+                    query = query.bind(*bind);
+                }
+                query.fetch_one(&mut conn).await.expect("seed")
+            };
+            let workspace = text(
+                "insert into workspaces (name) values ('Alpha') returning id::text",
+                &[],
+            )
+            .await;
+            let user = text(
+                "insert into users (email) values ('alice@example.test') returning id::text",
+                &[],
+            )
+            .await;
+            text(
+                "insert into sessions (user_id, token_hash, expires_at) \
+                 values ($1::uuid, sha256(convert_to($2, 'UTF8')), now() + interval '1 day') \
+                 returning id::text",
+                &[&user, &session_token("alice")],
+            )
+            .await;
+            text(
+                "insert into memberships (workspace_id, user_id) \
+                 values ($1::uuid, $2::uuid) returning id::text",
+                &[&workspace, &user],
+            )
+            .await;
+            workspace
+        });
+        let server = TestServer::start(&config());
+        let response = call(
+            &server.client,
+            "POST",
+            &format!("/api/v1/w/{workspace}/api-keys"),
+            &Auth::Session(&session_token("alice")),
+            Some(&json!({})),
+        );
+        assert_eq!(response.status, 201, "mint a key: {}", response.text());
+        let key = response.json()["secret"]
+            .as_str()
+            .expect("the new key has a secret")
+            .to_string();
+        Fixture {
+            workspace,
+            alice_token: session_token("alice"),
+            key,
+            server,
+        }
+    })
+}
+
+fn ready() -> (&'static Fixture, &'static Client) {
+    let fixture = fixture();
+    (fixture, &fixture.server.client)
+}
+
+/// Who sends a request: an agent (an API key with its run and role) or the
+/// human (a session cookie).
+#[derive(Clone, Copy)]
+enum Auth<'a> {
+    Agent(&'a str),
+    Session(&'a str),
+}
+
+fn agent(f: &Fixture) -> Auth<'_> {
+    Auth::Agent(&f.key)
+}
+
+fn human(f: &Fixture) -> Auth<'_> {
+    Auth::Session(&f.alice_token)
+}
+
+fn call(client: &Client, method: &str, path: &str, auth: &Auth, body: Option<&Value>) -> Response {
+    let headers: Vec<(&str, String)> = match auth {
+        Auth::Agent(key) => vec![
+            ("Authorization", format!("Bearer {key}")),
+            ("X-Omni-Run", "run-1".to_string()),
+            ("X-Omni-Role", "planner".to_string()),
+        ],
+        Auth::Session(token) => vec![("Cookie", cookie(token))],
+    };
+    let headers: Vec<(&str, &str)> = headers.iter().map(|(n, v)| (*n, v.as_str())).collect();
+    let body = body.map(Value::to_string);
+    client.request(method, path, &headers, body.as_deref())
+}
+
+fn must(response: Response, status: u16, what: &str) -> Value {
+    assert_eq!(response.status, status, "{what}: {}", response.text());
+    response.json()
+}
+
+fn assert_error(response: &Response, status: u16, code: &str) {
+    assert_eq!(response.status, status, "body: {}", response.text());
+    assert_eq!(
+        response.json(),
+        json!({ "error": code }),
+        "the error body carries the code and nothing else"
+    );
+}
+
+fn assert_uuid_v7(id: &Value) {
+    let id = id
+        .as_str()
+        .unwrap_or_else(|| panic!("an ID is a string: {id}"));
+    let bytes = id.as_bytes();
+    assert!(
+        bytes.len() == 36
+            && bytes[14] == b'7'
+            && matches!(bytes[19], b'8' | b'9' | b'a' | b'b')
+            && id.chars().all(|c| c == '-' || c.is_ascii_hexdigit()),
+        "{id:?} is not a UUIDv7"
+    );
+}
+
+fn unique(label: &str) -> String {
+    static COUNTER: AtomicU32 = AtomicU32::new(0);
+    format!("{label}-{}", COUNTER.fetch_add(1, Ordering::Relaxed))
+}
+
+fn parse(text: &str) -> Value {
+    serde_json::from_str(text).unwrap_or_else(|e| panic!("not JSON ({e}): {text}"))
+}
+
+fn features_path(f: &Fixture, project: &str) -> String {
+    format!("/api/v1/w/{}/projects/{project}/features", f.workspace)
+}
+
+fn feature_path(f: &Fixture, project: &str, feature: &str) -> String {
+    format!("{}/{feature}", features_path(f, project))
+}
+
+fn new_project(f: &Fixture, client: &Client) -> String {
+    let created = must(
+        call(
+            client,
+            "POST",
+            &format!("/api/v1/w/{}/projects", f.workspace),
+            &agent(f),
+            Some(&json!({ "name": unique("feature-project") })),
+        ),
+        201,
+        "create a project",
+    );
+    created["project"]["id"]
+        .as_str()
+        .expect("the project has an id")
+        .to_string()
+}
+
+fn create_feature_response(f: &Fixture, client: &Client, project: &str, body: &Value) -> Response {
+    call(
+        client,
+        "POST",
+        &features_path(f, project),
+        &agent(f),
+        Some(body),
+    )
+}
+
+/// Creates a feature as the agent; returns the `feature` of the answer.
+fn create_feature(f: &Fixture, client: &Client, project: &str, name: &str) -> Value {
+    must(
+        create_feature_response(f, client, project, &json!({ "name": name })),
+        201,
+        "create a feature",
+    )["feature"]
+        .clone()
+}
+
+fn list_features(f: &Fixture, client: &Client, auth: &Auth, project: &str) -> Vec<Value> {
+    let listed = must(
+        call(client, "GET", &features_path(f, project), auth, None),
+        200,
+        "list the features",
+    );
+    listed["features"]
+        .as_array()
+        .unwrap_or_else(|| panic!("`features` is a list: {listed}"))
+        .clone()
+}
+
+/// The `data` of the live events of a project named `event`, oldest first.
+fn events_of(project: &str, event: &str) -> Vec<Value> {
+    block(async {
+        let mut conn = admin_connection().await;
+        let rows = sqlx::query_scalar::<_, String>(
+            "select data::jsonb::text from live_events \
+             where project_id = $1::uuid and event = $2 order by seq",
+        )
+        .bind(project)
+        .bind(event)
+        .fetch_all(&mut conn)
+        .await
+        .unwrap_or_else(|e| panic!("read the live events: {e}"));
+        rows.iter().map(|text| parse(text)).collect()
+    })
+}
+
+/// How many rows the `features` table has for a project.
+fn feature_rows(project: &str) -> i64 {
+    block(async {
+        let mut conn = admin_connection().await;
+        sqlx::query_scalar("select count(*) from features where project_id = $1::uuid")
+            .bind(project)
+            .fetch_one(&mut conn)
+            .await
+            .unwrap_or_else(|e| panic!("count the features: {e}"))
+    })
+}
+
+/// Runs `sql` as the admin role and says whether the database accepted it;
+/// whatever it did is rolled back.
+fn accepted(sql: &str, binds: &[&str]) -> bool {
+    block(async {
+        let mut conn = admin_connection().await;
+        let mut tx = conn.begin().await.expect("begin");
+        let mut query = sqlx::query(sql);
+        for bind in binds {
+            query = query.bind(*bind);
+        }
+        let result = query.execute(&mut *tx).await;
+        tx.rollback().await.expect("roll back");
+        result.is_ok()
+    })
+}
+
+// ---------------------------------------------------------------------------
+// The routes
+// ---------------------------------------------------------------------------
+
+#[test]
+fn the_feature_routes_are_in_the_registry_with_who_may_call_them() {
+    for (method, path, access) in [
+        ("POST", FEATURES_ROUTE, Access::Agent),
+        ("GET", FEATURES_ROUTE, Access::Both),
+        ("GET", FEATURE_ROUTE, Access::Both),
+    ] {
+        let entry = registry()
+            .into_iter()
+            .find(|r| r.method == method && r.path == path)
+            .unwrap_or_else(|| panic!("the registry has no route {method} {path}"));
+        assert_eq!(entry.access, access, "{method} {path}");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Creating a feature
+// ---------------------------------------------------------------------------
+
+#[test]
+fn creating_a_feature_records_its_name_and_description_and_starts_it_active() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    let created = must(
+        create_feature_response(
+            f,
+            client,
+            &project,
+            &json!({ "name": "Checkout", "description": "Pay for the basket in one step." }),
+        ),
+        201,
+        "create a feature",
+    );
+    let feature = &created["feature"];
+    assert_uuid_v7(&feature["id"]);
+    assert_eq!(feature["project_id"], project.as_str(), "{feature}");
+    assert_eq!(feature["name"], "Checkout", "{feature}");
+    assert_eq!(
+        feature["description"], "Pay for the basket in one step.",
+        "{feature}"
+    );
+    assert_eq!(feature["status"], "active", "{feature}");
+    assert!(
+        feature["created_at"]
+            .as_str()
+            .is_some_and(|t| !t.is_empty()),
+        "created_at is a timestamp: {feature}"
+    );
+
+    // The agent and the human read the same feature back.
+    let id = feature["id"].as_str().expect("an id");
+    for auth in [agent(f), human(f)] {
+        let shown = must(
+            call(client, "GET", &feature_path(f, &project, id), &auth, None),
+            200,
+            "show the feature",
+        );
+        assert_eq!(&shown["feature"], feature, "{shown}");
+    }
+}
+
+#[test]
+fn a_feature_without_a_description_has_an_empty_one() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    let feature = create_feature(f, client, &project, "Search");
+    assert_eq!(feature["description"], "", "{feature}");
+    assert_eq!(feature["status"], "active", "{feature}");
+}
+
+#[test]
+fn a_feature_needs_a_name() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    for body in [
+        json!({}),
+        json!({ "description": "No name." }),
+        json!({ "name": "" }),
+        json!({ "name": "   \n\t" }),
+        json!({ "name": null }),
+        json!({ "name": 7 }),
+    ] {
+        let response = create_feature_response(f, client, &project, &body);
+        assert_error(&response, 400, "invalid_request");
+    }
+    let response = call(client, "POST", &features_path(f, &project), &agent(f), None);
+    assert_eq!(response.status, 400, "no body: {}", response.text());
+    assert!(
+        list_features(f, client, &agent(f), &project).is_empty(),
+        "a refused request creates nothing"
+    );
+    assert!(
+        events_of(&project, "feature.created").is_empty(),
+        "a refused request emits nothing"
+    );
+}
+
+#[test]
+fn feature_names_are_unique_in_a_project_ignoring_case() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    let first = create_feature(f, client, &project, "Checkout");
+    for name in ["checkout", "CHECKOUT", "Checkout"] {
+        let response = create_feature_response(f, client, &project, &json!({ "name": name }));
+        assert_error(&response, 409, "name_taken");
+    }
+    let listed = list_features(f, client, &agent(f), &project);
+    assert_eq!(listed, [first], "the refused names created nothing");
+    assert_eq!(
+        events_of(&project, "feature.created").len(),
+        1,
+        "a refused request emits nothing"
+    );
+
+    // Another project of the workspace may use the name.
+    let other = new_project(f, client);
+    let reused = create_feature(f, client, &other, "checkout");
+    assert_eq!(reused["project_id"], other.as_str(), "{reused}");
+}
+
+#[test]
+fn only_an_agent_creates_a_feature() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    let response = call(
+        client,
+        "POST",
+        &features_path(f, &project),
+        &human(f),
+        Some(&json!({ "name": "Checkout" })),
+    );
+    assert_error(&response, 403, "forbidden");
+    assert_eq!(
+        feature_rows(&project),
+        0,
+        "a refused request creates nothing"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Reading features
+// ---------------------------------------------------------------------------
+
+#[test]
+fn the_feature_list_is_in_creation_order_for_the_agent_and_the_human() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    for auth in [agent(f), human(f)] {
+        assert!(
+            list_features(f, client, &auth, &project).is_empty(),
+            "a new project has no features"
+        );
+    }
+    let created: Vec<Value> = ["Zebra crossing", "Apple pay", "Mango theme"]
+        .into_iter()
+        .map(|name| create_feature(f, client, &project, name))
+        .collect();
+    let other = new_project(f, client);
+    create_feature(f, client, &other, "Elsewhere");
+
+    for auth in [agent(f), human(f)] {
+        let listed = list_features(f, client, &auth, &project);
+        assert_eq!(
+            listed, created,
+            "the project's features, in the order they were created"
+        );
+    }
+}
+
+#[test]
+fn an_unknown_project_or_feature_is_not_found() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    let feature = create_feature(f, client, &project, "Checkout");
+    let id = feature["id"].as_str().expect("an id");
+    let other = new_project(f, client);
+
+    let response = create_feature_response(f, client, UNKNOWN_ID, &json!({ "name": "Lost" }));
+    assert_error(&response, 404, "not_found");
+    for auth in [agent(f), human(f)] {
+        for path in [
+            features_path(f, UNKNOWN_ID),
+            features_path(f, "not-a-uuid"),
+            feature_path(f, &project, UNKNOWN_ID),
+            feature_path(f, &project, "not-a-uuid"),
+            feature_path(f, UNKNOWN_ID, id),
+            // A feature is read through its own project only.
+            feature_path(f, &other, id),
+        ] {
+            let response = call(client, "GET", &path, &auth, None);
+            assert_error(&response, 404, "not_found");
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Live events
+// ---------------------------------------------------------------------------
+
+#[test]
+fn creating_a_feature_emits_feature_created_with_its_id_and_name() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    let feature = create_feature(f, client, &project, "Wish list");
+    let events = events_of(&project, "feature.created");
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(events[0]["feature_id"], feature["id"], "{}", events[0]);
+    assert_eq!(events[0]["name"], "Wish list", "{}", events[0]);
+
+    let second = create_feature(f, client, &project, "Gift cards");
+    let events = events_of(&project, "feature.created");
+    assert_eq!(events.len(), 2, "{events:?}");
+    assert_eq!(events[1]["feature_id"], second["id"], "{}", events[1]);
+}
+
+// ---------------------------------------------------------------------------
+// The table
+// ---------------------------------------------------------------------------
+
+#[test]
+fn the_features_table_keeps_its_rules_in_the_database() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    let workspace = f.workspace.as_str();
+
+    // The defaults: a new row is active with an empty description.
+    let (status, description): (String, String) = block(async {
+        let mut conn = admin_connection().await;
+        let mut tx = conn.begin().await.expect("begin");
+        let row = sqlx::query_as(
+            "insert into features (workspace_id, project_id, name) \
+             values ($1::uuid, $2::uuid, 'Defaults') returning status::text, description",
+        )
+        .bind(workspace)
+        .bind(&project)
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap_or_else(|e| panic!("insert a feature with only its required columns: {e}"));
+        tx.rollback().await.expect("roll back");
+        row
+    });
+    assert_eq!(status, "active");
+    assert_eq!(description, "");
+
+    let insert = "insert into features (workspace_id, project_id, name, status) \
+                  values ($1::uuid, $2::uuid, $3, $4)";
+    assert!(
+        accepted(insert, &[workspace, &project, "Done one", "done"]),
+        "`done` is a status"
+    );
+    assert!(
+        !accepted(insert, &[workspace, &project, "Paused", "paused"]),
+        "a status other than active or done is refused"
+    );
+    for blank in ["", "   "] {
+        assert!(
+            !accepted(insert, &[workspace, &project, blank, "active"]),
+            "the blank name {blank:?} is refused"
+        );
+    }
+
+    // The project must be one of the row's own workspace.
+    let foreign_workspace: String = block(async {
+        let mut conn = admin_connection().await;
+        sqlx::query_scalar("insert into workspaces (name) values ('Other') returning id::text")
+            .fetch_one(&mut conn)
+            .await
+            .expect("insert a workspace")
+    });
+    assert!(
+        !accepted(insert, &[&foreign_workspace, &project, "Moved", "active"]),
+        "a feature cannot belong to a project of another workspace"
+    );
+    assert!(
+        !accepted(insert, &[workspace, UNKNOWN_ID, "Nowhere", "active"]),
+        "a feature needs a project"
+    );
+
+    // Names are unique per project ignoring case, in the database too.
+    create_feature(f, client, &project, "Checkout");
+    assert!(
+        !accepted(insert, &[workspace, &project, "CHECKOUT", "active"]),
+        "the unique index on lower(name) refuses a name that differs in case only"
+    );
+
+    // Later tables tie a feature to its project with (workspace_id,
+    // project_id, id).
+    let keys: i64 = block(async {
+        let mut conn = admin_connection().await;
+        sqlx::query_scalar(
+            "select count(*) from pg_index i join pg_class c on c.oid = i.indrelid \
+             where c.relname = 'features' and i.indisunique and i.indexprs is null \
+             and (select array_agg(a.attname::text order by a.attname::text) \
+                  from pg_attribute a where a.attrelid = c.oid and a.attnum = any(i.indkey)) \
+                 = array['id', 'project_id', 'workspace_id']",
+        )
+        .fetch_one(&mut conn)
+        .await
+        .expect("look for the unique key")
+    });
+    assert_eq!(
+        keys, 1,
+        "features has UNIQUE (workspace_id, project_id, id)"
+    );
+}

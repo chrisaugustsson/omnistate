@@ -764,6 +764,26 @@ async fn fill_workspace(conn: &mut PgConnection, workspace: &str, membership: &s
             }
         }
     }
+
+    // US-059: a feature of the project. Seeded as soon as the table exists
+    // (tests/features.rs pins its name and the columns without a default), for
+    // the same reason as above.
+    let features_exist: bool =
+        sqlx::query_scalar("SELECT to_regclass('public.features') IS NOT NULL")
+            .fetch_one(&mut *conn)
+            .await
+            .expect("look for the features table");
+    if features_exist {
+        sqlx::query(
+            "INSERT INTO features (workspace_id, project_id, name) \
+             VALUES ($1::uuid, $2::uuid, 'deletion test')",
+        )
+        .bind(workspace)
+        .bind(&project_id)
+        .execute(&mut *conn)
+        .await
+        .expect("insert a feature");
+    }
 }
 
 async fn put_objects(keys: Vec<String>) {

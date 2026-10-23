@@ -27,9 +27,9 @@ serde_json = "1"
 # tests/stack.rs, tests/stack_changesets.rs, tests/stack_attachments.rs,
 # tests/stack_docs.rs, tests/stack_bench_ops.rs, tests/stack_design_edits.rs,
 # tests/stack_bench_design.rs, tests/stack_import_penpot.rs, tests/stack_threads.rs,
-# tests/stack_decisions.rs and tests/stack_comments.rs need Postgres (and RustFS)
-# and run against them, so they only build with this feature, which the
-# Compose test container turns on.
+# tests/stack_decisions.rs, tests/stack_comments.rs and tests/stack_features.rs
+# need Postgres (and RustFS) and run against them, so they only build with this
+# feature, which the Compose test container turns on.
 stack-tests = []
 
 [[test]]
@@ -74,4 +74,8 @@ required-features = ["stack-tests"]
 
 [[test]]
 name = "stack_comments"
+required-features = ["stack-tests"]
+
+[[test]]
+name = "stack_features"
 required-features = ["stack-tests"]

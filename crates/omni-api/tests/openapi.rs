@@ -208,7 +208,7 @@ fn the_document_describes_the_login_operation_from_its_handler() {
 
 /// Every live event the API emits, by name (`<entity>.<action>`): the
 /// `changeset.<status>` events of every status and the events of US-017 on.
-const LIVE_EVENTS: [&str; 30] = [
+const LIVE_EVENTS: [&str; 31] = [
     "changeset.open",
     "changeset.in_review",
     "changeset.approved",
@@ -233,6 +233,7 @@ const LIVE_EVENTS: [&str; 30] = [
     "doc.created",
     "draft.opened",
     "draft.rebased",
+    "feature.created",
     "op.applied",
     "phase.started",
     "post.created",
@@ -351,4 +352,48 @@ fn the_web_app_has_the_current_openapi_document() {
         "{} is out of date: regenerate it and the web app's types from the API's document",
         path.display()
     );
+}
+
+// US-059: the feature routes are in the registry and the document, and the
+// bodies they answer with are schemas of the document, from which the web app
+// generates its types.
+#[test]
+fn the_document_describes_the_feature_routes_and_their_bodies() {
+    let routes = registry();
+    let features = "/api/v1/w/{workspace_id}/projects/{project_id}/features";
+    let feature = "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}";
+    for (method, path, access) in [
+        ("POST", features, Access::Agent),
+        ("GET", features, Access::Both),
+        ("GET", feature, Access::Both),
+    ] {
+        let entry = find(&routes, method, path)
+            .unwrap_or_else(|| panic!("the registry has no entry for {method} {path}"));
+        assert_eq!(entry.access, access, "{method} {path}");
+    }
+
+    let server = TestServer::start(&offline_config());
+    let document = openapi(&server);
+    for name in [
+        "FeatureBody",
+        "CreateFeatureRequest",
+        "FeatureResponse",
+        "FeatureListResponse",
+    ] {
+        component(&document, name);
+    }
+    let body = component(&document, "FeatureBody");
+    for field in [
+        "id",
+        "project_id",
+        "name",
+        "description",
+        "status",
+        "created_at",
+    ] {
+        assert!(
+            body["properties"][field].is_object(),
+            "FeatureBody has the field {field}: {body}"
+        );
+    }
 }

@@ -1214,6 +1214,57 @@ fn resuming_from_the_newest_number_or_without_one_replays_nothing() {
     }
 }
 
+// US-059: creating a feature is an event of its project, `feature.created`
+// with `data` that has at least `{"feature_id", "name"}`, pushed live and
+// replayed to a client that resumes from an earlier sequence number.
+#[test]
+fn a_new_feature_is_pushed_and_replayed_to_a_client_that_resumes_before_it() {
+    let (f, client) = ready();
+    let project = new_project(f, client, "features");
+    new_changeset(f, client, &project);
+    let before = open(client, &f.a, &Auth::Key(&f.key_a)).subscribe(&project, None)["last_seq"]
+        .as_i64()
+        .unwrap();
+    assert!(before >= 1, "the project has had events: {before}");
+    let mut live = open(client, &f.a, &Auth::Session(&f.alice_token));
+    live.subscribe(&project, None);
+
+    let name = unique("Checkout");
+    let response = call(
+        client,
+        "POST",
+        &format!("/api/v1/w/{}/projects/{project}/features", f.a),
+        &Auth::Key(&f.key_a),
+        Some(&json!({ "name": name })),
+    );
+    assert_eq!(
+        response.status,
+        201,
+        "create a feature: {}",
+        response.text()
+    );
+    let feature = response.json()["feature"]["id"]
+        .as_str()
+        .expect("the feature has an id")
+        .to_string();
+
+    let pushed = live.events(1);
+    assert_eq!(name_of(&pushed[0]), "feature.created", "{}", pushed[0]);
+    assert_eq!(seq_of(&pushed[0]), before + 1);
+    assert_eq!(pushed[0]["project_id"], project.as_str());
+    assert_eq!(pushed[0]["data"]["feature_id"], feature.as_str());
+    assert_eq!(pushed[0]["data"]["name"], name.as_str());
+
+    let mut late = open(client, &f.a, &Auth::Key(&f.key_a));
+    late.subscribe(&project, Some(before));
+    let replayed = late.events(1);
+    assert_eq!(
+        replayed[0], pushed[0],
+        "the replayed event is the one that was pushed live"
+    );
+    late.assert_no_event("the feature's event is sent once");
+}
+
 // ---------------------------------------------------------------------------
 // Storage
 // ---------------------------------------------------------------------------
