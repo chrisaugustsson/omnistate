@@ -117,7 +117,7 @@ pub(crate) fn project_id(args: &Args, agent: &Agent) -> Result<String> {
 }
 
 /// The features of a project, as the API lists them.
-fn project_features(agent: &Agent, project_id: &str) -> Result<Vec<Value>> {
+pub(crate) fn project_features(agent: &Agent, project_id: &str) -> Result<Vec<Value>> {
     let path = format!("{}/{project_id}/features", projects_path(agent));
     let response = agent.request("GET", &path, None)?;
     let body = parsed(&response.text(), "the features")?;
@@ -130,7 +130,7 @@ fn project_features(agent: &Agent, project_id: &str) -> Result<Vec<Value>> {
 
 /// The ID of the feature a name or ID given by the user stands for: an ID is
 /// used as it is, a name is looked up (ignoring case) in the project's features.
-fn resolve_feature(agent: &Agent, project_id: &str, given: &str) -> Result<String> {
+pub(crate) fn resolve_feature(agent: &Agent, project_id: &str, given: &str) -> Result<String> {
     if is_uuid(given) {
         return Ok(given.to_ascii_lowercase());
     }

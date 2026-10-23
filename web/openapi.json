@@ -1220,6 +1220,13 @@
             },
             "type": "array"
           },
+          "feature_id": {
+            "description": "The feature the doc belongs to; `null` for a global doc of the project.\nFixed when a change set creates the doc.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "id": {
             "type": "string"
           },
@@ -1254,6 +1261,20 @@
           "created_at",
           "drafts",
           "claims"
+        ],
+        "type": "object"
+      },
+      "DocListResponse": {
+        "properties": {
+          "docs": {
+            "items": {
+              "$ref": "#/components/schemas/DocBody"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "docs"
         ],
         "type": "object"
       },
@@ -5213,9 +5234,19 @@
               }
             },
             "description": "The project has a design system doc already (`design_system_exists`)"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The change set belongs to a feature and the doc is a design system, which is always global (`design_system_is_global`)"
           }
         },
-        "summary": "Starts a new doc in a change set. The doc has no mainline version: its\nfirst version comes through the change set, which gets an empty draft of it.",
+        "summary": "Starts a new doc in a change set. The doc has no mainline version: its\nfirst version comes through the change set, which gets an empty draft of it.\nThe doc belongs to the change set's feature (global for a project-level\nchange set) and keeps that scope.",
         "tags": [
           "crate::docs"
         ],
@@ -8253,6 +8284,87 @@
           "crate::decisions"
         ],
         "x-omni-access": "human"
+      }
+    },
+    "/api/v1/w/{workspace_id}/projects/{project_id}/docs": {
+      "get": {
+        "operationId": "list_docs",
+        "parameters": [
+          {
+            "description": "The workspace's UUID",
+            "in": "path",
+            "name": "workspace_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The project's UUID",
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "A feature's UUID lists that feature's docs only; `global` lists the project's global docs only; without it, every doc of the project",
+            "in": "query",
+            "name": "feature",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DocListResponse"
+                }
+              }
+            },
+            "description": "The project's docs"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "`feature` is neither `global` nor a UUID"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No valid API key or session"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No such project in this workspace"
+          }
+        },
+        "summary": "The docs of a project, oldest first, each as `GET .../docs/{doc_id}` answers it.",
+        "tags": [
+          "crate::docs"
+        ],
+        "x-omni-access": "both"
       }
     },
     "/api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}": {

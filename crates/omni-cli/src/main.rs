@@ -67,6 +67,9 @@ Usage:
   omni doc create --changeset <id> --kind html|design|design-system --module prd|architecture|db|ui
                 --title <text>        start a doc in a change set (its first version comes
                                       through the change set)
+  omni doc list                       list the project's docs: ID, scope (project or the
+                                      feature's name), kind, module and title; --feature
+                                      <name|id> or --global list one scope only
   omni doc open <doc> --changeset <id>
                                       make (or reuse) the change set's draft of a doc
   omni doc read <doc> [--changeset <id> | --version <v>]
@@ -210,9 +213,9 @@ Options (before or after the command):
   --project <name|id>   the project to work in (fallback: project in .omni.toml)
   --feature <name|id>   the feature that `omni changeset create` opens a change set in
                         (fallback: feature in .omni.toml); `omni changeset list` shows its
-                        change sets only
+                        change sets or docs only
   --global              `omni changeset create` opens a project-level change set, whatever
-                        .omni.toml says; `omni changeset list` shows those only
+                        .omni.toml says; `omni changeset list` and `omni doc list` show those only
   --body-file <path>    send this file as the request body (for a change set: its
                         description; for `doc edit` and `design edit`: the operations); -
                         reads standard input

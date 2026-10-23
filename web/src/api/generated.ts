@@ -265,6 +265,7 @@ export const DocBodySchema = z.object({
   claims: z.array(ClaimBodySchema),
   created_at: z.string(),
   drafts: z.array(DraftBodySchema),
+  feature_id: z.string().nullable().optional(),
   id: z.string(),
   kind: z.string(),
   mainline_version_id: z.string().nullable().optional(),
@@ -388,6 +389,11 @@ export const DigestResponseSchema = z.object({
   thread_id: z.string(),
 });
 export type DigestResponse = z.infer<typeof DigestResponseSchema>;
+
+export const DocListResponseSchema = z.object({
+  docs: z.array(DocBodySchema),
+});
+export type DocListResponse = z.infer<typeof DocListResponseSchema>;
 
 export const DocResponseSchema = z.object({
   doc: DocBodySchema,
@@ -925,6 +931,7 @@ export const schemas = {
   DigestResponse: DigestResponseSchema,
   Dissent: DissentSchema,
   DocBody: DocBodySchema,
+  DocListResponse: DocListResponseSchema,
   DocResponse: DocResponseSchema,
   DraftBody: DraftBodySchema,
   DraftHtmlResponse: DraftHtmlResponseSchema,
@@ -1200,6 +1207,7 @@ export const operations = {
       "403": ErrorBodySchema,
       "404": ErrorBodySchema,
       "409": ErrorBodySchema,
+      "422": ErrorBodySchema,
     },
   },
   "GET /api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs/{doc_id}": {
@@ -1443,6 +1451,14 @@ export const operations = {
       "403": ErrorBodySchema,
       "404": ErrorBodySchema,
       "409": ErrorBodySchema,
+    },
+  },
+  "GET /api/v1/w/{workspace_id}/projects/{project_id}/docs": {
+    responses: {
+      "200": DocListResponseSchema,
+      "400": ErrorBodySchema,
+      "401": ErrorBodySchema,
+      "404": ErrorBodySchema,
     },
   },
   "GET /api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}": {

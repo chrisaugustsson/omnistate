@@ -1,9 +1,9 @@
-//! `omni doc`: start a doc in a change set, open it there, read it (mainline, a
-//! version or a change set's draft), show its metadata and edit a draft with a
-//! batch of operations. The project is found as for `omni changeset`.
+//! `omni doc`: start a doc in a change set, list the project's docs, open a doc
+//! there, read it (mainline, a version or a change set's draft), show its
+//! metadata and edit a draft with a batch of operations. The project is found as for `omni changeset`.
 
 use crate::args::Args;
-use crate::changesets::{is_uuid, project_id};
+use crate::changesets::{is_uuid, project_features, project_id, resolve_feature};
 use crate::commands::{Agent, agent, read_body, say};
 use crate::error::{CliError, Result, bail};
 use crate::json::{Value, quote};
@@ -110,6 +110,63 @@ pub fn create(args: &Args) -> Result<()> {
             "draft {} in change set {}",
             field(draft, "id"),
             field(draft, "changeset_id")
+        ));
+    }
+    Ok(())
+}
+
+/// `omni doc list [--feature <name or id> | --global]`
+pub fn list(args: &Args) -> Result<()> {
+    let agent = agent(args)?;
+    let project = project_id(args, &agent)?;
+    let mut path = format!("{}/docs", project_path(&agent, &project));
+    match (&args.feature, args.global) {
+        (Some(_), true) => bail!("give --feature or --global, not both"),
+        (Some(given), false) => {
+            path.push_str(&format!(
+                "?feature={}",
+                resolve_feature(&agent, &project, given)?
+            ));
+        }
+        (None, true) => path.push_str("?feature=global"),
+        (None, false) => {}
+    }
+    let response = agent.request("GET", &path, None)?;
+    let text = response.text();
+    if args.json {
+        print_json(&text);
+        return Ok(());
+    }
+    let body = parsed(&text, "the docs")?;
+    let docs = body
+        .get("docs")
+        .and_then(Value::as_array)
+        .unwrap_or_default();
+    if docs.is_empty() {
+        say("no docs");
+    }
+    // The names of the features are only looked up when a doc is in one.
+    let features = if docs.iter().any(|doc| doc.str_at("feature_id").is_some()) {
+        project_features(&agent, &project).unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    for doc in docs {
+        let scope = match doc.str_at("feature_id") {
+            None => "project",
+            Some(id) => features
+                .iter()
+                .find(|feature| feature.str_at("id") == Some(id))
+                .and_then(|feature| feature.str_at("name"))
+                .unwrap_or(id),
+        };
+        let field = |name: &str| doc.str_at(name).unwrap_or("?");
+        say(&format!(
+            "{}  {scope}  {}  {}  {}",
+            field("id"),
+            field("kind"),
+            field("module"),
+            field("title")
         ));
     }
     Ok(())

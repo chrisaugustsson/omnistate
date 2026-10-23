@@ -93,6 +93,7 @@ pub fn run(args: &Args) -> Result<()> {
             )
         }
         ["doc", "create"] => docs::create(args),
+        ["doc", "list"] => docs::list(args),
         ["doc", "open"] => docs::open(args, None),
         ["doc", "open", doc] => docs::open(args, Some(doc)),
         ["doc", "read"] => docs::read(args, None),
@@ -104,7 +105,7 @@ pub fn run(args: &Args) -> Result<()> {
         ["doc", "remove"] => versions::remove(args, None),
         ["doc", "remove", doc] => versions::remove(args, Some(doc)),
         ["doc", ..] => {
-            bail!("usage: omni doc create|open|read|show|edit|remove; see `omni --help`")
+            bail!("usage: omni doc create|list|open|read|show|edit|remove; see `omni --help`")
         }
         ["version", "save"] => versions::save(args, None),
         ["version", "save", doc] => versions::save(args, Some(doc)),

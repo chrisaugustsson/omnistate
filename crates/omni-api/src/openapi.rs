@@ -24,9 +24,9 @@ use crate::design::{
     UsageResponse,
 };
 use crate::docs::{
-    ConflictBody, ConflictDetails, CreateDocRequest, CreatedDocResponse, DocBody, DocResponse,
-    DraftBody, DraftHtmlResponse, DraftResponse, DraftWithHtml, EditRequest, EditResponse,
-    InvalidOperationBody, MainlineHtmlResponse, OpResultBody,
+    ConflictBody, ConflictDetails, CreateDocRequest, CreatedDocResponse, DocBody, DocListResponse,
+    DocResponse, DraftBody, DraftHtmlResponse, DraftResponse, DraftWithHtml, EditRequest,
+    EditResponse, InvalidOperationBody, MainlineHtmlResponse, OpResultBody,
 };
 use crate::features::{CreateFeatureRequest, FeatureBody, FeatureListResponse, FeatureResponse};
 use crate::home::{HomeResponse, WaitingBody};
@@ -96,6 +96,7 @@ use utoipa::OpenApi;
         crate::attachments::upload,
         crate::attachments::download,
         crate::docs::create_doc,
+        crate::docs::list_docs,
         crate::docs::show_doc,
         crate::docs::read_doc_html,
         crate::docs::open_draft,
@@ -174,6 +175,7 @@ use utoipa::OpenApi;
         CreateDocRequest,
         DocBody,
         DocResponse,
+        DocListResponse,
         CreatedDocResponse,
         DraftBody,
         DraftResponse,

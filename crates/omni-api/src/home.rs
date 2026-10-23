@@ -11,7 +11,7 @@
 //! move an item onto or off a list emit those events already.
 
 use crate::AppState;
-use crate::changesets::{ChangesetBody, changesets_of_project, require_project};
+use crate::changesets::{ChangesetBody, Scope, changesets_of_project, require_project};
 use crate::claims;
 use crate::comments::{CommentBody, addressed_of_project};
 use crate::decisions::{DecisionBody, proposed_of_project};
@@ -75,7 +75,14 @@ pub async fn show(
     claims::sweep(&state, &request.workspace_id).await;
     let mut tx = state.workspace_tx(&request.workspace_id).await?;
     require_project(&mut tx, &project_id).await?;
-    let docs = docs_of_project(&state, &mut tx, &request.workspace_id, &project_id).await?;
+    let docs = docs_of_project(
+        &state,
+        &mut tx,
+        &request.workspace_id,
+        &project_id,
+        Scope::Project,
+    )
+    .await?;
     let changesets = changesets_of_project(&mut tx, &Viewer::human(), &project_id).await?;
     let threads = threads_of_project(&mut tx, &project_id).await?;
     let decisions = proposed_of_project(&mut tx, &Viewer::human(), &project_id).await?;

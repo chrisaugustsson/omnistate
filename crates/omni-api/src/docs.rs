@@ -14,7 +14,7 @@
 
 use crate::AppState;
 use crate::boards;
-use crate::changesets::{non_blank, parse_body};
+use crate::changesets::{Scope, non_blank, parse_body, require_project};
 use crate::claims::{self, ClaimBody};
 use crate::design::{self, Library};
 use crate::live;
@@ -44,7 +44,7 @@ pub(crate) type Tx = Transaction<'static, Postgres>;
 /// The columns of a doc; `created_at` is ISO 8601 text in UTC.
 const DOC_COLUMNS: &str = "id::text, project_id::text, kind, module, title, \
      to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"') AS created_at, \
-     mainline_version_id::text";
+     mainline_version_id::text, feature_id::text";
 
 const DRAFT_COLUMNS: &str = "id::text, doc_id::text, changeset_id::text, base_version_id::text";
 
@@ -75,6 +75,7 @@ pub(crate) struct DocRow {
     title: String,
     created_at: String,
     pub(crate) mainline_version_id: Option<String>,
+    pub(crate) feature_id: Option<String>,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -89,6 +90,9 @@ pub struct DocBody {
     pub created_at: String,
     /// `null` until a change set that holds the doc's first version merges.
     pub mainline_version_id: Option<String>,
+    /// The feature the doc belongs to; `null` for a global doc of the project.
+    /// Fixed when a change set creates the doc.
+    pub feature_id: Option<String>,
     /// The doc's drafts, one per change set, oldest first.
     pub drafts: Vec<DraftBody>,
     /// The doc's live claims, oldest first.
@@ -98,6 +102,11 @@ pub struct DocBody {
 #[derive(Serialize, ToSchema)]
 pub struct DocResponse {
     pub doc: DocBody,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct DocListResponse {
+    pub docs: Vec<DocBody>,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -725,22 +734,67 @@ pub(crate) async fn require_changeset(
     project_id: &str,
     changeset_id: &str,
 ) -> Result<(), ApiError> {
-    let found: Option<(String,)> = sqlx::query_as(
-        "SELECT id::text FROM changesets WHERE id = $1::uuid AND project_id = $2::uuid",
+    changeset_feature(tx, project_id, changeset_id)
+        .await
+        .map(|_| ())
+}
+
+/// The feature that the change set belongs to, `None` for a project-level one;
+/// 404 when the change set is not in this project.
+async fn changeset_feature(
+    tx: &mut Tx,
+    project_id: &str,
+    changeset_id: &str,
+) -> Result<Option<String>, ApiError> {
+    let found: Option<(Option<String>,)> = sqlx::query_as(
+        "SELECT feature_id::text FROM changesets WHERE id = $1::uuid AND project_id = $2::uuid",
     )
     .bind(changeset_id)
     .bind(project_id)
     .fetch_optional(&mut **tx)
     .await
     .map_err(ApiError::database)?;
-    found.map(|_| ()).ok_or(ApiError::NotFound)
+    found
+        .map(|(feature_id,)| feature_id)
+        .ok_or(ApiError::NotFound)
+}
+
+/// A change set may draft the global docs and the docs of its own feature
+/// (FR-54): a project-level one drafts global docs only. Another scope is 422
+/// `doc_in_other_feature`.
+async fn check_doc_scope(
+    tx: &mut Tx,
+    doc_feature: Option<&str>,
+    changeset_id: &str,
+) -> Result<(), ApiError> {
+    let Some(doc_feature) = doc_feature else {
+        return Ok(());
+    };
+    let same: bool = sqlx::query_scalar(
+        "SELECT feature_id IS NOT DISTINCT FROM $2::uuid FROM changesets WHERE id = $1::uuid",
+    )
+    .bind(changeset_id)
+    .bind(doc_feature)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(ApiError::database)?
+    .ok_or(ApiError::NotFound)?;
+    if same {
+        Ok(())
+    } else {
+        Err(ApiError::Refused(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "doc_in_other_feature",
+        ))
+    }
 }
 
 /// The ID of the draft that `changeset_id` has of `doc_id`. A change set that
 /// has none gets one, based on the doc's mainline version (409
 /// `no_mainline_version` when the doc has none, so that only its own change set
 /// has a draft of it), and `draft.opened` is emitted; two requests that open it
-/// at once get the same draft.
+/// at once get the same draft. A doc of another feature than the change set's is
+/// 422 `doc_in_other_feature`.
 pub(crate) async fn ensure_draft(
     tx: &mut Tx,
     workspace_id: &str,
@@ -749,6 +803,13 @@ pub(crate) async fn ensure_draft(
     changeset_id: &str,
     mainline: Option<&str>,
 ) -> Result<String, ApiError> {
+    let doc_feature: Option<String> =
+        sqlx::query_scalar("SELECT feature_id::text FROM docs WHERE id = $1::uuid")
+            .bind(doc_id)
+            .fetch_one(&mut **tx)
+            .await
+            .map_err(ApiError::database)?;
+    check_doc_scope(tx, doc_feature.as_deref(), changeset_id).await?;
     let existing: Option<String> = sqlx::query_scalar(
         "SELECT id::text FROM drafts WHERE doc_id = $1::uuid AND changeset_id = $2::uuid",
     )
@@ -832,18 +893,27 @@ async fn drafts_of(tx: &mut Tx, doc_id: &str) -> Result<Vec<DraftBody>, ApiError
     .map_err(ApiError::database)
 }
 
-/// The docs of a project, oldest first, each as `show_doc` answers it. Callers
-/// sweep the expired claims first.
+/// The docs of a project in the scope, oldest first, each as `show_doc` answers
+/// it. Callers sweep the expired claims first.
 pub(crate) async fn docs_of_project(
     state: &AppState,
     tx: &mut Tx,
     workspace_id: &str,
     project_id: &str,
+    scope: Scope<'_>,
 ) -> Result<Vec<DocBody>, ApiError> {
+    let all = matches!(scope, Scope::Project);
+    let feature = match scope {
+        Scope::Feature(id) => Some(id),
+        _ => None,
+    };
     let rows: Vec<DocRow> = sqlx::query_as(&format!(
-        "SELECT {DOC_COLUMNS} FROM docs WHERE project_id = $1::uuid ORDER BY created_at, id"
+        "SELECT {DOC_COLUMNS} FROM docs WHERE project_id = $1::uuid \
+         AND ($2::bool OR feature_id IS NOT DISTINCT FROM $3::uuid) ORDER BY created_at, id"
     ))
     .bind(project_id)
+    .bind(all)
+    .bind(feature)
     .fetch_all(&mut **tx)
     .await
     .map_err(ApiError::database)?;
@@ -865,6 +935,7 @@ fn doc_body(row: DocRow, drafts: Vec<DraftBody>, claims: Vec<ClaimBody>) -> DocB
         title: row.title,
         created_at: row.created_at,
         mainline_version_id: row.mainline_version_id,
+        feature_id: row.feature_id,
         drafts,
         claims,
     }
@@ -883,6 +954,8 @@ fn valid_kind_and_module(kind: &str, module: &str) -> bool {
 
 /// Starts a new doc in a change set. The doc has no mainline version: its
 /// first version comes through the change set, which gets an empty draft of it.
+/// The doc belongs to the change set's feature (global for a project-level
+/// change set) and keeps that scope.
 #[utoipa::path(
     post,
     path = "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs",
@@ -899,6 +972,7 @@ fn valid_kind_and_module(kind: &str, module: &str) -> bool {
         (status = 403, description = "Called with a session; agents only", body = ErrorBody),
         (status = 404, description = "No such change set in this project and workspace", body = ErrorBody),
         (status = 409, description = "The project has a design system doc already (`design_system_exists`)", body = ErrorBody),
+        (status = 422, description = "The change set belongs to a feature and the doc is a design system, which is always global (`design_system_is_global`)", body = ErrorBody),
     )
 )]
 pub async fn create_doc(
@@ -911,7 +985,7 @@ pub async fn create_doc(
     let changeset_id = parse_uuid(&changeset_id).ok_or(ApiError::NotFound)?;
     let new = parse_body::<CreateDocRequest>(&body);
     let mut tx = state.workspace_tx(&request.workspace_id).await?;
-    require_changeset(&mut tx, &project_id, &changeset_id).await?;
+    let feature_id = changeset_feature(&mut tx, &project_id, &changeset_id).await?;
     let new = new?;
     let invalid = || ApiError::bad_request("invalid_request");
     let kind = non_blank(new.kind).ok_or_else(invalid)?;
@@ -919,6 +993,12 @@ pub async fn create_doc(
     let title = non_blank(new.title).ok_or_else(invalid)?;
     if !valid_kind_and_module(&kind, &module) {
         return Err(invalid());
+    }
+    if kind == "design-system" && feature_id.is_some() {
+        return Err(ApiError::Refused(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "design_system_is_global",
+        ));
     }
     // A project has one design system doc, whichever change set started it and
     // whether or not it merged. The unique index of the migration settles two
@@ -937,11 +1017,12 @@ pub async fn create_doc(
         }
     }
     let row: DocRow = sqlx::query_as(&format!(
-        "INSERT INTO docs (workspace_id, project_id, kind, module, title) \
-         VALUES ($1::uuid, $2::uuid, $3, $4, $5) RETURNING {DOC_COLUMNS}"
+        "INSERT INTO docs (workspace_id, project_id, feature_id, kind, module, title) \
+         VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5, $6) RETURNING {DOC_COLUMNS}"
     ))
     .bind(&request.workspace_id)
     .bind(&project_id)
+    .bind(&feature_id)
     .bind(&kind)
     .bind(&module)
     .bind(&title)
@@ -975,6 +1056,7 @@ pub async fn create_doc(
         &json!({
             "doc_id": row.id,
             "changeset_id": changeset_id,
+            "feature_id": feature_id,
             "kind": kind,
             "module": module,
             "title": title,
@@ -994,6 +1076,49 @@ pub async fn create_doc(
         Vec::new(),
     );
     Ok((StatusCode::CREATED, Json(CreatedDocResponse { doc, draft })))
+}
+
+/// The docs of a project, oldest first, each as `GET .../docs/{doc_id}` answers it.
+#[utoipa::path(
+    get,
+    path = "/api/v1/w/{workspace_id}/projects/{project_id}/docs",
+    params(
+        ("workspace_id" = String, Path, description = "The workspace's UUID"),
+        ("project_id" = String, Path, description = "The project's UUID"),
+        ("feature" = Option<String>, Query, description = "A feature's UUID lists that feature's docs only; `global` lists the project's global docs only; without it, every doc of the project"),
+    ),
+    responses(
+        (status = 200, description = "The project's docs", body = DocListResponse),
+        (status = 400, description = "`feature` is neither `global` nor a UUID", body = ErrorBody),
+        (status = 401, description = "No valid API key or session", body = ErrorBody),
+        (status = 404, description = "No such project in this workspace", body = ErrorBody),
+    )
+)]
+pub async fn list_docs(
+    State(state): State<AppState>,
+    request: WorkspaceRequest,
+    Path((_, project_id)): Path<(String, String)>,
+    Query(query): Query<HashMap<String, String>>,
+) -> Result<Json<DocListResponse>, ApiError> {
+    let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
+    let feature = match query.get("feature").map(String::as_str) {
+        None => None,
+        Some("global") => Some(None),
+        Some(id) => Some(Some(
+            parse_uuid(id).ok_or_else(|| ApiError::bad_request("invalid_request"))?,
+        )),
+    };
+    let scope = match &feature {
+        None => Scope::Project,
+        Some(None) => Scope::Global,
+        Some(Some(id)) => Scope::Feature(id),
+    };
+    claims::sweep(&state, &request.workspace_id).await;
+    let mut tx = state.workspace_tx(&request.workspace_id).await?;
+    require_project(&mut tx, &project_id).await?;
+    let docs = docs_of_project(&state, &mut tx, &request.workspace_id, &project_id, scope).await?;
+    tx.commit().await.map_err(ApiError::database)?;
+    Ok(Json(DocListResponse { docs }))
 }
 
 /// A doc's metadata, its mainline version, its drafts and its claims.
@@ -1114,6 +1239,7 @@ pub async fn open_draft(
     let mut tx = state.workspace_tx(&request.workspace_id).await?;
     require_changeset(&mut tx, &project_id, &changeset_id).await?;
     let doc = find_doc(&mut tx, &project_id, &doc_id).await?;
+    check_doc_scope(&mut tx, doc.feature_id.as_deref(), &changeset_id).await?;
     let existing = sqlx::query_as::<_, DraftBody>(&format!(
         "SELECT {DRAFT_COLUMNS} FROM drafts WHERE doc_id = $1::uuid AND changeset_id = $2::uuid"
     ))
