@@ -1,9 +1,15 @@
 /*
- * The one stylesheet of HTML docs (docs/formats/html-docs.md). The doc viewer
- * embeds it in its frame and the export (US-047) in every exported doc, so a
- * doc looks the same in both and has no styles of its own. It styles the
- * blocks of the format under `.omni-doc`, and it fetches nothing.
+ * OmniState's default stylesheet for HTML docs (docs/formats/html-docs.md). The
+ * doc viewer embeds it in its frame and the export (US-047) in every exported
+ * doc, so a doc without styles of its own looks the same in both and is
+ * readable. It styles the elements docs use under `.omni-doc`, and it fetches
+ * nothing.
+ *
+ * The rules are in the cascade layer `omni-default`. Rules outside any layer
+ * win over a layer's rules whatever their specificity, so a doc's own `<style>`
+ * overrides the defaults even with a plain `h1 { ... }` or `td { ... }`.
  */
+@layer omni-default {
 .omni-doc {
   --doc-text: #1f2328;
   --doc-muted: #59636e;
@@ -256,4 +262,5 @@
   .omni-doc pre {
     white-space: pre-wrap;
   }
+}
 }

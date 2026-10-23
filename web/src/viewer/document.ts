@@ -1,38 +1,38 @@
 import mermaidScript from "mermaid/dist/mermaid.min.js?raw";
 import docStyles from "./doc.css?raw";
 import { FRAME_SCRIPT } from "./frame-script";
-import { sha256Source } from "./sha256";
 
 // The document of the doc viewer's frame, which the doc page gives the frame
 // as its `srcdoc`. The frame is `<iframe sandbox="allow-scripts">` without
 // `allow-same-origin`, so its origin is opaque: it cannot read the page and
 // its requests carry no session cookie. The document adds a content security
 // policy that blocks all network access but the images of the workspace's
-// attachments, and runs nothing but the viewer's own two scripts (Mermaid and
-// the viewer's), each allowed by its hash. The doc's HTML is not part of the
-// document: the page posts it to the frame (see frame-script.ts).
+// attachments. A doc is free-form HTML with its own scripts and handlers
+// (US-109), so inline scripts may run, but no script comes from the network.
+// The doc's HTML is not part of the document: the page posts it to the frame
+// (see frame-script.ts).
 
 const VIEWER_STYLES = `
 html, body { margin: 0; background: #fff; }
 body { position: relative; padding: 1.5rem 3.5rem 4rem; }
-.omni-doc [data-node-id] { cursor: pointer; }
-.omni-doc [data-node-id].is-hover {
+.omni-doc [data-omni-id] { cursor: pointer; }
+.omni-doc [data-omni-id].is-hover {
   outline: 2px solid rgba(9, 105, 218, 0.4);
   outline-offset: 2px;
   background-image: linear-gradient(rgba(9, 105, 218, 0.07), rgba(9, 105, 218, 0.07));
 }
-.omni-doc [data-node-id].is-claimed {
+.omni-doc [data-omni-id].is-claimed {
   outline: 2px dashed #9a6700;
   outline-offset: 2px;
 }
-.omni-doc [data-node-id].is-selected {
+.omni-doc [data-omni-id].is-selected {
   outline: 2px solid #0969da;
   outline-offset: 2px;
   background-image: linear-gradient(rgba(9, 105, 218, 0.14), rgba(9, 105, 218, 0.14));
 }
-.omni-doc [data-node-id].is-added { background-color: rgba(26, 127, 55, 0.2); }
-.omni-doc [data-node-id].is-changed { background-color: rgba(212, 167, 44, 0.3); }
-.omni-doc [data-node-id].is-removed { background-color: rgba(207, 34, 46, 0.2); text-decoration: line-through; }
+.omni-doc [data-omni-id].is-added { background-color: rgba(26, 127, 55, 0.2); }
+.omni-doc [data-omni-id].is-changed { background-color: rgba(212, 167, 44, 0.3); }
+.omni-doc [data-omni-id].is-removed { background-color: rgba(207, 34, 46, 0.2); text-decoration: line-through; }
 .omni-mermaid svg { max-width: 100%; height: auto; }
 #pins { position: absolute; top: 0; left: 0; width: 0; height: 0; }
 .omni-pin {
@@ -49,18 +49,6 @@ body { position: relative; padding: 1.5rem 3.5rem 4rem; }
   cursor: pointer;
 }
 `;
-
-/** The hash of each script text, so that the large Mermaid script is only hashed once. */
-const hashes = new Map<string, string>();
-
-function hashOf(text: string): string {
-  let hash = hashes.get(text);
-  if (!hash) {
-    hash = sha256Source(text);
-    hashes.set(text, hash);
-  }
-  return hash;
-}
 
 /** A value as a JavaScript literal that cannot end its script element. */
 function literal(value: string): string {
@@ -79,7 +67,7 @@ export function viewerDocument({ workspaceId, origin }: { workspaceId: string; o
     "default-src 'none'",
     `img-src data: blob: ${origin}/api/v1/w/${workspaceId}/attachments/`,
     "style-src 'unsafe-inline'",
-    `script-src ${hashOf(mermaidScript)} ${hashOf(viewerScript)}`,
+    "script-src 'unsafe-inline'",
     "base-uri 'none'",
     "form-action 'none'",
   ].join("; ");

@@ -132,7 +132,7 @@ pub struct DraftResponse {
 pub struct DraftWithHtml {
     #[serde(flatten)]
     pub draft: DraftBody,
-    /// The draft as HTML: `data-node-id` and `data-rev` (the node's revision)
+    /// The draft as HTML: `data-omni-id` and `data-rev` (the node's revision)
     /// on every block; empty for a design doc, whose content is `tags` and
     /// `pages`.
     pub html: String,
@@ -174,7 +174,7 @@ pub struct MainlineHtmlResponse {
     /// The version that was read. For the doc's head, the mainline version when
     /// the head is its content; `null` for a head that no version holds.
     pub version_id: Option<String>,
-    /// The head or version as HTML with `data-node-id`; the empty text for an
+    /// The head or version as HTML with `data-omni-id`; the empty text for an
     /// empty doc, and for a design's head, whose content is `tags` and `pages`.
     pub html: String,
     /// A design's head as tags, one `<Page>` after the other; only for the
@@ -245,7 +245,7 @@ pub struct ConflictDetails {
     pub expected: u64,
     /// The revision the node has now.
     pub current_revision: u64,
-    /// The node as it is now: HTML with `data-node-id` for an HTML doc, tags
+    /// The node as it is now: HTML with `data-omni-id` for an HTML doc, tags
     /// with `rev` for a design.
     pub current_html: String,
 }
@@ -1597,7 +1597,7 @@ pub async fn show_doc(
     }))
 }
 
-/// A doc's head as HTML with `data-node-id`, or the version named by
+/// A doc's head as HTML with `data-omni-id`, or the version named by
 /// `?version=` (a version has no `data-rev`). The head is read, never the
 /// mainline version: a new doc reads as the empty doc. A design's head answers
 /// its `pages` and `tags` and no HTML.
@@ -1801,7 +1801,7 @@ pub async fn open_draft(
     Ok((status, Json(DraftResponse { draft })))
 }
 
-/// A change set's draft of a doc, as HTML with `data-node-id` and `data-rev` on
+/// A change set's draft of a doc, as HTML with `data-omni-id` and `data-rev` on
 /// every block.
 #[utoipa::path(
     get,
@@ -1993,7 +1993,7 @@ pub async fn edit_draft(
 /// nothing, with no change set. The batch runs under the lock on the doc's row,
 /// so batches to one doc are applied one after the other, each to the head the
 /// one before made. The new head of an HTML doc is a chunk in RustFS that holds
-/// the doc as HTML with `data-node-id` and `data-rev`, which is where a node's
+/// the doc as HTML with `data-omni-id` and `data-rev`, which is where a node's
 /// revision is kept; the new head of a design is a manifest that lists the
 /// chunk of every page and board and the revisions, and only the boards the
 /// batch changed get a new chunk (`design::edit_head`). Nothing about a head is

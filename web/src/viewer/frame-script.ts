@@ -1,5 +1,6 @@
-// The viewer's own script: the only script that runs in the doc frame
-// (document.ts puts it inline, allowed by its hash). It is plain browser
+// The viewer's own script, which runs in the doc frame beside the doc's own
+// scripts (US-109)
+// (document.ts puts it inline). It is plain browser
 // JavaScript kept in a string, because the frame's document carries it as
 // text; it must not contain a backtick or a `${`. `PARENT_ORIGIN` is declared
 // before it by document.ts, and `mermaid` is the global of the Mermaid script
@@ -30,35 +31,41 @@ export const FRAME_SCRIPT = String.raw`(function () {
   }
 
   function blockOf(target) {
-    return target instanceof Element ? target.closest("[data-node-id]") : null;
+    return target instanceof Element ? target.closest("[data-omni-id]") : null;
   }
 
   function find(node) {
-    var blocks = doc.querySelectorAll("[data-node-id]");
+    var blocks = doc.querySelectorAll("[data-omni-id]");
     for (var i = 0; i < blocks.length; i += 1) {
-      if (blocks[i].getAttribute("data-node-id") === node) return blocks[i];
+      if (blocks[i].getAttribute("data-omni-id") === node) return blocks[i];
     }
     return null;
   }
 
-  // The doc's HTML is already cleaned by the API; this keeps only what a doc
-  // may hold, whatever the page sends, and the policy blocks the rest.
+  // The doc is free-form HTML (docs/formats/html-docs.md): its styles, scripts
+  // and event handlers stay, and run inside this sandboxed frame, which has
+  // no origin of its own and a policy that blocks every request. Only what
+  // could navigate or restyle the frame itself is left out.
   function parse(html) {
     var parsed = new DOMParser().parseFromString(html, "text/html");
-    var banned = "script, style, link, meta, base, iframe, object, embed, form";
+    var banned = "base, link, iframe, object, embed, meta[http-equiv]";
     Array.prototype.forEach.call(parsed.querySelectorAll(banned), function (element) {
       element.remove();
     });
-    Array.prototype.forEach.call(parsed.querySelectorAll("*"), function (element) {
-      Array.prototype.forEach.call(Array.from(element.attributes), function (attribute) {
-        var name = attribute.name.toLowerCase();
-        var value = attribute.value.replace(/[\s\u0000-\u001f]/g, "").toLowerCase();
-        if (name.indexOf("on") === 0 || ((name === "href" || name === "src" || name === "xlink:href") && value.indexOf("javascript:") === 0)) {
-          element.removeAttribute(attribute.name);
-        }
-      });
-    });
     return parsed.body;
+  }
+
+  // A script that a parser built does not run when it is moved into the
+  // frame's document, so each one is made again.
+  function revive(root) {
+    Array.prototype.forEach.call(root.querySelectorAll("script"), function (old) {
+      var script = document.createElement("script");
+      Array.prototype.forEach.call(Array.from(old.attributes), function (attribute) {
+        if (attribute.name.toLowerCase() !== "src") script.setAttribute(attribute.name, attribute.value);
+      });
+      script.textContent = old.textContent;
+      old.replaceWith(script);
+    });
   }
 
   function place(pre, svg) {
@@ -96,7 +103,7 @@ export const FRAME_SCRIPT = String.raw`(function () {
   function setHover(block) {
     var current = hovered && find(hovered);
     if (current) current.classList.remove("is-hover");
-    hovered = block ? block.getAttribute("data-node-id") : null;
+    hovered = block ? block.getAttribute("data-omni-id") : null;
     if (block) block.classList.add("is-hover");
   }
 
@@ -156,6 +163,7 @@ export const FRAME_SCRIPT = String.raw`(function () {
     if (typeof message.html === "string" && message.html !== shown.html) {
       shown.html = message.html;
       doc.replaceChildren.apply(doc, Array.from(parse(message.html).childNodes));
+      revive(doc);
       drawDiagrams();
       var again = hovered && find(hovered);
       if (again) again.classList.add("is-hover");
@@ -184,7 +192,7 @@ export const FRAME_SCRIPT = String.raw`(function () {
     if (target && target.closest("a")) event.preventDefault();
     var pin = target && target.closest("[data-pin-for]");
     var block = pin ? find(pin.getAttribute("data-pin-for")) : blockOf(target);
-    if (block) post({ type: "viewer.select", node: block.getAttribute("data-node-id") });
+    if (block) post({ type: "viewer.select", node: block.getAttribute("data-omni-id") });
   });
 
   var frameRequested = false;

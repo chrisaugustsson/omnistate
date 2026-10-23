@@ -22,7 +22,7 @@ with the `node`, its new `revision`, and the IDs it `created` and `removed`; the
 next read of the doc has the change.
 
 Nothing about a head is held in memory. The head of an HTML doc is a chunk with
-`data-node-id` and `data-rev` on every block, and `data-rev` is where a node's
+`data-omni-id` and `data-rev` on every block-level element, and `data-rev` is where a node's
 revision is kept between batches, so an API that is started afresh checks
 revisions against what was written. Every applied batch adds one row to the
 doc's change log (`doc_changes`: the agent, the operations as sent, the head
@@ -32,7 +32,10 @@ changes, logs and sends nothing. A batch of no operations changes nothing either
 
 ## Nodes, revisions and positions
 
-A node is addressed by its ID. Every node has a revision, a number that starts at
+A node is addressed by its ID. In an HTML doc a node is a block-level element at
+any depth: a `<td>` in a table in a `<details>` in a `<div>` is a node, and its
+parent is the nearest node above it (the `<tr>`; a `<tbody>` or a `<span>`
+between belongs to the content). Every node has a revision, a number that starts at
 1 when the node is created and rises by 1 each time an operation changes that
 node, and no other node.
 
@@ -50,7 +53,8 @@ A parent is a node ID, or `null` for the top level of the doc. Both `parent` and
 
 ## insert
 
-Adds a new block as a child of `parent`, at `position`.
+Adds a new node as a child of `parent`, at `position`. `parent` is any node of the
+doc, at any depth.
 
 ```json
 {
@@ -61,10 +65,13 @@ Adds a new block as a child of `parent`, at `position`.
 }
 ```
 
-`content` is the HTML of exactly one block, in the doc type's format. The block
-and every block inside it are new: the engine assigns their IDs, so the content
-must not carry `data-node-id`. Each new node starts at revision 1. The result
-lists the new IDs in `created`, in document order.
+`content` is the HTML of exactly one block-level element (any HTML, CSS and
+inline JavaScript inside it). The element and every block-level element inside
+it are new nodes. An element keeps a `data-omni-id` it carries when that is a
+valid node ID that no other element of the content or the doc has; otherwise
+the engine assigns the ID, and the one the content carried is gone. Each new
+node starts at revision 1. The result lists the new IDs in `created`, in
+document order. A `data-rev` in the content is ignored.
 
 An insert neither checks nor changes the revision of the parent, so it needs no
 `rev`. Children are ordered by fractional indexes (see Order), so agents that
@@ -92,50 +99,42 @@ Swaps a node's content for new content, in one step.
 ```
 
 The node keeps its ID and its place, and its revision rises by 1. The content may
-be another kind of block, as long as the parent accepts it. The content's root may
-carry the node's `data-node-id` or none; any other ID is an error.
+be another kind of element (a `<p>` becomes an `<h3>`), as long as it is a
+block-level element that reads back where it goes. The content's root keeps the
+replaced node's ID, whatever `data-omni-id` it carries.
 
 Descendants of the node are matched by ID:
 
-- A descendant whose `data-node-id` is in the content is kept, with that ID. Its
+- A descendant whose `data-omni-id` is in the content is kept, with that ID. Its
   revision rises by 1 only if its own content changed.
 - A descendant that the content leaves out is removed, and listed in `removed` in
   document order.
-- A block in the content without a `data-node-id` is new. It gets a new ID,
-  revision 1, and a place in `created`.
+- A block-level element in the content without a `data-omni-id` is new. It gets a
+  new ID, revision 1, and a place in `created`.
 
-An ID in the content that belongs to another node of the doc, or to no node at
-all, is an error that names the ID.
+An ID in the content that belongs to another node of the doc is not taken: the
+element gets a new ID and the other node is not touched. A valid, unique ID that
+belongs to no node is kept.
 
 ## set
 
-Changes properties of a block, keeping everything else.
+Changes the inner HTML of a node, keeping the element itself.
 
 ```json
 {
   "op": "set",
   "node": "b0000002",
   "rev": 1,
-  "properties": {"level": 2, "html": "Orders, <code>v2</code>"}
+  "properties": {"html": "Orders, <code>v2</code>"}
 }
 ```
 
-Several properties in one `set` are one change: the revision rises by 1. The
-properties for HTML docs are:
-
-| Property | Value | Block |
-| --- | --- | --- |
-| `level` | 1 to 6 | heading |
-| `kind` | `note`, `warning` or `decision` | callout |
-| `ordered` | true or false | list |
-| `header` | true or false | table cell |
-| `alt` | text, or null to remove it | image |
-| `caption` | text | figure |
-| `html` | the inner HTML of the block, inline markup only | heading, paragraph, quote, list item, table cell, callout, requirement |
-
-A property that does not fit the block, an unknown property and `id` are errors
-that name the property. `html` goes through the same parsing and cleaning as any
-other content.
+`html` is the only property of an HTML doc: the inner HTML of the element, with
+any markup. The revision rises by 1. A node inside the old content that the new
+HTML leaves out is removed (listed in `removed`); one whose `data-omni-id` is in
+the new HTML is kept, and new block-level elements are new nodes (`created`). An
+unknown property, `id` and `style` are errors that name the property. An
+element that holds nothing (`<hr>`) takes no `html`.
 
 ## move
 
@@ -154,8 +153,8 @@ Moves a node, with everything inside it, to a new parent and position.
 The node keeps its ID and its descendants keep theirs. Only the moved node's
 revision rises; the old and the new parent are not touched. A move within one
 parent reorders its children. A node cannot move into itself or a descendant,
-cannot go after itself, and cannot go into a parent that does not accept it (a
-paragraph into a list, a list item into a section).
+cannot go after itself, and cannot go where the HTML parser would read it
+differently (see Validation).
 
 ## delete
 
@@ -252,28 +251,30 @@ operation of the holder renews the claim. Each applied operation emits
 A revision mismatch is a conflict, not a failure of the content. The conflict
 says which operation (`index`, counting from 0), which `node`, the revision it
 `expected`, the node's `current_revision`, and the node's `current_html`: its
-current state as HTML with `data-node-id` (for a design, as tags with `rev`). The agent reads it, decides how to
+current state as HTML with `data-omni-id` (for a design, as tags with `rev`). The agent reads it, decides how to
 merge, and sends a new batch with the current revision.
 
 ```text
 conflict in operation 2: b0000004 is at revision 3, not 1
-current_html: <p data-node-id="b0000004">Changed by someone else</p>
+current_html: <p data-omni-id="b0000004">Changed by someone else</p>
 ```
 
 Every other refusal is an error with the operation's `index` and a message that
-names the ID, tag or property that is wrong, for example "line 1: `<span>` is not
-allowed inside `<p>`" or "the node `b0000fff` is not in the doc".
+names the ID, tag or property that is wrong, for example "`<tr>` cannot go inside
+`<section>`" or "the node `b0000fff` is not in the doc".
 
-## Validation and cleaning
+## Validation
 
-Every operation runs the doc type's rules on its content, not only when the doc
-is saved. For HTML docs these are the rules of `docs/formats/html-docs.md`: only
-the block set, links with http, https or mailto, images that are attachments, and
-no `style`. Content is also checked in the context of its parent: a list holds
-list items, a table rows and a row cells, and text blocks hold no blocks. Dirty
-inline SVG is cleaned, not rejected. Content that breaks the rules is refused
-with the problem named, and the doc stays as it was. After every batch the doc is
-a valid doc: it prints HTML that parses back to the same doc.
+An HTML doc holds any HTML, so content is not cleaned; it is checked for one
+thing: that the doc still reads back. After an insert, a replace, a set or a move
+the engine prints the changed element inside the elements above it and reads
+that HTML again with the HTML parser. If the parser would close, move or drop
+something (a `<div>` or a `<p>` in a `<p>`, a `<tr>` or a `<td>` in a
+`<section>`, a `<li>` in a `<li>`), the operation is refused with the tag named,
+and the doc stays as it was. Content must hold one block-level element: text or
+a second element beside it, an inline element such as `<span>` and an empty
+string are errors. After every batch the doc prints HTML (`to_html_with_revisions`)
+that `EditDoc::from_html` reads back as the same doc.
 
 ## Order
 

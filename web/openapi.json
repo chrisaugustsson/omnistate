@@ -500,7 +500,7 @@
       "ConflictDetails": {
         "properties": {
           "current_html": {
-            "description": "The node as it is now: HTML with `data-node-id` for an HTML doc, tags\nwith `rev` for a design.",
+            "description": "The node as it is now: HTML with `data-omni-id` for an HTML doc, tags\nwith `rev` for a design.",
             "type": "string"
           },
           "current_revision": {
@@ -561,7 +561,7 @@
         "description": "One side of a conflict: the version that its state of the node comes from\nand the node there.",
         "properties": {
           "html": {
-            "description": "The node and what is inside it as HTML with `data-node-id`; `null` when\nthis side removed the node.",
+            "description": "The node and what is inside it as HTML with `data-omni-id`; `null` when\nthis side removed the node.",
             "type": [
               "string",
               "null"
@@ -1411,7 +1411,7 @@
                 ]
               },
               "html": {
-                "description": "The draft as HTML: `data-node-id` and `data-rev` (the node's revision)\non every block; empty for a design doc, whose content is `tags` and\n`pages`.",
+                "description": "The draft as HTML: `data-omni-id` and `data-rev` (the node's revision)\non every block; empty for a design doc, whose content is `tags` and\n`pages`.",
                 "type": "string"
               },
               "pages": {
@@ -2125,7 +2125,7 @@
             "type": "string"
           },
           "html": {
-            "description": "The head or version as HTML with `data-node-id`; the empty text for an\nempty doc, and for a design's head, whose content is `tags` and `pages`.",
+            "description": "The head or version as HTML with `data-omni-id`; the empty text for an\nempty doc, and for a design's head, whose content is `tags` and `pages`.",
             "type": "string"
           },
           "pages": {
@@ -5562,7 +5562,7 @@
             "description": "The change set has no draft of this doc in this project and workspace"
           }
         },
-        "summary": "A change set's draft of a doc, as HTML with `data-node-id` and `data-rev` on\nevery block.",
+        "summary": "A change set's draft of a doc, as HTML with `data-omni-id` and `data-rev` on\nevery block.",
         "tags": [
           "crate::docs"
         ],
@@ -9038,7 +9038,7 @@
             "description": "No such doc, or the doc has no such version"
           }
         },
-        "summary": "A doc's head as HTML with `data-node-id`, or the version named by\n`?version=` (a version has no `data-rev`). The head is read, never the\nmainline version: a new doc reads as the empty doc. A design's head answers\nits `pages` and `tags` and no HTML.",
+        "summary": "A doc's head as HTML with `data-omni-id`, or the version named by\n`?version=` (a version has no `data-rev`). The head is read, never the\nmainline version: a new doc reads as the empty doc. A design's head answers\nits `pages` and `tags` and no HTML.",
         "tags": [
           "crate::docs"
         ],
@@ -9197,7 +9197,7 @@
             "description": "A node is at another revision than the operation expected (`conflict`); nothing changed"
           }
         },
-        "summary": "Applies a batch of operations to the head of an HTML doc or a design, all or\nnothing, with no change set. The batch runs under the lock on the doc's row,\nso batches to one doc are applied one after the other, each to the head the\none before made. The new head of an HTML doc is a chunk in RustFS that holds\nthe doc as HTML with `data-node-id` and `data-rev`, which is where a node's\nrevision is kept; the new head of a design is a manifest that lists the\nchunk of every page and board and the revisions, and only the boards the\nbatch changed get a new chunk (`design::edit_head`). Nothing about a head is\nheld in memory. A batch that is refused changes, logs and emits nothing; an\napplied one adds one row of `doc_changes` and emits `doc.changed`.",
+        "summary": "Applies a batch of operations to the head of an HTML doc or a design, all or\nnothing, with no change set. The batch runs under the lock on the doc's row,\nso batches to one doc are applied one after the other, each to the head the\none before made. The new head of an HTML doc is a chunk in RustFS that holds\nthe doc as HTML with `data-omni-id` and `data-rev`, which is where a node's\nrevision is kept; the new head of a design is a manifest that lists the\nchunk of every page and board and the revisions, and only the boards the\nbatch changed get a new chunk (`design::edit_head`). Nothing about a head is\nheld in memory. A batch that is refused changes, logs and emits nothing; an\napplied one adds one row of `doc_changes` and emits `doc.changed`.",
         "tags": [
           "crate::docs"
         ],

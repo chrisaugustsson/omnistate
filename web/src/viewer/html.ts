@@ -8,16 +8,16 @@ function parse(html: string): Document {
 /** The node IDs of the blocks of the doc. */
 export function blockIds(html: string): Set<string> {
   const ids = new Set<string>();
-  for (const block of Array.from(parse(html).querySelectorAll("[data-node-id]"))) {
-    ids.add(block.getAttribute("data-node-id") ?? "");
+  for (const block of Array.from(parse(html).querySelectorAll("[data-omni-id]"))) {
+    ids.add(block.getAttribute("data-omni-id") ?? "");
   }
   return ids;
 }
 
 /** The text of the block `node`, with its white space collapsed; `null` when the doc has no such block. */
 export function blockText(html: string, node: string): string | null {
-  for (const block of Array.from(parse(html).querySelectorAll("[data-node-id]"))) {
-    if (block.getAttribute("data-node-id") === node) return (block.textContent ?? "").replace(/\s+/g, " ").trim();
+  for (const block of Array.from(parse(html).querySelectorAll("[data-omni-id]"))) {
+    if (block.getAttribute("data-omni-id") === node) return (block.textContent ?? "").replace(/\s+/g, " ").trim();
   }
   return null;
 }

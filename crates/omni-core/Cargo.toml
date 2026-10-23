@@ -5,6 +5,10 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+# HTML docs are free-form HTML (US-109): html5ever reads them the way a browser
+# does, so what the engine edits is what the viewer frame shows.
+html5ever = "0.27"
+markup5ever_rcdom = "0.3"
 pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
 serde = { version = "1", features = ["derive"] }
 # The renderer, the API and the CLI read designs with serde_json. Its

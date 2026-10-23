@@ -1,83 +1,32 @@
-//! HTML docs: PRDs, architecture and database docs as a tree of typed blocks
-//! with stable node IDs, in a strict HTML form (docs/formats/html-docs.md).
+//! HTML docs: specs, architecture and database docs as free-form HTML
+//! (docs/formats/html-docs.md). Any HTML, CSS and inline JavaScript is
+//! accepted and kept as written.
 //!
-//! [`HtmlDoc::parse`] reads that HTML form, rejecting anything outside it with
-//! the line and the problem, and cleans what it keeps: inline SVG is reduced to
-//! an allow-list, links must use http, https or mailto, and images must be
-//! attachments. A doc is stored as its block tree in JSON, never as raw HTML,
-//! and [`HtmlDoc::to_html`] prints the tree back with a `data-node-id` on every
-//! block.
+//! A doc is read with a general HTML parser (html5ever), the way a browser
+//! reads it, into a [`Tree`]. Every block-level element of the tree is a node
+//! with a stable ID, written in a `data-omni-id` attribute; the elements and
+//! text inside a node are part of its content. [`crate::ops::EditDoc`] edits
+//! the tree node by node, and the tree prints back as HTML that reads as the
+//! same tree.
 
-use crate::design::{AttachmentRef, NodeId};
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
-use std::collections::{HashMap, HashSet};
+use crate::design::NodeId;
+use html5ever::tendril::TendrilSink;
+use html5ever::{LocalName, ParseOpts, QualName, namespace_url, ns, parse_fragment};
+use markup5ever_rcdom::{Handle, NodeData, RcDom};
+use std::collections::HashSet;
 use std::fmt;
 use std::str::FromStr;
 
-/// How deeply blocks and inline markup may nest, so that hostile input cannot
-/// overflow the stack.
-pub(crate) const MAX_DEPTH: usize = 64;
+/// How deeply elements may nest, so that hostile input cannot overflow the
+/// stack.
+pub(crate) const MAX_DEPTH: usize = 128;
 
-/// The type of a block.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum BlockKind {
-    Section,
-    Heading,
-    Paragraph,
-    Quote,
-    Divider,
-    List,
-    ListItem,
-    Table,
-    TableRow,
-    TableCell,
-    Figure,
-    Callout,
-    CodeBlock,
-    Image,
-    Requirement,
-    UserStory,
-}
+/// The attribute that holds a block-level element's node ID.
+pub(crate) const ID_ATTRIBUTE: &str = "data-omni-id";
+/// The attribute that holds a node's revision in a doc under edit.
+pub(crate) const REV_ATTRIBUTE: &str = "data-rev";
 
-/// What a callout says: a note, a warning or a decision.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum CalloutKind {
-    Note,
-    Warning,
-    Decision,
-}
-
-impl CalloutKind {
-    fn as_str(self) -> &'static str {
-        match self {
-            CalloutKind::Note => "note",
-            CalloutKind::Warning => "warning",
-            CalloutKind::Decision => "decision",
-        }
-    }
-}
-
-/// Inline markup inside a text block.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Inline {
-    Text(String),
-    Strong(Vec<Inline>),
-    Emphasis(Vec<Inline>),
-    Code(String),
-    Link { href: String, children: Vec<Inline> },
-    LineBreak,
-}
-
-/// What a figure shows: cleaned inline SVG markup, or Mermaid code.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum FigureSource {
-    Svg(String),
-    Mermaid(String),
-}
-
-/// Why HTML is not a valid HTML doc: the line it is on and the problem.
+/// An HTML doc that cannot be read.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ParseError {
     line: usize,
@@ -85,12 +34,12 @@ pub struct ParseError {
 }
 
 impl ParseError {
-    /// The line, counting from 1, of the tag with the problem.
+    /// The line of the problem, counting from 1, or 0 when it is not in one
+    /// place.
     pub fn line(&self) -> usize {
         self.line
     }
 
-    /// The problem, such as "`<span>` is not allowed".
     pub fn message(&self) -> &str {
         &self.message
     }
@@ -98,2106 +47,727 @@ impl ParseError {
 
 impl fmt::Display for ParseError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "line {}: {}", self.line, self.message)
+        if self.line == 0 {
+            f.write_str(&self.message)
+        } else {
+            write!(f, "line {}: {}", self.line, self.message)
+        }
     }
 }
 
 impl std::error::Error for ParseError {}
 
-type Result<T> = std::result::Result<T, ParseError>;
-
-fn error(line: usize, message: impl Into<String>) -> ParseError {
+pub(crate) fn error(message: impl Into<String>) -> ParseError {
     ParseError {
-        line,
+        line: 0,
         message: message.into(),
     }
 }
 
-/// What a block is and holds.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-enum Body {
-    Section {
-        children: Vec<Block>,
-    },
-    Heading {
-        level: u8,
-        inline: Vec<Inline>,
-    },
-    Paragraph {
-        inline: Vec<Inline>,
-    },
-    Quote {
-        inline: Vec<Inline>,
-    },
-    Divider,
-    List {
-        ordered: bool,
-        children: Vec<Block>,
-    },
-    ListItem {
-        inline: Vec<Inline>,
-    },
-    Table {
-        children: Vec<Block>,
-    },
-    TableRow {
-        children: Vec<Block>,
-    },
-    TableCell {
-        header: bool,
-        inline: Vec<Inline>,
-    },
-    Figure {
-        source: FigureSource,
-        caption: String,
-    },
-    Callout {
-        kind: CalloutKind,
-        inline: Vec<Inline>,
-    },
-    CodeBlock {
-        code: String,
-    },
-    Image {
-        attachment: AttachmentRef,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        alt: Option<String>,
-    },
-    Requirement {
-        inline: Vec<Inline>,
-    },
-    UserStory {
-        children: Vec<Block>,
-    },
+// --- Block-level elements ---
+
+/// The block-level elements, each with the type it is indexed as: the HTML
+/// spec's flow content that is not phrasing content, plus `li`, `tr`, `td`,
+/// `th`, `figure` and (as an SVG element) `svg`. Every one of them is a node
+/// with a `data-omni-id`.
+const BLOCK_LEVEL: &[(&str, &str)] = &[
+    ("address", "address"),
+    ("article", "article"),
+    ("aside", "aside"),
+    ("blockquote", "quote"),
+    ("details", "details"),
+    ("dialog", "dialog"),
+    ("div", "div"),
+    ("dl", "dl"),
+    ("fieldset", "fieldset"),
+    ("figure", "figure"),
+    ("footer", "footer"),
+    ("form", "form"),
+    ("h1", "heading"),
+    ("h2", "heading"),
+    ("h3", "heading"),
+    ("h4", "heading"),
+    ("h5", "heading"),
+    ("h6", "heading"),
+    ("header", "header"),
+    ("hgroup", "hgroup"),
+    ("hr", "divider"),
+    ("main", "main"),
+    ("menu", "menu"),
+    ("nav", "nav"),
+    ("ol", "list"),
+    ("p", "paragraph"),
+    ("pre", "code_block"),
+    ("search", "search"),
+    ("section", "section"),
+    ("table", "table"),
+    ("ul", "list"),
+    ("li", "list_item"),
+    ("tr", "table_row"),
+    ("td", "table_cell"),
+    ("th", "table_cell"),
+];
+
+/// The namespace of an element: HTML, or the foreign content that the HTML
+/// parser knows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Ns {
+    Html,
+    Svg,
+    MathMl,
 }
 
-/// One block of a doc.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Block {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    id: Option<NodeId>,
-    #[serde(flatten)]
-    body: Body,
+/// An element of the tree.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Element {
+    /// The name as the parser has it: lowercase for HTML, and for SVG the
+    /// case that SVG uses (`foreignObject`).
+    pub name: String,
+    pub ns: Ns,
+    /// The attributes in the order written, without the ID and the revision.
+    pub attrs: Vec<(String, String)>,
+    /// The node ID of a block-level element once the tree is identified.
+    pub id: Option<NodeId>,
+    /// The `data-omni-id` as written, until the tree is identified.
+    claimed: Option<String>,
+    /// The `data-rev` as written, until the tree is identified.
+    claimed_rev: Option<String>,
+    /// The revision that a doc under edit stored for the node (set when a
+    /// tree is identified strictly).
+    pub rev: Option<u64>,
 }
 
-impl Block {
-    /// The block's type.
-    pub fn kind(&self) -> BlockKind {
-        match &self.body {
-            Body::Section { .. } => BlockKind::Section,
-            Body::Heading { .. } => BlockKind::Heading,
-            Body::Paragraph { .. } => BlockKind::Paragraph,
-            Body::Quote { .. } => BlockKind::Quote,
-            Body::Divider => BlockKind::Divider,
-            Body::List { .. } => BlockKind::List,
-            Body::ListItem { .. } => BlockKind::ListItem,
-            Body::Table { .. } => BlockKind::Table,
-            Body::TableRow { .. } => BlockKind::TableRow,
-            Body::TableCell { .. } => BlockKind::TableCell,
-            Body::Figure { .. } => BlockKind::Figure,
-            Body::Callout { .. } => BlockKind::Callout,
-            Body::CodeBlock { .. } => BlockKind::CodeBlock,
-            Body::Image { .. } => BlockKind::Image,
-            Body::Requirement { .. } => BlockKind::Requirement,
-            Body::UserStory { .. } => BlockKind::UserStory,
-        }
-    }
-
-    /// The block's type as a stored doc names it: `section`, `heading`,
-    /// `paragraph`, `list_item`, `code_block`, `user_story` and so on.
-    pub fn type_name(&self) -> &'static str {
-        match self.kind() {
-            BlockKind::Section => "section",
-            BlockKind::Heading => "heading",
-            BlockKind::Paragraph => "paragraph",
-            BlockKind::Quote => "quote",
-            BlockKind::Divider => "divider",
-            BlockKind::List => "list",
-            BlockKind::ListItem => "list_item",
-            BlockKind::Table => "table",
-            BlockKind::TableRow => "table_row",
-            BlockKind::TableCell => "table_cell",
-            BlockKind::Figure => "figure",
-            BlockKind::Callout => "callout",
-            BlockKind::CodeBlock => "code_block",
-            BlockKind::Image => "image",
-            BlockKind::Requirement => "requirement",
-            BlockKind::UserStory => "user_story",
-        }
-    }
-
-    /// The block's own content as text: its type, properties and inline
-    /// content as stored, with neither its ID nor the blocks inside it. Two
-    /// blocks with the same text have the same content, wherever they sit.
-    pub fn own_content(&self) -> String {
-        let mut own = self.clone();
-        own.take_children();
-        serde_json::to_string(&own.body).expect("a block body serializes")
-    }
-
-    /// The block's `data-node-id`, or `None` for a block that is new.
-    pub fn id(&self) -> Option<&NodeId> {
-        self.id.as_ref()
-    }
-
-    /// Whether the block has no ID yet: the server assigns one when it is saved.
-    pub fn is_new(&self) -> bool {
-        self.id.is_none()
-    }
-
-    /// The blocks inside this one: the blocks of a section or user story, the
-    /// items of a list, the rows of a table or the cells of a row.
-    pub fn children(&self) -> &[Block] {
-        match &self.body {
-            Body::Section { children }
-            | Body::List { children, .. }
-            | Body::Table { children }
-            | Body::TableRow { children }
-            | Body::UserStory { children } => children,
-            _ => &[],
-        }
-    }
-
-    /// The inline content of a heading, paragraph, quote, list item, table
-    /// cell, callout or requirement. Empty for the other blocks.
-    pub fn inline(&self) -> &[Inline] {
-        match &self.body {
-            Body::Heading { inline, .. }
-            | Body::Paragraph { inline }
-            | Body::Quote { inline }
-            | Body::ListItem { inline }
-            | Body::TableCell { inline, .. }
-            | Body::Callout { inline, .. }
-            | Body::Requirement { inline } => inline,
-            _ => &[],
-        }
-    }
-
-    /// The level, 1 to 6, of a heading.
-    pub fn heading_level(&self) -> Option<u8> {
-        match &self.body {
-            Body::Heading { level, .. } => Some(*level),
-            _ => None,
-        }
-    }
-
-    /// Whether a list is numbered (`<ol>`) rather than bulleted.
-    pub fn is_ordered(&self) -> bool {
-        matches!(&self.body, Body::List { ordered: true, .. })
-    }
-
-    /// Whether a table cell is a header cell (`<th>`).
-    pub fn is_header(&self) -> bool {
-        matches!(&self.body, Body::TableCell { header: true, .. })
-    }
-
-    /// The kind of a callout.
-    pub fn callout_kind(&self) -> Option<CalloutKind> {
-        match &self.body {
-            Body::Callout { kind, .. } => Some(*kind),
-            _ => None,
-        }
-    }
-
-    /// The text of a code block, exactly as written.
-    pub fn code(&self) -> Option<&str> {
-        match &self.body {
-            Body::CodeBlock { code } => Some(code),
-            _ => None,
-        }
-    }
-
-    /// What a figure shows.
-    pub fn figure(&self) -> Option<&FigureSource> {
-        match &self.body {
-            Body::Figure { source, .. } => Some(source),
-            _ => None,
-        }
-    }
-
-    /// A figure's caption, as text.
-    pub fn caption(&self) -> Option<&str> {
-        match &self.body {
-            Body::Figure { caption, .. } => Some(caption),
-            _ => None,
-        }
-    }
-
-    /// The attachment an image shows.
-    pub fn attachment(&self) -> Option<&AttachmentRef> {
-        match &self.body {
-            Body::Image { attachment, .. } => Some(attachment),
-            _ => None,
-        }
-    }
-
-    /// An image's alternative text.
-    pub fn alt(&self) -> Option<&str> {
-        match &self.body {
-            Body::Image { alt, .. } => alt.as_deref(),
-            _ => None,
-        }
-    }
-}
-
-impl Block {
-    /// Takes the blocks inside this one, leaving it with none.
-    pub(crate) fn take_children(&mut self) -> Vec<Block> {
-        match &mut self.body {
-            Body::Section { children }
-            | Body::List { children, .. }
-            | Body::Table { children }
-            | Body::TableRow { children }
-            | Body::UserStory { children } => std::mem::take(children),
-            _ => Vec::new(),
-        }
-    }
-
-    /// Puts the blocks inside this one, which must be a block that holds
-    /// blocks.
-    pub(crate) fn set_children(&mut self, new_children: Vec<Block>) {
-        match &mut self.body {
-            Body::Section { children }
-            | Body::List { children, .. }
-            | Body::Table { children }
-            | Body::TableRow { children }
-            | Body::UserStory { children } => *children = new_children,
-            _ => debug_assert!(new_children.is_empty(), "only containers hold blocks"),
-        }
-    }
-
-    pub(crate) fn set_id(&mut self, id: NodeId) {
-        self.id = Some(id);
-    }
-
-    /// The block as HTML, with its blocks inside it.
-    pub(crate) fn to_html(&self) -> String {
-        self.to_html_with(None)
-    }
-
-    /// Like `to_html`, with `data-rev` on every block that `revisions` knows.
-    pub(crate) fn to_html_with(&self, revisions: Option<&dyn Revisions>) -> String {
-        let mut out = Printer {
-            text: String::new(),
-            revisions,
-        };
-        print_block(self, &mut out);
-        out.text
-    }
-
-    /// The tag that holds the inline content of a text block.
-    fn text_tag(&self) -> Option<String> {
-        Some(match &self.body {
-            Body::Heading { level, .. } => format!("h{level}"),
-            Body::Paragraph { .. } | Body::Requirement { .. } => "p".to_string(),
-            Body::Quote { .. } => "blockquote".to_string(),
-            Body::ListItem { .. } => "li".to_string(),
-            Body::TableCell { header, .. } => (if *header { "th" } else { "td" }).to_string(),
-            Body::Callout { .. } => "aside".to_string(),
-            _ => return None,
-        })
-    }
-
-    /// Sets one property of the block, such as `level` of a heading or `html`
-    /// (the inner HTML) of a text block. The block sits `depth` levels deep.
-    /// The error names the property.
-    pub(crate) fn set_property(
-        &mut self,
-        name: &str,
-        value: &Value,
-        depth: usize,
-    ) -> std::result::Result<(), String> {
-        let kind = self.kind();
-        let wrong_type = |expected: &str| format!("`{name}` must be {expected}, not {value}");
-        match (name, &mut self.body) {
-            ("level", Body::Heading { level, .. }) => {
-                let number = value.as_u64().filter(|n| (1..=6).contains(n));
-                *level = number.ok_or_else(|| wrong_type("a whole number from 1 to 6"))? as u8;
-            }
-            ("kind", Body::Callout { kind, .. }) => {
-                *kind = match value.as_str() {
-                    Some("note") => CalloutKind::Note,
-                    Some("warning") => CalloutKind::Warning,
-                    Some("decision") => CalloutKind::Decision,
-                    _ => return Err(wrong_type("note, warning or decision")),
-                };
-            }
-            ("ordered", Body::List { ordered, .. }) => {
-                *ordered = value.as_bool().ok_or_else(|| wrong_type("true or false"))?;
-            }
-            ("header", Body::TableCell { header, .. }) => {
-                *header = value.as_bool().ok_or_else(|| wrong_type("true or false"))?;
-            }
-            ("alt", Body::Image { alt, .. }) => {
-                *alt = match value {
-                    Value::Null => None,
-                    Value::String(text) => Some(text.clone()),
-                    _ => return Err(wrong_type("text or null")),
-                };
-            }
-            ("caption", Body::Figure { caption, .. }) => {
-                *caption = value
-                    .as_str()
-                    .ok_or_else(|| wrong_type("text"))?
-                    .to_string();
-            }
-            ("html", _) => {
-                let Some(tag) = self.text_tag() else {
-                    return Err(format!(
-                        "`html` cannot be set on {}: it has no inline content",
-                        describe(kind)
-                    ));
-                };
-                let html = value.as_str().ok_or_else(|| wrong_type("text"))?;
-                let parsed = parse_inline(html, &tag, depth)
-                    .map_err(|e| format!("`html`: {}", e.message))?;
-                match &mut self.body {
-                    Body::Heading { inline, .. }
-                    | Body::Paragraph { inline }
-                    | Body::Quote { inline }
-                    | Body::ListItem { inline }
-                    | Body::TableCell { inline, .. }
-                    | Body::Callout { inline, .. }
-                    | Body::Requirement { inline } => *inline = parsed,
-                    _ => unreachable!("text_tag is Some only for text blocks"),
-                }
-            }
-            ("level" | "kind" | "ordered" | "header" | "alt" | "caption", _) => {
-                return Err(format!("`{name}` cannot be set on {}", describe(kind)));
-            }
-            _ => {
-                return Err(format!(
-                    "`{name}` is not a property that can be set: use level, kind, ordered, header, alt, caption or html"
-                ));
-            }
-        }
-        Ok(())
-    }
-}
-
-/// Whether a block of kind `child` may sit inside a parent of kind `parent`
-/// (`None` for the top level).
-pub(crate) fn can_hold(parent: Option<BlockKind>, child: BlockKind) -> bool {
-    match parent {
-        None | Some(BlockKind::Section | BlockKind::UserStory) => !matches!(
-            child,
-            BlockKind::ListItem | BlockKind::TableRow | BlockKind::TableCell
-        ),
-        Some(BlockKind::List) => child == BlockKind::ListItem,
-        Some(BlockKind::Table) => child == BlockKind::TableRow,
-        Some(BlockKind::TableRow) => child == BlockKind::TableCell,
-        Some(_) => false,
-    }
-}
-
-/// A block kind in words, for error messages.
-pub(crate) fn describe(kind: BlockKind) -> &'static str {
-    match kind {
-        BlockKind::Section => "a section",
-        BlockKind::Heading => "a heading",
-        BlockKind::Paragraph => "a paragraph",
-        BlockKind::Quote => "a quote",
-        BlockKind::Divider => "a divider",
-        BlockKind::List => "a list",
-        BlockKind::ListItem => "a list item",
-        BlockKind::Table => "a table",
-        BlockKind::TableRow => "a table row",
-        BlockKind::TableCell => "a table cell",
-        BlockKind::Figure => "a figure",
-        BlockKind::Callout => "a callout",
-        BlockKind::CodeBlock => "a code block",
-        BlockKind::Image => "an image",
-        BlockKind::Requirement => "a requirement",
-        BlockKind::UserStory => "a user story",
-    }
-}
-
-/// Parses the inner HTML of the text block `tag`, which sits `depth` levels
-/// deep.
-fn parse_inline(html: &str, tag: &str, depth: usize) -> Result<Vec<Inline>> {
-    let wrapped = format!("<{tag}>{html}</{tag}>");
-    let mut parser = Parser::new(&wrapped, false, depth);
-    let Token { line, tok } = parser.next()?;
-    let Tok::Start(open) = tok else {
-        unreachable!("the wrapper starts with a start tag")
-    };
-    let inline = parser.inline_of(&open)?;
-    match parser.next()?.tok {
-        Tok::Eof => Ok(inline),
-        _ => Err(error(
-            line,
-            format!("the inline content closes `</{tag}>` early: it holds inline markup only"),
-        )),
-    }
-}
-
-/// A doc: its blocks, in order. Stored as JSON, never as raw HTML.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct HtmlDoc {
-    blocks: Vec<Block>,
-}
-
-impl HtmlDoc {
-    /// Parses and cleans HTML. Anything outside the format is an error that
-    /// names the line and the problem.
-    pub fn parse(html: &str) -> std::result::Result<HtmlDoc, ParseError> {
-        Self::parse_with(html, false)
-    }
-
-    /// Like [`HtmlDoc::parse`], and every block must carry a `data-node-id`:
-    /// the HTML of a doc under edit. A block may carry the `data-rev` that
-    /// [`HtmlDoc::to_html_with`] writes; the revisions are returned beside the
-    /// doc.
-    pub(crate) fn parse_identified(
-        html: &str,
-    ) -> std::result::Result<(HtmlDoc, HashMap<NodeId, u64>), ParseError> {
-        let mut parser = Parser::new(html, true, 0);
-        let blocks = parser.blocks(None)?;
-        Ok((HtmlDoc { blocks }, parser.revisions))
-    }
-
-    fn parse_with(html: &str, require_ids: bool) -> std::result::Result<HtmlDoc, ParseError> {
-        let mut parser = Parser::new(html, require_ids, 0);
-        let blocks = parser.blocks(None)?;
-        Ok(HtmlDoc { blocks })
-    }
-
-    pub(crate) fn from_blocks(blocks: Vec<Block>) -> HtmlDoc {
-        HtmlDoc { blocks }
-    }
-
-    /// Parses the HTML of exactly one block that is to go into a parent of kind
-    /// `parent` (`None` for the top level) already `depth` levels deep, with
-    /// the rules of that parent: a list holds items, a table rows and a row
-    /// cells, and a text block holds no blocks.
-    pub(crate) fn parse_block(
-        html: &str,
-        parent: Option<BlockKind>,
-        depth: usize,
-    ) -> std::result::Result<Block, ParseError> {
-        let mut parser = Parser::new(html, false, depth);
-        parser.one_block(parent)
-    }
-
-    /// The doc's top-level blocks.
-    pub fn blocks(&self) -> &[Block] {
-        &self.blocks
-    }
-
-    /// The doc as HTML, with `data-node-id` on every block.
-    pub fn to_html(&self) -> String {
-        self.to_html_with(None)
-    }
-
-    /// Like `to_html`, with `data-rev` on every block that `revisions` knows.
-    pub(crate) fn to_html_with(&self, revisions: Option<&dyn Revisions>) -> String {
-        let mut out = Printer {
-            text: String::new(),
-            revisions,
-        };
-        print_blocks(&self.blocks, &mut out);
-        out.text
-    }
-}
-
-// --- Tokens ---
-
-struct Attr {
-    /// The name in lowercase.
-    name: String,
-    /// The name as written, for SVG attributes that are case-sensitive.
-    raw_name: String,
-    value: String,
-}
-
-struct StartTag {
-    /// The name in lowercase.
-    name: String,
-    raw_name: String,
-    attrs: Vec<Attr>,
-    self_closing: bool,
-    line: usize,
-}
-
-impl StartTag {
-    fn display(&self) -> String {
-        format!("`<{}>`", self.name)
-    }
-
-    fn attr(&self, name: &str) -> Option<&str> {
-        self.attrs
-            .iter()
-            .find(|attr| attr.name == name)
-            .map(|attr| attr.value.as_str())
-    }
-
-    /// Rejects the first attribute that is not in `allowed`.
-    fn check_attrs(&self, allowed: &[&str]) -> Result<()> {
-        for attr in &self.attrs {
-            if allowed.contains(&attr.name.as_str()) {
-                continue;
-            }
-            let name = &attr.name;
-            let tag = self.display();
-            let message = if name == "style" {
-                format!(
-                    "the `style` attribute is not allowed on {tag}: docs share one stylesheet and carry no inline styles"
-                )
-            } else if name.starts_with("on") {
-                format!("the event handler attribute `{name}` is not allowed on {tag}")
-            } else {
-                format!("the attribute `{name}` is not allowed on {tag}")
-            };
-            return Err(error(self.line, message));
-        }
-        Ok(())
-    }
-}
-
-enum Tok {
-    Start(StartTag),
-    End(String),
-    Text(String),
-    /// A comment, a doctype or a processing instruction.
-    Skipped,
-    Error(String),
-    Eof,
-}
-
-struct Token {
-    line: usize,
-    tok: Tok,
-}
-
-// --- Lexer ---
-
-struct Lexer<'a> {
-    src: &'a str,
-    pos: usize,
-    line_pos: usize,
-    line: usize,
-    /// After a `<script>` or `<style>` start tag, whose content is raw text.
-    raw_until: Option<String>,
-}
-
-fn lex(src: &str) -> Vec<Token> {
-    let mut lexer = Lexer {
-        src,
-        pos: 0,
-        line_pos: 0,
-        line: 1,
-        raw_until: None,
-    };
-    let mut tokens = Vec::new();
-    loop {
-        match lexer.next() {
-            Ok(Some(token)) => tokens.push(token),
-            Ok(None) => {
-                let line = lexer.line_at(src.len());
-                tokens.push(Token {
-                    line,
-                    tok: Tok::Eof,
-                });
-                return tokens;
-            }
-            Err(token) => {
-                tokens.push(token);
-                return tokens;
-            }
-        }
-    }
-}
-
-fn is_name_byte(byte: u8) -> bool {
-    byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b':' | b'_')
-}
-
-impl Lexer<'_> {
-    /// The line, counting from 1, of byte `pos`.
-    fn line_at(&mut self, pos: usize) -> usize {
-        if pos < self.line_pos {
-            self.line_pos = 0;
-            self.line = 1;
-        }
-        let newlines = self.src.as_bytes()[self.line_pos..pos]
-            .iter()
-            .filter(|&&byte| byte == b'\n')
-            .count();
-        self.line += newlines;
-        self.line_pos = pos;
-        self.line
-    }
-
-    fn fail(&mut self, pos: usize, message: impl Into<String>) -> Token {
-        Token {
-            line: self.line_at(pos),
-            tok: Tok::Error(message.into()),
-        }
-    }
-
-    fn next(&mut self) -> std::result::Result<Option<Token>, Token> {
-        if let Some(name) = self.raw_until.take() {
-            let rest = &self.src[self.pos..];
-            let end = rest
-                .to_ascii_lowercase()
-                .find(&format!("</{name}"))
-                .unwrap_or(rest.len());
-            if end > 0 {
-                let line = self.line_at(self.pos);
-                let text = rest[..end].to_string();
-                self.pos += end;
-                return Ok(Some(Token {
-                    line,
-                    tok: Tok::Text(text),
-                }));
-            }
-        }
-        let bytes = self.src.as_bytes();
-        if self.pos >= bytes.len() {
-            return Ok(None);
-        }
-        if bytes[self.pos] != b'<' {
-            let end = self.src[self.pos..]
-                .find('<')
-                .map_or(self.src.len(), |offset| self.pos + offset);
-            let raw = &self.src[self.pos..end];
-            let first = raw
-                .find(|c: char| !c.is_ascii_whitespace())
-                .unwrap_or_default();
-            let line = self.line_at(self.pos + first);
-            self.pos = end;
-            return Ok(Some(Token {
-                line,
-                tok: Tok::Text(decode(raw)),
-            }));
-        }
-        let start = self.pos;
-        let rest = &self.src[start + 1..];
-        if rest.starts_with("!--") {
-            return match rest.find("-->") {
-                Some(end) => self.skipped(start, start + 1 + end + 3),
-                None => Err(self.fail(start, "this comment is never closed: it needs `-->`")),
-            };
-        }
-        if rest.starts_with(['!', '?']) {
-            return match rest.find('>') {
-                Some(end) => self.skipped(start, start + 1 + end + 1),
-                None => Err(self.fail(start, "this declaration is never closed: it needs `>`")),
-            };
-        }
-        if let Some(after) = rest.strip_prefix('/') {
-            return self.end_tag(start, after);
-        }
-        if rest.starts_with(|c: char| c.is_ascii_alphabetic()) {
-            return self.start_tag(start).map(Some);
-        }
-        Err(self.fail(
-            start,
-            "a `<` that does not start a tag must be written `&lt;`",
-        ))
-    }
-
-    fn skipped(&mut self, start: usize, end: usize) -> std::result::Result<Option<Token>, Token> {
-        let line = self.line_at(start);
-        self.pos = end;
-        Ok(Some(Token {
-            line,
-            tok: Tok::Skipped,
-        }))
-    }
-
-    fn end_tag(&mut self, start: usize, after: &str) -> std::result::Result<Option<Token>, Token> {
-        let name_len = after.bytes().take_while(|&byte| is_name_byte(byte)).count();
-        let name = after[..name_len].to_ascii_lowercase();
-        let tail = after[name_len..].trim_start_matches(|c: char| c.is_ascii_whitespace());
-        if name.is_empty() || !tail.starts_with('>') {
-            return Err(self.fail(start, "this end tag is malformed: write `</name>`"));
-        }
-        let line = self.line_at(start);
-        self.pos = self.src.len() - tail.len() + 1;
-        Ok(Some(Token {
-            line,
-            tok: Tok::End(name),
-        }))
-    }
-
-    fn start_tag(&mut self, start: usize) -> std::result::Result<Token, Token> {
-        let src = self.src;
-        let bytes = src.as_bytes();
-        let line = self.line_at(start);
-        let name_start = start + 1;
-        let mut i = name_start;
-        while i < bytes.len() && is_name_byte(bytes[i]) {
-            i += 1;
-        }
-        let raw_name = src[name_start..i].to_string();
-        let name = raw_name.to_ascii_lowercase();
-        if i < bytes.len() && !(bytes[i].is_ascii_whitespace() || matches!(bytes[i], b'/' | b'>')) {
-            return Err(self.fail(start, format!("`<{raw_name}` is malformed")));
-        }
-        let mut attrs: Vec<Attr> = Vec::new();
-        let mut self_closing = false;
-        loop {
-            while i < bytes.len() && bytes[i].is_ascii_whitespace() {
-                i += 1;
-            }
-            if i >= bytes.len() {
-                return Err(self.fail(start, format!("`<{name}>` is never closed: it needs `>`")));
-            }
-            match bytes[i] {
-                b'>' => {
-                    i += 1;
-                    break;
-                }
-                b'/' => {
-                    if bytes.get(i + 1) == Some(&b'>') {
-                        self_closing = true;
-                        i += 2;
-                        break;
-                    }
-                    i += 1;
-                    continue;
-                }
-                _ => {}
-            }
-            let attr_start = i;
-            while i < bytes.len()
-                && !bytes[i].is_ascii_whitespace()
-                && !matches!(bytes[i], b'=' | b'>' | b'/')
-            {
-                i += 1;
-            }
-            if i == attr_start {
-                return Err(self.fail(start, format!("`<{name}>` has a malformed attribute")));
-            }
-            let raw_attr = src[attr_start..i].to_string();
-            while i < bytes.len() && bytes[i].is_ascii_whitespace() {
-                i += 1;
-            }
-            let mut value = String::new();
-            if bytes.get(i) == Some(&b'=') {
-                i += 1;
-                while i < bytes.len() && bytes[i].is_ascii_whitespace() {
-                    i += 1;
-                }
-                match bytes.get(i) {
-                    Some(&quote @ (b'"' | b'\'')) => {
-                        let value_start = i + 1;
-                        let Some(length) = src[value_start..].find(quote as char) else {
-                            return Err(self.fail(
-                                start,
-                                format!("the value of `{raw_attr}` is never closed: it needs a closing quote"),
-                            ));
-                        };
-                        value = decode(&src[value_start..value_start + length]);
-                        i = value_start + length + 1;
-                    }
-                    _ => {
-                        let value_start = i;
-                        while i < bytes.len() && !bytes[i].is_ascii_whitespace() && bytes[i] != b'>'
-                        {
-                            i += 1;
-                        }
-                        value = decode(&src[value_start..i]);
-                    }
-                }
-            }
-            let attr_name = raw_attr.to_ascii_lowercase();
-            if attrs.iter().any(|attr| attr.name == attr_name) {
-                return Err(self.fail(
-                    start,
-                    format!("the attribute `{attr_name}` is written twice on `<{name}>`"),
-                ));
-            }
-            attrs.push(Attr {
-                name: attr_name,
-                raw_name: raw_attr,
-                value,
-            });
-        }
-        self.pos = i;
-        if !self_closing && matches!(name.as_str(), "script" | "style") {
-            self.raw_until = Some(name.clone());
-        }
-        Ok(Token {
-            line,
-            tok: Tok::Start(StartTag {
-                name,
-                raw_name,
-                attrs,
-                self_closing,
-                line,
-            }),
-        })
-    }
-}
-
-/// Decodes character references. A `&` that does not start a known one stays
-/// as it is, which is what a browser shows.
-fn decode(text: &str) -> String {
-    if !text.contains('&') {
-        return text.to_string();
-    }
-    let mut out = String::with_capacity(text.len());
-    let mut rest = text;
-    while let Some(at) = rest.find('&') {
-        out.push_str(&rest[..at]);
-        let after = &rest[at + 1..];
-        let decoded = after
-            .find(';')
-            .filter(|&end| end <= 10)
-            .and_then(|end| reference(&after[..end]).map(|c| (c, end)));
-        match decoded {
-            Some((c, end)) => {
-                out.push(c);
-                rest = &after[end + 1..];
-            }
-            None => {
-                out.push('&');
-                rest = after;
-            }
-        }
-    }
-    out.push_str(rest);
-    out
-}
-
-/// The character that the reference `&name;` stands for.
-fn reference(name: &str) -> Option<char> {
-    match name {
-        "lt" => Some('<'),
-        "gt" => Some('>'),
-        "amp" => Some('&'),
-        "quot" => Some('"'),
-        "apos" => Some('\''),
-        "nbsp" => Some('\u{a0}'),
-        _ => {
-            let digits = name.strip_prefix('#')?;
-            let code = match digits.strip_prefix(['x', 'X']) {
-                Some(hex) => u32::from_str_radix(hex, 16).ok()?,
-                None => digits.parse().ok()?,
-            };
-            char::from_u32(code).filter(|&c| c != '\0')
-        }
-    }
-}
-
-// --- Parser ---
-
-struct Parser {
-    tokens: std::vec::IntoIter<Token>,
-    last_line: usize,
-    ids: HashSet<NodeId>,
-    depth: usize,
-    /// Whether a block without a `data-node-id` is an error. The blocks of
-    /// such a doc may also carry the `data-rev` that the printer writes, which
-    /// is kept in `revisions`.
-    require_ids: bool,
-    revisions: HashMap<NodeId, u64>,
-}
-
-fn is_blank(text: &str) -> bool {
-    text.chars().all(|c| c.is_ascii_whitespace())
-}
-
-impl Parser {
-    fn new(html: &str, require_ids: bool, depth: usize) -> Parser {
-        Parser {
-            tokens: lex(html).into_iter(),
-            last_line: 1,
-            ids: HashSet::new(),
-            depth,
-            require_ids,
-            revisions: HashMap::new(),
-        }
-    }
-
-    /// The next token, including comments. A lexing error is returned when the
-    /// parser reaches it, so the first problem in the document is the one named.
-    fn raw_next(&mut self) -> Result<Token> {
-        match self.tokens.next() {
-            Some(Token {
-                line,
-                tok: Tok::Error(message),
-            }) => Err(error(line, message)),
-            Some(token) => {
-                self.last_line = token.line;
-                Ok(token)
-            }
-            None => Ok(Token {
-                line: self.last_line,
-                tok: Tok::Eof,
-            }),
-        }
-    }
-
-    /// The next token. Comments, doctypes and processing instructions are not
-    /// part of the format.
-    fn next(&mut self) -> Result<Token> {
-        let token = self.raw_next()?;
-        if matches!(token.tok, Tok::Skipped) {
-            return Err(error(
-                token.line,
-                "comments, doctypes and processing instructions are not allowed",
-            ));
-        }
-        Ok(token)
-    }
-
-    fn descend<T>(&mut self, line: usize, f: impl FnOnce(&mut Self) -> Result<T>) -> Result<T> {
-        if self.depth >= MAX_DEPTH {
-            return Err(error(
-                line,
-                format!("blocks are nested more than {MAX_DEPTH} levels deep"),
-            ));
-        }
-        self.depth += 1;
-        let result = f(self);
-        self.depth -= 1;
-        result
-    }
-
-    fn read_id(&mut self, tag: &StartTag, extra: &[&str]) -> Result<Option<NodeId>> {
-        let mut allowed = vec!["data-node-id"];
-        if self.require_ids {
-            allowed.push("data-rev");
-        }
-        allowed.extend_from_slice(extra);
-        tag.check_attrs(&allowed)?;
-        let Some(value) = tag.attr("data-node-id") else {
-            if self.require_ids {
-                return Err(error(
-                    tag.line,
-                    format!(
-                        "{} has no `data-node-id`: every block of a doc under edit has its ID",
-                        tag.display()
-                    ),
-                ));
-            }
-            return Ok(None);
-        };
-        let id = NodeId::from_str(value).map_err(|_| {
-            error(
-                tag.line,
-                format!("`data-node-id` is `{value}`, which is not a node ID: node IDs are 8 lowercase base32 characters (0-9 and a-z without i, l, o and u)"),
-            )
-        })?;
-        if !self.ids.insert(id) {
-            return Err(error(
-                tag.line,
-                format!("`data-node-id` `{id}` is used twice: every block has its own ID"),
-            ));
-        }
-        if let Some(value) = tag.attr("data-rev") {
-            let revision = value.parse::<u64>().ok().filter(|revision| *revision >= 1);
-            let Some(revision) = revision else {
-                return Err(error(
-                    tag.line,
-                    format!(
-                        "`data-rev` is `{value}`, which is not a revision: revisions are whole numbers from 1"
-                    ),
-                ));
-            };
-            self.revisions.insert(id, revision);
-        }
-        Ok(Some(id))
-    }
-
-    /// The blocks up to the end tag of `parent`, or to the end of the document
-    /// when there is none.
-    fn blocks(&mut self, parent: Option<&StartTag>) -> Result<Vec<Block>> {
-        let mut blocks = Vec::new();
-        loop {
-            let Token { line, tok } = self.next()?;
-            match tok {
-                Tok::Text(text) => {
-                    if !is_blank(&text) {
-                        return Err(error(line, TEXT_OUTSIDE));
-                    }
-                }
-                Tok::Start(tag) => blocks.push(self.block(tag)?),
-                Tok::End(name) => match parent {
-                    Some(parent) if parent.name == name => return Ok(blocks),
-                    Some(parent) => return Err(mismatch(line, &name, parent)),
-                    None => {
-                        return Err(error(
-                            line,
-                            format!("`</{name}>` closes a tag that is not open"),
-                        ));
-                    }
-                },
-                Tok::Eof => match parent {
-                    Some(parent) => return Err(never_closed(parent)),
-                    None => return Ok(blocks),
-                },
-                Tok::Skipped | Tok::Error(_) => unreachable!("handled by next"),
-            }
-        }
-    }
-
-    /// The one block that is all of the document, for a parent of kind `parent`.
-    fn one_block(&mut self, parent: Option<BlockKind>) -> Result<Block> {
-        let Token { line, tok } = self.next_non_blank()?;
-        let block = match tok {
-            Tok::Start(tag) => match parent {
-                None | Some(BlockKind::Section | BlockKind::UserStory) => self.block(tag)?,
-                Some(BlockKind::List) => {
-                    self.item_of(tag, &["li"], "a list holds `<li>` items only")?
-                }
-                Some(BlockKind::Table) => {
-                    self.item_of(tag, &["tr"], "a table holds `<tr>` rows only")?
-                }
-                Some(BlockKind::TableRow) => self.item_of(
-                    tag,
-                    &["td", "th"],
-                    "a row holds `<td>` and `<th>` cells only",
-                )?,
-                Some(other) => {
-                    return Err(error(
-                        tag.line,
-                        format!(
-                            "{} cannot go inside {}: it holds text, not blocks",
-                            tag.display(),
-                            describe(other)
-                        ),
-                    ));
-                }
-            },
-            Tok::Text(_) => return Err(error(line, TEXT_OUTSIDE)),
-            Tok::End(name) => {
-                return Err(error(
-                    line,
-                    format!("`</{name}>` closes a tag that is not open"),
-                ));
-            }
-            _ => {
-                return Err(error(
-                    line,
-                    "the content is empty: it must be exactly one block",
-                ));
-            }
-        };
-        let Token { line, tok } = self.next_non_blank()?;
-        match tok {
-            Tok::Eof => Ok(block),
-            _ => Err(error(
-                line,
-                "the content must be exactly one block, but more follows the first",
-            )),
-        }
-    }
-
-    /// The next token that is not white space between blocks.
-    fn next_non_blank(&mut self) -> Result<Token> {
-        loop {
-            let token = self.next()?;
-            match &token.tok {
-                Tok::Text(text) if is_blank(text) => {}
-                _ => return Ok(token),
-            }
-        }
-    }
-
-    /// A list item, table row or table cell, which only `allowed` tags are.
-    fn item_of(&mut self, tag: StartTag, allowed: &[&str], rule: &str) -> Result<Block> {
-        if allowed.contains(&tag.name.as_str()) {
-            return self.child(tag);
-        }
-        Err(error(
-            tag.line,
-            format!("{} is not allowed here: {rule}", tag.display()),
-        ))
-    }
-
-    fn block(&mut self, tag: StartTag) -> Result<Block> {
-        let name = tag.name.as_str();
-        let is_container = matches!(
-            name,
-            "section"
-                | "h1"
-                | "h2"
-                | "h3"
-                | "h4"
-                | "h5"
-                | "h6"
-                | "p"
-                | "blockquote"
-                | "ul"
-                | "ol"
-                | "table"
-                | "figure"
-                | "aside"
-                | "pre"
-                | "article"
-        );
-        if is_container && tag.self_closing {
-            return Err(error(
-                tag.line,
-                format!(
-                    "{} cannot be self-closing: write `<{name}>` and `</{name}>`",
-                    tag.display()
-                ),
-            ));
-        }
-        let (id, body) = match name {
-            "section" => {
-                let id = self.read_id(&tag, &[])?;
-                let children = self.descend(tag.line, |p| p.blocks(Some(&tag)))?;
-                (id, Body::Section { children })
-            }
-            "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => {
-                let id = self.read_id(&tag, &[])?;
-                let level = name.as_bytes()[1] - b'0';
-                let inline = self.inline_of(&tag)?;
-                (id, Body::Heading { level, inline })
-            }
-            "p" => {
-                let id = self.read_id(&tag, &["data-block"])?;
-                let requirement = match tag.attr("data-block") {
-                    None => false,
-                    Some("requirement") => true,
-                    Some(other) => return Err(unknown_block_type(&tag, other)),
-                };
-                let inline = self.inline_of(&tag)?;
-                let body = if requirement {
-                    Body::Requirement { inline }
-                } else {
-                    Body::Paragraph { inline }
-                };
-                (id, body)
-            }
-            "blockquote" => {
-                let id = self.read_id(&tag, &[])?;
-                let inline = self.inline_of(&tag)?;
-                (id, Body::Quote { inline })
-            }
-            "hr" => {
-                let id = self.read_id(&tag, &[])?;
-                (id, Body::Divider)
-            }
-            "ul" | "ol" => {
-                let id = self.read_id(&tag, &[])?;
-                let children = self.descend(tag.line, |p| {
-                    p.children(&tag, &["li"], "a list holds `<li>` items only")
-                })?;
-                (
-                    id,
-                    Body::List {
-                        ordered: name == "ol",
-                        children,
-                    },
-                )
-            }
-            "table" => {
-                let id = self.read_id(&tag, &[])?;
-                let children = self.descend(tag.line, |p| {
-                    p.children(&tag, &["tr"], "a table holds `<tr>` rows only")
-                })?;
-                (id, Body::Table { children })
-            }
-            "figure" => {
-                let id = self.read_id(&tag, &[])?;
-                let (source, caption) = self.descend(tag.line, |p| p.figure(&tag))?;
-                (id, Body::Figure { source, caption })
-            }
-            "aside" => {
-                let id = self.read_id(&tag, &["data-callout"])?;
-                let kind = match tag.attr("data-callout") {
-                    Some("note") => CalloutKind::Note,
-                    Some("warning") => CalloutKind::Warning,
-                    Some("decision") => CalloutKind::Decision,
-                    Some(other) => {
-                        return Err(error(
-                            tag.line,
-                            format!(
-                                "`data-callout=\"{other}\"` is not a callout kind: use note, warning or decision"
-                            ),
-                        ));
-                    }
-                    None => {
-                        return Err(error(
-                            tag.line,
-                            "an `<aside>` is a callout and needs a `data-callout` attribute: note, warning or decision",
-                        ));
-                    }
-                };
-                let inline = self.inline_of(&tag)?;
-                (id, Body::Callout { kind, inline })
-            }
-            "pre" => {
-                if tag.attr("class").is_some() {
-                    return Err(error(
-                        tag.line,
-                        "a `<pre>` with a class belongs inside a `<figure>` with a `<figcaption>`; a code block is `<pre><code>`",
-                    ));
-                }
-                let id = self.read_id(&tag, &[])?;
-                let code = self.code_block(&tag)?;
-                (id, Body::CodeBlock { code })
-            }
-            "img" => {
-                let id = self.read_id(&tag, &["src", "alt"])?;
-                let Some(src) = tag.attr("src") else {
-                    return Err(error(
-                        tag.line,
-                        "an `<img>` needs a `src` that is an attachment: `attachment:<id>`",
-                    ));
-                };
-                let attachment = AttachmentRef::from_str(src).map_err(|_| {
-                    error(
-                        tag.line,
-                        format!("the image `src` `{src}` is not an attachment: images must be written `attachment:<id>`"),
-                    )
-                })?;
-                let alt = tag.attr("alt").map(str::to_string);
-                (id, Body::Image { attachment, alt })
-            }
-            "article" => {
-                let id = self.read_id(&tag, &["data-block"])?;
-                if tag.attr("data-block") != Some("user-story") {
-                    return Err(error(
-                        tag.line,
-                        "an `<article>` is only allowed as a user story: `<article data-block=\"user-story\">`",
-                    ));
-                }
-                let children = self.descend(tag.line, |p| p.blocks(Some(&tag)))?;
-                (id, Body::UserStory { children })
-            }
-            _ => return Err(not_a_block(&tag)),
-        };
-        Ok(Block { id, body })
-    }
-
-    /// The blocks that fill a list, a table or a row, which hold `allowed` tags
-    /// only.
-    fn children(&mut self, parent: &StartTag, allowed: &[&str], rule: &str) -> Result<Vec<Block>> {
-        let mut children = Vec::new();
-        loop {
-            let Token { line, tok } = self.next()?;
-            match tok {
-                Tok::Text(text) => {
-                    if !is_blank(&text) {
-                        return Err(error(
-                            line,
-                            format!(
-                                "text is not allowed directly inside {}: {rule}",
-                                parent.display()
-                            ),
-                        ));
-                    }
-                }
-                Tok::Start(tag) if allowed.contains(&tag.name.as_str()) => {
-                    children.push(self.child(tag)?)
-                }
-                Tok::Start(tag) => {
-                    return Err(error(
-                        tag.line,
-                        format!(
-                            "{} is not allowed inside {}: {rule}",
-                            tag.display(),
-                            parent.display()
-                        ),
-                    ));
-                }
-                Tok::End(name) if name == parent.name => return Ok(children),
-                Tok::End(name) => return Err(mismatch(line, &name, parent)),
-                Tok::Eof => return Err(never_closed(parent)),
-                Tok::Skipped | Tok::Error(_) => unreachable!("handled by next"),
-            }
-        }
-    }
-
-    /// A list item, a table row or a table cell.
-    fn child(&mut self, tag: StartTag) -> Result<Block> {
-        if tag.self_closing {
-            return Err(error(
-                tag.line,
-                format!(
-                    "{} cannot be self-closing: write `<{}>` and `</{}>`",
-                    tag.display(),
-                    tag.name,
-                    tag.name
-                ),
-            ));
-        }
-        let id = self.read_id(&tag, &[])?;
-        let body = match tag.name.as_str() {
-            "li" => Body::ListItem {
-                inline: self.inline_of(&tag)?,
-            },
-            "tr" => Body::TableRow {
-                children: self.descend(tag.line, |p| {
-                    p.children(
-                        &tag,
-                        &["td", "th"],
-                        "a row holds `<td>` and `<th>` cells only",
-                    )
-                })?,
-            },
-            _ => Body::TableCell {
-                header: tag.name == "th",
-                inline: self.inline_of(&tag)?,
-            },
-        };
-        Ok(Block { id, body })
-    }
-
-    fn inline_of(&mut self, tag: &StartTag) -> Result<Vec<Inline>> {
-        self.descend(tag.line, |p| p.inline(tag, false))
-    }
-
-    /// The inline content up to the end tag of `parent`.
-    fn inline(&mut self, parent: &StartTag, in_link: bool) -> Result<Vec<Inline>> {
-        let mut inline = Vec::new();
-        loop {
-            let Token { line, tok } = self.next()?;
-            match tok {
-                Tok::Text(text) => inline.push(Inline::Text(text)),
-                Tok::Start(tag) => {
-                    let name = tag.name.as_str();
-                    if matches!(name, "strong" | "em" | "code" | "a" | "br") {
-                        tag.check_attrs(if name == "a" { &["href"] } else { &[] })?;
-                    }
-                    match name {
-                        "br" => inline.push(Inline::LineBreak),
-                        "strong" | "em" | "code" | "a" if tag.self_closing => {
-                            return Err(error(
-                                tag.line,
-                                format!(
-                                    "{} cannot be self-closing: write `<{name}>` and `</{name}>`",
-                                    tag.display()
-                                ),
-                            ));
-                        }
-                        "strong" => {
-                            let children = self.descend(tag.line, |p| p.inline(&tag, in_link))?;
-                            inline.push(Inline::Strong(children));
-                        }
-                        "em" => {
-                            let children = self.descend(tag.line, |p| p.inline(&tag, in_link))?;
-                            inline.push(Inline::Emphasis(children));
-                        }
-                        "code" => inline.push(Inline::Code(self.text_only(&tag)?)),
-                        "a" if in_link => {
-                            return Err(error(tag.line, "a `<a>` link cannot hold another link"));
-                        }
-                        "a" => {
-                            let href = tag.attr("href").unwrap_or_default().to_string();
-                            if !is_safe_link(&href) {
-                                return Err(error(
-                                    tag.line,
-                                    format!(
-                                        "the link `href` `{href}` is not allowed: links must use http, https or mailto"
-                                    ),
-                                ));
-                            }
-                            let children = self.descend(tag.line, |p| p.inline(&tag, true))?;
-                            inline.push(Inline::Link { href, children });
-                        }
-                        _ => {
-                            return Err(error(
-                                tag.line,
-                                format!(
-                                    "{} is not allowed inside {}: inline markup is `<strong>`, `<em>`, `<code>`, `<a>` and `<br>`",
-                                    tag.display(),
-                                    parent.display()
-                                ),
-                            ));
-                        }
-                    }
-                }
-                Tok::End(name) if name == parent.name => return Ok(inline),
-                Tok::End(name) => return Err(mismatch(line, &name, parent)),
-                Tok::Eof => return Err(never_closed(parent)),
-                Tok::Skipped | Tok::Error(_) => unreachable!("handled by next"),
-            }
-        }
-    }
-
-    /// The text up to the end tag of `parent`, which holds text only.
-    fn text_only(&mut self, parent: &StartTag) -> Result<String> {
-        if parent.self_closing {
-            return Ok(String::new());
-        }
-        let mut text = String::new();
-        loop {
-            let Token { line, tok } = self.next()?;
-            match tok {
-                Tok::Text(more) => text.push_str(&more),
-                Tok::Start(tag) => {
-                    return Err(error(
-                        tag.line,
-                        format!(
-                            "{} is not allowed inside {}: it holds text only",
-                            tag.display(),
-                            parent.display()
-                        ),
-                    ));
-                }
-                Tok::End(name) if name == parent.name => return Ok(text),
-                Tok::End(name) => return Err(mismatch(line, &name, parent)),
-                Tok::Eof => return Err(never_closed(parent)),
-                Tok::Skipped | Tok::Error(_) => unreachable!("handled by next"),
-            }
-        }
-    }
-
-    /// The text of the `<code>` inside a `<pre>`.
-    fn code_block(&mut self, pre: &StartTag) -> Result<String> {
-        let code = loop {
-            let Token { line, tok } = self.next()?;
-            match tok {
-                Tok::Text(text) if is_blank(&text) => {}
-                Tok::Text(_) => return Err(error(line, NOT_A_CODE_BLOCK)),
-                Tok::Start(tag) if tag.name == "code" => break tag,
-                Tok::Start(tag) => {
-                    return Err(error(
-                        tag.line,
-                        format!(
-                            "{} is not allowed inside {}: {NOT_A_CODE_BLOCK}",
-                            tag.display(),
-                            pre.display()
-                        ),
-                    ));
-                }
-                Tok::End(name) if name == pre.name => {
-                    return Err(error(pre.line, NOT_A_CODE_BLOCK));
-                }
-                Tok::End(name) => return Err(mismatch(line, &name, pre)),
-                Tok::Eof => return Err(never_closed(pre)),
-                Tok::Skipped | Tok::Error(_) => unreachable!("handled by next"),
-            }
-        };
-        code.check_attrs(&[])?;
-        let text = self.text_only(&code)?;
-        loop {
-            let Token { line, tok } = self.next()?;
-            match tok {
-                Tok::Text(text) if is_blank(&text) => {}
-                Tok::Text(_) => return Err(error(line, NOT_A_CODE_BLOCK)),
-                Tok::Start(tag) => {
-                    return Err(error(
-                        tag.line,
-                        format!(
-                            "{} is not allowed inside {}: {NOT_A_CODE_BLOCK}",
-                            tag.display(),
-                            pre.display()
-                        ),
-                    ));
-                }
-                Tok::End(name) if name == pre.name => return Ok(text),
-                Tok::End(name) => return Err(mismatch(line, &name, pre)),
-                Tok::Eof => return Err(never_closed(pre)),
-                Tok::Skipped | Tok::Error(_) => unreachable!("handled by next"),
-            }
-        }
-    }
-
-    /// A figure's picture and caption, up to its end tag.
-    fn figure(&mut self, figure: &StartTag) -> Result<(FigureSource, String)> {
-        let needs_picture = || {
-            error(
-                figure.line,
-                "a `<figure>` needs an `<svg>` or a `<pre class=\"mermaid\">` before its `<figcaption>`",
-            )
-        };
-        let source = loop {
-            let Token { line, tok } = self.next()?;
-            match tok {
-                Tok::Text(text) if is_blank(&text) => {}
-                Tok::Text(_) => return Err(error(line, TEXT_OUTSIDE)),
-                Tok::Start(tag) if tag.name == "svg" => {
-                    break FigureSource::Svg(self.svg(&tag)?);
-                }
-                Tok::Start(tag) if tag.name == "pre" => {
-                    if tag.attrs.len() != 1 || tag.attr("class") != Some("mermaid") {
-                        return Err(error(
-                            tag.line,
-                            "the `<pre>` of a figure must be `<pre class=\"mermaid\">` and have no other attributes",
-                        ));
-                    }
-                    let mut code = self.text_only(&tag)?;
-                    if code.starts_with('\n') {
-                        // A browser drops the line break right after `<pre>`.
-                        code.remove(0);
-                    }
-                    break FigureSource::Mermaid(code);
-                }
-                Tok::Start(tag) if tag.name == "figcaption" => return Err(needs_picture()),
-                Tok::Start(tag) => {
-                    return Err(error(
-                        tag.line,
-                        format!(
-                            "{} is not allowed inside `<figure>`: a figure holds an `<svg>` or a Mermaid `<pre>` and a `<figcaption>`",
-                            tag.display()
-                        ),
-                    ));
-                }
-                Tok::End(name) if name == figure.name => return Err(needs_picture()),
-                Tok::End(name) => return Err(mismatch(line, &name, figure)),
-                Tok::Eof => return Err(never_closed(figure)),
-                Tok::Skipped | Tok::Error(_) => unreachable!("handled by next"),
-            }
-        };
-        let caption = loop {
-            let Token { line, tok } = self.next()?;
-            match tok {
-                Tok::Text(text) if is_blank(&text) => {}
-                Tok::Text(_) => return Err(error(line, TEXT_OUTSIDE)),
-                Tok::Start(tag) if tag.name == "figcaption" => {
-                    tag.check_attrs(&[])?;
-                    break self.text_only(&tag)?;
-                }
-                Tok::Start(tag) => {
-                    return Err(error(
-                        tag.line,
-                        format!(
-                            "{} is not allowed inside `<figure>`: a figure holds one picture and then its `<figcaption>`",
-                            tag.display()
-                        ),
-                    ));
-                }
-                Tok::End(name) if name == figure.name => {
-                    return Err(error(
-                        figure.line,
-                        "a `<figure>` needs a `<figcaption>`: every figure has a caption",
-                    ));
-                }
-                Tok::End(name) => return Err(mismatch(line, &name, figure)),
-                Tok::Eof => return Err(never_closed(figure)),
-                Tok::Skipped | Tok::Error(_) => unreachable!("handled by next"),
-            }
-        };
-        loop {
-            let Token { line, tok } = self.next()?;
-            match tok {
-                Tok::Text(text) if is_blank(&text) => {}
-                Tok::Text(_) => return Err(error(line, TEXT_OUTSIDE)),
-                Tok::Start(tag) => {
-                    return Err(error(
-                        tag.line,
-                        format!(
-                            "{} is not allowed inside `<figure>`: a figure ends after its `<figcaption>`",
-                            tag.display()
-                        ),
-                    ));
-                }
-                Tok::End(name) if name == figure.name => return Ok((source, caption)),
-                Tok::End(name) => return Err(mismatch(line, &name, figure)),
-                Tok::Eof => return Err(never_closed(figure)),
-                Tok::Skipped | Tok::Error(_) => unreachable!("handled by next"),
-            }
-        }
-    }
-
-    /// The cleaned markup of the `<svg>` that `root` starts.
-    fn svg(&mut self, root: &StartTag) -> Result<String> {
-        let element = self
-            .svg_element(root, true)?
-            .expect("an <svg> is on the allow-list");
-        let mut out = String::new();
-        write_svg(&element, &mut out);
-        Ok(out)
-    }
-
-    /// Reads one SVG element and everything inside it, and returns it cleaned,
-    /// or `None` when it is dropped. An element that is not on the allow-list is
-    /// dropped with all that it holds; `keep` is false inside one.
-    fn svg_element(&mut self, tag: &StartTag, keep: bool) -> Result<Option<SvgElement>> {
-        self.descend(tag.line, |parser| {
-            let canonical = SVG_ELEMENTS
-                .iter()
-                .find(|name| name.eq_ignore_ascii_case(&tag.raw_name))
-                .copied();
-            let kept = keep && canonical.is_some();
-            let keeps_text = kept && SVG_TEXT_ELEMENTS.contains(&canonical.unwrap_or_default());
-            let mut children = Vec::new();
-            let is_void = matches!(
-                tag.name.as_str(),
+impl Element {
+    pub fn is_void(&self) -> bool {
+        self.ns == Ns::Html
+            && matches!(
+                self.name.as_str(),
                 "area"
                     | "base"
+                    | "basefont"
+                    | "bgsound"
                     | "br"
                     | "col"
                     | "embed"
+                    | "frame"
                     | "hr"
                     | "img"
                     | "input"
+                    | "keygen"
                     | "link"
                     | "meta"
+                    | "param"
                     | "source"
                     | "track"
                     | "wbr"
-            );
-            if !tag.self_closing && !is_void {
-                loop {
-                    let Token { line, tok } = parser.raw_next()?;
-                    match tok {
-                        Tok::Text(text) => {
-                            if keeps_text {
-                                children.push(SvgNode::Text(text));
-                            }
-                        }
-                        Tok::Start(child) => {
-                            if let Some(element) = parser.svg_element(&child, kept)? {
-                                children.push(SvgNode::Element(element));
-                            }
-                        }
-                        Tok::End(name) if name == tag.name => break,
-                        Tok::End(name) => return Err(mismatch(line, &name, tag)),
-                        Tok::Skipped => {}
-                        Tok::Eof => return Err(never_closed(tag)),
-                        Tok::Error(_) => unreachable!("handled by raw_next"),
-                    }
-                }
-            }
-            let Some(name) = canonical.filter(|_| kept) else {
-                return Ok(None);
-            };
-            let attrs = tag
-                .attrs
-                .iter()
-                .filter_map(|attr| {
-                    let name = SVG_ATTRIBUTES
-                        .iter()
-                        .find(|name| name.eq_ignore_ascii_case(&attr.raw_name))?;
-                    let safe = if *name == "xmlns" {
-                        attr.value == SVG_NAMESPACE
-                    } else {
-                        is_safe_svg_value(&attr.value)
-                    };
-                    safe.then(|| (*name, attr.value.clone()))
-                })
-                .collect();
-            Ok(Some(SvgElement {
-                name,
-                attrs,
-                children,
-            }))
-        })
+            )
+    }
+
+    /// An element whose text is written as is: the parser reads it as raw
+    /// text, so it is printed without escapes.
+    fn holds_raw_text(&self) -> bool {
+        self.ns == Ns::Html
+            && matches!(
+                self.name.as_str(),
+                "style"
+                    | "script"
+                    | "xmp"
+                    | "iframe"
+                    | "noembed"
+                    | "noframes"
+                    | "plaintext"
+                    | "noscript"
+            )
+    }
+
+    /// Whether the element is block-level, and so a node. `inside_svg` says
+    /// that an SVG element holds it, which makes a nested `<svg>` part of the
+    /// outer one.
+    pub fn is_block_level(&self, inside_svg: bool) -> bool {
+        match self.ns {
+            Ns::Html => BLOCK_LEVEL.iter().any(|(tag, _)| *tag == self.name),
+            Ns::Svg => self.name == "svg" && !inside_svg,
+            Ns::MathMl => false,
+        }
+    }
+
+    /// The type that the node index lists the element as.
+    pub fn kind_name(&self) -> &'static str {
+        if self.ns == Ns::Svg {
+            return "svg";
+        }
+        BLOCK_LEVEL
+            .iter()
+            .find(|(tag, _)| *tag == self.name)
+            .map_or("element", |(_, kind)| kind)
     }
 }
 
-const TEXT_OUTSIDE: &str =
-    "text is not allowed here: write it inside a paragraph or another text block";
-
-const NOT_A_CODE_BLOCK: &str = "a code block is `<pre><code>` holding text only";
-
-fn mismatch(line: usize, end: &str, open: &StartTag) -> ParseError {
-    error(
-        line,
-        format!(
-            "`</{end}>` does not match the open {}: close it with `</{}>` first",
-            open.display(),
-            open.name
-        ),
-    )
-}
-
-fn never_closed(tag: &StartTag) -> ParseError {
-    error(
-        tag.line,
-        format!("{} is never closed: add `</{}>`", tag.display(), tag.name),
-    )
-}
-
-fn unknown_block_type(tag: &StartTag, value: &str) -> ParseError {
-    error(
-        tag.line,
-        format!(
-            "`data-block=\"{value}\"` is not a block type: the only one on {} is `requirement`",
-            tag.display()
-        ),
-    )
-}
-
-/// The error for a start tag that begins no block.
-fn not_a_block(tag: &StartTag) -> ParseError {
-    let name = tag.display();
-    let message = match tag.name.as_str() {
-        "li" => format!("{name} must be inside a `<ul>` or `<ol>`"),
-        "tr" => format!("{name} must be inside a `<table>`"),
-        "td" | "th" => format!("{name} must be inside a `<tr>` of a `<table>`"),
-        "strong" | "em" | "code" | "a" | "br" => {
-            format!("{name} is inline markup and must be inside a text block such as a paragraph")
-        }
-        "svg" => format!("{name} is only allowed inside a `<figure>` with a `<figcaption>`"),
-        "figcaption" => format!("{name} is only allowed inside a `<figure>`"),
-        _ => format!("{name} is not part of the format"),
-    };
-    error(tag.line, message)
-}
-
-/// Whether a link may be kept: http, https or mailto, with something after it.
-fn is_safe_link(href: &str) -> bool {
-    let lower = href.to_ascii_lowercase();
-    let rest = ["http://", "https://", "mailto:"]
-        .iter()
-        .find_map(|scheme| lower.strip_prefix(scheme));
-    rest.is_some_and(|rest| !rest.is_empty())
-        && !href.chars().any(|c| c.is_whitespace() || c.is_control())
-}
-
-// --- SVG cleaning ---
-
-const SVG_NAMESPACE: &str = "http://www.w3.org/2000/svg";
-
-/// The SVG elements a figure may keep: shapes, text, groups and gradients. A
-/// script, a style, a `foreignObject`, an image, a link or a `use` is dropped
-/// with all that it holds.
-const SVG_ELEMENTS: &[&str] = &[
-    "svg",
-    "g",
-    "defs",
-    "title",
-    "desc",
-    "rect",
-    "circle",
-    "ellipse",
-    "line",
-    "polyline",
-    "polygon",
-    "path",
-    "text",
-    "tspan",
-    "linearGradient",
-    "radialGradient",
-    "stop",
-    "clipPath",
-    "marker",
-];
-
-/// The elements whose text is kept.
-const SVG_TEXT_ELEMENTS: &[&str] = &["text", "tspan", "title", "desc"];
-
-/// The SVG attributes a figure may keep: geometry and presentation. No event
-/// handler, `style`, `href` or `xlink:href` is on the list.
-const SVG_ATTRIBUTES: &[&str] = &[
-    "xmlns",
-    "viewBox",
-    "preserveAspectRatio",
-    "width",
-    "height",
-    "x",
-    "y",
-    "cx",
-    "cy",
-    "r",
-    "rx",
-    "ry",
-    "x1",
-    "y1",
-    "x2",
-    "y2",
-    "fx",
-    "fy",
-    "dx",
-    "dy",
-    "points",
-    "d",
-    "pathLength",
-    "transform",
-    "fill",
-    "fill-opacity",
-    "fill-rule",
-    "stroke",
-    "stroke-width",
-    "stroke-opacity",
-    "stroke-linecap",
-    "stroke-linejoin",
-    "stroke-miterlimit",
-    "stroke-dasharray",
-    "stroke-dashoffset",
-    "opacity",
-    "clip-path",
-    "clip-rule",
-    "clipPathUnits",
-    "marker-start",
-    "marker-mid",
-    "marker-end",
-    "markerWidth",
-    "markerHeight",
-    "markerUnits",
-    "refX",
-    "refY",
-    "orient",
-    "offset",
-    "stop-color",
-    "stop-opacity",
-    "gradientUnits",
-    "gradientTransform",
-    "spreadMethod",
-    "font-family",
-    "font-size",
-    "font-weight",
-    "font-style",
-    "text-anchor",
-    "dominant-baseline",
-    "letter-spacing",
-    "text-decoration",
-    "id",
-    "class",
-    "role",
-    "aria-label",
-    "aria-hidden",
-    "aria-labelledby",
-    "aria-describedby",
-    "version",
-];
-
-struct SvgElement {
-    name: &'static str,
-    attrs: Vec<(&'static str, String)>,
-    children: Vec<SvgNode>,
-}
-
-enum SvgNode {
-    Element(SvgElement),
+/// What an item of the tree is.
+#[derive(Clone, Debug)]
+pub(crate) enum Kind {
+    /// The top of a tree: its children are the doc's top level.
+    Root,
     Text(String),
+    Comment(String),
+    Element(Element),
+    /// The place of a node in a copy of an element's own content (a rebase
+    /// copies content without the nodes inside).
+    Slot(NodeId),
 }
 
-/// Whether the value of an SVG attribute loads nothing from outside and runs
-/// nothing: no script URL, no `@import`, no `url()` except to an ID in the same
-/// picture, and no address.
-fn is_safe_svg_value(value: &str) -> bool {
-    let squashed: String = value
-        .chars()
-        .filter(|c| !c.is_whitespace() && !c.is_control())
-        .collect::<String>()
-        .to_ascii_lowercase();
-    const FORBIDDEN: [&str; 9] = [
-        "javascript:",
-        "vbscript:",
-        "data:",
-        "@import",
-        "expression(",
-        "://",
-        "<",
-        ">",
-        "\\",
-    ];
-    if squashed.starts_with("//") || FORBIDDEN.iter().any(|bad| squashed.contains(bad)) {
-        return false;
-    }
-    let mut rest = squashed.as_str();
-    while let Some(at) = rest.find("url(") {
-        let after = rest[at + 4..].trim_start_matches(['\'', '"']);
-        if !after.starts_with('#') {
-            return false;
-        }
-        rest = after;
-    }
-    true
+#[derive(Clone, Debug)]
+pub(crate) struct Item {
+    pub kind: Kind,
+    pub parent: Option<usize>,
+    pub children: Vec<usize>,
 }
 
-fn write_svg(element: &SvgElement, out: &mut String) {
-    out.push('<');
-    out.push_str(element.name);
-    for (name, value) in &element.attrs {
-        out.push(' ');
-        out.push_str(name);
-        out.push_str("=\"");
-        out.push_str(&escape_attr(value));
-        out.push('"');
-    }
-    if element.children.is_empty() {
-        out.push_str("/>");
-        return;
-    }
-    out.push('>');
-    for child in &element.children {
-        match child {
-            SvgNode::Element(child) => write_svg(child, out),
-            SvgNode::Text(text) => out.push_str(&escape_text(text)),
+/// A parsed doc: items in an arena, the root at index 0. An item that is
+/// taken out of its parent stays in the arena, unreachable.
+#[derive(Clone, Debug)]
+pub(crate) struct Tree {
+    pub items: Vec<Item>,
+}
+
+/// The element a fragment is parsed inside, which decides how the parser reads
+/// it (`<li>` belongs in a `<ul>`, a `<td>` in a `<tr>`).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Context<'a> {
+    pub name: &'a str,
+    pub ns: Ns,
+}
+
+impl Context<'static> {
+    pub const BODY: Context<'static> = Context {
+        name: "body",
+        ns: Ns::Html,
+    };
+}
+
+impl Tree {
+    pub fn new() -> Tree {
+        Tree {
+            items: vec![Item {
+                kind: Kind::Root,
+                parent: None,
+                children: Vec::new(),
+            }],
         }
     }
-    out.push_str("</");
-    out.push_str(element.name);
-    out.push('>');
-}
 
-// --- Printing ---
-
-fn escape_text(text: &str) -> String {
-    text.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-}
-
-fn escape_attr(value: &str) -> String {
-    escape_text(value).replace('"', "&quot;")
-}
-
-/// Says the revision of a node, for the `data-rev` that the printer adds.
-pub(crate) trait Revisions {
-    fn revision(&self, id: &NodeId) -> Option<u64>;
-}
-
-impl<F: Fn(&NodeId) -> Option<u64>> Revisions for F {
-    fn revision(&self, id: &NodeId) -> Option<u64> {
-        self(id)
-    }
-}
-
-/// The text that the printer writes, and the revisions it adds as `data-rev`
-/// when it has them (a doc under edit, which knows each node's revision).
-struct Printer<'a> {
-    text: String,
-    revisions: Option<&'a dyn Revisions>,
-}
-
-impl Printer<'_> {
-    fn push(&mut self, c: char) {
-        self.text.push(c);
+    pub fn push(&mut self, kind: Kind) -> usize {
+        self.items.push(Item {
+            kind,
+            parent: None,
+            children: Vec::new(),
+        });
+        self.items.len() - 1
     }
 
-    fn push_str(&mut self, text: &str) {
-        self.text.push_str(text);
+    pub fn element(&self, ix: usize) -> Option<&Element> {
+        match &self.items[ix].kind {
+            Kind::Element(element) => Some(element),
+            _ => None,
+        }
     }
 
-    fn revision(&self, id: &NodeId) -> Option<u64> {
-        self.revisions.and_then(|revisions| revisions.revision(id))
+    pub fn element_mut(&mut self, ix: usize) -> Option<&mut Element> {
+        match &mut self.items[ix].kind {
+            Kind::Element(element) => Some(element),
+            _ => None,
+        }
     }
-}
 
-fn print_blocks(blocks: &[Block], out: &mut Printer) {
-    for block in blocks {
-        print_block(block, out);
-        out.push('\n');
+    /// The ID of the item when it is a node.
+    pub fn id_of(&self, ix: usize) -> Option<NodeId> {
+        self.element(ix).and_then(|element| element.id)
     }
-}
 
-fn print_inline(inline: &[Inline], out: &mut Printer) {
-    for part in inline {
-        match part {
-            Inline::Text(text) => out.push_str(&escape_text(text)),
-            Inline::Strong(children) => {
-                out.push_str("<strong>");
-                print_inline(children, out);
-                out.push_str("</strong>");
+    /// Puts `child`, which has no parent, among the children of `parent`.
+    pub fn attach(&mut self, parent: usize, at: usize, child: usize) {
+        debug_assert!(self.items[child].parent.is_none());
+        self.items[parent].children.insert(at, child);
+        self.items[child].parent = Some(parent);
+    }
+
+    /// Takes an item out of its parent; it keeps its own children.
+    pub fn detach(&mut self, ix: usize) {
+        if let Some(parent) = self.items[ix].parent.take() {
+            self.items[parent].children.retain(|child| *child != ix);
+        }
+    }
+
+    /// The place of an item among the children of its parent.
+    pub fn position(&self, ix: usize) -> usize {
+        let parent = self.items[ix].parent.expect("the item has a parent");
+        self.items[parent]
+            .children
+            .iter()
+            .position(|child| *child == ix)
+            .expect("a parent lists its children")
+    }
+
+    /// The elements above an item, from the top down to its parent.
+    pub fn ancestors(&self, ix: usize) -> Vec<usize> {
+        let mut chain = Vec::new();
+        let mut at = self.items[ix].parent;
+        while let Some(parent) = at {
+            if matches!(self.items[parent].kind, Kind::Element(_)) {
+                chain.push(parent);
             }
-            Inline::Emphasis(children) => {
-                out.push_str("<em>");
-                print_inline(children, out);
-                out.push_str("</em>");
-            }
-            Inline::Code(code) => {
-                out.push_str("<code>");
-                out.push_str(&escape_text(code));
-                out.push_str("</code>");
-            }
-            Inline::Link { href, children } => {
-                out.push_str("<a href=\"");
-                out.push_str(&escape_attr(href));
-                out.push_str("\">");
-                print_inline(children, out);
-                out.push_str("</a>");
-            }
-            Inline::LineBreak => out.push_str("<br>"),
+            at = self.items[parent].parent;
         }
+        chain.reverse();
+        chain
     }
-}
 
-/// Prints `<tag data-node-id="..." extra>`, the ID first.
-fn open_tag(tag: &str, id: Option<&NodeId>, extra: &str, out: &mut Printer) {
-    out.push('<');
-    out.push_str(tag);
-    if let Some(id) = id {
-        out.push_str(" data-node-id=\"");
-        out.push_str(id.as_str());
-        out.push('"');
-        if let Some(revision) = out.revision(id) {
-            out.push_str(" data-rev=\"");
-            out.push_str(&revision.to_string());
-            out.push('"');
+    /// Whether `ix` or an element above it is an SVG element.
+    pub fn within_svg(&self, ix: usize) -> bool {
+        let mut at = Some(ix);
+        while let Some(item) = at {
+            if self
+                .element(item)
+                .is_some_and(|element| element.ns == Ns::Svg)
+            {
+                return true;
+            }
+            at = self.items[item].parent;
         }
+        false
     }
-    out.push_str(extra);
-    out.push('>');
-}
 
-fn print_text_block(tag: &str, block: &Block, extra: &str, inline: &[Inline], out: &mut Printer) {
-    open_tag(tag, block.id(), extra, out);
-    print_inline(inline, out);
-    out.push_str("</");
-    out.push_str(tag);
-    out.push('>');
-}
+    /// How many levels an item and what is inside it take up.
+    pub fn height(&self, ix: usize) -> usize {
+        let mut deepest = 0;
+        let mut stack = vec![(ix, 1)];
+        while let Some((item, level)) = stack.pop() {
+            deepest = deepest.max(level);
+            stack.extend(self.items[item].children.iter().map(|c| (*c, level + 1)));
+        }
+        deepest
+    }
 
-fn print_container(tag: &str, block: &Block, extra: &str, children: &[Block], out: &mut Printer) {
-    open_tag(tag, block.id(), extra, out);
-    out.push('\n');
-    print_blocks(children, out);
-    out.push_str("</");
-    out.push_str(tag);
-    out.push('>');
-}
+    /// The items of the subtree of `ix`, in document order, `ix` first.
+    pub fn subtree(&self, ix: usize) -> Vec<usize> {
+        let mut out = Vec::new();
+        let mut stack = vec![ix];
+        while let Some(item) = stack.pop() {
+            out.push(item);
+            stack.extend(self.items[item].children.iter().rev().copied());
+        }
+        out
+    }
 
-fn print_block(block: &Block, out: &mut Printer) {
-    match &block.body {
-        Body::Section { children } => print_container("section", block, "", children, out),
-        Body::Heading { level, inline } => {
-            print_text_block(&format!("h{level}"), block, "", inline, out)
-        }
-        Body::Paragraph { inline } => print_text_block("p", block, "", inline, out),
-        Body::Quote { inline } => print_text_block("blockquote", block, "", inline, out),
-        Body::Divider => open_tag("hr", block.id(), "", out),
-        Body::List { ordered, children } => {
-            print_container(if *ordered { "ol" } else { "ul" }, block, "", children, out)
-        }
-        Body::ListItem { inline } => print_text_block("li", block, "", inline, out),
-        Body::Table { children } => print_container("table", block, "", children, out),
-        Body::TableRow { children } => print_container("tr", block, "", children, out),
-        Body::TableCell { header, inline } => {
-            print_text_block(if *header { "th" } else { "td" }, block, "", inline, out)
-        }
-        Body::Figure { source, caption } => {
-            open_tag("figure", block.id(), "", out);
-            match source {
-                FigureSource::Svg(markup) => out.push_str(markup),
-                FigureSource::Mermaid(code) => {
-                    out.push_str("<pre class=\"mermaid\">");
-                    if code.starts_with('\n') {
-                        // The line break that a browser drops after `<pre>`.
-                        out.push('\n');
-                    }
-                    out.push_str(&escape_text(code));
-                    out.push_str("</pre>");
+    /// Copies the subtree of `ix` in `from` into this tree, as an item with no
+    /// parent. With `slots`, each node below the copy's root becomes a
+    /// [`Kind::Slot`] and what was inside it is left out.
+    pub fn copy_from(&mut self, from: &Tree, ix: usize, slots: bool) -> usize {
+        let mut stack = vec![(ix, None::<usize>)];
+        let mut top = None;
+        while let Some((source, parent)) = stack.pop() {
+            let kind = match &from.items[source].kind {
+                Kind::Element(element) if slots && parent.is_some() && element.id.is_some() => {
+                    Kind::Slot(element.id.expect("checked"))
+                }
+                other => other.clone(),
+            };
+            let skip_children = matches!(kind, Kind::Slot(_));
+            let copy = self.push(kind);
+            match parent {
+                Some(parent) => {
+                    self.items[copy].parent = Some(parent);
+                    self.items[parent].children.push(copy);
+                }
+                None => top = Some(copy),
+            }
+            if !skip_children {
+                // Pushed in reverse so that the children are copied in order.
+                for child in from.items[source].children.iter().rev() {
+                    stack.push((*child, Some(copy)));
                 }
             }
-            out.push_str("<figcaption>");
-            out.push_str(&escape_text(caption));
-            out.push_str("</figcaption></figure>");
         }
-        Body::Callout { kind, inline } => print_text_block(
-            "aside",
-            block,
-            &format!(" data-callout=\"{}\"", kind.as_str()),
-            inline,
-            out,
-        ),
-        Body::CodeBlock { code } => {
-            open_tag("pre", block.id(), "", out);
-            out.push_str("<code>");
-            out.push_str(&escape_text(code));
-            out.push_str("</code></pre>");
+        top.expect("a subtree has a root")
+    }
+
+    // --- Reading ---
+
+    /// Parses a fragment of HTML the way a browser parses the inside of
+    /// `context`. The result's root holds the fragment's top level. Nothing is
+    /// rejected, except nesting deeper than [`MAX_DEPTH`]: an element that the
+    /// parser cannot place is dropped or moved, as a browser does.
+    pub fn parse_fragment(html: &str, context: Context<'_>) -> Result<Tree, ParseError> {
+        let namespace = match context.ns {
+            Ns::Html => ns!(html),
+            Ns::Svg => ns!(svg),
+            Ns::MathMl => ns!(mathml),
+        };
+        let dom = parse_fragment(
+            RcDom::default(),
+            ParseOpts::default(),
+            QualName::new(None, namespace, LocalName::from(context.name)),
+            Vec::new(),
+        )
+        .one(html);
+        let mut tree = Tree::new();
+        // A fragment parse puts the fragment under one `html` element.
+        let top: Vec<Handle> = dom.document.children.borrow().clone();
+        let source = top
+            .iter()
+            .find(|node| matches!(node.data, NodeData::Element { .. }))
+            .cloned();
+        if let Some(source) = source {
+            tree.convert(&source)?;
         }
-        Body::Image { attachment, alt } => {
-            let mut extra = format!(" src=\"{}\"", escape_attr(attachment.as_str()));
-            if let Some(alt) = alt {
-                extra.push_str(&format!(" alt=\"{}\"", escape_attr(alt)));
+        Ok(tree)
+    }
+
+    /// Copies the children of `source` into the root, iteratively.
+    fn convert(&mut self, source: &Handle) -> Result<(), ParseError> {
+        let mut stack: Vec<(Handle, usize, usize)> = vec![(source.clone(), 0, 1)];
+        while let Some((handle, parent, depth)) = stack.pop() {
+            if depth > MAX_DEPTH {
+                return Err(error(format!(
+                    "elements are nested more than {MAX_DEPTH} levels deep"
+                )));
             }
-            open_tag("img", block.id(), &extra, out);
+            let children: Vec<Handle> = match &handle.data {
+                NodeData::Element {
+                    template_contents, ..
+                } => match template_contents.borrow().as_ref() {
+                    Some(contents) => contents.children.borrow().clone(),
+                    None => handle.children.borrow().clone(),
+                },
+                _ => handle.children.borrow().clone(),
+            };
+            let mut nested = Vec::new();
+            for child in children {
+                let kind = match &child.data {
+                    NodeData::Text { contents } => Kind::Text(contents.borrow().to_string()),
+                    NodeData::Comment { contents } => Kind::Comment(contents.to_string()),
+                    NodeData::Element { name, attrs, .. } => {
+                        Kind::Element(read_element(name, &attrs.borrow()))
+                    }
+                    _ => continue,
+                };
+                let is_element = matches!(kind, Kind::Element(_));
+                let ix = self.push(kind);
+                self.items[ix].parent = Some(parent);
+                self.items[parent].children.push(ix);
+                if is_element {
+                    nested.push((child, ix, depth + 1));
+                }
+            }
+            // Reversed, so that the tree is walked in document order.
+            stack.extend(nested.into_iter().rev());
         }
-        Body::Requirement { inline } => {
-            print_text_block("p", block, " data-block=\"requirement\"", inline, out)
+        Ok(())
+    }
+
+    // --- Identifying ---
+
+    /// The block-level elements of the subtrees under `roots`, in document
+    /// order, each with the items found. `inside_svg` says that the roots sit
+    /// inside an SVG element.
+    pub fn block_level(&self, roots: &[usize], inside_svg: bool) -> Vec<usize> {
+        let mut found = Vec::new();
+        let mut stack: Vec<(usize, bool)> = roots.iter().rev().map(|r| (*r, inside_svg)).collect();
+        while let Some((ix, svg)) = stack.pop() {
+            let mut svg_below = svg;
+            if let Kind::Element(element) = &self.items[ix].kind {
+                if element.is_block_level(svg) {
+                    found.push(ix);
+                }
+                svg_below = svg || element.ns == Ns::Svg;
+            }
+            stack.extend(
+                self.items[ix]
+                    .children
+                    .iter()
+                    .rev()
+                    .map(|c| (*c, svg_below)),
+            );
         }
-        Body::UserStory { children } => print_container(
-            "article",
-            block,
-            " data-block=\"user-story\"",
-            children,
-            out,
-        ),
+        found
+    }
+
+    /// Reads the IDs of a doc under edit: every block-level element must have
+    /// a valid `data-omni-id` that no other element has, and may have a
+    /// `data-rev`. Elements that are not block-level lose a `data-omni-id`
+    /// they carry.
+    pub fn identify_strict(&mut self) -> Result<(), ParseError> {
+        let roots = self.items[0].children.clone();
+        let blocks = self.block_level(&roots, false);
+        let mut seen = HashSet::new();
+        for ix in blocks {
+            let element = self.element_mut(ix).expect("a block is an element");
+            let tag = describe(element);
+            let Some(claimed) = element.claimed.take() else {
+                return Err(error(format!(
+                    "{tag} has no `{ID_ATTRIBUTE}`: every block-level element of a doc under edit has its ID"
+                )));
+            };
+            let id = NodeId::from_str(&claimed).map_err(|_| {
+                error(format!(
+                    "`{ID_ATTRIBUTE}` is `{claimed}` on {tag}, which is not a node ID: node IDs are 8 lowercase base32 characters (0-9 and a-z without i, l, o and u)"
+                ))
+            })?;
+            if !seen.insert(id) {
+                return Err(error(format!(
+                    "`{ID_ATTRIBUTE}` `{id}` is used twice: every block-level element has its own ID"
+                )));
+            }
+            element.id = Some(id);
+            if let Some(text) = element.claimed_rev.take() {
+                let rev = text.parse::<u64>().ok().filter(|rev| *rev >= 1);
+                element.rev = Some(rev.ok_or_else(|| {
+                    error(format!(
+                        "`{REV_ATTRIBUTE}` is `{text}` on {tag}, which is not a revision: revisions are whole numbers from 1"
+                    ))
+                })?);
+            }
+        }
+        for item in &mut self.items {
+            if let Kind::Element(element) = &mut item.kind {
+                element.claimed = None;
+                element.claimed_rev = None;
+            }
+        }
+        Ok(())
+    }
+
+    /// Gives IDs to the block-level elements under `roots`, in document
+    /// order, and returns their items. An element keeps the `data-omni-id` it
+    /// carries when that is a node ID that `allowed` accepts and no earlier
+    /// element has taken; otherwise `fresh` supplies one. `reserved` lists IDs
+    /// that nothing may take, and `first` the ID of the first block-level
+    /// element, whatever it carries.
+    pub fn identify(
+        &mut self,
+        roots: &[usize],
+        inside_svg: bool,
+        reserved: &[NodeId],
+        first: Option<NodeId>,
+        allowed: &dyn Fn(NodeId) -> bool,
+        fresh: &mut dyn FnMut() -> NodeId,
+    ) -> Vec<usize> {
+        let blocks = self.block_level(roots, inside_svg);
+        let mut seen: HashSet<NodeId> = reserved.iter().copied().collect();
+        seen.extend(first);
+        for (n, ix) in blocks.iter().enumerate() {
+            let element = self.element_mut(*ix).expect("a block is an element");
+            element.claimed_rev = None;
+            let claimed = element
+                .claimed
+                .take()
+                .and_then(|text| NodeId::from_str(&text).ok())
+                .filter(|id| !seen.contains(id) && allowed(*id));
+            let id = match (n, first, claimed) {
+                (0, Some(first), _) => first,
+                (_, _, Some(claimed)) => claimed,
+                _ => loop {
+                    let id = fresh();
+                    if !seen.contains(&id) {
+                        break id;
+                    }
+                },
+            };
+            seen.insert(id);
+            element.id = Some(id);
+        }
+        // What is left of a claim on an element that is not a node is dropped.
+        for ix in self.subtrees(roots) {
+            if let Some(element) = self.element_mut(ix) {
+                element.claimed = None;
+                element.claimed_rev = None;
+            }
+        }
+        blocks
+    }
+
+    fn subtrees(&self, roots: &[usize]) -> Vec<usize> {
+        roots.iter().flat_map(|root| self.subtree(*root)).collect()
+    }
+
+    // --- Printing ---
+
+    /// Prints an item and what is inside it.
+    pub fn print(&self, ix: usize, how: &Print<'_>, out: &mut String) {
+        self.print_item(ix, how, false, out);
+    }
+
+    fn print_item(&self, ix: usize, how: &Print<'_>, raw: bool, out: &mut String) {
+        match &self.items[ix].kind {
+            Kind::Root => self.print_children(ix, how, false, out),
+            Kind::Text(text) => {
+                if raw {
+                    out.push_str(text);
+                } else {
+                    escape_text(text, out);
+                }
+            }
+            Kind::Comment(text) => {
+                out.push_str("<!--");
+                out.push_str(text);
+                out.push_str("-->");
+            }
+            Kind::Slot(_) => {}
+            Kind::Element(element) => {
+                // The content of a node without the nodes inside it.
+                if how.own.is_some_and(|top| top != ix) && element.id.is_some() {
+                    return;
+                }
+                self.print_open(element, ix, how, out);
+                if element.is_void() {
+                    return;
+                }
+                // The parser drops a newline right after these start tags, so
+                // a text that starts with one gets another to keep it.
+                if element.ns == Ns::Html
+                    && matches!(element.name.as_str(), "pre" | "textarea" | "listing")
+                    && matches!(
+                        self.items[ix].children.first().map(|c| &self.items[*c].kind),
+                        Some(Kind::Text(text)) if text.starts_with('\n')
+                    )
+                {
+                    out.push('\n');
+                }
+                self.print_children(ix, how, element.holds_raw_text(), out);
+                out.push_str("</");
+                out.push_str(&element.name);
+                out.push('>');
+            }
+        }
+    }
+
+    fn print_children(&self, ix: usize, how: &Print<'_>, raw: bool, out: &mut String) {
+        for child in &self.items[ix].children {
+            self.print_item(*child, how, raw, out);
+        }
+    }
+
+    /// The start tag of an element.
+    pub fn print_open(&self, element: &Element, ix: usize, how: &Print<'_>, out: &mut String) {
+        out.push('<');
+        out.push_str(&element.name);
+        if let (Some(id), true) = (element.id, how.ids && how.own != Some(ix)) {
+            write_attr(ID_ATTRIBUTE, id.as_str(), out);
+            if let Some(rev) = how.revisions.and_then(|revision| revision(id)) {
+                write_attr(REV_ATTRIBUTE, &rev.to_string(), out);
+            }
+        }
+        for (name, value) in &element.attrs {
+            write_attr(name, value, out);
+        }
+        out.push('>');
+    }
+
+    /// An element and what is inside it as HTML.
+    pub fn html(&self, ix: usize, how: &Print<'_>) -> String {
+        let mut out = String::new();
+        self.print(ix, how, &mut out);
+        out
+    }
+}
+
+/// How an item is printed.
+pub(crate) struct Print<'a> {
+    /// Whether nodes carry their `data-omni-id`.
+    pub ids: bool,
+    /// The revision to write as `data-rev` on a node, if the doc has one.
+    pub revisions: Option<&'a dyn Fn(NodeId) -> Option<u64>>,
+    /// Print the content of this node only, leaving out the nodes inside it
+    /// and its own ID.
+    pub own: Option<usize>,
+}
+
+impl Print<'_> {
+    pub const PLAIN: Print<'static> = Print {
+        ids: true,
+        revisions: None,
+        own: None,
+    };
+    pub const WITHOUT_IDS: Print<'static> = Print {
+        ids: false,
+        revisions: None,
+        own: None,
+    };
+}
+
+fn describe(element: &Element) -> String {
+    format!("<{}>", element.name)
+}
+
+fn write_attr(name: &str, value: &str, out: &mut String) {
+    out.push(' ');
+    out.push_str(name);
+    out.push_str("=\"");
+    for c in value.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '\u{00A0}' => out.push_str("&nbsp;"),
+            '"' => out.push_str("&quot;"),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+}
+
+fn escape_text(text: &str, out: &mut String) {
+    for c in text.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '\u{00A0}' => out.push_str("&nbsp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            c => out.push(c),
+        }
+    }
+}
+
+/// An element as the parser read it.
+fn read_element(name: &QualName, attributes: &[html5ever::Attribute]) -> Element {
+    let ns = if name.ns == ns!(svg) {
+        Ns::Svg
+    } else if name.ns == ns!(mathml) {
+        Ns::MathMl
+    } else {
+        Ns::Html
+    };
+    let mut attrs = Vec::new();
+    let mut claimed = None;
+    let mut claimed_rev = None;
+    for attribute in attributes {
+        let local = attribute.name.local.to_string();
+        let printed = if attribute.name.ns == ns!() {
+            local
+        } else if attribute.name.ns == ns!(xlink) {
+            format!("xlink:{local}")
+        } else if attribute.name.ns == ns!(xml) {
+            format!("xml:{local}")
+        } else if attribute.name.ns == ns!(xmlns) {
+            if local == "xmlns" {
+                local
+            } else {
+                format!("xmlns:{local}")
+            }
+        } else {
+            local
+        };
+        match printed.as_str() {
+            ID_ATTRIBUTE => claimed = Some(attribute.value.to_string()),
+            REV_ATTRIBUTE => claimed_rev = Some(attribute.value.to_string()),
+            _ => attrs.push((printed, attribute.value.to_string())),
+        }
+    }
+    Element {
+        name: name.local.to_string(),
+        ns,
+        attrs,
+        id: None,
+        claimed,
+        claimed_rev,
+        rev: None,
     }
 }

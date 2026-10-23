@@ -10,8 +10,9 @@
 //! it, and a moved node goes after a sibling that the mainline left in place,
 //! so that a reorder on each side keeps both.
 
-use super::{EditDoc, MAX_DEPTH, Node, can_hold, longest_increasing};
+use super::{EditDoc, Meta, longest_increasing};
 use crate::design::NodeId;
+use crate::html_doc::Kind;
 use std::collections::{HashMap, HashSet};
 
 /// What a rebase made.
@@ -177,11 +178,9 @@ impl EditDoc {
 
         let mut doc = mainline.clone();
         for id in &t.order {
-            if mine.content.contains(id) && !conflicts.contains(id) {
-                if let Some(node) = doc.nodes.get_mut(id) {
-                    node.block = changes.nodes[id].block.clone();
-                    node.rev += 1;
-                }
+            if mine.content.contains(id) && !conflicts.contains(id) && doc.nodes.contains_key(id) {
+                doc.adopt_content(changes, *id);
+                doc.nodes.get_mut(id).expect("the node is in the doc").rev += 1;
             }
         }
 
@@ -244,15 +243,16 @@ impl EditDoc {
         // node is judged after the nodes under it.
         for id in order.iter().rev() {
             let stays = |children: &[NodeId]| children.iter().any(|child| !gone.contains(child));
-            if gone.contains(id) && stays(&self.nodes[id].children) {
+            if gone.contains(id) && stays(&self.sibling_ids(Some(*id))) {
                 gone.remove(id);
                 conflicts.insert(*id);
             }
         }
         for id in &order {
             if gone.contains(id) && self.nodes.contains_key(id) {
+                let removed = self.subtree(*id);
                 self.detach(*id);
-                for removed in self.subtree(*id) {
+                for removed in removed {
                     self.nodes.remove(&removed);
                 }
             }
@@ -264,40 +264,109 @@ impl EditDoc {
     /// that is here and can hold it, else at the top level. `false` when it
     /// finds no place.
     fn replay_added(&mut self, changes: &EditDoc, t: &Shape, id: NodeId) -> bool {
-        let block = changes.nodes[&id].block.clone();
         let mut candidate = t.parent[&id];
         loop {
             if candidate.is_none_or(|parent| self.nodes.contains_key(&parent))
-                && can_hold(self.kind_of(candidate), block.kind())
-                && self.level(candidate) < MAX_DEPTH
+                && self.add_shell(changes, t, id, candidate)
             {
-                break;
+                return true;
             }
             match candidate {
                 Some(parent) => candidate = t.parent[&parent],
                 None => return false,
             }
         }
-        let after = self.preceding(changes, t, id, candidate, &|_| true);
-        let (at, key) = self.place(candidate, after);
+    }
+
+    /// Adds the content of a node of the change set, without the nodes in it,
+    /// under `parent`. `false` when the HTML parser would not read it back
+    /// there.
+    fn add_shell(
+        &mut self,
+        changes: &EditDoc,
+        t: &Shape,
+        id: NodeId,
+        parent: Option<NodeId>,
+    ) -> bool {
+        let after = self.preceding(changes, t, id, parent, &|_| true);
+        let (holder, at) = self.locate(parent, after);
+        let key = self.key_for(parent, after);
+        let shell = self
+            .tree
+            .copy_from(&changes.tree, changes.nodes[&id].item, true);
+        for ix in self.tree.subtree(shell) {
+            if matches!(self.tree.items[ix].kind, Kind::Slot(_)) {
+                self.tree.detach(ix);
+            }
+        }
+        self.tree.attach(holder, at, shell);
+        if self.reads_back(shell).is_err() {
+            self.tree.detach(shell);
+            return false;
+        }
         self.nodes.insert(
             id,
-            Node {
-                block,
-                parent: candidate,
-                key,
+            Meta {
+                item: shell,
                 rev: 1,
-                children: Vec::new(),
+                key,
             },
         );
-        self.siblings_mut(candidate).insert(at, id);
         true
+    }
+
+    /// Gives a node the content it has in the change set's doc: its element
+    /// and what is inside it outside the nodes in it. The nodes that are in it
+    /// stay where the shell of the change set has them, and those the shell
+    /// has no place for go at its end.
+    fn adopt_content(&mut self, changes: &EditDoc, id: NodeId) {
+        let old = self.nodes[&id].item;
+        let shell = self
+            .tree
+            .copy_from(&changes.tree, changes.nodes[&id].item, true);
+        let kids: Vec<(NodeId, usize)> = self
+            .ided_children(old)
+            .into_iter()
+            .filter_map(|ix| self.tree.id_of(ix).map(|child| (child, ix)))
+            .collect();
+        let mut placed = HashSet::new();
+        for ix in self.tree.subtree(shell) {
+            let Kind::Slot(child) = &self.tree.items[ix].kind else {
+                continue;
+            };
+            let child = *child;
+            let holder = self.tree.items[ix].parent.expect("a slot is in the shell");
+            let at = self.tree.position(ix);
+            self.tree.detach(ix);
+            if let Some((_, kid)) = kids.iter().find(|(other, _)| *other == child) {
+                if placed.insert(child) {
+                    self.tree.detach(*kid);
+                    self.tree.attach(holder, at, *kid);
+                }
+            }
+        }
+        for (child, kid) in &kids {
+            if !placed.contains(child) {
+                self.tree.detach(*kid);
+                let at = self.tree.items[shell].children.len();
+                self.tree.attach(shell, at, *kid);
+            }
+        }
+        let holder = self.tree.items[old].parent.expect("a node has a holder");
+        let at = self.tree.position(old);
+        self.tree.detach(old);
+        self.tree.attach(holder, at, shell);
+        self.nodes
+            .get_mut(&id)
+            .expect("the node is in the doc")
+            .item = shell;
     }
 
     /// Moves a node the change set moved to the place it has there, after the
     /// nearest of its preceding siblings there that is `settled`. `false` when
     /// that place is not possible here: its parent is gone, the move would put
-    /// the node under itself, or the parent cannot hold it.
+    /// the node under itself, or the HTML parser would not read the node back
+    /// there.
     fn replay_moved(
         &mut self,
         changes: &EditDoc,
@@ -314,19 +383,22 @@ impl EditDoc {
             if ancestor == id {
                 return false;
             }
-            above = self.nodes[&ancestor].parent;
+            above = self.parent_of(self.nodes[&ancestor].item);
         }
-        if !can_hold(self.kind_of(parent), self.nodes[&id].block.kind())
-            || self.level(parent) + self.height(id) > MAX_DEPTH
-        {
-            return false;
-        }
+        let item = self.nodes[&id].item;
+        let old_holder = self.tree.items[item].parent.expect("a node has a holder");
+        let old_at = self.tree.position(item);
         self.detach(id);
         let after = self.preceding(changes, t, id, parent, settled);
-        let (at, key) = self.place(parent, after);
-        self.siblings_mut(parent).insert(at, id);
+        let (holder, at) = self.locate(parent, after);
+        let key = self.key_for(parent, after);
+        self.tree.attach(holder, at, item);
+        if self.reads_back(item).is_err() {
+            self.tree.detach(item);
+            self.tree.attach(old_holder, old_at, item);
+            return false;
+        }
         let node = self.nodes.get_mut(&id).expect("the node is in the doc");
-        node.parent = parent;
         node.key = key;
         node.rev += 1;
         true
@@ -352,14 +424,14 @@ impl EditDoc {
                 && self
                     .nodes
                     .get(sibling)
-                    .is_some_and(|node| node.parent == parent)
+                    .is_some_and(|node| self.parent_of(node.item) == parent)
         })
     }
 
     /// Takes a node out of its parent's children; the node stays in the doc.
     fn detach(&mut self, id: NodeId) {
-        let parent = self.nodes[&id].parent;
-        self.siblings_mut(parent).retain(|sibling| *sibling != id);
+        let item = self.nodes[&id].item;
+        self.tree.detach(item);
     }
 }
 
@@ -379,7 +451,7 @@ mod tests {
     fn paragraphs(items: &[(&str, &str)]) -> EditDoc {
         doc(&items
             .iter()
-            .map(|(id, text)| format!("<p data-node-id=\"{id}\">{text}</p>"))
+            .map(|(id, text)| format!("<p data-omni-id=\"{id}\">{text}</p>"))
             .collect::<String>())
     }
 
@@ -485,10 +557,10 @@ mod tests {
     fn a_removed_section_stays_when_the_mainline_added_to_it() {
         let section = |children: &str| {
             doc(&format!(
-                "<section data-node-id=\"s0000000\">{children}</section>"
+                "<section data-omni-id=\"s0000000\">{children}</section>"
             ))
         };
-        let child = |id: &str| format!("<p data-node-id=\"{id}\">{id}</p>");
+        let child = |id: &str| format!("<p data-omni-id=\"{id}\">{id}</p>");
         let base = section(&child("a0000000"));
         let mainline = section(&format!("{}{}", child("a0000000"), child("b0000000")));
         let changes = doc("");
@@ -501,14 +573,14 @@ mod tests {
     #[test]
     fn a_removed_section_stays_when_the_mainline_moved_a_node_into_it() {
         let base = doc(concat!(
-            "<section data-node-id=\"s0000000\"><p data-node-id=\"a0000000\">A</p></section>",
-            "<p data-node-id=\"b0000000\">B</p>"
+            "<section data-omni-id=\"s0000000\"><p data-omni-id=\"a0000000\">A</p></section>",
+            "<p data-omni-id=\"b0000000\">B</p>"
         ));
         let mainline = doc(concat!(
-            "<section data-node-id=\"s0000000\"><p data-node-id=\"a0000000\">A</p>",
-            "<p data-node-id=\"b0000000\">B</p></section>"
+            "<section data-omni-id=\"s0000000\"><p data-omni-id=\"a0000000\">A</p>",
+            "<p data-omni-id=\"b0000000\">B</p></section>"
         ));
-        let changes = doc("<p data-node-id=\"b0000000\">B</p>");
+        let changes = doc("<p data-omni-id=\"b0000000\">B</p>");
         let rebased = EditDoc::rebase(&base, &mainline, &changes);
         assert_eq!(rebased.conflicts, [id("s0000000")]);
         assert_eq!(order(&rebased.doc), ["s0000000", "b0000000"]);
@@ -517,11 +589,11 @@ mod tests {
     #[test]
     fn a_node_added_under_a_section_the_mainline_removed_goes_up_a_level() {
         let section =
-            doc("<section data-node-id=\"s0000000\"><p data-node-id=\"a0000000\">A</p></section>");
+            doc("<section data-omni-id=\"s0000000\"><p data-omni-id=\"a0000000\">A</p></section>");
         let mainline = doc("");
         let changes = doc(concat!(
-            "<section data-node-id=\"s0000000\"><p data-node-id=\"a0000000\">A</p>",
-            "<p data-node-id=\"n0000000\">New</p></section>"
+            "<section data-omni-id=\"s0000000\"><p data-omni-id=\"a0000000\">A</p>",
+            "<p data-omni-id=\"n0000000\">New</p></section>"
         ));
         let rebased = EditDoc::rebase(&section, &mainline, &changes);
         assert!(rebased.conflicts.is_empty());

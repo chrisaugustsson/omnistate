@@ -53,7 +53,7 @@ const CONFLICT_COLUMNS: &str = "id::text, changeset_id::text, doc_id::text, node
 #[derive(Serialize, ToSchema)]
 pub struct ConflictSide {
     pub version_id: String,
-    /// The node and what is inside it as HTML with `data-node-id`; `null` when
+    /// The node and what is inside it as HTML with `data-omni-id`; `null` when
     /// this side removed the node.
     pub html: Option<String>,
 }

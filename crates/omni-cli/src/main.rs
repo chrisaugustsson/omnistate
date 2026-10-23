@@ -75,7 +75,7 @@ Usage:
   omni doc open <doc> --changeset <id>
                                       make (or reuse) the change set's draft of a doc
   omni doc read <doc> [--changeset <id> | --version <v>]
-                                      print the doc as HTML with data-node-id (data-rev too
+                                      print the doc as HTML with data-omni-id (data-rev too
                                       for a draft); without options, the doc's head (a
                                       design's tags)
   omni doc show <doc>                 show the doc's metadata, mainline version, drafts, claims

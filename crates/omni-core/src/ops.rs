@@ -1,14 +1,15 @@
 //! The operation engine: one edit engine for every doc type, so that edits,
 //! conflicts and history behave the same everywhere (docs/formats/operations.md).
 //!
-//! An [`EditDoc`] is a doc under edit: its blocks, each with a revision, in an
+//! An [`EditDoc`] is a doc under edit: its nodes, each with a revision, in an
 //! order kept by fractional indexes. [`EditDoc::apply`] runs a batch of
-//! [`Operation`]s, all or nothing, and validates and cleans the content of
-//! every operation with the doc type's rules (for HTML docs, those of
-//! [`crate::html_doc`]).
+//! [`Operation`]s, all or nothing. For HTML docs the nodes are the block-level
+//! elements of free-form HTML ([`crate::html_doc`]): the content of an
+//! operation is any HTML, and an operation whose result the HTML parser would
+//! read differently is refused, so a doc always reads back as the same tree.
 
 use crate::design::NodeId;
-use crate::html_doc::{Block, BlockKind, HtmlDoc, MAX_DEPTH, ParseError, can_hold, describe};
+use crate::html_doc::{Context, Kind, MAX_DEPTH, Ns, ParseError, Print, Tree};
 use serde::{Deserialize, Deserializer};
 use serde_json::{Map, Value};
 use std::collections::{HashMap, HashSet};
@@ -75,7 +76,7 @@ pub struct OpResult {
     /// The node's revision after the operation. A deleted node keeps the
     /// revision it had.
     pub revision: u64,
-    /// The IDs the engine assigned to new nodes, in document order.
+    /// The IDs of the new nodes, in document order.
     pub created: Vec<NodeId>,
     /// The nodes the operation removed from the doc, in document order.
     pub removed: Vec<NodeId>,
@@ -97,7 +98,7 @@ pub struct Conflict {
     pub expected: u64,
     /// The revision the node has now.
     pub current_revision: u64,
-    /// The node's current state, as HTML with `data-node-id`.
+    /// The node's current state, as HTML with `data-omni-id`.
     pub current_html: String,
 }
 
@@ -130,97 +131,140 @@ fn invalid(index: usize, message: impl Into<String>) -> ApplyError {
     }
 }
 
-/// A node of a doc under edit: its block without the blocks inside it, which
-/// are the node's `children`, in the order of their sort keys.
+/// What the doc knows of a node beyond the element: where it is in the tree,
+/// its revision and the fractional index that orders it among its siblings.
 #[derive(Clone, Debug)]
-struct Node {
-    block: Block,
-    parent: Option<NodeId>,
-    key: String,
+struct Meta {
+    item: usize,
     rev: u64,
-    children: Vec<NodeId>,
+    key: String,
 }
 
 /// A node of a doc as a saved version indexes it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IndexedNode {
     pub id: NodeId,
-    /// The block's type: `section`, `heading`, `paragraph` and so on.
+    /// The node's type: `section`, `heading`, `paragraph` and so on.
     pub kind: &'static str,
     /// `None` for a top-level node.
     pub parent: Option<NodeId>,
-    /// The node's own content (its type, properties and text), which does not
-    /// change when a child or the node's place does. The fingerprint is a hash
-    /// of this text.
+    /// The node's own content (its tag, attributes and what is inside it
+    /// outside the nodes in it), which does not change when a child or the
+    /// node's place does. The fingerprint is a hash of this text.
     pub content: String,
 }
 
-/// A doc under edit.
+/// A doc under edit: free-form HTML whose block-level elements are nodes. A
+/// node's parent is the nearest node above it; the elements between (a
+/// `<tbody>`, a `<span>`) belong to the content.
 #[derive(Clone, Debug)]
 pub struct EditDoc {
-    nodes: HashMap<NodeId, Node>,
-    top: Vec<NodeId>,
+    tree: Tree,
+    nodes: HashMap<NodeId, Meta>,
 }
 
 impl EditDoc {
-    /// Starts from HTML in which every block carries a `data-node-id`. A node
-    /// starts at the revision of its `data-rev` (what `to_html_with_revisions`
-    /// writes), else at revision 1.
+    /// Starts from HTML in which every block-level element carries a
+    /// `data-omni-id`. A node starts at the revision of its `data-rev` (what
+    /// `to_html_with_revisions` writes), else at revision 1.
     pub fn from_html(html: &str) -> Result<EditDoc, ParseError> {
-        let (parsed, revisions) = HtmlDoc::parse_identified(html)?;
+        let mut tree = Tree::parse_fragment(html, Context::BODY)?;
+        tree.identify_strict()?;
         let mut doc = EditDoc {
+            tree,
             nodes: HashMap::new(),
-            top: Vec::new(),
         };
-        let mut keep_id = |block: &mut Block| {
-            Ok(block
-                .id()
-                .and_then(|id| revisions.get(id))
-                .copied()
-                .unwrap_or(1))
-        };
-        doc.top = doc
-            .graft_all(parsed.blocks().to_vec(), None, &mut keep_id)
-            .expect("a parsed doc has an ID on every block");
+        for ix in doc.tree.subtree(0) {
+            if let Some(element) = doc.tree.element(ix) {
+                if let Some(id) = element.id {
+                    let rev = element.rev.unwrap_or(1);
+                    doc.nodes.insert(
+                        id,
+                        Meta {
+                            item: ix,
+                            rev,
+                            key: String::new(),
+                        },
+                    );
+                }
+            }
+        }
+        doc.rekey_groups(0);
         Ok(doc)
     }
 
-    /// The doc as HTML, with `data-node-id` on every block.
+    /// The doc as HTML, with `data-omni-id` on every block-level element.
     pub fn to_html(&self) -> String {
-        HtmlDoc::from_blocks(self.top.iter().map(|id| self.block(*id)).collect()).to_html()
+        self.tree.html(0, &Print::PLAIN)
     }
 
-    /// The doc as HTML, with `data-node-id` and `data-rev` (the node's
-    /// revision) on every block: what an agent reads before it edits.
+    /// The doc as HTML, with `data-omni-id` and `data-rev` (the node's
+    /// revision) on every block-level element: what an agent reads before it
+    /// edits.
     pub fn to_html_with_revisions(&self) -> String {
-        let revision = |id: &NodeId| self.revision(*id);
-        HtmlDoc::from_blocks(self.top.iter().map(|id| self.block(*id)).collect())
-            .to_html_with(Some(&revision))
+        let revision = |id: NodeId| self.revision(id);
+        self.tree.html(
+            0,
+            &Print {
+                ids: true,
+                revisions: Some(&revision),
+                own: None,
+            },
+        )
     }
 
     /// Every node of the doc in document order, as the node index of a saved
     /// version holds it.
     pub fn index(&self) -> Vec<IndexedNode> {
         let mut nodes = Vec::with_capacity(self.nodes.len());
-        let mut pending: Vec<NodeId> = self.top.iter().rev().copied().collect();
-        while let Some(id) = pending.pop() {
-            let node = &self.nodes[&id];
-            nodes.push(IndexedNode {
-                id,
-                kind: node.block.type_name(),
-                parent: node.parent,
-                content: node.block.own_content(),
-            });
-            pending.extend(node.children.iter().rev().copied());
+        let mut stack: Vec<(usize, Option<NodeId>)> = self.tree.items[0]
+            .children
+            .iter()
+            .rev()
+            .map(|child| (*child, None))
+            .collect();
+        while let Some((ix, parent)) = stack.pop() {
+            let mut below = parent;
+            if let Some(element) = self.tree.element(ix) {
+                if let Some(id) = element.id {
+                    nodes.push(IndexedNode {
+                        id,
+                        kind: element.kind_name(),
+                        parent,
+                        content: self.own_content(ix),
+                    });
+                    below = Some(id);
+                }
+            }
+            stack.extend(
+                self.tree.items[ix]
+                    .children
+                    .iter()
+                    .rev()
+                    .map(|child| (*child, below)),
+            );
         }
         nodes
+    }
+
+    /// The content of the node at `ix`: its element and what is inside it
+    /// outside the nodes in it.
+    fn own_content(&self, ix: usize) -> String {
+        self.tree.html(
+            ix,
+            &Print {
+                ids: false,
+                revisions: None,
+                own: Some(ix),
+            },
+        )
     }
 
     /// One node and its descendants as HTML.
     pub fn node_html(&self, id: NodeId) -> Option<String> {
         self.nodes
-            .contains_key(&id)
-            .then(|| self.block(id).to_html())
+            .get(&id)
+            .map(|node| self.tree.html(node.item, &Print::PLAIN))
     }
 
     pub fn contains(&self, id: NodeId) -> bool {
@@ -234,23 +278,31 @@ impl EditDoc {
     /// The children of a node in order, or the top-level nodes for `None`.
     /// `None` when the node is not in the doc.
     pub fn children(&self, parent: Option<NodeId>) -> Option<Vec<NodeId>> {
-        match parent {
-            None => Some(self.top.clone()),
-            Some(id) => self.nodes.get(&id).map(|node| node.children.clone()),
-        }
+        let container = match parent {
+            None => 0,
+            Some(id) => self.nodes.get(&id)?.item,
+        };
+        Some(
+            self.ided_children(container)
+                .into_iter()
+                .filter_map(|ix| self.tree.id_of(ix))
+                .collect(),
+        )
     }
 
     /// The parent of a node: `Some(None)` for a top-level node, `None` when the
     /// node is not in the doc.
     pub fn parent(&self, id: NodeId) -> Option<Option<NodeId>> {
-        self.nodes.get(&id).map(|node| node.parent)
+        self.nodes.get(&id).map(|node| self.parent_of(node.item))
     }
 
     /// Whether the node is a section, which an agent may claim (US-023).
     pub fn is_section(&self, id: NodeId) -> bool {
-        self.nodes
-            .get(&id)
-            .is_some_and(|node| node.block.kind() == BlockKind::Section)
+        self.nodes.get(&id).is_some_and(|node| {
+            self.tree
+                .element(node.item)
+                .is_some_and(|element| element.name == "section")
+        })
     }
 
     /// The fractional index that orders a node among its siblings.
@@ -278,83 +330,112 @@ impl EditDoc {
 
     // --- Reading the tree ---
 
-    /// A node and its descendants as a block tree.
-    fn block(&self, id: NodeId) -> Block {
-        let node = &self.nodes[&id];
-        let mut block = node.block.clone();
-        block.set_children(
-            node.children
-                .iter()
-                .map(|child| self.block(*child))
-                .collect(),
-        );
-        block
+    /// The nearest node above an item: `None` at the top level.
+    fn parent_of(&self, ix: usize) -> Option<NodeId> {
+        let mut at = self.tree.items[ix].parent;
+        while let Some(parent) = at {
+            if let Some(id) = self.tree.id_of(parent) {
+                return Some(id);
+            }
+            at = self.tree.items[parent].parent;
+        }
+        None
     }
 
-    fn siblings(&self, parent: Option<NodeId>) -> &Vec<NodeId> {
-        match parent {
-            None => &self.top,
-            Some(id) => &self.nodes[&id].children,
+    /// The nodes directly inside an item (the root for the top level), in
+    /// order, as items: those with no other node between them and the item.
+    fn ided_children(&self, container: usize) -> Vec<usize> {
+        let mut found = Vec::new();
+        let mut stack: Vec<usize> = self.tree.items[container]
+            .children
+            .iter()
+            .rev()
+            .copied()
+            .collect();
+        while let Some(ix) = stack.pop() {
+            if self.tree.id_of(ix).is_some() {
+                found.push(ix);
+            } else {
+                stack.extend(self.tree.items[ix].children.iter().rev().copied());
+            }
+        }
+        found
+    }
+
+    fn sibling_ids(&self, parent: Option<NodeId>) -> Vec<NodeId> {
+        let container = parent.map_or(0, |id| self.nodes[&id].item);
+        self.ided_children(container)
+            .into_iter()
+            .filter_map(|ix| self.tree.id_of(ix))
+            .collect()
+    }
+
+    /// A node and the nodes inside it, in document order.
+    fn subtree(&self, id: NodeId) -> Vec<NodeId> {
+        self.tree
+            .subtree(self.nodes[&id].item)
+            .into_iter()
+            .filter_map(|ix| self.tree.id_of(ix))
+            .collect()
+    }
+
+    /// The element a fragment inside an item is parsed in.
+    fn context_of(&self, ix: usize) -> (String, Ns) {
+        match self.tree.element(ix) {
+            Some(element) => (element.name.clone(), element.ns),
+            None => ("body".to_string(), Ns::Html),
         }
     }
 
-    fn siblings_mut(&mut self, parent: Option<NodeId>) -> &mut Vec<NodeId> {
-        match parent {
-            None => &mut self.top,
-            Some(id) => {
-                &mut self
-                    .nodes
-                    .get_mut(&id)
-                    .expect("the parent is in the doc")
-                    .children
+    // --- Keys ---
+
+    /// Gives the nodes under every node of the subtree at `top` (and under
+    /// `top`) fresh fractional indexes, in order. `top` itself keeps its own.
+    fn rekey_groups(&mut self, top: usize) {
+        let containers: Vec<usize> = self
+            .tree
+            .subtree(top)
+            .into_iter()
+            .filter(|ix| *ix == top || self.tree.id_of(*ix).is_some())
+            .collect();
+        for container in containers {
+            let kids = self.ided_children(container);
+            let keys = initial_keys(kids.len());
+            for (kid, key) in kids.into_iter().zip(keys) {
+                let id = self.tree.id_of(kid).expect("a child is a node");
+                self.nodes.get_mut(&id).expect("a node has its meta").key = key;
             }
         }
     }
 
-    fn kind_of(&self, id: Option<NodeId>) -> Option<BlockKind> {
-        id.map(|id| self.nodes[&id].block.kind())
-    }
-
-    /// How many levels deep a node sits: 1 for a top-level node, 0 for `None`.
-    fn level(&self, id: Option<NodeId>) -> usize {
-        let mut level = 0;
-        let mut at = id;
-        while let Some(id) = at {
-            level += 1;
-            at = self.nodes[&id].parent;
-        }
-        level
-    }
-
-    /// How many levels a node and its descendants take up: 1 for a leaf.
-    fn height(&self, id: NodeId) -> usize {
-        1 + self.nodes[&id]
-            .children
-            .iter()
-            .map(|child| self.height(*child))
-            .max()
-            .unwrap_or(0)
-    }
-
-    /// A node and its descendants, in document order.
-    fn subtree(&self, id: NodeId) -> Vec<NodeId> {
-        let mut ids = vec![id];
-        for child in &self.nodes[&id].children {
-            ids.extend(self.subtree(*child));
-        }
-        ids
+    /// The fractional index for a node that goes right after `after` among
+    /// the children of `parent`.
+    fn key_for(&self, parent: Option<NodeId>, after: Option<NodeId>) -> String {
+        let siblings = self.sibling_ids(parent);
+        let at = after.map_or(0, |after| {
+            siblings
+                .iter()
+                .position(|id| *id == after)
+                .expect("after is a child")
+                + 1
+        });
+        let before = at
+            .checked_sub(1)
+            .map(|i| self.nodes[&siblings[i]].key.as_str());
+        let next = siblings.get(at).map(|id| self.nodes[id].key.as_str());
+        between(before.unwrap_or(""), next)
     }
 
     // --- Checking operations ---
 
-    fn lookup(&self, index: usize, id: NodeId, role: &str) -> Result<&Node, ApplyError> {
+    fn lookup(&self, index: usize, id: NodeId, role: &str) -> Result<&Meta, ApplyError> {
         self.nodes
             .get(&id)
             .ok_or_else(|| invalid(index, format!("{role} `{id}` is not in the doc")))
     }
 
     /// The node an operation changes, which must be at revision `rev`.
-    fn expect_rev(&self, index: usize, id: NodeId, rev: u64) -> Result<&Node, ApplyError> {
+    fn expect_rev(&self, index: usize, id: NodeId, rev: u64) -> Result<&Meta, ApplyError> {
         let node = self.lookup(index, id, "the node")?;
         if node.rev != rev {
             return Err(ApplyError::Conflict(Conflict {
@@ -362,7 +443,7 @@ impl EditDoc {
                 node: id,
                 expected: rev,
                 current_revision: node.rev,
-                current_html: self.block(id).to_html(),
+                current_html: self.tree.html(node.item, &Print::PLAIN),
             }));
         }
         Ok(node)
@@ -380,8 +461,8 @@ impl EditDoc {
             self.lookup(index, parent, "the parent")?;
         }
         if let Some(after) = after {
-            self.lookup(index, after, "the node to go after")?;
-            if self.nodes[&after].parent != parent {
+            let node = self.lookup(index, after, "the node to go after")?;
+            if self.parent_of(node.item) != parent {
                 let place = parent.map_or("the top level".to_string(), |id| format!("`{id}`"));
                 return Err(invalid(
                     index,
@@ -392,22 +473,112 @@ impl EditDoc {
         Ok(())
     }
 
-    /// The place in the children of `parent` right after `after` (first when
-    /// `None`), as the index and the fractional index that goes there.
-    fn place(&self, parent: Option<NodeId>, after: Option<NodeId>) -> (usize, String) {
-        let siblings = self.siblings(parent);
-        let at = after.map_or(0, |after| {
-            siblings
-                .iter()
-                .position(|id| *id == after)
-                .expect("after is a child")
-                + 1
-        });
-        let before = at
-            .checked_sub(1)
-            .map(|i| self.nodes[&siblings[i]].key.as_str());
-        let next = siblings.get(at).map(|id| self.nodes[id].key.as_str());
-        (at, between(before.unwrap_or(""), next))
+    /// Where a new child of `parent` goes right after `after` (first when
+    /// `None`), as the item that holds it and its place among that item's
+    /// children. After a sibling it goes right behind it; first, it goes in
+    /// front of the first node inside the parent, else at the end of the
+    /// parent.
+    fn locate(&self, parent: Option<NodeId>, after: Option<NodeId>) -> (usize, usize) {
+        if let Some(after) = after {
+            let item = self.nodes[&after].item;
+            let holder = self.tree.items[item].parent.expect("a node has a holder");
+            return (holder, self.tree.position(item) + 1);
+        }
+        let container = parent.map_or(0, |id| self.nodes[&id].item);
+        match self.ided_children(container).first() {
+            Some(first) => {
+                let holder = self.tree.items[*first].parent.expect("a node has a holder");
+                (holder, self.tree.position(*first))
+            }
+            None => (container, self.tree.items[container].children.len()),
+        }
+    }
+
+    /// Checks that the item, put where it is now, reads back as itself: the
+    /// HTML of the item inside the elements above it, parsed by the HTML
+    /// parser, gives that same HTML again. An element the parser would close,
+    /// move or drop there (a `<div>` in a `<p>`, a `<tr>` in a `<section>`)
+    /// is an error.
+    fn reads_back(&self, ix: usize) -> Result<(), String> {
+        let chain = self.tree.ancestors(ix);
+        let tag = |ix: usize| {
+            self.tree
+                .element(ix)
+                .map_or("the content".to_string(), |element| {
+                    format!("<{}>", element.name)
+                })
+        };
+        if chain.len() + self.tree.height(ix) > MAX_DEPTH {
+            return Err(format!(
+                "{} nests elements more than {MAX_DEPTH} levels deep",
+                tag(ix)
+            ));
+        }
+        let holder = self.tree.items[ix].parent.expect("the item is in the doc");
+        if let Some(element) = self.tree.element(ix) {
+            let needs: &[&str] = match (element.ns, element.name.as_str()) {
+                (Ns::Html, "li") => &["ul", "ol", "menu"],
+                (Ns::Html, "tr") => &["table", "thead", "tbody", "tfoot"],
+                (Ns::Html, "td" | "th") => &["tr"],
+                _ => &[],
+            };
+            let held = self
+                .tree
+                .element(holder)
+                .is_some_and(|above| above.ns == Ns::Html && needs.contains(&above.name.as_str()));
+            if !needs.is_empty() && !held {
+                let names: Vec<String> = needs.iter().map(|name| format!("<{name}>")).collect();
+                return Err(format!(
+                    "{} can only go inside {}",
+                    tag(ix),
+                    names.join(", ")
+                ));
+            }
+        }
+        let blocks = self.tree.block_level(&[ix], self.tree.within_svg(holder));
+        let ided: Vec<usize> = self
+            .tree
+            .subtree(ix)
+            .into_iter()
+            .filter(|item| self.tree.id_of(*item).is_some())
+            .collect();
+        if blocks != ided {
+            return Err(format!(
+                "{} holds a node that is not a block-level element where it goes",
+                tag(ix)
+            ));
+        }
+        let mut text = String::new();
+        for above in &chain {
+            let element = self
+                .tree
+                .element(*above)
+                .expect("an ancestor is an element");
+            self.tree
+                .print_open(element, *above, &Print::WITHOUT_IDS, &mut text);
+        }
+        self.tree.print(ix, &Print::WITHOUT_IDS, &mut text);
+        for above in chain.iter().rev() {
+            let element = self
+                .tree
+                .element(*above)
+                .expect("an ancestor is an element");
+            text.push_str("</");
+            text.push_str(&element.name);
+            text.push('>');
+        }
+        let place = chain
+            .last()
+            .map_or("the top level".to_string(), |above| tag(*above));
+        let parsed =
+            Tree::parse_fragment(&text, Context::BODY).map_err(|e| e.message().to_string())?;
+        if parsed.html(0, &Print::WITHOUT_IDS) != text {
+            return Err(format!(
+                "{} cannot go inside {place}: the HTML parser would read the result differently, so the doc would not read back as the same HTML",
+                tag(ix)
+            ));
+        }
+        Ok(())
     }
 
     // --- Applying operations ---
@@ -431,7 +602,7 @@ impl EditDoc {
                 node,
                 rev,
                 properties,
-            } => self.set(index, *node, *rev, properties),
+            } => self.set(index, *node, *rev, properties, new_ids),
             Operation::Move {
                 node,
                 rev,
@@ -440,6 +611,31 @@ impl EditDoc {
             } => self.move_node(index, *node, *rev, *parent, position.after),
             Operation::Delete { node, rev } => self.delete(index, *node, *rev),
         }
+    }
+
+    /// Parses the content of an insert or a replace: one block-level element,
+    /// to go inside the item `holder`.
+    fn parse_content(
+        &self,
+        index: usize,
+        content: &str,
+        holder: usize,
+    ) -> Result<(Tree, usize), ApplyError> {
+        let (name, ns) = self.context_of(holder);
+        let frag = Tree::parse_fragment(content, Context { name: &name, ns })
+            .map_err(|error| invalid(index, error.message()))?;
+        let top = one_element(&frag).map_err(|message| invalid(index, message))?;
+        let element = frag.element(top).expect("one_element finds an element");
+        if !element.is_block_level(self.tree.within_svg(holder)) {
+            return Err(invalid(
+                index,
+                format!(
+                    "<{}> is not a block-level element, so it cannot be a node: insert or replace with a block-level element such as <div>, <p>, <section>, <li> or <tr>",
+                    element.name
+                ),
+            ));
+        }
+        Ok((frag, top))
     }
 
     fn insert(
@@ -451,31 +647,52 @@ impl EditDoc {
         new_ids: &mut dyn FnMut() -> NodeId,
     ) -> Result<OpResult, ApplyError> {
         self.check_place(index, parent, after)?;
-        let block = HtmlDoc::parse_block(content, self.kind_of(parent), self.level(parent))
-            .map_err(|error| invalid(index, error.message()))?;
-        let (at, key) = self.place(parent, after);
-        let mut created = Vec::new();
-        let mut assign = |block: &mut Block| {
-            if let Some(id) = block.id() {
-                return Err(format!(
-                    "inserted content must not carry `data-node-id` (`{id}`): the server assigns the IDs of new nodes"
-                ));
-            }
-            let id = new_ids();
-            block.set_id(id);
-            created.push(id);
-            Ok(1)
+        let (holder, at) = self.locate(parent, after);
+        let (mut frag, top) = self.parse_content(index, content, holder)?;
+        let blocks = {
+            let nodes = &self.nodes;
+            frag.identify(
+                &[top],
+                self.tree.within_svg(holder),
+                &[],
+                None,
+                &|id| !nodes.contains_key(&id),
+                &mut || new_ids(),
+            )
         };
-        let node = self
-            .graft(block, parent, key, &mut assign)
+        let created: Vec<NodeId> = blocks.iter().filter_map(|ix| frag.id_of(*ix)).collect();
+        let key = self.key_for(parent, after);
+        let item = self.tree.copy_from(&frag, top, false);
+        self.tree.attach(holder, at, item);
+        self.register(item);
+        let node = created[0];
+        self.nodes.get_mut(&node).expect("just registered").key = key;
+        self.rekey_groups(item);
+        self.reads_back(item)
             .map_err(|message| invalid(index, message))?;
-        self.siblings_mut(parent).insert(at, node);
         Ok(OpResult {
             node,
             revision: 1,
             created,
             removed: Vec::new(),
         })
+    }
+
+    /// Lists the nodes of the subtree at `top` among the doc's nodes, as new
+    /// ones at revision 1.
+    fn register(&mut self, top: usize) {
+        for ix in self.tree.subtree(top) {
+            if let Some(id) = self.tree.id_of(ix) {
+                self.nodes.insert(
+                    id,
+                    Meta {
+                        item: ix,
+                        rev: 1,
+                        key: String::new(),
+                    },
+                );
+            }
+        }
     }
 
     fn replace(
@@ -486,75 +703,47 @@ impl EditDoc {
         content: &str,
         new_ids: &mut dyn FnMut() -> NodeId,
     ) -> Result<OpResult, ApplyError> {
-        let node = self.expect_rev(index, id, rev)?;
-        let parent = node.parent;
-        let parsed = HtmlDoc::parse_block(content, self.kind_of(parent), self.level(parent))
-            .map_err(|error| invalid(index, error.message()))?;
-        if let Some(root) = parsed.id() {
-            if *root != id {
-                return Err(invalid(
-                    index,
-                    format!(
-                        "the content's `data-node-id` `{root}` is not the replaced node `{id}`: replace keeps the node's ID"
-                    ),
-                ));
-            }
-        }
+        let old_item = self.expect_rev(index, id, rev)?.item;
+        let holder = self.tree.items[old_item]
+            .parent
+            .expect("a node has a holder");
+        let (mut frag, top) = self.parse_content(index, content, holder)?;
         let old_order = self.subtree(id);
         let own: HashSet<NodeId> = old_order[1..].iter().copied().collect();
-        let mut inner = Vec::new();
-        collect_ids(parsed.children(), &mut inner);
-        for kept in inner {
-            if !own.contains(&kept) {
-                let message = if self.nodes.contains_key(&kept) {
-                    format!(
-                        "`{kept}` belongs to another node of the doc: replacing `{id}` may reuse only its own descendants' IDs"
-                    )
-                } else {
-                    format!("`{kept}` is not in the doc: the server assigns the IDs of new nodes")
-                };
-                return Err(invalid(index, message));
-            }
-        }
-
-        // Take the old descendants out; those that the content includes come
-        // back with their revisions.
-        let old: HashMap<NodeId, Node> = old_order[1..]
-            .iter()
-            .map(|old| {
-                (
-                    *old,
-                    self.nodes.remove(old).expect("a descendant is in the doc"),
-                )
-            })
-            .collect();
-        let mut block = parsed;
-        let children = block.take_children();
-        block.set_id(id);
-        let root = self.nodes.get_mut(&id).expect("the node is in the doc");
-        root.block = block;
-        root.rev += 1;
-        let revision = root.rev;
-        let mut created = Vec::new();
-        let mut assign = |block: &mut Block| match block.id() {
-            Some(kept) => {
-                let before = &old[kept];
-                Ok(before.rev + u64::from(before.block != *block))
-            }
-            None => {
-                let id = new_ids();
-                block.set_id(id);
-                created.push(id);
-                Ok(1)
-            }
+        let blocks = {
+            let nodes = &self.nodes;
+            frag.identify(
+                &[top],
+                self.tree.within_svg(holder),
+                &[],
+                Some(id),
+                &|other| own.contains(&other) || !nodes.contains_key(&other),
+                &mut || new_ids(),
+            )
         };
-        let kids = self
-            .graft_all(children, Some(id), &mut assign)
+        let ids: Vec<NodeId> = blocks.iter().filter_map(|ix| frag.id_of(*ix)).collect();
+        let before = self.states_of(ids.iter().filter(|other| own.contains(*other)));
+
+        let new_item = self.tree.copy_from(&frag, top, false);
+        let at = self.tree.position(old_item);
+        self.tree.detach(old_item);
+        self.tree.attach(holder, at, new_item);
+        for gone in &old_order[1..] {
+            self.nodes.remove(gone);
+        }
+        let node = self.nodes.get_mut(&id).expect("the node is in the doc");
+        node.item = new_item;
+        node.rev += 1;
+        let revision = node.rev;
+        self.register_kept(new_item, &before);
+        self.rekey_groups(new_item);
+        self.reads_back(new_item)
             .map_err(|message| invalid(index, message))?;
-        self.nodes
-            .get_mut(&id)
-            .expect("the node is in the doc")
-            .children = kids;
+        let created = ids
+            .into_iter()
+            .skip(1)
+            .filter(|other| !own.contains(other))
+            .collect();
         let removed = old_order
             .into_iter()
             .filter(|old| !self.nodes.contains_key(old))
@@ -567,30 +756,126 @@ impl EditDoc {
         })
     }
 
+    /// The revision and the content of each of `ids`, before an operation
+    /// rebuilds the nodes.
+    fn states_of<'a>(
+        &self,
+        ids: impl Iterator<Item = &'a NodeId>,
+    ) -> HashMap<NodeId, (u64, String)> {
+        ids.map(|id| {
+            let node = &self.nodes[id];
+            (*id, (node.rev, self.own_content(node.item)))
+        })
+        .collect()
+    }
+
+    /// Lists the nodes below `top` among the doc's nodes (not `top`): a node
+    /// that was there before keeps its revision, and gets one more when its
+    /// content changed; a new node starts at revision 1.
+    fn register_kept(&mut self, top: usize, before: &HashMap<NodeId, (u64, String)>) {
+        for ix in self.tree.subtree(top).into_iter().skip(1) {
+            let Some(id) = self.tree.id_of(ix) else {
+                continue;
+            };
+            let rev = match before.get(&id) {
+                Some((rev, content)) => *rev + u64::from(*content != self.own_content(ix)),
+                None => 1,
+            };
+            self.nodes.insert(
+                id,
+                Meta {
+                    item: ix,
+                    rev,
+                    key: String::new(),
+                },
+            );
+        }
+    }
+
     fn set(
         &mut self,
         index: usize,
         id: NodeId,
         rev: u64,
         properties: &Map<String, Value>,
+        new_ids: &mut dyn FnMut() -> NodeId,
     ) -> Result<OpResult, ApplyError> {
-        self.expect_rev(index, id, rev)?;
+        let item = self.expect_rev(index, id, rev)?.item;
         if properties.is_empty() {
             return Err(invalid(index, "set needs at least one property"));
         }
-        let depth = self.level(Some(id)) - 1;
-        let node = self.nodes.get_mut(&id).expect("the node is in the doc");
-        for (name, value) in properties {
-            node.block
-                .set_property(name, value, depth)
-                .map_err(|message| invalid(index, message))?;
+        if let Some(name) = properties.keys().find(|name| *name != "html") {
+            return Err(invalid(
+                index,
+                format!(
+                    "`{name}` is not a property of an element: set takes one property, `html`, the inner HTML of the element"
+                ),
+            ));
         }
+        let Some(html) = properties["html"].as_str() else {
+            return Err(invalid(
+                index,
+                "`html` must be text: the inner HTML of the element",
+            ));
+        };
+        let element = self.tree.element(item).expect("a node is an element");
+        let (name, ns, void) = (element.name.clone(), element.ns, element.is_void());
+        if void && !html.trim().is_empty() {
+            return Err(invalid(
+                index,
+                format!("<{name}> holds nothing, so it has no inner HTML to set"),
+            ));
+        }
+        let mut frag = Tree::parse_fragment(html, Context { name: &name, ns })
+            .map_err(|error| invalid(index, error.message()))?;
+        let roots = frag.items[0].children.clone();
+        let old_order = self.subtree(id);
+        let own: HashSet<NodeId> = old_order[1..].iter().copied().collect();
+        let blocks = {
+            let nodes = &self.nodes;
+            frag.identify(
+                &roots,
+                self.tree.within_svg(item),
+                &[id],
+                None,
+                &|other| own.contains(&other) || !nodes.contains_key(&other),
+                &mut || new_ids(),
+            )
+        };
+        let ids: Vec<NodeId> = blocks.iter().filter_map(|ix| frag.id_of(*ix)).collect();
+        let before = self.states_of(ids.iter().filter(|other| own.contains(*other)));
+
+        for child in self.tree.items[item].children.clone() {
+            self.tree.detach(child);
+        }
+        for gone in &old_order[1..] {
+            self.nodes.remove(gone);
+        }
+        for root in roots {
+            let copy = self.tree.copy_from(&frag, root, false);
+            let at = self.tree.items[item].children.len();
+            self.tree.attach(item, at, copy);
+        }
+        self.register_kept(item, &before);
+        self.rekey_groups(item);
+        let node = self.nodes.get_mut(&id).expect("the node is in the doc");
         node.rev += 1;
+        let revision = node.rev;
+        self.reads_back(item)
+            .map_err(|message| invalid(index, message))?;
+        let created = ids
+            .into_iter()
+            .filter(|other| !own.contains(other))
+            .collect();
+        let removed = old_order
+            .into_iter()
+            .filter(|old| !self.nodes.contains_key(old))
+            .collect();
         Ok(OpResult {
             node: id,
-            revision: node.rev,
-            created: Vec::new(),
-            removed: Vec::new(),
+            revision,
+            created,
+            removed,
         })
     }
 
@@ -602,8 +887,7 @@ impl EditDoc {
         parent: Option<NodeId>,
         after: Option<NodeId>,
     ) -> Result<OpResult, ApplyError> {
-        let node = self.expect_rev(index, id, rev)?;
-        let (old_parent, kind) = (node.parent, node.block.kind());
+        let item = self.expect_rev(index, id, rev)?.item;
         self.check_place(index, parent, after)?;
         if after == Some(id) {
             return Err(invalid(index, format!("`{id}` cannot go after itself")));
@@ -616,30 +900,15 @@ impl EditDoc {
                     format!("`{id}` cannot move into itself or one of its descendants"),
                 ));
             }
-            above = self.nodes[&ancestor].parent;
+            above = self.parent_of(self.nodes[&ancestor].item);
         }
-        let parent_kind = self.kind_of(parent);
-        if !can_hold(parent_kind, kind) {
-            let place = parent_kind.map_or("the top level".to_string(), |kind| {
-                describe(kind).to_string()
-            });
-            return Err(invalid(
-                index,
-                format!("`{id}` is {} and cannot go inside {place}", describe(kind)),
-            ));
-        }
-        if self.level(parent) + self.height(id) > MAX_DEPTH {
-            return Err(invalid(
-                index,
-                format!("moving `{id}` there nests blocks more than {MAX_DEPTH} levels deep"),
-            ));
-        }
-        self.siblings_mut(old_parent)
-            .retain(|sibling| *sibling != id);
-        let (at, key) = self.place(parent, after);
-        self.siblings_mut(parent).insert(at, id);
+        self.tree.detach(item);
+        let (holder, at) = self.locate(parent, after);
+        let key = self.key_for(parent, after);
+        self.tree.attach(holder, at, item);
+        self.reads_back(item)
+            .map_err(|message| invalid(index, message))?;
         let node = self.nodes.get_mut(&id).expect("the node is in the doc");
-        node.parent = parent;
         node.key = key;
         node.rev += 1;
         Ok(OpResult {
@@ -651,13 +920,12 @@ impl EditDoc {
     }
 
     fn delete(&mut self, index: usize, id: NodeId, rev: u64) -> Result<OpResult, ApplyError> {
-        let node = self.expect_rev(index, id, rev)?;
-        let parent = node.parent;
+        let item = self.expect_rev(index, id, rev)?.item;
         let removed = self.subtree(id);
         for gone in &removed {
             self.nodes.remove(gone);
         }
-        self.siblings_mut(parent).retain(|sibling| *sibling != id);
+        self.tree.detach(item);
         Ok(OpResult {
             node: id,
             revision: rev,
@@ -665,64 +933,33 @@ impl EditDoc {
             removed,
         })
     }
-
-    // --- Building the tree ---
-
-    /// Puts `blocks` into the doc as the children of `parent`, with fresh
-    /// fractional indexes in order, and returns their IDs.
-    fn graft_all(
-        &mut self,
-        blocks: Vec<Block>,
-        parent: Option<NodeId>,
-        assign: &mut dyn FnMut(&mut Block) -> Result<u64, String>,
-    ) -> Result<Vec<NodeId>, String> {
-        let keys = initial_keys(blocks.len());
-        blocks
-            .into_iter()
-            .zip(keys)
-            .map(|(block, key)| self.graft(block, parent, key, assign))
-            .collect()
-    }
-
-    /// Puts a block and the blocks inside it into the doc as nodes, the block
-    /// under `parent` with the sort key `key` (the caller adds it to the
-    /// parent's children). `assign` gives each block, in document order, its ID
-    /// if it has none, and says its revision.
-    fn graft(
-        &mut self,
-        mut block: Block,
-        parent: Option<NodeId>,
-        key: String,
-        assign: &mut dyn FnMut(&mut Block) -> Result<u64, String>,
-    ) -> Result<NodeId, String> {
-        let children = block.take_children();
-        let rev = assign(&mut block)?;
-        let id = *block.id().expect("assign gives every block an ID");
-        if self.nodes.contains_key(&id) {
-            return Err(format!("`{id}` is already a node of the doc"));
-        }
-        self.nodes.insert(
-            id,
-            Node {
-                block,
-                parent,
-                key,
-                rev,
-                children: Vec::new(),
-            },
-        );
-        let kids = self.graft_all(children, Some(id), assign)?;
-        self.nodes.get_mut(&id).expect("just inserted").children = kids;
-        Ok(id)
-    }
 }
 
-/// The IDs that the blocks and their descendants carry, in document order.
-fn collect_ids(blocks: &[Block], ids: &mut Vec<NodeId>) {
-    for block in blocks {
-        ids.extend(block.id().copied());
-        collect_ids(block.children(), ids);
+/// The one element of parsed content: white space and comments around it are
+/// ignored, and anything else outside it is an error.
+fn one_element(tree: &Tree) -> Result<usize, String> {
+    let mut found = None;
+    for child in &tree.items[0].children {
+        match &tree.items[*child].kind {
+            Kind::Element(_) => {
+                if found.replace(*child).is_some() {
+                    return Err("the content holds more than one element: an operation inserts or replaces one element, so wrap them in one".to_string());
+                }
+            }
+            Kind::Text(text) if text.trim().is_empty() => {}
+            Kind::Comment(_) => {}
+            Kind::Text(text) => {
+                let shown: String = text.trim().chars().take(30).collect();
+                return Err(format!(
+                    "the content has text outside an element (`{shown}`): an operation inserts or replaces one element"
+                ));
+            }
+            _ => {}
+        }
     }
+    found.ok_or_else(|| {
+        "the content holds no element the HTML parser can place there: an operation inserts or replaces one element".to_string()
+    })
 }
 
 /// Which items of `values` belong to one longest strictly increasing
@@ -839,9 +1076,9 @@ mod tests {
     #[test]
     fn the_index_lists_nodes_in_document_order_with_their_parents() {
         let doc = doc(concat!(
-            "<section data-node-id=\"sect0001\"><h2 data-node-id=\"head0001\">Scope</h2>",
-            "<p data-node-id=\"para0001\">Text</p></section>",
-            "<p data-node-id=\"para0002\">After</p>"
+            "<section data-omni-id=\"b0000001\"><h2 data-omni-id=\"b0000002\">Scope</h2>",
+            "<p data-omni-id=\"b0000003\">Text</p></section>",
+            "<p data-omni-id=\"b0000004\">After</p>"
         ));
         let index = doc.index();
         let listed: Vec<_> = index
@@ -851,18 +1088,18 @@ mod tests {
         assert_eq!(
             listed,
             [
-                ("sect0001".to_string(), "section", None),
+                ("b0000001".to_string(), "section", None),
                 (
-                    "head0001".to_string(),
+                    "b0000002".to_string(),
                     "heading",
-                    Some("sect0001".to_string())
+                    Some("b0000001".to_string())
                 ),
                 (
-                    "para0001".to_string(),
+                    "b0000003".to_string(),
                     "paragraph",
-                    Some("sect0001".to_string())
+                    Some("b0000001".to_string())
                 ),
-                ("para0002".to_string(), "paragraph", None),
+                ("b0000004".to_string(), "paragraph", None),
             ]
         );
     }
@@ -870,12 +1107,12 @@ mod tests {
     #[test]
     fn a_nodes_content_leaves_out_its_children_and_its_place() {
         let one = doc(concat!(
-            "<section data-node-id=\"sect0001\"><p data-node-id=\"para0001\">One</p></section>",
-            "<p data-node-id=\"para0002\">Same</p>"
+            "<section data-omni-id=\"b0000001\"><p data-omni-id=\"b0000003\">One</p></section>",
+            "<p data-omni-id=\"b0000004\">Same</p>"
         ));
         let two = doc(concat!(
-            "<section data-node-id=\"sect0001\"><p data-node-id=\"para0001\">Other</p>",
-            "<p data-node-id=\"para0002\">Same</p></section>"
+            "<section data-omni-id=\"b0000001\"><p data-omni-id=\"b0000003\">Other</p>",
+            "<p data-omni-id=\"b0000004\">Same</p></section>"
         ));
         let content = |doc: &EditDoc, node: &str| {
             doc.index()
@@ -884,8 +1121,15 @@ mod tests {
                 .map(|n| n.content)
                 .expect("the node is indexed")
         };
-        assert_eq!(content(&one, "sect0001"), content(&two, "sect0001"));
-        assert_eq!(content(&one, "para0002"), content(&two, "para0002"));
-        assert_ne!(content(&one, "para0001"), content(&two, "para0001"));
+        assert_eq!(content(&one, "b0000001"), content(&two, "b0000001"));
+        assert_eq!(content(&one, "b0000004"), content(&two, "b0000004"));
+        assert_ne!(content(&one, "b0000003"), content(&two, "b0000003"));
+    }
+
+    #[test]
+    fn a_doc_without_ids_on_its_blocks_is_refused_by_name() {
+        let error = EditDoc::from_html("<div data-omni-id=\"b0000001\"><p>x</p></div>")
+            .expect_err("the paragraph has no ID");
+        assert!(error.message().contains("<p>"), "{error}");
     }
 }
