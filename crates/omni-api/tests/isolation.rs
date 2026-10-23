@@ -605,6 +605,14 @@ const CASES: &[Case] = &[
         Some(r#"{"kind":"html","pillar":"spec","title":"intruder"}"#),
         Kind::Workspace,
     ),
+    case(
+        "POST",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}/ops",
+        Some(
+            r#"{"ops":[{"op":"insert","parent":null,"position":{"after":null},"content":"<p>intruder</p>"}]}"#,
+        ),
+        Kind::Workspace,
+    ),
 ];
 
 /// The WebSocket routes that the suite attacks, as the paths of

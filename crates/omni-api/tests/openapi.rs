@@ -208,7 +208,7 @@ fn the_document_describes_the_login_operation_from_its_handler() {
 
 /// Every live event the API emits, by name (`<entity>.<action>`): the
 /// `changeset.<status>` events of every status and the events of US-017 on.
-const LIVE_EVENTS: [&str; 33] = [
+const LIVE_EVENTS: [&str; 34] = [
     "changeset.open",
     "changeset.in_review",
     "changeset.approved",
@@ -230,6 +230,7 @@ const LIVE_EVENTS: [&str; 33] = [
     "decision.approved",
     "decision.rejected",
     "design.imported",
+    "doc.changed",
     "doc.created",
     "draft.opened",
     "draft.rebased",

@@ -933,3 +933,113 @@ fn an_agent_creates_docs_without_a_change_set_and_reads_them_at_once() {
         assert_eq!(changesets, 0, "no change set was made");
     });
 }
+
+// US-103: an agent edits a live doc without a change set and reads the change
+// at once, through the real API.
+#[test]
+fn an_agent_edits_a_live_doc_without_a_change_set_and_reads_the_change() {
+    let f = fixture();
+    let home = agent_home(f);
+    let project = unique("live-edit");
+    let created = run(&home, &["project", "create", &project]);
+    assert_eq!(created.code, 0, "project create: {}", created.stderr);
+    let p = ["--project", project.as_str()];
+    let out = run(
+        &home,
+        &[
+            &[
+                "doc", "create", "--kind", "html", "--pillar", "spec", "--title", "Plan", "--json",
+            ][..],
+            &p,
+        ]
+        .concat(),
+    );
+    assert_eq!(out.code, 0, "doc create: {}", out.stderr);
+    let doc = out.json()["doc"]["id"]
+        .as_str()
+        .expect("a doc id")
+        .to_string();
+
+    let ops = json!([{
+        "op": "insert",
+        "parent": null,
+        "position": { "after": null },
+        "content": "<p>Pay in one step</p>"
+    }]);
+    let edited = run_as(
+        &home,
+        "run-7/author",
+        &[&["doc", "edit", &doc][..], &p].concat(),
+        ops.to_string().as_bytes(),
+    );
+    assert_eq!(edited.code, 0, "doc edit: {}", edited.stderr);
+    let nodes = printed_ids(&edited.stdout);
+    assert_eq!(nodes.len(), 1, "the new paragraph: {:?}", edited.stdout);
+    let node = &nodes[0];
+
+    let read = run(&home, &[&["doc", "read", &doc][..], &p].concat());
+    assert_eq!(read.code, 0, "{}", read.stderr);
+    assert!(
+        read.stdout.contains("Pay in one step"),
+        "the doc reads with the change at once: {:?}",
+        read.stdout
+    );
+
+    let set = |rev: u64, text: &str| json!([{ "op": "set", "node": node, "rev": rev, "properties": { "html": text } }]);
+    let edited = run_as(
+        &home,
+        "run-7/author",
+        &[&["doc", "edit", &doc, "--json"][..], &p].concat(),
+        set(1, "Pay in two steps").to_string().as_bytes(),
+    );
+    assert_eq!(edited.code, 0, "doc edit: {}", edited.stderr);
+    assert_eq!(
+        edited.json()["results"][0]["revision"],
+        2,
+        "{}",
+        edited.stdout
+    );
+    let stale = run_as(
+        &home,
+        "run-8/editor",
+        &[&["doc", "edit", &doc][..], &p].concat(),
+        set(1, "Stale").to_string().as_bytes(),
+    );
+    assert_ne!(stale.code, 0, "a stale rev is refused: {:?}", stale.stdout);
+    let lines = stale.stderr_lines();
+    assert_eq!(lines.len(), 1, "{:?}", stale.stderr);
+    assert!(
+        lines[0].contains("conflict") && lines[0].contains(node.as_str()),
+        "{:?}",
+        lines[0]
+    );
+
+    let read = run(&home, &[&["doc", "read", &doc][..], &p].concat());
+    assert!(
+        read.stdout.contains("Pay in two steps") && !read.stdout.contains("Stale"),
+        "{:?}",
+        read.stdout
+    );
+
+    // The creation and the two applied batches, and no change set.
+    block(async {
+        let mut conn = admin_connection().await;
+        let seqs: Vec<i64> = sqlx::query_scalar(
+            "SELECT seq::bigint FROM doc_changes WHERE doc_id = $1::uuid ORDER BY seq",
+        )
+        .bind(&doc)
+        .fetch_all(&mut conn)
+        .await
+        .expect("read the doc changes");
+        assert_eq!(seqs, vec![1, 2, 3], "one change per applied batch");
+        let changesets: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM changesets c JOIN projects p ON p.id = c.project_id \
+             WHERE p.name = $1",
+        )
+        .bind(&project)
+        .fetch_one(&mut conn)
+        .await
+        .expect("count the change sets");
+        assert_eq!(changesets, 0, "no change set was made");
+    });
+}

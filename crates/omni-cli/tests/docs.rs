@@ -34,7 +34,8 @@
 //!   with `{"ops": <the batch>}`. It prints each result's node and new
 //!   revision and the IDs of new nodes. Input that is not a JSON array sends
 //!   nothing. A conflict (409) or refused operation (400) is a one-line error
-//!   that names the node or carries the API's message.
+//!   that names the node or carries the API's message. Without `--changeset`
+//!   it edits the live doc (US-103, tests/live_edits.rs).
 //! - `<doc>` is a doc ID (a UUID). Every command is an agent request with the
 //!   agent identity headers, `--json` prints the API's JSON, and errors are one
 //!   line on standard error, as in US-015 (tests/common/mod.rs).
@@ -834,12 +835,6 @@ fn doc_edit_refuses_input_that_is_not_a_batch_before_sending_it() {
             .run();
         assert_one_line_error(&out, &[]);
     }
-    let out = omni(&home.path)
-        .args(&["doc", "edit", DOC])
-        .args(&["--project", PROJECT, "--as", "run-7/author"])
-        .stdin(batch().to_string().as_bytes())
-        .run();
-    assert_one_line_error(&out, &["changeset"]);
     assert_nothing_sent(&server);
 }
 
