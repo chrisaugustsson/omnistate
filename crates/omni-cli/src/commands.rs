@@ -58,6 +58,9 @@ pub fn run(args: &Args) -> Result<()> {
         ["feature", "list"] => features::list(args),
         ["feature", "show"] => features::show(args, None),
         ["feature", "show", feature] => features::show(args, Some(feature)),
+        ["feature", "done" | "reopen", ..] => {
+            bail!("marking a feature done is the reviewer's call, in the web app; an agent cannot")
+        }
         ["feature", ..] => bail!("usage: omni feature create|list|show; see `omni --help`"),
         ["changeset", "create"] => changesets::create(args),
         ["changeset", "list"] => changesets::list(args),

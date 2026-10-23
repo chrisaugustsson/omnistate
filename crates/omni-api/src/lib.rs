@@ -289,6 +289,14 @@ pub fn router(state: AppState) -> Router {
             get(features::show_feature),
         )
         .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/done",
+            post(features::done),
+        )
+        .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/reopen",
+            post(features::reopen),
+        )
+        .route(
             "/api/v1/w/{workspace_id}/projects/{project_id}/home",
             get(home::show),
         )

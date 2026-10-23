@@ -513,15 +513,19 @@ pub async fn create_changeset(
         None => None,
         Some(id) => {
             let id = parse_uuid(&id).ok_or_else(feature_not_in_project)?;
-            let found: Option<(String,)> = sqlx::query_as(
-                "SELECT id::text FROM features WHERE id = $1::uuid AND project_id = $2::uuid",
+            let found: Option<(String, String)> = sqlx::query_as(
+                "SELECT id::text, status FROM features WHERE id = $1::uuid AND project_id = $2::uuid",
             )
             .bind(&id)
             .bind(&project_id)
             .fetch_optional(&mut *tx)
             .await
             .map_err(ApiError::database)?;
-            Some(found.ok_or_else(feature_not_in_project)?.0)
+            let found = found.ok_or_else(feature_not_in_project)?;
+            if found.1 == "done" {
+                return Err(ApiError::conflict("feature_done"));
+            }
+            Some(found.0)
         }
     };
     let row: ChangesetRow = sqlx::query_as(&format!(

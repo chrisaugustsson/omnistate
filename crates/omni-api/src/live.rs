@@ -159,6 +159,10 @@ pub enum LiveEventName {
     DraftRebased,
     #[serde(rename = "feature.created")]
     FeatureCreated,
+    #[serde(rename = "feature.done")]
+    FeatureDone,
+    #[serde(rename = "feature.reopened")]
+    FeatureReopened,
     #[serde(rename = "op.applied")]
     OpApplied,
     #[serde(rename = "phase.started")]

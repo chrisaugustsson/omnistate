@@ -79,6 +79,8 @@ use utoipa::OpenApi;
         crate::features::list_features,
         crate::features::create_feature,
         crate::features::show_feature,
+        crate::features::done,
+        crate::features::reopen,
         crate::changesets::list_projects,
         crate::changesets::create_project,
         crate::changesets::list_changesets,
