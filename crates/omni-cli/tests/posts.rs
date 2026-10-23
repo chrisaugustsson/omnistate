@@ -7,10 +7,11 @@
 //! paths are under `/api/v1/w/{workspace}/projects/{project_id}`, the project
 //! found as for `omni changeset`, from `--project` or `.omni.toml`):
 //!
-//! - `omni post <thread> --type <type> --summary <text> [--body-file <path>]
+//! - `omni post <thread> --summary <text> [<body>] [--body-file <path>]
 //!   [--attach <file>]... [--link <target>]... [--confidence <n>] [--replaces
-//!   <post>]` sends `POST /threads/{thread}/posts` with `{"type", "summary",
-//!   "body"}` and the options that were given. The body is the text of
+//!   <post>]` sends `POST /threads/{thread}/posts` with `{"summary", "body"}`
+//!   and the options that were given, and no `type` (US-108 removed post
+//!   types). The body is the `<body>` argument, else the text of
 //!   `--body-file`, or else all of standard input.
 //! - Each `--attach <file>` is first uploaded as `omni attach` does it (US-019:
 //!   `POST /api/v1/w/{workspace}/attachments` with the file's bytes and
@@ -23,7 +24,8 @@
 //!   "url", "url"}` in `links`, in order. `--confidence` sends a number and
 //!   `--replaces` the ID of the post it replaces.
 //! - It prints the new post's ID; `--json` prints the API's JSON.
-//! - A missing `--type` or `--summary`, a `--confidence` that is no number, a
+//! - `--type` is an unknown option. A missing `--summary`, a `--confidence`
+//!   that is no number, a
 //!   `--link` of another form, or a body or attachment file that cannot be
 //!   read is a one-line error (naming the option or the file) that sends
 //!   nothing: no upload and no post. A thread that the API does not know (404)
@@ -298,8 +300,6 @@ fn post_reads_the_body_from_the_body_file() {
         &[
             "post",
             THREAD,
-            "--type",
-            "position",
             "--summary",
             "Pick the left layout",
             "--body-file",
@@ -308,12 +308,44 @@ fn post_reads_the_body_from_the_body_file() {
     );
     assert_eq!(out.code, 0, "{}", out.stderr);
     let body = sent_post(&server);
-    assert_eq!(body["type"], "position", "{body}");
+    assert!(body.get("type").is_none(), "a post has no type: {body}");
     assert_eq!(body["summary"], "Pick the left layout", "{body}");
     assert_eq!(
         body["body"].as_str().map(str::trim_end),
         Some(text.trim_end()),
         "the body is the file's text: {body}"
+    );
+    assert!(
+        out.stdout.contains(POST),
+        "post prints the new post's ID: {:?}",
+        out.stdout
+    );
+}
+
+#[test]
+fn post_sends_the_summary_and_the_body_argument_and_no_type() {
+    let server = mock(false);
+    let home = logged_in(&server.url);
+    let out = run_with_stdin(
+        &home,
+        &[
+            "post",
+            THREAD,
+            "--summary",
+            "Pick the left layout",
+            "The *left* layout reads better at 320 px.",
+        ],
+        b"Not this: the body argument comes first.",
+    );
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    let body = sent_post(&server);
+    assert_eq!(
+        body,
+        json!({
+            "summary": "Pick the left layout",
+            "body": "The *left* layout reads better at 320 px."
+        }),
+        "the summary and the body argument, and nothing else"
     );
     assert!(
         out.stdout.contains(POST),
@@ -329,19 +361,12 @@ fn post_reads_the_body_from_standard_input_without_a_body_file() {
     let text = "Found a contrast problem in the **hero**.\n\nSee the sketch.\n";
     let out = run_with_stdin(
         &home,
-        &[
-            "post",
-            THREAD,
-            "--type",
-            "finding",
-            "--summary",
-            "Low contrast in the hero",
-        ],
+        &["post", THREAD, "--summary", "Low contrast in the hero"],
         text.as_bytes(),
     );
     assert_eq!(out.code, 0, "{}", out.stderr);
     let body = sent_post(&server);
-    assert_eq!(body["type"], "finding", "{body}");
+    assert!(body.get("type").is_none(), "a post has no type: {body}");
     assert_eq!(
         body["body"].as_str().map(str::trim_end),
         Some(text.trim_end()),
@@ -361,8 +386,6 @@ fn post_uploads_each_attach_file_and_sends_the_attachment_ids_in_order() {
         &[
             "post",
             THREAD,
-            "--type",
-            "finding",
             "--summary",
             "With evidence",
             "--attach",
@@ -430,8 +453,6 @@ fn post_sends_links_a_confidence_and_the_post_it_replaces() {
         &[
             "post",
             THREAD,
-            "--type",
-            "position",
             "--summary",
             "Left layout, smaller hero",
             "--link",
@@ -471,15 +492,7 @@ fn post_with_json_prints_the_apis_answer() {
     let home = logged_in(&server.url);
     let out = run_with_stdin(
         &home,
-        &[
-            "post",
-            THREAD,
-            "--type",
-            "note",
-            "--summary",
-            "Noted",
-            "--json",
-        ],
+        &["post", THREAD, "--summary", "Noted", "--json"],
         b"A note.",
     );
     assert_eq!(out.code, 0, "{}", out.stderr);
@@ -488,15 +501,19 @@ fn post_with_json_prints_the_apis_answer() {
 }
 
 #[test]
-fn post_needs_a_type_and_a_summary() {
+fn post_needs_a_summary_and_takes_no_type() {
+    // US-108 removed post types: `--type` is an option `omni` no longer knows.
     let server = mock(false);
     let home = logged_in(&server.url);
-    for (args, missing) in [
-        (vec!["post", THREAD, "--summary", "No type"], "--type"),
-        (vec!["post", THREAD, "--type", "note"], "--summary"),
+    for (args, named) in [
+        (vec!["post", THREAD], "--summary"),
+        (
+            vec!["post", THREAD, "--type", "note", "--summary", "Typed"],
+            "--type",
+        ),
     ] {
         let out = run_with_stdin(&home, &args, b"A body.");
-        assert_one_line_error(&out, &[missing]);
+        assert_one_line_error(&out, &[named]);
     }
     assert!(
         server.requests().is_empty(),
@@ -514,7 +531,7 @@ fn post_with_a_confidence_or_link_it_cannot_read_sends_nothing() {
         (["--link", "javascript:alert(1)"], "--link"),
         (["--link", "ftp://example.com/file"], "--link"),
     ] {
-        let mut args = vec!["post", THREAD, "--type", "note", "--summary", "x"];
+        let mut args = vec!["post", THREAD, "--summary", "x"];
         args.extend(extra);
         let out = run_with_stdin(&home, &args, b"A body.");
         assert_one_line_error(&out, &[needle]);
@@ -537,8 +554,6 @@ fn post_with_a_file_that_cannot_be_read_is_one_line_that_names_it_and_sends_noth
         &[
             "post",
             THREAD,
-            "--type",
-            "note",
             "--summary",
             "x",
             "--body-file",
@@ -555,8 +570,6 @@ fn post_with_a_file_that_cannot_be_read_is_one_line_that_names_it_and_sends_noth
         &[
             "post",
             THREAD,
-            "--type",
-            "note",
             "--summary",
             "x",
             "--attach",
@@ -580,7 +593,7 @@ fn post_in_an_unknown_thread_is_one_line_that_names_it() {
     let home = logged_in(&server.url);
     let out = run_with_stdin(
         &home,
-        &["post", UNKNOWN_THREAD, "--type", "note", "--summary", "x"],
+        &["post", UNKNOWN_THREAD, "--summary", "x"],
         b"A body.",
     );
     assert_one_line_error(&out, &[UNKNOWN_THREAD]);
@@ -649,11 +662,7 @@ fn the_directives_of_an_answer_go_to_standard_error() {
         out.stdout
     );
 
-    let out = run_with_stdin(
-        &home,
-        &["post", THREAD, "--type", "note", "--summary", "Noted"],
-        b"A note.",
-    );
+    let out = run_with_stdin(&home, &["post", THREAD, "--summary", "Noted"], b"A note.");
     assert_directive_on_stderr(&out, "omni post");
     assert!(
         out.stdout.contains(POST),

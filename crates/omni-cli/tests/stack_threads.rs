@@ -1,18 +1,20 @@
-//! US-036: `omni thread digest`, `omni post show` and `omni wait --thread`
-//! against the real API. Run with `--features stack-tests` in the Compose
-//! test container, which reaches Postgres at `postgres:5432`.
+//! US-108: threads without change sets from the command line, against the
+//! real API. Run with `--features stack-tests` in the Compose test container,
+//! which reaches Postgres at `postgres:5432`.
 //!
 //! The tests migrate a scratch database, seed a workspace with an API key and
 //! serve the API's router on a local port against that database. The built
 //! `omni` runs against that address with the key in its config file; agents
 //! share the key and tell themselves apart with `--as <run>/<role>`. The
-//! CLI's contract is in tests/digests.rs and tests/thread_waits.rs, the API's
-//! in crates/omni-api/tests/thread_waits.rs and sealed_phases.rs.
+//! CLI's contract is in tests/threads.rs, tests/posts.rs and
+//! tests/thread_waits.rs, the API's in crates/omni-api/tests/live_threads.rs.
 //!
-//! What these tests add is the round trip: the waits see who has posted in a
-//! sealed phase without showing the agent what it may not read yet, the
-//! digest and `post show` keep to the sealed phase (US-035), and a thread
-//! without a decision is one that `decision:` waits wait on.
+//! What these tests add is the round trip: `omni thread create` starts
+//! threads at the app level and in a feature with no change set, `omni thread
+//! read` and `omni wait --thread --posts` keep to a sealed thread (an agent
+//! that has not posted reads no other agent's posts, and counts none of
+//! them), and `omni thread conclude` writes a conclusion that leaves the
+//! thread open to posts.
 
 mod common;
 
@@ -27,8 +29,8 @@ use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
-const TEST_DB: &str = "omni_us036_cli";
-const KEY_PREFIX: &str = "omniustest36";
+const TEST_DB: &str = "omni_us108_cli";
+const KEY_PREFIX: &str = "omniustes108";
 /// How long after the wait starts the other agents act.
 const LATER: Duration = Duration::from_millis(1500);
 
@@ -181,60 +183,27 @@ fn unique(label: &str) -> String {
     format!("{label}-{}", COUNTER.fetch_add(1, Ordering::Relaxed))
 }
 
-/// A new project with a change set and a thread, made by the moderator from
-/// the command line; returns (project name, thread ID).
-fn new_thread(home: &Scratch, sealed: bool) -> (String, String) {
+const MODERATOR: &str = "run-7/moderator";
+
+/// A new project made by the moderator from the command line; its name.
+fn new_project(home: &Scratch) -> String {
     let project = unique("forum-site");
     let created = run_as(home, MODERATOR, &["project", "create", &project]);
     assert_eq!(created.code, 0, "project create: {}", created.stderr);
-    let out = run_as(
-        home,
-        MODERATOR,
-        &[
-            "changeset",
-            "create",
-            "--project",
-            &project,
-            "--title",
-            "Hero section",
-            "--run",
-            "run-7",
-            "--json",
-        ],
-    );
-    assert_eq!(out.code, 0, "changeset create: {}", out.stderr);
-    let changeset = out.json()["changeset"]["id"]
-        .as_str()
-        .expect("the change set's id")
-        .to_string();
-    let criteria = home.join(&format!("{}.txt", unique("criteria")));
-    std::fs::write(&criteria, "Readable at 320 px\n").expect("write the criteria file");
-    let mut args = vec![
-        "thread",
-        "create",
-        "--project",
-        project.as_str(),
-        "--changeset",
-        changeset.as_str(),
-        "--question",
-        "Which hero layout?",
-        "--criteria-file",
-        criteria.to_str().expect("a UTF-8 path"),
-        "--json",
-    ];
-    if sealed {
-        args.push("--sealed");
-    }
-    let out = run_as(home, MODERATOR, &args);
-    assert_eq!(out.code, 0, "thread create: {}", out.stderr);
-    let thread = out.json()["thread"]["id"]
-        .as_str()
-        .expect("the thread's id")
-        .to_string();
-    (project, thread)
+    project
 }
 
-const MODERATOR: &str = "run-7/moderator";
+/// Starts a thread from the command line with `extra` options; its ID.
+fn new_thread(home: &Scratch, project: &str, question: &str, extra: &[&str]) -> String {
+    let mut args = vec!["thread", "create", question, "--project", project, "--json"];
+    args.extend_from_slice(extra);
+    let out = run_as(home, MODERATOR, &args);
+    assert_eq!(out.code, 0, "thread create: {}", out.stderr);
+    out.json()["thread"]["id"]
+        .as_str()
+        .expect("the thread's id")
+        .to_string()
+}
 
 /// What a test knows of a post it made.
 struct Made {
@@ -243,26 +212,21 @@ struct Made {
     body: String,
 }
 
-/// Posts a position as `who` with a unique summary and body.
+/// Posts as `who` with a unique summary and body, the body as an argument.
 fn post(home: &Scratch, who: &str, project: &str, thread: &str) -> Made {
     let summary = unique(&format!("{who} says"));
     let body = unique(&format!("{who} explains"));
-    let file = home.join(&format!("{}.md", unique("body")));
-    std::fs::write(&file, &body).expect("write the body file");
     let out = run_as(
         home,
         who,
         &[
             "post",
             thread,
-            "--project",
-            project,
-            "--type",
-            "position",
             "--summary",
             &summary,
-            "--body-file",
-            file.to_str().expect("a UTF-8 path"),
+            &body,
+            "--project",
+            project,
             "--json",
         ],
     );
@@ -278,6 +242,13 @@ fn post(home: &Scratch, who: &str, project: &str, thread: &str) -> Made {
     }
 }
 
+/// `omni thread read` as `who`; what it printed.
+fn read(home: &Scratch, who: &str, project: &str, thread: &str) -> String {
+    let out = run_as(home, who, &["thread", "read", thread, "--project", project]);
+    assert_eq!(out.code, 0, "{who} reads the thread: {}", out.stderr);
+    out.stdout
+}
+
 fn assert_nothing_of(text: &str, hidden: &Made, what: &str) {
     for (name, marker) in [
         ("ID", &hidden.id),
@@ -291,199 +262,213 @@ fn assert_nothing_of(text: &str, hidden: &Made, what: &str) {
     }
 }
 
-#[test]
-fn a_moderator_waits_for_the_critics_of_a_sealed_phase_without_reading_their_posts() {
-    let f = fixture();
-    let home = agent_home(f);
-    let (project, thread) = new_thread(&home, true);
+fn assert_all_of(text: &str, made: &Made, what: &str) {
+    for marker in [&made.summary, &made.body] {
+        assert!(
+            text.contains(marker.as_str()),
+            "{what}: {marker:?} shows: {text}"
+        );
+    }
+}
 
-    let (critics_home, critics_project, critics_thread) =
-        (agent_home(f), project.clone(), thread.clone());
-    let critics = std::thread::spawn(move || {
-        std::thread::sleep(LATER);
-        let a = post(
-            &critics_home,
-            "run-7/critic-a",
-            &critics_project,
-            &critics_thread,
-        );
-        let b = post(
-            &critics_home,
-            "run-8/critic-b",
-            &critics_project,
-            &critics_thread,
-        );
-        (a, b)
-    });
-    let out = run_as(
-        &home,
-        MODERATOR,
+/// `omni wait --thread <thread> --posts <posts> --timeout <timeout>` as `who`.
+fn wait_posts(
+    home: &Scratch,
+    who: &str,
+    project: &str,
+    thread: &str,
+    posts: &str,
+    timeout: &str,
+) -> Out {
+    run_as(
+        home,
+        who,
         &[
             "wait",
             "--thread",
-            &thread,
-            "--until",
-            "roles:critic-*,*-b",
+            thread,
+            "--posts",
+            posts,
             "--timeout",
-            "20",
+            timeout,
+            "--project",
+            project,
+        ],
+    )
+}
+
+#[test]
+fn an_agent_starts_threads_at_the_app_level_and_in_a_feature_without_a_change_set() {
+    let f = fixture();
+    let home = agent_home(f);
+    let project = new_project(&home);
+    let out = run_as(
+        &home,
+        MODERATOR,
+        &["feature", "create", "Checkout", "--project", &project],
+    );
+    assert_eq!(out.code, 0, "feature create: {}", out.stderr);
+
+    let app_question = unique("Which hero layout?");
+    let app = new_thread(&home, &project, &app_question, &[]);
+    let feature_question = unique("Do we need a cart page?");
+    let in_feature = new_thread(
+        &home,
+        &project,
+        &feature_question,
+        &["--feature", "checkout", "--sealed"],
+    );
+
+    let out = run_as(&home, MODERATOR, &["thread", "list", "--project", &project]);
+    assert_eq!(out.code, 0, "thread list: {}", out.stderr);
+    for (id, question) in [(&app, &app_question), (&in_feature, &feature_question)] {
+        let lines: Vec<&str> = non_empty_lines(&out.stdout)
+            .into_iter()
+            .filter(|line| line.contains(id.as_str()))
+            .collect();
+        assert_eq!(lines.len(), 1, "one line for {id}: {:?}", out.stdout);
+        assert!(lines[0].contains(question.as_str()), "{:?}", lines[0]);
+    }
+    let shown = run_as(
+        &home,
+        MODERATOR,
+        &[
+            "thread",
+            "read",
+            &in_feature,
             "--project",
             &project,
             "--json",
         ],
     );
-    let (a, b) = critics.join().expect("the critics post");
-    assert_eq!(out.code, 0, "omni wait: {} {}", out.stdout, out.stderr);
+    assert_eq!(shown.code, 0, "thread read: {}", shown.stderr);
+    let thread = &shown.json()["thread"];
+    assert_eq!(thread["scope"], "feature", "{thread}");
+    assert_eq!(thread["sealed"], true, "{thread}");
     assert!(
-        out.elapsed >= LATER - Duration::from_millis(100),
-        "it waited for the critics: {:?}",
-        out.elapsed
+        thread.get("changeset_id").is_none_or(Value::is_null),
+        "the thread has no change set: {thread}"
     );
-    // The moderator has not posted in the sealed phase: what it got shows
-    // that the critics posted, not what they wrote.
-    assert_nothing_of(&out.stdout, &a, "the wait's output");
-    assert_nothing_of(&out.stdout, &b, "the wait's output");
-    let answer = out.json();
-    let roles: Vec<&str> = answer["thread"]["phases"][0]["posted_by"]
-        .as_array()
-        .unwrap_or_else(|| panic!("phase 1 tells who has posted: {answer}"))
-        .iter()
-        .filter_map(|who| who["role"].as_str())
-        .collect();
-    assert_eq!(roles, vec!["critic-a", "critic-b"], "{answer}");
+
+    let rows: i64 = block(async {
+        let mut conn = admin_connection().await;
+        sqlx::query_scalar(
+            "select count(*) from threads where id = any($1::text[]::uuid[]) \
+             and changeset_id is null",
+        )
+        .bind(vec![app.clone(), in_feature.clone()])
+        .fetch_one(&mut conn)
+        .await
+        .expect("count the threads without a change set")
+    });
+    assert_eq!(rows, 2, "neither thread has a change set");
 }
 
 #[test]
-fn a_wait_for_posts_ends_with_3_when_the_next_phase_starts_first() {
+fn in_a_sealed_thread_read_and_wait_show_an_agent_no_other_agents_posts_until_it_posts() {
     let f = fixture();
     let home = agent_home(f);
-    let (project, thread) = new_thread(&home, false);
+    let project = new_project(&home);
+    let thread = new_thread(&home, &project, "Which hero layout?", &["--sealed"]);
+    let a = post(&home, "run-7/critic-a", &project, &thread);
+    let b = post(&home, "run-8/critic-b", &project, &thread);
+
+    let seen = read(&home, MODERATOR, &project, &thread);
+    assert_nothing_of(&seen, &a, "the moderator's thread read");
+    assert_nothing_of(&seen, &b, "the moderator's thread read");
+    let out = wait_posts(&home, MODERATOR, &project, &thread, "1", "2");
+    assert_eq!(
+        out.code, 2,
+        "the moderator reads no post yet, so even one post is not there for it; \
+         stdout: {:?}; stderr: {:?}",
+        out.stdout, out.stderr
+    );
+    let seen = read(&home, "run-7/critic-a", &project, &thread);
+    assert_all_of(&seen, &a, "critic-a reads its own post");
+    assert_nothing_of(&seen, &b, "critic-a's thread read");
+
+    let own = post(&home, MODERATOR, &project, &thread);
+    let out = wait_posts(&home, MODERATOR, &project, &thread, "3", "10");
+    assert_eq!(
+        out.code, 0,
+        "once it has posted, the moderator reads all three; stdout: {:?}; stderr: {:?}",
+        out.stdout, out.stderr
+    );
+    let seen = read(&home, MODERATOR, &project, &thread);
+    for made in [&a, &b, &own] {
+        assert_all_of(&seen, made, "the moderator's thread read after posting");
+    }
+}
+
+#[test]
+fn wait_posts_exits_0_once_the_thread_has_that_many_posts_and_2_on_timeout() {
+    let f = fixture();
+    let home = agent_home(f);
+    let project = new_project(&home);
+    let thread = new_thread(&home, &project, "Which hero layout?", &[]);
     post(&home, "run-7/critic-a", &project, &thread);
 
-    let (other_home, other_project, other_thread) =
-        (agent_home(f), project.clone(), thread.clone());
-    let next_phase = std::thread::spawn(move || {
+    let out = wait_posts(&home, MODERATOR, &project, &thread, "3", "1");
+    assert_eq!(
+        out.code, 2,
+        "one post is not three; stdout: {:?}; stderr: {:?}",
+        out.stdout, out.stderr
+    );
+    assert_eq!(
+        out.stdout, "",
+        "a timeout prints nothing on standard output"
+    );
+
+    let (others, others_project, others_thread) = (agent_home(f), project.clone(), thread.clone());
+    let critics = std::thread::spawn(move || {
         std::thread::sleep(LATER);
-        run_as(
-            &other_home,
-            MODERATOR,
-            &[
-                "thread",
-                "phase",
-                &other_thread,
-                "--sealed",
-                "--project",
-                &other_project,
-            ],
-        )
+        post(&others, "run-7/critic-b", &others_project, &others_thread);
+        post(&others, "run-7/critic-c", &others_project, &others_thread);
     });
+    let out = wait_posts(&home, MODERATOR, &project, &thread, "3", "20");
+    critics.join().expect("the critics posted");
+    assert_eq!(
+        out.code, 0,
+        "three posts came; stdout: {:?}; stderr: {:?}",
+        out.stdout, out.stderr
+    );
+    assert!(
+        out.elapsed >= LATER - Duration::from_millis(100),
+        "it waited for the posts: {:?}",
+        out.elapsed
+    );
+}
+
+#[test]
+fn thread_conclude_sets_the_conclusion_and_posts_can_still_be_added() {
+    let f = fixture();
+    let home = agent_home(f);
+    let project = new_project(&home);
+    let thread = new_thread(&home, &project, "Which hero layout?", &[]);
+    post(&home, "run-7/critic-a", &project, &thread);
+
+    let conclusion = unique("We take the left layout");
     let out = run_as(
         &home,
-        "run-7/scribe",
+        MODERATOR,
         &[
-            "wait",
-            "--thread",
+            "thread",
+            "conclude",
             &thread,
-            "--until",
-            "posts:2",
-            "--timeout",
-            "20",
+            &conclusion,
             "--project",
             &project,
         ],
     );
-    let started = next_phase.join().expect("the next phase");
-    assert_eq!(started.code, 0, "thread phase: {}", started.stderr);
-    assert_eq!(out.code, 3, "{} {}", out.stdout, out.stderr);
-    assert_eq!(out.stdout, "");
-    let lines = out.stderr_lines();
-    assert_eq!(lines.len(), 1, "one line: {:?}", out.stderr);
-    assert!(lines[0].contains("phase"), "{:?}", lines[0]);
-}
-
-#[test]
-fn phase_change_and_decision_waits_time_out_on_a_quiet_thread() {
-    let f = fixture();
-    let home = agent_home(f);
-    let (project, thread) = new_thread(&home, false);
-    for until in ["phase-change", "decision:approved", "posts:1"] {
-        let out = run_as(
-            &home,
-            MODERATOR,
-            &[
-                "wait",
-                "--thread",
-                &thread,
-                "--until",
-                until,
-                "--timeout",
-                "1",
-                "--project",
-                &project,
-            ],
-        );
-        assert_eq!(out.code, 2, "{until}: {} {}", out.stdout, out.stderr);
-        assert_eq!(out.stdout, "", "{until}");
-        assert_eq!(out.stderr_lines().len(), 1, "{until}: {:?}", out.stderr);
-    }
-}
-
-#[test]
-fn digest_and_post_show_keep_to_the_sealed_phase() {
-    let f = fixture();
-    let home = agent_home(f);
-    let (project, thread) = new_thread(&home, true);
-    let critic = "run-7/critic-a";
-    let made = post(&home, critic, &project, &thread);
-
-    // The critic reads its own post in the digest and in full.
-    let digest = run_as(
-        &home,
-        critic,
-        &["thread", "digest", &thread, "--project", &project],
-    );
-    assert_eq!(digest.code, 0, "{}", digest.stderr);
-    let lines = non_empty_lines(&digest.stdout);
-    assert_eq!(lines.len(), 1, "one post: {:?}", digest.stdout);
-    for needle in [
-        "position",
-        "critic-a",
-        made.summary.as_str(),
-        made.id.as_str(),
-    ] {
-        assert!(lines[0].contains(needle), "{needle:?}: {:?}", lines[0]);
-    }
-    let shown = run_as(
-        &home,
-        critic,
-        &["post", "show", &made.id, "--project", &project],
-    );
-    assert_eq!(shown.code, 0, "{}", shown.stderr);
-    assert!(shown.stdout.contains(&made.body), "{:?}", shown.stdout);
-
-    // The moderator has not posted in the sealed phase: it sees nothing of it.
-    let digest = run_as(
-        &home,
-        MODERATOR,
-        &["thread", "digest", &thread, "--project", &project],
-    );
-    assert_eq!(digest.code, 0, "{}", digest.stderr);
+    assert_eq!(out.code, 0, "thread conclude: {}", out.stderr);
+    let seen = read(&home, "run-7/critic-a", &project, &thread);
     assert!(
-        non_empty_lines(&digest.stdout).is_empty(),
-        "no post the moderator may see: {:?}",
-        digest.stdout
+        seen.contains(&conclusion),
+        "thread read shows the conclusion: {seen}"
     );
-    assert_nothing_of(&digest.stdout, &made, "the moderator's digest");
-    let hidden = run_as(
-        &home,
-        MODERATOR,
-        &["post", "show", &made.id, "--project", &project],
-    );
-    assert_eq!(hidden.code, 1, "{} {}", hidden.stdout, hidden.stderr);
-    assert_eq!(hidden.stdout, "");
-    assert_eq!(hidden.stderr_lines().len(), 1, "{:?}", hidden.stderr);
-    assert!(
-        !hidden.stderr.contains(&made.summary) && !hidden.stderr.contains(&made.body),
-        "{:?}",
-        hidden.stderr
-    );
+
+    let later = post(&home, "run-7/critic-b", &project, &thread);
+    let seen = read(&home, MODERATOR, &project, &thread);
+    assert_all_of(&seen, &later, "a post after the conclusion");
+    assert!(seen.contains(&conclusion), "{seen}");
 }

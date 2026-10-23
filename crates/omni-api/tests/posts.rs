@@ -18,7 +18,9 @@
 //!   - `type` is one of `note`, `finding`, `position`, `objection`,
 //!     `support`, `question`, `directive` and `verdict`, written exactly so;
 //!     anything else is 400 `invalid_request`. `directive` is the human's: an
-//!     API key that posts one here is 403 `{"error": "forbidden"}`.
+//!     API key that posts one here is 403 `{"error": "forbidden"}`. Since
+//!     US-108 removed post types, a post may also leave `type` out
+//!     (tests/live_threads.rs).
 //!   - `summary` is one line (no line break) of at most 200 characters and not
 //!     blank; `body` is a string of Markdown. Anything else is 400.
 //!   - `links` is a list (default `[]`) of `{"kind": "post", "post_id"}` (a
@@ -761,7 +763,6 @@ fn a_type_that_is_not_a_post_type_is_refused() {
     ]
     .into_iter()
     .map(|kind| json!({ "type": kind, "summary": "A post", "body": "Why." }))
-    .chain([json!({ "summary": "A post", "body": "Why." })])
     .collect();
     for auth in [agent(f), human(f)] {
         assert_refused(

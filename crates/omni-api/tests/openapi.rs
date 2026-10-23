@@ -208,8 +208,9 @@ fn the_document_describes_the_login_operation_from_its_handler() {
 
 /// Every live event the API emits, by name (`<entity>.<action>`): the
 /// `changeset.<status>` events of every status and the events of US-017 on
-/// (US-106 replaced `comment.status_changed` with `comment.deleted`).
-const LIVE_EVENTS: [&str; 34] = [
+/// (US-106 replaced `comment.status_changed` with `comment.deleted`, and
+/// US-108 added `thread.concluded`).
+const LIVE_EVENTS: [&str; 35] = [
     "changeset.open",
     "changeset.in_review",
     "changeset.approved",
@@ -242,6 +243,7 @@ const LIVE_EVENTS: [&str; 34] = [
     "phase.started",
     "post.created",
     "thread.created",
+    "thread.concluded",
     "tokens.imported",
     "version.saved",
 ];
