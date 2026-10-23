@@ -397,3 +397,28 @@ fn the_document_describes_the_feature_routes_and_their_bodies() {
         );
     }
 }
+
+// US-060: a change set belongs to the project or one of its features, so the
+// change set and thread bodies carry `feature_id`, the create request takes
+// it, and the change set list takes the `feature` filter.
+#[test]
+fn the_document_describes_the_feature_of_change_sets_and_threads() {
+    let server = TestServer::start(&offline_config());
+    let document = openapi(&server);
+    for name in ["ChangesetBody", "ThreadBody", "CreateChangesetRequest"] {
+        let schema = component(&document, name);
+        assert!(
+            schema["properties"]["feature_id"].is_object(),
+            "{name} has the field feature_id: {schema}"
+        );
+    }
+    let list =
+        &document["paths"]["/api/v1/w/{workspace_id}/projects/{project_id}/changesets"]["get"];
+    let parameters = list["parameters"].as_array().cloned().unwrap_or_default();
+    assert!(
+        parameters
+            .iter()
+            .any(|p| p["name"] == "feature" && p["in"] == "query"),
+        "GET .../changesets documents the query parameter `feature`: {list}"
+    );
+}
