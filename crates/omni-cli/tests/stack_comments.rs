@@ -18,7 +18,9 @@
 //! text and replies, oldest first; `omni comment reply <id> <text>` reaches
 //! the API and makes the comment wait on the human; `--doc` and `--feature`
 //! narrow the list; and a comment the human deleted is no longer listed and
-//! cannot be replied to.
+//! cannot be replied to. For US-107: an `omni doc edit` that deletes a
+//! commented node goes through, and `omni comment list` then shows that
+//! comment as orphaned with its snapshot until the human deletes it.
 
 mod common;
 
@@ -519,4 +521,57 @@ fn a_comment_the_human_deleted_is_no_longer_listed_and_takes_no_reply() {
     let out = paper.comment(&home, &["reply", &deleted, "Too late?"]);
     assert_ne!(out.code, 0, "{:?}", out.stdout);
     assert!(out.stderr.contains("not_found"), "{:?}", out.stderr);
+}
+
+#[test]
+fn deleting_a_commented_node_leaves_its_comment_listed_as_orphaned_with_its_snapshot() {
+    let f = fixture();
+    let home = agent_home(f);
+    let project = new_project(&home);
+    let paper = new_paper(&home, &project, None);
+    let orphan = human_comments(f, &paper, &paper.b, "Move the copy to the right.");
+    let kept = human_comments(f, &paper, &paper.a, "Split it evenly.");
+
+    let ops = json!([{ "op": "delete", "node": paper.b, "rev": 1 }]);
+    let out = run_with(
+        &home,
+        &["doc", "edit", &paper.doc, "--project", &project],
+        ops.to_string().as_bytes(),
+    );
+    assert_eq!(
+        out.code, 0,
+        "deleting a commented node goes through: {}",
+        out.stderr
+    );
+
+    let listed = paper.listed(&home, &["--doc", &paper.doc]);
+    assert_eq!(ids(&listed), [orphan.clone(), kept.clone()], "{listed:?}");
+    let gone = find(&listed, &orphan).expect("the orphaned comment");
+    assert_eq!(gone["orphaned"], true, "{gone}");
+    assert!(
+        gone["snapshot"]
+            .as_str()
+            .is_some_and(|snapshot| snapshot.contains("The copy sits on the left.")),
+        "{gone}"
+    );
+    let still = find(&listed, &kept).expect("the other comment");
+    assert_eq!(still["orphaned"], false, "{still}");
+
+    let out = paper.comment(&home, &["list"]);
+    assert_eq!(out.code, 0, "comment list: {}", out.stderr);
+    let text = &out.stdout;
+    let (at_orphan, at_kept) = (
+        text.find(&orphan).expect("the list shows the orphan"),
+        text.find(&kept).expect("the list shows the other comment"),
+    );
+    assert!(at_orphan < at_kept, "oldest first: {text:?}");
+    let orphan_part = &text[at_orphan..at_kept];
+    assert!(
+        orphan_part.contains("orphaned") && orphan_part.contains("The copy sits on the left."),
+        "{orphan_part:?}"
+    );
+    assert!(!text[at_kept..].contains("orphaned"), "{text:?}");
+
+    human_deletes(f, &paper, &orphan);
+    assert_eq!(ids(&paper.listed(&home, &[])), [kept.clone()]);
 }

@@ -1,9 +1,9 @@
-//! US-106: `omni comment list` and `omni comment reply` on comments that the
-//! human pins to nodes of live docs, tested as the built binary against a
-//! mock HTTP server. None of these tests needs Postgres; the API's contract is
-//! in crates/omni-api/tests/comments.rs, and the round trip against the API is
-//! in tests/stack_comments.rs. (`omni version save --remove-commented` keeps
-//! its US-038 tests here until US-107 removes it.)
+//! US-106 and US-107: `omni comment list` and `omni comment reply` on
+//! comments that the human pins to nodes of live docs, tested as the built
+//! binary against a mock HTTP server. None of these tests needs Postgres; the
+//! API's contract is in crates/omni-api/tests/comments.rs and
+//! orphaned_comments.rs, and the round trip against the API is in
+//! tests/stack_comments.rs.
 //!
 //! The contract these tests pin down (the rest is the green step's choice; all
 //! paths are under `/api/v1/w/{workspace}/projects/{project_id}`, the project
@@ -17,7 +17,10 @@
 //!   the order of the answer (oldest first), each with its ID, its doc's ID,
 //!   its node address and its text, followed by the text of each of its
 //!   replies, oldest first, before the next comment starts. A comment whose
-//!   `waiting_on_you` is `true` says `waiting on you`, and no other does.
+//!   `waiting_on_you` is `true` says `waiting on you`, and no other does. A
+//!   comment whose `orphaned` is `true` (its node left the doc's head, US-107)
+//!   says `orphaned` and shows its `snapshot`, what the node held when the
+//!   comment was made; no other comment says `orphaned`.
 //!   `--json` prints the API's JSON.
 //! - `omni comment reply <id> <text>` sends `POST /comments/{id}/replies` with
 //!   `{"text": <text>}` and prints a line naming the comment; `--json` prints
@@ -28,6 +31,10 @@
 //!   resolve` and `omni comment reopen` are a one-line error that sends
 //!   nothing, and `omni --help` lists `omni comment list` and `omni comment
 //!   reply` but none of them.
+//! - Commented nodes no longer stop a write (US-107), so there is no
+//!   `--remove-commented` any more: `omni version save` and `omni doc remove`
+//!   with it are a one-line error that names the option and sends nothing,
+//!   and `omni --help` does not mention it.
 //! - Every command is an agent request with the agent identity headers, and
 //!   errors are one line on standard error, as in US-015 (tests/common/mod.rs).
 
@@ -41,15 +48,14 @@ const PROJECT: &str = "01900000-0000-7000-8000-0000000000b1";
 const CHANGESET: &str = "01900000-0000-7000-8000-0000000000c1";
 const DOC: &str = "01900000-0000-7000-8000-0000000000d1";
 const OTHER_DOC: &str = "01900000-0000-7000-8000-0000000000d3";
-/// A doc whose save the API refuses: its draft removed commented nodes.
-const COMMENTED_DOC: &str = "01900000-0000-7000-8000-0000000000d2";
 const NEW_VERSION: &str = "01900000-0000-7000-8000-0000000000f3";
 const CHECKOUT: &str = "01900000-0000-7000-8000-0000000000e1";
 /// The oldest comment: an agent replied, then the human.
 const FIRST: &str = "01900000-0000-7000-8000-0000000000a1";
 /// An agent replied last: it waits on the human.
 const SECOND: &str = "01900000-0000-7000-8000-0000000000a2";
-/// The newest comment, without replies.
+/// The newest comment, without replies; an agent deleted its node, so it is
+/// orphaned.
 const THIRD: &str = "01900000-0000-7000-8000-0000000000a3";
 const UNKNOWN_ID: &str = "01900000-0000-7000-8000-0000000000e9";
 const NODE_FIRST: &str = "k3f9x2qa";
@@ -61,6 +67,9 @@ const THIRD_TEXT: &str = "Is this paragraph needed at all?";
 const FIRST_AGENT_REPLY: &str = "Shortened it to one line.";
 const FIRST_HUMAN_REPLY: &str = "Shorter still, please.";
 const SECOND_AGENT_REPLY: &str = "The label now uses color.brand.";
+const FIRST_SNAPSHOT: &str = "<h1>A hero for every season of the year</h1>";
+const SECOND_SNAPSHOT: &str = r#"<Text name="Label" content="Buy now"/>"#;
+const THIRD_SNAPSHOT: &str = "<p>Returns are free for thirty days.</p>";
 
 fn base() -> String {
     format!("/api/v1/w/{WORKSPACE}/projects/{PROJECT}")
@@ -83,35 +92,65 @@ fn reply_json(id: &str, author: Value, text: &str) -> Value {
     })
 }
 
-fn comment_json(
-    id: &str,
-    doc: &str,
-    node: &str,
-    text: &str,
-    replies: Vec<Value>,
-    waiting: bool,
-) -> Value {
+struct Shown<'a> {
+    id: &'a str,
+    doc: &'a str,
+    node: &'a str,
+    text: &'a str,
+    snapshot: &'a str,
+}
+
+fn comment_json(shown: Shown, replies: Vec<Value>, waiting: bool, orphaned: bool) -> Value {
     json!({
-        "id": id,
+        "id": shown.id,
         "project_id": PROJECT,
-        "doc_id": doc,
-        "node": node,
+        "doc_id": shown.doc,
+        "node": shown.node,
         "feature_id": null,
         "author": human_author(),
-        "text": text,
+        "text": shown.text,
+        "snapshot": shown.snapshot,
+        "orphaned": orphaned,
         "replies": replies,
         "waiting_on_you": waiting,
         "created_at": "2026-10-23T10:00:00.000000Z"
     })
 }
 
+fn first() -> Shown<'static> {
+    Shown {
+        id: FIRST,
+        doc: DOC,
+        node: NODE_FIRST,
+        text: FIRST_TEXT,
+        snapshot: FIRST_SNAPSHOT,
+    }
+}
+
+fn second() -> Shown<'static> {
+    Shown {
+        id: SECOND,
+        doc: OTHER_DOC,
+        node: NODE_SECOND,
+        text: SECOND_TEXT,
+        snapshot: SECOND_SNAPSHOT,
+    }
+}
+
+fn third() -> Shown<'static> {
+    Shown {
+        id: THIRD,
+        doc: DOC,
+        node: NODE_THIRD,
+        text: THIRD_TEXT,
+        snapshot: THIRD_SNAPSHOT,
+    }
+}
+
 fn all_comments() -> Value {
     json!([
         comment_json(
-            FIRST,
-            DOC,
-            NODE_FIRST,
-            FIRST_TEXT,
+            first(),
             vec![
                 reply_json(
                     "01900000-0000-7000-8000-0000000000b5",
@@ -125,34 +164,20 @@ fn all_comments() -> Value {
                 ),
             ],
             false,
+            false,
         ),
         comment_json(
-            SECOND,
-            OTHER_DOC,
-            NODE_SECOND,
-            SECOND_TEXT,
+            second(),
             vec![reply_json(
                 "01900000-0000-7000-8000-0000000000b7",
                 agent_author(),
                 SECOND_AGENT_REPLY
             )],
             true,
+            false,
         ),
-        comment_json(THIRD, DOC, NODE_THIRD, THIRD_TEXT, vec![], false),
+        comment_json(third(), vec![], false, true),
     ])
-}
-
-fn version_json(id: &str) -> Value {
-    json!({ "version": {
-        "id": id,
-        "doc_id": DOC,
-        "changeset_id": CHANGESET,
-        "draft_id": "01900000-0000-7000-8000-0000000000e2",
-        "removed": false,
-        "created_at": "2026-10-21T10:00:00.000000Z",
-        "agent": { "run": "run-7", "role": "author", "model": null, "harness": null },
-        "nodes": []
-    } })
 }
 
 /// The path without its query, and the query's parameters.
@@ -174,8 +199,7 @@ fn split_query(path: &str) -> (String, BTreeMap<String, String>) {
 }
 
 /// An API that knows the comments `FIRST`, `SECOND` and `THIRD` and the
-/// feature Checkout, saves versions of `DOC` and refuses to save
-/// `COMMENTED_DOC` without `remove_commented`.
+/// feature Checkout.
 fn mock() -> MockServer {
     MockServer::start(move |request| {
         let (path, _) = split_query(&request.path);
@@ -211,39 +235,16 @@ fn mock() -> MockServer {
             ),
             ("POST", r) if r == format!("/comments/{THIRD}/replies") => {
                 let comment = comment_json(
-                    THIRD,
-                    DOC,
-                    NODE_THIRD,
-                    THIRD_TEXT,
+                    third(),
                     vec![reply_json(
                         "01900000-0000-7000-8000-0000000000b9",
                         agent_author(),
                         body["text"].as_str().unwrap_or_default(),
                     )],
                     true,
+                    true,
                 );
                 Reply::json(201, &json!({ "comment": comment }))
-            }
-            ("POST", r) if r == format!("/changesets/{CHANGESET}/docs/{DOC}/versions") => {
-                Reply::json(201, &version_json(NEW_VERSION))
-            }
-            ("POST", r)
-                if r == format!("/changesets/{CHANGESET}/docs/{COMMENTED_DOC}/versions") =>
-            {
-                if body["remove_commented"] == true {
-                    Reply::json(201, &version_json(NEW_VERSION))
-                } else {
-                    Reply::json(
-                        409,
-                        &json!({
-                            "error": "commented_nodes_removed",
-                            "comments": [
-                                comment_json(FIRST, COMMENTED_DOC, NODE_FIRST, FIRST_TEXT, vec![], false),
-                                comment_json(THIRD, COMMENTED_DOC, NODE_THIRD, THIRD_TEXT, vec![], false),
-                            ]
-                        }),
-                    )
-                }
             }
             _ => Reply::json(404, &json!({ "error": "not_found" })),
         }
@@ -582,18 +583,39 @@ fn help_lists_list_and_reply_and_no_status_command() {
 }
 
 // ---------------------------------------------------------------------------
-// omni version save --remove-commented (US-038, until US-107)
+// Orphaned comments (US-107)
 // ---------------------------------------------------------------------------
 
 #[test]
-fn version_save_sends_remove_commented_only_when_asked() {
+fn list_says_orphaned_and_shows_the_snapshot_of_a_comment_whose_node_left_the_head() {
     let server = mock();
     let home = logged_in(&server.url);
-    let out = run(&home, &["version", "save", DOC, "--changeset", CHANGESET]);
-    assert_eq!(out.code, 0, "version save: {}", out.stderr);
-    let out = run(
-        &home,
-        &[
+    let out = run(&home, &["comment", "list"]);
+    assert_eq!(out.code, 0, "comment list: {}", out.stderr);
+    let text = &out.stdout;
+    let (first, second, third) = (
+        position(text, FIRST),
+        position(text, SECOND),
+        position(text, THIRD),
+    );
+    let orphan = &text[third..];
+    assert_contains_all(
+        orphan,
+        &["orphaned", THIRD_SNAPSHOT, THIRD_TEXT, NODE_THIRD],
+        "the orphaned comment",
+    );
+    assert!(
+        !text[first..second].contains("orphaned") && !text[second..third].contains("orphaned"),
+        "no other comment says orphaned: {text:?}"
+    );
+}
+
+#[test]
+fn the_remove_commented_option_is_gone_and_sends_nothing() {
+    let server = mock();
+    let home = logged_in(&server.url);
+    for args in [
+        vec![
             "version",
             "save",
             DOC,
@@ -601,61 +623,25 @@ fn version_save_sends_remove_commented_only_when_asked() {
             CHANGESET,
             "--remove-commented",
         ],
-    );
-    assert_eq!(
-        out.code, 0,
-        "version save --remove-commented: {}",
-        out.stderr
-    );
-    assert!(out.stdout.contains(NEW_VERSION), "{:?}", out.stdout);
-
-    let sent = requests(&server);
-    assert_eq!(sent.len(), 2, "{sent:?}");
-    let plain = body_of(&sent[0]);
-    assert!(plain.is_object(), "{plain}");
-    assert_ne!(plain["remove_commented"], true, "{plain}");
-    assert_eq!(body_of(&sent[1]), json!({ "remove_commented": true }));
-}
-
-#[test]
-fn version_save_that_would_remove_commented_nodes_lists_those_comments() {
-    let server = mock();
-    let home = logged_in(&server.url);
-    let out = run(
-        &home,
-        &["version", "save", COMMENTED_DOC, "--changeset", CHANGESET],
-    );
-    assert_ne!(out.code, 0, "the save is refused; stdout: {:?}", out.stdout);
-    assert!(
-        documented_exit_codes().contains(&out.code),
-        "exit code {} is not documented under \"Exit codes\" in omni --help",
-        out.code
-    );
-    assert_eq!(out.stdout, "", "nothing on standard output");
-    assert_contains_all(
-        &out.stderr,
-        &[
-            "--remove-commented",
-            FIRST,
-            NODE_FIRST,
-            FIRST_TEXT,
-            THIRD,
-            NODE_THIRD,
-            THIRD_TEXT,
-        ],
-        "standard error",
-    );
-
-    let out = run(
-        &home,
-        &[
-            "version",
-            "save",
-            COMMENTED_DOC,
+        vec![
+            "doc",
+            "remove",
+            DOC,
             "--changeset",
             CHANGESET,
             "--remove-commented",
         ],
+    ] {
+        let out = run(&home, &args);
+        assert_one_line_error(&out, &["--remove-commented"]);
+    }
+    assert!(requests(&server).is_empty(), "nothing was sent");
+
+    let help = omni(&home.path).args(&["--help"]).run();
+    assert_eq!(help.code, 0, "{}", help.stderr);
+    assert!(
+        !help.stdout.contains("--remove-commented"),
+        "omni --help no longer mentions --remove-commented: {:?}",
+        help.stdout
     );
-    assert_eq!(out.code, 0, "with --remove-commented: {}", out.stderr);
 }
