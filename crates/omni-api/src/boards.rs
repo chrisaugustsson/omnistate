@@ -34,7 +34,7 @@ use omni_core::design::{Node, NodeId};
 use omni_core::ops::IndexedNode;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 use utoipa::ToSchema;
 
@@ -51,6 +51,11 @@ pub struct ManifestBoard {
     /// The name of the board's chunk: the BLAKE3 hash of its bytes, 64
     /// lowercase hexadecimal characters.
     pub chunk: String,
+    /// The revision of each node of the board that is not at revision 1. A
+    /// head keeps its revisions here, so that a node's chunk does not change
+    /// with them; a version lists none.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub revs: BTreeMap<String, u64>,
 }
 
 /// A page of a manifest, with its boards in order.
@@ -60,6 +65,9 @@ pub struct ManifestPage {
     pub id: String,
     /// The name of the page's chunk, which holds the page without its boards.
     pub chunk: String,
+    /// The page's own revision when it is not 1, as the boards list theirs.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub revs: BTreeMap<String, u64>,
     pub boards: Vec<ManifestBoard>,
 }
 
@@ -156,6 +164,7 @@ fn split(pages: &[Node]) -> (Manifest, Vec<Part>) {
         let mut entry = ManifestPage {
             id: page.id().to_string(),
             chunk: page_chunk.hash.clone(),
+            revs: BTreeMap::new(),
             boards: Vec::new(),
         };
         parts.push(page_chunk);
@@ -164,6 +173,7 @@ fn split(pages: &[Node]) -> (Manifest, Vec<Part>) {
             entry.boards.push(ManifestBoard {
                 id: board.id().to_string(),
                 chunk: part.hash.clone(),
+                revs: BTreeMap::new(),
             });
             parts.push(part);
         }
@@ -313,6 +323,16 @@ pub(crate) async fn read_pages(
     let Ok(manifest) = serde_json::from_str::<Manifest>(&text) else {
         return read_whole_pages(&text, what);
     };
+    assemble_pages(state, workspace_id, &manifest, what).await
+}
+
+/// The pages that a manifest lists, each with its boards, read from RustFS.
+async fn assemble_pages(
+    state: &AppState,
+    workspace_id: &str,
+    manifest: &Manifest,
+    what: &str,
+) -> Result<Vec<Node>, ApiError> {
     let texts = read_chunks(state, workspace_id, &manifest.chunks()).await?;
     let parse = |chunk: &str| -> Result<Value, ApiError> {
         let text = texts
@@ -335,6 +355,160 @@ pub(crate) async fn read_pages(
         pages.push(page);
     }
     nodes_from(&Value::Array(pages)).map_err(|e| unavailable(what, e))
+}
+
+/// A design doc's head as an edit needs it: its manifest, its pages with their
+/// boards, and the revision of every node.
+pub(crate) struct HeadDesign {
+    pub(crate) manifest: Manifest,
+    pub(crate) pages: Vec<Node>,
+    pub(crate) revisions: HashMap<NodeId, u64>,
+}
+
+/// The revisions that a manifest lists; a node it does not list is at
+/// revision 1.
+fn revisions_of(manifest: &Manifest) -> HashMap<NodeId, u64> {
+    manifest
+        .pages
+        .iter()
+        .flat_map(|page| {
+            std::iter::once(&page.revs).chain(page.boards.iter().map(|board| &board.revs))
+        })
+        .flatten()
+        .filter_map(|(id, rev)| id.parse().ok().map(|id| (id, *rev)))
+        .collect()
+}
+
+/// A design doc's head, read from RustFS. A head in the older form, all its
+/// pages in one chunk, reads with an empty manifest: every chunk of its next
+/// head is new.
+pub(crate) async fn read_head_design(
+    state: &AppState,
+    workspace_id: &str,
+    chunk: &str,
+    what: &str,
+) -> Result<HeadDesign, ApiError> {
+    let text = read_chunk(state, workspace_id, chunk).await?;
+    let Ok(manifest) = serde_json::from_str::<Manifest>(&text) else {
+        return Ok(HeadDesign {
+            manifest: Manifest { pages: Vec::new() },
+            pages: read_whole_pages(&text, what)?,
+            revisions: HashMap::new(),
+        });
+    };
+    let pages = assemble_pages(state, workspace_id, &manifest, what).await?;
+    let revisions = revisions_of(&manifest);
+    Ok(HeadDesign {
+        manifest,
+        pages,
+        revisions,
+    })
+}
+
+/// The revisions of the nodes of a subtree that are not 1.
+fn revs_of(root: &Node, revisions: &HashMap<NodeId, u64>) -> BTreeMap<String, u64> {
+    let mut revs = BTreeMap::new();
+    let mut pending = vec![root];
+    while let Some(node) = pending.pop() {
+        match revisions.get(node.id()) {
+            Some(rev) if *rev != 1 => {
+                revs.insert(node.id().to_string(), *rev);
+            }
+            _ => {}
+        }
+        pending.extend(node.children());
+    }
+    revs
+}
+
+/// What writing a new head of a design takes: its manifest and the text of
+/// it, the chunks that no chunk of the head before has the name of, and the
+/// boards whose chunk changed.
+pub(crate) struct HeadWrite {
+    pub(crate) manifest: Manifest,
+    pub(crate) text: String,
+    pub(crate) changed: Vec<Part>,
+    /// `[{board, before, after}]`, as `doc_changes.boards` holds it.
+    pub(crate) boards: Value,
+}
+
+impl HeadWrite {
+    /// What the chunks of the write are listed by in the chunk index: the
+    /// manifest, and the changed chunks as parts.
+    pub(crate) fn into_snapshot(self) -> (Snapshot, Value) {
+        let snapshot = Snapshot {
+            html: self.text,
+            nodes: Vec::new(),
+            parts: self.changed,
+            manifest: Some(self.manifest),
+        };
+        (snapshot, self.boards)
+    }
+}
+
+/// Plans the write of `pages` with their `revisions` as the head that follows
+/// `before`: a chunk is written only when no chunk of `before` is named by its
+/// hash, so a write stores the boards it changed and the manifest.
+pub(crate) fn plan_head_write(
+    before: &Manifest,
+    pages: &[Node],
+    revisions: &HashMap<NodeId, u64>,
+) -> HeadWrite {
+    let (mut manifest, parts) = split(pages);
+    for (entry, page) in manifest.pages.iter_mut().zip(pages) {
+        entry.revs = match revisions.get(page.id()) {
+            Some(rev) if *rev != 1 => BTreeMap::from([(page.id().to_string(), *rev)]),
+            _ => BTreeMap::new(),
+        };
+        for (board_entry, board) in entry.boards.iter_mut().zip(page.children()) {
+            board_entry.revs = revs_of(board, revisions);
+        }
+    }
+    let known: HashSet<&str> = before.chunks().into_iter().collect();
+    let changed = parts
+        .into_iter()
+        .filter(|part| !known.contains(part.hash.as_str()))
+        .collect();
+    let boards = board_changes(before, &manifest);
+    let text = manifest_text(&manifest);
+    HeadWrite {
+        manifest,
+        text,
+        changed,
+        boards,
+    }
+}
+
+/// The boards whose chunk differs between two manifests, as `{board, before,
+/// after}`: the boards of `after` in order, then the ones it lacks.
+fn board_changes(before: &Manifest, after: &Manifest) -> Value {
+    let boards = |manifest: &Manifest| -> Vec<(String, String)> {
+        manifest
+            .pages
+            .iter()
+            .flat_map(|page| page.boards.iter())
+            .map(|board| (board.id.clone(), board.chunk.clone()))
+            .collect()
+    };
+    let (was, now) = (boards(before), boards(after));
+    let was_by_id: HashMap<&str, &str> = was
+        .iter()
+        .map(|(id, chunk)| (id.as_str(), chunk.as_str()))
+        .collect();
+    let now_ids: HashSet<&str> = now.iter().map(|(id, _)| id.as_str()).collect();
+    let mut changes = Vec::new();
+    for (id, chunk) in &now {
+        let before = was_by_id.get(id.as_str()).copied();
+        if before != Some(chunk.as_str()) {
+            changes.push(serde_json::json!({ "board": id, "before": before, "after": chunk }));
+        }
+    }
+    for (id, chunk) in &was {
+        if !now_ids.contains(id.as_str()) {
+            changes.push(serde_json::json!({ "board": id, "before": chunk, "after": null }));
+        }
+    }
+    Value::Array(changes)
 }
 
 /// The pages of a design version as the viewer reads them first: each page

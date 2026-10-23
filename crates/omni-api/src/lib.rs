@@ -414,7 +414,11 @@ pub fn router(state: AppState) -> Router {
         )
         .route(
             "/api/v1/w/{workspace_id}/projects/{project_id}/tokens",
-            get(tokens::read_mainline_tokens),
+            get(tokens::read_mainline_tokens).put(tokens::import_head_tokens),
+        )
+        .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/components",
+            put(design::import_head_components).layer(DefaultBodyLimit::max(IMPORT_MAX_BYTES)),
         )
         .route(
             "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/components",

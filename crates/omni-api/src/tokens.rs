@@ -15,6 +15,9 @@
 
 use crate::AppState;
 use crate::changesets::{parse_body, require_project};
+use crate::design::{
+    SystemTarget, design_system_text, locked_design_system, read_system_head, write_system_head,
+};
 use crate::docs::require_changeset;
 use crate::docs::{
     AgentIdentity, DraftRow, Tx, current_draft, ensure_draft, load_state, read_tokens,
@@ -433,10 +436,94 @@ pub async fn read_draft_tokens(
     }))
 }
 
-/// The token tree of the design system's mainline version, or of the version
-/// named by `?version=`, or, with `?mode=`, the tree of one mode. Before the
-/// design system has a mainline version (or a doc) there is no version and no
-/// tree.
+#[derive(Serialize, ToSchema)]
+pub struct ImportedHeadTokens {
+    pub project_id: String,
+    /// The project's design system doc.
+    pub doc_id: String,
+    /// The design system's new head.
+    pub head: String,
+    /// The design system's modes, in order.
+    pub modes: Vec<String>,
+    /// The token tree as stored.
+    #[schema(value_type = Object)]
+    pub tokens: Value,
+}
+
+/// Replaces the token tree of the project's design system head, all or nothing,
+/// with no change set; the components stay. The write makes a new head, adds a
+/// row of `doc_changes` and emits `doc.changed`; a tree that is refused
+/// changes, logs and emits nothing. Designs read the new tree at their next
+/// read.
+#[utoipa::path(
+    put,
+    path = "/api/v1/w/{workspace_id}/projects/{project_id}/tokens",
+    params(
+        ("workspace_id" = String, Path, description = "The workspace's UUID"),
+        ("project_id" = String, Path, description = "The project's UUID"),
+        ("X-Omni-Run" = Option<String>, Header, description = "The agent's run"),
+        ("X-Omni-Role" = Option<String>, Header, description = "The agent's role"),
+        ("X-Omni-Model" = Option<String>, Header, description = "The model behind the agent"),
+        ("X-Omni-Harness" = Option<String>, Header, description = "The harness that runs the agent"),
+    ),
+    request_body = ImportTokensRequest,
+    responses(
+        (status = 200, description = "The tree as stored", body = ImportedHeadTokens),
+        (status = 400, description = "`tokens` is missing (`invalid_request`), or the tree is refused or names a font file that is not a font of the workspace (`invalid_tokens`, with a message)", body = InvalidTokensBody),
+        (status = 401, description = "No valid API key or session", body = ErrorBody),
+        (status = 403, description = "Called with a session; agents only", body = ErrorBody),
+        (status = 404, description = "No such project in this workspace, or the project has no design system doc (`no_design_system`)", body = ErrorBody),
+    )
+)]
+pub async fn import_head_tokens(
+    State(state): State<AppState>,
+    request: AgentRequest,
+    identity: AgentIdentity,
+    Path((_, project_id)): Path<(String, String)>,
+    body: Bytes,
+) -> Result<Json<ImportedHeadTokens>, TokensError> {
+    let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
+    let workspace_id = request.workspace_id;
+    let sent = parse_body::<ImportTokensRequest>(&body);
+    let mut tx = state.workspace_tx(&workspace_id).await?;
+    require_project(&mut tx, &project_id).await?;
+    let (doc_id, head_before) = locked_design_system(&mut tx, &project_id).await?;
+    let tokens = sent?
+        .tokens
+        .ok_or_else(|| ApiError::bad_request("invalid_request"))?;
+    let tree = TokenTree::from_json(&tokens).map_err(|e| TokensError::Invalid(e.to_string()))?;
+    check_font_files(&mut tx, &tree).await?;
+
+    let current = read_system_head(&state, &workspace_id, &doc_id, head_before.as_deref()).await?;
+    let components: Vec<_> = current.library.into_components();
+    let agent = identity.to_json();
+    let target = SystemTarget {
+        workspace_id: &workspace_id,
+        project_id: &project_id,
+        doc_id: &doc_id,
+        head_before: head_before.as_deref(),
+        agent: &agent,
+    };
+    let modes = tree.modes().to_vec();
+    let tokens = tree.to_json();
+    let text = design_system_text(Some(&tree), &components);
+    let operations = json!([{ "op": "import_tokens", "tokens": tokens }]);
+    let head = write_system_head(&state, &mut tx, &target, &operations, text).await?;
+    tx.commit().await.map_err(ApiError::database)?;
+    state.live.announce(&workspace_id, &project_id);
+    Ok(Json(ImportedHeadTokens {
+        project_id,
+        doc_id,
+        head,
+        modes,
+        tokens,
+    }))
+}
+
+/// The token tree of the design system's head, or of the version named by
+/// `?version=`, or, with `?mode=`, the tree of one mode. Before the design
+/// system has a head (or a doc) there is no tree. `version_id` is the version
+/// that holds the head, `null` for a head that no version holds.
 #[utoipa::path(
     get,
     path = "/api/v1/w/{workspace_id}/projects/{project_id}/tokens",
@@ -464,24 +551,51 @@ pub async fn read_mainline_tokens(
     require_project(&mut tx, &project_id).await?;
     let found = find_design_system(&mut tx, &project_id).await?;
     let doc_id = found.as_ref().map(|(doc_id, _)| doc_id.clone());
-    let mainline = found.and_then(|(_, mainline)| mainline);
-    let version_id = match query.get("version") {
-        Some(version) => Some(parse_uuid(version).ok_or(ApiError::NotFound)?),
-        None => mainline,
-    };
-    // A version that holds no content (the removal of the doc) has no tree.
-    let chunk = match (&doc_id, &version_id) {
-        (Some(doc_id), Some(version_id)) => chunk_of_version(&mut tx, doc_id, version_id).await?,
-        (None, Some(_)) => return Err(ApiError::NotFound),
-        _ => None,
+    let (version_id, chunk) = match (query.get("version"), &doc_id) {
+        (Some(version), Some(doc_id)) => {
+            let version_id = parse_uuid(version).ok_or(ApiError::NotFound)?;
+            // A version that holds no content (the removal of the doc) has no
+            // tree.
+            let chunk = chunk_of_version(&mut tx, doc_id, &version_id).await?;
+            (Some(version_id), chunk)
+        }
+        (Some(version), None) => {
+            parse_uuid(version).ok_or(ApiError::NotFound)?;
+            return Err(ApiError::NotFound);
+        }
+        (None, Some(doc_id)) => {
+            let head: Option<String> =
+                sqlx::query_scalar("SELECT head FROM docs WHERE id = $1::uuid")
+                    .bind(doc_id)
+                    .fetch_one(&mut *tx)
+                    .await
+                    .map_err(ApiError::database)?;
+            let version: Option<String> = match &head {
+                Some(head) => sqlx::query_scalar(
+                    "SELECT v.id::text FROM versions v JOIN docs d ON d.mainline_version_id = v.id \
+                     WHERE d.id = $1::uuid AND v.chunk = $2",
+                )
+                .bind(doc_id)
+                .bind(head)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(ApiError::database)?,
+                None => None,
+            };
+            (version, head)
+        }
+        (None, None) => (None, None),
     };
     tx.commit().await.map_err(ApiError::database)?;
-    let tokens = match (&version_id, chunk) {
-        (Some(version_id), Some(chunk)) => {
+    let tokens = match chunk {
+        Some(chunk) => {
             let text = read_chunk(&state, &request.workspace_id, &chunk).await?;
-            read_tokens(&text, &format!("version {version_id}"))?
+            read_tokens(
+                &text,
+                &format!("the design system {}", doc_id.as_deref().unwrap_or("")),
+            )?
         }
-        _ => None,
+        None => None,
     };
     let mode = query.get("mode").map(String::as_str);
     let (modes, tree) = answer_for(tokens.as_ref(), mode)?;

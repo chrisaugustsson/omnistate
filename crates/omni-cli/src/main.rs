@@ -103,24 +103,26 @@ Usage:
                                       print one board of a design doc in the tag format (a
                                       rev on every tag for a draft); without options, the
                                       mainline version
-  omni design edit --changeset <id> --doc <id> [--board <id>]
+  omni design edit <doc> [--changeset <id>] [--board <id>]
                                       apply a batch of operations (a JSON array, from
-                                      --body-file or standard input) to the change set's
-                                      draft of a design: insert a subtree in the tag format
-                                      (a new board under a page too), replace, set, move and
-                                      delete, each with the rev you read; the server assigns
-                                      the IDs of new nodes and prints them. With --board the
-                                      batch must stay inside that board
+                                      --body-file or standard input) to the design's head, or
+                                      with --changeset to the change set's draft: insert a
+                                      subtree in the tag format (a new board under a page
+                                      too), replace, set, move and delete, each with the rev
+                                      you have; the server assigns the IDs of new nodes and
+                                      prints them. A write stores only the boards it changes.
+                                      With --board the batch must stay inside that board
   omni component usage <component>    list every board of the project's designs that uses a
-                                      component, from the mainline versions: an instance in a
-                                      board, in another component's tree, or a slot value
-  omni tokens import <file> --changeset <id>
+                                      component, from the heads: an instance in a board, in
+                                      another component's tree, or a slot value
+  omni tokens import <file> [--changeset <id>]
                                       replace the whole design token tree (DTCG JSON, with a
-                                      value per mode) of the change set's draft of the design
-                                      system, in one all-or-nothing batch
+                                      value per mode) of the design system's head, or with
+                                      --changeset of the change set's draft, in one
+                                      all-or-nothing batch
   omni tokens export [--changeset <id> | --version <v>] [--out <file>]
-                                      print the design tokens as DTCG JSON: the mainline
-                                      version, a change set's draft or a saved version
+                                      print the design tokens as DTCG JSON: the design
+                                      system's head, a change set's draft or a saved version
   omni tokens export --per-mode --out <dir>
                                       write one file per mode, <dir>/<mode>.tokens.json
   omni import penpot <file.penpot> --project <id>
@@ -241,6 +243,7 @@ Options (before or after the command):
   --note <text>         how a conflict was resolved (`omni changeset resolve`)
   --changeset <id>      the change set a doc, design edit, tokens, claim, release or wait command works in
   --doc <id>            the design doc that `omni design read` reads or `omni design edit` edits
+                        (`omni design edit` also takes it as an argument)
   --board <id>          the board of that doc that `omni design read` prints, or that a
                         `omni design edit` batch stays inside
   --status <status>     the comments that `omni comment list` shows: open, addressed or

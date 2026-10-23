@@ -40,7 +40,7 @@ pub fn usage(args: &Args, component: Option<&str>) -> Result<()> {
         ),
         "unknown_component",
         &format!(
-            "the design system does not define a component {component}; its components are in the design system's draft or mainline version"
+            "the design system does not define a component {component}; its components are in the design system's head"
         ),
     )?;
     let text = response.text();

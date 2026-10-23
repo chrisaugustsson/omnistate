@@ -186,6 +186,16 @@ pub struct MainlineHtmlResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schema(value_type = Option<Vec<Object>>)]
     pub pages: Option<Vec<Value>>,
+    /// The token tree of the project's design system head, in every mode; only
+    /// for the head of a design, and left out when the design system has none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<Object>)]
+    pub tokens: Option<Value>,
+    /// The components that the design's instances use, as the design system's
+    /// head defines them; only for the head of a design.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<Vec<Object>>)]
+    pub components: Option<Vec<Value>>,
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -1107,12 +1117,38 @@ pub(crate) async fn log_change(
     head_before: Option<&str>,
     head_after: &str,
 ) -> Result<(), ApiError> {
+    log_change_of_boards(
+        tx,
+        workspace_id,
+        doc_id,
+        agent,
+        operations,
+        head_before,
+        head_after,
+        None,
+    )
+    .await
+}
+
+/// Like `log_change`, for a write to a design: `boards` lists each board whose
+/// chunk the write changed as `{board, before, after}`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn log_change_of_boards(
+    tx: &mut Tx,
+    workspace_id: &str,
+    doc_id: &str,
+    agent: &Value,
+    operations: &Value,
+    head_before: Option<&str>,
+    head_after: &str,
+    boards: Option<&Value>,
+) -> Result<(), ApiError> {
     sqlx::query(
         "INSERT INTO doc_changes \
-         (workspace_id, doc_id, seq, agent, operations, head_before, head_after) \
+         (workspace_id, doc_id, seq, agent, operations, head_before, head_after, boards) \
          VALUES ($1::uuid, $2::uuid, \
                  (SELECT COALESCE(MAX(seq), 0) + 1 FROM doc_changes WHERE doc_id = $2::uuid), \
-                 $3::text::jsonb, $4::text::jsonb, $5, $6)",
+                 $3::text::jsonb, $4::text::jsonb, $5, $6, $7::text::jsonb)",
     )
     .bind(workspace_id)
     .bind(doc_id)
@@ -1120,6 +1156,7 @@ pub(crate) async fn log_change(
     .bind(operations.to_string())
     .bind(head_before)
     .bind(head_after)
+    .bind(boards.map(Value::to_string))
     .execute(&mut **tx)
     .await
     .map_err(ApiError::database)?;
@@ -1610,6 +1647,8 @@ pub async fn read_doc_html(
         html,
         tags: None,
         pages: None,
+        tokens: None,
+        components: None,
     }))
 }
 
@@ -1640,6 +1679,8 @@ async fn read_head(
         html: String::new(),
         tags: None,
         pages: None,
+        tokens: None,
+        components: None,
     };
     if row.kind == "design" {
         let pages = match &row.head {
@@ -1649,8 +1690,12 @@ async fn read_head(
             }
             None => Vec::new(),
         };
+        // The design resolves against the design system's head as it is now.
+        let system = design::system_head_of_project(state, workspace_id, &row.project_id).await?;
         answer.tags = Some(design::tags_of(&pages));
         answer.pages = Some(design::nodes_values(&pages));
+        answer.tokens = system.tokens_json();
+        answer.components = Some(system.components_used_by(&pages));
     } else if let Some(head) = &row.head {
         answer.html = versions::read_chunk(state, workspace_id, head).await?;
     }
@@ -1944,14 +1989,16 @@ pub async fn edit_draft(
     Ok(Json(EditResponse { results }))
 }
 
-/// Applies a batch of operations to the head of an HTML doc, all or nothing,
-/// with no change set. The batch runs under the lock on the doc's row, so
-/// batches to one doc are applied one after the other, each to the head the
-/// one before made. The new head is a chunk in RustFS that holds the doc as
-/// HTML with `data-node-id` and `data-rev`, which is where a node's revision
-/// is kept: nothing about a head is held in memory. A batch that is refused
-/// changes, logs and emits nothing; an applied one adds one row of
-/// `doc_changes` and emits `doc.changed`.
+/// Applies a batch of operations to the head of an HTML doc or a design, all or
+/// nothing, with no change set. The batch runs under the lock on the doc's row,
+/// so batches to one doc are applied one after the other, each to the head the
+/// one before made. The new head of an HTML doc is a chunk in RustFS that holds
+/// the doc as HTML with `data-node-id` and `data-rev`, which is where a node's
+/// revision is kept; the new head of a design is a manifest that lists the
+/// chunk of every page and board and the revisions, and only the boards the
+/// batch changed get a new chunk (`design::edit_head`). Nothing about a head is
+/// held in memory. A batch that is refused changes, logs and emits nothing; an
+/// applied one adds one row of `doc_changes` and emits `doc.changed`.
 #[utoipa::path(
     post,
     path = "/api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}/ops",
@@ -1967,10 +2014,10 @@ pub async fn edit_draft(
     request_body = EditRequest,
     responses(
         (status = 200, description = "The batch applied; one result per operation", body = EditResponse),
-        (status = 400, description = "The body is not a batch (`invalid_request`), the doc is no HTML doc (`not_an_html_doc`), or an operation is refused (`invalid_operation`, naming an unknown ID)", body = InvalidOperationBody),
+        (status = 400, description = "The body is not a batch (`invalid_request`), the doc is a design system (`not_an_html_doc`), or an operation is refused (`invalid_operation`, naming an unknown ID, or for a design an instance of a component the design system lacks)", body = InvalidOperationBody),
         (status = 401, description = "No valid API key or session", body = ErrorBody),
         (status = 403, description = "Called with a session; agents only", body = ErrorBody),
-        (status = 404, description = "No such doc in this project and workspace", body = ErrorBody),
+        (status = 404, description = "No such doc in this project and workspace, or `board` is no board of the design (`unknown_board`)", body = ErrorBody),
         (status = 409, description = "A node is at another revision than the operation expected (`conflict`); nothing changed", body = ConflictBody),
     )
 )]
@@ -1998,8 +2045,9 @@ pub async fn edit_doc(
     .await
     .map_err(ApiError::database)?;
     let (kind, head_before) = locked.ok_or(ApiError::NotFound)?;
-    let sent = batch?.ops;
-    if kind != "html" {
+    let batch = batch?;
+    let (sent, board) = (batch.ops, batch.board);
+    if kind != "html" && kind != "design" {
         return Err(ApiError::bad_request("not_an_html_doc").into());
     }
     let mut ops = Vec::with_capacity(sent.len());
@@ -2013,6 +2061,28 @@ pub async fn edit_doc(
                 });
             }
         }
+    }
+
+    if kind == "design" {
+        let agent = identity.to_json();
+        let results = design::edit_head(
+            &state,
+            &mut tx,
+            &workspace_id,
+            &project_id,
+            &doc_id,
+            head_before.as_deref(),
+            &agent,
+            sent,
+            ops,
+            board,
+        )
+        .await?;
+        tx.commit().await.map_err(ApiError::database)?;
+        if !results.is_empty() {
+            state.live.announce(&workspace_id, &project_id);
+        }
+        return Ok(Json(EditResponse { results }));
     }
 
     let html = match &head_before {
@@ -2037,16 +2107,7 @@ pub async fn edit_doc(
             return Err(DocError::Invalid { index, message });
         }
     };
-    let results: Vec<OpResultBody> = applied
-        .ops
-        .iter()
-        .map(|result| OpResultBody {
-            node: result.node.to_string(),
-            revision: result.revision,
-            created: result.created.iter().map(NodeId::to_string).collect(),
-            removed: result.removed.iter().map(NodeId::to_string).collect(),
-        })
-        .collect();
+    let results = results_of(&applied);
     if results.is_empty() {
         return Ok(Json(EditResponse { results }));
     }
@@ -2081,6 +2142,20 @@ pub async fn edit_doc(
     tx.commit().await.map_err(ApiError::database)?;
     state.live.announce(&workspace_id, &project_id);
     Ok(Json(EditResponse { results }))
+}
+
+/// The results of an applied batch as the API answers them.
+pub(crate) fn results_of(applied: &omni_core::ops::Applied) -> Vec<OpResultBody> {
+    applied
+        .ops
+        .iter()
+        .map(|result| OpResultBody {
+            node: result.node.to_string(),
+            revision: result.revision,
+            created: result.created.iter().map(NodeId::to_string).collect(),
+            removed: result.removed.iter().map(NodeId::to_string).collect(),
+        })
+        .collect()
 }
 
 /// Whether a batch places an instance of a component or changes one, whose
@@ -2161,16 +2236,7 @@ async fn apply_batch(state: &AppState, edit: Edit) -> Result<Vec<OpResultBody>, 
         }
     };
 
-    let results: Vec<OpResultBody> = applied
-        .ops
-        .iter()
-        .map(|result| OpResultBody {
-            node: result.node.to_string(),
-            revision: result.revision,
-            created: result.created.iter().map(NodeId::to_string).collect(),
-            removed: result.removed.iter().map(NodeId::to_string).collect(),
-        })
-        .collect();
+    let results = results_of(&applied);
     let persisted = log_and_emit(
         &mut tx,
         &workspace_id,

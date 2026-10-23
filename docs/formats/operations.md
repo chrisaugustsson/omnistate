@@ -205,6 +205,10 @@ A design doc takes the same five operations on its nodes (pages, boards,
 frames, text, images, vectors and instances), applied by
 `omni_core::design::DesignDoc::apply` (`crates/omni-core/src/design/edit.rs`)
 through `omni design edit`, which sends a batch to the same route as HTML docs.
+A batch to a design's head replaces only the chunks of the boards it changes
+and writes a new manifest; the revisions live in the manifest, so a changed
+revision does not change a chunk. Instances are checked against the design
+system's head.
 Positions are the same, and the `parent` of a page is `null`. `content` is one
 tag of the tag format with its children (`docs/formats/design-tags.md`), read
 against the node it goes into, so a board goes under a page only, a page at the

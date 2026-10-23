@@ -20,8 +20,8 @@ use crate::decisions::{
     DecisionBody, DecisionFile, DecisionOption, DecisionResponse, Dissent, RejectDecisionRequest,
 };
 use crate::design::{
-    ImportTagsRequest, ImportedComponents, ImportedDesign, InvalidDesignBody, UsageBoard,
-    UsageResponse,
+    ImportTagsRequest, ImportedComponents, ImportedDesign, ImportedHeadComponents,
+    InvalidDesignBody, UsageBoard, UsageResponse,
 };
 use crate::docs::{
     ConflictBody, ConflictDetails, CreateDocRequest, CreatedDocResponse, DocBody, DocListResponse,
@@ -46,7 +46,8 @@ use crate::threads::{
     ThreadBody, ThreadResponse,
 };
 use crate::tokens::{
-    DraftTokensResponse, ImportTokensRequest, InvalidTokensBody, MainlineTokensResponse,
+    DraftTokensResponse, ImportTokensRequest, ImportedHeadTokens, InvalidTokensBody,
+    MainlineTokensResponse,
 };
 use crate::versions::{
     DiffBody, DiffResponse, MovedNode, NodeEntry, SaveVersionRequest, VersionBody, VersionItem,
@@ -117,6 +118,8 @@ use utoipa::OpenApi;
         crate::tokens::import_tokens,
         crate::tokens::read_draft_tokens,
         crate::tokens::read_mainline_tokens,
+        crate::tokens::import_head_tokens,
+        crate::design::import_head_components,
         crate::design::import_components,
         crate::design::import_design,
         crate::design::component_usage,
@@ -216,10 +219,12 @@ use utoipa::OpenApi;
         ResolveConflictRequest,
         ImportTokensRequest,
         DraftTokensResponse,
+        ImportedHeadTokens,
         MainlineTokensResponse,
         InvalidTokensBody,
         ImportTagsRequest,
         ImportedComponents,
+        ImportedHeadComponents,
         ImportedDesign,
         InvalidDesignBody,
         UsageBoard,

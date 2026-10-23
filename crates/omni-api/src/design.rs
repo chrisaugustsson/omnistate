@@ -23,14 +23,17 @@ use crate::AppState;
 use crate::boards;
 use crate::changesets::{parse_body, require_project};
 use crate::docs::{
-    AgentIdentity, Tx, current_draft, ensure_draft, ensure_loaded, find_doc, load_state,
-    random_node_id, require_changeset,
+    AgentIdentity, DocError, OpResultBody, Tx, UsedIds, current_draft, ensure_draft, ensure_loaded,
+    find_doc, load_state, log_change, log_change_of_boards, random_node_id, require_changeset,
+    results_of,
 };
 use crate::live;
 use crate::placeholders::Sizing;
 use crate::session::{ApiError, ErrorBody};
 use crate::tokens::design_system_of;
-use crate::versions::{chunk_of_version, read_chunk, store_version};
+use crate::versions::{
+    Snapshot, chunk_of_version, index_snapshot, read_chunk, store_text, store_version,
+};
 use crate::workspace::{AgentRequest, WorkspaceRequest, parse_uuid};
 use axum::Json;
 use axum::body::Bytes;
@@ -42,9 +45,11 @@ use omni_core::design::tokens::TokenTree;
 use omni_core::design::{
     DesignDoc, Instance, Node, NodeData, NodeId, NodeKind, PropDef, PropDefs, PropValue,
 };
+use omni_core::ops::{ApplyError, Operation};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::{BTreeSet, HashMap, HashSet};
+use std::sync::{Arc, Mutex};
 use utoipa::ToSchema;
 
 /// The key that holds the components next to the tokens in the JSON of a
@@ -94,6 +99,11 @@ pub(crate) fn read_design_system(
         eprintln!("omni-api: {what} holds no design system: {why}");
         ApiError::Unavailable
     };
+    // A design system that has nothing yet (its head when it was made) is the
+    // empty text.
+    if text.is_empty() {
+        return Ok((None, Vec::new()));
+    }
     let mut json: Value = serde_json::from_str(text).map_err(|e| unavailable(e.to_string()))?;
     let components = match json
         .as_object_mut()
@@ -159,6 +169,10 @@ pub(crate) struct Library(Vec<Node>);
 impl Library {
     pub(crate) fn new(components: Vec<Node>) -> Self {
         Self(components)
+    }
+
+    pub(crate) fn into_components(self) -> Vec<Node> {
+        self.0
     }
 
     fn get(&self, id: &NodeId) -> Option<&Node> {
@@ -1362,6 +1376,360 @@ async fn apply_design(state: &AppState, import: Import) -> Result<ImportedDesign
     })
 }
 
+// The design system's head and the writes to heads ----------------------------------------
+
+/// The project's design system doc and its head, `None` for a project that has
+/// none. A project has at most one.
+async fn design_system_row(
+    tx: &mut Tx,
+    project_id: &str,
+    lock: bool,
+) -> Result<Option<(String, Option<String>)>, ApiError> {
+    let lock = if lock { " FOR UPDATE" } else { "" };
+    sqlx::query_as(&format!(
+        "SELECT id::text, head FROM docs \
+         WHERE project_id = $1::uuid AND kind = 'design-system'{lock}"
+    ))
+    .bind(project_id)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(ApiError::database)
+}
+
+/// What the head of a design system holds: its tokens, none for a design
+/// system of components only, and its components.
+#[derive(Clone, Default)]
+pub(crate) struct SystemHead {
+    pub(crate) tokens: Option<TokenTree>,
+    pub(crate) library: Library,
+}
+
+impl SystemHead {
+    /// The token tree in every mode, as the reads of a design answer it.
+    pub(crate) fn tokens_json(&self) -> Option<Value> {
+        self.tokens.as_ref().map(TokenTree::to_json)
+    }
+
+    /// The components that `pages` use, as the head defines them.
+    pub(crate) fn components_used_by(&self, pages: &[Node]) -> Vec<Value> {
+        let used = used_by(pages, &self.library);
+        nodes_values(&self.library.only(&used))
+    }
+}
+
+/// Reads the design system's head chunk; a design system with no head holds
+/// nothing.
+pub(crate) async fn read_system_head(
+    state: &AppState,
+    workspace_id: &str,
+    doc_id: &str,
+    head: Option<&str>,
+) -> Result<SystemHead, ApiError> {
+    let Some(head) = head else {
+        return Ok(SystemHead::default());
+    };
+    let text = read_chunk(state, workspace_id, head).await?;
+    let what = format!("the head of the design system {doc_id}");
+    let (tokens, components) = read_design_system(&text, &what)?;
+    Ok(SystemHead {
+        tokens,
+        library: Library::new(components),
+    })
+}
+
+/// The head of the project's design system, which the designs of the project
+/// resolve their instances and tokens against. A project without a design
+/// system has an empty one.
+pub(crate) async fn system_head_of_project(
+    state: &AppState,
+    workspace_id: &str,
+    project_id: &str,
+) -> Result<SystemHead, ApiError> {
+    let mut tx = state.workspace_tx(workspace_id).await?;
+    let found = design_system_row(&mut tx, project_id, false).await?;
+    tx.commit().await.map_err(ApiError::database)?;
+    match found {
+        Some((doc_id, head)) => {
+            read_system_head(state, workspace_id, &doc_id, head.as_deref()).await
+        }
+        None => Ok(SystemHead::default()),
+    }
+}
+
+/// The project's design system doc with its row locked, so that its imports
+/// run one after the other; 404 `no_design_system` for a project without one.
+pub(crate) async fn locked_design_system(
+    tx: &mut Tx,
+    project_id: &str,
+) -> Result<(String, Option<String>), ApiError> {
+    design_system_row(tx, project_id, true)
+        .await?
+        .ok_or(ApiError::Refused(StatusCode::NOT_FOUND, "no_design_system"))
+}
+
+/// Makes `text` the head of the design system `doc_id` in the transaction of
+/// an import (whose doc row is locked): stores the chunk, lists it in the
+/// indexes, sets the head, adds the row of `doc_changes` and emits
+/// `doc.changed`. Returns the new head.
+pub(crate) async fn write_system_head(
+    state: &AppState,
+    tx: &mut Tx,
+    target: &SystemTarget<'_>,
+    operations: &Value,
+    text: String,
+) -> Result<String, ApiError> {
+    let head = store_text(state, target.workspace_id, &text).await?;
+    index_snapshot(
+        tx,
+        target.workspace_id,
+        &head,
+        &Snapshot::new(text, Vec::new()),
+    )
+    .await?;
+    sqlx::query("UPDATE docs SET head = $2 WHERE id = $1::uuid")
+        .bind(target.doc_id)
+        .bind(&head)
+        .execute(&mut **tx)
+        .await
+        .map_err(ApiError::database)?;
+    log_change(
+        tx,
+        target.workspace_id,
+        target.doc_id,
+        target.agent,
+        operations,
+        target.head_before,
+        &head,
+    )
+    .await?;
+    live::emit(
+        tx,
+        target.workspace_id,
+        target.project_id,
+        "doc.changed",
+        &json!({ "doc_id": target.doc_id, "head": head }),
+    )
+    .await?;
+    Ok(head)
+}
+
+/// The design system an import writes to.
+pub(crate) struct SystemTarget<'a> {
+    pub(crate) workspace_id: &'a str,
+    pub(crate) project_id: &'a str,
+    pub(crate) doc_id: &'a str,
+    pub(crate) head_before: Option<&'a str>,
+    pub(crate) agent: &'a Value,
+}
+
+/// Applies a batch of operations to the head of a design, all or nothing, in
+/// the transaction of the request, whose doc row is locked. Instances are
+/// checked against the design system's head. The new head lists the chunk of
+/// every page and board: a board the batch did not change keeps its chunk, so
+/// only the changed boards and the new manifest are stored. The write adds one
+/// row of `doc_changes` that lists the changed boards, and emits
+/// `doc.changed`. The caller commits. A batch that changes nothing writes
+/// nothing.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn edit_head(
+    state: &AppState,
+    tx: &mut Tx,
+    workspace_id: &str,
+    project_id: &str,
+    doc_id: &str,
+    head_before: Option<&str>,
+    agent: &Value,
+    sent: Vec<Value>,
+    ops: Vec<Operation>,
+    board: Option<String>,
+) -> Result<Vec<OpResultBody>, DocError> {
+    let head = match head_before {
+        Some(chunk) => {
+            let what = format!("the head of doc {doc_id}");
+            boards::read_head_design(state, workspace_id, chunk, &what).await?
+        }
+        None => boards::HeadDesign {
+            manifest: boards::Manifest { pages: Vec::new() },
+            pages: Vec::new(),
+            revisions: HashMap::new(),
+        },
+    };
+    let system = match design_system_row(tx, project_id, false).await? {
+        Some((system_id, system_head)) => {
+            read_system_head(state, workspace_id, &system_id, system_head.as_deref()).await?
+        }
+        None => SystemHead::default(),
+    };
+
+    let manifest = head.manifest;
+    let mut doc = DesignDoc::new(head.pages, head.revisions);
+    let scope = match board {
+        None => None,
+        Some(board) => Some(
+            board
+                .parse::<NodeId>()
+                .ok()
+                .filter(|board| doc.is_board(*board))
+                .ok_or(ApiError::Refused(StatusCode::NOT_FOUND, "unknown_board"))?,
+        ),
+    };
+    let mut used = all_ids(doc.pages());
+    used.extend(all_ids(&system.library.0));
+    let mut new_ids = || loop {
+        let id = random_node_id();
+        if used.insert(id) {
+            return id;
+        }
+    };
+    let check = |nodes: &[Node]| check_instances(nodes, &system.library);
+    let applied = match doc.apply(&ops, scope, &mut new_ids, &check) {
+        Ok(applied) => applied,
+        Err(ApplyError::Conflict(conflict)) => return Err(DocError::Conflict(conflict)),
+        Err(ApplyError::Invalid { index, message }) => {
+            return Err(DocError::Invalid { index, message });
+        }
+    };
+    let results = results_of(&applied);
+    if results.is_empty() {
+        return Ok(results);
+    }
+
+    let (snapshot, boards) =
+        boards::plan_head_write(&manifest, doc.pages(), doc.revisions()).into_snapshot();
+    // The changed chunks first, then the manifest that names them.
+    let texts: Vec<String> = snapshot
+        .parts
+        .iter()
+        .map(|part| part.text.clone())
+        .collect();
+    let (store, workspace) = (state.clone(), workspace_id.to_string());
+    boards::each_concurrently(texts, move |text| {
+        let (store, workspace) = (store.clone(), workspace.clone());
+        async move { store_text(&store, &workspace, &text).await.map(|_| ()) }
+    })
+    .await?;
+    let head_after = store_text(state, workspace_id, &snapshot.html).await?;
+    index_snapshot(tx, workspace_id, &head_after, &snapshot).await?;
+    sqlx::query("UPDATE docs SET head = $2 WHERE id = $1::uuid")
+        .bind(doc_id)
+        .bind(&head_after)
+        .execute(&mut **tx)
+        .await
+        .map_err(ApiError::database)?;
+    log_change_of_boards(
+        tx,
+        workspace_id,
+        doc_id,
+        agent,
+        &Value::Array(sent),
+        head_before,
+        &head_after,
+        Some(&boards),
+    )
+    .await?;
+    live::emit(
+        tx,
+        workspace_id,
+        project_id,
+        "doc.changed",
+        &json!({ "doc_id": doc_id, "head": head_after }),
+    )
+    .await?;
+    Ok(results)
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct ImportedHeadComponents {
+    /// The project's design system doc.
+    pub doc_id: String,
+    /// The design system's new head.
+    pub head: String,
+    /// The components as tags, with every ID, in the order written.
+    pub tags: String,
+    /// The components as JSON nodes of type `component`, in the order written.
+    #[schema(value_type = Vec<Object>)]
+    pub components: Vec<Value>,
+}
+
+/// Replaces the components of the project's design system head, all or
+/// nothing, with no change set; the tokens stay. The write makes a new head,
+/// adds a row of `doc_changes` and emits `doc.changed`; tags that are refused
+/// change, log and emit nothing. Designs resolve their instances against the
+/// new head from their next read on.
+#[utoipa::path(
+    put,
+    path = "/api/v1/w/{workspace_id}/projects/{project_id}/components",
+    params(
+        ("workspace_id" = String, Path, description = "The workspace's UUID"),
+        ("project_id" = String, Path, description = "The project's UUID"),
+        ("X-Omni-Run" = Option<String>, Header, description = "The agent's run"),
+        ("X-Omni-Role" = Option<String>, Header, description = "The agent's role"),
+        ("X-Omni-Model" = Option<String>, Header, description = "The model behind the agent"),
+        ("X-Omni-Harness" = Option<String>, Header, description = "The harness that runs the agent"),
+    ),
+    request_body = ImportTagsRequest,
+    responses(
+        (status = 200, description = "The components as stored, with the IDs the server assigned", body = ImportedHeadComponents),
+        (status = 400, description = "`tags` is missing (`invalid_request`), or the tags are refused: they do not parse, a nested instance or a slot default names no component of the import, or a component places itself (`invalid_components`, with a message)", body = InvalidDesignBody),
+        (status = 401, description = "No valid API key or session", body = ErrorBody),
+        (status = 403, description = "Called with a session; agents only", body = ErrorBody),
+        (status = 404, description = "No such project in this workspace, or the project has no design system doc (`no_design_system`)", body = ErrorBody),
+    )
+)]
+pub async fn import_head_components(
+    State(state): State<AppState>,
+    request: AgentRequest,
+    identity: AgentIdentity,
+    Path((_, project_id)): Path<(String, String)>,
+    body: Bytes,
+) -> Result<Json<ImportedHeadComponents>, DesignError> {
+    let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
+    let workspace_id = request.workspace_id;
+    let sent = parse_body::<ImportTagsRequest>(&body);
+    let mut tx = state.workspace_tx(&workspace_id).await?;
+    require_project(&mut tx, &project_id).await?;
+    let (doc_id, head_before) = locked_design_system(&mut tx, &project_id).await?;
+    let tags = sent?
+        .tags
+        .ok_or_else(|| ApiError::bad_request("invalid_request"))?;
+    let roots = parse_import(&tags, "invalid_components", NodeKind::Component)?;
+
+    let current = read_system_head(&state, &workspace_id, &doc_id, head_before.as_deref()).await?;
+    let known = all_ids(&current.library.0);
+    let used: UsedIds = Arc::new(Mutex::new(known.clone()));
+    let (components, _) = assign(
+        roots,
+        &known,
+        &used,
+        "invalid_components",
+        "the design system's head",
+    )?;
+    check_components(&components).map_err(|message| DesignError::Invalid {
+        code: "invalid_components",
+        message,
+    })?;
+    let values = nodes_values(&components);
+    let agent = identity.to_json();
+    let target = SystemTarget {
+        workspace_id: &workspace_id,
+        project_id: &project_id,
+        doc_id: &doc_id,
+        head_before: head_before.as_deref(),
+        agent: &agent,
+    };
+    let text = design_system_text(current.tokens.as_ref(), &components);
+    let operations = json!([{ "op": "import_components", "components": values }]);
+    let head = write_system_head(&state, &mut tx, &target, &operations, text).await?;
+    tx.commit().await.map_err(ApiError::database)?;
+    state.live.announce(&workspace_id, &project_id);
+    Ok(Json(ImportedHeadComponents {
+        doc_id,
+        head,
+        tags: tags_of(&components),
+        components: values,
+    }))
+}
+
 // Usage -----------------------------------------------------------------------------------------
 
 /// A board that uses a component.
@@ -1369,8 +1737,9 @@ async fn apply_design(state: &AppState, import: Import) -> Result<ImportedDesign
 pub struct UsageBoard {
     pub doc_id: String,
     pub doc_title: String,
-    /// The doc's mainline version that was read.
-    pub version_id: String,
+    /// The doc's mainline version, when it holds the head that was read; `null`
+    /// for a head that no version holds.
+    pub version_id: Option<String>,
     pub page_id: String,
     pub page_name: String,
     pub board_id: String,
@@ -1387,12 +1756,12 @@ pub struct UsageResponse {
     pub boards: Vec<UsageBoard>,
 }
 
-/// Lists every board of the mainline versions of the project's design docs
-/// that uses the component: through an instance anywhere in the board, a slot
-/// value of an instance, an instance in the tree of another component that the
-/// board uses, or the default of a slot. Without `?component=`, every board
-/// that uses any component is listed. Drafts are not counted; each version is
-/// read against the design system version it recorded.
+/// Lists every board of the heads of the project's design docs that uses the
+/// component: through an instance anywhere in the board, a slot value of an
+/// instance, an instance in the tree of another component that the board uses,
+/// or the default of a slot. Without `?component=`, every board that uses any
+/// component is listed. Drafts are not counted; every head is read against the
+/// design system's head.
 #[utoipa::path(
     get,
     path = "/api/v1/w/{workspace_id}/projects/{project_id}/components/usage",
@@ -1405,7 +1774,7 @@ pub struct UsageResponse {
         (status = 200, description = "The boards that use the component", body = UsageResponse),
         (status = 400, description = "`component` is no node ID (`invalid_request`)", body = ErrorBody),
         (status = 401, description = "No valid API key or session", body = ErrorBody),
-        (status = 404, description = "No such project in this workspace, or the mainline design system does not define the component (`unknown_component`)", body = ErrorBody),
+        (status = 404, description = "No such project in this workspace, or the design system's head does not define the component (`unknown_component`)", body = ErrorBody),
     )
 )]
 pub async fn component_usage(
@@ -1425,56 +1794,36 @@ pub async fn component_usage(
         ),
         None => None,
     };
-    let mainline: Option<String> = sqlx::query_scalar(
-        "SELECT mainline_version_id::text FROM docs \
-         WHERE project_id = $1::uuid AND kind = 'design-system'",
-    )
-    .bind(&project_id)
-    .fetch_optional(&mut *tx)
-    .await
-    .map_err(ApiError::database)?
-    .flatten();
-    let docs = mainline_designs(&mut tx, &project_id).await?;
+    let system = design_system_row(&mut tx, &project_id, false).await?;
+    let docs = head_designs(&mut tx, &project_id).await?;
     tx.commit().await.map_err(ApiError::database)?;
-    if let Some(component) = &component {
-        let defined = match &mainline {
-            Some(version_id) => components_of(&state, workspace_id, version_id)
-                .await?
-                .get(component)
-                .is_some(),
-            None => false,
-        };
-        if !defined {
-            return Err(ApiError::Refused(
-                StatusCode::NOT_FOUND,
-                "unknown_component",
-            ));
+    let system = match system {
+        Some((doc_id, head)) => {
+            read_system_head(&state, workspace_id, &doc_id, head.as_deref()).await?
         }
+        None => SystemHead::default(),
+    };
+    if let Some(component) = &component
+        && system.library.get(component).is_none()
+    {
+        return Err(ApiError::Refused(
+            StatusCode::NOT_FOUND,
+            "unknown_component",
+        ));
     }
 
-    let mut libraries: HashMap<String, Library> = HashMap::new();
     let mut boards = Vec::new();
     for design in docs {
         let pages = boards::read_pages(
             &state,
             workspace_id,
             &design.chunk,
-            &format!("version {}", design.version_id),
+            &format!("the head of doc {}", design.doc_id),
         )
         .await?;
-        let library = match &design.design_system_version_id {
-            Some(recorded) => {
-                if !libraries.contains_key(recorded) {
-                    let library = components_of(&state, workspace_id, recorded).await?;
-                    libraries.insert(recorded.clone(), library);
-                }
-                libraries[recorded].clone()
-            }
-            None => Library::default(),
-        };
         for page in &pages {
             for board in page.children() {
-                let used = used_by(std::slice::from_ref(board), &library);
+                let used = used_by(std::slice::from_ref(board), &system.library);
                 let listed = match &component {
                     Some(component) => used.contains(component),
                     None => !used.is_empty(),
@@ -1502,23 +1851,22 @@ pub async fn component_usage(
 }
 
 #[derive(sqlx::FromRow)]
-struct MainlineDesign {
+struct HeadDoc {
     doc_id: String,
     title: String,
-    version_id: String,
+    /// The doc's mainline version when it holds the head.
+    version_id: Option<String>,
     chunk: String,
-    design_system_version_id: Option<String>,
 }
 
-/// The design docs of the project that have a mainline version with content,
-/// oldest doc first.
-async fn mainline_designs(tx: &mut Tx, project_id: &str) -> Result<Vec<MainlineDesign>, ApiError> {
+/// The design docs of the project that have a head, oldest doc first.
+async fn head_designs(tx: &mut Tx, project_id: &str) -> Result<Vec<HeadDoc>, ApiError> {
     sqlx::query_as(
-        "SELECT d.id::text AS doc_id, d.title, v.id::text AS version_id, v.chunk AS chunk, \
-                v.design_system_version_id::text AS design_system_version_id \
+        "SELECT d.id::text AS doc_id, d.title, v.id::text AS version_id, d.head AS chunk \
          FROM docs d \
-         JOIN versions v ON v.workspace_id = d.workspace_id AND v.id = d.mainline_version_id \
-         WHERE d.project_id = $1::uuid AND d.kind = 'design' AND v.chunk IS NOT NULL \
+         LEFT JOIN versions v ON v.workspace_id = d.workspace_id AND v.id = d.mainline_version_id \
+                             AND v.chunk = d.head \
+         WHERE d.project_id = $1::uuid AND d.kind = 'design' AND d.head IS NOT NULL \
          ORDER BY d.created_at, d.id",
     )
     .bind(project_id)

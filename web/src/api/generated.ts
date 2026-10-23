@@ -577,6 +577,23 @@ export const ImportedDesignSchema = z.object({
 });
 export type ImportedDesign = z.infer<typeof ImportedDesignSchema>;
 
+export const ImportedHeadComponentsSchema = z.object({
+  components: z.array(z.record(z.string(), z.unknown())),
+  doc_id: z.string(),
+  head: z.string(),
+  tags: z.string(),
+});
+export type ImportedHeadComponents = z.infer<typeof ImportedHeadComponentsSchema>;
+
+export const ImportedHeadTokensSchema = z.object({
+  doc_id: z.string(),
+  head: z.string(),
+  modes: z.array(z.string()),
+  project_id: z.string(),
+  tokens: z.record(z.string(), z.unknown()),
+});
+export type ImportedHeadTokens = z.infer<typeof ImportedHeadTokensSchema>;
+
 export const InvalidDesignBodySchema = z.object({
   error: z.string(),
   message: z.string(),
@@ -647,10 +664,12 @@ export const LoginRequestSchema = z.object({
 export type LoginRequest = z.infer<typeof LoginRequestSchema>;
 
 export const MainlineHtmlResponseSchema = z.object({
+  components: z.array(z.record(z.string(), z.unknown())).nullable().optional(),
   doc_id: z.string(),
   html: z.string(),
   pages: z.array(z.record(z.string(), z.unknown())).nullable().optional(),
   tags: z.string().nullable().optional(),
+  tokens: z.record(z.string(), z.unknown()).nullable().optional(),
   version_id: z.string().nullable().optional(),
 });
 export type MainlineHtmlResponse = z.infer<typeof MainlineHtmlResponseSchema>;
@@ -668,6 +687,7 @@ export type MainlineTokensResponse = z.infer<typeof MainlineTokensResponseSchema
 export const ManifestBoardSchema = z.object({
   chunk: z.string(),
   id: z.string(),
+  revs: z.record(z.string(), z.number().int()).optional(),
 });
 export type ManifestBoard = z.infer<typeof ManifestBoardSchema>;
 
@@ -675,6 +695,7 @@ export const ManifestPageSchema = z.object({
   boards: z.array(ManifestBoardSchema),
   chunk: z.string(),
   id: z.string(),
+  revs: z.record(z.string(), z.number().int()).optional(),
 });
 export type ManifestPage = z.infer<typeof ManifestPageSchema>;
 
@@ -818,7 +839,7 @@ export const UsageBoardSchema = z.object({
   doc_title: z.string(),
   page_id: z.string(),
   page_name: z.string(),
-  version_id: z.string(),
+  version_id: z.string().nullable().optional(),
 });
 export type UsageBoard = z.infer<typeof UsageBoardSchema>;
 
@@ -965,6 +986,8 @@ export const schemas = {
   ImportTokensRequest: ImportTokensRequestSchema,
   ImportedComponents: ImportedComponentsSchema,
   ImportedDesign: ImportedDesignSchema,
+  ImportedHeadComponents: ImportedHeadComponentsSchema,
+  ImportedHeadTokens: ImportedHeadTokensSchema,
   InvalidDesignBody: InvalidDesignBodySchema,
   InvalidOperationBody: InvalidOperationBodySchema,
   InvalidTokensBody: InvalidTokensBodySchema,
@@ -1422,6 +1445,16 @@ export const operations = {
       "409": ErrorBodySchema,
     },
   },
+  "PUT /api/v1/w/{workspace_id}/projects/{project_id}/components": {
+    request: ImportTagsRequestSchema,
+    responses: {
+      "200": ImportedHeadComponentsSchema,
+      "400": InvalidDesignBodySchema,
+      "401": ErrorBodySchema,
+      "403": ErrorBodySchema,
+      "404": ErrorBodySchema,
+    },
+  },
   "GET /api/v1/w/{workspace_id}/projects/{project_id}/components/usage": {
     responses: {
       "200": UsageResponseSchema,
@@ -1659,6 +1692,16 @@ export const operations = {
       "200": MainlineTokensResponseSchema,
       "400": ErrorBodySchema,
       "401": ErrorBodySchema,
+      "404": ErrorBodySchema,
+    },
+  },
+  "PUT /api/v1/w/{workspace_id}/projects/{project_id}/tokens": {
+    request: ImportTokensRequestSchema,
+    responses: {
+      "200": ImportedHeadTokensSchema,
+      "400": InvalidTokensBodySchema,
+      "401": ErrorBodySchema,
+      "403": ErrorBodySchema,
       "404": ErrorBodySchema,
     },
   },

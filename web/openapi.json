@@ -1766,6 +1766,70 @@
         ],
         "type": "object"
       },
+      "ImportedHeadComponents": {
+        "properties": {
+          "components": {
+            "description": "The components as JSON nodes of type `component`, in the order written.",
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "doc_id": {
+            "description": "The project's design system doc.",
+            "type": "string"
+          },
+          "head": {
+            "description": "The design system's new head.",
+            "type": "string"
+          },
+          "tags": {
+            "description": "The components as tags, with every ID, in the order written.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "doc_id",
+          "head",
+          "tags",
+          "components"
+        ],
+        "type": "object"
+      },
+      "ImportedHeadTokens": {
+        "properties": {
+          "doc_id": {
+            "description": "The project's design system doc.",
+            "type": "string"
+          },
+          "head": {
+            "description": "The design system's new head.",
+            "type": "string"
+          },
+          "modes": {
+            "description": "The design system's modes, in order.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "project_id": {
+            "type": "string"
+          },
+          "tokens": {
+            "description": "The token tree as stored.",
+            "type": "object"
+          }
+        },
+        "required": [
+          "project_id",
+          "doc_id",
+          "head",
+          "modes",
+          "tokens"
+        ],
+        "type": "object"
+      },
       "InvalidDesignBody": {
         "properties": {
           "error": {
@@ -2057,6 +2121,16 @@
       },
       "MainlineHtmlResponse": {
         "properties": {
+          "components": {
+            "description": "The components that the design's instances use, as the design system's\nhead defines them; only for the head of a design.",
+            "items": {
+              "type": "object"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
           "doc_id": {
             "type": "string"
           },
@@ -2078,6 +2152,13 @@
             "description": "A design's head as tags, one `<Page>` after the other; only for the\nhead of a design.",
             "type": [
               "string",
+              "null"
+            ]
+          },
+          "tokens": {
+            "description": "The token tree of the project's design system head, in every mode; only\nfor the head of a design, and left out when the design system has none.",
+            "type": [
+              "object",
               "null"
             ]
           },
@@ -2167,6 +2248,18 @@
           "id": {
             "description": "The board's node ID.",
             "type": "string"
+          },
+          "revs": {
+            "additionalProperties": {
+              "format": "int64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "description": "The revision of each node of the board that is not at revision 1. A\nhead keeps its revisions here, so that a node's chunk does not change\nwith them; a version lists none.",
+            "propertyNames": {
+              "type": "string"
+            },
+            "type": "object"
           }
         },
         "required": [
@@ -2191,6 +2284,18 @@
           "id": {
             "description": "The page's node ID.",
             "type": "string"
+          },
+          "revs": {
+            "additionalProperties": {
+              "format": "int64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "description": "The page's own revision when it is not 1, as the boards list theirs.",
+            "propertyNames": {
+              "type": "string"
+            },
+            "type": "object"
           }
         },
         "required": [
@@ -2942,14 +3047,16 @@
             "type": "string"
           },
           "version_id": {
-            "description": "The doc's mainline version that was read.",
-            "type": "string"
+            "description": "The doc's mainline version, when it holds the head that was read; `null`\nfor a head that no version holds.",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
           "doc_id",
           "doc_title",
-          "version_id",
           "page_id",
           "page_name",
           "board_id",
@@ -7875,6 +7982,146 @@
         "x-omni-access": "human"
       }
     },
+    "/api/v1/w/{workspace_id}/projects/{project_id}/components": {
+      "put": {
+        "operationId": "import_head_components",
+        "parameters": [
+          {
+            "description": "The workspace's UUID",
+            "in": "path",
+            "name": "workspace_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The project's UUID",
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The agent's run",
+            "in": "header",
+            "name": "X-Omni-Run",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "description": "The agent's role",
+            "in": "header",
+            "name": "X-Omni-Role",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "description": "The model behind the agent",
+            "in": "header",
+            "name": "X-Omni-Model",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "description": "The harness that runs the agent",
+            "in": "header",
+            "name": "X-Omni-Harness",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ImportTagsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImportedHeadComponents"
+                }
+              }
+            },
+            "description": "The components as stored, with the IDs the server assigned"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InvalidDesignBody"
+                }
+              }
+            },
+            "description": "`tags` is missing (`invalid_request`), or the tags are refused: they do not parse, a nested instance or a slot default names no component of the import, or a component places itself (`invalid_components`, with a message)"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No valid API key or session"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Called with a session; agents only"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No such project in this workspace, or the project has no design system doc (`no_design_system`)"
+          }
+        },
+        "summary": "Replaces the components of the project's design system head, all or\nnothing, with no change set; the tokens stay. The write makes a new head,\nadds a row of `doc_changes` and emits `doc.changed`; tags that are refused\nchange, log and emit nothing. Designs resolve their instances against the\nnew head from their next read on.",
+        "tags": [
+          "crate::design"
+        ],
+        "x-omni-access": "agent"
+      }
+    },
     "/api/v1/w/{workspace_id}/projects/{project_id}/components/usage": {
       "get": {
         "operationId": "component_usage",
@@ -7946,10 +8193,10 @@
                 }
               }
             },
-            "description": "No such project in this workspace, or the mainline design system does not define the component (`unknown_component`)"
+            "description": "No such project in this workspace, or the design system's head does not define the component (`unknown_component`)"
           }
         },
-        "summary": "Lists every board of the mainline versions of the project's design docs\nthat uses the component: through an instance anywhere in the board, a slot\nvalue of an instance, an instance in the tree of another component that the\nboard uses, or the default of a slot. Without `?component=`, every board\nthat uses any component is listed. Drafts are not counted; each version is\nread against the design system version it recorded.",
+        "summary": "Lists every board of the heads of the project's design docs that uses the\ncomponent: through an instance anywhere in the board, a slot value of an\ninstance, an instance in the tree of another component that the board uses,\nor the default of a slot. Without `?component=`, every board that uses any\ncomponent is listed. Drafts are not counted; every head is read against the\ndesign system's head.",
         "tags": [
           "crate::design"
         ],
@@ -8971,7 +9218,7 @@
                 }
               }
             },
-            "description": "The body is not a batch (`invalid_request`), the doc is no HTML doc (`not_an_html_doc`), or an operation is refused (`invalid_operation`, naming an unknown ID)"
+            "description": "The body is not a batch (`invalid_request`), the doc is a design system (`not_an_html_doc`), or an operation is refused (`invalid_operation`, naming an unknown ID, or for a design an instance of a component the design system lacks)"
           },
           "401": {
             "content": {
@@ -9001,7 +9248,7 @@
                 }
               }
             },
-            "description": "No such doc in this project and workspace"
+            "description": "No such doc in this project and workspace, or `board` is no board of the design (`unknown_board`)"
           },
           "409": {
             "content": {
@@ -9014,7 +9261,7 @@
             "description": "A node is at another revision than the operation expected (`conflict`); nothing changed"
           }
         },
-        "summary": "Applies a batch of operations to the head of an HTML doc, all or nothing,\nwith no change set. The batch runs under the lock on the doc's row, so\nbatches to one doc are applied one after the other, each to the head the\none before made. The new head is a chunk in RustFS that holds the doc as\nHTML with `data-node-id` and `data-rev`, which is where a node's revision\nis kept: nothing about a head is held in memory. A batch that is refused\nchanges, logs and emits nothing; an applied one adds one row of\n`doc_changes` and emits `doc.changed`.",
+        "summary": "Applies a batch of operations to the head of an HTML doc or a design, all or\nnothing, with no change set. The batch runs under the lock on the doc's row,\nso batches to one doc are applied one after the other, each to the head the\none before made. The new head of an HTML doc is a chunk in RustFS that holds\nthe doc as HTML with `data-node-id` and `data-rev`, which is where a node's\nrevision is kept; the new head of a design is a manifest that lists the\nchunk of every page and board and the revisions, and only the boards the\nbatch changed get a new chunk (`design::edit_head`). Nothing about a head is\nheld in memory. A batch that is refused changes, logs and emits nothing; an\napplied one adds one row of `doc_changes` and emits `doc.changed`.",
         "tags": [
           "crate::docs"
         ],
@@ -10636,11 +10883,149 @@
             "description": "No such project in this workspace, or the design system has no such version"
           }
         },
-        "summary": "The token tree of the design system's mainline version, or of the version\nnamed by `?version=`, or, with `?mode=`, the tree of one mode. Before the\ndesign system has a mainline version (or a doc) there is no version and no\ntree.",
+        "summary": "The token tree of the design system's head, or of the version named by\n`?version=`, or, with `?mode=`, the tree of one mode. Before the design\nsystem has a head (or a doc) there is no tree. `version_id` is the version\nthat holds the head, `null` for a head that no version holds.",
         "tags": [
           "crate::tokens"
         ],
         "x-omni-access": "both"
+      },
+      "put": {
+        "operationId": "import_head_tokens",
+        "parameters": [
+          {
+            "description": "The workspace's UUID",
+            "in": "path",
+            "name": "workspace_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The project's UUID",
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The agent's run",
+            "in": "header",
+            "name": "X-Omni-Run",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "description": "The agent's role",
+            "in": "header",
+            "name": "X-Omni-Role",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "description": "The model behind the agent",
+            "in": "header",
+            "name": "X-Omni-Model",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "description": "The harness that runs the agent",
+            "in": "header",
+            "name": "X-Omni-Harness",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ImportTokensRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImportedHeadTokens"
+                }
+              }
+            },
+            "description": "The tree as stored"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InvalidTokensBody"
+                }
+              }
+            },
+            "description": "`tokens` is missing (`invalid_request`), or the tree is refused or names a font file that is not a font of the workspace (`invalid_tokens`, with a message)"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No valid API key or session"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Called with a session; agents only"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No such project in this workspace, or the project has no design system doc (`no_design_system`)"
+          }
+        },
+        "summary": "Replaces the token tree of the project's design system head, all or nothing,\nwith no change set; the components stay. The write makes a new head, adds a\nrow of `doc_changes` and emits `doc.changed`; a tree that is refused\nchanges, logs and emits nothing. Designs read the new tree at their next\nread.",
+        "tags": [
+          "crate::tokens"
+        ],
+        "x-omni-access": "agent"
       }
     },
     "/api/v1/w/{workspace_id}/projects/{project_id}/versions/{version_id}": {

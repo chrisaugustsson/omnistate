@@ -241,6 +241,16 @@ pub fn registry() -> Vec<RouteEntry> {
         ),
         (
             "PUT",
+            "/api/v1/w/{workspace_id}/projects/{project_id}/tokens",
+            Access::Agent,
+        ),
+        (
+            "PUT",
+            "/api/v1/w/{workspace_id}/projects/{project_id}/components",
+            Access::Agent,
+        ),
+        (
+            "PUT",
             "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/components",
             Access::Agent,
         ),

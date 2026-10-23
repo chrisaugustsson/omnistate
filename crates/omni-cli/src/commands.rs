@@ -120,12 +120,13 @@ pub fn run(args: &Args) -> Result<()> {
         ["tokens", "import", file] => tokens::import(args, Some(file)),
         ["tokens", "export"] => tokens::export(args),
         ["tokens", ..] => bail!(
-            "usage: omni tokens import <file> --changeset <id> | omni tokens export [--changeset <id> | --version <v>] [--out <file>] [--per-mode]"
+            "usage: omni tokens import <file> [--changeset <id>] | omni tokens export [--changeset <id> | --version <v>] [--out <file>] [--per-mode]"
         ),
         ["design", "read"] => design::read(args),
-        ["design", "edit"] => design::edit(args),
+        ["design", "edit"] => design::edit(args, None),
+        ["design", "edit", doc] => design::edit(args, Some(doc)),
         ["design", ..] => bail!(
-            "usage: omni design read --doc <id> --board <id> [--changeset <id> | --version <v>] | omni design edit --changeset <id> --doc <id> [--board <id>] [--body-file <path|->]"
+            "usage: omni design read --doc <id> --board <id> [--changeset <id> | --version <v>] | omni design edit <doc> [--changeset <id>] [--board <id>] [--body-file <path|->]"
         ),
         ["component", "usage"] => components::usage(args, None),
         ["component", "usage", component] => components::usage(args, Some(component)),

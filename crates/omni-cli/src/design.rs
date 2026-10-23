@@ -1,7 +1,7 @@
 //! `omni design read` prints one board of a design doc in the tag format
-//! (US-030), and `omni design edit` applies a batch of operations to a change
-//! set's draft of a design (US-031). The project is found as for `omni
-//! changeset`.
+//! (US-030), and `omni design edit` applies a batch of operations to a design:
+//! to its head without a change set (US-104), or to a change set's draft with
+//! one (US-031). The project is found as for `omni changeset`.
 
 use crate::args::Args;
 use crate::changesets::{is_uuid, project_id};
@@ -99,22 +99,29 @@ pub fn read(args: &Args) -> Result<()> {
     Ok(())
 }
 
-/// `omni design edit --changeset <id> --doc <id> [--board <id>] [--body-file <path|->]`
-pub fn edit(args: &Args) -> Result<()> {
+/// `omni design edit <doc> [--changeset <id>] [--board <id>] [--body-file <path|->]`:
+/// without `--changeset` the batch applies to the design's head, with it to the
+/// change set's draft. The doc is the argument or `--doc`.
+pub fn edit(args: &Args, positional: Option<&str>) -> Result<()> {
     const USAGE: &str =
-        "omni design edit --changeset <id> --doc <id> [--board <id>] [--body-file <path|->]";
+        "omni design edit <doc> [--changeset <id>] [--board <id>] [--body-file <path|->]";
     let changeset = match args.changeset.as_deref() {
-        None => bail!("this command needs --changeset <id>, the change set to edit in: {USAGE}"),
-        Some(id) if is_uuid(id) => id.to_ascii_lowercase(),
+        None => None,
+        Some(id) if is_uuid(id) => Some(id.to_ascii_lowercase()),
         Some(id) => {
             bail!("--changeset {id:?} is not a change set ID; `omni changeset list` shows them")
         }
     };
-    let doc = match args.doc.as_deref() {
-        None => bail!("this command needs --doc <id>, the design doc: {USAGE}"),
-        Some(doc) if is_uuid(doc) => doc.to_ascii_lowercase(),
-        Some(doc) => {
-            bail!("--doc {doc:?} is not a doc ID (a UUID); `omni doc show <doc>` takes it")
+    let doc = match (positional, args.doc.as_deref()) {
+        (Some(doc), Some(flag)) if doc != flag => {
+            bail!("the doc is given twice, as {doc:?} and --doc {flag:?}: give it once")
+        }
+        (None, None) => {
+            bail!("this command needs the design doc, as an argument or --doc <id>: {USAGE}")
+        }
+        (Some(doc), _) | (None, Some(doc)) if is_uuid(doc) => doc.to_ascii_lowercase(),
+        (Some(doc), _) | (None, Some(doc)) => {
+            bail!("{doc:?} is not a doc ID (a UUID); `omni doc list` shows them")
         }
     };
     let board = match args.board.as_deref() {
@@ -143,14 +150,11 @@ pub fn edit(args: &Args) -> Result<()> {
         )
     });
     let explanations: Vec<_> = unknown_board.into_iter().collect();
-    let response = agent.request_explaining(
-        "POST",
-        &format!(
-            "/api/v1/w/{}/projects/{project}/changesets/{changeset}/docs/{doc}/ops",
-            agent.workspace_id
-        ),
-        Some(body.as_bytes()),
-        &explanations,
-    )?;
+    let base = format!("/api/v1/w/{}/projects/{project}", agent.workspace_id);
+    let path = match &changeset {
+        Some(changeset) => format!("{base}/changesets/{changeset}/docs/{doc}/ops"),
+        None => format!("{base}/docs/{doc}/ops"),
+    };
+    let response = agent.request_explaining("POST", &path, Some(body.as_bytes()), &explanations)?;
     print_edit(args, &response.text())
 }
