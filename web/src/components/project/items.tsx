@@ -5,6 +5,7 @@ import {
   CircleHelp,
   FileText,
   GitPullRequestArrow,
+  Layers,
   MessageSquareText,
   MessagesSquare,
   PenTool,
@@ -23,6 +24,65 @@ import { cn } from "@/lib/utils";
 // Change sets, Threads) show the same rows.
 
 type ProjectParams = { workspaceId: string; projectId: string };
+
+/** The project's sections that list items: a project's own page for each, and one per feature. */
+export type Section = "docs" | "changesets" | "threads";
+
+/** The `to` and `params` of a link to a section page of the project, or of one of its features. */
+export function sectionLink(section: Section, params: ProjectParams, featureId?: string | null) {
+  if (featureId) {
+    return {
+      to: `/w/$workspaceId/projects/$projectId/features/$featureId/${section}`,
+      params: { ...params, featureId },
+    };
+  }
+  return { to: `/w/$workspaceId/projects/$projectId/${section}`, params };
+}
+
+type Scoped = { feature_id?: string | null };
+
+/**
+ * The part of a project's home that one page shows: `null` is the project's
+ * own items, an ID is one feature's. The feature summaries stay as they are.
+ */
+export function scopedHome(home: HomeResponse, feature: string | null): HomeResponse {
+  const inScope = (item: Scoped) => (item.feature_id ?? null) === feature;
+  const { decisions, changesets, comments, questions } = home.waiting;
+  return {
+    ...home,
+    docs: home.docs.filter(inScope),
+    changesets: home.changesets.filter(inScope),
+    threads: home.threads.filter(inScope),
+    waiting: {
+      decisions: decisions.filter(inScope),
+      changesets: changesets.filter(inScope),
+      comments: comments.filter(inScope),
+      questions: questions.filter(inScope),
+    },
+  };
+}
+
+/** The names of the project's features by ID, for tagging the items that belong to one. */
+export type FeatureNames = ReadonlyMap<string, string>;
+
+export function featureNames(home: HomeResponse): FeatureNames {
+  return new Map((home.features ?? []).map(({ feature }) => [feature.id, feature.name]));
+}
+
+/** The name of the feature that `item` belongs to, when it belongs to one and `names` is given. */
+function tagOf(item: Scoped, names?: FeatureNames): string | undefined {
+  return item.feature_id ? names?.get(item.feature_id) : undefined;
+}
+
+/** A small tag with the name of the feature that an item belongs to. */
+export function FeatureTag({ name }: { name: string }) {
+  return (
+    <span className="inline-flex max-w-40 shrink-0 items-center gap-1 rounded-md px-1.5 py-px text-[11px] font-medium text-muted-foreground ring-1 ring-border ring-inset">
+      <Layers aria-hidden className="size-3 shrink-0" />
+      <span className="truncate">{name}</span>
+    </span>
+  );
+}
 
 /** The modules of a project's docs, in the order the pages show them. */
 export const MODULES = [
@@ -101,7 +161,7 @@ export function Section({
 }
 
 /** "View all" to a section page, for the overview's section headings. */
-export function ViewAll({ to, params }: { to: string; params: ProjectParams }) {
+export function ViewAll({ to, params }: { to: string; params: ProjectParams & { featureId?: string } }) {
   return (
     <Link
       to={to}
@@ -134,9 +194,20 @@ export type WaitingGroup = {
 };
 
 /** What waits for the reviewer, by kind, each item linking to where it is decided. */
-export function waitingGroups(home: HomeResponse, params: ProjectParams): WaitingGroup[] {
+export function waitingGroups(home: HomeResponse, params: ProjectParams, names?: FeatureNames): WaitingGroup[] {
   const { decisions, changesets, comments, questions } = home.waiting;
   const cover = "absolute inset-0 rounded-[inherit]";
+  const tagged = (item: Scoped, meta: ReactNode) => {
+    const tag = tagOf(item, names);
+    return tag ? (
+      <>
+        <FeatureTag name={tag} />
+        {meta}
+      </>
+    ) : (
+      meta
+    );
+  };
   return [
     {
       kind: "decisions",
@@ -146,7 +217,7 @@ export function waitingGroups(home: HomeResponse, params: ProjectParams): Waitin
       items: decisions.map((d) => ({
         id: d.id,
         text: d.direction,
-        meta: <AgentChip name={authorName(d.author)} />,
+        meta: tagged(d, <AgentChip name={authorName(d.author)} />),
         link: (
           <Link
             to="/w/$workspaceId/projects/$projectId/threads/$threadId"
@@ -165,7 +236,7 @@ export function waitingGroups(home: HomeResponse, params: ProjectParams): Waitin
       items: changesets.map((c) => ({
         id: c.id,
         text: c.title,
-        meta: <span>{timeAgo(c.created_at)}</span>,
+        meta: tagged(c, <span>{timeAgo(c.created_at)}</span>),
         link: (
           <Link
             to="/w/$workspaceId/projects/$projectId/changesets/$changesetId"
@@ -184,7 +255,7 @@ export function waitingGroups(home: HomeResponse, params: ProjectParams): Waitin
       items: comments.map((c) => ({
         id: c.id,
         text: c.text,
-        meta: <span className="font-mono text-[11px]">{c.node}</span>,
+        meta: tagged(c, <span className="font-mono text-[11px]">{c.node}</span>),
         link: (
           <Link
             to="/w/$workspaceId/projects/$projectId/docs/$docId"
@@ -203,7 +274,7 @@ export function waitingGroups(home: HomeResponse, params: ProjectParams): Waitin
       items: questions.map((q) => ({
         id: q.id,
         text: q.summary,
-        meta: <AgentChip name={authorName(q.author)} />,
+        meta: tagged(q, <AgentChip name={authorName(q.author)} />),
         link: (
           <Link
             to="/w/$workspaceId/projects/$projectId/threads/$threadId"
@@ -241,7 +312,19 @@ export function WaitingList({ group, showTitle = true }: { group: WaitingGroup; 
 }
 
 /** A doc's row: its kind, title, whether agents hold claims on it now. */
-export function DocRow({ doc, params, showModule }: { doc: DocBody; params: ProjectParams; showModule?: boolean }) {
+export function DocRow({
+  doc,
+  params,
+  showModule,
+  names,
+}: {
+  doc: DocBody;
+  params: ProjectParams;
+  showModule?: boolean;
+  /** The project's features: given, a doc of a feature carries the feature's name. */
+  names?: FeatureNames;
+}) {
+  const tag = tagOf(doc, names);
   const design = doc.kind === "design";
   return (
     <li>
@@ -253,6 +336,7 @@ export function DocRow({ doc, params, showModule }: { doc: DocBody; params: Proj
       >
         <Glyph icon={design ? PenTool : FileText} tone={design ? TONES.violet : TONES.plain} />
         <span className="min-w-0 flex-1 truncate font-medium">{doc.title}</span>
+        {tag && <FeatureTag name={tag} />}
         {doc.claims.length > 0 && (
           <span className="hidden items-center gap-1.5 text-xs text-signal sm:inline-flex">
             <span className="relative flex size-1.5">
@@ -277,12 +361,16 @@ export function ChangesetRow({
   changeset,
   params,
   detailed,
+  names,
 }: {
   changeset: ChangesetBody;
   params: ProjectParams;
   detailed?: boolean;
+  /** The project's features: given, a change set of a feature carries the feature's name. */
+  names?: FeatureNames;
 }) {
   const decisions = changeset.decisions.length;
+  const tag = tagOf(changeset, names);
   return (
     <li>
       <Link
@@ -305,6 +393,7 @@ export function ChangesetRow({
             </span>
           )}
         </span>{" "}
+        {tag && <FeatureTag name={tag} />}
         <StatusBadge status={changeset.status} />
       </Link>
     </li>
@@ -318,8 +407,20 @@ function decisionStatus(thread: ThreadBody): string | undefined {
 }
 
 /** A thread's row: its question, its current phase and, when asked, its decision's status. */
-export function ThreadRow({ thread, params, detailed }: { thread: ThreadBody; params: ProjectParams; detailed?: boolean }) {
+export function ThreadRow({
+  thread,
+  params,
+  detailed,
+  names,
+}: {
+  thread: ThreadBody;
+  params: ProjectParams;
+  detailed?: boolean;
+  /** The project's features: given, a thread of a feature carries the feature's name. */
+  names?: FeatureNames;
+}) {
   const phase = thread.phases.at(-1);
+  const tag = tagOf(thread, names);
   const decided = detailed ? decisionStatus(thread) : undefined;
   return (
     <li>
@@ -333,6 +434,7 @@ export function ThreadRow({ thread, params, detailed }: { thread: ThreadBody; pa
         <span className="min-w-0 flex-1 space-y-1">
           <span className="block leading-snug font-medium">{thread.question}</span>
           <span className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+            {tag && <FeatureTag name={tag} />}
             {phase && (
               <span>
                 Phase {phase.number}

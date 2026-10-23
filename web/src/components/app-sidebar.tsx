@@ -1,9 +1,11 @@
-import { useState, type ReactNode } from "react";
+import { useId, useState, type ReactNode } from "react";
 import { Link, useNavigate, useParams, useRouterState } from "@tanstack/react-router";
 import {
+  ChevronRight,
   FileText,
   GitPullRequestArrow,
   Inbox,
+  Layers,
   LayoutDashboard,
   LayoutGrid,
   LogOut,
@@ -12,6 +14,7 @@ import {
 import { logOut } from "@/api/auth";
 import { AgentAvatar } from "@/components/agent-chip";
 import { Button } from "@/components/ui/button";
+import type { FeatureSummary, HomeResponse } from "@/api/generated";
 import { waitingCount } from "@/components/project/items";
 import { useHome, useProjectName } from "@/lib/use-home";
 import { cn } from "@/lib/utils";
@@ -62,56 +65,181 @@ const SECTIONS = [
   { section: "threads", label: "Threads", icon: MessagesSquare, to: "/w/$workspaceId/projects/$projectId/threads" },
 ] as const;
 
-/** The section of the project that `pathname` is in: "" for the overview, else its first segment. */
-function sectionOf(pathname: string, projectId: string): string {
-  const rest = pathname.split(`/projects/${projectId}`)[1] ?? "";
-  return rest.split("/").filter(Boolean)[0] ?? "";
+/** The pages of a feature, each a page of its own under the feature. */
+const FEATURE_SECTIONS = [
+  { section: "docs", label: "Docs", to: "/w/$workspaceId/projects/$projectId/features/$featureId/docs" },
+  {
+    section: "changesets",
+    label: "Change sets",
+    to: "/w/$workspaceId/projects/$projectId/features/$featureId/changesets",
+  },
+  { section: "threads", label: "Threads", to: "/w/$workspaceId/projects/$projectId/features/$featureId/threads" },
+] as const;
+
+/** Where the reviewer is in a project: a feature (null for the project's own pages) and a section of it ("" is the overview). */
+type Place = { feature: string | null; section: string };
+
+/**
+ * The place that `pathname` is in. A detail page (a doc, change set or thread)
+ * belongs to the section of its kind, in the feature that it belongs to, which
+ * the project's home tells.
+ */
+function placeOf(pathname: string, projectId: string, home: HomeResponse | null | undefined): Place {
+  const rest = (pathname.split(`/projects/${projectId}`)[1] ?? "").split("/").filter(Boolean);
+  if (rest[0] === "features") return { feature: rest[1] ?? null, section: rest[2] ?? "" };
+  const [section = "", id] = rest;
+  const items = { docs: home?.docs, changesets: home?.changesets, threads: home?.threads }[section as "docs"];
+  return { feature: (id && items?.find((item) => item.id === id)?.feature_id) || null, section };
 }
 
-/** The navigation of one project: its sections, with counts, the current one marked. */
+/** A feature in the sidebar: its overview with its waiting count, and while it is the current one, its pages. */
+function FeatureItem({
+  summary,
+  workspaceId,
+  projectId,
+  place,
+}: {
+  summary: FeatureSummary;
+  workspaceId: string;
+  projectId: string;
+  place: Place;
+}) {
+  const { id, name } = summary.feature;
+  const here = place.feature === id;
+  const overview = here && place.section === "";
+  return (
+    <li className="space-y-0.5">
+      <Link
+        to="/w/$workspaceId/projects/$projectId/features/$featureId"
+        params={{ workspaceId, projectId, featureId: id }}
+        activeOptions={{ exact: true }}
+        aria-current={overview ? "page" : undefined}
+        className={cn(itemClass, here && "text-foreground", overview && "bg-sidebar-accent [&>svg]:text-foreground")}
+      >
+        <Layers />
+        <span className="min-w-0 truncate">{name}</span>
+        <Count value={summary.waiting} />
+      </Link>
+      {here &&
+        FEATURE_SECTIONS.map(({ section, label, to }) => {
+          const active = place.section === section;
+          return (
+            <Link
+              key={section}
+              to={to}
+              params={{ workspaceId, projectId, featureId: id }}
+              activeOptions={{ exact: true }}
+              aria-current={active ? "page" : undefined}
+              className={cn(itemClass, "pl-9", active && "bg-sidebar-accent text-foreground")}
+            >
+              {label}
+            </Link>
+          );
+        })}
+    </li>
+  );
+}
+
+/** The project's features below its sections: the active ones, and the done ones under a toggle. */
+function Features({
+  features,
+  workspaceId,
+  projectId,
+  place,
+}: {
+  features: FeatureSummary[];
+  workspaceId: string;
+  projectId: string;
+  place: Place;
+}) {
+  const titleId = useId();
+  const [shown, setShown] = useState<boolean | null>(null);
+  const active = features.filter((summary) => summary.feature.status !== "done");
+  const done = features.filter((summary) => summary.feature.status === "done");
+  // A done feature that the reviewer is in stays in sight, until the toggle is used.
+  const expanded = shown ?? done.some((summary) => summary.feature.id === place.feature);
+  if (!features.length) return null;
+  const item = (summary: FeatureSummary) => (
+    <FeatureItem key={summary.feature.id} summary={summary} workspaceId={workspaceId} projectId={projectId} place={place} />
+  );
+
+  return (
+    <div role="group" aria-labelledby={titleId} className="space-y-0.5">
+      <div
+        id={titleId}
+        className="flex h-7 items-center px-2 text-[11px] font-medium tracking-[0.08em] text-muted-foreground uppercase"
+      >
+        Features
+      </div>
+      <ul className="space-y-0.5">{active.map(item)}</ul>
+      {done.length > 0 && (
+        <>
+          <button
+            type="button"
+            aria-expanded={expanded}
+            onClick={() => setShown(!expanded)}
+            className={cn(itemClass, "w-full")}
+          >
+            <ChevronRight className={cn("transition-transform", expanded && "rotate-90")} />
+            Done{" "}
+            <Count value={done.length} />
+          </button>
+          {expanded && <ul className="space-y-0.5">{done.map(item)}</ul>}
+        </>
+      )}
+    </div>
+  );
+}
+
+/** The navigation of one project: its sections, with counts, and its features, the current place marked. */
 function ProjectNav({ workspaceId, projectId }: { workspaceId: string; projectId: string }) {
   const { home } = useHome(workspaceId, projectId);
   const name = useProjectName(workspaceId, projectId);
   const pathname = useRouterState({ select: (state) => state.location.pathname });
-  const current = sectionOf(pathname, projectId);
+  const place = placeOf(pathname, projectId, home);
+  const ownCount = (items: { feature_id?: string | null }[] | undefined) => items?.filter((item) => !item.feature_id).length;
   const counts: Record<string, number | undefined> = {
     inbox: home ? waitingCount(home) : undefined,
-    docs: home?.docs.length,
-    changesets: home?.changesets.length,
-    threads: home?.threads.length,
+    docs: ownCount(home?.docs),
+    changesets: ownCount(home?.changesets),
+    threads: ownCount(home?.threads),
   };
 
   return (
-    <div className="space-y-1">
-      <div className="flex h-7 items-center gap-2 px-2">
-        <span
-          aria-hidden
-          className="flex size-4 items-center justify-center rounded-[5px] bg-signal text-[9px] font-semibold text-signal-foreground"
-        >
-          {(name ?? "P").slice(0, 1).toUpperCase()}
-        </span>
-        <span className="truncate text-[11px] font-medium tracking-[0.08em] text-muted-foreground uppercase">
-          {name ?? "Project"}
-        </span>
+    <div className="space-y-3">
+      <div className="space-y-1">
+        <div className="flex h-7 items-center gap-2 px-2">
+          <span
+            aria-hidden
+            className="flex size-4 items-center justify-center rounded-[5px] bg-signal text-[9px] font-semibold text-signal-foreground"
+          >
+            {(name ?? "P").slice(0, 1).toUpperCase()}
+          </span>
+          <span className="truncate text-[11px] font-medium tracking-[0.08em] text-muted-foreground uppercase">
+            {name ?? "Project"}
+          </span>
+        </div>
+        <div className="space-y-0.5">
+          {SECTIONS.map(({ section, label, icon: Icon, to }) => {
+            const active = place.feature === null && place.section === section;
+            return (
+              <Link
+                key={section || "overview"}
+                to={to}
+                params={{ workspaceId, projectId }}
+                activeOptions={{ exact: true }}
+                aria-current={active ? "page" : undefined}
+                className={cn(itemClass, active && "bg-sidebar-accent text-foreground [&>svg]:text-foreground")}
+              >
+                <Icon />
+                {label}
+                <Count value={counts[section]} signal={section === "inbox"} />
+              </Link>
+            );
+          })}
+        </div>
       </div>
-      <div className="space-y-0.5">
-        {SECTIONS.map(({ section, label, icon: Icon, to }) => {
-          const active = current === section;
-          return (
-            <Link
-              key={section || "overview"}
-              to={to}
-              params={{ workspaceId, projectId }}
-              aria-current={active ? "page" : undefined}
-              className={cn(itemClass, active && "bg-sidebar-accent text-foreground [&>svg]:text-foreground")}
-            >
-              <Icon />
-              {label}
-              <Count value={counts[section]} signal={section === "inbox"} />
-            </Link>
-          );
-        })}
-      </div>
+      <Features features={home?.features ?? []} workspaceId={workspaceId} projectId={projectId} place={place} />
     </div>
   );
 }

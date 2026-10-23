@@ -26,6 +26,7 @@ import { createAssetLoader } from "@/design/assets";
 import { BoardCache, showBoardwise } from "@/design/boards";
 import { createDesignRenderer, type DesignRenderer } from "@/design/renderer";
 import { AgentAvatar } from "@/components/agent-chip";
+import { sectionLink } from "@/components/project/items";
 import { Eyebrow, PageHeader } from "@/components/page-header";
 import { StatusBadge, statusWords } from "@/components/status-badge";
 import { Alert, AlertDescription } from "@/components/ui/alert";
@@ -96,8 +97,7 @@ function ChangesetReview() {
   return (
     <main className="mx-auto max-w-7xl px-5 py-8 md:px-10 md:py-12">
       <Link
-        to="/w/$workspaceId/projects/$projectId/changesets"
-        params={{ workspaceId, projectId }}
+        {...sectionLink("changesets", { workspaceId, projectId }, loaded?.changeset.feature_id)}
         className="group inline-flex items-center gap-1.5 rounded-md text-[13px] text-muted-foreground transition-colors hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-none"
       >
         <ArrowLeft className="size-3.5 transition-transform group-hover:-translate-x-0.5" />

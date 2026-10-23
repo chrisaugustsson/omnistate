@@ -1,12 +1,13 @@
 import { useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { PartyPopper } from "lucide-react";
-import { WaitingList, waitingCount, waitingGroups, type WaitingGroup } from "@/components/project/items";
+import { WaitingList, featureNames, waitingCount, waitingGroups, type WaitingGroup } from "@/components/project/items";
 import { FilterTabs, SectionPage } from "@/components/project/section-page";
 
 // The project's inbox: everything that waits for the reviewer (decisions to
 // approve, change sets in review, comments marked addressed and agents'
-// questions), by kind, with a tab per kind.
+// questions), by kind, with a tab per kind. The items of a feature carry the
+// feature's name.
 export const Route = createFileRoute("/w/$workspaceId/projects/$projectId_/inbox")({
   component: Inbox,
 });
@@ -37,7 +38,7 @@ function Inbox() {
       }}
     >
       {(home) => {
-        const groups = waitingGroups(home, { workspaceId, projectId });
+        const groups = waitingGroups(home, { workspaceId, projectId }, featureNames(home));
         const shown = groups.filter((group) => tab === "all" || group.kind === tab);
         const nothing = shown.every((group) => !group.items.length);
         return (

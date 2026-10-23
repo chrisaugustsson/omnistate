@@ -1,6 +1,9 @@
 import type { ReactNode } from "react";
+import { Link } from "@tanstack/react-router";
+import { ArrowLeft } from "lucide-react";
 import type { HomeResponse } from "@/api/generated";
 import { PageHeader } from "@/components/page-header";
+import { scopedHome } from "@/components/project/items";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { useHome, useProjectName } from "@/lib/use-home";
 import { cn } from "@/lib/utils";
@@ -8,26 +11,51 @@ import { cn } from "@/lib/utils";
 /**
  * The frame of a project's section page (Inbox, Docs, Change sets, Threads):
  * the project's name over the section's title, and the section's content once
- * the project's home is loaded (live, as on the overview).
+ * the project's home is loaded (live, as on the overview). `feature` picks the
+ * part of the project the page shows: `null` its own items, an ID that
+ * feature's (the name of the feature, linking to its overview, over the
+ * title), and nothing everything.
  */
 export function SectionPage({
   workspaceId,
   projectId,
+  feature,
   title,
   description,
   children,
 }: {
   workspaceId: string;
   projectId: string;
+  feature?: string | null;
   title: string;
   description?: (home: HomeResponse) => ReactNode;
   children: (home: HomeResponse) => ReactNode;
 }) {
-  const { home, failed } = useHome(workspaceId, projectId);
+  const loaded = useHome(workspaceId, projectId);
+  const { failed } = loaded;
+  const home = loaded.home && feature !== undefined ? scopedHome(loaded.home, feature) : loaded.home;
   const name = useProjectName(workspaceId, projectId);
+  const featureName = feature ? loaded.home?.features?.find((summary) => summary.feature.id === feature)?.feature.name : null;
   return (
     <main className="mx-auto max-w-5xl px-5 py-8 md:px-10 md:py-12">
-      <PageHeader eyebrow={name ?? "Project"} title={title} description={home && description?.(home)} />
+      <PageHeader
+        eyebrow={
+          feature ? (
+            <Link
+              to="/w/$workspaceId/projects/$projectId/features/$featureId"
+              params={{ workspaceId, projectId, featureId: feature }}
+              className="group inline-flex items-center gap-1.5 transition-colors hover:text-foreground"
+            >
+              <ArrowLeft className="size-3.5 transition-transform group-hover:-translate-x-0.5" />
+              {featureName ?? "Feature"}
+            </Link>
+          ) : (
+            (name ?? "Project")
+          )
+        }
+        title={title}
+        description={home && description?.(home)}
+      />
       {failed && (
         <Alert variant="destructive" className="mt-8">
           <AlertDescription>The project could not be loaded. Try again in a moment.</AlertDescription>

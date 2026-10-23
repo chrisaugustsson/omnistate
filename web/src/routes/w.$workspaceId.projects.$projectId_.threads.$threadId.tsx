@@ -4,6 +4,7 @@ import { ArrowLeft } from "lucide-react";
 import { loadThread } from "@/api/threads";
 import { DecisionBodySchema, type DecisionBody, type PostBody, type ThreadBody } from "@/api/generated";
 import { PageHeader } from "@/components/page-header";
+import { sectionLink } from "@/components/project/items";
 import { Composer } from "@/components/thread/composer";
 import { DecisionPanel } from "@/components/thread/decision-panel";
 import { Segmented } from "@/components/thread/segmented";
@@ -74,8 +75,7 @@ function ThreadView() {
       <PageHeader
         eyebrow={
           <Link
-            to="/w/$workspaceId/projects/$projectId/threads"
-            params={{ workspaceId, projectId }}
+            {...sectionLink("threads", { workspaceId, projectId }, thread?.feature_id)}
             className="group inline-flex items-center gap-1.5 text-[11px] tracking-[0.08em] uppercase transition-colors hover:text-foreground"
           >
             <ArrowLeft className="size-3.5 transition-transform group-hover:-translate-x-0.5" />
