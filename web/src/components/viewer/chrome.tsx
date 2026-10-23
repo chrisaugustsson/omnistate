@@ -2,6 +2,7 @@ import type { ReactNode, SelectHTMLAttributes } from "react";
 import { Link } from "@tanstack/react-router";
 import { ArrowLeft, ChevronDown, TriangleAlert } from "lucide-react";
 import { AgentAvatar } from "@/components/agent-chip";
+import { sectionLink } from "@/components/project/items";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { cn } from "@/lib/utils";
 
@@ -9,10 +10,15 @@ import { cn } from "@/lib/utils";
 // compact selects, the live-draft indicator, side-pane sections with small
 // uppercase labels, and alerts that float over the work.
 
-/** The slim bar over a viewer: a back link, the doc's title and the viewer's controls on the right. */
+/**
+ * The slim bar over a viewer: a back link, the doc's title and the viewer's
+ * controls on the right. The back link goes to the docs of the doc's feature,
+ * or to the project's docs for a project-level doc.
+ */
 export function ViewerToolbar({
   workspaceId,
   projectId,
+  featureId,
   icon,
   title,
   status,
@@ -20,6 +26,8 @@ export function ViewerToolbar({
 }: {
   workspaceId: string;
   projectId: string;
+  /** The doc's feature; `null` or absent for a project-level doc. */
+  featureId?: string | null;
   icon?: ReactNode;
   /** The doc's title; `null` while it loads. */
   title: ReactNode | null;
@@ -31,8 +39,7 @@ export function ViewerToolbar({
   return (
     <header className="sticky top-0 z-30 flex min-h-12 shrink-0 flex-wrap items-center gap-x-3 gap-y-2 border-b bg-background/95 px-3 py-2 backdrop-blur supports-[backdrop-filter]:bg-background/80 lg:static">
       <Link
-        to="/w/$workspaceId/projects/$projectId/docs"
-        params={{ workspaceId, projectId }}
+        {...sectionLink("docs", { workspaceId, projectId }, featureId)}
         aria-label="Back to the docs"
         className="-ml-1 flex h-8 shrink-0 items-center gap-1.5 rounded-md px-2 text-[13px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-none"
       >

@@ -303,6 +303,7 @@ function HtmlDocViewer({
       <ViewerToolbar
         workspaceId={workspaceId}
         projectId={projectId}
+        featureId={doc.value?.feature_id}
         icon={<FileText />}
         title={doc.value?.title ?? null}
         status={draft && <LiveIndicator holders={holdersOf(shownClaims)} />}
@@ -1168,6 +1169,7 @@ function DesignViewer({
       <ViewerToolbar
         workspaceId={workspaceId}
         projectId={projectId}
+        featureId={doc.value?.feature_id}
         icon={<PenTool />}
         title={doc.value?.title ?? null}
         status={draft && <LiveIndicator holders={holdersOf(shownClaims)} />}
