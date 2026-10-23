@@ -31,6 +31,7 @@ import { sectionLink } from "@/components/project/items";
 import { Eyebrow, PageHeader } from "@/components/page-header";
 import { StatusBadge, statusWords } from "@/components/status-badge";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import { TokenChanges } from "@/components/changeset/token-changes";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
@@ -635,6 +636,13 @@ function Docs({
                   <DesignChanges workspaceId={workspaceId} projectId={projectId} doc={doc} />
                 ) : doc.kind === "html" ? (
                   <HtmlChanges workspaceId={workspaceId} projectId={projectId} doc={doc} />
+                ) : doc.kind === "design-system" ? (
+                  <TokenChanges
+                    workspaceId={workspaceId}
+                    projectId={projectId}
+                    baseVersionId={doc.base_version_id ?? null}
+                    versionId={doc.version_id}
+                  />
                 ) : null}
               </div>
             </li>

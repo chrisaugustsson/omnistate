@@ -54,3 +54,19 @@ export async function rejectChangeset(
   });
   return rejected.changeset;
 }
+
+const tokens = operations["GET /api/v1/w/{workspace_id}/projects/{project_id}/tokens"];
+
+/** The design token tree of the design system's saved version `versionId`, and its modes. */
+export async function loadVersionTokens(
+  workspaceId: string,
+  projectId: string,
+  versionId: string,
+): Promise<{ modes: string[]; tokens: Record<string, unknown> }> {
+  const loaded = await callApi(
+    "GET",
+    `/api/v1/w/${workspaceId}/projects/${projectId}/tokens?version=${encodeURIComponent(versionId)}`,
+    { response: tokens.responses["200"] },
+  );
+  return { modes: loaded.modes, tokens: loaded.tokens ?? {} };
+}
