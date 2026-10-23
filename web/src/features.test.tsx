@@ -28,7 +28,7 @@
 // page, the link to that feature's section (its overview, docs, change sets
 // or threads); on a doc, change set or thread of a feature, the link to that
 // feature's docs, change sets or threads, and that page's back link goes there
-// too.
+// too (for a doc, the viewer toolbar's "Back to the docs" link).
 import { RouterProvider, createMemoryHistory } from "@tanstack/react-router";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -634,7 +634,7 @@ describe("features in the web app", () => {
       expect(back.map((link) => link.getAttribute("href"))).not.toContain(`${PROJECT_PATH}/threads`);
     });
 
-    test("on a feature's doc the sidebar marks the feature's docs", async () => {
+    test("on a feature's doc the sidebar marks the feature's docs and the back link goes there", async () => {
       const seed = seeded();
       fakeApi(seed);
       renderAt(`${PROJECT_PATH}/docs/${seed.docs.savedPrd.id}`);
@@ -642,6 +642,35 @@ describe("features in the web app", () => {
       const current = await linkTo(nav, featurePath(WISHLIST, "docs"));
       await waitFor(() => expect(marked(current), "the Wishlist's docs are marked").toBe(true));
       expect(marked(await linkTo(nav, `${PROJECT_PATH}/docs`)), "the project's docs").toBe(false);
+
+      const main = await page();
+      await within(main).findByRole("heading", { level: 1, name: "Saved items PRD" });
+      await waitFor(() => {
+        const back = within(main).getAllByRole("link", { name: /docs/i });
+        expect(back.map((link) => link.getAttribute("href"))).toContain(featurePath(WISHLIST, "docs"));
+        expect(back.map((link) => link.getAttribute("href"))).not.toContain(`${PROJECT_PATH}/docs`);
+      });
+    });
+
+    test("on a project-level doc the sidebar marks the project's docs and the back link goes there", async () => {
+      const seed = seeded();
+      fakeApi(seed);
+      renderAt(`${PROJECT_PATH}/docs/${seed.docs.storefrontPrd.id}`);
+      const nav = await sidebar();
+      const current = await linkTo(nav, `${PROJECT_PATH}/docs`);
+      await waitFor(() => expect(marked(current), "the project's docs are marked").toBe(true));
+      await linkTo(nav, featurePath(WISHLIST));
+      for (const link of markedLinks(nav)) {
+        expect(link.getAttribute("href"), "no feature is marked").not.toMatch(/\/features\//);
+      }
+
+      const main = await page();
+      await within(main).findByRole("heading", { level: 1, name: "Storefront PRD" });
+      const back = within(main).getAllByRole("link", { name: /docs/i });
+      expect(back.map((link) => link.getAttribute("href"))).toContain(`${PROJECT_PATH}/docs`);
+      for (const link of back) {
+        expect(link.getAttribute("href"), "no back link to a feature").not.toMatch(/\/features\//);
+      }
     });
 
     test("on a project-level change set the sidebar marks the project's change sets and the back link goes there", async () => {
