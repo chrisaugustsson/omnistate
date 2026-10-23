@@ -1,6 +1,6 @@
 import { useState } from "react";
 import type { ThreadBody } from "@/api/generated";
-import { ChangesetRow, DocRow, Empty, List, MODULES, ThreadRow } from "@/components/project/items";
+import { ChangesetRow, DocRow, Empty, List, MODULES, ThreadRow, isDesign } from "@/components/project/items";
 import { FilterTabs, SectionPage } from "@/components/project/section-page";
 import { statusWords } from "@/components/status-badge";
 
@@ -26,7 +26,7 @@ export function DocsPage({ workspaceId, projectId, featureId }: PageProps) {
       description={() => "The plans agents write: the PRD, the architecture, the database and the UI."}
     >
       {(home) => {
-        const docs = home.docs.filter((doc) => tab === "all" || doc.kind === tab);
+        const docs = home.docs.filter((doc) => tab === "all" || (tab === "design") === isDesign(doc));
         return (
           <>
             <FilterTabs
@@ -35,8 +35,8 @@ export function DocsPage({ workspaceId, projectId, featureId }: PageProps) {
               onChange={setTab}
               tabs={[
                 { value: "all", label: "All", count: home.docs.length },
-                { value: "html", label: "Docs", count: home.docs.filter((doc) => doc.kind === "html").length },
-                { value: "design", label: "Designs", count: home.docs.filter((doc) => doc.kind === "design").length },
+                { value: "html", label: "Docs", count: home.docs.filter((doc) => !isDesign(doc)).length },
+                { value: "design", label: "Designs", count: home.docs.filter(isDesign).length },
               ]}
             />
             {docs.length === 0 && <Empty>No docs here yet. Agents add them through change sets.</Empty>}

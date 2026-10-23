@@ -311,6 +311,13 @@ export function WaitingList({ group, showTitle = true }: { group: WaitingGroup; 
   );
 }
 
+/** Whether a doc is drawn on a canvas: a design doc or the design system, not a written doc. */
+export function isDesign(doc: DocBody): boolean {
+  return doc.kind === "design" || doc.kind === "design-system";
+}
+
+const KIND_LABELS: Record<string, string> = { html: "Doc", design: "Design", "design-system": "System" };
+
 /** A doc's row: its kind, title, whether agents hold claims on it now. */
 export function DocRow({
   doc,
@@ -325,7 +332,7 @@ export function DocRow({
   names?: FeatureNames;
 }) {
   const tag = tagOf(doc, names);
-  const design = doc.kind === "design";
+  const design = isDesign(doc);
   return (
     <li>
       <Link
@@ -349,7 +356,7 @@ export function DocRow({
         {showModule && (
           <span className="hidden font-mono text-[11px] text-muted-foreground uppercase sm:inline">{doc.module}</span>
         )}
-        <span className="hidden w-12 text-right text-xs text-muted-foreground sm:inline">{design ? "Design" : "Doc"}</span>
+        <span className="hidden w-12 text-right text-xs text-muted-foreground sm:inline">{KIND_LABELS[doc.kind] ?? "Doc"}</span>
         <Chevron />
       </Link>
     </li>
