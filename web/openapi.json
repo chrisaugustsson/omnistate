@@ -693,8 +693,8 @@
               "null"
             ]
           },
-          "module": {
-            "description": "`prd`, `architecture` or `db` for `html`, `ui` for the design kinds.",
+          "pillar": {
+            "description": "`spec`, `ui`, `architecture`, `db` or `research`; the design kinds only go in `ui`.",
             "type": [
               "string",
               "null"
@@ -1255,8 +1255,8 @@
               "null"
             ]
           },
-          "module": {
-            "description": "`prd`, `architecture`, `db` or `ui`.",
+          "pillar": {
+            "description": "`spec`, `ui`, `architecture`, `db` or `research`.",
             "type": "string"
           },
           "project_id": {
@@ -1270,7 +1270,7 @@
           "id",
           "project_id",
           "kind",
-          "module",
+          "pillar",
           "title",
           "created_at",
           "drafts",
@@ -2728,7 +2728,7 @@
             "description": "`html`, `design` or `design-system`.",
             "type": "string"
           },
-          "module": {
+          "pillar": {
             "type": "string"
           },
           "removed": {
@@ -2746,7 +2746,7 @@
         "required": [
           "doc_id",
           "kind",
-          "module",
+          "pillar",
           "title",
           "version_id",
           "removed",
@@ -5253,7 +5253,7 @@
                 }
               }
             },
-            "description": "The kind, module or title is missing or not allowed"
+            "description": "The kind, pillar or title is missing or not allowed"
           },
           "401": {
             "content": {
@@ -5303,7 +5303,7 @@
                 }
               }
             },
-            "description": "The change set belongs to a feature and the doc is a design system, which is always global (`design_system_is_global`)"
+            "description": "A design or design-system doc outside the `ui` pillar (`design_needs_ui_pillar`), or a design system in a change set that belongs to a feature, which is always global (`design_system_is_global`)"
           }
         },
         "summary": "Starts a new doc in a change set. The doc has no mainline version: its\nfirst version comes through the change set, which gets an empty draft of it.\nThe doc belongs to the change set's feature (global for a project-level\nchange set) and keeps that scope.",
@@ -8376,6 +8376,15 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "description": "`spec`, `ui`, `architecture`, `db` or `research` lists that pillar's docs only; without it, every pillar",
+            "in": "query",
+            "name": "pillar",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -8397,7 +8406,7 @@
                 }
               }
             },
-            "description": "`feature` is neither `global` nor a UUID"
+            "description": "`feature` is neither `global` nor a UUID, or `pillar` is none of the five pillars"
           },
           "401": {
             "content": {

@@ -220,7 +220,7 @@ export type CreateDirectiveRequest = z.infer<typeof CreateDirectiveRequestSchema
 
 export const CreateDocRequestSchema = z.object({
   kind: z.string().nullable().optional(),
-  module: z.string().nullable().optional(),
+  pillar: z.string().nullable().optional(),
   title: z.string().nullable().optional(),
 });
 export type CreateDocRequest = z.infer<typeof CreateDocRequestSchema>;
@@ -270,7 +270,7 @@ export const DocBodySchema = z.object({
   id: z.string(),
   kind: z.string(),
   mainline_version_id: z.string().nullable().optional(),
-  module: z.string(),
+  pillar: z.string(),
   project_id: z.string(),
   title: z.string(),
 });
@@ -767,7 +767,7 @@ export const ReviewedDocSchema = z.object({
   changes: ReviewChangesSchema,
   doc_id: z.string(),
   kind: z.string(),
-  module: z.string(),
+  pillar: z.string(),
   removed: z.boolean(),
   title: z.string(),
   version_id: z.string(),

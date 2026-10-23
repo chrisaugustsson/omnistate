@@ -4,7 +4,7 @@ import {
   DocRow,
   Empty,
   List,
-  MODULES,
+  PILLARS,
   Section,
   ThreadRow,
   ViewAll,
@@ -93,12 +93,12 @@ function Docs({ docs, params, featureId, names, owner }: PartProps & { docs: Doc
     >
       {docs.length === 0 && <Empty>{owner} has no docs yet.</Empty>}
       <div className="space-y-6">
-        {MODULES.map(({ module, title, blurb }) => {
-          const inModule = docs.filter((doc) => doc.module === module);
-          if (!inModule.length) return null;
-          const id = `docs-${module}`;
+        {PILLARS.map(({ pillar, title, blurb }) => {
+          const inPillar = docs.filter((doc) => doc.pillar === pillar);
+          if (!inPillar.length) return null;
+          const id = `docs-${pillar}`;
           return (
-            <section key={module} aria-labelledby={id} className="space-y-2">
+            <section key={pillar} aria-labelledby={id} className="space-y-2">
               <div className="flex items-baseline gap-2">
                 <h3 id={id} className="text-[11px] font-medium tracking-[0.08em] text-muted-foreground uppercase">
                   {title}
@@ -106,7 +106,7 @@ function Docs({ docs, params, featureId, names, owner }: PartProps & { docs: Doc
                 <span className="text-xs text-muted-foreground/70">{blurb}</span>
               </div>
               <List>
-                {inModule.map((doc) => (
+                {inPillar.map((doc) => (
                   <DocRow key={doc.id} doc={doc} params={params} names={names} />
                 ))}
               </List>

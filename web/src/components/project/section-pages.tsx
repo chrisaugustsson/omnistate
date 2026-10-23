@@ -1,6 +1,6 @@
 import { useState } from "react";
 import type { ThreadBody } from "@/api/generated";
-import { ChangesetRow, DocRow, Empty, List, MODULES, ThreadRow, isDesign } from "@/components/project/items";
+import { ChangesetRow, DocRow, Empty, List, PILLARS, ThreadRow, isDesign } from "@/components/project/items";
 import { FilterTabs, SectionPage } from "@/components/project/section-page";
 import { statusWords } from "@/components/status-badge";
 
@@ -12,7 +12,7 @@ type PageProps = { workspaceId: string; projectId: string; featureId?: string };
 
 type DocsTab = "all" | "html" | "design";
 
-/** The docs: the PRD, architecture, DB and UI docs, grouped by module, with a tab for written docs and one for designs. */
+/** The docs: the spec, UI, architecture, DB and research docs, grouped by pillar, with a tab for written docs and one for designs. */
 export function DocsPage({ workspaceId, projectId, featureId }: PageProps) {
   const [tab, setTab] = useState<DocsTab>("all");
   const params = { workspaceId, projectId };
@@ -23,7 +23,7 @@ export function DocsPage({ workspaceId, projectId, featureId }: PageProps) {
       projectId={projectId}
       feature={featureId ?? null}
       title="Docs"
-      description={() => "The plans agents write: the PRD, the architecture, the database and the UI."}
+      description={() => "The plans agents write: the spec, the UI, the architecture, the database and the research."}
     >
       {(home) => {
         const docs = home.docs.filter((doc) => tab === "all" || (tab === "design") === isDesign(doc));
@@ -40,12 +40,12 @@ export function DocsPage({ workspaceId, projectId, featureId }: PageProps) {
               ]}
             />
             {docs.length === 0 && <Empty>No docs here yet. Agents add them through change sets.</Empty>}
-            {MODULES.map(({ module, title, blurb }) => {
-              const inModule = docs.filter((doc) => doc.module === module);
-              if (!inModule.length) return null;
-              const id = `docs-${module}`;
+            {PILLARS.map(({ pillar, title, blurb }) => {
+              const inPillar = docs.filter((doc) => doc.pillar === pillar);
+              if (!inPillar.length) return null;
+              const id = `docs-${pillar}`;
               return (
-                <section key={module} aria-labelledby={id} className="space-y-2">
+                <section key={pillar} aria-labelledby={id} className="space-y-2">
                   <div className="flex items-baseline gap-2">
                     <h2 id={id} className="text-[11px] font-medium tracking-[0.08em] text-muted-foreground uppercase">
                       {title}
@@ -53,7 +53,7 @@ export function DocsPage({ workspaceId, projectId, featureId }: PageProps) {
                     <span className="text-xs text-muted-foreground/70">{blurb}</span>
                   </div>
                   <List>
-                    {inModule.map((doc) => (
+                    {inPillar.map((doc) => (
                       <DocRow key={doc.id} doc={doc} params={params} />
                     ))}
                   </List>

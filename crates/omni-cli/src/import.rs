@@ -230,7 +230,7 @@ fn send_design_system(
         Some(doc) => doc.to_string(),
         None => {
             let body = format!(
-                "{{\"kind\":\"design-system\",\"module\":\"ui\",\"title\":{}}}",
+                "{{\"kind\":\"design-system\",\"pillar\":\"ui\",\"title\":{}}}",
                 quote("Design system")
             );
             let response = agent.request(
@@ -300,7 +300,7 @@ fn send_design(
     title: &str,
 ) -> Result<String> {
     let body = format!(
-        "{{\"kind\":\"design\",\"module\":\"ui\",\"title\":{}}}",
+        "{{\"kind\":\"design\",\"pillar\":\"ui\",\"title\":{}}}",
         quote(title)
     );
     let response = agent.request(

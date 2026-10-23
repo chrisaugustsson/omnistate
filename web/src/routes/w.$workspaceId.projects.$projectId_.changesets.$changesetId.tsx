@@ -619,7 +619,7 @@ function Docs({
                 </span>
                 <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2.5 gap-y-1">
                   <h3 className="truncate text-[15px] font-semibold tracking-tight">{doc.title}</h3>
-                  <span className="font-mono text-[11px] text-muted-foreground uppercase">{doc.module}</span>
+                  <span className="font-mono text-[11px] text-muted-foreground uppercase">{doc.pillar}</span>
                   {globalDocs.has(doc.doc_id) && <Badge variant="amber">Global</Badge>}
                   {doc.removed ? (
                     <Badge variant="red">Removed doc</Badge>

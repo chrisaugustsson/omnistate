@@ -38,7 +38,7 @@ pub struct ReviewedDoc {
     pub doc_id: String,
     /// `html`, `design` or `design-system`.
     pub kind: String,
-    pub module: String,
+    pub pillar: String,
     pub title: String,
     /// The version that the change set's draft is based on: the mainline
     /// version it was opened from or last rebased onto; `null` for a doc that
@@ -66,7 +66,7 @@ pub struct ReviewResponse {
 struct ReviewedRow {
     doc_id: String,
     kind: String,
-    module: String,
+    pillar: String,
     title: String,
     base_version_id: Option<String>,
     version_id: String,
@@ -109,7 +109,7 @@ pub async fn show(
     found.ok_or(ApiError::NotFound)?;
     let changeset = load_changeset(&mut tx, &Viewer::human(), &changeset_id).await?;
     let rows: Vec<ReviewedRow> = sqlx::query_as(
-        "SELECT d.id::text AS doc_id, d.kind, d.module, d.title, \
+        "SELECT d.id::text AS doc_id, d.kind, d.pillar, d.title, \
                 dr.base_version_id::text AS base_version_id, \
                 v.id::text AS version_id, v.removed \
          FROM docs d \
@@ -146,7 +146,7 @@ pub async fn show(
         docs.push(ReviewedDoc {
             doc_id: row.doc_id,
             kind: row.kind,
-            module: row.module,
+            pillar: row.pillar,
             title: row.title,
             base_version_id: row.base_version_id,
             version_id: row.version_id,

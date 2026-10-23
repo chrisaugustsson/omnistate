@@ -64,12 +64,13 @@ Usage:
                                       resolve a conflict once the draft is fixed with `omni doc
                                       edit`; a change set cannot be submitted until every
                                       conflict is resolved
-  omni doc create --changeset <id> --kind html|design|design-system --module prd|architecture|db|ui
+  omni doc create --changeset <id> --kind html|design|design-system --pillar spec|ui|architecture|db|research
                 --title <text>        start a doc in a change set (its first version comes
                                       through the change set)
   omni doc list                       list the project's docs: ID, scope (project or the
-                                      feature's name), kind, module and title; --feature
-                                      <name|id> or --global list one scope only
+                                      feature's name), kind, pillar and title; --feature
+                                      <name|id> or --global list one scope only; --pillar
+                                      <pillar> lists one pillar only
   omni doc open <doc> --changeset <id>
                                       make (or reuse) the change set's draft of a doc
   omni doc read <doc> [--changeset <id> | --version <v>]

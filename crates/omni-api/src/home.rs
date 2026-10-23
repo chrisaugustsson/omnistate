@@ -115,6 +115,7 @@ pub async fn show(
         &request.workspace_id,
         &project_id,
         Scope::Project,
+        None,
     )
     .await?;
     let changesets = changesets_of_project(&mut tx, &Viewer::human(), &project_id).await?;

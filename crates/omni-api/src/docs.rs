@@ -42,7 +42,7 @@ use utoipa::ToSchema;
 pub(crate) type Tx = Transaction<'static, Postgres>;
 
 /// The columns of a doc; `created_at` is ISO 8601 text in UTC.
-const DOC_COLUMNS: &str = "id::text, project_id::text, kind, module, title, \
+const DOC_COLUMNS: &str = "id::text, project_id::text, kind, pillar, title, \
      to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"') AS created_at, \
      mainline_version_id::text, feature_id::text";
 
@@ -71,7 +71,7 @@ pub(crate) struct DocRow {
     pub(crate) id: String,
     project_id: String,
     pub(crate) kind: String,
-    module: String,
+    pillar: String,
     title: String,
     created_at: String,
     pub(crate) mainline_version_id: Option<String>,
@@ -84,8 +84,8 @@ pub struct DocBody {
     pub project_id: String,
     /// `html`, `design` or `design-system`.
     pub kind: String,
-    /// `prd`, `architecture`, `db` or `ui`.
-    pub module: String,
+    /// `spec`, `ui`, `architecture`, `db` or `research`.
+    pub pillar: String,
     pub title: String,
     pub created_at: String,
     /// `null` until a change set that holds the doc's first version merges.
@@ -174,8 +174,8 @@ pub struct MainlineHtmlResponse {
 pub struct CreateDocRequest {
     /// `html`, `design` or `design-system`.
     pub kind: Option<String>,
-    /// `prd`, `architecture` or `db` for `html`, `ui` for the design kinds.
-    pub module: Option<String>,
+    /// `spec`, `ui`, `architecture`, `db` or `research`; the design kinds only go in `ui`.
+    pub pillar: Option<String>,
     pub title: Option<String>,
 }
 
@@ -901,6 +901,7 @@ pub(crate) async fn docs_of_project(
     workspace_id: &str,
     project_id: &str,
     scope: Scope<'_>,
+    pillar: Option<&str>,
 ) -> Result<Vec<DocBody>, ApiError> {
     let all = matches!(scope, Scope::Project);
     let feature = match scope {
@@ -909,11 +910,13 @@ pub(crate) async fn docs_of_project(
     };
     let rows: Vec<DocRow> = sqlx::query_as(&format!(
         "SELECT {DOC_COLUMNS} FROM docs WHERE project_id = $1::uuid \
-         AND ($2::bool OR feature_id IS NOT DISTINCT FROM $3::uuid) ORDER BY created_at, id"
+         AND ($2::bool OR feature_id IS NOT DISTINCT FROM $3::uuid) \
+         AND ($4::text IS NULL OR pillar = $4) ORDER BY created_at, id"
     ))
     .bind(project_id)
     .bind(all)
     .bind(feature)
+    .bind(pillar)
     .fetch_all(&mut **tx)
     .await
     .map_err(ApiError::database)?;
@@ -931,7 +934,7 @@ fn doc_body(row: DocRow, drafts: Vec<DraftBody>, claims: Vec<ClaimBody>) -> DocB
         id: row.id,
         project_id: row.project_id,
         kind: row.kind,
-        module: row.module,
+        pillar: row.pillar,
         title: row.title,
         created_at: row.created_at,
         mainline_version_id: row.mainline_version_id,
@@ -941,14 +944,8 @@ fn doc_body(row: DocRow, drafts: Vec<DraftBody>, claims: Vec<ClaimBody>) -> DocB
     }
 }
 
-/// The kind and module of a doc: HTML docs hold PRDs, architecture and the
-/// database design, design files hold the UI (FR-13).
-fn valid_kind_and_module(kind: &str, module: &str) -> bool {
-    matches!(
-        (kind, module),
-        ("html", "prd" | "architecture" | "db") | ("design" | "design-system", "ui")
-    )
-}
+/// The five pillars of a scope (FR-5).
+const PILLARS: [&str; 5] = ["spec", "ui", "architecture", "db", "research"];
 
 // Routes ---------------------------------------------------------------------------
 
@@ -967,12 +964,12 @@ fn valid_kind_and_module(kind: &str, module: &str) -> bool {
     request_body = CreateDocRequest,
     responses(
         (status = 201, description = "The new doc and the change set's draft of it", body = CreatedDocResponse),
-        (status = 400, description = "The kind, module or title is missing or not allowed", body = ErrorBody),
+        (status = 400, description = "The kind, pillar or title is missing or not allowed", body = ErrorBody),
         (status = 401, description = "No valid API key or session", body = ErrorBody),
         (status = 403, description = "Called with a session; agents only", body = ErrorBody),
         (status = 404, description = "No such change set in this project and workspace", body = ErrorBody),
         (status = 409, description = "The project has a design system doc already (`design_system_exists`)", body = ErrorBody),
-        (status = 422, description = "The change set belongs to a feature and the doc is a design system, which is always global (`design_system_is_global`)", body = ErrorBody),
+        (status = 422, description = "A design or design-system doc outside the `ui` pillar (`design_needs_ui_pillar`), or a design system in a change set that belongs to a feature, which is always global (`design_system_is_global`)", body = ErrorBody),
     )
 )]
 pub async fn create_doc(
@@ -989,10 +986,18 @@ pub async fn create_doc(
     let new = new?;
     let invalid = || ApiError::bad_request("invalid_request");
     let kind = non_blank(new.kind).ok_or_else(invalid)?;
-    let module = non_blank(new.module).ok_or_else(invalid)?;
+    let pillar = non_blank(new.pillar).ok_or_else(invalid)?;
     let title = non_blank(new.title).ok_or_else(invalid)?;
-    if !valid_kind_and_module(&kind, &module) {
+    if !matches!(kind.as_str(), "html" | "design" | "design-system")
+        || !PILLARS.contains(&pillar.as_str())
+    {
         return Err(invalid());
+    }
+    if kind != "html" && pillar != "ui" {
+        return Err(ApiError::Refused(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "design_needs_ui_pillar",
+        ));
     }
     if kind == "design-system" && feature_id.is_some() {
         return Err(ApiError::Refused(
@@ -1017,14 +1022,14 @@ pub async fn create_doc(
         }
     }
     let row: DocRow = sqlx::query_as(&format!(
-        "INSERT INTO docs (workspace_id, project_id, feature_id, kind, module, title) \
+        "INSERT INTO docs (workspace_id, project_id, feature_id, kind, pillar, title) \
          VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5, $6) RETURNING {DOC_COLUMNS}"
     ))
     .bind(&request.workspace_id)
     .bind(&project_id)
     .bind(&feature_id)
     .bind(&kind)
-    .bind(&module)
+    .bind(&pillar)
     .bind(&title)
     .fetch_one(&mut *tx)
     .await
@@ -1058,7 +1063,7 @@ pub async fn create_doc(
             "changeset_id": changeset_id,
             "feature_id": feature_id,
             "kind": kind,
-            "module": module,
+            "pillar": pillar,
             "title": title,
         }),
     )
@@ -1086,10 +1091,11 @@ pub async fn create_doc(
         ("workspace_id" = String, Path, description = "The workspace's UUID"),
         ("project_id" = String, Path, description = "The project's UUID"),
         ("feature" = Option<String>, Query, description = "A feature's UUID lists that feature's docs only; `global` lists the project's global docs only; without it, every doc of the project"),
+        ("pillar" = Option<String>, Query, description = "`spec`, `ui`, `architecture`, `db` or `research` lists that pillar's docs only; without it, every pillar"),
     ),
     responses(
         (status = 200, description = "The project's docs", body = DocListResponse),
-        (status = 400, description = "`feature` is neither `global` nor a UUID", body = ErrorBody),
+        (status = 400, description = "`feature` is neither `global` nor a UUID, or `pillar` is none of the five pillars", body = ErrorBody),
         (status = 401, description = "No valid API key or session", body = ErrorBody),
         (status = 404, description = "No such project in this workspace", body = ErrorBody),
     )
@@ -1113,10 +1119,23 @@ pub async fn list_docs(
         Some(None) => Scope::Global,
         Some(Some(id)) => Scope::Feature(id),
     };
+    let pillar = match query.get("pillar").map(String::as_str) {
+        None => None,
+        Some(pillar) if PILLARS.contains(&pillar) => Some(pillar),
+        Some(_) => return Err(ApiError::bad_request("invalid_request")),
+    };
     claims::sweep(&state, &request.workspace_id).await;
     let mut tx = state.workspace_tx(&request.workspace_id).await?;
     require_project(&mut tx, &project_id).await?;
-    let docs = docs_of_project(&state, &mut tx, &request.workspace_id, &project_id, scope).await?;
+    let docs = docs_of_project(
+        &state,
+        &mut tx,
+        &request.workspace_id,
+        &project_id,
+        scope,
+        pillar,
+    )
+    .await?;
     tx.commit().await.map_err(ApiError::database)?;
     Ok(Json(DocListResponse { docs }))
 }

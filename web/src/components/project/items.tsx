@@ -84,12 +84,13 @@ export function FeatureTag({ name }: { name: string }) {
   );
 }
 
-/** The modules of a project's docs, in the order the pages show them. */
-export const MODULES = [
-  { module: "prd", title: "PRD", blurb: "What gets built and why" },
-  { module: "architecture", title: "Architecture", blurb: "How the system fits together" },
-  { module: "db", title: "DB", blurb: "The data model" },
-  { module: "ui", title: "UI", blurb: "Design system and screens" },
+/** The pillars of a scope's docs, in the order the pages show them. */
+export const PILLARS = [
+  { pillar: "spec", title: "Spec", blurb: "What gets built and why" },
+  { pillar: "ui", title: "UI", blurb: "Design system and screens" },
+  { pillar: "architecture", title: "Architecture", blurb: "How the system fits together" },
+  { pillar: "db", title: "DB", blurb: "The data model" },
+  { pillar: "research", title: "Research", blurb: "What was learned along the way" },
 ];
 
 /** How many things wait for the reviewer. */
@@ -322,12 +323,12 @@ const KIND_LABELS: Record<string, string> = { html: "Doc", design: "Design", "de
 export function DocRow({
   doc,
   params,
-  showModule,
+  showPillar,
   names,
 }: {
   doc: DocBody;
   params: ProjectParams;
-  showModule?: boolean;
+  showPillar?: boolean;
   /** The project's features: given, a doc of a feature carries the feature's name. */
   names?: FeatureNames;
 }) {
@@ -353,8 +354,8 @@ export function DocRow({
             Agents editing
           </span>
         )}
-        {showModule && (
-          <span className="hidden font-mono text-[11px] text-muted-foreground uppercase sm:inline">{doc.module}</span>
+        {showPillar && (
+          <span className="hidden font-mono text-[11px] text-muted-foreground uppercase sm:inline">{doc.pillar}</span>
         )}
         <span className="hidden w-12 text-right text-xs text-muted-foreground sm:inline">{KIND_LABELS[doc.kind] ?? "Doc"}</span>
         <Chevron />

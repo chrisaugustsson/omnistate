@@ -10,7 +10,7 @@ use crate::json::{Value, quote};
 use std::io::IsTerminal;
 
 const KINDS: &str = "html, design or design-system";
-const MODULES: &str = "prd, architecture, db or ui";
+const PILLARS: &str = "spec, ui, architecture, db or research";
 
 /// The text of an API response, for `--json`.
 fn print_json(text: &str) {
@@ -23,6 +23,14 @@ fn parsed(text: &str, what: &str) -> Result<Value> {
             "the server's answer about {what} is not readable; is it an OmniState API?"
         ))
     })
+}
+
+/// The pillar as the API takes it, or an error that lists the five.
+fn known_pillar(pillar: &str) -> Result<&str> {
+    match pillar {
+        "spec" | "ui" | "architecture" | "db" | "research" => Ok(pillar),
+        _ => bail!("--pillar {pillar:?} is not a pillar; use {PILLARS}"),
+    }
 }
 
 fn doc_id(id: Option<&str>, usage: &str) -> Result<String> {
@@ -47,27 +55,22 @@ fn project_path(agent: &Agent, project: &str) -> String {
     format!("/api/v1/w/{}/projects/{project}", agent.workspace_id)
 }
 
-/// `omni doc create --changeset <id> --kind <kind> --module <module> --title <text>`
+/// `omni doc create --changeset <id> --kind <kind> --pillar <pillar> --title <text>`
 pub fn create(args: &Args) -> Result<()> {
-    const USAGE: &str = "omni doc create --changeset <id> --kind html|design|design-system --module prd|architecture|db|ui --title <text>";
+    const USAGE: &str = "omni doc create --changeset <id> --kind html|design|design-system --pillar spec|ui|architecture|db|research --title <text>";
     let changeset = changeset_option(args, USAGE)?;
     let kind = match args.kind.as_deref() {
         None => bail!("a doc needs --kind, one of {KINDS}: {USAGE}"),
         Some(kind @ ("html" | "design" | "design-system")) => kind,
         Some(kind) => bail!("--kind {kind:?} is not a kind of doc; use {KINDS}"),
     };
-    let module = match args.module.as_deref() {
-        None => bail!("a doc needs --module, one of {MODULES}: {USAGE}"),
-        Some(module @ ("prd" | "architecture" | "db" | "ui")) => module,
-        Some(module) => bail!("--module {module:?} is not a module; use {MODULES}"),
+    let pillar = match args.pillar.as_deref() {
+        None => bail!("a doc needs --pillar, one of {PILLARS}: {USAGE}"),
+        Some(pillar) => known_pillar(pillar)?,
     };
-    let fits = match kind {
-        "html" => module != "ui",
-        _ => module == "ui",
-    };
-    if !fits {
+    if kind != "html" && pillar != "ui" {
         bail!(
-            "a {kind} doc does not go in the {module} module: html docs are prd, architecture or db, design and design-system docs are ui"
+            "a {kind} doc does not go in the {pillar} pillar: design and design-system docs are ui, html docs go in any pillar"
         );
     }
     let title = args.title.as_deref().map(str::trim).unwrap_or_default();
@@ -78,9 +81,9 @@ pub fn create(args: &Args) -> Result<()> {
     let agent = agent(args)?;
     let project = project_id(args, &agent)?;
     let body = format!(
-        "{{\"kind\":{},\"module\":{},\"title\":{}}}",
+        "{{\"kind\":{},\"pillar\":{},\"title\":{}}}",
         quote(kind),
-        quote(module),
+        quote(pillar),
         quote(title)
     );
     let response = agent.request(
@@ -115,21 +118,29 @@ pub fn create(args: &Args) -> Result<()> {
     Ok(())
 }
 
-/// `omni doc list [--feature <name or id> | --global]`
+/// `omni doc list [--feature <name or id> | --global] [--pillar <pillar>]`
 pub fn list(args: &Args) -> Result<()> {
     let agent = agent(args)?;
     let project = project_id(args, &agent)?;
-    let mut path = format!("{}/docs", project_path(&agent, &project));
+    let mut query = Vec::new();
     match (&args.feature, args.global) {
         (Some(_), true) => bail!("give --feature or --global, not both"),
         (Some(given), false) => {
-            path.push_str(&format!(
-                "?feature={}",
+            query.push(format!(
+                "feature={}",
                 resolve_feature(&agent, &project, given)?
             ));
         }
-        (None, true) => path.push_str("?feature=global"),
+        (None, true) => query.push("feature=global".to_string()),
         (None, false) => {}
+    }
+    if let Some(pillar) = args.pillar.as_deref() {
+        query.push(format!("pillar={}", known_pillar(pillar)?));
+    }
+    let mut path = format!("{}/docs", project_path(&agent, &project));
+    if !query.is_empty() {
+        path.push('?');
+        path.push_str(&query.join("&"));
     }
     let response = agent.request("GET", &path, None)?;
     let text = response.text();
@@ -165,7 +176,7 @@ pub fn list(args: &Args) -> Result<()> {
             "{}  {scope}  {}  {}  {}",
             field("id"),
             field("kind"),
-            field("module"),
+            field("pillar"),
             field("title")
         ));
     }
@@ -280,9 +291,9 @@ pub fn show(args: &Args, doc: Option<&str>) -> Result<()> {
         field(doc, "title")
     ));
     say(&format!(
-        "kind: {}  module: {}",
+        "kind: {}  pillar: {}",
         field(doc, "kind"),
-        field(doc, "module")
+        field(doc, "pillar")
     ));
     say(&format!(
         "mainline version: {}",

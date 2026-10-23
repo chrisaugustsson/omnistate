@@ -28,11 +28,12 @@ pub struct Args {
     /// `omni changeset resolve <conflict-id> --note <text>`: how the conflict
     /// was resolved.
     pub note: Option<String>,
-    /// `--changeset <id>`, `--kind` and `--module` say which change set a doc
-    /// command works in and what kind of doc `omni doc create` starts.
+    /// `--changeset <id>`, `--kind` and `--pillar` say which change set a doc
+    /// command works in and what kind of doc `omni doc create` starts; `--pillar`
+    /// also filters `omni doc list`.
     pub changeset: Option<String>,
     pub kind: Option<String>,
-    pub module: Option<String>,
+    pub pillar: Option<String>,
     /// `omni wait --until <status> --timeout <seconds>`; both are checked by
     /// the command.
     pub until: Option<String>,
@@ -177,7 +178,10 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Args> {
             "--doc" => &mut parsed.doc,
             "--board" => &mut parsed.board,
             "--kind" => &mut parsed.kind,
-            "--module" => &mut parsed.module,
+            "--pillar" => &mut parsed.pillar,
+            "--module" => {
+                bail!("--module is now --pillar; use --pillar spec|ui|architecture|db|research")
+            }
             "--until" => &mut parsed.until,
             "--timeout" => &mut parsed.timeout,
             "--thread" => &mut parsed.thread,
@@ -282,14 +286,14 @@ mod tests {
             "--changeset",
             "c",
             "--kind=html",
-            "--module",
-            "prd",
+            "--pillar",
+            "spec",
         ])
         .unwrap();
         assert_eq!(parsed.words, ["doc", "create"]);
         assert_eq!(parsed.changeset.as_deref(), Some("c"));
         assert_eq!(parsed.kind.as_deref(), Some("html"));
-        assert_eq!(parsed.module.as_deref(), Some("prd"));
+        assert_eq!(parsed.pillar.as_deref(), Some("spec"));
 
         let parsed = parse_strs(&["doc", "read", "d", "--version", "v"]).unwrap();
         assert_eq!(parsed.words, ["doc", "read", "d"]);
