@@ -159,6 +159,11 @@ export const CommentResponseSchema = z.object({
 });
 export type CommentResponse = z.infer<typeof CommentResponseSchema>;
 
+export const ConcludeThreadRequestSchema = z.object({
+  conclusion: z.string().nullable().optional(),
+});
+export type ConcludeThreadRequest = z.infer<typeof ConcludeThreadRequestSchema>;
+
 export const ConflictDetailsSchema = z.object({
   current_html: z.string(),
   current_revision: z.number().int(),
@@ -372,9 +377,9 @@ export const DigestEntrySchema = z.object({
   author: z.record(z.string(), z.unknown()),
   created_at: z.string(),
   id: z.string(),
-  phase: z.number().int(),
+  phase: z.number().int().nullable().optional(),
   summary: z.string(),
-  type: z.string(),
+  type: z.string().nullable().optional(),
 });
 export type DigestEntry = z.infer<typeof DigestEntrySchema>;
 
@@ -501,26 +506,29 @@ export const PostBodySchema = z.object({
   feature_id: z.string().nullable().optional(),
   id: z.string(),
   links: z.array(z.record(z.string(), z.unknown())),
-  phase: z.number().int(),
+  phase: z.number().int().nullable().optional(),
   replaces: z.string().nullable().optional(),
   summary: z.string(),
   thread_id: z.string(),
-  type: z.string(),
+  type: z.string().nullable().optional(),
 });
 export type PostBody = z.infer<typeof PostBodySchema>;
 
 export const ThreadBodySchema = z.object({
-  changeset_id: z.string(),
+  changeset_id: z.string().nullable().optional(),
+  conclusion: z.string().nullable().optional(),
   created_at: z.string(),
-  criteria: z.array(z.string()),
+  criteria: z.array(z.string()).nullable().optional(),
   decision: z.record(z.string(), z.unknown()).nullable().optional(),
   feature_id: z.string().nullable().optional(),
   id: z.string(),
-  phases: z.array(PhaseBodySchema),
+  phases: z.array(PhaseBodySchema).nullable().optional(),
   posts: z.array(PostBodySchema).nullable().optional(),
   project_id: z.string(),
   question: z.string(),
   run_tag: z.string().nullable().optional(),
+  scope: z.string().optional(),
+  sealed: z.boolean().optional(),
 });
 export type ThreadBody = z.infer<typeof ThreadBodySchema>;
 
@@ -626,7 +634,7 @@ export type LiveClientMessage = z.infer<typeof LiveClientMessageSchema>;
 export const LiveErrorCodeSchema = z.enum(["not_found", "invalid_request", "unavailable"]);
 export type LiveErrorCode = z.infer<typeof LiveErrorCodeSchema>;
 
-export const LiveEventNameSchema = z.enum(["changeset.open", "changeset.in_review", "changeset.approved", "changeset.rejected", "changeset.merged", "changeset.needs_rebase", "changeset.abandoned", "claim.taken", "claim.released", "claim.expired", "comment.created", "comment.replied", "comment.deleted", "comment.status_changed", "components.imported", "conflict.recorded", "conflict.resolved", "decision.proposed", "decision.superseded", "decision.approved", "decision.rejected", "design.imported", "doc.changed", "doc.created", "draft.opened", "draft.rebased", "feature.created", "feature.done", "feature.reopened", "op.applied", "phase.started", "post.created", "thread.created", "tokens.imported", "version.saved"]);
+export const LiveEventNameSchema = z.enum(["changeset.open", "changeset.in_review", "changeset.approved", "changeset.rejected", "changeset.merged", "changeset.needs_rebase", "changeset.abandoned", "claim.taken", "claim.released", "claim.expired", "comment.created", "comment.replied", "comment.deleted", "comment.status_changed", "components.imported", "conflict.recorded", "conflict.resolved", "decision.proposed", "decision.superseded", "decision.approved", "decision.rejected", "design.imported", "doc.changed", "doc.created", "draft.opened", "draft.rebased", "feature.created", "feature.done", "feature.reopened", "op.applied", "phase.started", "post.created", "thread.concluded", "thread.created", "tokens.imported", "version.saved"]);
 export type LiveEventName = z.infer<typeof LiveEventNameSchema>;
 
 export const LiveServerMessageSchema = z.union([
@@ -819,6 +827,17 @@ export const StartPhaseRequestSchema = z.object({
 });
 export type StartPhaseRequest = z.infer<typeof StartPhaseRequestSchema>;
 
+export const StartThreadRequestSchema = z.object({
+  question: z.string().nullable().optional(),
+  sealed: z.boolean().nullable().optional(),
+});
+export type StartThreadRequest = z.infer<typeof StartThreadRequestSchema>;
+
+export const ThreadListResponseSchema = z.object({
+  threads: z.array(ThreadBodySchema),
+});
+export type ThreadListResponse = z.infer<typeof ThreadListResponseSchema>;
+
 export const ThreadResponseSchema = z.object({
   thread: ThreadBodySchema,
 });
@@ -933,6 +952,7 @@ export const schemas = {
   CommentBody: CommentBodySchema,
   CommentListResponse: CommentListResponseSchema,
   CommentResponse: CommentResponseSchema,
+  ConcludeThreadRequest: ConcludeThreadRequestSchema,
   ConflictBody: ConflictBodySchema,
   ConflictDetails: ConflictDetailsSchema,
   ConflictKind: ConflictKindSchema,
@@ -1022,7 +1042,9 @@ export const schemas = {
   SingleCommentResponse: SingleCommentResponseSchema,
   SinglePostResponse: SinglePostResponseSchema,
   StartPhaseRequest: StartPhaseRequestSchema,
+  StartThreadRequest: StartThreadRequestSchema,
   ThreadBody: ThreadBodySchema,
+  ThreadListResponse: ThreadListResponseSchema,
   ThreadResponse: ThreadResponseSchema,
   UsageBoard: UsageBoardSchema,
   UsageResponse: UsageResponseSchema,
@@ -1594,6 +1616,16 @@ export const operations = {
       "409": ErrorBodySchema,
     },
   },
+  "POST /api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/threads": {
+    request: StartThreadRequestSchema,
+    responses: {
+      "201": ThreadResponseSchema,
+      "400": ErrorBodySchema,
+      "401": ErrorBodySchema,
+      "403": ErrorBodySchema,
+      "404": ErrorBodySchema,
+    },
+  },
   "GET /api/v1/w/{workspace_id}/projects/{project_id}/home": {
     responses: {
       "200": HomeResponseSchema,
@@ -1610,11 +1642,39 @@ export const operations = {
       "404": ErrorBodySchema,
     },
   },
+  "GET /api/v1/w/{workspace_id}/projects/{project_id}/threads": {
+    responses: {
+      "200": ThreadListResponseSchema,
+      "400": ErrorBodySchema,
+      "401": ErrorBodySchema,
+      "404": ErrorBodySchema,
+    },
+  },
+  "POST /api/v1/w/{workspace_id}/projects/{project_id}/threads": {
+    request: StartThreadRequestSchema,
+    responses: {
+      "201": ThreadResponseSchema,
+      "400": ErrorBodySchema,
+      "401": ErrorBodySchema,
+      "403": ErrorBodySchema,
+      "404": ErrorBodySchema,
+    },
+  },
   "GET /api/v1/w/{workspace_id}/projects/{project_id}/threads/{thread_id}": {
     responses: {
       "200": ThreadResponseSchema,
       "400": ErrorBodySchema,
       "401": ErrorBodySchema,
+      "404": ErrorBodySchema,
+    },
+  },
+  "PUT /api/v1/w/{workspace_id}/projects/{project_id}/threads/{thread_id}/conclusion": {
+    request: ConcludeThreadRequestSchema,
+    responses: {
+      "200": ThreadResponseSchema,
+      "400": ErrorBodySchema,
+      "401": ErrorBodySchema,
+      "403": ErrorBodySchema,
       "404": ErrorBodySchema,
     },
   },

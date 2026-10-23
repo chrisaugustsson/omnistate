@@ -7,7 +7,16 @@
 //! and starting a later phase emits `phase.started`; the thread's first phase
 //! is announced by `thread.created` itself.
 //!
-//! A thread takes posts (US-034): typed messages with a one-line summary and a
+//! Threads without change sets (US-108): an agent starts a thread at the app
+//! level of a project or in one of its features, with a question and whether it
+//! is sealed, and later writes its conclusion (`thread.concluded`). Such a
+//! thread has one phase, which is sealed when the thread is, so the rule of
+//! sealed phases below is the rule of sealed threads. It has no criteria, no
+//! phases, no decision and no post types in the answers of the API. The
+//! threads that were started in a change set stay as they were until the
+//! change sets go (US-115).
+//!
+//! A thread takes posts (US-034): messages with a one-line summary and a
 //! Markdown body, recorded in the thread's current phase and never edited or
 //! deleted. Only the human posts directives, on a route of its own.
 //!
@@ -22,7 +31,7 @@
 //! the same rule applied to the phase the decision was proposed in.
 
 use crate::AppState;
-use crate::changesets::{non_blank, parse_body};
+use crate::changesets::{non_blank, parse_body, require_project};
 use crate::decisions::current_decision;
 use crate::docs::AgentIdentity;
 use crate::live;
@@ -96,21 +105,39 @@ pub struct PosterBody {
 pub struct ThreadBody {
     pub id: String,
     pub project_id: String,
-    pub changeset_id: String,
-    /// The feature of the thread's change set; `null` at project level.
+    /// The change set the thread was started in; `null` for a thread at the
+    /// app level or in a feature (US-108).
+    pub changeset_id: Option<String>,
+    /// `app` for a thread at the app level, `feature` for one in a feature.
+    #[schema(required = false)]
+    pub scope: String,
+    /// The feature the thread belongs to; `null` at the app level.
     pub feature_id: Option<String>,
     pub question: String,
-    /// The decision criteria, in the order the agent gave them.
-    pub criteria: Vec<String>,
+    /// The decision criteria, in the order the agent gave them. Only for a
+    /// thread started in a change set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub criteria: Option<Vec<String>>,
+    /// Whether an agent that has not posted in the thread yet reads no other
+    /// agent's posts. For a thread started in a change set: whether its
+    /// current phase is sealed.
+    #[schema(required = false)]
+    pub sealed: bool,
+    /// What the agents concluded; `null` until an agent writes it.
+    #[schema(required = false)]
+    pub conclusion: Option<String>,
     /// The run of the agent that started the thread.
     pub run_tag: Option<String>,
     pub created_at: String,
-    /// The phases, oldest first.
-    pub phases: Vec<PhaseBody>,
+    /// The phases, oldest first. Only for a thread started in a change set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub phases: Option<Vec<PhaseBody>>,
     /// The thread's current decision (US-037): the newest, which is not
     /// superseded, as the decision routes answer it, so with at least its `id`
     /// and `status`; `null` while the thread has none. An agent gets only the
-    /// posts of it that it may read.
+    /// posts of it that it may read. Only for a thread started in a change
+    /// set.
+    #[serde(skip_serializing_if = "Option::is_none")]
     #[schema(value_type = Option<Object>)]
     pub decision: Option<Value>,
     /// The posts the caller may read, oldest first. Only in the answer to a
@@ -122,6 +149,27 @@ pub struct ThreadBody {
 #[derive(Serialize, ToSchema)]
 pub struct ThreadResponse {
     pub thread: ThreadBody,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct ThreadListResponse {
+    /// The project's threads of every scope, oldest first, without their posts.
+    pub threads: Vec<ThreadBody>,
+}
+
+#[derive(Deserialize, ToSchema)]
+pub struct StartThreadRequest {
+    /// The question to work out; required.
+    pub question: Option<String>,
+    /// Whether an agent that has not posted yet reads no other agent's posts.
+    /// Defaults to `false`.
+    pub sealed: Option<bool>,
+}
+
+#[derive(Deserialize, ToSchema)]
+pub struct ConcludeThreadRequest {
+    /// What the agents concluded; required and not blank.
+    pub conclusion: Option<String>,
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -140,13 +188,24 @@ pub struct StartPhaseRequest {
     pub sealed: Option<bool>,
 }
 
+/// A field that is there, even as `null`: `Some(None)` is a `null`, so that a
+/// `type` of `null` is refused like any other value that is no post type, and
+/// only a missing `type` is no type.
+fn present<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Option<String>>, D::Error> {
+    Option::<String>::deserialize(deserializer).map(Some)
+}
+
 #[derive(Deserialize, ToSchema)]
 pub struct CreatePostRequest {
     /// The kind of post: `note`, `finding`, `position`, `objection`, `support`,
-    /// `question`, `directive` or `verdict`; required. Only the human posts a
-    /// `directive`.
-    #[serde(rename = "type")]
-    pub kind: Option<String>,
+    /// `question`, `directive` or `verdict`. Posts have no type since US-108:
+    /// leave it out. A post in a thread of a change set may still have one;
+    /// only the human posts a `directive`.
+    #[serde(rename = "type", default, deserialize_with = "present")]
+    #[schema(value_type = Option<String>)]
+    pub kind: Option<Option<String>>,
     /// One line of at most 200 characters; required.
     pub summary: Option<String>,
     /// The Markdown text; required.
@@ -184,12 +243,15 @@ pub struct CreateDirectiveRequest {
 pub struct PostBody {
     pub id: String,
     pub thread_id: String,
-    /// The feature of the thread's change set; `null` for a project-level one.
+    /// The feature of the thread; `null` for a thread at the app level.
     pub feature_id: Option<String>,
-    /// The number of the thread's phase that the post was made in.
-    pub phase: i32,
-    #[serde(rename = "type")]
-    pub kind: String,
+    /// The number of the thread's phase that the post was made in. Only for a
+    /// post in a thread of a change set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub phase: Option<i32>,
+    /// The post's type. Only for a post in a thread of a change set.
+    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
     /// `{"kind": "agent", "run", "role", "model", "harness"}` for an agent
     /// (each `null` when the request did not say), or `{"kind": "human",
     /// "user_id"}`.
@@ -218,9 +280,12 @@ pub struct PostResponse {
 #[derive(Serialize, ToSchema)]
 pub struct DigestEntry {
     pub id: String,
-    pub phase: i32,
-    #[serde(rename = "type")]
-    pub kind: String,
+    /// As for a post.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub phase: Option<i32>,
+    /// As for a post.
+    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
     /// As for a post.
     #[schema(value_type = Object)]
     pub author: Value,
@@ -248,7 +313,8 @@ struct DigestRow {
     id: String,
     phase: i32,
     #[sqlx(rename = "type")]
-    kind: String,
+    kind: Option<String>,
+    live: bool,
     author: String,
     summary: String,
     created_at: String,
@@ -415,7 +481,10 @@ pub(crate) struct PostRow {
     feature_id: Option<String>,
     phase: i32,
     #[sqlx(rename = "type")]
-    kind: String,
+    kind: Option<String>,
+    /// Whether the post is in a thread without a change set, whose posts have
+    /// neither a phase nor a type in the API's answers.
+    live: bool,
     author: String,
     summary: String,
     body: String,
@@ -444,8 +513,8 @@ impl PostRow {
             id: self.id,
             thread_id: self.thread_id,
             feature_id: self.feature_id,
-            phase: self.phase,
-            kind: self.kind,
+            phase: (!self.live).then_some(self.phase),
+            kind: self.kind.filter(|_| !self.live),
             author,
             summary: self.summary,
             body_html: omni_core::markdown::render(&self.body),
@@ -463,19 +532,18 @@ impl PostRow {
 struct ThreadRow {
     id: String,
     project_id: String,
-    changeset_id: String,
+    changeset_id: Option<String>,
     feature_id: Option<String>,
     question: String,
     criteria: String,
+    conclusion: Option<String>,
     run_tag: Option<String>,
     created_at: String,
 }
 
 const THREAD_COLUMNS: &str = concat!(
-    "id::text, project_id::text, changeset_id::text, ",
-    "(SELECT c.feature_id::text FROM changesets c \
-      WHERE c.workspace_id = threads.workspace_id AND c.id = threads.changeset_id) AS feature_id, ",
-    "question, criteria::text, run_tag, ",
+    "id::text, project_id::text, changeset_id::text, feature_id::text, ",
+    "question, criteria::text, conclusion, run_tag, ",
     timestamp!("created_at"),
     " AS created_at"
 );
@@ -488,18 +556,20 @@ const PHASE_COLUMNS: &str = concat!(
 
 pub(crate) const POST_COLUMNS: &str = concat!(
     "id::text, thread_id::text, \
-     (SELECT c.feature_id::text FROM threads t JOIN changesets c \
-        ON c.workspace_id = t.workspace_id AND c.id = t.changeset_id \
-      WHERE t.id = thread_id) AS feature_id, phase, type, author::text, summary, body, links::text, \
+     (SELECT t.feature_id::text FROM threads t WHERE t.id = thread_id) AS feature_id, \
+     phase, type, (SELECT t.changeset_id IS NULL FROM threads t WHERE t.id = thread_id) AS live, \
+     author::text, summary, body, links::text, \
      attachments::text, confidence, replaces::text, ",
     timestamp!("created_at"),
     " AS created_at"
 );
 
-/// The phases of a thread, oldest first.
+/// The phases of a thread, oldest first, with who posted in each unless
+/// `posters` is false.
 async fn phases_of(
     tx: &mut Transaction<'static, Postgres>,
     thread_id: &str,
+    posters: bool,
 ) -> Result<Vec<PhaseBody>, ApiError> {
     let mut phases: Vec<PhaseBody> = sqlx::query_as(&format!(
         "SELECT {PHASE_COLUMNS} FROM thread_phases WHERE thread_id = $1::uuid ORDER BY number"
@@ -508,6 +578,9 @@ async fn phases_of(
     .fetch_all(&mut **tx)
     .await
     .map_err(ApiError::database)?;
+    if !posters {
+        return Ok(phases);
+    }
     // Whoever posted, whatever the viewer may read: the identities only.
     let posters: Vec<(i32, Option<String>, Option<String>)> = sqlx::query_as(
         "SELECT p.phase, p.author->>'run', p.author->>'role' FROM posts p \
@@ -547,33 +620,68 @@ pub(crate) async fn load_thread(
     .await
     .map_err(ApiError::database)?
     .ok_or(ApiError::NotFound)?;
-    let phases = phases_of(tx, &row.id).await?;
-    let criteria = serde_json::from_str(&row.criteria).map_err(|e| {
-        eprintln!(
-            "omni-api: the criteria of thread {} are no list: {e}",
-            row.id
-        );
-        ApiError::Unavailable
-    })?;
+    // A thread without a change set has one phase, which says whether it is
+    // sealed, and none of the rest of what a thread of a change set has.
+    let live = row.changeset_id.is_none();
+    let phases = phases_of(tx, &row.id, !live).await?;
+    let sealed = phases.last().is_some_and(|phase| phase.sealed);
+    let criteria = if live {
+        None
+    } else {
+        Some(serde_json::from_str(&row.criteria).map_err(|e| {
+            eprintln!(
+                "omni-api: the criteria of thread {} are no list: {e}",
+                row.id
+            );
+            ApiError::Unavailable
+        })?)
+    };
     Ok(ThreadBody {
         id: row.id,
         project_id: row.project_id,
         changeset_id: row.changeset_id,
+        scope: if row.feature_id.is_some() {
+            "feature"
+        } else {
+            "app"
+        }
+        .to_string(),
         feature_id: row.feature_id,
         question: row.question,
         criteria,
+        sealed,
+        conclusion: row.conclusion,
         run_tag: row.run_tag,
         created_at: row.created_at,
-        phases,
-        decision: None,
+        phases: (!live).then_some(phases),
+        // `null` until `attach_decision` finds the thread's decision.
+        decision: (!live).then_some(Value::Null),
         posts: None,
     })
 }
 
-/// The threads of a project, oldest first, each as `show_thread` answers the
-/// human but without its posts.
+/// Sets the decision of a thread of a change set as `viewer` reads it. A
+/// thread without a change set has none.
+pub(crate) async fn attach_decision(
+    tx: &mut Transaction<'static, Postgres>,
+    viewer: &Viewer,
+    thread: &mut ThreadBody,
+) -> Result<(), ApiError> {
+    if thread.changeset_id.is_some() {
+        thread.decision = Some(
+            current_decision(tx, viewer, &thread.id)
+                .await?
+                .unwrap_or(Value::Null),
+        );
+    }
+    Ok(())
+}
+
+/// The threads of a project, oldest first, each as `show_thread` answers
+/// `viewer` but without its posts.
 pub(crate) async fn threads_of_project(
     tx: &mut Transaction<'static, Postgres>,
+    viewer: &Viewer,
     project_id: &str,
 ) -> Result<Vec<ThreadBody>, ApiError> {
     let ids: Vec<(String,)> = sqlx::query_as(
@@ -583,11 +691,10 @@ pub(crate) async fn threads_of_project(
     .fetch_all(&mut **tx)
     .await
     .map_err(ApiError::database)?;
-    let viewer = Viewer::human();
     let mut threads = Vec::with_capacity(ids.len());
     for (id,) in ids {
         let mut thread = load_thread(tx, project_id, &id, None).await?;
-        thread.decision = current_decision(tx, &viewer, &id).await?;
+        attach_decision(tx, viewer, &mut thread).await?;
         threads.push(thread);
     }
     Ok(threads)
@@ -696,12 +803,15 @@ pub async fn create_thread(
     let sealed = new.sealed.unwrap_or(false);
 
     let thread_id: String = sqlx::query_scalar(
-        "INSERT INTO threads (workspace_id, project_id, changeset_id, question, criteria, run_tag) \
-         VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5::text::jsonb, $6) RETURNING id::text",
+        "INSERT INTO threads (workspace_id, project_id, changeset_id, feature_id, question, \
+                              criteria, run_tag) \
+         VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5, $6::text::jsonb, $7) \
+         RETURNING id::text",
     )
     .bind(&workspace_id)
     .bind(&project_id)
     .bind(&changeset_id)
+    .bind(&feature_id)
     .bind(&question)
     .bind(json!(criteria).to_string())
     .bind(identity.run())
@@ -728,6 +838,233 @@ pub async fn create_thread(
     tx.commit().await.map_err(ApiError::database)?;
     state.live.announce(&workspace_id, &project_id);
     Ok((StatusCode::CREATED, Json(ThreadResponse { thread })))
+}
+
+/// Starts a thread without a change set, at the app level or in a feature of
+/// the project. Its one phase is sealed when the thread is.
+async fn start_live_thread(
+    state: &AppState,
+    request: &AgentRequest,
+    identity: &AgentIdentity,
+    project_id: &str,
+    feature_id: Option<&str>,
+    body: &Bytes,
+) -> Result<(StatusCode, Json<ThreadResponse>), ApiError> {
+    let new = parse_body::<StartThreadRequest>(body);
+    let workspace_id = &request.workspace_id;
+    let mut tx = state.workspace_tx(workspace_id).await?;
+    require_project(&mut tx, project_id).await?;
+    if let Some(feature_id) = feature_id {
+        let found: Option<(String,)> = sqlx::query_as(
+            "SELECT id::text FROM features WHERE id = $1::uuid AND project_id = $2::uuid",
+        )
+        .bind(feature_id)
+        .bind(project_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(ApiError::database)?;
+        found.ok_or(ApiError::NotFound)?;
+    }
+    let new = new?;
+    let question = non_blank(new.question).ok_or_else(invalid)?;
+    let sealed = new.sealed.unwrap_or(false);
+
+    let thread_id: String = sqlx::query_scalar(
+        "INSERT INTO threads (workspace_id, project_id, feature_id, question, criteria, run_tag) \
+         VALUES ($1::uuid, $2::uuid, $3::uuid, $4, '[]'::jsonb, $5) RETURNING id::text",
+    )
+    .bind(workspace_id)
+    .bind(project_id)
+    .bind(feature_id)
+    .bind(&question)
+    .bind(identity.run())
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(ApiError::database)?;
+    insert_phase(&mut tx, workspace_id, &thread_id, 1, sealed).await?;
+    live::emit(
+        &mut tx,
+        workspace_id,
+        project_id,
+        "thread.created",
+        &json!({
+            "thread_id": thread_id,
+            "feature_id": feature_id,
+            "question": question,
+            "sealed": sealed,
+        }),
+    )
+    .await?;
+    let thread = load_thread(&mut tx, project_id, &thread_id, None).await?;
+    tx.commit().await.map_err(ApiError::database)?;
+    state.live.announce(workspace_id, project_id);
+    Ok((StatusCode::CREATED, Json(ThreadResponse { thread })))
+}
+
+/// Starts a thread at the app level of a project, without a change set.
+#[utoipa::path(
+    post,
+    path = "/api/v1/w/{workspace_id}/projects/{project_id}/threads",
+    params(
+        ("workspace_id" = String, Path, description = "The workspace's UUID"),
+        ("project_id" = String, Path, description = "The project's UUID"),
+        ("X-Omni-Run" = Option<String>, Header, description = "The agent's run; the thread's run tag"),
+        ("X-Omni-Role" = Option<String>, Header, description = "The agent's role"),
+        ("X-Omni-Model" = Option<String>, Header, description = "The model behind the agent"),
+        ("X-Omni-Harness" = Option<String>, Header, description = "The harness that runs the agent"),
+    ),
+    request_body = StartThreadRequest,
+    responses(
+        (status = 201, description = "The new thread", body = ThreadResponse),
+        (status = 400, description = "The question is missing or blank, or `sealed` is not a boolean", body = ErrorBody),
+        (status = 401, description = "No valid API key or session", body = ErrorBody),
+        (status = 403, description = "Called with a session; agents only", body = ErrorBody),
+        (status = 404, description = "No such project in this workspace", body = ErrorBody),
+    )
+)]
+pub async fn create_app_thread(
+    State(state): State<AppState>,
+    request: AgentRequest,
+    identity: AgentIdentity,
+    Path((_, project_id)): Path<(String, String)>,
+    body: Bytes,
+) -> Result<(StatusCode, Json<ThreadResponse>), ApiError> {
+    let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
+    start_live_thread(&state, &request, &identity, &project_id, None, &body).await
+}
+
+/// Starts a thread in a feature of a project, without a change set.
+#[utoipa::path(
+    post,
+    path = "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/threads",
+    params(
+        ("workspace_id" = String, Path, description = "The workspace's UUID"),
+        ("project_id" = String, Path, description = "The project's UUID"),
+        ("feature_id" = String, Path, description = "The feature's UUID"),
+        ("X-Omni-Run" = Option<String>, Header, description = "The agent's run; the thread's run tag"),
+        ("X-Omni-Role" = Option<String>, Header, description = "The agent's role"),
+        ("X-Omni-Model" = Option<String>, Header, description = "The model behind the agent"),
+        ("X-Omni-Harness" = Option<String>, Header, description = "The harness that runs the agent"),
+    ),
+    request_body = StartThreadRequest,
+    responses(
+        (status = 201, description = "The new thread", body = ThreadResponse),
+        (status = 400, description = "The question is missing or blank, or `sealed` is not a boolean", body = ErrorBody),
+        (status = 401, description = "No valid API key or session", body = ErrorBody),
+        (status = 403, description = "Called with a session; agents only", body = ErrorBody),
+        (status = 404, description = "No such feature in this project and workspace", body = ErrorBody),
+    )
+)]
+pub async fn create_feature_thread(
+    State(state): State<AppState>,
+    request: AgentRequest,
+    identity: AgentIdentity,
+    Path((_, project_id, feature_id)): Path<(String, String, String)>,
+    body: Bytes,
+) -> Result<(StatusCode, Json<ThreadResponse>), ApiError> {
+    let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
+    let feature_id = parse_uuid(&feature_id).ok_or(ApiError::NotFound)?;
+    start_live_thread(
+        &state,
+        &request,
+        &identity,
+        &project_id,
+        Some(&feature_id),
+        &body,
+    )
+    .await
+}
+
+/// The threads of a project of every scope, oldest first, without their posts.
+#[utoipa::path(
+    get,
+    path = "/api/v1/w/{workspace_id}/projects/{project_id}/threads",
+    params(
+        ("workspace_id" = String, Path, description = "The workspace's UUID"),
+        ("project_id" = String, Path, description = "The project's UUID"),
+        ("X-Omni-Run" = Option<String>, Header, description = "The agent's run"),
+        ("X-Omni-Role" = Option<String>, Header, description = "The agent's role"),
+    ),
+    responses(
+        (status = 200, description = "The project's threads", body = ThreadListResponse),
+        (status = 400, description = "An agent request without both `X-Omni-Run` and `X-Omni-Role`", body = ErrorBody),
+        (status = 401, description = "No valid API key or session", body = ErrorBody),
+        (status = 404, description = "No such project in this workspace", body = ErrorBody),
+    )
+)]
+pub async fn list_threads(
+    State(state): State<AppState>,
+    request: WorkspaceRequest,
+    identity: AgentIdentity,
+    Path((_, project_id)): Path<(String, String)>,
+) -> Result<Json<ThreadListResponse>, ApiError> {
+    require_identity(&request.actor, &identity)?;
+    let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
+    let viewer = Viewer::of(&request.actor, &identity);
+    let mut tx = state.workspace_tx(&request.workspace_id).await?;
+    require_project(&mut tx, &project_id).await?;
+    let threads = threads_of_project(&mut tx, &viewer, &project_id).await?;
+    tx.commit().await.map_err(ApiError::database)?;
+    Ok(Json(ThreadListResponse { threads }))
+}
+
+/// Writes the conclusion of a thread, replacing an earlier one. The thread
+/// keeps taking posts.
+#[utoipa::path(
+    put,
+    path = "/api/v1/w/{workspace_id}/projects/{project_id}/threads/{thread_id}/conclusion",
+    params(
+        ("workspace_id" = String, Path, description = "The workspace's UUID"),
+        ("project_id" = String, Path, description = "The project's UUID"),
+        ("thread_id" = String, Path, description = "The thread's UUID"),
+        ("X-Omni-Run" = Option<String>, Header, description = "The agent's run"),
+        ("X-Omni-Role" = Option<String>, Header, description = "The agent's role"),
+    ),
+    request_body = ConcludeThreadRequest,
+    responses(
+        (status = 200, description = "The thread with its conclusion", body = ThreadResponse),
+        (status = 400, description = "The conclusion is missing or blank", body = ErrorBody),
+        (status = 401, description = "No valid API key or session", body = ErrorBody),
+        (status = 403, description = "Called with a session; agents only", body = ErrorBody),
+        (status = 404, description = "No such thread in this project and workspace", body = ErrorBody),
+    )
+)]
+pub async fn conclude_thread(
+    State(state): State<AppState>,
+    request: AgentRequest,
+    identity: AgentIdentity,
+    Path((_, project_id, thread_id)): Path<(String, String, String)>,
+    body: Bytes,
+) -> Result<Json<ThreadResponse>, ApiError> {
+    let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
+    let thread_id = parse_uuid(&thread_id).ok_or(ApiError::NotFound)?;
+    let new = parse_body::<ConcludeThreadRequest>(&body);
+    let workspace_id = request.workspace_id;
+    let mut tx = state.workspace_tx(&workspace_id).await?;
+    let thread = load_thread(&mut tx, &project_id, &thread_id, Some("FOR UPDATE")).await?;
+    let conclusion = non_blank(new?.conclusion).ok_or_else(invalid)?;
+    sqlx::query("UPDATE threads SET conclusion = $2 WHERE id = $1::uuid")
+        .bind(&thread_id)
+        .bind(&conclusion)
+        .execute(&mut *tx)
+        .await
+        .map_err(ApiError::database)?;
+    live::emit(
+        &mut tx,
+        &workspace_id,
+        &project_id,
+        "thread.concluded",
+        &json!({
+            "thread_id": thread_id,
+            "feature_id": thread.feature_id,
+        }),
+    )
+    .await?;
+    let mut thread = load_thread(&mut tx, &project_id, &thread_id, None).await?;
+    attach_decision(&mut tx, &Viewer::agent(&identity), &mut thread).await?;
+    tx.commit().await.map_err(ApiError::database)?;
+    state.live.announce(&workspace_id, &project_id);
+    Ok(Json(ThreadResponse { thread }))
 }
 
 /// One thread with its phases and the posts the caller may read.
@@ -760,7 +1097,7 @@ pub async fn show_thread(
     let viewer = Viewer::of(&request.actor, &identity);
     let mut tx = state.workspace_tx(&request.workspace_id).await?;
     let mut thread = load_thread(&mut tx, &project_id, &thread_id, None).await?;
-    thread.decision = current_decision(&mut tx, &viewer, &thread_id).await?;
+    attach_decision(&mut tx, &viewer, &mut thread).await?;
     let rows: Vec<PostRow> = bind_viewer(
         sqlx::query_as(&format!(
             "SELECT {POST_COLUMNS} FROM posts p WHERE p.thread_id = $1::uuid AND {} \
@@ -816,8 +1153,9 @@ pub async fn digest(
     load_thread(&mut tx, &project_id, &thread_id, None).await?;
     let rows: Vec<DigestRow> = bind_viewer(
         sqlx::query_as(&format!(
-            "SELECT p.id::text AS id, p.phase, p.type, p.author::text AS author, p.summary, {} \
-                 AS created_at \
+            "SELECT p.id::text AS id, p.phase, p.type, \
+                 (SELECT t.changeset_id IS NULL FROM threads t WHERE t.id = p.thread_id) AS live, \
+                 p.author::text AS author, p.summary, {} AS created_at \
              FROM posts p WHERE p.thread_id = $1::uuid AND {} ORDER BY p.created_at, p.id",
             timestamp!("p.created_at"),
             visible("p", 2)
@@ -841,8 +1179,8 @@ pub async fn digest(
             })?;
             Ok(DigestEntry {
                 id: row.id,
-                phase: row.phase,
-                kind: row.kind,
+                phase: (!row.live).then_some(row.phase),
+                kind: row.kind.filter(|_| !row.live),
                 author,
                 summary: row.summary,
                 created_at: row.created_at,
@@ -942,7 +1280,14 @@ pub async fn start_phase(
     let sealed = new?
         .sealed
         .ok_or_else(|| ApiError::bad_request("invalid_request"))?;
-    let number = thread.phases.last().map_or(1, |phase| phase.number + 1);
+    // Only a thread of a change set has phases to start.
+    let changeset_id = thread.changeset_id.clone().ok_or(ApiError::NotFound)?;
+    let number = thread
+        .phases
+        .iter()
+        .flatten()
+        .last()
+        .map_or(1, |phase| phase.number + 1);
     insert_phase(&mut tx, &workspace_id, &thread_id, number, sealed).await?;
     live::emit(
         &mut tx,
@@ -951,14 +1296,14 @@ pub async fn start_phase(
         "phase.started",
         &json!({
             "thread_id": thread_id,
-            "changeset_id": thread.changeset_id,
+            "changeset_id": changeset_id,
             "phase": number,
             "sealed": sealed,
         }),
     )
     .await?;
     let mut thread = load_thread(&mut tx, &project_id, &thread_id, None).await?;
-    thread.decision = current_decision(&mut tx, &Viewer::agent(&identity), &thread_id).await?;
+    attach_decision(&mut tx, &Viewer::agent(&identity), &mut thread).await?;
     tx.commit().await.map_err(ApiError::database)?;
     state.live.announce(&workspace_id, &project_id);
     Ok((StatusCode::CREATED, Json(ThreadResponse { thread })))
@@ -986,7 +1331,7 @@ impl Author {
 /// A post whose fields have the right form; what it points to is still to be
 /// looked up.
 struct Checked {
-    kind: String,
+    kind: Option<String>,
     summary: String,
     body: String,
     links: Vec<Value>,
@@ -1044,10 +1389,11 @@ fn checked_link(link: &Value) -> Option<Value> {
 }
 
 fn check(new: CreatePostRequest) -> Result<Checked, ApiError> {
-    let kind = new
-        .kind
-        .filter(|kind| POST_TYPES.contains(&kind.as_str()))
-        .ok_or_else(invalid)?;
+    let kind = match new.kind {
+        None => None,
+        Some(Some(kind)) if POST_TYPES.contains(&kind.as_str()) => Some(kind),
+        Some(_) => return Err(invalid()),
+    };
     let summary = non_blank(new.summary)
         .filter(|summary| {
             summary.chars().count() <= MAX_SUMMARY_CHARS
@@ -1206,8 +1552,22 @@ async fn record_post(
     let mut tx = state.workspace_tx(workspace_id).await?;
     let thread = load_thread(&mut tx, project_id, thread_id, Some("FOR SHARE")).await?;
     let post = check(new?)?;
+    // Directives are a feature of change sets; a thread without one has none.
+    if thread.changeset_id.is_none() && post.kind.as_deref() == Some("directive") {
+        return Err(ApiError::NotFound);
+    }
     check_references(&mut tx, project_id, thread_id, &author, &post).await?;
-    let phase = thread.phases.last().map_or(1, |phase| phase.number);
+    let phase = thread
+        .phases
+        .iter()
+        .flatten()
+        .last()
+        .map_or(1, |phase| phase.number);
+    // A post in a thread without a change set has no type.
+    let kind = post
+        .kind
+        .as_deref()
+        .filter(|_| thread.changeset_id.is_some());
     let row: PostRow = sqlx::query_as(&format!(
         "INSERT INTO posts (workspace_id, thread_id, phase, type, summary, body, author, \
                             links, attachments, confidence, replaces) \
@@ -1217,7 +1577,7 @@ async fn record_post(
     .bind(workspace_id)
     .bind(thread_id)
     .bind(phase)
-    .bind(&post.kind)
+    .bind(kind)
     .bind(&post.summary)
     .bind(&post.body)
     .bind(author.json().to_string())
@@ -1233,13 +1593,16 @@ async fn record_post(
         workspace_id,
         project_id,
         "post.created",
-        &json!({
-            "post_id": row.id,
-            "thread_id": thread_id,
-            "changeset_id": thread.changeset_id,
-            "phase": phase,
-            "type": post.kind,
-        }),
+        &match &thread.changeset_id {
+            Some(changeset_id) => json!({
+                "post_id": row.id,
+                "thread_id": thread_id,
+                "changeset_id": changeset_id,
+                "phase": phase,
+                "type": kind,
+            }),
+            None => json!({ "post_id": row.id, "thread_id": thread_id }),
+        },
     )
     .await?;
     let post = row.into_body()?;
@@ -1334,7 +1697,7 @@ pub async fn create_directive(
     let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
     let thread_id = parse_uuid(&thread_id).ok_or(ApiError::NotFound)?;
     let new = parse_body::<CreateDirectiveRequest>(&body).map(|directive| CreatePostRequest {
-        kind: Some("directive".to_string()),
+        kind: Some(Some("directive".to_string())),
         summary: directive.summary,
         body: directive.body,
         links: directive.links,

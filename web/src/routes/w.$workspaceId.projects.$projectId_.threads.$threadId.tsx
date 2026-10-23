@@ -84,7 +84,7 @@ function ThreadView() {
           ) : undefined
         }
         description={
-          thread &&
+          thread?.criteria &&
           thread.criteria.length > 0 && (
             <div className="space-y-2 pt-2">
               <div className="text-[11px] font-medium tracking-[0.08em] uppercase">Criteria</div>
@@ -123,8 +123,8 @@ function ThreadView() {
               <div className="flex items-baseline gap-2.5">
                 <span className="text-[15px] font-semibold tracking-tight">Discussion</span>
                 <span className="text-sm text-muted-foreground tabular-nums">
-                  {postCount} {postCount === 1 ? "post" : "posts"} · {thread.phases.length}{" "}
-                  {thread.phases.length === 1 ? "phase" : "phases"}
+                  {postCount} {postCount === 1 ? "post" : "posts"}
+                  {thread.phases && ` · ${thread.phases.length} ${thread.phases.length === 1 ? "phase" : "phases"}`}
                 </span>
               </div>
               <Segmented name="show" label="Show" options={SHOW} value={show} onChange={setShow} />

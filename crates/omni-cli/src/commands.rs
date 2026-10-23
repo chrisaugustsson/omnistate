@@ -14,7 +14,6 @@ use crate::claims;
 use crate::comments;
 use crate::components;
 use crate::config::{self, Stored};
-use crate::decisions;
 use crate::design;
 use crate::docs;
 use crate::error::{CliError, Result, bail};
@@ -82,17 +81,12 @@ pub fn run(args: &Args) -> Result<()> {
         ["changeset", "resolve"] => bail!(
             "`omni changeset resolve` needs the conflict's ID; `omni changeset conflicts <id>` lists them"
         ),
-        ["changeset", "link-decision", changeset, decision] => {
-            decisions::link(args, Some(changeset), Some(decision))
-        }
-        ["changeset", "link-decision", changeset] => decisions::link(args, Some(changeset), None),
-        ["changeset", "link-decision"] => decisions::link(args, None, None),
         ["changeset", "reject", ..] => bail!(
             "rejecting a change set is the human's decision and is made in the web app; an agent cannot"
         ),
         ["changeset", ..] => {
             bail!(
-                "usage: omni changeset create|list|show|submit|reopen|abandon|rebase|conflicts|resolve|link-decision; see `omni --help`"
+                "usage: omni changeset create|list|show|submit|reopen|abandon|rebase|conflicts|resolve; see `omni --help`"
             )
         }
         ["doc", "create"] => docs::create(args),
@@ -136,17 +130,25 @@ pub fn run(args: &Args) -> Result<()> {
         ["import", ..] => {
             bail!("usage: omni import penpot <file.penpot> --project <id> [--feature <name>]")
         }
-        ["thread", "create"] => threads::create(args),
-        ["thread", "phase"] => threads::phase(args, None),
-        ["thread", "phase", thread] => threads::phase(args, Some(thread)),
+        ["thread", "create"] => threads::create(args, None),
+        ["thread", "create", question] => threads::create(args, Some(question)),
+        ["thread", "list"] => threads::list(args),
+        ["thread", "read"] => threads::read(args, None),
+        ["thread", "read", thread] => threads::read(args, Some(thread)),
+        ["thread", "conclude"] => threads::conclude(args, None, None),
+        ["thread", "conclude", thread] => threads::conclude(args, Some(thread), None),
+        ["thread", "conclude", thread, text] => threads::conclude(args, Some(thread), Some(text)),
         ["thread", "digest"] => threads::digest(args, None),
         ["thread", "digest", thread] => threads::digest(args, Some(thread)),
-        ["thread", ..] => bail!("usage: omni thread create|phase|digest; see `omni --help`"),
-        ["decision", "propose"] => decisions::propose(args, None),
-        ["decision", "propose", thread] => decisions::propose(args, Some(thread)),
-        ["decision", "show"] => decisions::show(args, None),
-        ["decision", "show", id] => decisions::show(args, Some(id)),
-        ["decision", ..] => bail!("usage: omni decision propose|show; see `omni --help`"),
+        ["thread", "phase", ..] => bail!(
+            "`omni thread phase` is gone: a thread has no phases; a sealed thread (`omni thread create --sealed`) hides the others' posts until you have posted"
+        ),
+        ["thread", ..] => {
+            bail!("usage: omni thread create|list|read|conclude|digest; see `omni --help`")
+        }
+        ["decision", ..] => bail!(
+            "`omni decision` is gone: a thread ends in a conclusion; write it with `omni thread conclude <thread> <text>`"
+        ),
         ["comment", "list"] => comments::list(args),
         ["comment", "reply"] => comments::reply(args, None, None),
         ["comment", "reply", comment] => comments::reply(args, Some(comment), None),
@@ -159,13 +161,16 @@ pub fn run(args: &Args) -> Result<()> {
         ["comment", ..] => bail!("usage: omni comment list|reply; see `omni --help`"),
         ["post", "show"] => posts::show(args, None),
         ["post", "show", post] => posts::show(args, Some(post)),
-        ["post"] => posts::run(args, None),
-        ["post", thread] => posts::run(args, Some(thread)),
+        ["post"] => posts::run(args, None, None),
+        ["post", thread] => posts::run(args, Some(thread), None),
+        ["post", thread, body] => posts::run(args, Some(thread), Some(body)),
         ["post", ..] => {
-            bail!("usage: omni post <thread> --type <type> --summary <text>; see `omni --help`")
+            bail!("usage: omni post <thread> --summary <text> [<body>]; see `omni --help`")
         }
         ["wait"] => wait::run(args),
-        ["wait", ..] => bail!("usage: omni wait --changeset <id> --until <status> [--timeout <s>]"),
+        ["wait", ..] => bail!(
+            "usage: omni wait --changeset <id> --until <status> [--timeout <s>] | omni wait --thread <id> --posts <n>|--concluded [--timeout <s>]"
+        ),
         ["claim"] => claims::take(args, None),
         ["claim", node] => claims::take(args, Some(node)),
         ["claim", ..] => bail!("usage: omni claim <node> --changeset <id>"),
@@ -300,25 +305,6 @@ impl Agent {
             return Err(CliError::new(format!("{code}: {message}")));
         }
         checked(response)
-    }
-
-    /// Like `request`, but the answer is returned whatever its status (see
-    /// `checked`), for a command that decides what a refusal means.
-    pub(crate) fn request_any(
-        &self,
-        method: &str,
-        path: &str,
-        body: Option<&[u8]>,
-    ) -> Result<Response> {
-        let mut headers = self.headers.clone();
-        if body.is_some() {
-            headers.push(("Content-Type".to_string(), "application/json".to_string()));
-        }
-        let response = http::send(&self.server, method, path, &headers, body)?;
-        if response.is_success() {
-            show_directives(&response);
-        }
-        Ok(response)
     }
 
     /// Like `request`, but a 404 is the error `not_found`, for a command that

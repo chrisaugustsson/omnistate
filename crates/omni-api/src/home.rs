@@ -119,7 +119,7 @@ pub async fn show(
     )
     .await?;
     let changesets = changesets_of_project(&mut tx, &Viewer::human(), &project_id).await?;
-    let threads = threads_of_project(&mut tx, &project_id).await?;
+    let threads = threads_of_project(&mut tx, &Viewer::human(), &project_id).await?;
     let decisions = proposed_of_project(&mut tx, &Viewer::human(), &project_id).await?;
     let waiting_comments = waiting_of_project(&mut tx, &project_id).await?;
     let questions = unanswered_questions(&mut tx, &project_id).await?;

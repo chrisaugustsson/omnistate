@@ -21,8 +21,9 @@ const TYPE_VARIANTS: Record<string, Variant> = {
   verdict: "violet",
 };
 
-/** A post's type as a small coloured pill. */
-export function PostTypeBadge({ type }: { type: string }) {
+/** A post's type as a small coloured pill; a post of a thread without a change set has none. */
+export function PostTypeBadge({ type }: { type?: string | null }) {
+  if (!type) return null;
   return (
     <Badge variant={TYPE_VARIANTS[type] ?? "outline"} className="px-1.5 py-0 text-[11px] leading-[18px]">
       {type}
@@ -52,9 +53,33 @@ export function Phases({
   onReply: (post: PostBody) => void;
 }) {
   const posts = thread.posts ?? [];
+  const phases = thread.phases ?? [];
+  const list = (inList: PostBody[]) => (
+    <ol className="relative before:absolute before:top-3 before:bottom-3 before:left-[13px] before:w-px before:bg-border">
+      {inList.map((post) => (
+        <PostItem
+          key={post.id}
+          workspaceId={workspaceId}
+          projectId={projectId}
+          post={post}
+          posts={posts}
+          summariesOnly={summariesOnly}
+          onReply={onReply}
+        />
+      ))}
+    </ol>
+  );
+  // A thread without a change set has no phases: its posts are one timeline.
+  if (phases.length === 0) {
+    return posts.length === 0 ? (
+      <p className="text-sm text-muted-foreground">No posts yet.</p>
+    ) : (
+      list(posts)
+    );
+  }
   return (
     <div className="space-y-10">
-      {thread.phases.map((phase) => {
+      {phases.map((phase) => {
         const inPhase = posts.filter((post) => post.phase === phase.number);
         return (
           <section key={phase.number} aria-labelledby={`phase-${phase.number}`} className="space-y-4">
@@ -62,19 +87,7 @@ export function Phases({
             {inPhase.length === 0 ? (
               <p className="pl-10 text-sm text-muted-foreground">No posts in this phase yet.</p>
             ) : (
-              <ol className="relative before:absolute before:top-3 before:bottom-3 before:left-[13px] before:w-px before:bg-border">
-                {inPhase.map((post) => (
-                  <PostItem
-                    key={post.id}
-                    workspaceId={workspaceId}
-                    projectId={projectId}
-                    post={post}
-                    posts={posts}
-                    summariesOnly={summariesOnly}
-                    onReply={onReply}
-                  />
-                ))}
-              </ol>
+              list(inPhase)
             )}
           </section>
         );

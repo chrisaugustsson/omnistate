@@ -41,9 +41,9 @@ use crate::session::{
     ErrorBody, LoginRequest, UserBody, UserResponse, WorkspaceBody, WorkspaceListResponse,
 };
 use crate::threads::{
-    CreateDirectiveRequest, CreatePostRequest, CreateThreadRequest, DigestEntry, DigestResponse,
-    PhaseBody, PostBody, PostResponse, PosterBody, SinglePostResponse, StartPhaseRequest,
-    ThreadBody, ThreadResponse,
+    ConcludeThreadRequest, CreateDirectiveRequest, CreatePostRequest, CreateThreadRequest,
+    DigestEntry, DigestResponse, PhaseBody, PostBody, PostResponse, PosterBody, SinglePostResponse,
+    StartPhaseRequest, StartThreadRequest, ThreadBody, ThreadListResponse, ThreadResponse,
 };
 use crate::tokens::{
     DraftTokensResponse, ImportTokensRequest, ImportedHeadTokens, InvalidTokensBody,
@@ -126,6 +126,10 @@ use utoipa::OpenApi;
         crate::boards::read_draft_board,
         crate::boards::read_board_of_version,
         crate::threads::create_thread,
+        crate::threads::create_app_thread,
+        crate::threads::create_feature_thread,
+        crate::threads::list_threads,
+        crate::threads::conclude_thread,
         crate::threads::show_thread,
         crate::threads::digest,
         crate::threads::show_post,
@@ -236,6 +240,9 @@ use utoipa::OpenApi;
         PosterBody,
         ThreadBody,
         ThreadResponse,
+        ThreadListResponse,
+        StartThreadRequest,
+        ConcludeThreadRequest,
         CreateThreadRequest,
         StartPhaseRequest,
         CreatePostRequest,

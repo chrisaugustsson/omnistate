@@ -453,8 +453,20 @@ pub fn router(state: AppState) -> Router {
             post(threads::create_thread),
         )
         .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/threads",
+            get(threads::list_threads).post(threads::create_app_thread),
+        )
+        .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/threads",
+            post(threads::create_feature_thread),
+        )
+        .route(
             "/api/v1/w/{workspace_id}/projects/{project_id}/threads/{thread_id}",
             get(threads::show_thread),
+        )
+        .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/threads/{thread_id}/conclusion",
+            put(threads::conclude_thread),
         )
         .route(
             "/api/v1/w/{workspace_id}/projects/{project_id}/threads/{thread_id}/digest",

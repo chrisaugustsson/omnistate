@@ -175,6 +175,8 @@ pub enum LiveEventName {
     PhaseStarted,
     #[serde(rename = "post.created")]
     PostCreated,
+    #[serde(rename = "thread.concluded")]
+    ThreadConcluded,
     #[serde(rename = "thread.created")]
     ThreadCreated,
     #[serde(rename = "tokens.imported")]

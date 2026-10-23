@@ -1,6 +1,7 @@
-//! `omni post <thread>`: posts to a thread, a typed message with a one-line
-//! summary and a Markdown body. The body is read from `--body-file` or else
-//! standard input, each `--attach` file is uploaded first, and everything that
+//! `omni post <thread>`: posts to a thread, a message with a one-line summary
+//! and a Markdown body. The body is the argument after the thread, else
+//! `--body-file`, else standard input; each `--attach` file is uploaded first,
+//! and everything that
 //! can be checked here is checked before anything is sent. The project is found
 //! as for `omni changeset`.
 
@@ -13,18 +14,8 @@ use crate::json::{Value, quote};
 use std::io::IsTerminal;
 use std::path::Path;
 
-const USAGE: &str = "omni post <thread> --type <type> --summary <text> [--body-file <path>] \
+const USAGE: &str = "omni post <thread> --summary <text> [<body>] [--body-file <path>] \
      [--attach <file>]... [--link <target>]... [--confidence <0-1>] [--replaces <post>]";
-/// The types an agent may post; `directive` is the human's.
-const TYPES: [&str; 7] = [
-    "note",
-    "finding",
-    "position",
-    "objection",
-    "support",
-    "question",
-    "verdict",
-];
 const MAX_SUMMARY_CHARS: usize = 200;
 const SHOW_USAGE: &str = "omni post show <post>";
 
@@ -85,8 +76,15 @@ fn link(target: &str) -> Result<String> {
     }
 }
 
-/// The text of the post: `--body-file`, or else all of standard input.
-fn body(args: &Args) -> Result<String> {
+/// The text of the post: the argument, else `--body-file`, or else all of
+/// standard input.
+fn body(args: &Args, given: Option<&str>) -> Result<String> {
+    if let Some(given) = given {
+        if args.body_file.is_some() {
+            bail!("give the body as an argument or with --body-file, not both: {USAGE}");
+        }
+        return Ok(given.to_string());
+    }
     let bytes = match args.body_file.as_deref() {
         Some(path) => read_body(path)?,
         None => {
@@ -124,8 +122,8 @@ fn attachment(file: &str) -> Result<(String, Vec<u8>)> {
     Ok((name, bytes))
 }
 
-/// `omni post <thread> ...`
-pub fn run(args: &Args, thread: Option<&str>) -> Result<()> {
+/// `omni post <thread> [<body>] ...`
+pub fn run(args: &Args, thread: Option<&str>, given_body: Option<&str>) -> Result<()> {
     let Some(thread) = thread else {
         bail!("this command needs the thread's ID: {USAGE}");
     };
@@ -133,20 +131,6 @@ pub fn run(args: &Args, thread: Option<&str>) -> Result<()> {
         bail!("{thread:?} is not a thread ID: {USAGE}");
     }
     let thread = thread.to_ascii_lowercase();
-    let Some(kind) = args.post_type.as_deref() else {
-        bail!("this command needs --type <type>: {USAGE}");
-    };
-    if kind == "directive" {
-        bail!(
-            "--type directive is not for agents: only the human posts directives, in the web app"
-        );
-    }
-    if !TYPES.contains(&kind) {
-        bail!(
-            "{kind:?} is not a post type for --type; use one of {}",
-            TYPES.join(", ")
-        );
-    }
     let summary = args.summary.as_deref().map(str::trim).unwrap_or_default();
     if summary.is_empty() {
         bail!("this command needs --summary <text>: {USAGE}");
@@ -171,7 +155,7 @@ pub fn run(args: &Args, thread: Option<&str>) -> Result<()> {
         Some(id) if is_uuid(id) => Some(id.to_ascii_lowercase()),
         Some(id) => bail!("{id:?} is not a post ID for --replaces"),
     };
-    let text = body(args)?;
+    let text = body(args, given_body)?;
     let files = args
         .attach
         .iter()
@@ -195,7 +179,6 @@ pub fn run(args: &Args, thread: Option<&str>) -> Result<()> {
     }
 
     let mut fields = vec![
-        format!("\"type\":{}", quote(kind)),
         format!("\"summary\":{}", quote(summary)),
         format!("\"body\":{}", quote(&text)),
     ];
@@ -270,9 +253,12 @@ pub fn show(args: &Args, post: Option<&str>) -> Result<()> {
         CliError::new("the server's answer about the post is not readable; is it an OmniState API?")
     })?;
     let shown = answer.get("post").unwrap_or(&answer);
+    let kind = shown
+        .str_at("type")
+        .map(|kind| format!("{kind}  "))
+        .unwrap_or_default();
     say(&format!(
-        "{}  {}  {}",
-        shown.str_at("type").unwrap_or("?"),
+        "{kind}{}  {}",
         role(shown),
         shown.str_at("summary").unwrap_or_default()
     ));

@@ -1,160 +1,226 @@
-//! `omni thread create` and `omni thread phase`: start a thread, a question
-//! that agents work out in a change set, and start the thread's next phase.
-//! The project is found as for `omni changeset`.
+//! `omni thread create`, `list`, `read`, `conclude` and `digest`: threads at the
+//! app level of a project or in one of its features, with no change set. A
+//! thread is a question that agents work out together: they post to it with
+//! `omni post`, and one of them writes the conclusion. A sealed thread hides
+//! the posts of other agents from an agent until it has posted itself. The
+//! project is found as for `omni changeset`.
 
 use crate::args::Args;
-use crate::changesets::{changeset_id, is_uuid, project_id};
+use crate::changesets::{creation_feature, is_uuid, project_id};
 use crate::commands::{agent, say};
 use crate::error::{CliError, Result, bail};
 use crate::json::{Value, quote};
 
-const CREATE_USAGE: &str =
-    "omni thread create --changeset <id> --question <text> --criteria-file <path> [--sealed]";
-const PHASE_USAGE: &str = "omni thread phase <thread> --open|--sealed";
+const CREATE_USAGE: &str = "omni thread create <question> [--feature <name or id>] [--sealed]";
+const READ_USAGE: &str = "omni thread read <thread>";
+const CONCLUDE_USAGE: &str = "omni thread conclude <thread> <text>";
 const DIGEST_USAGE: &str = "omni thread digest <thread>";
 
-/// `open` or `sealed`: what a phase of the answer's thread is.
-fn kind(phase: &Value) -> &'static str {
-    if matches!(phase.get("sealed"), Some(Value::Bool(true))) {
-        "sealed"
+fn unreadable() -> CliError {
+    CliError::new("the server's answer about the thread is not readable; is it an OmniState API?")
+}
+
+/// The ID of the thread that an argument names, in lowercase.
+fn thread_id(thread: &str, usage: &str) -> Result<String> {
+    if is_uuid(thread) {
+        Ok(thread.to_ascii_lowercase())
     } else {
-        "open"
+        bail!("{thread:?} is not a thread ID: {usage}")
     }
 }
 
-/// The criteria in a file: each line that is not blank is one criterion.
-fn criteria_in(path: &str) -> Result<Vec<String>> {
-    let text = std::fs::read_to_string(path)
-        .map_err(|e| CliError::new(format!("cannot read the criteria file {path}: {e}")))?;
-    Ok(text
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .map(str::to_string)
-        .collect())
-}
-
-/// `omni thread create`
-pub fn create(args: &Args) -> Result<()> {
-    let Some(changeset) = args.changeset.as_deref() else {
-        bail!("this command needs --changeset <id>: {CREATE_USAGE}");
-    };
-    let changeset = changeset_id(changeset)?;
-    let question = args.question.as_deref().map(str::trim).unwrap_or_default();
+/// `omni thread create <question> [--feature <name or id>] [--sealed]`
+pub fn create(args: &Args, question: Option<&str>) -> Result<()> {
+    let question = question.map(str::trim).unwrap_or_default();
     if question.is_empty() {
-        bail!("this command needs --question <text>: {CREATE_USAGE}");
+        bail!("this command needs the thread's question: {CREATE_USAGE}");
     }
-    let Some(file) = args.criteria_file.as_deref() else {
-        bail!("this command needs --criteria-file <path>: {CREATE_USAGE}");
-    };
-    let criteria = criteria_in(file)?;
 
     let agent = agent(args)?;
     let project = project_id(args, &agent)?;
-    let criteria: Vec<String> = criteria.iter().map(|c| quote(c)).collect();
+    let feature = creation_feature(args, &agent, &project)?;
     let body = format!(
-        "{{\"question\":{},\"criteria\":[{}],\"sealed\":{}}}",
+        "{{\"question\":{},\"sealed\":{}}}",
         quote(question),
-        criteria.join(","),
         args.sealed
     );
-    let not_found = format!(
-        "not_found: no change set {changeset} in this project; `omni changeset list` shows them"
-    );
-    let response = agent.request_or_not_found(
-        "POST",
-        &format!(
-            "/api/v1/w/{}/projects/{project}/changesets/{changeset}/threads",
-            agent.workspace_id
+    let base = format!("/api/v1/w/{}/projects/{project}", agent.workspace_id);
+    let (path, not_found) = match feature {
+        Some(feature) => (
+            format!("{base}/features/{feature}/threads"),
+            format!(
+                "not_found: no feature {feature} in this project; `omni feature list` shows them"
+            ),
         ),
-        Some(body.as_bytes()),
-        &not_found,
-    )?;
-    answer(args, &response.text(), |thread, phase| {
-        format!(
-            "started thread {}  phase 1 is {}",
-            thread.str_at("id").unwrap_or("?"),
-            kind(phase)
-        )
-    })
-}
-
-/// `omni thread phase <thread> --open|--sealed`
-pub fn phase(args: &Args, thread: Option<&str>) -> Result<()> {
-    let Some(thread) = thread else {
-        bail!("this command needs the thread's ID: {PHASE_USAGE}");
+        None => (
+            format!("{base}/threads"),
+            format!("not_found: no project {project} in this workspace"),
+        ),
     };
-    if !is_uuid(thread) {
-        bail!("{thread:?} is not a thread ID: {PHASE_USAGE}");
-    }
-    let thread = thread.to_ascii_lowercase();
-    if args.open == args.sealed {
-        bail!("this command needs exactly one of --open and --sealed: {PHASE_USAGE}");
-    }
-
-    let agent = agent(args)?;
-    let project = project_id(args, &agent)?;
-    let body = format!("{{\"sealed\":{}}}", args.sealed);
-    let not_found = format!("not_found: no thread {thread} in this project");
-    let response = agent.request_or_not_found(
-        "POST",
-        &format!(
-            "/api/v1/w/{}/projects/{project}/threads/{thread}/phases",
-            agent.workspace_id
-        ),
-        Some(body.as_bytes()),
-        &not_found,
-    )?;
-    answer(args, &response.text(), |thread, phase| {
-        format!(
-            "thread {}  phase {} is {}",
-            thread.str_at("id").unwrap_or("?"),
-            phase
-                .get("number")
-                .and_then(|n| match n {
-                    Value::Number(n) => Some(n.as_str()),
-                    _ => None,
-                })
-                .unwrap_or("?"),
-            kind(phase)
-        )
-    })
-}
-
-/// Prints the API's answer, as it is with `--json`, else one line made from
-/// the thread and its current (last) phase.
-fn answer(args: &Args, text: &str, line: impl Fn(&Value, &Value) -> String) -> Result<()> {
+    let response = agent.request_or_not_found("POST", &path, Some(body.as_bytes()), &not_found)?;
+    let text = response.text();
     if args.json {
         say(text.trim_end());
         return Ok(());
     }
-    let unreadable = || {
-        CliError::new(
-            "the server's answer about the thread is not readable; is it an OmniState API?",
-        )
-    };
-    let body = Value::parse(text).map_err(|_| unreadable())?;
-    let thread = body.get("thread").unwrap_or(&body);
-    let phase = thread
-        .get("phases")
+    let answer = Value::parse(&text).map_err(|_| unreadable())?;
+    match answer.get("thread").unwrap_or(&answer).str_at("id") {
+        Some(id) => say(id),
+        None => bail!("the server's answer has no thread ID; try again"),
+    }
+    Ok(())
+}
+
+/// What a thread is, for a line of the list: its scope, and whether it is
+/// sealed or concluded.
+fn state(thread: &Value) -> String {
+    let mut state = thread.str_at("scope").unwrap_or("?").to_string();
+    if matches!(thread.get("sealed"), Some(Value::Bool(true))) {
+        state.push_str(", sealed");
+    }
+    if thread.str_at("conclusion").is_some() {
+        state.push_str(", concluded");
+    }
+    state
+}
+
+/// `omni thread list`: one line for each thread of the project, of every
+/// scope, oldest first: its ID, what it is and its question.
+pub fn list(args: &Args) -> Result<()> {
+    let agent = agent(args)?;
+    let project = project_id(args, &agent)?;
+    let response = agent.request(
+        "GET",
+        &format!(
+            "/api/v1/w/{}/projects/{project}/threads",
+            agent.workspace_id
+        ),
+        None,
+    )?;
+    let text = response.text();
+    if args.json {
+        say(text.trim_end());
+        return Ok(());
+    }
+    let body = Value::parse(&text).map_err(|_| unreadable())?;
+    let threads = body
+        .get("threads")
         .and_then(Value::as_array)
-        .and_then(<[Value]>::last)
         .ok_or_else(unreadable)?;
-    say(&line(thread, phase));
+    for thread in threads {
+        say(&format!(
+            "{}  {}  {}",
+            thread.str_at("id").unwrap_or("?"),
+            state(thread),
+            thread.str_at("question").unwrap_or_default()
+        ));
+    }
+    Ok(())
+}
+
+/// `omni thread read <thread>`: the question, every post the agent may read
+/// (a sealed thread hides the others' posts until the agent has posted) and
+/// the conclusion when there is one.
+pub fn read(args: &Args, thread: Option<&str>) -> Result<()> {
+    let Some(thread) = thread else {
+        bail!("this command needs the thread's ID: {READ_USAGE}");
+    };
+    let thread = thread_id(thread, READ_USAGE)?;
+
+    let agent = agent(args)?;
+    let project = project_id(args, &agent)?;
+    let not_found = format!("not_found: no thread {thread} in this project");
+    let response = agent.request_or_not_found(
+        "GET",
+        &format!(
+            "/api/v1/w/{}/projects/{project}/threads/{thread}",
+            agent.workspace_id
+        ),
+        None,
+        &not_found,
+    )?;
+    let text = response.text();
+    if args.json {
+        say(text.trim_end());
+        return Ok(());
+    }
+    let body = Value::parse(&text).map_err(|_| unreadable())?;
+    let shown = body.get("thread").unwrap_or(&body);
+    say(&format!(
+        "{}  {}",
+        shown.str_at("id").unwrap_or("?"),
+        state(shown)
+    ));
+    say(&format!(
+        "question: {}",
+        shown.str_at("question").unwrap_or_default()
+    ));
+    for post in shown
+        .get("posts")
+        .and_then(Value::as_array)
+        .unwrap_or_default()
+    {
+        say("");
+        say(&format!(
+            "{}  {}  {}",
+            crate::posts::role(post),
+            post.str_at("summary").unwrap_or_default(),
+            post.str_at("id").unwrap_or("?")
+        ));
+        for line in post.str_at("body").unwrap_or_default().lines() {
+            say(&format!("  {line}"));
+        }
+    }
+    if let Some(conclusion) = shown.str_at("conclusion") {
+        say("");
+        say(&format!("conclusion: {conclusion}"));
+    }
+    Ok(())
+}
+
+/// `omni thread conclude <thread> <text>`: writes the thread's conclusion. The
+/// thread keeps taking posts.
+pub fn conclude(args: &Args, thread: Option<&str>, text: Option<&str>) -> Result<()> {
+    let (Some(thread), Some(text)) = (thread, text) else {
+        bail!("this command needs the thread's ID and the conclusion: {CONCLUDE_USAGE}");
+    };
+    let thread = thread_id(thread, CONCLUDE_USAGE)?;
+    let text = text.trim();
+    if text.is_empty() {
+        bail!("the conclusion is blank: {CONCLUDE_USAGE}");
+    }
+
+    let agent = agent(args)?;
+    let project = project_id(args, &agent)?;
+    let body = format!("{{\"conclusion\":{}}}", quote(text));
+    let not_found = format!("not_found: no thread {thread} in this project");
+    let response = agent.request_or_not_found(
+        "PUT",
+        &format!(
+            "/api/v1/w/{}/projects/{project}/threads/{thread}/conclusion",
+            agent.workspace_id
+        ),
+        Some(body.as_bytes()),
+        &not_found,
+    )?;
+    let answer = response.text();
+    if args.json {
+        say(answer.trim_end());
+        return Ok(());
+    }
+    say(&format!("concluded thread {thread}"));
     Ok(())
 }
 
 /// `omni thread digest <thread>`: one line for each post the caller may read,
-/// oldest first: its type, its author's role, its summary and its ID. It reads
-/// nothing but the digest, the cheap view of a thread.
+/// oldest first: its type (a post of a thread in a change set has one), its
+/// author's role, its summary and its ID. It reads nothing but the digest, the
+/// cheap view of a thread.
 pub fn digest(args: &Args, thread: Option<&str>) -> Result<()> {
     let Some(thread) = thread else {
         bail!("this command needs the thread's ID: {DIGEST_USAGE}");
     };
-    if !is_uuid(thread) {
-        bail!("{thread:?} is not a thread ID: {DIGEST_USAGE}");
-    }
-    let thread = thread.to_ascii_lowercase();
+    let thread = thread_id(thread, DIGEST_USAGE)?;
 
     let agent = agent(args)?;
     let project = project_id(args, &agent)?;
@@ -173,20 +239,18 @@ pub fn digest(args: &Args, thread: Option<&str>) -> Result<()> {
         say(text.trim_end());
         return Ok(());
     }
-    let unreadable = || {
-        CliError::new(
-            "the server's answer about the thread is not readable; is it an OmniState API?",
-        )
-    };
     let body = Value::parse(&text).map_err(|_| unreadable())?;
     let posts = body
         .get("posts")
         .and_then(Value::as_array)
         .ok_or_else(unreadable)?;
     for post in posts {
+        let kind = post
+            .str_at("type")
+            .map(|kind| format!("{kind}  "))
+            .unwrap_or_default();
         say(&format!(
-            "{}  {}  {}  {}",
-            post.str_at("type").unwrap_or("?"),
+            "{kind}{}  {}  {}",
             crate::posts::role(post),
             post.str_at("summary").unwrap_or_default(),
             post.str_at("id").unwrap_or("?")

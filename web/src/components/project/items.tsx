@@ -427,7 +427,7 @@ export function ThreadRow({
   /** The project's features: given, a thread of a feature carries the feature's name. */
   names?: FeatureNames;
 }) {
-  const phase = thread.phases.at(-1);
+  const phase = thread.phases?.at(-1);
   const tag = tagOf(thread, names);
   const decided = detailed ? decisionStatus(thread) : undefined;
   return (
@@ -449,7 +449,8 @@ export function ThreadRow({
                 {phase.sealed ? " · sealed" : ""}
               </span>
             )}
-            {detailed && <span>· {thread.criteria.length} criteria</span>}
+            {!phase && thread.sealed && <span>Sealed</span>}
+            {detailed && thread.criteria && <span>· {thread.criteria.length} criteria</span>}
             {detailed && <span>· started {timeAgo(thread.created_at)}</span>}
             {thread.run_tag && <span className="font-mono text-[11px]">{detailed && "· "}{thread.run_tag}</span>}
           </span>

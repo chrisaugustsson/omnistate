@@ -455,12 +455,19 @@ pub async fn propose(
     // The thread's row is locked until the end, so of several proposals that
     // are made at once each supersedes the one before.
     let thread = load_thread(&mut tx, &project_id, &thread_id, Some("FOR UPDATE")).await?;
+    // Only a thread of a change set has a decision.
+    let changeset_id = thread.changeset_id.clone().ok_or(ApiError::NotFound)?;
     let file = check(new?)?;
     let viewer = Viewer::agent(&identity);
     require_readable_posts(&mut tx, &viewer, &thread_id, &file.posts).await?;
     // The decision belongs to the phase the thread is in now; the lock on the
     // thread keeps a new phase out until the decision is stored.
-    let phase = thread.phases.last().map_or(1, |phase| phase.number);
+    let phase = thread
+        .phases
+        .iter()
+        .flatten()
+        .last()
+        .map_or(1, |phase| phase.number);
 
     let superseded: Vec<(String,)> = sqlx::query_as(
         "UPDATE decisions SET status = 'superseded' \
@@ -485,7 +492,7 @@ pub async fn propose(
     .await
     .map_err(ApiError::database)?;
     for (earlier,) in &superseded {
-        let data = event_data(earlier, &thread_id, &thread.changeset_id, "superseded");
+        let data = event_data(earlier, &thread_id, &changeset_id, "superseded");
         live::emit(
             &mut tx,
             &workspace_id,
@@ -495,7 +502,7 @@ pub async fn propose(
         )
         .await?;
     }
-    let data = event_data(&decision_id, &thread_id, &thread.changeset_id, "proposed");
+    let data = event_data(&decision_id, &thread_id, &changeset_id, "proposed");
     live::emit(
         &mut tx,
         &workspace_id,

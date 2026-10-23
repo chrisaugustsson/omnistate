@@ -469,6 +469,18 @@
         ],
         "type": "object"
       },
+      "ConcludeThreadRequest": {
+        "properties": {
+          "conclusion": {
+            "description": "What the agents concluded; required and not blank.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
       "ConflictBody": {
         "properties": {
           "conflict": {
@@ -749,7 +761,7 @@
             ]
           },
           "type": {
-            "description": "The kind of post: `note`, `finding`, `position`, `objection`, `support`,\n`question`, `directive` or `verdict`; required. Only the human posts a\n`directive`.",
+            "description": "The kind of post: `note`, `finding`, `position`, `objection`, `support`,\n`question`, `directive` or `verdict`. Posts have no type since US-108:\nleave it out. A post in a thread of a change set may still have one;\nonly the human posts a `directive`.",
             "type": [
               "string",
               "null"
@@ -1125,20 +1137,26 @@
             "type": "string"
           },
           "phase": {
+            "description": "As for a post.",
             "format": "int32",
-            "type": "integer"
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "summary": {
             "type": "string"
           },
           "type": {
-            "type": "string"
+            "description": "As for a post.",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
           "id",
-          "phase",
-          "type",
           "author",
           "summary",
           "created_at"
@@ -1980,6 +1998,7 @@
           "op.applied",
           "phase.started",
           "post.created",
+          "thread.concluded",
           "thread.created",
           "tokens.imported",
           "version.saved"
@@ -2444,7 +2463,7 @@
             "type": "string"
           },
           "feature_id": {
-            "description": "The feature of the thread's change set; `null` for a project-level one.",
+            "description": "The feature of the thread; `null` for a thread at the app level.",
             "type": [
               "string",
               "null"
@@ -2460,9 +2479,12 @@
             "type": "array"
           },
           "phase": {
-            "description": "The number of the thread's phase that the post was made in.",
+            "description": "The number of the thread's phase that the post was made in. Only for a\npost in a thread of a change set.",
             "format": "int32",
-            "type": "integer"
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "replaces": {
             "type": [
@@ -2477,14 +2499,16 @@
             "type": "string"
           },
           "type": {
-            "type": "string"
+            "description": "The post's type. Only for a post in a thread of a change set.",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
           "id",
           "thread_id",
-          "phase",
-          "type",
           "author",
           "summary",
           "body",
@@ -2904,30 +2928,63 @@
         },
         "type": "object"
       },
+      "StartThreadRequest": {
+        "properties": {
+          "question": {
+            "description": "The question to work out; required.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "sealed": {
+            "description": "Whether an agent that has not posted yet reads no other agent's posts.\nDefaults to `false`.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
       "ThreadBody": {
         "properties": {
           "changeset_id": {
-            "type": "string"
+            "description": "The change set the thread was started in; `null` for a thread at the\napp level or in a feature (US-108).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "conclusion": {
+            "description": "What the agents concluded; `null` until an agent writes it.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "created_at": {
             "type": "string"
           },
           "criteria": {
-            "description": "The decision criteria, in the order the agent gave them.",
+            "description": "The decision criteria, in the order the agent gave them. Only for a\nthread started in a change set.",
             "items": {
               "type": "string"
             },
-            "type": "array"
+            "type": [
+              "array",
+              "null"
+            ]
           },
           "decision": {
-            "description": "The thread's current decision (US-037): the newest, which is not\nsuperseded, as the decision routes answer it, so with at least its `id`\nand `status`; `null` while the thread has none. An agent gets only the\nposts of it that it may read.",
+            "description": "The thread's current decision (US-037): the newest, which is not\nsuperseded, as the decision routes answer it, so with at least its `id`\nand `status`; `null` while the thread has none. An agent gets only the\nposts of it that it may read. Only for a thread started in a change\nset.",
             "type": [
               "object",
               "null"
             ]
           },
           "feature_id": {
-            "description": "The feature of the thread's change set; `null` at project level.",
+            "description": "The feature the thread belongs to; `null` at the app level.",
             "type": [
               "string",
               "null"
@@ -2937,11 +2994,14 @@
             "type": "string"
           },
           "phases": {
-            "description": "The phases, oldest first.",
+            "description": "The phases, oldest first. Only for a thread started in a change set.",
             "items": {
               "$ref": "#/components/schemas/PhaseBody"
             },
-            "type": "array"
+            "type": [
+              "array",
+              "null"
+            ]
           },
           "posts": {
             "description": "The posts the caller may read, oldest first. Only in the answer to a\nread of the thread; an agent does not get what a sealed phase hides.",
@@ -2965,16 +3025,36 @@
               "string",
               "null"
             ]
+          },
+          "scope": {
+            "description": "`app` for a thread at the app level, `feature` for one in a feature.",
+            "type": "string"
+          },
+          "sealed": {
+            "description": "Whether an agent that has not posted in the thread yet reads no other\nagent's posts. For a thread started in a change set: whether its\ncurrent phase is sealed.",
+            "type": "boolean"
           }
         },
         "required": [
           "id",
           "project_id",
-          "changeset_id",
           "question",
-          "criteria",
-          "created_at",
-          "phases"
+          "created_at"
+        ],
+        "type": "object"
+      },
+      "ThreadListResponse": {
+        "properties": {
+          "threads": {
+            "description": "The project's threads of every scope, oldest first, without their posts.",
+            "items": {
+              "$ref": "#/components/schemas/ThreadBody"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "threads"
         ],
         "type": "object"
       },
@@ -9769,6 +9849,155 @@
         "x-omni-access": "human"
       }
     },
+    "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/threads": {
+      "post": {
+        "operationId": "create_feature_thread",
+        "parameters": [
+          {
+            "description": "The workspace's UUID",
+            "in": "path",
+            "name": "workspace_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The project's UUID",
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The feature's UUID",
+            "in": "path",
+            "name": "feature_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The agent's run; the thread's run tag",
+            "in": "header",
+            "name": "X-Omni-Run",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "description": "The agent's role",
+            "in": "header",
+            "name": "X-Omni-Role",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "description": "The model behind the agent",
+            "in": "header",
+            "name": "X-Omni-Model",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "description": "The harness that runs the agent",
+            "in": "header",
+            "name": "X-Omni-Harness",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StartThreadRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ThreadResponse"
+                }
+              }
+            },
+            "description": "The new thread"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The question is missing or blank, or `sealed` is not a boolean"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No valid API key or session"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Called with a session; agents only"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No such feature in this project and workspace"
+          }
+        },
+        "summary": "Starts a thread in a feature of a project, without a change set.",
+        "tags": [
+          "crate::threads"
+        ],
+        "x-omni-access": "agent"
+      }
+    },
     "/api/v1/w/{workspace_id}/projects/{project_id}/home": {
       "get": {
         "operationId": "show",
@@ -9946,6 +10175,240 @@
         "x-omni-access": "both"
       }
     },
+    "/api/v1/w/{workspace_id}/projects/{project_id}/threads": {
+      "get": {
+        "operationId": "list_threads",
+        "parameters": [
+          {
+            "description": "The workspace's UUID",
+            "in": "path",
+            "name": "workspace_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The project's UUID",
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The agent's run",
+            "in": "header",
+            "name": "X-Omni-Run",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "description": "The agent's role",
+            "in": "header",
+            "name": "X-Omni-Role",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ThreadListResponse"
+                }
+              }
+            },
+            "description": "The project's threads"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "An agent request without both `X-Omni-Run` and `X-Omni-Role`"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No valid API key or session"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No such project in this workspace"
+          }
+        },
+        "summary": "The threads of a project of every scope, oldest first, without their posts.",
+        "tags": [
+          "crate::threads"
+        ],
+        "x-omni-access": "both"
+      },
+      "post": {
+        "operationId": "create_app_thread",
+        "parameters": [
+          {
+            "description": "The workspace's UUID",
+            "in": "path",
+            "name": "workspace_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The project's UUID",
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The agent's run; the thread's run tag",
+            "in": "header",
+            "name": "X-Omni-Run",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "description": "The agent's role",
+            "in": "header",
+            "name": "X-Omni-Role",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "description": "The model behind the agent",
+            "in": "header",
+            "name": "X-Omni-Model",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "description": "The harness that runs the agent",
+            "in": "header",
+            "name": "X-Omni-Harness",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StartThreadRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ThreadResponse"
+                }
+              }
+            },
+            "description": "The new thread"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The question is missing or blank, or `sealed` is not a boolean"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No valid API key or session"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Called with a session; agents only"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No such project in this workspace"
+          }
+        },
+        "summary": "Starts a thread at the app level of a project, without a change set.",
+        "tags": [
+          "crate::threads"
+        ],
+        "x-omni-access": "agent"
+      }
+    },
     "/api/v1/w/{workspace_id}/projects/{project_id}/threads/{thread_id}": {
       "get": {
         "operationId": "show_thread",
@@ -10049,6 +10512,131 @@
           "crate::threads"
         ],
         "x-omni-access": "both"
+      }
+    },
+    "/api/v1/w/{workspace_id}/projects/{project_id}/threads/{thread_id}/conclusion": {
+      "put": {
+        "operationId": "conclude_thread",
+        "parameters": [
+          {
+            "description": "The workspace's UUID",
+            "in": "path",
+            "name": "workspace_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The project's UUID",
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The thread's UUID",
+            "in": "path",
+            "name": "thread_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The agent's run",
+            "in": "header",
+            "name": "X-Omni-Run",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "description": "The agent's role",
+            "in": "header",
+            "name": "X-Omni-Role",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConcludeThreadRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ThreadResponse"
+                }
+              }
+            },
+            "description": "The thread with its conclusion"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The conclusion is missing or blank"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No valid API key or session"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Called with a session; agents only"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No such thread in this project and workspace"
+          }
+        },
+        "summary": "Writes the conclusion of a thread, replacing an earlier one. The thread\nkeeps taking posts.",
+        "tags": [
+          "crate::threads"
+        ],
+        "x-omni-access": "agent"
       }
     },
     "/api/v1/w/{workspace_id}/projects/{project_id}/threads/{thread_id}/decisions": {

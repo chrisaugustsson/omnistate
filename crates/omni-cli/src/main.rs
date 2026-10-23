@@ -13,7 +13,6 @@ mod commands;
 mod comments;
 mod components;
 mod config;
-mod decisions;
 mod design;
 mod docs;
 mod error;
@@ -129,48 +128,36 @@ Usage:
                                       app-level design system, added to the one the project
                                       has, the images as attachments; prints the docs and a
                                       report of what could not be imported
-  omni thread create --changeset <id> --question <text> --criteria-file <path> [--sealed]
-                                      start a thread, a question to work out in a change set;
-                                      each line of the criteria file is one criterion, and the
-                                      first phase is open unless --sealed; prints its ID
-  omni thread phase <thread> --open|--sealed
-                                      start the thread's next phase, open or sealed; a thread
-                                      keeps taking phases after its change set merged
-  omni thread digest <thread>         list the posts you may read, one line each: type, author
-                                      role, summary and post ID (a sealed phase hides the
-                                      posts of others until you have posted in it)
-  omni post <thread> --type <type> --summary <text> [--body-file <path>] [--attach <file>]...
+  omni thread create <question> [--feature <name|id>] [--sealed]
+                                      start a thread, a question that agents work out together,
+                                      at the app level or in a feature, with no change set;
+                                      with --sealed an agent reads no other agent's posts
+                                      until it has posted itself; prints its ID
+  omni thread list                    list the project's threads, of every scope: ID, scope,
+                                      whether it is sealed or concluded, and the question
+  omni thread read <thread>           print the question, the posts you may read (a sealed
+                                      thread hides the posts of others until you have posted)
+                                      and the conclusion when there is one
+  omni thread conclude <thread> <text>
+                                      write the thread's conclusion; the thread keeps taking
+                                      posts
+  omni thread digest <thread>         list the posts you may read, one line each: author role,
+                                      summary and post ID
+  omni post <thread> --summary <text> [<body>] [--body-file <path>] [--attach <file>]...
             [--link <target>]... [--confidence <0-1>] [--replaces <post>]
-                                      post to a thread: a note, finding, position, objection,
-                                      support, question or verdict with a one-line summary
-                                      (at most 200 characters) and a Markdown body, read from
-                                      --body-file or standard input; prints the post's ID.
-                                      Each --attach uploads a file first; a --link is
-                                      post:<id>, attachment:<id>, node:<doc>/<address> or an
-                                      http(s) address; --replaces names your earlier post in
+                                      post to a thread with a one-line summary (at most 200
+                                      characters) and a Markdown body, given as the argument,
+                                      else read from --body-file or standard input; prints the
+                                      post's ID. Each --attach uploads a file first; a --link
+                                      is post:<id>, attachment:<id>, node:<doc>/<address> or
+                                      an http(s) address; --replaces names your earlier post in
                                       the thread. Posts are never edited or deleted. Only the
                                       human posts directives; one that is new to you comes
                                       with the answer to your next request in the change set
                                       and is printed on standard error
-  omni post show <post>               print one whole post: type, author role, summary, ID and
-                                      the Markdown body; a post you may not read yet is
-                                      reported as not found
-  omni decision propose <thread> --file <decision.json>
-                                      propose the decision that ends a thread, from a JSON
-                                      file (docs/formats/decision.md has the schema): the
-                                      chosen direction, the options with their scores and why
-                                      each lost, assumptions, open questions, dissent and the
-                                      posts it relies on; prints its ID and status. A new
-                                      proposal supersedes the thread's earlier decision. Only
-                                      the human approves or rejects a decision, in the web app
-  omni decision show <thread|decision>
-                                      print a decision with its status and any rejection
-                                      reason: the one with this ID, or the thread's current
-                                      decision
-  omni changeset link-decision <changeset> <decision>
-                                      link a change set to a decision it carries out; the
-                                      change set cannot be approved until every linked
-                                      decision is
+  omni post show <post>               print one whole post: author role, summary, ID and the
+                                      Markdown body; a post you may not read yet is reported
+                                      as not found
   omni comment list [--doc <id>] [--feature <name|id>]
                                       list the project's comments, oldest first: ID, doc, node
                                       address, author, text and the replies. A comment whose
@@ -186,17 +173,10 @@ Usage:
   omni wait --changeset <id> --until approved|rejected|merged|needs_rebase [--timeout <s>]
                                       wait until the change set is approved (by the human),
                                       rejected, merged or needs a rebase; prints its status
-  omni wait --thread <id> --until <condition> [--timeout <s>]
-                                      wait on a thread; the conditions are
-                                        posts:<n>            n different agent identities have
-                                                             posted in the current phase (the
-                                                             last one when the wait began)
-                                        roles:<pattern>[,<pattern>...]
-                                                             every role pattern has posted in
-                                                             the current phase (* is a wildcard)
-                                        phase-change         a later phase has started
-                                        decision:approved    the human approved the decision
-                                        decision:rejected    the human rejected the decision
+  omni wait --thread <id> --posts <n> [--concluded] [--timeout <s>]
+                                      wait until the thread has n posts that you may read (a
+                                      sealed thread counts none of the others' posts until you
+                                      have posted) and, with --concluded, a conclusion
   omni claim <node> --changeset <id>  claim a board or section of the change set's draft, so
                                       that no other agent changes it; a claim lasts 10 minutes
                                       after your last operation in the draft
@@ -222,19 +202,14 @@ Options (before or after the command):
   --body-file <path>    send this file as the request body (for a change set: its
                         description; for `doc edit` and `design edit`: the operations); -
                         reads standard input
-  --question <text>     the question that `omni thread create` starts a thread with
-  --criteria-file <path>
-                        the file with the thread's criteria, one per line
-  --open, --sealed      whether a thread's first phase (`--sealed` only) or its next
-                        phase (`omni thread phase`) is open or sealed
-  --type <type>         the type of the post that `omni post` makes
+  --sealed              `omni thread create`: a sealed thread hides the posts of other agents
+                        from an agent until it has posted
   --summary <text>      the one-line summary of the post
   --attach <file>       a file that `omni post` uploads and attaches (repeat for more)
   --link <target>       what a post points to: post:<id>, attachment:<id>,
                         node:<doc>/<address> or an http(s) address (repeat for more)
   --confidence <n>      how sure the post is, from 0 to 1
   --replaces <post>     your earlier post in the thread that this one replaces
-  --file <path>         the decision file that `omni decision propose` sends
   --note <text>         how a conflict was resolved (`omni changeset resolve`)
   --changeset <id>      the change set a doc, design edit, tokens, claim, release or wait command works in
   --doc <id>            the design doc that `omni design read` reads or `omni design edit` edits
@@ -248,6 +223,8 @@ Options (before or after the command):
   --per-mode            `omni tokens export`: one file per mode
   --until <status>      the status or condition `omni wait` waits for
   --thread <id>         the thread that `omni wait` waits on, instead of a change set
+  --posts <n>           `omni wait --thread`: wait for this many posts that you may read
+  --concluded           `omni wait --thread`: wait for the thread's conclusion
   --timeout <seconds>   how long `omni wait` waits; without it, as long as it takes
   --json                print the full JSON instead of short text
   -h, --help            show this help
@@ -269,9 +246,8 @@ Exit codes:
   0  success
   1  the command failed: usage, login, network or API error (the message says which)
   2  `omni wait` timed out before its condition was met
-  3  `omni wait`: the condition can no longer be met (the change set is abandoned, or
-     merged while you wait for rejected or needs_rebase; for a thread, a later phase has
-     started while posts: or roles: is not met, or the decision has the other status)
+  3  `omni wait --changeset`: the status can no longer be reached (the change set is
+     abandoned, or merged while you wait for rejected or needs_rebase)
 ";
 
 fn main() -> ExitCode {

@@ -51,6 +51,12 @@ pub fn run(args: &Args) -> Result<()> {
     if let Some(thread) = args.thread.as_deref() {
         return thread_wait::run(args, thread);
     }
+    if args.posts.is_some() || args.concluded {
+        bail!(
+            "--posts and --concluded wait on a thread; add --thread <id>: {}",
+            thread_wait::USAGE
+        );
+    }
     let Some(changeset) = args.changeset.as_deref() else {
         bail!("this command needs --changeset <id>: {USAGE}");
     };

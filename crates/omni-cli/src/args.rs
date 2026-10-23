@@ -38,8 +38,11 @@ pub struct Args {
     /// the command.
     pub until: Option<String>,
     pub timeout: Option<String>,
-    /// `omni wait --thread <id>`: wait on a thread instead of a change set.
+    /// `omni wait --thread <id> --posts <n> --concluded`: wait on a thread
+    /// instead of a change set, for this many posts or for its conclusion.
     pub thread: Option<String>,
+    pub posts: Option<String>,
+    pub concluded: bool,
     /// `omni doc read --version <v>`, `omni design read --version <v>` and
     /// `omni tokens export --version <v>`: the version to read; for `omni
     /// comment addressed --version <v>`, the version that fixes the comment.
@@ -54,22 +57,15 @@ pub struct Args {
     pub out: Option<String>,
     /// `omni tokens export --per-mode`: one file per mode.
     pub per_mode: bool,
-    /// `omni thread create --question <text> --criteria-file <path> --sealed`
-    /// and `omni thread phase <thread> --open|--sealed`.
-    pub question: Option<String>,
-    pub criteria_file: Option<String>,
-    pub open: bool,
+    /// `omni thread create <question> --sealed`.
     pub sealed: bool,
-    /// `omni post <thread> --type <t> --summary <text> [--attach <file>]...
+    /// `omni post <thread> --summary <text> [<body>] [--attach <file>]...
     /// [--link <target>]... [--confidence <n>] [--replaces <post>]`.
-    pub post_type: Option<String>,
     pub summary: Option<String>,
     pub attach: Vec<String>,
     pub link: Vec<String>,
     pub confidence: Option<String>,
     pub replaces: Option<String>,
-    /// `omni decision propose <thread> --file <decision.json>`.
-    pub file: Option<String>,
     pub json: bool,
     pub help: bool,
     pub version: bool,
@@ -85,6 +81,15 @@ fn takes_a_version(words: &[String]) -> bool {
             | ["design", "read", ..]
             | ["tokens", "export", ..]
             | ["comment", "addressed", ..]
+    )
+}
+
+/// Whether the words so far name a command that US-108 removed.
+fn is_gone(words: &[String]) -> bool {
+    let command: Vec<&str> = words.iter().map(String::as_str).collect();
+    matches!(
+        command.as_slice(),
+        ["decision", ..] | ["thread", "phase", ..]
     )
 }
 
@@ -122,12 +127,12 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Args> {
                 parsed.per_mode = true;
                 continue;
             }
-            "--open" => {
-                parsed.open = true;
-                continue;
-            }
             "--sealed" => {
                 parsed.sealed = true;
+                continue;
+            }
+            "--concluded" => {
+                parsed.concluded = true;
                 continue;
             }
             "--global" => {
@@ -150,13 +155,9 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Args> {
                 }
                 continue;
             }
-            "--type" => &mut parsed.post_type,
             "--summary" => &mut parsed.summary,
             "--confidence" => &mut parsed.confidence,
             "--replaces" => &mut parsed.replaces,
-            "--file" => &mut parsed.file,
-            "--question" => &mut parsed.question,
-            "--criteria-file" => &mut parsed.criteria_file,
             "--out" => &mut parsed.out,
             "--as" => &mut parsed.agent,
             "--model" => &mut parsed.model,
@@ -180,6 +181,10 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Args> {
             "--until" => &mut parsed.until,
             "--timeout" => &mut parsed.timeout,
             "--thread" => &mut parsed.thread,
+            "--posts" => &mut parsed.posts,
+            // `omni thread phase` and `omni decision` are gone, whatever options
+            // they are tried with: the command itself says so.
+            _ if is_gone(&parsed.words) => break,
             // Rejecting is the human's, whatever options it is tried with:
             // the command itself explains that.
             _ if parsed
@@ -308,8 +313,6 @@ mod tests {
         let parsed = parse_strs(&[
             "post",
             "t",
-            "--type",
-            "note",
             "--summary=S",
             "--attach",
             "a.png",
@@ -325,13 +328,22 @@ mod tests {
         ])
         .unwrap();
         assert_eq!(parsed.words, ["post", "t"]);
-        assert_eq!(parsed.post_type.as_deref(), Some("note"));
         assert_eq!(parsed.summary.as_deref(), Some("S"));
         assert_eq!(parsed.attach, ["a.png", "b.txt"]);
         assert_eq!(parsed.link, ["post:p", "https://example.com"]);
         assert_eq!(parsed.confidence.as_deref(), Some("0.5"));
         assert_eq!(parsed.replaces.as_deref(), Some("r"));
         assert!(parse_strs(&["post", "--attach"]).is_err());
+        assert!(parse_strs(&["post", "t", "--type", "note"]).is_err());
+    }
+
+    #[test]
+    fn removed_commands_accept_any_options_so_the_command_can_explain() {
+        let parsed = parse_strs(&["decision", "propose", "t", "--file", "d.json"]).unwrap();
+        assert_eq!(parsed.words, ["decision", "propose", "t"]);
+        let parsed = parse_strs(&["thread", "phase", "t", "--open"]).unwrap();
+        assert_eq!(parsed.words, ["thread", "phase", "t"]);
+        assert!(parse_strs(&["thread", "read", "t", "--open"]).is_err());
     }
 
     #[test]
