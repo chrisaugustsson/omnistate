@@ -688,6 +688,24 @@
         },
         "type": "object"
       },
+      "CreateFeatureRequest": {
+        "properties": {
+          "description": {
+            "description": "Defaults to the empty text.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
       "CreatePostRequest": {
         "properties": {
           "attachments": {
@@ -1440,6 +1458,64 @@
         ],
         "type": "object"
       },
+      "FeatureBody": {
+        "properties": {
+          "created_at": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "description": "Unique in the project ignoring case; the omni CLI accepts it where it\ntakes a feature.",
+            "type": "string"
+          },
+          "project_id": {
+            "type": "string"
+          },
+          "status": {
+            "description": "`active` or `done`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "project_id",
+          "name",
+          "description",
+          "status",
+          "created_at"
+        ],
+        "type": "object"
+      },
+      "FeatureListResponse": {
+        "properties": {
+          "features": {
+            "items": {
+              "$ref": "#/components/schemas/FeatureBody"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "features"
+        ],
+        "type": "object"
+      },
+      "FeatureResponse": {
+        "properties": {
+          "feature": {
+            "$ref": "#/components/schemas/FeatureBody"
+          }
+        },
+        "required": [
+          "feature"
+        ],
+        "type": "object"
+      },
       "HistoryEntry": {
         "description": "One status change of a change set. The entry that creates it has no\n`from_status`.",
         "properties": {
@@ -1776,6 +1852,7 @@
           "doc.created",
           "draft.opened",
           "draft.rebased",
+          "feature.created",
           "op.applied",
           "phase.started",
           "post.created",
@@ -8455,6 +8532,239 @@
         "summary": "Every saved version of a doc, in every change set and the removal of the\ndoc included, oldest first.",
         "tags": [
           "crate::versions"
+        ],
+        "x-omni-access": "both"
+      }
+    },
+    "/api/v1/w/{workspace_id}/projects/{project_id}/features": {
+      "get": {
+        "operationId": "list_features",
+        "parameters": [
+          {
+            "description": "The workspace's UUID",
+            "in": "path",
+            "name": "workspace_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The project's UUID",
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FeatureListResponse"
+                }
+              }
+            },
+            "description": "The project's features, done ones included"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No valid API key or session"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No such project in this workspace"
+          }
+        },
+        "summary": "The features of a project, in the order they were created.",
+        "tags": [
+          "crate::features"
+        ],
+        "x-omni-access": "both"
+      },
+      "post": {
+        "operationId": "create_feature",
+        "parameters": [
+          {
+            "description": "The workspace's UUID",
+            "in": "path",
+            "name": "workspace_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The project's UUID",
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateFeatureRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FeatureResponse"
+                }
+              }
+            },
+            "description": "The new feature"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The name is missing or blank"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No valid API key or session"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Called with a session; agents only"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No such project in this workspace"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The project has a feature of this name, ignoring case"
+          }
+        },
+        "summary": "Creates a feature, `active`, in a project.",
+        "tags": [
+          "crate::features"
+        ],
+        "x-omni-access": "agent"
+      }
+    },
+    "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}": {
+      "get": {
+        "operationId": "show_feature",
+        "parameters": [
+          {
+            "description": "The workspace's UUID",
+            "in": "path",
+            "name": "workspace_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The project's UUID",
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The feature's UUID",
+            "in": "path",
+            "name": "feature_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FeatureResponse"
+                }
+              }
+            },
+            "description": "The feature"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No valid API key or session"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No such feature in this project and workspace"
+          }
+        },
+        "summary": "One feature of a project.",
+        "tags": [
+          "crate::features"
         ],
         "x-omni-access": "both"
       }

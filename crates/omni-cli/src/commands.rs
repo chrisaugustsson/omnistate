@@ -18,6 +18,7 @@ use crate::decisions;
 use crate::design;
 use crate::docs;
 use crate::error::{CliError, Result, bail};
+use crate::features;
 use crate::http::{self, Response, Server};
 use crate::identity::Identity;
 use crate::import;
@@ -52,6 +53,12 @@ pub fn run(args: &Args) -> Result<()> {
         ["project", "create", name] => changesets::project_create(args, name),
         ["project", "list"] => changesets::project_list(args),
         ["project", ..] => bail!("usage: omni project create <name> | omni project list"),
+        ["feature", "create"] => features::create(args, None),
+        ["feature", "create", name] => features::create(args, Some(name)),
+        ["feature", "list"] => features::list(args),
+        ["feature", "show"] => features::show(args, None),
+        ["feature", "show", feature] => features::show(args, Some(feature)),
+        ["feature", ..] => bail!("usage: omni feature create|list|show; see `omni --help`"),
         ["changeset", "create"] => changesets::create(args),
         ["changeset", "list"] => changesets::list(args),
         ["changeset", "show", id] => changesets::show(args, id),

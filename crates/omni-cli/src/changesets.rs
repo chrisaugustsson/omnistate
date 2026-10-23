@@ -81,7 +81,7 @@ pub fn project_list(args: &Args) -> Result<()> {
     Ok(())
 }
 
-fn projects_path(agent: &Agent) -> String {
+pub(crate) fn projects_path(agent: &Agent) -> String {
     format!("/api/v1/w/{}/projects", agent.workspace_id)
 }
 

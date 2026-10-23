@@ -18,6 +18,7 @@ pub mod delete_workspace;
 mod design;
 mod directives;
 mod docs;
+mod features;
 mod home;
 pub mod live;
 pub mod openapi;
@@ -278,6 +279,14 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/v1/w/{workspace_id}/projects",
             get(changesets::list_projects).post(changesets::create_project),
+        )
+        .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/features",
+            get(features::list_features).post(features::create_feature),
+        )
+        .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}",
+            get(features::show_feature),
         )
         .route(
             "/api/v1/w/{workspace_id}/projects/{project_id}/home",

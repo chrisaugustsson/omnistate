@@ -222,6 +222,12 @@ export const CreateDocRequestSchema = z.object({
 });
 export type CreateDocRequest = z.infer<typeof CreateDocRequestSchema>;
 
+export const CreateFeatureRequestSchema = z.object({
+  description: z.string().nullable().optional(),
+  name: z.string().nullable().optional(),
+});
+export type CreateFeatureRequest = z.infer<typeof CreateFeatureRequestSchema>;
+
 export const CreatePostRequestSchema = z.object({
   attachments: z.array(z.string()).nullable().optional(),
   body: z.string().nullable().optional(),
@@ -440,6 +446,26 @@ export const ErrorBodySchema = z.object({
 });
 export type ErrorBody = z.infer<typeof ErrorBodySchema>;
 
+export const FeatureBodySchema = z.object({
+  created_at: z.string(),
+  description: z.string(),
+  id: z.string(),
+  name: z.string(),
+  project_id: z.string(),
+  status: z.string(),
+});
+export type FeatureBody = z.infer<typeof FeatureBodySchema>;
+
+export const FeatureListResponseSchema = z.object({
+  features: z.array(FeatureBodySchema),
+});
+export type FeatureListResponse = z.infer<typeof FeatureListResponseSchema>;
+
+export const FeatureResponseSchema = z.object({
+  feature: FeatureBodySchema,
+});
+export type FeatureResponse = z.infer<typeof FeatureResponseSchema>;
+
 export const PosterBodySchema = z.object({
   role: z.string().nullable().optional(),
   run: z.string().nullable().optional(),
@@ -569,7 +595,7 @@ export type LiveClientMessage = z.infer<typeof LiveClientMessageSchema>;
 export const LiveErrorCodeSchema = z.enum(["not_found", "invalid_request", "unavailable"]);
 export type LiveErrorCode = z.infer<typeof LiveErrorCodeSchema>;
 
-export const LiveEventNameSchema = z.enum(["changeset.open", "changeset.in_review", "changeset.approved", "changeset.rejected", "changeset.merged", "changeset.needs_rebase", "changeset.abandoned", "claim.taken", "claim.released", "claim.expired", "comment.created", "comment.replied", "comment.status_changed", "components.imported", "conflict.recorded", "conflict.resolved", "decision.proposed", "decision.superseded", "decision.approved", "decision.rejected", "design.imported", "doc.created", "draft.opened", "draft.rebased", "op.applied", "phase.started", "post.created", "thread.created", "tokens.imported", "version.saved"]);
+export const LiveEventNameSchema = z.enum(["changeset.open", "changeset.in_review", "changeset.approved", "changeset.rejected", "changeset.merged", "changeset.needs_rebase", "changeset.abandoned", "claim.taken", "claim.released", "claim.expired", "comment.created", "comment.replied", "comment.status_changed", "components.imported", "conflict.recorded", "conflict.resolved", "decision.proposed", "decision.superseded", "decision.approved", "decision.rejected", "design.imported", "doc.created", "draft.opened", "draft.rebased", "feature.created", "op.applied", "phase.started", "post.created", "thread.created", "tokens.imported", "version.saved"]);
 export type LiveEventName = z.infer<typeof LiveEventNameSchema>;
 
 export const LiveServerMessageSchema = z.union([
@@ -880,6 +906,7 @@ export const schemas = {
   CreateCommentRequest: CreateCommentRequestSchema,
   CreateDirectiveRequest: CreateDirectiveRequestSchema,
   CreateDocRequest: CreateDocRequestSchema,
+  CreateFeatureRequest: CreateFeatureRequestSchema,
   CreatePostRequest: CreatePostRequestSchema,
   CreateProjectRequest: CreateProjectRequestSchema,
   CreateThreadRequest: CreateThreadRequestSchema,
@@ -904,6 +931,9 @@ export const schemas = {
   EditRequest: EditRequestSchema,
   EditResponse: EditResponseSchema,
   ErrorBody: ErrorBodySchema,
+  FeatureBody: FeatureBodySchema,
+  FeatureListResponse: FeatureListResponseSchema,
+  FeatureResponse: FeatureResponseSchema,
   HistoryEntry: HistoryEntrySchema,
   HomeResponse: HomeResponseSchema,
   ImportTagsRequest: ImportTagsRequestSchema,
@@ -1436,6 +1466,31 @@ export const operations = {
   "GET /api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}/versions": {
     responses: {
       "200": VersionListResponseSchema,
+      "401": ErrorBodySchema,
+      "404": ErrorBodySchema,
+    },
+  },
+  "GET /api/v1/w/{workspace_id}/projects/{project_id}/features": {
+    responses: {
+      "200": FeatureListResponseSchema,
+      "401": ErrorBodySchema,
+      "404": ErrorBodySchema,
+    },
+  },
+  "POST /api/v1/w/{workspace_id}/projects/{project_id}/features": {
+    request: CreateFeatureRequestSchema,
+    responses: {
+      "201": FeatureResponseSchema,
+      "400": ErrorBodySchema,
+      "401": ErrorBodySchema,
+      "403": ErrorBodySchema,
+      "404": ErrorBodySchema,
+      "409": ErrorBodySchema,
+    },
+  },
+  "GET /api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}": {
+    responses: {
+      "200": FeatureResponseSchema,
       "401": ErrorBodySchema,
       "404": ErrorBodySchema,
     },

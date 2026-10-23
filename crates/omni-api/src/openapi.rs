@@ -28,6 +28,7 @@ use crate::docs::{
     DraftBody, DraftHtmlResponse, DraftResponse, DraftWithHtml, EditRequest, EditResponse,
     InvalidOperationBody, MainlineHtmlResponse, OpResultBody,
 };
+use crate::features::{CreateFeatureRequest, FeatureBody, FeatureListResponse, FeatureResponse};
 use crate::home::{HomeResponse, WaitingBody};
 use crate::live::{LiveClientMessage, LiveErrorCode, LiveEventName, LiveServerMessage};
 use crate::rebase::{
@@ -75,6 +76,9 @@ use utoipa::OpenApi;
         crate::api_keys::create,
         crate::api_keys::revoke,
         crate::home::show,
+        crate::features::list_features,
+        crate::features::create_feature,
+        crate::features::show_feature,
         crate::changesets::list_projects,
         crate::changesets::create_project,
         crate::changesets::list_changesets,
@@ -153,6 +157,10 @@ use utoipa::OpenApi;
         ProjectResponse,
         ProjectListResponse,
         CreateProjectRequest,
+        FeatureBody,
+        FeatureResponse,
+        FeatureListResponse,
+        CreateFeatureRequest,
         CreateChangesetRequest,
         RejectRequest,
         HistoryEntry,

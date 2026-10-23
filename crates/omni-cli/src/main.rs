@@ -17,6 +17,7 @@ mod decisions;
 mod design;
 mod docs;
 mod error;
+mod features;
 mod http;
 mod identity;
 mod import;
@@ -40,6 +41,10 @@ Usage:
   omni key revoke <key-id>            revoke an API key (asks for the password)
   omni project create <name>          create a project
   omni project list                   list the projects
+  omni feature create <name>          create a feature in the project [--description <text>];
+                                      prints its ID and name
+  omni feature list                   list the project's features: ID, status and name
+  omni feature show <name|id>         show a feature
   omni changeset create --title <t>   create a change set [--description <d>] [--run <tag>]
   omni changeset list                 list the project's change sets
   omni changeset show <id>            show a change set with its status history
