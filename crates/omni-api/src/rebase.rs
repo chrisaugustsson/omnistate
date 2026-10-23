@@ -1090,16 +1090,7 @@ pub async fn rebase(
         }
         let docs: Vec<&str> = changed.iter().map(|c| c.draft.doc_id.as_str()).collect();
         let versions: Vec<&str> = changed.iter().map(|c| c.version_id.as_str()).collect();
-        sqlx::query(
-            "UPDATE docs SET mainline_version_id = a.version \
-             FROM unnest($1::text[]::uuid[], $2::text[]::uuid[]) AS a (doc, version) \
-             WHERE docs.id = a.doc",
-        )
-        .bind(&docs)
-        .bind(&versions)
-        .execute(&mut *tx)
-        .await
-        .map_err(ApiError::database)?;
+        crate::docs::set_mainlines(&state, &mut tx, workspace_id, &docs, &versions).await?;
         "merged"
     } else {
         sqlx::query(

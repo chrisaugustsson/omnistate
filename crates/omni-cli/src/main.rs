@@ -64,9 +64,11 @@ Usage:
                                       resolve a conflict once the draft is fixed with `omni doc
                                       edit`; a change set cannot be submitted until every
                                       conflict is resolved
-  omni doc create --changeset <id> --kind html|design|design-system --pillar spec|ui|architecture|db|research
-                --title <text>        start a doc in a change set (its first version comes
-                                      through the change set)
+  omni doc create [--feature <name|id>] --kind html|design|design-system
+                --pillar spec|ui|architecture|db|research --title <text>
+                                      create a doc at the app level, or in a feature; it is
+                                      readable at once, with no change set (--changeset <id>
+                                      starts it in a change set instead)
   omni doc list                       list the project's docs: ID, scope (project or the
                                       feature's name), kind, pillar and title; --feature
                                       <name|id> or --global list one scope only; --pillar
@@ -75,7 +77,8 @@ Usage:
                                       make (or reuse) the change set's draft of a doc
   omni doc read <doc> [--changeset <id> | --version <v>]
                                       print the doc as HTML with data-node-id (data-rev too
-                                      for a draft); without options, the mainline version
+                                      for a draft); without options, the doc's head (a
+                                      design's tags)
   omni doc show <doc>                 show the doc's metadata, mainline version, drafts, claims
   omni doc edit <doc> --changeset <id>
                                       apply a batch of operations (a JSON array, from

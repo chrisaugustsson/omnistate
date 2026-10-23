@@ -422,7 +422,7 @@ fn api_error(response: &Response) -> CliError {
         ),
         (403, _) => format!("{code}: only the human can do this, in the web app; an agent cannot"),
         (404, "no_design_system") => format!(
-            "{code}: this project has no design system doc; `omni doc create --changeset <id> --kind design-system --pillar ui --title <text>` starts one"
+            "{code}: this project has no design system doc; `omni doc create --kind design-system --pillar ui --title <text>` starts one"
         ),
         (400, "unknown_mode") => format!(
             "{code}: the design system does not list that mode; `omni tokens export` shows its modes"

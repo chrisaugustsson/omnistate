@@ -136,7 +136,7 @@ pub(crate) fn imported_pages(op: &str) -> Option<Result<Vec<Node>, String>> {
 }
 
 /// The nodes as tags, one tree after the other.
-fn tags_of(nodes: &[Node]) -> String {
+pub(crate) fn tags_of(nodes: &[Node]) -> String {
     nodes.iter().map(tags::print).collect::<Vec<_>>().join("\n")
 }
 
@@ -611,7 +611,7 @@ pub(crate) async fn view_of_draft(
     })
 }
 
-fn nodes_values(nodes: &[Node]) -> Vec<Value> {
+pub(crate) fn nodes_values(nodes: &[Node]) -> Vec<Value> {
     match nodes_json(nodes) {
         Value::Array(items) => items,
         _ => Vec::new(),

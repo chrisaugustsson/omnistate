@@ -1,9 +1,12 @@
 //! Docs and their drafts. A doc belongs to a project; a change set edits it
 //! through its own draft, with batches of operations (docs/formats/operations.md)
-//! that the operation engine of omni-core applies all or nothing. A new doc has
-//! no mainline version: its first version comes through the change set that
-//! started it (Q18), so `create_doc` makes the doc and that change set's draft
-//! together.
+//! that the operation engine of omni-core applies all or nothing. A doc has a
+//! head, the chunk of its content now (US-102): a new doc is readable at once
+//! as the empty doc of its kind, and `create_app_doc` and `create_feature_doc`
+//! make one with no change set. A doc started in a change set (`create_doc`)
+//! has the empty head too, and gets that change set's draft; its first version
+//! comes through the change set (Q18). Every write to a doc is a row of
+//! `doc_changes`.
 //!
 //! A draft is kept in memory, keyed by workspace and draft, because an edit
 //! must take well under 50 ms (FR-48). Postgres holds the truth: every applied
@@ -30,6 +33,7 @@ use axum::http::request::Parts;
 use axum::response::{IntoResponse, Response};
 use omni_core::design::tokens::TokenTree;
 use omni_core::design::{DesignDoc, Node, NodeId};
+use omni_core::hash::blake3_hex;
 use omni_core::ops::{ApplyError, Conflict, EditDoc, Operation};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -44,7 +48,7 @@ pub(crate) type Tx = Transaction<'static, Postgres>;
 /// The columns of a doc; `created_at` is ISO 8601 text in UTC.
 const DOC_COLUMNS: &str = "id::text, project_id::text, kind, pillar, title, \
      to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"') AS created_at, \
-     mainline_version_id::text, feature_id::text";
+     mainline_version_id::text, feature_id::text, head";
 
 const DRAFT_COLUMNS: &str = "id::text, doc_id::text, changeset_id::text, base_version_id::text";
 
@@ -76,6 +80,9 @@ pub(crate) struct DocRow {
     created_at: String,
     pub(crate) mainline_version_id: Option<String>,
     pub(crate) feature_id: Option<String>,
+    /// The chunk of the doc's content now; `None` for a doc that was started in a
+    /// change set before heads existed and never merged, which reads as empty.
+    pub(crate) head: Option<String>,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -164,10 +171,21 @@ pub struct DraftHtmlResponse {
 #[derive(Serialize, ToSchema)]
 pub struct MainlineHtmlResponse {
     pub doc_id: String,
-    /// The version that was read; `null` when the doc has no mainline version.
+    /// The version that was read. For the doc's head, the mainline version when
+    /// the head is its content; `null` for a head that no version holds.
     pub version_id: Option<String>,
-    /// The version as HTML with `data-node-id`; the empty text without a version.
+    /// The head or version as HTML with `data-node-id`; the empty text for an
+    /// empty doc, and for a design's head, whose content is `tags` and `pages`.
     pub html: String,
+    /// A design's head as tags, one `<Page>` after the other; only for the
+    /// head of a design.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tags: Option<String>,
+    /// A design's head as JSON nodes, each page with its boards under
+    /// `children`; only for the head of a design.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<Vec<Object>>)]
+    pub pages: Option<Vec<Value>>,
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -949,10 +967,309 @@ const PILLARS: [&str; 5] = ["spec", "ui", "architecture", "db", "research"];
 
 // Routes ---------------------------------------------------------------------------
 
-/// Starts a new doc in a change set. The doc has no mainline version: its
-/// first version comes through the change set, which gets an empty draft of it.
-/// The doc belongs to the change set's feature (global for a project-level
-/// change set) and keeps that scope.
+/// A new doc as the request describes it, once its kind, pillar and title are
+/// checked.
+struct NewDoc {
+    kind: String,
+    pillar: String,
+    title: String,
+}
+
+/// Checks the body of a request that creates a doc: 400 `invalid_request` for
+/// a missing or unknown kind, pillar or title, 422 `design_needs_ui_pillar` for
+/// a design kind outside `ui` and 422 `design_system_is_global` for a design
+/// system in a feature.
+fn check_new_doc(new: CreateDocRequest, in_feature: bool) -> Result<NewDoc, ApiError> {
+    let invalid = || ApiError::bad_request("invalid_request");
+    let kind = non_blank(new.kind).ok_or_else(invalid)?;
+    let pillar = non_blank(new.pillar).ok_or_else(invalid)?;
+    let title = non_blank(new.title).ok_or_else(invalid)?;
+    if !matches!(kind.as_str(), "html" | "design" | "design-system")
+        || !PILLARS.contains(&pillar.as_str())
+    {
+        return Err(invalid());
+    }
+    if kind != "html" && pillar != "ui" {
+        return Err(ApiError::Refused(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "design_needs_ui_pillar",
+        ));
+    }
+    if kind == "design-system" && in_feature {
+        return Err(ApiError::Refused(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "design_system_is_global",
+        ));
+    }
+    Ok(NewDoc {
+        kind,
+        pillar,
+        title,
+    })
+}
+
+fn design_system_exists() -> ApiError {
+    ApiError::conflict("design_system_exists")
+}
+
+/// A project has one design system doc, whichever change set started it and
+/// whether or not it merged: 409 `design_system_exists` when a second one is
+/// asked for. The unique index of the migration settles two requests that
+/// start one at once.
+async fn require_no_design_system(
+    tx: &mut Tx,
+    project_id: &str,
+    new: &NewDoc,
+) -> Result<(), ApiError> {
+    if new.kind != "design-system" {
+        return Ok(());
+    }
+    let found: Option<(String,)> = sqlx::query_as(
+        "SELECT id::text FROM docs WHERE project_id = $1::uuid AND kind = 'design-system'",
+    )
+    .bind(project_id)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(ApiError::database)?;
+    match found {
+        Some(_) => Err(design_system_exists()),
+        None => Ok(()),
+    }
+}
+
+/// What the head of an empty doc of `kind` holds: the empty text for an HTML
+/// doc or a design system, a manifest of one page without boards for a design.
+fn empty_snapshot(kind: &str) -> Snapshot {
+    if kind != "design" {
+        return Snapshot::new(String::new(), Vec::new());
+    }
+    let mut ids = HashSet::new();
+    let mut next = || loop {
+        let id = random_node_id();
+        if ids.insert(id) {
+            return id;
+        }
+    };
+    let page = omni_core::design::tags::parse_all(r#"<Page name="Page 1"/>"#)
+        .expect("the tag of an empty page parses")
+        .remove(0)
+        .assign_ids(&mut next);
+    boards::snapshot_of(&[page])
+}
+
+/// The head of an empty doc of `kind`, with what its chunks hold, which the
+/// caller lists in the chunk index in the transaction that writes the doc.
+struct EmptyHead {
+    /// The name of the head's chunk, the BLAKE3 hash of its text.
+    name: String,
+    snapshot: Snapshot,
+    /// Whether the chunks are in RustFS.
+    stored: bool,
+}
+
+/// Stores the chunks of an empty doc of `kind`. With `required` false, a
+/// storage that cannot be reached leaves the chunks unstored and the doc with a
+/// null head, which reads as the empty doc all the same: a doc started in a
+/// change set does not need the storage until its first version.
+async fn store_empty_head(
+    state: &AppState,
+    workspace_id: &str,
+    kind: &str,
+    required: bool,
+) -> Result<EmptyHead, ApiError> {
+    let snapshot = empty_snapshot(kind);
+    let name = blake3_hex(snapshot.html.as_bytes());
+    match versions::store_snapshot(state, workspace_id, &snapshot).await {
+        Ok(_) => Ok(EmptyHead {
+            name,
+            snapshot,
+            stored: true,
+        }),
+        Err(_) if !required => Ok(EmptyHead {
+            name,
+            snapshot,
+            stored: false,
+        }),
+        Err(error) => Err(error),
+    }
+}
+
+/// Adds the row of `doc_changes` for a write to a doc, in the transaction of the
+/// write: the next `seq` of the doc, the agent, the operations, and the head
+/// before and after. A write to one doc is serialised by the lock on the doc's
+/// row, or by its being new.
+pub(crate) async fn log_change(
+    tx: &mut Tx,
+    workspace_id: &str,
+    doc_id: &str,
+    agent: &Value,
+    operations: &Value,
+    head_before: Option<&str>,
+    head_after: &str,
+) -> Result<(), ApiError> {
+    sqlx::query(
+        "INSERT INTO doc_changes \
+         (workspace_id, doc_id, seq, agent, operations, head_before, head_after) \
+         VALUES ($1::uuid, $2::uuid, \
+                 (SELECT COALESCE(MAX(seq), 0) + 1 FROM doc_changes WHERE doc_id = $2::uuid), \
+                 $3::text::jsonb, $4::text::jsonb, $5, $6)",
+    )
+    .bind(workspace_id)
+    .bind(doc_id)
+    .bind(agent.to_string())
+    .bind(operations.to_string())
+    .bind(head_before)
+    .bind(head_after)
+    .execute(&mut **tx)
+    .await
+    .map_err(ApiError::database)?;
+    Ok(())
+}
+
+/// Makes `versions[i]` the mainline version of `docs[i]` and its chunk the doc's
+/// head, in the transaction of a merge whose docs are locked. A version that
+/// removes its doc leaves the doc with the empty head of its kind. Each doc
+/// whose head changes gets a row of `doc_changes`.
+pub(crate) async fn set_mainlines(
+    state: &AppState,
+    tx: &mut Tx,
+    workspace_id: &str,
+    docs: &[&str],
+    versions: &[&str],
+) -> Result<(), ApiError> {
+    #[derive(sqlx::FromRow)]
+    struct Merging {
+        doc_id: String,
+        kind: String,
+        head: Option<String>,
+        chunk: Option<String>,
+        version_id: String,
+    }
+    let merging: Vec<Merging> = sqlx::query_as(
+        "SELECT d.id::text AS doc_id, d.kind, d.head, v.chunk, v.id::text AS version_id \
+         FROM unnest($1::text[]::uuid[], $2::text[]::uuid[]) AS a (doc, version) \
+         JOIN docs d ON d.id = a.doc JOIN versions v ON v.id = a.version \
+         ORDER BY d.id",
+    )
+    .bind(docs)
+    .bind(versions)
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(ApiError::database)?;
+    let agent = json!({ "run": null, "role": "merge", "model": null, "harness": null });
+    for doc in merging {
+        let head = match doc.chunk {
+            Some(chunk) => chunk,
+            None => {
+                let empty = store_empty_head(state, workspace_id, &doc.kind, true).await?;
+                versions::index_snapshot(tx, workspace_id, &empty.name, &empty.snapshot).await?;
+                empty.name
+            }
+        };
+        sqlx::query(
+            "UPDATE docs SET mainline_version_id = $2::uuid, head = $3 WHERE id = $1::uuid",
+        )
+        .bind(&doc.doc_id)
+        .bind(&doc.version_id)
+        .bind(&head)
+        .execute(&mut **tx)
+        .await
+        .map_err(ApiError::database)?;
+        if doc.head.as_deref() != Some(head.as_str()) {
+            log_change(
+                tx,
+                workspace_id,
+                &doc.doc_id,
+                &agent,
+                &json!([{ "op": "merge", "version": doc.version_id }]),
+                doc.head.as_deref(),
+                &head,
+            )
+            .await?;
+        }
+    }
+    Ok(())
+}
+
+/// Writes a new doc with its head: the row, the head's chunks in the chunk
+/// index, the first row of `doc_changes` and the `doc.created` event, in the
+/// transaction of the request. `changeset_id` is the change set that starts the
+/// doc, `None` for a doc created live.
+#[allow(clippy::too_many_arguments)]
+async fn insert_doc(
+    tx: &mut Tx,
+    workspace_id: &str,
+    project_id: &str,
+    feature_id: Option<&str>,
+    changeset_id: Option<&str>,
+    new: &NewDoc,
+    empty: &EmptyHead,
+    agent: &Value,
+) -> Result<DocRow, ApiError> {
+    let row: DocRow = sqlx::query_as(&format!(
+        "INSERT INTO docs (workspace_id, project_id, feature_id, kind, pillar, title, head) \
+         VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5, $6, $7) RETURNING {DOC_COLUMNS}"
+    ))
+    .bind(workspace_id)
+    .bind(project_id)
+    .bind(feature_id)
+    .bind(&new.kind)
+    .bind(&new.pillar)
+    .bind(&new.title)
+    .bind(empty.stored.then_some(empty.name.as_str()))
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(|error| {
+        if error
+            .as_database_error()
+            .is_some_and(|e| e.is_unique_violation())
+        {
+            design_system_exists()
+        } else {
+            ApiError::database(error)
+        }
+    })?;
+    if empty.stored {
+        versions::index_snapshot(tx, workspace_id, &empty.name, &empty.snapshot).await?;
+    }
+    log_change(
+        tx,
+        workspace_id,
+        &row.id,
+        agent,
+        &json!([{
+            "op": "create",
+            "kind": new.kind,
+            "pillar": new.pillar,
+            "title": new.title,
+            "feature_id": feature_id,
+        }]),
+        None,
+        &empty.name,
+    )
+    .await?;
+    live::emit(
+        tx,
+        workspace_id,
+        project_id,
+        "doc.created",
+        &json!({
+            "doc_id": row.id,
+            "changeset_id": changeset_id,
+            "feature_id": feature_id,
+            "kind": new.kind,
+            "pillar": new.pillar,
+            "title": new.title,
+        }),
+    )
+    .await?;
+    Ok(row)
+}
+
+/// Starts a new doc in a change set. The doc has the empty head of its kind
+/// and no mainline version: its first version comes through the change set,
+/// which gets an empty draft of it. The doc belongs to the change set's feature
+/// (global for a project-level change set) and keeps that scope.
 #[utoipa::path(
     post,
     path = "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs",
@@ -975,6 +1292,7 @@ const PILLARS: [&str; 5] = ["spec", "ui", "architecture", "db", "research"];
 pub async fn create_doc(
     State(state): State<AppState>,
     request: AgentRequest,
+    identity: AgentIdentity,
     Path((_, project_id, changeset_id)): Path<(String, String, String)>,
     body: Bytes,
 ) -> Result<(StatusCode, Json<CreatedDocResponse>), ApiError> {
@@ -983,66 +1301,23 @@ pub async fn create_doc(
     let new = parse_body::<CreateDocRequest>(&body);
     let mut tx = state.workspace_tx(&request.workspace_id).await?;
     let feature_id = changeset_feature(&mut tx, &project_id, &changeset_id).await?;
-    let new = new?;
-    let invalid = || ApiError::bad_request("invalid_request");
-    let kind = non_blank(new.kind).ok_or_else(invalid)?;
-    let pillar = non_blank(new.pillar).ok_or_else(invalid)?;
-    let title = non_blank(new.title).ok_or_else(invalid)?;
-    if !matches!(kind.as_str(), "html" | "design" | "design-system")
-        || !PILLARS.contains(&pillar.as_str())
-    {
-        return Err(invalid());
-    }
-    if kind != "html" && pillar != "ui" {
-        return Err(ApiError::Refused(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "design_needs_ui_pillar",
-        ));
-    }
-    if kind == "design-system" && feature_id.is_some() {
-        return Err(ApiError::Refused(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "design_system_is_global",
-        ));
-    }
-    // A project has one design system doc, whichever change set started it and
-    // whether or not it merged. The unique index of the migration settles two
-    // requests that start one at once.
-    let design_system_exists = || ApiError::conflict("design_system_exists");
-    if kind == "design-system" {
-        let found: Option<(String,)> = sqlx::query_as(
-            "SELECT id::text FROM docs WHERE project_id = $1::uuid AND kind = 'design-system'",
-        )
-        .bind(&project_id)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(ApiError::database)?;
-        if found.is_some() {
-            return Err(design_system_exists());
-        }
-    }
-    let row: DocRow = sqlx::query_as(&format!(
-        "INSERT INTO docs (workspace_id, project_id, feature_id, kind, pillar, title) \
-         VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5, $6) RETURNING {DOC_COLUMNS}"
-    ))
-    .bind(&request.workspace_id)
-    .bind(&project_id)
-    .bind(&feature_id)
-    .bind(&kind)
-    .bind(&pillar)
-    .bind(&title)
-    .fetch_one(&mut *tx)
-    .await
-    .map_err(|error| {
-        if error
-            .as_database_error()
-            .is_some_and(|e| e.is_unique_violation())
-        {
-            design_system_exists()
-        } else {
-            ApiError::database(error)
-        }
-    })?;
+    let new = check_new_doc(new?, feature_id.is_some())?;
+    require_no_design_system(&mut tx, &project_id, &new).await?;
+    tx.commit().await.map_err(ApiError::database)?;
+
+    let empty = store_empty_head(&state, &request.workspace_id, &new.kind, false).await?;
+    let mut tx = state.workspace_tx(&request.workspace_id).await?;
+    let row = insert_doc(
+        &mut tx,
+        &request.workspace_id,
+        &project_id,
+        feature_id.as_deref(),
+        Some(&changeset_id),
+        &new,
+        &empty,
+        &identity.to_json(),
+    )
+    .await?;
     let draft: DraftBody = sqlx::query_as(&format!(
         "INSERT INTO drafts (workspace_id, doc_id, changeset_id) \
          VALUES ($1::uuid, $2::uuid, $3::uuid) RETURNING {DRAFT_COLUMNS}"
@@ -1053,21 +1328,6 @@ pub async fn create_doc(
     .fetch_one(&mut *tx)
     .await
     .map_err(ApiError::database)?;
-    live::emit(
-        &mut tx,
-        &request.workspace_id,
-        &project_id,
-        "doc.created",
-        &json!({
-            "doc_id": row.id,
-            "changeset_id": changeset_id,
-            "feature_id": feature_id,
-            "kind": kind,
-            "pillar": pillar,
-            "title": title,
-        }),
-    )
-    .await?;
     tx.commit().await.map_err(ApiError::database)?;
     state.live.announce(&request.workspace_id, &project_id);
     let doc = doc_body(
@@ -1081,6 +1341,133 @@ pub async fn create_doc(
         Vec::new(),
     );
     Ok((StatusCode::CREATED, Json(CreatedDocResponse { doc, draft })))
+}
+
+/// Creates a doc at the app level of a project or in one of its features,
+/// without a change set. The doc is readable at once: its head is the empty
+/// doc of its kind, and its creation is the first row of its log.
+async fn create_live_doc(
+    state: &AppState,
+    request: &AgentRequest,
+    identity: &AgentIdentity,
+    project_id: &str,
+    feature_id: Option<&str>,
+    body: &Bytes,
+) -> Result<(StatusCode, Json<DocResponse>), ApiError> {
+    let new = parse_body::<CreateDocRequest>(body);
+    let mut tx = state.workspace_tx(&request.workspace_id).await?;
+    require_project(&mut tx, project_id).await?;
+    if let Some(feature_id) = feature_id {
+        let found: Option<(String,)> = sqlx::query_as(
+            "SELECT id::text FROM features WHERE id = $1::uuid AND project_id = $2::uuid",
+        )
+        .bind(feature_id)
+        .bind(project_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(ApiError::database)?;
+        found.ok_or(ApiError::NotFound)?;
+    }
+    let new = check_new_doc(new?, feature_id.is_some())?;
+    require_no_design_system(&mut tx, project_id, &new).await?;
+    tx.commit().await.map_err(ApiError::database)?;
+
+    let empty = store_empty_head(state, &request.workspace_id, &new.kind, true).await?;
+    let mut tx = state.workspace_tx(&request.workspace_id).await?;
+    let row = insert_doc(
+        &mut tx,
+        &request.workspace_id,
+        project_id,
+        feature_id,
+        None,
+        &new,
+        &empty,
+        &identity.to_json(),
+    )
+    .await?;
+    tx.commit().await.map_err(ApiError::database)?;
+    state.live.announce(&request.workspace_id, project_id);
+    let doc = doc_body(row, Vec::new(), Vec::new());
+    Ok((StatusCode::CREATED, Json(DocResponse { doc })))
+}
+
+/// Creates a doc at the app level of a project, without a change set. The doc
+/// is readable at once, as the empty doc of its kind.
+#[utoipa::path(
+    post,
+    path = "/api/v1/w/{workspace_id}/projects/{project_id}/docs",
+    params(
+        ("workspace_id" = String, Path, description = "The workspace's UUID"),
+        ("project_id" = String, Path, description = "The project's UUID"),
+        ("X-Omni-Run" = Option<String>, Header, description = "The agent's run"),
+        ("X-Omni-Role" = Option<String>, Header, description = "The agent's role"),
+        ("X-Omni-Model" = Option<String>, Header, description = "The model behind the agent"),
+        ("X-Omni-Harness" = Option<String>, Header, description = "The harness that runs the agent"),
+    ),
+    request_body = CreateDocRequest,
+    responses(
+        (status = 201, description = "The new doc", body = DocResponse),
+        (status = 400, description = "The kind, pillar or title is missing or not allowed", body = ErrorBody),
+        (status = 401, description = "No valid API key or session", body = ErrorBody),
+        (status = 403, description = "Called with a session; agents only", body = ErrorBody),
+        (status = 404, description = "No such project in this workspace", body = ErrorBody),
+        (status = 409, description = "The project has a design system doc already (`design_system_exists`)", body = ErrorBody),
+        (status = 422, description = "A design or design-system doc outside the `ui` pillar (`design_needs_ui_pillar`)", body = ErrorBody),
+    )
+)]
+pub async fn create_app_doc(
+    State(state): State<AppState>,
+    request: AgentRequest,
+    identity: AgentIdentity,
+    Path((_, project_id)): Path<(String, String)>,
+    body: Bytes,
+) -> Result<(StatusCode, Json<DocResponse>), ApiError> {
+    let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
+    create_live_doc(&state, &request, &identity, &project_id, None, &body).await
+}
+
+/// Creates a doc in a feature of a project, without a change set. The doc is
+/// readable at once, as the empty doc of its kind.
+#[utoipa::path(
+    post,
+    path = "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/docs",
+    params(
+        ("workspace_id" = String, Path, description = "The workspace's UUID"),
+        ("project_id" = String, Path, description = "The project's UUID"),
+        ("feature_id" = String, Path, description = "The feature's UUID"),
+        ("X-Omni-Run" = Option<String>, Header, description = "The agent's run"),
+        ("X-Omni-Role" = Option<String>, Header, description = "The agent's role"),
+        ("X-Omni-Model" = Option<String>, Header, description = "The model behind the agent"),
+        ("X-Omni-Harness" = Option<String>, Header, description = "The harness that runs the agent"),
+    ),
+    request_body = CreateDocRequest,
+    responses(
+        (status = 201, description = "The new doc", body = DocResponse),
+        (status = 400, description = "The kind, pillar or title is missing or not allowed", body = ErrorBody),
+        (status = 401, description = "No valid API key or session", body = ErrorBody),
+        (status = 403, description = "Called with a session; agents only", body = ErrorBody),
+        (status = 404, description = "No such feature in this project and workspace", body = ErrorBody),
+        (status = 422, description = "A design or design-system doc outside the `ui` pillar (`design_needs_ui_pillar`), or a design system in a feature, which is always global (`design_system_is_global`)", body = ErrorBody),
+    )
+)]
+pub async fn create_feature_doc(
+    State(state): State<AppState>,
+    request: AgentRequest,
+    identity: AgentIdentity,
+    Path((_, project_id, feature_id)): Path<(String, String, String)>,
+    body: Bytes,
+) -> Result<(StatusCode, Json<DocResponse>), ApiError> {
+    let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
+    let feature_id = parse_uuid(&feature_id).ok_or(ApiError::NotFound)?;
+    create_live_doc(
+        &state,
+        &request,
+        &identity,
+        &project_id,
+        Some(&feature_id),
+        &body,
+    )
+    .await
 }
 
 /// The docs of a project, oldest first, each as `GET .../docs/{doc_id}` answers it.
@@ -1173,9 +1560,10 @@ pub async fn show_doc(
     }))
 }
 
-/// A doc's mainline version as HTML with `data-node-id`, or the version named
-/// by `?version=` (a version has no `data-rev`). A doc that has no mainline
-/// version gives no version and no HTML.
+/// A doc's head as HTML with `data-node-id`, or the version named by
+/// `?version=` (a version has no `data-rev`). The head is read, never the
+/// mainline version: a new doc reads as the empty doc. A design's head answers
+/// its `pages` and `tags` and no HTML.
 #[utoipa::path(
     get,
     path = "/api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}/html",
@@ -1183,10 +1571,10 @@ pub async fn show_doc(
         ("workspace_id" = String, Path, description = "The workspace's UUID"),
         ("project_id" = String, Path, description = "The project's UUID"),
         ("doc_id" = String, Path, description = "The doc's UUID"),
-        ("version" = Option<String>, Query, description = "The version to read instead of the mainline version"),
+        ("version" = Option<String>, Query, description = "The version to read instead of the head"),
     ),
     responses(
-        (status = 200, description = "The version's HTML", body = MainlineHtmlResponse),
+        (status = 200, description = "The head's or version's HTML", body = MainlineHtmlResponse),
         (status = 401, description = "No valid API key or session", body = ErrorBody),
         (status = 404, description = "No such doc, or the doc has no such version", body = ErrorBody),
     )
@@ -1201,18 +1589,14 @@ pub async fn read_doc_html(
     let doc_id = parse_uuid(&doc_id).ok_or(ApiError::NotFound)?;
     let mut tx = state.workspace_tx(&request.workspace_id).await?;
     let row = find_doc(&mut tx, &project_id, &doc_id).await?;
-    let version_id = match query.get("version") {
-        Some(version) => Some(parse_uuid(version).ok_or(ApiError::NotFound)?),
-        None => row.mainline_version_id.clone(),
-    };
-    let Some(version_id) = version_id else {
+    let Some(version) = query.get("version") else {
+        let version_id = head_version(&mut tx, &row).await?;
         tx.commit().await.map_err(ApiError::database)?;
-        return Ok(Json(MainlineHtmlResponse {
-            doc_id: row.id,
-            version_id: None,
-            html: String::new(),
-        }));
+        return read_head(&state, &request.workspace_id, row, version_id)
+            .await
+            .map(Json);
     };
+    let version_id = parse_uuid(version).ok_or(ApiError::NotFound)?;
     let chunk = versions::chunk_of_version(&mut tx, &row.id, &version_id).await?;
     tx.commit().await.map_err(ApiError::database)?;
     // A version that holds no content (the removal of the doc) reads as empty.
@@ -1224,7 +1608,53 @@ pub async fn read_doc_html(
         doc_id: row.id,
         version_id: Some(version_id),
         html,
+        tags: None,
+        pages: None,
     }))
+}
+
+/// The version that the doc's head is the content of: the mainline version
+/// when it holds the very chunk of the head, else none.
+pub(crate) async fn head_version(tx: &mut Tx, doc: &DocRow) -> Result<Option<String>, ApiError> {
+    let (Some(mainline), Some(head)) = (&doc.mainline_version_id, &doc.head) else {
+        return Ok(None);
+    };
+    sqlx::query_scalar("SELECT id::text FROM versions WHERE id = $1::uuid AND chunk = $2")
+        .bind(mainline)
+        .bind(head)
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(ApiError::database)
+}
+
+/// A doc's head as the read of the doc answers it.
+async fn read_head(
+    state: &AppState,
+    workspace_id: &str,
+    row: DocRow,
+    version_id: Option<String>,
+) -> Result<MainlineHtmlResponse, ApiError> {
+    let mut answer = MainlineHtmlResponse {
+        doc_id: row.id,
+        version_id,
+        html: String::new(),
+        tags: None,
+        pages: None,
+    };
+    if row.kind == "design" {
+        let pages = match &row.head {
+            Some(head) => {
+                let what = format!("the head of doc {}", answer.doc_id);
+                boards::read_pages(state, workspace_id, head, &what).await?
+            }
+            None => Vec::new(),
+        };
+        answer.tags = Some(design::tags_of(&pages));
+        answer.pages = Some(design::nodes_values(&pages));
+    } else if let Some(head) = &row.head {
+        answer.html = versions::read_chunk(state, workspace_id, head).await?;
+    }
+    Ok(answer)
 }
 
 /// Opens a doc in a change set: makes the change set's draft from the doc's

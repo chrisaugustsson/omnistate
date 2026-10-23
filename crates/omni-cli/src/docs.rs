@@ -1,9 +1,9 @@
-//! `omni doc`: start a doc in a change set, list the project's docs, open a doc
-//! there, read it (mainline, a version or a change set's draft), show its
-//! metadata and edit a draft with a batch of operations. The project is found as for `omni changeset`.
+//! `omni doc`: create a doc (live, or in a change set), list the project's docs,
+//! open a doc there, read it (its head, a version or a change set's draft), show
+//! its metadata and edit a draft with a batch of operations. The project is found as for `omni changeset`.
 
 use crate::args::Args;
-use crate::changesets::{is_uuid, project_features, project_id, resolve_feature};
+use crate::changesets::{creation_feature, is_uuid, project_features, project_id, resolve_feature};
 use crate::commands::{Agent, agent, read_body, say};
 use crate::error::{CliError, Result, bail};
 use crate::json::{Value, quote};
@@ -55,10 +55,19 @@ fn project_path(agent: &Agent, project: &str) -> String {
     format!("/api/v1/w/{}/projects/{project}", agent.workspace_id)
 }
 
-/// `omni doc create --changeset <id> --kind <kind> --pillar <pillar> --title <text>`
+/// `omni doc create [--feature <name or id>] --kind <kind> --pillar <pillar> --title <text>`,
+/// or with `--changeset <id>` to start the doc in that change set.
 pub fn create(args: &Args) -> Result<()> {
-    const USAGE: &str = "omni doc create --changeset <id> --kind html|design|design-system --pillar spec|ui|architecture|db|research --title <text>";
-    let changeset = changeset_option(args, USAGE)?;
+    const USAGE: &str = "omni doc create [--feature <name|id>] --kind html|design|design-system --pillar spec|ui|architecture|db|research --title <text>";
+    let changeset = match args.changeset {
+        Some(_) => Some(changeset_option(args, USAGE)?),
+        None => None,
+    };
+    if changeset.is_some() && (args.feature.is_some() || args.global) {
+        bail!(
+            "give --changeset or --feature, not both: a doc in a change set belongs to the change set's feature"
+        );
+    }
     let kind = match args.kind.as_deref() {
         None => bail!("a doc needs --kind, one of {KINDS}: {USAGE}"),
         Some(kind @ ("html" | "design" | "design-system")) => kind,
@@ -86,14 +95,17 @@ pub fn create(args: &Args) -> Result<()> {
         quote(pillar),
         quote(title)
     );
-    let response = agent.request(
-        "POST",
-        &format!(
+    let path = match &changeset {
+        Some(changeset) => format!(
             "{}/changesets/{changeset}/docs",
             project_path(&agent, &project)
         ),
-        Some(body.as_bytes()),
-    )?;
+        None => match creation_feature(args, &agent, &project)? {
+            Some(feature) => format!("{}/features/{feature}/docs", project_path(&agent, &project)),
+            None => format!("{}/docs", project_path(&agent, &project)),
+        },
+    };
+    let response = agent.request("POST", &path, Some(body.as_bytes()))?;
     let text = response.text();
     if args.json {
         print_json(&text);
@@ -252,17 +264,19 @@ pub fn read(args: &Args, doc: Option<&str>) -> Result<()> {
     let answer = parsed(&text, "the doc")?;
     let (holder, what) = match draft_of {
         Some(_) => (answer.get("draft").unwrap_or(&answer), "the draft"),
-        None => (&answer, "the version"),
+        None => (&answer, "the doc"),
     };
-    if draft_of.is_none() && holder.get("version_id") == Some(&Value::Null) {
-        bail!(
-            "doc {doc} has no mainline version yet: it exists only in the change set that started it; read it with --changeset <id>"
-        );
+    // The head of a design is its tags; every other doc is its HTML, as the API
+    // gave it, and nothing else.
+    if draft_of.is_none()
+        && let Some(tags) = holder.str_at("tags")
+    {
+        say(tags);
+        return Ok(());
     }
     let Some(html) = holder.str_at("html") else {
         bail!("the server's answer has no HTML for {what}; is it an OmniState API?");
     };
-    // The HTML as the API gave it, and nothing else.
     say(html);
     Ok(())
 }

@@ -1116,16 +1116,7 @@ pub async fn approve(
     let to = if outdated {
         "needs_rebase"
     } else {
-        sqlx::query(
-            "UPDATE docs SET mainline_version_id = a.version \
-             FROM unnest($1::text[]::uuid[], $2::text[]::uuid[]) AS a (doc, version) \
-             WHERE docs.id = a.doc",
-        )
-        .bind(&docs)
-        .bind(&versions)
-        .execute(&mut *tx)
-        .await
-        .map_err(ApiError::database)?;
+        crate::docs::set_mainlines(&state, &mut tx, workspace_id, &docs, &versions).await?;
         "merged"
     };
     move_status(

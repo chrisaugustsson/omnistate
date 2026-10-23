@@ -350,7 +350,11 @@ pub fn router(state: AppState) -> Router {
         )
         .route(
             "/api/v1/w/{workspace_id}/projects/{project_id}/docs",
-            get(docs::list_docs),
+            get(docs::list_docs).post(docs::create_app_doc),
+        )
+        .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/docs",
+            post(docs::create_feature_doc),
         )
         .route(
             "/api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}",

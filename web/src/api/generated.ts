@@ -649,6 +649,8 @@ export type LoginRequest = z.infer<typeof LoginRequestSchema>;
 export const MainlineHtmlResponseSchema = z.object({
   doc_id: z.string(),
   html: z.string(),
+  pages: z.array(z.record(z.string(), z.unknown())).nullable().optional(),
+  tags: z.string().nullable().optional(),
   version_id: z.string().nullable().optional(),
 });
 export type MainlineHtmlResponse = z.infer<typeof MainlineHtmlResponseSchema>;
@@ -1474,6 +1476,18 @@ export const operations = {
       "404": ErrorBodySchema,
     },
   },
+  "POST /api/v1/w/{workspace_id}/projects/{project_id}/docs": {
+    request: CreateDocRequestSchema,
+    responses: {
+      "201": DocResponseSchema,
+      "400": ErrorBodySchema,
+      "401": ErrorBodySchema,
+      "403": ErrorBodySchema,
+      "404": ErrorBodySchema,
+      "409": ErrorBodySchema,
+      "422": ErrorBodySchema,
+    },
+  },
   "GET /api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}": {
     responses: {
       "200": DocResponseSchema,
@@ -1487,7 +1501,6 @@ export const operations = {
       "400": ErrorBodySchema,
       "401": ErrorBodySchema,
       "404": ErrorBodySchema,
-      "409": ErrorBodySchema,
     },
   },
   "GET /api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}/html": {
@@ -1527,6 +1540,17 @@ export const operations = {
       "200": FeatureResponseSchema,
       "401": ErrorBodySchema,
       "404": ErrorBodySchema,
+    },
+  },
+  "POST /api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/docs": {
+    request: CreateDocRequestSchema,
+    responses: {
+      "201": DocResponseSchema,
+      "400": ErrorBodySchema,
+      "401": ErrorBodySchema,
+      "403": ErrorBodySchema,
+      "404": ErrorBodySchema,
+      "422": ErrorBodySchema,
     },
   },
   "POST /api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/done": {

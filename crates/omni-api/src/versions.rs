@@ -683,16 +683,27 @@ pub(crate) async fn insert_version(
     .await
     .map_err(ApiError::database)?;
     if let (Some(chunk), Some(snapshot)) = (chunk, snapshot) {
-        let mut chunks: Vec<(&str, &[IndexedNode])> = vec![(chunk, &snapshot.nodes)];
-        chunks.extend(
-            snapshot
-                .parts
-                .iter()
-                .map(|part| (part.hash.as_str(), part.nodes.as_slice())),
-        );
-        index_chunks(tx, workspace_id, &chunks).await?;
+        index_snapshot(tx, workspace_id, chunk, snapshot).await?;
     }
     Ok(id)
+}
+
+/// Lists the chunks of a snapshot (its own, named `chunk`, and its parts) in
+/// the chunk index, and the nodes of those that are new in the node index.
+pub(crate) async fn index_snapshot(
+    tx: &mut Tx,
+    workspace_id: &str,
+    chunk: &str,
+    snapshot: &Snapshot,
+) -> Result<(), ApiError> {
+    let mut chunks: Vec<(&str, &[IndexedNode])> = vec![(chunk, &snapshot.nodes)];
+    chunks.extend(
+        snapshot
+            .parts
+            .iter()
+            .map(|part| (part.hash.as_str(), part.nodes.as_slice())),
+    );
+    index_chunks(tx, workspace_id, &chunks).await
 }
 
 /// Emits `version.saved` for a version that the transaction inserted.

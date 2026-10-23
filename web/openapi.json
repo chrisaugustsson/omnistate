@@ -2060,11 +2060,28 @@
             "type": "string"
           },
           "html": {
-            "description": "The version as HTML with `data-node-id`; the empty text without a version.",
+            "description": "The head or version as HTML with `data-node-id`; the empty text for an\nempty doc, and for a design's head, whose content is `tags` and `pages`.",
             "type": "string"
           },
+          "pages": {
+            "description": "A design's head as JSON nodes, each page with its boards under\n`children`; only for the head of a design.",
+            "items": {
+              "type": "object"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "tags": {
+            "description": "A design's head as tags, one `<Page>` after the other; only for the\nhead of a design.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "version_id": {
-            "description": "The version that was read; `null` when the doc has no mainline version.",
+            "description": "The version that was read. For the doc's head, the mainline version when\nthe head is its content; `null` for a head that no version holds.",
             "type": [
               "string",
               "null"
@@ -5306,7 +5323,7 @@
             "description": "A design or design-system doc outside the `ui` pillar (`design_needs_ui_pillar`), or a design system in a change set that belongs to a feature, which is always global (`design_system_is_global`)"
           }
         },
-        "summary": "Starts a new doc in a change set. The doc has no mainline version: its\nfirst version comes through the change set, which gets an empty draft of it.\nThe doc belongs to the change set's feature (global for a project-level\nchange set) and keeps that scope.",
+        "summary": "Starts a new doc in a change set. The doc has the empty head of its kind\nand no mainline version: its first version comes through the change set,\nwhich gets an empty draft of it. The doc belongs to the change set's feature\n(global for a project-level change set) and keeps that scope.",
         "tags": [
           "crate::docs"
         ],
@@ -8434,6 +8451,164 @@
           "crate::docs"
         ],
         "x-omni-access": "both"
+      },
+      "post": {
+        "operationId": "create_app_doc",
+        "parameters": [
+          {
+            "description": "The workspace's UUID",
+            "in": "path",
+            "name": "workspace_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The project's UUID",
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The agent's run",
+            "in": "header",
+            "name": "X-Omni-Run",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "description": "The agent's role",
+            "in": "header",
+            "name": "X-Omni-Role",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "description": "The model behind the agent",
+            "in": "header",
+            "name": "X-Omni-Model",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "description": "The harness that runs the agent",
+            "in": "header",
+            "name": "X-Omni-Harness",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateDocRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DocResponse"
+                }
+              }
+            },
+            "description": "The new doc"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The kind, pillar or title is missing or not allowed"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No valid API key or session"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Called with a session; agents only"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No such project in this workspace"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The project has a design system doc already (`design_system_exists`)"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A design or design-system doc outside the `ui` pillar (`design_needs_ui_pillar`)"
+          }
+        },
+        "summary": "Creates a doc at the app level of a project, without a change set. The doc\nis readable at once, as the empty doc of its kind.",
+        "tags": [
+          "crate::docs"
+        ],
+        "x-omni-access": "agent"
       }
     },
     "/api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}": {
@@ -8548,7 +8723,7 @@
             }
           },
           {
-            "description": "The version to read instead of the mainline version",
+            "description": "The version to read instead of the head",
             "in": "query",
             "name": "version",
             "required": false,
@@ -8596,20 +8771,10 @@
                 }
               }
             },
-            "description": "No such doc in this project and workspace, the doc has no such version (`not_found`), or the version has no such board: an unknown node, a page, a frame, a text (`unknown_board`)"
-          },
-          "409": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "The doc has no mainline version yet, so only its own change set has it (`no_mainline_version`)"
+            "description": "No such doc in this project and workspace, the doc has no such version (`not_found`), or the head or version has no such board: an unknown node, a page, a frame, a text (`unknown_board`)"
           }
         },
-        "summary": "Reads one board of a design doc's mainline version, or of the version\nnamed by `?version=`, in the tag format. Only the manifest and the board's\none chunk are read.",
+        "summary": "Reads one board of a design doc's head, or of the version named by\n`?version=`, in the tag format. The head is read, never the mainline\nversion. Only the manifest and the board's one chunk are read.",
         "tags": [
           "crate::boards"
         ],
@@ -8648,7 +8813,7 @@
             }
           },
           {
-            "description": "The version to read instead of the mainline version",
+            "description": "The version to read instead of the head",
             "in": "query",
             "name": "version",
             "required": false,
@@ -8666,7 +8831,7 @@
                 }
               }
             },
-            "description": "The version's HTML"
+            "description": "The head's or version's HTML"
           },
           "401": {
             "content": {
@@ -8689,7 +8854,7 @@
             "description": "No such doc, or the doc has no such version"
           }
         },
-        "summary": "A doc's mainline version as HTML with `data-node-id`, or the version named\nby `?version=` (a version has no `data-rev`). A doc that has no mainline\nversion gives no version and no HTML.",
+        "summary": "A doc's head as HTML with `data-node-id`, or the version named by\n`?version=` (a version has no `data-rev`). The head is read, never the\nmainline version: a new doc reads as the empty doc. A design's head answers\nits `pages` and `tags` and no HTML.",
         "tags": [
           "crate::docs"
         ],
@@ -8998,6 +9163,165 @@
           "crate::features"
         ],
         "x-omni-access": "both"
+      }
+    },
+    "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/docs": {
+      "post": {
+        "operationId": "create_feature_doc",
+        "parameters": [
+          {
+            "description": "The workspace's UUID",
+            "in": "path",
+            "name": "workspace_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The project's UUID",
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The feature's UUID",
+            "in": "path",
+            "name": "feature_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The agent's run",
+            "in": "header",
+            "name": "X-Omni-Run",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "description": "The agent's role",
+            "in": "header",
+            "name": "X-Omni-Role",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "description": "The model behind the agent",
+            "in": "header",
+            "name": "X-Omni-Model",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "description": "The harness that runs the agent",
+            "in": "header",
+            "name": "X-Omni-Harness",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateDocRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DocResponse"
+                }
+              }
+            },
+            "description": "The new doc"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The kind, pillar or title is missing or not allowed"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No valid API key or session"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Called with a session; agents only"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No such feature in this project and workspace"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A design or design-system doc outside the `ui` pillar (`design_needs_ui_pillar`), or a design system in a feature, which is always global (`design_system_is_global`)"
+          }
+        },
+        "summary": "Creates a doc in a feature of a project, without a change set. The doc is\nreadable at once, as the empty doc of its kind.",
+        "tags": [
+          "crate::docs"
+        ],
+        "x-omni-access": "agent"
       }
     },
     "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/done": {

@@ -21,7 +21,7 @@
 
 use crate::AppState;
 use crate::design::nodes_from;
-use crate::docs::{current_draft, ensure_loaded, find_doc, find_draft};
+use crate::docs::{current_draft, ensure_loaded, find_doc, find_draft, head_version};
 use crate::placeholders::{self, Sizing};
 use crate::session::{ApiError, ErrorBody};
 use crate::versions::{Part, Snapshot, chunk_of_version, read_chunk};
@@ -585,9 +585,9 @@ pub async fn read_draft_board(
     }))
 }
 
-/// Reads one board of a design doc's mainline version, or of the version
-/// named by `?version=`, in the tag format. Only the manifest and the board's
-/// one chunk are read.
+/// Reads one board of a design doc's head, or of the version named by
+/// `?version=`, in the tag format. The head is read, never the mainline
+/// version. Only the manifest and the board's one chunk are read.
 #[utoipa::path(
     get,
     path = "/api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}/boards/{board_id}",
@@ -596,14 +596,13 @@ pub async fn read_draft_board(
         ("project_id" = String, Path, description = "The project's UUID"),
         ("doc_id" = String, Path, description = "The design doc's UUID"),
         ("board_id" = String, Path, description = "The board's node ID"),
-        ("version" = Option<String>, Query, description = "The version to read instead of the mainline version"),
+        ("version" = Option<String>, Query, description = "The version to read instead of the head"),
     ),
     responses(
         (status = 200, description = "The board", body = BoardBody),
         (status = 400, description = "The doc is no design (`not_a_design`)", body = ErrorBody),
         (status = 401, description = "No valid API key or session", body = ErrorBody),
-        (status = 404, description = "No such doc in this project and workspace, the doc has no such version (`not_found`), or the version has no such board: an unknown node, a page, a frame, a text (`unknown_board`)", body = ErrorBody),
-        (status = 409, description = "The doc has no mainline version yet, so only its own change set has it (`no_mainline_version`)", body = ErrorBody),
+        (status = 404, description = "No such doc in this project and workspace, the doc has no such version (`not_found`), or the head or version has no such board: an unknown node, a page, a frame, a text (`unknown_board`)", body = ErrorBody),
     )
 )]
 pub async fn read_board_of_version(
@@ -619,24 +618,25 @@ pub async fn read_board_of_version(
     if doc.kind != "design" {
         return Err(ApiError::bad_request("not_a_design"));
     }
-    let version_id = match query.get("version") {
-        Some(version) => parse_uuid(version).ok_or(ApiError::NotFound)?,
-        None => doc
-            .mainline_version_id
-            .clone()
-            .ok_or_else(|| ApiError::conflict("no_mainline_version"))?,
+    let (version_id, chunk) = match query.get("version") {
+        Some(version) => {
+            let version_id = parse_uuid(version).ok_or(ApiError::NotFound)?;
+            let chunk = chunk_of_version(&mut tx, &doc_id, &version_id).await?;
+            (Some(version_id), chunk)
+        }
+        None => (head_version(&mut tx, &doc).await?, doc.head.clone()),
     };
-    let chunk = chunk_of_version(&mut tx, &doc_id, &version_id).await?;
     tx.commit().await.map_err(ApiError::database)?;
     let board = board_id(&board)?;
-    // A version that removes the doc holds no boards.
+    // A version that removes the doc holds no boards, and neither does a doc
+    // with no head.
     let chunk = chunk.ok_or_else(unknown_board)?;
     let (page_id, node) = read_board(&state, &request.workspace_id, &chunk, &board).await?;
     Ok(Json(BoardBody {
         doc_id,
         page_id,
         board_id: board,
-        version_id: Some(version_id),
+        version_id,
         changeset_id: None,
         draft_id: None,
         tags: tags::print(&node),

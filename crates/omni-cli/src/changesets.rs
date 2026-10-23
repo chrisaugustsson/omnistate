@@ -150,10 +150,14 @@ pub(crate) fn resolve_feature(agent: &Agent, project_id: &str, given: &str) -> R
         })
 }
 
-/// The ID of the feature `omni changeset create` works in: `--feature`, else
+/// The ID of the feature `omni changeset create` and `omni doc create` work in: `--feature`, else
 /// the feature of `.omni.toml`, else none (project level). `--global` means
 /// none whatever `.omni.toml` says.
-fn creation_feature(args: &Args, agent: &Agent, project_id: &str) -> Result<Option<String>> {
+pub(crate) fn creation_feature(
+    args: &Args,
+    agent: &Agent,
+    project_id: &str,
+) -> Result<Option<String>> {
     if args.global {
         if args.feature.is_some() {
             bail!("give --feature or --global, not both");

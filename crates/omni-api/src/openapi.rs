@@ -98,6 +98,8 @@ use utoipa::OpenApi;
         crate::attachments::upload,
         crate::attachments::download,
         crate::docs::create_doc,
+        crate::docs::create_app_doc,
+        crate::docs::create_feature_doc,
         crate::docs::list_docs,
         crate::docs::show_doc,
         crate::docs::read_doc_html,
