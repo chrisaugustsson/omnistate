@@ -24,12 +24,15 @@
 //!   non-zero exit that touches nothing.
 //! - The API has no operation that deletes: no DELETE route, nothing named
 //!   delete in the route registry or the OpenAPI document, and the API role has
-//!   no DELETE or TRUNCATE privilege on any tenant table.
+//!   no DELETE or TRUNCATE privilege on any tenant table. The one exception is
+//!   the human's soft delete of a comment (US-106), `DELETE .../comments/
+//!   {comment_id}`: it only sets `deleted_at`, the row stays, and the API role
+//!   still has no DELETE privilege.
 
 mod common;
 
 use common::{TestServer, offline_config};
-use omni_api::routes::registry;
+use omni_api::routes::{Access, registry};
 use s3::creds::Credentials;
 use s3::{Bucket, BucketConfiguration, Region};
 use serde_json::Value;
@@ -1244,16 +1247,36 @@ fn an_unknown_or_malformed_workspace_id_deletes_nothing() {
 
 const DELETE_WORDS: [&str; 4] = ["delete", "purge", "erase", "destroy"];
 
+/// The only paths with a DELETE operation. Each is a soft delete: it sets
+/// `deleted_at` and keeps the row, so it is a human-only UPDATE (US-106).
+const SOFT_DELETE_PATHS: [&str; 1] =
+    ["/api/v1/w/{workspace_id}/projects/{project_id}/comments/{comment_id}"];
+
 #[test]
 fn the_route_registry_has_no_delete_operation() {
+    let soft_deletes: Vec<_> = registry()
+        .into_iter()
+        .filter(|route| route.method.to_uppercase() == "DELETE")
+        .map(|route| (route.path, route.access))
+        .collect();
+    assert_eq!(
+        soft_deletes,
+        SOFT_DELETE_PATHS
+            .iter()
+            .map(|path| (path.to_string(), Access::Human))
+            .collect::<Vec<_>>(),
+        "the only DELETE routes are the human-only soft deletes"
+    );
     for route in registry() {
-        assert_ne!(
-            route.method.to_uppercase(),
-            "DELETE",
-            "{} {} is a DELETE route",
-            route.method,
-            route.path
-        );
+        if !SOFT_DELETE_PATHS.contains(&route.path.as_str()) {
+            assert_ne!(
+                route.method.to_uppercase(),
+                "DELETE",
+                "{} {} is a DELETE route",
+                route.method,
+                route.path
+            );
+        }
         let path = route.path.to_lowercase();
         assert!(
             !DELETE_WORDS.iter().any(|word| path.contains(word)),
@@ -1273,9 +1296,10 @@ fn the_openapi_document_has_no_delete_operation() {
     let paths = document["paths"].as_object().expect("paths");
     assert!(!paths.is_empty());
     for (path, item) in paths {
-        assert!(
-            item.get("delete").is_none(),
-            "{path} has a delete operation in the OpenAPI document"
+        assert_eq!(
+            item.get("delete").is_some(),
+            SOFT_DELETE_PATHS.contains(&path.as_str()),
+            "{path}: only the soft deletes have a delete operation in the OpenAPI document"
         );
         assert!(
             !DELETE_WORDS
@@ -1302,6 +1326,15 @@ fn the_api_answers_the_delete_method_on_no_route() {
             server
                 .client
                 .request("DELETE", &path, &[("Authorization", "Bearer none")], None);
+        if SOFT_DELETE_PATHS.contains(&route.path.as_str()) {
+            // The soft delete exists, but no bad credential gets through it.
+            assert!(
+                response.status == 401 || response.status == 403,
+                "DELETE {path} with a bad credential answered {}",
+                response.status
+            );
+            continue;
+        }
         assert!(
             response.status == 404 || response.status == 405,
             "DELETE {path} answered {}, the API has no deleting operation",
