@@ -1,44 +1,57 @@
-//! US-051: `omni import penpot <file.penpot> --project <id>` against the real
-//! API. Run with `--features stack-tests` in the Compose test container, which
-//! reaches Postgres at `postgres:5432` and RustFS at `rustfs:9000`.
+//! US-051, US-105: `omni import penpot <file.penpot> --project <id> [--feature
+//! <name>]` against the real API. Run with `--features stack-tests` in the
+//! Compose test container, which reaches Postgres at `postgres:5432` and
+//! RustFS at `rustfs:9000`.
 //!
 //! The tests migrate a scratch database, seed a workspace with an API key (the
 //! agent) and a user with a live session (the human), create a scratch RustFS
 //! bucket and serve the API's router on a local port against both. The built
-//! `omni` runs against that address with the key in its config file. The
-//! human's approval is a plain HTTP request with the session cookie, because
-//! the CLI has no command for it. The rules of the import itself are in
-//! crates/omni-penpot/tests/import_synthetic.rs; the export these tests write
-//! follows the same Penpot fields (crates/omni-penpot/tests/common/import.rs).
+//! `omni` runs against that address with the key in its config file. The rules
+//! of the import itself are in crates/omni-penpot/tests/import_synthetic.rs;
+//! the export these tests write follows the same Penpot fields
+//! (crates/omni-penpot/tests/common/import.rs).
 //!
-//! The contract these tests pin down:
+//! The contract these tests pin down (US-105: the import writes the live docs,
+//! as an agent's edits do since US-102..US-104):
 //!
-//! - `omni import penpot <file> --project <id>` imports the export through a
-//!   new change set of the project: the design doc (its pages and boards) and
-//!   the project's design system doc (the tokens, with Penpot's themes Mörkt and
-//!   Ljust as modes, and the components) each get a version in it, and the
-//!   change set is left `open` or `in_review`, to be reviewed and merged like
-//!   any other. Once the human approves it, it merges and both docs have a
-//!   mainline version.
-//! - With `--json` it prints one JSON object with `changeset_id`,
-//!   `design_doc_id`, `design_system_doc_id` and `report`, the list of what
-//!   could not be imported, each entry with `page`, `board`, `shape_id`,
-//!   `name` and `reason`. Without `--json` it prints the change set's ID.
+//! - `omni import penpot <file> --project <id>` writes the export straight into
+//!   the project, with no change set: the project has no change set after it.
+//!   The design doc (kind `design`, pillar `ui`, at the app level) holds the
+//!   pages and boards in its head, and the project's design system doc (kind
+//!   `design-system`, pillar `ui`, always at the app level) holds the tokens,
+//!   with Penpot's themes Mörkt and Ljust as modes, and the components in its
+//!   head. Both read back at once: `GET /docs/{id}/html` of the design answers
+//!   its pages and the components its copies place, every board of it reads
+//!   with `GET /docs/{id}/boards/{board}`, `GET /tokens` answers the design
+//!   system's tokens, and the design system's head read (`GET
+//!   /docs/{id}/html`) answers its head text, the token tree with the
+//!   components under `$components` (docs/formats/tokens.md).
+//! - With `--json` it prints one JSON object with `design_doc_id`,
+//!   `design_system_doc_id` and `report`, the list of what could not be
+//!   imported, each entry with `page`, `board`, `shape_id`, `name` and
+//!   `reason`, and no `changeset_id`. Without `--json` it prints the design
+//!   doc's ID.
 //! - The images of the export are uploaded as workspace attachments, and the
 //!   design refers to them as `attachment:<id>`.
 //! - A file that is not a Penpot export fails with one line on standard error
-//!   that names the file, and leaves no change set behind.
-//! - An import into a project whose design system doc already has a mainline
-//!   version (a second import, after the first merged) adds its tokens and
-//!   components to that design system and keeps the ones it already has.
+//!   that names the file, and leaves no doc and no change set behind.
+//! - An import into a project that already has a design system (one an earlier
+//!   import wrote, or one an agent made with `PUT /tokens` and `PUT
+//!   /components`) writes into that same doc: its tokens and components stay,
+//!   with the IDs they had, the export's are added, and a token of the same
+//!   path takes the export's value.
+//! - With `--feature <name>` the design doc lands in that feature's UI pillar,
+//!   and the tokens and components land in the project's app-level design
+//!   system.
 //! - The fonts its texts use, when their files sit beside the export in
 //!   `fonts/<family>/` (US-057), are uploaded as workspace attachments too, and
 //!   the design system's typography tokens of that family list them as
 //!   `attachment:<id>` in `$extensions.omnistate.fontFiles`, where the design
 //!   viewer finds them.
-//! - fixtures/penpot/tirebud-ordrar.penpot, the export with components,
-//!   variants and swaps, imports through the API with every page, board,
-//!   component, copy and override that the converter makes of it, and merges.
+//! - fixtures/penpot/tirebud-idag.penpot imports into an empty project and
+//!   every one of its boards reads back; fixtures/penpot/tirebud-ordrar.penpot,
+//!   the export with components, variants and swaps, imports with every page,
+//!   board, component, copy and override that the converter makes of it.
 
 mod common;
 
@@ -319,13 +332,16 @@ fn request(f: &Fixture, method: &str, path: &str, auth: &str, body: Option<&Valu
     }
 }
 
-/// One request with the human's session cookie.
-fn as_human(f: &Fixture, method: &str, path: &str, body: &Value) -> Fetched {
+/// One request with the agent's key and `body` as JSON.
+fn as_agent(f: &Fixture, method: &str, path: &str, body: &Value) -> Fetched {
     request(
         f,
         method,
         path,
-        &format!("Cookie: omni_session={HUMAN_TOKEN}"),
+        &format!(
+            "Authorization: Bearer {}\r\nX-Omni-Run: run-51\r\nX-Omni-Role: importer",
+            f.secret
+        ),
         Some(body),
     )
 }
@@ -1007,24 +1023,22 @@ fn crc32(data: &[u8]) -> u32 {
 /// What `omni import penpot --json` printed.
 struct Imported {
     project: String,
-    changeset: String,
     design_doc: String,
     design_system_doc: String,
     answer: Value,
 }
 
-fn import(home: &Scratch, project: &str, file: &Path) -> Imported {
-    let out = run(
-        home,
-        &[
-            "import",
-            "penpot",
-            file.to_str().expect("a path"),
-            "--project",
-            project,
-            "--json",
-        ],
-    );
+fn import_with(home: &Scratch, project: &str, file: &Path, extra: &[&str]) -> Imported {
+    let mut args = vec![
+        "import",
+        "penpot",
+        file.to_str().expect("a path"),
+        "--project",
+        project,
+        "--json",
+    ];
+    args.extend_from_slice(extra);
+    let out = run(home, &args);
     let answer = json_of(&out, "omni import penpot");
     let text = |key: &str| {
         answer[key]
@@ -1034,46 +1048,70 @@ fn import(home: &Scratch, project: &str, file: &Path) -> Imported {
     };
     Imported {
         project: project.to_string(),
-        changeset: text("changeset_id"),
         design_doc: text("design_doc_id"),
         design_system_doc: text("design_system_doc_id"),
         answer,
     }
 }
 
-fn status(home: &Scratch, imported: &Imported) -> String {
-    let shown = json_of(
-        &run(
-            home,
-            &[
-                "changeset",
-                "show",
-                &imported.changeset,
-                "--project",
-                &imported.project,
-                "--json",
-            ],
-        ),
-        "changeset show",
-    );
-    shown["changeset"]["status"]
-        .as_str()
-        .expect("a status")
-        .to_string()
+fn import(home: &Scratch, project: &str, file: &Path) -> Imported {
+    import_with(home, project, file, &[])
 }
 
-/// The change set's draft of the design doc: its pages and the components
-/// its instances use.
-fn design_draft(f: &Fixture, home: &Scratch, imported: &Imported) -> Value {
-    get(
-        f,
-        home,
-        &imported.project,
-        &format!(
-            "/changesets/{}/docs/{}",
-            imported.changeset, imported.design_doc
-        ),
-    )["draft"]
+/// The IDs of the project's change sets.
+fn changesets(home: &Scratch, project: &str) -> Vec<String> {
+    let listed = json_of(
+        &run(home, &["changeset", "list", "--project", project, "--json"]),
+        "changeset list",
+    );
+    listed["changesets"]
+        .as_array()
+        .unwrap_or_else(|| panic!("change sets: {listed}"))
+        .iter()
+        .filter_map(|changeset| changeset["id"].as_str().map(str::to_string))
+        .collect()
+}
+
+/// Checks that the import wrote the live docs: no change set in the project,
+/// and none named in the answer.
+fn assert_no_change_set(home: &Scratch, imported: &Imported) {
+    assert!(
+        imported
+            .answer
+            .get("changeset_id")
+            .is_none_or(Value::is_null),
+        "the import names no change set: {}",
+        imported.answer
+    );
+    assert_eq!(
+        changesets(home, &imported.project),
+        Vec::<String>::new(),
+        "the import leaves no change set in the project"
+    );
+}
+
+/// The doc's record: `GET /docs/{doc}`.
+fn doc_of(f: &Fixture, home: &Scratch, project: &str, doc: &str) -> Value {
+    get(f, home, project, &format!("/docs/{doc}"))["doc"].clone()
+}
+
+/// The head read of a doc: `GET /docs/{doc}/html`.
+fn head(f: &Fixture, home: &Scratch, project: &str, doc: &str) -> Value {
+    get(f, home, project, &format!("/docs/{doc}/html"))
+}
+
+/// The components of the design system's head: its head text holds the token
+/// tree with the components under `$components` (docs/formats/tokens.md).
+fn system_components(f: &Fixture, home: &Scratch, imported: &Imported) -> Vec<Value> {
+    let read = head(f, home, &imported.project, &imported.design_system_doc);
+    let text = read["html"]
+        .as_str()
+        .unwrap_or_else(|| panic!("the design system's head read has its text: {read}"));
+    let json: Value = serde_json::from_str(text)
+        .unwrap_or_else(|e| panic!("the design system's head is JSON ({e}): {text:?}"));
+    json["$components"]
+        .as_array()
+        .unwrap_or_else(|| panic!("the design system's head lists its components: {json}"))
         .clone()
 }
 
@@ -1104,6 +1142,29 @@ fn board_names(page: &Value) -> Vec<&str> {
         .collect()
 }
 
+/// Reads every board of every page of the design's head with `GET
+/// /docs/{doc}/boards/{board}`; returns how many it read.
+fn read_every_board(f: &Fixture, home: &Scratch, project: &str, doc: &str, pages: &Value) -> usize {
+    let mut read = 0;
+    for page in pages.as_array().expect("pages") {
+        let page_id = page["id"].as_str().expect("a page id");
+        for board in page["children"].as_array().into_iter().flatten() {
+            let id = board["id"].as_str().expect("a board id");
+            let answer = get(f, home, project, &format!("/docs/{doc}/boards/{id}"));
+            assert_eq!(answer["board_id"], id, "{answer}");
+            assert_eq!(answer["page_id"], page_id, "{answer}");
+            let tags = answer["tags"].as_str().unwrap_or("");
+            assert!(
+                tags.starts_with("<Board") && tags.contains(&format!("id=\"{id}\"")),
+                "the board {} reads in the tag format: {tags:?}",
+                board["name"]
+            );
+            read += 1;
+        }
+    }
+    read
+}
+
 /// Every `attachment:<id>` that a JSON value mentions.
 fn attachment_ids(value: &Value, found: &mut Vec<String>) {
     match value {
@@ -1122,126 +1183,96 @@ fn lowercase(value: &Value) -> String {
     value.as_str().unwrap_or("").to_lowercase()
 }
 
+/// The values of the token at `path` in each mode of a token tree.
+fn token_modes<'a>(tokens: &'a Value, path: &[&str]) -> &'a Value {
+    let mut token = &tokens["tokens"];
+    for part in path {
+        token = &token[*part];
+    }
+    &token["$extensions"]["omnistate"]["modes"]
+}
+
+/// The IDs of the components named `name`, sorted.
+fn ids_named(components: &[Value], name: &str) -> Vec<String> {
+    let mut ids: Vec<String> = components
+        .iter()
+        .filter(|component| component["name"] == name)
+        .filter_map(|component| component["id"].as_str().map(str::to_string))
+        .collect();
+    ids.sort();
+    ids
+}
+
 #[test]
-fn import_penpot_puts_the_design_and_its_design_system_into_one_change_set() {
+fn import_penpot_writes_the_design_and_its_design_system_with_no_change_set() {
     let f = fixture();
     let home = agent_home(f);
     let project = new_project(&home);
     let imported = import(&home, &project, &write_export(&home));
-    assert!(
-        ["open", "in_review"].contains(&status(&home, &imported).as_str()),
-        "the import waits for review"
+    assert_no_change_set(&home, &imported);
+
+    let design = doc_of(f, &home, &project, &imported.design_doc);
+    assert_eq!(
+        (&design["kind"], &design["pillar"], &design["feature_id"]),
+        (&json!("design"), &json!("ui"), &Value::Null),
+        "a design doc of the app level's UI pillar: {design}"
+    );
+    let system = doc_of(f, &home, &project, &imported.design_system_doc);
+    assert_eq!(
+        (&system["kind"], &system["pillar"], &system["feature_id"]),
+        (&json!("design-system"), &json!("ui"), &Value::Null),
+        "the project's design system: {system}"
     );
 
-    let tokens = get(
-        f,
-        &home,
-        &project,
-        &format!("/changesets/{}/tokens", imported.changeset),
-    );
+    let tokens = get(f, &home, &project, "/tokens");
     assert_eq!(
         tokens["doc_id"],
         imported.design_system_doc.as_str(),
         "{tokens}"
     );
     assert_eq!(tokens["modes"], json!(["Mörkt", "Ljust"]), "{tokens}");
-    let surface = &tokens["tokens"]["color"]["surface"]["$extensions"]["omnistate"]["modes"];
+    let surface = token_modes(&tokens, &["color", "surface"]);
     assert_eq!(lowercase(&surface["Mörkt"]), "#1c1c21", "{tokens}");
     assert_eq!(lowercase(&surface["Ljust"]), "#ffffff", "{tokens}");
 
-    let draft = design_draft(f, &home, &imported);
-    let start = page(&draft["pages"], "Start");
+    let read = head(f, &home, &project, &imported.design_doc);
+    let start = page(&read["pages"], "Start");
     assert_eq!(board_names(start), ["Hem", "Unplaced"], "{start}");
-    assert_eq!(
-        board_names(page(&draft["pages"], "Komponenter")),
-        ["Märken"]
-    );
+    assert_eq!(board_names(page(&read["pages"], "Komponenter")), ["Märken"]);
     let hem = find(start, "Hem").expect("the board Hem");
     assert_eq!(hem["fills"][0]["color"], "$color.surface", "{hem}");
     assert_eq!(find(hem, "Rubrik").expect("Rubrik")["color"], "$color.text");
     let badge = find(hem, "Märke").expect("the copy Märke");
     assert_eq!(badge["type"], "instance", "{badge}");
     let component = badge["component"].as_str().expect("a component");
-    let components = draft["components"]
+    let used = read["components"]
         .as_array()
-        .expect("the components it uses");
+        .unwrap_or_else(|| panic!("the head read lists the components it uses: {read}"));
     assert!(
-        components
-            .iter()
+        used.iter()
             .any(|known| known["id"] == component && known["name"] == "Badge"),
-        "{badge} places a Badge of the design system: {components:?}"
+        "{badge} places a Badge of the design system: {used:?}"
     );
     let overrides = badge["overrides"].as_object().expect("overrides");
     assert!(
         overrides.values().any(|change| change["content"] == "Ny"),
         "the text of the copy: {badge}"
     );
-}
-
-#[test]
-fn the_import_is_reviewed_and_merged_like_any_other_change() {
-    let f = fixture();
-    let home = agent_home(f);
-    let project = new_project(&home);
-    let imported = import(&home, &project, &write_export(&home));
-    if status(&home, &imported) == "open" {
-        let submitted = run(
-            &home,
-            &[
-                "changeset",
-                "submit",
-                &imported.changeset,
-                "--project",
-                &project,
-            ],
-        );
-        assert_eq!(submitted.code, 0, "submit: {}", submitted.stderr);
-    }
-    assert_eq!(status(&home, &imported), "in_review");
-    let approved = as_human(
-        f,
-        "POST",
-        &format!(
-            "/api/v1/w/{}/projects/{project}/changesets/{}/approve",
-            f.workspace, imported.changeset
-        ),
-        &json!({}),
-    );
+    let components = system_components(f, &home, &imported);
     assert_eq!(
-        approved.status,
-        200,
-        "the human approves: {:?}",
-        String::from_utf8_lossy(&approved.body)
-    );
-    assert_eq!(status(&home, &imported), "merged", "{}", approved.json());
-
-    let tokens = get(f, &home, &project, "/tokens");
-    assert!(tokens["version_id"].is_string(), "{tokens}");
-    assert_eq!(tokens["modes"], json!(["Mörkt", "Ljust"]), "{tokens}");
-    let doc = get(
-        f,
-        &home,
-        &project,
-        &format!("/docs/{}", imported.design_doc),
-    );
-    let version = doc["doc"]["mainline_version_id"]
-        .as_str()
-        .unwrap_or_else(|| panic!("the design doc has a mainline version: {doc}"));
-    let version = &get(f, &home, &project, &format!("/versions/{version}"))["version"];
-    assert!(version["design_system_version_id"].is_string(), "{version}");
-    assert_eq!(
-        board_names(page(&version["pages"], "Start")),
-        ["Hem", "Unplaced"]
-    );
-    let system = get(
-        f,
-        &home,
-        &project,
-        &format!("/docs/{}", imported.design_system_doc),
+        ids_named(&components, "Badge").len(),
+        2,
+        "both Badge variants are in the design system's head: {components:?}"
     );
     assert!(
-        system["doc"]["mainline_version_id"].is_string(),
-        "the design system doc has a mainline version: {system}"
+        ids_named(&components, "Badge").contains(&component.to_string()),
+        "the copy places a component of the design system's head"
+    );
+
+    assert_eq!(
+        read_every_board(f, &home, &project, &imported.design_doc, &read["pages"]),
+        3,
+        "Märken, Hem and Unplaced read back"
     );
 }
 
@@ -1251,8 +1282,8 @@ fn images_of_the_export_become_workspace_attachments() {
     let home = agent_home(f);
     let project = new_project(&home);
     let imported = import(&home, &project, &write_export(&home));
-    let draft = design_draft(f, &home, &imported);
-    let picture = find(page(&draft["pages"], "Start"), "Bild").expect("the image Bild");
+    let read = head(f, &home, &project, &imported.design_doc);
+    let picture = find(page(&read["pages"], "Start"), "Bild").expect("the image Bild");
     let mut ids = Vec::new();
     attachment_ids(picture, &mut ids);
     assert_eq!(ids.len(), 1, "{picture}");
@@ -1288,7 +1319,8 @@ fn what_cannot_be_imported_is_listed_in_the_report() {
         "the boolean shape Union: {report:?}"
     );
 
-    // Without --json it prints the change set to review.
+    // Without --json it prints the design doc it wrote.
+    let other = new_project(&home);
     let out = run(
         &home,
         &[
@@ -1296,30 +1328,25 @@ fn what_cannot_be_imported_is_listed_in_the_report() {
             "penpot",
             write_export(&home).to_str().unwrap(),
             "--project",
-            &project,
+            &other,
         ],
     );
     assert_eq!(out.code, 0, "{}", out.stderr);
-    let listed = json_of(
-        &run(
-            &home,
-            &["changeset", "list", "--project", &project, "--json"],
-        ),
-        "changeset list",
-    );
-    let ids: Vec<&str> = listed["changesets"]
+    let listed = get(f, &home, &other, "/docs");
+    let designs: Vec<&str> = listed["docs"]
         .as_array()
-        .expect("change sets")
+        .expect("docs")
         .iter()
-        .filter_map(|changeset| changeset["id"].as_str())
-        .filter(|id| *id != imported.changeset)
+        .filter(|doc| doc["kind"] == "design")
+        .filter_map(|doc| doc["id"].as_str())
         .collect();
-    assert_eq!(ids.len(), 1, "a second change set: {listed}");
-    assert!(out.stdout.contains(ids[0]), "{:?}", out.stdout);
+    assert_eq!(designs.len(), 1, "one design doc: {listed}");
+    assert!(out.stdout.contains(designs[0]), "{:?}", out.stdout);
+    assert_eq!(changesets(&home, &other), Vec::<String>::new());
 }
 
 #[test]
-fn a_file_that_is_no_penpot_export_leaves_no_change_set() {
+fn a_file_that_is_no_penpot_export_leaves_no_doc_and_no_change_set() {
     let f = fixture();
     let home = agent_home(f);
     let project = new_project(&home);
@@ -1340,18 +1367,13 @@ fn a_file_that_is_no_penpot_export_leaves_no_change_set() {
     let lines = out.stderr_lines();
     assert_eq!(lines.len(), 1, "{:?}", out.stderr);
     assert!(lines[0].contains("anteckning.penpot"), "{:?}", lines[0]);
-    let listed = json_of(
-        &run(
-            &home,
-            &["changeset", "list", "--project", &project, "--json"],
-        ),
-        "changeset list",
-    );
-    assert_eq!(listed["changesets"], json!([]), "{listed}");
+    let listed = get(f, &home, &project, "/docs");
+    assert_eq!(listed["docs"], json!([]), "{listed}");
+    assert_eq!(changesets(&home, &project), Vec::<String>::new());
 }
 
 #[test]
-fn the_tirebud_idag_export_imports() {
+fn the_tirebud_idag_export_imports_into_an_empty_project_and_every_board_reads() {
     let path =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/penpot/tirebud-idag.penpot");
     if !path.is_file() {
@@ -1362,96 +1384,52 @@ fn the_tirebud_idag_export_imports() {
     let home = agent_home(f);
     let project = new_project(&home);
     let imported = import(&home, &project, &path);
-    let tokens = get(
-        f,
-        &home,
-        &project,
-        &format!("/changesets/{}/tokens", imported.changeset),
-    );
+    assert_no_change_set(&home, &imported);
+    let system = doc_of(f, &home, &project, &imported.design_system_doc);
+    assert_eq!(system["kind"], "design-system", "{system}");
+    let tokens = get(f, &home, &project, "/tokens");
+    assert_eq!(tokens["doc_id"], imported.design_system_doc.as_str());
     assert_eq!(tokens["modes"], json!(["Mörkt", "Ljust"]));
-    let draft = design_draft(f, &home, &imported);
-    let boards = board_names(page(&draft["pages"], "Idag"));
+
+    let read = head(f, &home, &project, &imported.design_doc);
+    let boards = board_names(page(&read["pages"], "Idag"));
     assert_eq!(boards.len(), 16, "15 boards and Unplaced: {boards:?}");
     for name in ["Idag / Dag / Desktop", "Idag / Dag / Telefon", "Unplaced"] {
         assert!(boards.contains(&name), "{name} in {boards:?}");
     }
-}
-
-/// Submits the imported change set if it is still open, has the human approve
-/// it and checks that it merged.
-fn merge(f: &Fixture, home: &Scratch, imported: &Imported) {
-    if status(home, imported) == "open" {
-        let submitted = run(
-            home,
-            &[
-                "changeset",
-                "submit",
-                &imported.changeset,
-                "--project",
-                &imported.project,
-            ],
-        );
-        assert_eq!(submitted.code, 0, "submit: {}", submitted.stderr);
-    }
-    let approved = as_human(
-        f,
-        "POST",
-        &format!(
-            "/api/v1/w/{}/projects/{}/changesets/{}/approve",
-            f.workspace, imported.project, imported.changeset
-        ),
-        &json!({}),
-    );
+    // The converter's pages, to compare the head with.
+    let library = omni_penpot::import::import_file(&path).expect("the converter reads idag");
+    let expected: usize = library.pages.iter().map(|page| page.children().len()).sum();
     assert_eq!(
-        approved.status,
-        200,
-        "the human approves: {:?}",
-        String::from_utf8_lossy(&approved.body)
+        read_every_board(f, &home, &project, &imported.design_doc, &read["pages"]),
+        expected,
+        "every board of the export reads back"
     );
-    assert_eq!(status(home, imported), "merged", "{}", approved.json());
-}
-
-/// The components of the design system version that the import saved.
-fn saved_components(f: &Fixture, home: &Scratch, imported: &Imported) -> Vec<Value> {
-    let version = imported.answer["design_system_version_id"]
-        .as_str()
-        .unwrap_or_else(|| panic!("the import saved the design system: {}", imported.answer));
-    get(f, home, &imported.project, &format!("/versions/{version}"))["version"]["components"]
-        .as_array()
-        .unwrap_or_else(|| panic!("the version {version} lists its components"))
-        .clone()
-}
-
-/// The values of the token at `path` in each mode of a token tree.
-fn token_modes<'a>(tokens: &'a Value, path: &[&str]) -> &'a Value {
-    let mut token = &tokens["tokens"];
-    for part in path {
-        token = &token[*part];
-    }
-    &token["$extensions"]["omnistate"]["modes"]
 }
 
 #[test]
-fn a_second_import_keeps_the_design_system_that_the_project_has() {
+fn a_second_import_merges_into_the_design_system_of_the_first() {
     let f = fixture();
     let home = agent_home(f);
     let project = new_project(&home);
     let first = import(&home, &project, &write_export(&home));
-    merge(f, &home, &first);
+    let badges = ids_named(&system_components(f, &home, &first), "Badge");
+    assert_eq!(badges.len(), 2, "the first import's Badge variants");
 
-    // The design system doc now has a mainline version; the second import adds
-    // to it and takes nothing of it away.
+    // The project has a design system now; the second import adds to it and
+    // takes nothing of it away.
     let second = import(&home, &project, &write_kassa_export(&home));
+    assert_no_change_set(&home, &second);
     assert_eq!(
         second.design_system_doc, first.design_system_doc,
         "a project has one design system doc"
     );
-    let tokens = get(
-        f,
-        &home,
-        &project,
-        &format!("/changesets/{}/tokens", second.changeset),
+    assert_ne!(
+        second.design_doc, first.design_doc,
+        "another file is another design"
     );
+    let tokens = get(f, &home, &project, "/tokens");
+    assert_eq!(tokens["doc_id"], first.design_system_doc.as_str());
     assert_eq!(tokens["modes"], json!(["Mörkt", "Ljust"]), "{tokens}");
     let kept = token_modes(&tokens, &["color", "text"]);
     assert_eq!(
@@ -1465,22 +1443,22 @@ fn a_second_import_keeps_the_design_system_that_the_project_has() {
         ("#3f3f46".to_string(), "#e4e4e7".to_string()),
         "the token color.border of the second import: {tokens}"
     );
-
-    let components = saved_components(f, &home, &second);
-    let named = |name: &str| {
-        components
-            .iter()
-            .filter(|component| component["name"] == name)
-            .count()
-    };
-    assert_eq!(
-        (named("Badge"), named("Knapp")),
-        (2, 1),
-        "the two Badge variants of the first import stay beside Knapp: {components:?}"
+    assert!(
+        token_modes(&tokens, &["color", "surface"])["Ljust"].is_string(),
+        "{tokens}"
     );
 
-    let draft = design_draft(f, &home, &second);
-    let kassa = page(&draft["pages"], "Kassa");
+    let components = system_components(f, &home, &second);
+    assert_eq!(
+        ids_named(&components, "Badge"),
+        badges,
+        "the two Badge variants of the first import stay, with their IDs: {components:?}"
+    );
+    let knapp = ids_named(&components, "Knapp");
+    assert_eq!(knapp.len(), 1, "Knapp is added: {components:?}");
+
+    let read = head(f, &home, &project, &second.design_doc);
+    let kassa = page(&read["pages"], "Kassa");
     // The page is named Kassa too, so look the board up among its children.
     let board = kassa["children"]
         .as_array()
@@ -1489,45 +1467,169 @@ fn a_second_import_keeps_the_design_system_that_the_project_has() {
     assert_eq!(board["fills"][0]["color"], "$color.border", "{board}");
     let copy = find(board, "Köpknapp").expect("the copy Köpknapp");
     assert_eq!(copy["type"], "instance", "{copy}");
+    assert_eq!(copy["component"], knapp[0].as_str(), "{copy} places Knapp");
+
+    // The first design still resolves its copy against the design system.
+    let first_read = head(f, &home, &project, &first.design_doc);
+    let badge = find(page(&first_read["pages"], "Start"), "Märke").expect("the copy Märke");
+    let component = badge["component"].as_str().expect("a component");
+    assert!(badges.contains(&component.to_string()), "{badge}");
     assert!(
-        components
-            .iter()
-            .any(|known| known["id"] == copy["component"] && known["name"] == "Knapp"),
-        "{copy} places Knapp: {components:?}"
+        first_read["components"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|known| known["id"] == component && known["name"] == "Badge"),
+        "{first_read}"
+    );
+}
+
+/// A Button component in the tag format, filled with the token `color.brand`.
+const BUTTON: &str = "<Component name=\"Button\" dir=\"row\" pad={8} fill=\"$color.brand\">\n  <Text name=\"Button label\" content=\"Köp\" fontFamily=\"Inter\" fontSize={14}/>\n</Component>";
+
+#[test]
+fn an_import_merges_into_a_design_system_that_an_agent_made() {
+    let f = fixture();
+    let home = agent_home(f);
+    let project = new_project(&home);
+    let base = format!("/api/v1/w/{}/projects/{project}", f.workspace);
+    let created = as_agent(
+        f,
+        "POST",
+        &format!("{base}/docs"),
+        &json!({ "kind": "design-system", "pillar": "ui", "title": "Designsystem" }),
+    );
+    assert_eq!(
+        created.status,
+        201,
+        "create the design system: {:?}",
+        String::from_utf8_lossy(&created.body)
+    );
+    let system = created.json()["doc"]["id"]
+        .as_str()
+        .expect("the design system's ID")
+        .to_string();
+    let tree = json!({
+        "$extensions": { "omnistate": { "modes": ["Mörkt", "Ljust"] } },
+        "color": {
+            "$type": "color",
+            "brand": {
+                "$value": "#01B597",
+                "$extensions": { "omnistate": { "modes": { "Mörkt": "#01B597", "Ljust": "#00897B" } } }
+            }
+        }
+    });
+    let tokens = as_agent(
+        f,
+        "PUT",
+        &format!("{base}/tokens"),
+        &json!({ "tokens": tree }),
+    );
+    assert_eq!(
+        tokens.status,
+        200,
+        "put the tokens: {:?}",
+        String::from_utf8_lossy(&tokens.body)
+    );
+    let put = as_agent(
+        f,
+        "PUT",
+        &format!("{base}/components"),
+        &json!({ "tags": BUTTON }),
+    );
+    assert_eq!(
+        put.status,
+        200,
+        "put the components: {:?}",
+        String::from_utf8_lossy(&put.body)
+    );
+    let button = put.json()["components"][0]["id"]
+        .as_str()
+        .expect("the Button's ID")
+        .to_string();
+
+    let imported = import(&home, &project, &write_export(&home));
+    assert_no_change_set(&home, &imported);
+    assert_eq!(
+        imported.design_system_doc, system,
+        "the import writes into the project's design system"
+    );
+    let tokens = get(f, &home, &project, "/tokens");
+    assert_eq!(tokens["doc_id"], system.as_str(), "{tokens}");
+    let brand = token_modes(&tokens, &["color", "brand"]);
+    assert_eq!(
+        (lowercase(&brand["Mörkt"]), lowercase(&brand["Ljust"])),
+        ("#01b597".to_string(), "#00897b".to_string()),
+        "the agent's token color.brand stays: {tokens}"
+    );
+    let surface = token_modes(&tokens, &["color", "surface"]);
+    assert_eq!(
+        (lowercase(&surface["Mörkt"]), lowercase(&surface["Ljust"])),
+        ("#1c1c21".to_string(), "#ffffff".to_string()),
+        "the export's token color.surface is added: {tokens}"
+    );
+    let components = system_components(f, &home, &imported);
+    assert_eq!(
+        ids_named(&components, "Button"),
+        [button],
+        "the agent's Button stays with its ID: {components:?}"
+    );
+    assert_eq!(
+        ids_named(&components, "Badge").len(),
+        2,
+        "the export's Badge variants are added: {components:?}"
+    );
+}
+
+#[test]
+fn with_feature_the_design_lands_in_the_feature_and_the_design_system_at_the_app_level() {
+    let f = fixture();
+    let home = agent_home(f);
+    let project = new_project(&home);
+    let name = unique("Kassaflöde");
+    let created = json_of(
+        &run(
+            &home,
+            &["feature", "create", &name, "--project", &project, "--json"],
+        ),
+        "feature create",
+    );
+    let feature = created["feature"]["id"]
+        .as_str()
+        .expect("a feature id")
+        .to_string();
+
+    let imported = import_with(&home, &project, &write_export(&home), &["--feature", &name]);
+    assert_no_change_set(&home, &imported);
+    let design = doc_of(f, &home, &project, &imported.design_doc);
+    assert_eq!(
+        (&design["kind"], &design["pillar"], &design["feature_id"]),
+        (&json!("design"), &json!("ui"), &json!(feature)),
+        "the design is in the feature's UI pillar: {design}"
+    );
+    let system = doc_of(f, &home, &project, &imported.design_system_doc);
+    assert_eq!(
+        (&system["kind"], &system["pillar"], &system["feature_id"]),
+        (&json!("design-system"), &json!("ui"), &Value::Null),
+        "the design system is the app level's: {system}"
     );
 
-    merge(f, &home, &second);
-    let mainline = get(f, &home, &project, "/tokens");
-    for path in [["color", "text"], ["color", "border"], ["color", "surface"]] {
-        assert!(
-            token_modes(&mainline, &path)["Ljust"].is_string(),
-            "{path:?} is on the mainline: {mainline}"
-        );
-    }
-    let system = get(
-        f,
-        &home,
-        &project,
-        &format!("/docs/{}", first.design_system_doc),
+    let tokens = get(f, &home, &project, "/tokens");
+    assert_eq!(tokens["doc_id"], imported.design_system_doc.as_str());
+    assert_eq!(tokens["modes"], json!(["Mörkt", "Ljust"]), "{tokens}");
+    let badges = ids_named(&system_components(f, &home, &imported), "Badge");
+    assert_eq!(badges.len(), 2, "the components are in the design system");
+
+    let read = head(f, &home, &project, &imported.design_doc);
+    let badge = find(page(&read["pages"], "Start"), "Märke").expect("the copy Märke");
+    assert_eq!(badge["type"], "instance", "{badge}");
+    assert!(
+        badges.contains(&badge["component"].as_str().unwrap_or("").to_string()),
+        "the feature's design places a component of the app level's design system: {badge}"
     );
-    let version = system["doc"]["mainline_version_id"]
-        .as_str()
-        .unwrap_or_else(|| panic!("the design system has a mainline version: {system}"));
-    let on_mainline =
-        &get(f, &home, &project, &format!("/versions/{version}"))["version"]["components"];
-    let names: Vec<&str> = on_mainline
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|component| component["name"].as_str())
-        .collect();
     assert_eq!(
-        (
-            names.iter().filter(|name| **name == "Badge").count(),
-            names.iter().filter(|name| **name == "Knapp").count()
-        ),
-        (2, 1),
-        "the merged design system: {names:?}"
+        read_every_board(f, &home, &project, &imported.design_doc, &read["pages"]),
+        3
     );
 }
 
@@ -1561,14 +1663,14 @@ fn overrides_of(instances: &[&Value]) -> (std::collections::BTreeSet<String>, us
 }
 
 #[test]
-fn the_tirebud_ordrar_export_imports_with_its_components_and_merges() {
+fn the_tirebud_ordrar_export_imports_with_its_components() {
     let path =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/penpot/tirebud-ordrar.penpot");
     if !path.is_file() {
         eprintln!("SKIPPED: fixtures/penpot/tirebud-ordrar.penpot is not there");
         return;
     }
-    // What the converter makes of the export, to compare the API's drafts with.
+    // What the converter makes of the export, to compare the API's heads with.
     let library = omni_penpot::import::import_file(&path).expect("the converter reads ordrar");
     let library_pages: Vec<Value> = library
         .pages
@@ -1593,21 +1695,17 @@ fn the_tirebud_ordrar_export_imports_with_its_components_and_merges() {
     let home = agent_home(f);
     let project = new_project(&home);
     let imported = import(&home, &project, &path);
+    assert_no_change_set(&home, &imported);
     let report = imported.answer["report"].as_array().expect("a report");
     assert_eq!(
         report.len(),
         library.report.len(),
         "the report lists all the converter leaves out"
     );
-    let tokens = get(
-        f,
-        &home,
-        &project,
-        &format!("/changesets/{}/tokens", imported.changeset),
-    );
+    let tokens = get(f, &home, &project, "/tokens");
     assert_eq!(tokens["modes"], json!(["Mörkt", "Ljust"]));
 
-    let components = saved_components(f, &home, &imported);
+    let components = system_components(f, &home, &imported);
     assert_eq!(
         components.len(),
         library.component_count(),
@@ -1636,8 +1734,8 @@ fn the_tirebud_ordrar_export_imports_with_its_components_and_merges() {
         .filter_map(|component| component["id"].as_str())
         .collect();
 
-    let draft = design_draft(f, &home, &imported);
-    let pages = draft["pages"].as_array().expect("pages");
+    let read = head(f, &home, &project, &imported.design_doc);
+    let pages = read["pages"].as_array().expect("pages");
     assert_eq!(
         pages
             .iter()
@@ -1678,19 +1776,6 @@ fn the_tirebud_ordrar_export_imports_with_its_components_and_merges() {
             }
         }
     }
-
-    merge(f, &home, &imported);
-    let doc = get(
-        f,
-        &home,
-        &project,
-        &format!("/docs/{}", imported.design_doc),
-    );
-    let version = doc["doc"]["mainline_version_id"]
-        .as_str()
-        .unwrap_or_else(|| panic!("the design doc has a mainline version: {doc}"));
-    let version = &get(f, &home, &project, &format!("/versions/{version}"))["version"];
-    assert!(version["design_system_version_id"].is_string(), "{version}");
 }
 
 #[test]
@@ -1698,13 +1783,8 @@ fn fonts_beside_the_export_become_font_files_of_its_typography_tokens() {
     let f = fixture();
     let home = agent_home(f);
     let project = new_project(&home);
-    let imported = import(&home, &project, &write_font_export(&home));
-    let tokens = get(
-        f,
-        &home,
-        &project,
-        &format!("/changesets/{}/tokens", imported.changeset),
-    );
+    import(&home, &project, &write_font_export(&home));
+    let tokens = get(f, &home, &project, "/tokens");
     let mut typographies = Vec::new();
     typographies_in(&tokens["tokens"], &mut typographies);
     let geist: Vec<&Value> = typographies

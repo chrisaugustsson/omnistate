@@ -1,11 +1,12 @@
-//! US-051: `omni import penpot <file.penpot> --project <id>`, tested as the
-//! built binary against a mock HTTP server. The import against the real API is
-//! in tests/stack_import_penpot.rs, and the rules of the import in
-//! crates/omni-penpot/tests/import_synthetic.rs.
+//! US-051, US-105: `omni import penpot <file.penpot> --project <id> [--feature
+//! <name>]`, tested as the built binary against a mock HTTP server. The import
+//! against the real API is in tests/stack_import_penpot.rs, and the rules of
+//! the import in crates/omni-penpot/tests/import_synthetic.rs.
 //!
 //! The contract these tests pin down:
 //!
-//! - `omni --help` lists `omni import penpot` with its `--project`.
+//! - `omni --help` lists `omni import penpot` with its `--project` and its
+//!   `--feature` (US-105).
 //! - The export is read before anything is sent: a file that is missing, or
 //!   that is not a Penpot export, is a one-line error that names the file and
 //!   sends nothing, so it leaves no change set behind. A missing file argument
@@ -84,6 +85,7 @@ fn help_lists_import_penpot() {
         .find(|line| line.contains("omni import penpot"))
         .unwrap_or_else(|| panic!("omni --help lists omni import penpot: {}", help.stdout));
     assert!(line.contains("--project"), "{line:?}");
+    assert!(line.contains("--feature"), "{line:?}");
 }
 
 #[test]
