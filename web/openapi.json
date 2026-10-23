@@ -20,18 +20,6 @@
         ],
         "type": "object"
       },
-      "AddressedRequest": {
-        "properties": {
-          "version_id": {
-            "description": "The version that fixes the comment: a version of the comment's doc saved\nafter the version the comment was made on.",
-            "type": [
-              "string",
-              "null"
-            ]
-          }
-        },
-        "type": "object"
-      },
       "ApiKeyBody": {
         "properties": {
           "created_at": {
@@ -381,41 +369,19 @@
         "type": "object"
       },
       "CommentBody": {
-        "description": "A comment pinned to a node of a saved version.",
+        "description": "A comment pinned to a node of a doc.",
         "properties": {
-          "addressed_in": {
-            "description": "The version that an agent named when it marked the comment addressed.",
-            "type": [
-              "string",
-              "null"
-            ]
-          },
           "author": {
             "type": "object"
-          },
-          "changeset_id": {
-            "description": "The change set of the version, while it is under review; `null` for a\ncomment on the mainline, which is one whose change set has merged.",
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "compared_to": {
-            "description": "The version the node is compared with: the newest version of the doc\nsaved in the comment's change set, or the doc's mainline version for a\nmainline comment.",
-            "type": [
-              "string",
-              "null"
-            ]
           },
           "created_at": {
             "type": "string"
           },
           "doc_id": {
-            "description": "The doc of the version.",
             "type": "string"
           },
           "feature_id": {
-            "description": "The feature of the doc; `null` for a global doc, also when a change\nset of a feature saved the version.",
+            "description": "The feature of the doc; `null` at the app level.",
             "type": [
               "string",
               "null"
@@ -425,11 +391,7 @@
             "type": "string"
           },
           "node": {
-            "description": "The node address as it was sent: a node ID of the version, or\n`<instanceId>/<componentNodeId>` inside a component instance.",
-            "type": "string"
-          },
-          "node_status": {
-            "description": "`current` when the version that the comment is compared with has the node\nas it was, `changed` when it has the node with other content (the comment\nwas made on an older version) and `removed` when it no longer has the\nnode.",
+            "description": "The node address as it was sent: a node ID of the doc's head, or\n`<instanceId>/<componentNodeId>` inside a component instance.",
             "type": "string"
           },
           "project_id": {
@@ -442,29 +404,29 @@
             },
             "type": "array"
           },
-          "status": {
-            "description": "`open`, `addressed` or `resolved`.",
-            "type": "string"
-          },
           "text": {
             "type": "string"
           },
           "version_id": {
-            "description": "The version the comment was made on; it never changes.",
-            "type": "string"
+            "description": "The saved version a comment was pinned to through\n`POST .../versions/{version_id}/comments`; `null` for a comment on the\ndoc's head.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "waiting_on_you": {
+            "description": "`true` when the latest reply is an agent's: the comment waits for the\nhuman. A comment without replies, or whose latest reply is the human's,\ndoes not.",
+            "type": "boolean"
           }
         },
         "required": [
           "id",
           "project_id",
           "doc_id",
-          "version_id",
           "node",
           "author",
           "text",
-          "status",
           "replies",
-          "node_status",
           "created_at"
         ],
         "type": "object"
@@ -629,7 +591,7 @@
       "CreateCommentRequest": {
         "properties": {
           "node": {
-            "description": "A node ID of the version, or `<instanceId>/<componentNodeId>` for a node\ninside a component instance of a design version.",
+            "description": "A node ID of the head (or of the version), or\n`<instanceId>/<componentNodeId>` for a node inside a component instance\nof a design.",
             "type": [
               "string",
               "null"
@@ -1990,6 +1952,7 @@
           "claim.expired",
           "comment.created",
           "comment.replied",
+          "comment.deleted",
           "comment.status_changed",
           "components.imported",
           "conflict.recorded",
@@ -2878,10 +2841,10 @@
         "type": "object"
       },
       "SaveVersionRequest": {
-        "description": "What saving a version takes: nothing, but the body must be a JSON object.\nA version that drops a node with an open comment is refused unless the body\nsays `remove_commented`.",
+        "description": "What saving a version takes: nothing, but the body must be a JSON object.",
         "properties": {
           "remove_commented": {
-            "description": "Save even though the version removes nodes that have open comments (the\ncomments stay, marked as removed). Left out or `false`, such a save is\nrefused with 409 `commented_nodes_removed`.",
+            "description": "Ignored since US-106: a comment whose node a version drops stays listed,\nso no save is refused for it. Still accepted so that older callers work.",
             "type": [
               "boolean",
               "null"
@@ -3309,7 +3272,7 @@
             "type": "array"
           },
           "comments": {
-            "description": "The comments whose status is `addressed`.",
+            "description": "The comments whose latest reply is an agent's.",
             "items": {
               "$ref": "#/components/schemas/CommentBody"
             },
@@ -6212,16 +6175,6 @@
               }
             },
             "description": "The change set has no draft of this doc in this project and workspace"
-          },
-          "409": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "The doc has nodes with open comments (`commented_nodes_removed`, with the `comments` that name them) and the body does not say `remove_commented: true`"
           }
         },
         "summary": "Removes a doc in a change set: saves a version that marks the doc removed,\nwith no nodes. Nothing is deleted: the doc and its earlier versions stay.",
@@ -6389,7 +6342,7 @@
                 }
               }
             },
-            "description": "The draft of a design system has neither tokens nor components yet (`no_tokens`): import them first; or the change set emptied a design system that has a mainline version, so a design cannot be saved against it (`design_system_emptied`); or the version removes nodes that have open comments (`commented_nodes_removed`, with the `comments` that name them) and the body does not say `remove_commented: true`"
+            "description": "The draft of a design system has neither tokens nor components yet (`no_tokens`): import them first; or the change set emptied a design system that has a mainline version, so a design cannot be saved against it (`design_system_emptied`)"
           }
         },
         "summary": "Saves a change set's draft of a doc as a version: an unchangeable snapshot\nwith each node's ID, type, parent and fingerprint. The draft stays open for\nmore operations. A version does not become the doc's mainline version; that\nhappens when its change set merges. Saving while the change set is\n`approved` or `needs_rebase` clears the approval: the change set moves back\nto `in_review`.",
@@ -7379,7 +7332,7 @@
             }
           },
           {
-            "description": "Only the comments on versions of this doc",
+            "description": "Only the comments on this doc",
             "in": "query",
             "name": "doc",
             "required": false,
@@ -7388,18 +7341,9 @@
             }
           },
           {
-            "description": "Only the comments made in this change set during its review",
+            "description": "Only the comments on the docs of this feature",
             "in": "query",
-            "name": "changeset",
-            "required": false,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "description": "Only the comments with this status: open, addressed or resolved",
-            "in": "query",
-            "name": "status",
+            "name": "feature",
             "required": false,
             "schema": {
               "type": "string"
@@ -7448,7 +7392,7 @@
             "description": "No such project in this workspace"
           }
         },
-        "summary": "The comments of a project, oldest first, narrowed by `doc`, `changeset` and\n`status`, which combine.",
+        "summary": "The comments of a project that nobody deleted, oldest first, narrowed by\n`doc` and `feature`, which combine.",
         "tags": [
           "crate::comments"
         ],
@@ -7456,6 +7400,78 @@
       }
     },
     "/api/v1/w/{workspace_id}/projects/{project_id}/comments/{comment_id}": {
+      "delete": {
+        "operationId": "delete",
+        "parameters": [
+          {
+            "description": "The workspace's UUID",
+            "in": "path",
+            "name": "workspace_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The project's UUID",
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The comment's UUID",
+            "in": "path",
+            "name": "comment_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "The comment is deleted"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No valid session"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Called with an API key; human only"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No such comment in this project and workspace, or it was deleted already"
+          }
+        },
+        "summary": "Deletes a comment. Only the human does. The row stays, with `deleted_at` set,\nand the comment is left out of every list and read.",
+        "tags": [
+          "crate::comments"
+        ],
+        "x-omni-access": "human"
+      },
       "get": {
         "operationId": "show",
         "parameters": [
@@ -7496,7 +7512,7 @@
                 }
               }
             },
-            "description": "The comment with its replies and the state of its node"
+            "description": "The comment with its replies"
           },
           "401": {
             "content": {
@@ -7516,7 +7532,7 @@
                 }
               }
             },
-            "description": "No such comment in this project and workspace"
+            "description": "No such comment in this project and workspace, or it was deleted"
           }
         },
         "summary": "One comment of a project.",
@@ -7524,232 +7540,6 @@
           "crate::comments"
         ],
         "x-omni-access": "both"
-      }
-    },
-    "/api/v1/w/{workspace_id}/projects/{project_id}/comments/{comment_id}/addressed": {
-      "post": {
-        "operationId": "addressed",
-        "parameters": [
-          {
-            "description": "The workspace's UUID",
-            "in": "path",
-            "name": "workspace_id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "description": "The project's UUID",
-            "in": "path",
-            "name": "project_id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "description": "The comment's UUID",
-            "in": "path",
-            "name": "comment_id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "description": "The agent's run",
-            "in": "header",
-            "name": "X-Omni-Run",
-            "required": false,
-            "schema": {
-              "type": [
-                "string",
-                "null"
-              ]
-            }
-          },
-          {
-            "description": "The agent's role",
-            "in": "header",
-            "name": "X-Omni-Role",
-            "required": false,
-            "schema": {
-              "type": [
-                "string",
-                "null"
-              ]
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/AddressedRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/CommentResponse"
-                }
-              }
-            },
-            "description": "The comment, now `addressed` in that version"
-          },
-          "400": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "The version is missing, unknown, of another doc or not saved after the comment's version"
-          },
-          "401": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "No valid API key"
-          },
-          "403": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Called with a session; agents only"
-          },
-          "404": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "No such comment in this project and workspace"
-          },
-          "409": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "The comment is `resolved` (`invalid_transition`)"
-          }
-        },
-        "summary": "Marks a comment addressed, naming the version that fixes it. Only an agent\ndoes.",
-        "tags": [
-          "crate::comments"
-        ],
-        "x-omni-access": "agent"
-      }
-    },
-    "/api/v1/w/{workspace_id}/projects/{project_id}/comments/{comment_id}/reopen": {
-      "post": {
-        "operationId": "reopen",
-        "parameters": [
-          {
-            "description": "The workspace's UUID",
-            "in": "path",
-            "name": "workspace_id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "description": "The project's UUID",
-            "in": "path",
-            "name": "project_id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "description": "The comment's UUID",
-            "in": "path",
-            "name": "comment_id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/CommentResponse"
-                }
-              }
-            },
-            "description": "The comment, now `open`"
-          },
-          "401": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "No valid session"
-          },
-          "403": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Called with an API key; human only"
-          },
-          "404": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "No such comment in this project and workspace"
-          },
-          "409": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "The comment is `open` already (`invalid_transition`)"
-          }
-        },
-        "summary": "Opens an addressed or resolved comment again. Only the human does.",
-        "tags": [
-          "crate::comments"
-        ],
-        "x-omni-access": "human"
       }
     },
     "/api/v1/w/{workspace_id}/projects/{project_id}/comments/{comment_id}/replies": {
@@ -7881,105 +7671,14 @@
                 }
               }
             },
-            "description": "No such comment in this project and workspace"
+            "description": "No such comment in this project and workspace, or it was deleted"
           }
         },
-        "summary": "Adds a reply to a comment. The comment keeps its status.",
+        "summary": "Adds a reply to a comment.",
         "tags": [
           "crate::comments"
         ],
         "x-omni-access": "both"
-      }
-    },
-    "/api/v1/w/{workspace_id}/projects/{project_id}/comments/{comment_id}/resolve": {
-      "post": {
-        "operationId": "resolve",
-        "parameters": [
-          {
-            "description": "The workspace's UUID",
-            "in": "path",
-            "name": "workspace_id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "description": "The project's UUID",
-            "in": "path",
-            "name": "project_id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "description": "The comment's UUID",
-            "in": "path",
-            "name": "comment_id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/CommentResponse"
-                }
-              }
-            },
-            "description": "The comment, now `resolved`"
-          },
-          "401": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "No valid session"
-          },
-          "403": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Called with an API key; human only"
-          },
-          "404": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "No such comment in this project and workspace"
-          },
-          "409": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "The comment is not `addressed` (`invalid_transition`)"
-          }
-        },
-        "summary": "Resolves an addressed comment. Only the human does.",
-        "tags": [
-          "crate::comments"
-        ],
-        "x-omni-access": "human"
       }
     },
     "/api/v1/w/{workspace_id}/projects/{project_id}/components": {
@@ -9025,6 +8724,155 @@
         "summary": "Reads one board of a design doc's head, or of the version named by\n`?version=`, in the tag format. The head is read, never the mainline\nversion. Only the manifest and the board's one chunk are read.",
         "tags": [
           "crate::boards"
+        ],
+        "x-omni-access": "both"
+      }
+    },
+    "/api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}/comments": {
+      "post": {
+        "operationId": "create_on_doc",
+        "parameters": [
+          {
+            "description": "The workspace's UUID",
+            "in": "path",
+            "name": "workspace_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The project's UUID",
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The doc to comment on",
+            "in": "path",
+            "name": "doc_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The agent's run",
+            "in": "header",
+            "name": "X-Omni-Run",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "description": "The agent's role",
+            "in": "header",
+            "name": "X-Omni-Role",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "description": "The model behind the agent",
+            "in": "header",
+            "name": "X-Omni-Model",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "description": "The harness that runs the agent",
+            "in": "header",
+            "name": "X-Omni-Harness",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateCommentRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommentResponse"
+                }
+              }
+            },
+            "description": "The new comment"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The node or the text is missing or blank"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No valid API key or session"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No such doc in this project and workspace"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The doc's head does not have the node address (`node_not_in_head`)"
+          }
+        },
+        "summary": "Pins a comment to a node of a doc's head.",
+        "tags": [
+          "crate::comments"
         ],
         "x-omni-access": "both"
       }
@@ -11207,7 +11055,7 @@
                 }
               }
             },
-            "description": "The new comment, `open`"
+            "description": "The new comment"
           },
           "400": {
             "content": {
@@ -11240,7 +11088,7 @@
             "description": "No such version in this project and workspace"
           }
         },
-        "summary": "Pins a comment to a node of a saved version.",
+        "summary": "Pins a comment to a node of a saved version, on the version's doc. This\nroute stays until the web app moves to the live routes (US-113).",
         "tags": [
           "crate::comments"
         ],

@@ -366,17 +366,12 @@ pub fn registry() -> Vec<RouteEntry> {
         ),
         (
             "POST",
-            "/api/v1/w/{workspace_id}/projects/{project_id}/comments/{comment_id}/addressed",
-            Access::Agent,
+            "/api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}/comments",
+            Access::Both,
         ),
         (
-            "POST",
-            "/api/v1/w/{workspace_id}/projects/{project_id}/comments/{comment_id}/resolve",
-            Access::Human,
-        ),
-        (
-            "POST",
-            "/api/v1/w/{workspace_id}/projects/{project_id}/comments/{comment_id}/reopen",
+            "DELETE",
+            "/api/v1/w/{workspace_id}/projects/{project_id}/comments/{comment_id}",
             Access::Human,
         ),
     ]

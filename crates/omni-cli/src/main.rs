@@ -176,19 +176,16 @@ Usage:
                                       link a change set to a decision it carries out; the
                                       change set cannot be approved until every linked
                                       decision is
-  omni comment list [--doc <id> | --changeset <id>] [--status open|addressed|resolved]
-                                      list the project's comments, one line each: ID, status,
-                                      node address, text; a comment whose node changed in a
-                                      later version says [changed], one whose node was removed
-                                      says [removed]. --doc narrows to one doc, --changeset to
-                                      one change set's review
-  omni comment reply <comment> [--body-file <path>]
-                                      reply to a comment; the text is read from --body-file or
-                                      standard input
-  omni comment addressed <comment> --version <v>
-                                      mark a comment addressed, naming the later version of
-                                      its doc that fixes it. The human resolves and reopens
-                                      comments, in the web app
+  omni comment list [--doc <id>] [--feature <name|id>]
+                                      list the project's comments, oldest first: ID, doc, node
+                                      address, author, text and the replies. A comment whose
+                                      latest reply is an agent's says `waiting on you`; the
+                                      human deletes a comment when satisfied, in the web app.
+                                      --doc narrows to one doc, --feature to the docs of one
+                                      feature
+  omni comment reply <comment> <text>
+                                      reply to a comment; without <text> it is read from
+                                      --body-file or standard input
   omni wait --changeset <id> --until approved|rejected|merged|needs_rebase [--timeout <s>]
                                       wait until the change set is approved (by the human),
                                       rejected, merged or needs a rebase; prints its status
@@ -244,15 +241,14 @@ Options (before or after the command):
   --note <text>         how a conflict was resolved (`omni changeset resolve`)
   --changeset <id>      the change set a doc, design edit, tokens, claim, release or wait command works in
   --doc <id>            the design doc that `omni design read` reads or `omni design edit` edits
-                        (`omni design edit` also takes it as an argument)
+                        (`omni design edit` also takes it as an argument), or the doc whose
+                        comments `omni comment list` shows
   --board <id>          the board of that doc that `omni design read` prints, or that a
                         `omni design edit` batch stays inside
-  --status <status>     the comments that `omni comment list` shows: open, addressed or
-                        resolved
   --remove-commented    `omni version save` and `omni doc remove`: go on although the
                         version removes nodes that have open comments
   --version <v>         the version that `omni doc read`, `omni design read` or
-                        `omni tokens export` reads, or that `omni comment addressed` names
+                        `omni tokens export` reads
   --out <path>          where `omni tokens export` writes: a file, or with --per-mode a directory
   --per-mode            `omni tokens export`: one file per mode
   --until <status>      the status or condition `omni wait` waits for

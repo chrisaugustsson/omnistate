@@ -13,8 +13,8 @@ use crate::changesets::{
 };
 use crate::claims::{ClaimBody, ClaimRequest, ClaimResponse, ClaimedBody};
 use crate::comments::{
-    AddressedRequest, CommentBody, CommentListResponse, CommentResponse, CreateCommentRequest,
-    ReplyBody, ReplyRequest, SingleCommentResponse,
+    CommentBody, CommentListResponse, CommentResponse, CreateCommentRequest, ReplyBody,
+    ReplyRequest, SingleCommentResponse,
 };
 use crate::decisions::{
     DecisionBody, DecisionFile, DecisionOption, DecisionResponse, Dissent, RejectDecisionRequest,
@@ -141,9 +141,8 @@ use utoipa::OpenApi;
         crate::comments::list,
         crate::comments::show,
         crate::comments::reply,
-        crate::comments::addressed,
-        crate::comments::resolve,
-        crate::comments::reopen
+        crate::comments::create_on_doc,
+        crate::comments::delete
     ),
     components(schemas(
         LoginRequest,
@@ -259,7 +258,6 @@ use utoipa::OpenApi;
         CommentListResponse,
         CreateCommentRequest,
         ReplyRequest,
-        AddressedRequest,
         WaitingBody,
         FeatureSummary,
         ReviewChanges,

@@ -1,21 +1,17 @@
-//! `omni comment list`, `omni comment reply` and `omni comment addressed`: the
-//! comments that the human pins to nodes of saved versions. An agent lists them,
-//! answers with a reply and marks a comment addressed once a later version fixes
-//! it; resolving and reopening are the human's, in the web app. The project is
-//! found as for `omni changeset`.
+//! `omni comment list` and `omni comment reply`: the comments that the human
+//! pins to nodes of the live docs. An agent lists them and answers with a
+//! reply; the human deletes a comment when satisfied, in the web app. A comment
+//! has no status. The project is found as for `omni changeset`.
 
 use crate::args::Args;
-use crate::changesets::{is_uuid, project_id};
+use crate::changesets::{is_uuid, project_id, resolve_feature};
 use crate::commands::{agent, read_body, say};
 use crate::error::{CliError, Result, bail};
 use crate::json::{Value, quote};
 use std::io::IsTerminal;
 
-const LIST_USAGE: &str =
-    "omni comment list [--doc <id> | --changeset <id>] [--status open|addressed|resolved]";
-const REPLY_USAGE: &str = "omni comment reply <comment> [--body-file <path>]";
-const ADDRESSED_USAGE: &str = "omni comment addressed <comment> --version <version>";
-const STATUSES: [&str; 3] = ["open", "addressed", "resolved"];
+const LIST_USAGE: &str = "omni comment list [--doc <id>] [--feature <name|id>]";
+const REPLY_USAGE: &str = "omni comment reply <comment> <text>";
 
 fn unreadable(what: &str) -> CliError {
     CliError::new(format!(
@@ -32,35 +28,52 @@ fn id_of(text: &str, what: &str, usage: &str) -> Result<String> {
     }
 }
 
-/// `omni comment list [--doc <id> | --changeset <id>] [--status <status>]`
-pub fn list(args: &Args) -> Result<()> {
-    let mut query = Vec::new();
-    match (args.doc.as_deref(), args.changeset.as_deref()) {
-        (Some(_), Some(_)) => bail!(
-            "--doc and --changeset cannot be used together; list one doc's comments or one change set's: {LIST_USAGE}"
+/// Who wrote a comment or a reply, for a line of the list.
+fn who(author: Option<&Value>) -> String {
+    let Some(author) = author else {
+        return "?".to_string();
+    };
+    match author.str_at("kind") {
+        Some("agent") => format!(
+            "agent {}/{}",
+            author.str_at("run").unwrap_or("?"),
+            author.str_at("role").unwrap_or("?")
         ),
-        (Some(doc), None) => query.push(format!(
-            "doc={}",
-            id_of(doc, "a doc ID for --doc", LIST_USAGE)?
-        )),
-        (None, Some(changeset)) => query.push(format!(
-            "changeset={}",
-            id_of(changeset, "a change set ID for --changeset", LIST_USAGE)?
-        )),
-        (None, None) => {}
+        Some(kind) => kind.to_string(),
+        None => "?".to_string(),
     }
-    if let Some(status) = args.status.as_deref() {
-        if !STATUSES.contains(&status) {
-            bail!(
-                "{status:?} is not a status for --status; use one of {}",
-                STATUSES.join(", ")
-            );
-        }
-        query.push(format!("status={status}"));
-    }
+}
+
+/// The lines of `text`, each indented by `indent`.
+fn indented(text: &str, indent: &str) -> String {
+    text.lines()
+        .map(|line| format!("{indent}{line}"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// `omni comment list [--doc <id>] [--feature <name or id>]`
+pub fn list(args: &Args) -> Result<()> {
+    let doc = args
+        .doc
+        .as_deref()
+        .map(|doc| id_of(doc, "a doc ID for --doc", LIST_USAGE))
+        .transpose()?;
 
     let agent = agent(args)?;
     let project = project_id(args, &agent)?;
+    let feature = args
+        .feature
+        .as_deref()
+        .map(|given| resolve_feature(&agent, &project, given))
+        .transpose()?;
+    let mut query = Vec::new();
+    if let Some(doc) = doc {
+        query.push(format!("doc={doc}"));
+    }
+    if let Some(feature) = feature {
+        query.push(format!("feature={feature}"));
+    }
     let mut path = format!(
         "/api/v1/w/{}/projects/{project}/comments",
         agent.workspace_id
@@ -81,33 +94,42 @@ pub fn list(args: &Args) -> Result<()> {
         .and_then(Value::as_array)
         .unwrap_or_default()
     {
-        let marker = match comment.str_at("node_status") {
-            Some("changed") => "  [changed]",
-            Some("removed") => "  [removed]",
+        let waiting = match comment.get("waiting_on_you") {
+            Some(Value::Bool(true)) => "  waiting on you",
             _ => "",
         };
         say(&format!(
-            "{}  {}  {}{marker}  {}",
+            "{}  doc {}  node {}  {}{waiting}",
             comment.str_at("id").unwrap_or("?"),
-            comment.str_at("status").unwrap_or("?"),
+            comment.str_at("doc_id").unwrap_or("?"),
             comment.str_at("node").unwrap_or("?"),
-            comment
-                .str_at("text")
-                .and_then(|text| text.lines().next())
-                .unwrap_or_default()
+            who(comment.get("author")),
         ));
+        say(&indented(comment.str_at("text").unwrap_or_default(), "  "));
+        for reply in comment
+            .get("replies")
+            .and_then(Value::as_array)
+            .unwrap_or_default()
+        {
+            say(&format!("  reply, {}:", who(reply.get("author"))));
+            say(&indented(reply.str_at("text").unwrap_or_default(), "    "));
+        }
     }
     Ok(())
 }
 
-/// The text of the reply: `--body-file`, or else all of standard input.
-fn reply_text(args: &Args) -> Result<String> {
+/// The text of the reply: the argument, else `--body-file`, else all of
+/// standard input.
+fn reply_text(args: &Args, given: Option<&str>) -> Result<String> {
+    if let Some(text) = given {
+        return Ok(text.to_string());
+    }
     let bytes = match args.body_file.as_deref() {
         Some(path) => read_body(path)?,
         None => {
             if std::io::stdin().is_terminal() {
                 bail!(
-                    "this command needs the reply's text: pass --body-file <path> or pipe it on standard input: {REPLY_USAGE}"
+                    "this command needs the reply's text: pass it after the comment's ID, with --body-file <path>, or pipe it on standard input: {REPLY_USAGE}"
                 );
             }
             read_body("-")?
@@ -116,16 +138,16 @@ fn reply_text(args: &Args) -> Result<String> {
     String::from_utf8(bytes).map_err(|_| CliError::new("the text of the reply is not UTF-8 text"))
 }
 
-/// `omni comment reply <comment>`
-pub fn reply(args: &Args, comment: Option<&str>) -> Result<()> {
+/// `omni comment reply <comment> <text>`
+pub fn reply(args: &Args, comment: Option<&str>, text: Option<&str>) -> Result<()> {
     let Some(comment) = comment else {
         bail!("this command needs the comment's ID: {REPLY_USAGE}");
     };
     let comment = id_of(comment, "a comment ID", REPLY_USAGE)?;
-    let text = reply_text(args)?;
+    let text = reply_text(args, text)?;
     let text = text.trim();
     if text.is_empty() {
-        bail!("the reply's text is blank; write the reply on standard input or in --body-file");
+        bail!("the reply's text is blank; write it after the comment's ID: {REPLY_USAGE}");
     }
 
     let agent = agent(args)?;
@@ -151,44 +173,9 @@ pub fn reply(args: &Args, comment: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-/// `omni comment addressed <comment> --version <version>`
-pub fn addressed(args: &Args, comment: Option<&str>) -> Result<()> {
-    let Some(comment) = comment else {
-        bail!("this command needs the comment's ID: {ADDRESSED_USAGE}");
-    };
-    let comment = id_of(comment, "a comment ID", ADDRESSED_USAGE)?;
-    let Some(version) = args.doc_version.as_deref() else {
-        bail!(
-            "this command needs --version <version>, the version that fixes the comment: {ADDRESSED_USAGE}"
-        );
-    };
-    let version = id_of(version, "a version ID for --version", ADDRESSED_USAGE)?;
-
-    let agent = agent(args)?;
-    let project = project_id(args, &agent)?;
-    let not_found = format!(
-        "not_found: no comment {comment} in this project; `omni comment list` shows the comments"
-    );
-    let response = agent.request_or_not_found(
-        "POST",
-        &format!(
-            "/api/v1/w/{}/projects/{project}/comments/{comment}/addressed",
-            agent.workspace_id
-        ),
-        Some(format!("{{\"version_id\":{}}}", quote(&version)).as_bytes()),
-        &not_found,
-    )?;
-    let answer = response.text();
-    if args.json {
-        say(answer.trim_end());
-        return Ok(());
-    }
-    say(&format!("comment {comment} addressed in version {version}"));
-    Ok(())
-}
-
-/// `omni comment resolve` and `omni comment reopen`: the human's. `doing` is
-/// what the command would do, as in "resolving".
-pub fn human_only(doing: &str) -> Result<()> {
-    bail!("{doing} a comment is the human's decision and is made in the web app; an agent cannot")
+/// `omni comment addressed|resolve|reopen`: comments have no status.
+pub fn no_status(command: &str) -> Result<()> {
+    bail!(
+        "`omni comment {command}` is gone: comments have no status; reply with `omni comment reply`, and the human deletes a comment when satisfied, in the web app"
+    )
 }

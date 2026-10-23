@@ -1,50 +1,43 @@
-//! Comments on nodes (US-038, Q4, Q19, FR-40, FR-41). The reviewer pins a
-//! comment to one node of a saved version, down to a single node inside a
-//! component instance of a design (`<instanceId>/<componentNodeId>`), so that
-//! feedback lands on the exact element and stays traceable. Comments go on
-//! saved versions and never on live drafts.
+//! Comments on nodes (US-038, reshaped by US-106, Q4, V17, V18, FR-19 to
+//! FR-21). The reviewer pins a comment to one node address of a doc's head, down
+//! to a single node inside a component instance of a design
+//! (`<instanceId>/<componentNodeId>`), so that feedback lands on the exact
+//! element. An agent replies; the human deletes the comment when satisfied. A
+//! comment has no status.
 //!
-//! A comment records the version it was made on, its author and its text; the
-//! doc, the project and the change set are those of its version. During a
-//! review it belongs to the version's change set; once that change set has
-//! merged it is a comment on the mainline. It has replies, and goes `open`, then
-//! `addressed` (an agent names the version that fixes it), then `resolved`. Only
-//! the human resolves and reopens. A comment is never deleted.
+//! A comment belongs to a doc and a node address, with its author and its text;
+//! the project and the feature are those of its doc. A deletion is soft
+//! (`deleted_at`): the API role cannot delete rows, and a deleted comment is
+//! left out of every list and read. A comment whose node later leaves the head
+//! stays listed (V18); nothing is checked after it was made.
 //!
-//! Whether a comment's node changed is not stored: the node index of the
-//! version it was made on is compared with the newest version of the doc saved
-//! in the comment's change set, or with the doc's mainline version for a
-//! mainline comment. A node that has another fingerprint there makes the
-//! comment `changed` (it was made on an older version) and a node that is gone
-//! makes it `removed`; the comment stays either way. For an address inside an
-//! instance the instance is the node that is compared.
+//! A comment `waits on you` (`waiting_on_you`) when its latest reply is an
+//! agent's: the human has not answered it yet.
 //!
-//! Saving a version that drops a node with an open comment is refused with 409
-//! `commented_nodes_removed`, which lists those comments, unless the body says
-//! `remove_commented: true` (`refuse_commented_removals`).
+//! `POST .../versions/{version_id}/comments` stays until the web app moves to
+//! the live routes (US-113). It pins a comment to a node of that saved version
+//! on the version's doc, and records the version.
 //!
-//! Commenting emits `comment.created`, a reply `comment.replied` and every
-//! change of status `comment.status_changed`.
+//! Commenting emits `comment.created`, a reply `comment.replied` and a delete
+//! `comment.deleted`.
 
 use crate::AppState;
+use crate::boards::Manifest;
 use crate::changesets::{non_blank, parse_body, require_project};
 use crate::design;
-use crate::docs::{AgentIdentity, DraftRow, Tx};
+use crate::docs::{AgentIdentity, DocRow, Tx, find_doc};
 use crate::live;
 use crate::session::{ApiError, ErrorBody};
-use crate::versions::{self, nodes_of_version, nodes_of_version_id};
-use crate::workspace::{Actor, AgentRequest, HumanRequest, WorkspaceRequest, parse_uuid};
+use crate::versions::{self, nodes_of_version};
+use crate::workspace::{Actor, HumanRequest, WorkspaceRequest, parse_uuid};
 use axum::Json;
 use axum::body::Bytes;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use utoipa::ToSchema;
-
-/// The statuses of a comment, in the order it goes through them.
-const STATUSES: [&str; 3] = ["open", "addressed", "resolved"];
 
 /// The reply to a comment.
 #[derive(Serialize, ToSchema)]
@@ -58,42 +51,31 @@ pub struct ReplyBody {
     pub created_at: String,
 }
 
-/// A comment pinned to a node of a saved version.
+/// A comment pinned to a node of a doc.
 #[derive(Serialize, ToSchema)]
 pub struct CommentBody {
     pub id: String,
     pub project_id: String,
-    /// The doc of the version.
     pub doc_id: String,
-    /// The version the comment was made on; it never changes.
-    pub version_id: String,
-    /// The node address as it was sent: a node ID of the version, or
+    /// The saved version a comment was pinned to through
+    /// `POST .../versions/{version_id}/comments`; `null` for a comment on the
+    /// doc's head.
+    pub version_id: Option<String>,
+    /// The node address as it was sent: a node ID of the doc's head, or
     /// `<instanceId>/<componentNodeId>` inside a component instance.
     pub node: String,
-    /// The change set of the version, while it is under review; `null` for a
-    /// comment on the mainline, which is one whose change set has merged.
-    pub changeset_id: Option<String>,
-    /// The feature of the doc; `null` for a global doc, also when a change
-    /// set of a feature saved the version.
+    /// The feature of the doc; `null` at the app level.
     pub feature_id: Option<String>,
     #[schema(value_type = Object)]
     pub author: Value,
     pub text: String,
-    /// `open`, `addressed` or `resolved`.
-    pub status: String,
-    /// The version that an agent named when it marked the comment addressed.
-    pub addressed_in: Option<String>,
     /// The replies, oldest first.
     pub replies: Vec<ReplyBody>,
-    /// `current` when the version that the comment is compared with has the node
-    /// as it was, `changed` when it has the node with other content (the comment
-    /// was made on an older version) and `removed` when it no longer has the
-    /// node.
-    pub node_status: String,
-    /// The version the node is compared with: the newest version of the doc
-    /// saved in the comment's change set, or the doc's mainline version for a
-    /// mainline comment.
-    pub compared_to: Option<String>,
+    /// `true` when the latest reply is an agent's: the comment waits for the
+    /// human. A comment without replies, or whose latest reply is the human's,
+    /// does not.
+    #[schema(required = false)]
+    pub waiting_on_you: bool,
     pub created_at: String,
 }
 
@@ -117,8 +99,9 @@ pub struct CommentListResponse {
 
 #[derive(Deserialize, ToSchema)]
 pub struct CreateCommentRequest {
-    /// A node ID of the version, or `<instanceId>/<componentNodeId>` for a node
-    /// inside a component instance of a design version.
+    /// A node ID of the head (or of the version), or
+    /// `<instanceId>/<componentNodeId>` for a node inside a component instance
+    /// of a design.
     pub node: Option<String>,
     /// What the comment says; not blank.
     pub text: Option<String>,
@@ -130,15 +113,12 @@ pub struct ReplyRequest {
     pub text: Option<String>,
 }
 
-#[derive(Deserialize, ToSchema)]
-pub struct AddressedRequest {
-    /// The version that fixes the comment: a version of the comment's doc saved
-    /// after the version the comment was made on.
-    pub version_id: Option<String>,
-}
-
 fn invalid() -> ApiError {
     ApiError::bad_request("invalid_request")
+}
+
+fn not_in_head() -> ApiError {
+    ApiError::Refused(StatusCode::UNPROCESSABLE_ENTITY, "node_not_in_head")
 }
 
 /// Who writes a comment or a reply, as the JSON that is stored.
@@ -153,12 +133,6 @@ fn author_of(actor: &Actor, identity: &AgentIdentity) -> Value {
     }
 }
 
-/// The node of the version that a comment address is compared by: the whole
-/// address, or the instance of an address inside an instance.
-fn node_of(address: &str) -> &str {
-    address.split('/').next().unwrap_or(address)
-}
-
 // Reading comments ----------------------------------------------------------------------
 
 #[derive(sqlx::FromRow)]
@@ -166,16 +140,12 @@ struct CommentRow {
     id: String,
     project_id: String,
     doc_id: String,
-    version_id: String,
+    version_id: Option<String>,
     node: String,
-    changeset_id: Option<String>,
     feature_id: Option<String>,
     author: String,
     text: String,
-    status: String,
-    addressed_in: Option<String>,
     created_at: String,
-    compared_to: Option<String>,
 }
 
 /// The rows of the comments that satisfy every condition, oldest first. A
@@ -194,42 +164,27 @@ impl Filter {
         self.conditions.push(condition.replace("{}", &parameter));
         self
     }
-
-    fn and_that(mut self, condition: &str) -> Self {
-        self.conditions.push(condition.to_string());
-        self
-    }
 }
 
-/// The comments that satisfy the filter; `lock` is a locking clause such as
-/// `FOR UPDATE OF c`, or empty. A comment belongs to a project through the doc
-/// of its version. A comment of a merged change set is on the mainline, so it
-/// names no change set and is compared with the doc's mainline version.
+/// The comments that satisfy the filter and that nobody deleted; `lock` is a
+/// locking clause such as `FOR UPDATE OF c`, or empty. A comment belongs to a
+/// project and a feature through its doc.
 async fn fetch_rows(tx: &mut Tx, filter: Filter, lock: &str) -> Result<Vec<CommentRow>, ApiError> {
     let sql = format!(
-        "SELECT c.id::text AS id, d.project_id::text AS project_id, v.doc_id::text AS doc_id, \
+        "SELECT c.id::text AS id, d.project_id::text AS project_id, c.doc_id::text AS doc_id, \
                 c.version_id::text AS version_id, c.node AS node, \
-                CASE WHEN cs.status = 'merged' THEN NULL ELSE v.changeset_id::text END AS changeset_id, \
                 d.feature_id::text AS feature_id, \
-                c.author::text AS author, c.body AS text, c.status AS status, \
-                c.addressed_in_version_id::text AS addressed_in, \
-                to_char(c.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"') AS created_at, \
-                CASE WHEN cs.status = 'merged' THEN d.mainline_version_id::text ELSE \
-                    (SELECT nv.id::text FROM versions nv \
-                     WHERE nv.workspace_id = v.workspace_id AND nv.doc_id = v.doc_id \
-                       AND nv.changeset_id = v.changeset_id \
-                     ORDER BY nv.created_at DESC, nv.id DESC LIMIT 1) \
-                END AS compared_to \
+                c.author::text AS author, c.body AS text, \
+                to_char(c.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"') AS created_at \
          FROM comments c \
-         JOIN versions v ON v.workspace_id = c.workspace_id AND v.id = c.version_id \
-         JOIN docs d ON d.workspace_id = v.workspace_id AND d.id = v.doc_id \
-         JOIN changesets cs ON cs.workspace_id = v.workspace_id AND cs.id = v.changeset_id \
-         WHERE {} ORDER BY c.created_at, c.id {lock}",
+         JOIN docs d ON d.workspace_id = c.workspace_id AND d.id = c.doc_id \
+         WHERE c.deleted_at IS NULL{}{} ORDER BY c.created_at, c.id {lock}",
         if filter.conditions.is_empty() {
-            "true".to_string()
+            ""
         } else {
-            filter.conditions.join(" AND ")
-        }
+            " AND "
+        },
+        filter.conditions.join(" AND ")
     );
     let mut query = sqlx::query_as::<_, CommentRow>(&sql);
     for value in &filter.values {
@@ -252,42 +207,7 @@ fn unreadable(what: &str, id: &str, error: serde_json::Error) -> ApiError {
     ApiError::Unavailable
 }
 
-/// The fingerprint of every node of each version, by version and node ID.
-async fn fingerprints(
-    tx: &mut Tx,
-    versions: HashSet<&str>,
-) -> Result<HashMap<String, HashMap<String, String>>, ApiError> {
-    let mut found = HashMap::new();
-    for version in versions {
-        let nodes = nodes_of_version_id(tx, version).await?;
-        found.insert(
-            version.to_string(),
-            nodes
-                .into_iter()
-                .map(|node| (node.id, node.fingerprint))
-                .collect(),
-        );
-    }
-    Ok(found)
-}
-
-/// Whether the node is as it was when the comment was made (`current`), has
-/// other content in the version it is compared with (`changed`) or is gone from
-/// it (`removed`).
-fn node_status(
-    address: &str,
-    own: Option<&HashMap<String, String>>,
-    compared: Option<&HashMap<String, String>>,
-) -> &'static str {
-    let node = node_of(address);
-    match compared.and_then(|nodes| nodes.get(node)) {
-        None => "removed",
-        Some(now) if own.and_then(|nodes| nodes.get(node)) == Some(now) => "current",
-        Some(_) => "changed",
-    }
-}
-
-/// The comments with their replies and the state of their nodes.
+/// The comments with their replies.
 async fn bodies(tx: &mut Tx, rows: Vec<CommentRow>) -> Result<Vec<CommentBody>, ApiError> {
     if rows.is_empty() {
         return Ok(Vec::new());
@@ -318,47 +238,33 @@ async fn bodies(tx: &mut Tx, rows: Vec<CommentRow>) -> Result<Vec<CommentBody>, 
                 created_at: reply.created_at,
             });
     }
-
-    let wanted: HashSet<&str> = rows
-        .iter()
-        .flat_map(|row| [Some(row.version_id.as_str()), row.compared_to.as_deref()])
-        .flatten()
-        .collect();
-    let prints = fingerprints(tx, wanted).await?;
     rows.into_iter()
         .map(|row| {
-            let status = node_status(
-                &row.node,
-                prints.get(&row.version_id),
-                row.compared_to
-                    .as_ref()
-                    .and_then(|version| prints.get(version)),
-            );
             let author =
                 serde_json::from_str(&row.author).map_err(|e| unreadable("author", &row.id, e))?;
+            let replies = replied.remove(&row.id).unwrap_or_default();
+            let waiting_on_you = replies
+                .last()
+                .is_some_and(|reply| reply.author["kind"] == "agent");
             Ok(CommentBody {
-                replies: replied.remove(&row.id).unwrap_or_default(),
+                replies,
                 id: row.id,
                 project_id: row.project_id,
                 doc_id: row.doc_id,
                 version_id: row.version_id,
                 node: row.node,
-                changeset_id: row.changeset_id,
                 feature_id: row.feature_id,
                 author,
                 text: row.text,
-                status: row.status,
-                addressed_in: row.addressed_in,
-                node_status: status.to_string(),
-                compared_to: row.compared_to,
+                waiting_on_you,
                 created_at: row.created_at,
             })
         })
         .collect()
 }
 
-/// The comment of the project, 404 when it has none. `lock` is as in
-/// `fetch_rows`.
+/// The comment of the project, 404 when it has none or it was deleted. `lock`
+/// is as in `fetch_rows`.
 async fn load_row(
     tx: &mut Tx,
     project_id: &str,
@@ -392,19 +298,177 @@ enum Address<'a> {
 }
 
 impl<'a> Address<'a> {
-    fn parse(text: &'a str) -> Result<Self, ApiError> {
+    fn parse(text: &'a str) -> Option<Self> {
         let parts: Vec<&str> = text.split('/').collect();
         match parts.as_slice() {
-            [node] if !node.is_empty() => Ok(Self::Node(node)),
+            [node] if !node.is_empty() => Some(Self::Node(node)),
             [instance, inner] if !instance.is_empty() && !inner.is_empty() => {
-                Ok(Self::Inside { instance, inner })
+                Some(Self::Inside { instance, inner })
             }
-            _ => Err(invalid()),
+            _ => None,
         }
     }
 }
 
-/// Pins a comment to a node of a saved version.
+/// A comment about to be stored.
+struct NewComment<'a> {
+    doc_id: &'a str,
+    /// The saved version a comment through the version route is pinned to.
+    version_id: Option<&'a str>,
+    node: &'a str,
+    text: &'a str,
+    author: &'a Value,
+}
+
+/// Stores the comment, emits `comment.created` and answers 201 with it.
+async fn insert_comment(
+    state: &AppState,
+    workspace_id: &str,
+    project_id: &str,
+    new: NewComment<'_>,
+) -> Result<(StatusCode, Json<CommentResponse>), ApiError> {
+    let mut tx = state.workspace_tx(workspace_id).await?;
+    let comment_id: String = sqlx::query_scalar(
+        "INSERT INTO comments (workspace_id, doc_id, version_id, node, author, body) \
+         VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5::text::jsonb, $6) RETURNING id::text",
+    )
+    .bind(workspace_id)
+    .bind(new.doc_id)
+    .bind(new.version_id)
+    .bind(new.node)
+    .bind(new.author.to_string())
+    .bind(new.text)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(ApiError::database)?;
+    let comment = load_comment(&mut tx, project_id, &comment_id).await?;
+    let data = json!({
+        "comment_id": comment.id,
+        "doc_id": comment.doc_id,
+        "node": comment.node,
+    });
+    live::emit(&mut tx, workspace_id, project_id, "comment.created", &data).await?;
+    tx.commit().await.map_err(ApiError::database)?;
+    state.live.announce(workspace_id, project_id);
+    Ok((StatusCode::CREATED, Json(CommentResponse { comment })))
+}
+
+/// Whether the node address is in the head of `doc`: a node of its node index,
+/// or, for a design, a node of the component that an instance of the head
+/// places, as the design system's head defines it.
+async fn head_has(
+    state: &AppState,
+    workspace_id: &str,
+    project_id: &str,
+    doc: &DocRow,
+    address: Address<'_>,
+) -> Result<bool, ApiError> {
+    let manifest: Option<Manifest> = if doc.kind == "design" {
+        versions::head_manifest(state, workspace_id, doc.head.as_deref()).await?
+    } else {
+        None
+    };
+    let mut tx = state.workspace_tx(workspace_id).await?;
+    let found = match address {
+        Address::Node(id) => {
+            versions::nodes_of_head(&mut tx, doc.head.as_deref(), manifest.as_ref())
+                .await?
+                .iter()
+                .any(|node| node.id == id)
+        }
+        Address::Inside { instance, inner } => {
+            let Some(manifest) = manifest.as_ref() else {
+                return Ok(false);
+            };
+            let chunks: Vec<&str> = manifest.chunks();
+            let chunk: Option<String> = sqlx::query_scalar(
+                "SELECT chunk FROM node_index \
+                 WHERE chunk = ANY($1::text[]) AND node = $2 AND type = 'instance' LIMIT 1",
+            )
+            .bind(&chunks)
+            .bind(instance)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(ApiError::database)?;
+            tx.commit().await.map_err(ApiError::database)?;
+            return match chunk {
+                Some(chunk) => {
+                    design::head_instance_holds(
+                        state,
+                        workspace_id,
+                        project_id,
+                        &chunk,
+                        instance,
+                        inner,
+                    )
+                    .await
+                }
+                None => Ok(false),
+            };
+        }
+    };
+    tx.commit().await.map_err(ApiError::database)?;
+    Ok(found)
+}
+
+/// Pins a comment to a node of a doc's head.
+#[utoipa::path(
+    post,
+    path = "/api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}/comments",
+    params(
+        ("workspace_id" = String, Path, description = "The workspace's UUID"),
+        ("project_id" = String, Path, description = "The project's UUID"),
+        ("doc_id" = String, Path, description = "The doc to comment on"),
+        ("X-Omni-Run" = Option<String>, Header, description = "The agent's run"),
+        ("X-Omni-Role" = Option<String>, Header, description = "The agent's role"),
+        ("X-Omni-Model" = Option<String>, Header, description = "The model behind the agent"),
+        ("X-Omni-Harness" = Option<String>, Header, description = "The harness that runs the agent"),
+    ),
+    request_body = CreateCommentRequest,
+    responses(
+        (status = 201, description = "The new comment", body = CommentResponse),
+        (status = 400, description = "The node or the text is missing or blank", body = ErrorBody),
+        (status = 401, description = "No valid API key or session", body = ErrorBody),
+        (status = 404, description = "No such doc in this project and workspace", body = ErrorBody),
+        (status = 422, description = "The doc's head does not have the node address (`node_not_in_head`)", body = ErrorBody),
+    )
+)]
+pub async fn create_on_doc(
+    State(state): State<AppState>,
+    request: WorkspaceRequest,
+    identity: AgentIdentity,
+    Path((_, project_id, doc_id)): Path<(String, String, String)>,
+    body: Bytes,
+) -> Result<(StatusCode, Json<CommentResponse>), ApiError> {
+    let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
+    let doc_id = parse_uuid(&doc_id).ok_or(ApiError::NotFound)?;
+    let new = parse_body::<CreateCommentRequest>(&body);
+    let author = author_of(&request.actor, &identity);
+    let workspace_id = &request.workspace_id;
+
+    let mut tx = state.workspace_tx(workspace_id).await?;
+    let doc = find_doc(&mut tx, &project_id, &doc_id).await?;
+    tx.commit().await.map_err(ApiError::database)?;
+    let new = new?;
+    let (Some(node), Some(text)) = (non_blank(new.node), non_blank(new.text)) else {
+        return Err(invalid());
+    };
+    let address = Address::parse(&node).ok_or_else(not_in_head)?;
+    if !head_has(&state, workspace_id, &project_id, &doc, address).await? {
+        return Err(not_in_head());
+    }
+    let new = NewComment {
+        doc_id: &doc_id,
+        version_id: None,
+        node: &node,
+        text: &text,
+        author: &author,
+    };
+    insert_comment(&state, workspace_id, &project_id, new).await
+}
+
+/// Pins a comment to a node of a saved version, on the version's doc. This
+/// route stays until the web app moves to the live routes (US-113).
 #[utoipa::path(
     post,
     path = "/api/v1/w/{workspace_id}/projects/{project_id}/versions/{version_id}/comments",
@@ -419,7 +483,7 @@ impl<'a> Address<'a> {
     ),
     request_body = CreateCommentRequest,
     responses(
-        (status = 201, description = "The new comment, `open`", body = CommentResponse),
+        (status = 201, description = "The new comment", body = CommentResponse),
         (status = 400, description = "The text is missing or blank, or the node address names a node that the version does not have", body = ErrorBody),
         (status = 401, description = "No valid API key or session", body = ErrorBody),
         (status = 404, description = "No such version in this project and workspace", body = ErrorBody),
@@ -451,7 +515,7 @@ pub async fn create(
             .iter()
             .any(|n| n.id == id && kind.is_none_or(|kind| n.kind == kind))
     };
-    match Address::parse(&node)? {
+    match Address::parse(&node).ok_or_else(invalid)? {
         Address::Node(id) if has(id, None) => {}
         Address::Inside { instance, inner }
             if version.doc_kind == "design" && has(instance, Some("instance")) =>
@@ -472,36 +536,17 @@ pub async fn create(
         }
         _ => return Err(invalid()),
     }
-
-    let mut tx = state.workspace_tx(workspace_id).await?;
-    let comment_id: String = sqlx::query_scalar(
-        "INSERT INTO comments (workspace_id, version_id, node, author, body) \
-         VALUES ($1::uuid, $2::uuid, $3, $4::text::jsonb, $5) RETURNING id::text",
-    )
-    .bind(workspace_id)
-    .bind(&version_id)
-    .bind(&node)
-    .bind(author.to_string())
-    .bind(&text)
-    .fetch_one(&mut *tx)
-    .await
-    .map_err(ApiError::database)?;
-    let comment = load_comment(&mut tx, &project_id, &comment_id).await?;
-    let data = json!({
-        "comment_id": comment.id,
-        "doc_id": comment.doc_id,
-        "version_id": comment.version_id,
-        "node": comment.node,
-        "changeset_id": comment.changeset_id,
-        "status": comment.status,
-    });
-    live::emit(&mut tx, workspace_id, &project_id, "comment.created", &data).await?;
-    tx.commit().await.map_err(ApiError::database)?;
-    state.live.announce(workspace_id, &project_id);
-    Ok((StatusCode::CREATED, Json(CommentResponse { comment })))
+    let new = NewComment {
+        doc_id: &version.doc_id,
+        version_id: Some(&version_id),
+        node: &node,
+        text: &text,
+        author: &author,
+    };
+    insert_comment(&state, workspace_id, &project_id, new).await
 }
 
-/// Adds a reply to a comment. The comment keeps its status.
+/// Adds a reply to a comment.
 #[utoipa::path(
     post,
     path = "/api/v1/w/{workspace_id}/projects/{project_id}/comments/{comment_id}/replies",
@@ -519,7 +564,7 @@ pub async fn create(
         (status = 201, description = "The comment with the new reply last", body = CommentResponse),
         (status = 400, description = "The text is missing or blank", body = ErrorBody),
         (status = 401, description = "No valid API key or session", body = ErrorBody),
-        (status = 404, description = "No such comment in this project and workspace", body = ErrorBody),
+        (status = 404, description = "No such comment in this project and workspace, or it was deleted", body = ErrorBody),
     )
 )]
 pub async fn reply(
@@ -561,6 +606,45 @@ pub async fn reply(
     Ok((StatusCode::CREATED, Json(CommentResponse { comment })))
 }
 
+/// Deletes a comment. Only the human does. The row stays, with `deleted_at` set,
+/// and the comment is left out of every list and read.
+#[utoipa::path(
+    delete,
+    path = "/api/v1/w/{workspace_id}/projects/{project_id}/comments/{comment_id}",
+    params(
+        ("workspace_id" = String, Path, description = "The workspace's UUID"),
+        ("project_id" = String, Path, description = "The project's UUID"),
+        ("comment_id" = String, Path, description = "The comment's UUID"),
+    ),
+    responses(
+        (status = 204, description = "The comment is deleted"),
+        (status = 401, description = "No valid session", body = ErrorBody),
+        (status = 403, description = "Called with an API key; human only", body = ErrorBody),
+        (status = 404, description = "No such comment in this project and workspace, or it was deleted already", body = ErrorBody),
+    )
+)]
+pub async fn delete(
+    State(state): State<AppState>,
+    request: HumanRequest,
+    Path((_, project_id, comment_id)): Path<(String, String, String)>,
+) -> Result<StatusCode, ApiError> {
+    let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
+    let comment_id = parse_uuid(&comment_id).ok_or(ApiError::NotFound)?;
+    let workspace_id = &request.workspace_id;
+    let mut tx = state.workspace_tx(workspace_id).await?;
+    let row = load_row(&mut tx, &project_id, &comment_id, "FOR UPDATE OF c").await?;
+    sqlx::query("UPDATE comments SET deleted_at = clock_timestamp() WHERE id = $1::uuid")
+        .bind(&comment_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(ApiError::database)?;
+    let data = json!({ "comment_id": comment_id, "doc_id": row.doc_id });
+    live::emit(&mut tx, workspace_id, &project_id, "comment.deleted", &data).await?;
+    tx.commit().await.map_err(ApiError::database)?;
+    state.live.announce(workspace_id, &project_id);
+    Ok(StatusCode::NO_CONTENT)
+}
+
 // Reading -------------------------------------------------------------------------------
 
 /// One comment of a project.
@@ -573,9 +657,9 @@ pub async fn reply(
         ("comment_id" = String, Path, description = "The comment's UUID"),
     ),
     responses(
-        (status = 200, description = "The comment with its replies and the state of its node", body = SingleCommentResponse),
+        (status = 200, description = "The comment with its replies", body = SingleCommentResponse),
         (status = 401, description = "No valid API key or session", body = ErrorBody),
-        (status = 404, description = "No such comment in this project and workspace", body = ErrorBody),
+        (status = 404, description = "No such comment in this project and workspace, or it was deleted", body = ErrorBody),
     )
 )]
 pub async fn show(
@@ -594,17 +678,16 @@ pub async fn show(
     }))
 }
 
-/// The comments of a project, oldest first, narrowed by `doc`, `changeset` and
-/// `status`, which combine.
+/// The comments of a project that nobody deleted, oldest first, narrowed by
+/// `doc` and `feature`, which combine.
 #[utoipa::path(
     get,
     path = "/api/v1/w/{workspace_id}/projects/{project_id}/comments",
     params(
         ("workspace_id" = String, Path, description = "The workspace's UUID"),
         ("project_id" = String, Path, description = "The project's UUID"),
-        ("doc" = Option<String>, Query, description = "Only the comments on versions of this doc"),
-        ("changeset" = Option<String>, Query, description = "Only the comments made in this change set during its review"),
-        ("status" = Option<String>, Query, description = "Only the comments with this status: open, addressed or resolved"),
+        ("doc" = Option<String>, Query, description = "Only the comments on this doc"),
+        ("feature" = Option<String>, Query, description = "Only the comments on the docs of this feature"),
     ),
     responses(
         (status = 200, description = "The comments", body = CommentListResponse),
@@ -625,19 +708,11 @@ pub async fn list(
     let mut filter = Filter::default().and("d.project_id = {}::uuid", &project_id);
     if let Some(doc) = query.get("doc") {
         let doc = parse_uuid(doc).ok_or_else(invalid)?;
-        filter = filter.and("v.doc_id = {}::uuid", &doc);
+        filter = filter.and("c.doc_id = {}::uuid", &doc);
     }
-    if let Some(changeset) = query.get("changeset") {
-        let changeset = parse_uuid(changeset).ok_or_else(invalid)?;
-        filter = filter
-            .and("v.changeset_id = {}::uuid", &changeset)
-            .and_that("cs.status <> 'merged'");
-    }
-    if let Some(status) = query.get("status") {
-        if !STATUSES.contains(&status.as_str()) {
-            return Err(invalid());
-        }
-        filter = filter.and("c.status = {}", status);
+    if let Some(feature) = query.get("feature") {
+        let feature = parse_uuid(feature).ok_or_else(invalid)?;
+        filter = filter.and("d.feature_id = {}::uuid", &feature);
     }
     let rows = fetch_rows(&mut tx, filter, "").await?;
     let comments = bodies(&mut tx, rows).await?;
@@ -648,267 +723,15 @@ pub async fn list(
     }))
 }
 
-/// The comments of a project that are marked `addressed`, oldest first.
-pub(crate) async fn addressed_of_project(
+/// The comments of a project that wait on the human, oldest first: those whose
+/// latest reply is an agent's.
+pub(crate) async fn waiting_of_project(
     tx: &mut Tx,
     project_id: &str,
 ) -> Result<Vec<CommentBody>, ApiError> {
-    let filter = Filter::default()
-        .and("d.project_id = {}::uuid", project_id)
-        .and_that("c.status = 'addressed'");
+    let filter = Filter::default().and("d.project_id = {}::uuid", project_id);
     let rows = fetch_rows(tx, filter, "").await?;
-    bodies(tx, rows).await
-}
-
-// Statuses ------------------------------------------------------------------------------
-
-/// What happens to a comment's status.
-enum Change {
-    /// An agent names the version that fixes it: the version's ID as sent.
-    Addressed(Result<String, ApiError>),
-    Resolve,
-    Reopen,
-}
-
-/// Moves a comment along its statuses. The comment's row is locked first, so of
-/// two requests that race for it one wins and the other is refused or applied
-/// to the new status.
-async fn change_status(
-    state: &AppState,
-    workspace_id: &str,
-    project_id: &str,
-    comment_id: &str,
-    change: Change,
-) -> Result<Json<CommentResponse>, ApiError> {
-    let project_id = parse_uuid(project_id).ok_or(ApiError::NotFound)?;
-    let comment_id = parse_uuid(comment_id).ok_or(ApiError::NotFound)?;
-    let mut tx = state.workspace_tx(workspace_id).await?;
-    let current = load_row(&mut tx, &project_id, &comment_id, "FOR UPDATE OF c").await?;
-    let from = current.status.clone();
-    let (to, addressed_in) = match change {
-        Change::Addressed(version) => {
-            let version = parse_uuid(&version?).ok_or_else(invalid)?;
-            let later: bool = sqlx::query_scalar(
-                "SELECT EXISTS (SELECT 1 FROM versions nv, versions cv \
-                 WHERE nv.id = $1::uuid AND cv.id = $2::uuid AND nv.doc_id = cv.doc_id \
-                   AND (nv.created_at, nv.id) > (cv.created_at, cv.id))",
-            )
-            .bind(&version)
-            .bind(&current.version_id)
-            .fetch_one(&mut *tx)
-            .await
-            .map_err(ApiError::database)?;
-            if !later {
-                return Err(invalid());
-            }
-            if from == "resolved" {
-                return Err(ApiError::conflict("invalid_transition"));
-            }
-            ("addressed", Some(version))
-        }
-        Change::Resolve if from == "addressed" => ("resolved", current.addressed_in.clone()),
-        Change::Reopen if from != "open" => ("open", None),
-        Change::Resolve | Change::Reopen => return Err(ApiError::conflict("invalid_transition")),
-    };
-    sqlx::query(
-        "UPDATE comments SET status = $2, addressed_in_version_id = $3::uuid WHERE id = $1::uuid",
-    )
-    .bind(&comment_id)
-    .bind(to)
-    .bind(&addressed_in)
-    .execute(&mut *tx)
-    .await
-    .map_err(ApiError::database)?;
-    let comment = load_comment(&mut tx, &project_id, &comment_id).await?;
-    let data = json!({
-        "comment_id": comment.id,
-        "doc_id": comment.doc_id,
-        "version_id": comment.version_id,
-        "node": comment.node,
-        "changeset_id": comment.changeset_id,
-        "from_status": from,
-        "status": comment.status,
-        "addressed_in": comment.addressed_in,
-    });
-    live::emit(
-        &mut tx,
-        workspace_id,
-        &project_id,
-        "comment.status_changed",
-        &data,
-    )
-    .await?;
-    tx.commit().await.map_err(ApiError::database)?;
-    state.live.announce(workspace_id, &project_id);
-    Ok(Json(CommentResponse { comment }))
-}
-
-/// Marks a comment addressed, naming the version that fixes it. Only an agent
-/// does.
-#[utoipa::path(
-    post,
-    path = "/api/v1/w/{workspace_id}/projects/{project_id}/comments/{comment_id}/addressed",
-    params(
-        ("workspace_id" = String, Path, description = "The workspace's UUID"),
-        ("project_id" = String, Path, description = "The project's UUID"),
-        ("comment_id" = String, Path, description = "The comment's UUID"),
-        ("X-Omni-Run" = Option<String>, Header, description = "The agent's run"),
-        ("X-Omni-Role" = Option<String>, Header, description = "The agent's role"),
-    ),
-    request_body = AddressedRequest,
-    responses(
-        (status = 200, description = "The comment, now `addressed` in that version", body = CommentResponse),
-        (status = 400, description = "The version is missing, unknown, of another doc or not saved after the comment's version", body = ErrorBody),
-        (status = 401, description = "No valid API key", body = ErrorBody),
-        (status = 403, description = "Called with a session; agents only", body = ErrorBody),
-        (status = 404, description = "No such comment in this project and workspace", body = ErrorBody),
-        (status = 409, description = "The comment is `resolved` (`invalid_transition`)", body = ErrorBody),
-    )
-)]
-pub async fn addressed(
-    State(state): State<AppState>,
-    request: AgentRequest,
-    Path((_, project_id, comment_id)): Path<(String, String, String)>,
-    body: Bytes,
-) -> Result<Json<CommentResponse>, ApiError> {
-    let version = parse_body::<AddressedRequest>(&body)
-        .and_then(|sent| non_blank(sent.version_id).ok_or_else(invalid));
-    change_status(
-        &state,
-        &request.workspace_id,
-        &project_id,
-        &comment_id,
-        Change::Addressed(version),
-    )
-    .await
-}
-
-/// Resolves an addressed comment. Only the human does.
-#[utoipa::path(
-    post,
-    path = "/api/v1/w/{workspace_id}/projects/{project_id}/comments/{comment_id}/resolve",
-    params(
-        ("workspace_id" = String, Path, description = "The workspace's UUID"),
-        ("project_id" = String, Path, description = "The project's UUID"),
-        ("comment_id" = String, Path, description = "The comment's UUID"),
-    ),
-    responses(
-        (status = 200, description = "The comment, now `resolved`", body = CommentResponse),
-        (status = 401, description = "No valid session", body = ErrorBody),
-        (status = 403, description = "Called with an API key; human only", body = ErrorBody),
-        (status = 404, description = "No such comment in this project and workspace", body = ErrorBody),
-        (status = 409, description = "The comment is not `addressed` (`invalid_transition`)", body = ErrorBody),
-    )
-)]
-pub async fn resolve(
-    State(state): State<AppState>,
-    request: HumanRequest,
-    Path((_, project_id, comment_id)): Path<(String, String, String)>,
-) -> Result<Json<CommentResponse>, ApiError> {
-    change_status(
-        &state,
-        &request.workspace_id,
-        &project_id,
-        &comment_id,
-        Change::Resolve,
-    )
-    .await
-}
-
-/// Opens an addressed or resolved comment again. Only the human does.
-#[utoipa::path(
-    post,
-    path = "/api/v1/w/{workspace_id}/projects/{project_id}/comments/{comment_id}/reopen",
-    params(
-        ("workspace_id" = String, Path, description = "The workspace's UUID"),
-        ("project_id" = String, Path, description = "The project's UUID"),
-        ("comment_id" = String, Path, description = "The comment's UUID"),
-    ),
-    responses(
-        (status = 200, description = "The comment, now `open`", body = CommentResponse),
-        (status = 401, description = "No valid session", body = ErrorBody),
-        (status = 403, description = "Called with an API key; human only", body = ErrorBody),
-        (status = 404, description = "No such comment in this project and workspace", body = ErrorBody),
-        (status = 409, description = "The comment is `open` already (`invalid_transition`)", body = ErrorBody),
-    )
-)]
-pub async fn reopen(
-    State(state): State<AppState>,
-    request: HumanRequest,
-    Path((_, project_id, comment_id)): Path<(String, String, String)>,
-) -> Result<Json<CommentResponse>, ApiError> {
-    change_status(
-        &state,
-        &request.workspace_id,
-        &project_id,
-        &comment_id,
-        Change::Reopen,
-    )
-    .await
-}
-
-// Saving a version ----------------------------------------------------------------------
-
-/// Refuses a save of `draft` whose version, with the node IDs `kept`, drops a
-/// node that has an open comment: 409 `commented_nodes_removed` with the
-/// comments. The nodes that the version drops are those of the doc's previous
-/// version in the change set that it no longer has, or, when the change set has
-/// saved none of the doc yet, those of the version the draft started from; a
-/// comment inside an instance goes with the instance. Resolved and addressed
-/// comments never stop a save, and neither does `remove_commented`.
-pub(crate) async fn refuse_commented_removals(
-    state: &AppState,
-    workspace_id: &str,
-    project_id: &str,
-    draft: &DraftRow,
-    kept: &HashSet<String>,
-    remove_commented: bool,
-) -> Result<(), ApiError> {
-    if remove_commented {
-        return Ok(());
-    }
-    let mut tx = state.workspace_tx(workspace_id).await?;
-    let previous: Option<String> = sqlx::query_scalar(
-        "SELECT id::text FROM versions WHERE doc_id = $1::uuid AND changeset_id = $2::uuid \
-         ORDER BY created_at DESC, id DESC LIMIT 1",
-    )
-    .bind(&draft.doc_id)
-    .bind(&draft.changeset_id)
-    .fetch_optional(&mut *tx)
-    .await
-    .map_err(ApiError::database)?;
-    let Some(previous) = previous.or_else(|| draft.base_version_id.clone()) else {
-        return Ok(());
-    };
-    let dropped: HashSet<String> = nodes_of_version_id(&mut tx, &previous)
-        .await?
-        .into_iter()
-        .map(|node| node.id)
-        .filter(|id| !kept.contains(id))
-        .collect();
-    if dropped.is_empty() {
-        return Ok(());
-    }
-    let filter = Filter::default()
-        .and("d.project_id = {}::uuid", project_id)
-        .and("v.doc_id = {}::uuid", &draft.doc_id)
-        .and_that("c.status = 'open'");
-    let blocking: Vec<CommentRow> = fetch_rows(&mut tx, filter, "")
-        .await?
-        .into_iter()
-        .filter(|row| dropped.contains(node_of(&row.node)))
-        .collect();
-    if blocking.is_empty() {
-        return Ok(());
-    }
-    let comments = bodies(&mut tx, blocking).await?;
-    Err(ApiError::Listing(
-        StatusCode::CONFLICT,
-        "commented_nodes_removed",
-        "comments",
-        serde_json::to_value(comments).map_err(|error| {
-            eprintln!("omni-api: the comments cannot be written: {error}");
-            ApiError::Unavailable
-        })?,
-    ))
+    let mut comments = bodies(tx, rows).await?;
+    comments.retain(|comment| comment.waiting_on_you);
+    Ok(comments)
 }

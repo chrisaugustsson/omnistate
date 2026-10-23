@@ -250,7 +250,7 @@ export function waitingGroups(home: HomeResponse, params: ProjectParams, names?:
     },
     {
       kind: "comments",
-      title: "Comments marked addressed",
+      title: "Comments waiting on you",
       icon: MessageSquareText,
       tone: TONES.sky,
       items: comments.map((c) => ({

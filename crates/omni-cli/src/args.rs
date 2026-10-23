@@ -70,8 +70,6 @@ pub struct Args {
     pub replaces: Option<String>,
     /// `omni decision propose <thread> --file <decision.json>`.
     pub file: Option<String>,
-    /// `omni comment list --status open|addressed|resolved`.
-    pub status: Option<String>,
     /// `omni version save --remove-commented`: save even though the version
     /// removes nodes that have open comments.
     pub remove_commented: bool,
@@ -159,7 +157,6 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Args> {
             "--confidence" => &mut parsed.confidence,
             "--replaces" => &mut parsed.replaces,
             "--file" => &mut parsed.file,
-            "--status" => &mut parsed.status,
             "--question" => &mut parsed.question,
             "--criteria-file" => &mut parsed.criteria_file,
             "--out" => &mut parsed.out,

@@ -133,6 +133,10 @@ pub enum LiveEventName {
     CommentCreated,
     #[serde(rename = "comment.replied")]
     CommentReplied,
+    #[serde(rename = "comment.deleted")]
+    CommentDeleted,
+    /// No longer emitted (comments have no status since US-106); the web app
+    /// still names it until it moves to the live routes (US-113).
     #[serde(rename = "comment.status_changed")]
     CommentStatusChanged,
     #[serde(rename = "components.imported")]

@@ -8,11 +8,6 @@ export const ActorBodySchema = z.object({
 });
 export type ActorBody = z.infer<typeof ActorBodySchema>;
 
-export const AddressedRequestSchema = z.object({
-  version_id: z.string().nullable().optional(),
-});
-export type AddressedRequest = z.infer<typeof AddressedRequestSchema>;
-
 export const ApiKeyBodySchema = z.object({
   created_at: z.string(),
   id: z.string(),
@@ -137,21 +132,17 @@ export const ReplyBodySchema = z.object({
 export type ReplyBody = z.infer<typeof ReplyBodySchema>;
 
 export const CommentBodySchema = z.object({
-  addressed_in: z.string().nullable().optional(),
   author: z.record(z.string(), z.unknown()),
-  changeset_id: z.string().nullable().optional(),
-  compared_to: z.string().nullable().optional(),
   created_at: z.string(),
   doc_id: z.string(),
   feature_id: z.string().nullable().optional(),
   id: z.string(),
   node: z.string(),
-  node_status: z.string(),
   project_id: z.string(),
   replies: z.array(ReplyBodySchema),
-  status: z.string(),
   text: z.string(),
-  version_id: z.string(),
+  version_id: z.string().nullable().optional(),
+  waiting_on_you: z.boolean().optional(),
 });
 export type CommentBody = z.infer<typeof CommentBodySchema>;
 
@@ -633,7 +624,7 @@ export type LiveClientMessage = z.infer<typeof LiveClientMessageSchema>;
 export const LiveErrorCodeSchema = z.enum(["not_found", "invalid_request", "unavailable"]);
 export type LiveErrorCode = z.infer<typeof LiveErrorCodeSchema>;
 
-export const LiveEventNameSchema = z.enum(["changeset.open", "changeset.in_review", "changeset.approved", "changeset.rejected", "changeset.merged", "changeset.needs_rebase", "changeset.abandoned", "claim.taken", "claim.released", "claim.expired", "comment.created", "comment.replied", "comment.status_changed", "components.imported", "conflict.recorded", "conflict.resolved", "decision.proposed", "decision.superseded", "decision.approved", "decision.rejected", "design.imported", "doc.changed", "doc.created", "draft.opened", "draft.rebased", "feature.created", "feature.done", "feature.reopened", "op.applied", "phase.started", "post.created", "thread.created", "tokens.imported", "version.saved"]);
+export const LiveEventNameSchema = z.enum(["changeset.open", "changeset.in_review", "changeset.approved", "changeset.rejected", "changeset.merged", "changeset.needs_rebase", "changeset.abandoned", "claim.taken", "claim.released", "claim.expired", "comment.created", "comment.replied", "comment.deleted", "comment.status_changed", "components.imported", "conflict.recorded", "conflict.resolved", "decision.proposed", "decision.superseded", "decision.approved", "decision.rejected", "design.imported", "doc.changed", "doc.created", "draft.opened", "draft.rebased", "feature.created", "feature.done", "feature.reopened", "op.applied", "phase.started", "post.created", "thread.created", "tokens.imported", "version.saved"]);
 export type LiveEventName = z.infer<typeof LiveEventNameSchema>;
 
 export const LiveServerMessageSchema = z.union([
@@ -925,7 +916,6 @@ export type WorkspaceListResponse = z.infer<typeof WorkspaceListResponseSchema>;
 /** Every component schema by name. */
 export const schemas = {
   ActorBody: ActorBodySchema,
-  AddressedRequest: AddressedRequestSchema,
   ApiKeyBody: ApiKeyBodySchema,
   ApprovedVersion: ApprovedVersionSchema,
   AttachmentBody: AttachmentBodySchema,
@@ -1303,7 +1293,6 @@ export const operations = {
       "401": ErrorBodySchema,
       "403": ErrorBodySchema,
       "404": ErrorBodySchema,
-      "409": ErrorBodySchema,
     },
   },
   "POST /api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs/{doc_id}/versions": {
@@ -1407,24 +1396,11 @@ export const operations = {
       "404": ErrorBodySchema,
     },
   },
-  "POST /api/v1/w/{workspace_id}/projects/{project_id}/comments/{comment_id}/addressed": {
-    request: AddressedRequestSchema,
+  "DELETE /api/v1/w/{workspace_id}/projects/{project_id}/comments/{comment_id}": {
     responses: {
-      "200": CommentResponseSchema,
-      "400": ErrorBodySchema,
       "401": ErrorBodySchema,
       "403": ErrorBodySchema,
       "404": ErrorBodySchema,
-      "409": ErrorBodySchema,
-    },
-  },
-  "POST /api/v1/w/{workspace_id}/projects/{project_id}/comments/{comment_id}/reopen": {
-    responses: {
-      "200": CommentResponseSchema,
-      "401": ErrorBodySchema,
-      "403": ErrorBodySchema,
-      "404": ErrorBodySchema,
-      "409": ErrorBodySchema,
     },
   },
   "POST /api/v1/w/{workspace_id}/projects/{project_id}/comments/{comment_id}/replies": {
@@ -1434,15 +1410,6 @@ export const operations = {
       "400": ErrorBodySchema,
       "401": ErrorBodySchema,
       "404": ErrorBodySchema,
-    },
-  },
-  "POST /api/v1/w/{workspace_id}/projects/{project_id}/comments/{comment_id}/resolve": {
-    responses: {
-      "200": CommentResponseSchema,
-      "401": ErrorBodySchema,
-      "403": ErrorBodySchema,
-      "404": ErrorBodySchema,
-      "409": ErrorBodySchema,
     },
   },
   "PUT /api/v1/w/{workspace_id}/projects/{project_id}/components": {
@@ -1534,6 +1501,16 @@ export const operations = {
       "400": ErrorBodySchema,
       "401": ErrorBodySchema,
       "404": ErrorBodySchema,
+    },
+  },
+  "POST /api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}/comments": {
+    request: CreateCommentRequestSchema,
+    responses: {
+      "201": CommentResponseSchema,
+      "400": ErrorBodySchema,
+      "401": ErrorBodySchema,
+      "404": ErrorBodySchema,
+      "422": ErrorBodySchema,
     },
   },
   "GET /api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}/html": {

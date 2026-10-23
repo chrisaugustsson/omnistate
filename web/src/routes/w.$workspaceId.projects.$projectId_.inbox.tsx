@@ -5,7 +5,7 @@ import { WaitingList, featureNames, waitingCount, waitingGroups, type WaitingGro
 import { FilterTabs, SectionPage } from "@/components/project/section-page";
 
 // The project's inbox: everything that waits for the reviewer (decisions to
-// approve, change sets in review, comments marked addressed and agents'
+// approve, change sets in review, comments an agent replied to and agents'
 // questions), by kind, with a tab per kind. The items of a feature carry the
 // feature's name.
 export const Route = createFileRoute("/w/$workspaceId/projects/$projectId_/inbox")({

@@ -506,23 +506,15 @@ pub fn router(state: AppState) -> Router {
         )
         .route(
             "/api/v1/w/{workspace_id}/projects/{project_id}/comments/{comment_id}",
-            get(comments::show),
+            get(comments::show).delete(comments::delete),
+        )
+        .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}/comments",
+            post(comments::create_on_doc),
         )
         .route(
             "/api/v1/w/{workspace_id}/projects/{project_id}/comments/{comment_id}/replies",
             post(comments::reply),
-        )
-        .route(
-            "/api/v1/w/{workspace_id}/projects/{project_id}/comments/{comment_id}/addressed",
-            post(comments::addressed),
-        )
-        .route(
-            "/api/v1/w/{workspace_id}/projects/{project_id}/comments/{comment_id}/resolve",
-            post(comments::resolve),
-        )
-        .route(
-            "/api/v1/w/{workspace_id}/projects/{project_id}/comments/{comment_id}/reopen",
-            post(comments::reopen),
         )
         .route("/ws/w/{workspace_id}", get(live::socket))
         .fallback(not_found)

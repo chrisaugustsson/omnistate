@@ -35,7 +35,6 @@ import {
   SlidersHorizontal,
 } from "lucide-react";
 import { AgentChip } from "@/components/agent-chip";
-import { StatusBadge } from "@/components/status-badge";
 import { Button } from "@/components/ui/button";
 import {
   FloatingAlert,
@@ -246,7 +245,7 @@ function HtmlDocViewer({
   const wanted = useMemo(() => {
     const ids = new Set<string>();
     if (versionId) ids.add(versionId);
-    for (const comment of commentsOnSelected) ids.add(comment.version_id);
+    for (const comment of commentsOnSelected) if (comment.version_id) ids.add(comment.version_id);
     return Array.from(ids);
   }, [versionId, commentsOnSelected]);
   const requested = useRef(new Set<string>());
@@ -348,7 +347,7 @@ function HtmlDocViewer({
               versionId={versionId}
               noun="block"
               compare={(comment) => ({
-                then: blockTextOf(versionHtml[comment.version_id], selected),
+                then: blockTextOf(versionHtml[comment.version_id ?? ""], selected),
                 now: blockTextOf(shownHtml, selected),
               })}
               versionLabels={Object.fromEntries(choices.map((choice) => [choice.value, choice.label]))}
@@ -462,13 +461,14 @@ function CommentsPanel({
               <AgentChip name={holderOfComment(comment.author)} />
               <div className="flex shrink-0 items-center gap-1.5">
                 <span className="text-[11px] text-muted-foreground">{timeAgo(comment.created_at)}</span>
-                <StatusBadge status={comment.status} className="py-0 text-[11px]" />
+                {comment.waiting_on_you && (
+                  <span className="rounded-full bg-signal-soft px-1.5 text-[11px] font-medium">Waiting on you</span>
+                )}
               </div>
             </div>
             <p className="leading-relaxed break-words whitespace-pre-wrap">{comment.text}</p>
-            {comment.version_id !== versionId && selected && (
+            {comment.version_id && comment.version_id !== versionId && selected && (
               <Comparison
-                comment={comment}
                 noun={noun}
                 label={versionLabels[comment.version_id]}
                 {...compare(comment)}
@@ -528,13 +528,11 @@ function CommentsPanel({
 
 /** A comment made on another version than the one shown: the node as it was then, next to the node now. */
 function Comparison({
-  comment,
   noun,
   label,
   then,
   now,
 }: {
-  comment: CommentBody;
   noun: string;
   label: string | undefined;
   then: string;
@@ -547,7 +545,7 @@ function Comparison({
       </dt>
       <dd className="break-words text-muted-foreground">{then}</dd>
       <dt className="mt-1 text-[11px] font-medium text-muted-foreground">
-        Now{comment.node_status === "removed" ? " (removed since)" : ""}
+        Now
       </dt>
       <dd className="break-words">{now}</dd>
     </dl>
@@ -880,7 +878,7 @@ function DesignViewer({
   const wanted = useMemo(() => {
     const ids = new Set<string>();
     if (versionId) ids.add(versionId);
-    for (const comment of commentsOnSelected) ids.add(comment.version_id);
+    for (const comment of commentsOnSelected) if (comment.version_id) ids.add(comment.version_id);
     return Array.from(ids);
   }, [versionId, commentsOnSelected]);
   const { bodies, failed: versionFailed } = useVersionBodies(workspaceId, projectId, wanted);
@@ -1119,10 +1117,12 @@ function DesignViewer({
   useEffect(() => {
     if (!boardOfSelected) return;
     for (const comment of commentsOnSelected) {
-      const key = `${comment.version_id}/${boardOfSelected}`;
-      if (comment.version_id === versionId || askedOlder.current.has(key)) continue;
+      const older = comment.version_id;
+      if (!older || older === versionId) continue;
+      const key = `${older}/${boardOfSelected}`;
+      if (askedOlder.current.has(key)) continue;
       askedOlder.current.add(key);
-      loadBoard(workspaceId, projectId, docId, comment.version_id, boardOfSelected).then(
+      loadBoard(workspaceId, projectId, docId, older, boardOfSelected).then(
         (board) => setOlderBoards((previous) => ({ ...previous, [key]: board })),
         () => setOlderBoards((previous) => ({ ...previous, [key]: null })),
       );
@@ -1325,7 +1325,7 @@ function DesignViewer({
             versionId={versionId}
             noun="node"
             compare={(comment) => ({
-              then: thenOf(comment.version_id),
+              then: thenOf(comment.version_id ?? ""),
               now: nowSource ? describeNode(nodeAt(nowSource, selected ?? "")) : "Loading",
             })}
             versionLabels={Object.fromEntries(choices.map((choice) => [choice.value, choice.label]))}

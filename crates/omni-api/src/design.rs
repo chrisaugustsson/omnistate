@@ -766,6 +766,37 @@ pub(crate) async fn instance_holds(
         .is_some_and(|component| tree_of(component).keys().any(|id| id.as_str() == inner)))
 }
 
+/// Whether `inner` is a node of the component that the instance `instance`
+/// places, as the design system's head defines the component: the second half
+/// of the node address `<instanceId>/<componentNodeId>` of a comment on a
+/// design's head (US-106). `chunk` is the board chunk of the head that holds
+/// the instance, so no other board is read.
+pub(crate) async fn head_instance_holds(
+    state: &AppState,
+    workspace_id: &str,
+    project_id: &str,
+    chunk: &str,
+    instance: &str,
+    inner: &str,
+) -> Result<bool, ApiError> {
+    let text = read_chunk(state, workspace_id, chunk).await?;
+    let nodes = serde_json::from_str::<Value>(&text)
+        .map_err(|e| e.to_string())
+        .and_then(|board| nodes_from(&Value::Array(vec![board])))
+        .map_err(|e| {
+            eprintln!("omni-api: the chunk {chunk} holds no board: {e}");
+            ApiError::Unavailable
+        })?;
+    let Some(placed) = component_of_instance(&nodes, instance) else {
+        return Ok(false);
+    };
+    let system = system_head_of_project(state, workspace_id, project_id).await?;
+    Ok(system
+        .library
+        .get(&placed)
+        .is_some_and(|component| tree_of(component).keys().any(|id| id.as_str() == inner)))
+}
+
 /// Saves the change set's draft of the design system first when it has
 /// changes that no version holds, and returns the design system version that
 /// a design version of the change set records: the version that holds the

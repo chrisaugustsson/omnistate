@@ -1,7 +1,7 @@
 //! The project home (US-040): the reviewer's page of one project in a single
 //! read. It lists the project's docs, change sets and threads, and what waits
 //! for the human: the decisions to approve, the change sets in review, the
-//! comments that an agent marked addressed, and the agents' questions that no
+//! comments whose latest reply is an agent's, and the agents' questions that no
 //! post of the human has answered yet.
 //!
 //! A feature (Q51) is a level below the project: the home lists the features
@@ -19,7 +19,7 @@
 use crate::AppState;
 use crate::changesets::{ChangesetBody, Scope, changesets_of_project, require_project};
 use crate::claims;
-use crate::comments::{CommentBody, addressed_of_project};
+use crate::comments::{CommentBody, waiting_of_project};
 use crate::decisions::{DecisionBody, proposed_of_project};
 use crate::docs::{DocBody, docs_of_project};
 use crate::features::{FEATURE_COLUMNS, FeatureBody};
@@ -38,7 +38,7 @@ pub struct WaitingBody {
     pub decisions: Vec<DecisionBody>,
     /// The change sets whose status is `in_review`.
     pub changesets: Vec<ChangesetBody>,
-    /// The comments whose status is `addressed`.
+    /// The comments whose latest reply is an agent's.
     pub comments: Vec<CommentBody>,
     /// The `question` posts of agents that no post of the human links to as a
     /// reply, in every phase.
@@ -121,7 +121,7 @@ pub async fn show(
     let changesets = changesets_of_project(&mut tx, &Viewer::human(), &project_id).await?;
     let threads = threads_of_project(&mut tx, &project_id).await?;
     let decisions = proposed_of_project(&mut tx, &Viewer::human(), &project_id).await?;
-    let comments = addressed_of_project(&mut tx, &project_id).await?;
+    let comments = waiting_of_project(&mut tx, &project_id).await?;
     let questions = unanswered_questions(&mut tx, &project_id).await?;
     tx.commit().await.map_err(ApiError::database)?;
     let in_review: Vec<ChangesetBody> = changesets
