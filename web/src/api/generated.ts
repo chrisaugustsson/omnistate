@@ -616,7 +616,7 @@ export type LiveClientMessage = z.infer<typeof LiveClientMessageSchema>;
 export const LiveErrorCodeSchema = z.enum(["not_found", "invalid_request", "unavailable"]);
 export type LiveErrorCode = z.infer<typeof LiveErrorCodeSchema>;
 
-export const LiveEventNameSchema = z.enum(["changeset.open", "changeset.in_review", "changeset.approved", "changeset.rejected", "changeset.merged", "changeset.needs_rebase", "changeset.abandoned", "claim.taken", "claim.released", "claim.expired", "comment.created", "comment.replied", "comment.status_changed", "components.imported", "conflict.recorded", "conflict.resolved", "decision.proposed", "decision.superseded", "decision.approved", "decision.rejected", "design.imported", "doc.created", "draft.opened", "draft.rebased", "feature.created", "feature.done", "feature.reopened", "op.applied", "phase.started", "post.created", "thread.created", "tokens.imported", "version.saved"]);
+export const LiveEventNameSchema = z.enum(["changeset.open", "changeset.in_review", "changeset.approved", "changeset.rejected", "changeset.merged", "changeset.needs_rebase", "changeset.abandoned", "claim.taken", "claim.released", "claim.expired", "comment.created", "comment.replied", "comment.status_changed", "components.imported", "conflict.recorded", "conflict.resolved", "decision.proposed", "decision.superseded", "decision.approved", "decision.rejected", "design.imported", "doc.changed", "doc.created", "draft.opened", "draft.rebased", "feature.created", "feature.done", "feature.reopened", "op.applied", "phase.started", "post.created", "thread.created", "tokens.imported", "version.saved"]);
 export type LiveEventName = z.infer<typeof LiveEventNameSchema>;
 
 export const LiveServerMessageSchema = z.union([
@@ -1508,6 +1508,17 @@ export const operations = {
       "200": MainlineHtmlResponseSchema,
       "401": ErrorBodySchema,
       "404": ErrorBodySchema,
+    },
+  },
+  "POST /api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}/ops": {
+    request: EditRequestSchema,
+    responses: {
+      "200": EditResponseSchema,
+      "400": InvalidOperationBodySchema,
+      "401": ErrorBodySchema,
+      "403": ErrorBodySchema,
+      "404": ErrorBodySchema,
+      "409": ConflictBodySchema,
     },
   },
   "GET /api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}/versions": {

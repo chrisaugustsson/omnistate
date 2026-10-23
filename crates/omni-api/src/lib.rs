@@ -361,6 +361,10 @@ pub fn router(state: AppState) -> Router {
             get(docs::show_doc),
         )
         .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}/ops",
+            post(docs::edit_doc),
+        )
+        .route(
             "/api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}/html",
             get(docs::read_doc_html),
         )

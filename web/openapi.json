@@ -1935,6 +1935,7 @@
           "decision.approved",
           "decision.rejected",
           "design.imported",
+          "doc.changed",
           "doc.created",
           "draft.opened",
           "draft.rebased",
@@ -8859,6 +8860,165 @@
           "crate::docs"
         ],
         "x-omni-access": "both"
+      }
+    },
+    "/api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}/ops": {
+      "post": {
+        "operationId": "edit_doc",
+        "parameters": [
+          {
+            "description": "The workspace's UUID",
+            "in": "path",
+            "name": "workspace_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The project's UUID",
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The doc's UUID",
+            "in": "path",
+            "name": "doc_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The agent's run",
+            "in": "header",
+            "name": "X-Omni-Run",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "description": "The agent's role",
+            "in": "header",
+            "name": "X-Omni-Role",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "description": "The model behind the agent",
+            "in": "header",
+            "name": "X-Omni-Model",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "description": "The harness that runs the agent",
+            "in": "header",
+            "name": "X-Omni-Harness",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EditRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EditResponse"
+                }
+              }
+            },
+            "description": "The batch applied; one result per operation"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InvalidOperationBody"
+                }
+              }
+            },
+            "description": "The body is not a batch (`invalid_request`), the doc is no HTML doc (`not_an_html_doc`), or an operation is refused (`invalid_operation`, naming an unknown ID)"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No valid API key or session"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Called with a session; agents only"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No such doc in this project and workspace"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConflictBody"
+                }
+              }
+            },
+            "description": "A node is at another revision than the operation expected (`conflict`); nothing changed"
+          }
+        },
+        "summary": "Applies a batch of operations to the head of an HTML doc, all or nothing,\nwith no change set. The batch runs under the lock on the doc's row, so\nbatches to one doc are applied one after the other, each to the head the\none before made. The new head is a chunk in RustFS that holds the doc as\nHTML with `data-node-id` and `data-rev`, which is where a node's revision\nis kept: nothing about a head is held in memory. A batch that is refused\nchanges, logs and emits nothing; an applied one adds one row of\n`doc_changes` and emits `doc.changed`.",
+        "tags": [
+          "crate::docs"
+        ],
+        "x-omni-access": "agent"
       }
     },
     "/api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}/versions": {

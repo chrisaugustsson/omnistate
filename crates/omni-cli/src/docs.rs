@@ -1,6 +1,7 @@
 //! `omni doc`: create a doc (live, or in a change set), list the project's docs,
 //! open a doc there, read it (its head, a version or a change set's draft), show
-//! its metadata and edit a draft with a batch of operations. The project is found as for `omni changeset`.
+//! its metadata and edit a doc (live, or a draft in a change set) with a batch of
+//! operations. The project is found as for `omni changeset`.
 
 use crate::args::Args;
 use crate::changesets::{creation_feature, is_uuid, project_features, project_id, resolve_feature};
@@ -356,24 +357,27 @@ pub fn show(args: &Args, doc: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-/// `omni doc edit <doc> --changeset <id> [--body-file <path|->]`
+/// `omni doc edit <doc> [--changeset <id>] [--body-file <path|->]`: without
+/// `--changeset` the batch applies to the live doc, with it to the change set's
+/// draft.
 pub fn edit(args: &Args, doc: Option<&str>) -> Result<()> {
-    const USAGE: &str = "omni doc edit <doc> --changeset <id> [--body-file <path|->]";
+    const USAGE: &str = "omni doc edit <doc> [--changeset <id>] [--body-file <path|->]";
     let doc = doc_id(doc, USAGE)?;
-    let changeset = changeset_option(args, USAGE)?;
+    let changeset = match args.changeset {
+        Some(_) => Some(changeset_option(args, USAGE)?),
+        None => None,
+    };
     let batch = read_batch(args)?;
 
     let agent = agent(args)?;
     let project = project_id(args, &agent)?;
     let body = format!("{{\"ops\":{}}}", batch.trim());
-    let response = agent.request(
-        "POST",
-        &format!(
-            "{}/changesets/{changeset}/docs/{doc}/ops",
-            project_path(&agent, &project)
-        ),
-        Some(body.as_bytes()),
-    )?;
+    let base = project_path(&agent, &project);
+    let path = match &changeset {
+        Some(changeset) => format!("{base}/changesets/{changeset}/docs/{doc}/ops"),
+        None => format!("{base}/docs/{doc}/ops"),
+    };
+    let response = agent.request("POST", &path, Some(body.as_bytes()))?;
     print_edit(args, &response.text())
 }
 

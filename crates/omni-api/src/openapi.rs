@@ -106,6 +106,7 @@ use utoipa::OpenApi;
         crate::docs::open_draft,
         crate::docs::read_draft,
         crate::docs::edit_draft,
+        crate::docs::edit_doc,
         crate::claims::take_claim,
         crate::claims::release_claim,
         crate::versions::save_version,

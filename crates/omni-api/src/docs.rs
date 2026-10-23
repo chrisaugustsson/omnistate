@@ -1944,6 +1944,145 @@ pub async fn edit_draft(
     Ok(Json(EditResponse { results }))
 }
 
+/// Applies a batch of operations to the head of an HTML doc, all or nothing,
+/// with no change set. The batch runs under the lock on the doc's row, so
+/// batches to one doc are applied one after the other, each to the head the
+/// one before made. The new head is a chunk in RustFS that holds the doc as
+/// HTML with `data-node-id` and `data-rev`, which is where a node's revision
+/// is kept: nothing about a head is held in memory. A batch that is refused
+/// changes, logs and emits nothing; an applied one adds one row of
+/// `doc_changes` and emits `doc.changed`.
+#[utoipa::path(
+    post,
+    path = "/api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}/ops",
+    params(
+        ("workspace_id" = String, Path, description = "The workspace's UUID"),
+        ("project_id" = String, Path, description = "The project's UUID"),
+        ("doc_id" = String, Path, description = "The doc's UUID"),
+        ("X-Omni-Run" = Option<String>, Header, description = "The agent's run"),
+        ("X-Omni-Role" = Option<String>, Header, description = "The agent's role"),
+        ("X-Omni-Model" = Option<String>, Header, description = "The model behind the agent"),
+        ("X-Omni-Harness" = Option<String>, Header, description = "The harness that runs the agent"),
+    ),
+    request_body = EditRequest,
+    responses(
+        (status = 200, description = "The batch applied; one result per operation", body = EditResponse),
+        (status = 400, description = "The body is not a batch (`invalid_request`), the doc is no HTML doc (`not_an_html_doc`), or an operation is refused (`invalid_operation`, naming an unknown ID)", body = InvalidOperationBody),
+        (status = 401, description = "No valid API key or session", body = ErrorBody),
+        (status = 403, description = "Called with a session; agents only", body = ErrorBody),
+        (status = 404, description = "No such doc in this project and workspace", body = ErrorBody),
+        (status = 409, description = "A node is at another revision than the operation expected (`conflict`); nothing changed", body = ConflictBody),
+    )
+)]
+pub async fn edit_doc(
+    State(state): State<AppState>,
+    request: AgentRequest,
+    identity: AgentIdentity,
+    Path((_, project_id, doc_id)): Path<(String, String, String)>,
+    body: Bytes,
+) -> Result<Json<EditResponse>, DocError> {
+    let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
+    let doc_id = parse_uuid(&doc_id).ok_or(ApiError::NotFound)?;
+    let workspace_id = request.workspace_id;
+    let batch = parse_body::<EditRequest>(&body);
+
+    // The lock comes first and the batch holds it to its commit, and the only
+    // connection it uses is its own.
+    let mut tx = state.workspace_tx(&workspace_id).await?;
+    let locked: Option<(String, Option<String>)> = sqlx::query_as(
+        "SELECT kind, head FROM docs WHERE id = $1::uuid AND project_id = $2::uuid FOR UPDATE",
+    )
+    .bind(&doc_id)
+    .bind(&project_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(ApiError::database)?;
+    let (kind, head_before) = locked.ok_or(ApiError::NotFound)?;
+    let sent = batch?.ops;
+    if kind != "html" {
+        return Err(ApiError::bad_request("not_an_html_doc").into());
+    }
+    let mut ops = Vec::with_capacity(sent.len());
+    for (index, op) in sent.iter().enumerate() {
+        match serde_json::from_value::<Operation>(op.clone()) {
+            Ok(op) => ops.push(op),
+            Err(error) => {
+                return Err(DocError::Invalid {
+                    index,
+                    message: error.to_string(),
+                });
+            }
+        }
+    }
+
+    let html = match &head_before {
+        Some(head) => versions::read_chunk(&state, &workspace_id, head).await?,
+        None => String::new(),
+    };
+    let mut doc = EditDoc::from_html(&html).map_err(|e| {
+        eprintln!("omni-api: the head of doc {doc_id} cannot be loaded: {e}");
+        ApiError::Unavailable
+    })?;
+    let mut used: HashSet<NodeId> = doc.index().iter().map(|node| node.id).collect();
+    let mut new_ids = || loop {
+        let id = random_node_id();
+        if used.insert(id) {
+            return id;
+        }
+    };
+    let applied = match doc.apply(&ops, &mut new_ids) {
+        Ok(applied) => applied,
+        Err(ApplyError::Conflict(conflict)) => return Err(DocError::Conflict(conflict)),
+        Err(ApplyError::Invalid { index, message }) => {
+            return Err(DocError::Invalid { index, message });
+        }
+    };
+    let results: Vec<OpResultBody> = applied
+        .ops
+        .iter()
+        .map(|result| OpResultBody {
+            node: result.node.to_string(),
+            revision: result.revision,
+            created: result.created.iter().map(NodeId::to_string).collect(),
+            removed: result.removed.iter().map(NodeId::to_string).collect(),
+        })
+        .collect();
+    if results.is_empty() {
+        return Ok(Json(EditResponse { results }));
+    }
+
+    let snapshot = Snapshot::new(doc.to_html_with_revisions(), doc.index());
+    let head_after = versions::store_text(&state, &workspace_id, &snapshot.html).await?;
+    versions::index_snapshot(&mut tx, &workspace_id, &head_after, &snapshot).await?;
+    sqlx::query("UPDATE docs SET head = $2 WHERE id = $1::uuid")
+        .bind(&doc_id)
+        .bind(&head_after)
+        .execute(&mut *tx)
+        .await
+        .map_err(ApiError::database)?;
+    log_change(
+        &mut tx,
+        &workspace_id,
+        &doc_id,
+        &identity.to_json(),
+        &Value::Array(sent),
+        head_before.as_deref(),
+        &head_after,
+    )
+    .await?;
+    live::emit(
+        &mut tx,
+        &workspace_id,
+        &project_id,
+        "doc.changed",
+        &json!({ "doc_id": doc_id, "head": head_after }),
+    )
+    .await?;
+    tx.commit().await.map_err(ApiError::database)?;
+    state.live.announce(&workspace_id, &project_id);
+    Ok(Json(EditResponse { results }))
+}
+
 /// Whether a batch places an instance of a component or changes one, whose
 /// component, properties and overrides must fit the design system.
 fn places_instances(sent: &[Value]) -> bool {

@@ -80,10 +80,12 @@ Usage:
                                       for a draft); without options, the doc's head (a
                                       design's tags)
   omni doc show <doc>                 show the doc's metadata, mainline version, drafts, claims
-  omni doc edit <doc> --changeset <id>
+  omni doc edit <doc> [--changeset <id>]
                                       apply a batch of operations (a JSON array, from
-                                      --body-file or standard input) to the draft; prints
-                                      each node's new revision and the IDs of new nodes
+                                      --body-file or standard input) to the live doc, at
+                                      once and all or nothing (--changeset <id> edits that
+                                      change set's draft instead); prints each node's new
+                                      revision and the IDs of new nodes
   omni doc remove <doc> --changeset <id> [--remove-commented]
                                       remove a doc in a change set: saves a version that
                                       marks it removed; the doc and its history stay. Open

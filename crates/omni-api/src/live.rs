@@ -151,6 +151,8 @@ pub enum LiveEventName {
     DecisionRejected,
     #[serde(rename = "design.imported")]
     DesignImported,
+    #[serde(rename = "doc.changed")]
+    DocChanged,
     #[serde(rename = "doc.created")]
     DocCreated,
     #[serde(rename = "draft.opened")]

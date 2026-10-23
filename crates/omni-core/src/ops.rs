@@ -163,15 +163,22 @@ pub struct EditDoc {
 }
 
 impl EditDoc {
-    /// Starts from HTML in which every block carries a `data-node-id`. Every
-    /// node starts at revision 1.
+    /// Starts from HTML in which every block carries a `data-node-id`. A node
+    /// starts at the revision of its `data-rev` (what `to_html_with_revisions`
+    /// writes), else at revision 1.
     pub fn from_html(html: &str) -> Result<EditDoc, ParseError> {
-        let parsed = HtmlDoc::parse_identified(html)?;
+        let (parsed, revisions) = HtmlDoc::parse_identified(html)?;
         let mut doc = EditDoc {
             nodes: HashMap::new(),
             top: Vec::new(),
         };
-        let mut keep_id = |_: &mut Block| Ok(1);
+        let mut keep_id = |block: &mut Block| {
+            Ok(block
+                .id()
+                .and_then(|id| revisions.get(id))
+                .copied()
+                .unwrap_or(1))
+        };
         doc.top = doc
             .graft_all(parsed.blocks().to_vec(), None, &mut keep_id)
             .expect("a parsed doc has an ID on every block");

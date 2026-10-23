@@ -295,6 +295,19 @@ pub(crate) async fn store_snapshot(
     Ok(chunk)
 }
 
+/// Stores `text` as a chunk of its own and returns its name, the BLAKE3 hash of
+/// the text. It does not consult the chunk index, so it needs no database
+/// connection: a caller that holds a row lock stores its chunk with it.
+pub(crate) async fn store_text(
+    state: &AppState,
+    workspace_id: &str,
+    text: &str,
+) -> Result<String, ApiError> {
+    let chunk = blake3_hex(text.as_bytes());
+    put_chunk(&state.bucket, workspace_id, &chunk, text).await?;
+    Ok(chunk)
+}
+
 /// The HTML that a chunk holds.
 pub(crate) async fn read_chunk(
     state: &AppState,

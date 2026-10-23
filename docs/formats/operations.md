@@ -11,6 +11,25 @@ A batch is a JSON array of operations. An operation is an object with an `op`
 field, an unknown field, a node ID that is not 8 lowercase base32 characters and
 a negative revision are all errors when the batch is read.
 
+## Where a batch goes
+
+A batch applies to the live doc: `POST .../docs/{doc_id}/ops` with the body
+`{"ops": [...]}`, or `omni doc edit <doc>` without `--changeset`. It is applied to
+the doc's head all or nothing, under a lock on the doc, so batches of agents that
+write one doc at once are applied one after the other, each to the head the one
+before made. The answer is 200 `{"results": [...]}`, one result per operation
+with the `node`, its new `revision`, and the IDs it `created` and `removed`; the
+next read of the doc has the change.
+
+Nothing about a head is held in memory. The head of an HTML doc is a chunk with
+`data-node-id` and `data-rev` on every block, and `data-rev` is where a node's
+revision is kept between batches, so an API that is started afresh checks
+revisions against what was written. Every applied batch adds one row to the
+doc's change log (`doc_changes`: the agent, the operations as sent, the head
+before and after) and sends `doc.changed` with the doc ID and the new head. A
+refused batch (a conflict, an invalid operation, a body that is not a batch)
+changes, logs and sends nothing. A batch of no operations changes nothing either.
+
 ## Nodes, revisions and positions
 
 A node is addressed by its ID. Every node has a revision, a number that starts at

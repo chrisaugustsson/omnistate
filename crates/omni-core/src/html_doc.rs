@@ -11,7 +11,7 @@
 use crate::design::{AttachmentRef, NodeId};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::str::FromStr;
 
@@ -546,9 +546,15 @@ impl HtmlDoc {
     }
 
     /// Like [`HtmlDoc::parse`], and every block must carry a `data-node-id`:
-    /// the HTML of a doc under edit.
-    pub(crate) fn parse_identified(html: &str) -> std::result::Result<HtmlDoc, ParseError> {
-        Self::parse_with(html, true)
+    /// the HTML of a doc under edit. A block may carry the `data-rev` that
+    /// [`HtmlDoc::to_html_with`] writes; the revisions are returned beside the
+    /// doc.
+    pub(crate) fn parse_identified(
+        html: &str,
+    ) -> std::result::Result<(HtmlDoc, HashMap<NodeId, u64>), ParseError> {
+        let mut parser = Parser::new(html, true, 0);
+        let blocks = parser.blocks(None)?;
+        Ok((HtmlDoc { blocks }, parser.revisions))
     }
 
     fn parse_with(html: &str, require_ids: bool) -> std::result::Result<HtmlDoc, ParseError> {
@@ -984,8 +990,11 @@ struct Parser {
     last_line: usize,
     ids: HashSet<NodeId>,
     depth: usize,
-    /// Whether a block without a `data-node-id` is an error.
+    /// Whether a block without a `data-node-id` is an error. The blocks of
+    /// such a doc may also carry the `data-rev` that the printer writes, which
+    /// is kept in `revisions`.
     require_ids: bool,
+    revisions: HashMap<NodeId, u64>,
 }
 
 fn is_blank(text: &str) -> bool {
@@ -1000,6 +1009,7 @@ impl Parser {
             ids: HashSet::new(),
             depth,
             require_ids,
+            revisions: HashMap::new(),
         }
     }
 
@@ -1050,6 +1060,9 @@ impl Parser {
 
     fn read_id(&mut self, tag: &StartTag, extra: &[&str]) -> Result<Option<NodeId>> {
         let mut allowed = vec!["data-node-id"];
+        if self.require_ids {
+            allowed.push("data-rev");
+        }
         allowed.extend_from_slice(extra);
         tag.check_attrs(&allowed)?;
         let Some(value) = tag.attr("data-node-id") else {
@@ -1075,6 +1088,18 @@ impl Parser {
                 tag.line,
                 format!("`data-node-id` `{id}` is used twice: every block has its own ID"),
             ));
+        }
+        if let Some(value) = tag.attr("data-rev") {
+            let revision = value.parse::<u64>().ok().filter(|revision| *revision >= 1);
+            let Some(revision) = revision else {
+                return Err(error(
+                    tag.line,
+                    format!(
+                        "`data-rev` is `{value}`, which is not a revision: revisions are whole numbers from 1"
+                    ),
+                ));
+            };
+            self.revisions.insert(id, revision);
         }
         Ok(Some(id))
     }
