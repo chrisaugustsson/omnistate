@@ -119,6 +119,9 @@ function FeatureItem({
         <Layers />
         <span className="min-w-0 truncate">{name}</span>
         <Count value={summary.waiting} />
+        {summary.feature.status === "done" && (
+          <span className={cn("text-[11px] font-medium text-muted-foreground", !summary.waiting && "ml-auto")}>Done</span>
+        )}
       </Link>
       {here &&
         FEATURE_SECTIONS.map(({ section, label, to }) => {

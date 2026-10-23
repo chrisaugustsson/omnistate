@@ -11,7 +11,7 @@ export function useHome(workspaceId: string, projectId: string) {
   const load = useCallback(() => loadHome(workspaceId, projectId), [workspaceId, projectId]);
   const { value: home, failed, reload } = useReloading(load);
   useProjectEvents(projectId, reload);
-  return { home, failed };
+  return { home, failed, reload };
 }
 
 /** The name of the project `projectId`, once the workspace's projects are loaded. */

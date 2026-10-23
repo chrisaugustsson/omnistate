@@ -5,6 +5,7 @@ import type { HomeResponse } from "@/api/generated";
 import { PageHeader } from "@/components/page-header";
 import { scopedHome } from "@/components/project/items";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
 import { useHome, useProjectName } from "@/lib/use-home";
 import { cn } from "@/lib/utils";
 
@@ -35,7 +36,7 @@ export function SectionPage({
   const { failed } = loaded;
   const home = loaded.home && feature !== undefined ? scopedHome(loaded.home, feature) : loaded.home;
   const name = useProjectName(workspaceId, projectId);
-  const featureName = feature ? loaded.home?.features?.find((summary) => summary.feature.id === feature)?.feature.name : null;
+  const current = feature ? loaded.home?.features?.find((summary) => summary.feature.id === feature)?.feature : undefined;
   return (
     <main className="mx-auto max-w-5xl px-5 py-8 md:px-10 md:py-12">
       <PageHeader
@@ -47,13 +48,14 @@ export function SectionPage({
               className="group inline-flex items-center gap-1.5 transition-colors hover:text-foreground"
             >
               <ArrowLeft className="size-3.5 transition-transform group-hover:-translate-x-0.5" />
-              {featureName ?? "Feature"}
+              {current?.name ?? "Feature"}
             </Link>
           ) : (
             (name ?? "Project")
           )
         }
         title={title}
+        badge={current?.status === "done" ? <Badge variant="outline">Done</Badge> : undefined}
         description={home && description?.(home)}
       />
       {failed && (

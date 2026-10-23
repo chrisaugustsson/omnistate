@@ -11,6 +11,7 @@ import {
   CircleDot,
   FileText,
   GitMerge,
+  Globe,
   GitPullRequestArrow,
   PenTool,
   Scale,
@@ -35,6 +36,7 @@ import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { timeAgo } from "@/lib/format";
 import { useReloading } from "@/lib/reloading";
+import { useHome, useProjectName } from "@/lib/use-home";
 import { cn } from "@/lib/utils";
 import { useProjectEvents } from "@/live/context";
 import { ViewerFrame, type BlockChange } from "@/viewer/frame";
@@ -93,6 +95,13 @@ function ChangesetReview() {
     reloadConflicts();
   });
   const loaded = review.value;
+  const { home } = useHome(workspaceId, projectId);
+  const projectName = useProjectName(workspaceId, projectId);
+  const featureId = loaded?.changeset.feature_id ?? null;
+  const featureName = home?.features?.find((summary) => summary.feature.id === featureId)?.feature.name;
+  // Only a feature's change set can change a doc that is not its own; a doc is global when it has no feature.
+  const globalDocs = new Set(featureId ? home?.docs.filter((doc) => !doc.feature_id).map((doc) => doc.id) : []);
+  const globalCount = loaded?.docs.filter((doc) => globalDocs.has(doc.doc_id)).length ?? 0;
 
   return (
     <main className="mx-auto max-w-7xl px-5 py-8 md:px-10 md:py-12">
@@ -110,16 +119,42 @@ function ChangesetReview() {
       )}
       {loaded && (
         <>
-          <Header review={loaded} />
+          <Header
+            review={loaded}
+            scope={
+              featureId ? (
+                <>
+                  Feature{" "}
+                  <Link
+                    to="/w/$workspaceId/projects/$projectId/features/$featureId"
+                    params={{ workspaceId, projectId, featureId }}
+                    className="font-medium text-foreground underline-offset-4 hover:underline focus-visible:underline focus-visible:outline-none"
+                  >
+                    {featureName ?? "…"}
+                  </Link>
+                </>
+              ) : (
+                <>
+                  Project <span className="font-medium text-foreground">{projectName ?? "…"}</span>
+                </>
+              )
+            }
+          />
           <div className="mt-10 grid gap-10 lg:grid-cols-[minmax(0,1fr)_18rem] lg:gap-12">
             <div className="min-w-0 space-y-10">
-              <MergeBox workspaceId={workspaceId} projectId={projectId} review={loaded} onChanged={reloadReview} />
+              <MergeBox
+                workspaceId={workspaceId}
+                projectId={projectId}
+                review={loaded}
+                globalCount={globalCount}
+                onChanged={reloadReview}
+              />
               <Conflicts docs={loaded.docs} conflicts={conflicts.value} failed={conflicts.failed} />
             </div>
             <History review={loaded} />
           </div>
           <div className="mt-14">
-            <Docs workspaceId={workspaceId} projectId={projectId} docs={loaded.docs} />
+            <Docs workspaceId={workspaceId} projectId={projectId} docs={loaded.docs} globalDocs={globalDocs} />
           </div>
         </>
       )}
@@ -173,7 +208,7 @@ function Empty({ children }: { children: ReactNode }) {
   );
 }
 
-function Header({ review }: { review: ReviewResponse }) {
+function Header({ review, scope }: { review: ReviewResponse; scope: ReactNode }) {
   const { changeset, docs, decisions } = review;
   return (
     <PageHeader
@@ -190,6 +225,10 @@ function Header({ review }: { review: ReviewResponse }) {
         <div className="space-y-3">
           {changeset.description && <p>{changeset.description}</p>}
           <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[13px]">
+            <span>{scope}</span>
+            <span aria-hidden className="text-muted-foreground/40">
+              ·
+            </span>
             <span>Opened {timeAgo(changeset.created_at)}</span>
             {changeset.run_tag && (
               <>
@@ -281,11 +320,14 @@ function MergeBox({
   workspaceId,
   projectId,
   review,
+  globalCount,
   onChanged,
 }: {
   workspaceId: string;
   projectId: string;
   review: ReviewResponse;
+  /** How many of the change set's docs are global, which only a feature's change set can say. */
+  globalCount: number;
   onChanged: () => void;
 }) {
   const blockedId = useId();
@@ -302,6 +344,15 @@ function MergeBox({
           {state.detail && <p className="text-[13px] leading-relaxed text-muted-foreground">{state.detail}</p>}
         </div>
       </div>
+      {globalCount > 0 && (
+        <p className="flex items-center gap-2 border-t bg-amber-50 px-5 py-2.5 text-[13px] font-medium text-amber-900 dark:bg-amber-400/10 dark:text-amber-200">
+          <Globe className="size-4 shrink-0" />
+          {`Changes ${globalCount} global ${globalCount === 1 ? "doc" : "docs"}`}
+          <span className="font-normal text-amber-800/80 dark:text-amber-200/70">
+            shared by the whole project, not only this feature
+          </span>
+        </p>
+      )}
       <Decisions workspaceId={workspaceId} projectId={projectId} decisions={review.decisions} />
       <Verdict
         workspaceId={workspaceId}
@@ -534,7 +585,18 @@ function Legend({ kinds = ["added", "changed", "removed"] }: { kinds?: Mark["cha
   );
 }
 
-function Docs({ workspaceId, projectId, docs }: { workspaceId: string; projectId: string; docs: ReviewedDoc[] }) {
+function Docs({
+  workspaceId,
+  projectId,
+  docs,
+  globalDocs,
+}: {
+  workspaceId: string;
+  projectId: string;
+  docs: ReviewedDoc[];
+  /** The IDs of the docs that the feature's change set shares with the whole project. */
+  globalDocs: ReadonlySet<string>;
+}) {
   return (
     <Section id="docs" title="Docs" count={docs.length} aside={docs.length > 0 && <Legend />}>
       {docs.length === 0 && <Empty>The change set has not saved a version of any doc.</Empty>}
@@ -557,6 +619,7 @@ function Docs({ workspaceId, projectId, docs }: { workspaceId: string; projectId
                 <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2.5 gap-y-1">
                   <h3 className="truncate text-[15px] font-semibold tracking-tight">{doc.title}</h3>
                   <span className="font-mono text-[11px] text-muted-foreground uppercase">{doc.module}</span>
+                  {globalDocs.has(doc.doc_id) && <Badge variant="amber">Global</Badge>}
                   {doc.removed ? (
                     <Badge variant="red">Removed doc</Badge>
                   ) : (

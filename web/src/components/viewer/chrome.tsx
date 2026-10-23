@@ -2,6 +2,7 @@ import type { ReactNode, SelectHTMLAttributes } from "react";
 import { Link } from "@tanstack/react-router";
 import { ArrowLeft, ChevronDown, TriangleAlert } from "lucide-react";
 import { AgentAvatar } from "@/components/agent-chip";
+import { Trail } from "@/components/trail";
 import { sectionLink } from "@/components/project/items";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { cn } from "@/lib/utils";
@@ -56,6 +57,7 @@ export function ViewerToolbar({
         )}
         {status}
       </div>
+      <Trail workspaceId={workspaceId} projectId={projectId} featureId={featureId} section="docs" />
       {children && <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:flex-nowrap">{children}</div>}
     </header>
   );

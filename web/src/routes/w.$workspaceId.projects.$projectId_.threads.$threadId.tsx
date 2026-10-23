@@ -1,10 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Link, createFileRoute } from "@tanstack/react-router";
-import { ArrowLeft } from "lucide-react";
+import { createFileRoute } from "@tanstack/react-router";
 import { loadThread } from "@/api/threads";
 import { DecisionBodySchema, type DecisionBody, type PostBody, type ThreadBody } from "@/api/generated";
 import { PageHeader } from "@/components/page-header";
-import { sectionLink } from "@/components/project/items";
+import { Trail } from "@/components/trail";
 import { Composer } from "@/components/thread/composer";
 import { DecisionPanel } from "@/components/thread/decision-panel";
 import { Segmented } from "@/components/thread/segmented";
@@ -74,13 +73,7 @@ function ThreadView() {
     <main className="mx-auto max-w-6xl px-5 py-8 md:px-10 md:py-12">
       <PageHeader
         eyebrow={
-          <Link
-            {...sectionLink("threads", { workspaceId, projectId }, thread?.feature_id)}
-            className="group inline-flex items-center gap-1.5 text-[11px] tracking-[0.08em] uppercase transition-colors hover:text-foreground"
-          >
-            <ArrowLeft className="size-3.5 transition-transform group-hover:-translate-x-0.5" />
-            Threads
-          </Link>
+          thread && <Trail workspaceId={workspaceId} projectId={projectId} featureId={thread.feature_id} section="threads" />
         }
         title={thread?.question ?? (failed ? "Thread" : "")}
         badge={
