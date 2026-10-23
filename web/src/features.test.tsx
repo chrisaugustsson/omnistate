@@ -458,6 +458,26 @@ describe("features in the web app", () => {
       );
     });
 
+    test("the Designs tab of the Docs page holds the design system, so the tabs add up to All", async () => {
+      const seed = seeded();
+      const system = { ...doc(null, "ui", "Design system"), kind: "design-system" };
+      seed.home.docs.push(system);
+      fakeApi(seed);
+      renderAt(`${PROJECT_PATH}/docs`);
+      const main = await page();
+      const count = (name: RegExp) => {
+        const tab = within(main).getByRole("tab", { name });
+        return Number(tab.textContent?.match(/\d+/)?.[0]);
+      };
+      await within(main).findByRole("tab", { name: /^designs/i });
+      expect(count(/^all/i), "All counts the three project docs").toBe(3);
+      expect(count(/^docs/i) + count(/^designs/i), "Docs and Designs add up to All").toBe(3);
+
+      fireEvent.click(within(main).getByRole("tab", { name: /^designs/i }));
+      await within(main).findByText("Design system");
+      expect(within(main).queryByText("Storefront PRD"), "written docs are not under Designs").toBeNull();
+    });
+
     test("the project's Change sets page shows project-level change sets only", async () => {
       fakeApi(seeded());
       renderAt(`${PROJECT_PATH}/changesets`);
