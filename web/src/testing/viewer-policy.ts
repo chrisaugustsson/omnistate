@@ -5,9 +5,12 @@
 //
 // The frame's document carries its content security policy in a `<meta
 // http-equiv="Content-Security-Policy">` that comes before every script. The
-// policy blocks all network access except the workspace's attachments, and
-// lets only the viewer's own scripts run: every script of the document is
-// inline and allowed by its hash (or its nonce), and nothing else is.
+// policy blocks all network access except the workspace's attachments. Since
+// US-109 a doc may carry its own inline scripts and event handlers, so the
+// policy may let inline scripts run (`'unsafe-inline'`, `'unsafe-hashes'`, a
+// hash or a nonce), but no script may come from the network: no host, no
+// scheme, no `'self'` and no `'strict-dynamic'`. Every script of the document
+// is inline, and the policy lets it run.
 import { createHash } from "node:crypto";
 
 /** The fetch directives and the directives each one falls back to, in order (CSP Level 3). */
@@ -31,10 +34,12 @@ const FALLBACKS: Record<string, string[]> = {
 /** Sources that allow no network access: no host, no scheme that reaches one, no `'self'`. */
 const LOCAL_SOURCES = new Set(["'none'", "data:", "blob:"]);
 
-/** Script sources that allow nothing but the scripts that a hash or nonce names. */
+/** Script sources that allow no script from the network: inline scripts at most. */
 function isScriptKeyword(source: string) {
   return (
     source === "'none'" ||
+    source === "'unsafe-inline'" ||
+    source === "'unsafe-hashes'" ||
     source === "'unsafe-eval'" ||
     source === "'wasm-unsafe-eval'" ||
     source === "'report-sample'" ||
@@ -164,9 +169,13 @@ export function viewerPolicyProblems(
     const sources = effectiveSources(policy, directive) ?? ["*"];
     for (const source of sources) {
       if (isScriptKeyword(source)) allowed.add(source);
-      else problems.push(`${directive} allows ${source}: only the viewer's own scripts, by hash or nonce, may run`);
+      else problems.push(`${directive} allows ${source}: inline scripts may run, but no script from the network`);
     }
   }
+  // 'unsafe-inline' counts only when the directive names no hash or nonce.
+  const elements = effectiveSources(policy, "script-src-elem") ?? [];
+  const inline =
+    elements.includes("'unsafe-inline'") && !elements.some((source) => /^'(sha256|sha384|sha512|nonce)-/.test(source));
   if (!scripts.length) problems.push("the document has no script: the viewer's own script runs inside it");
   for (const [index, script] of scripts.entries()) {
     if (script.attributes.has("src")) {
@@ -178,7 +187,7 @@ export function viewerPolicyProblems(
       allowed.has(hashSource(algorithm, script.text)),
     );
     const byNonce = nonce !== undefined && allowed.has(`'nonce-${nonce}'`);
-    if (!byHash && !byNonce) problems.push(`script ${index + 1} is not allowed by the policy, so it would not run`);
+    if (!byHash && !byNonce && !inline) problems.push(`script ${index + 1} is not allowed by the policy, so it would not run`);
   }
   return problems;
 }

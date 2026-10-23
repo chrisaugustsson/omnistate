@@ -231,7 +231,7 @@ fn project_with_doc(home: &Scratch) -> (String, String, Value) {
     (project, changeset, answer)
 }
 
-/// Every start tag of `html` that carries `data-node-id`, as (ID, `data-rev`).
+/// Every start tag of `html` that carries `data-omni-id`, as (ID, `data-rev`).
 fn tagged(html: &str) -> Vec<(String, Option<String>)> {
     let attribute = |tag: &str, name: &str| -> Option<String> {
         let needle = format!("{name}=\"");
@@ -246,7 +246,7 @@ fn tagged(html: &str) -> Vec<(String, Option<String>)> {
             break;
         };
         let tag = &rest[start..start + end];
-        if let Some(id) = attribute(tag, "data-node-id") {
+        if let Some(id) = attribute(tag, "data-omni-id") {
             found.push((id, attribute(tag, "data-rev")));
         }
         rest = &rest[start + end + 1..];

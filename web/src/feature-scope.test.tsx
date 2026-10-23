@@ -153,7 +153,7 @@ function thread(on: { id: string; feature_id: string | null }, question: string)
   };
 }
 
-const HTML = '<section data-node-id="s0000001"><p data-node-id="p0000001">Saved items.</p></section>';
+const HTML = '<section data-omni-id="s0000001"><p data-omni-id="p0000001">Saved items.</p></section>';
 
 /** A doc as the review lists it: a changed doc, or a new one when `fresh`. */
 function reviewed(of: Doc, fresh = false) {

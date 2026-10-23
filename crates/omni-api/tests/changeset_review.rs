@@ -503,7 +503,7 @@ fn rev_of(
     let html = draft["draft"]["html"]
         .as_str()
         .unwrap_or_else(|| panic!("the draft has its html: {draft}"));
-    let needle = format!("data-node-id=\"{node}\"");
+    let needle = format!("data-omni-id=\"{node}\"");
     let at = html
         .find(&needle)
         .unwrap_or_else(|| panic!("the draft has {node}: {html}"));

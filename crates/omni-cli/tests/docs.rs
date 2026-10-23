@@ -55,10 +55,10 @@ const DRAFT: &str = "01900000-0000-7000-8000-0000000000e2";
 const MAINLINE: &str = "01900000-0000-7000-8000-0000000000f1";
 const OLD_VERSION: &str = "01900000-0000-7000-8000-0000000000f0";
 const MAINLINE_HTML: &str =
-    "<h1 data-node-id=\"a0000001\">Checkout</h1><p data-node-id=\"a0000002\">Mainline text</p>";
+    "<h1 data-omni-id=\"a0000001\">Checkout</h1><p data-omni-id=\"a0000002\">Mainline text</p>";
 const OLD_HTML: &str =
-    "<h1 data-node-id=\"a0000001\">Checkout</h1><p data-node-id=\"a0000002\">Old text</p>";
-const DRAFT_HTML: &str = "<h1 data-node-id=\"a0000001\" data-rev=\"1\">Checkout</h1><p data-node-id=\"a0000002\" data-rev=\"3\">Draft text</p>";
+    "<h1 data-omni-id=\"a0000001\">Checkout</h1><p data-omni-id=\"a0000002\">Old text</p>";
+const DRAFT_HTML: &str = "<h1 data-omni-id=\"a0000001\" data-rev=\"1\">Checkout</h1><p data-omni-id=\"a0000002\" data-rev=\"3\">Draft text</p>";
 const CONFLICT_NODE: &str = "c0nf1ct0";
 const UNKNOWN_NODE: &str = "zzzzzzzz";
 
@@ -139,7 +139,7 @@ fn mock() -> MockServer {
                             "node": CONFLICT_NODE,
                             "expected": 1,
                             "current_revision": 3,
-                            "current_html": "<p data-node-id=\"c0nf1ct0\">Changed by someone else</p>"
+                            "current_html": "<p data-omni-id=\"c0nf1ct0\">Changed by someone else</p>"
                         } }),
                     )
                 } else if text.contains(UNKNOWN_NODE) {
@@ -564,7 +564,7 @@ fn doc_read_prints_the_mainline_version_by_default() {
     assert_eq!(
         out.stdout.trim_end(),
         MAINLINE_HTML,
-        "the HTML with data-node-id, and nothing else"
+        "the HTML with data-omni-id, and nothing else"
     );
 }
 
@@ -613,7 +613,7 @@ fn doc_read_with_a_change_set_prints_the_draft_with_revisions() {
     assert_eq!(
         out.stdout.trim_end(),
         DRAFT_HTML,
-        "the draft's HTML with data-node-id and data-rev"
+        "the draft's HTML with data-omni-id and data-rev"
     );
 
     let json = run(

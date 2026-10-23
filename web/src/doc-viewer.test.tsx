@@ -75,18 +75,18 @@ const HUMAN = { kind: "human", user_id: USER.id };
 const AUTHOR = { run: "run-1", role: "author", model: "test-model", harness: "test-harness" };
 const WRITER = { run: "run-1", role: "writer", model: "test-model", harness: "test-harness" };
 
-const V1_HTML = `<section data-node-id="s0000001">
-<h1 data-node-id="h0000001">Checkout</h1>
-<p data-node-id="p0000001">Orders ship in two days.</p>
-<p data-node-id="p0000002">Refunds take a week.</p>
+const V1_HTML = `<section data-omni-id="s0000001">
+<h1 data-omni-id="h0000001">Checkout</h1>
+<p data-omni-id="p0000001">Orders ship in two days.</p>
+<p data-omni-id="p0000002">Refunds take a week.</p>
 </section>`;
 const V2_HTML = V1_HTML.replace("Orders ship in two days.", "Orders ship in one day.");
 
 function draftHtml(extra: string) {
-  return `<section data-node-id="s0000001" data-rev="3">
-<h1 data-node-id="h0000001" data-rev="1">Checkout</h1>
-<p data-node-id="p0000001" data-rev="2">Orders ship in one day.</p>
-<p data-node-id="p0000002" data-rev="1">Refunds take a week.</p>
+  return `<section data-omni-id="s0000001" data-rev="3">
+<h1 data-omni-id="h0000001" data-rev="1">Checkout</h1>
+<p data-omni-id="p0000001" data-rev="2">Orders ship in one day.</p>
+<p data-omni-id="p0000002" data-rev="1">Refunds take a week.</p>
 ${extra}
 </section>`;
 }
@@ -173,7 +173,7 @@ function fakeApi() {
   const api = {
     comments: seededComments() as Comment[],
     claims: [] as ReturnType<typeof claim>[],
-    draft: draftHtml('<p data-node-id="p0000003" data-rev="1">Returns are free.</p>'),
+    draft: draftHtml('<p data-omni-id="p0000003" data-rev="1">Returns are free.</p>'),
     draftLoads: 0,
     calls: [] as Call[],
   };
@@ -260,7 +260,7 @@ function fakeApi() {
     if (method === "GET" && single) return json(200, { changeset: single });
     const read = versions.find((v) => path === `${API}/versions/${v.id}`);
     if (method === "GET" && read) {
-      const nodes = Array.from(htmlOf[read.id].matchAll(/<(\w+)[^>]*data-node-id="(\w+)"/g), (m) => ({
+      const nodes = Array.from(htmlOf[read.id].matchAll(/<(\w+)[^>]*data-omni-id="(\w+)"/g), (m) => ({
         id: m[2],
         type: m[1] === "h1" ? "heading" : m[1] === "p" ? "paragraph" : "section",
         parent: m[2] === "s0000001" ? null : "s0000001",
@@ -525,7 +525,7 @@ describe("the doc viewer", () => {
     expect(await screen.findByRole("heading", { name: DOC_TITLE })).toBeTruthy();
     await findFrame();
     const show = await shown((s) => expect(s.html).toContain("Orders ship in one day."));
-    expect(show.html).toContain('data-node-id="p0000002"');
+    expect(show.html).toContain('data-omni-id="p0000002"');
 
     const picker = await versionPicker();
     await waitFor(() => expect(picker.value).toBe(V2));
@@ -646,7 +646,7 @@ describe("the doc viewer", () => {
 
     const before = api.draftLoads;
     api.draft = draftHtml(
-      '<p data-node-id="p0000003" data-rev="1">Returns are free.</p>\n<p data-node-id="p0000004" data-rev="1">Coupons stack.</p>',
+      '<p data-omni-id="p0000003" data-rev="1">Returns are free.</p>\n<p data-omni-id="p0000004" data-rev="1">Coupons stack.</p>',
     );
     socket.receive(
       event(41, "op.applied", {

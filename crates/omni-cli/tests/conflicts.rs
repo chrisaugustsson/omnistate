@@ -80,7 +80,7 @@ fn conflict_json(
     let side = |version: &str, text: Option<&str>| {
         json!({
             "version_id": version,
-            "html": text.map(|t| format!("<p data-node-id=\"{node}\">{t}</p>")),
+            "html": text.map(|t| format!("<p data-omni-id=\"{node}\">{t}</p>")),
         })
     };
     json!({

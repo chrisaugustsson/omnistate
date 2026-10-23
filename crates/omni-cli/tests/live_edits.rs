@@ -70,7 +70,7 @@ fn mock() -> MockServer {
                     "node": CONFLICT_NODE,
                     "expected": 1,
                     "current_revision": 3,
-                    "current_html": "<p data-node-id=\"c0nf1ct0\">Changed by someone else</p>"
+                    "current_html": "<p data-omni-id=\"c0nf1ct0\">Changed by someone else</p>"
                 } }),
             )
         } else if text.contains(UNKNOWN_NODE) {

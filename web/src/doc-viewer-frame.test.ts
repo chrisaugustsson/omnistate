@@ -20,8 +20,9 @@
 // - from the page to the frame (`frame.contentWindow.postMessage(message,
 //   "*")`): `{ type: "viewer.show", html, pins, selected, claims }`, sent after
 //   each `viewer.ready` and whenever any of it changes:
-//   - `html`: the doc's HTML as the API prints it, with `data-node-id` on every
-//     block, which the frame shows with the shared stylesheet;
+//   - `html`: the doc's HTML as the API prints it, with `data-omni-id` on every
+//     block-level element (US-109), which the frame shows with the default
+//     stylesheet;
 //   - `pins`: `[{ node, count }]`, the blocks that have comments and how many,
 //     which the frame marks with a pin beside the block that shows the count;
 //   - `selected`: the selected block's node ID, or `null`; the frame shows it
@@ -40,8 +41,16 @@
 //   the workspace's attachments reach the network: a fetch, an XHR, a beacon,
 //   a stylesheet, a font or an image from anywhere else never reaches the
 //   server.
-// - Only the viewer's own script runs: a script, an event handler attribute or
-//   an SVG `onload` inside the doc's HTML never runs.
+// - US-109: a doc holds any HTML, CSS and inline JS. Its own scripts and
+//   event handlers run inside the frame, which keeps `sandbox="allow-scripts"`
+//   without `allow-same-origin`: they cannot read the page's document, and
+//   the policy blocks every request they make (a `fetch` to
+//   https://example.com fails with a policy violation and nothing reaches the
+//   server).
+// - US-109: a doc without styles of its own is readable with OmniState's
+//   default stylesheet (a sans-serif body with roomy lines and a measure, and
+//   table cells with padding and borders), and a doc's own `<style>` overrides
+//   it, even with plain element selectors.
 // - Mermaid figures (`<figure><pre class="mermaid">`) are drawn by the viewer as
 //   an SVG in the figure, in place of the Mermaid text.
 // - Hovering a block highlights it, and moving on takes the highlight away;
@@ -71,49 +80,49 @@ const FRAME_HEIGHT = 1200;
 const PATIENCE = 15_000;
 
 /** The doc of docs/formats/html-docs.md: every block type, an SVG and a Mermaid figure. */
-const FULL_DOC = `<section data-node-id="a0000001">
-<h1 data-node-id="a0000002">Order service</h1>
-<p data-node-id="a0000003">Plain, <strong>strong</strong>, <em>emphasis</em>, <code>code()</code> and <a href="https://example.com/docs">a link</a>.<br>After the line break.</p>
-<blockquote data-node-id="a0000004">Measure twice, cut once.</blockquote>
-<hr data-node-id="a0000005">
-<ul data-node-id="a0000006">
-<li data-node-id="a0000007">First item</li>
-<li data-node-id="a0000008">Second item</li>
+const FULL_DOC = `<section data-omni-id="a0000001">
+<h1 data-omni-id="a0000002">Order service</h1>
+<p data-omni-id="a0000003">Plain, <strong>strong</strong>, <em>emphasis</em>, <code>code()</code> and <a href="https://example.com/docs">a link</a>.<br>After the line break.</p>
+<blockquote data-omni-id="a0000004">Measure twice, cut once.</blockquote>
+<hr data-omni-id="a0000005">
+<ul data-omni-id="a0000006">
+<li data-omni-id="a0000007">First item</li>
+<li data-omni-id="a0000008">Second item</li>
 </ul>
-<ol data-node-id="a0000009">
-<li data-node-id="a0000010">Step one</li>
+<ol data-omni-id="a0000009">
+<li data-omni-id="a0000010">Step one</li>
 </ol>
-<table data-node-id="a0000011">
-<tr data-node-id="a0000012"><th data-node-id="a0000013">Field</th><th data-node-id="a0000014">Type</th></tr>
-<tr data-node-id="a0000015"><td data-node-id="a0000016">id</td><td data-node-id="a0000017">uuid</td></tr>
+<table data-omni-id="a0000011">
+<tr data-omni-id="a0000012"><th data-omni-id="a0000013">Field</th><th data-omni-id="a0000014">Type</th></tr>
+<tr data-omni-id="a0000015"><td data-omni-id="a0000016">id</td><td data-omni-id="a0000017">uuid</td></tr>
 </table>
-<figure data-node-id="a0000018"><svg viewBox="0 0 100 50"><rect x="1" y="1" width="50" height="20" fill="#336699"/><circle cx="70" cy="25" r="10"/></svg><figcaption>A box and a circle</figcaption></figure>
-<figure data-node-id="a0000019"><pre class="mermaid">graph TD;
+<figure data-omni-id="a0000018"><svg viewBox="0 0 100 50"><rect x="1" y="1" width="50" height="20" fill="#336699"/><circle cx="70" cy="25" r="10"/></svg><figcaption>A box and a circle</figcaption></figure>
+<figure data-omni-id="a0000019"><pre class="mermaid">graph TD;
   Alpha--&gt;Beta</pre><figcaption>The flow</figcaption></figure>
-<aside data-node-id="a0000020" data-callout="note">A note.</aside>
-<aside data-node-id="a0000021" data-callout="warning">Mind the gap.</aside>
-<aside data-node-id="a0000022" data-callout="decision">Orders are never deleted.</aside>
-<pre data-node-id="a0000023"><code>fn main() {
+<aside data-omni-id="a0000020" data-callout="note">A note.</aside>
+<aside data-omni-id="a0000021" data-callout="warning">Mind the gap.</aside>
+<aside data-omni-id="a0000022" data-callout="decision">Orders are never deleted.</aside>
+<pre data-omni-id="a0000023"><code>fn main() {
     println!("hi");
 }</code></pre>
-<img data-node-id="a0000024" src="attachment:${ATTACHMENT_ID}" alt="A screenshot">
-<p data-node-id="a0000025" data-block="requirement">FR-1: The system must keep every version.</p>
-<article data-node-id="a0000026" data-block="user-story">
-<h3 data-node-id="a0000027">Reset a password</h3>
-<p data-node-id="a0000028">As a user, I want to reset my password so that I can get back in.</p>
-<ul data-node-id="a0000029"><li data-node-id="a0000030">The link works once</li></ul>
+<img data-omni-id="a0000024" src="attachment:${ATTACHMENT_ID}" alt="A screenshot">
+<p data-omni-id="a0000025" data-block="requirement">FR-1: The system must keep every version.</p>
+<article data-omni-id="a0000026" data-block="user-story">
+<h3 data-omni-id="a0000027">Reset a password</h3>
+<p data-omni-id="a0000028">As a user, I want to reset my password so that I can get back in.</p>
+<ul data-omni-id="a0000029"><li data-omni-id="a0000030">The link works once</li></ul>
 </article>
 </section>`;
 
 /** A short doc whose blocks all fit in the frame; no digit appears in its text. */
-const SHORT_DOC = `<section data-node-id="s0000001">
-<h1 data-node-id="h0000001">Checkout</h1>
-<p data-node-id="p0000001">Orders ship in <strong>one</strong> day.</p>
-<p data-node-id="p0000002">Refunds take a week.</p>
-<ul data-node-id="t0000001"><li data-node-id="k0000001">Cards</li><li data-node-id="k0000002">Invoices</li></ul>
-<p data-node-id="p0000003">Returns are free.</p>
-<p data-node-id="p0000004">Gift wrap is extra.</p>
-<p data-node-id="p0000005">Taxes are shown at the end.</p>
+const SHORT_DOC = `<section data-omni-id="s0000001">
+<h1 data-omni-id="h0000001">Checkout</h1>
+<p data-omni-id="p0000001">Orders ship in <strong>one</strong> day.</p>
+<p data-omni-id="p0000002">Refunds take a week.</p>
+<ul data-omni-id="t0000001"><li data-omni-id="k0000001">Cards</li><li data-omni-id="k0000002">Invoices</li></ul>
+<p data-omni-id="p0000003">Returns are free.</p>
+<p data-omni-id="p0000004">Gift wrap is extra.</p>
+<p data-omni-id="p0000005">Taxes are shown at the end.</p>
 </section>`;
 
 /** A one-pixel PNG. */
@@ -227,7 +236,7 @@ async function show(
     const frame = document.getElementById("viewer") as HTMLIFrameElement;
     frame.contentWindow!.postMessage(data, "*");
   }, { type: "viewer.show", pins: [], selected: null, claims: [], ...message });
-  await target.frame.waitForSelector(`[data-node-id="${waitFor}"]`, { timeout: PATIENCE });
+  await target.frame.waitForSelector(`[data-omni-id="${waitFor}"]`, { timeout: PATIENCE });
 }
 
 /** The messages the frame posted to the page. */
@@ -237,7 +246,7 @@ async function got(target: { page: Page }): Promise<{ type?: string; node?: stri
 
 /** A screenshot of the frame's row of the block: the frame's width across the block's height, with a margin. */
 async function row(target: { page: Page; frame: Frame }, node: string) {
-  const box = await target.frame.locator(`[data-node-id="${node}"]`).boundingBox();
+  const box = await target.frame.locator(`[data-omni-id="${node}"]`).boundingBox();
   expect(box, `the block ${node} is shown`).toBeTruthy();
   const top = Math.max(FRAME_TOP, Math.floor(box!.y) - 4);
   const bottom = Math.min(FRAME_TOP + FRAME_HEIGHT, Math.ceil(box!.y + box!.height) + 4);
@@ -248,12 +257,12 @@ async function row(target: { page: Page; frame: Frame }, node: string) {
 
 /** A screenshot of the block's own box. */
 async function boxOf(target: { page: Page; frame: Frame }, node: string) {
-  return target.frame.locator(`[data-node-id="${node}"]`).screenshot();
+  return target.frame.locator(`[data-omni-id="${node}"]`).screenshot();
 }
 
 /** Moves the mouse, in steps as a hand does, to the middle of the block's first line. */
 async function pointAt(target: { page: Page; frame: Frame }, node: string) {
-  const box = await target.frame.locator(`[data-node-id="${node}"]`).boundingBox();
+  const box = await target.frame.locator(`[data-omni-id="${node}"]`).boundingBox();
   expect(box, `the block ${node} is shown`).toBeTruthy();
   await target.page.mouse.move(box!.x + Math.min(box!.width / 2, 40), box!.y + Math.min(box!.height / 2, 8), { steps: 8 });
 }
@@ -383,19 +392,66 @@ describe("the viewer frame in Chrome", { timeout: 60_000 }, () => {
     }
   });
 
-  test("only the viewer's own script runs: scripts and handlers in the doc do not", async () => {
+  test("a doc's own scripts and handlers run in the frame, and cannot reach the page", async () => {
     const target = await openViewer();
-    const html = `<section data-node-id="s0000001">
-<p data-node-id="p0000001">Clean text.</p>
-<script>parent.postMessage({ type: "injected", via: "script" }, "*")</script>
-<img src="data:," onerror='parent.postMessage({ type: "injected", via: "onerror" }, "*")'>
-<svg onload='parent.postMessage({ type: "injected", via: "svg" }, "*")'><rect width="5" height="5"/></svg>
-<p data-node-id="p0000002" onmouseover='parent.postMessage({ type: "injected", via: "handler" }, "*")'>Hover here.</p>
+    const html = `<section data-omni-id="s0000001">
+<p data-omni-id="p0000001" id="by-script">Waiting.</p>
+<p data-omni-id="p0000002" id="by-handler" onclick="this.textContent = 'Clicked.'">Click here.</p>
+<p data-omni-id="p0000003" id="parent-probe">Not probed.</p>
+<script>
+document.getElementById("by-script").textContent = "Ran.";
+try {
+  document.getElementById("parent-probe").textContent = "read: " + parent.document.title;
+} catch (error) {
+  document.getElementById("parent-probe").textContent = "threw: " + error.name;
+}
+</script>
 </section>`;
-    await show(target, { html }, "p0000002");
-    await pointAt(target, "p0000002");
-    await new Promise((resolve) => setTimeout(resolve, 1_000));
-    expect((await got(target)).filter((m) => m?.type === "injected")).toEqual([]);
+    await show(target, { html }, "p0000003");
+    const text = (id: string) => target.frame.evaluate((which) => document.getElementById(which)?.textContent ?? "", id);
+    await expect.poll(() => text("by-script"), { timeout: PATIENCE }).toBe("Ran.");
+    await expect.poll(() => text("parent-probe"), { timeout: PATIENCE }).toMatch(/^threw/);
+    await target.frame.click('[data-omni-id="p0000002"]', { force: true });
+    await expect.poll(() => text("by-handler"), { timeout: PATIENCE }).toBe("Clicked.");
+  });
+
+  test("a doc's own fetch is blocked by the policy and never reaches the network", async () => {
+    const target = await openViewer();
+    const html = `<section data-omni-id="s0000001">
+<p data-omni-id="p0000001" id="outcome">Pending.</p>
+<script>
+(function () {
+  var violations = [];
+  document.addEventListener("securitypolicyviolation", function (event) {
+    violations.push(event.blockedURI);
+  });
+  Promise.allSettled([
+    fetch("https://example.com/"),
+    fetch("${origin}/elsewhere/doc-fetch"),
+    fetch("${origin}/api/v1/w/${WORKSPACE_ID}/whoami?via=doc", { credentials: "include" }),
+  ]).then(function (outcomes) {
+    setTimeout(function () {
+      document.getElementById("outcome").textContent = JSON.stringify({
+        states: outcomes.map(function (outcome) { return outcome.status; }),
+        violations: violations,
+      });
+    }, 300);
+  });
+})();
+</script>
+</section>`;
+    await show(target, { html }, "p0000001");
+    const outcome = () => target.frame.evaluate(() => document.getElementById("outcome")?.textContent ?? "");
+    await expect.poll(outcome, { timeout: PATIENCE }).not.toBe("Pending.");
+    const result = JSON.parse(await outcome()) as { states: string[]; violations: string[] };
+    expect(result.states, "every fetch of the doc fails").toEqual(["rejected", "rejected", "rejected"]);
+    expect(
+      result.violations.some((uri) => uri.startsWith("https://example.com")),
+      `the policy blocked the fetch to example.com: ${JSON.stringify(result.violations)}`,
+    ).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    const reached = seen.filter((s) => s.path === "/elsewhere/doc-fetch" || s.path.endsWith("/whoami"));
+    expect(reached, "no request of the doc reached the server").toEqual([]);
   });
 
   test("the shared stylesheet styles the doc: the callout kinds look different", async () => {
@@ -403,11 +459,58 @@ describe("the viewer frame in Chrome", { timeout: 60_000 }, () => {
     await show(target, { html: FULL_DOC }, "a0000022");
     const looks = await target.frame.evaluate(() =>
       ["a0000020", "a0000021", "a0000022"].map((id) => {
-        const style = getComputedStyle(document.querySelector(`[data-node-id="${id}"]`)!);
+        const style = getComputedStyle(document.querySelector(`[data-omni-id="${id}"]`)!);
         return [style.backgroundColor, style.borderLeftColor, style.borderTopColor, style.color].join(" ");
       }),
     );
     expect(new Set(looks).size, `note, warning and decision callouts: ${JSON.stringify(looks)}`).toBe(3);
+  });
+
+  test("a doc without styles is readable with the default stylesheet, and a doc's own style overrides it", async () => {
+    const target = await openViewer();
+    const plain = `<section data-omni-id="s0000001">
+<h1 data-omni-id="h0000001">Checkout</h1>
+<p data-omni-id="p0000001">Orders ship in one day, and refunds take a week.</p>
+<div data-omni-id="d0000001" class="box"><p data-omni-id="p0000002">Inside a div.</p></div>
+<table data-omni-id="t0000001"><tbody><tr data-omni-id="r0000001"><td data-omni-id="c0000001">Cell</td></tr></tbody></table>
+</section>`;
+    await show(target, { html: plain }, "c0000001");
+    const looks = () =>
+      target.frame.evaluate(() => {
+        const style = (id: string) => getComputedStyle(document.querySelector(`[data-omni-id="${id}"]`)!);
+        const paragraph = style("p0000001");
+        const cell = style("c0000001");
+        const heading = style("h0000001");
+        return {
+          font: paragraph.fontFamily,
+          lineHeight: parseFloat(paragraph.lineHeight) / parseFloat(paragraph.fontSize),
+          width: document.querySelector('[data-omni-id="p0000001"]')!.getBoundingClientRect().width,
+          cellPadding: parseFloat(cell.paddingLeft),
+          cellBorder: parseFloat(cell.borderLeftWidth),
+          headingSize: heading.fontSize,
+          headingColor: heading.color,
+        };
+      });
+    const readable = await looks();
+    expect(readable.font, "the body text is not the browser's default serif").not.toMatch(/times|^serif$/i);
+    expect(readable.lineHeight, "lines have room").toBeGreaterThanOrEqual(1.4);
+    expect(readable.width, "text keeps a readable measure").toBeLessThanOrEqual(800);
+    expect(readable.cellPadding, "table cells have padding").toBeGreaterThan(0);
+    expect(readable.cellBorder, "table cells have a border").toBeGreaterThan(0);
+
+    const styled = plain.replace(
+      '<h1 data-omni-id="h0000001">',
+      `<style>h1 { font-size: 11px; color: rgb(1, 2, 3); } p { font-family: serif; line-height: 1; } td { padding: 0; border: 0 none; }</style>
+<h1 data-omni-id="h0000001">`,
+    );
+    await show(target, { html: styled }, "c0000001");
+    await expect.poll(async () => (await looks()).headingSize, { timeout: PATIENCE }).toBe("11px");
+    const own = await looks();
+    expect(own.headingColor).toBe("rgb(1, 2, 3)");
+    expect(own.font).toBe("serif");
+    expect(own.lineHeight).toBeCloseTo(1, 1);
+    expect(own.cellPadding).toBe(0);
+    expect(own.cellBorder).toBe(0);
   });
 
   test("Mermaid figures are drawn by the viewer", async () => {
@@ -415,7 +518,7 @@ describe("the viewer frame in Chrome", { timeout: 60_000 }, () => {
     await show(target, { html: FULL_DOC }, "a0000019");
     await target.frame.waitForFunction(
       () => {
-        const figure = document.querySelector('[data-node-id="a0000019"]');
+        const figure = document.querySelector('[data-omni-id="a0000019"]');
         const svg = figure?.querySelector("svg");
         return Boolean(svg && /Alpha/.test(svg.textContent ?? "") && /Beta/.test(svg.textContent ?? ""));
       },
@@ -423,7 +526,7 @@ describe("the viewer frame in Chrome", { timeout: 60_000 }, () => {
       { timeout: PATIENCE },
     );
     const figure = await target.frame.evaluate(() => {
-      const element = document.querySelector('[data-node-id="a0000019"]') as HTMLElement;
+      const element = document.querySelector('[data-omni-id="a0000019"]') as HTMLElement;
       return { text: element.innerText, caption: element.querySelector("figcaption")?.textContent ?? "" };
     });
     expect(figure.text, "the Mermaid source is drawn, not shown as text").not.toMatch(/graph TD/);
@@ -455,16 +558,16 @@ describe("the viewer frame in Chrome", { timeout: 60_000 }, () => {
     const lastSelect = async () =>
       (await got(target)).filter((m) => m?.type === "viewer.select").map((m) => m.node).pop();
 
-    await target.frame.click('[data-node-id="p0000002"]', { force: true });
+    await target.frame.click('[data-omni-id="p0000002"]', { force: true });
     await expect.poll(lastSelect, { timeout: PATIENCE }).toBe("p0000002");
 
-    await target.frame.click('[data-node-id="p0000001"] strong', { force: true });
+    await target.frame.click('[data-omni-id="p0000001"] strong', { force: true });
     await expect.poll(lastSelect, { timeout: PATIENCE }).toBe("p0000001");
 
-    await target.frame.click('[data-node-id="k0000002"]', { force: true });
+    await target.frame.click('[data-omni-id="k0000002"]', { force: true });
     await expect.poll(lastSelect, { timeout: PATIENCE }).toBe("k0000002");
 
-    await target.frame.click('[data-node-id="h0000001"]', { force: true });
+    await target.frame.click('[data-omni-id="h0000001"]', { force: true });
     await expect.poll(lastSelect, { timeout: PATIENCE }).toBe("h0000001");
   });
 
@@ -539,8 +642,8 @@ describe("the viewer frame in Chrome", { timeout: 60_000 }, () => {
     const target = await openViewer();
     await show(target, { html: SHORT_DOC }, "p0000005");
     const changed = SHORT_DOC.replace(
-      '<p data-node-id="p0000005">Taxes are shown at the end.</p>',
-      '<p data-node-id="p0000005">Taxes are shown at the end.</p>\n<p data-node-id="p0000006">Coupons stack.</p>',
+      '<p data-omni-id="p0000005">Taxes are shown at the end.</p>',
+      '<p data-omni-id="p0000005">Taxes are shown at the end.</p>\n<p data-omni-id="p0000006">Coupons stack.</p>',
     );
     await show(target, { html: changed }, "p0000006");
     expect(await target.frame.evaluate(() => document.body.innerText)).toContain("Coupons stack.");

@@ -1006,10 +1006,10 @@ fn has_live_doc_routes() -> bool {
     })
 }
 
-/// The `data-rev` of the block with `data-node-id="{node}"` in a draft's HTML.
+/// The `data-rev` of the block with `data-omni-id="{node}"` in a draft's HTML.
 fn rev_of(html: &str, node: &str) -> u64 {
     let at = html
-        .find(&format!("data-node-id=\"{node}\""))
+        .find(&format!("data-omni-id=\"{node}\""))
         .unwrap_or_else(|| panic!("the draft has {node}: {html}"));
     let start = html[..at].rfind('<').expect("the start of the tag");
     let end = at + html[at..].find('>').expect("the end of the tag");

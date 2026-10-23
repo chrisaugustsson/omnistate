@@ -68,7 +68,7 @@
 //!   Side, "changeset": Side, "resolution"}`, where a Side is `{"version_id",
 //!   "html"}`: the version that side's state comes from (the mainline version
 //!   that the rebase found, and the change set's latest version of the doc)
-//!   and the node there as HTML with `data-node-id`, `null` when that side
+//!   and the node there as HTML with `data-omni-id`, `null` when that side
 //!   removed it. `resolution` is `null` until the agent resolves it, then
 //!   `{"note", "resolved_at"}`.
 //! - `GET /changesets/{changeset_id}/conflicts` (agent or human) answers
@@ -801,7 +801,7 @@ fn attribute(tag: &str, name: &str) -> Option<String> {
     Some(tag[start..start + end].to_string())
 }
 
-/// Every start tag of `html` that carries `data-node-id`, as (ID, the tag's
+/// Every start tag of `html` that carries `data-omni-id`, as (ID, the tag's
 /// `data-rev` if it has one), in document order.
 fn tagged(html: &str) -> Vec<(String, Option<String>)> {
     let mut found = Vec::new();
@@ -811,7 +811,7 @@ fn tagged(html: &str) -> Vec<(String, Option<String>)> {
             break;
         };
         let tag = &rest[start..start + end];
-        if let Some(id) = attribute(tag, "data-node-id") {
+        if let Some(id) = attribute(tag, "data-omni-id") {
             found.push((id, attribute(tag, "data-rev")));
         }
         rest = &rest[start + end + 1..];
@@ -1418,12 +1418,12 @@ fn every_node_changed_on_both_sides_becomes_a_conflict_with_both_versions_of_the
         .as_str()
         .expect("the change set's side");
     assert!(
-        mainline.contains("Alpha by ahead") && mainline.contains(&format!("data-node-id=\"{p1}\"")),
+        mainline.contains("Alpha by ahead") && mainline.contains(&format!("data-omni-id=\"{p1}\"")),
         "{both}"
     );
     assert!(
         changeset.contains("Alpha by behind")
-            && changeset.contains(&format!("data-node-id=\"{p1}\"")),
+            && changeset.contains(&format!("data-omni-id=\"{p1}\"")),
         "{both}"
     );
 
@@ -1881,7 +1881,7 @@ fn delete(node: &str) -> Value {
 const NESTED: [&str; 2] = ["<p>Intro</p>", "<section><p>One</p><p>Two</p></section>"];
 
 /// The parents of the nodes in `html` as node ID -> parent ID, `None` at the
-/// top level, read from the nesting of the tags that carry `data-node-id`.
+/// top level, read from the nesting of the tags that carry `data-omni-id`.
 fn parents(html: &str) -> BTreeMap<String, Option<String>> {
     let mut found = BTreeMap::new();
     let mut open: Vec<Option<String>> = Vec::new();
@@ -1896,7 +1896,7 @@ fn parents(html: &str) -> BTreeMap<String, Option<String>> {
             open.pop();
         } else if !tag.ends_with('/') && !VOID.iter().any(|v| tag.split(' ').next() == Some(v)) {
             let parent = open.iter().rev().flatten().next().cloned();
-            let id = attribute(tag, "data-node-id");
+            let id = attribute(tag, "data-omni-id");
             if let Some(id) = &id {
                 found.insert(id.clone(), parent);
             }

@@ -555,10 +555,10 @@ function seededThread() {
   };
 }
 
-const HTML_V1_HTML = `<section data-node-id="s0000001">
-<h1 data-node-id="h0000001">Checkout</h1>
-<p data-node-id="p0000001">Orders ship in two days.</p>
-<p data-node-id="p0000002">Refunds take a week.</p>
+const HTML_V1_HTML = `<section data-omni-id="s0000001">
+<h1 data-omni-id="h0000001">Checkout</h1>
+<p data-omni-id="p0000001">Orders ship in two days.</p>
+<p data-omni-id="p0000002">Refunds take a week.</p>
 </section>`;
 
 type Call = { method: string; path: string; body: Record<string, unknown> | null };

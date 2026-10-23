@@ -20,11 +20,11 @@ fn id(text: &str) -> NodeId {
 }
 
 fn p(id: &str, text: &str) -> String {
-    format!("<p data-node-id=\"{id}\">{text}</p>")
+    format!("<p data-omni-id=\"{id}\">{text}</p>")
 }
 
 fn section(id: &str, children: &str) -> String {
-    format!("<section data-node-id=\"{id}\">{children}</section>")
+    format!("<section data-omni-id=\"{id}\">{children}</section>")
 }
 
 /// The node IDs of a doc in document order.

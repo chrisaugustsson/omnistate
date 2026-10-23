@@ -37,7 +37,7 @@
 //!   for a new doc.
 //! - `GET /docs/{doc_id}` (both) answers `{"doc": Doc}`.
 //! - `GET /docs/{doc_id}/html` (both) answers the mainline version as
-//!   `{"doc_id", "version_id", "html"}`, with `data-node-id` on every block and
+//!   `{"doc_id", "version_id", "html"}`, with `data-omni-id` on every block and
 //!   no `data-rev`. A doc without a mainline version answers `"version_id":
 //!   null` and `"html": ""`. With `?version=<id>` it answers that version
 //!   instead; a version that the doc does not have is 404 `not_found`.
@@ -48,7 +48,7 @@
 //!   change set that created it: opening it in another change set is 409
 //!   `{"error": "no_mainline_version"}` and makes no draft.
 //! - `GET /changesets/{changeset_id}/docs/{doc_id}` (both) answers `{"draft":
-//!   Draft + "html"}`: the draft as HTML with `data-node-id` and `data-rev`
+//!   Draft + "html"}`: the draft as HTML with `data-omni-id` and `data-rev`
 //!   (the node's revision) on every block.
 //! - `POST /changesets/{changeset_id}/docs/{doc_id}/ops` (agent) takes `{"ops":
 //!   [...]}`, a batch of operations, and applies it to the change set's draft,
@@ -506,7 +506,7 @@ fn attribute(tag: &str, name: &str) -> Option<String> {
     Some(tag[start..start + end].to_string())
 }
 
-/// Every start tag of `html` that carries `data-node-id`, as (ID, the tag's
+/// Every start tag of `html` that carries `data-omni-id`, as (ID, the tag's
 /// `data-rev` if it has one), in document order.
 fn tagged(html: &str) -> Vec<(String, Option<String>)> {
     let mut found = Vec::new();
@@ -516,7 +516,7 @@ fn tagged(html: &str) -> Vec<(String, Option<String>)> {
             break;
         };
         let tag = &rest[start..start + end];
-        if let Some(id) = attribute(tag, "data-node-id") {
+        if let Some(id) = attribute(tag, "data-omni-id") {
             found.push((id, attribute(tag, "data-rev")));
         }
         rest = &rest[start + end + 1..];
@@ -1022,7 +1022,7 @@ fn reading_a_draft_gives_every_block_its_node_id_and_revision() {
     assert_eq!(
         tags.iter().map(|(id, _)| id.clone()).collect::<Vec<_>>(),
         created,
-        "every block carries its data-node-id, in document order: {html}"
+        "every block carries its data-omni-id, in document order: {html}"
     );
     for (id, rev) in &tags {
         assert_eq!(rev.as_deref(), Some("1"), "{id} carries data-rev: {html}");
@@ -1209,8 +1209,10 @@ fn the_server_assigns_node_ids_unique_within_the_project() {
     assert_eq!(seen.len(), total, "no ID is used twice in the project");
 }
 
+/// US-109: an agent-supplied `data-omni-id` that is valid and unique is kept
+/// (it was refused before US-109).
 #[test]
-fn content_may_not_choose_its_own_node_ids() {
+fn content_may_choose_its_own_valid_unique_node_id() {
     let (f, client) = ready();
     let (project, changeset) = project_with_changeset(f, client);
     let doc = id_of(&create_doc(f, client, &project, &changeset)["doc"]);
@@ -1221,15 +1223,13 @@ fn content_may_not_choose_its_own_node_ids() {
         &project,
         &changeset,
         &doc,
-        &json!([insert_top("<p data-node-id=\"k3f9x2qa\">Mine</p>")]),
+        &json!([insert_top("<p data-omni-id=\"k3f9x2qa\">Mine</p>")]),
     );
-    assert_eq!(response.status, 400, "{}", response.text());
-    assert_eq!(response.json()["error"], "invalid_operation");
-    assert_eq!(
-        draft_html(f, client, &project, &changeset, &doc).trim(),
-        "",
-        "nothing was inserted"
-    );
+    assert_eq!(response.status, 200, "{}", response.text());
+    let answer = response.json();
+    assert_eq!(answer["results"][0]["node"], "k3f9x2qa", "{answer}");
+    let html = draft_html(f, client, &project, &changeset, &doc);
+    assert_eq!(rev_in(&html, "k3f9x2qa"), Some(1), "{html}");
 }
 
 #[test]

@@ -276,17 +276,17 @@ function seedBoxes() {
 //
 // The new version rewrites p0000001, drops p0000003 and adds p0000004.
 
-const HTML_BASE_HTML = `<section data-node-id="s0000001">
-<h1 data-node-id="h0000001">Checkout</h1>
-<p data-node-id="p0000001">Orders ship in two days.</p>
-<p data-node-id="p0000002">Refunds take a week.</p>
-<p data-node-id="p0000003">Gift wrap is extra.</p>
+const HTML_BASE_HTML = `<section data-omni-id="s0000001">
+<h1 data-omni-id="h0000001">Checkout</h1>
+<p data-omni-id="p0000001">Orders ship in two days.</p>
+<p data-omni-id="p0000002">Refunds take a week.</p>
+<p data-omni-id="p0000003">Gift wrap is extra.</p>
 </section>`;
-const HTML_NEW_HTML = `<section data-node-id="s0000001">
-<h1 data-node-id="h0000001">Checkout</h1>
-<p data-node-id="p0000001">Orders ship in one day.</p>
-<p data-node-id="p0000002">Refunds take a week.</p>
-<p data-node-id="p0000004">Returns are free.</p>
+const HTML_NEW_HTML = `<section data-omni-id="s0000001">
+<h1 data-omni-id="h0000001">Checkout</h1>
+<p data-omni-id="p0000001">Orders ship in one day.</p>
+<p data-omni-id="p0000002">Refunds take a week.</p>
+<p data-omni-id="p0000004">Returns are free.</p>
 </section>`;
 
 // The API -------------------------------------------------------------------------------
@@ -362,8 +362,8 @@ function conflicts() {
       doc_id: HTML_DOC,
       node: "p0000001",
       kind: "both_changed",
-      mainline: { version_id: HTML_BASE, html: '<p data-node-id="p0000001">Orders ship in three days.</p>' },
-      changeset: { version_id: HTML_NEW, html: '<p data-node-id="p0000001">Orders ship in one day.</p>' },
+      mainline: { version_id: HTML_BASE, html: '<p data-omni-id="p0000001">Orders ship in three days.</p>' },
+      changeset: { version_id: HTML_NEW, html: '<p data-omni-id="p0000001">Orders ship in one day.</p>' },
       resolution: { note: RESOLVED_NOTE, resolved_at: AT },
     },
     {
@@ -373,7 +373,7 @@ function conflicts() {
       node: "p0000004",
       kind: "unplaced",
       mainline: { version_id: HTML_BASE, html: null as string | null },
-      changeset: { version_id: HTML_NEW, html: '<p data-node-id="p0000004">Returns are free.</p>' },
+      changeset: { version_id: HTML_NEW, html: '<p data-omni-id="p0000004">Returns are free.</p>' },
       resolution: null as { note: string; resolved_at: string } | null,
     },
   ];
@@ -561,7 +561,7 @@ function fakeApi({ undecided }: { undecided: boolean }) {
     }
     if (method === "GET" && (path === `${API}/versions/${HTML_BASE}` || path === `${API}/versions/${HTML_NEW}`)) {
       const id = path.slice(path.lastIndexOf("/") + 1);
-      const nodes = Array.from(htmlOf[id].matchAll(/<(\w+)[^>]*data-node-id="(\w+)"/g), (m) =>
+      const nodes = Array.from(htmlOf[id].matchAll(/<(\w+)[^>]*data-omni-id="(\w+)"/g), (m) =>
         node(m[2], m[1] === "h1" ? "heading" : m[1] === "p" ? "paragraph" : "section", m[2] === "s0000001" ? null : "s0000001"),
       );
       return json(200, {

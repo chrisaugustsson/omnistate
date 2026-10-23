@@ -15,8 +15,9 @@
 //   links nothing. Its content security policy (a meta tag before every
 //   script, checked by src/testing/viewer-policy.ts) blocks all network access
 //   except the attachments of the workspace, under
-//   `<origin>/api/v1/w/<workspace id>/attachments/`, and lets only the
-//   viewer's own scripts run. The doc's HTML is not in the document: the page
+//   `<origin>/api/v1/w/<workspace id>/attachments/`. Since US-109 it may let
+//   inline scripts run (a doc carries its own scripts and handlers), but no
+//   script from the network. The doc's HTML is not in the document: the page
 //   posts it to the frame (see doc-viewer-frame.test.ts).
 import { readFileSync } from "node:fs";
 import { describe, expect, test } from "vitest";
@@ -141,7 +142,7 @@ describe("the viewer frame's document", () => {
     expect(markup).not.toMatch(/<(iframe|object|embed|base)\b/i);
   });
 
-  test("its policy blocks the network but the workspace's attachments and runs only the viewer's script", async () => {
+  test("its policy blocks the network but the workspace's attachments and loads no script from the network", async () => {
     const { viewerDocument } = await loadDocument();
     const html = viewerDocument({ workspaceId: WORKSPACE_ID, origin: ORIGIN });
     expect(viewerPolicyProblems(html, { workspaceId: WORKSPACE_ID, origin: ORIGIN })).toEqual([]);
@@ -165,8 +166,15 @@ describe("the policy check itself", () => {
 
   test("it reports scripts that the policy does not allow, and network sources", () => {
     expect(viewerPolicyProblems(ok, options).join("\n")).toMatch(/not allowed by the policy/);
-    const lax = ok.replace("script-src 'sha256-HASH'", "script-src 'unsafe-inline'");
-    expect(viewerPolicyProblems(lax, options).join("\n")).toMatch(/'unsafe-inline'/);
+    // US-109: inline scripts may run, but no script may come from the network.
+    const inline = ok.replace("script-src 'sha256-HASH'", "script-src 'unsafe-inline'");
+    expect(viewerPolicyProblems(inline, options)).toEqual([]);
+    const ignored = ok.replace("script-src 'sha256-HASH'", "script-src 'unsafe-inline' 'sha256-HASH'");
+    expect(viewerPolicyProblems(ignored, options).join("\n")).toMatch(/not allowed by the policy/);
+    for (const source of ["https://cdn.example.test", "'self'", "'strict-dynamic'", "https:", "*"]) {
+      const remote = ok.replace("script-src 'sha256-HASH'", `script-src 'unsafe-inline' ${source}`);
+      expect(viewerPolicyProblems(remote, options).join("\n"), source).toContain(source);
+    }
     const open = ok.replace("default-src 'none'", "default-src 'self'");
     expect(viewerPolicyProblems(open, options).join("\n")).toMatch(/default-src/);
     const elsewhere = ok.replace(`${ORIGIN}/api/v1/w/${WORKSPACE_ID}/attachments/`, `${ORIGIN}/`);

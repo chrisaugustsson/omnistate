@@ -585,7 +585,7 @@ fn attribute(tag: &str, name: &str) -> Option<String> {
     Some(tag[start..start + end].to_string())
 }
 
-/// Every start tag of `html` that carries `data-node-id`, as (ID, the tag's
+/// Every start tag of `html` that carries `data-omni-id`, as (ID, the tag's
 /// `data-rev` if it has one), in document order.
 fn tagged(html: &str) -> Vec<(String, Option<String>)> {
     let mut found = Vec::new();
@@ -595,7 +595,7 @@ fn tagged(html: &str) -> Vec<(String, Option<String>)> {
             break;
         };
         let tag = &rest[start..start + end];
-        if let Some(id) = attribute(tag, "data-node-id") {
+        if let Some(id) = attribute(tag, "data-omni-id") {
             found.push((id, attribute(tag, "data-rev")));
         }
         rest = &rest[start + end + 1..];

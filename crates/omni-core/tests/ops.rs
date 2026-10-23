@@ -1,12 +1,13 @@
 //! US-021: the operation engine. One engine edits every doc type; these tests
-//! run it on HTML docs (US-020). They read no files, so the same tests run
-//! natively and in WebAssembly (`wasm-pack test --node`).
+//! run it on HTML docs, which hold any HTML since US-109 (US-020's fixed block
+//! set is gone). They read no files, so the same tests run natively and in
+//! WebAssembly (`wasm-pack test --node`).
 //!
 //! The tests pin this API and JSON form (docs/formats/operations.md documents
 //! the JSON):
 //!
-//! - `EditDoc::from_html` starts a doc whose every block has a `data-node-id`;
-//!   every node starts at revision 1. `to_html`, `node_html`, `contains`,
+//! - `EditDoc::from_html` starts a doc whose every block-level element has a
+//!   `data-omni-id` (US-109); every node starts at revision 1. `to_html`, `node_html`, `contains`,
 //!   `revision`, `children` (`None` is the top level) and `sort_key` read it.
 //! - `EditDoc::apply(&ops, &mut new_ids)` applies a batch all or nothing and
 //!   returns one `OpResult` per operation: the `node`, its `revision` after
@@ -18,17 +19,19 @@
 //!   `{"op":"set","node":<id>,"rev":<n>,"properties":{...}}`,
 //!   `{"op":"move","node":<id>,"rev":<n>,"parent":<id>|null,"position":{"after":<id>|null}}`
 //!   and `{"op":"delete","node":<id>,"rev":<n>}`. A `null` parent is the top
-//!   level. Content is the HTML of one block, with the US-020 rules.
-//! - `set` properties for HTML docs: `level` (heading, 1 to 6), `kind`
-//!   (callout: note, warning or decision), `ordered` (list), `header` (table
-//!   cell), `alt` (image), `caption` (figure) and `html` (the inner HTML of a
-//!   paragraph, heading, quote, list item, table cell, callout or requirement).
+//!   level. Content is the HTML of one element, which may hold any HTML.
+//! - US-109: operations address any element with an ID at any depth: inside
+//!   table cells, `<details>`, `<div>`s and list items. `set` takes `html`,
+//!   the inner HTML of the element (any markup); an unknown property is
+//!   refused. An operation whose result would not read back as the same tree
+//!   (a `<div>` inside a `<p>`, a `<tr>` outside a table) is refused, so the
+//!   doc printed with `to_html_with_revisions` always reads back with
+//!   `from_html` as the same doc.
 //! - A revision mismatch is `ApplyError::Conflict` with the node's current
 //!   revision and HTML; any other refusal is `ApplyError::Invalid { index,
 //!   message }`, and the message names the ID or the tag that is wrong.
 
 use omni_core::design::NodeId;
-use omni_core::html_doc::HtmlDoc;
 use omni_core::ops::{Applied, ApplyError, Conflict, EditDoc, Operation};
 use serde_json::{Value, json};
 use std::str::FromStr;
@@ -47,23 +50,43 @@ const NOTE: &str = "b000000a";
 const TABLE: &str = "b000000b";
 const ROW: &str = "b000000c";
 const CELL: &str = "b000000d";
-const IMG: &str = "b000000e";
-const FIGURE: &str = "b000000f";
+const FIGURE: &str = "b000000e";
+const SVG: &str = "b000000f";
 const UNKNOWN: &str = "b0000fff";
 
-const BASE: &str = r##"<section data-node-id="b0000001">
-<h1 data-node-id="b0000002">Orders</h1>
-<p data-node-id="b0000003">First paragraph</p>
-<p data-node-id="b0000004">Second paragraph</p>
+const BASE: &str = r##"<section data-omni-id="b0000001">
+<h1 data-omni-id="b0000002">Orders</h1>
+<p data-omni-id="b0000003">First paragraph</p>
+<p data-omni-id="b0000004">Second paragraph</p>
 </section>
-<section data-node-id="b0000005">
-<h2 data-node-id="b0000006">Rules</h2>
-<ul data-node-id="b0000007"><li data-node-id="b0000008">One</li><li data-node-id="b0000009">Two</li></ul>
-<aside data-node-id="b000000a" data-callout="note">A note</aside>
-<table data-node-id="b000000b"><tr data-node-id="b000000c"><th data-node-id="b000000d">Field</th></tr></table>
-<img data-node-id="b000000e" src="attachment:0192f1c4-5b6a-7d8e-9f01-23456789abcd" alt="A screenshot">
-<figure data-node-id="b000000f"><pre class="mermaid">graph TD;
-  A--&gt;B</pre><figcaption>The flow</figcaption></figure>
+<section data-omni-id="b0000005">
+<h2 data-omni-id="b0000006">Rules</h2>
+<ul data-omni-id="b0000007"><li data-omni-id="b0000008">One</li><li data-omni-id="b0000009">Two</li></ul>
+<aside data-omni-id="b000000a" data-callout="note">A note</aside>
+<table data-omni-id="b000000b"><tbody><tr data-omni-id="b000000c"><th data-omni-id="b000000d">Field</th></tr></tbody></table>
+<figure data-omni-id="b000000e"><svg data-omni-id="b000000f" viewBox="0 0 10 10"><rect x="1" y="1" width="5" height="5"/></svg></figure>
+</section>
+"##;
+
+/// US-109: a doc whose elements nest deeply: a table in a `<details>` in a
+/// card `<div>`, and a `<div>` in a list item.
+const DS: &str = "d0000001";
+const CARD: &str = "d0000002";
+const MORE: &str = "d0000003";
+const INNER: &str = "d0000004";
+const DT: &str = "d0000005";
+const DR: &str = "d0000006";
+const DC1: &str = "d0000007";
+const DP1: &str = "d0000008";
+const DC2: &str = "d0000009";
+const DUL: &str = "d000000a";
+const DLI: &str = "d000000b";
+const DDIV: &str = "d000000c";
+const DP2: &str = "d000000d";
+
+const DEEP: &str = r##"<section data-omni-id="d0000001">
+<div data-omni-id="d0000002" class="card"><details data-omni-id="d0000003" open><div data-omni-id="d0000004"><table data-omni-id="d0000005"><tbody><tr data-omni-id="d0000006"><td data-omni-id="d0000007"><p data-omni-id="d0000008">Deep <span class="x">text</span></p></td><td data-omni-id="d0000009">Second cell</td></tr></tbody></table></div></details></div>
+<ul data-omni-id="d000000a"><li data-omni-id="d000000b"><div data-omni-id="d000000c"><p data-omni-id="d000000d">In an item</p></div></li></ul>
 </section>
 "##;
 
@@ -75,6 +98,33 @@ fn id(text: &str) -> NodeId {
 
 fn doc() -> EditDoc {
     EditDoc::from_html(BASE).expect("the base doc is valid")
+}
+
+fn deep() -> EditDoc {
+    EditDoc::from_html(DEEP).expect("the deep doc is valid")
+}
+
+/// Checks that the doc printed with revisions reads back as the same doc.
+fn assert_reads_back(doc: &EditDoc) {
+    let head = doc.to_html_with_revisions();
+    let read = EditDoc::from_html(&head)
+        .unwrap_or_else(|error| panic!("the doc no longer reads back: {error}\n{head}"));
+    assert_eq!(
+        read.to_html_with_revisions(),
+        head,
+        "the doc prints stable HTML"
+    );
+    let ids = printed_ids(&head);
+    let distinct: std::collections::HashSet<_> = ids.iter().collect();
+    assert_eq!(distinct.len(), ids.len(), "every ID is used once: {head}");
+    for node in &ids {
+        assert_eq!(
+            read.revision(id(node)),
+            doc.revision(id(node)),
+            "{node} reads back at its revision"
+        );
+        assert_eq!(read.parent(id(node)), doc.parent(id(node)), "{node}");
+    }
 }
 
 /// The next ID for a new node, never used before by any test or doc.
@@ -148,9 +198,9 @@ fn conflict(doc: &mut EditDoc, ops: Value) -> Conflict {
     }
 }
 
-/// The `data-node-id` values of printed HTML, in order.
+/// The `data-omni-id` values of printed HTML, in order.
 fn printed_ids(html: &str) -> Vec<String> {
-    const ATTRIBUTE: &str = "data-node-id=\"";
+    const ATTRIBUTE: &str = "data-omni-id=\"";
     let mut ids = Vec::new();
     let mut rest = html;
     while let Some(start) = rest.find(ATTRIBUTE) {
@@ -225,7 +275,7 @@ fn every_kind_of_operation_is_read_from_its_json_form() {
         {"op": "insert", "parent": S1, "position": {"after": P1}, "content": "<p>New</p>"},
         {"op": "insert", "parent": null, "position": {"after": null}, "content": "<hr>"},
         {"op": "replace", "node": P1, "rev": 1, "content": "<p>Replaced</p>"},
-        {"op": "set", "node": H1, "rev": 1, "properties": {"level": 2}},
+        {"op": "set", "node": H1, "rev": 1, "properties": {"html": "Retitled"}},
         {"op": "move", "node": P2, "rev": 1, "parent": S2, "position": {"after": null}},
         {"op": "move", "node": S2, "rev": 1, "parent": null, "position": {"after": S1}},
         {"op": "delete", "node": LI1, "rev": 1}
@@ -312,7 +362,7 @@ fn malformed_operations_are_rejected_when_read() {
 fn every_node_starts_at_revision_one() {
     let doc = doc();
     let ids = printed_ids(&doc.to_html());
-    assert_eq!(ids.len(), 15, "the base doc has 15 blocks");
+    assert_eq!(ids.len(), 15, "the base doc has 15 block-level elements");
     for node in &ids {
         assert_eq!(rev(&doc, node), 1, "{node} starts at revision 1");
     }
@@ -370,7 +420,7 @@ fn a_stale_revision_is_a_conflict_with_the_current_state() {
     assert!(
         found
             .current_html
-            .contains(&format!("data-node-id=\"{P1}\"")),
+            .contains(&format!("data-omni-id=\"{P1}\"")),
         "the conflict's HTML carries the node's ID: {}",
         found.current_html
     );
@@ -512,7 +562,7 @@ fn insert_gives_every_new_block_of_the_content_an_id_in_document_order() {
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
 fn inserts_neither_check_nor_change_the_parents_revision() {
     let mut doc = doc();
-    apply_one(&mut doc, set(UL, 1, json!({"ordered": true})));
+    apply_one(&mut doc, move_to(UL, 1, Some(S2), Some(H2)));
     assert_eq!(rev(&doc, UL), 2);
     apply_one(&mut doc, insert_into(UL, Some(LI2), "<li>Three</li>"));
     apply_one(&mut doc, insert_into(UL, None, "<li>Zero</li>"));
@@ -602,7 +652,7 @@ fn unknown_ids_are_errors_that_name_them() {
     let mut doc = doc();
     let cases = [
         (
-            set(UNKNOWN, 1, json!({"level": 2})),
+            set(UNKNOWN, 1, json!({"html": "x"})),
             "set of an unknown node",
         ),
         (
@@ -681,7 +731,7 @@ fn replace_keeps_the_nodes_id_and_place() {
         replace(
             P2,
             1,
-            &format!("<h3 data-node-id=\"{P2}\">Now a heading</h3>"),
+            &format!("<h3 data-omni-id=\"{P2}\">Now a heading</h3>"),
         ),
     );
     assert_eq!(result.node, id(P2));
@@ -695,7 +745,7 @@ fn replace_keeps_the_nodes_id_and_place() {
 fn replace_keeps_descendants_that_the_content_includes_removes_the_rest_and_marks_new_ones() {
     let mut doc = doc();
     let content = format!(
-        "<section><h2 data-node-id=\"{H2}\">Rules, rewritten</h2><p>A brand new paragraph</p><ul data-node-id=\"{UL}\"><li data-node-id=\"{LI2}\">Two, kept</li><li>A new item</li></ul></section>"
+        "<section><h2 data-omni-id=\"{H2}\">Rules, rewritten</h2><p>A brand new paragraph</p><ul data-omni-id=\"{UL}\"><li data-omni-id=\"{LI2}\">Two, kept</li><li>A new item</li></ul></section>"
     );
     let result = apply_one(&mut doc, replace(S2, 1, &content));
     assert_eq!(result.node, id(S2), "the section keeps its ID");
@@ -704,7 +754,7 @@ fn replace_keeps_descendants_that_the_content_includes_removes_the_rest_and_mark
     // Kept: H2, UL and LI2 keep their IDs and place in the content.
     assert!(doc.contains(id(H2)) && doc.contains(id(UL)) && doc.contains(id(LI2)));
     // Removed: what the content leaves out.
-    for gone in [LI1, NOTE, TABLE, ROW, CELL, IMG, FIGURE] {
+    for gone in [LI1, NOTE, TABLE, ROW, CELL, FIGURE, SVG] {
         assert!(
             !doc.contains(id(gone)),
             "{gone} was left out, so it is removed"
@@ -714,7 +764,7 @@ fn replace_keeps_descendants_that_the_content_includes_removes_the_rest_and_mark
     removed.sort();
     assert_eq!(
         removed,
-        [LI1, NOTE, TABLE, ROW, CELL, IMG, FIGURE].map(String::from)
+        [LI1, NOTE, TABLE, ROW, CELL, FIGURE, SVG].map(String::from)
     );
     // New: the new paragraph and the new item, each with a new ID at revision 1.
     assert_eq!(result.created.len(), 2, "two new nodes: {result:?}");
@@ -748,125 +798,84 @@ fn replace_keeps_descendants_that_the_content_includes_removes_the_rest_and_mark
 
 #[cfg_attr(not(target_arch = "wasm32"), test)]
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
-fn replace_refuses_content_with_a_different_root_id_or_an_id_used_elsewhere() {
+fn replace_never_takes_an_id_another_node_has() {
+    // US-109: an ID in the content that another node of the doc has is not
+    // kept (US-021 refused the operation): the replaced node keeps its own
+    // ID, the other node keeps its ID and place, and the element gets a new
+    // ID.
     let mut doc = doc();
-    let (index, message) = invalid(
+    let result = apply_one(
         &mut doc,
-        json!([replace(
-            P1,
-            1,
-            &format!("<p data-node-id=\"{P2}\">Other</p>")
-        )]),
+        replace(P1, 1, &format!("<p data-omni-id=\"{P2}\">Other</p>")),
     );
-    assert_eq!(index, 0);
-    assert!(
-        message.contains(P2),
-        "the error must name the clashing ID: {message}"
-    );
-    let (_, message) = invalid(
+    assert_eq!(result.node, id(P1), "the replaced node keeps its ID");
+    assert!(doc.node_html(id(P1)).unwrap().contains("Other"));
+    assert!(doc.node_html(id(P2)).unwrap().contains("Second paragraph"));
+    assert_eq!(rev(&doc, P2), 1, "P2 is not touched");
+    assert_eq!(children(&doc, Some(S1)), [H1, P1, P2]);
+
+    let result = apply_one(
         &mut doc,
-        json!([replace(
+        replace(
             S1,
             1,
-            &format!("<section><p data-node-id=\"{LI1}\">Steals an ID</p></section>")
-        )]),
+            &format!("<section><p data-omni-id=\"{LI1}\">Takes no ID</p></section>"),
+        ),
     );
-    assert!(message.contains(LI1), "{message}");
+    assert_eq!(result.created.len(), 1, "the paragraph is new: {result:?}");
+    assert_ne!(result.created[0], id(LI1));
+    assert_eq!(
+        children(&doc, Some(UL)),
+        [LI1, LI2],
+        "LI1 stays in its list"
+    );
+    assert!(doc.node_html(id(LI1)).unwrap().contains("One"));
+    assert_eq!(rev(&doc, LI1), 1);
+    assert_reads_back(&doc);
 }
 
 // --- Set ---
 
 #[cfg_attr(not(target_arch = "wasm32"), test)]
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
-fn set_changes_the_properties_of_a_block() {
+fn set_changes_the_inner_html_of_any_element() {
     let mut doc = doc();
-    apply_one(&mut doc, set(H1, 1, json!({"level": 3})));
-    assert!(doc.node_html(id(H1)).unwrap().starts_with("<h3"));
-    apply_one(&mut doc, set(NOTE, 1, json!({"kind": "warning"})));
-    assert!(
-        doc.node_html(id(NOTE))
-            .unwrap()
-            .contains("data-callout=\"warning\""),
-        "{}",
-        doc.node_html(id(NOTE)).unwrap()
-    );
-    apply_one(&mut doc, set(UL, 1, json!({"ordered": true})));
-    assert!(doc.node_html(id(UL)).unwrap().starts_with("<ol"));
-    assert_eq!(
-        doc.children(Some(id(UL))).unwrap().len(),
-        2,
-        "items are kept"
-    );
-    apply_one(&mut doc, set(CELL, 1, json!({"header": false})));
-    assert!(doc.node_html(id(CELL)).unwrap().starts_with("<td"));
-    apply_one(&mut doc, set(IMG, 1, json!({"alt": "A new description"})));
-    assert!(
-        doc.node_html(id(IMG))
-            .unwrap()
-            .contains("A new description")
-    );
-    apply_one(
-        &mut doc,
-        set(FIGURE, 1, json!({"caption": "A new caption"})),
-    );
-    assert!(doc.node_html(id(FIGURE)).unwrap().contains("A new caption"));
-    apply_one(
+    let result = apply_one(
         &mut doc,
         set(
             P1,
             1,
-            json!({"html": "Some <strong>bold</strong> and <a href=\"https://example.com\">a link</a>"}),
+            json!({"html": "Some <strong>bold</strong>, <span class=\"tag\">a span</span> and <a href=\"https://example.com\">a link</a>"}),
         ),
     );
+    assert_eq!(result.revision, 2);
     assert!(
         doc.node_html(id(P1))
             .unwrap()
-            .contains("Some <strong>bold</strong> and <a href=\"https://example.com\">a link</a>")
+            .contains("Some <strong>bold</strong>, <span class=\"tag\">a span</span> and <a href=\"https://example.com\">a link</a>"),
+        "{}",
+        doc.node_html(id(P1)).unwrap()
     );
-    // Several properties in one set, one revision.
-    let result = apply_one(&mut doc, set(H2, 1, json!({"level": 4, "html": "Both"})));
-    assert_eq!(result.revision, 2);
-    let html = doc.node_html(id(H2)).unwrap();
-    assert!(html.starts_with("<h4") && html.contains("Both"), "{html}");
-    HtmlDoc::parse(&doc.to_html()).expect("the doc is still a valid HTML doc");
+    apply_one(
+        &mut doc,
+        set(NOTE, 1, json!({"html": "A <b>warning</b> now"})),
+    );
+    assert!(
+        doc.node_html(id(NOTE))
+            .unwrap()
+            .contains("A <b>warning</b> now")
+    );
+    apply_one(&mut doc, set(CELL, 1, json!({"html": "<em>Name</em>"})));
+    assert!(doc.node_html(id(CELL)).unwrap().contains("<em>Name</em>"));
+    assert_eq!(rev(&doc, ROW), 1, "the row is not changed");
+    assert_reads_back(&doc);
 }
 
 #[cfg_attr(not(target_arch = "wasm32"), test)]
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
-fn set_runs_the_validation_of_the_doc_type() {
+fn set_refuses_unknown_properties_and_names_them() {
     let mut doc = doc();
     let refusals = [
-        (
-            set(H1, 1, json!({"level": 7})),
-            "level",
-            "a heading level of 7",
-        ),
-        (
-            set(H1, 1, json!({"level": 0})),
-            "level",
-            "a heading level of 0",
-        ),
-        (set(H1, 1, json!({"level": "big"})), "level", "a text level"),
-        (
-            set(P1, 1, json!({"level": 2})),
-            "level",
-            "a level on a paragraph",
-        ),
-        (
-            set(NOTE, 1, json!({"kind": "danger"})),
-            "kind|danger",
-            "an unknown callout kind",
-        ),
-        (
-            set(P1, 1, json!({"kind": "note"})),
-            "kind",
-            "a callout kind on a paragraph",
-        ),
-        (
-            set(P1, 1, json!({"ordered": true})),
-            "ordered",
-            "ordered on a paragraph",
-        ),
         (
             set(P1, 1, json!({"colour": "red"})),
             "colour",
@@ -878,38 +887,14 @@ fn set_runs_the_validation_of_the_doc_type() {
             "a new id",
         ),
         (
-            set(P1, 1, json!({"alt": "text"})),
-            "alt",
-            "alt on a paragraph",
-        ),
-        (
-            set(P1, 1, json!({"html": "<span>x</span>"})),
-            "span",
-            "a tag outside the format",
-        ),
-        (
-            set(P1, 1, json!({"html": "<p>nested block</p>"})),
-            "p|block",
-            "a block in inline content",
-        ),
-        (
-            set(
-                P1,
-                1,
-                json!({"html": "<a href=\"javascript:alert(1)\">x</a>"}),
-            ),
-            "javascript|href|link",
-            "a script link",
-        ),
-        (
-            set(S1, 1, json!({"html": "text"})),
-            "html|section|inline|text",
-            "inline content on a section",
-        ),
-        (
             set(P1, 1, json!({"style": "color:red"})),
             "style",
-            "a style",
+            "a style property",
+        ),
+        (
+            set(P1, 1, json!({"html": 5})),
+            "html",
+            "html that is no text",
         ),
     ];
     for (op, problem, what) in refusals {
@@ -981,19 +966,18 @@ fn a_block_cannot_move_into_itself_or_its_descendants() {
 
 #[cfg_attr(not(target_arch = "wasm32"), test)]
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
-fn a_move_obeys_the_rules_of_the_new_parent() {
+fn a_move_that_would_not_read_back_is_refused() {
     let mut doc = doc();
     for (op, what) in [
-        (move_to(P1, 1, Some(UL), None), "a paragraph into a list"),
-        (
-            move_to(LI1, 1, Some(S1), None),
-            "a list item into a section",
-        ),
-        (move_to(LI1, 1, None, None), "a list item to the top level"),
         (
             move_to(ROW, 1, Some(S1), None),
             "a table row into a section",
         ),
+        (
+            move_to(P1, 1, Some(P2), None),
+            "a paragraph into a paragraph",
+        ),
+        (move_to(S2, 1, Some(P1), None), "a section into a paragraph"),
     ] {
         let (index, _message) = invalid(&mut doc, json!([op]));
         assert_eq!(index, 0, "{what}");
@@ -1004,6 +988,13 @@ fn a_move_obeys_the_rules_of_the_new_parent() {
         [LI2, LI1],
         "an item may move within its list"
     );
+    apply_one(&mut doc, move_to(P1, 1, Some(LI2), None));
+    assert_eq!(
+        children(&doc, Some(LI2)),
+        [P1],
+        "a paragraph may go into an item"
+    );
+    assert_reads_back(&doc);
 }
 
 // --- Delete ---
@@ -1038,96 +1029,55 @@ fn delete_removes_the_block_and_all_its_descendants() {
 
 #[cfg_attr(not(target_arch = "wasm32"), test)]
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
-fn insert_runs_the_html_doc_rules() {
+fn insert_accepts_any_html() {
     let mut doc = doc();
-    let bad = [
-        ("<span>x</span>", "span"),
-        ("<p>x <b>bold</b></p>", "b"),
-        ("<p>x</p><p>y</p>", ""),
-        ("<p>x<script>alert(1)</script></p>", "script"),
-        (
-            "<p><a href=\"javascript:alert(1)\">x</a></p>",
-            "javascript|href|link",
-        ),
-        ("<p><a href=\"/relative\">x</a></p>", "href|link|relative"),
-        (
-            "<img src=\"https://example.com/x.png\" alt=\"\">",
-            "src|attachment|img",
-        ),
-        ("<p style=\"color:red\">x</p>", "style"),
-        ("<aside data-callout=\"danger\">x</aside>", "danger|callout"),
-        ("<table><tbody><tr><td>x</td></tr></tbody></table>", "tbody"),
-        ("<p>unclosed", ""),
-        ("plain text", ""),
-        ("", ""),
-    ];
-    for (content, problem) in bad {
-        let (index, message) = invalid(&mut doc, json!([insert_into(S1, None, content)]));
-        assert_eq!(index, 0, "{content}");
-        assert!(
-            problem.is_empty() || names_problem(&message, problem),
-            "inserting `{content}` must be refused naming `{problem}`, but the error is `{message}`"
-        );
-    }
-}
-
-#[cfg_attr(not(target_arch = "wasm32"), test)]
-#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
-fn insert_cleans_what_it_keeps() {
-    let mut doc = doc();
-    let content = "<figure><svg viewBox=\"0 0 10 10\" onload=\"steal()\"><script>steal()</script><foreignObject><p>x</p></foreignObject><rect x=\"1\" y=\"1\" width=\"5\" height=\"5\" onclick=\"steal()\" fill=\"#336699\"/><image href=\"https://evil.example/x.png\"/></svg><figcaption>Clean</figcaption></figure>";
-    let figure = apply_one(&mut doc, insert_into(S1, None, content)).node;
-    let html = doc.node_html(figure).unwrap().to_lowercase();
-    assert!(html.contains("<rect") && html.contains("clean"), "{html}");
-    for dirty in [
-        "script",
-        "onclick",
-        "onload",
-        "foreignobject",
-        "evil.example",
-        "<image",
+    let content = "<div class=\"card custom\" data-theme=\"dark\" onclick=\"toggle()\"><style>.card { color: red; }</style><p>A <span class=\"tag\">span</span>, <b>b</b>, <i>i</i></p><details><summary>More</summary><p>Hidden</p></details><svg viewBox=\"0 0 10 10\"><rect width=\"5\" height=\"5\"/></svg><script>if (a < b && b > c) { go(); }</script></div>";
+    let result = apply_one(&mut doc, insert_into(S1, Some(P2), content));
+    let html = doc.node_html(result.node).expect("the div prints");
+    for kept in [
+        "class=\"card custom\"",
+        "onclick=\"toggle()\"",
+        "<style>.card { color: red; }</style>",
+        "<span class=\"tag\">span</span>",
+        ">More</summary>",
+        "viewBox=\"0 0 10 10\"",
+        "<script>if (a < b && b > c) { go(); }</script>",
     ] {
-        assert!(
-            !html.contains(dirty),
-            "the SVG is cleaned of `{dirty}`: {html}"
-        );
+        assert!(html.contains(kept), "the insert keeps `{kept}`: {html}");
     }
+    assert!(
+        result.created.len() >= 5,
+        "the div, two paragraphs, the details and the svg are new nodes: {result:?}"
+    );
+    assert_eq!(children(&doc, Some(S1))[3], result.node.to_string());
+    assert_reads_back(&doc);
+    let (index, _) = invalid(&mut doc, json!([insert_into(S1, None, "")]));
+    assert_eq!(index, 0, "empty content inserts nothing, so it is refused");
 }
 
 #[cfg_attr(not(target_arch = "wasm32"), test)]
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
-fn replace_runs_the_html_doc_rules_and_cleaning() {
+fn replace_accepts_any_html() {
     let mut doc = doc();
-    let (_, message) = invalid(&mut doc, json!([replace(P1, 1, "<p><span>x</span></p>")]));
-    assert!(names_problem(&message, "span"), "{message}");
-    let (_, message) = invalid(
-        &mut doc,
-        json!([replace(P1, 1, "<p><a href=\"data:text/html,x\">x</a></p>")]),
-    );
-    assert!(names_problem(&message, "data|href|link"), "{message}");
-
-    let content = "<figure><svg viewBox=\"0 0 10 10\"><script>steal()</script><circle cx=\"5\" cy=\"5\" r=\"3\" onclick=\"steal()\"/></svg><figcaption>Cleaned</figcaption></figure>";
-    apply_one(&mut doc, replace(FIGURE, 1, content));
-    let html = doc.node_html(id(FIGURE)).unwrap().to_lowercase();
+    let content = "<figure><svg viewBox=\"0 0 10 10\" onload=\"draw()\"><circle cx=\"5\" cy=\"5\" r=\"3\" onclick=\"pick()\"/></svg><figcaption>Kept</figcaption></figure>";
+    let result = apply_one(&mut doc, replace(FIGURE, 1, content));
+    assert_eq!(result.node, id(FIGURE));
+    let html = doc.node_html(id(FIGURE)).unwrap();
     assert!(
-        html.contains("<circle") && !html.contains("script") && !html.contains("onclick"),
+        html.contains("<circle")
+            && html.contains("onclick=\"pick()\"")
+            && html.contains("onload=\"draw()\""),
         "{html}"
     );
+    assert_eq!(result.removed, [id(SVG)], "the old svg is replaced");
+    assert_reads_back(&doc);
 }
 
 #[cfg_attr(not(target_arch = "wasm32"), test)]
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
-fn an_operation_obeys_the_rules_of_the_parent_it_puts_a_block_in() {
+fn an_operation_whose_result_would_not_read_back_is_refused() {
     let mut doc = doc();
     for (op, what) in [
-        (
-            insert_into(UL, None, "<p>Not an item</p>"),
-            "a paragraph into a list",
-        ),
-        (
-            insert_into(S1, None, "<li>Loose item</li>"),
-            "a list item into a section",
-        ),
         (
             insert_into(S1, None, "<tr><td>x</td></tr>"),
             "a table row into a section",
@@ -1137,28 +1087,16 @@ fn an_operation_obeys_the_rules_of_the_parent_it_puts_a_block_in() {
             "a table cell into a section",
         ),
         (
-            insert_into(TABLE, None, "<p>Not a row</p>"),
-            "a paragraph into a table",
-        ),
-        (
-            insert_into(ROW, None, "<p>Not a cell</p>"),
-            "a paragraph into a row",
+            insert_into(P1, None, "<div>Inside</div>"),
+            "a div into a paragraph",
         ),
         (
             insert_into(P1, None, "<p>Inside</p>"),
-            "a block into a paragraph",
+            "a paragraph into a paragraph",
         ),
         (
-            json!({"op": "insert", "parent": null, "position": {"after": null}, "content": "<li>x</li>"}),
-            "a list item at the top level",
-        ),
-        (
-            replace(LI1, 1, "<p>Not an item</p>"),
-            "replacing an item with a paragraph",
-        ),
-        (
-            replace(CELL, 1, "<li>x</li>"),
-            "replacing a cell with an item",
+            replace(P1, 1, "<tr><td>x</td></tr>"),
+            "replacing a paragraph with a row",
         ),
     ] {
         let (index, _message) = invalid(&mut doc, json!([op]));
@@ -1166,21 +1104,21 @@ fn an_operation_obeys_the_rules_of_the_parent_it_puts_a_block_in() {
     }
     apply_one(&mut doc, insert_into(UL, Some(LI1), "<li>Fine</li>"));
     apply_one(&mut doc, insert_into(ROW, Some(CELL), "<td>Fine</td>"));
-    apply_one(&mut doc, insert_into(TABLE, None, "<tr><td>Fine</td></tr>"));
     apply_one(
         &mut doc,
         insert_into(S1, None, "<section><h2>Fine</h2></section>"),
     );
     apply_one(
         &mut doc,
-        json!({"op": "insert", "parent": null, "position": {"after": null}, "content": "<section><p>Fine</p></section>"}),
+        insert_into(LI1, None, "<div><p>Fine in an item</p></div>"),
     );
     apply_one(&mut doc, replace(LI1, 1, "<li>Still an item</li>"));
+    assert_reads_back(&doc);
 }
 
 #[cfg_attr(not(target_arch = "wasm32"), test)]
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
-fn the_doc_is_a_valid_html_doc_after_every_batch() {
+fn the_doc_reads_back_after_every_batch() {
     let mut doc = doc();
     let batches = [
         json!([insert_into(
@@ -1188,35 +1126,22 @@ fn the_doc_is_a_valid_html_doc_after_every_batch() {
             Some(P1),
             "<ul><li>a</li><li>b <em>c</em></li></ul>"
         )]),
-        json!([set(
-            H1,
-            1,
-            json!({"level": 2, "html": "Title <code>x</code>"})
-        )]),
+        json!([set(H1, 1, json!({"html": "Title <code>x</code>"}))]),
         json!([move_to(P2, 1, Some(S2), None), delete(LI1, 1)]),
         json!([replace(
             NOTE,
             1,
-            "<aside data-callout=\"decision\">Decided</aside>"
+            "<aside class=\"decision\"><p>Decided</p></aside>"
         )]),
         json!([insert_into(
             S2,
             None,
-            "<figure><pre class=\"mermaid\">graph TD;\n  A--&gt;B</pre><figcaption>x</figcaption></figure>"
+            "<div class=\"grid\"><style>.grid { display: grid; }</style><details><summary>x</summary><table><tbody><tr><td><p>cell</p></td></tr></tbody></table></details></div>"
         )]),
     ];
     for ops in batches {
         apply(&mut doc, ops);
-        let html = doc.to_html();
-        let parsed = HtmlDoc::parse(&html)
-            .unwrap_or_else(|error| panic!("the doc is no longer valid: {error}\n{html}"));
-        assert_eq!(parsed.to_html(), html, "the doc prints stable HTML");
-        let ids = printed_ids(&html);
-        let distinct: std::collections::HashSet<_> = ids.iter().collect();
-        assert_eq!(distinct.len(), ids.len(), "every ID is used once");
-        for node in &ids {
-            assert!(doc.revision(id(node)).is_some(), "{node} has a revision");
-        }
+        assert_reads_back(&doc);
     }
 }
 
@@ -1271,7 +1196,7 @@ fn a_batch_that_fails_changes_nothing() {
         move_to(P2, 1, Some(S2), None),
         delete(UL, 1),
         replace(S2, 1, "<section><h2>Replaced</h2></section>"),
-        set(H1, 1, json!({"level": 9}))
+        set(H1, 1, json!({"colour": "red"}))
     ]);
     let (index, message) = invalid(&mut doc, ops);
     assert_eq!(
@@ -1306,4 +1231,118 @@ fn an_empty_batch_applies_and_changes_nothing() {
     let applied = apply(&mut doc, json!([]));
     assert!(applied.ops.is_empty());
     assert_eq!(snapshot(&doc), before);
+}
+
+// --- US-109: operations at any depth ---
+
+#[cfg_attr(not(target_arch = "wasm32"), test)]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+fn elements_at_any_depth_are_nodes_with_their_nearest_ided_ancestor_as_parent() {
+    let doc = deep();
+    for node in [
+        DS, CARD, MORE, INNER, DT, DR, DC1, DP1, DC2, DUL, DLI, DDIV, DP2,
+    ] {
+        assert_eq!(rev(&doc, node), 1, "{node} is a node at revision 1");
+    }
+    assert_eq!(doc.parent(id(DP1)), Some(Some(id(DC1))));
+    assert_eq!(doc.parent(id(DC1)), Some(Some(id(DR))));
+    assert_eq!(doc.parent(id(INNER)), Some(Some(id(MORE))));
+    assert_eq!(doc.parent(id(DP2)), Some(Some(id(DDIV))));
+    assert_eq!(children(&doc, Some(DR)), [DC1, DC2]);
+    assert_eq!(children(&doc, Some(CARD)), [MORE]);
+    assert!(
+        doc.node_html(id(DP1))
+            .unwrap()
+            .contains("Deep <span class=\"x\">text</span>"),
+        "{}",
+        doc.node_html(id(DP1)).unwrap()
+    );
+}
+
+#[cfg_attr(not(target_arch = "wasm32"), test)]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+fn insert_replace_set_move_and_delete_work_at_any_depth() {
+    let mut doc = deep();
+
+    let inserted = apply_one(&mut doc, insert_into(DC1, Some(DP1), "<p>Deeper still</p>"));
+    assert_eq!(
+        children(&doc, Some(DC1)),
+        [DP1, &inserted.node.to_string()],
+        "an insert into a table cell lands after DP1"
+    );
+    let nested = apply_one(
+        &mut doc,
+        insert_into(DDIV, None, "<div class=\"inner\"><p>x</p></div>"),
+    );
+    assert_eq!(nested.created.len(), 2, "{nested:?}");
+    assert_eq!(children(&doc, Some(DDIV))[0], nested.node.to_string());
+
+    let replaced = apply_one(
+        &mut doc,
+        replace(DP2, 1, "<p>Rewritten <span class=\"y\">here</span></p>"),
+    );
+    assert_eq!(replaced.node, id(DP2));
+    assert_eq!(rev(&doc, DP2), 2);
+    assert!(
+        doc.node_html(id(DP2))
+            .unwrap()
+            .contains("<span class=\"y\">here</span>")
+    );
+
+    let set_cell = apply_one(&mut doc, set(DC2, 1, json!({"html": "<b>Bold</b> cell"})));
+    assert_eq!(set_cell.revision, 2);
+    assert!(doc.node_html(id(DC2)).unwrap().contains("<b>Bold</b> cell"));
+
+    let moved = apply_one(&mut doc, move_to(DP1, 1, Some(DDIV), Some(DP2)));
+    assert_eq!(moved.revision, 2, "the moved node's revision rises");
+    assert_eq!(children(&doc, Some(DDIV))[1..], [DP2, DP1]);
+    assert_eq!(children(&doc, Some(DC1)), [inserted.node.to_string()]);
+    for untouched in [DC1, DDIV, DS, CARD, MORE, DT, DR] {
+        assert_eq!(rev(&doc, untouched), 1, "{untouched} keeps revision 1");
+    }
+
+    let deleted = apply_one(&mut doc, delete(DT, 1));
+    assert_eq!(
+        deleted.removed,
+        [id(DT), id(DR), id(DC1), inserted.node, id(DC2)],
+        "the table and everything in it, in document order"
+    );
+    assert_eq!(children(&doc, Some(INNER)), Vec::<String>::new());
+    assert!(
+        doc.contains(id(DP1)),
+        "the moved paragraph is not in the table any more"
+    );
+    assert_reads_back(&doc);
+}
+
+#[cfg_attr(not(target_arch = "wasm32"), test)]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+fn revisions_are_checked_at_any_depth() {
+    let mut doc = deep();
+    apply_one(&mut doc, set(DC2, 1, json!({"html": "Fresh"})));
+    for (name, op) in [
+        ("set", set(DC2, 1, json!({"html": "Stale"}))),
+        ("replace", replace(DC2, 1, "<td>Stale</td>")),
+        ("move", move_to(DC2, 1, Some(DR), None)),
+        ("delete", delete(DC2, 1)),
+    ] {
+        let found = conflict(&mut doc, json!([op]));
+        assert_eq!(found.node, id(DC2), "a stale {name}");
+        assert_eq!(found.expected, 1);
+        assert_eq!(found.current_revision, 2);
+        assert!(
+            found
+                .current_html
+                .contains(&format!("data-omni-id=\"{DC2}\""))
+                && found.current_html.contains("Fresh"),
+            "a stale {name} shows the cell as it is now: {}",
+            found.current_html
+        );
+    }
+    let found = conflict(
+        &mut doc,
+        json!([delete(DP1, 1), set(DP2, 3, json!({"html": "x"}))]),
+    );
+    assert_eq!(found.index, 1);
+    assert!(doc.contains(id(DP1)), "the batch changed nothing");
 }
