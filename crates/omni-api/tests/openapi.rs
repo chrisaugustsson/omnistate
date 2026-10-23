@@ -481,3 +481,38 @@ fn the_document_describes_the_routes_that_finish_and_reopen_a_feature() {
         );
     }
 }
+
+// US-063: the project home lists the features with their counts, and every
+// item that waits for the human carries the feature it belongs to.
+#[test]
+fn the_document_describes_the_features_of_the_project_home() {
+    let server = TestServer::start(&offline_config());
+    let document = openapi(&server);
+    let home = component(&document, "HomeResponse");
+    assert!(
+        home["properties"]["features"]
+            .to_string()
+            .contains("FeatureSummary"),
+        "HomeResponse has the field features, a list of FeatureSummary: {home}"
+    );
+    let summary = component(&document, "FeatureSummary");
+    for field in ["feature", "docs", "open_changesets", "waiting"] {
+        assert!(
+            summary["properties"][field].is_object(),
+            "FeatureSummary has the field {field}: {summary}"
+        );
+    }
+    assert!(
+        summary["properties"]["feature"]
+            .to_string()
+            .contains("FeatureBody"),
+        "FeatureSummary.feature is a FeatureBody: {summary}"
+    );
+    for name in ["DecisionBody", "ChangesetBody", "CommentBody", "PostBody"] {
+        let schema = component(&document, name);
+        assert!(
+            schema["properties"]["feature_id"].is_object(),
+            "{name} has the field feature_id: {schema}"
+        );
+    }
+}
