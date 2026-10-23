@@ -33,6 +33,23 @@
 //!   project oldest first; `?feature=<id>` lists that feature's docs only and
 //!   `?feature=global` the global ones only. Another value is 400, an unknown
 //!   project 404 `not_found`.
+//!
+//! US-062 adds finishing a feature (FR-52, FR-55):
+//!
+//! - `POST /features/{feature_id}/done` and `POST /features/{feature_id}/reopen`
+//!   are human routes: an API key is 403 `{"error": "forbidden"}` and changes
+//!   nothing. `done` sets an active feature's status to `done` and `reopen`
+//!   sets a done one back to `active`; each answers 200 `{"feature":
+//!   Feature}` and emits `feature.done` or `feature.reopened` with `data` that
+//!   has at least `{"feature_id"}`. `done` on a done feature is 409 `{"error":
+//!   "already_done"}`, `reopen` on an active one 409 `{"error": "not_done"}`,
+//!   and an unknown feature is 404 `not_found`; a refused call emits nothing.
+//! - Creating a change set in a done feature is 409 `{"error":
+//!   "feature_done"}` and creates nothing. A change set that was open in it
+//!   before keeps its whole lifecycle: edits, saves, submit, reject, reopen,
+//!   approve and merge.
+//! - Every read of a done feature's docs, versions, threads, posts, decisions
+//!   and comments answers as it did before the feature was done.
 
 mod common;
 
@@ -1190,4 +1207,498 @@ fn the_doc_list_has_every_doc_of_the_project_and_filters_by_feature_or_global() 
     // A project without docs lists none.
     let empty = new_project(f, client);
     assert!(list_docs(client, &agent(f), &docs_path(f, &empty)).is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// Finishing a feature (US-062)
+// ---------------------------------------------------------------------------
+
+const FEATURE_DONE_ROUTE: &str =
+    "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/done";
+const FEATURE_REOPEN_ROUTE: &str =
+    "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/reopen";
+
+fn feature_path(f: &Fixture, project: &str, feature: &str) -> String {
+    format!("{}/features/{feature}", project_base(f, project))
+}
+
+/// `auth` calls `POST /features/{feature}/{action}` (`done` or `reopen`).
+fn mark(
+    f: &Fixture,
+    client: &Client,
+    auth: &Auth,
+    project: &str,
+    feature: &str,
+    action: &str,
+) -> Response {
+    call(
+        client,
+        "POST",
+        &format!("{}/{action}", feature_path(f, project, feature)),
+        auth,
+        Some(&json!({})),
+    )
+}
+
+/// The human marks the feature done (`done`) or reopens it (`reopen`);
+/// returns the Feature of the answer.
+fn human_marks(f: &Fixture, client: &Client, project: &str, feature: &str, action: &str) -> Value {
+    must(
+        mark(f, client, &human(f), project, feature, action),
+        200,
+        &format!("the human calls {action}"),
+    )["feature"]
+        .clone()
+}
+
+fn status_of_feature(f: &Fixture, client: &Client, project: &str, feature: &str) -> Value {
+    must(
+        call(
+            client,
+            "GET",
+            &feature_path(f, project, feature),
+            &agent(f),
+            None,
+        ),
+        200,
+        "show the feature",
+    )["feature"]["status"]
+        .clone()
+}
+
+/// The status of each of the project's features, in the list's order.
+fn listed_statuses(
+    f: &Fixture,
+    client: &Client,
+    auth: &Auth,
+    project: &str,
+) -> Vec<(String, Value)> {
+    let listed = must(
+        call(
+            client,
+            "GET",
+            &format!("{}/features", project_base(f, project)),
+            auth,
+            None,
+        ),
+        200,
+        "list the features",
+    );
+    listed["features"]
+        .as_array()
+        .unwrap_or_else(|| panic!("`features` is a list: {listed}"))
+        .iter()
+        .map(|feature| (id_of(feature), feature["status"].clone()))
+        .collect()
+}
+
+fn changesets_of_feature(feature: &str) -> i64 {
+    count(
+        "select count(*) from changesets where feature_id = $1::uuid",
+        &[feature],
+    )
+}
+
+fn create_changeset_response(
+    f: &Fixture,
+    client: &Client,
+    project: &str,
+    feature: &str,
+) -> Response {
+    call(
+        client,
+        "POST",
+        &format!("{}/changesets", project_base(f, project)),
+        &agent(f),
+        Some(&json!({ "title": unique("change"), "run_tag": "run-61", "feature_id": feature })),
+    )
+}
+
+/// Inserts a paragraph in the change set's draft of `doc`; returns its node.
+fn paragraph_node(
+    f: &Fixture,
+    client: &Client,
+    project: &str,
+    changeset: &str,
+    doc: &str,
+    text: &str,
+) -> String {
+    let edited = must(
+        call(
+            client,
+            "POST",
+            &format!("{}/docs/{doc}/ops", changeset_path(f, project, changeset)),
+            &agent(f),
+            Some(&json!({ "ops": [{
+                "op": "insert",
+                "parent": null,
+                "position": { "after": null },
+                "content": format!("<p>{text}</p>")
+            }] })),
+        ),
+        200,
+        "insert a paragraph",
+    );
+    edited["results"][0]["node"]
+        .as_str()
+        .unwrap_or_else(|| panic!("an insert names its node: {edited}"))
+        .to_string()
+}
+
+fn changeset_action(
+    f: &Fixture,
+    client: &Client,
+    auth: &Auth,
+    project: &str,
+    changeset: &str,
+    action: &str,
+    body: Option<&Value>,
+) -> Value {
+    must(
+        call(
+            client,
+            "POST",
+            &format!("{}/{action}", changeset_path(f, project, changeset)),
+            auth,
+            body,
+        ),
+        200,
+        &format!("{action} the change set"),
+    )["changeset"]
+        .clone()
+}
+
+#[test]
+fn the_done_and_reopen_routes_are_human_routes_in_the_registry() {
+    for path in [FEATURE_DONE_ROUTE, FEATURE_REOPEN_ROUTE] {
+        let entry = registry()
+            .into_iter()
+            .find(|r| r.method == "POST" && r.path == path)
+            .unwrap_or_else(|| panic!("the registry has no route POST {path}"));
+        assert_eq!(entry.access, Access::Human, "POST {path}");
+    }
+}
+
+#[test]
+fn the_human_marks_a_feature_done_and_reopens_it_with_their_events() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    let feature = new_feature(f, client, &project, "Checkout");
+    let other = new_feature(f, client, &project, "Search");
+
+    let done = human_marks(f, client, &project, &feature, "done");
+    assert_eq!(done["id"], feature.as_str(), "{done}");
+    assert_eq!(done["status"], "done", "{done}");
+    assert_eq!(status_of_feature(f, client, &project, &feature), "done");
+    for auth in [agent(f), human(f)] {
+        assert_eq!(
+            listed_statuses(f, client, &auth, &project),
+            [
+                (feature.clone(), json!("done")),
+                (other.clone(), json!("active"))
+            ],
+            "the list shows the done feature as done and leaves the other active"
+        );
+    }
+    let events = events_of(&project, "feature.done");
+    assert_eq!(events.len(), 1, "one feature.done: {events:?}");
+    assert_eq!(events[0]["feature_id"], feature.as_str(), "{}", events[0]);
+    assert!(
+        events_of(&project, "feature.reopened").is_empty(),
+        "nothing was reopened yet"
+    );
+
+    let reopened = human_marks(f, client, &project, &feature, "reopen");
+    assert_eq!(reopened["id"], feature.as_str(), "{reopened}");
+    assert_eq!(reopened["status"], "active", "{reopened}");
+    assert_eq!(status_of_feature(f, client, &project, &feature), "active");
+    let events = events_of(&project, "feature.reopened");
+    assert_eq!(events.len(), 1, "one feature.reopened: {events:?}");
+    assert_eq!(events[0]["feature_id"], feature.as_str(), "{}", events[0]);
+
+    // It can be marked done again after it was reopened.
+    let again = human_marks(f, client, &project, &feature, "done");
+    assert_eq!(again["status"], "done", "{again}");
+    assert_eq!(events_of(&project, "feature.done").len(), 2);
+}
+
+#[test]
+fn done_on_a_done_feature_and_reopen_on_an_active_one_are_conflicts() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    let feature = new_feature(f, client, &project, "Checkout");
+
+    let response = mark(f, client, &human(f), &project, &feature, "reopen");
+    assert_error(&response, 409, "not_done");
+    assert_eq!(status_of_feature(f, client, &project, &feature), "active");
+    assert!(events_of(&project, "feature.reopened").is_empty());
+
+    human_marks(f, client, &project, &feature, "done");
+    let response = mark(f, client, &human(f), &project, &feature, "done");
+    assert_error(&response, 409, "already_done");
+    assert_eq!(status_of_feature(f, client, &project, &feature), "done");
+    assert_eq!(
+        events_of(&project, "feature.done").len(),
+        1,
+        "a refused done emits nothing"
+    );
+
+    for action in ["done", "reopen"] {
+        let response = mark(f, client, &human(f), &project, UNKNOWN_ID, action);
+        assert_error(&response, 404, "not_found");
+    }
+}
+
+#[test]
+fn an_api_key_cannot_mark_a_feature_done_or_reopen_it() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    let feature = new_feature(f, client, &project, "Checkout");
+
+    let response = mark(f, client, &agent(f), &project, &feature, "done");
+    assert_error(&response, 403, "forbidden");
+    assert_eq!(status_of_feature(f, client, &project, &feature), "active");
+    assert!(events_of(&project, "feature.done").is_empty());
+
+    human_marks(f, client, &project, &feature, "done");
+    let response = mark(f, client, &agent(f), &project, &feature, "reopen");
+    assert_error(&response, 403, "forbidden");
+    assert_eq!(status_of_feature(f, client, &project, &feature), "done");
+    assert!(events_of(&project, "feature.reopened").is_empty());
+}
+
+#[test]
+fn a_done_feature_takes_no_new_change_sets() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    let feature = new_feature(f, client, &project, "Checkout");
+    new_changeset(f, client, &project, Some(&feature));
+    human_marks(f, client, &project, &feature, "done");
+
+    let before = changesets_of_feature(&feature);
+    let response = create_changeset_response(f, client, &project, &feature);
+    assert_error(&response, 409, "feature_done");
+    assert_eq!(
+        changesets_of_feature(&feature),
+        before,
+        "a refused change set is not created"
+    );
+
+    // The project and its other features still take change sets.
+    new_changeset(f, client, &project, None);
+    let other = new_feature(f, client, &project, "Search");
+    new_changeset(f, client, &project, Some(&other));
+
+    // Reopened, the feature takes change sets again.
+    human_marks(f, client, &project, &feature, "reopen");
+    new_changeset(f, client, &project, Some(&feature));
+    assert_eq!(changesets_of_feature(&feature), before + 1);
+}
+
+#[test]
+fn a_change_set_open_in_a_feature_keeps_its_lifecycle_after_the_feature_is_done() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    let feature = new_feature(f, client, &project, "Checkout");
+    let changeset = new_changeset(f, client, &project, Some(&feature));
+    let doc = id_of(&create_doc(f, client, &project, &changeset, "html", "prd")["doc"]);
+    add_paragraph(f, client, &project, &changeset, &doc, "Pay in one step.");
+    save(f, client, &project, &changeset, &doc);
+
+    human_marks(f, client, &project, &feature, "done");
+
+    // The open change set goes on: edits, saves, submit, reject, reopen,
+    // submit again, approve and merge.
+    add_paragraph(
+        f,
+        client,
+        &project,
+        &changeset,
+        &doc,
+        "Pay with a saved card.",
+    );
+    let version = save(f, client, &project, &changeset, &doc);
+    let submitted = changeset_action(f, client, &agent(f), &project, &changeset, "submit", None);
+    assert_eq!(submitted["status"], "in_review", "{submitted}");
+    let rejected = changeset_action(
+        f,
+        client,
+        &human(f),
+        &project,
+        &changeset,
+        "reject",
+        Some(&json!({ "reason": "Name the card brands." })),
+    );
+    assert_eq!(rejected["status"], "rejected", "{rejected}");
+    let reopened = changeset_action(f, client, &agent(f), &project, &changeset, "reopen", None);
+    assert_eq!(reopened["status"], "open", "{reopened}");
+    add_paragraph(
+        f,
+        client,
+        &project,
+        &changeset,
+        &doc,
+        "Visa and Mastercard.",
+    );
+    let last = save(f, client, &project, &changeset, &doc);
+    assert_ne!(last["id"], version["id"], "a new version was saved");
+    merge(f, client, &project, &changeset);
+
+    let shown = show_doc(f, client, &human(f), &project, &doc);
+    assert_eq!(
+        shown["mainline_version_id"], last["id"],
+        "the merge made the last version the doc's mainline: {shown}"
+    );
+    assert_feature_id(&shown, &json!(feature), "the merged doc");
+    assert_eq!(status_of_feature(f, client, &project, &feature), "done");
+}
+
+#[test]
+fn every_read_of_a_done_features_records_answers_as_before() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    let feature = new_feature(f, client, &project, "Checkout");
+    let changeset = new_changeset(f, client, &project, Some(&feature));
+    let doc = id_of(&create_doc(f, client, &project, &changeset, "html", "prd")["doc"]);
+    let node = paragraph_node(f, client, &project, &changeset, &doc, "Pay in one step.");
+    let version = id_of(&save(f, client, &project, &changeset, &doc));
+    let base = project_base(f, &project);
+
+    let criteria = ["Fewest steps", "Works on phones"];
+    let thread = id_of(
+        &must(
+            call(
+                client,
+                "POST",
+                &format!("{}/threads", changeset_path(f, &project, &changeset)),
+                &agent(f),
+                Some(&json!({
+                    "question": unique("How many steps to pay?"),
+                    "criteria": criteria,
+                    "sealed": false
+                })),
+            ),
+            201,
+            "start a thread",
+        )["thread"],
+    );
+    let post = id_of(
+        &must(
+            call(
+                client,
+                "POST",
+                &format!("{base}/threads/{thread}/posts"),
+                &agent(f),
+                Some(&json!({
+                    "type": "position",
+                    "summary": unique("One step"),
+                    "body": "One page with the card form keeps it short."
+                })),
+            ),
+            201,
+            "post in the thread",
+        )["post"],
+    );
+    let decision = id_of(
+        &must(
+            call(
+                client,
+                "POST",
+                &format!("{base}/threads/{thread}/decisions"),
+                &agent(f),
+                Some(&json!({
+                    "direction": unique("Pay on one page"),
+                    "chosen": "One page",
+                    "criteria": criteria,
+                    "options": [
+                        {
+                            "name": "One page",
+                            "scores": { "Fewest steps": 9, "Works on phones": 8 },
+                            "lost_because": null
+                        },
+                        {
+                            "name": "Three steps",
+                            "scores": { "Fewest steps": 4, "Works on phones": 7 },
+                            "lost_because": "Two more pages to load."
+                        },
+                        {
+                            "name": "Pop-up",
+                            "scores": { "Fewest steps": 7, "Works on phones": 3 },
+                            "lost_because": "Pop-ups are hard to use on phones."
+                        }
+                    ],
+                    "assumptions": ["Most buyers pay by card."],
+                    "open_questions": [],
+                    "dissent": [],
+                    "posts": [post]
+                })),
+            ),
+            201,
+            "propose a decision",
+        )["decision"],
+    );
+    let comment = id_of(
+        &must(
+            call(
+                client,
+                "POST",
+                &format!("{base}/versions/{version}/comments"),
+                &human(f),
+                Some(&json!({ "node": node, "text": "Say which cards." })),
+            ),
+            201,
+            "comment on the paragraph",
+        )["comment"],
+    );
+    merge(f, client, &project, &changeset);
+
+    let reads = [
+        format!("{base}/docs/{doc}"),
+        format!("{base}/docs/{doc}/html"),
+        format!("{base}/docs?feature={feature}"),
+        format!("{base}/docs/{doc}/versions"),
+        format!("{base}/versions/{version}"),
+        format!("{base}/changesets/{changeset}"),
+        format!("{base}/changesets?feature={feature}"),
+        format!("{base}/threads/{thread}"),
+        format!("{base}/threads/{thread}/digest"),
+        format!("{base}/posts/{post}"),
+        format!("{base}/decisions/{decision}"),
+        format!("{base}/comments?doc={doc}"),
+        format!("{base}/comments/{comment}"),
+    ];
+    let read_all = || -> Vec<(String, u16, String)> {
+        let mut answers = Vec::new();
+        for auth in [agent(f), human(f)] {
+            for path in &reads {
+                let response = call(client, "GET", path, &auth, None);
+                answers.push((path.clone(), response.status, response.text()));
+            }
+        }
+        answers
+    };
+    let before = read_all();
+    for (path, status, text) in &before {
+        assert_eq!(
+            *status, 200,
+            "GET {path} before the feature is done: {text}"
+        );
+    }
+    // Each kind of record is really in what is read.
+    let joined: String = before.iter().map(|(_, _, text)| text.as_str()).collect();
+    for id in [&doc, &version, &thread, &post, &decision, &comment] {
+        assert!(joined.contains(id.as_str()), "the reads show {id}");
+    }
+
+    human_marks(f, client, &project, &feature, "done");
+
+    let after = read_all();
+    for ((path, status, text), (_, _, text_before)) in after.iter().zip(&before) {
+        assert_eq!(*status, 200, "GET {path} after the feature is done: {text}");
+        let (now, then) = (parse(text), parse(text_before));
+        assert_eq!(
+            now, then,
+            "GET {path} answers as it did before the feature was done"
+        );
+    }
 }

@@ -572,6 +572,18 @@ const CASES: &[Case] = &[
         Kind::Workspace,
     ),
     case(
+        "POST",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/done",
+        Some("{}"),
+        Kind::Workspace,
+    ),
+    case(
+        "POST",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/reopen",
+        Some("{}"),
+        Kind::Workspace,
+    ),
+    case(
         "GET",
         "/api/v1/w/{workspace_id}/projects/{project_id}/docs",
         None,
@@ -4407,10 +4419,10 @@ fn the_review_call_of_the_attacks_shows_the_owner_its_own_change_set() {
 }
 
 // ---------------------------------------------------------------------------
-// Features (US-059)
+// Features (US-059, US-062)
 // ---------------------------------------------------------------------------
 
-const FEATURE_ROUTES: [(&str, &str, Access); 3] = [
+const FEATURE_ROUTES: [(&str, &str, Access); 5] = [
     (
         "POST",
         "/api/v1/w/{workspace_id}/projects/{project_id}/features",
@@ -4425,6 +4437,16 @@ const FEATURE_ROUTES: [(&str, &str, Access); 3] = [
         "GET",
         "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}",
         Access::Both,
+    ),
+    (
+        "POST",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/done",
+        Access::Human,
+    ),
+    (
+        "POST",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/reopen",
+        Access::Human,
     ),
 ];
 

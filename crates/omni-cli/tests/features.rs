@@ -21,6 +21,11 @@
 //!   nearest `.omni.toml`, as a UUID or a project name (US-016), print the
 //!   API's JSON with `--json`, and report errors as one line on standard
 //!   error (US-015, tests/common/mod.rs). `omni --help` lists them.
+//! - US-062: marking a feature done and reopening it are the human's, in the
+//!   web app. `omni feature done` and `omni feature reopen`, with or without a
+//!   feature, are refused as `omni changeset reject` is: one line on standard
+//!   error that says "marking a feature done is the reviewer's call, in the
+//!   web app", and nothing is sent.
 
 mod common;
 
@@ -552,4 +557,32 @@ fn help_lists_the_feature_commands() {
             help.stdout
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// omni feature done / reopen
+// ---------------------------------------------------------------------------
+
+#[test]
+fn marking_a_feature_done_or_reopening_it_is_left_to_the_reviewer_in_the_web_app() {
+    let server = mock();
+    let home = logged_in(&server.url);
+    for command in ["done", "reopen"] {
+        for args in [
+            &["feature", command, "Checkout", "--project", PROJECT][..],
+            &["feature", command, FEATURE, "--project", PROJECT][..],
+            &["feature", command][..],
+        ] {
+            let out = run(&home, args);
+            assert_one_line_error(
+                &out,
+                &["marking a feature done is the reviewer's call, in the web app"],
+            );
+        }
+    }
+    assert!(
+        server.requests().is_empty(),
+        "nothing is sent: {:?}",
+        server.requests()
+    );
 }
