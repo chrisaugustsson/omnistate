@@ -70,9 +70,6 @@ pub struct Args {
     pub replaces: Option<String>,
     /// `omni decision propose <thread> --file <decision.json>`.
     pub file: Option<String>,
-    /// `omni version save --remove-commented`: save even though the version
-    /// removes nodes that have open comments.
-    pub remove_commented: bool,
     pub json: bool,
     pub help: bool,
     pub version: bool,
@@ -138,8 +135,9 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Args> {
                 continue;
             }
             "--remove-commented" => {
-                parsed.remove_commented = true;
-                continue;
+                bail!(
+                    "--remove-commented is gone: a write that removes a commented node always goes through, and the comment stays, orphaned, until the human deletes it"
+                )
             }
             "--attach" | "--link" => {
                 let Some(value) = inline.or_else(|| args.next()) else {

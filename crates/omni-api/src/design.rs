@@ -739,11 +739,22 @@ fn component_of_instance(nodes: &[Node], instance: &str) -> Option<NodeId> {
     })
 }
 
-/// Whether `inner` is a node of the component that the instance `instance` of
-/// the design version `version_id` places, as the design system version that the
-/// design version recorded defines the component: the second half of the node
-/// address `<instanceId>/<componentNodeId>` of a comment (US-038).
-pub(crate) async fn instance_holds(
+/// The tags of the node `id` among `nodes` and their descendants.
+fn tags_of_node(nodes: &[Node], id: &str) -> Option<String> {
+    nodes.iter().find_map(|node| {
+        if node.id().as_str() == id {
+            return Some(tags::print(node));
+        }
+        tags_of_node(node.children(), id)
+    })
+}
+
+/// The tags of the node `inner` of the component that the instance `instance`
+/// of the design version `version_id` places, as the design system version that
+/// the design version recorded defines the component: the second half of the
+/// node address `<instanceId>/<componentNodeId>` of a comment (US-038).
+/// `None` when the version has no such instance or the component no such node.
+pub(crate) async fn instance_node(
     state: &AppState,
     workspace_id: &str,
     version_id: &str,
@@ -751,34 +762,81 @@ pub(crate) async fn instance_holds(
     design_system_version_id: Option<&str>,
     instance: &str,
     inner: &str,
-) -> Result<bool, ApiError> {
+) -> Result<Option<String>, ApiError> {
     let (Some(chunk), Some(recorded)) = (chunk, design_system_version_id) else {
-        return Ok(false);
+        return Ok(None);
     };
     let pages =
         boards::read_pages(state, workspace_id, chunk, &format!("version {version_id}")).await?;
     let Some(placed) = component_of_instance(&pages, instance) else {
-        return Ok(false);
+        return Ok(None);
     };
     let library = components_of(state, workspace_id, recorded).await?;
-    Ok(library
-        .get(&placed)
-        .is_some_and(|component| tree_of(component).keys().any(|id| id.as_str() == inner)))
+    Ok(library.get(&placed).and_then(|component| {
+        tree_of(component)
+            .values()
+            .find(|node| node.id().as_str() == inner)
+            .map(|node| tags::print(node))
+    }))
 }
 
-/// Whether `inner` is a node of the component that the instance `instance`
+/// The tags of the node `node` of the design version whose manifest or pages
+/// are in `chunk`, `None` when the version has no such node.
+pub(crate) async fn version_node_tags(
+    state: &AppState,
+    workspace_id: &str,
+    version_id: &str,
+    chunk: &str,
+    node: &str,
+) -> Result<Option<String>, ApiError> {
+    let pages =
+        boards::read_pages(state, workspace_id, chunk, &format!("version {version_id}")).await?;
+    Ok(tags_of_node(&pages, node))
+}
+
+/// The tags of the node `node` in `chunk`, a page or a board of a design's
+/// head: the node found by its ID in the subtree that the chunk holds. A page
+/// chunk has no children; its boards are chunks of their own.
+pub(crate) async fn head_node_tags(
+    state: &AppState,
+    workspace_id: &str,
+    chunk: &str,
+    node: &str,
+) -> Result<Option<String>, ApiError> {
+    let text = read_chunk(state, workspace_id, chunk).await?;
+    let unreadable = |why: String| {
+        eprintln!("omni-api: the chunk {chunk} holds no board: {why}");
+        ApiError::Unavailable
+    };
+    let mut value: Value = serde_json::from_str(&text).map_err(|e| unreadable(e.to_string()))?;
+    let nodes = match nodes_from(&Value::Array(vec![value.clone()])) {
+        Ok(nodes) => nodes,
+        Err(_) => {
+            if let Some(object) = value.as_object_mut() {
+                object
+                    .entry("children")
+                    .or_insert_with(|| Value::Array(Vec::new()));
+            }
+            nodes_from(&Value::Array(vec![value])).map_err(unreadable)?
+        }
+    };
+    Ok(tags_of_node(&nodes, node))
+}
+
+/// The tags of the node `inner` of the component that the instance `instance`
 /// places, as the design system's head defines the component: the second half
 /// of the node address `<instanceId>/<componentNodeId>` of a comment on a
 /// design's head (US-106). `chunk` is the board chunk of the head that holds
-/// the instance, so no other board is read.
-pub(crate) async fn head_instance_holds(
+/// the instance, so no other board is read. `None` when the instance does not
+/// place a component that has the node.
+pub(crate) async fn head_instance_node(
     state: &AppState,
     workspace_id: &str,
     project_id: &str,
     chunk: &str,
     instance: &str,
     inner: &str,
-) -> Result<bool, ApiError> {
+) -> Result<Option<String>, ApiError> {
     let text = read_chunk(state, workspace_id, chunk).await?;
     let nodes = serde_json::from_str::<Value>(&text)
         .map_err(|e| e.to_string())
@@ -788,13 +846,15 @@ pub(crate) async fn head_instance_holds(
             ApiError::Unavailable
         })?;
     let Some(placed) = component_of_instance(&nodes, instance) else {
-        return Ok(false);
+        return Ok(None);
     };
     let system = system_head_of_project(state, workspace_id, project_id).await?;
-    Ok(system
-        .library
-        .get(&placed)
-        .is_some_and(|component| tree_of(component).keys().any(|id| id.as_str() == inner)))
+    Ok(system.library.get(&placed).and_then(|component| {
+        tree_of(component)
+            .values()
+            .find(|node| node.id().as_str() == inner)
+            .map(|node| tags::print(node))
+    }))
 }
 
 /// Saves the change set's draft of the design system first when it has

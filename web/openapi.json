@@ -394,6 +394,10 @@
             "description": "The node address as it was sent: a node ID of the doc's head, or\n`<instanceId>/<componentNodeId>` inside a component instance.",
             "type": "string"
           },
+          "orphaned": {
+            "description": "`true` when the doc's head no longer has the node address: an\noperation deleted the node, or a node above it, or a replace left it\nout. A replace or a set that keeps the node's ID does not orphan it.\nThe comment stays listed with its snapshot until the human deletes it.",
+            "type": "boolean"
+          },
           "project_id": {
             "type": "string"
           },
@@ -403,6 +407,10 @@
               "$ref": "#/components/schemas/ReplyBody"
             },
             "type": "array"
+          },
+          "snapshot": {
+            "description": "What the node held when the comment was made: the HTML of a block of\nan HTML doc, the tags of a node of a design, or of the component's node\nfor an address inside an instance. Later edits do not change it; it is\nempty for a comment made before snapshots, and cut off after\n`SNAPSHOT_LIMIT` bytes.",
+            "type": "string"
           },
           "text": {
             "type": "string"

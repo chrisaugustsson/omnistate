@@ -19,7 +19,7 @@
 use crate::AppState;
 use crate::changesets::{ChangesetBody, Scope, changesets_of_project, require_project};
 use crate::claims;
-use crate::comments::{CommentBody, waiting_of_project};
+use crate::comments::{CommentBody, finish, waiting_of_project};
 use crate::decisions::{DecisionBody, proposed_of_project};
 use crate::docs::{DocBody, docs_of_project};
 use crate::features::{FEATURE_COLUMNS, FeatureBody};
@@ -121,9 +121,10 @@ pub async fn show(
     let changesets = changesets_of_project(&mut tx, &Viewer::human(), &project_id).await?;
     let threads = threads_of_project(&mut tx, &project_id).await?;
     let decisions = proposed_of_project(&mut tx, &Viewer::human(), &project_id).await?;
-    let comments = waiting_of_project(&mut tx, &project_id).await?;
+    let waiting_comments = waiting_of_project(&mut tx, &project_id).await?;
     let questions = unanswered_questions(&mut tx, &project_id).await?;
     tx.commit().await.map_err(ApiError::database)?;
+    let comments = finish(&state, &request.workspace_id, &project_id, waiting_comments).await?;
     let in_review: Vec<ChangesetBody> = changesets
         .iter()
         .filter(|changeset| changeset.status == "in_review")

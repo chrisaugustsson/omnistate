@@ -11,6 +11,13 @@
 //! left out of every list and read. A comment whose node later leaves the head
 //! stays listed (V18); nothing is checked after it was made.
 //!
+//! A comment stores a `snapshot`: what its node held when the comment was made
+//! (an HTML doc's block as HTML, a design's node in tag form, and for
+//! `<instanceId>/<componentNodeId>` the component's node). It is `orphaned`
+//! when the doc's head no longer has the node address, which is computed when
+//! the comment is read; a replace or a set that keeps the node's ID leaves it
+//! in the head. Removing a commented node never stops a write (V18).
+//!
 //! A comment `waits on you` (`waiting_on_you`) when its latest reply is an
 //! agent's: the human has not answered it yet.
 //!
@@ -34,9 +41,10 @@ use axum::Json;
 use axum::body::Bytes;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
+use omni_core::ops::EditDoc;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use utoipa::ToSchema;
 
 /// The reply to a comment.
@@ -69,6 +77,19 @@ pub struct CommentBody {
     #[schema(value_type = Object)]
     pub author: Value,
     pub text: String,
+    /// What the node held when the comment was made: the HTML of a block of
+    /// an HTML doc, the tags of a node of a design, or of the component's node
+    /// for an address inside an instance. Later edits do not change it; it is
+    /// empty for a comment made before snapshots, and cut off after
+    /// `SNAPSHOT_LIMIT` bytes.
+    #[schema(required = false)]
+    pub snapshot: String,
+    /// `true` when the doc's head no longer has the node address: an
+    /// operation deleted the node, or a node above it, or a replace left it
+    /// out. A replace or a set that keeps the node's ID does not orphan it.
+    /// The comment stays listed with its snapshot until the human deletes it.
+    #[schema(required = false)]
+    pub orphaned: bool,
     /// The replies, oldest first.
     pub replies: Vec<ReplyBody>,
     /// `true` when the latest reply is an agent's: the comment waits for the
@@ -145,7 +166,26 @@ struct CommentRow {
     feature_id: Option<String>,
     author: String,
     text: String,
+    snapshot: String,
+    doc_kind: String,
+    doc_head: Option<String>,
     created_at: String,
+}
+
+/// The longest snapshot that is stored, in bytes; a longer one is cut off.
+const SNAPSHOT_LIMIT: usize = 16_000;
+
+/// The snapshot as stored: `text`, cut off at a character boundary when it
+/// is longer than `SNAPSHOT_LIMIT`.
+fn clipped(text: String) -> String {
+    if text.len() <= SNAPSHOT_LIMIT {
+        return text;
+    }
+    let mut end = SNAPSHOT_LIMIT;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}...", &text[..end])
 }
 
 /// The rows of the comments that satisfy every condition, oldest first. A
@@ -175,6 +215,7 @@ async fn fetch_rows(tx: &mut Tx, filter: Filter, lock: &str) -> Result<Vec<Comme
                 c.version_id::text AS version_id, c.node AS node, \
                 d.feature_id::text AS feature_id, \
                 c.author::text AS author, c.body AS text, \
+                COALESCE(c.snapshot, '') AS snapshot, d.kind AS doc_kind, d.head AS doc_head, \
                 to_char(c.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"') AS created_at \
          FROM comments c \
          JOIN docs d ON d.workspace_id = c.workspace_id AND d.id = c.doc_id \
@@ -207,8 +248,16 @@ fn unreadable(what: &str, id: &str, error: serde_json::Error) -> ApiError {
     ApiError::Unavailable
 }
 
-/// The comments with their replies.
-async fn bodies(tx: &mut Tx, rows: Vec<CommentRow>) -> Result<Vec<CommentBody>, ApiError> {
+/// A comment read from the database, with where its doc's head is: `finish`
+/// computes `orphaned` from it once the transaction is closed.
+pub(crate) struct Listed {
+    body: CommentBody,
+    doc_kind: String,
+    doc_head: Option<String>,
+}
+
+/// The comments with their replies, not yet checked against the heads.
+async fn bodies(tx: &mut Tx, rows: Vec<CommentRow>) -> Result<Vec<Listed>, ApiError> {
     if rows.is_empty() {
         return Ok(Vec::new());
     }
@@ -246,18 +295,24 @@ async fn bodies(tx: &mut Tx, rows: Vec<CommentRow>) -> Result<Vec<CommentBody>, 
             let waiting_on_you = replies
                 .last()
                 .is_some_and(|reply| reply.author["kind"] == "agent");
-            Ok(CommentBody {
-                replies,
-                id: row.id,
-                project_id: row.project_id,
-                doc_id: row.doc_id,
-                version_id: row.version_id,
-                node: row.node,
-                feature_id: row.feature_id,
-                author,
-                text: row.text,
-                waiting_on_you,
-                created_at: row.created_at,
+            Ok(Listed {
+                body: CommentBody {
+                    replies,
+                    id: row.id,
+                    project_id: row.project_id,
+                    doc_id: row.doc_id,
+                    version_id: row.version_id,
+                    node: row.node,
+                    feature_id: row.feature_id,
+                    author,
+                    text: row.text,
+                    snapshot: row.snapshot,
+                    orphaned: false,
+                    waiting_on_you,
+                    created_at: row.created_at,
+                },
+                doc_kind: row.doc_kind,
+                doc_head: row.doc_head,
             })
         })
         .collect()
@@ -280,13 +335,150 @@ async fn load_row(
         .ok_or(ApiError::NotFound)
 }
 
-async fn load_comment(
-    tx: &mut Tx,
-    project_id: &str,
-    comment_id: &str,
-) -> Result<CommentBody, ApiError> {
+async fn load_comment(tx: &mut Tx, project_id: &str, comment_id: &str) -> Result<Listed, ApiError> {
     let row = load_row(tx, project_id, comment_id, "").await?;
     bodies(tx, vec![row]).await?.pop().ok_or(ApiError::NotFound)
+}
+
+/// The comments with `orphaned` set: `true` when the head of the comment's doc
+/// no longer has its node address. The heads are checked through the node
+/// index, one query for the plain addresses of a doc, and a design's manifest
+/// is the only thing read from RustFS besides the board of an instance. Call
+/// it after the transaction that read the comments is closed.
+pub(crate) async fn finish(
+    state: &AppState,
+    workspace_id: &str,
+    project_id: &str,
+    listed: Vec<Listed>,
+) -> Result<Vec<CommentBody>, ApiError> {
+    let mut by_doc: HashMap<&str, Vec<usize>> = HashMap::new();
+    for (index, comment) in listed.iter().enumerate() {
+        by_doc
+            .entry(comment.body.doc_id.as_str())
+            .or_default()
+            .push(index);
+    }
+    let mut orphaned: HashSet<usize> = HashSet::new();
+    for indexes in by_doc.values() {
+        let first = &listed[indexes[0]];
+        let addresses: Vec<(usize, &str)> = indexes
+            .iter()
+            .map(|index| (*index, listed[*index].body.node.as_str()))
+            .collect();
+        let kept = addresses_in_head(
+            state,
+            workspace_id,
+            project_id,
+            &first.doc_kind,
+            first.doc_head.as_deref(),
+            &addresses,
+        )
+        .await?;
+        orphaned.extend(
+            addresses
+                .iter()
+                .map(|(index, _)| *index)
+                .filter(|index| !kept.contains(index)),
+        );
+    }
+    Ok(listed
+        .into_iter()
+        .enumerate()
+        .map(|(index, mut comment)| {
+            comment.body.orphaned = orphaned.contains(&index);
+            comment.body
+        })
+        .collect())
+}
+
+/// One comment with `orphaned` set; see `finish`.
+async fn finish_one(
+    state: &AppState,
+    workspace_id: &str,
+    project_id: &str,
+    listed: Listed,
+) -> Result<CommentBody, ApiError> {
+    finish(state, workspace_id, project_id, vec![listed])
+        .await?
+        .pop()
+        .ok_or(ApiError::NotFound)
+}
+
+/// Which of the node addresses (each with the index that names it) the head of
+/// a doc has: the index of every address that is still there.
+async fn addresses_in_head(
+    state: &AppState,
+    workspace_id: &str,
+    project_id: &str,
+    doc_kind: &str,
+    head: Option<&str>,
+    addresses: &[(usize, &str)],
+) -> Result<HashSet<usize>, ApiError> {
+    let Some(head) = head else {
+        return Ok(HashSet::new());
+    };
+    let manifest = if doc_kind == "design" {
+        versions::head_manifest(state, workspace_id, Some(head)).await?
+    } else {
+        None
+    };
+    let chunks: Vec<&str> = match &manifest {
+        Some(manifest) => manifest.chunks(),
+        None => vec![head],
+    };
+    let parsed: Vec<(usize, Address)> = addresses
+        .iter()
+        .filter_map(|(index, node)| Address::parse(node).map(|address| (*index, address)))
+        .collect();
+    let wanted: Vec<&str> = parsed
+        .iter()
+        .map(|(_, address)| match address {
+            Address::Node(id) => *id,
+            Address::Inside { instance, .. } => *instance,
+        })
+        .collect();
+    let mut tx = state.workspace_tx(workspace_id).await?;
+    let found: Vec<(String, String, String)> = sqlx::query_as(
+        "SELECT chunk, node, type FROM node_index \
+         WHERE chunk = ANY($1::text[]) AND node = ANY($2::text[])",
+    )
+    .bind(&chunks)
+    .bind(&wanted)
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(ApiError::database)?;
+    tx.commit().await.map_err(ApiError::database)?;
+
+    let mut kept = HashSet::new();
+    for (index, address) in parsed {
+        match address {
+            Address::Node(id) => {
+                if found.iter().any(|(_, node, _)| node == id) {
+                    kept.insert(index);
+                }
+            }
+            Address::Inside { instance, inner } => {
+                let placed = found
+                    .iter()
+                    .find(|(_, node, kind)| node == instance && kind == "instance");
+                if let (Some((chunk, _, _)), Some(_)) = (placed, &manifest) {
+                    let node = design::head_instance_node(
+                        state,
+                        workspace_id,
+                        project_id,
+                        chunk,
+                        instance,
+                        inner,
+                    )
+                    .await?;
+                    if node.is_some() {
+                        kept.insert(index);
+                    }
+                }
+            }
+        }
+    }
+    Ok(kept)
 }
 
 // Making comments -----------------------------------------------------------------------
@@ -317,6 +509,8 @@ struct NewComment<'a> {
     version_id: Option<&'a str>,
     node: &'a str,
     text: &'a str,
+    /// What the node holds now, stored as the comment's snapshot.
+    snapshot: String,
     author: &'a Value,
 }
 
@@ -329,8 +523,8 @@ async fn insert_comment(
 ) -> Result<(StatusCode, Json<CommentResponse>), ApiError> {
     let mut tx = state.workspace_tx(workspace_id).await?;
     let comment_id: String = sqlx::query_scalar(
-        "INSERT INTO comments (workspace_id, doc_id, version_id, node, author, body) \
-         VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5::text::jsonb, $6) RETURNING id::text",
+        "INSERT INTO comments (workspace_id, doc_id, version_id, node, author, body, snapshot) \
+         VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5::text::jsonb, $6, $7) RETURNING id::text",
     )
     .bind(workspace_id)
     .bind(new.doc_id)
@@ -338,77 +532,90 @@ async fn insert_comment(
     .bind(new.node)
     .bind(new.author.to_string())
     .bind(new.text)
+    .bind(clipped(new.snapshot))
     .fetch_one(&mut *tx)
     .await
     .map_err(ApiError::database)?;
     let comment = load_comment(&mut tx, project_id, &comment_id).await?;
     let data = json!({
-        "comment_id": comment.id,
-        "doc_id": comment.doc_id,
-        "node": comment.node,
+        "comment_id": comment.body.id,
+        "doc_id": comment.body.doc_id,
+        "node": comment.body.node,
     });
     live::emit(&mut tx, workspace_id, project_id, "comment.created", &data).await?;
     tx.commit().await.map_err(ApiError::database)?;
     state.live.announce(workspace_id, project_id);
+    let comment = finish_one(state, workspace_id, project_id, comment).await?;
     Ok((StatusCode::CREATED, Json(CommentResponse { comment })))
 }
 
-/// Whether the node address is in the head of `doc`: a node of its node index,
-/// or, for a design, a node of the component that an instance of the head
-/// places, as the design system's head defines it.
-async fn head_has(
+/// The HTML of the block `id` in the HTML chunk `chunk`, `None` when the chunk
+/// has no such block.
+async fn block_html(
+    state: &AppState,
+    workspace_id: &str,
+    chunk: &str,
+    id: &str,
+) -> Result<Option<String>, ApiError> {
+    let text = versions::read_chunk(state, workspace_id, chunk).await?;
+    let doc = EditDoc::from_html(&text).map_err(|e| {
+        eprintln!("omni-api: the chunk {chunk} cannot be loaded: {e}");
+        ApiError::Unavailable
+    })?;
+    Ok(id.parse().ok().and_then(|id| doc.node_html(id)))
+}
+
+/// What the node address holds in the head of `doc`: `None` when the head does
+/// not have it, else the HTML of an HTML doc's block, the tags of a design's
+/// node, or the tags of the component's node for an address inside an
+/// instance. Only the chunk of the node is read.
+async fn head_snapshot(
     state: &AppState,
     workspace_id: &str,
     project_id: &str,
     doc: &DocRow,
     address: Address<'_>,
-) -> Result<bool, ApiError> {
+) -> Result<Option<String>, ApiError> {
+    let Some(head) = doc.head.as_deref() else {
+        return Ok(None);
+    };
     let manifest: Option<Manifest> = if doc.kind == "design" {
-        versions::head_manifest(state, workspace_id, doc.head.as_deref()).await?
+        versions::head_manifest(state, workspace_id, Some(head)).await?
     } else {
         None
     };
-    let mut tx = state.workspace_tx(workspace_id).await?;
-    let found = match address {
-        Address::Node(id) => {
-            versions::nodes_of_head(&mut tx, doc.head.as_deref(), manifest.as_ref())
-                .await?
-                .iter()
-                .any(|node| node.id == id)
-        }
-        Address::Inside { instance, inner } => {
-            let Some(manifest) = manifest.as_ref() else {
-                return Ok(false);
-            };
-            let chunks: Vec<&str> = manifest.chunks();
-            let chunk: Option<String> = sqlx::query_scalar(
-                "SELECT chunk FROM node_index \
-                 WHERE chunk = ANY($1::text[]) AND node = $2 AND type = 'instance' LIMIT 1",
-            )
-            .bind(&chunks)
-            .bind(instance)
-            .fetch_optional(&mut *tx)
-            .await
-            .map_err(ApiError::database)?;
-            tx.commit().await.map_err(ApiError::database)?;
-            return match chunk {
-                Some(chunk) => {
-                    design::head_instance_holds(
-                        state,
-                        workspace_id,
-                        project_id,
-                        &chunk,
-                        instance,
-                        inner,
-                    )
-                    .await
-                }
-                None => Ok(false),
-            };
-        }
+    let chunks: Vec<&str> = match &manifest {
+        Some(manifest) => manifest.chunks(),
+        None => vec![head],
     };
+    let (id, inner) = match address {
+        Address::Node(id) => (id, None),
+        Address::Inside { instance, inner } => (instance, Some(inner)),
+    };
+    let mut tx = state.workspace_tx(workspace_id).await?;
+    let found: Option<(String, String)> = sqlx::query_as(
+        "SELECT chunk, type FROM node_index \
+         WHERE chunk = ANY($1::text[]) AND node = $2 LIMIT 1",
+    )
+    .bind(&chunks)
+    .bind(id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(ApiError::database)?;
     tx.commit().await.map_err(ApiError::database)?;
-    Ok(found)
+    let Some((chunk, kind)) = found else {
+        return Ok(None);
+    };
+    match inner {
+        Some(inner) if manifest.is_some() && kind == "instance" => {
+            design::head_instance_node(state, workspace_id, project_id, &chunk, id, inner).await
+        }
+        Some(_) => Ok(None),
+        None if doc.kind != "design" => block_html(state, workspace_id, &chunk, id).await,
+        // A head in the older form holds all its pages in one chunk.
+        None if manifest.is_none() => Ok(Some(String::new())),
+        None => design::head_node_tags(state, workspace_id, &chunk, id).await,
+    }
 }
 
 /// Pins a comment to a node of a doc's head.
@@ -454,14 +661,16 @@ pub async fn create_on_doc(
         return Err(invalid());
     };
     let address = Address::parse(&node).ok_or_else(not_in_head)?;
-    if !head_has(&state, workspace_id, &project_id, &doc, address).await? {
+    let Some(snapshot) = head_snapshot(&state, workspace_id, &project_id, &doc, address).await?
+    else {
         return Err(not_in_head());
-    }
+    };
     let new = NewComment {
         doc_id: &doc_id,
         version_id: None,
         node: &node,
         text: &text,
+        snapshot,
         author: &author,
     };
     insert_comment(&state, workspace_id, &project_id, new).await
@@ -515,12 +724,18 @@ pub async fn create(
             .iter()
             .any(|n| n.id == id && kind.is_none_or(|kind| n.kind == kind))
     };
-    match Address::parse(&node).ok_or_else(invalid)? {
-        Address::Node(id) if has(id, None) => {}
+    let snapshot = match Address::parse(&node).ok_or_else(invalid)? {
+        Address::Node(id) if has(id, None) => match version.chunk.as_deref() {
+            Some(chunk) if version.doc_kind == "design" => {
+                design::version_node_tags(&state, workspace_id, &version_id, chunk, id).await?
+            }
+            Some(chunk) => block_html(&state, workspace_id, chunk, id).await?,
+            None => None,
+        },
         Address::Inside { instance, inner }
             if version.doc_kind == "design" && has(instance, Some("instance")) =>
         {
-            let holds = design::instance_holds(
+            design::instance_node(
                 &state,
                 workspace_id,
                 &version_id,
@@ -529,18 +744,16 @@ pub async fn create(
                 instance,
                 inner,
             )
-            .await?;
-            if !holds {
-                return Err(invalid());
-            }
+            .await?
         }
-        _ => return Err(invalid()),
-    }
+        _ => None,
+    };
     let new = NewComment {
         doc_id: &version.doc_id,
         version_id: Some(&version_id),
         node: &node,
         text: &text,
+        snapshot: snapshot.ok_or_else(invalid)?,
         author: &author,
     };
     insert_comment(&state, workspace_id, &project_id, new).await
@@ -596,13 +809,14 @@ pub async fn reply(
     .map_err(ApiError::database)?;
     let comment = load_comment(&mut tx, &project_id, &comment_id).await?;
     let data = json!({
-        "comment_id": comment.id,
+        "comment_id": comment.body.id,
         "reply_id": reply_id,
-        "doc_id": comment.doc_id,
+        "doc_id": comment.body.doc_id,
     });
     live::emit(&mut tx, workspace_id, &project_id, "comment.replied", &data).await?;
     tx.commit().await.map_err(ApiError::database)?;
     state.live.announce(workspace_id, &project_id);
+    let comment = finish_one(&state, workspace_id, &project_id, comment).await?;
     Ok((StatusCode::CREATED, Json(CommentResponse { comment })))
 }
 
@@ -672,6 +886,7 @@ pub async fn show(
     let mut tx = state.workspace_tx(&request.workspace_id).await?;
     let comment = load_comment(&mut tx, &project_id, &comment_id).await?;
     tx.commit().await.map_err(ApiError::database)?;
+    let comment = finish_one(&state, &request.workspace_id, &project_id, comment).await?;
     Ok(Json(SingleCommentResponse {
         project_id,
         comment,
@@ -715,8 +930,9 @@ pub async fn list(
         filter = filter.and("d.feature_id = {}::uuid", &feature);
     }
     let rows = fetch_rows(&mut tx, filter, "").await?;
-    let comments = bodies(&mut tx, rows).await?;
+    let listed = bodies(&mut tx, rows).await?;
     tx.commit().await.map_err(ApiError::database)?;
+    let comments = finish(&state, &request.workspace_id, &project_id, listed).await?;
     Ok(Json(CommentListResponse {
         project_id,
         comments,
@@ -724,14 +940,15 @@ pub async fn list(
 }
 
 /// The comments of a project that wait on the human, oldest first: those whose
-/// latest reply is an agent's.
+/// latest reply is an agent's. Pass them to `finish` once the transaction is
+/// closed.
 pub(crate) async fn waiting_of_project(
     tx: &mut Tx,
     project_id: &str,
-) -> Result<Vec<CommentBody>, ApiError> {
+) -> Result<Vec<Listed>, ApiError> {
     let filter = Filter::default().and("d.project_id = {}::uuid", project_id);
     let rows = fetch_rows(tx, filter, "").await?;
     let mut comments = bodies(tx, rows).await?;
-    comments.retain(|comment| comment.waiting_on_you);
+    comments.retain(|comment| comment.body.waiting_on_you);
     Ok(comments)
 }

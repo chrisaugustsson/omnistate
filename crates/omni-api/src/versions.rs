@@ -482,21 +482,6 @@ pub(crate) async fn head_manifest(
     Ok(serde_json::from_str(&text).ok())
 }
 
-/// The nodes of a doc's head in document order, read from the node index and
-/// never from the content: the chunk of an HTML doc, the chunks of the manifest
-/// of a design (`manifest`, as `head_manifest` read it). A doc with no head has
-/// no nodes.
-pub(crate) async fn nodes_of_head(
-    tx: &mut Tx,
-    head: Option<&str>,
-    manifest: Option<&Manifest>,
-) -> Result<Vec<NodeEntry>, ApiError> {
-    match manifest {
-        Some(manifest) => manifest_nodes(tx, manifest).await,
-        None => nodes_of(tx, head).await,
-    }
-}
-
 async fn version_body(tx: &mut Tx, row: VersionRow) -> Result<VersionBody, ApiError> {
     let nodes = nodes_of_version(tx, &row).await?;
     Ok(body_with_nodes(row, nodes))

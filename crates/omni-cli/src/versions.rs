@@ -89,20 +89,13 @@ fn send(
 ) -> Result<()> {
     let agent = agent(args)?;
     let project = project_id(args, &agent)?;
-    // The API refuses a version that removes nodes with open comments unless
-    // the body says so.
-    let body: &[u8] = if args.remove_commented {
-        b"{\"remove_commented\":true}"
-    } else {
-        b"{}"
-    };
     let response = agent.request_or_not_found(
         "POST",
         &format!(
             "/api/v1/w/{}/projects/{project}/changesets/{changeset}/docs/{doc}/{route}",
             agent.workspace_id
         ),
-        Some(body),
+        Some(b"{}"),
         not_found,
     )?;
     let text = response.text();

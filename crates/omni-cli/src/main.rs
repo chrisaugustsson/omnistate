@@ -86,17 +86,12 @@ Usage:
                                       once and all or nothing (--changeset <id> edits that
                                       change set's draft instead); prints each node's new
                                       revision and the IDs of new nodes
-  omni doc remove <doc> --changeset <id> [--remove-commented]
+  omni doc remove <doc> --changeset <id>
                                       remove a doc in a change set: saves a version that
-                                      marks it removed; the doc and its history stay. Open
-                                      comments on its nodes need --remove-commented, as for
-                                      `omni version save`
-  omni version save <doc> --changeset <id> [--remove-commented]
+                                      marks it removed; the doc and its history stay
+  omni version save <doc> --changeset <id>
                                       save the change set's draft of a doc as a version, an
-                                      unchangeable snapshot; prints the version's ID. A save
-                                      that removes a node with open comments is refused (exit
-                                      code 4) and lists those comments; --remove-commented
-                                      saves anyway, and the comments stay, marked as removed
+                                      unchangeable snapshot; prints the version's ID
   omni version diff <a> <b>           list the nodes added, removed, changed and moved from
                                       version <a> to version <b> of a doc
   omni design read --doc <id> --board <id> [--changeset <id> | --version <v>]
@@ -179,8 +174,10 @@ Usage:
   omni comment list [--doc <id>] [--feature <name|id>]
                                       list the project's comments, oldest first: ID, doc, node
                                       address, author, text and the replies. A comment whose
-                                      latest reply is an agent's says `waiting on you`; the
-                                      human deletes a comment when satisfied, in the web app.
+                                      latest reply is an agent's says `waiting on you`; one
+                                      whose node left the doc says `orphaned` and shows what
+                                      the node held; the human deletes a comment when
+                                      satisfied, in the web app.
                                       --doc narrows to one doc, --feature to the docs of one
                                       feature
   omni comment reply <comment> <text>
@@ -245,8 +242,6 @@ Options (before or after the command):
                         comments `omni comment list` shows
   --board <id>          the board of that doc that `omni design read` prints, or that a
                         `omni design edit` batch stays inside
-  --remove-commented    `omni version save` and `omni doc remove`: go on although the
-                        version removes nodes that have open comments
   --version <v>         the version that `omni doc read`, `omni design read` or
                         `omni tokens export` reads
   --out <path>          where `omni tokens export` writes: a file, or with --per-mode a directory
@@ -277,8 +272,6 @@ Exit codes:
   3  `omni wait`: the condition can no longer be met (the change set is abandoned, or
      merged while you wait for rejected or needs_rebase; for a thread, a later phase has
      started while posts: or roles: is not met, or the decision has the other status)
-  4  `omni version save` or `omni doc remove` was refused because it would remove nodes
-     that have open comments; they are listed on standard error (--remove-commented)
 ";
 
 fn main() -> ExitCode {

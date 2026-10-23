@@ -94,18 +94,32 @@ pub fn list(args: &Args) -> Result<()> {
         .and_then(Value::as_array)
         .unwrap_or_default()
     {
-        let waiting = match comment.get("waiting_on_you") {
-            Some(Value::Bool(true)) => "  waiting on you",
-            _ => "",
+        let flagged = |name: &str| matches!(comment.get(name), Some(Value::Bool(true)));
+        let orphaned = if flagged("orphaned") {
+            "  orphaned"
+        } else {
+            ""
+        };
+        let waiting = if flagged("waiting_on_you") {
+            "  waiting on you"
+        } else {
+            ""
         };
         say(&format!(
-            "{}  doc {}  node {}  {}{waiting}",
+            "{}  doc {}  node {}  {}{orphaned}{waiting}",
             comment.str_at("id").unwrap_or("?"),
             comment.str_at("doc_id").unwrap_or("?"),
             comment.str_at("node").unwrap_or("?"),
             who(comment.get("author")),
         ));
         say(&indented(comment.str_at("text").unwrap_or_default(), "  "));
+        if flagged("orphaned") {
+            say("  the node was removed; it held:");
+            say(&indented(
+                comment.str_at("snapshot").unwrap_or_default(),
+                "    ",
+            ));
+        }
         for reply in comment
             .get("replies")
             .and_then(Value::as_array)
