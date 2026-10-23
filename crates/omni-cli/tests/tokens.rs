@@ -11,7 +11,7 @@
 //!   <the file's JSON>}`, which replaces the whole token tree of the change
 //!   set's draft of the design system in one all-or-nothing batch. It prints a
 //!   short plain-text line or two with the design system's modes; `--json`
-//!   prints the API's answer. A missing change set or file argument, a file
+//!   prints the API's answer. A missing file argument, a file
 //!   that cannot be read (the error names it) and a file that is not JSON are
 //!   one-line errors that send nothing. A refusal (400 `invalid_tokens`) is a
 //!   one-line error that carries the API's message, and a project without a
@@ -348,8 +348,6 @@ fn tokens_import_replaces_the_token_tree_of_the_change_set() {
 fn tokens_import_refuses_bad_input_before_sending_anything() {
     let server = mock();
     let home = logged_in(&server.url);
-    let file = write_file(&home, "tokens.json", &draft_tree().to_string());
-    assert_one_line_error(&run(&home, &["tokens", "import", &file]), &["changeset"]);
     assert_one_line_error(
         &run(&home, &["tokens", "import", "--changeset", CHANGESET]),
         &["file"],

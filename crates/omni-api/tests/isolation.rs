@@ -397,6 +397,22 @@ const CASES: &[Case] = &[
     ),
     case(
         "PUT",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/tokens",
+        Some(
+            r##"{"tokens":{"$extensions":{"omnistate":{"modes":["light"]}},"color":{"$type":"color","intruder":{"$value":"#000000"}}}}"##,
+        ),
+        Kind::Workspace,
+    ),
+    case(
+        "PUT",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/components",
+        Some(
+            r##"{"tags":"<Component name=\"Intruder\" dir=\"row\" fill=\"#000000\" props={{label: {type: \"text\", default: \"intruder\"}}}>\n  <Text name=\"Intruder label\" content=\"intruder\" fontFamily=\"Inter\" fontSize={12} bind={{content: \"label\"}}/>\n</Component>"}"##,
+        ),
+        Kind::Workspace,
+    ),
+    case(
+        "PUT",
         "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/components",
         Some(
             r##"{"tags":"<Component name=\"Intruder\" dir=\"row\" fill=\"#000000\" props={{label: {type: \"text\", default: \"intruder\"}}}>\n  <Text name=\"Intruder label\" content=\"intruder\" fontFamily=\"Inter\" fontSize={12} bind={{content: \"label\"}}/>\n</Component>"}"##,
@@ -3413,6 +3429,96 @@ fn the_token_calls_of_the_attacks_work_for_the_workspace_that_owns_the_records()
             call(client, "GET", &format!("{base}/tokens"), auth, None),
             200,
             "read the mainline tokens",
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Live design system writes (US-104)
+// ---------------------------------------------------------------------------
+
+/// The routes that write the design system's head without a change set.
+const LIVE_DESIGN_SYSTEM_ROUTES: [&str; 2] = [
+    "/api/v1/w/{workspace_id}/projects/{project_id}/tokens",
+    "/api/v1/w/{workspace_id}/projects/{project_id}/components",
+];
+
+#[test]
+fn the_live_design_system_routes_are_in_the_registry_and_the_suite_attacks_them() {
+    for path in LIVE_DESIGN_SYSTEM_ROUTES {
+        let entry = registry()
+            .into_iter()
+            .find(|r| r.method == "PUT" && r.path == path)
+            .unwrap_or_else(|| panic!("the registry has no route PUT {path}"));
+        assert_eq!(entry.access, Access::Agent, "PUT {path}");
+        assert!(
+            matches!(case_for(&entry).kind, Kind::Workspace),
+            "PUT {path} is a workspace route that the suite attacks"
+        );
+    }
+}
+
+#[test]
+fn the_live_design_system_calls_of_the_attacks_work_for_the_workspace_that_owns_the_records() {
+    // The control for the live design system routes: the owner's agent starts
+    // a design system without a change set in a project of its own, writes the
+    // tokens and the components of the cases' bodies to its head, and both the
+    // agent and the human read the tokens back.
+    let (f, client) = ready();
+    let _guard = serial();
+    let key = Auth::Key(&f.a.key);
+    let human = Auth::Session(&f.a.token);
+    let body = json!({ "name": unique("owner-live-tokens") }).to_string();
+    let project = must(
+        call(
+            client,
+            "POST",
+            &format!("/api/v1/w/{}/projects", f.a.id),
+            &key,
+            Some(&body),
+        ),
+        201,
+        "create a project",
+    );
+    let project = project["project"]["id"].as_str().expect("an id");
+    let base = format!("/api/v1/w/{}/projects/{project}", f.a.id);
+    let body =
+        json!({ "kind": "design-system", "pillar": "ui", "title": unique("owner-live-tokens") })
+            .to_string();
+    must(
+        call(client, "POST", &format!("{base}/docs"), &key, Some(&body)),
+        201,
+        "start the design system doc without a change set",
+    );
+    let tokens = case_named("PUT", LIVE_DESIGN_SYSTEM_ROUTES[0]);
+    let imported = must(
+        call(client, "PUT", &format!("{base}/tokens"), &key, tokens.body),
+        200,
+        "write the tokens to the design system's head",
+    );
+    assert_eq!(imported["modes"], json!(["light"]), "{imported}");
+    let components = case_named("PUT", LIVE_DESIGN_SYSTEM_ROUTES[1]);
+    let imported = must(
+        call(
+            client,
+            "PUT",
+            &format!("{base}/components"),
+            &key,
+            components.body,
+        ),
+        200,
+        "write the components to the design system's head",
+    );
+    assert_eq!(imported["components"][0]["name"], "Intruder", "{imported}");
+    for auth in [&key, &human] {
+        let read = must(
+            call(client, "GET", &format!("{base}/tokens"), auth, None),
+            200,
+            "read the design system's tokens",
+        );
+        assert_eq!(
+            read["tokens"]["color"]["intruder"]["$value"], "#000000",
+            "{read}"
         );
     }
 }

@@ -17,7 +17,7 @@
 //!   `"board": "<id>"`, which keeps the batch inside that board.
 //! - It prints each result's node and new revision and the IDs that the
 //!   server assigned to new nodes; `--json` prints the API's answer.
-//! - A missing `--changeset` or `--doc`, a doc or change set that is no UUID,
+//! - A missing `--doc`, a doc or change set that is no UUID,
 //!   a board that is no node ID, and input that is not a JSON array are
 //!   one-line errors that send nothing.
 //! - A refused operation (400 `invalid_operation`) is a one-line error with
@@ -285,11 +285,10 @@ fn design_edit_prints_the_new_revisions_and_the_ids_of_new_nodes() {
 }
 
 #[test]
-fn design_edit_needs_a_changeset_a_doc_and_a_batch_before_sending_anything() {
+fn design_edit_needs_a_doc_and_a_batch_before_sending_anything() {
     let server = mock();
     let home = logged_in(&server.url);
     let ops = batch().to_string();
-    assert_one_line_error(&run(&home, &["--doc", DOC], &ops), &["--changeset"]);
     assert_one_line_error(&run(&home, &["--changeset", CHANGESET], &ops), &["--doc"]);
     assert_one_line_error(
         &run(
