@@ -73,6 +73,9 @@ pub struct CommentBody {
     /// The change set of the version, while it is under review; `null` for a
     /// comment on the mainline, which is one whose change set has merged.
     pub changeset_id: Option<String>,
+    /// The feature of the doc; `null` for a global doc, also when a change
+    /// set of a feature saved the version.
+    pub feature_id: Option<String>,
     #[schema(value_type = Object)]
     pub author: Value,
     pub text: String,
@@ -166,6 +169,7 @@ struct CommentRow {
     version_id: String,
     node: String,
     changeset_id: Option<String>,
+    feature_id: Option<String>,
     author: String,
     text: String,
     status: String,
@@ -206,6 +210,7 @@ async fn fetch_rows(tx: &mut Tx, filter: Filter, lock: &str) -> Result<Vec<Comme
         "SELECT c.id::text AS id, d.project_id::text AS project_id, v.doc_id::text AS doc_id, \
                 c.version_id::text AS version_id, c.node AS node, \
                 CASE WHEN cs.status = 'merged' THEN NULL ELSE v.changeset_id::text END AS changeset_id, \
+                d.feature_id::text AS feature_id, \
                 c.author::text AS author, c.body AS text, c.status AS status, \
                 c.addressed_in_version_id::text AS addressed_in, \
                 to_char(c.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"') AS created_at, \
@@ -339,6 +344,7 @@ async fn bodies(tx: &mut Tx, rows: Vec<CommentRow>) -> Result<Vec<CommentBody>, 
                 version_id: row.version_id,
                 node: row.node,
                 changeset_id: row.changeset_id,
+                feature_id: row.feature_id,
                 author,
                 text: row.text,
                 status: row.status,

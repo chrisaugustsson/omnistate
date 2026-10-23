@@ -184,6 +184,8 @@ pub struct CreateDirectiveRequest {
 pub struct PostBody {
     pub id: String,
     pub thread_id: String,
+    /// The feature of the thread's change set; `null` for a project-level one.
+    pub feature_id: Option<String>,
     /// The number of the thread's phase that the post was made in.
     pub phase: i32,
     #[serde(rename = "type")]
@@ -410,6 +412,7 @@ pub(crate) async fn hide_unseen_links(
 pub(crate) struct PostRow {
     id: String,
     thread_id: String,
+    feature_id: Option<String>,
     phase: i32,
     #[sqlx(rename = "type")]
     kind: String,
@@ -440,6 +443,7 @@ impl PostRow {
         Ok(PostBody {
             id: self.id,
             thread_id: self.thread_id,
+            feature_id: self.feature_id,
             phase: self.phase,
             kind: self.kind,
             author,
@@ -483,7 +487,10 @@ const PHASE_COLUMNS: &str = concat!(
 );
 
 pub(crate) const POST_COLUMNS: &str = concat!(
-    "id::text, thread_id::text, phase, type, author::text, summary, body, links::text, \
+    "id::text, thread_id::text, \
+     (SELECT c.feature_id::text FROM threads t JOIN changesets c \
+        ON c.workspace_id = t.workspace_id AND c.id = t.changeset_id \
+      WHERE t.id = thread_id) AS feature_id, phase, type, author::text, summary, body, links::text, \
      attachments::text, confidence, replaces::text, ",
     timestamp!("created_at"),
     " AS created_at"

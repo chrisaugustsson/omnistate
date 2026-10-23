@@ -48,7 +48,7 @@ pub struct CreateFeatureRequest {
     pub description: Option<String>,
 }
 
-const FEATURE_COLUMNS: &str = concat!(
+pub(crate) const FEATURE_COLUMNS: &str = concat!(
     "id::text, project_id::text, name, description, status, to_char(created_at AT TIME ZONE 'UTC', ",
     "'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"') AS created_at"
 );

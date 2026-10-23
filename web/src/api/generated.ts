@@ -143,6 +143,7 @@ export const CommentBodySchema = z.object({
   compared_to: z.string().nullable().optional(),
   created_at: z.string(),
   doc_id: z.string(),
+  feature_id: z.string().nullable().optional(),
   id: z.string(),
   node: z.string(),
   node_status: z.string(),
@@ -309,6 +310,7 @@ export const DecisionBodySchema = z.object({
   criteria: z.array(z.string()),
   direction: z.string(),
   dissent: z.array(DissentSchema),
+  feature_id: z.string().nullable().optional(),
   id: z.string(),
   open_questions: z.array(z.string()),
   options: z.array(DecisionOptionSchema),
@@ -474,6 +476,14 @@ export const FeatureResponseSchema = z.object({
 });
 export type FeatureResponse = z.infer<typeof FeatureResponseSchema>;
 
+export const FeatureSummarySchema = z.object({
+  docs: z.number().int(),
+  feature: FeatureBodySchema,
+  open_changesets: z.number().int(),
+  waiting: z.number().int(),
+});
+export type FeatureSummary = z.infer<typeof FeatureSummarySchema>;
+
 export const PosterBodySchema = z.object({
   role: z.string().nullable().optional(),
   run: z.string().nullable().optional(),
@@ -495,6 +505,7 @@ export const PostBodySchema = z.object({
   body_html: z.string(),
   confidence: z.number().nullable().optional(),
   created_at: z.string(),
+  feature_id: z.string().nullable().optional(),
   id: z.string(),
   links: z.array(z.record(z.string(), z.unknown())),
   phase: z.number().int(),
@@ -531,6 +542,7 @@ export type WaitingBody = z.infer<typeof WaitingBodySchema>;
 export const HomeResponseSchema = z.object({
   changesets: z.array(ChangesetBodySchema),
   docs: z.array(DocBodySchema),
+  features: z.array(FeatureSummarySchema).optional(),
   project_id: z.string(),
   threads: z.array(ThreadBodySchema),
   waiting: WaitingBodySchema,
@@ -944,6 +956,7 @@ export const schemas = {
   FeatureBody: FeatureBodySchema,
   FeatureListResponse: FeatureListResponseSchema,
   FeatureResponse: FeatureResponseSchema,
+  FeatureSummary: FeatureSummarySchema,
   HistoryEntry: HistoryEntrySchema,
   HomeResponse: HomeResponseSchema,
   ImportTagsRequest: ImportTagsRequestSchema,

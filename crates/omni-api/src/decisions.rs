@@ -97,6 +97,8 @@ pub struct DecisionBody {
     pub thread_id: String,
     /// The change set of the thread.
     pub changeset_id: String,
+    /// The feature of the change set; `null` for a project-level change set.
+    pub feature_id: Option<String>,
     /// `proposed`, `approved`, `rejected` or `superseded`.
     pub status: String,
     /// The agent that proposed it: `{"kind": "agent", "run", "role", "model",
@@ -134,6 +136,7 @@ struct DecisionRow {
     project_id: String,
     thread_id: String,
     changeset_id: String,
+    feature_id: Option<String>,
     status: String,
     content: String,
     author: String,
@@ -158,6 +161,7 @@ impl DecisionRow {
             project_id: self.project_id,
             thread_id: self.thread_id,
             changeset_id: self.changeset_id,
+            feature_id: self.feature_id,
             status: self.status,
             author,
             direction: file.direction,
@@ -180,6 +184,8 @@ fn select(condition: &str) -> String {
     format!(
         "SELECT d.id::text AS id, t.project_id::text AS project_id, \
                 d.thread_id::text AS thread_id, t.changeset_id::text AS changeset_id, \
+                (SELECT c.feature_id::text FROM changesets c \
+                  WHERE c.workspace_id = t.workspace_id AND c.id = t.changeset_id) AS feature_id, \
                 d.status, d.content::text AS content, d.author::text AS author, \
                 d.rejection_reason, {CREATED_AT} AS created_at \
          FROM decisions d JOIN threads t ON t.workspace_id = d.workspace_id AND t.id = d.thread_id \

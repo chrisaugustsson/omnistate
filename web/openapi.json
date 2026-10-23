@@ -414,6 +414,13 @@
             "description": "The doc of the version.",
             "type": "string"
           },
+          "feature_id": {
+            "description": "The feature of the doc; `null` for a global doc, also when a change\nset of a feature saved the version.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "id": {
             "type": "string"
           },
@@ -890,6 +897,13 @@
               "$ref": "#/components/schemas/Dissent"
             },
             "type": "array"
+          },
+          "feature_id": {
+            "description": "The feature of the change set; `null` for a project-level change set.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "id": {
             "type": "string"
@@ -1551,6 +1565,36 @@
         ],
         "type": "object"
       },
+      "FeatureSummary": {
+        "description": "A feature of the project with what it holds.",
+        "properties": {
+          "docs": {
+            "description": "The docs of the feature; the global docs that its change sets draft are\nnot counted.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "feature": {
+            "$ref": "#/components/schemas/FeatureBody"
+          },
+          "open_changesets": {
+            "description": "The feature's change sets that are open, in review, approved or need a\nrebase.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "waiting": {
+            "description": "The items of `waiting` that belong to the feature.",
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "feature",
+          "docs",
+          "open_changesets",
+          "waiting"
+        ],
+        "type": "object"
+      },
       "HistoryEntry": {
         "description": "One status change of a change set. The entry that creates it has no\n`from_status`.",
         "properties": {
@@ -1598,6 +1642,13 @@
             "description": "Every doc of the project, oldest first, as `GET /docs/{doc_id}` answers it.",
             "items": {
               "$ref": "#/components/schemas/DocBody"
+            },
+            "type": "array"
+          },
+          "features": {
+            "description": "Every feature of the project, oldest first, done ones included. The\nAPI always sends it; it is not marked required so that the web app's\nreader still accepts a home from before features.",
+            "items": {
+              "$ref": "#/components/schemas/FeatureSummary"
             },
             "type": "array"
           },
@@ -2297,6 +2348,13 @@
           },
           "created_at": {
             "type": "string"
+          },
+          "feature_id": {
+            "description": "The feature of the thread's change set; `null` for a project-level one.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "id": {
             "type": "string"

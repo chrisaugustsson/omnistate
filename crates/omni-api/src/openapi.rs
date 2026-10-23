@@ -29,7 +29,7 @@ use crate::docs::{
     EditResponse, InvalidOperationBody, MainlineHtmlResponse, OpResultBody,
 };
 use crate::features::{CreateFeatureRequest, FeatureBody, FeatureListResponse, FeatureResponse};
-use crate::home::{HomeResponse, WaitingBody};
+use crate::home::{FeatureSummary, HomeResponse, WaitingBody};
 use crate::live::{LiveClientMessage, LiveErrorCode, LiveEventName, LiveServerMessage};
 use crate::rebase::{
     ConflictKind, ConflictResolution, ConflictSide, RebaseResponse, RecordedConflict,
@@ -253,6 +253,7 @@ use utoipa::OpenApi;
         ReplyRequest,
         AddressedRequest,
         WaitingBody,
+        FeatureSummary,
         ReviewChanges,
         ReviewedDoc,
         ReviewResponse,

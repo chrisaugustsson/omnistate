@@ -4,6 +4,12 @@
 //! comments that an agent marked addressed, and the agents' questions that no
 //! post of the human has answered yet.
 //!
+//! A feature (Q51) is a level below the project: the home lists the features
+//! with their counts, and every item that waits for the human carries the
+//! `feature_id` of its change set (a comment's of its doc), so the web app can
+//! show the project and each feature on their own while `docs`, `changesets`
+//! and `threads` stay complete.
+//!
 //! Every item is the body that the API's own read of it answers, so the web
 //! app shows one shape per entity. The route is the human's: a sealed phase
 //! stays sealed for agents, and the home lists questions of every phase. The
@@ -16,6 +22,7 @@ use crate::claims;
 use crate::comments::{CommentBody, addressed_of_project};
 use crate::decisions::{DecisionBody, proposed_of_project};
 use crate::docs::{DocBody, docs_of_project};
+use crate::features::{FEATURE_COLUMNS, FeatureBody};
 use crate::session::{ApiError, ErrorBody};
 use crate::threads::{PostBody, ThreadBody, Viewer, threads_of_project, unanswered_questions};
 use crate::workspace::{HumanRequest, parse_uuid};
@@ -38,9 +45,28 @@ pub struct WaitingBody {
     pub questions: Vec<PostBody>,
 }
 
+/// A feature of the project with what it holds.
+#[derive(Serialize, ToSchema)]
+pub struct FeatureSummary {
+    pub feature: FeatureBody,
+    /// The docs of the feature; the global docs that its change sets draft are
+    /// not counted.
+    pub docs: i64,
+    /// The feature's change sets that are open, in review, approved or need a
+    /// rebase.
+    pub open_changesets: i64,
+    /// The items of `waiting` that belong to the feature.
+    pub waiting: i64,
+}
+
 #[derive(Serialize, ToSchema)]
 pub struct HomeResponse {
     pub project_id: String,
+    /// Every feature of the project, oldest first, done ones included. The
+    /// API always sends it; it is not marked required so that the web app's
+    /// reader still accepts a home from before features.
+    #[schema(required = false)]
+    pub features: Vec<FeatureSummary>,
     /// Every doc of the project, oldest first, as `GET /docs/{doc_id}` answers it.
     pub docs: Vec<DocBody>,
     /// Every change set of the project, oldest first, with its status.
@@ -75,6 +101,14 @@ pub async fn show(
     claims::sweep(&state, &request.workspace_id).await;
     let mut tx = state.workspace_tx(&request.workspace_id).await?;
     require_project(&mut tx, &project_id).await?;
+    let features: Vec<FeatureBody> = sqlx::query_as(&format!(
+        "SELECT {FEATURE_COLUMNS} FROM features WHERE project_id = $1::uuid \
+         ORDER BY created_at, id"
+    ))
+    .bind(&project_id)
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(ApiError::database)?;
     let docs = docs_of_project(
         &state,
         &mut tx,
@@ -89,13 +123,50 @@ pub async fn show(
     let comments = addressed_of_project(&mut tx, &project_id).await?;
     let questions = unanswered_questions(&mut tx, &project_id).await?;
     tx.commit().await.map_err(ApiError::database)?;
-    let in_review = changesets
+    let in_review: Vec<ChangesetBody> = changesets
         .iter()
         .filter(|changeset| changeset.status == "in_review")
         .cloned()
         .collect();
+    let features = features
+        .into_iter()
+        .map(|feature| {
+            let own = Some(feature.id.as_str());
+            let open =
+                |status: &str| matches!(status, "open" | "in_review" | "approved" | "needs_rebase");
+            let waiting = decisions
+                .iter()
+                .filter(|d| d.feature_id.as_deref() == own)
+                .count()
+                + in_review
+                    .iter()
+                    .filter(|c| c.feature_id.as_deref() == own)
+                    .count()
+                + comments
+                    .iter()
+                    .filter(|c| c.feature_id.as_deref() == own)
+                    .count()
+                + questions
+                    .iter()
+                    .filter(|q| q.feature_id.as_deref() == own)
+                    .count();
+            FeatureSummary {
+                docs: docs
+                    .iter()
+                    .filter(|d| d.feature_id.as_deref() == own)
+                    .count() as i64,
+                open_changesets: changesets
+                    .iter()
+                    .filter(|c| c.feature_id.as_deref() == own && open(&c.status))
+                    .count() as i64,
+                waiting: waiting as i64,
+                feature,
+            }
+        })
+        .collect();
     Ok(Json(HomeResponse {
         project_id,
+        features,
         docs,
         changesets,
         threads,
