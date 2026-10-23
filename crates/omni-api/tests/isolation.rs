@@ -55,7 +55,11 @@
 //!   `{other_version_id}`. Once the feature routes exist (US-059), the
 //!   workspace's agent also created the feature `{feature_id}` in
 //!   `{project_id}`, whose name is text that nothing else holds. The doc list
-//!   (US-061) lists `{doc_id}` among the project's docs.
+//!   (US-061) lists `{doc_id}` among the project's docs. Once the scope-level
+//!   doc routes exist (US-102), the workspace's agent also created a doc at the
+//!   app level of `{project_id}` and one in `{feature_id}` without a change
+//!   set, so the log of the writes to docs (`doc_changes`) has rows of the
+//!   workspace.
 //! - Workspace A's credentials against workspace B's workspace and IDs, and
 //!   against B's IDs under A's own workspace, are always 404
 //!   `{"error": "not_found"}` with nothing of B in the body, and the answer is
@@ -589,6 +593,18 @@ const CASES: &[Case] = &[
         None,
         Kind::Workspace,
     ),
+    case(
+        "POST",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/docs",
+        Some(r#"{"kind":"html","pillar":"spec","title":"intruder"}"#),
+        Kind::Workspace,
+    ),
+    case(
+        "POST",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/docs",
+        Some(r#"{"kind":"html","pillar":"spec","title":"intruder"}"#),
+        Kind::Workspace,
+    ),
 ];
 
 /// The WebSocket routes that the suite attacks, as the paths of
@@ -930,6 +946,14 @@ fn has_comment_routes() -> bool {
 fn has_feature_routes() -> bool {
     registry().iter().any(|r| {
         r.method == "POST" && r.path == "/api/v1/w/{workspace_id}/projects/{project_id}/features"
+    })
+}
+
+/// Whether the router has the scope-level doc routes (US-102) yet.
+fn has_live_doc_routes() -> bool {
+    registry().iter().any(|r| {
+        r.method == "POST"
+            && r.path == "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/docs"
     })
 }
 
@@ -1453,6 +1477,32 @@ fn fixture() -> &'static Fixture {
             } else {
                 (String::new(), String::new())
             };
+            // US-102: a doc at the app level and one in the feature, made
+            // without a change set, so the log of the writes to docs has rows
+            // of the workspace. Seeded as soon as the registry has the
+            // scope-level doc routes.
+            if has_live_doc_routes() && !feature_id.is_empty() {
+                let project_path = format!("/api/v1/w/{workspace}/projects/{project_id}");
+                for scope in [String::new(), format!("/features/{feature_id}")] {
+                    let body = json!({
+                        "kind": "html",
+                        "pillar": "spec",
+                        "title": unique(&format!("{name}-live-doc"))
+                    })
+                    .to_string();
+                    must(
+                        call(
+                            client,
+                            "POST",
+                            &format!("{project_path}{scope}/docs"),
+                            &agent,
+                            Some(&body),
+                        ),
+                        201,
+                        "create a doc without a change set",
+                    );
+                }
+            }
             // US-019: a file of the workspace's own. The attachment routes are
             // seeded as soon as the registry has them; the table behind them
             // would otherwise make the checks below fail on a tenant table
@@ -5221,4 +5271,81 @@ fn a_connection_that_set_workspace_a_for_one_transaction_has_forgotten_it_in_the
             );
         }
     });
+}
+
+// ---------------------------------------------------------------------------
+// Docs without a change set (US-102)
+// ---------------------------------------------------------------------------
+
+const LIVE_DOC_ROUTES: [&str; 2] = [
+    "/api/v1/w/{workspace_id}/projects/{project_id}/docs",
+    "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/docs",
+];
+
+#[test]
+fn the_scope_level_doc_routes_are_in_the_registry_and_the_suite_attacks_them() {
+    for path in LIVE_DOC_ROUTES {
+        let entry = registry()
+            .into_iter()
+            .find(|r| r.method == "POST" && r.path == path)
+            .unwrap_or_else(|| panic!("the registry has no route POST {path}"));
+        assert_eq!(entry.access, Access::Agent, "POST {path}");
+        assert!(
+            matches!(case_for(&entry).kind, Kind::Workspace),
+            "POST {path} is a workspace route that the suite attacks"
+        );
+    }
+
+    // The suite seeded the log of the writes to docs for both workspaces.
+    let (f, _) = ready();
+    for side in [&f.a, &f.b] {
+        let rows = block(async {
+            let mut admin = admin_connection().await;
+            rows_of(&mut admin, "doc_changes", &side.id).await
+        });
+        assert!(rows > 0, "the suite seeded no doc change for {}", side.id);
+    }
+}
+
+#[test]
+fn the_scope_level_doc_calls_of_the_attacks_work_for_the_workspace_that_owns_the_records() {
+    // The control for the scope-level doc routes: in the owner's workspace,
+    // the owner's agent creates a doc with the body of each case, and both the
+    // agent and the human read it back in the scope it was created in.
+    let (f, client) = ready();
+    let _guard = serial();
+    let key = Auth::Key(&f.a.key);
+    let human = Auth::Session(&f.a.token);
+    let project = format!("/api/v1/w/{}/projects/{}", f.a.id, f.a.project_id);
+    for (path, feature) in [
+        (LIVE_DOC_ROUTES[0], Value::Null),
+        (LIVE_DOC_ROUTES[1], json!(f.a.feature_id)),
+    ] {
+        let title = unique("owner");
+        let body = case_named("POST", path)
+            .body
+            .map(|b| b.replace("intruder", &title));
+        let created = must(
+            call(
+                client,
+                "POST",
+                &fill(path, &f.a, &f.a),
+                &key,
+                body.as_deref(),
+            ),
+            201,
+            "create a doc without a change set",
+        );
+        let doc = created["doc"]["id"].as_str().expect("an id");
+        assert_eq!(created["doc"]["feature_id"], feature, "{created}");
+        for auth in [&key, &human] {
+            let read = must(
+                call(client, "GET", &format!("{project}/docs/{doc}"), auth, None),
+                200,
+                "read the doc",
+            );
+            assert_eq!(read["doc"]["title"], title.as_str(), "{read}");
+            assert_eq!(read["doc"]["feature_id"], feature, "{read}");
+        }
+    }
 }

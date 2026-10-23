@@ -469,6 +469,29 @@ async fn fill_workspace(conn: &mut PgConnection, workspace: &str, membership: &s
         .await
         .expect("insert an operation of the draft's log");
 
+        // US-102: one row of the log of the writes to docs, the append-only
+        // tenant table `doc_changes` (tests/live_docs.rs pins its name and the
+        // columns without a default). Seeded as soon as it exists, for the same
+        // reason as above.
+        let changes_exist: bool =
+            sqlx::query_scalar("SELECT to_regclass('public.doc_changes') IS NOT NULL")
+                .fetch_one(&mut *conn)
+                .await
+                .expect("look for the doc changes table");
+        if changes_exist {
+            sqlx::query(
+                "INSERT INTO doc_changes (workspace_id, doc_id, seq, agent, operations, head_after) \
+                 VALUES ($1::uuid, $2::uuid, 1, $3::jsonb, '[]'::jsonb, \
+                 'af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262')",
+            )
+            .bind(workspace)
+            .bind(&doc_id)
+            .bind(r#"{"run":"run-1","role":"writer","model":null,"harness":null}"#)
+            .execute(&mut *conn)
+            .await
+            .expect("insert a doc change");
+        }
+
         // US-023: a claim on a node of the draft. Claims may live in memory;
         // if they live in the tenant table `claims` (tests/claims.rs pins its
         // name and the columns without a default), it is seeded as soon as it

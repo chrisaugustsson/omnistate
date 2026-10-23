@@ -40,9 +40,9 @@ const GLOBAL_TABLES: [&str; 3] = ["users", "login_identities", "sessions"];
 const TENANT_TABLES: [&str; 3] = ["workspaces", "memberships", "api_keys"];
 /// The tenant tables whose rows are never changed: the API role may not UPDATE
 /// them (US-024), the chunk index of US-030, the forum's posts (US-033), the
-/// links of change sets to the decisions they carry out (US-037) and the
-/// replies to comments (US-038).
-const APPEND_ONLY_TABLES: [&str; 7] = [
+/// links of change sets to the decisions they carry out (US-037), the
+/// replies to comments (US-038) and the log of the writes to docs (US-102).
+const APPEND_ONLY_TABLES: [&str; 8] = [
     "draft_ops",
     "versions",
     "node_index",
@@ -50,6 +50,7 @@ const APPEND_ONLY_TABLES: [&str; 7] = [
     "posts",
     "changeset_decisions",
     "comment_replies",
+    "doc_changes",
 ];
 const POLICY_EXPRESSION: &str = "NULLIF(current_setting('app.workspace_id', true), '')::uuid";
 /// A UUIDv4, which the database must refuse as a record ID.

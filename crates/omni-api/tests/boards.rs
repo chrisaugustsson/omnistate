@@ -45,9 +45,11 @@
 //!   carries a `rev` attribute, the node's revision (`rev={3}` or `rev="3"`);
 //!   a version or the mainline has none. An ID that names no board of the doc
 //!   (an unknown node, a page, a frame) is 404 `{"error": "unknown_board"}`,
-//!   a doc of another kind 400 `{"error": "not_a_design"}`, the mainline of a
-//!   doc that has no mainline version 409 `{"error": "no_mainline_version"}`,
-//!   and a version that is not one of the doc's 404 `{"error": "not_found"}`.
+//!   a doc of another kind 400 `{"error": "not_a_design"}`, and a version
+//!   that is not one of the doc's 404 `{"error": "not_found"}`. Without
+//!   `?version=` the board is read from the doc's head (US-102), which is
+//!   empty until the change set that started the doc merges, so such a doc
+//!   has no board there yet (404 `unknown_board`).
 //! - Both routes are in the route registry as `both`.
 //!
 //! US-058: the design viewer and the change set review read a version board by
@@ -1330,11 +1332,12 @@ fn reading_a_board_of_what_is_no_design_or_has_no_such_version_is_refused() {
     let d = new_design(f, client);
     let cart = id(&d.ids, "Cart");
 
-    // The doc has no mainline version until its change set merges.
+    // The doc's head is empty until its change set merges (US-102): the
+    // board is in the draft only.
     assert_error(
         &board_response(f, client, &agent(f), &d.project, &d.doc, &cart, ""),
-        409,
-        "no_mainline_version",
+        404,
+        "unknown_board",
     );
 
     // A version that is not one of the doc's.

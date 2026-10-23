@@ -370,14 +370,11 @@ fn an_agent_starts_a_doc_edits_its_draft_and_reads_it_back() {
         shown.stdout
     );
 
-    // Mainline has nothing of the doc until the change set merges.
-    let mainline = run(&home, &[&["doc", "read", &doc][..], &p].concat());
-    assert_ne!(mainline.code, 0, "{:?}", mainline.stdout);
-    assert!(
-        mainline.stderr.to_lowercase().contains("mainline"),
-        "{:?}",
-        mainline.stderr
-    );
+    // The doc's head is empty until the change set merges (US-102): it reads
+    // at once, as the empty doc.
+    let head = run(&home, &[&["doc", "read", &doc][..], &p].concat());
+    assert_eq!(head.code, 0, "{}", head.stderr);
+    assert_eq!(head.stdout.trim(), "", "{:?}", head.stdout);
 
     // Edit from standard input.
     let ops = json!([
@@ -846,4 +843,93 @@ fn an_agent_saves_versions_compares_them_and_removes_the_doc() {
     );
     assert_eq!(read.code, 0, "{}", read.stderr);
     assert!(read.stdout.contains("Added."), "{:?}", read.stdout);
+}
+
+// US-102: a doc is created without a change set, at the app level or in a
+// feature, and reads back at once, through the real API.
+#[test]
+fn an_agent_creates_docs_without_a_change_set_and_reads_them_at_once() {
+    let f = fixture();
+    let home = agent_home(f);
+    let project = unique("live");
+    let created = run(&home, &["project", "create", &project]);
+    assert_eq!(created.code, 0, "project create: {}", created.stderr);
+    let p = ["--project", project.as_str()];
+    let feature = run(
+        &home,
+        &[&["feature", "create", "Checkout"][..], &p].concat(),
+    );
+    assert_eq!(feature.code, 0, "feature create: {}", feature.stderr);
+
+    let create = |extra: &[&str], kind: &str, pillar: &str, title: &str| -> Value {
+        let out = run(
+            &home,
+            &[
+                &["doc", "create"][..],
+                extra,
+                &[
+                    "--kind", kind, "--pillar", pillar, "--title", title, "--json",
+                ][..],
+                &p,
+            ]
+            .concat(),
+        );
+        assert_eq!(out.code, 0, "doc create {title}: {}", out.stderr);
+        out.json()["doc"].clone()
+    };
+    let plan = create(&[], "html", "spec", "Checkout plan");
+    assert_eq!(plan["feature_id"], Value::Null, "{plan}");
+    let architecture = create(
+        &["--feature", "checkout"],
+        "html",
+        "architecture",
+        "Checkout architecture",
+    );
+    assert!(
+        architecture["feature_id"].is_string(),
+        "the doc is in the feature: {architecture}"
+    );
+    let screens = create(&["--feature", "Checkout"], "design", "ui", "Screens");
+
+    for doc in [&plan, &architecture] {
+        let id = doc["id"].as_str().expect("a doc id");
+        let read = run(&home, &[&["doc", "read", id][..], &p].concat());
+        assert_eq!(read.code, 0, "{}", read.stderr);
+        assert_eq!(read.stdout.trim(), "", "an empty doc: {:?}", read.stdout);
+    }
+    let id = screens["id"].as_str().expect("a doc id");
+    let read = run(&home, &[&["doc", "read", id][..], &p].concat());
+    assert_eq!(read.code, 0, "{}", read.stderr);
+    assert_eq!(
+        read.stdout.matches("<Page").count(),
+        1,
+        "an empty design with one page: {:?}",
+        read.stdout
+    );
+    assert!(!read.stdout.contains("<Board"), "{:?}", read.stdout);
+
+    // Each creation is the doc's first change, and no change set was made.
+    block(async {
+        let mut conn = admin_connection().await;
+        for doc in [&plan, &architecture, &screens] {
+            let id = doc["id"].as_str().expect("a doc id");
+            let seqs: Vec<i64> = sqlx::query_scalar(
+                "SELECT seq::bigint FROM doc_changes WHERE doc_id = $1::uuid ORDER BY seq",
+            )
+            .bind(id)
+            .fetch_all(&mut conn)
+            .await
+            .expect("read the doc changes");
+            assert_eq!(seqs, vec![1], "the creation of {id} is its first change");
+        }
+        let changesets: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM changesets c JOIN projects p ON p.id = c.project_id \
+             WHERE p.name = $1",
+        )
+        .bind(&project)
+        .fetch_one(&mut conn)
+        .await
+        .expect("count the change sets");
+        assert_eq!(changesets, 0, "no change set was made");
+    });
 }

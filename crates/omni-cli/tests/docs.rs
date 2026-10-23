@@ -10,7 +10,8 @@
 //! - `omni doc create --changeset <id> --kind html|design|design-system
 //!   --pillar spec|ui|architecture|db|research --title <text>` sends `POST
 //!   /changesets/{changeset}/docs` with `{"kind", "pillar", "title"}` and prints
-//!   the new doc's ID and title. A missing change set, pillar or title, or a
+//!   the new doc's ID and title; without `--changeset` it creates the doc live
+//!   (US-102, tests/live_docs.rs). A missing kind, pillar or title, or a
 //!   kind outside that list, is a one-line error that sends nothing; so is a
 //!   pillar that is not one of the five (the error lists the five pillar
 //!   names) and the old `--module` option (the error names `--pillar`, US-101).
@@ -21,8 +22,9 @@
 //!   and `--changeset <id>` the change set's draft, `GET
 //!   /changesets/{changeset}/docs/{doc}`, whose HTML has `data-rev`. The HTML
 //!   is printed as the API gave it, and nothing else is on standard output.
-//!   Both options at once are an error that sends nothing; a doc without a
-//!   mainline version (`"version_id": null`) is a one-line error that says so.
+//!   Both options at once are an error that sends nothing. Since US-102 the
+//!   read without options is of the doc's head, so a doc without a mainline
+//!   version (`"version_id": null`) prints its empty head and is no error.
 //! - `omni doc show <doc>` sends `GET /docs/{doc}` and prints the doc's title,
 //!   kind, pillar, mainline version (or that there is none), its drafts with
 //!   their change sets, and its claims.
@@ -423,8 +425,9 @@ fn doc_create_refuses_bad_options_before_sending_anything() {
         );
         args
     };
+    // Without --changeset the doc is created live (US-102,
+    // tests/live_docs.rs), so only the kind, pillar and title are required.
     for (flag, needle) in [
-        ("--changeset", "changeset"),
         ("--kind", "kind"),
         ("--pillar", "pillar"),
         ("--title", "title"),
@@ -642,11 +645,14 @@ fn doc_read_takes_a_change_set_or_a_version_not_both() {
 }
 
 #[test]
-fn doc_read_of_a_doc_without_a_mainline_version_says_so() {
+fn doc_read_of_a_doc_without_a_mainline_version_prints_its_empty_head() {
+    // US-102: a doc is readable at once, from its head; one without a
+    // mainline version is no error.
     let server = mock();
     let home = logged_in(&server.url);
     let out = run(&home, &["doc", "read", NEW_DOC]);
-    assert_one_line_error(&out, &["mainline"]);
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    assert_eq!(out.stdout.trim(), "", "{:?}", out.stdout);
 }
 
 // ---------------------------------------------------------------------------
