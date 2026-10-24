@@ -1,9 +1,10 @@
-//! `omni feature`: create, list and show the features of a project (Q51). A
-//! feature is a part of a project with docs, change sets and threads of its
-//! own. Agents create features; marking one done is the human's.
+//! `omni feature`: create, list, show, rename and delete the features of a
+//! project (Q51). A feature is a part of a project with docs, change sets and
+//! threads of its own. It has no status (V7); a delete is soft and takes its
+//! docs and threads with it.
 
 use crate::args::Args;
-use crate::changesets::{is_uuid, project_id, projects_path};
+use crate::changesets::{is_uuid, project_id, projects_path, resolve_feature};
 use crate::commands::{Agent, agent, say};
 use crate::error::{CliError, Result, bail};
 use crate::json::{Value, quote};
@@ -25,10 +26,10 @@ fn features_path(agent: &Agent, project_id: &str) -> String {
     format!("{}/{project_id}/features", projects_path(agent))
 }
 
-/// One line: ID, status and name.
+/// One line: ID and name.
 fn summary(feature: &Value) -> String {
     let field = |name: &str| feature.str_at(name).unwrap_or("?");
-    format!("{}  {}  {}", field("id"), field("status"), field("name"))
+    format!("{}  {}", field("id"), field("name"))
 }
 
 pub fn create(args: &Args, name: Option<&str>) -> Result<()> {
@@ -136,6 +137,60 @@ pub fn show(args: &Args, feature: Option<&str>) -> Result<()> {
         for line in description.lines() {
             say(&format!("  {line}"));
         }
+    }
+    Ok(())
+}
+
+/// `omni feature rename <name|id> <new name>`
+pub fn rename(args: &Args, feature: Option<&str>, name: Option<&str>) -> Result<()> {
+    let usage = "omni feature rename <name|id> <new name>";
+    let Some(given) = feature else {
+        bail!("a feature rename needs the feature and its new name: {usage}");
+    };
+    let name = name.map(str::trim).unwrap_or_default();
+    if name.is_empty() {
+        bail!("a feature rename needs a new name: {usage}");
+    }
+    let agent = agent(args)?;
+    let project = project_id(args, &agent)?;
+    let id = resolve_feature(&agent, &project, given)?;
+    let response = agent.request(
+        "PATCH",
+        &format!("{}/{id}", features_path(&agent, &project)),
+        Some(format!("{{\"name\":{}}}", quote(name)).as_bytes()),
+    )?;
+    let text = response.text();
+    if args.json {
+        print_json(&text);
+        return Ok(());
+    }
+    let body = parsed(&text, "the renamed feature")?;
+    let feature = body.get("feature").unwrap_or(&body);
+    say(&format!(
+        "{}  {}",
+        feature.str_at("id").unwrap_or(&id),
+        feature.str_at("name").unwrap_or(name)
+    ));
+    Ok(())
+}
+
+/// `omni feature delete <name|id>`
+pub fn delete(args: &Args, feature: Option<&str>) -> Result<()> {
+    let Some(given) = feature else {
+        bail!("`omni feature delete` needs a feature name or ID: omni feature delete <name|id>");
+    };
+    let agent = agent(args)?;
+    let project = project_id(args, &agent)?;
+    let id = resolve_feature(&agent, &project, given)?;
+    agent.request(
+        "DELETE",
+        &format!("{}/{id}", features_path(&agent, &project)),
+        None,
+    )?;
+    if args.json {
+        say(&format!("{{\"deleted\":{}}}", quote(&id)));
+    } else {
+        say(&format!("deleted feature {id}"));
     }
     Ok(())
 }

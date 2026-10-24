@@ -611,7 +611,8 @@ pub(crate) async fn load_thread(
     lock: Option<&str>,
 ) -> Result<ThreadBody, ApiError> {
     let row: ThreadRow = sqlx::query_as(&format!(
-        "SELECT {THREAD_COLUMNS} FROM threads WHERE id = $1::uuid AND project_id = $2::uuid {}",
+        "SELECT {THREAD_COLUMNS} FROM threads \
+         WHERE id = $1::uuid AND project_id = $2::uuid AND deleted_at IS NULL {}",
         lock.unwrap_or("")
     ))
     .bind(thread_id)
@@ -685,7 +686,8 @@ pub(crate) async fn threads_of_project(
     project_id: &str,
 ) -> Result<Vec<ThreadBody>, ApiError> {
     let ids: Vec<(String,)> = sqlx::query_as(
-        "SELECT id::text FROM threads WHERE project_id = $1::uuid ORDER BY created_at, id",
+        "SELECT id::text FROM threads WHERE project_id = $1::uuid AND deleted_at IS NULL \
+         ORDER BY created_at, id",
     )
     .bind(project_id)
     .fetch_all(&mut **tx)
@@ -711,7 +713,8 @@ pub(crate) async fn unanswered_questions(
         "SELECT {POST_COLUMNS} FROM posts p \
          WHERE p.type = 'question' AND p.author->>'kind' = 'agent' \
            AND EXISTS (SELECT 1 FROM threads t WHERE t.workspace_id = p.workspace_id \
-                       AND t.id = p.thread_id AND t.project_id = $1::uuid) \
+                       AND t.id = p.thread_id AND t.project_id = $1::uuid \
+                       AND t.deleted_at IS NULL) \
            AND NOT EXISTS (SELECT 1 FROM posts r WHERE r.workspace_id = p.workspace_id \
                            AND r.author->>'kind' = 'human' \
                            AND r.links @> jsonb_build_array(jsonb_build_object( \
@@ -856,7 +859,8 @@ async fn start_live_thread(
     require_project(&mut tx, project_id).await?;
     if let Some(feature_id) = feature_id {
         let found: Option<(String,)> = sqlx::query_as(
-            "SELECT id::text FROM features WHERE id = $1::uuid AND project_id = $2::uuid",
+            "SELECT id::text FROM features \
+             WHERE id = $1::uuid AND project_id = $2::uuid AND deleted_at IS NULL FOR SHARE",
         )
         .bind(feature_id)
         .bind(project_id)
@@ -1228,7 +1232,8 @@ pub async fn show_post(
         sqlx::query_as(&format!(
             "SELECT {POST_COLUMNS} FROM posts p WHERE p.id = $1::uuid \
                AND EXISTS (SELECT 1 FROM threads t WHERE t.workspace_id = p.workspace_id \
-                           AND t.id = p.thread_id AND t.project_id = $2::uuid) AND {}",
+                           AND t.id = p.thread_id AND t.project_id = $2::uuid \
+                           AND t.deleted_at IS NULL) AND {}",
             visible("p", 3)
         ))
         .bind(&post_id)

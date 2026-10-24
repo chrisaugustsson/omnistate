@@ -901,7 +901,8 @@ pub(crate) async fn find_doc(
     doc_id: &str,
 ) -> Result<DocRow, ApiError> {
     sqlx::query_as(&format!(
-        "SELECT {DOC_COLUMNS} FROM docs WHERE id = $1::uuid AND project_id = $2::uuid"
+        "SELECT {DOC_COLUMNS} FROM docs \
+         WHERE id = $1::uuid AND project_id = $2::uuid AND deleted_at IS NULL"
     ))
     .bind(doc_id)
     .bind(project_id)
@@ -937,7 +938,7 @@ pub(crate) async fn docs_of_project(
         _ => None,
     };
     let rows: Vec<DocRow> = sqlx::query_as(&format!(
-        "SELECT {DOC_COLUMNS} FROM docs WHERE project_id = $1::uuid \
+        "SELECT {DOC_COLUMNS} FROM docs WHERE project_id = $1::uuid AND deleted_at IS NULL \
          AND ($2::bool OR feature_id IS NOT DISTINCT FROM $3::uuid) \
          AND ($4::text IS NULL OR pillar = $4) ORDER BY created_at, id"
     ))
@@ -1035,7 +1036,8 @@ async fn require_no_design_system(
         return Ok(());
     }
     let found: Option<(String,)> = sqlx::query_as(
-        "SELECT id::text FROM docs WHERE project_id = $1::uuid AND kind = 'design-system'",
+        "SELECT id::text FROM docs \
+         WHERE project_id = $1::uuid AND kind = 'design-system' AND deleted_at IS NULL",
     )
     .bind(project_id)
     .fetch_optional(&mut **tx)
@@ -1396,7 +1398,8 @@ async fn create_live_doc(
     require_project(&mut tx, project_id).await?;
     if let Some(feature_id) = feature_id {
         let found: Option<(String,)> = sqlx::query_as(
-            "SELECT id::text FROM features WHERE id = $1::uuid AND project_id = $2::uuid",
+            "SELECT id::text FROM features \
+             WHERE id = $1::uuid AND project_id = $2::uuid AND deleted_at IS NULL",
         )
         .bind(feature_id)
         .bind(project_id)
@@ -1411,6 +1414,18 @@ async fn create_live_doc(
 
     let empty = store_empty_head(state, &request.workspace_id, &new.kind, true).await?;
     let mut tx = state.workspace_tx(&request.workspace_id).await?;
+    if let Some(feature_id) = feature_id {
+        // A feature that is deleted in between takes no new doc.
+        let found: Option<(String,)> = sqlx::query_as(
+            "SELECT id::text FROM features \
+             WHERE id = $1::uuid AND deleted_at IS NULL FOR SHARE",
+        )
+        .bind(feature_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(ApiError::database)?;
+        found.ok_or(ApiError::NotFound)?;
+    }
     let row = insert_doc(
         &mut tx,
         &request.workspace_id,
@@ -1595,6 +1610,163 @@ pub async fn show_doc(
     Ok(Json(DocResponse {
         doc: doc_body(row, drafts, claims),
     }))
+}
+
+#[derive(Deserialize, ToSchema)]
+pub struct RenameDocRequest {
+    /// The doc's new title; not blank.
+    pub title: Option<String>,
+}
+
+/// The name in the log of a head that is empty: the chunk of the empty text.
+/// A doc that has no head yet is logged with it.
+pub(crate) fn empty_head() -> String {
+    blake3_hex(b"")
+}
+
+/// Locks a doc of the project that is not deleted; 404 when there is none.
+/// Returns its head.
+async fn lock_doc(tx: &mut Tx, project_id: &str, doc_id: &str) -> Result<Option<String>, ApiError> {
+    let found: Option<(Option<String>,)> = sqlx::query_as(
+        "SELECT head FROM docs \
+         WHERE id = $1::uuid AND project_id = $2::uuid AND deleted_at IS NULL FOR UPDATE",
+    )
+    .bind(doc_id)
+    .bind(project_id)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(ApiError::database)?;
+    found.map(|(head,)| head).ok_or(ApiError::NotFound)
+}
+
+/// Renames a doc. Its ID, head and comments stay; the rename is one row of the
+/// doc's log, with the head before and after the same.
+#[utoipa::path(
+    patch,
+    path = "/api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}",
+    params(
+        ("workspace_id" = String, Path, description = "The workspace's UUID"),
+        ("project_id" = String, Path, description = "The project's UUID"),
+        ("doc_id" = String, Path, description = "The doc's UUID"),
+        ("X-Omni-Run" = Option<String>, Header, description = "The agent's run"),
+        ("X-Omni-Role" = Option<String>, Header, description = "The agent's role"),
+        ("X-Omni-Model" = Option<String>, Header, description = "The model behind the agent"),
+        ("X-Omni-Harness" = Option<String>, Header, description = "The harness that runs the agent"),
+    ),
+    request_body = RenameDocRequest,
+    responses(
+        (status = 200, description = "The renamed doc", body = DocResponse),
+        (status = 400, description = "The title is missing or blank", body = ErrorBody),
+        (status = 401, description = "No valid API key or session", body = ErrorBody),
+        (status = 403, description = "Called with a session; agents only", body = ErrorBody),
+        (status = 404, description = "No such doc in this project and workspace, or it was deleted", body = ErrorBody),
+    )
+)]
+pub async fn rename_doc(
+    State(state): State<AppState>,
+    request: AgentRequest,
+    identity: AgentIdentity,
+    Path((_, project_id, doc_id)): Path<(String, String, String)>,
+    body: Bytes,
+) -> Result<Json<DocResponse>, ApiError> {
+    let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
+    let doc_id = parse_uuid(&doc_id).ok_or(ApiError::NotFound)?;
+    let new = parse_body::<RenameDocRequest>(&body);
+    let mut tx = state.workspace_tx(&request.workspace_id).await?;
+    let head = lock_doc(&mut tx, &project_id, &doc_id).await?;
+    let title = non_blank(new?.title).ok_or_else(|| ApiError::bad_request("invalid_request"))?;
+    sqlx::query("UPDATE docs SET title = $2 WHERE id = $1::uuid")
+        .bind(&doc_id)
+        .bind(&title)
+        .execute(&mut *tx)
+        .await
+        .map_err(ApiError::database)?;
+    log_change(
+        &mut tx,
+        &request.workspace_id,
+        &doc_id,
+        &identity.to_json(),
+        &json!([{ "op": "rename", "title": title }]),
+        head.as_deref(),
+        &head.clone().unwrap_or_else(empty_head),
+    )
+    .await?;
+    live::emit(
+        &mut tx,
+        &request.workspace_id,
+        &project_id,
+        "doc.renamed",
+        &json!({ "doc_id": doc_id, "title": title }),
+    )
+    .await?;
+    let row = find_doc(&mut tx, &project_id, &doc_id).await?;
+    let drafts = drafts_of(&mut tx, &row.id).await?;
+    tx.commit().await.map_err(ApiError::database)?;
+    state.live.announce(&request.workspace_id, &project_id);
+    let claims = state.claims.live_of_doc(&request.workspace_id, &row.id);
+    Ok(Json(DocResponse {
+        doc: doc_body(row, drafts, claims),
+    }))
+}
+
+/// Deletes a doc. Nothing is erased: the row gets `deleted_at`, the doc and its
+/// comments leave every list and read, and the deletion is one row of the
+/// doc's log. A deleted doc takes no more writes.
+#[utoipa::path(
+    delete,
+    path = "/api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}",
+    params(
+        ("workspace_id" = String, Path, description = "The workspace's UUID"),
+        ("project_id" = String, Path, description = "The project's UUID"),
+        ("doc_id" = String, Path, description = "The doc's UUID"),
+        ("X-Omni-Run" = Option<String>, Header, description = "The agent's run"),
+        ("X-Omni-Role" = Option<String>, Header, description = "The agent's role"),
+        ("X-Omni-Model" = Option<String>, Header, description = "The model behind the agent"),
+        ("X-Omni-Harness" = Option<String>, Header, description = "The harness that runs the agent"),
+    ),
+    responses(
+        (status = 204, description = "The doc is deleted"),
+        (status = 401, description = "No valid API key or session", body = ErrorBody),
+        (status = 403, description = "Called with a session; agents only", body = ErrorBody),
+        (status = 404, description = "No such doc in this project and workspace, or it was deleted already", body = ErrorBody),
+    )
+)]
+pub async fn delete_doc(
+    State(state): State<AppState>,
+    request: AgentRequest,
+    identity: AgentIdentity,
+    Path((_, project_id, doc_id)): Path<(String, String, String)>,
+) -> Result<StatusCode, ApiError> {
+    let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
+    let doc_id = parse_uuid(&doc_id).ok_or(ApiError::NotFound)?;
+    let mut tx = state.workspace_tx(&request.workspace_id).await?;
+    let head = lock_doc(&mut tx, &project_id, &doc_id).await?;
+    sqlx::query("UPDATE docs SET deleted_at = clock_timestamp() WHERE id = $1::uuid")
+        .bind(&doc_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(ApiError::database)?;
+    log_change(
+        &mut tx,
+        &request.workspace_id,
+        &doc_id,
+        &identity.to_json(),
+        &json!([{ "op": "delete" }]),
+        head.as_deref(),
+        &head.clone().unwrap_or_else(empty_head),
+    )
+    .await?;
+    live::emit(
+        &mut tx,
+        &request.workspace_id,
+        &project_id,
+        "doc.deleted",
+        &json!({ "doc_id": doc_id }),
+    )
+    .await?;
+    tx.commit().await.map_err(ApiError::database)?;
+    state.live.announce(&request.workspace_id, &project_id);
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// A doc's head as HTML with `data-omni-id`, or the version named by
@@ -2037,7 +2209,8 @@ pub async fn edit_doc(
     // connection it uses is its own.
     let mut tx = state.workspace_tx(&workspace_id).await?;
     let locked: Option<(String, Option<String>)> = sqlx::query_as(
-        "SELECT kind, head FROM docs WHERE id = $1::uuid AND project_id = $2::uuid FOR UPDATE",
+        "SELECT kind, head FROM docs \
+         WHERE id = $1::uuid AND project_id = $2::uuid AND deleted_at IS NULL FOR UPDATE",
     )
     .bind(&doc_id)
     .bind(&project_id)

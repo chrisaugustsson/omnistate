@@ -365,7 +365,7 @@ pub(crate) async fn find_version(
     sqlx::query_as(&format!(
         "SELECT {VERSION_COLUMNS} FROM versions v \
          JOIN docs d ON d.workspace_id = v.workspace_id AND d.id = v.doc_id \
-         WHERE v.id = $1::uuid AND d.project_id = $2::uuid"
+         WHERE v.id = $1::uuid AND d.project_id = $2::uuid AND d.deleted_at IS NULL"
     ))
     .bind(version_id)
     .bind(project_id)

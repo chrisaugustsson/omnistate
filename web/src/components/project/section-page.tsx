@@ -5,7 +5,6 @@ import type { HomeResponse } from "@/api/generated";
 import { PageHeader } from "@/components/page-header";
 import { scopedHome } from "@/components/project/items";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { Badge } from "@/components/ui/badge";
 import { useHome, useProjectName } from "@/lib/use-home";
 import { cn } from "@/lib/utils";
 
@@ -55,7 +54,6 @@ export function SectionPage({
           )
         }
         title={title}
-        badge={current?.status === "done" ? <Badge variant="outline">Done</Badge> : undefined}
         description={home && description?.(home)}
       />
       {failed && (

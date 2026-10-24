@@ -1,7 +1,6 @@
 import { useId, useState, type ReactNode } from "react";
 import { Link, useNavigate, useParams, useRouterState } from "@tanstack/react-router";
 import {
-  ChevronRight,
   FileText,
   GitPullRequestArrow,
   Inbox,
@@ -119,9 +118,6 @@ function FeatureItem({
         <Layers />
         <span className="min-w-0 truncate">{name}</span>
         <Count value={summary.waiting} />
-        {summary.feature.status === "done" && (
-          <span className={cn("text-[11px] font-medium text-muted-foreground", !summary.waiting && "ml-auto")}>Done</span>
-        )}
       </Link>
       {here &&
         FEATURE_SECTIONS.map(({ section, label, to }) => {
@@ -143,7 +139,7 @@ function FeatureItem({
   );
 }
 
-/** The project's features below its sections: the active ones, and the done ones under a toggle. */
+/** The project's features below its sections, every one of them: a feature has no status. */
 function Features({
   features,
   workspaceId,
@@ -156,15 +152,7 @@ function Features({
   place: Place;
 }) {
   const titleId = useId();
-  const [shown, setShown] = useState<boolean | null>(null);
-  const active = features.filter((summary) => summary.feature.status !== "done");
-  const done = features.filter((summary) => summary.feature.status === "done");
-  // A done feature that the reviewer is in stays in sight, until the toggle is used.
-  const expanded = shown ?? done.some((summary) => summary.feature.id === place.feature);
   if (!features.length) return null;
-  const item = (summary: FeatureSummary) => (
-    <FeatureItem key={summary.feature.id} summary={summary} workspaceId={workspaceId} projectId={projectId} place={place} />
-  );
 
   return (
     <div role="group" aria-labelledby={titleId} className="space-y-0.5">
@@ -174,22 +162,11 @@ function Features({
       >
         Features
       </div>
-      <ul className="space-y-0.5">{active.map(item)}</ul>
-      {done.length > 0 && (
-        <>
-          <button
-            type="button"
-            aria-expanded={expanded}
-            onClick={() => setShown(!expanded)}
-            className={cn(itemClass, "w-full")}
-          >
-            <ChevronRight className={cn("transition-transform", expanded && "rotate-90")} />
-            Done{" "}
-            <Count value={done.length} />
-          </button>
-          {expanded && <ul className="space-y-0.5">{done.map(item)}</ul>}
-        </>
-      )}
+      <ul className="space-y-0.5">
+        {features.map((summary) => (
+          <FeatureItem key={summary.feature.id} summary={summary} workspaceId={workspaceId} projectId={projectId} place={place} />
+        ))}
+      </ul>
     </div>
   );
 }

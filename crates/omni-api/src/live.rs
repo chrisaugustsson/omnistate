@@ -159,16 +159,20 @@ pub enum LiveEventName {
     DocChanged,
     #[serde(rename = "doc.created")]
     DocCreated,
+    #[serde(rename = "doc.deleted")]
+    DocDeleted,
+    #[serde(rename = "doc.renamed")]
+    DocRenamed,
     #[serde(rename = "draft.opened")]
     DraftOpened,
     #[serde(rename = "draft.rebased")]
     DraftRebased,
     #[serde(rename = "feature.created")]
     FeatureCreated,
-    #[serde(rename = "feature.done")]
-    FeatureDone,
-    #[serde(rename = "feature.reopened")]
-    FeatureReopened,
+    #[serde(rename = "feature.deleted")]
+    FeatureDeleted,
+    #[serde(rename = "feature.renamed")]
+    FeatureRenamed,
     #[serde(rename = "op.applied")]
     OpApplied,
     #[serde(rename = "phase.started")]

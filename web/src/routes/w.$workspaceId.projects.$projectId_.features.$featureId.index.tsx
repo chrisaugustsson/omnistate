@@ -1,15 +1,9 @@
-import { useState } from "react";
 import { Link, createFileRoute } from "@tanstack/react-router";
-import { ArrowLeft, Check, RotateCcw } from "lucide-react";
-import { ApiError } from "@/api/client";
-import { markFeatureDone, reopenFeature } from "@/api/features";
-import type { FeatureBody } from "@/api/generated";
+import { ArrowLeft } from "lucide-react";
 import { OverviewSections, OverviewSkeleton } from "@/components/project/overview";
 import { scopedHome } from "@/components/project/items";
 import { PageHeader } from "@/components/page-header";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import { useHome, useProjectName } from "@/lib/use-home";
 
 // A feature's overview: what waits for the reviewer on the feature, and its
@@ -21,7 +15,7 @@ export const Route = createFileRoute("/w/$workspaceId/projects/$projectId_/featu
 
 function FeatureHome() {
   const { workspaceId, projectId, featureId } = Route.useParams();
-  const { home, failed, reload } = useHome(workspaceId, projectId);
+  const { home, failed } = useHome(workspaceId, projectId);
   const name = useProjectName(workspaceId, projectId);
   const feature = home?.features?.find((summary) => summary.feature.id === featureId)?.feature;
 
@@ -39,9 +33,7 @@ function FeatureHome() {
           </Link>
         }
         title={feature?.name ?? (failed ? "Feature" : "")}
-        badge={feature?.status === "done" ? <Badge variant="outline">Done</Badge> : undefined}
         description={feature?.description || undefined}
-        actions={feature && <FeatureStatus workspaceId={workspaceId} projectId={projectId} feature={feature} onChanged={reload} />}
       />
       {failed && (
         <Alert variant="destructive" className="mt-8">
@@ -60,77 +52,5 @@ function FeatureHome() {
       )}
       {!home && !failed && <OverviewSkeleton />}
     </main>
-  );
-}
-
-/**
- * The reviewer's call on a feature: mark it done, which asks for a
- * confirmation first because the feature then takes no new change sets, or
- * reopen it.
- */
-function FeatureStatus({
-  workspaceId,
-  projectId,
-  feature,
-  onChanged,
-}: {
-  workspaceId: string;
-  projectId: string;
-  feature: FeatureBody;
-  onChanged: () => void;
-}) {
-  const [confirming, setConfirming] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [failure, setFailure] = useState<string | null>(null);
-
-  async function change(call: typeof markFeatureDone) {
-    setBusy(true);
-    setFailure(null);
-    try {
-      await call(workspaceId, projectId, feature.id);
-      setConfirming(false);
-      onChanged();
-    } catch (error) {
-      setFailure(
-        error instanceof ApiError && error.status === 409
-          ? "The feature has changed meanwhile. Reload and try again."
-          : "The feature could not be changed. Try again in a moment.",
-      );
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  if (feature.status === "done") {
-    return (
-      <>
-        {failure && <span className="text-[13px] text-destructive">{failure}</span>}
-        <Button variant="outline" disabled={busy} onClick={() => change(reopenFeature)}>
-          <RotateCcw className="size-4" />
-          Reopen
-        </Button>
-      </>
-    );
-  }
-  if (!confirming) {
-    return (
-      <Button variant="outline" onClick={() => setConfirming(true)}>
-        <Check className="size-4" />
-        Mark done
-      </Button>
-    );
-  }
-  return (
-    <>
-      <span role="status" className="max-w-sm text-[13px] text-muted-foreground">
-        {failure ?? "A done feature takes no new change sets. Its docs, threads and comments stay readable."}
-      </span>
-      <Button disabled={busy} onClick={() => change(markFeatureDone)}>
-        Confirm
-      </Button>
-      <Button variant="ghost" disabled={busy} onClick={() => setConfirming(false)}>
-        Cancel
-      </Button>
-    </>
   );
 }

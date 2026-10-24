@@ -42,8 +42,12 @@ Usage:
   omni project list                   list the projects
   omni feature create <name>          create a feature in the project [--description <text>];
                                       prints its ID and name
-  omni feature list                   list the project's features: ID, status and name
+  omni feature list                   list the project's features: ID and name
   omni feature show <name|id>         show a feature
+  omni feature rename <name|id> <new name>
+                                      rename a feature; its ID, docs and threads stay
+  omni feature delete <name|id>       delete a feature with its docs, threads and comments (they
+                                      are kept, hidden; the name can be used again)
   omni changeset create --title <t>   create a change set [--description <d>] [--run <tag>];
                                       in the feature of --feature or .omni.toml, or at project
                                       level with --global
@@ -88,6 +92,9 @@ Usage:
   omni doc remove <doc> --changeset <id>
                                       remove a doc in a change set: saves a version that
                                       marks it removed; the doc and its history stay
+  omni doc rename <doc> <title>       rename a doc; its ID, head and comments stay
+  omni doc delete <doc>               delete a doc (it is kept, hidden from every list and
+                                      read; the deletion is logged)
   omni version save <doc> --changeset <id>
                                       save the change set's draft of a doc as a version, an
                                       unchangeable snapshot; prints the version's ID

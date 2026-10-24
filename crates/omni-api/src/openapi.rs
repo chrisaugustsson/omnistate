@@ -26,9 +26,11 @@ use crate::design::{
 use crate::docs::{
     ConflictBody, ConflictDetails, CreateDocRequest, CreatedDocResponse, DocBody, DocListResponse,
     DocResponse, DraftBody, DraftHtmlResponse, DraftResponse, DraftWithHtml, EditRequest,
-    EditResponse, InvalidOperationBody, MainlineHtmlResponse, OpResultBody,
+    EditResponse, InvalidOperationBody, MainlineHtmlResponse, OpResultBody, RenameDocRequest,
 };
-use crate::features::{CreateFeatureRequest, FeatureBody, FeatureListResponse, FeatureResponse};
+use crate::features::{
+    CreateFeatureRequest, FeatureBody, FeatureListResponse, FeatureResponse, RenameFeatureRequest,
+};
 use crate::home::{FeatureSummary, HomeResponse, WaitingBody};
 use crate::live::{LiveClientMessage, LiveErrorCode, LiveEventName, LiveServerMessage};
 use crate::rebase::{
@@ -80,8 +82,8 @@ use utoipa::OpenApi;
         crate::features::list_features,
         crate::features::create_feature,
         crate::features::show_feature,
-        crate::features::done,
-        crate::features::reopen,
+        crate::features::rename_feature,
+        crate::features::delete_feature,
         crate::changesets::list_projects,
         crate::changesets::create_project,
         crate::changesets::list_changesets,
@@ -103,6 +105,8 @@ use utoipa::OpenApi;
         crate::docs::create_feature_doc,
         crate::docs::list_docs,
         crate::docs::show_doc,
+        crate::docs::rename_doc,
+        crate::docs::delete_doc,
         crate::docs::read_doc_html,
         crate::docs::open_draft,
         crate::docs::read_draft,
@@ -171,6 +175,7 @@ use utoipa::OpenApi;
         CreateProjectRequest,
         FeatureBody,
         FeatureResponse,
+        RenameFeatureRequest,
         FeatureListResponse,
         CreateFeatureRequest,
         CreateChangesetRequest,
@@ -184,6 +189,7 @@ use utoipa::OpenApi;
         AttachmentBody,
         AttachmentResponse,
         CreateDocRequest,
+        RenameDocRequest,
         DocBody,
         DocResponse,
         DocListResponse,

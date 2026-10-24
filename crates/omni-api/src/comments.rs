@@ -219,7 +219,7 @@ async fn fetch_rows(tx: &mut Tx, filter: Filter, lock: &str) -> Result<Vec<Comme
                 to_char(c.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"') AS created_at \
          FROM comments c \
          JOIN docs d ON d.workspace_id = c.workspace_id AND d.id = c.doc_id \
-         WHERE c.deleted_at IS NULL{}{} ORDER BY c.created_at, c.id {lock}",
+         WHERE c.deleted_at IS NULL AND d.deleted_at IS NULL{}{} ORDER BY c.created_at, c.id {lock}",
         if filter.conditions.is_empty() {
             ""
         } else {

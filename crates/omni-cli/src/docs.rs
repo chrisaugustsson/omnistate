@@ -1,7 +1,8 @@
 //! `omni doc`: create a doc (live, or in a change set), list the project's docs,
 //! open a doc there, read it (its head, a version or a change set's draft), show
-//! its metadata and edit a doc (live, or a draft in a change set) with a batch of
-//! operations. The project is found as for `omni changeset`.
+//! its metadata, edit a doc (live, or a draft in a change set) with a batch of
+//! operations, and rename or delete it. The project is found as for `omni
+//! changeset`.
 
 use crate::args::Args;
 use crate::changesets::{creation_feature, is_uuid, project_features, project_id, resolve_feature};
@@ -440,6 +441,54 @@ pub(crate) fn print_edit(args: &Args, text: &str) -> Result<()> {
             }
         }
         say(&line);
+    }
+    Ok(())
+}
+
+/// `omni doc rename <doc> <title>`
+pub fn rename(args: &Args, doc: Option<&str>, title: Option<&str>) -> Result<()> {
+    let usage = "omni doc rename <doc> <title>";
+    let doc = doc_id(doc, usage)?;
+    let title = title.map(str::trim).unwrap_or_default();
+    if title.is_empty() {
+        bail!("a doc rename needs a new title: {usage}");
+    }
+    let agent = agent(args)?;
+    let project = project_id(args, &agent)?;
+    let response = agent.request(
+        "PATCH",
+        &format!("{}/docs/{doc}", project_path(&agent, &project)),
+        Some(format!("{{\"title\":{}}}", quote(title)).as_bytes()),
+    )?;
+    let text = response.text();
+    if args.json {
+        print_json(&text);
+        return Ok(());
+    }
+    let answer = parsed(&text, "the renamed doc")?;
+    let renamed = answer.get("doc").unwrap_or(&answer);
+    say(&format!(
+        "{}  {}",
+        renamed.str_at("id").unwrap_or(&doc),
+        renamed.str_at("title").unwrap_or(title)
+    ));
+    Ok(())
+}
+
+/// `omni doc delete <doc>`
+pub fn delete(args: &Args, doc: Option<&str>) -> Result<()> {
+    let doc = doc_id(doc, "omni doc delete <doc>")?;
+    let agent = agent(args)?;
+    let project = project_id(args, &agent)?;
+    agent.request(
+        "DELETE",
+        &format!("{}/docs/{doc}", project_path(&agent, &project)),
+        None,
+    )?;
+    if args.json {
+        say(&format!("{{\"deleted\":{}}}", quote(&doc)));
+    } else {
+        say(&format!("deleted doc {doc}"));
     }
     Ok(())
 }

@@ -1512,10 +1512,6 @@
           },
           "project_id": {
             "type": "string"
-          },
-          "status": {
-            "description": "`active` or `done`.",
-            "type": "string"
           }
         },
         "required": [
@@ -1523,7 +1519,6 @@
           "project_id",
           "name",
           "description",
-          "status",
           "created_at"
         ],
         "type": "object"
@@ -1634,7 +1629,7 @@
             "type": "array"
           },
           "features": {
-            "description": "Every feature of the project, oldest first, done ones included. The\nAPI always sends it; it is not marked required so that the web app's\nreader still accepts a home from before features.",
+            "description": "Every feature of the project that is not deleted, oldest first. The\nAPI always sends it; it is not marked required so that the web app's\nreader still accepts a home from before features.",
             "items": {
               "$ref": "#/components/schemas/FeatureSummary"
             },
@@ -1990,11 +1985,13 @@
           "design.imported",
           "doc.changed",
           "doc.created",
+          "doc.deleted",
+          "doc.renamed",
           "draft.opened",
           "draft.rebased",
           "feature.created",
-          "feature.done",
-          "feature.reopened",
+          "feature.deleted",
+          "feature.renamed",
           "op.applied",
           "phase.started",
           "post.created",
@@ -2702,6 +2699,30 @@
         "properties": {
           "reason": {
             "description": "Why the change set is rejected; required.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "RenameDocRequest": {
+        "properties": {
+          "title": {
+            "description": "The doc's new title; not blank.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "RenameFeatureRequest": {
+        "properties": {
+          "name": {
+            "description": "The feature's new name; not blank, and not the name of another feature\nof the project, ignoring case.",
             "type": [
               "string",
               "null"
@@ -8647,6 +8668,126 @@
       }
     },
     "/api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}": {
+      "delete": {
+        "operationId": "delete_doc",
+        "parameters": [
+          {
+            "description": "The workspace's UUID",
+            "in": "path",
+            "name": "workspace_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The project's UUID",
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The doc's UUID",
+            "in": "path",
+            "name": "doc_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The agent's run",
+            "in": "header",
+            "name": "X-Omni-Run",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "description": "The agent's role",
+            "in": "header",
+            "name": "X-Omni-Role",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "description": "The model behind the agent",
+            "in": "header",
+            "name": "X-Omni-Model",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "description": "The harness that runs the agent",
+            "in": "header",
+            "name": "X-Omni-Harness",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "The doc is deleted"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No valid API key or session"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Called with a session; agents only"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No such doc in this project and workspace, or it was deleted already"
+          }
+        },
+        "summary": "Deletes a doc. Nothing is erased: the row gets `deleted_at`, the doc and its\ncomments leave every list and read, and the deletion is one row of the\ndoc's log. A deleted doc takes no more writes.",
+        "tags": [
+          "crate::docs"
+        ],
+        "x-omni-access": "agent"
+      },
       "get": {
         "operationId": "show_doc",
         "parameters": [
@@ -8715,6 +8856,153 @@
           "crate::docs"
         ],
         "x-omni-access": "both"
+      },
+      "patch": {
+        "operationId": "rename_doc",
+        "parameters": [
+          {
+            "description": "The workspace's UUID",
+            "in": "path",
+            "name": "workspace_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The project's UUID",
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The doc's UUID",
+            "in": "path",
+            "name": "doc_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The agent's run",
+            "in": "header",
+            "name": "X-Omni-Run",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "description": "The agent's role",
+            "in": "header",
+            "name": "X-Omni-Role",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "description": "The model behind the agent",
+            "in": "header",
+            "name": "X-Omni-Model",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "description": "The harness that runs the agent",
+            "in": "header",
+            "name": "X-Omni-Harness",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RenameDocRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DocResponse"
+                }
+              }
+            },
+            "description": "The renamed doc"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The title is missing or blank"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No valid API key or session"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Called with a session; agents only"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No such doc in this project and workspace, or it was deleted"
+          }
+        },
+        "summary": "Renames a doc. Its ID, head and comments stay; the rename is one row of the\ndoc's log, with the head before and after the same.",
+        "tags": [
+          "crate::docs"
+        ],
+        "x-omni-access": "agent"
       }
     },
     "/api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}/boards/{board_id}": {
@@ -9307,7 +9595,7 @@
                 }
               }
             },
-            "description": "The project's features, done ones included"
+            "description": "The project's features"
           },
           "401": {
             "content": {
@@ -9430,7 +9718,7 @@
             "description": "The project has a feature of this name, ignoring case"
           }
         },
-        "summary": "Creates a feature, `active`, in a project.",
+        "summary": "Creates a feature in a project.",
         "tags": [
           "crate::features"
         ],
@@ -9438,6 +9726,126 @@
       }
     },
     "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}": {
+      "delete": {
+        "operationId": "delete_feature",
+        "parameters": [
+          {
+            "description": "The workspace's UUID",
+            "in": "path",
+            "name": "workspace_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The project's UUID",
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The feature's UUID",
+            "in": "path",
+            "name": "feature_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The agent's run",
+            "in": "header",
+            "name": "X-Omni-Run",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "description": "The agent's role",
+            "in": "header",
+            "name": "X-Omni-Role",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "description": "The model behind the agent",
+            "in": "header",
+            "name": "X-Omni-Model",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "description": "The harness that runs the agent",
+            "in": "header",
+            "name": "X-Omni-Harness",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "The feature, its docs and its threads are deleted"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No valid API key or session"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Called with a session; agents only"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No such feature in this project and workspace, or it was deleted already"
+          }
+        },
+        "summary": "Deletes a feature, and with it its docs and threads. Nothing is erased: the\nrows get `deleted_at`, every list and read leaves them out (the comments of\na deleted doc with them), and each doc's log gets a row for its deletion.\nThe feature's name can be used again.",
+        "tags": [
+          "crate::features"
+        ],
+        "x-omni-access": "agent"
+      },
       "get": {
         "operationId": "show_feature",
         "parameters": [
@@ -9506,6 +9914,115 @@
           "crate::features"
         ],
         "x-omni-access": "both"
+      },
+      "patch": {
+        "operationId": "rename_feature",
+        "parameters": [
+          {
+            "description": "The workspace's UUID",
+            "in": "path",
+            "name": "workspace_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The project's UUID",
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The feature's UUID",
+            "in": "path",
+            "name": "feature_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RenameFeatureRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FeatureResponse"
+                }
+              }
+            },
+            "description": "The renamed feature"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The name is missing or blank"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No valid API key or session"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Called with a session; agents only"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No such feature in this project and workspace, or it was deleted"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The project has a feature of this name, ignoring case (`name_taken`)"
+          }
+        },
+        "summary": "Renames a feature. Its ID, docs and threads stay.",
+        "tags": [
+          "crate::features"
+        ],
+        "x-omni-access": "agent"
       }
     },
     "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/docs": {
@@ -9665,188 +10182,6 @@
           "crate::docs"
         ],
         "x-omni-access": "agent"
-      }
-    },
-    "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/done": {
-      "post": {
-        "operationId": "done",
-        "parameters": [
-          {
-            "description": "The workspace's UUID",
-            "in": "path",
-            "name": "workspace_id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "description": "The project's UUID",
-            "in": "path",
-            "name": "project_id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "description": "The feature's UUID",
-            "in": "path",
-            "name": "feature_id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/FeatureResponse"
-                }
-              }
-            },
-            "description": "The feature, now done"
-          },
-          "401": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "No valid session"
-          },
-          "403": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Called with an API key; the human only"
-          },
-          "404": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "No such feature in this project and workspace"
-          },
-          "409": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "The feature is already done (`already_done`)"
-          }
-        },
-        "summary": "Marks an active feature done. Only the human does this. A done feature\ntakes no new change sets (FR-55); its docs, versions, threads and comments\nstay readable, and change sets already open in it keep their lifecycle.",
-        "tags": [
-          "crate::features"
-        ],
-        "x-omni-access": "human"
-      }
-    },
-    "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/reopen": {
-      "post": {
-        "operationId": "reopen",
-        "parameters": [
-          {
-            "description": "The workspace's UUID",
-            "in": "path",
-            "name": "workspace_id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "description": "The project's UUID",
-            "in": "path",
-            "name": "project_id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "description": "The feature's UUID",
-            "in": "path",
-            "name": "feature_id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/FeatureResponse"
-                }
-              }
-            },
-            "description": "The feature, active again"
-          },
-          "401": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "No valid session"
-          },
-          "403": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Called with an API key; the human only"
-          },
-          "404": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "No such feature in this project and workspace"
-          },
-          "409": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "The feature is not done (`not_done`)"
-          }
-        },
-        "summary": "Sets a done feature back to active so it takes change sets again. Only the\nhuman does this.",
-        "tags": [
-          "crate::features"
-        ],
-        "x-omni-access": "human"
       }
     },
     "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/threads": {

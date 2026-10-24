@@ -460,7 +460,6 @@ export const FeatureBodySchema = z.object({
   id: z.string(),
   name: z.string(),
   project_id: z.string(),
-  status: z.string(),
 });
 export type FeatureBody = z.infer<typeof FeatureBodySchema>;
 
@@ -634,7 +633,7 @@ export type LiveClientMessage = z.infer<typeof LiveClientMessageSchema>;
 export const LiveErrorCodeSchema = z.enum(["not_found", "invalid_request", "unavailable"]);
 export type LiveErrorCode = z.infer<typeof LiveErrorCodeSchema>;
 
-export const LiveEventNameSchema = z.enum(["changeset.open", "changeset.in_review", "changeset.approved", "changeset.rejected", "changeset.merged", "changeset.needs_rebase", "changeset.abandoned", "claim.taken", "claim.released", "claim.expired", "comment.created", "comment.replied", "comment.deleted", "comment.status_changed", "components.imported", "conflict.recorded", "conflict.resolved", "decision.proposed", "decision.superseded", "decision.approved", "decision.rejected", "design.imported", "doc.changed", "doc.created", "draft.opened", "draft.rebased", "feature.created", "feature.done", "feature.reopened", "op.applied", "phase.started", "post.created", "thread.concluded", "thread.created", "tokens.imported", "version.saved"]);
+export const LiveEventNameSchema = z.enum(["changeset.open", "changeset.in_review", "changeset.approved", "changeset.rejected", "changeset.merged", "changeset.needs_rebase", "changeset.abandoned", "claim.taken", "claim.released", "claim.expired", "comment.created", "comment.replied", "comment.deleted", "comment.status_changed", "components.imported", "conflict.recorded", "conflict.resolved", "decision.proposed", "decision.superseded", "decision.approved", "decision.rejected", "design.imported", "doc.changed", "doc.created", "doc.deleted", "doc.renamed", "draft.opened", "draft.rebased", "feature.created", "feature.deleted", "feature.renamed", "op.applied", "phase.started", "post.created", "thread.concluded", "thread.created", "tokens.imported", "version.saved"]);
 export type LiveEventName = z.infer<typeof LiveEventNameSchema>;
 
 export const LiveServerMessageSchema = z.union([
@@ -767,6 +766,16 @@ export const RejectRequestSchema = z.object({
   reason: z.string().nullable().optional(),
 });
 export type RejectRequest = z.infer<typeof RejectRequestSchema>;
+
+export const RenameDocRequestSchema = z.object({
+  title: z.string().nullable().optional(),
+});
+export type RenameDocRequest = z.infer<typeof RenameDocRequestSchema>;
+
+export const RenameFeatureRequestSchema = z.object({
+  name: z.string().nullable().optional(),
+});
+export type RenameFeatureRequest = z.infer<typeof RenameFeatureRequestSchema>;
 
 export const ReplyRequestSchema = z.object({
   text: z.string().nullable().optional(),
@@ -1032,6 +1041,8 @@ export const schemas = {
   RecordedConflictResponse: RecordedConflictResponseSchema,
   RejectDecisionRequest: RejectDecisionRequestSchema,
   RejectRequest: RejectRequestSchema,
+  RenameDocRequest: RenameDocRequestSchema,
+  RenameFeatureRequest: RenameFeatureRequestSchema,
   ReplyBody: ReplyBodySchema,
   ReplyRequest: ReplyRequestSchema,
   ResolveConflictRequest: ResolveConflictRequestSchema,
@@ -1519,6 +1530,23 @@ export const operations = {
       "404": ErrorBodySchema,
     },
   },
+  "DELETE /api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}": {
+    responses: {
+      "401": ErrorBodySchema,
+      "403": ErrorBodySchema,
+      "404": ErrorBodySchema,
+    },
+  },
+  "PATCH /api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}": {
+    request: RenameDocRequestSchema,
+    responses: {
+      "200": DocResponseSchema,
+      "400": ErrorBodySchema,
+      "401": ErrorBodySchema,
+      "403": ErrorBodySchema,
+      "404": ErrorBodySchema,
+    },
+  },
   "GET /api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}/boards/{board_id}": {
     responses: {
       "200": BoardBodySchema,
@@ -1587,6 +1615,24 @@ export const operations = {
       "404": ErrorBodySchema,
     },
   },
+  "DELETE /api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}": {
+    responses: {
+      "401": ErrorBodySchema,
+      "403": ErrorBodySchema,
+      "404": ErrorBodySchema,
+    },
+  },
+  "PATCH /api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}": {
+    request: RenameFeatureRequestSchema,
+    responses: {
+      "200": FeatureResponseSchema,
+      "400": ErrorBodySchema,
+      "401": ErrorBodySchema,
+      "403": ErrorBodySchema,
+      "404": ErrorBodySchema,
+      "409": ErrorBodySchema,
+    },
+  },
   "POST /api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/docs": {
     request: CreateDocRequestSchema,
     responses: {
@@ -1596,24 +1642,6 @@ export const operations = {
       "403": ErrorBodySchema,
       "404": ErrorBodySchema,
       "422": ErrorBodySchema,
-    },
-  },
-  "POST /api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/done": {
-    responses: {
-      "200": FeatureResponseSchema,
-      "401": ErrorBodySchema,
-      "403": ErrorBodySchema,
-      "404": ErrorBodySchema,
-      "409": ErrorBodySchema,
-    },
-  },
-  "POST /api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/reopen": {
-    responses: {
-      "200": FeatureResponseSchema,
-      "401": ErrorBodySchema,
-      "403": ErrorBodySchema,
-      "404": ErrorBodySchema,
-      "409": ErrorBodySchema,
     },
   },
   "POST /api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/threads": {

@@ -532,7 +532,7 @@ pub(crate) async fn resolve(
     let mut tx = state.workspace_tx(workspace_id).await?;
     let found: Option<(String, Option<String>)> = sqlx::query_as(
         "SELECT id::text, mainline_version_id::text FROM docs \
-         WHERE project_id = $1::uuid AND kind = 'design-system'",
+         WHERE project_id = $1::uuid AND kind = 'design-system' AND deleted_at IS NULL",
     )
     .bind(project_id)
     .fetch_optional(&mut *tx)
@@ -874,7 +874,7 @@ pub(crate) async fn settle_design_system(
     let mut tx = state.workspace_tx(workspace_id).await?;
     let found: Option<(String, Option<String>)> = sqlx::query_as(
         "SELECT id::text, mainline_version_id::text FROM docs \
-         WHERE project_id = $1::uuid AND kind = 'design-system'",
+         WHERE project_id = $1::uuid AND kind = 'design-system' AND deleted_at IS NULL",
     )
     .bind(project_id)
     .fetch_optional(&mut *tx)
@@ -1479,7 +1479,7 @@ async fn design_system_row(
     let lock = if lock { " FOR UPDATE" } else { "" };
     sqlx::query_as(&format!(
         "SELECT id::text, head FROM docs \
-         WHERE project_id = $1::uuid AND kind = 'design-system'{lock}"
+         WHERE project_id = $1::uuid AND kind = 'design-system' AND deleted_at IS NULL{lock}"
     ))
     .bind(project_id)
     .fetch_optional(&mut **tx)
@@ -1958,6 +1958,7 @@ async fn head_designs(tx: &mut Tx, project_id: &str) -> Result<Vec<HeadDoc>, Api
          LEFT JOIN versions v ON v.workspace_id = d.workspace_id AND v.id = d.mainline_version_id \
                              AND v.chunk = d.head \
          WHERE d.project_id = $1::uuid AND d.kind = 'design' AND d.head IS NOT NULL \
+           AND d.deleted_at IS NULL \
          ORDER BY d.created_at, d.id",
     )
     .bind(project_id)

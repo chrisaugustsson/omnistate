@@ -62,7 +62,7 @@ pub struct FeatureSummary {
 #[derive(Serialize, ToSchema)]
 pub struct HomeResponse {
     pub project_id: String,
-    /// Every feature of the project, oldest first, done ones included. The
+    /// Every feature of the project that is not deleted, oldest first. The
     /// API always sends it; it is not marked required so that the web app's
     /// reader still accepts a home from before features.
     #[schema(required = false)]
@@ -103,7 +103,7 @@ pub async fn show(
     require_project(&mut tx, &project_id).await?;
     let features: Vec<FeatureBody> = sqlx::query_as(&format!(
         "SELECT {FEATURE_COLUMNS} FROM features WHERE project_id = $1::uuid \
-         ORDER BY created_at, id"
+         AND deleted_at IS NULL ORDER BY created_at, id"
     ))
     .bind(&project_id)
     .fetch_all(&mut *tx)

@@ -286,15 +286,9 @@ pub fn router(state: AppState) -> Router {
         )
         .route(
             "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}",
-            get(features::show_feature),
-        )
-        .route(
-            "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/done",
-            post(features::done),
-        )
-        .route(
-            "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/reopen",
-            post(features::reopen),
+            get(features::show_feature)
+                .patch(features::rename_feature)
+                .delete(features::delete_feature),
         )
         .route(
             "/api/v1/w/{workspace_id}/projects/{project_id}/home",
@@ -358,7 +352,9 @@ pub fn router(state: AppState) -> Router {
         )
         .route(
             "/api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}",
-            get(docs::show_doc),
+            get(docs::show_doc)
+                .patch(docs::rename_doc)
+                .delete(docs::delete_doc),
         )
         .route(
             "/api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}/ops",

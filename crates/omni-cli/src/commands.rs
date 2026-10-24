@@ -57,10 +57,14 @@ pub fn run(args: &Args) -> Result<()> {
         ["feature", "list"] => features::list(args),
         ["feature", "show"] => features::show(args, None),
         ["feature", "show", feature] => features::show(args, Some(feature)),
-        ["feature", "done" | "reopen", ..] => {
-            bail!("marking a feature done is the reviewer's call, in the web app; an agent cannot")
+        ["feature", "rename"] => features::rename(args, None, None),
+        ["feature", "rename", feature] => features::rename(args, Some(feature), None),
+        ["feature", "rename", feature, name] => features::rename(args, Some(feature), Some(name)),
+        ["feature", "delete"] => features::delete(args, None),
+        ["feature", "delete", feature] => features::delete(args, Some(feature)),
+        ["feature", ..] => {
+            bail!("usage: omni feature create|list|show|rename|delete; see `omni --help`")
         }
-        ["feature", ..] => bail!("usage: omni feature create|list|show; see `omni --help`"),
         ["changeset", "create"] => changesets::create(args),
         ["changeset", "list"] => changesets::list(args),
         ["changeset", "show", id] => changesets::show(args, id),
@@ -101,8 +105,15 @@ pub fn run(args: &Args) -> Result<()> {
         ["doc", "edit", doc] => docs::edit(args, Some(doc)),
         ["doc", "remove"] => versions::remove(args, None),
         ["doc", "remove", doc] => versions::remove(args, Some(doc)),
+        ["doc", "rename"] => docs::rename(args, None, None),
+        ["doc", "rename", doc] => docs::rename(args, Some(doc), None),
+        ["doc", "rename", doc, title] => docs::rename(args, Some(doc), Some(title)),
+        ["doc", "delete"] => docs::delete(args, None),
+        ["doc", "delete", doc] => docs::delete(args, Some(doc)),
         ["doc", ..] => {
-            bail!("usage: omni doc create|list|open|read|show|edit|remove; see `omni --help`")
+            bail!(
+                "usage: omni doc create|list|open|read|show|edit|remove|rename|delete; see `omni --help`"
+            )
         }
         ["version", "save"] => versions::save(args, None),
         ["version", "save", doc] => versions::save(args, Some(doc)),

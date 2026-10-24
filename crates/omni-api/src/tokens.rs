@@ -133,7 +133,7 @@ async fn find_design_system(
 ) -> Result<Option<(String, Option<String>)>, ApiError> {
     sqlx::query_as(
         "SELECT id::text, mainline_version_id::text FROM docs \
-         WHERE project_id = $1::uuid AND kind = 'design-system'",
+         WHERE project_id = $1::uuid AND kind = 'design-system' AND deleted_at IS NULL",
     )
     .bind(project_id)
     .fetch_optional(&mut **tx)
