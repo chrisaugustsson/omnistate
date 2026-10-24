@@ -618,3 +618,49 @@ fn the_document_describes_the_features_of_the_project_home() {
         );
     }
 }
+
+// US-111: the activity of a doc is read by agents and the human, paged with
+// `limit` and `before`, and a board reads as a write left it with `at`.
+#[test]
+fn the_document_describes_the_activity_routes_and_the_board_read_at_a_write() {
+    let list = "/api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}/activity";
+    let one = "/api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}/activity/{seq}";
+    let board = "/api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}/boards/{board_id}";
+    let routes = registry();
+    for path in [list, one] {
+        let entry = find(&routes, "GET", path)
+            .unwrap_or_else(|| panic!("no registry entry for GET {path}"));
+        assert_eq!(entry.access, Access::Both, "GET {path}");
+    }
+
+    let server = TestServer::start(&offline_config());
+    let document = openapi(&server);
+    let query_names = |path: &str| -> Vec<String> {
+        let get = &document["paths"][path]["get"];
+        get["parameters"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .iter()
+            .filter(|p| p["in"] == "query")
+            .filter_map(|p| p["name"].as_str().map(str::to_string))
+            .collect()
+    };
+    for name in ["limit", "before"] {
+        assert!(
+            query_names(list).iter().any(|n| n == name),
+            "GET {list} documents the query parameter `{name}`"
+        );
+    }
+    assert!(
+        query_names(board).iter().any(|n| n == "at"),
+        "GET {board} documents the query parameter `at`"
+    );
+    let text = document.to_string();
+    for field in ["entries", "next", "summary", "nodes", "boards"] {
+        assert!(
+            text.contains(&format!("\"{field}\"")),
+            "the document describes the field `{field}` of the activity"
+        );
+    }
+}

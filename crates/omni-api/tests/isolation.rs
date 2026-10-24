@@ -661,6 +661,18 @@ const CASES: &[Case] = &[
         ),
         Kind::Workspace,
     ),
+    case(
+        "GET",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}/activity",
+        None,
+        Kind::Workspace,
+    ),
+    case(
+        "GET",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}/activity/{seq}",
+        None,
+        Kind::Workspace,
+    ),
 ];
 
 /// The WebSocket routes that the suite attacks, as the paths of
@@ -2094,6 +2106,8 @@ fn fill(template: &str, workspace: &Side, record: &Side) -> String {
             // project, before any board is looked up, so a node ID that no
             // board has stands in for one.
             "board_id" => UNKNOWN_NODE,
+            // US-111: every doc's log starts with its creation, seq 1.
+            "seq" => "1",
             other => panic!(
                 "{template} has the placeholder {{{other}}}, for which the suite has no seeded \
                  ID: add it to Side and fill() in tests/isolation.rs"
@@ -5684,6 +5698,109 @@ fn the_doc_rename_and_delete_calls_of_the_attacks_work_for_the_workspace_that_ow
             200,
             "the seeded doc is still there",
         );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The activity of a doc (US-111)
+// ---------------------------------------------------------------------------
+
+const ACTIVITY_ROUTES: [&str; 2] = [
+    "/api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}/activity",
+    "/api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}/activity/{seq}",
+];
+
+#[test]
+fn the_activity_routes_are_in_the_registry_and_the_suite_attacks_them() {
+    for path in ACTIVITY_ROUTES {
+        let entry = registry()
+            .into_iter()
+            .find(|r| r.method == "GET" && r.path == path)
+            .unwrap_or_else(|| panic!("the registry has no route GET {path}"));
+        assert_eq!(entry.access, Access::Both, "GET {path}");
+        assert!(
+            matches!(case_for(&entry).kind, Kind::Workspace),
+            "GET {path} is a workspace route that the suite attacks"
+        );
+    }
+}
+
+#[test]
+fn the_activity_calls_of_the_attacks_work_for_the_workspace_that_owns_the_records() {
+    // The control for the activity routes: in the owner's workspace, the
+    // agent and the human read the activity of the seeded doc and of a doc
+    // the owner's agent creates and writes, and its first write.
+    let (f, client) = ready();
+    let _guard = serial();
+    let key = Auth::Key(&f.a.key);
+    let human = Auth::Session(&f.a.token);
+    let project = format!("/api/v1/w/{}/projects/{}", f.a.id, f.a.project_id);
+    let created = must(
+        call(
+            client,
+            "POST",
+            &format!("{project}/docs"),
+            &key,
+            Some(
+                &json!({ "kind": "html", "pillar": "spec", "title": unique("owner-doc") })
+                    .to_string(),
+            ),
+        ),
+        201,
+        "create a doc without a change set",
+    );
+    let doc = created["doc"]["id"].as_str().expect("an id").to_string();
+    must(
+        call(
+            client,
+            "POST",
+            &format!("{project}/docs/{doc}/ops"),
+            &key,
+            Some(
+                r#"{"ops":[{"op":"insert","parent":null,"position":{"after":null},"content":"<p>owner</p>"}]}"#,
+            ),
+        ),
+        200,
+        "write the doc",
+    );
+    for auth in [&key, &human] {
+        let list = must(
+            call(
+                client,
+                "GET",
+                &format!("{project}/docs/{doc}/activity"),
+                auth,
+                None,
+            ),
+            200,
+            "read the doc's activity",
+        );
+        let seqs: Vec<i64> = list["entries"]
+            .as_array()
+            .unwrap_or_else(|| panic!("the activity lists entries: {list}"))
+            .iter()
+            .map(|entry| entry["seq"].as_i64().expect("a seq"))
+            .collect();
+        assert_eq!(seqs, [2, 1], "{list}");
+        let first = must(
+            call(
+                client,
+                "GET",
+                &format!("{project}/docs/{doc}/activity/1"),
+                auth,
+                None,
+            ),
+            200,
+            "read the doc's first write",
+        );
+        assert_eq!(first["entry"]["seq"], 1, "{first}");
+        for path in ACTIVITY_ROUTES {
+            must(
+                call(client, "GET", &fill(path, &f.a, &f.a), auth, None),
+                200,
+                "read the activity of the seeded doc",
+            );
+        }
     }
 }
 
