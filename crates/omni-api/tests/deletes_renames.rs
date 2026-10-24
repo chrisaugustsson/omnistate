@@ -471,6 +471,27 @@ fn new_thread(f: &Fixture, client: &Client, project: &str, feature: Option<&str>
     )
 }
 
+/// Opens a change set in the feature; returns its ID.
+fn new_changeset(f: &Fixture, client: &Client, project: &str, feature: &str) -> String {
+    id_of(
+        &must(
+            call(
+                client,
+                "POST",
+                &format!("{}/changesets", project_base(f, project)),
+                &agent(f),
+                Some(&json!({
+                    "title": unique("change"),
+                    "run_tag": "run-110",
+                    "feature_id": feature
+                })),
+            ),
+            201,
+            "open a change set in the feature",
+        )["changeset"],
+    )
+}
+
 fn rename_doc(
     f: &Fixture,
     client: &Client,
@@ -1050,13 +1071,25 @@ fn a_deleted_feature_takes_nothing_new() {
     let node = write_paragraph(f, client, &project, &doc, "Pay in one step.");
     let comment = waiting_comment(f, client, &project, &doc, &node);
     let thread = new_thread(f, client, &project, Some(&feature));
+    let changeset = new_changeset(f, client, &project, &feature);
     assert_deleted(
         &delete_feature(f, client, &agent(f), &project, &feature),
         "delete the feature",
     );
     let base = project_base(f, &project);
     let feature_base = feature_path(f, &project, &feature);
+    let changeset_base = format!("{base}/changesets/{changeset}");
     for (auth, path, body) in [
+        (
+            agent(f),
+            format!("{changeset_base}/docs"),
+            json!({ "kind": "html", "pillar": "spec", "title": "Late draft" }),
+        ),
+        (
+            agent(f),
+            format!("{changeset_base}/threads"),
+            json!({ "question": "Too late in the change set?", "criteria": ["Speed"] }),
+        ),
         (
             agent(f),
             format!("{feature_base}/docs"),
@@ -1090,6 +1123,20 @@ fn a_deleted_feature_takes_nothing_new() {
     ] {
         let response = call(client, "POST", &path, &auth, Some(&body));
         assert_error(&response, 404, "not_found");
+    }
+    for auth in [agent(f), human(f)] {
+        let docs = listed(f, client, &auth, &project, "/docs", "docs");
+        assert_eq!(
+            docs,
+            Vec::<String>::new(),
+            "no doc of the deleted feature is listed"
+        );
+        let threads = listed(f, client, &auth, &project, "/threads", "threads");
+        assert_eq!(
+            threads,
+            Vec::<String>::new(),
+            "no thread of the deleted feature is listed"
+        );
     }
     assert_error(
         &rename_feature(
