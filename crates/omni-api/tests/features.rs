@@ -15,7 +15,8 @@
 //!   `description` is optional and defaults to `""`. A session (the human) is
 //!   403 `{"error": "forbidden"}`.
 //! - A Feature (`FeatureBody`) is `{"id" (UUIDv7), "project_id", "name",
-//!   "description", "status", "created_at"}`. A new feature is `active`.
+//!   "description", "created_at"}` and nothing else: since US-110 a feature
+//!   has no status.
 //! - Feature names are unique in their project, ignoring case: a second
 //!   feature named "checkout" next to "Checkout" is 409 `{"error":
 //!   "name_taken"}` and creates nothing. Another project may use the name.
@@ -29,11 +30,12 @@
 //!   emits nothing.
 //! - Features live in the tenant table `features` (migrations/README.md):
 //!   `id`, `workspace_id`, `project_id`, `name` (not blank), `description`
-//!   (default `''`), `status` (`active` or `done`, default `active`) and
-//!   `created_at`, with a composite foreign key to `projects`, `UNIQUE
-//!   (workspace_id, project_id, id)` and a unique index on `(workspace_id,
-//!   project_id, lower(name))`. tests/workspace_delete.rs and the isolation
-//!   suite seed it.
+//!   (default `''`), `created_at` and `deleted_at` (US-110; null until an
+//!   agent deletes it), with no `status` column, a composite foreign key to
+//!   `projects`, `UNIQUE (workspace_id, project_id, id)` and a unique index on
+//!   `(workspace_id, project_id, lower(name))` over the features that are not
+//!   deleted, so a deleted feature's name can be taken again.
+//!   tests/workspace_delete.rs and the isolation suite seed it.
 //!
 //! US-060 adds change sets in a feature:
 //!
@@ -395,6 +397,9 @@ fn the_feature_routes_are_in_the_registry_with_who_may_call_them() {
         ("POST", FEATURES_ROUTE, Access::Agent),
         ("GET", FEATURES_ROUTE, Access::Both),
         ("GET", FEATURE_ROUTE, Access::Both),
+        // US-110: agents rename and delete features.
+        ("PATCH", FEATURE_ROUTE, Access::Agent),
+        ("DELETE", FEATURE_ROUTE, Access::Agent),
     ] {
         let entry = registry()
             .into_iter()
@@ -409,7 +414,7 @@ fn the_feature_routes_are_in_the_registry_with_who_may_call_them() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn creating_a_feature_records_its_name_and_description_and_starts_it_active() {
+fn creating_a_feature_records_its_name_and_description_and_no_status() {
     let (f, client) = ready();
     let project = new_project(f, client);
     let created = must(
@@ -430,7 +435,18 @@ fn creating_a_feature_records_its_name_and_description_and_starts_it_active() {
         feature["description"], "Pay for the basket in one step.",
         "{feature}"
     );
-    assert_eq!(feature["status"], "active", "{feature}");
+    let mut fields: Vec<&str> = feature
+        .as_object()
+        .expect("a feature is an object")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    fields.sort_unstable();
+    assert_eq!(
+        fields,
+        ["created_at", "description", "id", "name", "project_id"],
+        "a feature has no status (US-110): {feature}"
+    );
     assert!(
         feature["created_at"]
             .as_str()
@@ -456,7 +472,7 @@ fn a_feature_without_a_description_has_an_empty_one() {
     let project = new_project(f, client);
     let feature = create_feature(f, client, &project, "Search");
     assert_eq!(feature["description"], "", "{feature}");
-    assert_eq!(feature["status"], "active", "{feature}");
+    assert!(feature.get("status").is_none(), "no status: {feature}");
 }
 
 #[test]
@@ -614,13 +630,14 @@ fn the_features_table_keeps_its_rules_in_the_database() {
     let project = new_project(f, client);
     let workspace = f.workspace.as_str();
 
-    // The defaults: a new row is active with an empty description.
-    let (status, description): (String, String) = block(async {
+    // The defaults: a new row has an empty description and is not deleted.
+    let (deleted, description): (bool, String) = block(async {
         let mut conn = admin_connection().await;
         let mut tx = conn.begin().await.expect("begin");
         let row = sqlx::query_as(
             "insert into features (workspace_id, project_id, name) \
-             values ($1::uuid, $2::uuid, 'Defaults') returning status::text, description",
+             values ($1::uuid, $2::uuid, 'Defaults') \
+             returning coalesce(to_jsonb(features) ->> 'deleted_at', '') <> '', description",
         )
         .bind(workspace)
         .bind(&project)
@@ -630,22 +647,34 @@ fn the_features_table_keeps_its_rules_in_the_database() {
         tx.rollback().await.expect("roll back");
         row
     });
-    assert_eq!(status, "active");
+    assert!(!deleted, "a new feature is not deleted");
     assert_eq!(description, "");
 
-    let insert = "insert into features (workspace_id, project_id, name, status) \
-                  values ($1::uuid, $2::uuid, $3, $4)";
+    // US-110: there is no status column, and a feature has `deleted_at`.
+    let columns: Vec<String> = block(async {
+        let mut conn = admin_connection().await;
+        sqlx::query_scalar(
+            "select column_name::text from information_schema.columns \
+             where table_schema = 'public' and table_name = 'features' order by column_name",
+        )
+        .fetch_all(&mut conn)
+        .await
+        .expect("list the columns of features")
+    });
     assert!(
-        accepted(insert, &[workspace, &project, "Done one", "done"]),
-        "`done` is a status"
+        !columns.iter().any(|c| c == "status"),
+        "features has no status column: {columns:?}"
     );
     assert!(
-        !accepted(insert, &[workspace, &project, "Paused", "paused"]),
-        "a status other than active or done is refused"
+        columns.iter().any(|c| c == "deleted_at"),
+        "features has deleted_at: {columns:?}"
     );
+
+    let insert = "insert into features (workspace_id, project_id, name) \
+                  values ($1::uuid, $2::uuid, $3)";
     for blank in ["", "   "] {
         assert!(
-            !accepted(insert, &[workspace, &project, blank, "active"]),
+            !accepted(insert, &[workspace, &project, blank]),
             "the blank name {blank:?} is refused"
         );
     }
@@ -659,19 +688,26 @@ fn the_features_table_keeps_its_rules_in_the_database() {
             .expect("insert a workspace")
     });
     assert!(
-        !accepted(insert, &[&foreign_workspace, &project, "Moved", "active"]),
+        !accepted(insert, &[&foreign_workspace, &project, "Moved"]),
         "a feature cannot belong to a project of another workspace"
     );
     assert!(
-        !accepted(insert, &[workspace, UNKNOWN_ID, "Nowhere", "active"]),
+        !accepted(insert, &[workspace, UNKNOWN_ID, "Nowhere"]),
         "a feature needs a project"
     );
 
     // Names are unique per project ignoring case, in the database too.
     create_feature(f, client, &project, "Checkout");
     assert!(
-        !accepted(insert, &[workspace, &project, "CHECKOUT", "active"]),
+        !accepted(insert, &[workspace, &project, "CHECKOUT"]),
         "the unique index on lower(name) refuses a name that differs in case only"
+    );
+    // A deleted feature does not hold its name.
+    let deleted_insert = "insert into features (workspace_id, project_id, name, deleted_at) \
+                          values ($1::uuid, $2::uuid, $3, now())";
+    assert!(
+        accepted(deleted_insert, &[workspace, &project, "checkout"]),
+        "a deleted feature may have the name of a live one"
     );
 
     // Later tables tie a feature to its project with (workspace_id,

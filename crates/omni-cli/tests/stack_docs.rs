@@ -1043,3 +1043,85 @@ fn an_agent_edits_a_live_doc_without_a_change_set_and_reads_the_change() {
         assert_eq!(changesets, 0, "no change set was made");
     });
 }
+
+// US-110: an agent renames and deletes a live doc from the command line,
+// through the real API. Both are logged in `doc_changes`.
+#[test]
+fn an_agent_renames_and_deletes_a_live_doc_from_the_command_line() {
+    let f = fixture();
+    let home = agent_home(f);
+    let project = unique("tidy");
+    let created = run(&home, &["project", "create", &project]);
+    assert_eq!(created.code, 0, "project create: {}", created.stderr);
+    let p = ["--project", project.as_str()];
+    let create = |title: &str| -> String {
+        let out = run(
+            &home,
+            &[
+                &[
+                    "doc", "create", "--kind", "html", "--pillar", "spec", "--title", title,
+                    "--json",
+                ][..],
+                &p,
+            ]
+            .concat(),
+        );
+        assert_eq!(out.code, 0, "doc create: {}", out.stderr);
+        out.json()["doc"]["id"]
+            .as_str()
+            .expect("a doc id")
+            .to_string()
+    };
+    let doc = create("Draft plan");
+    let kept = create("Kept plan");
+
+    let renamed = run(
+        &home,
+        &[&["doc", "rename", &doc, "Checkout plan"][..], &p].concat(),
+    );
+    assert_eq!(renamed.code, 0, "doc rename: {}", renamed.stderr);
+    let shown = run(&home, &[&["doc", "show", &doc][..], &p].concat());
+    assert_eq!(shown.code, 0, "{}", shown.stderr);
+    assert!(
+        shown.stdout.contains("Checkout plan") && !shown.stdout.contains("Draft plan"),
+        "the doc shows its new title: {:?}",
+        shown.stdout
+    );
+
+    let deleted = run(&home, &[&["doc", "delete", &doc][..], &p].concat());
+    assert_eq!(deleted.code, 0, "doc delete: {}", deleted.stderr);
+    let read = run(&home, &[&["doc", "read", &doc][..], &p].concat());
+    assert_ne!(
+        read.code, 0,
+        "a deleted doc cannot be read: {:?}",
+        read.stdout
+    );
+    assert!(
+        read.stderr.contains("not_found"),
+        "the error names the code: {:?}",
+        read.stderr
+    );
+    let listed = run(&home, &[&["doc", "list"][..], &p].concat());
+    assert_eq!(listed.code, 0, "{}", listed.stderr);
+    assert!(
+        !listed.stdout.contains(&doc) && listed.stdout.contains(&kept),
+        "the list has the kept doc and not the deleted one: {:?}",
+        listed.stdout
+    );
+
+    let operations: Vec<String> = block(async {
+        let mut conn = admin_connection().await;
+        sqlx::query_scalar(
+            "SELECT operations -> 0 ->> 'op' FROM doc_changes WHERE doc_id = $1::uuid ORDER BY seq",
+        )
+        .bind(&doc)
+        .fetch_all(&mut conn)
+        .await
+        .expect("read the doc changes")
+    });
+    assert_eq!(
+        operations,
+        ["create", "rename", "delete"],
+        "the creation, the rename and the delete are logged"
+    );
+}

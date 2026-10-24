@@ -12,12 +12,9 @@ mod common;
 
 use common::*;
 use omni_api::Config;
-use serde_json::Value;
 use sqlx::Connection;
 use sqlx::postgres::{PgConnectOptions, PgConnection};
 use std::future::Future;
-use std::io::{Read, Write};
-use std::net::TcpStream;
 use std::str::FromStr;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -79,7 +76,6 @@ async fn admin_connection() -> PgConnection {
 
 struct Fixture {
     url: String,
-    port: u16,
     workspace: String,
     secret: String,
     /// Keeps the API's runtime, and so the server, alive.
@@ -168,7 +164,6 @@ fn fixture() -> &'static Fixture {
         });
         Fixture {
             url: format!("http://127.0.0.1:{port}"),
-            port,
             workspace,
             secret,
             _runtime: runtime,
@@ -238,7 +233,10 @@ fn a_feature_is_created_listed_and_shown_from_the_command_line() {
     );
     assert_eq!(out.code, 0, "feature create --json: {}", out.stderr);
     let wish_list = out.json()["feature"].clone();
-    assert_eq!(wish_list["status"], "active", "{wish_list}");
+    assert!(
+        wish_list.get("status").is_none(),
+        "a feature has no status (US-110): {wish_list}"
+    );
     assert_eq!(wish_list["description"], "", "{wish_list}");
     let wish_list = wish_list["id"].as_str().expect("an id").to_string();
 
@@ -259,10 +257,10 @@ fn a_feature_is_created_listed_and_shown_from_the_command_line() {
     assert_eq!(
         non_empty_lines(&listed.stdout),
         [
-            format!("{checkout}  active  Checkout"),
-            format!("{wish_list}  active  Wish list"),
+            format!("{checkout}  Checkout"),
+            format!("{wish_list}  Wish list"),
         ],
-        "the features in creation order"
+        "the features in creation order, `<id>  <name>`"
     );
 
     for which in [checkout.as_str(), "Checkout"] {
@@ -271,7 +269,6 @@ fn a_feature_is_created_listed_and_shown_from_the_command_line() {
         for needle in [
             checkout.as_str(),
             "Checkout",
-            "active",
             "Pay for the basket in one step.",
         ] {
             assert!(
@@ -392,132 +389,97 @@ fn doc_list_prints_the_scope_of_each_doc_from_the_command_line() {
     }
 }
 
-/// One request with the human's session cookie; returns (status, body).
-fn as_human(f: &Fixture, method: &str, path: &str, body: &Value) -> (u16, Value) {
-    let body = body.to_string();
-    let mut stream = TcpStream::connect(("127.0.0.1", f.port)).expect("connect to the API");
-    let request = format!(
-        "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\
-         Cookie: omni_session={HUMAN_TOKEN}\r\nContent-Type: application/json\r\n\
-         Content-Length: {}\r\n\r\n{body}",
-        body.len()
-    );
-    stream.write_all(request.as_bytes()).expect("send request");
-    let mut raw = Vec::new();
-    // A reset after the response is complete is not an error for these tests.
-    let _ = stream.read_to_end(&mut raw);
-    let text = String::from_utf8_lossy(&raw).into_owned();
-    let status = text
-        .split_whitespace()
-        .nth(1)
-        .and_then(|s| s.parse().ok())
-        .unwrap_or_else(|| panic!("no HTTP response: {text:?}"));
-    let body = text.split_once("\r\n\r\n").map_or("", |(_, b)| b);
-    // The API may send the body chunked; the JSON object is what lies between
-    // the first `{` and the last `}`.
-    let json = match (body.find('{'), body.rfind('}')) {
-        (Some(start), Some(end)) => serde_json::from_str(&body[start..=end]).unwrap_or(Value::Null),
-        _ => Value::Null,
-    };
-    (status, json)
-}
-
-// US-062: the human marks a feature done in the web app; the command line
-// then lists and shows it as done, refuses to mark it itself and opens no new
-// change set in it.
+// US-110: an agent renames and deletes a feature from the command line. A
+// deleted feature is in no list, cannot be shown and leaves its name free.
 #[test]
-fn a_done_feature_is_listed_as_done_from_the_command_line() {
+fn a_feature_is_renamed_and_deleted_from_the_command_line() {
     let f = fixture();
     let home = agent_home(f);
     let project = unique("shop");
     let created = run(&home, &["project", "create", &project]);
     assert_eq!(created.code, 0, "project create: {}", created.stderr);
-    let out = run(
+    let create = |name: &str| -> String {
+        let out = run(&home, &["feature", "create", name, "--project", &project]);
+        assert_eq!(out.code, 0, "feature create: {}", out.stderr);
+        non_empty_lines(&out.stdout)[0]
+            .split_once("  ")
+            .map(|(id, _)| id.to_string())
+            .unwrap_or_else(|| panic!("`<id>  <name>`: {:?}", out.stdout))
+    };
+    let checkout = create("Checkout");
+    let search = create("Search");
+
+    let renamed = run(
         &home,
         &[
             "feature",
-            "create",
+            "rename",
             "Checkout",
+            "Express checkout",
             "--project",
             &project,
-            "--json",
         ],
     );
-    assert_eq!(out.code, 0, "feature create: {}", out.stderr);
-    let checkout = out.json()["feature"].clone();
-    let id = checkout["id"].as_str().expect("an id").to_string();
-    let project_id = checkout["project_id"]
-        .as_str()
-        .expect("a project id")
-        .to_string();
-    let out = run(
-        &home,
-        &["feature", "create", "Search", "--project", &project],
-    );
-    assert_eq!(out.code, 0, "feature create: {}", out.stderr);
-    let search = non_empty_lines(&out.stdout)[0]
-        .split_once("  ")
-        .map(|(id, _)| id.to_string())
-        .unwrap_or_else(|| panic!("`<id>  <name>`: {:?}", out.stdout));
-
-    let refused = run(
-        &home,
-        &["feature", "done", "Checkout", "--project", &project],
-    );
-    assert_ne!(refused.code, 0, "{:?}", refused.stdout);
-    assert!(
-        refused
-            .stderr
-            .contains("marking a feature done is the reviewer's call, in the web app"),
-        "{:?}",
-        refused.stderr
-    );
-
-    let (status, answer) = as_human(
-        f,
-        "POST",
-        &format!(
-            "/api/v1/w/{}/projects/{project_id}/features/{id}/done",
-            f.workspace
-        ),
-        &serde_json::json!({}),
-    );
-    assert_eq!(status, 200, "the human marks the feature done: {answer}");
-
+    assert_eq!(renamed.code, 0, "feature rename: {}", renamed.stderr);
     let listed = run(&home, &["feature", "list", "--project", &project]);
     assert_eq!(listed.code, 0, "{}", listed.stderr);
     assert_eq!(
         non_empty_lines(&listed.stdout),
         [
-            format!("{id}  done  Checkout"),
-            format!("{search}  active  Search"),
+            format!("{checkout}  Express checkout"),
+            format!("{search}  Search"),
         ],
-        "the done feature is listed as done"
+        "the renamed feature keeps its ID"
     );
-    let shown = run(
-        &home,
-        &["feature", "show", "Checkout", "--project", &project],
-    );
-    assert_eq!(shown.code, 0, "{}", shown.stderr);
-    assert!(shown.stdout.contains("done"), "{:?}", shown.stdout);
 
-    let out = run(
+    let taken = run(
         &home,
         &[
-            "changeset",
-            "create",
-            "--title",
-            "More checkout",
-            "--feature",
-            "Checkout",
+            "feature",
+            "rename",
+            "Search",
+            "express CHECKOUT",
             "--project",
             &project,
         ],
     );
-    assert_ne!(out.code, 0, "{:?}", out.stdout);
+    assert_ne!(taken.code, 0, "{:?}", taken.stdout);
     assert!(
-        out.stderr.contains("feature_done"),
+        taken.stderr.contains("name_taken"),
         "the error names the code: {:?}",
-        out.stderr
+        taken.stderr
     );
+
+    let deleted = run(
+        &home,
+        &[
+            "feature",
+            "delete",
+            "Express checkout",
+            "--project",
+            &project,
+        ],
+    );
+    assert_eq!(deleted.code, 0, "feature delete: {}", deleted.stderr);
+    let listed = run(&home, &["feature", "list", "--project", &project]);
+    assert_eq!(listed.code, 0, "{}", listed.stderr);
+    assert_eq!(
+        non_empty_lines(&listed.stdout),
+        [format!("{search}  Search")],
+        "the deleted feature is in no list"
+    );
+    let shown = run(
+        &home,
+        &["feature", "show", &checkout, "--project", &project],
+    );
+    assert_ne!(shown.code, 0, "{:?}", shown.stdout);
+    assert!(
+        shown.stderr.contains("not_found"),
+        "the error names the code: {:?}",
+        shown.stderr
+    );
+
+    // The name is free again.
+    let again = create("Express checkout");
+    assert_ne!(again, checkout, "a new feature takes the name");
 }

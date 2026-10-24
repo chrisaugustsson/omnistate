@@ -56,7 +56,6 @@ fn feature_json(id: &str, project: &str, name: &str) -> Value {
         "project_id": project,
         "name": name,
         "description": "",
-        "status": "active",
         "created_at": "2026-10-23T10:00:00.000000Z"
     })
 }

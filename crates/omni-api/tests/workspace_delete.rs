@@ -1248,24 +1248,34 @@ fn an_unknown_or_malformed_workspace_id_deletes_nothing() {
 const DELETE_WORDS: [&str; 4] = ["delete", "purge", "erase", "destroy"];
 
 /// The only paths with a DELETE operation. Each is a soft delete: it sets
-/// `deleted_at` and keeps the row, so it is a human-only UPDATE (US-106).
-const SOFT_DELETE_PATHS: [&str; 1] =
-    ["/api/v1/w/{workspace_id}/projects/{project_id}/comments/{comment_id}"];
+/// `deleted_at` and keeps the row, so it is an UPDATE. Deleting a comment is
+/// the human's (US-106); agents delete docs and features (US-110).
+const SOFT_DELETE_PATHS: [&str; 3] = [
+    "/api/v1/w/{workspace_id}/projects/{project_id}/comments/{comment_id}",
+    "/api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}",
+    "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}",
+];
+
+/// Who may call each soft delete of `SOFT_DELETE_PATHS`, in its order.
+const SOFT_DELETE_ACCESS: [Access; 3] = [Access::Human, Access::Agent, Access::Agent];
 
 #[test]
 fn the_route_registry_has_no_delete_operation() {
-    let soft_deletes: Vec<_> = registry()
+    let mut soft_deletes: Vec<_> = registry()
         .into_iter()
         .filter(|route| route.method.to_uppercase() == "DELETE")
         .map(|route| (route.path, route.access))
         .collect();
+    let mut expected: Vec<_> = SOFT_DELETE_PATHS
+        .iter()
+        .zip(SOFT_DELETE_ACCESS)
+        .map(|(path, access)| (path.to_string(), access))
+        .collect();
+    soft_deletes.sort_by(|a, b| a.0.cmp(&b.0));
+    expected.sort_by(|a, b| a.0.cmp(&b.0));
     assert_eq!(
-        soft_deletes,
-        SOFT_DELETE_PATHS
-            .iter()
-            .map(|path| (path.to_string(), Access::Human))
-            .collect::<Vec<_>>(),
-        "the only DELETE routes are the human-only soft deletes"
+        soft_deletes, expected,
+        "the only DELETE routes are the soft deletes, each with who may call it"
     );
     for route in registry() {
         if !SOFT_DELETE_PATHS.contains(&route.path.as_str()) {

@@ -209,8 +209,9 @@ fn the_document_describes_the_login_operation_from_its_handler() {
 /// Every live event the API emits, by name (`<entity>.<action>`): the
 /// `changeset.<status>` events of every status and the events of US-017 on
 /// (US-106 replaced `comment.status_changed` with `comment.deleted`, and
-/// US-108 added `thread.concluded`).
-const LIVE_EVENTS: [&str; 35] = [
+/// US-108 added `thread.concluded`; US-110 removed `feature.done` and
+/// `feature.reopened` with the feature's status).
+const LIVE_EVENTS: [&str; 33] = [
     "changeset.open",
     "changeset.in_review",
     "changeset.approved",
@@ -237,8 +238,6 @@ const LIVE_EVENTS: [&str; 35] = [
     "draft.opened",
     "draft.rebased",
     "feature.created",
-    "feature.done",
-    "feature.reopened",
     "op.applied",
     "phase.started",
     "post.created",
@@ -389,14 +388,7 @@ fn the_document_describes_the_feature_routes_and_their_bodies() {
         component(&document, name);
     }
     let body = component(&document, "FeatureBody");
-    for field in [
-        "id",
-        "project_id",
-        "name",
-        "description",
-        "status",
-        "created_at",
-    ] {
+    for field in ["id", "project_id", "name", "description", "created_at"] {
         assert!(
             body["properties"][field].is_object(),
             "FeatureBody has the field {field}: {body}"
@@ -497,26 +489,97 @@ fn the_document_describes_the_pillar_of_docs_and_the_pillar_filter() {
     );
 }
 
-// US-062: the human marks a feature done or reopens it, through routes of the
-// registry and the document that answer with the feature.
+// US-110: a feature has no status, so the document has no status field and
+// no route that finishes or reopens a feature, and no live event of either.
 #[test]
-fn the_document_describes_the_routes_that_finish_and_reopen_a_feature() {
-    let routes = registry();
+fn the_document_gives_a_feature_no_status() {
     let server = TestServer::start(&offline_config());
     let document = openapi(&server);
+    let body = component(&document, "FeatureBody");
+    assert!(
+        body["properties"].get("status").is_none(),
+        "FeatureBody has no field status: {body}"
+    );
+    let required = body["required"].to_string();
+    assert!(
+        !required.contains("status"),
+        "FeatureBody requires no status: {body}"
+    );
+    let paths = document["paths"].as_object().expect("paths");
+    for path in paths.keys() {
+        if path.contains("/features/") {
+            assert!(
+                !path.ends_with("/done") && !path.ends_with("/reopen"),
+                "the document still has the feature route {path}"
+            );
+        }
+    }
+    let routes = registry();
     for action in ["done", "reopen"] {
         let path = format!(
             "/api/v1/w/{{workspace_id}}/projects/{{project_id}}/features/{{feature_id}}/{action}"
         );
-        let entry = find(&routes, "POST", &path)
-            .unwrap_or_else(|| panic!("the registry has no entry for POST {path}"));
-        assert_eq!(entry.access, Access::Human, "POST {path}");
-        let operation = &document["paths"][path.as_str()]["post"];
-        assert!(operation.is_object(), "the document describes POST {path}");
-        let answer = operation["responses"]["200"].to_string();
         assert!(
-            answer.contains("FeatureResponse"),
-            "POST {path} answers with a FeatureResponse: {operation}"
+            find(&routes, "POST", &path).is_none(),
+            "the registry still has POST {path}"
+        );
+    }
+    let text = document.to_string();
+    for event in ["feature.done", "feature.reopened"] {
+        assert!(
+            !text.contains(event),
+            "the document still names the live event {event}"
+        );
+    }
+}
+
+// US-110: agents rename docs and features with PATCH and delete them with
+// DELETE on the record's own path. The renames answer with the record; the
+// deletes are soft and answer 204.
+#[test]
+fn the_document_describes_the_renames_and_deletes_of_docs_and_features() {
+    let routes = registry();
+    let server = TestServer::start(&offline_config());
+    let document = openapi(&server);
+    for (path, request, response, field) in [
+        (
+            "/api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}",
+            "RenameDocRequest",
+            "DocResponse",
+            "title",
+        ),
+        (
+            "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}",
+            "RenameFeatureRequest",
+            "FeatureResponse",
+            "name",
+        ),
+    ] {
+        for method in ["PATCH", "DELETE"] {
+            let entry = find(&routes, method, path)
+                .unwrap_or_else(|| panic!("the registry has no entry for {method} {path}"));
+            assert_eq!(entry.access, Access::Agent, "{method} {path}");
+        }
+        let patch = &document["paths"][path]["patch"];
+        assert!(patch.is_object(), "the document describes PATCH {path}");
+        assert!(
+            patch["requestBody"].to_string().contains(request),
+            "PATCH {path} takes a {request}: {patch}"
+        );
+        assert!(
+            patch["responses"]["200"].to_string().contains(response),
+            "PATCH {path} answers with a {response}: {patch}"
+        );
+        let schema = component(&document, request);
+        assert!(
+            schema["properties"][field].is_object(),
+            "{request} has the field {field}: {schema}"
+        );
+        let delete = &document["paths"][path]["delete"];
+        assert!(delete.is_object(), "the document describes DELETE {path}");
+        assert!(
+            delete["responses"]["204"].is_object(),
+            "DELETE {path} answers 204: {delete}"
         );
     }
 }

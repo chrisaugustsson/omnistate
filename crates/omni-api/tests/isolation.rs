@@ -59,7 +59,9 @@
 //!   doc routes exist (US-102), the workspace's agent also created a doc at the
 //!   app level of `{project_id}` and one in `{feature_id}` without a change
 //!   set, so the log of the writes to docs (`doc_changes`) has rows of the
-//!   workspace.
+//!   workspace. The rename and delete routes of docs and features (US-110)
+//!   are attacked with the seeded `{doc_id}` and `{feature_id}`; their
+//!   controls rename and delete records of their own.
 //! - Workspace A's credentials against workspace B's workspace and IDs, and
 //!   against B's IDs under A's own workspace, are always 404
 //!   `{"error": "not_found"}` with nothing of B in the body, and the answer is
@@ -279,6 +281,18 @@ const CASES: &[Case] = &[
     ),
     case(
         "GET",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}",
+        None,
+        Kind::Workspace,
+    ),
+    case(
+        "PATCH",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}",
+        Some(r#"{"title":"intruder"}"#),
+        Kind::Workspace,
+    ),
+    case(
+        "DELETE",
         "/api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}",
         None,
         Kind::Workspace,
@@ -610,15 +624,15 @@ const CASES: &[Case] = &[
         Kind::Workspace,
     ),
     case(
-        "POST",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/done",
-        Some("{}"),
+        "PATCH",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}",
+        Some(r#"{"name":"intruder"}"#),
         Kind::Workspace,
     ),
     case(
-        "POST",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/reopen",
-        Some("{}"),
+        "DELETE",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}",
+        None,
         Kind::Workspace,
     ),
     case(
@@ -4662,7 +4676,7 @@ fn the_review_call_of_the_attacks_shows_the_owner_its_own_change_set() {
 }
 
 // ---------------------------------------------------------------------------
-// Features (US-059, US-062)
+// Features (US-059, US-110)
 // ---------------------------------------------------------------------------
 
 const FEATURE_ROUTES: [(&str, &str, Access); 5] = [
@@ -4682,14 +4696,14 @@ const FEATURE_ROUTES: [(&str, &str, Access); 5] = [
         Access::Both,
     ),
     (
-        "POST",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/done",
-        Access::Human,
+        "PATCH",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}",
+        Access::Agent,
     ),
     (
-        "POST",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/reopen",
-        Access::Human,
+        "DELETE",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}",
+        Access::Agent,
     ),
 ];
 
@@ -4722,7 +4736,9 @@ fn the_feature_calls_of_the_attacks_work_for_the_workspace_that_owns_the_records
     // The control for the feature routes: in the owner's workspace, the
     // owner's agent creates a feature with the body of the case, and both the
     // agent and the human list the project's features, in creation order, and
-    // read the new one and the seeded one.
+    // read the new one and the seeded one. Then the agent renames the new
+    // feature and deletes it with the calls of the cases, and the seeded one
+    // is still there.
     let (f, client) = ready();
     let _guard = serial();
     let key = Auth::Key(&f.a.key);
@@ -4781,6 +4797,52 @@ fn the_feature_calls_of_the_attacks_work_for_the_workspace_that_owns_the_records
             "{seeded}"
         );
     }
+
+    let (method, template, _) = FEATURE_ROUTES[3];
+    let name = unique("renamed");
+    let body = case_named(method, template)
+        .body
+        .map(|b| b.replace("intruder", &name));
+    let renamed = must(
+        call(
+            client,
+            method,
+            &format!("{project}/features/{feature}"),
+            &key,
+            body.as_deref(),
+        ),
+        200,
+        "rename the feature",
+    );
+    assert_eq!(renamed["feature"]["id"], feature, "{renamed}");
+    assert_eq!(renamed["feature"]["name"], name.as_str(), "{renamed}");
+    let (method, _, _) = FEATURE_ROUTES[4];
+    let response = call(
+        client,
+        method,
+        &format!("{project}/features/{feature}"),
+        &key,
+        None,
+    );
+    assert_eq!(
+        response.status,
+        204,
+        "delete the feature: {}",
+        response.text()
+    );
+    let gone = call(
+        client,
+        "GET",
+        &format!("{project}/features/{feature}"),
+        &human,
+        None,
+    );
+    assert_eq!(gone.status, 404, "the deleted feature: {}", gone.text());
+    must(
+        call(client, "GET", &path(FEATURE_ROUTES[2].1), &human, None),
+        200,
+        "the seeded feature is still there",
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -5539,6 +5601,89 @@ fn the_scope_level_doc_calls_of_the_attacks_work_for_the_workspace_that_owns_the
             assert_eq!(read["doc"]["title"], title.as_str(), "{read}");
             assert_eq!(read["doc"]["feature_id"], feature, "{read}");
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Renaming and deleting docs (US-110)
+// ---------------------------------------------------------------------------
+
+const DOC_ROUTE: &str = "/api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}";
+
+#[test]
+fn the_doc_rename_and_delete_routes_are_agent_routes_that_the_suite_attacks() {
+    for method in ["PATCH", "DELETE"] {
+        let entry = registry()
+            .into_iter()
+            .find(|r| r.method == method && r.path == DOC_ROUTE)
+            .unwrap_or_else(|| panic!("the registry has no route {method} {DOC_ROUTE}"));
+        assert_eq!(entry.access, Access::Agent, "{method} {DOC_ROUTE}");
+        assert!(
+            matches!(case_for(&entry).kind, Kind::Workspace),
+            "{method} {DOC_ROUTE} is a workspace route that the suite attacks"
+        );
+    }
+}
+
+#[test]
+fn the_doc_rename_and_delete_calls_of_the_attacks_work_for_the_workspace_that_owns_the_records() {
+    // The control for renaming and deleting a doc: in the owner's workspace,
+    // the owner's agent creates a doc without a change set, renames it with
+    // the body of the case, and deletes it with the call of the case; the doc
+    // then reads as not found, and the seeded doc is still there.
+    let (f, client) = ready();
+    let _guard = serial();
+    let key = Auth::Key(&f.a.key);
+    let human = Auth::Session(&f.a.token);
+    let project = format!("/api/v1/w/{}/projects/{}", f.a.id, f.a.project_id);
+    let created = must(
+        call(
+            client,
+            "POST",
+            &format!("{project}/docs"),
+            &key,
+            Some(
+                &json!({ "kind": "html", "pillar": "spec", "title": unique("owner-doc") })
+                    .to_string(),
+            ),
+        ),
+        201,
+        "create a doc without a change set",
+    );
+    let doc = created["doc"]["id"].as_str().expect("an id").to_string();
+    let title = unique("renamed");
+    let body = case_named("PATCH", DOC_ROUTE)
+        .body
+        .map(|b| b.replace("intruder", &title));
+    let renamed = must(
+        call(
+            client,
+            "PATCH",
+            &format!("{project}/docs/{doc}"),
+            &key,
+            body.as_deref(),
+        ),
+        200,
+        "rename the doc",
+    );
+    assert_eq!(renamed["doc"]["id"], doc.as_str(), "{renamed}");
+    assert_eq!(renamed["doc"]["title"], title.as_str(), "{renamed}");
+    let response = call(
+        client,
+        "DELETE",
+        &format!("{project}/docs/{doc}"),
+        &key,
+        None,
+    );
+    assert_eq!(response.status, 204, "delete the doc: {}", response.text());
+    for auth in [&key, &human] {
+        let gone = call(client, "GET", &format!("{project}/docs/{doc}"), auth, None);
+        assert_eq!(gone.status, 404, "the deleted doc: {}", gone.text());
+        must(
+            call(client, "GET", &fill(DOC_ROUTE, &f.a, &f.a), auth, None),
+            200,
+            "the seeded doc is still there",
+        );
     }
 }
 

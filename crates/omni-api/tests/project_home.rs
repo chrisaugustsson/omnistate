@@ -58,8 +58,8 @@
 //! US-063 ties the home to the project's features (Q51; features are those of
 //! US-059 to US-062):
 //!
-//! - `features` lists every feature of the project, done ones too, in
-//!   creation order, each a FeatureSummary `{"feature", "docs",
+//! - `features` lists every feature of the project in creation order (US-110:
+//!   a feature has no status, so there are no done ones), each a FeatureSummary `{"feature", "docs",
 //!   "open_changesets", "waiting"}`: `feature` is the Feature that `GET
 //!   /features/{feature_id}` answers, `docs` the number of the feature's own
 //!   docs (not the global docs its change sets draft), `open_changesets` the
@@ -1332,21 +1332,6 @@ fn new_feature(f: &Fixture, client: &Client, project: &str) -> String {
     )
 }
 
-/// The human marks the feature done.
-fn finish_feature(f: &Fixture, client: &Client, project: &str, feature: &str) {
-    must(
-        call(
-            client,
-            "POST",
-            &format!("{}/features/{feature}/done", project_base(f, project)),
-            &human(f),
-            Some(&json!({})),
-        ),
-        200,
-        "the human marks the feature done",
-    );
-}
-
 /// The change set opens a draft of the existing doc `doc`.
 fn open_draft(f: &Fixture, client: &Client, project: &str, changeset: &str, doc: &str) {
     must(
@@ -1427,7 +1412,7 @@ fn the_home_lists_the_features_in_creation_order_with_their_counts() {
     let project = new_project(f, client);
     let first = new_feature(f, client, &project);
     let second = new_feature(f, client, &project);
-    let finished = new_feature(f, client, &project);
+    let quiet = new_feature(f, client, &project);
 
     // A global doc that merged, and project-level change sets that count for
     // no feature.
@@ -1491,8 +1476,7 @@ fn the_home_lists_the_features_in_creation_order_with_their_counts() {
     let second_open = new_changeset_in(f, client, &project, Some(&second));
     create_doc(f, client, &project, &second_open, "html", "spec");
 
-    // The third has nothing and is done.
-    finish_feature(f, client, &project, &finished);
+    // The third has nothing.
 
     // Another project's feature is not this project's.
     let elsewhere = new_project(f, client);
@@ -1501,11 +1485,11 @@ fn the_home_lists_the_features_in_creation_order_with_their_counts() {
     let home = home(f, client, &project);
     assert_eq!(
         feature_ids(&home),
-        vec![first.clone(), second.clone(), finished.clone()],
-        "every feature of the project, the done one too, in creation order: {home}"
+        vec![first.clone(), second.clone(), quiet.clone()],
+        "every feature of the project, the empty one too, in creation order: {home}"
     );
     assert!(!home.to_string().contains(&foreign), "{home}");
-    for feature in [&first, &second, &finished] {
+    for feature in [&first, &second, &quiet] {
         assert_eq!(
             summary_of(&home, feature)["feature"],
             read(
@@ -1518,7 +1502,14 @@ fn the_home_lists_the_features_in_creation_order_with_their_counts() {
             "the summary holds the feature as its read answers it"
         );
     }
-    assert_eq!(summary_of(&home, &finished)["feature"]["status"], "done");
+    for feature in [&first, &second, &quiet] {
+        assert!(
+            summary_of(&home, feature)["feature"]
+                .get("status")
+                .is_none(),
+            "a feature has no status (US-110): {home}"
+        );
+    }
     assert_eq!(
         counts(&summary_of(&home, &first)),
         (json!(3), json!(4), json!(2)),
@@ -1532,9 +1523,9 @@ fn the_home_lists_the_features_in_creation_order_with_their_counts() {
         "the second feature: {home}"
     );
     assert_eq!(
-        counts(&summary_of(&home, &finished)),
+        counts(&summary_of(&home, &quiet)),
         (json!(0), json!(0), json!(0)),
-        "the done feature: {home}"
+        "the feature without docs or change sets: {home}"
     );
 }
 
@@ -1657,7 +1648,6 @@ fn the_home_lists_the_docs_change_sets_and_threads_of_the_project_and_every_feat
     // A merged change set of a feature stays listed, with its doc and thread.
     submit(f, client, &project, &first_changeset);
     approve_changeset(f, client, &project, &first_changeset);
-    finish_feature(f, client, &project, &second);
 
     let home = home(f, client, &project);
     let none = Value::Null;
@@ -1698,7 +1688,7 @@ fn the_home_lists_the_docs_change_sets_and_threads_of_the_project_and_every_feat
                 .iter()
                 .map(|(id, _)| (*id).clone())
                 .collect::<Vec<_>>(),
-            "{pointer}: project level and every feature, done ones too, oldest first: {home}"
+            "{pointer}: project level and every feature, oldest first: {home}"
         );
         for (id, feature) in items {
             assert_feature_of(&home, pointer, id, feature);

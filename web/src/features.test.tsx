@@ -7,15 +7,15 @@
 // The pages read the project's home, GET .../projects/<project>/home
 // (crates/omni-api/tests/project_home.rs). Its docs, change sets, threads and
 // waiting items each carry `feature_id` (null for the project level), and
-// `features` lists each feature as {feature, docs, open_changesets, waiting},
-// done features included.
+// `features` lists each feature as {feature, docs, open_changesets, waiting}.
+// Since US-110 a feature has no status.
 //
 // The sidebar (the navigation named "Workspace") has, below the project's
 // sections (Overview, Inbox, Docs, Change sets, Threads), a group named
-// "Features" (role group or region, named by its heading) that links each
-// active feature to its overview, /w/<workspace>/projects/<project>/features/
-// <feature>, with its waiting count next to its name. Done features sit under
-// a "Done" toggle, a button with aria-expanded, collapsed at first.
+// "Features" (role group or region, named by its heading) that links every
+// feature to its overview, /w/<workspace>/projects/<project>/features/
+// <feature>, with its waiting count next to its name. There is no "Done"
+// toggle (US-110).
 //
 // A feature has an overview page (its name as the page's heading, its
 // description, and sections named "Waiting for you", "Docs", "Change sets" and
@@ -59,8 +59,14 @@ function featurePath(featureId: string, section = "") {
   return `${PROJECT_PATH}/features/${featureId}${section ? `/${section}` : ""}`;
 }
 
-function feature(id: string, name: string, description: string, status: string) {
-  return { id, project_id: PROJECT_ID, name, description, status, created_at: AT };
+/**
+ * A feature as the API sends it. `legacyStatus` is the `status` field that
+ * features had before US-110: the fixtures keep it so that they parse against
+ * the API schema before and after the field goes, and so that the tests also
+ * show that the app pays no heed to it.
+ */
+function feature(id: string, name: string, description: string, legacyStatus: string) {
+  return { id, project_id: PROJECT_ID, name, description, status: legacyStatus, created_at: AT };
 }
 
 function doc(featureId: string | null, pillar: string, title: string) {
@@ -172,8 +178,9 @@ function question(on: ReturnType<typeof thread>, summary: string) {
 
 /**
  * A project with project-level items, two active features (Wishlist and Gift
- * cards) and a done one (Loyalty points). No item's title holds a feature's
- * name, so a feature's name next to an item is its tag.
+ * cards) and one with nothing open (Loyalty points, whose legacy status says
+ * done). No item's title holds a feature's name, so a feature's name next to
+ * an item is its tag.
  */
 function seeded() {
   const wishlist = feature(WISHLIST, "Wishlist", "Shoppers save products for later.", "active");
@@ -405,7 +412,7 @@ describe("features in the web app", () => {
   });
 
   describe("the sidebar", () => {
-    test("below the project's sections, a Features group lists the active features with their waiting counts", async () => {
+    test("below the project's sections, a Features group lists every feature with its waiting count", async () => {
       fakeApi(seeded());
       renderAt(PROJECT_PATH);
       const nav = await sidebar();
@@ -423,27 +430,9 @@ describe("features in the web app", () => {
       expect(giftCards.textContent).toMatch(/gift cards/i);
       expect(besideName(giftCards, "Gift cards"), "the Gift cards' waiting count").toMatch(/(^|\D)1(\D|$)/);
 
-      expect(
-        within(nav).queryByRole("link", { name: /loyalty points/i }),
-        "a done feature is not among the active ones",
-      ).toBeNull();
-    });
-
-    test("done features sit under a Done toggle that starts collapsed", async () => {
-      fakeApi(seeded());
-      renderAt(PROJECT_PATH);
-      const nav = await sidebar();
-      const features = await section(/^features\b/i, nav);
-      await linkTo(features, featurePath(WISHLIST));
-
-      const toggle = within(nav).getByRole("button", { name: /^done\b/i });
-      expect(toggle.getAttribute("aria-expanded")).toBe("false");
-      expect(within(nav).queryByRole("link", { name: /loyalty points/i })).toBeNull();
-
-      fireEvent.click(toggle);
-      await waitFor(() => expect(toggle.getAttribute("aria-expanded")).toBe("true"));
-      const loyalty = await within(nav).findByRole("link", { name: /loyalty points/i });
-      expect(loyalty.getAttribute("href")).toBe(featurePath(LOYALTY));
+      const loyalty = await linkTo(features, featurePath(LOYALTY));
+      expect(loyalty.textContent).toMatch(/loyalty points/i);
+      expect(within(nav).queryByRole("button", { name: /^done\b/i }), "there is no Done toggle").toBeNull();
     });
   });
 
@@ -578,7 +567,7 @@ describe("features in the web app", () => {
       await showsOnly(await page(), WISHLIST_THREADS, OTHER_THREADS);
     });
 
-    test("another feature's pages show that feature's items, and a done feature's docs stay readable", async () => {
+    test("another feature's pages show that feature's items", async () => {
       fakeApi(seeded());
       renderAt(featurePath(GIFT_CARDS, "changesets"));
       await showsOnly(

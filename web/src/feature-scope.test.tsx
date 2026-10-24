@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 // US-065: feature scope in reviews. A feature's change set can change its own
 // docs and the project's global docs (FR-54), so the reviewer has to see when
-// it reaches beyond the feature before approving it. The reviewer also marks a
-// feature done and reopens it (FR-52, FR-55). The app is rendered with its own
+// it reaches beyond the feature before approving it. Since US-110 a feature has
+// no status, so nobody marks it done or reopens it. The app is rendered with its own
 // router on a memory history, the browser's fetch is replaced by a fake of the
 // API, and the browser's WebSocket by a fake socket that never opens, so a page
 // shows what it loads itself.
@@ -30,21 +30,13 @@
 // for an item of a feature), then the section ("Threads" or "Docs"; as a link,
 // it goes to that section of the item's feature, or of the project).
 //
-// A feature's overview has, for the reviewer:
-//
-// - while the feature is active, a "Mark done" button. It first asks for a
-//   confirmation in the page (not window.confirm) and sends nothing; the
-//   confirming button, the last button on the page named "Mark done…",
-//   "Confirm…" or "Yes…", sends POST .../features/<feature>/done. The page then
-//   shows the feature as done.
-// - while the feature is done, a "Reopen" button that sends POST
-//   .../features/<feature>/reopen at once. The page then shows the feature as
-//   active.
-//
-// A done feature shows a badge reading "Done" on its pages (its overview, its
-// Docs, Change sets and Threads) and on its entry in the sidebar.
+// US-110: a feature has no status. Its overview has no "Mark done" and no
+// "Reopen" button, no page of a feature (its overview, its Docs, Change sets
+// and Threads) shows a "Done" badge, and the sidebar lists every feature with
+// no "Done" toggle and no Done badge. The fake API has no done or reopen
+// route.
 import { RouterProvider, createMemoryHistory } from "@tanstack/react-router";
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { getRouter } from "./router";
 
@@ -101,8 +93,14 @@ function featurePath(featureId: string, section = "") {
   return `${PROJECT_PATH}/features/${featureId}${section ? `/${section}` : ""}`;
 }
 
-function feature(id: string, name: string, description: string, status: string) {
-  return { id, project_id: PROJECT_ID, name, description, status, created_at: AT };
+/**
+ * A feature as the API sends it. `legacyStatus` is the `status` field that
+ * features had before US-110: the fixtures keep it so that they parse against
+ * the API schema before and after the field goes, and so that the tests also
+ * show that the app pays no heed to it.
+ */
+function feature(id: string, name: string, description: string, legacyStatus: string) {
+  return { id, project_id: PROJECT_ID, name, description, status: legacyStatus, created_at: AT };
 }
 
 function doc(featureId: string | null, kind: string, pillar: string, title: string) {
@@ -176,9 +174,9 @@ function reviewed(of: Doc, fresh = false) {
 }
 
 /**
- * A project with two global docs (an HTML doc and the design system), an
- * active feature (Wishlist) with an HTML doc and a design, and a done feature
- * (Loyalty points). The Wishlist's change set "Share saved lists" changes its
+ * A project with two global docs (an HTML doc and the design system), a
+ * feature (Wishlist) with an HTML doc and a design, and another feature
+ * (Loyalty points, whose legacy status says done). The Wishlist's change set "Share saved lists" changes its
  * own PRD and both global docs; its "Draft saved items" changes its own PRD
  * only; the project-level "Rework the hero" changes the shop PRD. No doc's or
  * item's title holds the project's or a feature's name.
@@ -268,16 +266,6 @@ function fakeApi(seed: Seeded) {
     }
     for (const f of seed.features) {
       if (method === "GET" && path === `${API}/features/${f.id}`) return json(200, { feature: f });
-      for (const [action, from, to, conflict] of [
-        ["done", "active", "done", "already_done"],
-        ["reopen", "done", "active", "not_done"],
-      ]) {
-        if (method === "POST" && path === `${API}/features/${f.id}/${action}`) {
-          if (f.status !== from) return json(409, { error: conflict });
-          f.status = to;
-          return json(200, { feature: f });
-        }
-      }
     }
     if (method !== "GET") return json(404, { error: "not_found" });
     for (const d of home.docs) {
@@ -420,10 +408,8 @@ async function expectTrail(crumbs: Crumb[], section: RegExp, sectionHref: string
 
 const PROJECT_CRUMB = { name: new RegExp(PROJECT_NAME), href: PROJECT_PATH };
 const WISHLIST_CRUMB = { name: /wishlist/i, href: featurePath(WISHLIST) };
-const DONE_PATH = (featureId: string) => `${API}/features/${featureId}/done`;
-const REOPEN_PATH = (featureId: string) => `${API}/features/${featureId}/reopen`;
 const MARK_DONE = /^\s*mark (as |it )?done\b/i;
-const CONFIRMING = /^\s*(mark (as |it )?done|confirm|yes)\b/i;
+const REOPEN = /^\s*reopen\b/i;
 
 describe("feature scope in reviews", () => {
   beforeEach(() => {
@@ -561,46 +547,22 @@ describe("feature scope in reviews", () => {
     });
   });
 
-  describe("finishing a feature", () => {
-    test("Mark done asks for a confirmation, then sends POST .../done, and the feature shows as done", async () => {
+  describe("a feature has no status", () => {
+    test.each([
+      ["Wishlist", WISHLIST, /wishlist/i],
+      ["Loyalty points", LOYALTY, /loyalty points/i],
+    ])("the overview of %s has no Mark done and no Reopen button and sends nothing", async (_, id, name) => {
       const api = fakeApi(seeded());
-      renderAt(featurePath(WISHLIST));
+      renderAt(featurePath(id));
       const main = await page();
-      await within(main).findByRole("heading", { level: 1, name: /wishlist/i });
-      const markDone = await screen.findByRole("button", { name: MARK_DONE });
-      expect(screen.queryByRole("button", { name: /^\s*reopen\b/i }), "an active feature has no Reopen").toBeNull();
-      expect(within(main).queryAllByText(/^\s*done\s*$/i), "an active feature has no Done badge").toEqual([]);
-
-      fireEvent.click(markDone);
+      await within(main).findByRole("heading", { level: 1, name });
+      await waitFor(() => expect(main.textContent, "the overview has loaded its sections").toMatch(/threads/i));
       await act(async () => {
         await new Promise((resolve) => setTimeout(resolve, 50));
       });
-      expect(api.calls, "nothing is sent before the reviewer confirms").toEqual([]);
-
-      const confirming = await waitFor(() => {
-        const buttons = screen.getAllByRole("button", { name: CONFIRMING });
-        return buttons[buttons.length - 1];
-      });
-      fireEvent.click(confirming);
-      await waitFor(() => expect(api.calls).toEqual([{ method: "POST", path: DONE_PATH(WISHLIST) }]));
-
-      expect(await screen.findByRole("button", { name: /^\s*reopen\b/i }), "the done feature can be reopened").toBeTruthy();
-      expect(await within(main).findAllByText(/^\s*done\s*$/i), "the Done badge").not.toHaveLength(0);
-    });
-
-    test("Reopen on a done feature sends POST .../reopen, and the feature shows as active", async () => {
-      const api = fakeApi(seeded());
-      renderAt(featurePath(LOYALTY));
-      const main = await page();
-      await within(main).findByRole("heading", { level: 1, name: /loyalty points/i });
-      const reopen = await screen.findByRole("button", { name: /^\s*reopen\b/i });
-      expect(screen.queryByRole("button", { name: MARK_DONE }), "a done feature has no Mark done").toBeNull();
-
-      fireEvent.click(reopen);
-      await waitFor(() => expect(api.calls).toEqual([{ method: "POST", path: REOPEN_PATH(LOYALTY) }]));
-
-      expect(await screen.findByRole("button", { name: MARK_DONE }), "the active feature can be marked done").toBeTruthy();
-      await waitFor(() => expect(within(main).queryAllByText(/^\s*done\s*$/i), "no Done badge").toEqual([]));
+      expect(screen.queryByRole("button", { name: MARK_DONE }), "no Mark done").toBeNull();
+      expect(screen.queryByRole("button", { name: REOPEN }), "no Reopen").toBeNull();
+      expect(api.calls, "nothing is sent").toEqual([]);
     });
 
     test.each([
@@ -608,27 +570,21 @@ describe("feature scope in reviews", () => {
       ["Docs", "docs"],
       ["Change sets", "changesets"],
       ["Threads", "threads"],
-    ])("a done feature's %s page shows a Done badge", async (name, section) => {
-      fakeApi(seeded());
-      renderAt(featurePath(LOYALTY, section));
-      const main = await page();
-      await waitFor(() => expect(main.textContent, `the ${name} page names the feature`).toMatch(/loyalty points/i));
-      expect(
-        await within(main).findAllByText(/^\s*done\s*$/i),
-        `the Done badge on the feature's ${name} page`,
-      ).not.toHaveLength(0);
+    ])("no feature's %s page shows a Done badge", async (name, section) => {
+      for (const [id, featureName] of [
+        [WISHLIST, /wishlist/i],
+        [LOYALTY, /loyalty points/i],
+      ] as const) {
+        fakeApi(seeded());
+        renderAt(featurePath(id, section));
+        const main = await page();
+        await waitFor(() => expect(main.textContent, `the ${name} page names the feature`).toMatch(featureName));
+        expect(within(main).queryAllByText(/^\s*done\s*$/i), `no Done badge on the ${name} page`).toEqual([]);
+        cleanup();
+      }
     });
 
-    test("an active feature's page shows no Done badge", async () => {
-      fakeApi(seeded());
-      renderAt(featurePath(WISHLIST, "docs"));
-      const main = await page();
-      await within(main).findByText("Saved items PRD");
-      await waitFor(() => expect(main.textContent).toMatch(/wishlist/i));
-      expect(within(main).queryAllByText(/^\s*done\s*$/i), "no Done badge on an active feature's page").toEqual([]);
-    });
-
-    test("in the sidebar a done feature shows a Done badge, an active one none", async () => {
+    test("the sidebar lists every feature, with no Done toggle and no Done badge", async () => {
       fakeApi(seeded());
       renderAt(PROJECT_PATH);
       const nav = await sidebar();
@@ -637,9 +593,13 @@ describe("feature scope in reviews", () => {
         expect(found.length).toBeGreaterThan(0);
         return found[0];
       });
-      fireEvent.click(within(nav).getByRole("button", { name: /^done\b/i }));
-      const loyalty = await within(nav).findByRole("link", { name: /loyalty points/i });
-      expect(besideName(loyalty, "Loyalty points"), "the Loyalty points' entry").toMatch(/\bdone\b/i);
+      const loyalty = await waitFor(() => {
+        const found = linksTo(nav, featurePath(LOYALTY));
+        expect(found.length, "Loyalty points is listed with the others").toBeGreaterThan(0);
+        return found[0];
+      });
+      expect(within(nav).queryByRole("button", { name: /^done\b/i }), "no Done toggle").toBeNull();
+      expect(besideName(loyalty, "Loyalty points"), "the Loyalty points' entry").not.toMatch(/\bdone\b/i);
       expect(besideName(wishlist, "Wishlist"), "the Wishlist's entry").not.toMatch(/\bdone\b/i);
     });
   });
