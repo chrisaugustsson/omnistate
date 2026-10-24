@@ -768,14 +768,15 @@ pub(crate) async fn require_changeset(
 }
 
 /// The feature that the change set belongs to, `None` for a project-level one;
-/// 404 when the change set is not in this project.
+/// 404 when the change set is not in this project or its feature is deleted.
 async fn changeset_feature(
     tx: &mut Tx,
     project_id: &str,
     changeset_id: &str,
 ) -> Result<Option<String>, ApiError> {
     let found: Option<(Option<String>,)> = sqlx::query_as(
-        "SELECT feature_id::text FROM changesets WHERE id = $1::uuid AND project_id = $2::uuid",
+        "SELECT c.feature_id::text FROM changesets c LEFT JOIN features f ON f.id = c.feature_id \
+         WHERE c.id = $1::uuid AND c.project_id = $2::uuid AND f.deleted_at IS NULL",
     )
     .bind(changeset_id)
     .bind(project_id)

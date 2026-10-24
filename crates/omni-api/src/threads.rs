@@ -784,7 +784,8 @@ pub async fn create_thread(
     let workspace_id = request.workspace_id;
     let mut tx = state.workspace_tx(&workspace_id).await?;
     let found: Option<(Option<String>,)> = sqlx::query_as(
-        "SELECT feature_id::text FROM changesets WHERE id = $1::uuid AND project_id = $2::uuid",
+        "SELECT c.feature_id::text FROM changesets c LEFT JOIN features f ON f.id = c.feature_id \
+         WHERE c.id = $1::uuid AND c.project_id = $2::uuid AND f.deleted_at IS NULL",
     )
     .bind(&changeset_id)
     .bind(&project_id)
