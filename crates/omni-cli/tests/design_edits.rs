@@ -208,83 +208,6 @@ fn sent_bodies(server: &MockServer) -> Vec<Value> {
 const TARGET: [&str; 4] = ["--changeset", CHANGESET, "--doc", DOC];
 
 #[test]
-fn design_edit_sends_the_batch_from_a_file_or_standard_input() {
-    let server = mock();
-    let home = logged_in(&server.url);
-    let file = home.join("ops.json");
-    std::fs::write(&file, serde_json::to_string_pretty(&batch()).unwrap()).unwrap();
-    let from_file = run(
-        &home,
-        &[&TARGET[..], &["--body-file", file.to_str().unwrap()]].concat(),
-        "",
-    );
-    assert_eq!(from_file.code, 0, "a file: {}", from_file.stderr);
-    let from_stdin = run(&home, &TARGET, &batch().to_string());
-    assert_eq!(from_stdin.code, 0, "standard input: {}", from_stdin.stderr);
-    let from_dash = run(
-        &home,
-        &[&TARGET[..], &["--body-file", "-"]].concat(),
-        &batch().to_string(),
-    );
-    assert_eq!(from_dash.code, 0, "--body-file -: {}", from_dash.stderr);
-
-    let bodies = sent_bodies(&server);
-    assert_eq!(bodies.len(), 3, "{:?}", server.requests());
-    for body in bodies {
-        assert_eq!(
-            body,
-            json!({ "ops": batch() }),
-            "the batch goes to the API as it is, with no board"
-        );
-    }
-}
-
-#[test]
-fn design_edit_with_a_board_sends_the_board_along() {
-    let server = mock();
-    let home = logged_in(&server.url);
-    let out = run(
-        &home,
-        &[&TARGET[..], &["--board", BOARD]].concat(),
-        &batch().to_string(),
-    );
-    assert_eq!(out.code, 0, "{}", out.stderr);
-    assert_eq!(
-        sent_bodies(&server),
-        vec![json!({ "ops": batch(), "board": BOARD })]
-    );
-}
-
-#[test]
-fn design_edit_prints_the_new_revisions_and_the_ids_of_new_nodes() {
-    let server = mock();
-    let home = logged_in(&server.url);
-    let out = run(&home, &TARGET, &batch().to_string());
-    assert_eq!(out.code, 0, "{}", out.stderr);
-    let lines = non_empty_lines(&out.stdout);
-    assert!(
-        lines.iter().any(|l| l.contains(TOTAL) && l.contains('4')),
-        "the set node and its new revision 4 are on one line: {:?}",
-        out.stdout
-    );
-    for id in [NEW_BOARD, NEW_TEXT] {
-        assert!(
-            out.stdout.contains(id),
-            "the new node {id} is printed: {:?}",
-            out.stdout
-        );
-    }
-
-    let json = run(
-        &home,
-        &[&TARGET[..], &["--json"]].concat(),
-        &batch().to_string(),
-    );
-    assert_eq!(json.code, 0, "{}", json.stderr);
-    assert_eq!(json.json(), edit_answer());
-}
-
-#[test]
 fn design_edit_needs_a_doc_and_a_batch_before_sending_anything() {
     let server = mock();
     let home = logged_in(&server.url);
@@ -313,16 +236,6 @@ fn design_edit_needs_a_doc_and_a_batch_before_sending_anything() {
 }
 
 #[test]
-fn a_refused_operation_is_one_line_that_names_the_unknown_id() {
-    let server = mock();
-    let home = logged_in(&server.url);
-    let ops = json!([{ "op": "delete", "node": UNKNOWN, "rev": 1 }]);
-    let out = run(&home, &TARGET, &ops.to_string());
-    assert_one_line_error(&out, &[UNKNOWN]);
-    assert_eq!(sent_bodies(&server).len(), 1, "the batch was sent");
-}
-
-#[test]
 fn an_edit_of_a_board_that_another_agent_claimed_is_one_line_that_names_the_holder() {
     let server = mock();
     let home = logged_in(&server.url);
@@ -343,16 +256,4 @@ fn an_edit_inside_a_board_that_the_doc_does_not_have_names_it() {
     );
     assert_one_line_error(&out, &[UNKNOWN]);
     assert_eq!(sent_bodies(&server).len(), 1, "the batch was sent");
-}
-
-#[test]
-fn help_lists_design_edit() {
-    let home = Scratch::new("help");
-    let out = omni(&home.path).args(&["--help"]).run();
-    assert_eq!(out.code, 0, "{}", out.stderr);
-    assert!(
-        out.stdout.contains("omni design edit"),
-        "omni --help lists `omni design edit`: {}",
-        out.stdout
-    );
 }

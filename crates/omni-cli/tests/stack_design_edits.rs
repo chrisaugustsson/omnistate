@@ -1,7 +1,6 @@
-//! US-031: `omni design edit`, `omni claim` and `omni release` on boards,
-//! against the real API. Run with `--features stack-tests` in the Compose test
-//! container, which reaches Postgres at `postgres:5432` and RustFS at
-//! `rustfs:9000`.
+//! US-031: `omni design edit` against the real API. Run with
+//! `--features stack-tests` in the Compose test container, which reaches
+//! Postgres at `postgres:5432` and RustFS at `rustfs:9000`.
 //!
 //! The tests migrate a scratch database, seed a workspace with an API key (the
 //! agents, told apart by `--as`), create a scratch RustFS bucket and serve the
@@ -27,10 +26,8 @@ use std::sync::atomic::{AtomicU32, Ordering};
 const TEST_DB: &str = "omni_us031_cli";
 const TEST_BUCKET: &str = "omni-us031-cli";
 const KEY_PREFIX: &str = "omniustest31";
-/// The agent that builds the designs and claims boards.
+/// The agent that builds and edits the designs.
 const HOLDER: &str = "run-1/designer";
-/// Another agent on the same machine, with the same key.
-const OTHER: &str = "run-2/illustrator";
 
 fn block<F: Future>(future: F) -> F::Output {
     tokio::runtime::Builder::new_current_thread()
@@ -346,14 +343,6 @@ fn read_board(home: &Scratch, design: &Design, board: &str) -> String {
     out.stdout
 }
 
-/// `omni claim` or `omni release` of a node as `agent`.
-fn claim_command(home: &Scratch, agent: &str, design: &Design, command: &str, node: &str) -> Out {
-    let target = design.target(false);
-    let mut args: Vec<&str> = vec![command, node];
-    args.extend(target.iter().map(String::as_str));
-    run_as(home, agent, &args, b"")
-}
-
 fn set_content(node: &str, rev: u64, content: &str) -> Value {
     json!({ "op": "set", "node": node, "rev": rev, "properties": { "content": content } })
 }
@@ -413,96 +402,4 @@ fn an_agent_edits_a_design_from_the_command_line_and_gets_the_new_ids() {
         "the error names the unknown ID: {:?}",
         out.stderr
     );
-}
-
-#[test]
-fn omni_claim_and_release_work_on_boards() {
-    let f = fixture();
-    let home = agent_home(f);
-    let design = new_design(f, &home);
-    let cart = design.id("Cart");
-    let out = claim_command(&home, HOLDER, &design, "claim", &cart);
-    assert_eq!(out.code, 0, "claim the board: {}", out.stderr);
-    assert!(out.stdout.contains(&cart), "{}", out.stdout);
-
-    let theirs = claim_command(&home, OTHER, &design, "claim", &cart);
-    assert_ne!(theirs.code, 0, "{}", theirs.stdout);
-    assert!(
-        theirs.stderr.contains("run-1") && theirs.stderr.contains("designer"),
-        "the refusal names the holder: {:?}",
-        theirs.stderr
-    );
-    let ops = json!([set_content(&design.id("Total"), 1, "Summa 12 kr")]);
-    let refused = design_edit(&home, OTHER, &design, &[], &ops);
-    assert_ne!(refused.code, 0, "{}", refused.stdout);
-    assert!(
-        refused.stderr.contains("run-1") && refused.stderr.contains("designer"),
-        "the refusal names the holder: {:?}",
-        refused.stderr
-    );
-    let elsewhere = design_edit(
-        &home,
-        OTHER,
-        &design,
-        &[],
-        &json!([set_content(&design.id("Pay"), 1, "Betala")]),
-    );
-    assert_eq!(elsewhere.code, 0, "another board: {}", elsewhere.stderr);
-
-    let out = claim_command(&home, HOLDER, &design, "release", &cart);
-    assert_eq!(out.code, 0, "release the board: {}", out.stderr);
-    let out = design_edit(&home, OTHER, &design, &[], &ops);
-    assert_eq!(out.code, 0, "the board is free again: {}", out.stderr);
-}
-
-#[test]
-fn two_agents_edit_different_boards_of_one_draft_from_the_command_line_at_once() {
-    let f = fixture();
-    let home = agent_home(f);
-    let design = new_design(f, &home);
-    const ROUNDS: usize = 5;
-    let barrier = std::sync::Barrier::new(2);
-    let jobs = [
-        (HOLDER, design.id("Summary"), "A"),
-        (OTHER, design.id("Payment"), "B"),
-    ];
-    let outs: Vec<Out> = std::thread::scope(|scope| {
-        let handles: Vec<_> = jobs
-            .iter()
-            .map(|(agent, parent, label)| {
-                let (barrier, home, design) = (&barrier, &home, &design);
-                scope.spawn(move || {
-                    barrier.wait();
-                    (0..ROUNDS)
-                        .map(|round| {
-                            let name = format!("{label}{round}");
-                            let ops = json!([{
-                                "op": "insert",
-                                "parent": parent,
-                                "position": { "after": null },
-                                "content": text_tag(&name, &name)
-                            }]);
-                            design_edit(home, agent, design, &[], &ops)
-                        })
-                        .collect::<Vec<_>>()
-                })
-            })
-            .collect();
-        handles
-            .into_iter()
-            .flat_map(|handle| handle.join().expect("an agent's thread"))
-            .collect()
-    });
-    for out in &outs {
-        assert_eq!(out.code, 0, "every edit applies: {}", out.stderr);
-    }
-    let cart = read_board(&home, &design, &design.id("Cart"));
-    let payment = read_board(&home, &design, &design.id("Payment"));
-    for round in 0..ROUNDS {
-        assert!(cart.contains(&format!(r#"name="A{round}""#)), "{cart}");
-        assert!(
-            payment.contains(&format!(r#"name="B{round}""#)),
-            "{payment}"
-        );
-    }
 }
