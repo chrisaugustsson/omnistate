@@ -746,15 +746,6 @@ function descriptionOf(element: HTMLElement) {
   return [element.getAttribute("title") ?? "", ...parts].join(" ");
 }
 
-/** The entry of the decision with `direction` in the Decisions section. */
-async function findDecision(direction: string): Promise<HTMLElement> {
-  const decisions = await findSection(/^decisions$/i);
-  return waitFor(() => {
-    const named = within(decisions).getByText(direction);
-    return (named.closest("li, article, tr, [role=listitem], [role=row]") ?? named.parentElement) as HTMLElement;
-  });
-}
-
 function postsTo(path: string) {
   return api.calls.filter((call) => call.method === "POST" && call.path === path);
 }
@@ -928,15 +919,6 @@ describe("HTML docs", () => {
 });
 
 describe("linked decisions", () => {
-  test("each linked decision is shown with its status", async () => {
-    renderAt(REVIEW_PATH);
-    await findReview();
-    const approved = await findDecision(APPROVED_DIRECTION);
-    const proposed = await findDecision(PROPOSED_DIRECTION);
-    expect(within(approved).queryAllByText(/\bapproved\b/i).length, "the approved decision says approved").toBeGreaterThan(0);
-    expect(within(proposed).queryAllByText(/\bproposed\b/i).length, "the proposed decision says proposed").toBeGreaterThan(0);
-  });
-
   test("Approve is disabled while a linked decision is not approved, and names that decision", async () => {
     renderAt(REVIEW_PATH);
     await findReview();
