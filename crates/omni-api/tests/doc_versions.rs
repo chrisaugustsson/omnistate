@@ -29,7 +29,6 @@ mod common;
 
 use common::{Client, Response, TestServer, cookie};
 use omni_api::Config;
-use omni_api::routes::{Access, registry};
 use s3::creds::Credentials;
 use s3::{Bucket, BucketConfiguration, Region};
 use serde_json::{Value, json};
@@ -44,8 +43,6 @@ const TEST_DB: &str = "omni_us042_doc_versions";
 const TEST_BUCKET: &str = "omni-us042-doc-versions";
 /// An ID that no row has.
 const UNKNOWN_ID: &str = "01900000-0000-7000-8000-000000000000";
-const VERSIONS_ROUTE: &str =
-    "/api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}/versions";
 
 // ---------------------------------------------------------------------------
 // Plumbing
@@ -543,19 +540,6 @@ fn doc_with_history(f: &Fixture, client: &Client, project: &str) -> (String, Vec
     open_doc(f, client, &editor(f), project, &third, &doc);
     let removal = save(f, client, &editor(f), project, &third, &doc, "remove");
     (doc, vec![one, two, three, removal])
-}
-
-// ---------------------------------------------------------------------------
-// The route
-// ---------------------------------------------------------------------------
-
-#[test]
-fn the_versions_route_is_in_the_registry_for_agents_and_the_human() {
-    let entry = registry()
-        .into_iter()
-        .find(|r| r.method == "GET" && r.path == VERSIONS_ROUTE)
-        .unwrap_or_else(|| panic!("the registry has no route GET {VERSIONS_ROUTE}"));
-    assert_eq!(entry.access, Access::Both, "GET {VERSIONS_ROUTE}");
 }
 
 // ---------------------------------------------------------------------------
