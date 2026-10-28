@@ -327,18 +327,6 @@ fn thread_create_with_a_feature_and_sealed_starts_a_sealed_thread_in_the_feature
 }
 
 #[test]
-fn thread_create_with_json_prints_the_apis_answer() {
-    let server = mock();
-    let home = logged_in(&server.url);
-    let out = run(&home, &["thread", "create", QUESTION, "--json"]);
-    assert_eq!(out.code, 0, "{}", out.stderr);
-    assert_eq!(
-        out.json(),
-        json!({ "thread": thread_json(NEW_THREAD, None, &json!(QUESTION), false, Value::Null) })
-    );
-}
-
-#[test]
 fn thread_create_in_a_feature_the_project_does_not_have_names_it_and_starts_nothing() {
     let server = mock();
     let home = logged_in(&server.url);

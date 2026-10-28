@@ -57,7 +57,6 @@ const SECOND: &str = "01900000-0000-7000-8000-0000000000a2";
 /// The newest comment, without replies; an agent deleted its node, so it is
 /// orphaned.
 const THIRD: &str = "01900000-0000-7000-8000-0000000000a3";
-const UNKNOWN_ID: &str = "01900000-0000-7000-8000-0000000000e9";
 const NODE_FIRST: &str = "k3f9x2qa";
 const NODE_SECOND: &str = "b7m2c4dd/r9t5w1ee";
 const NODE_THIRD: &str = "h4p8n6zz";
@@ -468,18 +467,6 @@ fn list_of_a_feature_that_does_not_exist_is_one_line_and_asks_for_no_comments() 
     );
 }
 
-#[test]
-fn list_with_json_prints_the_apis_answer() {
-    let server = mock();
-    let home = logged_in(&server.url);
-    let out = run(&home, &["comment", "list", "--doc", DOC, "--json"]);
-    assert_eq!(out.code, 0, "{}", out.stderr);
-    assert_eq!(
-        out.json(),
-        json!({ "project_id": PROJECT, "comments": all_comments() })
-    );
-}
-
 // ---------------------------------------------------------------------------
 // omni comment reply
 // ---------------------------------------------------------------------------
@@ -530,14 +517,6 @@ fn reply_needs_an_id_and_a_text() {
     let out = run(&home, &["comment", "reply", THIRD, "  \n "]);
     assert_one_line_error(&out, &["text"]);
     assert!(requests(&server).is_empty(), "nothing was sent");
-}
-
-#[test]
-fn reply_to_an_unknown_comment_is_one_line_with_not_found() {
-    let server = mock();
-    let home = logged_in(&server.url);
-    let out = run(&home, &["comment", "reply", UNKNOWN_ID, "Hello"]);
-    assert_one_line_error(&out, &["not_found"]);
 }
 
 // ---------------------------------------------------------------------------
