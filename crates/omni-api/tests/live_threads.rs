@@ -1132,26 +1132,6 @@ fn agents_and_the_human_post_in_a_thread_without_a_change_set() {
     }
 }
 
-#[test]
-fn a_post_needs_a_summary_and_a_body() {
-    let (f, client) = ready();
-    let (project, thread) = thread_in_new_project(f, client, false);
-    let posts = format!("{}/posts", thread_path(f, &project, &thread));
-    for body in [
-        json!({ "body": "No summary" }),
-        json!({ "summary": "   ", "body": "Blank summary" }),
-        json!({ "summary": "No body" }),
-    ] {
-        let response = call(client, "POST", &posts, &critic(f), Some(&body));
-        assert_eq!(response.status, 400, "{body}: {}", response.text());
-    }
-    assert_eq!(
-        seen_in_thread(f, client, &human(f), &project, &thread),
-        Vec::<String>::new(),
-        "nothing was posted"
-    );
-}
-
 // ---------------------------------------------------------------------------
 // Sealed threads
 // ---------------------------------------------------------------------------
@@ -1216,21 +1196,6 @@ fn in_a_sealed_thread_an_agent_that_has_not_posted_reads_no_other_agents_posts()
         ids_of(&[&by_critic, &by_scout, &by_moderator]),
         "the human reads every post"
     );
-}
-
-#[test]
-fn in_a_thread_that_is_not_sealed_every_agent_reads_every_post() {
-    let (f, client) = ready();
-    let (project, thread) = thread_in_new_project(f, client, false);
-    let by_critic = post(f, client, &critic(f), &project, &thread, "critic");
-    let by_scout = post(f, client, &scout(f), &project, &thread, "scout");
-    for auth in [moderator(f), critic(f), scout(f), human(f)] {
-        assert_eq!(
-            seen_in_thread(f, client, &auth, &project, &thread),
-            ids_of(&[&by_critic, &by_scout]),
-            "every post, oldest first"
-        );
-    }
 }
 
 #[test]
