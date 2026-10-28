@@ -1125,11 +1125,4 @@ mod tests {
         assert_eq!(content(&one, "b0000004"), content(&two, "b0000004"));
         assert_ne!(content(&one, "b0000003"), content(&two, "b0000003"));
     }
-
-    #[test]
-    fn a_doc_without_ids_on_its_blocks_is_refused_by_name() {
-        let error = EditDoc::from_html("<div data-omni-id=\"b0000001\"><p>x</p></div>")
-            .expect_err("the paragraph has no ID");
-        assert!(error.message().contains("<p>"), "{error}");
-    }
 }

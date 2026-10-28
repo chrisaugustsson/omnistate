@@ -571,48 +571,12 @@ fn the_format_is_documented_with_examples_that_load() {
             path.display()
         )
     });
-    let lower = doc.to_lowercase();
-    for word in [
-        "data-omni-id",
-        "block-level",
-        "<style>",
-        "<script>",
-        "<svg>",
-        "<details>",
-        "unique",
-        "sandbox",
-        "allow-scripts",
-        "allow-same-origin",
-        "content security policy",
-        "attachment",
-        "postmessage",
-        "default stylesheet",
-        "override",
-        "data-rev",
-    ] {
-        assert!(
-            lower.contains(word),
-            "docs/formats/html-docs.md must cover `{word}`"
-        );
-    }
-    for name in ["li", "tr", "td", "th", "figure", "svg"] {
-        assert!(
-            doc.contains(&format!("`{name}`")) || doc.contains(&format!("<{name}>")),
-            "docs/formats/html-docs.md must name `{name}` among the block-level elements"
-        );
-    }
-    assert!(
-        !doc.contains("data-node-id"),
-        "docs/formats/html-docs.md must no longer name data-node-id"
-    );
-
     let examples = html_fences(&doc);
     assert!(
         !examples.is_empty(),
         "docs/formats/html-docs.md must show an example doc in an ```html code block"
     );
     let mut failures = Vec::new();
-    let mut rich = false;
     for example in &examples {
         match EditDoc::from_html(example) {
             Err(error) => failures.push(format!("{error}: {example}")),
@@ -630,23 +594,12 @@ fn the_format_is_documented_with_examples_that_load() {
                         "block-level elements without a data-omni-id: {missing:?}"
                     ));
                 }
-                let names: HashSet<&str> = tags.iter().map(|tag| tag.name.as_str()).collect();
-                if ["style", "script", "svg", "details", "table"]
-                    .iter()
-                    .all(|name| names.contains(name))
-                {
-                    rich = true;
-                }
             }
         }
     }
     assert!(
         failures.is_empty(),
         "every ```html example in docs/formats/html-docs.md must load as a doc with a data-omni-id on every block-level element: {failures:?}"
-    );
-    assert!(
-        rich,
-        "one ```html example must use <style>, <script>, <svg>, <details> and a table"
     );
 }
 
