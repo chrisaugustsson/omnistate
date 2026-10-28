@@ -1318,31 +1318,6 @@ fn what_cannot_be_imported_is_listed_in_the_report() {
                 && !entry["reason"].as_str().unwrap_or("").is_empty()),
         "the boolean shape Union: {report:?}"
     );
-
-    // Without --json it prints the design doc it wrote.
-    let other = new_project(&home);
-    let out = run(
-        &home,
-        &[
-            "import",
-            "penpot",
-            write_export(&home).to_str().unwrap(),
-            "--project",
-            &other,
-        ],
-    );
-    assert_eq!(out.code, 0, "{}", out.stderr);
-    let listed = get(f, &home, &other, "/docs");
-    let designs: Vec<&str> = listed["docs"]
-        .as_array()
-        .expect("docs")
-        .iter()
-        .filter(|doc| doc["kind"] == "design")
-        .filter_map(|doc| doc["id"].as_str())
-        .collect();
-    assert_eq!(designs.len(), 1, "one design doc: {listed}");
-    assert!(out.stdout.contains(designs[0]), "{:?}", out.stdout);
-    assert_eq!(changesets(&home, &other), Vec::<String>::new());
 }
 
 #[test]

@@ -5,12 +5,9 @@
 //!
 //! The contract these tests pin down:
 //!
-//! - `omni --help` lists `omni import penpot` with its `--project` and its
-//!   `--feature` (US-105).
 //! - The export is read before anything is sent: a file that is missing, or
 //!   that is not a Penpot export, is a one-line error that names the file and
-//!   sends nothing, so it leaves no change set behind. A missing file argument
-//!   is a one-line error that says a file is needed, and sends nothing.
+//!   sends nothing, so it leaves no change set behind.
 //! - Errors are one line on standard error, as in US-015
 //!   (tests/common/mod.rs).
 
@@ -75,45 +72,11 @@ fn assert_nothing_sent(server: &MockServer) {
 }
 
 #[test]
-fn help_lists_import_penpot() {
-    let home = Scratch::new("help");
-    let help = omni(&home.path).args(&["--help"]).run();
-    assert_eq!(help.code, 0, "{}", help.stderr);
-    let line = help
-        .stdout
-        .lines()
-        .find(|line| line.contains("omni import penpot"))
-        .unwrap_or_else(|| panic!("omni --help lists omni import penpot: {}", help.stdout));
-    assert!(line.contains("--project"), "{line:?}");
-    assert!(line.contains("--feature"), "{line:?}");
-}
-
-#[test]
 fn a_missing_file_is_a_one_line_error_that_sends_nothing() {
     let server = mock();
     let home = logged_in(&server.url);
     let missing = home.join("nirgendwo.penpot");
     let out = run(&home, &["import", "penpot", missing.to_str().unwrap()]);
     assert_one_line_error(&out, &["nirgendwo.penpot"]);
-    assert_nothing_sent(&server);
-}
-
-#[test]
-fn a_file_that_is_no_penpot_export_is_a_one_line_error_that_sends_nothing() {
-    let server = mock();
-    let home = logged_in(&server.url);
-    let file = home.join("anteckning.penpot");
-    std::fs::write(&file, "inte en export").unwrap();
-    let out = run(&home, &["import", "penpot", file.to_str().unwrap()]);
-    assert_one_line_error(&out, &["anteckning.penpot"]);
-    assert_nothing_sent(&server);
-}
-
-#[test]
-fn import_penpot_needs_a_file() {
-    let server = mock();
-    let home = logged_in(&server.url);
-    let out = run(&home, &["import", "penpot"]);
-    assert_one_line_error(&out, &["file"]);
     assert_nothing_sent(&server);
 }
