@@ -28,14 +28,7 @@
 //! - `omni doc show <doc>` sends `GET /docs/{doc}` and prints the doc's title,
 //!   kind, pillar, mainline version (or that there is none), its drafts with
 //!   their change sets, and its claims.
-//! - `omni doc edit <doc> --changeset <id>` reads a batch of operations (a JSON
-//!   array) from `--body-file <path>`, or standard input without it or with
-//!   `--body-file -`, and sends `POST /changesets/{changeset}/docs/{doc}/ops`
-//!   with `{"ops": <the batch>}`. It prints each result's node and new
-//!   revision and the IDs of new nodes. Input that is not a JSON array sends
-//!   nothing. A conflict (409) or refused operation (400) is a one-line error
-//!   that names the node or carries the API's message. Without `--changeset`
-//!   it edits the live doc (US-103, tests/live_edits.rs).
+//! - `omni doc edit` is in tests/live_edits.rs (US-103).
 //! - `<doc>` is a doc ID (a UUID). Every command is an agent request with the
 //!   agent identity headers, `--json` prints the API's JSON, and errors are one
 //!   line on standard error, as in US-015 (tests/common/mod.rs).
@@ -59,8 +52,6 @@ const MAINLINE_HTML: &str =
 const OLD_HTML: &str =
     "<h1 data-omni-id=\"a0000001\">Checkout</h1><p data-omni-id=\"a0000002\">Old text</p>";
 const DRAFT_HTML: &str = "<h1 data-omni-id=\"a0000001\" data-rev=\"1\">Checkout</h1><p data-omni-id=\"a0000002\" data-rev=\"3\">Draft text</p>";
-const CONFLICT_NODE: &str = "c0nf1ct0";
-const UNKNOWN_NODE: &str = "zzzzzzzz";
 
 fn base() -> String {
     format!("/api/v1/w/{WORKSPACE}/projects/{PROJECT}")
@@ -84,19 +75,9 @@ fn doc_json(id: &str, title: &str, kind: &str, pillar: &str, mainline: Option<&s
     })
 }
 
-/// The answer to a batch: the first operation is a `set` of `a0000002`, the
-/// second an insert that made two nodes.
-fn edit_answer() -> Value {
-    json!({ "results": [
-        { "node": "a0000002", "revision": 4, "created": [], "removed": [] },
-        { "node": "n3wa1st0", "revision": 1, "created": ["n3wa1st0", "n3w1tem0"], "removed": [] }
-    ] })
-}
-
 /// An API with the doc `DOC` (mainline version `MAINLINE`, an older version
 /// `OLD_VERSION` and a draft in `CHANGESET`) and `NEW_DOC`, which has no
-/// mainline version. A batch that mentions `CONFLICT_NODE` is a conflict, one
-/// that mentions `UNKNOWN_NODE` is refused.
+/// mainline version.
 fn mock() -> MockServer {
     MockServer::start(|request| {
         let body: Value = serde_json::from_slice(&request.body).unwrap_or(Value::Null);
@@ -128,32 +109,6 @@ fn mock() -> MockServer {
                 let mut draft = draft_json(DRAFT, DOC, Some(MAINLINE));
                 draft["html"] = json!(DRAFT_HTML);
                 Reply::json(200, &json!({ "draft": draft }))
-            }
-            ("POST", r) if r == format!("{changeset}/docs/{DOC}/ops") => {
-                let text = body.to_string();
-                if text.contains(CONFLICT_NODE) {
-                    Reply::json(
-                        409,
-                        &json!({ "error": "conflict", "conflict": {
-                            "index": 0,
-                            "node": CONFLICT_NODE,
-                            "expected": 1,
-                            "current_revision": 3,
-                            "current_html": "<p data-omni-id=\"c0nf1ct0\">Changed by someone else</p>"
-                        } }),
-                    )
-                } else if text.contains(UNKNOWN_NODE) {
-                    Reply::json(
-                        400,
-                        &json!({
-                            "error": "invalid_operation",
-                            "index": 0,
-                            "message": format!("the node `{UNKNOWN_NODE}` is not in the doc")
-                        }),
-                    )
-                } else {
-                    Reply::json(200, &edit_answer())
-                }
             }
             ("GET", r) if r == format!("/docs/{DOC}") => Reply::json(
                 200,
@@ -706,132 +661,5 @@ fn doc_show_prints_the_metadata_mainline_version_drafts_and_claims() {
     assert_eq!(
         json.json(),
         json!({ "doc": doc_json(DOC, "Checkout PRD", "html", "research", Some(MAINLINE)) })
-    );
-}
-
-// ---------------------------------------------------------------------------
-// omni doc edit
-// ---------------------------------------------------------------------------
-
-fn batch() -> Value {
-    json!([
-        { "op": "set", "node": "a0000002", "rev": 3, "properties": { "html": "Changed" } },
-        {
-            "op": "insert",
-            "parent": null,
-            "position": { "after": "a0000002" },
-            "content": "<ul><li>New</li></ul>"
-        }
-    ])
-}
-
-#[test]
-fn doc_edit_prints_the_new_revisions_and_the_ids_of_new_nodes() {
-    let server = mock();
-    let home = logged_in(&server.url);
-    let out = omni(&home.path)
-        .args(&["doc", "edit", DOC, "--changeset", CHANGESET])
-        .args(&["--project", PROJECT, "--as", "run-7/author"])
-        .stdin(batch().to_string().as_bytes())
-        .run();
-    assert_eq!(out.code, 0, "{}", out.stderr);
-    let lines = non_empty_lines(&out.stdout);
-    assert!(
-        lines
-            .iter()
-            .any(|l| l.contains("a0000002") && l.contains('4')),
-        "the set node and its new revision 4 are on one line: {:?}",
-        out.stdout
-    );
-    for id in ["n3wa1st0", "n3w1tem0"] {
-        assert!(
-            out.stdout.contains(id),
-            "the new node {id} is printed: {:?}",
-            out.stdout
-        );
-    }
-
-    let json = omni(&home.path)
-        .args(&["doc", "edit", DOC, "--changeset", CHANGESET, "--json"])
-        .args(&["--project", PROJECT, "--as", "run-7/author"])
-        .stdin(batch().to_string().as_bytes())
-        .run();
-    assert_eq!(json.code, 0, "{}", json.stderr);
-    assert_eq!(json.json(), edit_answer());
-}
-
-#[test]
-fn doc_edit_refuses_input_that_is_not_a_batch_before_sending_it() {
-    let server = mock();
-    let home = logged_in(&server.url);
-    for input in ["", "not json", "{\"op\": \"delete\"}"] {
-        let out = omni(&home.path)
-            .args(&["doc", "edit", DOC, "--changeset", CHANGESET])
-            .args(&["--project", PROJECT, "--as", "run-7/author"])
-            .stdin(input.as_bytes())
-            .run();
-        assert_one_line_error(&out, &[]);
-    }
-    assert_nothing_sent(&server);
-}
-
-#[test]
-fn a_conflict_is_one_line_that_names_the_node() {
-    let server = mock();
-    let home = logged_in(&server.url);
-    let ops =
-        json!([{ "op": "set", "node": CONFLICT_NODE, "rev": 1, "properties": { "html": "x" } }]);
-    let out = omni(&home.path)
-        .args(&["doc", "edit", DOC, "--changeset", CHANGESET])
-        .args(&["--project", PROJECT, "--as", "run-7/author"])
-        .stdin(ops.to_string().as_bytes())
-        .run();
-    assert_one_line_error(&out, &["conflict", CONFLICT_NODE]);
-}
-
-#[test]
-fn a_refused_operation_is_one_line_that_names_the_unknown_id() {
-    let server = mock();
-    let home = logged_in(&server.url);
-    let ops = json!([{ "op": "delete", "node": UNKNOWN_NODE, "rev": 1 }]);
-    let out = omni(&home.path)
-        .args(&["doc", "edit", DOC, "--changeset", CHANGESET])
-        .args(&["--project", PROJECT, "--as", "run-7/author"])
-        .stdin(ops.to_string().as_bytes())
-        .run();
-    assert_one_line_error(&out, &[UNKNOWN_NODE]);
-}
-
-#[test]
-fn help_lists_the_doc_commands() {
-    let home = Scratch::new("help");
-    let help = omni(&home.path).args(&["--help"]).run();
-    assert_eq!(help.code, 0, "{}", help.stderr);
-    for command in ["doc create", "doc open", "doc read", "doc show", "doc edit"] {
-        assert!(
-            help.stdout.contains(command),
-            "omni --help lists `omni {command}`: {:?}",
-            help.stdout
-        );
-    }
-}
-
-#[test]
-fn make_bench_ops_is_a_target_of_the_makefile() {
-    let makefile = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Makefile"),
-    )
-    .expect("read the Makefile");
-    assert!(
-        makefile.lines().any(|l| l.starts_with("bench-ops:")),
-        "the Makefile has a bench-ops target"
-    );
-    let phony = makefile
-        .lines()
-        .find(|l| l.starts_with(".PHONY:"))
-        .expect("a .PHONY line");
-    assert!(
-        phony.split_whitespace().any(|t| t == "bench-ops"),
-        "bench-ops is phony: {phony}"
     );
 }
