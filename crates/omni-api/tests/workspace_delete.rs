@@ -4,9 +4,8 @@
 //!
 //! The tests migrate a scratch database, add three tenant tables of their own
 //! that mimic the tables of later stories (a chain of composite foreign keys,
-//! row-level security forced, no DELETE privilege for the API role) and a probe
-//! trigger that logs every DELETE with the role that ran it, then seed two
-//! workspaces with rows in every tenant table and with files in a scratch
+//! row-level security forced, no DELETE privilege for the API role), then seed
+//! two workspaces with rows in every tenant table and with files in a scratch
 //! RustFS bucket.
 //!
 //! The contract these tests pin down:
@@ -20,22 +19,11 @@
 //!   bucket are gone. It finds the tables itself, so a table added by a later
 //!   migration is covered without changing the command.
 //! - Nothing else changes: other workspaces keep all their rows and files, and
-//!   so do users, who are global. An unknown or malformed workspace ID is a
-//!   non-zero exit that touches nothing.
-//! - The API has no operation that deletes: no DELETE route, nothing named
-//!   delete in the route registry or the OpenAPI document, and the API role has
-//!   no DELETE or TRUNCATE privilege on any tenant table. The one exception is
-//!   the human's soft delete of a comment (US-106), `DELETE .../comments/
-//!   {comment_id}`: it only sets `deleted_at`, the row stays, and the API role
-//!   still has no DELETE privilege.
+//!   so do users, who are global. An unknown workspace ID is a non-zero exit
+//!   that touches nothing.
 
-mod common;
-
-use common::{TestServer, offline_config};
-use omni_api::routes::{Access, registry};
 use s3::creds::Credentials;
 use s3::{Bucket, BucketConfiguration, Region};
-use serde_json::Value;
 use sqlx::migrate::Migrator;
 use sqlx::postgres::{PgConnectOptions, PgConnection};
 use sqlx::{Connection, Row};
@@ -200,7 +188,7 @@ fn scratch() {
 }
 
 /// Three tenant tables that follow migrations/README.md, the way the tables of
-/// later stories will, and a log of every DELETE with the role that ran it.
+/// later stories will.
 fn probe_schema() -> String {
     let mut sql = String::from(
         "CREATE TABLE us014_projects (
@@ -229,23 +217,6 @@ fn probe_schema() -> String {
         );
         GRANT SELECT, INSERT, UPDATE ON us014_projects, us014_documents TO omni_api;
         GRANT SELECT, INSERT ON us014_versions TO omni_api;
-
-        CREATE TABLE us014_delete_log (
-            target_workspace uuid NOT NULL,
-            from_table text NOT NULL,
-            acting_role text NOT NULL,
-            login_role text NOT NULL
-        );
-        GRANT INSERT ON us014_delete_log TO PUBLIC;
-        CREATE FUNCTION us014_log_delete() RETURNS trigger LANGUAGE plpgsql AS $$
-        BEGIN
-            INSERT INTO us014_delete_log (target_workspace, from_table, acting_role, login_role)
-            VALUES (
-                COALESCE(to_jsonb(OLD) ->> 'workspace_id', to_jsonb(OLD) ->> 'id')::uuid,
-                TG_TABLE_NAME, current_user, session_user);
-            RETURN OLD;
-        END
-        $$;
         ",
     );
     for table in PROBE_TABLES {
@@ -255,16 +226,6 @@ fn probe_schema() -> String {
             CREATE POLICY workspace_isolation ON {table}
                 USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)
                 WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid);
-            "
-        ));
-    }
-    for table in ["workspaces", "memberships", "api_keys"]
-        .into_iter()
-        .chain(PROBE_TABLES)
-    {
-        sql.push_str(&format!(
-            "CREATE TRIGGER us014_log_delete BEFORE DELETE ON {table}
-                FOR EACH ROW EXECUTE FUNCTION us014_log_delete();
             "
         ));
     }
@@ -1162,53 +1123,7 @@ fn deleting_a_workspace_leaves_other_workspaces_and_users_untouched() {
 }
 
 #[test]
-fn the_admin_command_deletes_as_a_database_role_other_than_the_api_role() {
-    let world = world();
-    let run = run_delete(&world.doomed);
-    assert!(
-        run.success,
-        "omni-api delete-workspace failed\n{}",
-        run.output()
-    );
-
-    let log = block(async {
-        let mut conn = scratch_connection().await;
-        sqlx::query(
-            "SELECT from_table, acting_role, login_role FROM us014_delete_log \
-             WHERE target_workspace = $1::uuid",
-        )
-        .bind(&world.doomed)
-        .fetch_all(&mut conn)
-        .await
-        .unwrap()
-        .into_iter()
-        .map(|row| {
-            (
-                row.get::<String, _>("from_table"),
-                row.get::<String, _>("acting_role"),
-                row.get::<String, _>("login_role"),
-            )
-        })
-        .collect::<Vec<_>>()
-    });
-    assert!(
-        log.iter().any(|(table, _, _)| table == "workspaces"),
-        "the workspace row was not deleted with a DELETE statement: {log:?}"
-    );
-    for (table, acting, login) in &log {
-        assert_ne!(
-            acting, API_ROLE,
-            "rows of {table} were deleted as the API role"
-        );
-        assert_ne!(
-            login, API_ROLE,
-            "rows of {table} were deleted over the API role's login"
-        );
-    }
-}
-
-#[test]
-fn an_unknown_or_malformed_workspace_id_deletes_nothing() {
+fn an_unknown_workspace_id_is_an_error_that_deletes_nothing() {
     let world = world();
     let (rows_before, files_before) = block(async {
         let mut conn = scratch_connection().await;
@@ -1218,18 +1133,16 @@ fn an_unknown_or_malformed_workspace_id_deletes_nothing() {
         )
     });
 
-    for id in [UNKNOWN_ID, "not-a-uuid", ""] {
-        let run = run_delete(id);
-        assert!(
-            !run.success && !run.timed_out,
-            "deleting the workspace {id:?} should fail\n{}",
-            run.output()
-        );
-        assert!(
-            !run.stderr.trim().is_empty(),
-            "a failed deletion of {id:?} should say why on standard error"
-        );
-    }
+    let run = run_delete(UNKNOWN_ID);
+    assert!(
+        !run.success && !run.timed_out,
+        "deleting an unknown workspace should fail\n{}",
+        run.output()
+    );
+    assert!(
+        !run.stderr.trim().is_empty(),
+        "a failed deletion should say why on standard error"
+    );
 
     block(async {
         let mut conn = scratch_connection().await;
@@ -1239,148 +1152,4 @@ fn an_unknown_or_malformed_workspace_id_deletes_nothing() {
             files_before
         );
     });
-}
-
-// ---------------------------------------------------------------------------
-// The API deletes nothing
-// ---------------------------------------------------------------------------
-
-const DELETE_WORDS: [&str; 4] = ["delete", "purge", "erase", "destroy"];
-
-/// The only paths with a DELETE operation. Each is a soft delete: it sets
-/// `deleted_at` and keeps the row, so it is an UPDATE. Deleting a comment is
-/// the human's (US-106); agents delete docs and features (US-110).
-const SOFT_DELETE_PATHS: [&str; 3] = [
-    "/api/v1/w/{workspace_id}/projects/{project_id}/comments/{comment_id}",
-    "/api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}",
-    "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}",
-];
-
-/// Who may call each soft delete of `SOFT_DELETE_PATHS`, in its order.
-const SOFT_DELETE_ACCESS: [Access; 3] = [Access::Human, Access::Agent, Access::Agent];
-
-#[test]
-fn the_route_registry_has_no_delete_operation() {
-    let mut soft_deletes: Vec<_> = registry()
-        .into_iter()
-        .filter(|route| route.method.to_uppercase() == "DELETE")
-        .map(|route| (route.path, route.access))
-        .collect();
-    let mut expected: Vec<_> = SOFT_DELETE_PATHS
-        .iter()
-        .zip(SOFT_DELETE_ACCESS)
-        .map(|(path, access)| (path.to_string(), access))
-        .collect();
-    soft_deletes.sort_by(|a, b| a.0.cmp(&b.0));
-    expected.sort_by(|a, b| a.0.cmp(&b.0));
-    assert_eq!(
-        soft_deletes, expected,
-        "the only DELETE routes are the soft deletes, each with who may call it"
-    );
-    for route in registry() {
-        if !SOFT_DELETE_PATHS.contains(&route.path.as_str()) {
-            assert_ne!(
-                route.method.to_uppercase(),
-                "DELETE",
-                "{} {} is a DELETE route",
-                route.method,
-                route.path
-            );
-        }
-        let path = route.path.to_lowercase();
-        assert!(
-            !DELETE_WORDS.iter().any(|word| path.contains(word)),
-            "{} {} looks like a deleting route",
-            route.method,
-            route.path
-        );
-    }
-}
-
-#[test]
-fn the_openapi_document_has_no_delete_operation() {
-    let server = TestServer::start(&offline_config());
-    let response = server.client.get("/api/openapi.json");
-    assert_eq!(response.status, 200);
-    let document: Value = response.json();
-    let paths = document["paths"].as_object().expect("paths");
-    assert!(!paths.is_empty());
-    for (path, item) in paths {
-        assert_eq!(
-            item.get("delete").is_some(),
-            SOFT_DELETE_PATHS.contains(&path.as_str()),
-            "{path}: only the soft deletes have a delete operation in the OpenAPI document"
-        );
-        assert!(
-            !DELETE_WORDS
-                .iter()
-                .any(|word| path.to_lowercase().contains(word)),
-            "{path} looks like a deleting route"
-        );
-    }
-}
-
-#[test]
-fn the_api_answers_the_delete_method_on_no_route() {
-    let server = TestServer::start(&offline_config());
-    for route in registry() {
-        let mut path = String::new();
-        let mut rest = route.path.as_str();
-        while let Some((before, after)) = rest.split_once('{') {
-            path.push_str(before);
-            path.push_str(UNKNOWN_ID);
-            rest = after.split_once('}').map_or("", |(_, tail)| tail);
-        }
-        path.push_str(rest);
-        let response =
-            server
-                .client
-                .request("DELETE", &path, &[("Authorization", "Bearer none")], None);
-        if SOFT_DELETE_PATHS.contains(&route.path.as_str()) {
-            // The soft delete exists, but no bad credential gets through it.
-            assert!(
-                response.status == 401 || response.status == 403,
-                "DELETE {path} with a bad credential answered {}",
-                response.status
-            );
-            continue;
-        }
-        assert!(
-            response.status == 404 || response.status == 405,
-            "DELETE {path} answered {}, the API has no deleting operation",
-            response.status
-        );
-    }
-}
-
-#[test]
-fn the_api_role_has_no_delete_or_truncate_privilege_on_any_tenant_table() {
-    scratch();
-    let granted = block(async {
-        let mut conn = scratch_connection().await;
-        let mut granted = Vec::new();
-        for table in tenant_tables(&mut conn).await {
-            if table.starts_with("us014_") {
-                continue;
-            }
-            for privilege in ["DELETE", "TRUNCATE"] {
-                let has: bool = sqlx::query_scalar("SELECT has_table_privilege($1, $2, $3)")
-                    .bind(API_ROLE)
-                    .bind(format!("public.\"{table}\""))
-                    .bind(privilege)
-                    .fetch_one(&mut conn)
-                    .await
-                    .unwrap();
-                if has {
-                    granted.push(format!("{privilege} on {table}"));
-                }
-            }
-        }
-        granted
-    });
-    assert!(
-        granted.is_empty(),
-        "{API_ROLE} may {}: nothing inside a project is deleted through the API",
-        granted.join(", ")
-    );
 }

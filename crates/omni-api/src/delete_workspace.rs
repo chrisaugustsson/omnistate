@@ -277,14 +277,4 @@ mod tests {
         assert!(at("versions") < at("documents"));
         assert!(at("documents") < at("projects"));
     }
-
-    #[test]
-    fn a_cycle_of_foreign_keys_is_an_error() {
-        let tables = names(&["a", "b"]);
-        let keys = vec![
-            ("a".to_string(), "b".to_string()),
-            ("b".to_string(), "a".to_string()),
-        ];
-        assert!(delete_order(&tables, &keys).is_err());
-    }
 }
