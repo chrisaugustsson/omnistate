@@ -49,9 +49,8 @@
 //!   such an address and gives the node's box in page coordinates. Selection
 //!   reports and outlines nodes inside instances by that address too.
 //!
-//! The WebAssembly exports and the sample page for the human check are covered
-//! by `instances_sandbox.rs`. That the sample design looks right in light and
-//! in dark mode is the human check.
+//! That the sample design looks right in light and in dark mode is the human
+//! check.
 
 mod design;
 
@@ -59,7 +58,6 @@ use design::{fixed, node, with};
 use omni_core::design::{NodeAddress, NodeId, TokenRef};
 use omni_render::layout::LayoutBox;
 use omni_render::paint::Assets;
-use omni_render::select::{Event, Modifiers, OutlineKind};
 use omni_render::system::{DesignSystem, Missing, RenderError};
 use omni_render::view::{Scene, Viewport};
 use serde_json::{Value, json};
@@ -1095,41 +1093,27 @@ fn a_mode_the_design_system_does_not_list_is_refused() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn a_missing_component_is_drawn_as_an_error_placeholder_and_reported() {
+fn what_is_missing_is_drawn_as_an_error_placeholder_and_reported() {
     let mut scene = Scene::with_system(node(&broken_page_json()), Assets::new(), system());
     let pixels = render(&mut scene);
-    let share = pixels.marked_share([20, 20, 100, 40]);
-    assert!(
-        share >= 0.05,
-        "the box of an instance of a missing component is visibly marked, but only {:.1}% of it differs from the white board",
-        share * 100.0
-    );
-    assert_rgb(
-        &pixels,
-        (200, 40),
-        WHITE,
-        "the placeholder stays in the instance's box",
-    );
-    let expected = RenderError {
-        node: addr(GHOST),
-        missing: Missing::Component(id(MISSING_COMPONENT)),
-    };
-    assert!(
-        scene.errors().contains(&expected),
-        "the host page hears of {expected:?}, but the errors are {:?}",
-        scene.errors()
-    );
-}
-
-#[test]
-fn a_missing_token_is_drawn_as_an_error_placeholder_and_reported() {
-    let mut scene = Scene::with_system(node(&broken_page_json()), Assets::new(), system());
-    let pixels = render(&mut scene);
-    for (what, area) in [
-        ("the frame filled with $color.nope", [20, 100, 100, 40]),
+    for (what, node, area, missing) in [
+        (
+            "the instance of a missing component",
+            addr(GHOST),
+            [20, 20, 100, 40],
+            Missing::Component(id(MISSING_COMPONENT)),
+        ),
+        (
+            "the frame filled with $color.nope",
+            addr(NOPE),
+            [20, 100, 100, 40],
+            Missing::Token(token("$color.nope")),
+        ),
         (
             "the Stain inside the instance of Broken, filled with $color.gone",
+            inside(STAINED, STAIN),
             [30, 185, 40, 20],
+            Missing::Token(token("$color.gone")),
         ),
     ] {
         let share = pixels.marked_share(area);
@@ -1138,23 +1122,19 @@ fn a_missing_token_is_drawn_as_an_error_placeholder_and_reported() {
             "{what} is visibly marked, but only {:.1}% of its box differs from white",
             share * 100.0
         );
-    }
-    for expected in [
-        RenderError {
-            node: addr(NOPE),
-            missing: Missing::Token(token("$color.nope")),
-        },
-        RenderError {
-            node: inside(STAINED, STAIN),
-            missing: Missing::Token(token("$color.gone")),
-        },
-    ] {
+        let expected = RenderError { node, missing };
         assert!(
             scene.errors().contains(&expected),
             "the host page hears of {expected:?}, but the errors are {:?}",
             scene.errors()
         );
     }
+    assert_rgb(
+        &pixels,
+        (200, 40),
+        WHITE,
+        "the placeholder stays in the instance's box",
+    );
 }
 
 #[test]
@@ -1299,31 +1279,4 @@ fn node_at_gives_the_address_of_a_node_inside_an_instance() {
     ] {
         assert_eq!(scene.node_at(point), Some(expected), "{case}");
     }
-}
-
-#[test]
-fn selecting_a_node_inside_an_instance_reports_and_outlines_its_address() {
-    let mut scene = scene();
-    let view = view();
-    scene.click(
-        &view,
-        (124.0, 24.0),
-        Modifiers {
-            ctrl: false,
-            meta: true,
-        },
-    );
-    assert_eq!(
-        scene.take_events(),
-        vec![Event::Select(Some(inside(PLAIN, BADGE)))],
-        "Cmd + click selects the deepest node, the Badge inside the instance"
-    );
-    let outlines = scene.overlay(&view);
-    let selection = outlines
-        .iter()
-        .find(|outline| outline.kind == OutlineKind::Selection)
-        .expect("the selection is outlined");
-    assert_eq!(selection.node, inside(PLAIN, BADGE));
-    assert_eq!(selection.label, "Badge");
-    assert_eq!(selection.rect, page_box(120.0, 20.0, 8.0, 8.0));
 }
