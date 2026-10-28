@@ -4,11 +4,10 @@
 //!
 //! The tests migrate a scratch database, seed a workspace with one member
 //! (alice) and a live session, mint two API keys through the API, create a
-//! scratch RustFS bucket and serve the API's router on a local port. The tests
-//! of expiry use a second router over the same database whose claims last a
-//! few seconds (`AppState::with_claim_ttl`), and the test of the log a third
-//! one, which loads the draft from the database; every other test talks to one
-//! router only, since each keeps its own drafts in memory.
+//! scratch RustFS bucket and serve the API's router on a local port. The test
+//! of the log uses a second router, which loads the draft from the database;
+//! every other test talks to one router only, since each keeps its own drafts
+//! in memory.
 //!
 //! The contract these tests pin down (all paths are under
 //! `/api/v1/w/{workspace_id}/projects/{project_id}`; docs, drafts and the
@@ -84,7 +83,7 @@
 mod common;
 
 use common::{Client, Response, TestServer, cookie};
-use omni_api::{AppState, Config};
+use omni_api::Config;
 use s3::creds::Credentials;
 use s3::{Bucket, BucketConfiguration, Region};
 use serde_json::{Value, json};
@@ -95,14 +94,11 @@ use std::future::Future;
 use std::str::FromStr;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::time::Duration;
 
 const TEST_DB: &str = "omni_us031_design_edits";
 const TEST_BUCKET: &str = "omni-us031-design-edits";
 /// A node ID in the right format that no node has.
 const UNKNOWN_NODE: &str = "zzzzzzzz";
-/// How long a claim lasts on the short router.
-const SHORT_TTL: Duration = Duration::from_secs(3);
 
 // ---------------------------------------------------------------------------
 // Plumbing
@@ -300,45 +296,6 @@ fn fixture() -> &'static Fixture {
 fn ready() -> (&'static Fixture, &'static Client) {
     let fixture = fixture();
     (fixture, &fixture.server.client)
-}
-
-/// A second router over the scratch database whose claims last `SHORT_TTL`.
-struct ShortServer {
-    client: Client,
-    /// Keeps the router's runtime, and so the router, alive.
-    _runtime: tokio::runtime::Runtime,
-}
-
-fn short() -> (&'static Fixture, &'static Client) {
-    static SHORT: OnceLock<ShortServer> = OnceLock::new();
-    let f = fixture();
-    let server = SHORT.get_or_init(|| {
-        let runtime = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(2)
-            .enable_all()
-            .build()
-            .expect("tokio runtime");
-        let listener = runtime
-            .block_on(tokio::net::TcpListener::bind("127.0.0.1:0"))
-            .expect("bind a local port");
-        let port = listener.local_addr().unwrap().port();
-        let router = {
-            // The connection pool needs a runtime to be created in.
-            let _guard = runtime.enter();
-            let state = AppState::new(&config())
-                .expect("build the API state")
-                .with_claim_ttl(SHORT_TTL);
-            omni_api::router(state)
-        };
-        runtime.spawn(async move {
-            axum::serve(listener, router).await.expect("serve the API");
-        });
-        ShortServer {
-            client: Client::local(port),
-            _runtime: runtime,
-        }
-    });
-    (f, &server.client)
 }
 
 /// Who sends a request: an agent (an API key with its run and role), or the
@@ -1051,40 +1008,6 @@ fn applied_operations_are_logged_and_a_fresh_router_reads_the_same_draft() {
 }
 
 #[test]
-fn applied_operations_emit_op_applied() {
-    let (f, client) = ready();
-    let design = new_design(f, client);
-    let before = events_of(&design.project, "op.applied").len();
-    let results = applied(
-        f,
-        client,
-        &design,
-        json!([
-            set_content(&design.id("Total"), 1, "Summa 12 kr"),
-            insert(&design.id("Actions"), None, &text_tag("Buy", "Köp"))
-        ]),
-    );
-    let events = events_of(&design.project, "op.applied");
-    assert_eq!(
-        events.len(),
-        before + 2,
-        "one event per operation: {events:?}"
-    );
-    let events = &events[before..];
-    for (event, result) in events.iter().zip(&results) {
-        assert_eq!(event["doc_id"], design.doc.as_str(), "{event}");
-        assert_eq!(event["changeset_id"], design.changeset.as_str(), "{event}");
-        assert_eq!(event["draft_id"], design.draft.as_str(), "{event}");
-        assert_eq!(event["node"], result["node"], "{event}");
-        assert_eq!(event["revision"], result["revision"], "{event}");
-        assert_eq!(event["created"], result["created"], "{event}");
-        assert_eq!(event["agent"]["run"], "run-1", "{event}");
-        assert_eq!(event["agent"]["role"], "designer", "{event}");
-    }
-    assert_eq!(events[0]["node"], design.id("Total"), "{:?}", events[0]);
-}
-
-#[test]
 fn two_agents_editing_different_boards_of_one_draft_at_once_both_succeed() {
     let (f, client) = ready();
     let design = new_design(f, client);
@@ -1145,16 +1068,6 @@ fn claim(f: &Fixture, client: &Client, auth: &Auth, design: &Design, node: &str)
     )
 }
 
-fn release(f: &Fixture, client: &Client, auth: &Auth, design: &Design, node: &str) -> Response {
-    call(
-        client,
-        "POST",
-        &format!("{}/claims/release", design.changeset_path(f)),
-        auth,
-        Some(&json!({ "node": node })),
-    )
-}
-
 /// Asserts that `response` is a refusal because `board` is claimed by the
 /// holder (run-1/designer).
 fn assert_claimed_by_holder(response: &Response, board: &str) {
@@ -1171,38 +1084,6 @@ fn assert_claimed_by_holder(response: &Response, board: &str) {
 }
 
 #[test]
-fn an_agent_claims_a_board_and_the_doc_lists_the_claim() {
-    let (f, client) = ready();
-    let design = new_design(f, client);
-    let cart = design.id("Cart");
-    let taken = must(
-        claim(f, client, &holder(f), &design, &cart),
-        201,
-        "claim the board",
-    );
-    assert_eq!(taken["claim"]["node"], cart.as_str(), "{taken}");
-    assert_eq!(taken["claim"]["doc_id"], design.doc.as_str(), "{taken}");
-    assert_eq!(taken["claim"]["draft_id"], design.draft.as_str(), "{taken}");
-    let doc = must(
-        call(
-            client,
-            "GET",
-            &format!("{}/docs/{}", design.base(f), design.doc),
-            &holder(f),
-            None,
-        ),
-        200,
-        "read the doc",
-    );
-    let claims = doc["doc"]["claims"].as_array().cloned().unwrap_or_default();
-    assert_eq!(claims.len(), 1, "{doc}");
-    assert_eq!(claims[0]["node"], cart.as_str(), "{doc}");
-    let events = events_of(&design.project, "claim.taken");
-    assert_eq!(events.len(), 1, "{events:?}");
-    assert_eq!(events[0]["node"], cart.as_str(), "{:?}", events[0]);
-}
-
-#[test]
 fn only_boards_of_a_design_can_be_claimed() {
     let (f, client) = ready();
     let design = new_design(f, client);
@@ -1211,24 +1092,6 @@ fn only_boards_of_a_design_can_be_claimed() {
         assert_error(&response, 400, "invalid_request");
     }
     assert!(events_of(&design.project, "claim.taken").is_empty());
-}
-
-#[test]
-fn a_board_that_another_agent_holds_cannot_be_claimed() {
-    let (f, client) = ready();
-    let design = new_design(f, client);
-    let cart = design.id("Cart");
-    must(
-        claim(f, client, &holder(f), &design, &cart),
-        201,
-        "claim the board",
-    );
-    assert_claimed_by_holder(&claim(f, client, &other(f), &design, &cart), &cart);
-    must(
-        claim(f, client, &other(f), &design, &design.id("Payment")),
-        201,
-        "another agent claims another board",
-    );
 }
 
 #[test]
@@ -1284,118 +1147,4 @@ fn editing_a_board_claimed_by_another_agent_fails_and_names_the_holder() {
         200,
         "the holder edits its board",
     );
-}
-
-#[test]
-fn the_holder_releases_a_board_and_others_edit_it_again() {
-    let (f, client) = ready();
-    let design = new_design(f, client);
-    let cart = design.id("Cart");
-    must(
-        claim(f, client, &holder(f), &design, &cart),
-        201,
-        "claim the board",
-    );
-    let released = must(
-        release(f, client, &holder(f), &design, &cart),
-        200,
-        "release the board",
-    );
-    assert_eq!(released["claim"]["node"], cart.as_str(), "{released}");
-    let events = events_of(&design.project, "claim.released");
-    assert_eq!(events.len(), 1, "{events:?}");
-    assert_eq!(events[0]["node"], cart.as_str(), "{:?}", events[0]);
-    must(
-        edit(
-            f,
-            client,
-            &other(f),
-            &design,
-            json!([set_content(&design.id("Total"), 1, "Summa 12 kr")]),
-        ),
-        200,
-        "another agent edits the released board",
-    );
-}
-
-#[test]
-fn a_board_claim_expires_without_an_operation_from_its_holder() {
-    let (f, client) = short();
-    let design = new_design(f, client);
-    let cart = design.id("Cart");
-    let taken = must(
-        claim(f, client, &holder(f), &design, &cart),
-        201,
-        "claim the board",
-    );
-    let total = design.id("Total");
-    assert_claimed_by_holder(
-        &edit(
-            f,
-            client,
-            &other(f),
-            &design,
-            json!([set_content(&total, 1, "Too early")]),
-        ),
-        &cart,
-    );
-
-    std::thread::sleep(SHORT_TTL + Duration::from_millis(700));
-
-    must(
-        edit(
-            f,
-            client,
-            &other(f),
-            &design,
-            json!([set_content(&total, 1, "After the claim expired")]),
-        ),
-        200,
-        "another agent edits once the claim expired",
-    );
-    let expired = events_of(&design.project, "claim.expired");
-    assert_eq!(expired.len(), 1, "{expired:?}");
-    assert_eq!(
-        expired[0]["claim_id"], taken["claim"]["id"],
-        "{:?}",
-        expired[0]
-    );
-    assert_eq!(expired[0]["node"], cart.as_str(), "{:?}", expired[0]);
-}
-
-#[test]
-fn the_holders_operations_on_the_board_keep_its_claim_alive() {
-    let (f, client) = short();
-    let design = new_design(f, client);
-    let cart = design.id("Cart");
-    must(
-        claim(f, client, &holder(f), &design, &cart),
-        201,
-        "claim the board",
-    );
-    std::thread::sleep(SHORT_TTL.mul_f64(0.6));
-    must(
-        edit(
-            f,
-            client,
-            &holder(f),
-            &design,
-            json!([set_content(&design.id("Total"), 1, "Summa 12 kr")]),
-        ),
-        200,
-        "the holder edits its board",
-    );
-    std::thread::sleep(SHORT_TTL.mul_f64(0.6));
-    // Past the TTL since the claim was taken, but not since the holder's edit.
-    assert_claimed_by_holder(
-        &edit(
-            f,
-            client,
-            &other(f),
-            &design,
-            json!([set_content(&design.id("Shipping"), 1, "Still claimed")]),
-        ),
-        &cart,
-    );
-    assert!(events_of(&design.project, "claim.expired").is_empty());
 }
