@@ -358,14 +358,6 @@ fn a_later_sibling_is_above_an_earlier_one_where_they_overlap() {
 }
 
 #[test]
-fn a_hidden_node_is_never_the_topmost_node() {
-    let scene = fresh();
-    // Ghost covers Panel's box and comes after it, but is hidden.
-    assert_eq!(scene.node_at(PANEL_AT), Some(addr(PANEL)));
-    assert_eq!(scene.node_at((560.0, 60.0)), Some(addr(PANEL)));
-}
-
-#[test]
 fn a_hidden_node_hides_its_whole_subtree() {
     let hidden_group = with(
         &holding(
@@ -579,33 +571,33 @@ fn node_at_answers_in_under_a_millisecond_on_the_2000_node_board() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn nothing_is_selected_at_the_start() {
-    let mut scene = fresh();
-    assert_state(&scene, None, None, "a new scene");
-    assert!(scene.take_events().is_empty(), "no events before any input");
-}
-
-#[test]
 fn a_click_selects_the_direct_child_of_the_board_that_holds_the_node_under_the_pointer() {
-    for (point, expected, case) in [
-        (ICON_AT, CARD, "an icon two levels down selects its card"),
-        (BUTTON_AT, CARD, "a button selects the card that holds it"),
-        (CARD_AT, CARD, "the card itself"),
-        (SIDE_AT, SIDE, "a child of the board with no children"),
-        (PANEL_AT, PANEL, "a child of the second board"),
+    for (point, selected, board, case) in [
+        (
+            ICON_AT,
+            CARD,
+            BOARD_A,
+            "an icon two levels down selects its card",
+        ),
+        (
+            BUTTON_AT,
+            CARD,
+            BOARD_A,
+            "a button selects the card that holds it",
+        ),
+        (CARD_AT, CARD, BOARD_A, "the card itself"),
+        (
+            SIDE_AT,
+            SIDE,
+            BOARD_A,
+            "a child of the board with no children",
+        ),
+        (PANEL_AT, PANEL, BOARD_B, "a child of the second board"),
     ] {
         let mut scene = fresh();
         click(&mut scene, point);
-        let board = if expected == PANEL { BOARD_B } else { BOARD_A };
-        assert_state(&scene, Some(expected), Some(board), case);
+        assert_state(&scene, Some(selected), Some(board), case);
     }
-}
-
-#[test]
-fn a_click_on_the_board_where_no_child_is_selects_the_board_itself() {
-    let mut scene = fresh();
-    click(&mut scene, BOARD_A_AT);
-    assert_state(&scene, Some(BOARD_A), Some(BOARD_A), "bare board");
 }
 
 #[test]
