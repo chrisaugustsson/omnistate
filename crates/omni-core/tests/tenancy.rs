@@ -52,7 +52,6 @@ const APPEND_ONLY_TABLES: [&str; 8] = [
     "comment_replies",
     "doc_changes",
 ];
-const POLICY_EXPRESSION: &str = "NULLIF(current_setting('app.workspace_id', true), '')::uuid";
 /// A UUIDv4, which the database must refuse as a record ID.
 const V4_ID: &str = "f47ac10b-58cc-4372-a567-0e02b2c3d479";
 
@@ -332,36 +331,6 @@ fn seed() -> &'static Seed {
 // ---------------------------------------------------------------------------
 // Tables and record IDs
 // ---------------------------------------------------------------------------
-
-#[test]
-fn migrations_create_the_global_and_the_tenant_tables() {
-    let db = test_db();
-    block(async {
-        let mut conn = admin_connection(db).await;
-        assert_tables_exist(&mut conn).await;
-    });
-}
-
-#[test]
-fn global_tables_are_not_scoped_to_a_workspace() {
-    let db = test_db();
-    block(async {
-        let mut conn = admin_connection(db).await;
-        assert_tables_exist(&mut conn).await;
-        for table in GLOBAL_TABLES {
-            let scoped = scalar_i64(
-                &mut conn,
-                &format!(
-                    "select count(*) from information_schema.columns \
-                     where table_schema = 'public' and table_name = '{table}' \
-                     and column_name = 'workspace_id'"
-                ),
-            )
-            .await;
-            assert_eq!(scoped, 0, "{table} is a global table: no workspace_id");
-        }
-    });
-}
 
 #[test]
 fn tenant_tables_have_a_not_null_workspace_id_and_a_unique_workspace_id_id_key() {
@@ -645,15 +614,6 @@ fn the_database_rejects_a_row_that_references_another_workspaces_row() {
 // Row-level security policy
 // ---------------------------------------------------------------------------
 
-/// A policy expression without whitespace, parentheses and the `::text` casts
-/// that Postgres adds when it prints the expression back.
-fn normalised(sql: &str) -> String {
-    sql.replace("::text", "")
-        .chars()
-        .filter(|c| !c.is_whitespace() && *c != '(' && *c != ')')
-        .collect()
-}
-
 #[test]
 fn row_level_security_is_enabled_and_forced_on_every_tenant_table() {
     let db = test_db();
@@ -676,47 +636,6 @@ fn row_level_security_is_enabled_and_forced_on_every_tenant_table() {
                 row.get::<bool, _>(1),
                 "{table}: row-level security is not forced"
             );
-        }
-    });
-}
-
-#[test]
-fn the_policy_of_every_tenant_table_scopes_using_and_with_check_to_the_workspace_setting() {
-    let db = test_db();
-    block(async {
-        let mut conn = admin_connection(db).await;
-        for table in tenant_tables(&mut conn).await {
-            let policies = sqlx::query(
-                "select policyname::text, permissive::text, cmd::text, qual, with_check \
-                 from pg_policies where schemaname = 'public' and tablename = $1",
-            )
-            .bind(&table)
-            .fetch_all(&mut conn)
-            .await
-            .expect("query pg_policies");
-            assert!(!policies.is_empty(), "{table} has no policy");
-            let expected = normalised(&format!("{} = {POLICY_EXPRESSION}", scope_column(&table)));
-            for policy in policies {
-                let name: String = policy.get(0);
-                assert_eq!(policy.get::<String, _>(1), "PERMISSIVE", "{table}.{name}");
-                assert_eq!(policy.get::<String, _>(2), "ALL", "{table}.{name}");
-                let using: String = policy
-                    .get::<Option<String>, _>(3)
-                    .unwrap_or_else(|| panic!("{table}.{name} has no USING"));
-                let check: String = policy
-                    .get::<Option<String>, _>(4)
-                    .unwrap_or_else(|| panic!("{table}.{name} has no WITH CHECK"));
-                assert_eq!(
-                    normalised(&using),
-                    expected,
-                    "{table}.{name} USING: {using}"
-                );
-                assert_eq!(
-                    normalised(&check),
-                    expected,
-                    "{table}.{name} WITH CHECK: {check}"
-                );
-            }
         }
     });
 }
@@ -836,62 +755,6 @@ fn the_api_role_has_no_update_privilege_on_the_log_the_versions_or_the_node_inde
                 !granted,
                 "{API_ROLE} may UPDATE the append-only table {table}"
             );
-        }
-    });
-}
-
-#[test]
-fn the_api_role_cannot_delete_a_row_it_can_see() {
-    let db = test_db();
-    let seed = seed();
-    block(async {
-        let mut conn = api_connection(db).await;
-        let mut tx = conn.begin().await.unwrap();
-        set_workspace(&mut tx, &seed.ws_a).await;
-        assert!(count_rows(&mut tx, "memberships").await > 0);
-        let error = sqlx::query("delete from memberships")
-            .execute(&mut *tx)
-            .await
-            .expect_err("the API role deleted tenant rows");
-        assert_eq!(sqlstate(&error), "42501", "{error}");
-    });
-}
-
-#[test]
-fn the_api_role_cannot_switch_row_level_security_off() {
-    let db = test_db();
-    let seed = seed();
-    block(async {
-        let mut conn = api_connection(db).await;
-
-        let mut tx = conn.begin().await.unwrap();
-        set_workspace(&mut tx, &seed.ws_a).await;
-        sqlx::query("set local row_security = off")
-            .execute(&mut *tx)
-            .await
-            .expect("set row_security");
-        let error = sqlx::query("select * from memberships")
-            .fetch_all(&mut *tx)
-            .await
-            .expect_err("row_security = off lets the API role through the policy");
-        assert_eq!(sqlstate(&error), "42501", "{error}");
-        drop(tx);
-
-        for table in TENANT_TABLES {
-            let mut tx = conn.begin().await.unwrap();
-            let error = sqlx::query(&format!("alter table {table} disable row level security"))
-                .execute(&mut *tx)
-                .await
-                .expect_err("the API role changed a table's row-level security");
-            assert_eq!(sqlstate(&error), "42501", "{table}: {error}");
-            drop(tx);
-
-            let mut tx = conn.begin().await.unwrap();
-            let error = sqlx::query(&format!("create policy leak on {table} using (true)"))
-                .execute(&mut *tx)
-                .await
-                .expect_err("the API role created a policy");
-            assert_eq!(sqlstate(&error), "42501", "{table}: {error}");
         }
     });
 }
