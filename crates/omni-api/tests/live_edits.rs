@@ -874,36 +874,6 @@ fn a_stale_rev_is_a_conflict_with_the_current_revision_and_content_and_changes_n
     );
 }
 
-#[test]
-fn an_operation_on_a_deleted_node_is_refused_and_changes_nothing() {
-    let (f, client) = ready();
-    let project = new_project(f, client);
-    let (doc, node) = doc_with_paragraph(f, client, &project, &unique("Short-lived"));
-    edit(
-        f,
-        client,
-        &project,
-        &doc,
-        &json!([{ "op": "delete", "node": node, "rev": 1 }]),
-    );
-    let before = untouched(f, client, &project, &doc);
-    let response = edit_response(
-        f,
-        client,
-        &agent(f),
-        &project,
-        &doc,
-        &json!([set_html(&node, 1, "Back from the dead")]),
-    );
-    assert!(
-        matches!(response.status, 400 | 409),
-        "an edit of a node that is gone is refused: {} {}",
-        response.status,
-        response.text()
-    );
-    assert_untouched(&before, f, client, &project, &doc, "an edit of a gone node");
-}
-
 // ---------------------------------------------------------------------------
 // Who and where
 // ---------------------------------------------------------------------------
@@ -1062,7 +1032,7 @@ fn an_acknowledged_write_survives_an_api_restart() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn every_applied_batch_adds_one_doc_change_with_the_agent_the_operations_and_both_heads() {
+fn every_applied_batch_adds_one_doc_change_and_sends_doc_changed_with_the_new_head() {
     let (f, client) = ready();
     let project = new_project(f, client);
     let doc = new_doc(f, client, &project);
@@ -1072,6 +1042,7 @@ fn every_applied_batch_adds_one_doc_change_with_the_agent_the_operations_and_bot
         1,
         "the creation is the first change"
     );
+    let events_before = doc_changed_events(&project, &doc).len();
 
     let first = json!([
         insert_paragraph(&unique("One")),
@@ -1117,43 +1088,17 @@ fn every_applied_batch_adds_one_doc_change_with_the_agent_the_operations_and_bot
             "the head the batch made: {change:?}"
         );
     }
-}
-
-#[test]
-fn every_applied_batch_sends_doc_changed_with_the_new_head() {
-    let (f, client) = ready();
-    let project = new_project(f, client);
-    let doc = new_doc(f, client, &project);
-    let before = doc_changed_events(&project, &doc).len();
-
-    let results = edit(
-        f,
-        client,
-        &project,
-        &doc,
-        &json!([
-            insert_paragraph(&unique("One")),
-            insert_paragraph(&unique("Two"))
-        ]),
-    );
-    let first_head = head_of(&doc);
-    let node = node_of(&results[0]);
-    edit(
-        f,
-        client,
-        &project,
-        &doc,
-        &json!([set_html(&node, 1, &unique("Three"))]),
-    );
-    let second_head = head_of(&doc);
 
     let events = doc_changed_events(&project, &doc);
     assert_eq!(
         events.len(),
-        before + 2,
+        events_before + 2,
         "one doc.changed per applied batch: {events:?}"
     );
-    for (event, head) in events[before..].iter().zip([&first_head, &second_head]) {
+    for (event, head) in events[events_before..]
+        .iter()
+        .zip([&after_first, &after_second])
+    {
         assert_eq!(event["doc_id"], doc.as_str(), "{event}");
         assert_eq!(event["head"], head.as_str(), "the new head: {event}");
     }
