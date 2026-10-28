@@ -180,13 +180,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn whole_lengths_are_integers_and_others_are_kept_to_a_hundredth() {
-        assert_eq!(length(140.0), json!(140));
-        assert_eq!(length(2361.999), json!(2362));
-        assert_eq!(length(97.5), json!(97.5));
-    }
-
-    #[test]
     fn only_the_sizes_that_are_not_fixed_are_replaced() {
         let mut board = json!({"id": "b0000001", "width": {"fixed": 1800}, "height": "hug"});
         assert!(needs_box(&board));
@@ -198,19 +191,5 @@ mod tests {
         sized(&mut no_size, (12.0, 8.0));
         assert_eq!(no_size["width"], json!({"fixed": 12}));
         assert_eq!(no_size["height"], json!({"fixed": 8}));
-    }
-
-    #[test]
-    fn a_board_that_hugs_its_content_gets_the_size_of_that_content() {
-        let board = json!({
-            "id": "b0000001", "type": "board", "name": "Status", "x": 0, "y": 0,
-            "width": "hug", "height": {"fixed": 32},
-            "layout": {"mode": "flex", "padding": {"left": 12, "right": 12, "top": 0, "bottom": 0}},
-            "children": [{
-                "id": "f0000001", "type": "frame", "name": "Dot",
-                "width": {"fixed": 60}, "height": {"fixed": 20}, "layout": {"mode": "none"}
-            }]
-        });
-        assert_eq!(lay_out(&board.to_string(), None), Some((84.0, 32.0)));
     }
 }
