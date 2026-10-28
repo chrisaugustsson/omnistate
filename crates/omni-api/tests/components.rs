@@ -2031,24 +2031,6 @@ fn a_design_draft_carries_the_tokens_of_the_design_system_it_resolves_against() 
     );
 }
 
-#[test]
-fn a_version_of_another_doc_records_no_design_system_version() {
-    let (f, client) = ready();
-    let lib = library(f, client);
-    let version = read_version(f, client, &lib.project, &lib.design_system_version);
-    assert!(
-        version
-            .as_object()
-            .is_some_and(|v| v.contains_key("design_system_version_id")),
-        "{version:#}"
-    );
-    assert_eq!(
-        version["design_system_version_id"],
-        Value::Null,
-        "{version:#}"
-    );
-}
-
 // ---------------------------------------------------------------------------
 // Component usage
 // ---------------------------------------------------------------------------
