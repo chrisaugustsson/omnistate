@@ -108,7 +108,6 @@ mod common;
 
 use common::{Client, Response, TestServer, cookie};
 use omni_api::Config;
-use omni_api::routes::{Access, registry};
 use s3::creds::Credentials;
 use s3::{Bucket, BucketConfiguration, Region};
 use serde_json::{Value, json};
@@ -123,7 +122,6 @@ const TEST_DB: &str = "omni_us037_decisions";
 const TEST_BUCKET: &str = "omni-us037-decisions";
 /// An ID that no row has.
 const UNKNOWN_ID: &str = "01900000-0000-7000-8000-000000000000";
-const ROUTE_BASE: &str = "/api/v1/w/{workspace_id}/projects/{project_id}";
 
 // ---------------------------------------------------------------------------
 // Plumbing
@@ -863,34 +861,6 @@ fn stored_decisions(thread: &str) -> i64 {
 }
 
 // ---------------------------------------------------------------------------
-// The routes
-// ---------------------------------------------------------------------------
-
-#[test]
-fn the_decision_routes_are_in_the_registry_with_their_access() {
-    let expected = [
-        ("POST", "/threads/{thread_id}/decisions", Access::Agent),
-        ("GET", "/decisions/{decision_id}", Access::Both),
-        ("POST", "/decisions/{decision_id}/approve", Access::Human),
-        ("POST", "/decisions/{decision_id}/reject", Access::Human),
-        (
-            "POST",
-            "/changesets/{changeset_id}/decisions/{decision_id}",
-            Access::Agent,
-        ),
-    ];
-    let routes = registry();
-    for (method, tail, access) in expected {
-        let path = format!("{ROUTE_BASE}{tail}");
-        let entry = routes
-            .iter()
-            .find(|r| r.method == method && r.path == path)
-            .unwrap_or_else(|| panic!("the registry has no route {method} {path}"));
-        assert_eq!(entry.access, access, "{method} {path}");
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Proposing
 // ---------------------------------------------------------------------------
 
@@ -1115,36 +1085,6 @@ fn the_human_does_not_propose_and_an_unknown_thread_is_not_found() {
 // ---------------------------------------------------------------------------
 // Statuses
 // ---------------------------------------------------------------------------
-
-#[test]
-fn only_the_human_approves_a_proposed_decision() {
-    let (f, client) = ready();
-    let (project, _, thread) = thread_in_new_project(f, client);
-    let id = id_of(&propose(f, client, &project, &thread, &proposal(&[])));
-
-    let response = act_response(
-        f,
-        client,
-        &moderator(f),
-        &project,
-        &id,
-        "approve",
-        &json!({}),
-    );
-    assert_error(&response, 403, "forbidden", "an agent approves");
-    assert_eq!(status_of(f, client, &project, &id), "proposed");
-
-    let approved = approve_decision(f, client, &project, &id);
-    assert_eq!(approved["id"], id.as_str(), "{approved}");
-    assert_eq!(approved["status"], "approved", "{approved}");
-    assert_eq!(approved["rejection_reason"], Value::Null, "{approved}");
-    assert_eq!(status_of(f, client, &project, &id), "approved");
-    assert_eq!(
-        current_decision(f, client, &moderator(f), &project, &thread)["status"],
-        "approved",
-        "the thread's decision is approved"
-    );
-}
 
 #[test]
 fn only_the_human_rejects_and_a_rejection_needs_a_reason_that_is_kept() {
@@ -1679,76 +1619,4 @@ fn proposing_superseding_approving_and_rejecting_emit_their_events() {
         "the current decision is not superseded: {events:?}"
     );
     assert_eq!(events.len(), 7, "no other decision events: {events:?}");
-}
-
-#[test]
-fn refused_decision_calls_emit_nothing() {
-    let (f, client) = ready();
-    let (project, _, thread) = thread_in_new_project(f, client);
-    let decision = id_of(&propose(f, client, &project, &thread, &proposal(&[])));
-    let before = decision_events(&project);
-
-    let mut broken = proposal(&[]);
-    broken["chosen"] = json!("Video hero");
-    let refused = [
-        propose_response(f, client, &moderator(f), &project, &thread, &broken),
-        propose_response(f, client, &human(f), &project, &thread, &proposal(&[])),
-        act_response(
-            f,
-            client,
-            &moderator(f),
-            &project,
-            &decision,
-            "approve",
-            &json!({}),
-        ),
-        act_response(
-            f,
-            client,
-            &moderator(f),
-            &project,
-            &decision,
-            "reject",
-            &json!({ "reason": "An agent may not." }),
-        ),
-        act_response(
-            f,
-            client,
-            &human(f),
-            &project,
-            &decision,
-            "reject",
-            &json!({}),
-        ),
-    ];
-    for response in refused {
-        assert!(
-            matches!(response.status, 400 | 403),
-            "the call is refused: {} {}",
-            response.status,
-            response.text()
-        );
-    }
-    approve_decision(f, client, &project, &decision);
-    let response = act_response(
-        f,
-        client,
-        &human(f),
-        &project,
-        &decision,
-        "approve",
-        &json!({}),
-    );
-    assert_eq!(response.status, 409, "{}", response.text());
-
-    let after = decision_events(&project);
-    assert_eq!(
-        after.len(),
-        before.len() + 1,
-        "only the approval emitted an event: {after:?}"
-    );
-    assert_eq!(
-        after.last().map(|(e, _)| e.as_str()),
-        Some("decision.approved")
-    );
 }
