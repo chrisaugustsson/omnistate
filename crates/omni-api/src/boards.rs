@@ -860,7 +860,7 @@ mod tests {
     /// board C.
     const TWO_PAGES: &str = r#"<Page name="P">
   <Board name="A" x={0} y={0} width={10} height={10}>
-    <Text name="T" content="one" fontFamily="Inter" fontSize={12}/>
+    <Text name="T" content="quokka" fontFamily="Inter" fontSize={12}/>
   </Board>
   <Board name="B" x={20} y={0} width={10} height={10}/>
 </Page>
@@ -898,15 +898,18 @@ mod tests {
         // The page's chunk holds no board; a board's chunk holds its subtree
         // and nothing of another board.
         let page = &part(&parts, &manifest.pages[0].chunk).text;
-        assert!(!page.contains(&id("A")) && !page.contains("one"), "{page}");
+        assert!(
+            !page.contains(&id("A")) && !page.contains("quokka"),
+            "{page}"
+        );
         let a = part(&parts, &manifest.pages[0].boards[0].chunk);
         assert!(
-            a.text.contains(&id("T")) && a.text.contains("one"),
+            a.text.contains(&id("T")) && a.text.contains("quokka"),
             "{}",
             a.text
         );
         let b = &part(&parts, &manifest.pages[0].boards[1].chunk).text;
-        for needle in [id("A"), id("T"), "one".to_string()] {
+        for needle in [id("A"), id("T"), "quokka".to_string()] {
             assert!(!b.contains(&needle), "B's chunk holds nothing of A: {b}");
         }
 
