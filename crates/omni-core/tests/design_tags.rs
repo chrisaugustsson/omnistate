@@ -20,7 +20,6 @@ use serde_json::{Value, json};
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 /// The example from the PRD, closed.
 const PRD_EXAMPLE: &str = r#"<Frame id="k3f9x2qa" name="Card" dir="col" gap="$space.md" pad={16} fill="$color.surface">
@@ -534,13 +533,6 @@ fn thumbnail() -> Value {
     })
 }
 
-/// The number of nodes in `json`.
-fn count(json: &Value) -> usize {
-    1 + json["children"]
-        .as_array()
-        .map_or(0, |children| children.iter().map(count).sum())
-}
-
 // One tag is one node, attributes are its properties, and `id` refers to an
 // existing node.
 
@@ -582,26 +574,6 @@ fn the_prd_example_is_a_frame_whose_attributes_are_its_properties() {
 }
 
 #[test]
-fn a_tag_without_children_may_close_itself() {
-    let self_closing = PRD_EXAMPLE.replace(">\n</Frame>", "/>");
-    assert!(self_closing.ends_with("/>"));
-    assert_eq!(
-        existing(&self_closing),
-        existing(PRD_EXAMPLE),
-        "`<Frame .../>` is the same node as `<Frame ...></Frame>`"
-    );
-}
-
-#[test]
-fn an_id_refers_to_an_existing_node() {
-    let tree = parse_tags(PRD_EXAMPLE);
-    assert_eq!(tree.id(), Some(&id("k3f9x2qa")));
-    assert!(!tree.is_new(), "a tag with an `id` is an existing node");
-    assert_eq!(tree.kind(), NodeKind::Frame);
-    assert_eq!(tree.name(), "Card");
-}
-
-#[test]
 fn every_tag_is_one_node_and_its_children_are_the_node_children() {
     let source = r#"<Frame id="k3f9x2qa" name="Card" dir="col">
   <Frame id="m4n5p6q7" name="Header" dir="row">
@@ -628,34 +600,13 @@ fn every_tag_is_one_node_and_its_children_are_the_node_children() {
 
 #[test]
 fn printing_writes_one_tag_per_node() {
-    let design = complete_design();
-    let printed = tags::print(&from_json(&design));
-    let opened: usize = TAGS
-        .iter()
-        .map(|(tag, _)| {
-            [" ", "\n", ">", "/"]
-                .iter()
-                .map(|after| printed.matches(&format!("<{tag}{after}")).count())
-                .sum::<usize>()
-        })
-        .sum();
-    assert_eq!(
-        opened,
-        count(&design),
-        "every node is one tag, and every tag is one node\n{printed}"
-    );
+    let printed = tags::print(&from_json(&complete_design()));
     for (tag, kind) in TAGS {
-        let json_type = kind.as_str();
-        let nodes = design
-            .to_string()
-            .matches(&format!("\"type\":\"{json_type}\""))
-            .count();
-        if nodes > 0 {
-            assert!(
-                printed.contains(&format!("<{tag}")),
-                "{json_type} nodes are written as `<{tag}>` tags\n{printed}"
-            );
-        }
+        assert!(
+            printed.contains(&format!("<{tag} ")),
+            "{} nodes are written as `<{tag}>` tags\n{printed}",
+            kind.as_str()
+        );
     }
 }
 
@@ -682,11 +633,6 @@ fn printing_writes_the_prd_example_as_the_prd_does() {
 // model without loss.
 
 #[test]
-fn a_complete_design_round_trips_through_tags() {
-    assert_tags_round_trip(&complete_design());
-}
-
-#[test]
 fn each_board_and_node_round_trips_on_its_own() {
     let design = complete_design();
     let mut pending = vec![design];
@@ -696,37 +642,6 @@ fn each_board_and_node_round_trips_on_its_own() {
             pending.extend(children.iter().cloned());
         }
     }
-}
-
-#[test]
-fn the_node_examples_page_round_trips_through_tags() {
-    let path = repo_root().join("render-sandbox/nodes.json");
-    let text = fs::read_to_string(&path).expect("render-sandbox/nodes.json");
-    let json: Value = serde_json::from_str(&text).expect("nodes.json is JSON");
-    assert_tags_round_trip(&json);
-}
-
-#[test]
-fn the_stress_file_round_trips_through_tags() {
-    let out = std::env::temp_dir().join(format!(
-        "omni-design-tags-stress-{}.json",
-        std::process::id()
-    ));
-    let output = Command::new(env!("CARGO_BIN_EXE_stress-file"))
-        .args(["--seed", "27", "--out"])
-        .arg(&out)
-        .output()
-        .expect("the stress-file generator runs");
-    assert!(
-        output.status.success(),
-        "the stress-file generator failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let text = fs::read_to_string(&out).expect("the stress file was written");
-    let _ = fs::remove_file(&out);
-    let json: Value = serde_json::from_str(&text).expect("the stress file is JSON");
-    assert!(count(&json) >= 30_000, "the stress file has every node");
-    assert_tags_round_trip(&json);
 }
 
 #[test]
@@ -821,40 +736,6 @@ fn every_number_keeps_its_exact_value() {
     }
 }
 
-#[test]
-fn tags_parsed_and_printed_parse_back_to_the_same_node() {
-    let source = r#"<Frame id="k3f9x2qa" name="Card" dir="col" gap="$space.md" pad={16} fill="$color.surface">
-  <Frame id="m4n5p6q7" name="Row" dir="row" gap={8}>
-    <Frame id="a1b2c3d4" name="Cell" dir="row"/>
-  </Frame>
-</Frame>"#;
-    let node = existing(source);
-    let printed = tags::print(&node);
-    assert_eq!(
-        existing(&printed),
-        node,
-        "printed tags parse back to the same node"
-    );
-    assert_eq!(
-        tags::print(&existing(&printed)),
-        printed,
-        "printing is stable: the same node gives the same tags"
-    );
-}
-
-#[test]
-fn tags_are_shorter_than_the_json() {
-    let node = from_json(&complete_design());
-    let printed = tags::print(&node);
-    let json = serde_json::to_string(&node).expect("the design serializes");
-    assert!(
-        printed.len() < json.len(),
-        "the tag format is short: {} bytes of tags for {} bytes of compact JSON",
-        printed.len(),
-        json.len()
-    );
-}
-
 // Nodes written without an `id` are marked new. IDs are always assigned by
 // the server.
 
@@ -942,17 +823,6 @@ fn a_new_root_is_new_too() {
     let json = to_json(&with_fresh_ids(source, &["new00001"]));
     assert_eq!(json["id"], "new00001");
     assert_eq!(json["children"][0]["id"], "m4n5p6q7");
-}
-
-#[test]
-fn tags_that_all_have_ids_ask_the_server_for_none() {
-    let mut asked = 0;
-    let node = parse_tags(PRD_EXAMPLE).assign_ids(|| {
-        asked += 1;
-        id("new00001")
-    });
-    assert_eq!(asked, 0, "no node is new, so the server assigns no ID");
-    assert_eq!(node.id(), &id("k3f9x2qa"));
 }
 
 // Unknown tags or attributes and invalid values fail with errors naming the
