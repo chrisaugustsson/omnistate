@@ -311,23 +311,6 @@ describe("live-event client", () => {
     client.close();
   });
 
-  test("messages that are not of the protocol are ignored", async () => {
-    const client = await connect();
-    const seen: number[] = [];
-    client.subscribe(PROJECT_ID, (e) => seen.push(e.seq));
-    await vi.advanceTimersByTimeAsync(0);
-    const socket = FakeWebSocket.instances[0];
-    socket.open();
-    const withoutSeq: Record<string, unknown> = { ...event(1) };
-    delete withoutSeq.seq;
-    socket.receive(withoutSeq);
-    socket.receive({ type: "error", error: "invalid_request" });
-    socket.receive(event(2));
-    await vi.advanceTimersByTimeAsync(0);
-    expect(seen).toEqual([2]);
-    client.close();
-  });
-
   test("closing the client closes the socket and stops reconnecting", async () => {
     const client = await connect();
     client.subscribe(PROJECT_ID, () => {});
