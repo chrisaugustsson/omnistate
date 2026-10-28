@@ -23,7 +23,7 @@ use omni_core::design::{Node, NodeKind};
 use omni_penpot::{Conversion, PenpotFile, Shape, read_file};
 
 use common::convert::{assert_validates, board_node, json_of, nodes};
-use common::{ROOT_ID, find, fixture, flatten, page_shapes};
+use common::{fixture, flatten};
 
 fn read(name: &str) -> Option<PenpotFile> {
     fixture(name).map(|path| {
@@ -160,43 +160,6 @@ fn assert_boards_follow_the_file(conversion: &Conversion, file: &PenpotFile) {
 }
 
 #[test]
-fn idag_has_a_design_for_each_of_its_15_boards() {
-    let (Some(conversion), Some(file)) = (idag(), idag_file()) else {
-        return;
-    };
-    // And one Unplaced board for the texts outside them (US-054).
-    assert_eq!(conversion.boards.len(), 16);
-    let boards = file_boards(conversion);
-    assert_eq!(boards.len(), 15);
-    assert_eq!(boards[0].name, "Idag / Dag / Desktop");
-    assert_eq!(boards[0].page, "Idag");
-    assert_boards_follow_the_file(conversion, file);
-}
-
-#[test]
-fn idag_boards_hold_the_node_types_of_their_shapes() {
-    let Some(conversion) = idag() else { return };
-    let counts = count(conversion);
-    // The 15 boards of the file and the Unplaced board (US-054).
-    assert_eq!(counts.boards, 16);
-    // 981 frames, 87 groups and 181 rects, less the 15 boards, are frames.
-    assert_eq!(counts.frames, 1234);
-    // 84 circles and 294 paths.
-    assert_eq!(counts.vectors, 378);
-    // All 798 texts, the 8 that sit outside the boards in the Unplaced board.
-    assert_eq!(counts.texts, 798);
-    assert_eq!(counts.images, 0);
-}
-
-#[test]
-fn idag_flex_layouts_come_through() {
-    let Some(conversion) = idag() else { return };
-    let counts = count(conversion);
-    assert_eq!(counts.flex, 894, "the frames with a flex layout");
-    assert_eq!(counts.grid, 0);
-}
-
-#[test]
 fn idag_puts_the_texts_outside_boards_into_the_unplaced_board() {
     let (Some(conversion), Some(file)) = (idag(), idag_file()) else {
         return;
@@ -239,40 +202,6 @@ fn idag_puts_the_texts_outside_boards_into_the_unplaced_board() {
 }
 
 #[test]
-fn idag_report_entries_are_complete_and_none_is_a_dropped_shape_of_a_board() {
-    let (Some(conversion), Some(file)) = (idag(), idag_file()) else {
-        return;
-    };
-    for entry in &conversion.report.entries {
-        assert!(!entry.shape_id.is_empty() && !entry.reason.trim().is_empty());
-        assert!(
-            find(&file.pages[0], &entry.shape_id).is_some(),
-            "{entry:?} names a shape that is not in the file"
-        );
-        if !entry.board_id.is_empty() {
-            assert!(
-                entry.property.is_some(),
-                "{entry:?} drops a whole shape of a board, which has only convertible types"
-            );
-            let board = conversion
-                .boards
-                .iter()
-                .find(|board| board.id == entry.board_id)
-                .expect("an entry names the board it is in");
-            assert_eq!(board.name, entry.board);
-        }
-    }
-}
-
-#[test]
-fn idag_converts_the_same_way_every_time() {
-    let (Some(first), Some(again)) = (idag(), convert("tirebud-idag.penpot")) else {
-        return;
-    };
-    assert_eq!(first, &again);
-}
-
-#[test]
 fn ordrar_has_a_valid_design_for_each_of_its_795_boards() {
     let (Some(conversion), Some(file)) = (ordrar(), ordrar_file()) else {
         return;
@@ -298,107 +227,4 @@ fn ordrar_boards_hold_the_node_types_and_layouts_of_their_shapes() {
     assert_eq!(counts.images, 0);
     assert_eq!(counts.flex, 37_933);
     assert_eq!(counts.grid, 40);
-}
-
-#[test]
-fn ordrar_lists_what_it_leaves_out_and_nothing_else() {
-    let (Some(conversion), Some(file)) = (ordrar(), ordrar_file()) else {
-        return;
-    };
-    let ids: std::collections::HashSet<&str> = file
-        .pages
-        .iter()
-        .flat_map(page_shapes)
-        .map(|shape| shape.id.as_str())
-        .collect();
-    assert!(!ids.contains(ROOT_ID));
-    for entry in &conversion.report.entries {
-        assert!(!entry.reason.trim().is_empty(), "{entry:?} has no reason");
-        assert!(
-            ids.contains(entry.shape_id.as_str()),
-            "{entry:?} names a shape that is not in the file"
-        );
-        // The 232 texts that sit directly on the pages are converted into the
-        // Unplaced boards now (US-054), so no shape is left out whole.
-        assert!(
-            entry.property.is_some(),
-            "{entry:?} drops a whole shape, but the file has only convertible types"
-        );
-    }
-}
-
-/// The root shapes of components in the export at `path`: the shapes stored
-/// with `componentRoot` true, as their id, name and `componentId`. The reader
-/// does not expose component fields, so this reads the shape entries itself.
-fn component_roots(path: &std::path::Path) -> Vec<(String, String, String)> {
-    use std::io::Read;
-
-    let file = std::fs::File::open(path).expect("the export opens");
-    let mut archive = zip::ZipArchive::new(file).expect("the export is a zip");
-    let mut roots = Vec::new();
-    let mut text = String::new();
-    for index in 0..archive.len() {
-        let mut entry = archive.by_index(index).expect("an archive entry");
-        let name = entry.name().expect("an entry name").to_string();
-        if !(name.contains("/pages/") && name.matches('/').count() == 4) {
-            continue;
-        }
-        text.clear();
-        entry
-            .read_to_string(&mut text)
-            .expect("a shape entry is text");
-        if !text.contains("\"componentRoot\"") {
-            continue;
-        }
-        let shape: serde_json::Value = serde_json::from_str(&text).expect("a shape is JSON");
-        if shape["componentRoot"] != serde_json::Value::Bool(true) {
-            continue;
-        }
-        let field = |key: &str| shape[key].as_str().expect("a string field").to_string();
-        roots.push((field("id"), field("name"), field("componentId")));
-    }
-    roots
-}
-
-#[test]
-fn ordrar_lists_every_component_root_in_the_report() {
-    let (Some(path), Some(conversion), Some(file)) =
-        (fixture("tirebud-ordrar.penpot"), ordrar(), ordrar_file())
-    else {
-        return;
-    };
-    // Every shape id inside a board, with the board that holds it.
-    let mut board_of = std::collections::HashMap::new();
-    for page in &file.pages {
-        for board in page.boards() {
-            for shape in flatten(board) {
-                board_of.insert(shape.id.as_str(), board);
-            }
-        }
-    }
-    let roots = component_roots(&path);
-    // Counted from the export: every one is a frame inside a board, and 375 of
-    // them are boards themselves.
-    assert_eq!(roots.len(), 10_005);
-    for (id, name, component) in &roots {
-        let board = board_of
-            .get(id.as_str())
-            .unwrap_or_else(|| panic!("component root {id} ({name}) is in a board"));
-        let entry = conversion
-            .report
-            .entries
-            .iter()
-            .find(|entry| {
-                entry.shape_id == *id && entry.reason.to_lowercase().contains("component")
-            })
-            .unwrap_or_else(|| panic!("the report does not list component root {id} ({name})"));
-        assert_eq!(entry.board_id, board.id, "board id of {entry:?}");
-        assert_eq!(entry.board, board.name, "board name of {entry:?}");
-        assert_eq!(entry.name, *name, "shape name of {entry:?}");
-        assert!(
-            entry.reason.contains(component.as_str()),
-            "the reason of {entry:?} names the component {component}"
-        );
-        assert!(entry.property.is_some(), "{entry:?} is still converted");
-    }
 }

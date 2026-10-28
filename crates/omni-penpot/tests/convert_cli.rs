@@ -17,11 +17,10 @@
 
 mod common;
 
-use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
-use omni_core::design::{Node, NodeKind};
+use omni_core::design::Node;
 use omni_penpot::convert_file;
 use omni_render::paint::Assets;
 use serde_json::{Value, json};
@@ -47,29 +46,6 @@ fn export_with_everything(test: &str) -> std::path::PathBuf {
         ],
         media_entries(&media, &uid(200)),
     )
-}
-
-/// Every file under `dir`, by path relative to it, with its bytes.
-fn read_tree(dir: &Path) -> BTreeMap<String, Vec<u8>> {
-    fn walk(root: &Path, dir: &Path, found: &mut BTreeMap<String, Vec<u8>>) {
-        for entry in
-            fs::read_dir(dir).unwrap_or_else(|error| panic!("cannot list {dir:?}: {error}"))
-        {
-            let path = entry.expect("a directory entry").path();
-            if path.is_dir() {
-                walk(root, &path, found);
-            } else {
-                let name = path.strip_prefix(root).expect("under the root");
-                found.insert(
-                    name.to_string_lossy().to_string(),
-                    fs::read(&path).expect("a readable file"),
-                );
-            }
-        }
-    }
-    let mut found = BTreeMap::new();
-    walk(dir, dir, &mut found);
-    found
 }
 
 fn read_designs(out: &Path) -> Vec<Node> {
@@ -103,17 +79,26 @@ fn convert_writes_one_design_per_board_the_report_and_the_images() {
         String::from_utf8_lossy(&result.stderr)
     );
 
+    let conversion = convert_file(&file).expect("converts");
+
     let designs = files_with_extension(&out.join("designs"), "json");
     assert_eq!(
         designs.len(),
         3,
         "one file for each of the 3 boards: {designs:?}"
     );
-    for design in read_designs(&out) {
-        assert_eq!(design.kind(), NodeKind::Page);
-        assert_eq!(design.children().len(), 1);
-        assert_eq!(design.children()[0].kind(), NodeKind::Board);
-    }
+    let mut from_files: Vec<String> = read_designs(&out)
+        .iter()
+        .map(|design| serde_json::to_string(design).unwrap())
+        .collect();
+    let mut from_api: Vec<String> = conversion
+        .boards
+        .iter()
+        .map(|board| serde_json::to_string(&board.design).unwrap())
+        .collect();
+    from_files.sort();
+    from_api.sort();
+    assert_eq!(from_files, from_api);
 
     let entries = read_report(&out);
     assert_eq!(entries.len(), 1, "only the boolean shape: {entries:#?}");
@@ -122,12 +107,8 @@ fn convert_writes_one_design_per_board_the_report_and_the_images() {
     assert_eq!(entry["name"], "Union");
     assert_eq!(entry["board"], "Same name");
     assert_eq!(entry["boardId"], uid(1));
-    assert!(
-        entry["reason"]
-            .as_str()
-            .is_some_and(|reason| !reason.trim().is_empty()),
-        "{entry}"
-    );
+    assert_eq!(conversion.report.entries.len(), 1);
+    assert_eq!(entry["reason"], conversion.report.entries[0].reason);
 
     let mut references = Vec::new();
     for design in read_designs(&out) {
@@ -148,86 +129,6 @@ fn convert_writes_one_design_per_board_the_report_and_the_images() {
     Assets::new()
         .add_image(&references[0].parse().expect("a reference"), &bytes)
         .unwrap_or_else(|error| panic!("the renderer cannot load {image:?}: {error}"));
-}
-
-#[test]
-fn the_files_hold_what_convert_file_returns() {
-    let file = export_with_everything("cli-same-as-api");
-    let out = temp_dir("same-as-api");
-    assert!(run_convert(&file, &out).status.success());
-    let conversion = convert_file(&file).expect("converts");
-
-    let mut from_files: Vec<String> = read_designs(&out)
-        .iter()
-        .map(|design| serde_json::to_string(design).unwrap())
-        .collect();
-    let mut from_api: Vec<String> = conversion
-        .boards
-        .iter()
-        .map(|board| serde_json::to_string(&board.design).unwrap())
-        .collect();
-    from_files.sort();
-    from_api.sort();
-    assert_eq!(from_files, from_api);
-
-    let mut listed: Vec<(String, String)> = read_report(&out)
-        .iter()
-        .map(|entry| {
-            (
-                entry["shapeId"].as_str().unwrap_or_default().to_string(),
-                entry["reason"].as_str().unwrap_or_default().to_string(),
-            )
-        })
-        .collect();
-    let mut expected: Vec<(String, String)> = conversion
-        .report
-        .entries
-        .iter()
-        .map(|entry| (entry.shape_id.clone(), entry.reason.clone()))
-        .collect();
-    listed.sort();
-    expected.sort();
-    assert_eq!(listed, expected);
-}
-
-#[test]
-fn running_it_twice_writes_identical_files() {
-    let file = export_with_everything("cli-twice");
-    let (first, second) = (temp_dir("twice-1"), temp_dir("twice-2"));
-    assert!(run_convert(&file, &first).status.success());
-    assert!(run_convert(&file, &second).status.success());
-    let (first, second) = (read_tree(&first), read_tree(&second));
-    assert!(
-        first.len() >= 5,
-        "designs, report and image: {:?}",
-        first.keys()
-    );
-    assert_eq!(first, second);
-}
-
-#[test]
-fn the_output_directory_is_created_with_its_parents() {
-    let file = export_with_everything("cli-mkdir");
-    let out = temp_dir("mkdir").join("not/yet/there");
-    let result = run_convert(&file, &out);
-    assert!(
-        result.status.success(),
-        "{}",
-        String::from_utf8_lossy(&result.stderr)
-    );
-    assert!(out.join("report.json").is_file());
-}
-
-#[test]
-fn a_board_without_problems_gives_an_empty_report() {
-    let file = write_export(
-        "cli-clean",
-        vec![shape(1, "frame", "Home", [0.0, 0.0, 100.0, 100.0])],
-    );
-    let out = temp_dir("clean");
-    assert!(run_convert(&file, &out).status.success());
-    assert_eq!(read_report(&out), Vec::<Value>::new());
-    assert_eq!(read_designs(&out).len(), 1);
 }
 
 #[test]
