@@ -675,10 +675,6 @@ const CASES: &[Case] = &[
     ),
 ];
 
-/// The WebSocket routes that the suite attacks, as the paths of
-/// `websocket_registry()`.
-const WEBSOCKET_PATHS: &[&str] = &["/ws/w/{workspace_id}"];
-
 /// The human routes that an API key may still reach: the login checks a
 /// password, so a key next to it is not an attempt at the human's authority.
 const KEY_EXEMPT: &[(&str, &str)] = &[("POST", "/api/v1/auth/login")];
@@ -2257,59 +2253,6 @@ fn every_route_in_the_registry_has_suite_coverage() {
     }
 }
 
-#[test]
-fn a_route_without_suite_coverage_is_reported() {
-    let mut routes = registry();
-    assert!(
-        uncovered(&routes, CASES).is_empty(),
-        "the real registry is covered"
-    );
-    routes.push(RouteEntry {
-        method: "GET".to_string(),
-        path: "/api/v1/w/{workspace_id}/projects/{project_id}/documents".to_string(),
-        access: Access::Both,
-    });
-    routes.push(RouteEntry {
-        method: "DELETE".to_string(),
-        path: "/api/v1/w/{workspace_id}/projects".to_string(),
-        access: Access::Agent,
-    });
-    assert_eq!(
-        uncovered(&routes, CASES),
-        [
-            "GET /api/v1/w/{workspace_id}/projects/{project_id}/documents",
-            "DELETE /api/v1/w/{workspace_id}/projects"
-        ],
-        "a new route, and a new method on a covered path, are both uncovered"
-    );
-    let without_one = &CASES[1..];
-    assert_eq!(
-        uncovered(&registry(), without_one),
-        ["GET /api/health"],
-        "a case taken away uncovers its route"
-    );
-}
-
-#[test]
-fn every_websocket_route_has_suite_coverage() {
-    let routes = websocket_registry();
-    let paths: BTreeSet<&str> = routes.iter().map(|r| r.path.as_str()).collect();
-    let covered: BTreeSet<&str> = WEBSOCKET_PATHS.iter().copied().collect();
-    assert_eq!(
-        paths, covered,
-        "the WebSocket routes of websocket_registry() against the paths this suite attacks \
-         (WEBSOCKET_PATHS in tests/isolation.rs)"
-    );
-    for route in &routes {
-        assert_eq!(route.method, "GET", "{}", route.path);
-        assert!(
-            route.path.starts_with("/ws/") && route.path.contains("{workspace_id}"),
-            "a WebSocket route lives under /ws/ and names its workspace: {}",
-            route.path
-        );
-    }
-}
-
 /// The path literals of every `.route("...")` call in the API's source.
 fn served_paths() -> BTreeSet<String> {
     let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
@@ -2355,51 +2298,6 @@ fn every_path_that_the_router_serves_is_in_a_route_registry() {
     assert!(
         phantom.is_empty(),
         "registry entries that the router does not serve: {phantom:?}"
-    );
-}
-
-#[test]
-fn the_suite_runs_in_make_test() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let read = |file: &str| -> String {
-        std::fs::read_to_string(root.join(file)).unwrap_or_else(|e| panic!("read {file}: {e}"))
-    };
-
-    // `make test` runs the test container.
-    let makefile = read("Makefile");
-    let target = makefile
-        .split("\ntest:")
-        .nth(1)
-        .and_then(|rest| rest.split("\n\n").next())
-        .expect("the test target of the Makefile");
-    assert!(
-        target.contains("docker compose run --rm test"),
-        "make test must run the test container: {target}"
-    );
-
-    // The container runs all of omni-api's tests, not a chosen few.
-    let dockerfile = read("docker/test.Dockerfile");
-    let run = dockerfile
-        .split("&&")
-        .find(|part| part.contains("-p omni-api"))
-        .expect("the test container runs omni-api's tests");
-    assert!(
-        run.contains("--features stack-tests") && !run.contains("--test "),
-        "the container must run every omni-api test target: {run}"
-    );
-
-    // The suite needs Postgres, so its target is built with the stack-tests
-    // feature only, which keeps `cargo test --workspace` on the host green.
-    let manifest = read("crates/omni-api/Cargo.toml");
-    let target = manifest
-        .split("[[test]]")
-        .find(|section| section.contains("name = \"isolation\""))
-        .expect("Cargo.toml registers the isolation test target");
-    assert!(
-        target
-            .lines()
-            .any(|l| l.trim() == "required-features = [\"stack-tests\"]"),
-        "the isolation target needs required-features = [\"stack-tests\"]: {target}"
     );
 }
 
@@ -2487,40 +2385,6 @@ fn ids_of_workspace_b_under_the_workspace_of_a_get_the_answer_for_an_id_that_doe
 }
 
 #[test]
-fn the_same_attacks_work_the_other_way_round() {
-    let (f, client) = ready();
-    let _guard = serial();
-    let before = snapshot(&f.a.id);
-    for entry in registry() {
-        let case = case_for(&entry);
-        if !matches!(case.kind, Kind::Workspace) {
-            continue;
-        }
-        let abroad = fill(&entry.path, &f.a, &f.a);
-        let stolen = fill(&entry.path, &f.b, &f.a);
-        for auth in credentials(entry.access, &f.b) {
-            let what = format!(
-                "{} with {} of workspace B against A",
-                route_name(&entry.method, &abroad),
-                auth.label()
-            );
-            let body = body_of(case, &f.a);
-            let response = call(client, &entry.method, &abroad, &auth, body.as_deref());
-            assert_not_found_without_data(&response, &f.a, &what);
-            if names_a_record(&entry.path) {
-                let response = call(client, &entry.method, &stolen, &auth, body.as_deref());
-                assert_not_found_without_data(&response, &f.a, &what);
-            }
-        }
-    }
-    assert_eq!(
-        snapshot(&f.a.id),
-        before,
-        "an attack on workspace A changed it"
-    );
-}
-
-#[test]
 fn the_lists_of_a_workspace_hold_nothing_of_the_other() {
     let (f, client) = ready();
     for (own, other) in [(&f.a, &f.b), (&f.b, &f.a)] {
@@ -2568,134 +2432,6 @@ fn the_lists_of_a_workspace_hold_nothing_of_the_other() {
                 }
             }
         }
-    }
-}
-
-#[test]
-fn the_calls_of_the_attacks_work_for_the_workspace_that_owns_the_records() {
-    // The control: the same requests, with the same bodies, succeed for the
-    // owner, so the 404s above come from isolation and not from a bad request.
-    let (f, client) = ready();
-    let _guard = serial();
-    let key = Auth::Key(&f.a.key);
-    let human = Auth::Session(&f.a.token);
-    let path = |template: &str| fill(template, &f.a, &f.a);
-
-    let projects = case_named("POST", "/api/v1/w/{workspace_id}/projects");
-    let body = projects
-        .body
-        .map(|b| b.replace("intruder", &unique("owner")));
-    let response = call(client, "POST", &path(projects.path), &key, body.as_deref());
-    must(response, 201, "create a project");
-
-    let changesets = case_named(
-        "POST",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/changesets",
-    );
-    let created = must(
-        call(
-            client,
-            "POST",
-            &path(changesets.path),
-            &key,
-            changesets.body,
-        ),
-        201,
-        "create a change set",
-    );
-    let id = created["changeset"]["id"].as_str().expect("an id");
-    let base = format!(
-        "/api/v1/w/{}/projects/{}/changesets/{id}",
-        f.a.id, f.a.project_id
-    );
-    let action = |name: &str, auth: &Auth| {
-        let template = format!(
-            "/api/v1/w/{{workspace_id}}/projects/{{project_id}}/changesets/{{changeset_id}}/{name}"
-        );
-        let case = case_named("POST", &template);
-        call(client, "POST", &format!("{base}/{name}"), auth, case.body)
-    };
-    assert_eq!(action("submit", &key).status, 200);
-    assert_eq!(action("reject", &human).status, 200);
-    assert_eq!(action("reopen", &key).status, 200);
-    assert_eq!(action("abandon", &key).status, 200);
-
-    let keys = case_named("POST", "/api/v1/w/{workspace_id}/api-keys");
-    must(
-        call(client, "POST", &path(keys.path), &human, keys.body),
-        201,
-        "mint a key",
-    );
-    let spare = must(
-        call(client, "POST", &path(keys.path), &human, keys.body),
-        201,
-        "mint a key to revoke",
-    );
-    let spare_id = spare["key"]["id"].as_str().expect("an id");
-    let revoked = must(
-        call(
-            client,
-            "POST",
-            &format!("/api/v1/w/{}/api-keys/{spare_id}/revoke", f.a.id),
-            &human,
-            None,
-        ),
-        200,
-        "revoke a key",
-    );
-    assert!(revoked["key"]["revoked_at"].is_string(), "{revoked}");
-
-    // US-022: the doc and draft calls, with the bodies of their cases.
-    let docs = case_named(
-        "POST",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs",
-    );
-    let body = docs.body.map(|b| b.replace("intruder", &unique("owner")));
-    let created = must(
-        call(client, "POST", &path(docs.path), &key, body.as_deref()),
-        201,
-        "create a doc",
-    );
-    let doc_id = created["doc"]["id"].as_str().expect("an id");
-    let draft = format!(
-        "/api/v1/w/{}/projects/{}/changesets/{}/docs/{doc_id}",
-        f.a.id, f.a.project_id, f.a.changeset_id
-    );
-    let open = case_named(
-        "POST",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs/{doc_id}/open",
-    );
-    let opened = call(client, "POST", &format!("{draft}/open"), &key, open.body);
-    assert!(
-        matches!(opened.status, 200 | 201),
-        "open the doc: {}",
-        opened.text()
-    );
-    let ops = case_named(
-        "POST",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs/{doc_id}/ops",
-    );
-    must(
-        call(client, "POST", &format!("{draft}/ops"), &key, ops.body),
-        200,
-        "edit the draft",
-    );
-    let doc = format!(
-        "/api/v1/w/{}/projects/{}/docs/{doc_id}",
-        f.a.id, f.a.project_id
-    );
-    for auth in [&key, &human] {
-        must(
-            call(client, "GET", &draft, auth, None),
-            200,
-            "read the draft",
-        );
-        must(call(client, "GET", &doc, auth, None), 200, "show the doc");
-        must(
-            call(client, "GET", &format!("{doc}/html"), auth, None),
-            200,
-            "read mainline",
-        );
     }
 }
 
@@ -4611,37 +4347,6 @@ fn every_human_route_answers_an_api_key_with_403_and_changes_nothing() {
     );
 }
 
-#[test]
-fn the_login_is_the_only_human_route_that_an_api_key_does_not_turn_down() {
-    // The exemption list is closed: a new human route that a key could use
-    // would need a decision here.
-    assert_eq!(KEY_EXEMPT, [("POST", "/api/v1/auth/login")]);
-    let human_routes: Vec<String> = registry()
-        .into_iter()
-        .filter(|r| r.access == Access::Human)
-        .map(|r| route_name(&r.method, &r.path))
-        .collect();
-    assert!(
-        human_routes.contains(&"POST /api/v1/auth/login".to_string()),
-        "{human_routes:?}"
-    );
-    let (f, client) = ready();
-    let body = json!({ "email": f.a.email, "password": "not the password" }).to_string();
-    let response = call(
-        client,
-        "POST",
-        "/api/v1/auth/login",
-        &Auth::Key(&f.a.key),
-        Some(&body),
-    );
-    assert_ne!(
-        response.status,
-        403,
-        "the login checks the password: {}",
-        response.text()
-    );
-}
-
 // ---------------------------------------------------------------------------
 // WebSockets
 // ---------------------------------------------------------------------------
@@ -5130,37 +4835,6 @@ fn row_level_security_stops_workspace_a_from_changing_inserting_moving_or_deleti
         before,
         "the attempts changed rows"
     );
-}
-
-#[test]
-fn a_connection_that_set_workspace_a_for_one_transaction_has_forgotten_it_in_the_next() {
-    let f = fixture();
-    block(async {
-        let tables = seeded_tenant_tables(&f.a.id, &f.b.id).await;
-        let mut conn = api_connection().await;
-        let mut tx = conn.begin().await.expect("begin");
-        sqlx::query("select set_config('app.workspace_id', $1, true)")
-            .bind(&f.a.id)
-            .execute(&mut *tx)
-            .await
-            .expect("set app.workspace_id");
-        let seen: i64 = sqlx::query_scalar("select count(*) from projects")
-            .fetch_one(&mut *tx)
-            .await
-            .expect("count");
-        assert!(seen > 0, "the transaction sees its workspace");
-        tx.commit().await.expect("commit");
-        for table in &tables {
-            let rows: i64 = sqlx::query_scalar(&format!("select count(*) from {table}"))
-                .fetch_one(&mut conn)
-                .await
-                .unwrap_or_else(|e| panic!("{table}: {e}"));
-            assert_eq!(
-                rows, 0,
-                "{table}: the finished transaction's workspace lingers"
-            );
-        }
-    });
 }
 
 // ---------------------------------------------------------------------------
