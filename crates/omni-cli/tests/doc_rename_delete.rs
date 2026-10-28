@@ -204,6 +204,19 @@ fn doc_delete_sends_a_delete_and_prints_the_id() {
 }
 
 #[test]
+fn doc_delete_without_a_doc_is_one_line_and_sends_nothing() {
+    let server = mock();
+    let home = logged_in(&server.url);
+    let out = run(&home, &["doc", "delete"]);
+    assert_one_line_error(&out, &["doc"]);
+    assert!(
+        server.requests().is_empty(),
+        "nothing is sent: {:?}",
+        server.requests()
+    );
+}
+
+#[test]
 fn doc_delete_of_a_doc_that_is_not_there_is_one_line_with_the_code() {
     let server = mock();
     let home = logged_in(&server.url);
