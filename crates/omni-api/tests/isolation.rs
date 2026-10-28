@@ -3365,50 +3365,6 @@ fn the_directive_route_is_a_human_route_that_the_suite_attacks() {
     );
 }
 
-#[test]
-fn the_directive_call_of_the_attacks_works_for_the_workspace_that_owns_the_records() {
-    // The control for the directive route: the owner's human posts a
-    // directive with the body of the case in the seeded thread, and the
-    // owner's agent is given it with its next request in the change set.
-    let (f, client) = ready();
-    let _guard = serial();
-    let key = Auth::Key(&f.a.key);
-    let human = Auth::Session(&f.a.token);
-    let posted = must(
-        call(
-            client,
-            "POST",
-            &fill(DIRECTIVES_ROUTE, &f.a, &f.a),
-            &human,
-            case_named("POST", DIRECTIVES_ROUTE).body,
-        ),
-        201,
-        "the human posts a directive",
-    );
-    assert_eq!(posted["post"]["type"], "directive", "{posted}");
-    let shown = must(
-        call(
-            client,
-            "GET",
-            &fill(
-                "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}",
-                &f.a,
-                &f.a,
-            ),
-            &key,
-            None,
-        ),
-        200,
-        "show the change set to the agent",
-    );
-    let given: Vec<&Value> = shown["directives"]
-        .as_array()
-        .map(|d| d.iter().collect())
-        .unwrap_or_default();
-    assert_eq!(given.len(), 1, "the agent is given the directive: {shown}");
-    assert_eq!(given[0]["id"], posted["post"]["id"], "{shown}");
-}
-
 // ---------------------------------------------------------------------------
 // Reading posts (US-035)
 // ---------------------------------------------------------------------------

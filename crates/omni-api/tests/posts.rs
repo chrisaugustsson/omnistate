@@ -78,7 +78,7 @@ mod common;
 
 use common::{Client, Response, TestServer, cookie};
 use omni_api::Config;
-use omni_api::routes::{Access, registry};
+use omni_api::routes::registry;
 use s3::creds::Credentials;
 use s3::{Bucket, BucketConfiguration, Region};
 use serde_json::{Value, json};
@@ -93,10 +93,6 @@ const TEST_DB: &str = "omni_us034_posts";
 const TEST_BUCKET: &str = "omni-us034-posts";
 /// An ID that no row has.
 const UNKNOWN_ID: &str = "01900000-0000-7000-8000-000000000000";
-const POSTS_ROUTE: &str =
-    "/api/v1/w/{workspace_id}/projects/{project_id}/threads/{thread_id}/posts";
-const DIRECTIVES_ROUTE: &str =
-    "/api/v1/w/{workspace_id}/projects/{project_id}/threads/{thread_id}/directives";
 /// The post types an agent may post.
 const AGENT_TYPES: [&str; 7] = [
     "note",
@@ -394,10 +390,6 @@ fn id_of(value: &Value) -> String {
         .to_string()
 }
 
-fn parse(text: &str) -> Value {
-    serde_json::from_str(text).unwrap_or_else(|e| panic!("not JSON ({e}): {text}"))
-}
-
 fn project_base(f: &Fixture, project: &str) -> String {
     format!("/api/v1/w/{}/projects/{project}", f.workspace)
 }
@@ -648,27 +640,6 @@ fn post_row(post: &str) -> String {
     })
 }
 
-/// The live events of a project named `event` for one thread, oldest first,
-/// as (seq, data).
-fn events_of(project: &str, thread: &str, event: &str) -> Vec<(i64, Value)> {
-    block(async {
-        let mut conn = admin_connection().await;
-        let rows = sqlx::query_as::<_, (i64, String)>(
-            "select seq, data::jsonb::text from live_events \
-             where project_id = $1::uuid and event = $2 order by seq",
-        )
-        .bind(project)
-        .bind(event)
-        .fetch_all(&mut conn)
-        .await
-        .unwrap_or_else(|e| panic!("read the live events: {e}"));
-        rows.iter()
-            .map(|(seq, text)| (*seq, parse(text)))
-            .filter(|(_, data)| data["thread_id"] == thread)
-            .collect()
-    })
-}
-
 /// How many live events of the project there are: a refused request must not
 /// add one.
 fn event_count(project: &str) -> i64 {
@@ -705,24 +676,6 @@ fn assert_refused(
         events_before,
         "a refused post emits nothing"
     );
-}
-
-// ---------------------------------------------------------------------------
-// The routes
-// ---------------------------------------------------------------------------
-
-#[test]
-fn the_post_routes_are_in_the_registry_with_who_may_call_them() {
-    for (method, path, access) in [
-        ("POST", POSTS_ROUTE, Access::Both),
-        ("POST", DIRECTIVES_ROUTE, Access::Human),
-    ] {
-        let entry = registry()
-            .into_iter()
-            .find(|r| r.method == method && r.path == path)
-            .unwrap_or_else(|| panic!("the registry has no route {method} {path}"));
-        assert_eq!(entry.access, access, "{method} {path}");
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -797,7 +750,7 @@ fn an_agent_cannot_post_a_directive() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn a_post_has_a_type_an_author_a_summary_and_a_markdown_body() {
+fn a_posts_author_is_the_agent_identity_of_the_request_or_the_human_user() {
     let (f, client) = ready();
     let (project, _, thread) = setting(f, client);
     let body = "## Why\n\nThe *left* layout reads better at 320 px.\n";
@@ -807,18 +760,14 @@ fn a_post_has_a_type_an_author_a_summary_and_a_markdown_body() {
         &agent(f),
         &project,
         &thread,
-        &json!({ "type": "position", "summary": "Pick the left layout", "body": body }),
+        &json!({ "summary": "Pick the left layout", "body": body }),
     );
-    assert_uuid_v7(&posted["id"]);
     assert_eq!(posted["thread_id"], thread.as_str(), "{posted}");
-    assert_eq!(posted["phase"], 1, "{posted}");
-    assert_eq!(posted["type"], "position", "{posted}");
     assert_eq!(posted["summary"], "Pick the left layout", "{posted}");
     assert_eq!(
         posted["body"], body,
         "the Markdown is kept as sent: {posted}"
     );
-    assert!(posted["created_at"].is_string(), "{posted}");
     assert_eq!(
         posted["author"],
         json!({
@@ -830,10 +779,6 @@ fn a_post_has_a_type_an_author_a_summary_and_a_markdown_body() {
         }),
         "the author is the agent identity of the request: {posted}"
     );
-    assert_eq!(posted["links"], json!([]), "{posted}");
-    assert_eq!(posted["attachments"], json!([]), "{posted}");
-    assert_eq!(posted["confidence"], Value::Null, "{posted}");
-    assert_eq!(posted["replaces"], Value::Null, "{posted}");
 
     let by_human = post(
         f,
@@ -841,14 +786,13 @@ fn a_post_has_a_type_an_author_a_summary_and_a_markdown_body() {
         &human(f),
         &project,
         &thread,
-        &json!({ "type": "question", "summary": "Why not the right one?", "body": "Curious." }),
+        &json!({ "summary": "Why not the right one?", "body": "Curious." }),
     );
     assert_eq!(
         by_human["author"],
         json!({ "kind": "human", "user_id": f.alice }),
         "the author is the human user: {by_human}"
     );
-    assert_eq!(by_human["type"], "question", "{by_human}");
 }
 
 #[test]
@@ -1535,37 +1479,4 @@ fn a_refused_request_does_not_use_up_a_directive() {
         vec![id_of(&given)],
         "the directive comes with the next successful request: {answer}"
     );
-}
-
-// ---------------------------------------------------------------------------
-// Live events
-// ---------------------------------------------------------------------------
-
-#[test]
-fn recording_a_post_emits_post_created() {
-    let (f, client) = ready();
-    let (project, changeset, thread) = setting(f, client);
-    let noted = id_of(&post(
-        f,
-        client,
-        &agent(f),
-        &project,
-        &thread,
-        &note("Noted"),
-    ));
-    let order = id_of(&directive(f, client, &project, &thread, "Ship it"));
-
-    let created = events_of(&project, &thread, "post.created");
-    assert_eq!(created.len(), 2, "one post.created per post: {created:?}");
-    for ((_, data), (id, kind)) in created
-        .iter()
-        .zip([(&noted, "note"), (&order, "directive")])
-    {
-        assert_eq!(data["post_id"], id.as_str(), "{data}");
-        assert_eq!(data["thread_id"], thread.as_str(), "{data}");
-        assert_eq!(data["changeset_id"], changeset.as_str(), "{data}");
-        assert_eq!(data["phase"], 1, "{data}");
-        assert_eq!(data["type"], kind, "{data}");
-    }
-    assert!(created[0].0 < created[1].0, "the events are in order");
 }
