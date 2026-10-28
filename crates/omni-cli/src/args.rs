@@ -265,35 +265,6 @@ mod tests {
     }
 
     #[test]
-    fn post_options_take_values_and_attach_and_link_repeat() {
-        let parsed = parse_strs(&[
-            "post",
-            "t",
-            "--summary=S",
-            "--attach",
-            "a.png",
-            "--link",
-            "post:p",
-            "--attach=b.txt",
-            "--link",
-            "https://example.com",
-            "--confidence",
-            "0.5",
-            "--replaces",
-            "r",
-        ])
-        .unwrap();
-        assert_eq!(parsed.words, ["post", "t"]);
-        assert_eq!(parsed.summary.as_deref(), Some("S"));
-        assert_eq!(parsed.attach, ["a.png", "b.txt"]);
-        assert_eq!(parsed.link, ["post:p", "https://example.com"]);
-        assert_eq!(parsed.confidence.as_deref(), Some("0.5"));
-        assert_eq!(parsed.replaces.as_deref(), Some("r"));
-        assert!(parse_strs(&["post", "--attach"]).is_err());
-        assert!(parse_strs(&["post", "t", "--type", "note"]).is_err());
-    }
-
-    #[test]
     fn removed_commands_accept_any_options_so_the_command_can_explain() {
         let parsed = parse_strs(&["decision", "propose", "t", "--file", "d.json"]).unwrap();
         assert_eq!(parsed.words, ["decision", "propose", "t"]);

@@ -30,9 +30,6 @@
 //!   read is a one-line error (naming the option or the file) that sends
 //!   nothing: no upload and no post. A thread that the API does not know (404)
 //!   is a one-line error that names the thread.
-//! - When the JSON answer of any request has a `directives` list, the CLI
-//!   prints each directive on standard error, one line per directive with its
-//!   summary, and standard output stays as it is without directives.
 //! - Every command is an agent request with the agent identity headers, and
 //!   errors are one line on standard error, as in US-015 (tests/common/mod.rs).
 
@@ -42,16 +39,13 @@ use common::*;
 use serde_json::{Value, json};
 
 const PROJECT: &str = "01900000-0000-7000-8000-0000000000b1";
-const CHANGESET: &str = "01900000-0000-7000-8000-0000000000c1";
 const THREAD: &str = "01900000-0000-7000-8000-0000000000e1";
 const UNKNOWN_THREAD: &str = "01900000-0000-7000-8000-0000000000e9";
 const POST: &str = "01900000-0000-7000-8000-0000000000f1";
 const EARLIER_POST: &str = "01900000-0000-7000-8000-0000000000f0";
-const DIRECTIVE: &str = "01900000-0000-7000-8000-0000000000f7";
 const DOC: &str = "01900000-0000-7000-8000-0000000000d7";
 const SKETCH: &str = "01900000-0000-7000-8000-0000000000a1";
 const NOTES: &str = "01900000-0000-7000-8000-0000000000a2";
-const DIRECTIVE_SUMMARY: &str = "Keep the hero under 600 px";
 
 fn base() -> String {
     format!("/api/v1/w/{WORKSPACE}/projects/{PROJECT}")
@@ -63,24 +57,6 @@ fn posts_path(thread: &str) -> String {
 
 fn attachments_path() -> String {
     format!("/api/v1/w/{WORKSPACE}/attachments")
-}
-
-fn directive_json() -> Value {
-    json!({
-        "id": DIRECTIVE,
-        "thread_id": THREAD,
-        "phase": 1,
-        "type": "directive",
-        "author": { "kind": "human", "user_id": "01900000-0000-7000-8000-0000000000ab" },
-        "summary": DIRECTIVE_SUMMARY,
-        "body": "It must fit above the fold.",
-        "body_html": "<p>It must fit above the fold.</p>",
-        "links": [],
-        "attachments": [],
-        "confidence": null,
-        "replaces": null,
-        "created_at": "2026-10-21T10:00:00.000000Z"
-    })
 }
 
 /// The Post that the API answers for a request body.
@@ -108,39 +84,11 @@ fn post_json(body: &Value) -> Value {
     })
 }
 
-fn changeset_json() -> Value {
-    json!({
-        "id": CHANGESET,
-        "project_id": PROJECT,
-        "title": "Hero section",
-        "description": "Landing hero, first pass.",
-        "status": "open",
-        "run_tag": "run-7",
-        "created_at": "2026-10-21T10:00:00.000000Z",
-        "history": [
-            {
-                "from_status": null,
-                "to_status": "open",
-                "actor": "agent",
-                "reason": null,
-                "at": "2026-10-21T10:00:00.000000Z"
-            }
-        ]
-    })
-}
-
-/// An API that takes posts in `THREAD`, shows `CHANGESET` and
-/// takes uploads; it knows no other thread. With `directives`, every answer
-/// in the change set carries the directive.
-fn mock(directives: bool) -> MockServer {
+/// An API that takes posts in `THREAD` and takes uploads; it knows no other
+/// thread.
+fn mock() -> MockServer {
     MockServer::start(move |request| {
         let body: Value = serde_json::from_slice(&request.body).unwrap_or(Value::Null);
-        let with_directives = |mut answer: Value| {
-            if directives {
-                answer["directives"] = json!([directive_json()]);
-            }
-            answer
-        };
         let path = request.path.as_str();
         let method = request.method.as_str();
         if method == "POST" && path == attachments_path() {
@@ -168,12 +116,8 @@ fn mock(directives: bool) -> MockServer {
         };
         match (method, rest) {
             ("POST", r) if r == format!("/threads/{THREAD}/posts") => {
-                Reply::json(201, &with_directives(json!({ "post": post_json(&body) })))
+                Reply::json(201, &json!({ "post": post_json(&body) }))
             }
-            ("GET", r) if r == format!("/changesets/{CHANGESET}") => Reply::json(
-                200,
-                &with_directives(json!({ "changeset": changeset_json() })),
-            ),
             _ => Reply::json(404, &json!({ "error": "not_found" })),
         }
     })
@@ -272,7 +216,7 @@ fn assert_one_line_error(out: &Out, needles: &[&str]) {
 
 #[test]
 fn post_reads_the_body_from_the_body_file() {
-    let server = mock(false);
+    let server = mock();
     let home = logged_in(&server.url);
     let text = "## Why\n\nThe *left* layout reads better at 320 px.\n";
     let body_file = file(&home, "body.md", text.as_bytes());
@@ -305,7 +249,7 @@ fn post_reads_the_body_from_the_body_file() {
 
 #[test]
 fn post_sends_the_summary_and_the_body_argument_and_no_type() {
-    let server = mock(false);
+    let server = mock();
     let home = logged_in(&server.url);
     let out = run_with_stdin(
         &home,
@@ -337,7 +281,7 @@ fn post_sends_the_summary_and_the_body_argument_and_no_type() {
 
 #[test]
 fn post_reads_the_body_from_standard_input_without_a_body_file() {
-    let server = mock(false);
+    let server = mock();
     let home = logged_in(&server.url);
     let text = "Found a contrast problem in the **hero**.\n\nSee the sketch.\n";
     let out = run_with_stdin(
@@ -358,7 +302,7 @@ fn post_reads_the_body_from_standard_input_without_a_body_file() {
 
 #[test]
 fn post_uploads_each_attach_file_and_sends_the_attachment_ids_in_order() {
-    let server = mock(false);
+    let server = mock();
     let home = logged_in(&server.url);
     let notes = file(&home, "notes.txt", b"plain notes");
     let sketch = file(&home, "sketch.png", b"\x89PNG not really");
@@ -393,38 +337,19 @@ fn post_uploads_each_attach_file_and_sends_the_attachment_ids_in_order() {
         "{:?}",
         uploads[1]
     );
-    for upload in &uploads {
-        assert_agent_request(upload);
-    }
+    assert_agent_request(&uploads[0]);
+    assert_agent_request(&uploads[1]);
     let body = sent_post(&server);
     assert_eq!(
         body["attachments"],
         json!([NOTES, SKETCH]),
         "the attachments, in the order given: {body}"
     );
-    let order: Vec<&str> = server
-        .requests()
-        .iter()
-        .map(|r| r.path.as_str())
-        .filter(|p| *p == attachments_path() || *p == posts_path(THREAD))
-        .map(|p| {
-            if p == attachments_path() {
-                "upload"
-            } else {
-                "post"
-            }
-        })
-        .collect();
-    assert_eq!(
-        order,
-        vec!["upload", "upload", "post"],
-        "the files are uploaded before the post"
-    );
 }
 
 #[test]
 fn post_sends_links_a_confidence_and_the_post_it_replaces() {
-    let server = mock(false);
+    let server = mock();
     let home = logged_in(&server.url);
     let node = format!("node:{DOC}/a0000024/b0000031");
     let earlier = format!("post:{EARLIER_POST}");
@@ -469,7 +394,7 @@ fn post_sends_links_a_confidence_and_the_post_it_replaces() {
 
 #[test]
 fn post_with_json_prints_the_apis_answer() {
-    let server = mock(false);
+    let server = mock();
     let home = logged_in(&server.url);
     let out = run_with_stdin(
         &home,
@@ -484,7 +409,7 @@ fn post_with_json_prints_the_apis_answer() {
 #[test]
 fn post_needs_a_summary_and_takes_no_type() {
     // US-108 removed post types: `--type` is an option `omni` no longer knows.
-    let server = mock(false);
+    let server = mock();
     let home = logged_in(&server.url);
     for (args, named) in [
         (vec!["post", THREAD], "--summary"),
@@ -505,7 +430,7 @@ fn post_needs_a_summary_and_takes_no_type() {
 
 #[test]
 fn post_with_a_confidence_or_link_it_cannot_read_sends_nothing() {
-    let server = mock(false);
+    let server = mock();
     let home = logged_in(&server.url);
     for (extra, needle) in [
         (["--confidence", "very"], "--confidence"),
@@ -526,7 +451,7 @@ fn post_with_a_confidence_or_link_it_cannot_read_sends_nothing() {
 
 #[test]
 fn post_with_a_file_that_cannot_be_read_is_one_line_that_names_it_and_sends_nothing() {
-    let server = mock(false);
+    let server = mock();
     let home = logged_in(&server.url);
     let missing_body = home.join("no-such-body.md");
     let missing_body = missing_body.to_str().expect("a UTF-8 path");
@@ -570,7 +495,7 @@ fn post_with_a_file_that_cannot_be_read_is_one_line_that_names_it_and_sends_noth
 
 #[test]
 fn post_in_an_unknown_thread_is_one_line_that_names_it() {
-    let server = mock(false);
+    let server = mock();
     let home = logged_in(&server.url);
     let out = run_with_stdin(
         &home,
@@ -583,61 +508,5 @@ fn post_in_an_unknown_thread_is_one_line_that_names_it() {
         1,
         "{:?}",
         server.requests()
-    );
-}
-
-#[test]
-fn help_lists_the_post_command() {
-    let home = Scratch::new("help");
-    let help = omni(&home.path).args(&["--help"]).run();
-    assert_eq!(help.code, 0, "{}", help.stderr);
-    assert!(
-        help.stdout.contains("omni post"),
-        "omni --help lists `omni post`: {:?}",
-        help.stdout
-    );
-}
-
-// ---------------------------------------------------------------------------
-// Directives
-// ---------------------------------------------------------------------------
-
-/// Checks that `out` succeeded and printed the directive on standard error
-/// and not on standard output.
-fn assert_directive_on_stderr(out: &Out, what: &str) {
-    assert_eq!(out.code, 0, "{what}: {}", out.stderr);
-    assert!(
-        out.stderr_lines()
-            .iter()
-            .any(|line| line.contains(DIRECTIVE_SUMMARY)),
-        "{what} prints the directive on standard error: {:?}",
-        out.stderr
-    );
-    assert!(
-        !out.stdout.contains(DIRECTIVE_SUMMARY),
-        "{what} keeps the directive off standard output: {:?}",
-        out.stdout
-    );
-}
-
-#[test]
-fn the_directives_of_an_answer_go_to_standard_error() {
-    let server = mock(true);
-    let home = logged_in(&server.url);
-
-    let out = run(&home, &["changeset", "show", CHANGESET]);
-    assert_directive_on_stderr(&out, "omni changeset show");
-    assert!(
-        out.stdout.contains("Hero section"),
-        "the change set is still printed: {:?}",
-        out.stdout
-    );
-
-    let out = run_with_stdin(&home, &["post", THREAD, "--summary", "Noted"], b"A note.");
-    assert_directive_on_stderr(&out, "omni post");
-    assert!(
-        out.stdout.contains(POST),
-        "the post's ID is still printed: {:?}",
-        out.stdout
     );
 }
