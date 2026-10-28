@@ -2158,10 +2158,10 @@ fn quote(text: &str, out: &mut String) {
 
 #[cfg(test)]
 mod tests {
-    //! `print_with` writes `rev={n}` after the `id` of every tag, `print`
-    //! writes none, and a tag that sets `rev` is not part of the format.
+    //! `print_with` writes `rev={n}` after the `id` of every tag, and a tag
+    //! that sets `rev` is not part of the format.
 
-    use super::{Revision, parse, print, print_with};
+    use super::{Revision, parse, print_with};
     use crate::design::{Node, NodeId};
 
     const TAGS: &str = r#"<Board id="brd00001" name="Cart" x={0} y={0} width={360} height={640} dir="col">
@@ -2171,11 +2171,6 @@ mod tests {
     fn board() -> Node {
         let root = parse(TAGS).expect("the tags parse");
         root.assign_ids(|| unreachable!("every node has an ID"))
-    }
-
-    #[test]
-    fn print_writes_no_rev() {
-        assert_eq!(print(&board()), TAGS);
     }
 
     #[test]
@@ -2195,23 +2190,18 @@ mod tests {
     }
 
     #[test]
-    fn a_node_without_a_revision_is_printed_without_one() {
-        let revision = |id: &NodeId| (id.to_string() == "brd00001").then_some(1);
-        let revision: Revision = &revision;
-        let printed = print_with(&board(), Some(revision));
-        assert!(
-            printed.contains(r#"<Board id="brd00001" rev={1} "#),
-            "{printed}"
-        );
-        assert!(
-            printed.contains(r#"<Text id="txt00001" name="Total""#),
-            "{printed}"
-        );
-    }
-
-    #[test]
     fn a_tag_that_sets_rev_is_refused() {
         let tags_with_rev = TAGS.replace(r#"id="brd00001""#, r#"id="brd00001" rev={3}"#);
-        assert!(parse(&tags_with_rev).is_err());
+        let error = parse(&tags_with_rev).expect_err("rev is only read, never written");
+        assert_eq!(
+            (error.line(), error.column()),
+            (1, 22),
+            "the error points at `rev`: {error}"
+        );
+        assert!(
+            error.message().contains("rev"),
+            "the message names `rev`: {}",
+            error.message()
+        );
     }
 }

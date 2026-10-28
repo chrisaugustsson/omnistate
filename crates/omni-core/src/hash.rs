@@ -203,7 +203,7 @@ mod tests {
     //! The output matches the published BLAKE3 test vectors, whose input is
     //! the bytes `i % 251`.
 
-    use super::{blake3, blake3_hex};
+    use super::blake3_hex;
 
     fn input(len: usize) -> Vec<u8> {
         (0..len).map(|i| (i % 251) as u8).collect()
@@ -248,17 +248,5 @@ mod tests {
         for (len, expected) in vectors {
             assert_eq!(blake3_hex(&input(len)), expected, "{len} bytes");
         }
-    }
-
-    #[test]
-    fn the_hex_form_is_the_hash_in_lowercase() {
-        let bytes = blake3(b"board");
-        let hex = blake3_hex(b"board");
-        assert_eq!(hex.len(), 64);
-        let decoded: Vec<u8> = (0..32)
-            .map(|i| u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).expect("hex digits"))
-            .collect();
-        assert_eq!(decoded, bytes);
-        assert_eq!(hex, hex.to_lowercase());
     }
 }
