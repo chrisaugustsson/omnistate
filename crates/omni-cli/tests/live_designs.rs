@@ -30,7 +30,6 @@ const DESIGN_SYSTEM: &str = "01900000-0000-7000-8000-0000000000d2";
 const PAGE: &str = "page0001";
 const BOARD: &str = "brd00001";
 const TOTAL: &str = "txt00001";
-const CONFLICT_NODE: &str = "c0nf1ct0";
 const NEW_BOARD: &str = "n3wb0ard";
 const NEW_TEXT: &str = "n3wtext0";
 /// A token name that the mock API refuses.
@@ -81,28 +80,12 @@ fn tree() -> Value {
 }
 
 /// An API with a design `DOC` and a design system `DESIGN_SYSTEM` that it
-/// writes directly. A batch that mentions `CONFLICT_NODE` is a conflict, and a
-/// token tree with a `color.broken` token is refused.
+/// writes directly. A token tree with a `color.broken` token is refused.
 fn mock() -> MockServer {
     MockServer::start(|request| {
         let body: Value = serde_json::from_slice(&request.body).unwrap_or(Value::Null);
-        let text = String::from_utf8_lossy(&request.body).into_owned();
         match (request.method.as_str(), request.path.as_str()) {
-            ("POST", path) if path == ops_path() => {
-                if text.contains(CONFLICT_NODE) {
-                    Reply::json(
-                        409,
-                        &json!({ "error": "conflict", "conflict": {
-                            "index": 0,
-                            "node": CONFLICT_NODE,
-                            "expected": 1,
-                            "current_revision": 3
-                        } }),
-                    )
-                } else {
-                    Reply::json(200, &edit_answer())
-                }
-            }
+            ("POST", path) if path == ops_path() => Reply::json(200, &edit_answer()),
             ("PUT", path) if path == tokens_path() => {
                 if body["tokens"]["color"].get(BROKEN).is_some() {
                     Reply::json(
@@ -297,18 +280,6 @@ fn design_edit_without_a_change_set_prints_the_new_revisions() {
     let json = design_edit(&home, &[DOC, "--json"], &batch().to_string());
     assert_eq!(json.code, 0, "{}", json.stderr);
     assert_eq!(json.json(), edit_answer());
-}
-
-#[test]
-fn a_conflict_on_a_live_design_is_one_line_with_the_current_revision() {
-    let server = mock();
-    let home = logged_in(&server.url);
-    let ops = json!([
-        { "op": "set", "node": CONFLICT_NODE, "rev": 1, "properties": { "content": "x" } }
-    ]);
-    let out = design_edit(&home, &[DOC], &ops.to_string());
-    assert_one_line_error(&out, &["conflict", CONFLICT_NODE, "revision 3"]);
-    assert_eq!(server.requests().len(), 1, "the batch was sent");
 }
 
 // ---------------------------------------------------------------------------

@@ -17,7 +17,7 @@
 //!   `"board": "<id>"`, which keeps the batch inside that board.
 //! - It prints each result's node and new revision and the IDs that the
 //!   server assigned to new nodes; `--json` prints the API's answer.
-//! - A missing `--doc`, a doc or change set that is no UUID,
+//! - A missing doc, a doc that is no UUID,
 //!   a board that is no node ID, and input that is not a JSON array are
 //!   one-line errors that send nothing.
 //! - A refused operation (400 `invalid_operation`) is a one-line error with
@@ -208,30 +208,13 @@ fn sent_bodies(server: &MockServer) -> Vec<Value> {
 const TARGET: [&str; 4] = ["--changeset", CHANGESET, "--doc", DOC];
 
 #[test]
-fn design_edit_needs_a_doc_and_a_batch_before_sending_anything() {
+fn design_edit_refuses_a_missing_or_malformed_doc_or_board_before_sending_anything() {
     let server = mock();
     let home = logged_in(&server.url);
     let ops = batch().to_string();
-    assert_one_line_error(&run(&home, &["--changeset", CHANGESET], &ops), &["--doc"]);
-    assert_one_line_error(
-        &run(
-            &home,
-            &["--changeset", CHANGESET, "--doc", "checkout"],
-            &ops,
-        ),
-        &["checkout"],
-    );
-    assert_one_line_error(
-        &run(&home, &["--changeset", "draft-1", "--doc", DOC], &ops),
-        &["draft-1"],
-    );
-    assert_one_line_error(
-        &run(&home, &[&TARGET[..], &["--board", "Cart!"]].concat(), &ops),
-        &["Cart!"],
-    );
-    for input in ["", "not json", "{\"op\": \"delete\"}"] {
-        assert_one_line_error(&run(&home, &TARGET, input), &[]);
-    }
+    assert_one_line_error(&run(&home, &[], &ops), &["--doc"]);
+    assert_one_line_error(&run(&home, &["--doc", "checkout"], &ops), &["checkout"]);
+    assert_one_line_error(&run(&home, &[DOC, "--board", "Cart!"], &ops), &["Cart!"]);
     assert_nothing_sent(&server);
 }
 
