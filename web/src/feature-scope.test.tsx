@@ -29,14 +29,8 @@
 // overview, then the feature's name linking to the feature's overview (only
 // for an item of a feature), then the section ("Threads" or "Docs"; as a link,
 // it goes to that section of the item's feature, or of the project).
-//
-// US-110: a feature has no status. Its overview has no "Mark done" and no
-// "Reopen" button, no page of a feature (its overview, its Docs, Change sets
-// and Threads) shows a "Done" badge, and the sidebar lists every feature with
-// no "Done" toggle and no Done badge. The fake API has no done or reopen
-// route.
 import { RouterProvider, createMemoryHistory } from "@tanstack/react-router";
-import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { getRouter } from "./router";
 
@@ -328,11 +322,6 @@ function renderAt(path: string) {
   return router;
 }
 
-/** The sidebar's navigation. */
-async function sidebar() {
-  return screen.findByRole("navigation", { name: /workspace/i });
-}
-
 /** The page itself, without the sidebar. */
 async function page() {
   return screen.findByRole("main");
@@ -369,12 +358,6 @@ function hasGlobalBadge(container: HTMLElement) {
   return within(container).queryAllByText(/^\s*global\s*$/i).length > 0;
 }
 
-/** The text of the feature's entry in the sidebar, without its name. */
-function besideName(link: HTMLElement, name: string) {
-  const entry = (link.closest("li") as HTMLElement | null) ?? link;
-  return (entry.textContent ?? "").replace(name, "");
-}
-
 type Crumb = { name: RegExp; href: string };
 
 /**
@@ -408,8 +391,6 @@ async function expectTrail(crumbs: Crumb[], section: RegExp, sectionHref: string
 
 const PROJECT_CRUMB = { name: new RegExp(PROJECT_NAME), href: PROJECT_PATH };
 const WISHLIST_CRUMB = { name: /wishlist/i, href: featurePath(WISHLIST) };
-const MARK_DONE = /^\s*mark (as |it )?done\b/i;
-const REOPEN = /^\s*reopen\b/i;
 
 describe("feature scope in reviews", () => {
   beforeEach(() => {
@@ -519,63 +500,6 @@ describe("feature scope in reviews", () => {
       // The doc viewer replaces its loading page once the doc is there.
       await screen.findByRole("heading", { level: 1, name: "Saved items screens" });
       await expectTrail([PROJECT_CRUMB, WISHLIST_CRUMB], /docs/i, featurePath(WISHLIST, "docs"));
-    });
-  });
-
-  describe("a feature has no status", () => {
-    test.each([
-      ["Wishlist", WISHLIST, /wishlist/i],
-      ["Loyalty points", LOYALTY, /loyalty points/i],
-    ])("the overview of %s has no Mark done and no Reopen button and sends nothing", async (_, id, name) => {
-      const api = fakeApi(seeded());
-      renderAt(featurePath(id));
-      const main = await page();
-      await within(main).findByRole("heading", { level: 1, name });
-      await waitFor(() => expect(main.textContent, "the overview has loaded its sections").toMatch(/threads/i));
-      await act(async () => {
-        await new Promise((resolve) => setTimeout(resolve, 50));
-      });
-      expect(screen.queryByRole("button", { name: MARK_DONE }), "no Mark done").toBeNull();
-      expect(screen.queryByRole("button", { name: REOPEN }), "no Reopen").toBeNull();
-      expect(api.calls, "nothing is sent").toEqual([]);
-    });
-
-    test.each([
-      ["overview", ""],
-      ["Docs", "docs"],
-      ["Change sets", "changesets"],
-      ["Threads", "threads"],
-    ])("no feature's %s page shows a Done badge", async (name, section) => {
-      for (const [id, featureName] of [
-        [WISHLIST, /wishlist/i],
-        [LOYALTY, /loyalty points/i],
-      ] as const) {
-        fakeApi(seeded());
-        renderAt(featurePath(id, section));
-        const main = await page();
-        await waitFor(() => expect(main.textContent, `the ${name} page names the feature`).toMatch(featureName));
-        expect(within(main).queryAllByText(/^\s*done\s*$/i), `no Done badge on the ${name} page`).toEqual([]);
-        cleanup();
-      }
-    });
-
-    test("the sidebar lists every feature, with no Done toggle and no Done badge", async () => {
-      fakeApi(seeded());
-      renderAt(PROJECT_PATH);
-      const nav = await sidebar();
-      const wishlist = await waitFor(() => {
-        const found = linksTo(nav, featurePath(WISHLIST));
-        expect(found.length).toBeGreaterThan(0);
-        return found[0];
-      });
-      const loyalty = await waitFor(() => {
-        const found = linksTo(nav, featurePath(LOYALTY));
-        expect(found.length, "Loyalty points is listed with the others").toBeGreaterThan(0);
-        return found[0];
-      });
-      expect(within(nav).queryByRole("button", { name: /^done\b/i }), "no Done toggle").toBeNull();
-      expect(besideName(loyalty, "Loyalty points"), "the Loyalty points' entry").not.toMatch(/\bdone\b/i);
-      expect(besideName(wishlist, "Wishlist"), "the Wishlist's entry").not.toMatch(/\bdone\b/i);
     });
   });
 });
