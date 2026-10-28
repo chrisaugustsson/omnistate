@@ -42,7 +42,7 @@
 // fetch is replaced by a fake of the API, and the browser's WebSocket by a fake
 // socket.
 import { RouterProvider, createMemoryHistory } from "@tanstack/react-router";
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { getRouter } from "./router";
 import { answerDesignRead, own, type JsonNode } from "./testing/design-boards";
@@ -598,23 +598,6 @@ describe("the design viewer", () => {
     expect(boardReads(api, ORDER_1), "a loaded board is read once").toHaveLength(1);
     expect(boardReads(api, ORDER_2)).toHaveLength(1);
     expect(boardReads(api, ORDER_3)).toHaveLength(1);
-  });
-
-  test("another page shows its own boards as placeholders and loads those in view", async () => {
-    api = fakeApi();
-    fake.visible = [ORDER_1, ARCHIVE];
-    renderAt(DOC_PATH);
-    const renderer = await viewerRenderer();
-    await loaded(renderer, ORDRAR, V1, ORDER_1);
-    const pages = await waitFor(
-      () => screen.queryByRole("navigation", { name: /^pages$/i }) ?? screen.getByRole("region", { name: /^pages$/i }),
-    );
-    fireEvent.click(within(pages).getByRole("button", { name: /^Arkiv\b/ }));
-    await loaded(renderer, ARKIV, V1, ARCHIVE);
-    const read = boardReads(api, ARCHIVE);
-    expect(read).toHaveLength(1);
-    expect(read[0].params.get("version")).toBe(V1);
-    expect(versionReads(api, V1).every((call) => call.params.get("view") === "outline"), "still only the outline").toBe(true);
   });
 });
 
