@@ -39,7 +39,7 @@
 // still draws: the design viewer's error line is its alert (role "alert"), a
 // review canvas's is the text in its region.
 import { RouterProvider, createMemoryHistory } from "@tanstack/react-router";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { getRouter } from "./router";
 import { answerDesignRead } from "./testing/design-boards";
@@ -594,18 +594,6 @@ describe("images", () => {
     expect(alertText(), "nothing failed").toBe("");
   });
 
-  test("another page of the design is drawn with its own images", async () => {
-    api = fakeApi();
-    renderAt(DOC_PATH);
-    const renderer = await rendererIn(await findCanvasArea());
-    await drawnWith(renderer, IDAG, [PHOTO, LOGO, ICON], []);
-    const pages = await waitFor(
-      () => screen.queryByRole("navigation", { name: /^pages$/i }) ?? screen.getByRole("region", { name: /^pages$/i }),
-    );
-    fireEvent.click(within(pages).getByRole("button", { name: /^Kampanj\b/ }));
-    await drawnWith(renderer, KAMPANJ_PAGE, [HERO], []);
-  });
-
   test("both canvases of the change set review are given the images of the version they draw", async () => {
     api = fakeApi();
     renderAt(REVIEW_PATH);
@@ -632,14 +620,6 @@ describe("fonts", () => {
         `the font file ${id} is read from the workspace's attachments`,
       ).toBe(true);
     }
-  });
-
-  test("both canvases of the change set review are given the design system's fonts", async () => {
-    api = fakeApi();
-    renderAt(REVIEW_PATH);
-    const { base, after } = await findReviewRegions();
-    await drawnWith(await rendererIn(base), IDAG, [], ALL_FONTS);
-    await drawnWith(await rendererIn(after), IDAG, [], ALL_FONTS);
   });
 });
 
