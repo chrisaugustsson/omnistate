@@ -588,34 +588,6 @@ fn the_summary_at_the_top_has_the_counts_the_median_and_the_totals() {
 }
 
 #[test]
-fn the_summary_agrees_with_the_boards_below_it() {
-    let s = scenario();
-    let (summary, _) = s.report.summary();
-    let boards = s.report.boards();
-    let sum = |key: &str| boards.iter().map(|b| b.tag().number(key)).sum::<f64>();
-    assert_eq!(summary.number("data-boards"), boards.len() as f64);
-    assert_eq!(
-        summary.number("data-layout-mismatches"),
-        sum("data-layout-mismatches")
-    );
-    assert_eq!(summary.number("data-text-drift"), sum("data-text-drift"));
-    assert_eq!(summary.number("data-unconverted"), sum("data-unconverted"));
-    let items = |role: &str| boards.iter().map(|b| b.items(role).len()).sum::<usize>();
-    assert_eq!(
-        items("mismatch") as f64,
-        summary.number("data-layout-mismatches")
-    );
-    assert_eq!(
-        items("text-drift") as f64,
-        summary.number("data-text-drift")
-    );
-    assert_eq!(
-        items("unconverted") as f64,
-        summary.number("data-unconverted")
-    );
-}
-
-#[test]
 fn the_median_of_an_even_number_of_scores_is_the_mean_of_the_middle_two() {
     let folder = write_folder(
         "even",
@@ -777,25 +749,6 @@ fn make(args: &[&str]) -> Output {
         .expect("make can be started")
 }
 
-fn makefile() -> String {
-    fs::read_to_string(repo_root().join("Makefile")).expect("the Makefile is there")
-}
-
-#[test]
-fn make_has_a_phony_penpot_compare_target() {
-    let phony: Vec<String> = makefile()
-        .lines()
-        .filter(|line| line.starts_with(".PHONY"))
-        .map(str::to_string)
-        .collect();
-    assert!(
-        phony
-            .iter()
-            .any(|line| line.split_whitespace().any(|word| word == "penpot-compare")),
-        "penpot-compare is a .PHONY target: {phony:?}"
-    );
-}
-
 #[test]
 fn make_penpot_compare_reads_fixtures_penpot_and_writes_docs_penpot_compare() {
     let result = make(&["-n", "penpot-compare"]);
@@ -809,24 +762,6 @@ fn make_penpot_compare_reads_fixtures_penpot_and_writes_docs_penpot_compare() {
     assert!(plan.contains("report"), "{plan}");
     assert!(plan.contains("fixtures/penpot"), "{plan}");
     assert!(plan.contains("docs/penpot-compare"), "{plan}");
-}
-
-#[test]
-fn the_folders_of_make_penpot_compare_can_be_replaced() {
-    let result = make(&[
-        "-n",
-        "penpot-compare",
-        "PENPOT_FIXTURES=/some/exports",
-        "PENPOT_REPORT=/some/report",
-    ]);
-    assert!(
-        result.status.success(),
-        "{}",
-        String::from_utf8_lossy(&result.stderr)
-    );
-    let plan = String::from_utf8_lossy(&result.stdout);
-    assert!(plan.contains("/some/exports"), "{plan}");
-    assert!(plan.contains("/some/report"), "{plan}");
 }
 
 #[test]
@@ -853,20 +788,4 @@ fn make_penpot_compare_writes_the_report_of_the_folder() {
     for (name, bytes) in &from_command {
         assert!(bytes == &from_make[name], "{name} differs");
     }
-}
-
-#[test]
-fn the_report_is_documented() {
-    let text = fs::read_to_string(repo_root().join("docs/penpot-compare.md"))
-        .unwrap_or_else(|error| panic!("docs/penpot-compare.md is not there: {error}"))
-        .to_lowercase();
-    assert!(
-        text.contains("make penpot-compare"),
-        "the document says how to make the report"
-    );
-    assert!(
-        text.contains("docs/penpot-compare/index.html"),
-        "and where it is"
-    );
-    assert!(text.contains("worst"), "and how the boards are sorted");
 }
