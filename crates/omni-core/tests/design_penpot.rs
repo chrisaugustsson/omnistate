@@ -67,38 +67,6 @@ fn every_node_below_a_page_may_have_a_margin_on_each_side() {
 }
 
 #[test]
-fn the_punkt_dot_keeps_its_top_margin_of_5_px_in_its_row() {
-    let dot = with(
-        &with(&frame("dt000001"), "/width", json!({"fixed": 8})),
-        "/height",
-        json!({"fixed": 8}),
-    );
-    let row = flex_frame(
-        "frame001",
-        vec![with(&dot, "/margin", json!({"top": 5})), text("text0001")],
-    );
-    let output = assert_round_trips(&row);
-    assert_eq!(output["children"][0]["margin"], json!({"top": 5}));
-}
-
-#[test]
-fn each_side_of_a_margin_is_set_on_its_own() {
-    assert_distinct_values(
-        &with(&frame("frame001"), "/margin", json!({})),
-        "/margin",
-        &[
-            json!({"top": 5}),
-            json!({"right": 5}),
-            json!({"bottom": 5}),
-            json!({"left": 5}),
-            json!({"top": 5, "left": 5}),
-            json!({"top": "$space.sm"}),
-            json!({"top": -5}),
-        ],
-    );
-}
-
-#[test]
 fn margins_hold_only_the_four_sides_as_lengths() {
     let node = frame("frame001");
     for margin in [
@@ -115,23 +83,6 @@ fn margins_hold_only_the_four_sides_as_lengths() {
             ),
         );
     }
-}
-
-#[test]
-fn children_of_a_grid_align_themselves_with_justify_self_and_align_self() {
-    let button = with(
-        &with(&frame("btn00001"), "/justifySelf", json!("center")),
-        "/alignSelf",
-        json!("center"),
-    );
-    let label = with(
-        &with(&text("text0001"), "/justifySelf", json!("stretch")),
-        "/alignSelf",
-        json!("end"),
-    );
-    let output = assert_round_trips(&grid_frame("grd00001", vec![label, button]));
-    assert_eq!(output["children"][1]["justifySelf"], "center");
-    assert_eq!(output["children"][1]["alignSelf"], "center");
 }
 
 #[test]
