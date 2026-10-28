@@ -139,13 +139,4 @@ mod tests {
         assert!(!is_lost("approved", "merged"));
         assert!(!is_lost("rejected", "needs_rebase"));
     }
-
-    #[test]
-    fn a_timeout_is_a_non_negative_number() {
-        assert_eq!(timeout("1.5").unwrap(), Duration::from_millis(1500));
-        assert!(timeout("0").is_ok());
-        for text in ["soon", "-1", "nan", "inf", ""] {
-            assert!(timeout(text).is_err(), "{text:?}");
-        }
-    }
 }

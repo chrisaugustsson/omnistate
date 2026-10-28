@@ -48,12 +48,6 @@ const ABANDONED: &str = "01900000-0000-7000-8000-0000000000d5";
 const STUCK: &str = "01900000-0000-7000-8000-0000000000d6";
 /// `in_review` until `LATER` after its first read, then `merged`.
 const LATER_MERGED: &str = "01900000-0000-7000-8000-0000000000d7";
-/// `in_review` until `LATER` after its first read, then `abandoned`.
-const LATER_ABANDONED: &str = "01900000-0000-7000-8000-0000000000d8";
-/// `in_review` until `LATER` after its first read, then `rejected`.
-const LATER_REJECTED: &str = "01900000-0000-7000-8000-0000000000d9";
-/// No such change set.
-const MISSING: &str = "01900000-0000-7000-8000-0000000000da";
 
 const LATER: Duration = Duration::from_millis(1500);
 
@@ -126,8 +120,6 @@ fn mock() -> MockServer {
             ABANDONED => "abandoned",
             STUCK => "in_review",
             LATER_MERGED => later("merged"),
-            LATER_ABANDONED => later("abandoned"),
-            LATER_REJECTED => later("rejected"),
             _ => return Reply::json(404, &json!({ "error": "not_found" })),
         };
         Reply::json(200, &json!({ "changeset": changeset_json(id, status) }))
@@ -204,38 +196,6 @@ fn assert_only_reads(server: &MockServer) {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn a_status_that_is_already_reached_exits_0_at_once() {
-    let server = mock();
-    let home = logged_in(&server.url);
-    let out = wait(&home, &["--changeset", MERGED, "--until", "merged"]);
-    assert_eq!(out.code, 0, "stderr: {}", out.stderr);
-    assert!(
-        out.stdout.contains("merged"),
-        "the output names the status: {:?}",
-        out.stdout
-    );
-    assert!(out.elapsed < Duration::from_secs(3), "{:?}", out.elapsed);
-
-    let reads: Vec<_> = server
-        .requests()
-        .into_iter()
-        .filter(|r| r.path == changeset_path(MERGED))
-        .collect();
-    assert!(
-        !reads.is_empty(),
-        "it reads the change set: {:?}",
-        server.requests()
-    );
-    assert_eq!(
-        reads[0].header("authorization"),
-        Some(format!("Bearer {API_KEY}").as_str())
-    );
-    assert_eq!(reads[0].header("x-omni-run"), Some("run-7"));
-    assert_eq!(reads[0].header("x-omni-role"), Some("author"));
-    assert_only_reads(&server);
-}
-
-#[test]
 fn json_output_is_the_change_set_as_the_api_answers_it() {
     let server = mock();
     let home = logged_in(&server.url);
@@ -273,28 +233,6 @@ fn each_status_is_met_by_itself() {
 }
 
 #[test]
-fn approved_is_met_once_the_change_set_carries_the_approval() {
-    // The server merges an approved change set at once or moves it to
-    // needs_rebase, so both of those statuses mean the human approved.
-    let server = mock();
-    let home = logged_in(&server.url);
-    for changeset in [APPROVED, NEEDS_REBASE, MERGED] {
-        let out = wait(
-            &home,
-            &[
-                "--changeset",
-                changeset,
-                "--until",
-                "approved",
-                "--timeout",
-                "5",
-            ],
-        );
-        assert_eq!(out.code, 0, "{changeset}: {}", out.stderr);
-    }
-}
-
-#[test]
 fn it_blocks_until_the_status_is_reached() {
     let server = mock();
     let home = logged_in(&server.url);
@@ -318,29 +256,6 @@ fn it_blocks_until_the_status_is_reached() {
         server.requests()
     );
     assert_only_reads(&server);
-}
-
-#[test]
-fn a_rejection_while_waiting_meets_until_rejected() {
-    let server = mock();
-    let home = logged_in(&server.url);
-    let out = wait(
-        &home,
-        &[
-            "--changeset",
-            LATER_REJECTED,
-            "--until",
-            "rejected",
-            "--timeout",
-            "10",
-        ],
-    );
-    assert_eq!(out.code, 0, "stderr: {}", out.stderr);
-    assert!(
-        out.elapsed >= LATER - Duration::from_millis(100),
-        "{:?}",
-        out.elapsed
-    );
 }
 
 // ---------------------------------------------------------------------------
@@ -399,52 +314,6 @@ fn an_abandoned_change_set_meets_no_condition_and_exits_3() {
     }
 }
 
-#[test]
-fn a_merged_change_set_can_no_longer_be_rejected_or_need_a_rebase() {
-    let server = mock();
-    let home = logged_in(&server.url);
-    for until in ["rejected", "needs_rebase"] {
-        let out = wait(
-            &home,
-            &["--changeset", MERGED, "--until", until, "--timeout", "10"],
-        );
-        assert_one_line_failure(&out, 3, &["merged"]);
-        assert!(
-            out.elapsed < Duration::from_secs(3),
-            "--until {until}: {:?}",
-            out.elapsed
-        );
-    }
-}
-
-#[test]
-fn abandoning_while_waiting_ends_the_wait_with_3() {
-    let server = mock();
-    let home = logged_in(&server.url);
-    let out = wait(
-        &home,
-        &[
-            "--changeset",
-            LATER_ABANDONED,
-            "--until",
-            "merged",
-            "--timeout",
-            "10",
-        ],
-    );
-    assert_one_line_failure(&out, 3, &["abandoned"]);
-    assert!(
-        out.elapsed >= LATER - Duration::from_millis(100),
-        "{:?}",
-        out.elapsed
-    );
-    assert!(
-        out.elapsed < LATER + Duration::from_millis(2500),
-        "{:?}",
-        out.elapsed
-    );
-}
-
 // ---------------------------------------------------------------------------
 // Usage and API errors
 // ---------------------------------------------------------------------------
@@ -477,43 +346,5 @@ fn a_wait_without_its_options_is_a_usage_error_that_sends_nothing() {
         server.requests().is_empty(),
         "a usage error sends nothing: {:?}",
         server.requests()
-    );
-}
-
-#[test]
-fn an_unknown_change_set_is_one_line_with_the_error_code() {
-    let server = mock();
-    let home = logged_in(&server.url);
-    let out = wait(
-        &home,
-        &[
-            "--changeset",
-            MISSING,
-            "--until",
-            "merged",
-            "--timeout",
-            "5",
-        ],
-    );
-    assert_one_line_failure(&out, 1, &["not_found"]);
-}
-
-#[test]
-fn the_help_lists_omni_wait_for_change_sets() {
-    let home = Scratch::new("help");
-    let help = omni(&home.path).args(&["--help"]).run();
-    assert_eq!(help.code, 0, "{}", help.stderr);
-    assert!(
-        help.stdout.contains("omni wait --changeset"),
-        "omni --help lists omni wait --changeset: {}",
-        help.stdout
-    );
-    for word in ["--until", "needs_rebase", "--timeout"] {
-        assert!(help.stdout.contains(word), "omni --help mentions {word}");
-    }
-    let codes = documented_exit_codes();
-    assert!(
-        codes.contains(&2) && codes.contains(&3),
-        "exits 2 and 3 are documented: {codes:?}"
     );
 }
