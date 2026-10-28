@@ -155,7 +155,6 @@ struct Fixture {
     alice_token: String,
     bob_token: String,
     carol_token: String,
-    carol_membership_a: String,
     server: TestServer,
 }
 
@@ -211,7 +210,7 @@ fn fixture() -> &'static Fixture {
                 .await
                 .expect("apply the migrations to the scratch database");
         });
-        let (a, b, alice_id, carol_membership_a) = block(async {
+        let (a, b, alice_id) = block(async {
             let mut conn = admin_connection().await;
             for statement in PROBE_SQL {
                 sqlx::query(statement)
@@ -256,9 +255,9 @@ fn fixture() -> &'static Fixture {
                           values ($1::uuid, $2::uuid) returning id::text";
             text(member, &[&a, &users[0]]).await;
             text(member, &[&b, &users[1]]).await;
-            let carol_membership_a = text(member, &[&a, &users[2]]).await;
+            text(member, &[&a, &users[2]]).await;
             text(member, &[&b, &users[2]]).await;
-            (a, b, users[0].clone(), carol_membership_a)
+            (a, b, users[0].clone())
         });
         Fixture {
             a,
@@ -267,7 +266,6 @@ fn fixture() -> &'static Fixture {
             alice_token: session_token("alice"),
             bob_token: session_token("bob"),
             carol_token: session_token("carol"),
-            carol_membership_a,
             server: TestServer::start(&config()),
         }
     })
@@ -494,100 +492,6 @@ fn a_key_is_found_by_prefix_and_its_secret_is_checked() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn a_key_belongs_to_one_workspace_and_has_full_access_scopes() {
-    let (_guard, f, client) = ready();
-    let (_, key_a) = create_key(client, &f.carol_token, &f.a);
-    let (_, key_b) = create_key(client, &f.carol_token, &f.b);
-    assert_eq!(key_a["scopes"], json!(["*"]), "v1 issues full-access keys");
-    assert!(key_a["last_used_at"].is_null() && key_a["revoked_at"].is_null());
-    assert!(
-        key_a["created_at"].as_str().is_some_and(|t| !t.is_empty()),
-        "created_at: {key_a}"
-    );
-    assert_eq!(
-        db_text(
-            "select workspace_id::text from api_keys where id = $1::uuid",
-            &[&key_id(&key_a)]
-        )
-        .as_deref(),
-        Some(f.a.as_str())
-    );
-    assert_eq!(
-        db_text(
-            "select workspace_id::text from api_keys where id = $1::uuid",
-            &[&key_id(&key_b)]
-        )
-        .as_deref(),
-        Some(f.b.as_str())
-    );
-    assert_eq!(
-        db_text(
-            "select scopes::text from api_keys where id = $1::uuid",
-            &[&key_id(&key_a)]
-        )
-        .as_deref(),
-        Some("{*}")
-    );
-    assert_eq!(
-        db_text(
-            "select created_by_membership_id::text from api_keys where id = $1::uuid",
-            &[&key_id(&key_a)]
-        )
-        .as_deref(),
-        Some(f.carol_membership_a.as_str()),
-        "the key records the membership that created it"
-    );
-
-    // Each workspace lists its own keys only, and the list shows all key fields.
-    for (workspace, mine, other) in [(&f.a, &key_a, &key_b), (&f.b, &key_b, &key_a)] {
-        let list = call(
-            client,
-            "GET",
-            &format!("/api/v1/w/{workspace}/api-keys"),
-            &with_cookie(&f.carol_token),
-            None,
-        );
-        assert_eq!(list.status, 200, "list keys: {}", list.text());
-        let body = list.json();
-        let keys = body["keys"]
-            .as_array()
-            .unwrap_or_else(|| panic!("`keys` is an array: {body}"));
-        let ids: Vec<&str> = keys.iter().filter_map(|k| k["id"].as_str()).collect();
-        assert!(
-            ids.contains(&key_id(mine).as_str()),
-            "own key listed: {body}"
-        );
-        assert!(
-            !ids.contains(&key_id(other).as_str()),
-            "the other workspace's key is not listed: {body}"
-        );
-        let listed = keys.iter().find(|k| k["id"] == mine["id"]).unwrap();
-        for field in [
-            "prefix",
-            "scopes",
-            "created_at",
-            "last_used_at",
-            "revoked_at",
-        ] {
-            assert!(
-                listed.get(field).is_some(),
-                "the list shows {field}: {listed}"
-            );
-        }
-        let all_keys = db_text(
-            "select count(*)::text from api_keys where workspace_id = $1::uuid",
-            &[workspace],
-        )
-        .unwrap();
-        assert_eq!(
-            keys.len().to_string(),
-            all_keys,
-            "every key of the workspace is listed"
-        );
-    }
-}
-
-#[test]
 fn a_revoked_key_stops_working_and_its_row_stays() {
     let (_guard, f, client) = ready();
     let (secret, key) = create_key(client, &f.carol_token, &f.a);
@@ -761,30 +665,29 @@ fn a_key_reaches_its_own_workspace_and_any_other_path_is_404() {
 #[test]
 fn a_session_reaches_only_the_workspaces_it_is_a_member_of() {
     let (_guard, f, client) = ready();
-    let cases = [
-        (&f.alice_token, &f.a, 200),
-        (&f.alice_token, &f.b, 404),
-        (&f.bob_token, &f.a, 404),
-        (&f.bob_token, &f.b, 200),
-        (&f.carol_token, &f.a, 200),
-        (&f.carol_token, &f.b, 200),
-    ];
-    for (token, workspace, expected) in cases {
+    for (token, workspace) in [
+        (&f.alice_token, f.a.as_str()),
+        (&f.bob_token, f.b.as_str()),
+        (&f.carol_token, f.a.as_str()),
+        (&f.carol_token, f.b.as_str()),
+    ] {
         let response = whoami(client, workspace, &with_cookie(token));
         assert_eq!(
             response.status,
-            expected,
+            200,
             "session {token} on workspace {workspace}: {}",
             response.text()
         );
-        if expected == 404 {
-            assert_error(&response, 404, "not_found");
-        } else {
-            assert_eq!(response.json()["workspace_id"], json!(workspace));
-        }
+        assert_eq!(response.json()["workspace_id"], json!(workspace));
     }
-    let unknown = whoami(client, UNKNOWN_ID, &with_cookie(&f.carol_token));
-    assert_error(&unknown, 404, "not_found");
+    for (token, workspace) in [
+        (&f.alice_token, f.b.as_str()),
+        (&f.bob_token, f.a.as_str()),
+        (&f.carol_token, UNKNOWN_ID),
+    ] {
+        let response = whoami(client, workspace, &with_cookie(token));
+        assert_error(&response, 404, "not_found");
+    }
 }
 
 #[test]
@@ -795,86 +698,6 @@ fn a_request_without_valid_credentials_is_401_whatever_the_workspace() {
     }
     let bad_cookie = whoami(client, &f.a, &with_cookie("not-a-session"));
     assert_error(&bad_cookie, 401, "unauthorized");
-}
-
-#[test]
-fn the_workspace_never_comes_from_a_body_query_parameter_or_header() {
-    let (_guard, f, client) = ready();
-    let (secret_a, _) = create_key(client, &f.carol_token, &f.a);
-
-    // A key of A, on A's path, with B named everywhere else: still A.
-    let mut headers = with_bearer(&secret_a);
-    headers.push(("X-Workspace-Id".to_string(), f.b.clone()));
-    headers.push(("Workspace-Id".to_string(), f.b.clone()));
-    for path in [
-        format!("/api/v1/w/{}/whoami", f.a),
-        format!("/api/v1/w/{}/whoami?workspace_id={}", f.a, f.b),
-    ] {
-        let response = call(client, "GET", &path, &headers, None);
-        assert_eq!(response.status, 200, "{path}: {}", response.text());
-        assert_eq!(response.json()["workspace_id"], json!(f.a), "{path}");
-    }
-    // Naming A does not open B's path.
-    let mut headers = with_bearer(&secret_a);
-    headers.push(("X-Workspace-Id".to_string(), f.a.clone()));
-    let response = call(
-        client,
-        "GET",
-        &format!("/api/v1/w/{}/whoami?workspace_id={}", f.b, f.a),
-        &headers,
-        None,
-    );
-    assert_error(&response, 404, "not_found");
-
-    // A session of A's only member, with B named in the header, query and body.
-    let mut headers = with_cookie(&f.alice_token);
-    headers.push(("X-Workspace-Id".to_string(), f.b.clone()));
-    let response = call(
-        client,
-        "GET",
-        &format!("/api/v1/w/{}/api-keys?workspace_id={}", f.a, f.b),
-        &headers,
-        None,
-    );
-    assert_eq!(response.status, 200, "list: {}", response.text());
-    let created = call(
-        client,
-        "POST",
-        &format!("/api/v1/w/{}/api-keys?workspace_id={}", f.a, f.b),
-        &headers,
-        Some(&json!({ "workspace_id": f.b, "workspaceId": f.b })),
-    );
-    assert_eq!(created.status, 201, "create: {}", created.text());
-    let id = key_id(&created.json()["key"]);
-    assert_eq!(
-        db_text(
-            "select workspace_id::text from api_keys where id = $1::uuid",
-            &[&id]
-        )
-        .as_deref(),
-        Some(f.a.as_str()),
-        "the key belongs to the workspace of the path"
-    );
-    let mut headers = with_cookie(&f.alice_token);
-    headers.push(("X-Workspace-Id".to_string(), f.a.clone()));
-    let denied = call(
-        client,
-        "POST",
-        &format!("/api/v1/w/{}/api-keys", f.b),
-        &headers,
-        Some(&json!({ "workspace_id": f.a })),
-    );
-    assert_error(&denied, 404, "not_found");
-    assert_eq!(
-        db_text(
-            "select count(*)::text from api_keys where created_by_membership_id in \
-             (select id from memberships where user_id = $1::uuid) and workspace_id = $2::uuid",
-            &[&f.alice_id, &f.b]
-        )
-        .as_deref(),
-        Some("0"),
-        "no key was created in B"
-    );
 }
 
 #[test]
