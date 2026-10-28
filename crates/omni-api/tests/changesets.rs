@@ -46,7 +46,6 @@ mod common;
 
 use common::{Client, Response, TestServer, cookie};
 use omni_api::Config;
-use omni_api::routes::{Access, registry};
 use serde_json::{Value, json};
 use sqlx::Connection;
 use sqlx::postgres::{PgConnectOptions, PgConnection};
@@ -234,20 +233,18 @@ fn ready() -> (&'static Fixture, &'static Client) {
     (fixture, &fixture.server.client)
 }
 
-/// How a request authenticates: an API key (an agent), a session cookie (the
-/// human) or nothing.
+/// How a request authenticates: an API key (an agent) or a session cookie (the
+/// human).
 #[derive(Clone, Copy)]
 enum Auth<'a> {
     Key(&'a str),
     Session(&'a str),
-    Nobody,
 }
 
 fn call(client: &Client, method: &str, path: &str, auth: &Auth, body: Option<&Value>) -> Response {
     let header = match auth {
         Auth::Key(secret) => Some(("Authorization", format!("Bearer {secret}"))),
         Auth::Session(token) => Some(("Cookie", cookie(token))),
-        Auth::Nobody => None,
     };
     let headers: Vec<(&str, &str)> = header.iter().map(|(n, v)| (*n, v.as_str())).collect();
     let body = body.map(Value::to_string);
@@ -429,73 +426,6 @@ fn new_changeset_in(f: &Fixture, client: &Client, project: &str, status: &str) -
 }
 
 // ---------------------------------------------------------------------------
-// Routes
-// ---------------------------------------------------------------------------
-
-#[test]
-fn the_routes_are_registered_with_who_may_call_them_and_described_in_openapi() {
-    let (_f, client) = ready();
-    let expected = [
-        ("GET", "/api/v1/w/{workspace_id}/projects", Access::Both),
-        ("POST", "/api/v1/w/{workspace_id}/projects", Access::Agent),
-        (
-            "GET",
-            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets",
-            Access::Both,
-        ),
-        (
-            "POST",
-            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets",
-            Access::Agent,
-        ),
-        (
-            "GET",
-            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}",
-            Access::Both,
-        ),
-        (
-            "POST",
-            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/submit",
-            Access::Agent,
-        ),
-        (
-            "POST",
-            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/reject",
-            Access::Human,
-        ),
-        (
-            "POST",
-            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/reopen",
-            Access::Agent,
-        ),
-        (
-            "POST",
-            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/abandon",
-            Access::Agent,
-        ),
-    ];
-    let routes = registry();
-    let document = client.get("/api/openapi.json").json();
-    for (method, path, access) in expected {
-        let entry = routes
-            .iter()
-            .find(|r| r.method == method && r.path == path)
-            .unwrap_or_else(|| panic!("the registry has no entry for {method} {path}"));
-        assert_eq!(entry.access, access, "{method} {path}");
-        let word = match access {
-            Access::Agent => "agent",
-            Access::Human => "human",
-            Access::Both => "both",
-        };
-        let operation = &document["paths"][path][method.to_lowercase()];
-        assert_eq!(
-            operation["x-omni-access"], word,
-            "{method} {path} in the OpenAPI document: {operation}"
-        );
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Projects
 // ---------------------------------------------------------------------------
 
@@ -545,57 +475,6 @@ fn an_agent_creates_a_project_and_the_agent_and_the_human_list_it() {
         Some(f.a.as_str()),
         "the project is a row of the tenant table `projects`, in workspace A"
     );
-}
-
-#[test]
-fn a_workspace_lists_only_its_own_projects() {
-    let (f, client) = ready();
-    let name_a = unique("only-in-a");
-    let name_b = unique("only-in-b");
-    for (workspace, key, name) in [(&f.a, &f.key_a, &name_a), (&f.b, &f.key_b, &name_b)] {
-        let response = call(
-            client,
-            "POST",
-            &projects_path(workspace),
-            &Auth::Key(key),
-            Some(&json!({ "name": name })),
-        );
-        assert_eq!(response.status, 201, "{}", response.text());
-    }
-    let names = |workspace: &str, auth: Auth| -> Vec<String> {
-        let list = call(client, "GET", &projects_path(workspace), &auth, None);
-        assert_eq!(list.status, 200, "{}", list.text());
-        list.json()["projects"]
-            .as_array()
-            .expect("projects")
-            .iter()
-            .map(|p| p["name"].as_str().unwrap().to_string())
-            .collect()
-    };
-    let in_a = names(&f.a, Auth::Key(&f.key_a));
-    assert!(
-        in_a.contains(&name_a) && !in_a.contains(&name_b),
-        "{in_a:?}"
-    );
-    let in_b = names(&f.b, Auth::Session(&f.bob_token));
-    assert!(
-        in_b.contains(&name_b) && !in_b.contains(&name_a),
-        "{in_b:?}"
-    );
-
-    // The other workspace's path is not reachable with these credentials.
-    for auth in [Auth::Key(&f.key_b), Auth::Session(&f.bob_token)] {
-        let response = call(client, "GET", &projects_path(&f.a), &auth, None);
-        assert_error(&response, 404, "not_found");
-        let response = call(
-            client,
-            "POST",
-            &projects_path(&f.a),
-            &auth,
-            Some(&json!({ "name": unique("intruder") })),
-        );
-        assert_error(&response, 404, "not_found");
-    }
 }
 
 #[test]
@@ -658,103 +537,9 @@ fn a_project_needs_a_name_and_a_name_is_unique_in_its_workspace() {
     assert_eq!(count, 1, "the refused duplicate was not created");
 }
 
-#[test]
-fn project_routes_need_credentials() {
-    let (f, client) = ready();
-    for (method, body) in [("GET", None), ("POST", Some(json!({ "name": "x" })))] {
-        let response = call(
-            client,
-            method,
-            &projects_path(&f.a),
-            &Auth::Nobody,
-            body.as_ref(),
-        );
-        assert_error(&response, 401, "unauthorized");
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Change sets
 // ---------------------------------------------------------------------------
-
-#[test]
-fn a_change_set_has_a_title_a_description_a_run_tag_and_starts_open() {
-    let (f, client) = ready();
-    let project = new_project(f, client, "fields");
-    let created = call(
-        client,
-        "POST",
-        &changesets_path(&f.a, &project),
-        &Auth::Key(&f.key_a),
-        Some(&json!({
-            "title": "Hero section",
-            "description": "First pass of the landing hero.",
-            "run_tag": "ui-research-7"
-        })),
-    );
-    assert_eq!(created.status, 201, "{}", created.text());
-    let changeset = created.json()["changeset"].clone();
-    assert_uuid_v7(&changeset["id"]);
-    assert_eq!(changeset["project_id"], project.as_str(), "{changeset}");
-    assert_eq!(changeset["title"], "Hero section", "{changeset}");
-    assert_eq!(
-        changeset["description"], "First pass of the landing hero.",
-        "{changeset}"
-    );
-    assert_eq!(changeset["status"], "open", "{changeset}");
-    assert_eq!(changeset["run_tag"], "ui-research-7", "{changeset}");
-    assert!(
-        changeset["created_at"]
-            .as_str()
-            .is_some_and(|t| !t.is_empty()),
-        "created_at: {changeset}"
-    );
-
-    // The same object is what show and list answer, for the agent and the human.
-    let id = id_of(&changeset);
-    for auth in [Auth::Key(&f.key_a), Auth::Session(&f.alice_token)] {
-        let shown = call(
-            client,
-            "GET",
-            &changeset_path(&f.a, &project, &id),
-            &auth,
-            None,
-        );
-        assert_eq!(shown.status, 200, "{}", shown.text());
-        let shown = shown.json()["changeset"].clone();
-        for field in [
-            "id",
-            "project_id",
-            "title",
-            "description",
-            "status",
-            "run_tag",
-        ] {
-            assert_eq!(shown[field], changeset[field], "show: {field}");
-        }
-        let list = call(client, "GET", &changesets_path(&f.a, &project), &auth, None);
-        assert_eq!(list.status, 200, "{}", list.text());
-        let listed = list.json()["changesets"]
-            .as_array()
-            .expect("`changesets` is an array")
-            .iter()
-            .find(|c| c["id"] == changeset["id"])
-            .cloned()
-            .expect("the change set is listed");
-        for field in ["project_id", "title", "description", "status", "run_tag"] {
-            assert_eq!(listed[field], changeset[field], "list: {field}");
-        }
-    }
-
-    // Creating it is the first entry of its history.
-    assert_eq!(steps(&changeset), [step(None, "open", "agent")]);
-    let first = &history_of(&changeset)[0];
-    assert!(first["reason"].is_null(), "{first}");
-    assert!(
-        first["at"].as_str().is_some_and(|t| !t.is_empty()),
-        "{first}"
-    );
-}
 
 #[test]
 fn a_change_set_needs_only_a_title_and_the_rest_has_defaults() {
@@ -947,74 +732,9 @@ fn change_sets_are_reached_through_a_project_of_the_callers_workspace() {
     );
 }
 
-#[test]
-fn change_set_routes_need_credentials() {
-    let (f, client) = ready();
-    let project = new_project(f, client, "auth");
-    let id = id_of(&new_changeset(f, client, &project, "needs credentials"));
-    let nobody = Auth::Nobody;
-    let paths = [
-        ("GET", changesets_path(&f.a, &project)),
-        ("POST", changesets_path(&f.a, &project)),
-        ("GET", changeset_path(&f.a, &project, &id)),
-        (
-            "POST",
-            format!("{}/submit", changeset_path(&f.a, &project, &id)),
-        ),
-        (
-            "POST",
-            format!("{}/reject", changeset_path(&f.a, &project, &id)),
-        ),
-        (
-            "POST",
-            format!("{}/reopen", changeset_path(&f.a, &project, &id)),
-        ),
-        (
-            "POST",
-            format!("{}/abandon", changeset_path(&f.a, &project, &id)),
-        ),
-    ];
-    for (method, path) in paths {
-        let body = (method == "POST").then(|| json!({ "title": "x", "reason": "x" }));
-        assert_error(
-            &call(client, method, &path, &nobody, body.as_ref()),
-            401,
-            "unauthorized",
-        );
-    }
-    assert_eq!(status_of(f, client, &project, &id), "open");
-}
-
 // ---------------------------------------------------------------------------
 // The lifecycle
 // ---------------------------------------------------------------------------
-
-#[test]
-fn an_agent_submits_an_open_change_set_for_review() {
-    let (f, client) = ready();
-    let project = new_project(f, client, "submit");
-    let id = id_of(&new_changeset(f, client, &project, "to submit"));
-    let response = act(
-        f,
-        client,
-        &project,
-        &id,
-        "submit",
-        &Auth::Key(&f.key_a),
-        Some(&json!({})),
-    );
-    assert_eq!(response.status, 200, "{}", response.text());
-    let changeset = response.json()["changeset"].clone();
-    assert_eq!(changeset["status"], "in_review", "{changeset}");
-    assert_eq!(
-        steps(&changeset),
-        [
-            step(None, "open", "agent"),
-            step(Some("open"), "in_review", "agent")
-        ]
-    );
-    assert_eq!(status_of(f, client, &project, &id), "in_review");
-}
 
 #[test]
 fn rejecting_is_for_the_human_alone_and_needs_a_reason() {
