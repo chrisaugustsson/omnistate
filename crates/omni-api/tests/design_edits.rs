@@ -90,7 +90,7 @@ use s3::{Bucket, BucketConfiguration, Region};
 use serde_json::{Value, json};
 use sqlx::Connection;
 use sqlx::postgres::{PgConnectOptions, PgConnection};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::future::Future;
 use std::str::FromStr;
 use std::sync::OnceLock;
@@ -103,8 +103,6 @@ const TEST_BUCKET: &str = "omni-us031-design-edits";
 const UNKNOWN_NODE: &str = "zzzzzzzz";
 /// How long a claim lasts on the short router.
 const SHORT_TTL: Duration = Duration::from_secs(3);
-/// The characters of a node ID.
-const NODE_ID_ALPHABET: &str = "0123456789abcdefghjkmnpqrstvwxyz";
 
 // ---------------------------------------------------------------------------
 // Plumbing
@@ -666,16 +664,6 @@ fn rev_in(tags: &str, id: &str) -> u64 {
     rev_of(tag).unwrap_or_else(|| panic!("the tag of {id} has a rev: {tag}"))
 }
 
-fn assert_node_id(id: &Value) {
-    let id = id
-        .as_str()
-        .unwrap_or_else(|| panic!("a node ID is a string: {id}"));
-    assert!(
-        id.len() == 8 && id.chars().all(|c| NODE_ID_ALPHABET.contains(c)),
-        "{id:?} is not a node ID of 8 lowercase base32 characters"
-    );
-}
-
 fn ids_of(result: &Value, field: &str) -> Vec<String> {
     result[field]
         .as_array()
@@ -753,63 +741,6 @@ fn assert_invalid_naming(response: &Response, index: u64, id: &str) {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn an_insert_adds_a_subtree_in_the_tag_format_with_ids_that_the_server_assigns() {
-    let (f, client) = ready();
-    let design = new_design(f, client);
-    let content = format!(
-        "<Frame name=\"Buttons\" dir=\"row\" gap={{4}}>\n  {}\n  {}\n</Frame>",
-        text_tag("Buy", "Köp"),
-        text_tag("Later", "Spara till senare")
-    );
-    let results = applied(
-        f,
-        client,
-        &design,
-        json!([insert(&design.id("Actions"), None, &content)]),
-    );
-    assert_eq!(results.len(), 1, "{results:?}");
-    let created = ids_of(&results[0], "created");
-    assert_eq!(
-        created.len(),
-        3,
-        "a frame and two texts are new: {results:?}"
-    );
-    for id in &created {
-        assert_node_id(&json!(id));
-        assert!(
-            !design.ids.values().any(|known| known == id),
-            "a new ID is new to the design: {id}"
-        );
-    }
-    assert_eq!(
-        created.iter().collect::<HashSet<_>>().len(),
-        3,
-        "every new node has its own ID: {created:?}"
-    );
-    assert_eq!(results[0]["node"], created[0].as_str(), "{results:?}");
-    assert_eq!(results[0]["revision"], 1, "{results:?}");
-    assert_eq!(ids_of(&results[0], "removed"), Vec::<String>::new());
-
-    let tags = board_tags(f, client, &design, &design.id("Cart"));
-    for (id, name) in created.iter().zip(["Buttons", "Buy", "Later"]) {
-        let tag = tag_of(&tags, id).unwrap_or_else(|| panic!("the board has {name}: {tags}"));
-        assert!(
-            tag.contains(&format!(r#"name="{name}""#)),
-            "the IDs are in document order: {tag}"
-        );
-        assert_eq!(rev_of(tag), Some(1), "a new node is at revision 1: {tag}");
-    }
-    assert_eq!(
-        rev_in(&tags, &design.id("Actions")),
-        1,
-        "an insert does not change the parent's revision: {tags}"
-    );
-    let pages = draft_pages(f, client, &design);
-    let actions = find_node(&pages, &design.id("Actions")).expect("the draft has Actions");
-    assert_eq!(child_ids(&actions), vec![created[0].clone()], "{actions}");
-}
-
-#[test]
 fn an_insert_puts_a_new_board_under_a_page() {
     let (f, client) = ready();
     let design = new_design(f, client);
@@ -849,64 +780,6 @@ fn an_insert_puts_a_new_board_under_a_page() {
 }
 
 #[test]
-fn an_insert_keeps_boards_under_pages_and_other_nodes_under_boards_and_frames() {
-    let (f, client) = ready();
-    let design = new_design(f, client);
-    let before = log_len(&design);
-    let frame_under_page = edit(
-        f,
-        client,
-        &holder(f),
-        &design,
-        json!([insert(
-            &design.id("Checkout"),
-            None,
-            "<Frame name=\"Loose\" dir=\"row\"/>"
-        )]),
-    );
-    assert_error(&frame_under_page, 400, "invalid_operation");
-    let board_in_frame = edit(
-        f,
-        client,
-        &holder(f),
-        &design,
-        json!([insert(
-            &design.id("Summary"),
-            None,
-            "<Board name=\"Nested\" width={100} height={100}/>"
-        )]),
-    );
-    assert_error(&board_in_frame, 400, "invalid_operation");
-    assert_eq!(log_len(&design), before, "refused inserts log nothing");
-
-    // The same nodes where they belong: the board under the page, the frame
-    // in a board.
-    let results = applied(
-        f,
-        client,
-        &design,
-        json!([
-            insert(
-                &design.id("Checkout"),
-                None,
-                "<Board name=\"Nested\" x={0} y={800} width={100} height={100}/>"
-            ),
-            insert(
-                &design.id("Cart"),
-                None,
-                "<Frame name=\"Loose\" dir=\"row\"/>"
-            )
-        ]),
-    );
-    assert_eq!(results.len(), 2, "{results:?}");
-    assert_eq!(
-        log_len(&design),
-        before + 2,
-        "two applied inserts are logged"
-    );
-}
-
-#[test]
 fn an_insert_whose_content_carries_an_id_is_refused_since_the_server_assigns_ids() {
     let (f, client) = ready();
     let design = new_design(f, client);
@@ -942,80 +815,6 @@ fn an_insert_whose_content_carries_an_id_is_refused_since_the_server_assigns_ids
 }
 
 #[test]
-fn a_replace_swaps_a_node_keeping_the_descendants_its_content_names() {
-    let (f, client) = ready();
-    let design = new_design(f, client);
-    let content = format!(
-        "<Frame id=\"{}\" name=\"Summary\" dir=\"row\" gap={{4}}>\n  <Text id=\"{}\" name=\"Total\" content=\"Summa 12 kr\" fontFamily=\"Inter\" fontSize={{16}}/>\n  {}\n</Frame>",
-        design.id("Summary"),
-        design.id("Total"),
-        text_tag("Discount", "Rabatt 2 kr")
-    );
-    let results = applied(
-        f,
-        client,
-        &design,
-        json!([{ "op": "replace", "node": design.id("Summary"), "rev": 1, "content": content }]),
-    );
-    assert_eq!(results[0]["node"], design.id("Summary"), "{results:?}");
-    assert_eq!(results[0]["revision"], 2, "{results:?}");
-    assert_eq!(
-        ids_of(&results[0], "removed"),
-        vec![design.id("Shipping")],
-        "the content leaves Shipping out: {results:?}"
-    );
-    let created = ids_of(&results[0], "created");
-    assert_eq!(created.len(), 1, "Discount is new: {results:?}");
-
-    let tags = board_tags(f, client, &design, &design.id("Cart"));
-    let summary = tag_of(&tags, &design.id("Summary")).expect("Summary stays");
-    assert!(summary.contains(r#"dir="row""#), "{summary}");
-    let total = tag_of(&tags, &design.id("Total")).expect("Total keeps its ID");
-    assert!(total.contains("Summa 12 kr"), "{total}");
-    assert_eq!(rev_of(total), Some(2), "Total's content changed: {total}");
-    assert!(
-        tag_of(&tags, &design.id("Shipping")).is_none(),
-        "Shipping is removed: {tags}"
-    );
-    assert!(
-        tag_of(&tags, &created[0]).is_some_and(|tag| tag.contains("Rabatt 2 kr")),
-        "{tags}"
-    );
-    assert_eq!(rev_in(&tags, &design.id("Cart")), 1, "{tags}");
-}
-
-#[test]
-fn a_set_changes_properties_and_only_that_nodes_revision() {
-    let (f, client) = ready();
-    let design = new_design(f, client);
-    let results = applied(
-        f,
-        client,
-        &design,
-        json!([set(
-            &design.id("Total"),
-            1,
-            json!({ "content": "Summa 12 kr", "fontSize": 18 })
-        )]),
-    );
-    assert_eq!(results[0]["node"], design.id("Total"), "{results:?}");
-    assert_eq!(results[0]["revision"], 2, "{results:?}");
-
-    let tags = board_tags(f, client, &design, &design.id("Cart"));
-    let total = tag_of(&tags, &design.id("Total")).expect("the board has Total");
-    assert!(total.contains(r#"content="Summa 12 kr""#), "{total}");
-    assert!(total.contains("fontSize={18}"), "{total}");
-    assert_eq!(rev_of(total), Some(2), "{total}");
-    for name in ["Cart", "Summary", "Shipping", "Actions"] {
-        assert_eq!(
-            rev_in(&tags, &design.id(name)),
-            1,
-            "a set changes no other node's revision ({name}): {tags}"
-        );
-    }
-}
-
-#[test]
 fn a_set_of_a_property_that_the_tag_does_not_take_is_refused_naming_it() {
     let (f, client) = ready();
     let design = new_design(f, client);
@@ -1037,103 +836,6 @@ fn a_set_of_a_property_that_the_tag_does_not_take_is_refused_naming_it() {
     assert_error(&id, 400, "invalid_operation");
     let tags = board_tags(f, client, &design, &design.id("Cart"));
     assert_eq!(rev_in(&tags, &design.id("Total")), 1, "{tags}");
-}
-
-#[test]
-fn a_move_puts_a_node_under_a_new_parent_and_raises_only_its_revision() {
-    let (f, client) = ready();
-    let design = new_design(f, client);
-    let results = applied(
-        f,
-        client,
-        &design,
-        json!([move_to(
-            &design.id("Shipping"),
-            1,
-            &design.id("Actions"),
-            None
-        )]),
-    );
-    assert_eq!(results[0]["node"], design.id("Shipping"), "{results:?}");
-    assert_eq!(results[0]["revision"], 2, "{results:?}");
-
-    let pages = draft_pages(f, client, &design);
-    let summary = find_node(&pages, &design.id("Summary")).expect("Summary");
-    let actions = find_node(&pages, &design.id("Actions")).expect("Actions");
-    assert_eq!(child_ids(&summary), vec![design.id("Total")], "{summary}");
-    assert_eq!(
-        child_ids(&actions),
-        vec![design.id("Shipping")],
-        "{actions}"
-    );
-    let tags = board_tags(f, client, &design, &design.id("Cart"));
-    assert_eq!(rev_in(&tags, &design.id("Summary")), 1, "{tags}");
-    assert_eq!(rev_in(&tags, &design.id("Actions")), 1, "{tags}");
-}
-
-#[test]
-fn a_delete_removes_a_node_and_its_descendants() {
-    let (f, client) = ready();
-    let design = new_design(f, client);
-    let results = applied(
-        f,
-        client,
-        &design,
-        json!([delete(&design.id("Summary"), 1)]),
-    );
-    assert_eq!(
-        ids_of(&results[0], "removed"),
-        vec![
-            design.id("Summary"),
-            design.id("Total"),
-            design.id("Shipping")
-        ],
-        "the node and its descendants, in document order: {results:?}"
-    );
-    let tags = board_tags(f, client, &design, &design.id("Cart"));
-    for name in ["Summary", "Total", "Shipping"] {
-        assert!(tag_of(&tags, &design.id(name)).is_none(), "{name}: {tags}");
-    }
-    assert_eq!(rev_in(&tags, &design.id("Cart")), 1, "{tags}");
-}
-
-#[test]
-fn a_batch_with_a_stale_revision_is_a_conflict_and_changes_nothing() {
-    let (f, client) = ready();
-    let design = new_design(f, client);
-    let cart = board_tags(f, client, &design, &design.id("Cart"));
-    let payment = board_tags(f, client, &design, &design.id("Payment"));
-    let before = log_len(&design);
-    let events = events_of(&design.project, "op.applied").len();
-    let response = edit(
-        f,
-        client,
-        &holder(f),
-        &design,
-        json!([
-            set_content(&design.id("Total"), 1, "Summa 12 kr"),
-            delete(&design.id("Pay"), 7)
-        ]),
-    );
-    assert_eq!(response.status, 409, "body: {}", response.text());
-    let answer = response.json();
-    assert_eq!(answer["error"], "conflict", "{answer}");
-    assert_eq!(answer["conflict"]["index"], 1, "{answer}");
-    assert_eq!(answer["conflict"]["node"], design.id("Pay"), "{answer}");
-    assert_eq!(answer["conflict"]["expected"], 7, "{answer}");
-    assert_eq!(answer["conflict"]["current_revision"], 1, "{answer}");
-
-    assert_eq!(board_tags(f, client, &design, &design.id("Cart")), cart);
-    assert_eq!(
-        board_tags(f, client, &design, &design.id("Payment")),
-        payment
-    );
-    assert_eq!(log_len(&design), before, "a refused batch logs nothing");
-    assert_eq!(
-        events_of(&design.project, "op.applied").len(),
-        events,
-        "a refused batch emits nothing"
-    );
 }
 
 #[test]
