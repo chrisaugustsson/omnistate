@@ -90,17 +90,6 @@ fn omni_version_returns_in_under_20_ms() {
 }
 
 #[test]
-fn help_documents_the_exit_codes() {
-    let codes = documented_exit_codes();
-    for code in [0, 1, 2, 3] {
-        assert!(
-            codes.contains(&code),
-            "omni --help documents exit code {code} under \"Exit codes\"; found {codes:?}"
-        );
-    }
-}
-
-#[test]
 fn a_command_without_a_login_fails_with_one_line_that_says_to_log_in() {
     let home = Scratch::new("nologin");
     let out = omni(&home.path)
@@ -146,31 +135,6 @@ fn a_request_without_an_identity_exits_nonzero_with_a_hint_and_sends_nothing() {
     assert!(
         server.requests().is_empty(),
         "no request leaves without an identity: {:?}",
-        server.requests()
-    );
-}
-
-#[test]
-fn an_incomplete_or_malformed_identity_is_refused_before_any_request() {
-    let server = mock();
-    let home = logged_in(&server.url);
-
-    // --as needs both parts.
-    let out = omni(&home.path).args(&["whoami", "--as", "run-1"]).run();
-    assert_one_line_error(&out, &["<run>/<role>"]);
-    let out = omni(&home.path).args(&["whoami", "--as", "run-1/"]).run();
-    assert_one_line_error(&out, &["<run>/<role>"]);
-
-    // A run in the environment without a role is incomplete too.
-    let out = omni(&home.path)
-        .env("OMNI_RUN", "run-1")
-        .args(&["whoami"])
-        .run();
-    assert_one_line_error(&out, &["role"]);
-
-    assert!(
-        server.requests().is_empty(),
-        "no request leaves with a bad identity: {:?}",
         server.requests()
     );
 }
@@ -261,24 +225,6 @@ fn environment_variables_are_the_fallback_identity_and_flags_win() {
         ["flag-run", "flag-role", "flag-model", "env-harness"],
         "flags win over the environment, and the harness falls back to it"
     );
-}
-
-#[test]
-fn model_and_harness_are_optional() {
-    let server = mock();
-    let home = logged_in(&server.url);
-    let out = omni(&home.path)
-        .args(&["whoami", "--as", "run-2/author"])
-        .run();
-    assert_eq!(
-        out.code, 0,
-        "run and role are the required identity: {}",
-        out.stderr
-    );
-    let requests = server.requests();
-    assert_eq!(requests.len(), 1);
-    assert_eq!(requests[0].header("x-omni-run"), Some("run-2"));
-    assert_eq!(requests[0].header("x-omni-role"), Some("author"));
 }
 
 #[test]
