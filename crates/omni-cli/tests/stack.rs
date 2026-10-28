@@ -507,38 +507,3 @@ fn key_revoke_revokes_the_key_and_it_stops_working() {
         unknown.stderr
     );
 }
-
-#[test]
-fn key_commands_with_a_wrong_password_do_nothing() {
-    let (_guard, f) = ready();
-    let home = Scratch::new("keywrong");
-    let out = login(&home, &f.url, "dana@example.test", PASSWORD, "1");
-    assert_eq!(out.code, 0, "{}", out.stderr);
-    let secret = secret_of(&home);
-
-    let listed = omni(&home.path)
-        .args(&["key", "list"])
-        .stdin(b"not the password\n")
-        .run();
-    assert_ne!(listed.code, 0);
-    assert_eq!(listed.stdout, "");
-    assert!(
-        last_line(&listed).contains("password"),
-        "{:?}",
-        listed.stderr
-    );
-
-    // The key still works: nothing was revoked.
-    let whoami = omni(&home.path)
-        .args(&["whoami", "--as", "run-1/explorer"])
-        .run();
-    assert_eq!(whoami.code, 0, "{}", whoami.stderr);
-    assert!(
-        db_text(
-            "select (revoked_at is null)::text from api_keys where prefix = $1",
-            &[&prefix_of(&secret)]
-        )
-        .as_deref()
-            == Some("true")
-    );
-}

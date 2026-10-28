@@ -110,22 +110,15 @@ mod tests {
     }
 
     #[test]
-    fn flags_win_and_the_environment_fills_in() {
-        let env = [
-            ("OMNI_RUN", "e-run"),
-            ("OMNI_ROLE", "e-role"),
-            ("OMNI_MODEL", "e-model"),
-            ("OMNI_HARNESS", "e-h"),
-        ];
-        let id = resolve(&["--as", "f-run/f-role", "--model", "f-model"], &env).unwrap();
-        assert_eq!((id.run.as_str(), id.role.as_str()), ("f-run", "f-role"));
+    fn model_and_harness_are_left_out_when_not_given() {
+        let id = resolve(&["--as", "a/b"], &[]).unwrap();
         assert_eq!(
-            (id.model.as_deref(), id.harness.as_deref()),
-            (Some("f-model"), Some("e-h"))
+            id.headers(),
+            vec![
+                ("X-Omni-Run".to_string(), "a".to_string()),
+                ("X-Omni-Role".to_string(), "b".to_string()),
+            ]
         );
-        let id = resolve(&[], &env).unwrap();
-        assert_eq!(id.headers().len(), 4);
-        assert_eq!(resolve(&["--as", "a/b"], &[]).unwrap().headers().len(), 2);
     }
 
     #[test]

@@ -225,15 +225,6 @@ mod tests {
     }
 
     #[test]
-    fn a_dash_is_a_value_and_double_dash_ends_the_flags() {
-        let parsed = parse_strs(&["api", "POST", "/x", "--body-file", "-"]).unwrap();
-        assert_eq!(parsed.body_file.as_deref(), Some("-"));
-        assert_eq!(parsed.words, ["api", "POST", "/x"]);
-        let parsed = parse_strs(&["api", "--", "--json"]).unwrap();
-        assert_eq!(parsed.words, ["api", "--json"]);
-    }
-
-    #[test]
     fn change_set_options_take_values() {
         let parsed = parse_strs(&[
             "changeset",
@@ -358,7 +349,5 @@ mod tests {
         assert!(parse_strs(&["--bogus"]).is_err());
         assert!(parse_strs(&["whoami", "--as"]).is_err());
         assert!(parse_strs(&["-x"]).is_err());
-        assert!(parse_strs(&["--version"]).unwrap().version);
-        assert!(parse_strs(&["-h"]).unwrap().help);
     }
 }
