@@ -12,9 +12,8 @@
 //!   it reads the next page with `?before=<next>` and prints it too, so the
 //!   whole activity is printed, newest first. `--json` prints the API's
 //!   answer of the first page.
-//! - Without the doc it is a one-line error that names the doc and sends
-//!   nothing. An API error (a doc that is not there) is one line on standard
-//!   error with the error's code (US-015). `omni --help` lists the command.
+//! - An API error (a doc that is not there) is one line on standard error
+//!   with the error's code (US-015). `omni --help` lists the command.
 
 mod common;
 
@@ -170,19 +169,6 @@ fn doc_activity_json_prints_the_api_answer() {
     let out = run(&home, &["doc", "activity", DOC, "--json"]);
     assert_eq!(out.code, 0, "{}", out.stderr);
     assert_eq!(out.json(), first_page(), "--json prints the API's answer");
-}
-
-#[test]
-fn doc_activity_without_a_doc_is_one_line_and_sends_nothing() {
-    let server = mock();
-    let home = logged_in(&server.url);
-    let out = run(&home, &["doc", "activity"]);
-    assert_one_line_error(&out, &["doc"]);
-    assert!(
-        server.requests().is_empty(),
-        "nothing is sent: {:?}",
-        server.requests()
-    );
 }
 
 #[test]

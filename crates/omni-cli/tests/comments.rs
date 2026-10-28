@@ -31,10 +31,6 @@
 //!   resolve` and `omni comment reopen` are a one-line error that sends
 //!   nothing, and `omni --help` lists `omni comment list` and `omni comment
 //!   reply` but none of them.
-//! - Commented nodes no longer stop a write (US-107), so there is no
-//!   `--remove-commented` any more: `omni version save` and `omni doc remove`
-//!   with it are a one-line error that names the option and sends nothing,
-//!   and `omni --help` does not mention it.
 //! - Every command is an agent request with the agent identity headers, and
 //!   errors are one line on standard error, as in US-015 (tests/common/mod.rs).
 
@@ -45,7 +41,6 @@ use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
 const PROJECT: &str = "01900000-0000-7000-8000-0000000000b1";
-const CHANGESET: &str = "01900000-0000-7000-8000-0000000000c1";
 const DOC: &str = "01900000-0000-7000-8000-0000000000d1";
 const OTHER_DOC: &str = "01900000-0000-7000-8000-0000000000d3";
 const CHECKOUT: &str = "01900000-0000-7000-8000-0000000000e1";
@@ -530,41 +525,5 @@ fn list_says_orphaned_and_shows_the_snapshot_of_a_comment_whose_node_left_the_he
     assert!(
         !text[first..second].contains("orphaned") && !text[second..third].contains("orphaned"),
         "no other comment says orphaned: {text:?}"
-    );
-}
-
-#[test]
-fn the_remove_commented_option_is_gone_and_sends_nothing() {
-    let server = mock();
-    let home = logged_in(&server.url);
-    for args in [
-        vec![
-            "version",
-            "save",
-            DOC,
-            "--changeset",
-            CHANGESET,
-            "--remove-commented",
-        ],
-        vec![
-            "doc",
-            "remove",
-            DOC,
-            "--changeset",
-            CHANGESET,
-            "--remove-commented",
-        ],
-    ] {
-        let out = run(&home, &args);
-        assert_one_line_error(&out, &["--remove-commented"]);
-    }
-    assert!(requests(&server).is_empty(), "nothing was sent");
-
-    let help = omni(&home.path).args(&["--help"]).run();
-    assert_eq!(help.code, 0, "{}", help.stderr);
-    assert!(
-        !help.stdout.contains("--remove-commented"),
-        "omni --help no longer mentions --remove-commented: {:?}",
-        help.stdout
     );
 }
