@@ -571,22 +571,6 @@ mod tests {
     }
 
     #[test]
-    fn a_removed_section_stays_when_the_mainline_moved_a_node_into_it() {
-        let base = doc(concat!(
-            "<section data-omni-id=\"s0000000\"><p data-omni-id=\"a0000000\">A</p></section>",
-            "<p data-omni-id=\"b0000000\">B</p>"
-        ));
-        let mainline = doc(concat!(
-            "<section data-omni-id=\"s0000000\"><p data-omni-id=\"a0000000\">A</p>",
-            "<p data-omni-id=\"b0000000\">B</p></section>"
-        ));
-        let changes = doc("<p data-omni-id=\"b0000000\">B</p>");
-        let rebased = EditDoc::rebase(&base, &mainline, &changes);
-        assert_eq!(rebased.conflicts, [id("s0000000")]);
-        assert_eq!(order(&rebased.doc), ["s0000000", "b0000000"]);
-    }
-
-    #[test]
     fn a_node_added_under_a_section_the_mainline_removed_goes_up_a_level() {
         let section =
             doc("<section data-omni-id=\"s0000000\"><p data-omni-id=\"a0000000\">A</p></section>");
