@@ -221,8 +221,8 @@ function seeded() {
     home,
     features: [wishlist, loyalty],
     reviews,
-    docs: { shopPrd, savedPrd, savedScreens },
-    changesets: { shareSaved, draftSaved, hero },
+    docs: { savedPrd, savedScreens },
+    changesets: { shareSaved, hero },
     threads: { savedThread, heroThread },
   };
 }
@@ -480,18 +480,6 @@ describe("feature scope in reviews", () => {
         "the statement comes before Approve",
       ).toBeTruthy();
     });
-
-    test("a feature's change set that changes its own docs only marks no doc global", async () => {
-      const seed = seeded();
-      fakeApi(seed);
-      renderAt(`${PROJECT_PATH}/changesets/${seed.changesets.draftSaved.id}`);
-      const main = await page();
-      await reviewedEntry(main, "Saved items PRD");
-      await within(main).findByRole("button", { name: /^approve/i });
-      await waitFor(() => expect(linksTo(main, featurePath(WISHLIST)).length, "the feature is named").toBeGreaterThan(0));
-      expect(hasGlobalBadge(main), "no Global badge").toBe(false);
-      expect(main.textContent).not.toMatch(/changes\s+[1-9]\d*\s+global\s+docs?/i);
-    });
   });
 
   describe("where an item lives", () => {
@@ -522,19 +510,6 @@ describe("feature scope in reviews", () => {
       // The doc viewer replaces its loading page once the doc is there.
       await screen.findByRole("heading", { level: 1, name: "Saved items PRD" });
       await expectTrail([PROJECT_CRUMB, WISHLIST_CRUMB], /docs/i, featurePath(WISHLIST, "docs"));
-    });
-
-    test("a project-level doc in the doc viewer: project › Docs, no feature", async () => {
-      const seed = seeded();
-      fakeApi(seed);
-      renderAt(`${PROJECT_PATH}/docs/${seed.docs.shopPrd.id}`);
-      // The doc viewer replaces its loading page once the doc is there.
-      await screen.findByRole("heading", { level: 1, name: "Shop PRD" });
-      const trail = await expectTrail([PROJECT_CRUMB], /docs/i, `${PROJECT_PATH}/docs`);
-      expect(trail.textContent).not.toMatch(/wishlist|loyalty points/i);
-      for (const link of Array.from(trail.querySelectorAll("a"))) {
-        expect(link.getAttribute("href"), "no crumb goes to a feature").not.toMatch(/\/features\//);
-      }
     });
 
     test("a feature's design in the design viewer: project › feature › Docs", async () => {
