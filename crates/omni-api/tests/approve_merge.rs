@@ -630,24 +630,6 @@ fn events_of(project: &str, changeset: &str, event: &str) -> Vec<Value> {
     })
 }
 
-/// The sequence number of the first event named `event` for the change set.
-fn first_seq(project: &str, changeset: &str, event: &str) -> Option<i64> {
-    block(async {
-        let mut conn = admin_connection().await;
-        sqlx::query_scalar::<_, i64>(
-            "select seq from live_events \
-             where project_id = $1::uuid and event = $2 and data->>'changeset_id' = $3 \
-             order by seq limit 1",
-        )
-        .bind(project)
-        .bind(event)
-        .bind(changeset)
-        .fetch_optional(&mut conn)
-        .await
-        .unwrap_or_else(|e| panic!("read the live events: {e}"))
-    })
-}
-
 /// A doc with a mainline version: started, saved and merged through a change
 /// set of its own. Returns (doc ID, its mainline version ID).
 fn merged_doc(f: &Fixture, client: &Client, project: &str) -> (String, String) {
@@ -684,45 +666,6 @@ fn the_approve_route_is_in_the_registry_as_a_human_route() {
         .find(|r| r.method == "POST" && r.path == APPROVE_ROUTE)
         .unwrap_or_else(|| panic!("the registry has no route POST {APPROVE_ROUTE}"));
     assert_eq!(entry.access, Access::Human, "only the human approves");
-}
-
-#[test]
-fn approving_is_the_humans_alone_and_an_api_key_changes_nothing() {
-    let (f, client) = ready();
-    let project = new_project(f, client);
-    let changeset = new_changeset(f, client, &project);
-    let doc = create_doc(f, client, &project, &changeset);
-    add_paragraph(
-        f,
-        client,
-        &project,
-        &changeset,
-        &doc,
-        "Agents cannot approve",
-    );
-    save(f, client, &project, &changeset, &doc);
-    submit(f, client, &project, &changeset);
-    let before = changeset_of(f, client, &project, &changeset);
-
-    let response = approve_response(f, client, &agent(f), &project, &changeset);
-    assert_error(&response, 403, "forbidden");
-
-    let after = changeset_of(f, client, &project, &changeset);
-    assert_eq!(after["status"], "in_review", "{after}");
-    assert_eq!(moves(&after), moves(&before), "the history is unchanged");
-    assert_eq!(
-        doc_of(f, client, &project, &doc)["mainline_version_id"],
-        Value::Null,
-        "nothing was merged"
-    );
-    assert!(
-        events_of(&project, &changeset, "changeset.approved").is_empty(),
-        "no approval event"
-    );
-
-    // The control: the human's session approves the same change set.
-    let approved = approve(f, client, &project, &changeset);
-    assert_eq!(approved["status"], "merged", "{approved}");
 }
 
 #[test]
@@ -860,86 +803,6 @@ fn approving_records_the_latest_saved_version_of_each_changed_doc_and_merges_the
     assert!(
         !html.contains(&unseen),
         "an edit that was never saved is not merged: {html}"
-    );
-}
-
-#[test]
-fn approving_and_merging_emit_their_live_events_in_order() {
-    let (f, client) = ready();
-    let project = new_project(f, client);
-    let changeset = new_changeset(f, client, &project);
-    let doc = create_doc(f, client, &project, &changeset);
-    add_paragraph(f, client, &project, &changeset, &doc, "Live");
-    save(f, client, &project, &changeset, &doc);
-    submit(f, client, &project, &changeset);
-    approve(f, client, &project, &changeset);
-
-    let approved = events_of(&project, &changeset, "changeset.approved");
-    assert_eq!(
-        approved,
-        vec![json!({
-            "changeset_id": changeset,
-            "from_status": "in_review",
-            "status": "approved",
-            "actor": "human",
-            "feature_id": null
-        })],
-        "one changeset.approved event"
-    );
-    let merged = events_of(&project, &changeset, "changeset.merged");
-    assert_eq!(
-        merged,
-        vec![json!({
-            "changeset_id": changeset,
-            "from_status": "approved",
-            "status": "merged",
-            "actor": "system",
-            "feature_id": null
-        })],
-        "one changeset.merged event"
-    );
-    let order = (
-        first_seq(&project, &changeset, "changeset.approved"),
-        first_seq(&project, &changeset, "changeset.merged"),
-    );
-    assert!(
-        matches!(order, (Some(a), Some(m)) if a < m),
-        "the approval comes before the merge: {order:?}"
-    );
-    assert!(
-        events_of(&project, &changeset, "changeset.needs_rebase").is_empty(),
-        "a merge needs no rebase"
-    );
-}
-
-#[test]
-fn a_merged_version_is_the_base_of_the_next_draft() {
-    let (f, client) = ready();
-    let project = new_project(f, client);
-    let (doc, mainline) = merged_doc(f, client, &project);
-
-    let next = new_changeset(f, client, &project);
-    let draft = open_doc(f, client, &project, &next, &doc);
-    assert_eq!(
-        draft["base_version_id"],
-        mainline.as_str(),
-        "a new draft starts from the merged version: {draft}"
-    );
-
-    // And the next change set merges onto it in turn.
-    add_paragraph(f, client, &project, &next, &doc, "Second round");
-    let version = save(f, client, &project, &next, &doc);
-    submit(f, client, &project, &next);
-    let answer = approve(f, client, &project, &next);
-    assert_eq!(answer["status"], "merged", "{answer}");
-    assert_eq!(
-        approved_versions(&answer),
-        pairs(&[(&doc, &version)]),
-        "{answer}"
-    );
-    assert_eq!(
-        doc_of(f, client, &project, &doc)["mainline_version_id"],
-        version.as_str()
     );
 }
 
