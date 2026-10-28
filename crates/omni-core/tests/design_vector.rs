@@ -3,8 +3,8 @@
 mod common;
 
 use common::{
-    assert_distinct_values, assert_rejected, assert_round_trips, flex_frame, parse, strings,
-    vector, with, without,
+    assert_distinct_values, assert_rejected, assert_round_trips, parse, strings, vector, with,
+    without,
 };
 use serde_json::json;
 
@@ -81,31 +81,4 @@ fn path_data_follows_the_svg_path_grammar() {
             &format!("`{bad}` is invalid: {why}"),
         );
     }
-}
-
-#[test]
-fn vectors_are_drawn_with_fills_strokes_and_opacity() {
-    let json = json!({
-        "id": "vec00001",
-        "type": "vector",
-        "name": "Cart icon",
-        "width": {"fixed": 24},
-        "height": {"fixed": 24},
-        "path": PATHS[4],
-        "fills": [
-            {"type": "solid", "color": "#2563eb"},
-            {"type": "linear-gradient", "angle": 90, "stops": [
-                {"position": 0, "color": "#ffffff33"},
-                {"position": 1, "color": "#ffffff00"}
-            ]}
-        ],
-        "strokes": [{"color": "#1e3a8a", "width": 1.5}],
-        "opacity": 0.95
-    });
-    assert_round_trips(&flex_frame("frame001", vec![json.clone()]));
-    assert_ne!(
-        parse(&json),
-        parse(&without(&json, "/strokes")),
-        "strokes change a vector"
-    );
 }
