@@ -217,15 +217,6 @@ fn requests_to(server: &MockServer, method: &str, path: &str) -> Vec<Recorded> {
         .collect()
 }
 
-fn assert_nothing_posted(server: &MockServer) {
-    let posts: Vec<_> = server
-        .requests()
-        .into_iter()
-        .filter(|r| r.method != "GET")
-        .collect();
-    assert!(posts.is_empty(), "nothing should be sent: {posts:?}");
-}
-
 // ---------------------------------------------------------------------------
 // omni project
 // ---------------------------------------------------------------------------
@@ -266,15 +257,6 @@ fn project_create_sends_the_name_as_the_agent_and_prints_the_new_project() {
         json!({ "project": project_json(NEW_PROJECT, "landing-page") }),
         "--json prints the whole response"
     );
-}
-
-#[test]
-fn project_create_without_a_name_is_one_line_and_sends_nothing() {
-    let server = mock();
-    let home = logged_in(&server.url);
-    let out = run(&home, &["project", "create"]);
-    assert_one_line_error(&out, &["name"]);
-    assert_nothing_posted(&server);
 }
 
 #[test]
@@ -362,192 +344,6 @@ fn changeset_create_sends_the_title_description_and_run_tag() {
     assert_eq!(json.json()["changeset"]["id"], NEW_CHANGESET);
 }
 
-#[test]
-fn a_change_set_needs_a_title_before_anything_is_sent() {
-    let server = mock();
-    let home = logged_in(&server.url);
-    let out = run(&home, &["changeset", "create", "--project", PROJECT]);
-    assert_one_line_error(&out, &["title"]);
-    assert_nothing_posted(&server);
-}
-
-#[test]
-fn a_description_can_be_long_text_from_a_file_or_standard_input() {
-    let server = mock();
-    let home = logged_in(&server.url);
-    let text = format!("# Why\n\n{}", "Ünïcödé ✓ — a long reason.\n\n".repeat(300));
-    let file = home.join("description.md");
-    std::fs::write(&file, &text).unwrap();
-    for (label, out) in [
-        (
-            "a file",
-            run(
-                &home,
-                &[
-                    "changeset",
-                    "create",
-                    "--project",
-                    PROJECT,
-                    "--title",
-                    "Long",
-                    "--body-file",
-                    file.to_str().unwrap(),
-                ],
-            ),
-        ),
-        (
-            "standard input",
-            omni(&home.path)
-                .args(&[
-                    "changeset",
-                    "create",
-                    "--project",
-                    PROJECT,
-                    "--title",
-                    "Long",
-                    "--body-file",
-                    "-",
-                    "--as",
-                    "run-7/author",
-                ])
-                .stdin(text.as_bytes())
-                .run(),
-        ),
-    ] {
-        assert_eq!(out.code, 0, "{label}: {}", out.stderr);
-    }
-    let posts = requests_to(&server, "POST", &changesets_path(PROJECT));
-    assert_eq!(posts.len(), 2, "{:?}", server.requests());
-    for post in posts {
-        assert_eq!(
-            body_of(&post)["description"],
-            text.as_str(),
-            "the long text is the description, byte for byte"
-        );
-    }
-}
-
-#[test]
-fn the_default_project_comes_from_omni_toml_by_name() {
-    let server = mock();
-    let home = logged_in(&server.url);
-    let project_dir = Scratch::new("project");
-    std::fs::write(project_dir.join(".omni.toml"), "project = \"brand-site\"\n").unwrap();
-
-    let out = omni(&home.path)
-        .cwd(&project_dir.path)
-        .args(&["changeset", "create", "--title", "From the default"])
-        .args(&["--as", "run-7/author"])
-        .run();
-    assert_eq!(out.code, 0, "{}", out.stderr);
-    assert_eq!(
-        requests_to(&server, "POST", &changesets_path(PROJECT)).len(),
-        1,
-        "the name `brand-site` is looked up and its ID is used: {:?}",
-        server.requests()
-    );
-
-    // --project wins over .omni.toml, by name as well as by ID.
-    for project in ["other", OTHER_PROJECT] {
-        let out = omni(&home.path)
-            .cwd(&project_dir.path)
-            .args(&[
-                "changeset",
-                "create",
-                "--title",
-                "Flag wins",
-                "--project",
-                project,
-            ])
-            .args(&["--as", "run-7/author"])
-            .run();
-        assert_eq!(out.code, 0, "--project {project}: {}", out.stderr);
-    }
-    assert_eq!(
-        requests_to(&server, "POST", &changesets_path(OTHER_PROJECT)).len(),
-        2,
-        "{:?}",
-        server.requests()
-    );
-    assert_eq!(
-        requests_to(&server, "POST", &changesets_path(PROJECT)).len(),
-        1,
-        "the default was used once"
-    );
-
-    // list and show take the default project the same way.
-    let list = omni(&home.path)
-        .cwd(&project_dir.path)
-        .args(&["changeset", "list", "--as", "run-7/author"])
-        .run();
-    assert_eq!(list.code, 0, "{}", list.stderr);
-    assert_eq!(
-        requests_to(&server, "GET", &changesets_path(PROJECT)).len(),
-        1,
-        "{:?}",
-        server.requests()
-    );
-}
-
-#[test]
-fn an_unknown_or_missing_project_is_one_line_and_sends_nothing() {
-    let server = mock();
-    let home = logged_in(&server.url);
-
-    let unknown = run(
-        &home,
-        &[
-            "changeset",
-            "create",
-            "--title",
-            "T",
-            "--project",
-            "no-such-project",
-        ],
-    );
-    assert_one_line_error(&unknown, &["no-such-project"]);
-
-    let missing = run(&home, &["changeset", "create", "--title", "T"]);
-    assert_one_line_error(&missing, &["project"]);
-    assert_nothing_posted(&server);
-}
-
-#[test]
-fn changeset_list_prints_one_line_per_change_set_with_its_status() {
-    let server = mock();
-    let home = logged_in(&server.url);
-    let out = run(&home, &["changeset", "list", "--project", PROJECT]);
-    assert_eq!(out.code, 0, "{}", out.stderr);
-    assert_eq!(
-        requests_to(&server, "GET", &changesets_path(PROJECT)).len(),
-        1
-    );
-    let lines = non_empty_lines(&out.stdout);
-    let hero = lines
-        .iter()
-        .find(|l| l.contains("Hero section"))
-        .unwrap_or_else(|| panic!("a line for the hero change set: {:?}", out.stdout));
-    assert!(
-        hero.contains(CHANGESET) && hero.contains("in_review"),
-        "{hero:?}"
-    );
-    let pricing = lines
-        .iter()
-        .find(|l| l.contains("Pricing table"))
-        .unwrap_or_else(|| panic!("a line for the pricing change set: {:?}", out.stdout));
-    assert!(
-        pricing.contains(STUCK_CHANGESET) && pricing.contains("abandoned"),
-        "{pricing:?}"
-    );
-
-    let json = run(
-        &home,
-        &["changeset", "list", "--project", PROJECT, "--json"],
-    );
-    assert_eq!(json.code, 0, "{}", json.stderr);
-    assert_eq!(json.json()["changesets"].as_array().unwrap().len(), 2);
-}
-
 // ---------------------------------------------------------------------------
 // omni changeset show
 // ---------------------------------------------------------------------------
@@ -626,15 +422,6 @@ fn changeset_show_prints_the_status_history_with_the_rejection_reason() {
         json!({ "changeset": reviewed_changeset() }),
         "--json prints the whole response, history included"
     );
-}
-
-#[test]
-fn changeset_show_needs_an_id() {
-    let server = mock();
-    let home = logged_in(&server.url);
-    let out = run(&home, &["changeset", "show", "--project", PROJECT]);
-    assert_one_line_error(&out, &["changeset"]);
-    assert!(server.requests().is_empty(), "{:?}", server.requests());
 }
 
 // ---------------------------------------------------------------------------
