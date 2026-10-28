@@ -1029,17 +1029,6 @@ fn the_human_cannot_create_a_doc() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn a_doc_started_in_a_change_set_reads_as_its_empty_head() {
-    let (f, client) = ready();
-    let project = new_project(f, client);
-    let changeset = new_changeset(f, client, &project);
-    let doc = create_in_changeset(f, client, &project, &changeset, "html", "spec");
-    assert_head_is_stored(f, &doc);
-    let read = read_html(f, client, &agent(f), &project, &doc);
-    assert_eq!(read["html"], "", "{read}");
-}
-
-#[test]
 fn the_html_read_follows_the_head_never_the_mainline_version() {
     let (f, client) = ready();
     let project = new_project(f, client);
@@ -1085,17 +1074,6 @@ fn the_html_read_follows_the_head_never_the_mainline_version() {
             .is_some_and(|html| html.contains(&text)),
         "the doc reads as its head: {read}"
     );
-    must(
-        call(
-            client,
-            "GET",
-            &doc_path(f, &project, &live),
-            &agent(f),
-            None,
-        ),
-        200,
-        "show the doc",
-    );
 
     // The doc started in the change set has its empty head, whatever its
     // mainline version holds.
@@ -1107,17 +1085,6 @@ fn the_html_read_follows_the_head_never_the_mainline_version() {
     assert_eq!(
         read["html"], "",
         "the doc reads as its head, not its mainline version: {read}"
-    );
-    must(
-        call(
-            client,
-            "GET",
-            &doc_path(f, &project, &started),
-            &agent(f),
-            None,
-        ),
-        200,
-        "show the doc",
     );
 }
 

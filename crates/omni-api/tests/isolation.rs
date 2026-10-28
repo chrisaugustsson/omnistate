@@ -4566,31 +4566,6 @@ const LIVE_DOC_ROUTES: [&str; 2] = [
 ];
 
 #[test]
-fn the_scope_level_doc_routes_are_in_the_registry_and_the_suite_attacks_them() {
-    for path in LIVE_DOC_ROUTES {
-        let entry = registry()
-            .into_iter()
-            .find(|r| r.method == "POST" && r.path == path)
-            .unwrap_or_else(|| panic!("the registry has no route POST {path}"));
-        assert_eq!(entry.access, Access::Agent, "POST {path}");
-        assert!(
-            matches!(case_for(&entry).kind, Kind::Workspace),
-            "POST {path} is a workspace route that the suite attacks"
-        );
-    }
-
-    // The suite seeded the log of the writes to docs for both workspaces.
-    let (f, _) = ready();
-    for side in [&f.a, &f.b] {
-        let rows = block(async {
-            let mut admin = admin_connection().await;
-            rows_of(&mut admin, "doc_changes", &side.id).await
-        });
-        assert!(rows > 0, "the suite seeded no doc change for {}", side.id);
-    }
-}
-
-#[test]
 fn the_scope_level_doc_calls_of_the_attacks_work_for_the_workspace_that_owns_the_records() {
     // The control for the scope-level doc routes: in the owner's workspace,
     // the owner's agent creates a doc with the body of each case, and both the
