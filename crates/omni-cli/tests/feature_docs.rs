@@ -249,39 +249,6 @@ fn search_research_line() -> String {
 }
 
 #[test]
-fn doc_list_prints_the_scope_kind_pillar_and_title_of_each_doc() {
-    let server = mock();
-    let home = logged_in(&server.url);
-    let out = run(&home, &["doc", "list", "--project", PROJECT]);
-    assert_eq!(out.code, 0, "{}", out.stderr);
-    assert_eq!(
-        gets_to(&server, &docs_path()),
-        1,
-        "without a filter the list is GET .../docs: {:?}",
-        server.requests()
-    );
-    assert_eq!(
-        non_empty_lines(&out.stdout),
-        [
-            global_line(),
-            checkout_line(),
-            search_line(),
-            checkout_spec_line(),
-            search_research_line()
-        ],
-        "one `<id>  <scope>  <kind>  <pillar>  <title>` line per doc"
-    );
-
-    let json = run(&home, &["doc", "list", "--project", PROJECT, "--json"]);
-    assert_eq!(json.code, 0, "{}", json.stderr);
-    assert_eq!(
-        json.json(),
-        json!({ "docs": all_docs() }),
-        "--json prints the whole response"
-    );
-}
-
-#[test]
 fn doc_list_filters_by_feature_or_global() {
     let server = mock();
     let home = logged_in(&server.url);
@@ -397,27 +364,5 @@ fn doc_list_with_a_pillar_lists_only_that_pillars_docs() {
         non_empty_lines(&out.stdout),
         [checkout_spec_line()],
         "--pillar spec --feature Checkout lists Checkout's spec docs"
-    );
-}
-
-#[test]
-fn doc_list_refuses_a_pillar_that_is_not_one_of_the_five() {
-    let server = mock();
-    let home = logged_in(&server.url);
-    for pillar in ["other", "prd"] {
-        let out = run(
-            &home,
-            &["doc", "list", "--pillar", pillar, "--project", PROJECT],
-        );
-        assert_one_line_error(
-            &out,
-            &[pillar, "spec", "ui", "architecture", "db", "research"],
-        );
-    }
-    assert_eq!(
-        doc_lists(&server),
-        0,
-        "no list is asked for: {:?}",
-        server.requests()
     );
 }

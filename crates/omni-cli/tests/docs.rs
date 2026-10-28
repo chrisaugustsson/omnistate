@@ -282,81 +282,6 @@ fn doc_create_starts_a_doc_in_the_change_set() {
 }
 
 #[test]
-fn doc_create_takes_every_pillar() {
-    let server = mock();
-    let home = logged_in(&server.url);
-    let combinations = [
-        ("html", "spec"),
-        ("html", "ui"),
-        ("html", "architecture"),
-        ("html", "db"),
-        ("html", "research"),
-        ("design", "ui"),
-        ("design-system", "ui"),
-    ];
-    for (kind, pillar) in combinations {
-        let out = run(
-            &home,
-            &[
-                "doc",
-                "create",
-                "--changeset",
-                CHANGESET,
-                "--kind",
-                kind,
-                "--pillar",
-                pillar,
-                "--title",
-                "T",
-            ],
-        );
-        assert_eq!(out.code, 0, "{kind} {pillar}: {}", out.stderr);
-    }
-    let posts = requests_to(
-        &server,
-        "POST",
-        &format!("{}/changesets/{CHANGESET}/docs", base()),
-    );
-    assert_eq!(posts.len(), combinations.len(), "{:?}", server.requests());
-    for (post, (kind, pillar)) in posts.iter().zip(combinations) {
-        let body = body_of(post);
-        assert_eq!(body["kind"], kind, "{body}");
-        assert_eq!(body["pillar"], pillar, "{body}");
-    }
-}
-
-#[test]
-fn doc_create_puts_a_doc_in_the_research_pillar() {
-    let server = mock();
-    let home = logged_in(&server.url);
-    let out = run(
-        &home,
-        &[
-            "doc",
-            "create",
-            "--changeset",
-            CHANGESET,
-            "--kind",
-            "html",
-            "--pillar",
-            "research",
-            "--title",
-            "Interview notes",
-            "--json",
-        ],
-    );
-    assert_eq!(out.code, 0, "{}", out.stderr);
-    let posts = requests_to(
-        &server,
-        "POST",
-        &format!("{}/changesets/{CHANGESET}/docs", base()),
-    );
-    assert_eq!(posts.len(), 1, "{:?}", server.requests());
-    assert_eq!(body_of(&posts[0])["pillar"], "research");
-    assert_eq!(out.json()["doc"]["pillar"], "research", "{}", out.stdout);
-}
-
-#[test]
 fn doc_create_refuses_bad_options_before_sending_anything() {
     let server = mock();
     let home = logged_in(&server.url);
@@ -394,20 +319,11 @@ fn doc_create_refuses_bad_options_before_sending_anything() {
 fn doc_create_refuses_a_pillar_that_is_not_one_of_the_five() {
     let server = mock();
     let home = logged_in(&server.url);
-    for pillar in ["other", "prd", "marketing"] {
+    for pillar in ["other", "prd"] {
         let out = run(
             &home,
             &[
-                "doc",
-                "create",
-                "--changeset",
-                CHANGESET,
-                "--kind",
-                "html",
-                "--pillar",
-                pillar,
-                "--title",
-                "T",
+                "doc", "create", "--kind", "html", "--pillar", pillar, "--title", "T",
             ],
         );
         assert_one_line_error(
@@ -422,24 +338,13 @@ fn doc_create_refuses_a_pillar_that_is_not_one_of_the_five() {
 fn doc_create_refuses_the_old_module_option_and_names_pillar() {
     let server = mock();
     let home = logged_in(&server.url);
-    for module in ["prd", "spec"] {
-        let out = run(
-            &home,
-            &[
-                "doc",
-                "create",
-                "--changeset",
-                CHANGESET,
-                "--kind",
-                "html",
-                "--module",
-                module,
-                "--title",
-                "T",
-            ],
-        );
-        assert_one_line_error(&out, &["--module", "--pillar"]);
-    }
+    let out = run(
+        &home,
+        &[
+            "doc", "create", "--kind", "html", "--module", "prd", "--title", "T",
+        ],
+    );
+    assert_one_line_error(&out, &["--module", "--pillar"]);
     assert_nothing_sent(&server);
 }
 

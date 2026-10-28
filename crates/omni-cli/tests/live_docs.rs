@@ -302,6 +302,38 @@ fn doc_create_with_an_unknown_feature_is_one_line_and_creates_nothing() {
     );
 }
 
+#[test]
+fn doc_create_takes_every_pillar() {
+    let server = mock();
+    let home = logged_in(&server.url);
+    let combinations = [
+        ("html", "spec"),
+        ("html", "ui"),
+        ("html", "architecture"),
+        ("html", "db"),
+        ("html", "research"),
+        ("design", "ui"),
+        ("design-system", "ui"),
+    ];
+    for (kind, pillar) in combinations {
+        let out = run(
+            &home,
+            &[
+                "doc", "create", "--kind", kind, "--pillar", pillar, "--title", "T",
+            ],
+        );
+        assert_eq!(out.code, 0, "{kind} {pillar}: {}", out.stderr);
+    }
+    let sent = posts(&server);
+    assert_eq!(sent.len(), combinations.len(), "{:?}", server.requests());
+    for (post, (kind, pillar)) in sent.iter().zip(combinations) {
+        assert_eq!(post.path, format!("{}/docs", base()), "{post:?}");
+        let body = body_of(post);
+        assert_eq!(body["kind"], kind, "{body}");
+        assert_eq!(body["pillar"], pillar, "{body}");
+    }
+}
+
 // ---------------------------------------------------------------------------
 // omni doc read of the head
 // ---------------------------------------------------------------------------
