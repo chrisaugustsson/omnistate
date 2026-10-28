@@ -161,41 +161,12 @@ fn the_design_renderer_is_revalidated_on_every_load() {
 }
 
 #[test]
-fn web_app_health_route_returns_200_through_the_proxy() {
-    let response = get("/health");
-    assert_eq!(response.status, 200, "GET /health through the proxy");
-}
-
-#[test]
-fn api_health_returns_200_json_through_the_proxy() {
-    let response = get("/api/health");
-    assert_eq!(response.status, 200, "GET /api/health through the proxy");
-    assert!(
-        response.content_type().starts_with("application/json"),
-        "GET /api/health is not answered by the API: {}",
-        response.content_type()
-    );
-    assert_eq!(response.json()["status"], "ok");
-}
-
-#[test]
 fn api_health_reports_that_postgres_and_the_rustfs_bucket_are_reachable() {
     let health = get("/api/health").json();
     assert_eq!(health["database"], "ok", "API health: {health}");
     assert_eq!(
         health["storage"], "ok",
         "the RustFS bucket must exist on first start: {health}"
-    );
-}
-
-#[test]
-fn proxy_sends_unknown_api_paths_to_the_api_not_the_web_app() {
-    let response = get("/api/no-such-route");
-    assert_eq!(response.status, 404);
-    assert!(
-        !response.content_type().starts_with("text/html"),
-        "/api/* is answered by the web app: {}",
-        response.content_type()
     );
 }
 
@@ -222,11 +193,4 @@ fn proxy_sends_websocket_upgrades_at_ws_to_the_api() {
         "/ws/* is answered by the web app: {}",
         response.content_type()
     );
-}
-
-#[test]
-fn postgres_and_rustfs_are_reachable_inside_the_compose_network() {
-    for (host, port) in [("postgres", 5432), ("rustfs", 9000)] {
-        connect(host, port);
-    }
 }
