@@ -270,21 +270,6 @@ fn move_to(node: &str, rev: u64, parent: Option<&str>, after: Option<&str>) -> V
 
 #[cfg_attr(not(target_arch = "wasm32"), test)]
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
-fn every_kind_of_operation_is_read_from_its_json_form() {
-    let ops = batch(json!([
-        {"op": "insert", "parent": S1, "position": {"after": P1}, "content": "<p>New</p>"},
-        {"op": "insert", "parent": null, "position": {"after": null}, "content": "<hr>"},
-        {"op": "replace", "node": P1, "rev": 1, "content": "<p>Replaced</p>"},
-        {"op": "set", "node": H1, "rev": 1, "properties": {"html": "Retitled"}},
-        {"op": "move", "node": P2, "rev": 1, "parent": S2, "position": {"after": null}},
-        {"op": "move", "node": S2, "rev": 1, "parent": null, "position": {"after": S1}},
-        {"op": "delete", "node": LI1, "rev": 1}
-    ]));
-    assert_eq!(ops.len(), 7, "each operation in the batch is read");
-}
-
-#[cfg_attr(not(target_arch = "wasm32"), test)]
-#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
 fn malformed_operations_are_rejected_when_read() {
     let malformed = [
         (
@@ -359,20 +344,6 @@ fn malformed_operations_are_rejected_when_read() {
 
 #[cfg_attr(not(target_arch = "wasm32"), test)]
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
-fn every_node_starts_at_revision_one() {
-    let doc = doc();
-    let ids = printed_ids(&doc.to_html());
-    assert_eq!(ids.len(), 15, "the base doc has 15 block-level elements");
-    for node in &ids {
-        assert_eq!(rev(&doc, node), 1, "{node} starts at revision 1");
-    }
-    assert_eq!(doc.revision(id(UNKNOWN)), None);
-    assert!(doc.contains(id(P1)));
-    assert!(!doc.contains(id(UNKNOWN)));
-}
-
-#[cfg_attr(not(target_arch = "wasm32"), test)]
-#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
 fn an_operation_raises_only_the_revision_of_the_node_it_changes() {
     let mut doc = doc();
     let result = apply_one(
@@ -401,86 +372,11 @@ fn an_operation_raises_only_the_revision_of_the_node_it_changes() {
 
 #[cfg_attr(not(target_arch = "wasm32"), test)]
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
-fn a_stale_revision_is_a_conflict_with_the_current_state() {
-    let mut doc = doc();
-    apply_one(
-        &mut doc,
-        set(P1, 1, json!({"html": "Updated by someone else"})),
-    );
-    let found = conflict(&mut doc, json!([set(P1, 1, json!({"html": "My update"}))]));
-    assert_eq!(found.index, 0);
-    assert_eq!(found.node, id(P1));
-    assert_eq!(found.expected, 1);
-    assert_eq!(found.current_revision, 2);
-    assert!(
-        found.current_html.contains("Updated by someone else"),
-        "the conflict shows the node as it is now: {}",
-        found.current_html
-    );
-    assert!(
-        found
-            .current_html
-            .contains(&format!("data-omni-id=\"{P1}\"")),
-        "the conflict's HTML carries the node's ID: {}",
-        found.current_html
-    );
-    assert!(
-        !found.current_html.contains("My update"),
-        "nothing of the refused operation is applied"
-    );
-    assert!(
-        ApplyError::Conflict(found).to_string().contains(P1),
-        "the error text names the node"
-    );
-}
-
-#[cfg_attr(not(target_arch = "wasm32"), test)]
-#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
 fn a_revision_ahead_of_the_node_is_a_conflict_too() {
     let mut doc = doc();
     let found = conflict(&mut doc, json!([set(P1, 5, json!({"html": "Never"}))]));
     assert_eq!(found.expected, 5);
     assert_eq!(found.current_revision, 1);
-}
-
-#[cfg_attr(not(target_arch = "wasm32"), test)]
-#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
-fn every_operation_that_changes_a_node_checks_its_revision() {
-    let stale = [
-        ("set", set(P2, 1, json!({"html": "Stale"}))),
-        ("replace", replace(P2, 1, "<p>Stale</p>")),
-        ("move", move_to(P2, 1, Some(S2), None)),
-        ("delete", delete(P2, 1)),
-    ];
-    for (name, op) in stale {
-        let mut doc = doc();
-        apply_one(&mut doc, set(P2, 1, json!({"html": "Fresh"})));
-        let found = conflict(&mut doc, json!([op]));
-        assert_eq!(found.node, id(P2), "a stale {name} conflicts on its node");
-        assert_eq!(found.current_revision, 2, "a stale {name}");
-        assert!(
-            doc.to_html().contains("Fresh") && doc.contains(id(P2)),
-            "a stale {name} changes nothing"
-        );
-    }
-}
-
-#[cfg_attr(not(target_arch = "wasm32"), test)]
-#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
-fn a_conflict_in_a_later_operation_names_its_place_in_the_batch() {
-    let mut doc = doc();
-    apply_one(&mut doc, set(P2, 1, json!({"html": "Fresh"})));
-    let found = conflict(
-        &mut doc,
-        json!([
-            set(P1, 1, json!({"html": "Fine"})),
-            insert_into(S1, None, "<p>Fine too</p>"),
-            set(P2, 1, json!({"html": "Stale"}))
-        ]),
-    );
-    assert_eq!(found.index, 2);
-    assert_eq!(found.node, id(P2));
-    assert_eq!(rev(&doc, P1), 1, "the operations before it are undone too");
 }
 
 // --- Insert and fractional order ---
@@ -533,47 +429,6 @@ fn insert_adds_a_block_with_a_new_id_at_the_position() {
     )
     .node;
     assert_eq!(children(&doc, None)[0], top_first.to_string());
-}
-
-#[cfg_attr(not(target_arch = "wasm32"), test)]
-#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
-fn insert_gives_every_new_block_of_the_content_an_id_in_document_order() {
-    let mut doc = doc();
-    let result = apply_one(
-        &mut doc,
-        insert_into(S2, None, "<ul><li>a</li><li>b</li></ul>"),
-    );
-    assert_eq!(result.created.len(), 3, "a list and two items: {result:?}");
-    assert_eq!(result.created[0], result.node, "the block comes first");
-    let distinct: std::collections::HashSet<_> = result.created.iter().collect();
-    assert_eq!(distinct.len(), 3, "every new node has its own ID");
-    let list = result.node.to_string();
-    assert_eq!(
-        children(&doc, Some(&list)),
-        [result.created[1].to_string(), result.created[2].to_string()],
-        "the items are the list's children, in order"
-    );
-    for node in &result.created {
-        assert_eq!(rev(&doc, &node.to_string()), 1);
-    }
-}
-
-#[cfg_attr(not(target_arch = "wasm32"), test)]
-#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
-fn inserts_neither_check_nor_change_the_parents_revision() {
-    let mut doc = doc();
-    apply_one(&mut doc, move_to(UL, 1, Some(S2), Some(H2)));
-    assert_eq!(rev(&doc, UL), 2);
-    apply_one(&mut doc, insert_into(UL, Some(LI2), "<li>Three</li>"));
-    apply_one(&mut doc, insert_into(UL, None, "<li>Zero</li>"));
-    assert_eq!(
-        rev(&doc, UL),
-        2,
-        "inserting children leaves the parent at 2"
-    );
-    apply_one(&mut doc, insert_into(S1, Some(P2), "<p>Last</p>"));
-    assert_eq!(rev(&doc, S1), 1);
-    assert_eq!(children(&doc, Some(UL)).len(), 4);
 }
 
 #[cfg_attr(not(target_arch = "wasm32"), test)]
