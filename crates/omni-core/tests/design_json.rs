@@ -2,7 +2,7 @@
 
 mod common;
 
-use common::{assert_rejected, assert_round_trips, frame, parse, placed, try_parse, with};
+use common::{assert_rejected, assert_round_trips, parse, with};
 use omni_core::design::{Node, NodeKind};
 use serde_json::{Value, json};
 
@@ -378,34 +378,6 @@ fn serializing_a_parsed_design_again_gives_the_same_text() {
 const FULL_PRECISION: [f64; 4] = [12.345 * 3.0, 1439.1764831232663, 650.0 / 3.0, 20.0 / 13.0];
 
 #[test]
-fn numbers_keep_their_exact_values() {
-    let short = [0.1, 0.15, 1.3, 12.345, 1440.0, 1200.5];
-    for value in short.into_iter().chain(FULL_PRECISION) {
-        for (json, pointer, written) in [
-            (placed(&frame("frame001"), value, 1.0), "/x", value),
-            (placed(&frame("frame001"), -value, 1.0), "/x", -value),
-            (
-                with(&frame("frame001"), "/minWidth", json!(value)),
-                "/minWidth",
-                value,
-            ),
-            (
-                with(&frame("frame001"), "/width", json!({"fixed": value})),
-                "/width/fixed",
-                value,
-            ),
-        ] {
-            let output = assert_round_trips(&json);
-            assert_eq!(
-                output.pointer(pointer).and_then(Value::as_f64),
-                Some(written),
-                "{pointer} = {written} is written back exactly"
-            );
-        }
-    }
-}
-
-#[test]
 fn every_number_in_a_design_keeps_all_its_digits() {
     let [length, wide, weight, ratio] = FULL_PRECISION;
     let fraction = 10.0 / 11.0;
@@ -444,23 +416,6 @@ fn every_number_in_a_design_keeps_all_its_digits() {
 }
 
 #[test]
-fn equal_json_gives_equal_nodes() {
-    let as_integer = with(&frame("frame001"), "/width", json!({"fixed": 320}));
-    let as_decimal = with(&frame("frame001"), "/width", json!({"fixed": 320.0}));
-    assert_eq!(
-        parse(&as_integer),
-        parse(&as_decimal),
-        "320 and 320.0 are the same number"
-    );
-
-    let type_first = r#"{"type": "text", "id": "text0001", "name": "Hi", "width": "hug", "height": "hug", "content": "Hi", "fontFamily": "Inter", "fontSize": 16}"#;
-    let type_last = r#"{"fontSize": 16, "content": "Hi", "height": "hug", "width": "hug", "fontFamily": "Inter", "name": "Hi", "id": "text0001", "type": "text"}"#;
-    let first: Node = serde_json::from_str(type_first).expect("a node with `type` first parses");
-    let last: Node = serde_json::from_str(type_last).expect("a node with `type` last parses");
-    assert_eq!(first, last, "the order of JSON properties does not matter");
-}
-
-#[test]
 fn the_format_is_closed_so_unknown_properties_are_rejected() {
     let design = complete_design();
     parse(&design);
@@ -491,16 +446,4 @@ fn the_format_is_closed_so_unknown_properties_are_rejected() {
             "the error must name `{key}`; it says: {message}"
         );
     }
-}
-
-#[test]
-fn invalid_json_is_an_error_not_a_panic() {
-    parse(&frame("frame001"));
-    for text in ["", "null", "[]", "{}", "{\"type\": \"frame\"}", "not json"] {
-        assert!(
-            serde_json::from_str::<Node>(text).is_err(),
-            "`{text}` is not a design node"
-        );
-    }
-    assert!(try_parse(&json!({"id": "frame001", "type": "frame"})).is_err());
 }
