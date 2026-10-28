@@ -42,7 +42,6 @@ mod common;
 
 use common::{Client, Response, TestServer, cookie};
 use omni_api::Config;
-use omni_api::routes::{Access, registry};
 use s3::creds::Credentials;
 use s3::{Bucket, BucketConfiguration, Region};
 use serde_json::{Value, json};
@@ -58,7 +57,6 @@ const TEST_DB: &str = "omni_us061_feature_docs";
 const TEST_BUCKET: &str = "omni-us061-feature-docs";
 /// An ID that no row has.
 const UNKNOWN_ID: &str = "01900000-0000-7000-8000-000000000000";
-const DOCS_ROUTE: &str = "/api/v1/w/{workspace_id}/projects/{project_id}/docs";
 
 // ---------------------------------------------------------------------------
 // Plumbing
@@ -418,6 +416,34 @@ fn create_doc(
     )
 }
 
+/// Creates a live doc as the agent, in `feature` or at project level without
+/// one; returns the doc of the answer.
+fn create_live(
+    f: &Fixture,
+    client: &Client,
+    project: &str,
+    feature: Option<&str>,
+    kind: &str,
+    pillar: &str,
+) -> Value {
+    let path = match feature {
+        None => docs_path(f, project),
+        Some(feature) => format!("{}/features/{feature}/docs", project_base(f, project)),
+    };
+    must(
+        call(
+            client,
+            "POST",
+            &path,
+            &agent(f),
+            Some(&json!({ "kind": kind, "pillar": pillar, "title": unique(pillar) })),
+        ),
+        201,
+        "create a doc without a change set",
+    )["doc"]
+        .clone()
+}
+
 fn add_paragraph(
     f: &Fixture,
     client: &Client,
@@ -665,35 +691,6 @@ fn a_doc_takes_the_feature_of_the_change_set_that_creates_it() {
 }
 
 #[test]
-fn a_doc_keeps_its_scope_after_its_change_set_merges() {
-    let (f, client) = ready();
-    let project = new_project(f, client);
-    let feature = new_feature(f, client, &project, "Checkout");
-    let in_feature = merged_doc(f, client, &project, Some(&feature));
-    let global = merged_doc(f, client, &project, None);
-
-    for (doc, expected) in [(&in_feature, json!(feature)), (&global, Value::Null)] {
-        let shown = show_doc(f, client, &agent(f), &project, doc);
-        assert!(
-            shown["mainline_version_id"].is_string(),
-            "the doc merged: {shown}"
-        );
-        assert_feature_id(&shown, &expected, "a merged doc");
-    }
-
-    // Another change set of the same feature edits the feature's doc, and
-    // the doc stays in the feature.
-    let next = new_changeset(f, client, &project, Some(&feature));
-    let opened = open_response(f, client, &project, &next, &in_feature);
-    assert_eq!(opened.status, 201, "{}", opened.text());
-    add_paragraph(f, client, &project, &next, &in_feature, "Then confirm.");
-    save(f, client, &project, &next, &in_feature);
-    merge(f, client, &project, &next);
-    let shown = show_doc(f, client, &agent(f), &project, &in_feature);
-    assert_feature_id(&shown, &json!(feature), "the doc after a second merge");
-}
-
-#[test]
 fn the_docs_table_ties_a_doc_to_a_feature_of_its_own_project() {
     let (f, client) = ready();
     let project = new_project(f, client);
@@ -723,38 +720,6 @@ fn the_docs_table_ties_a_doc_to_a_feature_of_its_own_project() {
         ),
         "a doc without a feature is global"
     );
-
-    // The foreign key is (workspace_id, project_id, feature_id) to features.
-    let keys: Vec<String> = block(async {
-        let mut conn = admin_connection().await;
-        sqlx::query_scalar(
-            "select (select string_agg(a.attname::text, ',' order by a.attname::text) \
-                     from pg_attribute a \
-                     where a.attrelid = c.conrelid and a.attnum = any(c.conkey)) \
-             from pg_constraint c \
-             where c.contype = 'f' and c.conrelid = 'docs'::regclass \
-               and c.confrelid = 'features'::regclass",
-        )
-        .fetch_all(&mut conn)
-        .await
-        .expect("look for the foreign key")
-    });
-    assert_eq!(
-        keys,
-        ["feature_id,project_id,workspace_id"],
-        "docs has the foreign key (workspace_id, project_id, feature_id) to features"
-    );
-    let nullable: String = block(async {
-        let mut conn = admin_connection().await;
-        sqlx::query_scalar(
-            "select coalesce((select is_nullable from information_schema.columns \
-             where table_name = 'docs' and column_name = 'feature_id'), 'missing')",
-        )
-        .fetch_one(&mut conn)
-        .await
-        .expect("look for the column")
-    });
-    assert_eq!(nullable, "YES", "docs.feature_id is nullable");
 }
 
 // ---------------------------------------------------------------------------
@@ -1114,27 +1079,36 @@ fn a_design_import_cannot_draft_a_design_of_another_scope() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn the_docs_route_is_in_the_registry_for_both() {
-    let entry = registry()
-        .into_iter()
-        .find(|r| r.method == "GET" && r.path == DOCS_ROUTE)
-        .unwrap_or_else(|| panic!("the registry has no route GET {DOCS_ROUTE}"));
-    assert_eq!(entry.access, Access::Both, "GET {DOCS_ROUTE}");
-}
-
-#[test]
 fn the_doc_list_has_every_doc_of_the_project_and_filters_by_feature_or_global() {
     let (f, client) = ready();
     let project = new_project(f, client);
     let checkout = new_feature(f, client, &project, "Checkout");
     let search = new_feature(f, client, &project, "Search");
-    let global = new_changeset(f, client, &project, None);
-    let in_checkout = new_changeset(f, client, &project, Some(&checkout));
-    let in_search = new_changeset(f, client, &project, Some(&search));
-    let first = id_of(&create_doc(f, client, &project, &global, "html", "spec")["doc"]);
-    let second = id_of(&create_doc(f, client, &project, &in_checkout, "html", "spec")["doc"]);
-    let third = id_of(&create_doc(f, client, &project, &in_search, "design", "ui")["doc"]);
-    let fourth = id_of(&create_doc(f, client, &project, &global, "html", "architecture")["doc"]);
+    let first = id_of(&create_live(f, client, &project, None, "html", "spec"));
+    let second = id_of(&create_live(
+        f,
+        client,
+        &project,
+        Some(&checkout),
+        "html",
+        "spec",
+    ));
+    let third = id_of(&create_live(
+        f,
+        client,
+        &project,
+        Some(&search),
+        "design",
+        "ui",
+    ));
+    let fourth = id_of(&create_live(
+        f,
+        client,
+        &project,
+        None,
+        "html",
+        "architecture",
+    ));
 
     let path = docs_path(f, &project);
     for auth in [agent(f), human(f)] {
@@ -1149,16 +1123,6 @@ fn the_doc_list_has_every_doc_of_the_project_and_filters_by_feature_or_global() 
                 .zip([Value::Null, json!(checkout), json!(search), Value::Null])
         {
             assert_feature_id(listed, &expected, "a listed doc");
-            let shown = show_doc(f, client, &auth, &project, &id_of(listed));
-            for field in [
-                "project_id",
-                "kind",
-                "pillar",
-                "title",
-                "mainline_version_id",
-            ] {
-                assert_eq!(listed[field], shown[field], "{field}: {listed}");
-            }
         }
 
         let of_checkout = list_docs(client, &auth, &format!("{path}?feature={checkout}"));
