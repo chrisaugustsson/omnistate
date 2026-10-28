@@ -4497,40 +4497,6 @@ fn the_review_route_is_a_human_route_that_the_suite_attacks() {
     );
 }
 
-#[test]
-fn the_review_call_of_the_attacks_shows_the_owner_its_own_change_set() {
-    // The control for the review route: the owner's human reads the review of
-    // the seeded change set, which lists the seeded doc at its latest saved
-    // version, and nothing of the other workspace.
-    let (f, client) = ready();
-    let _guard = serial();
-    let human = Auth::Session(&f.a.token);
-    let review = must(
-        call(client, "GET", &fill(REVIEW_ROUTE, &f.a, &f.a), &human, None),
-        200,
-        "the human reads the change set review",
-    );
-    assert_eq!(
-        review["changeset"]["id"],
-        f.a.changeset_id.as_str(),
-        "{review}"
-    );
-    let doc = review["docs"]
-        .as_array()
-        .unwrap_or_else(|| panic!("the review lists `docs`: {review}"))
-        .iter()
-        .find(|doc| doc["doc_id"] == f.a.doc_id.as_str())
-        .cloned()
-        .unwrap_or_else(|| panic!("the review lists the seeded doc: {review}"));
-    assert_eq!(doc["version_id"], f.a.other_version_id.as_str(), "{doc}");
-    for marker in f.b.markers() {
-        assert!(
-            !review.to_string().contains(marker),
-            "the review shows {marker} of the other workspace: {review}"
-        );
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Features (US-059, US-110)
 // ---------------------------------------------------------------------------

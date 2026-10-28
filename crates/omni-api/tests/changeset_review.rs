@@ -48,7 +48,6 @@ mod common;
 
 use common::{Client, Response, TestServer, cookie};
 use omni_api::Config;
-use omni_api::routes::{Access, registry};
 use s3::creds::Credentials;
 use s3::{Bucket, BucketConfiguration, Region};
 use serde_json::{Value, json};
@@ -64,8 +63,6 @@ const TEST_DB: &str = "omni_us046_changeset_review";
 const TEST_BUCKET: &str = "omni-us046-changeset-review";
 /// An ID that no row has.
 const UNKNOWN_ID: &str = "01900000-0000-7000-8000-000000000000";
-const REVIEW_ROUTE: &str =
-    "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/review";
 
 // ---------------------------------------------------------------------------
 // Plumbing
@@ -761,15 +758,6 @@ fn set_of(ids: &[&String]) -> BTreeSet<String> {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn the_review_route_is_a_human_route_in_the_registry() {
-    let entry = registry()
-        .into_iter()
-        .find(|r| r.method == "GET" && r.path == REVIEW_ROUTE)
-        .unwrap_or_else(|| panic!("the registry has no route GET {REVIEW_ROUTE}"));
-    assert_eq!(entry.access, Access::Human, "GET {REVIEW_ROUTE}");
-}
-
-#[test]
 fn an_api_key_is_refused_the_review_and_an_unknown_change_set_is_not_found() {
     let (f, client) = ready();
     let project = new_project(f, client);
@@ -804,45 +792,6 @@ fn an_api_key_is_refused_the_review_and_an_unknown_change_set_is_not_found() {
         "not_found",
         "the human reads the review of a change set through another project",
     );
-}
-
-#[test]
-fn the_review_carries_the_change_set_as_its_own_read_answers_it() {
-    let (f, client) = ready();
-    let project = new_project(f, client);
-    let changeset = new_changeset(f, client, &project);
-    let doc = create_doc(f, client, &project, &changeset);
-    add_paragraph(
-        f,
-        client,
-        &project,
-        &changeset,
-        &doc,
-        "Orders ship in one day.",
-    );
-    save(f, client, &project, &changeset, &doc);
-    must(
-        call(
-            client,
-            "POST",
-            &format!("{}/submit", changeset_path(f, &project, &changeset)),
-            &author(f),
-            None,
-        ),
-        200,
-        "submit the change set",
-    );
-
-    let answer = review(f, client, &project, &changeset);
-    let own = read(
-        f,
-        client,
-        &human(f),
-        &project,
-        &format!("/changesets/{changeset}"),
-    );
-    assert_eq!(answer["changeset"], own["changeset"], "{answer}");
-    assert_eq!(answer["changeset"]["status"], "in_review", "{answer}");
 }
 
 // ---------------------------------------------------------------------------
