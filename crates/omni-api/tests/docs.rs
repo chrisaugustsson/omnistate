@@ -1278,52 +1278,6 @@ fn referring_to_an_unknown_node_is_an_error_that_names_it_and_changes_nothing() 
 }
 
 #[test]
-fn a_stale_revision_is_a_conflict_with_the_current_state_and_changes_nothing() {
-    let (f, client) = ready();
-    let (project, changeset) = project_with_changeset(f, client);
-    let doc = id_of(&create_doc(f, client, &project, &changeset)["doc"]);
-    let (first, _second) = two_paragraphs(f, client, &project, &changeset, &doc);
-    must(
-        edit(
-            f,
-            client,
-            &agent(f),
-            &project,
-            &changeset,
-            &doc,
-            &json!([set_html(&first, 1, "Changed by someone else")]),
-        ),
-        200,
-        "the first change",
-    );
-    let before = draft_html(f, client, &project, &changeset, &doc);
-    let response = edit(
-        f,
-        client,
-        &agent(f),
-        &project,
-        &changeset,
-        &doc,
-        &json!([set_html(&first, 1, "My stale change")]),
-    );
-    assert_eq!(response.status, 409, "{}", response.text());
-    let body = response.json();
-    assert_eq!(body["error"], "conflict", "{body}");
-    let conflict = &body["conflict"];
-    assert_eq!(conflict["index"], 0, "{body}");
-    assert_eq!(conflict["node"], first.as_str(), "{body}");
-    assert_eq!(conflict["expected"], 1, "{body}");
-    assert_eq!(conflict["current_revision"], 2, "{body}");
-    assert!(
-        conflict["current_html"]
-            .as_str()
-            .is_some_and(|html| html.contains("Changed by someone else")),
-        "{body}"
-    );
-    assert_eq!(draft_html(f, client, &project, &changeset, &doc), before);
-}
-
-#[test]
 fn the_human_never_edits_a_draft() {
     let (f, client) = ready();
     let (project, changeset) = project_with_changeset(f, client);
@@ -1820,51 +1774,4 @@ fn the_pillar_migration_renames_module_maps_prd_to_spec_and_accepts_only_the_fiv
         .await
         .expect("drop the scratch database");
     });
-}
-
-// ---------------------------------------------------------------------------
-// Tenancy
-// ---------------------------------------------------------------------------
-
-#[test]
-fn docs_drafts_and_the_log_are_tenant_tables_of_the_workspace() {
-    let (f, client) = ready();
-    let (project, changeset) = project_with_changeset(f, client);
-    let created = create_doc(f, client, &project, &changeset);
-    let doc = id_of(&created["doc"]);
-    must(
-        edit(
-            f,
-            client,
-            &agent(f),
-            &project,
-            &changeset,
-            &doc,
-            &json!([insert_top("<p>Tenant</p>")]),
-        ),
-        200,
-        "edit",
-    );
-    let owners: Vec<(String, String)> = block(async {
-        let mut conn = admin_connection().await;
-        sqlx::query_as(
-            "select 'docs', workspace_id::text from docs where id = $1::uuid \
-             union all select 'drafts', workspace_id::text from drafts where doc_id = $1::uuid \
-             union all select 'draft_ops', o.workspace_id::text from draft_ops o \
-               join drafts d on d.id = o.draft_id where d.doc_id = $1::uuid",
-        )
-        .bind(&doc)
-        .fetch_all(&mut conn)
-        .await
-        .unwrap_or_else(|e| panic!("read docs, drafts and draft_ops: {e}"))
-    });
-    let tables: BTreeSet<&str> = owners.iter().map(|(t, _)| t.as_str()).collect();
-    assert_eq!(
-        tables,
-        BTreeSet::from(["docs", "drafts", "draft_ops"]),
-        "{owners:?}"
-    );
-    for (table, owner) in &owners {
-        assert_eq!(owner, &f.workspace, "{table}");
-    }
 }

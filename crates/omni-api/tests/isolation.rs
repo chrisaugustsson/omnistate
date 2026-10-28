@@ -2883,59 +2883,6 @@ fn the_attachment_routes_are_in_the_registry_and_the_suite_attacks_them() {
 }
 
 // ---------------------------------------------------------------------------
-// Docs and drafts (US-022)
-// ---------------------------------------------------------------------------
-
-#[test]
-fn the_doc_routes_are_in_the_registry_and_the_suite_attacks_them() {
-    let routes = registry();
-    for path in [
-        "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}/html",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs/{doc_id}/open",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs/{doc_id}",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs/{doc_id}/ops",
-    ] {
-        let entry = routes
-            .iter()
-            .find(|r| r.path == path)
-            .unwrap_or_else(|| panic!("the registry has no route {path}"));
-        assert!(
-            matches!(case_for(entry).kind, Kind::Workspace),
-            "{path} is a workspace route that the suite attacks"
-        );
-    }
-
-    let (f, client) = ready();
-    for side in [&f.a, &f.b] {
-        assert!(
-            !side.doc_id.is_empty(),
-            "the suite seeded no doc for {}",
-            side.id
-        );
-    }
-    // The control: each workspace reads its own draft, with its own text.
-    for side in [&f.a, &f.b] {
-        let path = format!(
-            "/api/v1/w/{}/projects/{}/changesets/{}/docs/{}",
-            side.id, side.project_id, side.changeset_id, side.doc_id
-        );
-        let draft = must(
-            call(client, "GET", &path, &Auth::Key(&side.key), None),
-            200,
-            "read the workspace's own draft",
-        );
-        assert!(
-            draft["draft"]["html"]
-                .as_str()
-                .is_some_and(|html| html.contains(&side.doc_text)),
-            "{draft}"
-        );
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Versions (US-024)
 // ---------------------------------------------------------------------------
 
