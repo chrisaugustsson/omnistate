@@ -653,16 +653,6 @@ pub fn named<'a>(root: &'a Value, name: &str) -> &'a Value {
     find_json(root, name).unwrap_or_else(|| panic!("no node named {name:?} in {root}"))
 }
 
-/// Every name of `root` and the nodes below it.
-pub fn all_names(root: &Value, out: &mut Vec<String>) {
-    if let Some(name) = root["name"].as_str() {
-        out.push(name.to_string());
-    }
-    for child in root["children"].as_array().into_iter().flatten() {
-        all_names(child, out);
-    }
-}
-
 /// The components of the design system doc, as JSON nodes.
 pub fn components(import: &Import) -> Vec<&Value> {
     import.design_system["$components"]

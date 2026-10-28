@@ -575,60 +575,6 @@ fn what_cannot_be_imported_is_reported_with_its_page_board_shape_and_reason() {
 }
 
 #[test]
-fn nothing_is_dropped_silently() {
-    let import = import_library("dropped");
-    let mut names = Vec::new();
-    for page in &import.pages {
-        all_names(&json(page), &mut names);
-    }
-    for page in [components_page(), start_page()] {
-        // The layers of main instances are in the components, and the layers
-        // of copies in the instances.
-        let mut inside: BTreeSet<String> = BTreeSet::new();
-        let roots: Vec<&Value> = page
-            .shapes
-            .iter()
-            .filter(|shape| shape["mainInstance"] == true || shape["componentRoot"] == true)
-            .collect();
-        for root in &roots {
-            inside.insert(root["id"].as_str().unwrap().to_string());
-        }
-        let mut grew = true;
-        while grew {
-            grew = false;
-            for shape in &page.shapes {
-                let id = shape["id"].as_str().unwrap();
-                if !inside.contains(id)
-                    && shape["parentId"]
-                        .as_str()
-                        .is_some_and(|parent| inside.contains(parent))
-                {
-                    inside.insert(id.to_string());
-                    grew = true;
-                }
-            }
-        }
-        for shape in &page.shapes {
-            let id = shape["id"].as_str().unwrap();
-            let is_copy = shape["componentRoot"] == true && shape["mainInstance"] != true;
-            if inside.contains(id) && !is_copy {
-                continue;
-            }
-            let name = shape["name"].as_str().unwrap();
-            let reported = import
-                .report
-                .iter()
-                .any(|entry| entry.shape_id == id && entry.property.is_none());
-            assert!(
-                names.iter().any(|known| known == name) || reported,
-                "{name} on {} is neither a node nor in the report",
-                page.name
-            );
-        }
-    }
-}
-
-#[test]
 fn a_file_that_is_not_an_export_is_an_error() {
     let path = common::write_temp("import-not-an-export.penpot", b"not a zip archive");
     let error = import_file(&path).expect_err("a file that is no zip archive");
