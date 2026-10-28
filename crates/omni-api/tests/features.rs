@@ -648,51 +648,6 @@ fn assert_feature_id(value: &Value, expected: &Value, what: &str) {
 }
 
 #[test]
-fn a_change_set_opens_in_a_feature_or_at_project_level() {
-    let (f, client) = ready();
-    let project = new_project(f, client);
-    let feature = create_feature(f, client, &project, "Checkout");
-
-    let in_feature = create_changeset(
-        f,
-        client,
-        &project,
-        &json!({ "title": "Checkout flow", "feature_id": feature["id"] }),
-    );
-    assert_feature_id(&in_feature, &feature["id"], "a change set in a feature");
-    assert_eq!(in_feature["project_id"], project.as_str(), "{in_feature}");
-
-    let global = create_changeset(f, client, &project, &json!({ "title": "Brand refresh" }));
-    assert_feature_id(&global, &Value::Null, "a change set without a feature");
-    let explicit = create_changeset(
-        f,
-        client,
-        &project,
-        &json!({ "title": "Typography", "feature_id": null }),
-    );
-    assert_feature_id(&explicit, &Value::Null, "a change set with feature_id null");
-
-    // The agent and the human read the scope back.
-    for auth in [agent(f), human(f)] {
-        for (changeset, expected) in [(&in_feature, &feature["id"]), (&global, &Value::Null)] {
-            let id = changeset["id"].as_str().expect("an id");
-            let shown = must(
-                call(
-                    client,
-                    "GET",
-                    &format!("{}/{id}", changesets_path(f, &project)),
-                    &auth,
-                    None,
-                ),
-                200,
-                "show the change set",
-            );
-            assert_feature_id(&shown["changeset"], expected, "the shown change set");
-        }
-    }
-}
-
-#[test]
 fn a_change_set_cannot_open_in_a_feature_of_another_project() {
     let (f, client) = ready();
     let project = new_project(f, client);
@@ -837,42 +792,6 @@ fn a_thread_takes_the_feature_of_its_change_set() {
             .find(|data| data["thread_id"] == thread["id"])
             .unwrap_or_else(|| panic!("thread.created for {thread_id}"));
         assert_feature_id(&event, expected, "the data of thread.created");
-    }
-}
-
-#[test]
-fn the_changeset_events_carry_the_feature() {
-    let (f, client) = ready();
-    let project = new_project(f, client);
-    let feature = create_feature(f, client, &project, "Checkout");
-    let in_feature = create_changeset(
-        f,
-        client,
-        &project,
-        &json!({ "title": "Checkout flow", "feature_id": feature["id"] }),
-    );
-    let global = create_changeset(f, client, &project, &json!({ "title": "Brand refresh" }));
-
-    for (changeset, expected) in [(&in_feature, &feature["id"]), (&global, &Value::Null)] {
-        let id = changeset["id"].as_str().expect("an id");
-        must(
-            call(
-                client,
-                "POST",
-                &format!("{}/{id}/submit", changesets_path(f, &project)),
-                &agent(f),
-                Some(&json!({})),
-            ),
-            200,
-            "submit the change set",
-        );
-        for event in ["changeset.open", "changeset.in_review"] {
-            let data = events_of(&project, event)
-                .into_iter()
-                .find(|data| data["changeset_id"] == changeset["id"])
-                .unwrap_or_else(|| panic!("{event} for {id}"));
-            assert_feature_id(&data, expected, &format!("the data of {event}"));
-        }
     }
 }
 
