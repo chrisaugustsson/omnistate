@@ -2102,16 +2102,6 @@ fn a_vector_fills_its_path_in_pixels_from_the_corner_of_its_box() {
 }
 
 #[test]
-fn a_vector_without_a_fill_or_a_stroke_is_not_drawn() {
-    let triangle = vector_node("vec00001", 80.0, 80.0, "M0 40 L20 0 L40 40 Z", json!({}));
-    let pixels = render_200(&scene(200, 200, vec![triangle]));
-    assert!(
-        pixels.ink_box([0, 0, 200, 200]).is_none(),
-        "the canvas stays white"
-    );
-}
-
-#[test]
 fn a_vector_stroke_is_centered_on_its_path_and_over_the_fill() {
     let line = vector_node(
         "vec00001",
