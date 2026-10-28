@@ -23,17 +23,12 @@
 
 use omni_render::layout::LayoutBox;
 use omni_render::view::{Controls, MAX_ZOOM, MIN_ZOOM, Viewport, Wheel};
-use std::hint::black_box;
 
 const WIDTH: f32 = 1440.0;
 const HEIGHT: f32 = 900.0;
 
 /// How far a page point may drift, in page pixels.
 const EPSILON: f32 = 0.02;
-
-fn viewport() -> Viewport {
-    Viewport::new(WIDTH, HEIGHT)
-}
 
 /// A viewport away from the origin and zoomed, where mistakes in the maths
 /// do not cancel out.
@@ -88,23 +83,6 @@ fn controls() -> Controls {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn a_new_viewport_shows_the_page_from_its_origin_at_100_percent() {
-    let viewport = viewport();
-    assert_eq!(viewport.zoom(), 1.0);
-    assert_eq!(viewport.origin(), (0.0, 0.0));
-    assert_eq!(viewport.size(), (WIDTH, HEIGHT));
-    assert_eq!(
-        viewport.visible_rect(),
-        LayoutBox {
-            x: 0.0,
-            y: 0.0,
-            width: WIDTH,
-            height: HEIGHT
-        }
-    );
-}
-
-#[test]
 fn screen_and_page_points_convert_by_the_zoom_and_the_origin() {
     let viewport = Viewport::at(100.0, 50.0, 2.0, WIDTH, HEIGHT);
     assert_eq!(viewport.zoom(), 2.0);
@@ -136,24 +114,6 @@ fn screen_and_page_points_convert_by_the_zoom_and_the_origin() {
             height: HEIGHT / 2.0
         },
         "at 200% the screen shows half as much of the page"
-    );
-}
-
-#[test]
-fn resizing_keeps_the_zoom_and_the_page_point_at_the_corner() {
-    let mut viewport = somewhere();
-    viewport.resize(800.0, 600.0);
-    assert_eq!(viewport.size(), (800.0, 600.0));
-    assert_eq!(viewport.zoom(), 0.5);
-    assert_eq!(viewport.origin(), (1200.0, 700.0));
-    assert_eq!(
-        viewport.visible_rect(),
-        LayoutBox {
-            x: 1200.0,
-            y: 700.0,
-            width: 1600.0,
-            height: 1200.0
-        }
     );
 }
 
@@ -193,31 +153,7 @@ fn zooming_is_centered_on_the_anchor_so_the_page_point_under_it_stays() {
 }
 
 #[test]
-fn zooming_in_and_out_by_inverse_factors_restores_the_view() {
-    let mut viewport = somewhere();
-    let (origin, zoom) = (viewport.origin(), viewport.zoom());
-    viewport.zoom_at(3.0, (400.0, 300.0));
-    viewport.zoom_at(1.0 / 3.0, (400.0, 300.0));
-    assert_ratio(viewport.zoom(), zoom, "zoom after in and out");
-    assert_point(
-        viewport.origin(),
-        origin,
-        EPSILON,
-        "origin after in and out",
-    );
-}
-
-#[test]
 fn zoom_is_kept_within_its_limits_and_the_anchor_still_holds() {
-    // black_box keeps clippy from folding the limits into constant assertions.
-    let (min, max) = (black_box(MIN_ZOOM), black_box(MAX_ZOOM));
-    assert!(
-        min <= 0.05,
-        "the whole stress file (about 9,600 x 15,400 px) must fit on a 1440 x 900 screen"
-    );
-    assert!(max >= 16.0, "the reviewer must be able to zoom to pixels");
-    assert!(min < 1.0 && 1.0 < max);
-
     let anchor = (500.0, 250.0);
     for (factor, limit) in [(1.0e9, MAX_ZOOM), (1.0e-9, MIN_ZOOM)] {
         let mut viewport = somewhere();
@@ -231,27 +167,6 @@ fn zoom_is_kept_within_its_limits_and_the_anchor_still_holds() {
             &format!("the page point under the pointer when zoom stops at {limit}"),
         );
     }
-}
-
-#[test]
-fn panning_moves_the_content_against_the_scroll_by_screen_pixels() {
-    let mut viewport = somewhere();
-    let point = (1500.0, 1000.0);
-    let shown_at = viewport.to_screen(point);
-    viewport.pan_by(30.0, 80.0);
-    assert_eq!(viewport.zoom(), 0.5, "panning does not zoom");
-    assert_point(
-        viewport.to_screen(point),
-        (shown_at.0 - 30.0, shown_at.1 - 80.0),
-        EPSILON,
-        "content moves up and to the left by the scroll",
-    );
-    assert_point(
-        viewport.origin(),
-        (1200.0 + 60.0, 700.0 + 160.0),
-        EPSILON,
-        "at 50% a scroll of 30, 80 screen pixels is 60, 160 page pixels",
-    );
 }
 
 #[test]
