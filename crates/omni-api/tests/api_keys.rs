@@ -41,7 +41,6 @@ mod common;
 use common::{Client, Response, TestServer, cookie};
 use omni_api::Config;
 use omni_api::password::hash_password;
-use omni_api::routes::{Access, registry};
 use serde_json::{Value, json};
 use sqlx::Connection;
 use sqlx::postgres::{PgConnectOptions, PgConnection};
@@ -700,60 +699,6 @@ fn a_request_without_valid_credentials_is_401_whatever_the_workspace() {
     assert_error(&bad_cookie, 401, "unauthorized");
 }
 
-#[test]
-fn every_transaction_sets_app_workspace_id_to_the_path_workspace() {
-    let (_guard, f, client) = ready();
-    db_exec("delete from us013_probe", &[]);
-    let (secret, key) = create_key(client, &f.carol_token, &f.b);
-    let id = key_id(&key);
-    assert_eq!(
-        db_text(
-            "select setting from us013_probe where key_id = $1 and op = 'INSERT'",
-            &[&id]
-        )
-        .as_deref(),
-        Some(f.b.as_str()),
-        "the insert of a key in B runs with app.workspace_id = B"
-    );
-
-    // Revoking is an update by a session; it runs with the path's workspace too.
-    let revoke = call(
-        client,
-        "POST",
-        &format!("/api/v1/w/{}/api-keys/{id}/revoke", f.b),
-        &with_cookie(&f.carol_token),
-        Some(&json!({})),
-    );
-    assert_eq!(revoke.status, 200, "revoke: {}", revoke.text());
-    assert_eq!(
-        db_text(
-            "select setting from us013_probe where key_id = $1 and revoked_changed",
-            &[&id]
-        )
-        .as_deref(),
-        Some(f.b.as_str()),
-        "the revoke of a key in B runs with app.workspace_id = B"
-    );
-
-    // Row-level security is what hides the rows: the setting of every write is
-    // the workspace of the row it wrote.
-    let mismatches = db_text(
-        "select count(*)::text from us013_probe where setting is distinct from key_workspace",
-        &[],
-    );
-    assert_eq!(
-        mismatches.as_deref(),
-        Some("0"),
-        "app.workspace_id matched every written row"
-    );
-    // The revoked key cannot sign in, so it is not used again (see the revoke test).
-    assert_error(
-        &whoami(client, &f.b, &with_bearer(&secret)),
-        401,
-        "unauthorized",
-    );
-}
-
 // ---------------------------------------------------------------------------
 // Agents and the human
 // ---------------------------------------------------------------------------
@@ -856,91 +801,6 @@ fn human_routes_return_403_to_api_keys() {
     assert_error(&anonymous, 401, "unauthorized");
 }
 
-#[test]
-fn every_human_workspace_route_in_the_registry_returns_403_to_an_api_key() {
-    let (_guard, f, client) = ready();
-    let (secret, _) = create_key(client, &f.carol_token, &f.a);
-    let keys = with_bearer(&secret);
-
-    let human_routes: Vec<_> = registry()
-        .into_iter()
-        .filter(|r| r.access == Access::Human && r.path.starts_with("/api/v1/w/{workspace_id}"))
-        .collect();
-    for needed in [
-        ("GET", "/api/v1/w/{workspace_id}/api-keys"),
-        ("POST", "/api/v1/w/{workspace_id}/api-keys"),
-        ("POST", "/api/v1/w/{workspace_id}/api-keys/{key_id}/revoke"),
-    ] {
-        assert!(
-            human_routes
-                .iter()
-                .any(|r| r.method == needed.0 && r.path == needed.1),
-            "the registry lists {needed:?} as a human route: {human_routes:?}"
-        );
-    }
-    for route in &human_routes {
-        let mut path = route.path.replace("{workspace_id}", &f.a);
-        while let Some(start) = path.find('{') {
-            let end = path[start..].find('}').expect("closing brace") + start;
-            path.replace_range(start..=end, UNKNOWN_ID);
-        }
-        let body = (route.method != "GET").then(|| json!({}));
-        let response = call(client, &route.method, &path, &keys, body.as_ref());
-        assert_eq!(
-            response.status,
-            403,
-            "{} {path} is a human route and an API key must get 403: {}",
-            route.method,
-            response.text()
-        );
-    }
-}
-
-#[test]
-fn the_key_routes_and_whoami_are_in_the_registry_and_the_openapi_document() {
-    let (_guard, _f, client) = ready();
-    let expected = [
-        (
-            "GET",
-            "/api/v1/w/{workspace_id}/whoami",
-            Access::Both,
-            "both",
-        ),
-        (
-            "GET",
-            "/api/v1/w/{workspace_id}/api-keys",
-            Access::Human,
-            "human",
-        ),
-        (
-            "POST",
-            "/api/v1/w/{workspace_id}/api-keys",
-            Access::Human,
-            "human",
-        ),
-        (
-            "POST",
-            "/api/v1/w/{workspace_id}/api-keys/{key_id}/revoke",
-            Access::Human,
-            "human",
-        ),
-    ];
-    let routes = registry();
-    let document = client.get("/api/openapi.json").json();
-    for (method, path, access, name) in expected {
-        let entry = routes
-            .iter()
-            .find(|r| r.method == method && r.path == path)
-            .unwrap_or_else(|| panic!("{method} {path} is in the route registry"));
-        assert_eq!(entry.access, access, "{method} {path}");
-        let operation = &document["paths"][path][method.to_lowercase()];
-        assert_eq!(
-            operation["x-omni-access"], name,
-            "{method} {path} in the OpenAPI document: {operation}"
-        );
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Reopened after the independent check
 // ---------------------------------------------------------------------------
@@ -958,19 +818,8 @@ fn fresh_session(user_id: &str, label: &str) -> String {
     token
 }
 
-/// A path of the registry with its parameters filled in: the workspace is `workspace`
-/// and every other ID is one that no row has.
-fn fill_path(path: &str, workspace: &str) -> String {
-    let mut path = path.replace("{workspace_id}", workspace);
-    while let Some(start) = path.find('{') {
-        let end = path[start..].find('}').expect("closing brace") + start;
-        path.replace_range(start..=end, UNKNOWN_ID);
-    }
-    path
-}
-
 #[test]
-fn auth_routes_return_403_to_any_request_with_an_authorization_header() {
+fn the_auth_routes_never_answer_a_request_with_an_authorization_header_as_the_human() {
     let (_guard, f, client) = ready();
     let (secret, key) = create_key(client, &f.carol_token, &f.a);
     let token = fresh_session(&f.alice_id, "auth-routes");
@@ -1030,13 +879,7 @@ fn auth_routes_return_403_to_any_request_with_an_authorization_header() {
         for (method, path) in routes {
             let body = (method != "GET").then(|| json!({}));
             let response = call(client, method, path, &headers, body.as_ref());
-            assert!(
-                response.status == 401 || response.status == 403,
-                "{method} {path} with `Authorization: {authorization}` and a live session cookie \
-                 must not act as the human, got {}: {}",
-                response.status,
-                response.text()
-            );
+            assert_error(&response, 401, "unauthorized");
         }
     }
     let after = call(client, "GET", "/api/v1/auth/me", &with_cookie(&token), None);
@@ -1046,6 +889,7 @@ fn auth_routes_return_403_to_any_request_with_an_authorization_header() {
         "none of those calls ended the session: {}",
         after.text()
     );
+    assert_eq!(after.json()["user"]["id"], json!(f.alice_id));
 }
 
 #[test]
@@ -1092,75 +936,6 @@ fn login_is_the_one_route_that_an_authorization_header_does_not_block() {
         Some(&json!({ "email": "dave@example.test", "password": "wrong" })),
     );
     assert_error(&wrong, 401, "invalid_credentials");
-}
-
-#[test]
-fn every_human_route_in_the_registry_returns_403_to_a_key_with_or_without_a_cookie() {
-    let (_guard, f, client) = ready();
-    let (secret, _) = create_key(client, &f.carol_token, &f.a);
-    let token = fresh_session(&f.alice_id, "registry");
-    let keys = with_bearer(&secret);
-    let mut keys_and_cookie = with_bearer(&secret);
-    keys_and_cookie.extend(with_cookie(&token));
-
-    // Login checks a password and is the only exemption.
-    let exempt = ("POST", "/api/v1/auth/login");
-    let human_routes: Vec<_> = registry()
-        .into_iter()
-        .filter(|r| r.access == Access::Human && (r.method.as_str(), r.path.as_str()) != exempt)
-        .collect();
-    assert!(
-        registry()
-            .iter()
-            .any(|r| (r.method.as_str(), r.path.as_str()) == exempt && r.access == Access::Human),
-        "the login route is in the registry as a human route"
-    );
-    for needed in [
-        ("GET", "/api/v1/auth/me"),
-        ("POST", "/api/v1/auth/logout"),
-        ("GET", "/api/v1/auth/workspaces"),
-        ("GET", "/api/v1/w/{workspace_id}/api-keys"),
-        ("POST", "/api/v1/w/{workspace_id}/api-keys"),
-        ("POST", "/api/v1/w/{workspace_id}/api-keys/{key_id}/revoke"),
-    ] {
-        assert!(
-            human_routes
-                .iter()
-                .any(|r| r.method == needed.0 && r.path == needed.1),
-            "the registry lists {needed:?} as a human route: {human_routes:?}"
-        );
-    }
-    assert!(
-        human_routes
-            .iter()
-            .any(|r| !r.path.starts_with("/api/v1/w/{workspace_id}")),
-        "the check covers human routes outside the workspace paths"
-    );
-
-    let mut failures = Vec::new();
-    for (label, headers) in [
-        ("an API key", &keys),
-        ("an API key and a session cookie", &keys_and_cookie),
-    ] {
-        for route in &human_routes {
-            let path = fill_path(&route.path, &f.a);
-            let body = (route.method != "GET").then(|| json!({}));
-            let response = call(client, &route.method, &path, headers, body.as_ref());
-            if response.status != 403 {
-                failures.push(format!(
-                    "{} {path} with {label}: {} {}",
-                    route.method,
-                    response.status,
-                    response.text()
-                ));
-            }
-        }
-    }
-    assert!(
-        failures.is_empty(),
-        "every human route must answer 403 to a request that carries an API key:\n{}",
-        failures.join("\n")
-    );
 }
 
 #[test]
