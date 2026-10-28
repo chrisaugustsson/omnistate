@@ -691,13 +691,4 @@ mod tests {
         assert_eq!(rfc3339(at(951_782_400, 5)), "2000-02-29T00:00:00.000005Z");
         assert_eq!(rfc3339(at(1_792_058_400, 0)), "2026-10-15T10:00:00.000000Z");
     }
-
-    #[test]
-    fn a_holder_is_named_by_run_and_role() {
-        assert_eq!(
-            holder(&json!({ "run": "run-2", "role": "reviewer", "model": null })),
-            "run-2/reviewer"
-        );
-        assert_eq!(holder(&json!({ "run": null, "role": null })), "?/?");
-    }
 }

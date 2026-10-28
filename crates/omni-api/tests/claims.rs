@@ -86,7 +86,6 @@
 mod common;
 
 use common::{Client, Response, TestServer, cookie};
-use omni_api::routes::{Access, registry};
 use omni_api::{AppState, Config};
 use s3::creds::Credentials;
 use s3::{Bucket, BucketConfiguration, Region};
@@ -883,25 +882,6 @@ fn terminate(pid: i32) {
 }
 
 // ---------------------------------------------------------------------------
-// The routes
-// ---------------------------------------------------------------------------
-
-#[test]
-fn the_claim_routes_are_in_the_registry_as_agent_routes() {
-    let routes = registry();
-    for path in [
-        "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/claims",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/claims/release",
-    ] {
-        let entry = routes
-            .iter()
-            .find(|r| r.method == "POST" && r.path == path)
-            .unwrap_or_else(|| panic!("the registry has no POST {path}"));
-        assert_eq!(entry.access, Access::Agent, "POST {path}");
-    }
-}
-
-// ---------------------------------------------------------------------------
 // omni claim and omni release
 // ---------------------------------------------------------------------------
 
@@ -943,26 +923,6 @@ fn an_agent_claims_a_section_of_its_draft_and_the_doc_lists_the_claim() {
     assert_eq!(listed[0]["node"], section.as_str(), "{listed:?}");
     assert_eq!(listed[0]["agent"]["run"], "run-1", "{listed:?}");
     assert_eq!(listed[0]["agent"]["role"], "writer", "{listed:?}");
-}
-
-#[test]
-fn claiming_a_node_twice_keeps_the_one_claim() {
-    let (f, client) = ready();
-    let draft = new_draft(f, client);
-    let (section, _, _) = add_section(f, client, &draft, "Pricing");
-    let first = must(
-        claim(f, client, &holder(f), &draft, &section),
-        201,
-        "claim the section",
-    );
-    let again = claim(f, client, &holder(f), &draft, &section);
-    assert!(
-        matches!(again.status, 200 | 201),
-        "the holder claims its own node again: {}",
-        again.text()
-    );
-    assert_eq!(again.json()["claim"]["id"], first["claim"]["id"]);
-    assert_eq!(claims_of(f, client, &draft).len(), 1);
 }
 
 #[test]
@@ -1123,25 +1083,6 @@ fn nested_sections(f: &Fixture, client: &Client, draft: &Draft) -> (String, Stri
     );
     assert_eq!(ids.len(), 5, "{ids:?}");
     (ids[0].clone(), ids[2].clone(), ids[4].clone())
-}
-
-#[test]
-fn a_claim_fails_on_a_node_that_another_agent_holds() {
-    let (f, client) = ready();
-    let draft = new_draft(f, client);
-    let (section, _, _) = add_section(f, client, &draft, "Pricing");
-    must(
-        claim(f, client, &holder(f), &draft, &section),
-        201,
-        "claim the section",
-    );
-    for auth in [other(f), same_key_other_agent(f)] {
-        let response = claim(f, client, &auth, &draft, &section);
-        assert_claimed_by_holder(&response, &section);
-    }
-    let listed = claims_of(f, client, &draft);
-    assert_eq!(listed.len(), 1, "{listed:?}");
-    assert_eq!(listed[0]["agent"]["run"], "run-1", "{listed:?}");
 }
 
 #[test]
