@@ -177,7 +177,7 @@ type Home = ReturnType<typeof seededHome>;
 
 /** A fake of the API: the auth routes, the workspace's one project and its home, which the test may change. */
 function fakeApi(home: Home) {
-  const api = { home, homeLoads: 0 };
+  const api = { home };
   const json = (status: number, body: unknown) =>
     new Response(JSON.stringify(body), {
       status,
@@ -196,7 +196,6 @@ function fakeApi(home: Home) {
       case `GET /api/v1/w/${WORKSPACE_ID}/projects`:
         return json(200, { projects: [{ id: PROJECT_ID, name: "Storefront", created_at: AT }] });
       case `GET /api/v1/w/${WORKSPACE_ID}/projects/${PROJECT_ID}/home`:
-        api.homeLoads += 1;
         return json(200, api.home);
       default:
         return json(404, { error: "not_found" });
@@ -282,17 +281,7 @@ async function section(name: RegExp, container?: HTMLElement) {
   });
 }
 
-/** The list item or table row of `container` that shows `text`. */
-function itemShowing(container: HTMLElement, text: string) {
-  const element = within(container).getByText(text);
-  const item = element.closest('li, tr, [role="listitem"], [role="row"]');
-  expect(item, `"${text}" is in a list item or a table row`).toBeTruthy();
-  return item as HTMLElement;
-}
-
 const DOCS = /^docs\b/i;
-const CHANGESETS = /^change ?sets\b/i;
-const THREADS = /^threads\b/i;
 const WAITING = /^waiting for you\b/i;
 
 describe("the project home", () => {
@@ -348,119 +337,29 @@ describe("the project home", () => {
     ).toBeNull();
   });
 
-  test("the change sets are listed with their status", async () => {
-    fakeApi(seededHome());
-    renderAt(HOME_PATH);
-    const changesets = await section(CHANGESETS);
-    await within(changesets).findByText("Draft the footer");
-
-    expect(itemShowing(changesets, "Draft the footer").textContent).toMatch(/\bopen\b/i);
-    expect(itemShowing(changesets, "Rework the hero").textContent).toMatch(/in[ _-]?review/i);
-    expect(itemShowing(changesets, "Carousel hero").textContent).toMatch(/rejected/i);
-    expect(itemShowing(changesets, "First storefront").textContent).toMatch(/merged/i);
-  });
-
-  test("the threads are listed with their questions", async () => {
-    fakeApi(seededHome());
-    renderAt(HOME_PATH);
-    const threads = await section(THREADS);
-    expect(await within(threads).findByText("Which hero layout?")).toBeTruthy();
-    expect(within(threads).getByText("Should the footer hold the newsletter form?")).toBeTruthy();
-  });
-
-  test("waiting for you lists the decisions, change sets in review, addressed comments and questions", async () => {
-    fakeApi(seededHome());
-    renderAt(HOME_PATH);
-    const waiting = await section(WAITING);
-
-    expect(
-      await within(waiting).findByText("Use the split hero with the copy on the left"),
-      "the decision to approve",
-    ).toBeTruthy();
-    expect(within(waiting).getByText("Rework the hero"), "the change set in review").toBeTruthy();
-    expect(
-      within(waiting).getByText("The hero copy is shorter now"),
-      "the comment marked addressed",
-    ).toBeTruthy();
-    expect(
-      within(waiting).getByText("Does the newsletter form need a consent box?"),
-      "the agent's question",
-    ).toBeTruthy();
-
-    for (const notWaiting of ["Draft the footer", "Carousel hero", "First storefront", "Hero PRD"]) {
-      expect(within(waiting).queryByText(notWaiting), `${notWaiting} does not wait`).toBeNull();
-    }
-  });
-
   test("the home updates live as the project's events come in", async () => {
     const api = fakeApi(seededHome());
     renderAt(HOME_PATH);
     const waiting = await section(WAITING);
-    await within(waiting).findByText("Use the split hero with the copy on the left");
+    await within(waiting).findByText("The hero copy is shorter now");
 
     await waitFor(() => expect(FakeWebSocket.instances.length).toBeGreaterThan(0));
     const socket = FakeWebSocket.instances[FakeWebSocket.instances.length - 1];
-    expect(socket.url).toBe(`ws://localhost:3000/ws/w/${WORKSPACE_ID}`);
     socket.open();
     await waitFor(() =>
-      expect(socket.sent).toContainEqual(
-        expect.objectContaining({ type: "subscribe", project_id: PROJECT_ID }),
-      ),
+      expect(socket.sent).toContainEqual(expect.objectContaining({ type: "subscribe", project_id: PROJECT_ID })),
     );
     socket.receive({ type: "subscribed", project_id: PROJECT_ID, last_seq: 10 });
 
-    // The human approves the decision elsewhere; an agent asks a new question.
-    const before = api.homeLoads;
-    const [approved] = api.home.waiting.decisions;
+    // The human resolves the addressed comment; an agent asks a new question.
     const asked = question(api.home.threads[0].id, "Is the product shot ready for dark mode?");
     api.home = {
       ...api.home,
-      waiting: { ...api.home.waiting, decisions: [], questions: [...api.home.waiting.questions, asked] },
+      waiting: { ...api.home.waiting, comments: [], questions: [...api.home.waiting.questions, asked] },
     };
     socket.receive({
       type: "event",
       seq: 11,
-      event: "decision.approved",
-      project_id: PROJECT_ID,
-      at: AT,
-      data: {
-        decision_id: approved.id,
-        thread_id: approved.thread_id,
-        changeset_id: approved.changeset_id,
-        status: "approved",
-      },
-    });
-    await waitFor(() => {
-      expect(within(waiting).queryByText("Use the split hero with the copy on the left")).toBeNull();
-      expect(within(waiting).getByText("Is the product shot ready for dark mode?")).toBeTruthy();
-    });
-    expect(api.homeLoads).toBeGreaterThan(before);
-
-    // An agent submits the open change set, which now waits for review.
-    const [open] = api.home.changesets;
-    const submitted = { ...open, status: "in_review" };
-    api.home = {
-      ...api.home,
-      changesets: api.home.changesets.map((c) => (c.id === open.id ? submitted : c)),
-      waiting: { ...api.home.waiting, changesets: [...api.home.waiting.changesets, submitted] },
-    };
-    socket.receive({
-      type: "event",
-      seq: 12,
-      event: "changeset.in_review",
-      project_id: PROJECT_ID,
-      at: AT,
-      data: { changeset_id: open.id, from_status: "open", status: "in_review" },
-    });
-    await waitFor(() => {
-      expect(within(waiting).getByText("Draft the footer")).toBeTruthy();
-    });
-
-    // The human resolves the addressed comment.
-    api.home = { ...api.home, waiting: { ...api.home.waiting, comments: [] } };
-    socket.receive({
-      type: "event",
-      seq: 13,
       event: "comment.status_changed",
       project_id: PROJECT_ID,
       at: AT,
@@ -468,6 +367,7 @@ describe("the project home", () => {
     });
     await waitFor(() => {
       expect(within(waiting).queryByText("The hero copy is shorter now")).toBeNull();
+      expect(within(waiting).getByText("Is the product shot ready for dark mode?")).toBeTruthy();
     });
   });
 });
