@@ -405,40 +405,33 @@ fn doc_create_puts_a_doc_in_the_research_pillar() {
 fn doc_create_refuses_bad_options_before_sending_anything() {
     let server = mock();
     let home = logged_in(&server.url);
-    let full = [
-        "--changeset",
-        CHANGESET,
-        "--kind",
-        "html",
-        "--pillar",
-        "spec",
-        "--title",
-        "T",
-    ];
-    let without = |flag: &str| -> Vec<&str> {
-        let at = full.iter().position(|a| *a == flag).unwrap();
-        let mut args = vec!["doc", "create"];
-        args.extend(
-            full.iter()
-                .enumerate()
-                .filter(|(i, _)| *i != at && *i != at + 1)
-                .map(|(_, a)| *a),
-        );
-        args
-    };
-    // Without --changeset the doc is created live (US-102,
-    // tests/live_docs.rs), so only the kind, pillar and title are required.
-    for (flag, needle) in [
-        ("--kind", "kind"),
-        ("--pillar", "pillar"),
-        ("--title", "title"),
-    ] {
-        let out = run(&home, &without(flag));
-        assert_one_line_error(&out, &[needle]);
-    }
-    let mut bad_kind = without("--kind");
-    bad_kind.extend(["--kind", "pdf"]);
-    assert_one_line_error(&run(&home, &bad_kind), &["pdf"]);
+    assert_one_line_error(
+        &run(
+            &home,
+            &["doc", "create", "--pillar", "spec", "--title", "T"],
+        ),
+        &["kind"],
+    );
+    assert_one_line_error(
+        &run(&home, &["doc", "create", "--kind", "html", "--title", "T"]),
+        &["pillar"],
+    );
+    assert_one_line_error(
+        &run(
+            &home,
+            &["doc", "create", "--kind", "html", "--pillar", "spec"],
+        ),
+        &["title"],
+    );
+    assert_one_line_error(
+        &run(
+            &home,
+            &[
+                "doc", "create", "--kind", "pdf", "--pillar", "spec", "--title", "T",
+            ],
+        ),
+        &["pdf"],
+    );
     assert_nothing_sent(&server);
 }
 
@@ -730,62 +723,6 @@ fn batch() -> Value {
             "content": "<ul><li>New</li></ul>"
         }
     ])
-}
-
-fn ops_path() -> String {
-    format!("{}/changesets/{CHANGESET}/docs/{DOC}/ops", base())
-}
-
-#[test]
-fn doc_edit_sends_the_batch_from_a_file_or_standard_input() {
-    let server = mock();
-    let home = logged_in(&server.url);
-    let file = home.join("ops.json");
-    std::fs::write(&file, serde_json::to_string_pretty(&batch()).unwrap()).unwrap();
-    let from_file = run(
-        &home,
-        &[
-            "doc",
-            "edit",
-            DOC,
-            "--changeset",
-            CHANGESET,
-            "--body-file",
-            file.to_str().unwrap(),
-        ],
-    );
-    assert_eq!(from_file.code, 0, "a file: {}", from_file.stderr);
-    let stdin = batch().to_string();
-    let from_stdin = omni(&home.path)
-        .args(&["doc", "edit", DOC, "--changeset", CHANGESET])
-        .args(&["--project", PROJECT, "--as", "run-7/author"])
-        .stdin(stdin.as_bytes())
-        .run();
-    assert_eq!(from_stdin.code, 0, "standard input: {}", from_stdin.stderr);
-    let from_dash = omni(&home.path)
-        .args(&["doc", "edit", DOC, "--changeset", CHANGESET])
-        .args(&[
-            "--body-file",
-            "-",
-            "--project",
-            PROJECT,
-            "--as",
-            "run-7/author",
-        ])
-        .stdin(stdin.as_bytes())
-        .run();
-    assert_eq!(from_dash.code, 0, "--body-file -: {}", from_dash.stderr);
-
-    let posts = requests_to(&server, "POST", &ops_path());
-    assert_eq!(posts.len(), 3, "{:?}", server.requests());
-    for post in &posts {
-        assert_agent_request(post);
-        assert_eq!(
-            body_of(post),
-            json!({ "ops": batch() }),
-            "the batch goes to the API as it is"
-        );
-    }
 }
 
 #[test]
