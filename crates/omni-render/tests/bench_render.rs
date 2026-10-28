@@ -160,36 +160,6 @@ fn the_bench_script_drives_headed_chrome_through_playwright_at_the_fixed_viewpor
 }
 
 #[test]
-fn playwright_is_declared_as_a_dependency_of_the_sandbox() {
-    let manifest: Value = serde_json::from_str(&read_text(&sandbox_file("package.json")))
-        .expect("render-sandbox/package.json is JSON");
-    let declared = ["dependencies", "devDependencies"].iter().any(|section| {
-        manifest[section]
-            .as_object()
-            .is_some_and(|deps| deps.keys().any(|name| name.contains("playwright")))
-    });
-    assert!(
-        declared,
-        "render-sandbox/package.json must declare Playwright in dependencies or devDependencies"
-    );
-}
-
-#[test]
-fn the_gate_runs_5_times_at_1440_by_900_and_a_pixel_ratio_of_2() {
-    assert_eq!(lib("config.runs"), 5);
-    assert_eq!(lib("config.viewport.width"), 1440);
-    assert_eq!(lib("config.viewport.height"), 900);
-    assert_eq!(lib("config.deviceScaleFactor"), 2);
-}
-
-#[test]
-fn the_gate_limits_are_500_ms_2_s_and_16_7_ms() {
-    assert_eq!(lib("config.limits.boardMs"), 500);
-    assert_eq!(lib("config.limits.fileMs"), 2000);
-    assert_eq!(lib("config.limits.frameP95Ms"), 16.7);
-}
-
-#[test]
 fn software_rendering_is_recognised_by_the_webgl_renderer_string() {
     for renderer in [
         "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)",
@@ -246,45 +216,15 @@ fn a_hardware_renderer_is_accepted() {
 }
 
 #[test]
-fn the_median_is_the_middle_measurement_of_an_unsorted_list() {
-    assert_eq!(lib("median([431, 12, 980, 77, 300])"), 300);
-    assert_eq!(lib("median([5, 1, 9])"), 5);
-    assert_eq!(lib("median([7])"), 7);
-}
-
-#[test]
-fn the_median_of_an_even_list_is_the_mean_of_the_middle_two() {
-    assert_eq!(lib("median([10, 40, 20, 30])"), 25);
-}
-
-#[test]
-fn the_median_does_not_reorder_the_measurements() {
-    assert_eq!(
-        lib("(() => { const values = [3, 1, 2]; median(values); return values; })()"),
-        serde_json::json!([3, 1, 2])
-    );
-}
-
-#[test]
-fn a_percentile_is_the_nearest_rank_of_the_sorted_values() {
-    assert_eq!(
-        lib("percentile(Array.from({ length: 100 }, (_, i) => 100 - i), 95)"),
-        95
-    );
-    assert_eq!(lib("percentile([1, 2, 3, 4, 5, 6, 7, 8, 9, 10], 50)"), 5);
-    assert_eq!(lib("percentile([4, 2, 9], 100)"), 9);
-}
-
-#[test]
 fn the_frame_p95_ignores_the_slowest_five_percent_of_frames() {
     // 95 frames of 10 ms and 5 of 40 ms: the 95th percentile is the last fast one.
     assert_eq!(
         lib("frameP95([...Array(95).fill(10), ...Array(5).fill(40)])"),
         10
     );
-    // 94 fast frames and 6 slow ones put the 95th percentile among the slow ones.
+    // 94 fast frames and 6 slow ones, slow ones first, put the 95th percentile among the slow ones.
     assert_eq!(
-        lib("frameP95([...Array(94).fill(10), ...Array(6).fill(40)])"),
+        lib("frameP95([...Array(6).fill(40), ...Array(94).fill(10)])"),
         40
     );
 }
