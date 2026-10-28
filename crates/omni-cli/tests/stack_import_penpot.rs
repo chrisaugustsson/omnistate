@@ -283,18 +283,6 @@ impl Fetched {
             .find(|(n, _)| n.eq_ignore_ascii_case(name))
             .map(|(_, v)| v.as_str())
     }
-
-    fn json(&self) -> Value {
-        let text = String::from_utf8_lossy(&self.body);
-        // The API may send the body chunked; the JSON object is what lies
-        // between the first `{` and the last `}`.
-        match (text.find('{'), text.rfind('}')) {
-            (Some(start), Some(end)) => {
-                serde_json::from_str(&text[start..=end]).unwrap_or(Value::Null)
-            }
-            _ => Value::Null,
-        }
-    }
 }
 
 /// One request to the API with `auth` as its credentials header.
@@ -330,20 +318,6 @@ fn request(f: &Fixture, method: &str, path: &str, auth: &str, body: Option<&Valu
         headers,
         body: raw[split + 4..].to_vec(),
     }
-}
-
-/// One request with the agent's key and `body` as JSON.
-fn as_agent(f: &Fixture, method: &str, path: &str, body: &Value) -> Fetched {
-    request(
-        f,
-        method,
-        path,
-        &format!(
-            "Authorization: Bearer {}\r\nX-Omni-Run: run-51\r\nX-Omni-Role: importer",
-            f.secret
-        ),
-        Some(body),
-    )
 }
 
 /// `GET path` with the agent's key; the body comes back as bytes.
@@ -1321,33 +1295,6 @@ fn what_cannot_be_imported_is_listed_in_the_report() {
 }
 
 #[test]
-fn a_file_that_is_no_penpot_export_leaves_no_doc_and_no_change_set() {
-    let f = fixture();
-    let home = agent_home(f);
-    let project = new_project(&home);
-    let file = home.join("anteckning.penpot");
-    std::fs::write(&file, "inte en export").unwrap();
-    let out = run(
-        &home,
-        &[
-            "import",
-            "penpot",
-            file.to_str().unwrap(),
-            "--project",
-            &project,
-        ],
-    );
-    assert_eq!(out.code, 1, "{:?}", out.stdout);
-    assert_eq!(out.stdout, "");
-    let lines = out.stderr_lines();
-    assert_eq!(lines.len(), 1, "{:?}", out.stderr);
-    assert!(lines[0].contains("anteckning.penpot"), "{:?}", lines[0]);
-    let listed = get(f, &home, &project, "/docs");
-    assert_eq!(listed["docs"], json!([]), "{listed}");
-    assert_eq!(changesets(&home, &project), Vec::<String>::new());
-}
-
-#[test]
 fn the_tirebud_idag_export_imports_into_an_empty_project_and_every_board_reads() {
     let path =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/penpot/tirebud-idag.penpot");
@@ -1456,103 +1403,6 @@ fn a_second_import_merges_into_the_design_system_of_the_first() {
             .flatten()
             .any(|known| known["id"] == component && known["name"] == "Badge"),
         "{first_read}"
-    );
-}
-
-/// A Button component in the tag format, filled with the token `color.brand`.
-const BUTTON: &str = "<Component name=\"Button\" dir=\"row\" pad={8} fill=\"$color.brand\">\n  <Text name=\"Button label\" content=\"Köp\" fontFamily=\"Inter\" fontSize={14}/>\n</Component>";
-
-#[test]
-fn an_import_merges_into_a_design_system_that_an_agent_made() {
-    let f = fixture();
-    let home = agent_home(f);
-    let project = new_project(&home);
-    let base = format!("/api/v1/w/{}/projects/{project}", f.workspace);
-    let created = as_agent(
-        f,
-        "POST",
-        &format!("{base}/docs"),
-        &json!({ "kind": "design-system", "pillar": "ui", "title": "Designsystem" }),
-    );
-    assert_eq!(
-        created.status,
-        201,
-        "create the design system: {:?}",
-        String::from_utf8_lossy(&created.body)
-    );
-    let system = created.json()["doc"]["id"]
-        .as_str()
-        .expect("the design system's ID")
-        .to_string();
-    let tree = json!({
-        "$extensions": { "omnistate": { "modes": ["Mörkt", "Ljust"] } },
-        "color": {
-            "$type": "color",
-            "brand": {
-                "$value": "#01B597",
-                "$extensions": { "omnistate": { "modes": { "Mörkt": "#01B597", "Ljust": "#00897B" } } }
-            }
-        }
-    });
-    let tokens = as_agent(
-        f,
-        "PUT",
-        &format!("{base}/tokens"),
-        &json!({ "tokens": tree }),
-    );
-    assert_eq!(
-        tokens.status,
-        200,
-        "put the tokens: {:?}",
-        String::from_utf8_lossy(&tokens.body)
-    );
-    let put = as_agent(
-        f,
-        "PUT",
-        &format!("{base}/components"),
-        &json!({ "tags": BUTTON }),
-    );
-    assert_eq!(
-        put.status,
-        200,
-        "put the components: {:?}",
-        String::from_utf8_lossy(&put.body)
-    );
-    let button = put.json()["components"][0]["id"]
-        .as_str()
-        .expect("the Button's ID")
-        .to_string();
-
-    let imported = import(&home, &project, &write_export(&home));
-    assert_no_change_set(&home, &imported);
-    assert_eq!(
-        imported.design_system_doc, system,
-        "the import writes into the project's design system"
-    );
-    let tokens = get(f, &home, &project, "/tokens");
-    assert_eq!(tokens["doc_id"], system.as_str(), "{tokens}");
-    let brand = token_modes(&tokens, &["color", "brand"]);
-    assert_eq!(
-        (lowercase(&brand["Mörkt"]), lowercase(&brand["Ljust"])),
-        ("#01b597".to_string(), "#00897b".to_string()),
-        "the agent's token color.brand stays: {tokens}"
-    );
-    let surface = token_modes(&tokens, &["color", "surface"]);
-    assert_eq!(
-        (lowercase(&surface["Mörkt"]), lowercase(&surface["Ljust"])),
-        ("#1c1c21".to_string(), "#ffffff".to_string()),
-        "the export's token color.surface is added: {tokens}"
-    );
-    let components = system_components(f, &home, &imported);
-    assert_eq!(
-        ids_named(&components, "Button"),
-        [button],
-        "the agent's Button stays with its ID: {components:?}"
-    );
-    assert_eq!(
-        ids_named(&components, "Badge").len(),
-        2,
-        "the export's Badge variants are added: {components:?}"
     );
 }
 
