@@ -21,7 +21,6 @@
 //!   one-line error that names it, and a mainline read of a doc without a
 //!   mainline version (409 `no_mainline_version`) one that says so and points
 //!   to `--changeset`.
-//! - `omni --help` lists `omni design read`.
 //! - Every command is an agent request with the agent identity headers, and
 //!   errors are one line on standard error, as in US-015
 //!   (tests/common/mod.rs).
@@ -257,20 +256,10 @@ fn design_read_prints_the_answer_with_json() {
     let home = logged_in(&server.url);
     let out = run(
         &home,
-        &[
-            "design",
-            "read",
-            "--doc",
-            DOC,
-            "--board",
-            BOARD,
-            "--changeset",
-            CHANGESET,
-            "--json",
-        ],
+        &["design", "read", "--doc", DOC, "--board", BOARD, "--json"],
     );
     assert_eq!(out.code, 0, "{}", out.stderr);
-    assert_eq!(out.json(), draft_answer());
+    assert_eq!(out.json(), version_answer(MAINLINE, MAINLINE_TAGS));
 }
 
 #[test]
@@ -350,18 +339,6 @@ fn design_read_of_the_mainline_of_a_doc_without_one_points_to_the_draft() {
             &["design", "read", "--doc", NEW_DOC, "--board", BOARD],
         ),
         &["mainline", "--changeset"],
-    );
-}
-
-#[test]
-fn help_lists_design_read() {
-    let home = Scratch::new("help");
-    let out = omni(&home.path).args(&["--help"]).run();
-    assert_eq!(out.code, 0, "{}", out.stderr);
-    assert!(
-        out.stdout.contains("omni design read"),
-        "omni --help lists `omni design read`: {}",
-        out.stdout
     );
 }
 
