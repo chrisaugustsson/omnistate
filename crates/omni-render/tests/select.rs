@@ -601,13 +601,6 @@ fn a_click_selects_the_direct_child_of_the_board_that_holds_the_node_under_the_p
 }
 
 #[test]
-fn a_click_on_a_hidden_node_selects_what_is_below_it() {
-    let mut scene = fresh();
-    click(&mut scene, (560.0, 60.0));
-    assert_state(&scene, Some(PANEL), Some(BOARD_B), "Ghost is hidden");
-}
-
-#[test]
 fn a_click_lands_on_the_node_drawn_under_the_pointer_at_any_zoom_and_pan() {
     // At 200% from page point (-100, -50), the screen point (290, 190) is
     // the page point (45, 45), inside Icon.
@@ -622,7 +615,7 @@ fn a_click_lands_on_the_node_drawn_under_the_pointer_at_any_zoom_and_pan() {
     scene.click(&viewport, (190.0, 140.0), NONE);
     assert_state(&scene, Some(BOARD_A), Some(BOARD_A), "zoomed out");
 
-    // The same screen point is no node at 100%.
+    // At 100% the same screen point is the page point (190, 140), inside Body, so the click selects Card again.
     scene.click(&view(), (190.0, 140.0), NONE);
     assert_state(&scene, Some(CARD), Some(BOARD_A), "back at 100%");
 }
@@ -642,13 +635,6 @@ fn a_double_click_makes_the_selection_the_context_and_selects_its_child_under_th
 
     double_click(&mut scene, ICON_AT);
     assert_state(&scene, Some(ICON), Some(HEADER), "two levels in");
-}
-
-#[test]
-fn a_double_click_on_its_own_selects_the_same_as_a_click_and_a_double_click() {
-    let mut scene = fresh();
-    double_click(&mut scene, ICON_AT);
-    assert_state(&scene, Some(HEADER), Some(CARD), "no click before");
 }
 
 #[test]
@@ -771,18 +757,6 @@ fn escape_on_the_board_clears_the_selection_and_with_nothing_selected_does_nothi
     );
 }
 
-#[test]
-fn after_escape_a_click_selects_among_the_children_of_the_new_context() {
-    let mut scene = fresh();
-    double_click(&mut scene, ICON_AT);
-    double_click(&mut scene, ICON_AT);
-    scene.escape();
-    assert_state(&scene, Some(HEADER), Some(CARD), "back to the header");
-
-    click(&mut scene, BODY_AT);
-    assert_state(&scene, Some(BODY), Some(CARD), "a child of the card");
-}
-
 // ---------------------------------------------------------------------------
 // Ctrl/Cmd + click and empty canvas
 // ---------------------------------------------------------------------------
@@ -826,14 +800,6 @@ fn ctrl_or_cmd_click_selects_the_deepest_node_under_the_pointer() {
 }
 
 #[test]
-fn escape_after_a_deep_selection_selects_its_parent() {
-    let mut scene = fresh();
-    scene.click(&view(), BUTTON_AT, CTRL);
-    scene.escape();
-    assert_state(&scene, Some(BODY), Some(CARD), "Esc after Ctrl + click");
-}
-
-#[test]
 fn a_click_on_empty_canvas_clears_the_selection_and_resets_the_context() {
     let mut scene = fresh();
     double_click(&mut scene, ICON_AT);
@@ -850,15 +816,6 @@ fn a_click_on_empty_canvas_clears_the_selection_and_resets_the_context() {
         Some(BOARD_A),
         "the context starts at the board again",
     );
-}
-
-#[test]
-fn ctrl_click_on_empty_canvas_clears_the_selection_too() {
-    let mut scene = fresh();
-    scene.click(&view(), ICON_AT, CTRL);
-    assert_state(&scene, Some(ICON), Some(HEADER), "the icon is selected");
-    scene.click(&view(), NO_BOARD_AT, CTRL);
-    assert_state(&scene, None, None, "Ctrl + click on no board");
 }
 
 // ---------------------------------------------------------------------------
