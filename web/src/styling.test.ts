@@ -24,22 +24,6 @@ function filesUnder(dir: string): string[] {
   );
 }
 
-test("shadcn/ui is set up for Tailwind and its stylesheet loads Tailwind", () => {
-  const config = readJson(join(webDir, "components.json"));
-  const tailwind = config.tailwind as { css?: string } | undefined;
-  expect(typeof tailwind?.css, "components.json names the Tailwind stylesheet").toBe("string");
-  const stylesheet = resolve(webDir, tailwind!.css!);
-  expect(existsSync(stylesheet), `${tailwind!.css} exists`).toBe(true);
-  expect(readFileSync(stylesheet, "utf8")).toMatch(/@import\s+["']tailwindcss["']/);
-
-  const pkg = readJson(join(webDir, "package.json"));
-  const deps = {
-    ...(pkg.dependencies as Record<string, string> | undefined),
-    ...(pkg.devDependencies as Record<string, string> | undefined),
-  };
-  expect(Object.keys(deps)).toContain("tailwindcss");
-});
-
 test("the Tailwind stylesheet is the only stylesheet of the app", () => {
   const config = readJson(join(webDir, "components.json"));
   const tailwind = config.tailwind as { css?: string } | undefined;

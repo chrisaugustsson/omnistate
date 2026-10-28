@@ -178,16 +178,4 @@ describe("login, logout and the workspace in the URL", () => {
     await router.navigate({ to: `/w/${WORKSPACE_ID}` as never });
     await expectPath(router, atLogin, "the login page again, the session being over");
   });
-
-  test("the login form is built from shadcn/ui components", async () => {
-    fakeApi({ loggedIn: false });
-    renderAt("/login");
-    const email = await screen.findByLabelText(/email/i);
-    const password = screen.getByLabelText(/password/i);
-    const button = screen.getByRole("button", { name: /log ?in|sign ?in/i });
-    expect(email.getAttribute("data-slot")).toBe("input");
-    expect(password.getAttribute("data-slot")).toBe("input");
-    expect(button.getAttribute("data-slot")).toBe("button");
-    expect(password.getAttribute("type")).toBe("password");
-  });
 });

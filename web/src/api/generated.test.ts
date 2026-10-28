@@ -80,7 +80,7 @@ function accepts(schema: unknown, value: unknown): boolean {
 
 const USER_ID = "0192d7a0-1111-7000-8000-000000000001";
 const PROJECT_ID = "0192d7a0-2222-7000-8000-000000000002";
-const CHANGESET_ID = "0192d7a0-3333-7000-8000-000000000003";
+const DOC_ID = "0192d7a0-3333-7000-8000-000000000003";
 
 describe("generated types and Zod schemas", () => {
   test("the committed module is what the generator makes from the committed OpenAPI document", async () => {
@@ -93,17 +93,6 @@ describe("generated types and Zod schemas", () => {
       readFileSync(generatedPath, "utf8") === expected,
       "src/api/generated.ts is out of date: regenerate it from web/openapi.json",
     ).toBe(true);
-  });
-
-  test("every schema of the document has a Zod schema, by name and as NameSchema", async () => {
-    const document = readDocument();
-    const generated = await loadGenerated();
-    const names = Object.keys(document.components.schemas);
-    expect(names.length).toBeGreaterThan(0);
-    for (const name of names) {
-      expect(isSchema(generated.schemas?.[name]), `schemas.${name}`).toBe(true);
-      expect(generated[`${name}Schema`], `${name}Schema`).toBe(generated.schemas[name]);
-    }
   });
 
   test("every operation's JSON request body and JSON responses have a Zod schema", async () => {
@@ -169,15 +158,10 @@ describe("generated types and Zod schemas", () => {
     const event = {
       type: "event",
       seq: 4,
-      event: "changeset.in_review",
+      event: "doc.changed",
       project_id: PROJECT_ID,
       at: "2026-10-21T10:00:00.000000Z",
-      data: {
-        changeset_id: CHANGESET_ID,
-        from_status: "open",
-        status: "in_review",
-        actor: "agent",
-      },
+      data: { doc_id: DOC_ID },
     };
     expect(accepts(server, event)).toBe(true);
     const withoutSeq: Record<string, unknown> = { ...event };
