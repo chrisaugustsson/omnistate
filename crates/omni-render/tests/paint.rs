@@ -797,6 +797,15 @@ fn a_dashed_stroke_inside_the_edge_starts_its_first_dash_at_the_top_left_corner(
 }
 
 #[test]
+fn a_dashed_stroke_on_the_edge_starts_its_first_dash_at_the_top_left_corner() {
+    // The middle of the stroke is the edge, from (80, 80): dashes from 80 to
+    // 90, 100 to 110 and 120 to 130, from y 79 to 81.
+    let pixels = render_200(&dashed_box("center"));
+    assert_all_rgb(&pixels, &[(85, 80), (105, 80), (125, 80)], BLUE, "a dash");
+    assert_all_rgb(&pixels, &[(95, 80), (115, 80)], WHITE, "a gap");
+}
+
+#[test]
 fn a_dashed_vector_stroke_follows_its_path_from_where_it_starts() {
     let line = vector_node(
         "vec00001",
