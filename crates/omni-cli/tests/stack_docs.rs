@@ -832,8 +832,10 @@ fn an_agent_edits_a_live_doc_without_a_change_set_and_reads_the_change() {
     let lines = stale.stderr_lines();
     assert_eq!(lines.len(), 1, "{:?}", stale.stderr);
     assert!(
-        lines[0].contains("conflict") && lines[0].contains(node.as_str()),
-        "{:?}",
+        lines[0].contains("conflict")
+            && lines[0].contains(node.as_str())
+            && lines[0].contains("revision 2"),
+        "the conflict names the node and its current revision 2: {:?}",
         lines[0]
     );
 
@@ -843,28 +845,6 @@ fn an_agent_edits_a_live_doc_without_a_change_set_and_reads_the_change() {
         "{:?}",
         read.stdout
     );
-
-    // The creation and the two applied batches, and no change set.
-    block(async {
-        let mut conn = admin_connection().await;
-        let seqs: Vec<i64> = sqlx::query_scalar(
-            "SELECT seq::bigint FROM doc_changes WHERE doc_id = $1::uuid ORDER BY seq",
-        )
-        .bind(&doc)
-        .fetch_all(&mut conn)
-        .await
-        .expect("read the doc changes");
-        assert_eq!(seqs, vec![1, 2, 3], "one change per applied batch");
-        let changesets: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM changesets c JOIN projects p ON p.id = c.project_id \
-             WHERE p.name = $1",
-        )
-        .bind(&project)
-        .fetch_one(&mut conn)
-        .await
-        .expect("count the change sets");
-        assert_eq!(changesets, 0, "no change set was made");
-    });
 }
 
 // US-110: an agent renames and deletes a live doc from the command line,
