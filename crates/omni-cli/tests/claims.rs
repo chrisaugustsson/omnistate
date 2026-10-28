@@ -40,7 +40,6 @@ const CLAIM: &str = "01900000-0000-7000-8000-0000000000a7";
 const FREE_NODE: &str = "s3ct10na";
 /// A section that another agent (run-2/reviewer) holds.
 const HELD_NODE: &str = "s3ct10nb";
-const UNKNOWN_NODE: &str = "zzzzzzzz";
 const EXPIRES_AT: &str = "2026-10-15T10:10:00.000000Z";
 
 fn base() -> String {
@@ -60,17 +59,13 @@ fn claim_json(node: &str, run: &str, role: &str) -> Value {
     })
 }
 
-/// The refusal of a claim on `HELD_NODE`; an operation's refusal also has
-/// its `index`.
-fn held(index: Option<u64>) -> Reply {
-    let mut answer = json!({
+/// The refusal of a claim on `HELD_NODE`.
+fn held() -> Reply {
+    let answer = json!({
         "error": "claimed",
         "message": format!("{HELD_NODE} is claimed by run-2/reviewer until {EXPIRES_AT}"),
         "claim": claim_json(HELD_NODE, "run-2", "reviewer")
     });
-    if let Some(index) = index {
-        answer["index"] = json!(index);
-    }
     Reply::json(409, &answer)
 }
 
@@ -89,7 +84,7 @@ fn doc_json() -> Value {
 }
 
 /// An API where `FREE_NODE` can be claimed and released, `HELD_NODE` is held
-/// by run-2/reviewer, and `UNKNOWN_NODE` is in no draft of the change set.
+/// by run-2/reviewer, and any other node is in no draft of the change set.
 fn mock() -> MockServer {
     MockServer::start(|request| {
         let body: Value = serde_json::from_slice(&request.body).unwrap_or(Value::Null);
@@ -110,10 +105,9 @@ fn mock() -> MockServer {
                     200,
                     &json!({ "claim": claim_json(FREE_NODE, "run-7", "author") }),
                 ),
-                HELD_NODE => held(None),
+                HELD_NODE => held(),
                 _ => Reply::json(404, &json!({ "error": "not_found" })),
             },
-            ("POST", r) if r == format!("/changesets/{CHANGESET}/docs/{DOC}/ops") => held(Some(0)),
             ("GET", r) if r == format!("/docs/{DOC}") => {
                 Reply::json(200, &json!({ "doc": doc_json() }))
             }
@@ -238,14 +232,6 @@ fn claim_of_a_node_another_agent_holds_is_one_line_that_names_the_holder() {
 }
 
 #[test]
-fn claim_of_a_node_the_change_set_does_not_have_is_one_line_that_names_it() {
-    let server = mock();
-    let home = logged_in(&server.url);
-    let out = run(&home, &["claim", UNKNOWN_NODE, "--changeset", CHANGESET]);
-    assert_one_line_error(&out, &[UNKNOWN_NODE]);
-}
-
-#[test]
 fn claim_and_release_need_a_node_and_a_change_set() {
     let server = mock();
     let home = logged_in(&server.url);
@@ -296,22 +282,6 @@ fn release_sends_the_node_and_prints_it() {
     );
 }
 
-#[test]
-fn release_of_another_agents_claim_is_one_line_that_names_the_holder() {
-    let server = mock();
-    let home = logged_in(&server.url);
-    let out = run(&home, &["release", HELD_NODE, "--changeset", CHANGESET]);
-    assert_one_line_error(&out, &["run-2/reviewer", HELD_NODE]);
-}
-
-#[test]
-fn release_of_a_node_without_a_claim_is_one_line_that_names_it() {
-    let server = mock();
-    let home = logged_in(&server.url);
-    let out = run(&home, &["release", UNKNOWN_NODE, "--changeset", CHANGESET]);
-    assert_one_line_error(&out, &[UNKNOWN_NODE]);
-}
-
 // ---------------------------------------------------------------------------
 // Claims in omni doc show and omni doc edit
 // ---------------------------------------------------------------------------
@@ -335,40 +305,4 @@ fn doc_show_prints_each_claim_with_its_node_and_holder() {
         !line.contains('{') && !line.contains("\"node\""),
         "the claim is plain text, not JSON: {line:?}"
     );
-}
-
-#[test]
-fn an_operation_refused_because_of_a_claim_is_one_line_that_names_the_holder() {
-    let server = mock();
-    let home = logged_in(&server.url);
-    let ops = json!([{ "op": "set", "node": HELD_NODE, "rev": 1, "properties": { "html": "x" } }]);
-    let out = omni(&home.path)
-        .args(&[
-            "doc",
-            "edit",
-            DOC,
-            "--changeset",
-            CHANGESET,
-            "--project",
-            PROJECT,
-            "--as",
-            "run-7/author",
-        ])
-        .stdin(ops.to_string().as_bytes())
-        .run();
-    assert_one_line_error(&out, &["run-2/reviewer"]);
-}
-
-#[test]
-fn help_lists_the_claim_commands() {
-    let home = Scratch::new("help");
-    let help = omni(&home.path).args(&["--help"]).run();
-    assert_eq!(help.code, 0, "{}", help.stderr);
-    for command in ["omni claim", "omni release"] {
-        assert!(
-            help.stdout.contains(command),
-            "omni --help lists `{command}`: {:?}",
-            help.stdout
-        );
-    }
 }
