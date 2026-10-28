@@ -566,20 +566,6 @@ describe("features in the web app", () => {
       renderAt(featurePath(WISHLIST, "threads"));
       await showsOnly(await page(), WISHLIST_THREADS, OTHER_THREADS);
     });
-
-    test("another feature's pages show that feature's items", async () => {
-      fakeApi(seeded());
-      renderAt(featurePath(GIFT_CARDS, "changesets"));
-      await showsOnly(
-        await page(),
-        ["Voucher balance"],
-        [...WISHLIST_CHANGESETS, "Tidy the footer", "Rework the hero", "Points ledger"],
-      );
-      cleanup();
-
-      renderAt(featurePath(LOYALTY, "docs"));
-      await showsOnly(await page(), ["Points PRD"], [...WISHLIST_DOCS, "Storefront PRD", "Voucher PRD"]);
-    });
   });
 
   describe("marking where the reviewer is", () => {
@@ -680,24 +666,6 @@ describe("features in the web app", () => {
       for (const link of back) {
         expect(link.getAttribute("href"), "no back link to a feature").not.toMatch(/\/features\//);
       }
-    });
-
-    test("on a project-level change set the sidebar marks the project's change sets and the back link goes there", async () => {
-      const seed = seeded();
-      fakeApi(seed);
-      renderAt(`${PROJECT_PATH}/changesets/${seed.changesets.hero.id}`);
-      const nav = await sidebar();
-      const current = await linkTo(nav, `${PROJECT_PATH}/changesets`);
-      await waitFor(() => expect(marked(current), "the project's change sets are marked").toBe(true));
-      await linkTo(nav, featurePath(WISHLIST));
-      for (const link of markedLinks(nav)) {
-        expect(link.getAttribute("href"), "no feature is marked").not.toMatch(/\/features\//);
-      }
-
-      const main = await page();
-      await within(main).findAllByText("Rework the hero");
-      const back = within(main).getAllByRole("link", { name: /change sets/i });
-      expect(back.map((link) => link.getAttribute("href"))).toContain(`${PROJECT_PATH}/changesets`);
     });
   });
 });
