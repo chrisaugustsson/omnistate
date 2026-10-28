@@ -265,6 +265,21 @@ fn owner_login(client: &Client) -> Response {
     response
 }
 
+fn token_state(token: &str) -> Option<(bool, bool)> {
+    // (not revoked, not expired) of the session whose token hash is SHA-256(token).
+    block(async {
+        let mut conn = admin_connection().await;
+        sqlx::query_as::<_, (bool, bool)>(
+            "select revoked_at is null, expires_at > now() from sessions \
+             where token_hash = sha256($1)",
+        )
+        .bind(token.as_bytes().to_vec())
+        .fetch_optional(&mut conn)
+        .await
+        .expect("query sessions")
+    })
+}
+
 // ---------------------------------------------------------------------------
 // The one-time setup command
 // ---------------------------------------------------------------------------
@@ -402,6 +417,23 @@ fn login_sets_an_httponly_secure_samesite_lax_session_cookie() {
             "the session cookie needs {required}: {line}"
         );
     }
+}
+
+#[test]
+fn the_session_is_stored_on_the_server_by_the_hash_of_its_token() {
+    let (_guard, _fixture, client) = ready();
+    let before = session_count();
+    let token = owner_login(client).session_token().unwrap();
+    assert_eq!(
+        session_count(),
+        before + 1,
+        "a login creates one session row"
+    );
+    assert_eq!(
+        token_state(&token),
+        Some((true, true)),
+        "a live session whose token_hash is the SHA-256 of the cookie value"
+    );
 }
 
 #[test]
