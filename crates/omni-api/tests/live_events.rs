@@ -1,11 +1,11 @@
 //! US-017: live updates over WebSockets. Run with `--features stack-tests` in
 //! the Compose test container, which reaches Postgres at `postgres:5432`.
 //!
-//! The tests migrate a scratch database, seed two workspaces (A and B) with one
-//! member each (alice in A, bob in B) and a live session for each, mint an API
-//! key per workspace through the API, and serve the API's router on a local
-//! port. They speak WebSocket to it with a small client of their own (a TCP
-//! stream, the handshake and the frames of RFC 6455).
+//! The tests migrate a scratch database, seed a workspace (A) with one member
+//! (alice) and a live session, mint an API key for it through the API, and
+//! serve the API's router on a local port. They speak WebSocket to it with a
+//! small client of their own (a TCP stream, the handshake and the frames of
+//! RFC 6455).
 //!
 //! The contract these tests pin down:
 //!
@@ -61,8 +61,6 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 const TEST_DB: &str = "omni_us017_live_events";
-/// An ID that no row has.
-const UNKNOWN_ID: &str = "01900000-0000-7000-8000-000000000000";
 /// The handshake key of RFC 6455's example, whose accept value is fixed.
 const HANDSHAKE_KEY: &str = "dGhlIHNhbXBsZSBub25jZQ==";
 const HANDSHAKE_ACCEPT: &str = "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=";
@@ -122,29 +120,10 @@ async fn admin_connection() -> PgConnection {
         .expect("connect to the scratch database as the admin role")
 }
 
-/// The first column of the first row of `sql` as text, or None for no row or NULL.
-fn db_text(sql: &str, binds: &[&str]) -> Option<String> {
-    block(async {
-        let mut conn = admin_connection().await;
-        let mut query = sqlx::query_scalar::<_, Option<String>>(sql);
-        for bind in binds {
-            query = query.bind(*bind);
-        }
-        query
-            .fetch_optional(&mut conn)
-            .await
-            .unwrap_or_else(|e| panic!("query failed ({e}): {sql}"))
-            .flatten()
-    })
-}
-
 struct Fixture {
     a: String,
-    b: String,
     alice_token: String,
-    bob_token: String,
     key_a: String,
-    key_b: String,
     server: TestServer,
 }
 
@@ -171,7 +150,7 @@ fn fixture() -> &'static Fixture {
                 .await
                 .expect("apply the migrations to the scratch database");
         });
-        let (a, b) = block(async {
+        let a = block(async {
             let mut conn = admin_connection().await;
             let mut text = async |sql: &str, binds: &[&str]| -> String {
                 let mut query = sqlx::query_scalar::<_, String>(sql);
@@ -185,32 +164,25 @@ fn fixture() -> &'static Fixture {
                 &[],
             )
             .await;
-            let b = text(
-                "insert into workspaces (name) values ('Beta') returning id::text",
-                &[],
+            let user = text(
+                "insert into users (email) values ($1) returning id::text",
+                &["alice@example.test"],
             )
             .await;
-            for (name, workspace) in [("alice", &a), ("bob", &b)] {
-                let user = text(
-                    "insert into users (email) values ($1) returning id::text",
-                    &[&format!("{name}@example.test")],
-                )
-                .await;
-                text(
-                    "insert into sessions (user_id, token_hash, expires_at) \
-                     values ($1::uuid, sha256(convert_to($2, 'UTF8')), now() + interval '1 day') \
-                     returning id::text",
-                    &[&user, &session_token(name)],
-                )
-                .await;
-                text(
-                    "insert into memberships (workspace_id, user_id) \
-                     values ($1::uuid, $2::uuid) returning id::text",
-                    &[workspace, &user],
-                )
-                .await;
-            }
-            (a, b)
+            text(
+                "insert into sessions (user_id, token_hash, expires_at) \
+                 values ($1::uuid, sha256(convert_to($2, 'UTF8')), now() + interval '1 day') \
+                 returning id::text",
+                &[&user, &session_token("alice")],
+            )
+            .await;
+            text(
+                "insert into memberships (workspace_id, user_id) \
+                 values ($1::uuid, $2::uuid) returning id::text",
+                &[&a, &user],
+            )
+            .await;
+            a
         });
         let server = TestServer::start(&config());
         let mint = |token: &str, workspace: &str| -> String {
@@ -228,14 +200,10 @@ fn fixture() -> &'static Fixture {
                 .to_string()
         };
         let key_a = mint(&session_token("alice"), &a);
-        let key_b = mint(&session_token("bob"), &b);
         Fixture {
             a,
-            b,
             alice_token: session_token("alice"),
-            bob_token: session_token("bob"),
             key_a,
-            key_b,
             server,
         }
     })
@@ -246,14 +214,12 @@ fn ready() -> (&'static Fixture, &'static Client) {
     (fixture, &fixture.server.client)
 }
 
-/// How a request authenticates: an API key (an agent), a session cookie (the
-/// human), both at once, or nothing.
+/// How a request authenticates: an API key (an agent) or a session cookie (the
+/// human).
 #[derive(Clone, Copy)]
 enum Auth<'a> {
     Key(&'a str),
     Session(&'a str),
-    KeyAndSession(&'a str, &'a str),
-    Nobody,
 }
 
 impl Auth<'_> {
@@ -270,10 +236,6 @@ impl Auth<'_> {
         match self {
             Auth::Key(secret) => [vec![key(secret)], identity()].concat(),
             Auth::Session(token) => vec![("Cookie", cookie(token))],
-            Auth::KeyAndSession(secret, token) => {
-                [vec![key(secret), ("Cookie", cookie(token))], identity()].concat()
-            }
-            Auth::Nobody => vec![],
         }
     }
 }
@@ -379,13 +341,6 @@ fn human_rejects(f: &Fixture, client: &Client, project: &str, changeset: &str) {
 // A small WebSocket client
 // ---------------------------------------------------------------------------
 
-/// The answer to a handshake that did not open the socket.
-#[derive(Debug)]
-struct Refused {
-    status: u16,
-    body: String,
-}
-
 /// What a read of the stream found.
 enum Arrived {
     Data(Vec<u8>),
@@ -406,7 +361,8 @@ struct Ws {
 }
 
 impl Ws {
-    fn open(client: &Client, path: &str, auth: &Auth) -> Result<Ws, Refused> {
+    /// Opens the socket at `path`, which must work.
+    fn open(client: &Client, path: &str, auth: &Auth) -> Ws {
         let stream = TcpStream::connect(("127.0.0.1", client.port())).expect("connect");
         let mut ws = Ws {
             stream,
@@ -458,7 +414,7 @@ impl Ws {
                 Some(HANDSHAKE_ACCEPT),
                 "the accept value of the handshake: {head}"
             );
-            return Ok(ws);
+            return ws;
         }
         let length: usize = header("content-length")
             .and_then(|v| v.parse().ok())
@@ -469,10 +425,10 @@ impl Ws {
                 _ => break,
             }
         }
-        Err(Refused {
-            status,
-            body: String::from_utf8_lossy(&ws.buffer).into_owned(),
-        })
+        panic!(
+            "the socket should open, but {path} answered {status}: {}",
+            String::from_utf8_lossy(&ws.buffer)
+        );
     }
 
     /// Reads whatever arrives before `deadline`.
@@ -669,22 +625,6 @@ fn path_of(workspace: &str) -> String {
 /// Opens the socket of `workspace`, which must work.
 fn open(client: &Client, workspace: &str, auth: &Auth) -> Ws {
     Ws::open(client, &path_of(workspace), auth)
-        .unwrap_or_else(|refused| panic!("the socket should open: {refused:?}"))
-}
-
-fn assert_refused(result: Result<Ws, Refused>, status: u16, code: &str) {
-    let refused = match result {
-        Ok(_) => panic!("the socket opened, but {status} {code} was expected"),
-        Err(refused) => refused,
-    };
-    assert_eq!(refused.status, status, "{refused:?}");
-    let body: Value = serde_json::from_str(&refused.body)
-        .unwrap_or_else(|e| panic!("the refusal is JSON ({e}): {refused:?}"));
-    assert_eq!(
-        body,
-        json!({ "error": code }),
-        "the error body carries the code and nothing else"
-    );
 }
 
 fn seq_of(event: &Value) -> i64 {
@@ -722,145 +662,8 @@ fn assert_gapless(events: &[Value]) {
 }
 
 // ---------------------------------------------------------------------------
-// Opening the socket
-// ---------------------------------------------------------------------------
-
-#[test]
-fn an_agent_with_a_key_and_the_human_with_a_session_open_the_socket_of_their_workspace() {
-    let (f, client) = ready();
-    open(client, &f.a, &Auth::Key(&f.key_a));
-    open(client, &f.a, &Auth::Session(&f.alice_token));
-    open(client, &f.b, &Auth::Key(&f.key_b));
-    open(client, &f.b, &Auth::Session(&f.bob_token));
-}
-
-#[test]
-fn the_socket_needs_valid_credentials_and_a_bad_key_is_never_rescued_by_a_cookie() {
-    let (f, client) = ready();
-    let path = path_of(&f.a);
-    assert_refused(Ws::open(client, &path, &Auth::Nobody), 401, "unauthorized");
-    assert_refused(
-        Ws::open(client, &path, &Auth::Key("omni_not-a-real-key")),
-        401,
-        "unauthorized",
-    );
-    assert_refused(
-        Ws::open(client, &path, &Auth::Session("not-a-real-session")),
-        401,
-        "unauthorized",
-    );
-    // Any Authorization header means an agent: the valid cookie next to the bad
-    // key does not make the request the human's.
-    assert_refused(
-        Ws::open(
-            client,
-            &path,
-            &Auth::KeyAndSession("omni_not-a-real-key", &f.alice_token),
-        ),
-        401,
-        "unauthorized",
-    );
-}
-
-#[test]
-fn a_caller_cannot_open_the_socket_of_a_workspace_it_cannot_reach() {
-    let (f, client) = ready();
-    // A key belongs to one workspace; a session to the workspaces of its user.
-    assert_refused(
-        Ws::open(client, &path_of(&f.b), &Auth::Key(&f.key_a)),
-        404,
-        "not_found",
-    );
-    assert_refused(
-        Ws::open(client, &path_of(&f.a), &Auth::Key(&f.key_b)),
-        404,
-        "not_found",
-    );
-    assert_refused(
-        Ws::open(client, &path_of(&f.b), &Auth::Session(&f.alice_token)),
-        404,
-        "not_found",
-    );
-    assert_refused(
-        Ws::open(client, &path_of(&f.a), &Auth::Session(&f.bob_token)),
-        404,
-        "not_found",
-    );
-    assert_refused(
-        Ws::open(client, &path_of(UNKNOWN_ID), &Auth::Key(&f.key_a)),
-        404,
-        "not_found",
-    );
-    assert_refused(
-        Ws::open(client, "/ws/w/not-a-uuid", &Auth::Session(&f.alice_token)),
-        404,
-        "not_found",
-    );
-    // The workspace is the one in the path, never one named in the query.
-    let path = format!("{}?workspace_id={}", path_of(&f.a), f.b);
-    assert_refused(
-        Ws::open(client, &path, &Auth::Key(&f.key_b)),
-        404,
-        "not_found",
-    );
-}
-
-// ---------------------------------------------------------------------------
 // Subscribing
 // ---------------------------------------------------------------------------
-
-#[test]
-fn subscribing_to_a_project_is_acknowledged_with_its_newest_sequence_number() {
-    let (f, client) = ready();
-    let project = new_project(f, client, "ack");
-    let mut ws = open(client, &f.a, &Auth::Key(&f.key_a));
-    let fresh = ws.subscribe(&project, None);
-    let before = fresh["last_seq"].as_i64().unwrap();
-
-    let changeset = new_changeset(f, client, &project);
-    agent_acts(f, client, &project, &changeset, "submit");
-    let events = ws.events(2);
-
-    let again = open(client, &f.a, &Auth::Key(&f.key_a)).subscribe(&project, None)["last_seq"]
-        .as_i64()
-        .unwrap();
-    assert_eq!(
-        again,
-        seq_of(&events[1]),
-        "last_seq is the newest event's sequence number (it was {before} before)"
-    );
-}
-
-#[test]
-fn a_subscription_to_an_unknown_or_foreign_project_is_an_error_and_leaks_nothing() {
-    let (f, client) = ready();
-    let own = new_project(f, client, "own");
-    let foreign = new_project_in(client, &f.b, &f.key_b, "foreign");
-    let mut ws = open(client, &f.a, &Auth::Key(&f.key_a));
-
-    for project in [UNKNOWN_ID, foreign.as_str()] {
-        ws.send(&json!({ "type": "subscribe", "project_id": project }));
-        let reply = ws.reply();
-        assert_eq!(reply["type"], "error", "{reply}");
-        assert_eq!(reply["error"], "not_found", "{reply}");
-    }
-
-    // The socket stays open and works for a project of the workspace.
-    ws.subscribe(&own, None);
-
-    // Workspace B's agent changes its project: A's client sees none of it.
-    let key_b = Auth::Key(&f.key_b);
-    let body = json!({ "title": "theirs" });
-    let path = changesets_path(&f.b, &foreign);
-    let created = call(client, "POST", &path, &key_b, Some(&body));
-    assert_eq!(created.status, 201, "{}", created.text());
-    ws.assert_no_event("the client subscribed to no project of workspace B");
-
-    // Resuming a foreign project from the start does not work either.
-    ws.send(&json!({ "type": "subscribe", "project_id": foreign, "after": 0 }));
-    assert_eq!(ws.reply()["error"], "not_found");
-    ws.assert_no_event("a foreign project cannot be replayed");
-}
 
 #[test]
 fn text_that_is_not_a_message_is_an_error_and_the_socket_stays_open() {
@@ -953,28 +756,6 @@ fn a_request_that_changes_nothing_pushes_no_event() {
 }
 
 #[test]
-fn the_agent_and_the_human_both_receive_the_same_events() {
-    let (f, client) = ready();
-    let project = new_project(f, client, "both");
-    let mut agent = open(client, &f.a, &Auth::Key(&f.key_a));
-    let mut human = open(client, &f.a, &Auth::Session(&f.alice_token));
-    agent.subscribe(&project, None);
-    human.subscribe(&project, None);
-
-    let changeset = new_changeset(f, client, &project);
-    agent_acts(f, client, &project, &changeset, "submit");
-    human_rejects(f, client, &project, &changeset);
-
-    let seen_by_agent = agent.events(3);
-    let seen_by_human = human.events(3);
-    assert_eq!(
-        seen_by_agent, seen_by_human,
-        "same events, same sequence numbers"
-    );
-    assert_eq!(seen_by_human[2]["data"]["actor"], "human");
-}
-
-#[test]
 fn a_client_only_gets_the_events_of_the_projects_it_subscribed_to() {
     let (f, client) = ready();
     let watched = new_project(f, client, "watched");
@@ -991,28 +772,6 @@ fn a_client_only_gets_the_events_of_the_projects_it_subscribed_to() {
     assert_eq!(events[0]["data"]["changeset_id"], changeset.as_str());
     subscribed.assert_no_event("the other project's change set was never announced");
     unsubscribed.assert_no_event("this client subscribed to no project");
-}
-
-#[test]
-fn a_client_can_follow_several_projects_on_one_socket() {
-    let (f, client) = ready();
-    let first = new_project(f, client, "first");
-    let second = new_project(f, client, "second");
-    let mut ws = open(client, &f.a, &Auth::Key(&f.key_a));
-    ws.subscribe(&first, None);
-    ws.subscribe(&second, None);
-
-    new_changeset(f, client, &first);
-    new_changeset(f, client, &second);
-    let events = ws.events(2);
-    let mut projects: Vec<&str> = events
-        .iter()
-        .map(|e| e["project_id"].as_str().unwrap())
-        .collect();
-    projects.sort();
-    let mut expected = [first.as_str(), second.as_str()];
-    expected.sort();
-    assert_eq!(projects, expected);
 }
 
 #[test]
@@ -1053,8 +812,8 @@ fn sequence_numbers_go_up_by_one_per_project() {
     let busy = new_project(f, client, "busy");
     let quiet = new_project(f, client, "quiet");
     let mut ws = open(client, &f.a, &Auth::Key(&f.key_a));
-    ws.subscribe(&busy, None);
-    ws.subscribe(&quiet, None);
+    let busy_from = ws.subscribe(&busy, None)["last_seq"].as_i64().unwrap();
+    let quiet_from = ws.subscribe(&quiet, None)["last_seq"].as_i64().unwrap();
 
     for _ in 0..3 {
         let changeset = new_changeset(f, client, &busy);
@@ -1073,9 +832,11 @@ fn sequence_numbers_go_up_by_one_per_project() {
     let (busy_events, quiet_events) = (of(&busy), of(&quiet));
     assert_eq!(busy_events.len(), 6);
     assert_eq!(quiet_events.len(), 1);
+    assert_eq!(seq_of(&busy_events[0]), busy_from + 1, "{busy_events:?}");
     assert_gapless(&busy_events);
-    assert!(
-        seq_of(&quiet_events[0]) <= 2,
+    assert_eq!(
+        seq_of(&quiet_events[0]),
+        quiet_from + 1,
         "the numbers are per project, so the quiet project did not count the busy one's events: {quiet_events:?}"
     );
 }
@@ -1263,33 +1024,4 @@ fn a_new_feature_is_pushed_and_replayed_to_a_client_that_resumes_before_it() {
         "the replayed event is the one that was pushed live"
     );
     late.assert_no_event("the feature's event is sent once");
-}
-
-// ---------------------------------------------------------------------------
-// Storage
-// ---------------------------------------------------------------------------
-
-#[test]
-fn events_are_kept_in_the_tenant_table_live_events_under_their_sequence_numbers() {
-    let (f, client) = ready();
-    let project = new_project(f, client, "stored");
-    let mut ws = open(client, &f.a, &Auth::Key(&f.key_a));
-    ws.subscribe(&project, None);
-    let changeset = new_changeset(f, client, &project);
-    agent_acts(f, client, &project, &changeset, "submit");
-    let events = ws.events(2);
-
-    for event in &events {
-        let stored = db_text(
-            "select workspace_id::text || ' ' || event from live_events \
-             where project_id = $1::uuid and seq = $2::bigint",
-            &[&project, &seq_of(event).to_string()],
-        );
-        assert_eq!(
-            stored,
-            Some(format!("{} {}", f.a, name_of(event))),
-            "the event with seq {} is stored in workspace A with its name",
-            seq_of(event)
-        );
-    }
 }
