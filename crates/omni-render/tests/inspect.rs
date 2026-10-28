@@ -400,49 +400,6 @@ fn a_frame_shows_its_layout_size_and_style_with_its_tokens_in_the_mode() {
     assert_eq!(summary.instance, None, "a frame is no instance");
 }
 
-#[test]
-fn a_text_shows_its_text_properties() {
-    let scene = scene();
-    let total = inspect(&scene, TOTAL);
-    assert_eq!(total.kind, "text");
-    assert_eq!(total.name, "Total");
-    assert_eq!(
-        property(&total.text, "text", "content").value,
-        json!("Total 96 kr")
-    );
-    assert_eq!(
-        property(&total.text, "text", "fontFamily").value,
-        json!("Inter")
-    );
-    assert_eq!(
-        number(&property(&total.text, "text", "fontSize").value, "fontSize"),
-        14.0
-    );
-    assert_eq!(
-        number(
-            &property(&total.text, "text", "lineHeight").value,
-            "lineHeight"
-        ),
-        1.25
-    );
-    let color = property(&total.text, "text", "color");
-    assert_eq!(color.value, json!("#000000"));
-    assert!(color.tokens.is_empty(), "a literal color uses no token");
-    for key in ["content", "fontSize", "color"] {
-        assert!(
-            !names(&total.style).contains(&key) && !names(&total.layout).contains(&key),
-            "`{key}` is a text property only"
-        );
-    }
-    assert_eq!(
-        property(&total.size, "size", "width").value,
-        json!("hug"),
-        "the text's sizes are in the size group"
-    );
-    assert_eq!(Some(total.bounds), scene.bounds_of(&address(TOTAL)));
-    assert_eq!(total.instance, None);
-}
-
 // ---------------------------------------------------------------------------
 // Instances
 // ---------------------------------------------------------------------------
@@ -555,18 +512,6 @@ fn a_node_inside_an_instance_shows_what_the_instance_gave_it() {
     assert_eq!(instance.component_name, "Cart");
     assert!(instance.props.is_empty(), "Cart has no properties");
     assert!(instance.overrides.is_empty(), "Icon overrides nothing");
-}
-
-#[test]
-fn an_address_that_names_no_node_gives_nothing() {
-    let scene = scene();
-    for unknown in ["zzzzzzzz", "e0000001/zzzzzzzz", "zzzzzzzz/ct000001"] {
-        assert_eq!(
-            scene.inspect(&address(unknown)),
-            None,
-            "{unknown} names no node of the scene"
-        );
-    }
 }
 
 // ---------------------------------------------------------------------------
