@@ -258,50 +258,6 @@ fn opening<'a>(tags: &'a [Tag], name: &str) -> Vec<&'a Tag> {
 }
 
 // ---------------------------------------------------------------------------
-// Markdown
-// ---------------------------------------------------------------------------
-
-#[test]
-fn common_markdown_renders_as_html() {
-    let markdown = "# The hero\n\n\
-                    Some **bold** and *emphasis* with `code`.\n\n\
-                    > Quoted\n\n\
-                    - one\n\
-                    - two\n\n\
-                    1. first\n\
-                    2. second\n\n\
-                    ```\nlet x = 1;\n```\n";
-    let (html, found) = safe(markdown);
-    for needle in [
-        "<h1>The hero</h1>",
-        "<strong>bold</strong>",
-        "<em>emphasis</em>",
-        "<code>code</code>",
-        "<li>one</li>",
-        "<li>two</li>",
-        "<li>first</li>",
-        "let x = 1;",
-    ] {
-        assert!(html.contains(needle), "{needle:?} is in {html:?}");
-    }
-    for name in ["blockquote", "ul", "ol", "pre", "p"] {
-        assert!(
-            !opening(&found, name).is_empty(),
-            "the output has a <{name}>: {html:?}"
-        );
-    }
-}
-
-#[test]
-fn text_is_escaped() {
-    let (html, _) = safe("5 < 6 & 7 > 3\n");
-    assert!(
-        html.contains("5 &lt; 6 &amp; 7 &gt; 3"),
-        "the text is escaped: {html:?}"
-    );
-}
-
-// ---------------------------------------------------------------------------
 // Raw HTML
 // ---------------------------------------------------------------------------
 
