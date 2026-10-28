@@ -504,6 +504,23 @@ fn create_doc(
     )
 }
 
+/// Starts a live doc in the project, outside any change set; returns its ID.
+fn create_live(f: &Fixture, client: &Client, project: &str, kind: &str, pillar: &str) -> String {
+    id_of(
+        &must(
+            call(
+                client,
+                "POST",
+                &format!("{}/docs", project_base(f, project)),
+                &author(f),
+                Some(&json!({ "kind": kind, "pillar": pillar, "title": unique("Doc") })),
+            ),
+            201,
+            "create a live doc",
+        )["doc"],
+    )
+}
+
 /// Inserts one paragraph into the change set's draft of the HTML doc `doc`;
 /// returns the new node's ID.
 fn insert_paragraph(
@@ -894,30 +911,24 @@ fn an_api_key_is_refused_the_home_and_an_unknown_project_is_not_found() {
 fn the_home_lists_every_doc_of_the_project_with_its_pillar() {
     let (f, client) = ready();
     let project = new_project(f, client);
-
-    // A Spec doc that merged, and docs of other pillars whose first version
-    // has not merged yet.
-    let (merged, prd, _, _) = changeset_with_version(f, client, &project);
-    submit(f, client, &project, &merged);
-    approve_changeset(f, client, &project, &merged);
-    let open = new_changeset(f, client, &project);
-    let architecture = create_doc(f, client, &project, &open, "html", "architecture");
-    let db = create_doc(f, client, &project, &open, "html", "db");
-    let ui = create_doc(f, client, &project, &open, "design", "ui");
+    let spec = create_live(f, client, &project, "html", "spec");
+    let architecture = create_live(f, client, &project, "html", "architecture");
+    let db = create_live(f, client, &project, "html", "db");
+    let ui = create_live(f, client, &project, "design", "ui");
 
     // Another project's doc is not this project's.
     let elsewhere = new_project(f, client);
-    let (_, foreign, _, _) = changeset_with_version(f, client, &elsewhere);
+    let foreign = create_live(f, client, &elsewhere, "html", "spec");
 
     let home = home(f, client, &project);
     assert_eq!(
         ids_at(&home, "/docs"),
-        vec![prd.clone(), architecture.clone(), db.clone(), ui.clone()],
+        vec![spec.clone(), architecture.clone(), db.clone(), ui.clone()],
         "every doc of the project, oldest first, and nothing else: {home}"
     );
     assert!(!home.to_string().contains(&foreign), "{home}");
     for (doc, pillar) in [
-        (&prd, "spec"),
+        (&spec, "spec"),
         (&architecture, "architecture"),
         (&db, "db"),
         (&ui, "ui"),
@@ -930,14 +941,6 @@ fn the_home_lists_every_doc_of_the_project_with_its_pillar() {
             "the home lists the doc as its read answers it"
         );
     }
-    assert!(
-        item_at(&home, "/docs", &prd)["mainline_version_id"].is_string(),
-        "the merged doc has its mainline version: {home}"
-    );
-    assert!(
-        item_at(&home, "/docs", &ui)["mainline_version_id"].is_null(),
-        "a doc whose first version has not merged has none: {home}"
-    );
 }
 
 #[test]

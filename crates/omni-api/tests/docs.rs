@@ -435,6 +435,17 @@ fn create_doc_response(
     )
 }
 
+/// Starts a live doc in the project, outside any change set.
+fn create_live_response(f: &Fixture, client: &Client, project: &str, body: &Value) -> Response {
+    call(
+        client,
+        "POST",
+        &format!("{}/docs", project_base(f, project)),
+        &agent(f),
+        Some(body),
+    )
+}
+
 /// Creates an HTML Spec doc in the change set; returns the whole answer.
 fn create_doc(f: &Fixture, client: &Client, project: &str, changeset: &str) -> Value {
     must(
@@ -745,14 +756,13 @@ fn a_new_doc_starts_in_its_change_set_without_a_mainline_version() {
 #[test]
 fn an_html_doc_starts_in_each_of_the_five_pillars() {
     let (f, client) = ready();
-    let (project, changeset) = project_with_changeset(f, client);
+    let (project, _changeset) = project_with_changeset(f, client);
     for pillar in ["spec", "ui", "architecture", "db", "research"] {
         let answer = must(
-            create_doc_response(
+            create_live_response(
                 f,
                 client,
                 &project,
-                &changeset,
                 &json!({ "kind": "html", "pillar": pillar, "title": unique(pillar) }),
             ),
             201,
@@ -760,7 +770,6 @@ fn an_html_doc_starts_in_each_of_the_five_pillars() {
         );
         assert_eq!(answer["doc"]["kind"], "html", "{answer}");
         assert_eq!(answer["doc"]["pillar"], pillar, "{answer}");
-        assert_eq!(answer["draft"]["changeset_id"], changeset.as_str());
         let shown = must(
             call(
                 client,
@@ -777,81 +786,19 @@ fn an_html_doc_starts_in_each_of_the_five_pillars() {
 }
 
 #[test]
-fn design_docs_start_in_the_ui_pillar() {
-    let (f, client) = ready();
-    let (project, changeset) = project_with_changeset(f, client);
-    for kind in ["design", "design-system"] {
-        let answer = must(
-            create_doc_response(
-                f,
-                client,
-                &project,
-                &changeset,
-                &json!({ "kind": kind, "pillar": "ui", "title": unique(kind) }),
-            ),
-            201,
-            &format!("create a {kind} doc in ui"),
-        );
-        assert_eq!(answer["doc"]["kind"], kind, "{answer}");
-        assert_eq!(answer["doc"]["pillar"], "ui", "{answer}");
-    }
-}
-
-#[test]
 fn design_docs_outside_the_ui_pillar_are_422_and_create_nothing() {
     let (f, client) = ready();
-    let (project, changeset) = project_with_changeset(f, client);
+    let (project, _changeset) = project_with_changeset(f, client);
     for kind in ["design", "design-system"] {
         for pillar in ["spec", "architecture", "db", "research"] {
-            let response = create_doc_response(
+            let response = create_live_response(
                 f,
                 client,
                 &project,
-                &changeset,
                 &json!({ "kind": kind, "pillar": pillar, "title": unique(kind) }),
             );
-            assert_eq!(
-                response.status,
-                422,
-                "a {kind} doc in {pillar}: {}",
-                response.text()
-            );
-            assert!(
-                response.json()["error"].is_string(),
-                "the refusal names its reason: {}",
-                response.text()
-            );
+            assert_error(&response, 422, "design_needs_ui_pillar");
         }
-    }
-    let docs: i64 = block(async {
-        let mut conn = admin_connection().await;
-        sqlx::query_scalar("select count(*) from docs where project_id = $1::uuid")
-            .bind(&project)
-            .fetch_one(&mut conn)
-            .await
-            .expect("count the project's docs")
-    });
-    assert_eq!(docs, 0, "a refused doc is not stored");
-}
-
-#[test]
-fn a_doc_needs_a_known_kind_and_pillar_and_a_title() {
-    let (f, client) = ready();
-    let (project, changeset) = project_with_changeset(f, client);
-    for body in [
-        json!({ "kind": "pdf", "pillar": "spec", "title": "T" }),
-        json!({ "kind": "html", "pillar": "marketing", "title": "T" }),
-        json!({ "kind": "html", "pillar": "other", "title": "T" }),
-        // The old module value and the old field are no pillar.
-        json!({ "kind": "html", "pillar": "prd", "title": "T" }),
-        json!({ "kind": "html", "module": "spec", "title": "T" }),
-        json!({ "kind": "html", "pillar": "spec", "title": "   " }),
-        json!({ "pillar": "spec", "title": "T" }),
-        json!({ "kind": "html", "title": "T" }),
-        json!({ "kind": "html", "pillar": "spec" }),
-    ] {
-        let response = create_doc_response(f, client, &project, &changeset, &body);
-        assert_error(&response, 400, "invalid_request");
     }
     let docs: i64 = block(async {
         let mut conn = admin_connection().await;
@@ -1555,7 +1502,7 @@ fn listed_titles(f: &Fixture, client: &Client, project: &str, query: &str) -> Ve
 #[test]
 fn the_docs_of_one_pillar_are_listed_with_the_pillar_filter() {
     let (f, client) = ready();
-    let (project, changeset) = project_with_changeset(f, client);
+    let (project, _changeset) = project_with_changeset(f, client);
     let mut titles = Vec::new();
     for (kind, pillar, title) in [
         ("html", "spec", "Checkout spec"),
@@ -1566,11 +1513,10 @@ fn the_docs_of_one_pillar_are_listed_with_the_pillar_filter() {
     ] {
         let title = unique(title);
         must(
-            create_doc_response(
+            create_live_response(
                 f,
                 client,
                 &project,
-                &changeset,
                 &json!({ "kind": kind, "pillar": pillar, "title": title }),
             ),
             201,

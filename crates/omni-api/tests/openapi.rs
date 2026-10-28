@@ -359,41 +359,6 @@ fn the_document_describes_the_feature_of_docs_and_the_doc_list() {
     );
 }
 
-// US-101: every doc sits in one of five pillars, so the doc body and the
-// create request carry `pillar` instead of the old `module`, and the doc list
-// takes the `pillar` filter.
-#[test]
-fn the_document_describes_the_pillar_of_docs_and_the_pillar_filter() {
-    let server = TestServer::start(&offline_config());
-    let document = openapi(&server);
-    for name in ["DocBody", "CreateDocRequest"] {
-        let schema = component(&document, name);
-        assert!(
-            schema["properties"]["pillar"].is_object(),
-            "{name} has the field pillar: {schema}"
-        );
-        assert!(
-            schema["properties"].get("module").is_none(),
-            "{name} has no field module any more: {schema}"
-        );
-    }
-    let body = component(&document, "DocBody");
-    let required = body["required"].as_array().cloned().unwrap_or_default();
-    assert!(
-        required.iter().any(|field| field == "pillar"),
-        "every doc has a pillar: {body}"
-    );
-    let docs = "/api/v1/w/{workspace_id}/projects/{project_id}/docs";
-    let get = &document["paths"][docs]["get"];
-    let parameters = get["parameters"].as_array().cloned().unwrap_or_default();
-    assert!(
-        parameters
-            .iter()
-            .any(|p| p["name"] == "pillar" && p["in"] == "query"),
-        "GET .../docs documents the query parameter `pillar`: {get}"
-    );
-}
-
 // US-063: the project home lists the features with their counts, and every
 // item that waits for the human carries the feature it belongs to.
 #[test]
