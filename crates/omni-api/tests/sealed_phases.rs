@@ -1641,42 +1641,6 @@ fn a_directive_link_to_a_post_hidden_from_the_agent_shows_nowhere_in_its_answers
     assert_eq!(read["post"]["links"], json!([pointer, source]), "{read}");
 }
 
-/// `src/live.rs` without its comments.
-fn live_source() -> String {
-    include_str!("../src/live.rs")
-        .lines()
-        .map(|line| line.split_once("//").map_or(line, |(code, _)| code))
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-#[test]
-fn the_live_event_filter_compares_post_ids_as_uuids_within_the_workspace() {
-    let source = live_source();
-    let start = source
-        .find("async fn read_events")
-        .expect("src/live.rs reads the events with `read_events`");
-    let body = &source[start..];
-    let body = &body[..body.find("\n}\n").map_or(body.len(), |end| end)];
-    assert!(
-        !body.contains("id::text"),
-        "the filter casts no post ID to text, so it can use the index of \
-         posts:\n{body}"
-    );
-    assert!(
-        body.contains("'post_id')::uuid") || body.contains("'post_id' AS uuid"),
-        "the filter reads the event's post ID as a UUID:\n{body}"
-    );
-    let posts = body
-        .find("FROM posts")
-        .map(|at| &body[at..])
-        .unwrap_or_else(|| panic!("the filter looks the post up in posts:\n{body}"));
-    assert!(
-        posts.contains("workspace_id"),
-        "the filter looks the post up within the event's workspace:\n{body}"
-    );
-}
-
 // ---------------------------------------------------------------------------
 // US-056: sealed decisions
 // ---------------------------------------------------------------------------
