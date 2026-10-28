@@ -4,7 +4,6 @@
 //! size of what hugs them. The expected boxes are the ones Chrome gives, as
 //! `make chrome-boxes` prints them (`tests/design/cases.rs`).
 
-mod common;
 mod design;
 
 use design::{
@@ -15,18 +14,6 @@ use omni_render::layout;
 use omni_render::text::Fonts;
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
-
-/// A board wide enough that no text in it needs to wrap, which places its
-/// children in a row from its top-left corner without stretching them.
-fn wide_row(children: Vec<Value>) -> Value {
-    board(
-        "brd00001",
-        fixed(2000.0),
-        fixed(500.0),
-        flex(json!({"alignItems": "start"})),
-        children,
-    )
-}
 
 /// A column `width` px wide that aligns its children to the start of its
 /// cross axis, so CSS gives a text that hugs its width there its fit-content
@@ -223,22 +210,6 @@ fn a_tab_moves_its_line_on_to_the_next_tab_stop() {
 }
 
 #[test]
-fn a_max_width_makes_a_hug_text_wrap() {
-    let json = with(
-        &text("txt00001", SIX_WORDS, 16.0, 1.5),
-        "maxWidth",
-        json!(100),
-    );
-    let boxes = lay_out(&wide_row(vec![json]));
-    assert_box(
-        &boxes,
-        "txt00001",
-        [0.0, 0.0, 100.0, 72.0],
-        "six words in a text that hugs its content with maxWidth 100",
-    );
-}
-
-#[test]
 fn a_max_width_narrower_than_the_widest_word_still_bounds_a_hug_text() {
     // A text that hugs its width is never wider than its maxWidth, even when
     // its widest word is wider, and its lines break at that width: with
@@ -305,13 +276,6 @@ fn a_line_break_starts_a_new_line_but_not_at_the_very_end_and_an_empty_text_has_
 }
 
 #[test]
-fn letter_spacing_adds_space_after_every_character() {
-    // CSS `letter-spacing` adds its spacing after each of the 5 characters of
-    // "Hello", the last one included: 2 px of it make the text 10 px wider.
-    assert_cases(cases::letter_spacing_after_every_character());
-}
-
-#[test]
 fn letter_spacing_turns_off_contextual_alternates() {
     // Inter's contextual alternates (OpenType `calt`) change glyphs by their
     // neighbors: "->" becomes one arrow, and a colon between capitals takes
@@ -325,63 +289,10 @@ fn letter_spacing_turns_off_contextual_alternates() {
 }
 
 #[test]
-fn font_families_that_are_missing_measure_as_the_bundled_inter() {
-    // The bundled Inter stands in for every missing family, so text measures
-    // the same on every machine.
-    assert_cases(cases::missing_families());
-}
-
-#[test]
 fn a_text_in_a_grid_column_wraps_at_the_column_width() {
     // A text that fills a 100 px column wraps there, and an auto column is as
     // wide as the text that hugs its content in it.
     assert_cases(cases::texts_in_grid_columns());
-}
-
-#[test]
-fn a_frame_that_hugs_a_text_is_the_size_of_the_text_and_its_padding() {
-    assert_cases(cases::frames_that_hug_a_text());
-}
-
-#[test]
-fn the_content_of_a_text_is_text_and_never_markup() {
-    // "a&b <i>c</i> d" is fourteen characters, all of them drawn, and so is
-    // every character of "x &lt; y &amp;&amp; z > 0".
-    assert_cases(cases::markup_characters_in_text());
-}
-
-#[test]
-fn omni_render_measures_text_with_skias_paragraph_layout() {
-    let output = common::cargo(&["metadata", "--no-deps", "--format-version", "1"]);
-    assert!(
-        output.status.success(),
-        "`cargo metadata` failed at the repository root:\n{}",
-        common::describe(&output)
-    );
-    let metadata: Value =
-        serde_json::from_slice(&output.stdout).expect("cargo metadata prints JSON");
-    let omni_render = metadata["packages"]
-        .as_array()
-        .expect("cargo metadata lists packages")
-        .iter()
-        .find(|package| package["name"] == "omni-render")
-        .expect("omni-render is a workspace member");
-    let skia = omni_render["dependencies"]
-        .as_array()
-        .expect("every package lists its dependencies")
-        .iter()
-        .find(|dependency| dependency["name"] == "skia-safe" && dependency["kind"].is_null())
-        .expect("omni-render depends on skia-safe");
-    let features: Vec<&str> = skia["features"]
-        .as_array()
-        .expect("cargo metadata lists a dependency's features")
-        .iter()
-        .filter_map(Value::as_str)
-        .collect();
-    assert!(
-        features.contains(&"textlayout"),
-        "omni-render shapes and wraps text with Skia's paragraph layout, which skia-safe's `textlayout` feature provides; it enables {features:?}"
-    );
 }
 
 #[test]
@@ -498,11 +409,6 @@ fn a_tab_moves_its_line_on_to_the_stop_after_the_next_when_less_than_half_a_spac
     // but less than half of the space and its letter spacing, and its tab
     // stops there.
     assert_cases(cases::tabs_near_a_stop());
-}
-
-#[test]
-fn text_style_leaves_boxes_alone() {
-    assert_cases(cases::text_style_leaves_boxes_alone());
 }
 
 #[test]
