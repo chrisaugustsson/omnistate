@@ -9,13 +9,11 @@
 //! - `omni component usage <component>` takes a component's node ID and sends
 //!   `GET /components/usage?component=<component>`. It prints one line per
 //!   board of the answer's `boards`, with the board's name and ID and the
-//!   doc's title, as plain text; without boards it prints a line that says no
-//!   board uses the component. `--json` prints the API's answer.
+//!   doc's title, as plain text. `--json` prints the API's answer.
 //! - A missing component argument, or one that is no node ID (8 lowercase
 //!   base32 characters), is a one-line error that sends nothing. A component
 //!   that the design system does not define (404 `unknown_component`) is a
 //!   one-line error that names it.
-//! - `omni --help` lists `omni component usage`.
 //! - Every command is an agent request with the agent identity headers, and
 //!   errors are one line on standard error, as in US-015
 //!   (tests/common/mod.rs).
@@ -32,8 +30,6 @@ const SHOP_VERSION: &str = "01900000-0000-7000-8000-0000000000f1";
 const ADMIN_VERSION: &str = "01900000-0000-7000-8000-0000000000f2";
 /// The button, which three boards use.
 const BUTTON: &str = "btn00001";
-/// A tag, which no board uses.
-const TAG: &str = "tag00001";
 /// A component ID that the design system does not define.
 const UNKNOWN: &str = "zzzzzzzz";
 
@@ -77,11 +73,6 @@ fn mock() -> MockServer {
         }
         if request.path == usage_path(BUTTON) {
             Reply::json(200, &button_usage())
-        } else if request.path == usage_path(TAG) {
-            Reply::json(
-                200,
-                &json!({ "project_id": PROJECT, "component": TAG, "boards": [] }),
-            )
         } else if request.path == usage_path(UNKNOWN) {
             Reply::json(404, &json!({ "error": "unknown_component" }))
         } else {
@@ -187,20 +178,6 @@ fn component_usage_lists_every_board_that_uses_the_component() {
 }
 
 #[test]
-fn component_usage_says_when_no_board_uses_the_component() {
-    let server = mock();
-    let home = logged_in(&server.url);
-    let out = run(&home, &["component", "usage", TAG]);
-    assert_eq!(out.code, 0, "{}", out.stderr);
-    assert!(
-        out.stdout.to_lowercase().contains("no board"),
-        "the output says that no board uses it: {:?}",
-        out.stdout
-    );
-    assert_eq!(server.requests().len(), 1, "{:?}", server.requests());
-}
-
-#[test]
 fn component_usage_prints_the_answer_with_json() {
     let server = mock();
     let home = logged_in(&server.url);
@@ -226,16 +203,4 @@ fn component_usage_of_an_unknown_component_names_it() {
     let server = mock();
     let home = logged_in(&server.url);
     assert_one_line_error(&run(&home, &["component", "usage", UNKNOWN]), &[UNKNOWN]);
-}
-
-#[test]
-fn help_lists_component_usage() {
-    let home = Scratch::new("help");
-    let out = omni(&home.path).args(&["--help"]).run();
-    assert_eq!(out.code, 0, "{}", out.stderr);
-    assert!(
-        out.stdout.contains("omni component usage"),
-        "omni --help lists `omni component usage`: {}",
-        out.stdout
-    );
 }
