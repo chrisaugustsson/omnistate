@@ -62,6 +62,47 @@ fn run() -> Option<&'static Run> {
 }
 
 #[test]
+fn the_summary_is_the_median_and_the_totals_of_the_boards() {
+    let Some(run) = run() else { return };
+    let (summary, text) = run.report.summary();
+    let boards = run.report.boards();
+    let mut shares: Vec<f64> = boards
+        .iter()
+        .filter(|board| {
+            !board
+                .attr("data-pixel-share")
+                .unwrap_or_default()
+                .trim()
+                .is_empty()
+        })
+        .map(|board| board.tag().number("data-pixel-share"))
+        .collect();
+    shares.sort_by(f64::total_cmp);
+    if !shares.is_empty() {
+        let middle = shares.len() / 2;
+        let median = if shares.len() % 2 == 1 {
+            shares[middle]
+        } else {
+            (shares[middle - 1] + shares[middle]) / 2.0
+        };
+        assert!((summary.number("data-median-share") - median).abs() < 1e-9);
+        assert!(text.contains(&format!("{:.1}%", median * 100.0)), "{text}");
+    }
+    let sum = |key: &str| {
+        boards
+            .iter()
+            .map(|board| board.tag().number(key))
+            .sum::<f64>()
+    };
+    assert_eq!(
+        summary.number("data-layout-mismatches"),
+        sum("data-layout-mismatches")
+    );
+    assert_eq!(summary.number("data-text-drift"), sum("data-text-drift"));
+    assert_eq!(summary.number("data-unconverted"), sum("data-unconverted"));
+}
+
+#[test]
 fn the_two_exports_have_at_most_1000_structural_mismatches() {
     let Some(run) = run() else { return };
     let folder = repo_root().join("fixtures/penpot");
