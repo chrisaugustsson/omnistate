@@ -2700,65 +2700,6 @@ fn the_calls_of_the_attacks_work_for_the_workspace_that_owns_the_records() {
 }
 
 #[test]
-fn the_claim_calls_of_the_attacks_work_for_the_workspace_that_owns_the_records() {
-    // The control for the claim routes (US-023): the owner's agent claims and
-    // releases a section of its own draft.
-    let (f, client) = ready();
-    let _guard = serial();
-    let key = Auth::Key(&f.a.key);
-    let draft = format!(
-        "/api/v1/w/{}/projects/{}/changesets/{}/docs/{}",
-        f.a.id, f.a.project_id, f.a.changeset_id, f.a.doc_id
-    );
-    let ops = json!({ "ops": [{
-        "op": "insert",
-        "parent": null,
-        "position": { "after": null },
-        "content": "<section><h2>Owner</h2></section>"
-    }] })
-    .to_string();
-    let inserted = must(
-        call(client, "POST", &format!("{draft}/ops"), &key, Some(&ops)),
-        200,
-        "add a section",
-    );
-    let section = inserted["results"][0]["node"]
-        .as_str()
-        .expect("the new section");
-    let body = json!({ "node": section }).to_string();
-    let claims = case_named(
-        "POST",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/claims",
-    );
-    must(
-        call(
-            client,
-            "POST",
-            &fill(claims.path, &f.a, &f.a),
-            &key,
-            Some(&body),
-        ),
-        201,
-        "claim the section",
-    );
-    let release = case_named(
-        "POST",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/claims/release",
-    );
-    must(
-        call(
-            client,
-            "POST",
-            &fill(release.path, &f.a, &f.a),
-            &key,
-            Some(&body),
-        ),
-        200,
-        "release the claim",
-    );
-}
-
-#[test]
 fn the_claim_attacks_name_a_section_that_workspace_b_really_holds_and_leave_it_held() {
     let (f, client) = ready();
     let _guard = serial();

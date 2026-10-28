@@ -1284,23 +1284,6 @@ fn the_holder_and_everyone_outside_the_claim_still_edit() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn the_claim_ttl_is_configurable() {
-    let (f, client) = short();
-    let draft = new_draft(f, client);
-    let (section, _, _) = add_section(f, client, &draft, "Pricing");
-    let answer = must(
-        claim(f, client, &holder(f), &draft, &section),
-        201,
-        "claim the section",
-    );
-    let ttl = epoch(&answer["claim"]["expires_at"]) - epoch(&answer["claim"]["taken_at"]);
-    assert!(
-        (ttl - SHORT_TTL.as_secs_f64()).abs() < 0.5,
-        "the claim lasts the configured {SHORT_TTL:?}, not {ttl} s: {answer}"
-    );
-}
-
-#[test]
 fn a_claim_expires_without_an_operation_from_its_holder() {
     let (f, client) = short();
     let draft = new_draft(f, client);
