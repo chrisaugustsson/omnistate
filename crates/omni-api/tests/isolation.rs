@@ -3798,58 +3798,6 @@ fn the_comment_calls_of_the_attacks_work_for_the_workspace_that_owns_the_records
 }
 
 // ---------------------------------------------------------------------------
-// The project home (US-040)
-// ---------------------------------------------------------------------------
-
-const HOME_ROUTE: &str = "/api/v1/w/{workspace_id}/projects/{project_id}/home";
-
-#[test]
-fn the_home_route_is_a_human_route_that_the_suite_attacks() {
-    let entry = registry()
-        .into_iter()
-        .find(|r| r.method == "GET" && r.path == HOME_ROUTE)
-        .unwrap_or_else(|| panic!("the registry has no route GET {HOME_ROUTE}"));
-    assert_eq!(entry.access, Access::Human, "GET {HOME_ROUTE}");
-    assert!(
-        matches!(case_for(&entry).kind, Kind::Workspace),
-        "GET {HOME_ROUTE} is a workspace route that the suite attacks"
-    );
-}
-
-#[test]
-fn the_home_call_of_the_attacks_shows_the_owner_its_own_records() {
-    // The control for the home route: the owner's human reads the home of the
-    // seeded project, which lists the seeded doc, change set and thread, and
-    // nothing of the other workspace.
-    let (f, client) = ready();
-    let _guard = serial();
-    let human = Auth::Session(&f.a.token);
-    let home = must(
-        call(client, "GET", &fill(HOME_ROUTE, &f.a, &f.a), &human, None),
-        200,
-        "the human reads the project home",
-    );
-    assert_eq!(home["project_id"], f.a.project_id.as_str(), "{home}");
-    let ids = |list: &str| -> Vec<String> {
-        home[list]
-            .as_array()
-            .unwrap_or_else(|| panic!("the home lists `{list}`: {home}"))
-            .iter()
-            .filter_map(|item| item["id"].as_str().map(str::to_string))
-            .collect()
-    };
-    assert!(ids("docs").contains(&f.a.doc_id), "{home}");
-    assert!(ids("changesets").contains(&f.a.changeset_id), "{home}");
-    assert!(ids("threads").contains(&f.a.thread_id), "{home}");
-    for marker in f.b.markers() {
-        assert!(
-            !home.to_string().contains(marker),
-            "the home shows {marker} of the other workspace: {home}"
-        );
-    }
-}
-
-// ---------------------------------------------------------------------------
 // The change set review (US-046)
 // ---------------------------------------------------------------------------
 

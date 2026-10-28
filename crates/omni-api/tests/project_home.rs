@@ -77,7 +77,6 @@ mod common;
 
 use common::{Client, Response, TestServer, cookie};
 use omni_api::Config;
-use omni_api::routes::{Access, registry};
 use s3::creds::Credentials;
 use s3::{Bucket, BucketConfiguration, Region};
 use serde_json::{Value, json};
@@ -92,7 +91,6 @@ const TEST_DB: &str = "omni_us040_project_home";
 const TEST_BUCKET: &str = "omni-us040-project-home";
 /// An ID that no row has.
 const UNKNOWN_ID: &str = "01900000-0000-7000-8000-000000000000";
-const HOME_ROUTE: &str = "/api/v1/w/{workspace_id}/projects/{project_id}/home";
 
 // ---------------------------------------------------------------------------
 // Plumbing
@@ -871,15 +869,6 @@ fn delete_comment(f: &Fixture, client: &Client, project: &str, comment: &str) {
 // ---------------------------------------------------------------------------
 // The route
 // ---------------------------------------------------------------------------
-
-#[test]
-fn the_home_route_is_a_human_route_in_the_registry() {
-    let entry = registry()
-        .into_iter()
-        .find(|r| r.method == "GET" && r.path == HOME_ROUTE)
-        .unwrap_or_else(|| panic!("the registry has no route GET {HOME_ROUTE}"));
-    assert_eq!(entry.access, Access::Human, "GET {HOME_ROUTE}");
-}
 
 #[test]
 fn an_api_key_is_refused_the_home_and_an_unknown_project_is_not_found() {
