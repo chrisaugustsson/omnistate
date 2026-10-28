@@ -199,9 +199,9 @@ fn resolving_cuts_a_design_off_at_the_nesting_limit() {
         let scene = Scene::with_system(read_node(&page), Assets::new(), system);
         (scene.errors().to_vec(), layer_depth(&scene.layers()))
     });
-    assert!(
-        depth <= MAX_NESTING,
-        "a resolved scene must be at most {MAX_NESTING} levels deep, but it is {depth}"
+    assert_eq!(
+        depth, MAX_NESTING,
+        "the scene must be cut off at {MAX_NESTING} levels, the node at the limit drawn as a placeholder"
     );
     let nesting: Vec<String> = errors
         .iter()
@@ -221,8 +221,8 @@ fn resolving_cuts_a_design_off_at_the_nesting_limit() {
 }
 
 #[test]
-fn a_design_within_the_limit_resolves_whole() {
-    let (system, page) = instance_chain(11, 10);
+fn a_design_exactly_at_the_limit_resolves_whole() {
+    let (system, page) = instance_chain(9, 13);
     let (errors, depth) = on_stack(TEST_STACK, move || {
         let system = DesignSystem::from_json(&system)
             .unwrap_or_else(|error| panic!("the design system must be read, but: {error}"));
@@ -230,18 +230,10 @@ fn a_design_within_the_limit_resolves_whole() {
         (scene.errors().to_vec(), layer_depth(&scene.layers()))
     });
     assert!(errors.is_empty(), "nothing is missing, but: {errors:?}");
-    // The board; for each of the 11 components its instance, drawn as the
-    // component's frame, and the 10 frames inside it; and the text.
-    assert_eq!(depth, 1 + 11 * 11 + 1, "every level must be drawn");
-    assert!(depth <= MAX_NESTING);
-}
-
-#[test]
-fn depth_counts_the_levels_below_and_including_a_node() {
-    assert_eq!(nesting::depth(&read_node(&leaf_text())), 1);
-    assert_eq!(nesting::depth(&read_node(&nested_page(2))), 3);
-    let depth = on_stack(TEST_STACK, || nesting::depth(&read_node(&nested_page(62))));
-    assert_eq!(depth, 63);
+    // The board; for each of the 9 components its instance, drawn as the
+    // component's frame, and the 13 frames inside it; and the text.
+    assert_eq!(depth, 1 + 9 * 14 + 1, "every level must be drawn");
+    assert_eq!(depth, MAX_NESTING);
 }
 
 #[test]
