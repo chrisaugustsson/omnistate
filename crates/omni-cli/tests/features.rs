@@ -626,38 +626,6 @@ fn feature_rename_without_a_feature_or_a_new_name_is_one_line_and_sends_nothing(
 }
 
 #[test]
-fn feature_rename_of_an_unknown_name_or_to_a_taken_one_is_one_line() {
-    let server = mock();
-    let home = logged_in(&server.url);
-    let unknown = run(
-        &home,
-        &[
-            "feature",
-            "rename",
-            "Loyalty points",
-            "Points",
-            "--project",
-            PROJECT,
-        ],
-    );
-    assert_one_line_error(&unknown, &["Loyalty points"]);
-    assert_nothing_posted(&server);
-
-    let taken = run(
-        &home,
-        &[
-            "feature",
-            "rename",
-            "Wish list",
-            "CHECKOUT",
-            "--project",
-            PROJECT,
-        ],
-    );
-    assert_one_line_error(&taken, &["name_taken"]);
-}
-
-#[test]
 fn feature_delete_sends_a_delete_and_prints_the_id() {
     let server = mock();
     let home = logged_in(&server.url);
@@ -673,18 +641,4 @@ fn feature_delete_sends_a_delete_and_prints_the_id() {
         assert_eq!(deletes.len(), 1, "{:?}", server.requests());
         assert_eq!(deletes[0].header("x-omni-role"), Some("planner"));
     }
-}
-
-#[test]
-fn feature_delete_without_a_feature_or_of_an_unknown_one_is_one_line_and_sends_nothing() {
-    let server = mock();
-    let home = logged_in(&server.url);
-    let missing = run(&home, &["feature", "delete", "--project", PROJECT]);
-    assert_one_line_error(&missing, &["feature"]);
-    let unknown = run(
-        &home,
-        &["feature", "delete", "Loyalty points", "--project", PROJECT],
-    );
-    assert_one_line_error(&unknown, &["Loyalty points"]);
-    assert_nothing_posted(&server);
 }

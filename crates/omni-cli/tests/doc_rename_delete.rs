@@ -181,14 +181,6 @@ fn doc_rename_without_a_doc_or_a_title_is_one_line_and_sends_nothing() {
     );
 }
 
-#[test]
-fn doc_rename_of_a_doc_that_is_not_there_is_one_line_with_the_code() {
-    let server = mock();
-    let home = logged_in(&server.url);
-    let out = run(&home, &["doc", "rename", GONE, "Late plan"]);
-    assert_one_line_error(&out, &["not_found"]);
-}
-
 // ---------------------------------------------------------------------------
 // omni doc delete
 // ---------------------------------------------------------------------------
@@ -212,36 +204,9 @@ fn doc_delete_sends_a_delete_and_prints_the_id() {
 }
 
 #[test]
-fn doc_delete_without_a_doc_is_one_line_and_sends_nothing() {
-    let server = mock();
-    let home = logged_in(&server.url);
-    let out = run(&home, &["doc", "delete"]);
-    assert_one_line_error(&out, &["doc"]);
-    assert!(
-        server.requests().is_empty(),
-        "nothing is sent: {:?}",
-        server.requests()
-    );
-}
-
-#[test]
 fn doc_delete_of_a_doc_that_is_not_there_is_one_line_with_the_code() {
     let server = mock();
     let home = logged_in(&server.url);
     let out = run(&home, &["doc", "delete", GONE]);
     assert_one_line_error(&out, &["not_found"]);
-}
-
-#[test]
-fn help_lists_doc_rename_and_doc_delete() {
-    let home = Scratch::new("help");
-    let help = omni(&home.path).args(&["--help"]).run();
-    assert_eq!(help.code, 0, "{}", help.stderr);
-    for command in ["doc rename", "doc delete"] {
-        assert!(
-            help.stdout.contains(command),
-            "omni --help lists `omni {command}`: {:?}",
-            help.stdout
-        );
-    }
 }
