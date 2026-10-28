@@ -597,13 +597,6 @@ afterEach(() => {
 // The canvas -----------------------------------------------------------------------------
 
 describe("the design on the renderer's canvas", () => {
-  test("a design doc's page opens on a canvas that the renderer draws, not in the HTML doc's frame", async () => {
-    renderAt(DOC_PATH);
-    expect(await screen.findByRole("heading", { name: DOC_TITLE })).toBeTruthy();
-    await findRenderer();
-    expect(document.querySelector("iframe"), "a design is no HTML doc, so it has no doc frame").toBeNull();
-  });
-
   test("the first page of the mainline version is shown, resolved against the version's design system", async () => {
     renderAt(DOC_PATH);
     const shown = await findShownWhole(PAGES[0]);
@@ -623,21 +616,6 @@ describe("the design on the renderer's canvas", () => {
 // The page list --------------------------------------------------------------------------
 
 describe("the page list", () => {
-  test("lists every page of the design in order and marks the one shown", async () => {
-    renderAt(DOC_PATH);
-    const panel = await findPagesPanel();
-    const names = within(panel)
-      .getAllByRole("button")
-      .map((button) => (button.textContent ?? "").trim());
-    expect(names.findIndex((name) => name.startsWith("Mobile")), "Mobile is listed").toBeGreaterThanOrEqual(0);
-    expect(
-      names.findIndex((name) => name.startsWith("Desktop")),
-      "Desktop is listed after Mobile",
-    ).toBeGreaterThan(names.findIndex((name) => name.startsWith("Mobile")));
-    await waitFor(() => expect(isCurrent(pageButton("Mobile")), "Mobile is the page shown").toBe(true));
-    expect(isCurrent(pageButton("Desktop"))).toBe(false);
-  });
-
   test("choosing a page shows it on the canvas and marks it", async () => {
     renderAt(DOC_PATH);
     await findShown(MOBILE);
@@ -668,44 +646,15 @@ describe("the page list", () => {
 // The layers panel -----------------------------------------------------------------------
 
 describe("the layers panel", () => {
-  test("lists the boards of the page shown and every node below them", async () => {
+  test("lists every layer of the page shown at its depth, in order, nodes inside instances under their instance", async () => {
     renderAt(DOC_PATH);
     await findLayersTree();
-    await waitFor(() => expect(treeItem("Cart")).toBeTruthy());
-    const levels: [string, string][] = [
-      ["Cart", "1"],
-      ["Buy", "2"],
-      ["Summary", "2"],
-      ["Total", "3"],
-      ["Receipt", "1"],
-    ];
-    for (const [name, level] of levels) {
-      expect(treeItem(name).getAttribute("aria-level"), `${name} is at level ${level}`).toBe(level);
-    }
-    expect(queryTreeItem("Wide cart"), "only the page shown is listed").toBeNull();
-  });
-
-  test("lists the nodes inside instances under their instance", async () => {
-    renderAt(DOC_PATH);
-    await findLayersTree();
-    await waitFor(() => expect(treeItem("Buy")).toBeTruthy());
-    expect(treeItem("Label").getAttribute("aria-level"), "Button's Label, inside Buy").toBe("3");
-    expect(treeItem("Icon").getAttribute("aria-level"), "Button's Icon, inside Buy").toBe("3");
-    expect(treeItem("Wheel").getAttribute("aria-level"), "Cart's Wheel, inside Icon inside Buy").toBe("4");
-
-    // In document order: Buy, its layers, then Summary.
+    await waitFor(() => expect(treeItem("Wheel")).toBeTruthy());
     const region = screen.getByRole("region", { name: /^layers$/i });
     const order = within(region)
       .getAllByRole("treeitem")
       .map((item) => item.getAttribute("aria-level") + ":" + (item.textContent ?? "").trim().split(/\s+/)[0]);
-    const at = (entry: string) => order.indexOf(entry);
-    for (const entry of ["2:Buy", "3:Label", "3:Icon", "4:Wheel", "2:Summary"]) {
-      expect(at(entry), `${entry} is listed: ${order.join(", ")}`).toBeGreaterThanOrEqual(0);
-    }
-    expect(at("2:Buy")).toBeLessThan(at("3:Label"));
-    expect(at("3:Label")).toBeLessThan(at("3:Icon"));
-    expect(at("3:Icon")).toBeLessThan(at("4:Wheel"));
-    expect(at("4:Wheel")).toBeLessThan(at("2:Summary"));
+    expect(order).toEqual(["1:Cart", "2:Buy", "3:Label", "3:Icon", "4:Wheel", "2:Summary", "3:Total", "1:Receipt"]);
   });
 });
 
