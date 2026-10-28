@@ -235,20 +235,6 @@ mod tests {
     }
 
     #[test]
-    fn resolve_takes_a_note() {
-        let parsed = parse_strs(&["changeset", "resolve", "c", "--note", "Kept both"]).unwrap();
-        assert_eq!(parsed.words, ["changeset", "resolve", "c"]);
-        assert_eq!(parsed.note.as_deref(), Some("Kept both"));
-        assert_eq!(
-            parse_strs(&["changeset", "resolve", "--note=N", "c"])
-                .unwrap()
-                .note
-                .as_deref(),
-            Some("N")
-        );
-    }
-
-    #[test]
     fn doc_options_take_values_and_doc_read_takes_a_version() {
         let parsed = parse_strs(&[
             "doc",

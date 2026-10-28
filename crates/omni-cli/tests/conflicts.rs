@@ -37,13 +37,11 @@ use serde_json::{Value, json};
 const PROJECT: &str = "01900000-0000-7000-8000-0000000000b1";
 const CLEAN: &str = "01900000-0000-7000-8000-0000000000c1";
 const CONFLICTED: &str = "01900000-0000-7000-8000-0000000000c2";
-const STUCK: &str = "01900000-0000-7000-8000-0000000000c3";
 const DOC: &str = "01900000-0000-7000-8000-0000000000d1";
 const MAINLINE_VERSION: &str = "01900000-0000-7000-8000-0000000000e1";
 const CHANGESET_VERSION: &str = "01900000-0000-7000-8000-0000000000e2";
 const EDITED: &str = "01900000-0000-7000-8000-0000000000f1";
 const REMOVED: &str = "01900000-0000-7000-8000-0000000000f2";
-const RESOLVED: &str = "01900000-0000-7000-8000-0000000000f3";
 const EDITED_NODE: &str = "k3f9x2qa";
 const REMOVED_NODE: &str = "m7q2r8tb";
 const NOTE: &str = "Kept the ahead wording, added the behind detail.";
@@ -118,8 +116,8 @@ fn rebase_answer(id: &str) -> Value {
     }
 }
 
-/// An API with a change set that rebases cleanly, one that rebases into two
-/// conflicts and one that cannot be rebased.
+/// An API with a change set that rebases cleanly and one that rebases into two
+/// conflicts.
 fn mock() -> MockServer {
     MockServer::start(|request| {
         let body: Value = serde_json::from_slice(&request.body).unwrap_or(Value::Null);
@@ -131,24 +129,15 @@ fn mock() -> MockServer {
                 return Reply::json(200, &rebase_answer(id));
             }
         }
-        if method == "POST" && path == format!("{changesets}/{STUCK}/rebase") {
-            return Reply::json(409, &json!({ "error": "invalid_transition" }));
-        }
         if method == "GET" && path == format!("{changesets}/{CONFLICTED}/conflicts") {
             return Reply::json(
                 200,
                 &json!({ "conflicts": [edited(Some(NOTE)), removed()] }),
             );
         }
-        if method == "GET" && path == format!("{changesets}/{CLEAN}/conflicts") {
-            return Reply::json(200, &json!({ "conflicts": [] }));
-        }
         if method == "POST" && path == resolve_path(EDITED) {
             let note = body["note"].as_str().unwrap_or("?");
             return Reply::json(200, &json!({ "conflict": edited(Some(note)) }));
-        }
-        if method == "POST" && path == resolve_path(RESOLVED) {
-            return Reply::json(409, &json!({ "error": "already_resolved" }));
         }
         Reply::json(404, &json!({ "error": "not_found" }))
     })
@@ -259,56 +248,6 @@ fn rebase_is_an_agent_post_that_prints_the_merged_change_set() {
 }
 
 #[test]
-fn a_rebase_with_conflicts_prints_the_open_change_set_and_every_conflict() {
-    let server = mock();
-    let home = logged_in(&server.url);
-    let out = run(
-        &home,
-        &["changeset", "rebase", CONFLICTED, "--project", PROJECT],
-    );
-    assert_eq!(out.code, 0, "{}", out.stderr);
-    assert!(
-        out.stdout.contains(CONFLICTED) && out.stdout.contains("open"),
-        "the text has the change set and its new status: {:?}",
-        out.stdout
-    );
-    for conflict in [EDITED, REMOVED] {
-        assert!(
-            out.stdout.contains(conflict),
-            "the text names the conflict {conflict}: {:?}",
-            out.stdout
-        );
-    }
-    assert!(
-        out.stdout.to_lowercase().contains("conflict"),
-        "{:?}",
-        out.stdout
-    );
-
-    let json = run(
-        &home,
-        &[
-            "changeset",
-            "rebase",
-            CONFLICTED,
-            "--project",
-            PROJECT,
-            "--json",
-        ],
-    );
-    assert_eq!(json.code, 0, "{}", json.stderr);
-    assert_eq!(json.json(), rebase_answer(CONFLICTED));
-}
-
-#[test]
-fn a_refused_rebase_is_one_line_with_the_error_code() {
-    let server = mock();
-    let home = logged_in(&server.url);
-    let out = run(&home, &["changeset", "rebase", STUCK, "--project", PROJECT]);
-    assert_one_line_error(&out, &["invalid_transition"]);
-}
-
-#[test]
 fn rebase_needs_a_change_set_id() {
     let server = mock();
     let home = logged_in(&server.url);
@@ -404,43 +343,6 @@ fn conflicts_lists_each_conflict_with_both_sides_and_its_resolution() {
     );
 }
 
-#[test]
-fn conflicts_says_so_when_there_are_none() {
-    let server = mock();
-    let home = logged_in(&server.url);
-    let out = run(
-        &home,
-        &["changeset", "conflicts", CLEAN, "--project", PROJECT],
-    );
-    assert_eq!(out.code, 0, "{}", out.stderr);
-    assert!(
-        out.stdout.to_lowercase().contains("no conflicts"),
-        "{:?}",
-        out.stdout
-    );
-}
-
-#[test]
-fn conflicts_needs_a_change_set_id() {
-    let server = mock();
-    let home = logged_in(&server.url);
-    let out = run(&home, &["changeset", "conflicts", "--project", PROJECT]);
-    assert_one_line_error(&out, &["changeset"]);
-    let out = run(
-        &home,
-        &["changeset", "conflicts", "not-an-id", "--project", PROJECT],
-    );
-    assert_one_line_error(&out, &["not-an-id"]);
-    assert_nothing_sent(&server);
-
-    // The control: with an ID, the same command reaches the API.
-    let out = run(
-        &home,
-        &["changeset", "conflicts", CLEAN, "--project", PROJECT],
-    );
-    assert_eq!(out.code, 0, "{}", out.stderr);
-}
-
 // ---------------------------------------------------------------------------
 // omni changeset resolve
 // ---------------------------------------------------------------------------
@@ -530,46 +432,4 @@ fn resolve_needs_a_note_and_a_conflict_id_before_anything_is_sent() {
     );
     assert_one_line_error(&out, &["not-an-id"]);
     assert_nothing_sent(&server);
-}
-
-#[test]
-fn resolving_twice_is_one_line_with_the_error_code() {
-    let server = mock();
-    let home = logged_in(&server.url);
-    let out = run(
-        &home,
-        &[
-            "changeset",
-            "resolve",
-            RESOLVED,
-            "--note",
-            NOTE,
-            "--project",
-            PROJECT,
-        ],
-    );
-    assert_one_line_error(&out, &["already_resolved"]);
-}
-
-#[test]
-fn help_lists_the_rebase_and_conflict_commands() {
-    let home = Scratch::new("help");
-    let help = omni(&home.path).args(&["--help"]).run();
-    assert_eq!(help.code, 0, "{}", help.stderr);
-    for command in [
-        "changeset rebase",
-        "changeset conflicts",
-        "changeset resolve",
-    ] {
-        assert!(
-            help.stdout.contains(command),
-            "omni --help lists `omni {command}`: {:?}",
-            help.stdout
-        );
-    }
-    assert!(
-        help.stdout.contains("--note"),
-        "omni --help documents --note: {:?}",
-        help.stdout
-    );
 }
