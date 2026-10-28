@@ -772,18 +772,22 @@ mod tests {
         let applied = run(
             &mut doc,
             &[op(serde_json::json!({
-                "op": "replace", "node": "00000003", "rev": 1,
-                "content": "<Frame id=\"00000003\" name=\"Summary\" dir=\"row\" gap={4}><Text id=\"00000004\" name=\"Total\" content=\"Summa 12 kr\" fontFamily=\"Inter\" fontSize={16}/><Text name=\"New\" content=\"Ny\" fontFamily=\"Inter\" fontSize={14}/></Frame>"
+                "op": "replace", "node": "00000002", "rev": 1,
+                "content": "<Board id=\"00000002\" name=\"Cart\" x={0} y={0} width={360} height={640} dir=\"col\" gap={8}><Frame id=\"00000003\" name=\"Summary\" dir=\"col\" gap={4}><Text id=\"00000004\" name=\"Total\" content=\"Summa 12 kr\" fontFamily=\"Inter\" fontSize={16}/><Text id=\"00000005\" name=\"Shipping\" content=\"Frakt ingår\" fontFamily=\"Inter\" fontSize={14}/></Frame><Text name=\"New\" content=\"Ny\" fontFamily=\"Inter\" fontSize={14}/></Board>"
             }))],
         )
         .expect("the replace applies");
         let result = &applied.ops[0];
         assert_eq!(result.revision, 2);
         assert_eq!(result.created, vec![id("00000101")]);
-        assert_eq!(result.removed, vec![id("00000005")]);
+        assert_eq!(result.removed, vec![id("00000006")]);
+        // Total's own content changed; Summary and Shipping are kept as they were.
         assert_eq!(doc.revision(&id("00000004")), Some(2));
-        assert_eq!(doc.revision(&id("00000002")), Some(1));
-        assert!(!doc.contains(id("00000005")));
+        assert_eq!(doc.revision(&id("00000005")), Some(1));
+        assert_eq!(doc.revision(&id("00000003")), Some(1));
+        assert_eq!(doc.revision(&id("00000101")), Some(1));
+        assert_eq!(doc.revision(&id("00000001")), Some(1));
+        assert!(!doc.contains(id("00000006")));
     }
 
     #[test]
@@ -799,6 +803,11 @@ mod tests {
         .expect("the move applies");
         assert_eq!(doc.revision(&id("00000005")), Some(2));
         assert_eq!(doc.revision(&id("00000003")), Some(1));
+        assert_eq!(
+            doc.revision(&id("00000006")),
+            Some(1),
+            "the new parent is not touched"
+        );
         assert_eq!(doc.parent(id("00000005")), Some(Some(id("00000006"))));
         assert_eq!(doc.siblings(Some(id("00000003"))).len(), 1);
     }
