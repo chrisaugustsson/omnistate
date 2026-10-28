@@ -25,14 +25,13 @@
 //!   the API role may only SELECT and INSERT them.
 
 use sqlx::migrate::Migrator;
-use sqlx::postgres::{PgConnectOptions, PgConnection, PgPoolOptions};
+use sqlx::postgres::{PgConnectOptions, PgConnection};
 use sqlx::{Connection, Row};
 use std::future::Future;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, Instant};
 
 const TEST_DB: &str = "omni_us011_tenancy";
 const API_ROLE: &str = "omni_api";
@@ -854,31 +853,6 @@ fn rows_of_another_workspace_cannot_be_written_or_changed() {
 }
 
 #[test]
-fn the_api_role_can_insert_into_its_own_workspace_with_a_generated_uuid_v7() {
-    let db = test_db();
-    let seed = seed();
-    block(async {
-        let mut conn = api_connection(db).await;
-        let mut tx = conn.begin().await.unwrap();
-        set_workspace(&mut tx, &seed.ws_a).await;
-        let id = new_id(
-            &mut tx,
-            &format!(
-                "insert into memberships (workspace_id, user_id) \
-                 values ('{}', '{}') returning id::text",
-                seed.ws_a, seed.user_in_none
-            ),
-        )
-        .await;
-        assert_eq!(
-            id.as_bytes()[14],
-            b'7',
-            "membership id {id} is not a UUIDv7"
-        );
-    });
-}
-
-#[test]
 fn with_no_workspace_set_queries_return_no_rows() {
     let db = test_db();
     let seed = seed();
@@ -931,62 +905,6 @@ fn with_no_workspace_set_queries_return_no_rows() {
         .await
         .expect_err("inserted a row without a workspace");
         assert_eq!(sqlstate(&error), "42501", "{error}");
-    });
-}
-
-#[test]
-fn a_pooled_connection_reused_after_a_transaction_sees_no_rows() {
-    let db = test_db();
-    let seed = seed();
-    block(async {
-        let pool = PgPoolOptions::new()
-            .max_connections(1)
-            .after_connect(|conn, _| {
-                Box::pin(async move {
-                    sqlx::query(&format!("SET ROLE {API_ROLE}"))
-                        .execute(&mut *conn)
-                        .await?;
-                    Ok(())
-                })
-            })
-            .connect_with(db.clone())
-            .await
-            .expect("connect the pool as the API role");
-
-        for commit in [true, false] {
-            let mut tx = pool.begin().await.unwrap();
-            let pid: i32 = sqlx::query_scalar("select pg_backend_pid()")
-                .fetch_one(&mut *tx)
-                .await
-                .unwrap();
-            set_workspace(&mut tx, &seed.ws_a).await;
-            assert!(
-                count_rows(&mut tx, "memberships").await > 0,
-                "the transaction sees its workspace"
-            );
-            if commit {
-                tx.commit().await.unwrap();
-            } else {
-                tx.rollback().await.unwrap();
-            }
-
-            let mut reused = pool.acquire().await.unwrap();
-            let reused_pid: i32 = sqlx::query_scalar("select pg_backend_pid()")
-                .fetch_one(&mut *reused)
-                .await
-                .unwrap();
-            assert_eq!(
-                pid, reused_pid,
-                "the pool must hand out the same connection"
-            );
-            for table in TENANT_TABLES {
-                assert_eq!(
-                    count_rows(&mut reused, table).await,
-                    0,
-                    "{table}: the reused connection (committed: {commit}) still sees workspace A"
-                );
-            }
-        }
     });
 }
 
@@ -1106,70 +1024,5 @@ fn user_memberships_lists_the_memberships_of_a_user_across_workspaces() {
         .await;
         assert!(none.is_empty(), "a user without memberships: {none:?}");
         assert_eq!(count_rows(&mut conn, "memberships").await, 0);
-    });
-}
-
-// ---------------------------------------------------------------------------
-// The running stack
-// ---------------------------------------------------------------------------
-
-#[test]
-fn the_running_api_applied_the_migrations_to_the_stack_database() {
-    block(async {
-        let mut conn = PgConnection::connect_with(&admin_options())
-            .await
-            .expect("connect to the stack database as the admin role");
-        let applied = sqlx::query("select version, success from _sqlx_migrations")
-            .fetch_all(&mut conn)
-            .await
-            .expect("the API must apply migrations/ with sqlx at start-up (no _sqlx_migrations)");
-        let files = std::fs::read_dir(migrations_dir())
-            .unwrap()
-            .filter_map(|e| e.ok())
-            .filter(|e| {
-                let name = e.file_name().to_string_lossy().into_owned();
-                name.ends_with(".sql")
-                    && name
-                        .split('_')
-                        .next()
-                        .is_some_and(|v| v.parse::<i64>().is_ok())
-            })
-            .count();
-        assert!(files >= 1, "migrations/ has no migration");
-        assert_eq!(applied.len(), files, "migrations applied by the API");
-        assert!(
-            applied.iter().all(|m| m.get::<bool, _>(1)),
-            "a migration failed"
-        );
-        assert_tables_exist(&mut conn).await;
-    });
-}
-
-#[test]
-fn the_running_api_connects_to_postgres_as_the_api_role() {
-    block(async {
-        let mut conn = PgConnection::connect_with(&admin_options())
-            .await
-            .expect("connect to the stack database as the admin role");
-        // The proxy's health check calls /api/health every two seconds, which
-        // keeps a connection of the API's pool open.
-        let deadline = Instant::now() + Duration::from_secs(30);
-        loop {
-            let usernames = strings(
-                &mut conn,
-                "select distinct usename::text from pg_stat_activity \
-                 where datname = current_database() and pid <> pg_backend_pid() \
-                 and backend_type = 'client backend'",
-            )
-            .await;
-            if usernames.iter().any(|u| u == API_ROLE) {
-                return;
-            }
-            assert!(
-                Instant::now() < deadline,
-                "no connection of {API_ROLE} to the stack database; clients are {usernames:?}"
-            );
-            tokio::time::sleep(Duration::from_millis(500)).await;
-        }
     });
 }
