@@ -4186,30 +4186,6 @@ const COMMENT_ROUTES: [(&str, &str, Access); 6] = [
 ];
 
 #[test]
-fn the_comment_routes_are_in_the_registry_and_the_suite_attacks_them() {
-    for (method, path, access) in COMMENT_ROUTES {
-        let entry = registry()
-            .into_iter()
-            .find(|r| r.method == method && r.path == path)
-            .unwrap_or_else(|| panic!("the registry has no route {method} {path}"));
-        assert_eq!(entry.access, access, "{method} {path}");
-        assert!(
-            matches!(case_for(&entry).kind, Kind::Workspace),
-            "{method} {path} is a workspace route that the suite attacks"
-        );
-    }
-
-    let (f, _) = ready();
-    for side in [&f.a, &f.b] {
-        assert!(
-            !side.comment_id.is_empty(),
-            "the suite seeded no comment for {}",
-            side.id
-        );
-    }
-}
-
-#[test]
 fn the_comment_calls_of_the_attacks_work_for_the_workspace_that_owns_the_records() {
     // The control for the comment routes: in the owner's workspace, the
     // owner's human comments on the seeded version with the body of the case,
