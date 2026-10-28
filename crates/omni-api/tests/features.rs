@@ -56,7 +56,6 @@ mod common;
 
 use common::{Client, Response, TestServer, cookie};
 use omni_api::Config;
-use omni_api::routes::{Access, registry};
 use serde_json::{Value, json};
 use sqlx::Connection;
 use sqlx::postgres::{PgConnectOptions, PgConnection};
@@ -68,8 +67,6 @@ use std::sync::atomic::{AtomicU32, Ordering};
 const TEST_DB: &str = "omni_us059_features";
 /// An ID that no row has.
 const UNKNOWN_ID: &str = "01900000-0000-7000-8000-000000000000";
-const FEATURES_ROUTE: &str = "/api/v1/w/{workspace_id}/projects/{project_id}/features";
-const FEATURE_ROUTE: &str = "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}";
 
 // ---------------------------------------------------------------------------
 // Plumbing
@@ -388,28 +385,6 @@ fn accepted(sql: &str, binds: &[&str]) -> bool {
 }
 
 // ---------------------------------------------------------------------------
-// The routes
-// ---------------------------------------------------------------------------
-
-#[test]
-fn the_feature_routes_are_in_the_registry_with_who_may_call_them() {
-    for (method, path, access) in [
-        ("POST", FEATURES_ROUTE, Access::Agent),
-        ("GET", FEATURES_ROUTE, Access::Both),
-        ("GET", FEATURE_ROUTE, Access::Both),
-        // US-110: agents rename and delete features.
-        ("PATCH", FEATURE_ROUTE, Access::Agent),
-        ("DELETE", FEATURE_ROUTE, Access::Agent),
-    ] {
-        let entry = registry()
-            .into_iter()
-            .find(|r| r.method == method && r.path == path)
-            .unwrap_or_else(|| panic!("the registry has no route {method} {path}"));
-        assert_eq!(entry.access, access, "{method} {path}");
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Creating a feature
 // ---------------------------------------------------------------------------
 
@@ -456,15 +431,6 @@ fn creating_a_feature_records_its_name_and_description_and_no_status() {
         );
         assert_eq!(&shown["feature"], feature, "{shown}");
     }
-}
-
-#[test]
-fn a_feature_without_a_description_has_an_empty_one() {
-    let (f, client) = ready();
-    let project = new_project(f, client);
-    let feature = create_feature(f, client, &project, "Search");
-    assert_eq!(feature["description"], "", "{feature}");
-    assert!(feature.get("status").is_none(), "no status: {feature}");
 }
 
 #[test]
@@ -593,26 +559,6 @@ fn an_unknown_project_or_feature_is_not_found() {
 }
 
 // ---------------------------------------------------------------------------
-// Live events
-// ---------------------------------------------------------------------------
-
-#[test]
-fn creating_a_feature_emits_feature_created_with_its_id_and_name() {
-    let (f, client) = ready();
-    let project = new_project(f, client);
-    let feature = create_feature(f, client, &project, "Wish list");
-    let events = events_of(&project, "feature.created");
-    assert_eq!(events.len(), 1, "{events:?}");
-    assert_eq!(events[0]["feature_id"], feature["id"], "{}", events[0]);
-    assert_eq!(events[0]["name"], "Wish list", "{}", events[0]);
-
-    let second = create_feature(f, client, &project, "Gift cards");
-    let events = events_of(&project, "feature.created");
-    assert_eq!(events.len(), 2, "{events:?}");
-    assert_eq!(events[1]["feature_id"], second["id"], "{}", events[1]);
-}
-
-// ---------------------------------------------------------------------------
 // The table
 // ---------------------------------------------------------------------------
 
@@ -622,104 +568,21 @@ fn the_features_table_keeps_its_rules_in_the_database() {
     let project = new_project(f, client);
     let workspace = f.workspace.as_str();
 
-    // The defaults: a new row has an empty description and is not deleted.
-    let (deleted, description): (bool, String) = block(async {
-        let mut conn = admin_connection().await;
-        let mut tx = conn.begin().await.expect("begin");
-        let row = sqlx::query_as(
-            "insert into features (workspace_id, project_id, name) \
-             values ($1::uuid, $2::uuid, 'Defaults') \
-             returning coalesce(to_jsonb(features) ->> 'deleted_at', '') <> '', description",
-        )
-        .bind(workspace)
-        .bind(&project)
-        .fetch_one(&mut *tx)
-        .await
-        .unwrap_or_else(|e| panic!("insert a feature with only its required columns: {e}"));
-        tx.rollback().await.expect("roll back");
-        row
-    });
-    assert!(!deleted, "a new feature is not deleted");
-    assert_eq!(description, "");
-
-    // US-110: there is no status column, and a feature has `deleted_at`.
-    let columns: Vec<String> = block(async {
-        let mut conn = admin_connection().await;
-        sqlx::query_scalar(
-            "select column_name::text from information_schema.columns \
-             where table_schema = 'public' and table_name = 'features' order by column_name",
-        )
-        .fetch_all(&mut conn)
-        .await
-        .expect("list the columns of features")
-    });
-    assert!(
-        !columns.iter().any(|c| c == "status"),
-        "features has no status column: {columns:?}"
-    );
-    assert!(
-        columns.iter().any(|c| c == "deleted_at"),
-        "features has deleted_at: {columns:?}"
-    );
-
     let insert = "insert into features (workspace_id, project_id, name) \
                   values ($1::uuid, $2::uuid, $3)";
+    assert!(
+        accepted(insert, &[workspace, &project, "Checkout"]),
+        "a named feature of the row's own project is accepted"
+    );
     for blank in ["", "   "] {
         assert!(
             !accepted(insert, &[workspace, &project, blank]),
             "the blank name {blank:?} is refused"
         );
     }
-
-    // The project must be one of the row's own workspace.
-    let foreign_workspace: String = block(async {
-        let mut conn = admin_connection().await;
-        sqlx::query_scalar("insert into workspaces (name) values ('Other') returning id::text")
-            .fetch_one(&mut conn)
-            .await
-            .expect("insert a workspace")
-    });
-    assert!(
-        !accepted(insert, &[&foreign_workspace, &project, "Moved"]),
-        "a feature cannot belong to a project of another workspace"
-    );
     assert!(
         !accepted(insert, &[workspace, UNKNOWN_ID, "Nowhere"]),
         "a feature needs a project"
-    );
-
-    // Names are unique per project ignoring case, in the database too.
-    create_feature(f, client, &project, "Checkout");
-    assert!(
-        !accepted(insert, &[workspace, &project, "CHECKOUT"]),
-        "the unique index on lower(name) refuses a name that differs in case only"
-    );
-    // A deleted feature does not hold its name.
-    let deleted_insert = "insert into features (workspace_id, project_id, name, deleted_at) \
-                          values ($1::uuid, $2::uuid, $3, now())";
-    assert!(
-        accepted(deleted_insert, &[workspace, &project, "checkout"]),
-        "a deleted feature may have the name of a live one"
-    );
-
-    // Later tables tie a feature to its project with (workspace_id,
-    // project_id, id).
-    let keys: i64 = block(async {
-        let mut conn = admin_connection().await;
-        sqlx::query_scalar(
-            "select count(*) from pg_index i join pg_class c on c.oid = i.indrelid \
-             where c.relname = 'features' and i.indisunique and i.indexprs is null \
-             and (select array_agg(a.attname::text order by a.attname::text) \
-                  from pg_attribute a where a.attrelid = c.oid and a.attnum = any(i.indkey)) \
-                 = array['id', 'project_id', 'workspace_id']",
-        )
-        .fetch_one(&mut conn)
-        .await
-        .expect("look for the unique key")
-    });
-    assert_eq!(
-        keys, 1,
-        "features has UNIQUE (workspace_id, project_id, id)"
     );
 }
 

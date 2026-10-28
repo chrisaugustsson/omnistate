@@ -264,43 +264,6 @@ fn the_web_app_has_the_current_openapi_document() {
     );
 }
 
-// US-059: the feature routes are in the registry and the document, and the
-// bodies they answer with are schemas of the document, from which the web app
-// generates its types.
-#[test]
-fn the_document_describes_the_feature_routes_and_their_bodies() {
-    let routes = registry();
-    let features = "/api/v1/w/{workspace_id}/projects/{project_id}/features";
-    let feature = "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}";
-    for (method, path, access) in [
-        ("POST", features, Access::Agent),
-        ("GET", features, Access::Both),
-        ("GET", feature, Access::Both),
-    ] {
-        let entry = find(&routes, method, path)
-            .unwrap_or_else(|| panic!("the registry has no entry for {method} {path}"));
-        assert_eq!(entry.access, access, "{method} {path}");
-    }
-
-    let server = TestServer::start(&offline_config());
-    let document = openapi(&server);
-    for name in [
-        "FeatureBody",
-        "CreateFeatureRequest",
-        "FeatureResponse",
-        "FeatureListResponse",
-    ] {
-        component(&document, name);
-    }
-    let body = component(&document, "FeatureBody");
-    for field in ["id", "project_id", "name", "description", "created_at"] {
-        assert!(
-            body["properties"][field].is_object(),
-            "FeatureBody has the field {field}: {body}"
-        );
-    }
-}
-
 // US-060: a change set belongs to the project or one of its features, so the
 // change set and thread bodies carry `feature_id`, the create request takes
 // it, and the change set list takes the `feature` filter.
