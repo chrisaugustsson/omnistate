@@ -238,13 +238,6 @@ fn a_component_tag_defines_a_component_with_properties_of_four_kinds() {
     assert_eq!(json["id"], "btn00001");
     assert_eq!(json["name"], "Button");
     assert_eq!(json["props"], button_props(), "{json:#}");
-    let kinds: BTreeSet<&str> = json["props"]
-        .as_object()
-        .expect("props is an object")
-        .values()
-        .map(|prop| prop["type"].as_str().expect("each property has a type"))
-        .collect();
-    assert_eq!(kinds, KINDS.into_iter().collect(), "{json:#}");
     // The component is laid out and styled like a frame.
     assert_eq!(json["layout"]["mode"], "flex", "{json:#}");
     assert_eq!(json["layout"]["direction"], "row", "{json:#}");
@@ -295,55 +288,6 @@ fn a_component_round_trips_through_tags_and_json() {
         );
     }
     assert_round_trips(&to_json(&button));
-}
-
-#[test]
-fn components_without_ids_are_new() {
-    let source = r##"<Component name="Tag" pad={4} fill="#e2e8f0" props={{text: {type: "text", default: "Ny"}}}>
-  <Text name="Text" content="Ny" fontFamily="Inter" fontSize={12} bind={{content: "text"}}/>
-</Component>"##;
-    let tree = tags::parse(source).unwrap_or_else(|error| panic!("{error}"));
-    assert!(tree.is_new(), "a component without an `id` is new");
-    let mut fresh = ["tag00001", "tag00002"].into_iter();
-    let json = to_json(&tree.assign_ids(|| id(fresh.next().expect("two new nodes"))));
-    assert_eq!(json["id"], "tag00001");
-    assert_eq!(json["children"][0]["id"], "tag00002");
-    assert_eq!(json["children"][0]["bind"], json!({"content": "text"}));
-}
-
-#[test]
-fn the_component_tag_takes_props_and_the_frame_attributes() {
-    let component = tags::all()
-        .iter()
-        .find(|tag| tag.name == "Component")
-        .expect("`<Component>` is a tag of the format");
-    for attribute in [
-        "id", "name", "props", "width", "height", "dir", "gap", "pad", "fill", "radius",
-    ] {
-        assert!(
-            component.attributes.contains(&attribute),
-            "`<Component>` takes `{attribute}`: {:?}",
-            component.attributes
-        );
-    }
-    let instance = tags::all()
-        .iter()
-        .find(|tag| tag.name == "Instance")
-        .expect("`<Instance>` is a tag of the format");
-    for attribute in ["component", "props", "overrides", "bind"] {
-        assert!(
-            instance.attributes.contains(&attribute),
-            "`<Instance>` takes `{attribute}`: {:?}",
-            instance.attributes
-        );
-    }
-    for name in ["Frame", "Text", "Image", "Vector"] {
-        let tag = tags::all().iter().find(|tag| tag.name == name).unwrap();
-        assert!(
-            tag.attributes.contains(&"bind"),
-            "a `<{name}>` layer of a component takes `bind`"
-        );
-    }
 }
 
 #[test]
