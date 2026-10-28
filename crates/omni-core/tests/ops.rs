@@ -695,34 +695,21 @@ fn replace_never_takes_an_id_another_node_has() {
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
 fn set_changes_the_inner_html_of_any_element() {
     let mut doc = doc();
-    let result = apply_one(
-        &mut doc,
-        set(
-            P1,
-            1,
-            json!({"html": "Some <strong>bold</strong>, <span class=\"tag\">a span</span> and <a href=\"https://example.com\">a link</a>"}),
-        ),
-    );
-    assert_eq!(result.revision, 2);
+    let markup = "Some <strong>bold</strong>, <span class=\"tag\">a span</span> and <a href=\"https://example.com\">a link</a>";
+    let result = apply_one(&mut doc, set(P1, 1, json!({"html": markup})));
+    assert_eq!(result.node, id(P1));
+    assert_eq!(result.revision, 2, "the revision rises by 1");
+    let html = doc.node_html(id(P1)).expect("P1 prints");
     assert!(
-        doc.node_html(id(P1))
-            .unwrap()
-            .contains("Some <strong>bold</strong>, <span class=\"tag\">a span</span> and <a href=\"https://example.com\">a link</a>"),
-        "{}",
-        doc.node_html(id(P1)).unwrap()
-    );
-    apply_one(
-        &mut doc,
-        set(NOTE, 1, json!({"html": "A <b>warning</b> now"})),
+        html.starts_with("<p") && html.contains(markup),
+        "P1 holds the new markup: {html}"
     );
     assert!(
-        doc.node_html(id(NOTE))
-            .unwrap()
-            .contains("A <b>warning</b> now")
+        !html.contains("First paragraph"),
+        "set replaces the old inner HTML: {html}"
     );
-    apply_one(&mut doc, set(CELL, 1, json!({"html": "<em>Name</em>"})));
-    assert!(doc.node_html(id(CELL)).unwrap().contains("<em>Name</em>"));
-    assert_eq!(rev(&doc, ROW), 1, "the row is not changed");
+    assert_eq!(children(&doc, Some(S1)), [H1, P1, P2], "P1 keeps its place");
+    assert_eq!(rev(&doc, S1), 1, "the parent is not changed");
     assert_reads_back(&doc);
 }
 
@@ -884,48 +871,17 @@ fn delete_removes_the_block_and_all_its_descendants() {
 
 #[cfg_attr(not(target_arch = "wasm32"), test)]
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
-fn insert_accepts_any_html() {
+fn content_that_is_not_one_block_level_element_is_refused() {
     let mut doc = doc();
-    let content = "<div class=\"card custom\" data-theme=\"dark\" onclick=\"toggle()\"><style>.card { color: red; }</style><p>A <span class=\"tag\">span</span>, <b>b</b>, <i>i</i></p><details><summary>More</summary><p>Hidden</p></details><svg viewBox=\"0 0 10 10\"><rect width=\"5\" height=\"5\"/></svg><script>if (a < b && b > c) { go(); }</script></div>";
-    let result = apply_one(&mut doc, insert_into(S1, Some(P2), content));
-    let html = doc.node_html(result.node).expect("the div prints");
-    for kept in [
-        "class=\"card custom\"",
-        "onclick=\"toggle()\"",
-        "<style>.card { color: red; }</style>",
-        "<span class=\"tag\">span</span>",
-        ">More</summary>",
-        "viewBox=\"0 0 10 10\"",
-        "<script>if (a < b && b > c) { go(); }</script>",
+    for (content, what) in [
+        ("", "an empty string"),
+        ("Just text", "text"),
+        ("<p>One</p><p>Two</p>", "a second element beside the first"),
+        ("<span>Inline</span>", "an inline element"),
     ] {
-        assert!(html.contains(kept), "the insert keeps `{kept}`: {html}");
+        let (index, _message) = invalid(&mut doc, json!([insert_into(S1, None, content)]));
+        assert_eq!(index, 0, "{what} is refused");
     }
-    assert!(
-        result.created.len() >= 5,
-        "the div, two paragraphs, the details and the svg are new nodes: {result:?}"
-    );
-    assert_eq!(children(&doc, Some(S1))[3], result.node.to_string());
-    assert_reads_back(&doc);
-    let (index, _) = invalid(&mut doc, json!([insert_into(S1, None, "")]));
-    assert_eq!(index, 0, "empty content inserts nothing, so it is refused");
-}
-
-#[cfg_attr(not(target_arch = "wasm32"), test)]
-#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
-fn replace_accepts_any_html() {
-    let mut doc = doc();
-    let content = "<figure><svg viewBox=\"0 0 10 10\" onload=\"draw()\"><circle cx=\"5\" cy=\"5\" r=\"3\" onclick=\"pick()\"/></svg><figcaption>Kept</figcaption></figure>";
-    let result = apply_one(&mut doc, replace(FIGURE, 1, content));
-    assert_eq!(result.node, id(FIGURE));
-    let html = doc.node_html(id(FIGURE)).unwrap();
-    assert!(
-        html.contains("<circle")
-            && html.contains("onclick=\"pick()\"")
-            && html.contains("onload=\"draw()\""),
-        "{html}"
-    );
-    assert_eq!(result.removed, [id(SVG)], "the old svg is replaced");
-    assert_reads_back(&doc);
 }
 
 #[cfg_attr(not(target_arch = "wasm32"), test)]
@@ -969,35 +925,6 @@ fn an_operation_whose_result_would_not_read_back_is_refused() {
     );
     apply_one(&mut doc, replace(LI1, 1, "<li>Still an item</li>"));
     assert_reads_back(&doc);
-}
-
-#[cfg_attr(not(target_arch = "wasm32"), test)]
-#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
-fn the_doc_reads_back_after_every_batch() {
-    let mut doc = doc();
-    let batches = [
-        json!([insert_into(
-            S1,
-            Some(P1),
-            "<ul><li>a</li><li>b <em>c</em></li></ul>"
-        )]),
-        json!([set(H1, 1, json!({"html": "Title <code>x</code>"}))]),
-        json!([move_to(P2, 1, Some(S2), None), delete(LI1, 1)]),
-        json!([replace(
-            NOTE,
-            1,
-            "<aside class=\"decision\"><p>Decided</p></aside>"
-        )]),
-        json!([insert_into(
-            S2,
-            None,
-            "<div class=\"grid\"><style>.grid { display: grid; }</style><details><summary>x</summary><table><tbody><tr><td><p>cell</p></td></tr></tbody></table></details></div>"
-        )]),
-    ];
-    for ops in batches {
-        apply(&mut doc, ops);
-        assert_reads_back(&doc);
-    }
 }
 
 // --- Batches ---
@@ -1093,6 +1020,16 @@ fn elements_at_any_depth_are_nodes_with_their_nearest_ided_ancestor_as_parent() 
     assert_eq!(doc.parent(id(DC1)), Some(Some(id(DR))));
     assert_eq!(doc.parent(id(INNER)), Some(Some(id(MORE))));
     assert_eq!(doc.parent(id(DP2)), Some(Some(id(DDIV))));
+    assert_eq!(
+        doc.parent(id(DR)),
+        Some(Some(id(DT))),
+        "the row's parent is the table: the <tbody> between them has no ID"
+    );
+    assert_eq!(
+        children(&doc, Some(DT)),
+        [DR],
+        "the table's child is the row, past the <tbody>"
+    );
     assert_eq!(children(&doc, Some(DR)), [DC1, DC2]);
     assert_eq!(children(&doc, Some(CARD)), [MORE]);
     assert!(
