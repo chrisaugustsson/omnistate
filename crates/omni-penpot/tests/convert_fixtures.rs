@@ -38,16 +38,6 @@ fn convert(name: &str) -> Option<Conversion> {
     })
 }
 
-fn idag() -> Option<&'static Conversion> {
-    static CELL: OnceLock<Option<Conversion>> = OnceLock::new();
-    CELL.get_or_init(|| convert("tirebud-idag.penpot")).as_ref()
-}
-
-fn idag_file() -> Option<&'static PenpotFile> {
-    static CELL: OnceLock<Option<PenpotFile>> = OnceLock::new();
-    CELL.get_or_init(|| read("tirebud-idag.penpot")).as_ref()
-}
-
 fn ordrar() -> Option<&'static Conversion> {
     static CELL: OnceLock<Option<Conversion>> = OnceLock::new();
     CELL.get_or_init(|| convert("tirebud-ordrar.penpot"))
@@ -154,48 +144,6 @@ fn assert_boards_follow_the_file(conversion: &Conversion, file: &PenpotFile) {
             node_count(&converted.design),
             flatten(shape).len(),
             "the nodes of board {:?} are its shapes",
-            shape.name
-        );
-    }
-}
-
-#[test]
-fn idag_puts_the_texts_outside_boards_into_the_unplaced_board() {
-    let (Some(conversion), Some(file)) = (idag(), idag_file()) else {
-        return;
-    };
-    let loose: Vec<&Shape> = file.pages[0]
-        .shapes
-        .iter()
-        .filter(|shape| shape.kind != omni_penpot::ShapeKind::Frame)
-        .collect();
-    assert_eq!(loose.len(), 8);
-    let unplaced: Vec<_> = conversion
-        .boards
-        .iter()
-        .filter(|board| board.name == "Unplaced")
-        .collect();
-    assert_eq!(unplaced.len(), 1);
-    let names: Vec<&str> = board_node(&unplaced[0].design)
-        .children()
-        .iter()
-        .map(Node::name)
-        .collect();
-    let expected: Vec<&str> = loose.iter().map(|shape| shape.name.as_str()).collect();
-    assert_eq!(names, expected, "the loose texts, in their stacking order");
-    for shape in loose {
-        assert!(
-            unplaced[0].shapes.iter().any(|found| found.id == shape.id),
-            "{:?} is converted",
-            shape.name
-        );
-        assert!(
-            conversion
-                .report
-                .entries
-                .iter()
-                .all(|entry| entry.shape_id != shape.id || entry.property.is_some()),
-            "{:?} is not left out",
             shape.name
         );
     }

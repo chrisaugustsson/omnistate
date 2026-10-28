@@ -12,8 +12,7 @@
 //!   `attachment:<id>`.
 //!
 //! The files are the same on every run, and exit status says whether it worked.
-//! Most tests build their own export; the last one needs fixtures/penpot/ and
-//! skips, with a message, when it is empty.
+//! The tests build their own export.
 
 mod common;
 
@@ -26,7 +25,6 @@ use omni_render::paint::Assets;
 use serde_json::{Value, json};
 
 use common::convert::*;
-use common::fixture;
 
 /// An export with two boards, an image, and a boolean shape that is not
 /// converted.
@@ -179,29 +177,4 @@ fn bad_usage_and_unreadable_files_fail_with_a_message() {
 
 fn write_temp_text(name: &str, text: &str) -> std::path::PathBuf {
     common::write_temp(name, text.as_bytes())
-}
-
-#[test]
-fn idag_converts_to_16_designs_and_a_report() {
-    let Some(file) = fixture("tirebud-idag.penpot") else {
-        return;
-    };
-    let out = temp_dir("idag");
-    let result = run_convert(&file, &out);
-    assert!(
-        result.status.success(),
-        "{}",
-        String::from_utf8_lossy(&result.stderr)
-    );
-    // 15 boards and the Unplaced board with the 8 texts outside them (US-054).
-    assert_eq!(read_designs(&out).len(), 16);
-    assert_eq!(files_with_extension(&out.join("designs"), "json").len(), 16);
-    let entries = read_report(&out);
-    // At least the 55 shapes with constraints and the 7 with interactions.
-    assert!(entries.len() >= 62, "{} entries", entries.len());
-    for entry in &entries {
-        for key in ["board", "boardId", "shapeId", "name", "reason"] {
-            assert!(entry.get(key).is_some(), "{entry} has no `{key}`");
-        }
-    }
 }

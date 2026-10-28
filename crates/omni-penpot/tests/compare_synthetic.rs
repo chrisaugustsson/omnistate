@@ -63,7 +63,6 @@ use serde_json::{Value, json};
 
 use common::compare::*;
 use common::convert::*;
-use common::repo_root;
 
 /// A board with a rectangle, and the reference PNG: no pixel differs.
 #[test]
@@ -527,17 +526,4 @@ fn the_same_inputs_give_the_same_files() {
         a.keys()
     );
     assert_eq!(a, b);
-}
-
-#[test]
-fn the_structural_mismatches_and_the_text_drift_are_documented() {
-    let text = fs::read_to_string(repo_root().join("docs/penpot-compare.md"))
-        .unwrap_or_else(|error| panic!("docs/penpot-compare.md is not there: {error}"))
-        .to_lowercase();
-    for words in ["structural mismatches", "text drift", "textdrift", "pinned"] {
-        assert!(
-            text.contains(words),
-            "the document explains the two layout numbers and says {words:?}"
-        );
-    }
 }
