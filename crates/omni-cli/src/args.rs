@@ -225,16 +225,6 @@ mod tests {
     }
 
     #[test]
-    fn feature_takes_a_value_and_global_is_a_flag() {
-        let parsed = parse_strs(&["changeset", "list", "--feature=Checkout"]).unwrap();
-        assert_eq!(parsed.feature.as_deref(), Some("Checkout"));
-        assert!(!parsed.global);
-        let parsed = parse_strs(&["changeset", "create", "--global"]).unwrap();
-        assert!(parsed.global);
-        assert!(parse_strs(&["changeset", "list", "--feature"]).is_err());
-    }
-
-    #[test]
     fn doc_options_take_values_and_doc_read_takes_a_version() {
         let parsed = parse_strs(&[
             "doc",

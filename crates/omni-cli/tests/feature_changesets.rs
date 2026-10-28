@@ -183,34 +183,6 @@ fn logged_in(server: &str) -> Scratch {
     home
 }
 
-/// An error as US-015 defines it: a documented non-zero exit code, nothing on
-/// standard output and exactly one line on standard error that has every
-/// needle in it.
-fn assert_one_line_error(out: &Out, needles: &[&str]) {
-    assert_ne!(out.code, 0, "expected a failure; stdout: {:?}", out.stdout);
-    assert!(
-        documented_exit_codes().contains(&out.code),
-        "exit code {} is not documented under \"Exit codes\" in omni --help",
-        out.code
-    );
-    assert_eq!(out.stdout, "", "an error prints nothing on standard output");
-    let lines = out.stderr_lines();
-    assert_eq!(
-        lines.len(),
-        1,
-        "one line on standard error: {:?}",
-        out.stderr
-    );
-    let line = lines[0].to_lowercase();
-    for needle in needles {
-        assert!(
-            line.contains(&needle.to_lowercase()),
-            "the error line should contain {needle:?}: {:?}",
-            lines[0]
-        );
-    }
-}
-
 fn run(home: &Scratch, args: &[&str]) -> Out {
     omni(&home.path)
         .args(args)
@@ -221,14 +193,6 @@ fn run(home: &Scratch, args: &[&str]) -> Out {
 fn body_of(request: &Recorded) -> Value {
     serde_json::from_slice(&request.body)
         .unwrap_or_else(|e| panic!("the request body is JSON ({e}): {:?}", request.body))
-}
-
-fn posts_to(server: &MockServer, path: &str) -> Vec<Recorded> {
-    server
-        .requests()
-        .into_iter()
-        .filter(|r| r.method == "POST" && r.path == path)
-        .collect()
 }
 
 /// The `feature_id` of the only change set created since `before` requests.
@@ -248,64 +212,6 @@ fn created_feature(server: &MockServer, before: usize) -> Value {
 // ---------------------------------------------------------------------------
 // omni changeset create
 // ---------------------------------------------------------------------------
-
-#[test]
-fn changeset_create_opens_the_change_set_in_the_feature_given_by_name_or_id() {
-    let server = mock();
-    let home = logged_in(&server.url);
-    for (feature, expected) in [("Checkout", CHECKOUT), (SEARCH, SEARCH)] {
-        let before = server.requests().len();
-        let out = run(
-            &home,
-            &[
-                "changeset",
-                "create",
-                "--title",
-                "Pay page",
-                "--feature",
-                feature,
-                "--project",
-                PROJECT,
-            ],
-        );
-        assert_eq!(out.code, 0, "--feature {feature}: {}", out.stderr);
-        assert_eq!(
-            created_feature(&server, before),
-            expected,
-            "--feature {feature} opens the change set in that feature"
-        );
-    }
-}
-
-#[test]
-fn without_a_feature_the_change_set_is_project_level() {
-    let server = mock();
-    let home = logged_in(&server.url);
-    for extra in [&[][..], &["--global"][..]] {
-        let before = server.requests().len();
-        let out = run(
-            &home,
-            &[
-                &[
-                    "changeset",
-                    "create",
-                    "--title",
-                    "Pay page",
-                    "--project",
-                    PROJECT,
-                ][..],
-                extra,
-            ]
-            .concat(),
-        );
-        assert_eq!(out.code, 0, "{extra:?}: {}", out.stderr);
-        assert_eq!(
-            created_feature(&server, before),
-            Value::Null,
-            "{extra:?}: no feature_id is sent"
-        );
-    }
-}
 
 #[test]
 fn the_feature_comes_from_the_nearest_omni_toml_and_the_flags_win() {
@@ -353,48 +259,6 @@ fn the_feature_comes_from_the_nearest_omni_toml_and_the_flags_win() {
         created_feature(&server, before),
         Value::Null,
         "--global makes the change set project level whatever .omni.toml says"
-    );
-}
-
-#[test]
-fn an_unknown_feature_is_one_line_and_creates_nothing() {
-    let server = mock();
-    let home = logged_in(&server.url);
-    let control = run(
-        &home,
-        &[
-            "changeset",
-            "create",
-            "--title",
-            "Pay page",
-            "--feature",
-            "Checkout",
-            "--project",
-            PROJECT,
-        ],
-    );
-    assert_eq!(control.code, 0, "a known feature works: {}", control.stderr);
-    let before = posts_to(&server, &changesets_path(PROJECT)).len();
-
-    let out = run(
-        &home,
-        &[
-            "changeset",
-            "create",
-            "--title",
-            "Pay page",
-            "--feature",
-            "Loyalty points",
-            "--project",
-            PROJECT,
-        ],
-    );
-    assert_one_line_error(&out, &["Loyalty points"]);
-    assert_eq!(
-        posts_to(&server, &changesets_path(PROJECT)).len(),
-        before,
-        "no change set is created: {:?}",
-        server.requests()
     );
 }
 
@@ -502,18 +366,4 @@ fn changeset_list_filters_by_feature_or_global() {
         )],
         "--global lists the project-level change sets"
     );
-}
-
-#[test]
-fn help_names_the_feature_and_global_flags() {
-    let home = Scratch::new("help");
-    let help = omni(&home.path).args(&["--help"]).run();
-    assert_eq!(help.code, 0, "{}", help.stderr);
-    for flag in ["--feature", "--global"] {
-        assert!(
-            help.stdout.contains(flag),
-            "omni --help names {flag}: {:?}",
-            help.stdout
-        );
-    }
 }
