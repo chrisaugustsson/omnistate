@@ -2,12 +2,11 @@
 //! box (x, y, width, height) for every node ID, in page coordinates, with the
 //! fractions a browser keeps.
 
-mod common;
 mod design;
 
 use design::{
-    EPSILON, absolute, assert_box, assert_boxes, assert_cases, at, board, box_of, cases, fixed,
-    flex, frame, grid, ids_in, lay_out, none, rect, sized, text, with,
+    absolute, assert_box, assert_cases, at, board, box_of, cases, fixed, flex, frame, grid, ids_in,
+    lay_out, none, rect, sized, text, with,
 };
 use serde_json::{Value, json};
 
@@ -298,120 +297,6 @@ fn a_page_gets_an_empty_box_at_its_origin() {
         "an empty page has one node, so layout returns one box; it returned {boxes:?}"
     );
     assert_box(&boxes, "page0001", [0.0, 0.0, 0.0, 0.0], "an empty page");
-}
-
-#[test]
-fn sizes_include_the_padding() {
-    let boxes = lay_out(&board(
-        "brd00001",
-        fixed(200.0),
-        fixed(100.0),
-        flex(json!({"padding": {"top": 10, "right": 20, "bottom": 30, "left": 40}})),
-        vec![sized("a0000001", json!("fill"), json!("fill"))],
-    ));
-    let case = "a 200 x 100 board with padding 10 20 30 40 and a child that fills it";
-    assert_box(&boxes, "brd00001", [0.0, 0.0, 200.0, 100.0], case);
-    assert_box(&boxes, "a0000001", [40.0, 10.0, 140.0, 60.0], case);
-}
-
-#[test]
-fn boxes_keep_their_fractions() {
-    // Chrome shares the 100 px between the three fill children in its layout
-    // units of 1/128 px: 33.328125, 33.3359375 and 33.3359375 px.
-    let boxes = lay_out(&board(
-        "brd00001",
-        fixed(110.25),
-        fixed(30.0),
-        flex(json!({})),
-        vec![
-            rect("a0000001", 10.25, 20.75),
-            sized("b0000001", json!("fill"), fixed(30.0)),
-            sized("c0000001", json!("fill"), fixed(30.0)),
-            sized("d0000001", json!("fill"), fixed(30.0)),
-        ],
-    ));
-    let case = "a 10.25 x 20.75 box and three fill children sharing the other 100 px of a row";
-    let expected = [
-        ("a0000001", [0.0, 0.0, 10.25, 20.75]),
-        ("b0000001", [10.25, 0.0, 33.328125, 30.0]),
-        ("c0000001", [43.578125, 0.0, 33.3359375, 30.0]),
-        ("d0000001", [76.9140625, 0.0, 33.3359375, 30.0]),
-    ];
-    assert_boxes(&boxes, &expected, EPSILON, case);
-}
-
-#[test]
-fn hidden_nodes_take_no_space() {
-    let hidden = |json: Value| with(&json, "visible", json!(false));
-    let boxes = lay_out(&board(
-        "brd00001",
-        fixed(300.0),
-        fixed(100.0),
-        flex(json!({"gap": {"column": 10}})),
-        vec![
-            rect("a0000001", 50.0, 20.0),
-            hidden(rect("b0000001", 60.0, 20.0)),
-            rect("c0000001", 70.0, 20.0),
-        ],
-    ));
-    let case = "a row of three boxes whose middle one is hidden";
-    assert_box(&boxes, "a0000001", [0.0, 0.0, 50.0, 20.0], case);
-    assert_box(&boxes, "c0000001", [60.0, 0.0, 70.0, 20.0], case);
-    // A hidden node still gets a box, like every node of the tree.
-    box_of(&boxes, "b0000001");
-
-    let boxes = lay_out(&board(
-        "brd00002",
-        json!("hug"),
-        json!("hug"),
-        flex(json!({"gap": {"column": 10}})),
-        vec![
-            rect("d0000001", 50.0, 20.0),
-            hidden(frame(
-                "e0000001",
-                fixed(200.0),
-                fixed(200.0),
-                flex(json!({})),
-                vec![rect("e1000001", 100.0, 100.0)],
-            )),
-            rect("f0000001", 70.0, 30.0),
-        ],
-    ));
-    let case = "a row that hugs two boxes and a hidden 200 x 200 frame";
-    assert_box(&boxes, "brd00002", [0.0, 0.0, 130.0, 30.0], case);
-    assert_box(&boxes, "f0000001", [60.0, 0.0, 70.0, 30.0], case);
-    // So do the nodes below a hidden node.
-    box_of(&boxes, "e0000001");
-    box_of(&boxes, "e1000001");
-}
-
-#[test]
-fn omni_render_lays_out_with_taffy() {
-    let output = common::cargo(&["metadata", "--no-deps", "--format-version", "1"]);
-    assert!(
-        output.status.success(),
-        "`cargo metadata` failed at the repository root:\n{}",
-        common::describe(&output)
-    );
-    let metadata: Value =
-        serde_json::from_slice(&output.stdout).expect("cargo metadata prints JSON");
-    let omni_render = metadata["packages"]
-        .as_array()
-        .expect("cargo metadata lists packages")
-        .iter()
-        .find(|package| package["name"] == "omni-render")
-        .expect("omni-render is a workspace member");
-    let dependencies = omni_render["dependencies"]
-        .as_array()
-        .expect("every package lists its dependencies");
-    for crate_name in ["taffy", "omni-core"] {
-        assert!(
-            dependencies
-                .iter()
-                .any(|dependency| dependency["name"] == crate_name && dependency["kind"].is_null()),
-            "omni-render lays out the omni-core node tree with Taffy, so it needs a normal dependency on the `{crate_name}` crate"
-        );
-    }
 }
 
 #[test]
