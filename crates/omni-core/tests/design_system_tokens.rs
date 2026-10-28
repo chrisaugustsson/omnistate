@@ -630,8 +630,14 @@ fn the_tree_can_be_written_as_one_file_per_mode() {
     );
     let mut found = Vec::new();
     tokens_of(&dark, "", &mut found);
-    assert!(
-        found.len() >= 10,
+    let mut all = Vec::new();
+    tokens_of(&sample(), "", &mut all);
+    let paths = |tokens: &[(String, Value)]| -> Vec<String> {
+        tokens.iter().map(|(path, _)| path.clone()).collect()
+    };
+    assert_eq!(
+        paths(&found),
+        paths(&all),
         "the file of a mode has every token: {dark:#}"
     );
     for (path, token) in &found {
