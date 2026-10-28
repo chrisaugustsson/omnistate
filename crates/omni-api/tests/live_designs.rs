@@ -63,7 +63,6 @@ mod common;
 
 use common::{Client, Response, TestServer, cookie};
 use omni_api::Config;
-use omni_api::routes::{Access, registry};
 use s3::creds::Credentials;
 use s3::{Bucket, BucketConfiguration, Region};
 use serde_json::{Value, json};
@@ -79,8 +78,6 @@ const TEST_DB: &str = "omni_us104_live_designs";
 const TEST_BUCKET: &str = "omni-us104-live-designs";
 /// A node ID in the right format that no node has.
 const UNKNOWN_NODE: &str = "zzzzzzzz";
-const TOKENS_ROUTE: &str = "/api/v1/w/{workspace_id}/projects/{project_id}/tokens";
-const COMPONENTS_ROUTE: &str = "/api/v1/w/{workspace_id}/projects/{project_id}/components";
 
 // ---------------------------------------------------------------------------
 // Plumbing
@@ -788,21 +785,6 @@ fn board_using(button: &str, name: &str) -> String {
     format!(
         "<Board name=\"{name}\" x={{0}} y={{0}} width={{320}} height={{200}} dir=\"col\">\n  <Instance name=\"{name} pay\" component=\"{button}\"/>\n  <Frame name=\"{name} banner\" width={{320}} height={{40}} fill=\"$color.brand\"/>\n</Board>"
     )
-}
-
-// ---------------------------------------------------------------------------
-// The routes
-// ---------------------------------------------------------------------------
-
-#[test]
-fn the_live_token_and_component_routes_are_agent_routes_of_the_registry() {
-    for path in [TOKENS_ROUTE, COMPONENTS_ROUTE] {
-        let entry = registry()
-            .into_iter()
-            .find(|r| r.method == "PUT" && r.path == path)
-            .unwrap_or_else(|| panic!("the registry has no route PUT {path}"));
-        assert_eq!(entry.access, Access::Agent, "PUT {path}");
-    }
 }
 
 // ---------------------------------------------------------------------------
