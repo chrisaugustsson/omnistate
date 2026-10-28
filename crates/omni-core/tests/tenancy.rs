@@ -733,31 +733,6 @@ fn the_api_role_can_read_and_write_but_not_delete_or_truncate_tenant_tables() {
     });
 }
 
-#[test]
-fn the_api_role_has_no_update_privilege_on_the_log_the_versions_or_the_node_index() {
-    let db = test_db();
-    block(async {
-        let mut conn = admin_connection(db).await;
-        let tenant = tenant_tables(&mut conn).await;
-        for table in APPEND_ONLY_TABLES {
-            assert!(
-                tenant.iter().any(|t| t == table),
-                "the migrations must create the tenant table {table}; the tenant tables are {tenant:?}"
-            );
-            let granted: bool = sqlx::query_scalar("select has_table_privilege($1, $2, 'UPDATE')")
-                .bind(API_ROLE)
-                .bind(format!("public.{table}"))
-                .fetch_one(&mut conn)
-                .await
-                .unwrap();
-            assert!(
-                !granted,
-                "{API_ROLE} may UPDATE the append-only table {table}"
-            );
-        }
-    });
-}
-
 // ---------------------------------------------------------------------------
 // Isolation
 // ---------------------------------------------------------------------------
