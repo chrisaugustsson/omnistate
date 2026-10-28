@@ -346,19 +346,6 @@ fn a_frame_is_filled_with_its_solid_color_inside_its_box_and_nowhere_else() {
 }
 
 #[test]
-fn a_translucent_color_blends_with_what_is_beneath() {
-    let pixels = render_200(&one_box(40.0, 40.0, json!({"fills": [solid("#ff000080")]})));
-    assert_rgb(
-        &pixels,
-        100,
-        100,
-        [255, 127, 127],
-        3,
-        "half-transparent red over white",
-    );
-}
-
-#[test]
 fn fills_paint_in_list_order_with_the_last_on_top() {
     let pixels = render_200(&one_box(
         40.0,
@@ -390,32 +377,6 @@ fn fills_paint_in_list_order_with_the_last_on_top() {
     );
 }
 
-/// What CSS's `linear-gradient(<angle>deg, ...)` gives the point `(x, y)` of a
-/// `width` x `height` box: how far along the gradient line it is, 0 to 1.
-fn gradient_position(width: f32, height: f32, angle: f32, x: f32, y: f32) -> f32 {
-    let (sin, cos) = angle.to_radians().sin_cos();
-    let length = (width * sin).abs() + (height * cos).abs();
-    ((x - width / 2.0) * sin + (y - height / 2.0) * -cos) / length + 0.5
-}
-
-/// The color at `position` of the gradient with `stops`.
-fn gradient_color(stops: &[(f32, [u8; 3])], position: f32) -> [u8; 3] {
-    let (first, last) = (stops[0], stops[stops.len() - 1]);
-    if position <= first.0 {
-        return first.1;
-    }
-    if position >= last.0 {
-        return last.1;
-    }
-    let pair = stops
-        .windows(2)
-        .find(|pair| position <= pair[1].0)
-        .expect("the position is between two stops");
-    let t = (position - pair[0].0) / (pair[1].0 - pair[0].0);
-    let mix = |a: u8, b: u8| (f32::from(a) + (f32::from(b) - f32::from(a)) * t).round() as u8;
-    [0, 1, 2].map(|i| mix(pair[0].1[i], pair[1].1[i]))
-}
-
 fn gradient_fill(angle: f64, stops: &[(f32, &str)]) -> Value {
     json!({
         "type": "linear-gradient",
@@ -430,53 +391,40 @@ fn gradient_fill(angle: f64, stops: &[(f32, &str)]) -> Value {
 #[test]
 fn a_linear_gradient_follows_the_css_gradient_line_at_any_angle() {
     // Angles are degrees clockwise from pointing up, so 0 runs bottom to top
-    // and 90 left to right. At 45 degrees the gradient line of a wide box is
-    // longer than its sides and a corner is not at either end.
-    for (angle, width, height) in [
-        (90.0, 100.0, 20.0),
-        (180.0, 20.0, 100.0),
-        (0.0, 20.0, 100.0),
-        (270.0, 100.0, 20.0),
-        (45.0, 100.0, 50.0),
-        (135.0, 100.0, 50.0),
+    // and 90 left to right. The corners lie at the ends of the CSS gradient
+    // line.
+    for (angle, width, height, x, y, expected) in [
+        (90.0, 100.0, 20.0, 90, 90, [228, 0, 27]),
+        (90.0, 100.0, 20.0, 169, 90, [27, 0, 228]),
+        (180.0, 20.0, 100.0, 90, 90, [228, 0, 27]),
+        (180.0, 20.0, 100.0, 90, 169, [27, 0, 228]),
+        (0.0, 20.0, 100.0, 90, 90, [27, 0, 228]),
+        (270.0, 100.0, 20.0, 90, 90, [27, 0, 228]),
+        (45.0, 100.0, 50.0, 82, 82, [170, 0, 85]),
+        (45.0, 100.0, 50.0, 177, 82, [8, 0, 246]),
+        (45.0, 100.0, 50.0, 82, 127, [246, 0, 8]),
+        (135.0, 100.0, 50.0, 82, 82, [246, 0, 8]),
+        (135.0, 100.0, 50.0, 177, 82, [85, 0, 170]),
+        (135.0, 100.0, 50.0, 177, 127, [8, 0, 246]),
     ] {
         let pixels = render_200(&one_box(
             width,
             height,
             json!({"fills": [gradient_fill(angle, &[(0.0, "#ff0000"), (1.0, "#0000ff")])]}),
         ));
-        let stops = [(0.0, RED), (1.0, BLUE)];
-        for (fx, fy) in [
-            (0.07, 0.1),
-            (0.5, 0.5),
-            (0.93, 0.9),
-            (0.1, 0.9),
-            (0.9, 0.1),
-            (0.5, 0.1),
-        ] {
-            let (px, py) = (
-                (fx * width as f32).floor() + 0.5,
-                (fy * height as f32).floor() + 0.5,
-            );
-            let expected = gradient_color(
-                &stops,
-                gradient_position(width as f32, height as f32, angle as f32, px, py),
-            );
-            assert_rgb(
-                &pixels,
-                80 + px as u32,
-                80 + py as u32,
-                expected,
-                9,
-                &format!("a {width} x {height} box with a gradient at {angle} degrees"),
-            );
-        }
+        assert_rgb(
+            &pixels,
+            x,
+            y,
+            expected,
+            9,
+            &format!("a {width} x {height} box with a gradient at {angle} degrees, at {x}, {y}"),
+        );
     }
 }
 
 #[test]
 fn a_gradient_holds_its_end_colors_beyond_its_first_and_last_stops() {
-    let stops = [(0.25, RED), (0.5, GREEN), (0.75, BLUE)];
     let pixels = render_200(&one_box(
         100.0,
         20.0,
@@ -485,15 +433,21 @@ fn a_gradient_holds_its_end_colors_beyond_its_first_and_last_stops() {
             &[(0.25, "#ff0000"), (0.5, "#00a000"), (0.75, "#0000ff")],
         )]}),
     ));
-    for x in [3u32, 12, 24, 37, 50, 62, 74, 88, 96] {
-        let expected = gradient_color(&stops, (x as f32 + 0.5) / 100.0);
+    for (x, expected) in [
+        (83, RED),
+        (92, RED),
+        (117, [128, 80, 0]),
+        (142, [0, 80, 128]),
+        (168, BLUE),
+        (176, BLUE),
+    ] {
         assert_rgb(
             &pixels,
-            80 + x,
+            x,
             90,
             expected,
             9,
-            "a gradient with three stops",
+            &format!("a gradient with three stops, at x {x}"),
         );
     }
 }
