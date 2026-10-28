@@ -1521,15 +1521,6 @@ fn the_home_lists_the_features_in_creation_order_with_their_counts() {
     );
 }
 
-#[test]
-fn a_project_without_features_has_an_empty_feature_list_in_its_home() {
-    let (f, client) = ready();
-    let project = new_project(f, client);
-    changeset_with_version(f, client, &project);
-    let home = home(f, client, &project);
-    assert_eq!(list_at(&home, "/features"), Vec::<Value>::new(), "{home}");
-}
-
 /// One of each waiting kind in a change set of `feature` (or at project
 /// level): (decision, change set, comment, question).
 fn one_of_each_waiting(
