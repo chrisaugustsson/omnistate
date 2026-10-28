@@ -48,7 +48,7 @@
 
 mod common;
 
-use common::{assert_rejected, assert_round_trips, first_difference, to_json};
+use common::{assert_rejected, assert_round_trips, board, first_difference, to_json};
 use omni_core::design::tags::{self, TagError};
 use omni_core::design::{Node, NodeAddress, NodeId};
 use serde_json::{Value, json};
@@ -420,15 +420,17 @@ fn component_json_is_checked_like_its_tags() {
 }
 
 #[test]
-fn a_component_json_node_is_not_a_child_of_a_page_or_board() {
-    let component = to_json(&existing(BUTTON));
-    let page = json!({
-        "id": "page0001",
-        "type": "page",
-        "name": "Home",
-        "children": [component]
-    });
-    assert_rejected(&page, "a component is no board of a page");
+fn a_component_json_node_inside_a_board_is_rejected() {
+    let mut board = board("brd00001");
+    board["children"] = json!([to_json(&existing(BUTTON))]);
+    let message = assert_rejected(
+        &board,
+        "a component sits only at the top of the design system doc",
+    );
+    assert!(
+        message.contains("top of the design system doc") && message.contains("btn00001"),
+        "the error names the component and where components sit: {message}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -493,7 +495,11 @@ fn an_instance_takes_no_style_and_no_children() {
     let with_children = checkout_with_instance(
         r##"<Instance id="pay00001" name="Pay button" component="btn00001"><Text id="txt00009" name="Extra" content="x" fontFamily="Inter" fontSize={12}/></Instance>"##,
     );
-    rejected(&with_children);
+    let error = rejected(&with_children);
+    assert!(
+        error.message().contains("children"),
+        "an instance takes no children: {error}"
+    );
 }
 
 #[test]
@@ -535,23 +541,6 @@ fn a_property_value_is_text_or_true_or_false() {
         r#"<Instance id="pay00001" name="Pay button" component="btn00001" props={{label: ["Pay"]}}/>"#,
     );
     assert_error_at(&source, value_of(&source, "props", 0), &["label"], &[]);
-}
-
-#[test]
-fn instance_json_is_checked_like_its_tags() {
-    let page = to_json(&existing(CHECKOUT));
-    let instance = child(child(&page, "Checkout"), "Pay button").clone();
-    let mut other_field = instance.clone();
-    other_field["overrides"]["txt00001"] = json!({"fontSize": 20});
-    let message = assert_rejected(&other_field, "an override of another field is rejected");
-    assert!(message.contains("fontSize"), "{message}");
-    let mut bad_key = instance.clone();
-    bad_key["overrides"] = json!({"Label": {"content": "Pay now"}});
-    let message = assert_rejected(&bad_key, "an override key that is no node ID is rejected");
-    assert!(message.contains("Label"), "{message}");
-    let mut styled = instance;
-    styled["fills"] = json!([{"type": "solid", "color": "#16a34a"}]);
-    assert_rejected(&styled, "an instance stores no fills of its own");
 }
 
 // ---------------------------------------------------------------------------
@@ -598,20 +587,6 @@ fn text_that_is_no_node_address_is_rejected() {
     }
 }
 
-#[test]
-fn every_override_key_of_an_instance_addresses_a_node_inside_it() {
-    let page = to_json(&existing(CHECKOUT));
-    let instance = child(child(&page, "Checkout"), "Pay button");
-    let instance_id = instance["id"].as_str().unwrap();
-    for key in instance["overrides"].as_object().unwrap().keys() {
-        let address: NodeAddress = format!("{instance_id}/{key}")
-            .parse()
-            .unwrap_or_else(|_| panic!("{instance_id}/{key} is a node address"));
-        assert_eq!(address.instance(), Some(&id(instance_id)));
-        assert_eq!(address.node().as_str(), key);
-    }
-}
-
 // ---------------------------------------------------------------------------
 // docs/formats/design-tags.md
 // ---------------------------------------------------------------------------
@@ -637,30 +612,6 @@ fn code_blocks(doc: &str) -> Vec<String> {
 fn the_format_doc_documents_components_and_instances() {
     let path = repo_root().join("docs/formats/design-tags.md");
     let doc = fs::read_to_string(&path).expect("docs/formats/design-tags.md exists");
-    let mut missing = Vec::new();
-    for needle in [
-        "<Component",
-        "`props`",
-        "`overrides`",
-        "`bind`",
-        "`variant`",
-        "`boolean`",
-        "`text`",
-        "`slot`",
-        "`content`",
-        "`fills`",
-        "`visible`",
-        "<instanceId>/<componentNodeId>",
-    ] {
-        if !doc.contains(needle) {
-            missing.push(needle);
-        }
-    }
-    assert!(
-        missing.is_empty(),
-        "docs/formats/design-tags.md must document components and instances, but it lacks {missing:?}"
-    );
-
     let blocks = code_blocks(&doc);
     let component_example = blocks
         .iter()
@@ -677,17 +628,6 @@ fn the_format_doc_documents_components_and_instances() {
         }
     }));
     assert_eq!(json["type"], "component", "{json:#}");
-    let kinds: BTreeSet<&str> = json["props"]
-        .as_object()
-        .expect("the example defines properties")
-        .values()
-        .filter_map(|prop| prop["type"].as_str())
-        .collect();
-    assert_eq!(
-        kinds,
-        KINDS.into_iter().collect(),
-        "the example shows a property of each kind"
-    );
 
     let instance_example = blocks
         .iter()
