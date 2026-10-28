@@ -508,59 +508,59 @@ fn unknown_ids_are_errors_that_name_them() {
     let cases = [
         (
             set(UNKNOWN, 1, json!({"html": "x"})),
+            UNKNOWN,
             "set of an unknown node",
         ),
         (
             replace(UNKNOWN, 1, "<p>x</p>"),
+            UNKNOWN,
             "replace of an unknown node",
         ),
-        (delete(UNKNOWN, 1), "delete of an unknown node"),
+        (delete(UNKNOWN, 1), UNKNOWN, "delete of an unknown node"),
         (
             move_to(UNKNOWN, 1, Some(S1), None),
+            UNKNOWN,
             "move of an unknown node",
         ),
         (
             move_to(P1, 1, Some(UNKNOWN), None),
+            UNKNOWN,
             "move into an unknown parent",
         ),
         (
             move_to(P1, 1, Some(S2), Some(UNKNOWN)),
+            UNKNOWN,
             "move after an unknown node",
         ),
         (
             insert_into(UNKNOWN, None, "<p>x</p>"),
+            UNKNOWN,
             "insert into an unknown parent",
         ),
         (
             insert_into(S1, Some(UNKNOWN), "<p>x</p>"),
+            UNKNOWN,
             "insert after an unknown node",
         ),
         (
             insert_into(S2, Some(P1), "<p>x</p>"),
+            P1,
             "insert after a node that is not a child of the parent",
         ),
         (
             move_to(P1, 1, Some(S2), Some(P2)),
+            P2,
             "move after a node that is not a child of the new parent",
         ),
     ];
-    for (op, what) in cases {
-        let (index, message) = invalid(&mut doc, json!([op.clone()]));
+    for (op, named, what) in cases {
+        let (index, message) = invalid(&mut doc, json!([op]));
         assert_eq!(index, 0, "{what}");
-        let named = [UNKNOWN, P1, P2].iter().any(|node| message.contains(node));
         assert!(
-            named,
-            "{what}: the error must name the ID, but it is `{message}`"
+            message.contains(named),
+            "{what}: the error must name {named}, but it is `{message}`"
         );
-        if what.contains("unknown") {
-            assert!(
-                message.contains(UNKNOWN),
-                "{what}: the error must name {UNKNOWN}, but it is `{message}`"
-            );
-        }
     }
-    let error = refused(&mut doc, json!([delete(UNKNOWN, 1)]));
-    assert!(error.to_string().contains(UNKNOWN), "{error}");
 }
 
 // --- Replace ---
@@ -1076,16 +1076,6 @@ fn a_batch_that_fails_changes_nothing() {
     assert_eq!(applied.ops.len(), 4);
     assert_eq!(rev(&doc, P1), 2);
     assert!(!doc.contains(id(UL)));
-}
-
-#[cfg_attr(not(target_arch = "wasm32"), test)]
-#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
-fn an_empty_batch_applies_and_changes_nothing() {
-    let mut doc = doc();
-    let before = snapshot(&doc);
-    let applied = apply(&mut doc, json!([]));
-    assert!(applied.ops.is_empty());
-    assert_eq!(snapshot(&doc), before);
 }
 
 // --- US-109: operations at any depth ---

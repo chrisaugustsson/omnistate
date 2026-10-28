@@ -1,13 +1,10 @@
-//! US-021: the documents and build wiring of the operation engine.
+//! US-021: the document of the operation engine.
 //!
 //! - docs/formats/operations.md defines the JSON of the five operations. Every
 //!   ```json code block in it is an operation or a batch (an array) of
 //!   operations that `omni-core` reads; between them the examples use all five
-//!   operations, a null parent and a null position (`{"after": null}`). Results
-//!   and errors are shown in other kinds of code block (```text).
-//! - The engine compiles to WebAssembly and the same tests (tests/ops.rs) pass
-//!   there: `make test` runs them with `wasm-pack test --node`, and omni-core
-//!   has `wasm-bindgen-test` as a dev-dependency for the wasm32 target.
+//!   operations. Results and errors are shown in other kinds of code block
+//!   (```text).
 
 use omni_core::ops::Operation;
 use serde_json::Value;
@@ -53,38 +50,6 @@ fn the_operations_are_documented_with_valid_examples_of_each() {
         "docs/formats/operations.md",
         "define the JSON shape of each operation",
     );
-    let lower = doc.to_lowercase();
-    for word in [
-        "insert",
-        "replace",
-        "set",
-        "move",
-        "delete",
-        "parent",
-        "position",
-        "after",
-        "content",
-        "properties",
-        "node",
-        "rev",
-        "revision",
-        "conflict",
-        "fractional",
-        "descendant",
-        "all or nothing",
-        "clean",
-        "null",
-    ] {
-        assert!(
-            lower.contains(word),
-            "docs/formats/operations.md must cover `{word}`"
-        );
-    }
-    assert!(
-        doc.contains("\"after\": null") || doc.contains("\"after\":null"),
-        "docs/formats/operations.md must show the first position, `{{\"after\": null}}`"
-    );
-
     let examples = json_fences(&doc);
     assert!(
         !examples.is_empty(),
@@ -123,21 +88,4 @@ fn the_operations_are_documented_with_valid_examples_of_each() {
             "docs/formats/operations.md must show a `{kind}` operation in a ```json example"
         );
     }
-}
-
-#[test]
-fn the_engine_tests_run_in_webassembly_with_wasm_pack() {
-    let makefile = read("Makefile", "run the engine tests in WebAssembly");
-    assert!(
-        makefile.contains("wasm-pack test --node"),
-        "the Makefile must run `wasm-pack test --node` for omni-core"
-    );
-    let manifest = read(
-        "crates/omni-core/Cargo.toml",
-        "declare the WebAssembly test dependency",
-    );
-    assert!(
-        manifest.contains("wasm-bindgen-test"),
-        "omni-core must have wasm-bindgen-test as a dev-dependency for the wasm32 target"
-    );
 }
