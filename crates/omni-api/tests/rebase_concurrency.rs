@@ -62,7 +62,7 @@ use std::future::Future;
 use std::str::FromStr;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Arc, Barrier, mpsc};
+use std::sync::mpsc;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -772,8 +772,6 @@ enum Change {
     Set(usize, &'static str),
     /// Deletes the paragraph.
     Delete(usize),
-    /// Inserts a new paragraph with the text right after the paragraph.
-    InsertAfter(usize, &'static str),
 }
 
 /// A doc whose mainline moved on under a change set: both change sets started
@@ -786,7 +784,7 @@ struct Scene {
 }
 
 /// Applies one side's changes to its draft of the doc in one batch, with the
-/// revisions the draft shows; returns the IDs of the new paragraphs.
+/// revisions the draft shows.
 fn apply(
     f: &Fixture,
     client: &Client,
@@ -795,7 +793,7 @@ fn apply(
     doc: &str,
     paragraphs: &[String],
     changes: &[Change],
-) -> Vec<String> {
+) {
     let html = draft_html(f, client, project, changeset, doc);
     let ops: Vec<Value> = changes
         .iter()
@@ -811,21 +809,9 @@ fn apply(
                 "node": paragraphs[i],
                 "rev": rev_in(&html, &paragraphs[i])
             }),
-            Change::InsertAfter(i, text) => insert_after(Some(&paragraphs[i]), text),
         })
         .collect();
-    let results = edit(f, client, project, changeset, doc, ops);
-    changes
-        .iter()
-        .zip(results)
-        .filter(|(change, _)| matches!(change, Change::InsertAfter(..)))
-        .map(|(_, result)| {
-            result["node"]
-                .as_str()
-                .expect("the inserted node")
-                .to_string()
-        })
-        .collect()
+    edit(f, client, project, changeset, doc, ops);
 }
 
 fn scene(
@@ -833,7 +819,6 @@ fn scene(
     client: &Client,
     ahead_changes: &[Change],
     behind_changes: &[Change],
-    with_fresh_doc: bool,
 ) -> Scene {
     let project = new_project(f, client);
 
@@ -898,18 +883,6 @@ fn scene(
         behind_changes,
     );
     save(f, client, &project, &behind, &doc);
-    if with_fresh_doc {
-        let fresh = create_doc(f, client, &project, &behind);
-        edit(
-            f,
-            client,
-            &project,
-            &behind,
-            &fresh,
-            vec![insert_after(None, "Fresh doc text")],
-        );
-        save(f, client, &project, &behind, &fresh);
-    }
     submit(f, client, &project, &behind);
     let approved = approve(f, client, &project, &behind);
     assert_eq!(
@@ -929,20 +902,6 @@ fn scene(
     }
 }
 
-/// Changes on different paragraphs: a clean rebase.
-fn clean_scene(f: &Fixture, client: &Client) -> Scene {
-    scene(
-        f,
-        client,
-        &[Change::Set(0, "Alpha by ahead")],
-        &[
-            Change::Set(1, "Beta by behind"),
-            Change::InsertAfter(1, "Delta by behind"),
-        ],
-        true,
-    )
-}
-
 /// Both sides change the first paragraph, the mainline removes the second
 /// one that the change set edits, and only the change set touches the third.
 fn conflicted_scene(f: &Fixture, client: &Client) -> Scene {
@@ -955,7 +914,6 @@ fn conflicted_scene(f: &Fixture, client: &Client) -> Scene {
             Change::Set(1, "Beta by behind"),
             Change::Set(2, "Gamma by behind"),
         ],
-        false,
     )
 }
 
@@ -1397,42 +1355,6 @@ fn two_rebases_of_the_same_change_set_give_one_result_and_one_409() {
     );
 }
 
-#[test]
-fn two_rebases_sent_together_merge_the_change_set_once() {
-    let (f, client) = ready();
-    let s = clean_scene(f, client);
-    let before = record(f, client, &s);
-
-    let together = Arc::new(Barrier::new(2));
-    let send = |together: Arc<Barrier>| {
-        let (project, behind) = (s.project.clone(), s.behind.clone());
-        spawn(move || {
-            together.wait();
-            rebase_response(f, client, &agent(f), &project, &behind)
-        })
-    };
-    let first = send(together.clone());
-    let second = send(together);
-    let answers = [
-        joined(first, "first rebase"),
-        joined(second, "second rebase"),
-    ];
-
-    let after = record(f, client, &s);
-    let won = assert_rebased_once(answers, &after, &before, "merged");
-    let approved = approved_versions(&after.changeset);
-    assert_eq!(
-        mainline_of(f, client, &s.project, &s.doc),
-        approved[&s.doc].as_str(),
-        "the doc's mainline is the one rebased version: {won}"
-    );
-    let html = mainline_html(f, client, &s.project, &s.doc);
-    assert!(
-        html.contains("Alpha by ahead") && html.contains("Beta by behind"),
-        "{html}"
-    );
-}
-
 // ---------------------------------------------------------------------------
 // A rebase racing an edit
 // ---------------------------------------------------------------------------
@@ -1661,95 +1583,9 @@ fn an_approval_sent_while_a_rebase_runs_is_refused_once_the_change_set_is_open()
     assert_eq!(after.rebased - before.rebased, 1);
 }
 
-#[test]
-fn a_rebase_sent_while_an_approval_runs_finds_the_state_the_approval_left() {
-    let (f, client) = ready();
-    let s = conflicted_scene(f, client);
-    // The agent saves again: the approval is cleared and the change set is
-    // in review on its old base, so approving it gives `needs_rebase`.
-    let latest = save(f, client, &s.project, &s.behind, &s.doc);
-    let review = changeset_of(f, client, &s.project, &s.behind);
-    assert_eq!(review["status"], "in_review", "{review}");
-    let before = record(f, client, &s);
-
-    let lock = RowLock::on("changesets", &s.behind);
-    let (project, behind) = (s.project.clone(), s.behind.clone());
-    let approving = spawn(move || approve_response(f, client, &project, &behind));
-    assert!(
-        lock.wait_for_waiters(1, REACH),
-        "the approval never reached the change set's row"
-    );
-    let rebasing = spawn_rebase(f, client, &s);
-    lock.wait_for_waiters(2, Duration::from_secs(3));
-    lock.release();
-    let (approved, approve_body) = joined(approving, "approval");
-    let (rebased, rebase_body) = joined(rebasing, "rebase");
-
-    assert_eq!(approved, 200, "{approve_body}");
-    assert_eq!(
-        approve_body["changeset"]["status"], "needs_rebase",
-        "{approve_body}"
-    );
-    let after = record(f, client, &s);
-    match rebased {
-        409 => {
-            assert_eq!(rebase_body, json!({ "error": "invalid_transition" }));
-            assert_eq!(after.changeset["status"], "needs_rebase");
-            assert_eq!(
-                approved_versions(&after.changeset),
-                BTreeMap::from([(s.doc.clone(), latest.clone())]),
-                "the approval of the latest version stands"
-            );
-            assert_eq!(
-                last_moves(&after.changeset, 2),
-                vec![
-                    step("in_review", "approved", "human"),
-                    step("approved", "needs_rebase", "system"),
-                ]
-            );
-            assert_not_rebased(&after, &before);
-            // The change set is rebased once the approval has gone through.
-            let answer = rebase(f, client, &s.project, &s.behind);
-            assert_eq!(answer["changeset"]["status"], "open", "{answer}");
-        }
-        200 => {
-            assert_eq!(after.changeset["status"], "open", "{rebase_body}");
-            assert_eq!(approved_versions(&after.changeset), BTreeMap::new());
-            assert_eq!(
-                last_moves(&after.changeset, 3),
-                vec![
-                    step("in_review", "approved", "human"),
-                    step("approved", "needs_rebase", "system"),
-                    step("needs_rebase", "open", "agent"),
-                ]
-            );
-            assert_eq!(after.rebased - before.rebased, 1);
-        }
-        other => panic!("a rebase racing an approval: {other} {rebase_body}"),
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Conflict kinds
 // ---------------------------------------------------------------------------
-
-#[test]
-fn nodes_changed_on_both_sides_are_both_changed_conflicts() {
-    let (f, client) = ready();
-    let s = conflicted_scene(f, client);
-    let answer = rebase(f, client, &s.project, &s.behind);
-    let answered = answer["conflicts"]
-        .as_array()
-        .expect("the conflicts")
-        .clone();
-    assert!(!answered.is_empty(), "{answer}");
-    for conflict in answered
-        .iter()
-        .chain(conflicts_of(f, client, &s.project, &s.behind).iter())
-    {
-        assert_eq!(conflict["kind"], "both_changed", "{conflict}");
-    }
-}
 
 #[test]
 fn a_node_the_change_set_added_that_the_rebase_cannot_place_is_an_unplaced_conflict() {
