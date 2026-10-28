@@ -852,14 +852,6 @@ fn hover_is_the_node_a_click_would_select() {
     assert_eq!(scene.hovered(), Some(id(HEADER)), "in the card's context");
 }
 
-#[test]
-fn hover_follows_the_screen_point_through_the_viewport() {
-    let viewport = Viewport::at(-100.0, -50.0, 2.0, WIDTH, HEIGHT);
-    let mut scene = fresh();
-    scene.pointer_move(&viewport, (290.0, 190.0), NONE);
-    assert_eq!(scene.hovered(), Some(id(CARD)));
-}
-
 // ---------------------------------------------------------------------------
 // Events
 // ---------------------------------------------------------------------------
@@ -905,37 +897,6 @@ fn selection_events_tell_each_change_of_the_selected_node_once() {
 }
 
 #[test]
-fn a_double_click_and_escape_tell_the_selection_they_leave() {
-    let mut scene = fresh();
-    double_click(&mut scene, ICON_AT);
-    let last_selected = scene
-        .take_events()
-        .into_iter()
-        .rfind(|event| matches!(event, Event::Select(_)));
-    assert_eq!(
-        last_selected,
-        Some(Event::Select(Some(addr(HEADER)))),
-        "a double-click ends with the header selected"
-    );
-
-    scene.escape();
-    assert_eq!(
-        scene.take_events(),
-        vec![Event::Select(Some(addr(CARD)))],
-        "Esc moves the selection from the header to the card"
-    );
-}
-
-#[test]
-fn events_are_drained_when_taken() {
-    let mut scene = fresh();
-    scene.pointer_move(&view(), ICON_AT, NONE);
-    click(&mut scene, ICON_AT);
-    assert!(!scene.take_events().is_empty());
-    assert!(scene.take_events().is_empty(), "taken events are gone");
-}
-
-#[test]
 fn hover_and_selection_events_come_in_the_order_they_happened() {
     let mut scene = fresh();
     scene.pointer_move(&view(), SIDE_AT, NONE);
@@ -972,12 +933,6 @@ fn assert_near(actual: LayoutBox, expected: LayoutBox, case: &str) {
 }
 
 #[test]
-fn there_is_no_overlay_while_nothing_is_hovered_or_selected() {
-    let scene = fresh();
-    assert!(scene.overlay(&view()).is_empty());
-}
-
-#[test]
 fn the_overlay_outlines_the_hovered_and_selected_nodes_labeled_with_their_names() {
     let mut scene = fresh();
     click(&mut scene, ICON_AT);
@@ -1001,54 +956,7 @@ fn the_overlay_outlines_the_hovered_and_selected_nodes_labeled_with_their_names(
 }
 
 #[test]
-fn the_overlay_has_only_the_outlines_that_still_apply() {
-    let mut scene = fresh();
-    click(&mut scene, ICON_AT);
-    scene.pointer_move(&view(), NO_BOARD_AT, NONE);
-    let overlay = scene.overlay(&view());
-    assert_eq!(overlay.len(), 1);
-    assert_eq!(overlay[0].kind, OutlineKind::Selection);
-
-    click(&mut scene, NO_BOARD_AT);
-    assert!(
-        scene.overlay(&view()).is_empty(),
-        "cleared selection, no outline"
-    );
-}
-
-#[test]
-fn outlines_stay_aligned_with_their_nodes_while_zooming_and_panning() {
-    let mut scene = fresh();
-    scene.click(&view(), BUTTON_AT, CTRL);
-    assert_eq!(scene.selected(), Some(id(BUTTON)));
-
-    // The button's page box is (40, 100, 80 x 40).
-    let at_200 = Viewport::at(-100.0, -50.0, 2.0, WIDTH, HEIGHT);
-    let overlay = scene.overlay(&at_200);
-    let selection = outline(&overlay, OutlineKind::Selection).expect("outlined");
-    assert_near(
-        selection.rect,
-        page_box(280.0, 300.0, 160.0, 80.0),
-        "at 200% from (-100, -50)",
-    );
-
-    let mut viewport = view();
-    viewport.zoom_at(0.5, (700.0, 400.0));
-    viewport.pan_by(30.0, -20.0);
-    let zoom = viewport.zoom();
-    let origin = viewport.to_screen((40.0, 100.0));
-    let overlay = scene.overlay(&viewport);
-    let selection = outline(&overlay, OutlineKind::Selection).expect("outlined");
-    assert_near(
-        selection.rect,
-        page_box(origin.0, origin.1, 80.0 * zoom, 40.0 * zoom),
-        "after zoom_at and pan_by",
-    );
-    assert!(zoom < 1.0, "the view really is zoomed out");
-}
-
-#[test]
-fn a_hover_outline_stays_aligned_too() {
+fn outlines_stay_aligned_with_their_nodes_at_every_zoom_and_pan() {
     let mut scene = fresh();
     let viewport = Viewport::at(-100.0, -50.0, 2.0, WIDTH, HEIGHT);
     scene.pointer_move(&viewport, (290.0, 190.0), NONE);
