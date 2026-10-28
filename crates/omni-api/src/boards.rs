@@ -856,25 +856,72 @@ mod tests {
         panic!("no node named {name}");
     }
 
+    /// Two pages: P with the boards A (holding the text T) and B, Q with the
+    /// board C.
+    const TWO_PAGES: &str = r#"<Page name="P">
+  <Board name="A" x={0} y={0} width={10} height={10}>
+    <Text name="T" content="one" fontFamily="Inter" fontSize={12}/>
+  </Board>
+  <Board name="B" x={20} y={0} width={10} height={10}/>
+</Page>
+<Page name="Q">
+  <Board name="C" x={0} y={0} width={10} height={10}/>
+</Page>"#;
+
+    /// The part named by `chunk`.
+    fn part<'a>(parts: &'a [Part], chunk: &str) -> &'a Part {
+        parts
+            .iter()
+            .find(|part| part.hash == chunk)
+            .unwrap_or_else(|| panic!("no part is named {chunk}"))
+    }
+
     #[test]
     fn a_design_splits_into_a_chunk_per_page_and_board_named_by_content() {
-        let design = pages(DESIGN);
+        let design = pages(TWO_PAGES);
+        let id = |name: &str| node_named(&design, name).id().to_string();
         let (manifest, parts) = split(&design);
-        assert_eq!(manifest.pages.len(), 1);
-        assert_eq!(manifest.pages[0].boards.len(), 2);
-        assert_eq!(parts.len(), 3);
+
+        let page_ids: Vec<&str> = manifest.pages.iter().map(|page| page.id.as_str()).collect();
+        assert_eq!(page_ids, [id("P"), id("Q")], "the pages in order");
+        let boards = |page: &ManifestPage| -> Vec<String> {
+            page.boards.iter().map(|board| board.id.clone()).collect()
+        };
+        assert_eq!(boards(&manifest.pages[0]), [id("A"), id("B")]);
+        assert_eq!(boards(&manifest.pages[1]), [id("C")]);
+
+        assert_eq!(parts.len(), 5, "a chunk per page and per board");
         for part in &parts {
             assert_eq!(part.hash, blake3_hex(part.text.as_bytes()));
         }
-        // The page's chunk holds no board; a board's chunk holds its subtree.
-        assert!(!parts[0].text.contains("one"));
-        assert!(parts[1].text.contains("one"));
+
+        // The page's chunk holds no board; a board's chunk holds its subtree
+        // and nothing of another board.
+        let page = &part(&parts, &manifest.pages[0].chunk).text;
+        assert!(!page.contains(&id("A")) && !page.contains("one"), "{page}");
+        let a = part(&parts, &manifest.pages[0].boards[0].chunk);
+        assert!(
+            a.text.contains(&id("T")) && a.text.contains("one"),
+            "{}",
+            a.text
+        );
+        let b = &part(&parts, &manifest.pages[0].boards[1].chunk).text;
+        for needle in [id("A"), id("T"), "one".to_string()] {
+            assert!(!b.contains(&needle), "B's chunk holds nothing of A: {b}");
+        }
+
+        // A board's node index is the board, its root without a parent, and
+        // its subtree.
+        let index: Vec<(String, Option<String>)> = a
+            .nodes
+            .iter()
+            .map(|node| (node.id.to_string(), node.parent.map(|p| p.to_string())))
+            .collect();
+        assert_eq!(index, [(id("A"), None), (id("T"), Some(id("A")))]);
+
         // The same design splits the same way.
         let (again, _) = split(&design);
         assert_eq!(manifest_text(&again), manifest_text(&manifest));
-        // A board's root has no parent in its chunk.
-        assert!(parts[1].nodes[0].parent.is_none());
-        assert_eq!(parts[1].nodes.len(), 2);
     }
 
     #[test]

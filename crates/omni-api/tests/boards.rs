@@ -73,7 +73,6 @@ mod common;
 
 use common::{Client, Response, TestServer, cookie};
 use omni_api::Config;
-use omni_api::routes::{Access, registry};
 use s3::creds::Credentials;
 use s3::{Bucket, BucketConfiguration, Region};
 use serde_json::{Value, json};
@@ -87,13 +86,8 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 const TEST_DB: &str = "omni_us030_boards";
 const TEST_BUCKET: &str = "omni-us030-boards";
-const DRAFT_BOARD_ROUTE: &str = "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs/{doc_id}/boards/{board_id}";
-const BOARD_ROUTE: &str =
-    "/api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}/boards/{board_id}";
 /// A node ID in the right format that no node has.
 const UNKNOWN_NODE: &str = "zzzzzzzz";
-/// A version ID that no version has.
-const UNKNOWN_ID: &str = "01900000-0000-7000-8000-000000000000";
 
 // ---------------------------------------------------------------------------
 // Plumbing
@@ -610,22 +604,6 @@ fn indexed_nodes(f: &Fixture, chunk: &str) -> BTreeSet<String> {
     })
 }
 
-/// The bytes stored at `key`, which must exist.
-fn stored(key: &str) -> Vec<u8> {
-    let object = block(bucket().get_object(key)).unwrap_or_else(|e| panic!("get {key}: {e}"));
-    assert_eq!(
-        object.status_code(),
-        200,
-        "{key} is stored in RustFS: {}",
-        String::from_utf8_lossy(object.bytes())
-    );
-    object.to_vec()
-}
-
-fn chunk_key(f: &Fixture, chunk: &str) -> String {
-    format!("ws/{}/chunks/{chunk}", f.workspace)
-}
-
 // ---------------------------------------------------------------------------
 // The design
 // ---------------------------------------------------------------------------
@@ -714,7 +692,6 @@ fn design_tags(ids: &Ids, total: &str, hello: &str) -> String {
 const TOTAL: &str = "Summa 10 kr";
 const NEW_TOTAL: &str = "Summa 12 kr";
 const HELLO: &str = "Hej Alice";
-const NEW_HELLO: &str = "Hej Bob";
 
 /// A project with a design doc started in an open change set and the design
 /// imported into its draft.
@@ -744,6 +721,84 @@ fn new_design(f: &Fixture, client: &Client) -> Design {
         changeset,
         doc,
         ids,
+    }
+}
+
+/// A design doc created without a change set (US-102), with the boards Cart
+/// (Frame Summary holding Text Total) and Payment inserted into its head.
+struct LiveDesign {
+    project: String,
+    doc: String,
+    page: String,
+    cart: String,
+    summary: String,
+    total: String,
+}
+
+fn live_design(f: &Fixture, client: &Client) -> LiveDesign {
+    let project = new_project(f, client);
+    let base = project_base(f, &project);
+    let doc = id_of(
+        &must(
+            call(
+                client,
+                "POST",
+                &format!("{base}/docs"),
+                &agent(f),
+                Some(&json!({ "kind": "design", "pillar": "ui", "title": unique("doc") })),
+            ),
+            201,
+            "create a design without a change set",
+        )["doc"],
+    );
+    let head = must(
+        call(
+            client,
+            "GET",
+            &format!("{base}/docs/{doc}/html"),
+            &agent(f),
+            None,
+        ),
+        200,
+        "read the doc's head",
+    );
+    let page = id_of(&head["pages"][0]);
+    let cart = format!(
+        r#"<Board name="Cart" x={{0}} y={{0}} width={{360}} height={{640}} dir="col" gap={{8}}>
+  <Frame name="Summary" dir="col" gap={{4}}>
+    <Text name="Total" content="{TOTAL}" fontFamily="Inter" fontSize={{16}}/>
+  </Frame>
+</Board>"#
+    );
+    let payment = r#"<Board name="Payment" x={400} y={0} width={360} height={640} dir="col">
+  <Text name="Pay" content="Betala nu" fontFamily="Inter" fontSize={16}/>
+</Board>"#;
+    let insert = |content: &str| json!({ "op": "insert", "parent": page, "position": { "after": null }, "content": content });
+    let answer = must(
+        call(
+            client,
+            "POST",
+            &format!("{base}/docs/{doc}/ops"),
+            &agent(f),
+            Some(&json!({ "ops": [insert(&cart), insert(payment)] })),
+        ),
+        200,
+        "insert the boards into the head",
+    );
+    let created: Vec<String> = answer["results"][0]["created"]
+        .as_array()
+        .unwrap_or_else(|| panic!("the insert lists what it created: {answer}"))
+        .iter()
+        .map(|id| id.as_str().expect("an ID").to_string())
+        .collect();
+    assert_eq!(created.len(), 3, "Cart, Summary and Total: {answer}");
+    LiveDesign {
+        project,
+        doc,
+        page,
+        cart: created[0].clone(),
+        summary: created[1].clone(),
+        total: created[2].clone(),
     }
 }
 
@@ -841,172 +896,30 @@ fn assert_board_alone(tags: &str, board: &str, inside: &[&str], outside: &[&str]
 }
 
 // ---------------------------------------------------------------------------
-// The routes
-// ---------------------------------------------------------------------------
-
-#[test]
-fn the_board_routes_are_in_the_registry() {
-    let routes = registry();
-    for path in [DRAFT_BOARD_ROUTE, BOARD_ROUTE] {
-        let entry = routes
-            .iter()
-            .find(|r| r.method == "GET" && r.path == path)
-            .unwrap_or_else(|| panic!("the registry has no route GET {path}"));
-        assert_eq!(entry.access, Access::Both, "GET {path}");
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Pages, boards and their chunks
 // ---------------------------------------------------------------------------
 
 #[test]
-fn a_design_version_is_a_manifest_of_its_pages_and_their_boards() {
-    let (f, client) = ready();
-    let d = new_design(f, client);
-    let saved = save(f, client, &d.project, &d.changeset, &d.doc);
-    let version = read_version(f, client, &d.project, &id_of(&saved));
-
-    let pages = manifest_pages(&version);
-    let page_ids: Vec<String> = pages.iter().map(id_of).collect();
-    assert_eq!(
-        page_ids,
-        [id(&d.ids, "Checkout"), id(&d.ids, "Account")],
-        "the manifest lists the pages in order: {version:#}"
-    );
-    let boards = |page: &Value| -> Vec<String> {
-        page["boards"]
-            .as_array()
-            .unwrap_or_else(|| panic!("a page of the manifest lists its boards: {page}"))
-            .iter()
-            .map(id_of)
-            .collect()
-    };
-    assert_eq!(
-        boards(&pages[0]),
-        [id(&d.ids, "Cart"), id(&d.ids, "Payment")],
-        "the first page holds its boards in order"
-    );
-    assert_eq!(boards(&pages[1]), [id(&d.ids, "Profile")]);
-
-    let chunks = chunks_by_node(&version);
-    let distinct: BTreeSet<&String> = chunks.values().collect();
-    assert_eq!(
-        distinct.len(),
-        5,
-        "every page and board is a chunk of its own: {chunks:?}"
-    );
-    // The full design is still there for every viewer.
-    let tags = version["tags"].as_str().expect("the version's tags");
-    for text in [TOTAL, "Betala nu", HELLO] {
-        assert!(tags.contains(text), "{text:?} is in the version: {tags}");
-    }
-}
-
-#[test]
-fn every_page_and_board_is_stored_in_rustfs_named_by_the_blake3_hash_of_its_content() {
-    let (f, client) = ready();
-    let d = new_design(f, client);
-    let saved = save(f, client, &d.project, &d.changeset, &d.doc);
-    let version = read_version(f, client, &d.project, &id_of(&saved));
-    let chunks = chunks_by_node(&version);
-    assert_eq!(chunks.len(), 5, "{chunks:?}");
-
-    let mut contents = HashMap::new();
-    for (node, chunk) in &chunks {
-        let key = chunk_key(f, chunk);
-        let bytes = stored(&key);
-        assert_eq!(
-            blake3::hash(&bytes).to_hex().as_str(),
-            chunk.as_str(),
-            "{key} (of node {node}) is named by the BLAKE3 hash of its bytes"
-        );
-        contents.insert(node.clone(), String::from_utf8_lossy(&bytes).to_string());
-    }
-    let content = |name: &str| contents[&id(&d.ids, name)].clone();
-
-    // A board's chunk holds the board and its subtree, and nothing else.
-    let cart = content("Cart");
-    for name in ["Cart", "Summary", "Total", "Shipping"] {
-        assert!(
-            cart.contains(&id(&d.ids, name)),
-            "the Cart chunk holds {name}: {cart}"
-        );
-    }
-    assert!(cart.contains(TOTAL), "{cart}");
-    for name in ["Payment", "Pay", "Profile", "Hello"] {
-        assert!(
-            !cart.contains(&id(&d.ids, name)),
-            "the Cart chunk holds nothing of {name}: {cart}"
-        );
-    }
-    let payment = content("Payment");
-    assert!(payment.contains("Betala nu"), "{payment}");
-    assert!(
-        !payment.contains(TOTAL) && !payment.contains(HELLO),
-        "{payment}"
-    );
-
-    // A page's chunk holds none of its boards' content.
-    for page in ["Checkout", "Account"] {
-        let text = content(page);
-        for board_content in [TOTAL, "Frakt ingår", "Betala nu", HELLO] {
-            assert!(
-                !text.contains(board_content),
-                "the {page} page's chunk holds no board content: {text}"
-            );
-        }
-    }
-}
-
-#[test]
 fn the_chunk_index_is_keyed_by_workspace_and_hash() {
-    let (f, client) = ready();
-    let d = new_design(f, client);
-    let saved = save(f, client, &d.project, &d.changeset, &d.doc);
-    let first = read_version(f, client, &d.project, &id_of(&saved));
-    let chunks = chunks_by_node(&first);
-
-    for chunk in chunks.values() {
-        assert_eq!(
-            count(
-                "select count(*) from chunks where workspace_id = $1::uuid and hash = $2",
-                &[&f.workspace, chunk],
-            ),
-            1,
-            "the chunk index has one row for {chunk} in the workspace"
-        );
-    }
-
-    // Saving the same draft again uses the same chunks: still one row each.
-    let again = save(f, client, &d.project, &d.changeset, &d.doc);
-    let again = read_version(f, client, &d.project, &id_of(&again));
-    assert_eq!(chunks_by_node(&again), chunks);
-    for chunk in chunks.values() {
-        assert_eq!(
-            count(
-                "select count(*) from chunks where workspace_id = $1::uuid and hash = $2",
-                &[&f.workspace, chunk],
-            ),
-            1,
-            "a chunk that two versions use is indexed once: {chunk}"
-        );
-    }
+    let (f, _) = ready();
+    let hash = blake3::hash(unique("chunk").as_bytes())
+        .to_hex()
+        .to_string();
 
     // The key is the pair: the same hash may be indexed in another workspace,
     // but not twice in one.
-    let cart = chunk_named(&chunks, &d.ids, "Cart");
     let insert = |workspace: &str| {
         block(async {
             let mut conn = admin_connection().await;
             sqlx::query("insert into chunks (workspace_id, hash) values ($1::uuid, $2)")
                 .bind(workspace)
-                .bind(&cart)
+                .bind(&hash)
                 .execute(&mut conn)
                 .await
                 .map(|_| ())
         })
     };
+    insert(&f.workspace).unwrap_or_else(|e| panic!("a workspace indexes a new hash: {e}"));
     insert(&f.other_workspace)
         .unwrap_or_else(|e| panic!("another workspace may index the same hash: {e}"));
     let twice = insert(&f.workspace).expect_err("a workspace indexes a hash once");
@@ -1014,64 +927,6 @@ fn the_chunk_index_is_keyed_by_workspace_and_hash() {
         twice.to_string().contains("duplicate key"),
         "the second row is refused as a duplicate of (workspace_id, hash): {twice}"
     );
-}
-
-#[test]
-fn unchanged_boards_and_pages_keep_their_chunks_in_later_versions() {
-    let (f, client) = ready();
-    let d = new_design(f, client);
-    let first = save(f, client, &d.project, &d.changeset, &d.doc);
-    let first = chunks_by_node(&read_version(f, client, &d.project, &id_of(&first)));
-
-    // Only the Cart board changes.
-    import_design(
-        f,
-        client,
-        &d.project,
-        &d.changeset,
-        &d.doc,
-        &design_tags(&d.ids, NEW_TOTAL, HELLO),
-    );
-    let second = save(f, client, &d.project, &d.changeset, &d.doc);
-    let second_version = read_version(f, client, &d.project, &id_of(&second));
-    let second = chunks_by_node(&second_version);
-    let chunk = |chunks: &HashMap<String, String>, name: &str| chunk_named(chunks, &d.ids, name);
-    assert_ne!(
-        chunk(&first, "Cart"),
-        chunk(&second, "Cart"),
-        "the changed board has a new chunk"
-    );
-    for name in ["Payment", "Profile", "Account"] {
-        assert_eq!(
-            chunk(&first, name),
-            chunk(&second, name),
-            "the unchanged {name} keeps its chunk"
-        );
-    }
-    let tags = second_version["tags"].as_str().expect("the version's tags");
-    assert!(tags.contains(NEW_TOTAL) && tags.contains(HELLO), "{tags}");
-
-    // A version of another change set shares the boards it does not change.
-    merge(f, client, &d.project, &d.changeset);
-    let later = new_changeset(f, client, &d.project);
-    import_design(
-        f,
-        client,
-        &d.project,
-        &later,
-        &d.doc,
-        &design_tags(&d.ids, NEW_TOTAL, NEW_HELLO),
-    );
-    let third = save(f, client, &d.project, &later, &d.doc);
-    let third = chunks_by_node(&read_version(f, client, &d.project, &id_of(&third)));
-    for name in ["Cart", "Payment", "Checkout"] {
-        assert_eq!(
-            chunk(&second, name),
-            chunk(&third, name),
-            "the unchanged {name} keeps its chunk in the next change set"
-        );
-    }
-    assert_ne!(chunk(&second, "Profile"), chunk(&third, "Profile"));
 }
 
 #[test]
@@ -1212,114 +1067,34 @@ fn reading_a_board_of_a_draft_gives_its_tags_with_a_rev_on_every_tag() {
 }
 
 #[test]
-fn reading_a_board_of_the_mainline_or_a_version_gives_its_tags_without_rev() {
+fn reading_a_board_of_the_head_gives_that_board_alone() {
     let (f, client) = ready();
-    let d = new_design(f, client);
-    save(f, client, &d.project, &d.changeset, &d.doc);
-    merge(f, client, &d.project, &d.changeset);
-    let mainline = mainline_of(f, client, &d.project, &d.doc);
-    let later = new_changeset(f, client, &d.project);
-    import_design(
-        f,
-        client,
-        &d.project,
-        &later,
-        &d.doc,
-        &design_tags(&d.ids, NEW_TOTAL, HELLO),
-    );
-    let newer = id_of(&save(f, client, &d.project, &later, &d.doc));
-    let cart = id(&d.ids, "Cart");
-
-    let answer = must(
-        board_response(f, client, &agent(f), &d.project, &d.doc, &cart, ""),
-        200,
-        "read a board of the mainline",
-    );
-    assert_eq!(answer["version_id"], mainline.as_str(), "{answer}");
-    assert_eq!(answer["board_id"], cart.as_str(), "{answer}");
-    assert_eq!(
-        answer["page_id"],
-        id(&d.ids, "Checkout").as_str(),
-        "{answer}"
-    );
-    let tags = answer["tags"].as_str().expect("the board's tags");
-    assert_board_alone(tags, &cart, &[TOTAL], &[NEW_TOTAL, "Betala nu"]);
-    assert!(
-        !tags.contains("rev="),
-        "a version's tags carry no rev: {tags}"
-    );
-
-    // The human reads it too.
-    let by_human = must(
-        board_response(f, client, &human(f), &d.project, &d.doc, &cart, ""),
-        200,
-        "the human reads a board of the mainline",
-    );
-    assert_eq!(by_human["tags"], answer["tags"]);
-
-    let answer = must(
-        board_response(
-            f,
-            client,
-            &agent(f),
-            &d.project,
-            &d.doc,
-            &cart,
-            &format!("?version={newer}"),
-        ),
-        200,
-        "read a board of a saved version",
-    );
-    assert_eq!(answer["version_id"], newer.as_str(), "{answer}");
-    let tags = answer["tags"].as_str().expect("the board's tags");
-    assert_board_alone(tags, &cart, &[NEW_TOTAL], &[TOTAL]);
-    assert!(
-        !tags.contains("rev="),
-        "a version's tags carry no rev: {tags}"
-    );
-
-    // The draft of the later change set, with revs.
-    let answer = must(
-        draft_board_response(f, client, &d.project, &later, &d.doc, &cart),
-        200,
-        "read a board of the later draft",
-    );
-    let tags = answer["tags"].as_str().expect("the board's tags");
-    assert_board_alone(tags, &cart, &[NEW_TOTAL], &[TOTAL]);
-    assert!(
-        opening_tags(tags).iter().all(|tag| rev_of(tag).is_some()),
-        "{tags}"
-    );
+    let d = live_design(f, client);
+    for auth in [agent(f), human(f)] {
+        let answer = must(
+            board_response(f, client, &auth, &d.project, &d.doc, &d.cart, ""),
+            200,
+            "read a board of the head",
+        );
+        assert_eq!(answer["board_id"], d.cart.as_str(), "{answer}");
+        assert_eq!(answer["page_id"], d.page.as_str(), "{answer}");
+        let tags = answer["tags"].as_str().expect("the board's tags");
+        assert_board_alone(
+            tags,
+            &d.cart,
+            &[&d.summary, &d.total, TOTAL],
+            &["Betala nu"],
+        );
+    }
 }
 
 #[test]
 fn an_id_that_names_no_board_of_the_doc_is_refused() {
     let (f, client) = ready();
-    let d = new_design(f, client);
-    save(f, client, &d.project, &d.changeset, &d.doc);
-    merge(f, client, &d.project, &d.changeset);
-    let later = new_changeset(f, client, &d.project);
-    import_design(
-        f,
-        client,
-        &d.project,
-        &later,
-        &d.doc,
-        &design_tags(&d.ids, TOTAL, HELLO),
-    );
-    for node in [
-        UNKNOWN_NODE.to_string(),
-        id(&d.ids, "Checkout"),
-        id(&d.ids, "Summary"),
-        id(&d.ids, "Pay"),
-    ] {
+    let d = live_design(f, client);
+    for node in [UNKNOWN_NODE, &d.page, &d.summary, &d.total] {
         assert_error(
-            &board_response(f, client, &agent(f), &d.project, &d.doc, &node, ""),
-            404,
-            "unknown_board",
-        );
-        assert_error(
-            &draft_board_response(f, client, &d.project, &later, &d.doc, &node),
+            &board_response(f, client, &agent(f), &d.project, &d.doc, node, ""),
             404,
             "unknown_board",
         );
@@ -1327,38 +1102,24 @@ fn an_id_that_names_no_board_of_the_doc_is_refused() {
 }
 
 #[test]
-fn reading_a_board_of_what_is_no_design_or_has_no_such_version_is_refused() {
+fn reading_a_board_of_a_doc_that_is_no_design_is_refused() {
     let (f, client) = ready();
-    let d = new_design(f, client);
-    let cart = id(&d.ids, "Cart");
-
-    // The doc's head is empty until its change set merges (US-102): the
-    // board is in the draft only.
-    assert_error(
-        &board_response(f, client, &agent(f), &d.project, &d.doc, &cart, ""),
-        404,
-        "unknown_board",
+    let project = new_project(f, client);
+    let html = id_of(
+        &must(
+            call(
+                client,
+                "POST",
+                &format!("{}/docs", project_base(f, &project)),
+                &agent(f),
+                Some(&json!({ "kind": "html", "pillar": "spec", "title": unique("doc") })),
+            ),
+            201,
+            "create an HTML doc",
+        )["doc"],
     );
-
-    // A version that is not one of the doc's.
     assert_error(
-        &board_response(
-            f,
-            client,
-            &agent(f),
-            &d.project,
-            &d.doc,
-            &cart,
-            &format!("?version={UNKNOWN_ID}"),
-        ),
-        404,
-        "not_found",
-    );
-
-    // An HTML doc has no boards.
-    let html = create_doc(f, client, &d.project, &d.changeset, "html", "spec");
-    assert_error(
-        &draft_board_response(f, client, &d.project, &d.changeset, &html, &cart),
+        &board_response(f, client, &agent(f), &project, &html, UNKNOWN_NODE, ""),
         400,
         "not_a_design",
     );
