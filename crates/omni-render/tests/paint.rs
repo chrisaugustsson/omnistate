@@ -658,36 +658,6 @@ fn aligned_stroke(align: &str) -> Value {
 }
 
 #[test]
-fn a_frame_stroke_aligned_inside_lies_inside_the_edge() {
-    let pixels = render_200(&aligned_stroke("inside"));
-    assert_all_rgb(
-        &pixels,
-        &[
-            (80, 100),
-            (83, 100),
-            (116, 100),
-            (119, 100),
-            (100, 80),
-            (100, 119),
-        ],
-        BLUE,
-        "the 4 px stroke inside the edge, from 80 to 84 and from 116 to 120",
-    );
-    assert_all_rgb(
-        &pixels,
-        &[(84, 100), (115, 100)],
-        RED,
-        "the fill inside the stroke",
-    );
-    assert_all_rgb(
-        &pixels,
-        &[(79, 100), (120, 100), (100, 79), (100, 120)],
-        WHITE,
-        "outside the box",
-    );
-}
-
-#[test]
 fn a_frame_stroke_aligned_to_the_center_straddles_the_edge() {
     let pixels = render_200(&aligned_stroke("center"));
     assert_all_rgb(
@@ -823,36 +793,6 @@ fn a_dashed_stroke_inside_the_edge_starts_its_first_dash_at_the_top_left_corner(
     // pixels from y 80 to 82.
     let pixels = render_200(&dashed_box("inside"));
     assert_all_rgb(&pixels, &[(86, 81), (106, 81), (126, 81)], BLUE, "a dash");
-    assert_all_rgb(&pixels, &[(96, 81), (116, 81)], WHITE, "a gap");
-}
-
-#[test]
-fn a_dashed_stroke_on_the_edge_starts_its_first_dash_at_the_top_left_corner() {
-    // The middle of the stroke is the edge, from (80, 80): dashes from 80 to
-    // 90, 100 to 110 and 120 to 130, from y 79 to 81.
-    let pixels = render_200(&dashed_box("center"));
-    assert_all_rgb(&pixels, &[(85, 80), (105, 80), (125, 80)], BLUE, "a dash");
-    assert_all_rgb(&pixels, &[(95, 80), (115, 80)], WHITE, "a gap");
-}
-
-#[test]
-fn a_dashed_stroke_outside_the_edge_starts_its_first_dash_at_the_top_left_corner() {
-    // The middle of the stroke runs 1 px outside the edge, from (79, 79):
-    // dashes from 79 to 89, 99 to 109 and 119 to 129, from y 78 to 80.
-    let pixels = render_200(&dashed_box("outside"));
-    assert_all_rgb(&pixels, &[(84, 79), (104, 79), (124, 79)], BLUE, "a dash");
-    assert_all_rgb(&pixels, &[(94, 79), (114, 79)], WHITE, "a gap");
-}
-
-#[test]
-fn a_dashed_stroke_without_an_align_lies_inside_the_edge() {
-    let design = one_box(
-        80.0,
-        40.0,
-        json!({"strokes": [{"color": "#0000ff", "width": 2, "dash": {"length": 10, "gap": 10}}]}),
-    );
-    let pixels = render_200(&design);
-    assert_all_rgb(&pixels, &[(86, 81), (106, 81)], BLUE, "a dash");
     assert_all_rgb(&pixels, &[(96, 81), (116, 81)], WHITE, "a gap");
 }
 

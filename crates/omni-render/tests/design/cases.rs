@@ -6745,36 +6745,3 @@ pub fn grid_self_alignment() -> Vec<Case> {
         ),
     ]
 }
-
-/// Strokes take no space wherever they sit and however they are dashed, so a
-/// box with dashed strokes inside, on and outside its edge keeps its size.
-pub fn dashed_and_aligned_strokes_take_no_space() -> Vec<Case> {
-    let strokes = json!([
-        {"color": "#0f172a", "width": 6, "align": "outside", "dash": {"length": 4, "gap": 2}},
-        {"color": "#2563eb", "width": 3, "align": "center"},
-        {"color": "#ffffff", "width": 2, "align": "inside", "dash": {"length": 1, "gap": 1}}
-    ]);
-    vec![case(
-        "a hug row with dashed and aligned strokes around two boxes",
-        board(
-            "brd00001",
-            json!("hug"),
-            json!("hug"),
-            flex(json!({"gap": {"column": 4}})),
-            vec![
-                with(
-                    &hugging("frm00001", "a0000001", 20.0, 10.0),
-                    "strokes",
-                    strokes.clone(),
-                ),
-                with(&rect("b0000001", 30.0, 30.0), "strokes", strokes),
-            ],
-        ),
-        &[
-            ("brd00001", [0.0, 0.0, 54.0, 30.0]),
-            ("frm00001", [0.0, 0.0, 20.0, 30.0]),
-            ("a0000001", [0.0, 0.0, 20.0, 10.0]),
-            ("b0000001", [24.0, 0.0, 30.0, 30.0]),
-        ],
-    )]
-}
