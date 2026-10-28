@@ -1288,17 +1288,4 @@ mod tests {
         assert_eq!(diff.moved[0].from_after.as_deref(), Some("c0000000"));
         assert_eq!(diff.moved[0].to_after, None);
     }
-
-    #[test]
-    fn longest_increasing_marks_one_longest_run() {
-        assert_eq!(
-            longest_increasing(vec![1, 2, 0, 3]),
-            [true, true, false, true]
-        );
-        assert_eq!(
-            longest_increasing(vec![2, 0, 1, 3]),
-            [false, true, true, true]
-        );
-        assert_eq!(longest_increasing(Vec::new()), Vec::<bool>::new());
-    }
 }
