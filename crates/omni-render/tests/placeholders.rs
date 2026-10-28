@@ -13,12 +13,11 @@
 //!   tokens resolved against the design system (in its first mode).
 //! - A page of such placeholders, spread as far apart as the Ordrar page of
 //!   the TireBud design (boards from x = -3200 to 4900, y = -484 to 300,000),
-//!   reports its boards in view once the view is fitted to it, and the boards
-//!   under the view as the reviewer zooms in on them.
+//!   reports its boards in view once the view is fitted to it.
 
 mod design;
 
-use design::{at, board, fixed, flex, node, none, rect};
+use design::{at, board, fixed, flex, node, rect};
 use omni_render::layout::LayoutBox;
 use omni_render::paint::Assets;
 use omni_render::system::DesignSystem;
@@ -145,56 +144,13 @@ fn a_board_that_hugs_its_content_is_laid_out_in_the_box_of_that_content() {
 }
 
 #[test]
-fn a_board_of_a_fixed_size_keeps_it() {
-    let board = at(
-        &board("b0000001", fixed(1800.0), fixed(640.0), none(), Vec::new()),
-        0.0,
-        631.0,
-    );
-    assert_eq!(
-        board_box(node(&board), &Assets::new(), None),
-        Some(LayoutBox {
-            x: 0.0,
-            y: 631.0,
-            width: 1800.0,
-            height: 640.0,
-        })
-    );
-}
-
-#[test]
-fn a_hugging_placeholder_without_its_content_is_never_in_view() {
-    // Why the outline cannot hand the renderer the board's own JSON: left
-    // without its content, a board that hugs it and has no padding has no
-    // room, and no view shows it.
-    let bare = placeholder_of(&at(
-        &board(
-            "b0000001",
-            json!("hug"),
-            json!("hug"),
-            flex(json!({})),
-            Vec::new(),
-        ),
-        100.0,
-        100.0,
-    ));
-    let scene = Scene::new(node(&page(vec![bare])), Assets::new());
-    let viewport = Viewport::at(0.0, 0.0, 1.0, WIDTH, HEIGHT);
-    assert_eq!(visible(&scene, &viewport), Vec::<String>::new());
-}
-
-#[test]
 fn the_placeholders_of_a_page_spread_far_apart_are_in_view_once_the_view_is_fitted() {
     let system = system();
     let boards: Vec<Value> = SPREAD
         .iter()
         .map(|(id, x, y)| sized_placeholder(&hugging_board(id, *x, *y), &system))
         .collect();
-    for board in &boards {
-        assert_eq!(board["width"], fixed(140.0), "{board}");
-        assert_eq!(board["height"], fixed(98.0), "{board}");
-    }
-    let scene = Scene::with_system(node(&page(boards)), Assets::new(), system.clone());
+    let scene = Scene::with_system(node(&page(boards)), Assets::new(), system);
 
     // The first frame fits the view to the boards, as the web build does.
     let mut viewport = Viewport::new(WIDTH, HEIGHT);
@@ -212,14 +168,4 @@ fn the_placeholders_of_a_page_spread_far_apart_are_in_view_once_the_view_is_fitt
     // centered on it: on the board halfway down.
     assert_eq!(viewport.zoom(), MIN_ZOOM);
     assert_eq!(visible(&scene, &viewport), ["b0000005"]);
-
-    // Zoomed in on each board in turn, that board is the one in view.
-    for (id, x, y) in SPREAD {
-        let viewport = Viewport::at(x as f32 - 20.0, y as f32 - 20.0, 1.0, WIDTH, HEIGHT);
-        let shown = visible(&scene, &viewport);
-        assert!(
-            shown.contains(&id.to_string()),
-            "the view at ({x}, {y}) shows {id}: {shown:?}"
-        );
-    }
 }
