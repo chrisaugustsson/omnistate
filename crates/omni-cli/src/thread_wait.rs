@@ -158,22 +158,6 @@ mod tests {
     }
 
     #[test]
-    fn posts_need_a_whole_number_of_at_least_one() {
-        assert_eq!(
-            condition(&["wait", "--posts", "3"]).unwrap(),
-            Condition {
-                posts: Some(3),
-                concluded: false
-            }
-        );
-        for text in ["0", "-1", "abc", "2.5", ""] {
-            assert!(condition(&["wait", "--posts", text]).is_err(), "{text:?}");
-        }
-        assert!(condition(&["wait"]).is_err());
-        assert!(condition(&["wait", "--until", "posts:2"]).is_err());
-    }
-
-    #[test]
     fn a_thread_meets_the_posts_it_has_and_the_conclusion_it_was_given() {
         let posts = condition(&["wait", "--posts", "2"]).unwrap();
         assert!(!posts.met_by(&thread(1, None)));

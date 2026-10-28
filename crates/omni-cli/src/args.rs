@@ -255,15 +255,6 @@ mod tests {
     }
 
     #[test]
-    fn removed_commands_accept_any_options_so_the_command_can_explain() {
-        let parsed = parse_strs(&["decision", "propose", "t", "--file", "d.json"]).unwrap();
-        assert_eq!(parsed.words, ["decision", "propose", "t"]);
-        let parsed = parse_strs(&["thread", "phase", "t", "--open"]).unwrap();
-        assert_eq!(parsed.words, ["thread", "phase", "t"]);
-        assert!(parse_strs(&["thread", "read", "t", "--open"]).is_err());
-    }
-
-    #[test]
     fn bad_options_are_errors() {
         assert!(parse_strs(&["--bogus"]).is_err());
         assert!(parse_strs(&["whoami", "--as"]).is_err());

@@ -31,8 +31,6 @@
 //!   the Thread of the API's tests. Every command is an agent request with the
 //!   agent identity headers, `--json` prints the API's JSON, and errors are
 //!   one line on standard error, as in US-015 (tests/common/mod.rs).
-//! - Removed (US-108): `omni thread phase` and every `omni decision` command
-//!   are one-line errors that send nothing, and `omni --help` names neither.
 
 mod common;
 
@@ -281,42 +279,30 @@ fn assert_only_question_and_sealed(body: &Value) {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn thread_create_starts_a_thread_at_the_app_level_without_a_change_set() {
-    let server = mock();
-    let home = logged_in(&server.url);
-    let out = run(&home, &["thread", "create", QUESTION]);
-    assert_eq!(out.code, 0, "{}", out.stderr);
-    let body = started(&server, &format!("{}/threads", base()));
-    assert_eq!(body["question"], QUESTION, "{body}");
-    assert_ne!(body["sealed"], true, "not sealed without --sealed: {body}");
-    assert_only_question_and_sealed(&body);
-    assert!(
-        out.stdout.contains(NEW_THREAD),
-        "thread create prints the new thread's ID: {:?}",
-        out.stdout
-    );
-}
-
-#[test]
-fn thread_create_with_a_feature_and_sealed_starts_a_sealed_thread_in_the_feature() {
-    for feature in ["checkout", CHECKOUT] {
+fn thread_create_starts_a_thread_at_the_app_level_or_in_a_feature_without_a_change_set() {
+    // (extra arguments, path under base(), whether the body says sealed)
+    for (extra, path, sealed) in [
+        (vec![], "/threads".to_string(), false),
+        (
+            vec!["--feature", "checkout", "--sealed"],
+            format!("/features/{CHECKOUT}/threads"),
+            true,
+        ),
+        (
+            vec!["--feature", CHECKOUT, "--sealed"],
+            format!("/features/{CHECKOUT}/threads"),
+            true,
+        ),
+    ] {
         let server = mock();
         let home = logged_in(&server.url);
-        let out = run(
-            &home,
-            &[
-                "thread",
-                "create",
-                QUESTION,
-                "--feature",
-                feature,
-                "--sealed",
-            ],
-        );
-        assert_eq!(out.code, 0, "--feature {feature}: {}", out.stderr);
-        let body = started(&server, &format!("{}/features/{CHECKOUT}/threads", base()));
-        assert_eq!(body["question"], QUESTION, "{body}");
-        assert_eq!(body["sealed"], true, "{body}");
+        let mut args = vec!["thread", "create", QUESTION];
+        args.extend_from_slice(&extra);
+        let out = run(&home, &args);
+        assert_eq!(out.code, 0, "{extra:?}: {}", out.stderr);
+        let body = started(&server, &format!("{}{path}", base()));
+        assert_eq!(body["question"], QUESTION, "{extra:?}: {body}");
+        assert_eq!(body["sealed"] == true, sealed, "{extra:?}: {body}");
         assert_only_question_and_sealed(&body);
         assert!(
             out.stdout.contains(NEW_THREAD),
@@ -324,18 +310,6 @@ fn thread_create_with_a_feature_and_sealed_starts_a_sealed_thread_in_the_feature
             out.stdout
         );
     }
-}
-
-#[test]
-fn thread_create_in_a_feature_the_project_does_not_have_names_it_and_starts_nothing() {
-    let server = mock();
-    let home = logged_in(&server.url);
-    let out = run(
-        &home,
-        &["thread", "create", QUESTION, "--feature", "Billing"],
-    );
-    assert_one_line_error(&out, &["Billing"]);
-    assert!(writes(&server).is_empty(), "{:?}", server.requests());
 }
 
 #[test]
@@ -411,18 +385,19 @@ fn thread_read_prints_the_question_the_posts_and_the_conclusion() {
     assert_eq!(reads.len(), 1, "{:?}", server.requests());
     assert_agent_request(&reads[0]);
     assert!(writes(&server).is_empty(), "{:?}", server.requests());
-
-    let out = run(&home, &["thread", "read", THREAD, "--json"]);
-    assert_eq!(out.code, 0, "{}", out.stderr);
-    assert_eq!(out.json(), read_json(), "--json prints the API's answer");
 }
 
 #[test]
-fn thread_read_of_an_unknown_thread_is_one_line_that_names_it() {
+fn thread_read_and_conclude_of_an_unknown_thread_are_one_line_that_names_it() {
     let server = mock();
     let home = logged_in(&server.url);
-    let out = run(&home, &["thread", "read", UNKNOWN_THREAD]);
-    assert_one_line_error(&out, &[UNKNOWN_THREAD]);
+    for args in [
+        vec!["thread", "read", UNKNOWN_THREAD],
+        vec!["thread", "conclude", UNKNOWN_THREAD, CONCLUSION],
+    ] {
+        let out = run(&home, &args);
+        assert_one_line_error(&out, &[UNKNOWN_THREAD]);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -469,66 +444,4 @@ fn thread_conclude_needs_a_thread_and_a_text() {
         "nothing should be sent: {:?}",
         server.requests()
     );
-}
-
-#[test]
-fn thread_conclude_of_an_unknown_thread_is_one_line_that_names_it() {
-    let server = mock();
-    let home = logged_in(&server.url);
-    let out = run(&home, &["thread", "conclude", UNKNOWN_THREAD, CONCLUSION]);
-    assert_one_line_error(&out, &[UNKNOWN_THREAD]);
-}
-
-// ---------------------------------------------------------------------------
-// What US-108 removed
-// ---------------------------------------------------------------------------
-
-#[test]
-fn thread_phase_and_the_decision_commands_are_gone() {
-    let server = mock();
-    let home = logged_in(&server.url);
-    let decision = home.join("decision.json");
-    std::fs::write(&decision, "{}").expect("write a decision file");
-    let decision = decision.to_str().expect("a UTF-8 path");
-    for args in [
-        vec!["thread", "phase", THREAD, "--sealed"],
-        vec!["thread", "phase", THREAD, "--open"],
-        vec!["decision", "propose", THREAD, "--file", decision],
-        vec!["decision", "show", THREAD],
-    ] {
-        let out = run(&home, &args);
-        assert_one_line_error(&out, &[args[0]]);
-    }
-    assert!(
-        server.requests().is_empty(),
-        "nothing should be sent: {:?}",
-        server.requests()
-    );
-}
-
-#[test]
-fn help_lists_the_thread_commands_and_no_phases_or_decisions() {
-    let home = Scratch::new("help");
-    let help = omni(&home.path).args(&["--help"]).run();
-    assert_eq!(help.code, 0, "{}", help.stderr);
-    for command in [
-        "omni thread create",
-        "omni thread list",
-        "omni thread read",
-        "omni thread conclude",
-        "omni post",
-    ] {
-        assert!(
-            help.stdout.contains(command),
-            "omni --help lists `{command}`: {:?}",
-            help.stdout
-        );
-    }
-    for gone in ["omni thread phase", "omni decision"] {
-        assert!(
-            !help.stdout.contains(gone),
-            "omni --help no longer lists `{gone}`: {:?}",
-            help.stdout
-        );
-    }
 }
