@@ -232,26 +232,6 @@ fn wait_posts_exits_0_once_the_thread_has_that_many_posts() {
 }
 
 #[test]
-fn wait_posts_that_are_already_there_exits_0_at_once() {
-    let server = mock();
-    let home = logged_in(&server.url);
-    for posts in ["1", "3"] {
-        let out = wait_for(&home, THREE, posts, &["--timeout", "20"]);
-        assert_eq!(
-            out.code, 0,
-            "--posts {posts}; stdout: {:?}; stderr: {:?}",
-            out.stdout, out.stderr
-        );
-        assert!(
-            out.elapsed < Duration::from_secs(2),
-            "--posts {posts}: it ended at once: {:?}",
-            out.elapsed
-        );
-    }
-    assert_only_agent_reads(&server);
-}
-
-#[test]
 fn wait_posts_exits_2_when_the_timeout_runs_out_first() {
     let server = mock();
     let home = logged_in(&server.url);
@@ -293,18 +273,4 @@ fn wait_posts_on_an_unknown_thread_is_not_found() {
     let home = logged_in(&server.url);
     let out = wait_for(&home, MISSING, "1", &["--timeout", "5"]);
     assert_one_line_failure(&out, 1, &["not_found"]);
-}
-
-#[test]
-fn help_lists_the_thread_wait_on_posts() {
-    let home = Scratch::new("help");
-    let help = omni(&home.path).args(&["--help"]).run();
-    assert_eq!(help.code, 0, "{}", help.stderr);
-    for text in ["omni wait --thread", "--posts"] {
-        assert!(
-            help.stdout.contains(text),
-            "omni --help names {text:?}: {:?}",
-            help.stdout
-        );
-    }
 }

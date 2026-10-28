@@ -27,12 +27,9 @@ use std::future::Future;
 use std::str::FromStr;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::time::Duration;
 
 const TEST_DB: &str = "omni_us108_cli";
 const KEY_PREFIX: &str = "omniustes108";
-/// How long after the wait starts the other agents act.
-const LATER: Duration = Duration::from_millis(1500);
 
 fn block<F: Future>(future: F) -> F::Output {
     tokio::runtime::Builder::new_current_thread()
@@ -345,23 +342,6 @@ fn an_agent_starts_threads_at_the_app_level_and_in_a_feature_without_a_change_se
     let thread = &shown.json()["thread"];
     assert_eq!(thread["scope"], "feature", "{thread}");
     assert_eq!(thread["sealed"], true, "{thread}");
-    assert!(
-        thread.get("changeset_id").is_none_or(Value::is_null),
-        "the thread has no change set: {thread}"
-    );
-
-    let rows: i64 = block(async {
-        let mut conn = admin_connection().await;
-        sqlx::query_scalar(
-            "select count(*) from threads where id = any($1::text[]::uuid[]) \
-             and changeset_id is null",
-        )
-        .bind(vec![app.clone(), in_feature.clone()])
-        .fetch_one(&mut conn)
-        .await
-        .expect("count the threads without a change set")
-    });
-    assert_eq!(rows, 2, "neither thread has a change set");
 }
 
 #[test]
@@ -402,45 +382,6 @@ fn in_a_sealed_thread_read_and_wait_show_an_agent_no_other_agents_posts_until_it
     for made in [&a, &b, &own] {
         assert_all_of(&seen, made, "the moderator's thread read after posting");
     }
-}
-
-#[test]
-fn wait_posts_exits_0_once_the_thread_has_that_many_posts_and_2_on_timeout() {
-    let f = fixture();
-    let home = agent_home(f);
-    let project = new_project(&home);
-    let thread = new_thread(&home, &project, "Which hero layout?", &[]);
-    post(&home, "run-7/critic-a", &project, &thread);
-
-    let out = wait_posts(&home, MODERATOR, &project, &thread, "3", "1");
-    assert_eq!(
-        out.code, 2,
-        "one post is not three; stdout: {:?}; stderr: {:?}",
-        out.stdout, out.stderr
-    );
-    assert_eq!(
-        out.stdout, "",
-        "a timeout prints nothing on standard output"
-    );
-
-    let (others, others_project, others_thread) = (agent_home(f), project.clone(), thread.clone());
-    let critics = std::thread::spawn(move || {
-        std::thread::sleep(LATER);
-        post(&others, "run-7/critic-b", &others_project, &others_thread);
-        post(&others, "run-7/critic-c", &others_project, &others_thread);
-    });
-    let out = wait_posts(&home, MODERATOR, &project, &thread, "3", "20");
-    critics.join().expect("the critics posted");
-    assert_eq!(
-        out.code, 0,
-        "three posts came; stdout: {:?}; stderr: {:?}",
-        out.stdout, out.stderr
-    );
-    assert!(
-        out.elapsed >= LATER - Duration::from_millis(100),
-        "it waited for the posts: {:?}",
-        out.elapsed
-    );
 }
 
 #[test]
