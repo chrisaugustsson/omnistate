@@ -111,18 +111,6 @@ impl Pixels {
     }
 }
 
-/// The width and height in the header of the PNG file at `path`.
-pub fn png_size(path: &Path) -> (u32, u32) {
-    let bytes = fs::read(path).unwrap_or_else(|error| panic!("cannot read {path:?}: {error}"));
-    assert!(
-        bytes.len() > 24 && bytes[..8] == [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a],
-        "{path:?} is not a PNG"
-    );
-    let number =
-        |at: usize| u32::from_be_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]]);
-    (number(16), number(20))
-}
-
 /// A solid fill of the color `hex`, written `#rrggbb`.
 pub fn fill(hex: &str) -> Value {
     json!({ "fills": [{ "fillColor": hex, "fillOpacity": 1 }] })
