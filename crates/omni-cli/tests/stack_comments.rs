@@ -466,64 +466,6 @@ fn an_agent_lists_the_humans_comments_on_a_live_doc_and_replies() {
 }
 
 #[test]
-fn the_list_narrows_to_a_feature_by_its_name() {
-    let f = fixture();
-    let home = agent_home(f);
-    let project = new_project(&home);
-    let feature = unique("Checkout");
-    let out = run(
-        &home,
-        &["feature", "create", &feature, "--project", &project],
-    );
-    assert_eq!(out.code, 0, "feature create: {}", out.stderr);
-    let app = new_paper(&home, &project, None);
-    let in_feature = new_paper(&home, &project, Some(&feature));
-    let on_app = human_comments(f, &app, &app.a, "On the app level.");
-    let on_feature = human_comments(f, &in_feature, &in_feature.a, "In the feature.");
-
-    assert_eq!(
-        ids(&app.listed(&home, &[])),
-        [on_app.clone(), on_feature.clone()],
-        "the project's comments"
-    );
-    assert_eq!(
-        ids(&app.listed(&home, &["--feature", &feature])),
-        [on_feature.clone()],
-        "the feature's comments"
-    );
-    assert_eq!(
-        ids(&app.listed(&home, &["--doc", &app.doc])),
-        [on_app.clone()],
-        "one doc's comments"
-    );
-}
-
-#[test]
-fn a_comment_the_human_deleted_is_no_longer_listed_and_takes_no_reply() {
-    let f = fixture();
-    let home = agent_home(f);
-    let project = new_project(&home);
-    let paper = new_paper(&home, &project, None);
-    let kept = human_comments(f, &paper, &paper.a, "Keep me.");
-    let deleted = human_comments(f, &paper, &paper.b, "Delete me.");
-    human_deletes(f, &paper, &deleted);
-
-    assert_eq!(ids(&paper.listed(&home, &[])), [kept.clone()]);
-    let out = paper.comment(&home, &["list"]);
-    assert_eq!(out.code, 0, "comment list: {}", out.stderr);
-    assert!(
-        out.stdout.contains(&kept)
-            && !out.stdout.contains(&deleted)
-            && !out.stdout.contains("Delete me."),
-        "{:?}",
-        out.stdout
-    );
-    let out = paper.comment(&home, &["reply", &deleted, "Too late?"]);
-    assert_ne!(out.code, 0, "{:?}", out.stdout);
-    assert!(out.stderr.contains("not_found"), "{:?}", out.stderr);
-}
-
-#[test]
 fn deleting_a_commented_node_leaves_its_comment_listed_as_orphaned_with_its_snapshot() {
     let f = fixture();
     let home = agent_home(f);

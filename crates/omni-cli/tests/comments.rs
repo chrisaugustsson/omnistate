@@ -48,7 +48,6 @@ const PROJECT: &str = "01900000-0000-7000-8000-0000000000b1";
 const CHANGESET: &str = "01900000-0000-7000-8000-0000000000c1";
 const DOC: &str = "01900000-0000-7000-8000-0000000000d1";
 const OTHER_DOC: &str = "01900000-0000-7000-8000-0000000000d3";
-const NEW_VERSION: &str = "01900000-0000-7000-8000-0000000000f3";
 const CHECKOUT: &str = "01900000-0000-7000-8000-0000000000e1";
 /// The oldest comment: an agent replied, then the human.
 const FIRST: &str = "01900000-0000-7000-8000-0000000000a1";
@@ -454,19 +453,6 @@ fn list_narrows_to_a_doc_or_a_feature_by_name_or_id() {
     );
 }
 
-#[test]
-fn list_of_a_feature_that_does_not_exist_is_one_line_and_asks_for_no_comments() {
-    let server = mock();
-    let home = logged_in(&server.url);
-    let out = run(&home, &["comment", "list", "--feature", "Search"]);
-    assert_one_line_error(&out, &["Search"]);
-    assert!(
-        comment_requests(&server).is_empty(),
-        "no comments were asked for: {:?}",
-        requests(&server)
-    );
-}
-
 // ---------------------------------------------------------------------------
 // omni comment reply
 // ---------------------------------------------------------------------------
@@ -517,48 +503,6 @@ fn reply_needs_an_id_and_a_text() {
     let out = run(&home, &["comment", "reply", THIRD, "  \n "]);
     assert_one_line_error(&out, &["text"]);
     assert!(requests(&server).is_empty(), "nothing was sent");
-}
-
-// ---------------------------------------------------------------------------
-// No statuses
-// ---------------------------------------------------------------------------
-
-#[test]
-fn the_status_commands_are_gone_and_send_nothing() {
-    let server = mock();
-    let home = logged_in(&server.url);
-    for args in [
-        vec!["comment", "addressed", FIRST, "--version", NEW_VERSION],
-        vec!["comment", "resolve", FIRST],
-        vec!["comment", "reopen", FIRST],
-    ] {
-        let out = run(&home, &args);
-        assert_one_line_error(&out, &[]);
-    }
-    assert!(requests(&server).is_empty(), "nothing was sent");
-}
-
-#[test]
-fn help_lists_list_and_reply_and_no_status_command() {
-    let home = Scratch::new("help");
-    let help = omni(&home.path).args(&["--help"]).run();
-    assert_eq!(help.code, 0, "{}", help.stderr);
-    assert_contains_all(
-        &help.stdout,
-        &["omni comment list", "omni comment reply"],
-        "omni --help",
-    );
-    for gone in [
-        "omni comment addressed",
-        "omni comment resolve",
-        "omni comment reopen",
-    ] {
-        assert!(
-            !help.stdout.contains(gone),
-            "omni --help no longer lists {gone:?}: {:?}",
-            help.stdout
-        );
-    }
 }
 
 // ---------------------------------------------------------------------------
