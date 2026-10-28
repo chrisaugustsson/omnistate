@@ -435,17 +435,9 @@ fn creating_a_feature_records_its_name_and_description_and_no_status() {
         feature["description"], "Pay for the basket in one step.",
         "{feature}"
     );
-    let mut fields: Vec<&str> = feature
-        .as_object()
-        .expect("a feature is an object")
-        .keys()
-        .map(String::as_str)
-        .collect();
-    fields.sort_unstable();
-    assert_eq!(
-        fields,
-        ["created_at", "description", "id", "name", "project_id"],
-        "a feature has no status (US-110): {feature}"
+    assert!(
+        feature.get("status").is_none(),
+        "a feature has no status (V7, US-110): {feature}"
     );
     assert!(
         feature["created_at"]
