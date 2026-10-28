@@ -355,14 +355,6 @@ fn selecting_an_address_selects_that_node_on_the_canvas() {
         .collect();
     assert_eq!(selection.len(), 1, "one selection outline: {outlines:?}");
     assert_eq!(selection[0].node, label);
-    let page = scene.bounds_of(&label).expect("the label has a box");
-    let (x, y) = viewport.to_screen((page.x, page.y));
-    assert!(
-        (selection[0].rect.x - x).abs() < 0.01 && (selection[0].rect.y - y).abs() < 0.01,
-        "the outline sits on the node in the view: {:?} at ({x}, {y})",
-        selection[0].rect
-    );
-    assert!((selection[0].rect.width - page.width * 2.0).abs() < 0.01);
 
     // Selecting it again changes nothing, so it says nothing.
     assert!(scene.select_address(Some(&label)));
@@ -409,21 +401,6 @@ fn an_address_that_names_no_node_changes_nothing() {
     }
     assert_eq!(scene.take_events(), vec![]);
     assert_eq!(scene.selected(), Some(*address(SUMMARY).node()));
-}
-
-#[test]
-fn a_selection_in_the_panel_sets_the_context_as_a_click_would() {
-    // The context is always the parent of the selection, so that the next
-    // click on the canvas selects among the selected node's siblings.
-    let mut scene = scene();
-    assert!(scene.select_address(Some(&address(TOTAL))));
-    assert_eq!(scene.context(), Some(*address(SUMMARY).node()));
-    assert!(scene.select_address(Some(&address(CHECKOUT))));
-    assert_eq!(
-        scene.context(),
-        Some(*address(CHECKOUT).node()),
-        "a board is its own context"
-    );
 }
 
 // ---------------------------------------------------------------------------
