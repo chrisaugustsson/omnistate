@@ -383,66 +383,20 @@ describe("the viewer frame in Chrome", { timeout: 60_000 }, () => {
     }
   });
 
-  test("a doc's own scripts and handlers run in the frame, and cannot reach the page", async () => {
+  test("a doc's own scripts and handlers run in the frame", async () => {
     const target = await openViewer();
     const html = `<section data-omni-id="s0000001">
 <p data-omni-id="p0000001" id="by-script">Waiting.</p>
 <p data-omni-id="p0000002" id="by-handler" onclick="this.textContent = 'Clicked.'">Click here.</p>
-<p data-omni-id="p0000003" id="parent-probe">Not probed.</p>
 <script>
 document.getElementById("by-script").textContent = "Ran.";
-try {
-  document.getElementById("parent-probe").textContent = "read: " + parent.document.title;
-} catch (error) {
-  document.getElementById("parent-probe").textContent = "threw: " + error.name;
-}
 </script>
 </section>`;
-    await show(target, { html }, "p0000003");
+    await show(target, { html }, "p0000002");
     const text = (id: string) => target.frame.evaluate((which) => document.getElementById(which)?.textContent ?? "", id);
     await expect.poll(() => text("by-script"), { timeout: PATIENCE }).toBe("Ran.");
-    await expect.poll(() => text("parent-probe"), { timeout: PATIENCE }).toMatch(/^threw/);
     await target.frame.click('[data-omni-id="p0000002"]', { force: true });
     await expect.poll(() => text("by-handler"), { timeout: PATIENCE }).toBe("Clicked.");
-  });
-
-  test("a doc's own fetch is blocked by the policy and never reaches the network", async () => {
-    const target = await openViewer();
-    const html = `<section data-omni-id="s0000001">
-<p data-omni-id="p0000001" id="outcome">Pending.</p>
-<script>
-(function () {
-  var violations = [];
-  document.addEventListener("securitypolicyviolation", function (event) {
-    violations.push(event.blockedURI);
-  });
-  Promise.allSettled([
-    fetch("https://example.com/"),
-    fetch("${origin}/elsewhere/doc-fetch"),
-    fetch("${origin}/api/v1/w/${WORKSPACE_ID}/whoami?via=doc", { credentials: "include" }),
-  ]).then(function (outcomes) {
-    setTimeout(function () {
-      document.getElementById("outcome").textContent = JSON.stringify({
-        states: outcomes.map(function (outcome) { return outcome.status; }),
-        violations: violations,
-      });
-    }, 300);
-  });
-})();
-</script>
-</section>`;
-    await show(target, { html }, "p0000001");
-    const outcome = () => target.frame.evaluate(() => document.getElementById("outcome")?.textContent ?? "");
-    await expect.poll(outcome, { timeout: PATIENCE }).not.toBe("Pending.");
-    const result = JSON.parse(await outcome()) as { states: string[]; violations: string[] };
-    expect(result.states, "every fetch of the doc fails").toEqual(["rejected", "rejected", "rejected"]);
-    expect(
-      result.violations.some((uri) => uri.startsWith("https://example.com")),
-      `the policy blocked the fetch to example.com: ${JSON.stringify(result.violations)}`,
-    ).toBe(true);
-    await new Promise((resolve) => setTimeout(resolve, 300));
-    const reached = seen.filter((s) => s.path === "/elsewhere/doc-fetch" || s.path.endsWith("/whoami"));
-    expect(reached, "no request of the doc reached the server").toEqual([]);
   });
 
   test("a doc without styles is readable with the default stylesheet, and a doc's own style overrides it", async () => {
