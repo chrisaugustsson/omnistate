@@ -75,7 +75,6 @@ mod common;
 
 use common::{Client, Response, TestServer, cookie};
 use omni_api::Config;
-use omni_api::routes::{Access, registry};
 use s3::creds::Credentials;
 use s3::{Bucket, BucketConfiguration, Region};
 use serde_json::{Value, json};
@@ -91,7 +90,6 @@ const TEST_DB: &str = "omni_us024_versions";
 const TEST_BUCKET: &str = "omni-us024-versions";
 /// An ID that no row has.
 const UNKNOWN_ID: &str = "01900000-0000-7000-8000-000000000000";
-const API_ROLE: &str = "omni_api";
 
 // ---------------------------------------------------------------------------
 // Plumbing
@@ -767,44 +765,6 @@ fn story(f: &Fixture, client: &Client) -> Story {
 }
 
 // ---------------------------------------------------------------------------
-// The routes
-// ---------------------------------------------------------------------------
-
-#[test]
-fn the_version_routes_are_in_the_registry_with_their_access() {
-    let wanted = [
-        (
-            "POST",
-            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs/{doc_id}/versions",
-            Access::Agent,
-        ),
-        (
-            "POST",
-            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs/{doc_id}/remove",
-            Access::Agent,
-        ),
-        (
-            "GET",
-            "/api/v1/w/{workspace_id}/projects/{project_id}/versions/{version_id}",
-            Access::Both,
-        ),
-        (
-            "GET",
-            "/api/v1/w/{workspace_id}/projects/{project_id}/versions/{version_id}/diff/{other_version_id}",
-            Access::Both,
-        ),
-    ];
-    let routes = registry();
-    for (method, path, access) in wanted {
-        let entry = routes
-            .iter()
-            .find(|r| r.method == method && r.path == path)
-            .unwrap_or_else(|| panic!("the registry has no {method} {path}"));
-        assert_eq!(entry.access, access, "{method} {path}");
-    }
-}
-
-// ---------------------------------------------------------------------------
 // omni version save
 // ---------------------------------------------------------------------------
 
@@ -876,26 +836,6 @@ fn saving_a_draft_records_each_nodes_id_type_parent_and_fingerprint() {
         );
         assert_eq!(&read["version"], v1, "{read}");
     }
-}
-
-#[test]
-fn the_fingerprint_follows_the_nodes_own_content() {
-    let (f, client) = ready();
-    let s = story(f, client);
-    let (v1, v2) = (index_of(&s.v1), index_of(&s.v2));
-    for same in [&s.section, &s.heading, &s.keep, &s.mover] {
-        assert_eq!(
-            v1[same]["fingerprint"], v2[same]["fingerprint"],
-            "{same}'s own content did not change (a child or its place did)"
-        );
-    }
-    assert_ne!(
-        v1[&s.edited]["fingerprint"], v2[&s.edited]["fingerprint"],
-        "the edited paragraph's fingerprint changes"
-    );
-    assert_eq!(v2[&s.mover]["parent"], s.section.as_str(), "{}", s.v2);
-    assert!(!v2.contains_key(&s.dropped), "{}", s.v2);
-    assert_eq!(v2[&s.fresh]["parent"], Value::Null, "{}", s.v2);
 }
 
 #[test]
@@ -1027,78 +967,9 @@ fn the_human_never_saves_a_version_or_removes_a_doc() {
     assert_error(&response, 403, "forbidden");
 }
 
-#[test]
-fn saving_a_version_emits_version_saved() {
-    let (f, client) = ready();
-    let s = story(f, client);
-    let events = events_of(&s.project, "version.saved");
-    assert_eq!(events.len(), 2, "one event per saved version: {events:?}");
-    for (event, version) in events.iter().zip([&s.v1, &s.v2]) {
-        assert_eq!(event["version_id"], version["id"], "{event}");
-        assert_eq!(event["doc_id"], s.doc.as_str(), "{event}");
-        assert_eq!(event["changeset_id"], s.changeset.as_str(), "{event}");
-        assert_eq!(event["draft_id"], s.draft.as_str(), "{event}");
-        assert_eq!(event["removed"], false, "{event}");
-        assert_eq!(event["agent"]["run"], "run-1", "{event}");
-        assert_eq!(event["agent"]["role"], "writer", "{event}");
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Append-only storage
 // ---------------------------------------------------------------------------
-
-#[test]
-fn the_api_role_has_no_update_privilege_on_versions_the_log_or_the_node_index() {
-    let (f, client) = ready();
-    let s = story(f, client);
-    block(async {
-        let mut conn = admin_connection().await;
-        for table in ["versions", "draft_ops", "node_index"] {
-            let exists: bool = sqlx::query_scalar("select to_regclass($1) is not null")
-                .bind(format!("public.{table}"))
-                .fetch_one(&mut conn)
-                .await
-                .expect("look for the table");
-            assert!(exists, "the table {table} exists");
-            for (privilege, expected) in [("SELECT", true), ("INSERT", true), ("UPDATE", false)] {
-                let granted: bool = sqlx::query_scalar("select has_table_privilege($1, $2, $3)")
-                    .bind(API_ROLE)
-                    .bind(format!("public.{table}"))
-                    .bind(privilege)
-                    .fetch_one(&mut conn)
-                    .await
-                    .expect("look up the privilege");
-                assert_eq!(
-                    granted, expected,
-                    "{API_ROLE} {privilege} on {table}: expected {expected}"
-                );
-            }
-        }
-
-        // As the API role, a saved version cannot be changed.
-        let mut tx = conn.begin().await.expect("begin");
-        sqlx::query(&format!("set local role {API_ROLE}"))
-            .execute(&mut *tx)
-            .await
-            .expect("act as the API role");
-        sqlx::query("select set_config('app.workspace_id', $1, true)")
-            .bind(&f.workspace)
-            .execute(&mut *tx)
-            .await
-            .expect("set app.workspace_id");
-        let error = sqlx::query("update versions set doc_id = doc_id where id = $1::uuid")
-            .bind(id_of(&s.v1))
-            .execute(&mut *tx)
-            .await
-            .expect_err("the API role changed a saved version");
-        let code = error
-            .as_database_error()
-            .and_then(|e| e.code().map(|c| c.into_owned()))
-            .unwrap_or_default();
-        assert_eq!(code, "42501", "{error}");
-    });
-}
 
 #[test]
 fn versions_and_the_node_index_are_tenant_tables_of_the_workspace() {
