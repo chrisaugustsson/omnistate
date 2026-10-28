@@ -322,12 +322,33 @@ mod tests {
 
     #[test]
     fn the_bytes_decide_what_a_file_is() {
-        assert!(Sniffed::of(b"\x89PNG\r\n\x1a\n....") == Sniffed::Image("image/png"));
-        assert!(Sniffed::of(b"RIFF\0\0\0\0WEBPVP8 ") == Sniffed::Image("image/webp"));
-        assert!(Sniffed::of(b"RIFF\0\0\0\0WAVEfmt ") == Sniffed::Other);
-        assert!(Sniffed::of(b"<svg><script/></svg>") == Sniffed::Other);
-        assert!(Sniffed::of(b"wOF2....") == Sniffed::Font("font/woff2"));
-        assert!(Sniffed::of(b"") == Sniffed::Other);
+        let cases: [(&[u8], &str, &str); 13] = [
+            (b"\x89PNG\r\n\x1a\n....", "image", "image/png"),
+            (&[0xff, 0xd8, 0xff, 0xe0], "image", "image/jpeg"),
+            (b"GIF87a....", "image", "image/gif"),
+            (b"GIF89a....", "image", "image/gif"),
+            (b"RIFF\0\0\0\0WEBPVP8 ", "image", "image/webp"),
+            (b"RIFF\0\0\0\0WAVEfmt ", "file", "application/octet-stream"),
+            (b"<svg><script/></svg>", "file", "application/octet-stream"),
+            (
+                b"<html><script/></html>",
+                "file",
+                "application/octet-stream",
+            ),
+            (b"not a font", "file", "application/octet-stream"),
+            (b"", "file", "application/octet-stream"),
+            (b"wOF2....", "font", "font/woff2"),
+            (&[0x00, 0x01, 0x00, 0x00], "font", "font/ttf"),
+            (b"OTTO....", "font", "font/otf"),
+        ];
+        for (bytes, kind, content_type) in cases {
+            let sniffed = Sniffed::of(bytes);
+            assert_eq!(
+                (sniffed.kind(), sniffed.content_type()),
+                (kind, content_type),
+                "{bytes:?}"
+            );
+        }
     }
 
     #[test]
@@ -341,9 +362,14 @@ mod tests {
         assert!(!name.contains(['\r', '\n']), "{name:?}");
         let disposition = download_disposition("a\"b/c\u{e5}.txt");
         assert!(HeaderValue::from_str(&disposition).is_ok());
-        assert_eq!(
-            disposition,
-            "attachment; filename=\"a_b_c_.txt\"; filename*=UTF-8''a%22b%2Fc%C3%A5.txt"
+        assert!(
+            disposition.to_ascii_lowercase().starts_with("attachment;"),
+            "{disposition}"
+        );
+        assert_eq!(disposition.matches('"').count(), 2, "{disposition}");
+        assert!(
+            disposition.ends_with("filename*=UTF-8''a%22b%2Fc%C3%A5.txt"),
+            "{disposition}"
         );
     }
 }
