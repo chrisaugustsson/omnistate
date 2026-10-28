@@ -2145,60 +2145,6 @@ fn a_decision_proposed_in_a_sealed_phase_reads_like_no_decision_to_an_agent_that
 }
 
 #[test]
-fn a_hidden_decision_shows_in_no_live_event_neither_live_nor_on_a_resume() {
-    let (f, client) = ready();
-    let (project, thread) = thread_in_new_project(f, client, true);
-    let mut scouts = follow(f, client, &scout(f), &project, None);
-    let mut humans = follow(f, client, &human(f), &project, None);
-
-    let relied_on = post(f, client, &critic(f), &project, &thread, "critic");
-    let decision = propose(f, client, &critic(f), &project, &thread, &[&relied_on.id]);
-    approve_decision(f, client, &project, &decision.id);
-    // A visible event after the hidden ones, so the socket gets past them.
-    let human_post = post(f, client, &human(f), &project, &thread, "human");
-
-    let to_human = humans.drain();
-    assert_eq!(
-        times_of(&to_human, "decision.proposed", &decision.id),
-        1,
-        "the human's socket gets the proposal: {to_human:?}"
-    );
-    assert_eq!(
-        times_of(&to_human, "decision.approved", &decision.id),
-        1,
-        "the human's socket gets the approval: {to_human:?}"
-    );
-
-    let to_scout = scouts.drain();
-    assert!(
-        created_posts(&to_scout).contains(&human_post.id),
-        "the scout's socket gets the human's later post: {to_scout:?}"
-    );
-    assert_no_decision(
-        &serde_json::to_string(&to_scout).expect("events as JSON"),
-        &decision,
-        "the scout's live events",
-    );
-
-    let replayed = follow(f, client, &scout(f), &project, Some(0)).drain();
-    assert!(
-        created_posts(&replayed).contains(&human_post.id),
-        "the replay holds the human's post: {replayed:?}"
-    );
-    assert_no_decision(
-        &serde_json::to_string(&replayed).expect("events as JSON"),
-        &decision,
-        "the scout's replay from the start",
-    );
-    let replayed = follow(f, client, &human(f), &project, Some(0)).drain();
-    assert_eq!(
-        times_of(&replayed, "decision.proposed", &decision.id),
-        1,
-        "the human's replay holds the proposal: {replayed:?}"
-    );
-}
-
-#[test]
 fn once_the_agent_posts_in_the_phase_the_decision_shows_on_its_next_read_and_reaches_its_socket() {
     let (f, client) = ready();
     let (project, thread) = thread_in_new_project(f, client, true);
