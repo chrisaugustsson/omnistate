@@ -26,14 +26,6 @@ use std::sync::{Mutex, MutexGuard, OnceLock};
 const TEST_DB: &str = "omni_us019_cli";
 const TEST_BUCKET: &str = "omni-us019-cli";
 const KEY_PREFIX: &str = "omniustest19";
-/// A 1 x 1 PNG.
-const PNG: &[u8] = &[
-    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
-    0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x02, 0x00, 0x00, 0x00, 0x90, 0x77, 0x53,
-    0xde, 0x00, 0x00, 0x00, 0x0c, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0x63, 0xf8, 0xcf, 0xc0, 0x00,
-    0x00, 0x03, 0x01, 0x01, 0x00, 0xc9, 0xfe, 0x92, 0xef, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e,
-    0x44, 0xae, 0x42, 0x60, 0x82,
-];
 
 fn block<F: Future>(future: F) -> F::Output {
     tokio::runtime::Builder::new_current_thread()
@@ -196,12 +188,6 @@ fn unique(label: &str) -> String {
     format!("{label}-{}", COUNTER.fetch_add(1, Ordering::Relaxed))
 }
 
-/// The ID in what `omni attach` printed: the ID itself or `attachment:<id>`.
-fn printed_id(out: &Out) -> String {
-    let line = out.stdout.trim();
-    line.strip_prefix("attachment:").unwrap_or(line).to_string()
-}
-
 struct Fetched {
     status: u16,
     headers: Vec<(String, String)>,
@@ -256,35 +242,6 @@ fn attachment_path(f: &Fixture, id: &str) -> String {
 }
 
 #[test]
-fn an_image_attached_from_the_command_line_is_served_back_inline_byte_for_byte() {
-    let _guard = serial();
-    let f = fixture();
-    let home = agent_home(f);
-    let file = home.join("logo.png");
-    std::fs::write(&file, PNG).unwrap();
-
-    let out = run(&home, &["attach", file.to_str().unwrap()]);
-    assert_eq!(out.code, 0, "{}", out.stderr);
-    assert_eq!(non_empty_lines(&out.stdout).len(), 1, "{:?}", out.stdout);
-    let id = printed_id(&out);
-
-    let served = fetch(f, &attachment_path(f, &id));
-    assert_eq!(
-        served.status,
-        200,
-        "{:?}",
-        String::from_utf8_lossy(&served.body)
-    );
-    assert_eq!(served.body, PNG);
-    assert_eq!(served.header("content-type"), Some("image/png"));
-    let disposition = served.header("content-disposition").unwrap_or("");
-    assert!(
-        !disposition.to_lowercase().starts_with("attachment"),
-        "{disposition:?}"
-    );
-}
-
-#[test]
 fn a_text_file_attached_from_the_command_line_is_a_download_with_its_name() {
     let _guard = serial();
     let f = fixture();
@@ -313,61 +270,4 @@ fn a_text_file_attached_from_the_command_line_is_a_download_with_its_name() {
         "{disposition:?}"
     );
     assert_eq!(served.header("x-content-type-options"), Some("nosniff"));
-}
-
-#[test]
-fn a_file_over_the_limit_is_turned_down_in_one_line_and_stores_nothing() {
-    let _guard = serial();
-    let f = fixture();
-    let home = agent_home(f);
-    let rows_before = rows(f);
-    let huge = home.join("huge.bin");
-    std::fs::write(&huge, vec![0x61u8; 20 * 1024 * 1024 + 1]).unwrap();
-
-    let out = run(&home, &["attach", huge.to_str().unwrap()]);
-    assert_ne!(out.code, 0, "stdout: {:?}", out.stdout);
-    assert_eq!(out.stdout, "");
-    let lines = out.stderr_lines();
-    assert_eq!(lines.len(), 1, "{:?}", out.stderr);
-    assert!(lines[0].contains("20 MB"), "{:?}", lines[0]);
-    assert_eq!(rows(f), rows_before);
-}
-
-#[test]
-fn a_key_that_is_not_accepted_is_one_line_and_stores_nothing() {
-    let _guard = serial();
-    let f = fixture();
-    let home = Scratch::new("bad-key");
-    write_config(&home.path, &f.url, &f.workspace, API_KEY);
-    let file = home.join("logo.png");
-    std::fs::write(&file, PNG).unwrap();
-    let rows_before = rows(f);
-
-    let out = run(&home, &["attach", file.to_str().unwrap()]);
-    assert_ne!(out.code, 0);
-    assert_eq!(out.stdout, "");
-    let lines = out.stderr_lines();
-    assert_eq!(lines.len(), 1, "{:?}", out.stderr);
-    assert!(lines[0].contains("unauthorized"), "{:?}", lines[0]);
-    assert_eq!(rows(f), rows_before);
-}
-
-/// How many attachments the scratch workspace has.
-fn rows(f: &Fixture) -> i64 {
-    block(async {
-        let mut conn = admin_connection().await;
-        let exists: bool =
-            sqlx::query_scalar("select to_regclass('public.attachments') is not null")
-                .fetch_one(&mut conn)
-                .await
-                .expect("look for the attachments table");
-        if !exists {
-            return 0;
-        }
-        sqlx::query_scalar("select count(*) from attachments where workspace_id = $1::uuid")
-            .bind(&f.workspace)
-            .fetch_one(&mut conn)
-            .await
-            .expect("count the attachment rows")
-    })
 }

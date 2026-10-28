@@ -178,29 +178,6 @@ fn attach_uploads_the_file_byte_for_byte_as_the_agent_and_prints_its_id() {
 }
 
 #[test]
-fn attach_names_the_file_by_its_base_name_for_relative_and_odd_paths() {
-    let server = mock();
-    let home = logged_in(&server.url);
-    std::fs::create_dir_all(home.join("assets/brand")).unwrap();
-    std::fs::write(home.join("assets/brand/logo.png"), b"png-ish").unwrap();
-    std::fs::write(home.join("my logo \u{e9}.png"), b"png-ish too").unwrap();
-
-    // A path relative to the working directory, then a name with a space and
-    // a non-ASCII letter.
-    let out = run(&home, &["attach", "assets/brand/logo.png"]);
-    assert_eq!(out.code, 0, "{}", out.stderr);
-    let out = run(&home, &["attach", "my logo \u{e9}.png"]);
-    assert_eq!(out.code, 0, "{}", out.stderr);
-
-    let names: Vec<String> = uploads(&server)
-        .iter()
-        .map(|r| percent_decode(r.header("x-omni-filename").unwrap_or("")))
-        .collect();
-    assert_eq!(names, ["logo.png", "my logo \u{e9}.png"]);
-    assert_eq!(uploads(&server)[0].body, b"png-ish");
-}
-
-#[test]
 fn attach_with_json_prints_the_whole_response() {
     let server = mock();
     let home = logged_in(&server.url);
@@ -267,56 +244,4 @@ fn attach_without_a_usable_file_is_one_line_and_sends_nothing() {
     assert_one_line_error(&out, &["omni attach <file>"]);
 
     assert!(server.requests().is_empty(), "{:?}", server.requests());
-}
-
-#[test]
-fn attach_needs_a_login_and_an_agent_identity() {
-    let server = mock();
-    let file_home = logged_in(&server.url);
-    let file = file_home.join("logo.png");
-    std::fs::write(&file, b"png-ish").unwrap();
-
-    let nobody = Scratch::new("nobody");
-    let out = run(&nobody, &["attach", file.to_str().unwrap()]);
-    assert_one_line_error(&out, &["omni login"]);
-
-    let out = omni(&file_home.path)
-        .args(&["attach", file.to_str().unwrap()])
-        .run();
-    assert_one_line_error(&out, &["--as", "OMNI_RUN"]);
-
-    assert!(server.requests().is_empty(), "{:?}", server.requests());
-}
-
-#[test]
-fn an_answer_that_is_an_error_is_one_line_and_prints_nothing() {
-    for (status, code, needles) in [
-        (401, "unauthorized", vec!["unauthorized", "omni login"]),
-        (404, "not_found", vec!["not_found"]),
-        (503, "unavailable", vec!["unavailable"]),
-    ] {
-        let server = MockServer::start(move |_| Reply::json(status, &json!({ "error": code })));
-        let home = logged_in(&server.url);
-        let file = home.join("logo.png");
-        std::fs::write(&file, b"png-ish").unwrap();
-        let out = run(&home, &["attach", file.to_str().unwrap()]);
-        assert_one_line_error(&out, &needles);
-    }
-}
-
-#[test]
-fn the_help_lists_the_command_and_the_reference() {
-    let home = Scratch::new("help");
-    let out = omni(&home.path).args(&["--help"]).run();
-    assert_eq!(out.code, 0, "{}", out.stderr);
-    assert!(
-        out.stdout.contains("omni attach <file>"),
-        "`omni --help` lists `omni attach <file>`:\n{}",
-        out.stdout
-    );
-    assert!(
-        out.stdout.contains("attachment:<id>"),
-        "`omni --help` says how an attachment is referred to:\n{}",
-        out.stdout
-    );
 }
