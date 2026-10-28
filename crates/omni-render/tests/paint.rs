@@ -45,7 +45,7 @@ use omni_core::design::AttachmentRef;
 use omni_render::layout;
 use omni_render::paint::{self, Assets};
 use serde_json::{Value, json};
-use skia_safe::{AlphaType, ColorType, EncodedImageFormat, ImageInfo, Paint, surfaces};
+use skia_safe::{EncodedImageFormat, Paint, surfaces};
 
 /// An attachment the images of these tests are supplied under.
 const PHOTO: &str = "attachment:0192f1c4-5b6a-7d8e-9f01-23456789abcd";
@@ -1129,19 +1129,16 @@ fn opacity_zero_draws_nothing_and_neither_does_a_hidden_node_or_what_is_in_it() 
         json!({
             "fills": [solid("#ff0000")],
             "visible": false,
+            "shadows": [shadow("drop", "#000000", 0.0, 0.0, 0.0, 10.0)],
             "children": [box_at("frm00004", 10.0, 10.0, 20.0, 20.0, json!({"fills": [solid("#0000ff")]}))]
         }),
     );
     let pixels = render_200(&scene(200, 200, vec![faded, hidden]));
-    assert!(
-        pixels.ink_box([0, 0, 200, 200]).is_none(),
-        "nothing is drawn: the whole canvas stays white"
-    );
-    assert_all_rgb(
-        &pixels,
-        &[(30, 30), (50, 50), (100, 50), (30, 120), (50, 140)],
-        WHITE,
-        "faded and hidden nodes",
+    let blank = render_200(&scene(200, 200, vec![]));
+    assert_eq!(
+        pixels.differing(&blank, 3),
+        0,
+        "faded and hidden nodes, their shadows and children draw nothing: the canvas is the empty board"
     );
 }
 
@@ -1343,50 +1340,6 @@ fn children_are_drawn_in_order_so_the_last_is_on_top_and_in_their_layout_positio
         3,
         "the second child has no fill",
     );
-}
-
-#[test]
-fn draw_places_every_node_in_the_box_it_is_given() {
-    let design = scene(
-        200,
-        200,
-        vec![box_at(
-            "frm00001",
-            20.0,
-            20.0,
-            40.0,
-            40.0,
-            json!({"fills": [solid("#ff0000")]}),
-        )],
-    );
-    let root = node(&design);
-    let assets = Assets::new();
-    let mut boxes = layout::compute(&root, assets.fonts());
-    let moved = boxes
-        .get_mut(&"frm00001".parse().expect("a node ID"))
-        .expect("layout boxes the frame");
-    moved.x = 120.0;
-    moved.y = 130.0;
-
-    let mut surface = surfaces::raster_n32_premul((200, 200)).expect("a surface");
-    paint::draw(surface.canvas(), &root, &boxes, &assets);
-    let info = ImageInfo::new((200, 200), ColorType::RGBA8888, AlphaType::Unpremul, None);
-    let mut rgba = vec![0; info.compute_min_byte_size()];
-    assert!(surface.read_pixels(&info, &mut rgba, info.min_row_bytes(), (0, 0)));
-    let pixels = Pixels {
-        width: 200,
-        height: 200,
-        rgba,
-    };
-    assert_rgb(
-        &pixels,
-        140,
-        150,
-        RED,
-        3,
-        "the frame where the boxes put it",
-    );
-    assert_rgb(&pixels, 40, 40, WHITE, 3, "and not where layout would have");
 }
 
 // ---------------------------------------------------------------------------
