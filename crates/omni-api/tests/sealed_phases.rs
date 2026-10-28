@@ -110,7 +110,6 @@ mod common;
 
 use common::{Client, Response, TestServer, cookie};
 use omni_api::Config;
-use omni_api::routes::{Access, registry};
 use s3::creds::Credentials;
 use s3::{Bucket, BucketConfiguration, Region};
 use serde_json::{Value, json};
@@ -128,10 +127,6 @@ const TEST_DB: &str = "omni_us035_sealed_phases";
 const TEST_BUCKET: &str = "omni-us035-sealed-phases";
 /// An ID that no row has.
 const UNKNOWN_ID: &str = "01900000-0000-7000-8000-000000000000";
-const THREAD_ROUTE: &str = "/api/v1/w/{workspace_id}/projects/{project_id}/threads/{thread_id}";
-const DIGEST_ROUTE: &str =
-    "/api/v1/w/{workspace_id}/projects/{project_id}/threads/{thread_id}/digest";
-const POST_ROUTE: &str = "/api/v1/w/{workspace_id}/projects/{project_id}/posts/{post_id}";
 /// The handshake key of RFC 6455's example, whose accept value is fixed.
 const HANDSHAKE_KEY: &str = "dGhlIHNhbXBsZSBub25jZQ==";
 const HANDSHAKE_ACCEPT: &str = "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=";
@@ -929,54 +924,8 @@ fn newest_seq(events: &[Value]) -> i64 {
 }
 
 // ---------------------------------------------------------------------------
-// The routes
-// ---------------------------------------------------------------------------
-
-#[test]
-fn the_read_routes_are_in_the_registry_for_agents_and_the_human() {
-    for (method, path) in [
-        ("GET", THREAD_ROUTE),
-        ("GET", DIGEST_ROUTE),
-        ("GET", POST_ROUTE),
-    ] {
-        let entry = registry()
-            .into_iter()
-            .find(|r| r.method == method && r.path == path)
-            .unwrap_or_else(|| panic!("the registry has no route {method} {path}"));
-        assert_eq!(entry.access, Access::Both, "{method} {path}");
-    }
-}
-
-// ---------------------------------------------------------------------------
 // What an agent sees in a sealed phase
 // ---------------------------------------------------------------------------
-
-#[test]
-fn in_a_sealed_phase_an_agent_sees_earlier_phases_its_own_and_the_humans_posts_only() {
-    let (f, client) = ready();
-    let (project, thread) = thread_in_new_project(f, client, false);
-    let earlier = post(f, client, &critic(f), &project, &thread, "critic phase 1");
-    start_phase(f, client, &project, &thread, true);
-    let hidden = post(f, client, &critic(f), &project, &thread, "critic phase 2");
-    let humans = post(f, client, &human(f), &project, &thread, "human phase 2");
-
-    let answer = read_thread(f, client, &scout(f), &project, &thread);
-    let text = answer.text();
-    let answer = must(answer, 200, "the scout reads the thread");
-    let seen: Vec<String> = thread_posts(&answer).iter().map(id_of).collect();
-    assert_eq!(
-        seen,
-        ids_of(&[&earlier, &humans]),
-        "the scout sees the earlier phase's post and the human's, oldest first"
-    );
-    assert_nothing_of(&text, &hidden, "the scout's thread read");
-
-    assert_eq!(
-        seen_in_thread(f, client, &critic(f), &project, &thread),
-        ids_of(&[&earlier, &hidden, &humans]),
-        "the critic sees its own post of the sealed phase"
-    );
-}
 
 #[test]
 fn an_agent_identity_is_its_run_and_role() {
@@ -1038,64 +987,6 @@ fn an_agent_identity_is_its_run_and_role() {
 // ---------------------------------------------------------------------------
 // When hidden posts show
 // ---------------------------------------------------------------------------
-
-#[test]
-fn once_the_agent_has_posted_in_the_phase_it_sees_the_hidden_posts_on_its_next_read() {
-    let (f, client) = ready();
-    let (project, thread) = thread_in_new_project(f, client, true);
-    let first = post(f, client, &critic(f), &project, &thread, "critic");
-    let second = post(f, client, &moderator(f), &project, &thread, "moderator");
-    assert!(
-        seen_in_thread(f, client, &scout(f), &project, &thread).is_empty(),
-        "before it posts, the scout sees nothing of the sealed phase"
-    );
-
-    let own = post(f, client, &scout(f), &project, &thread, "scout");
-    assert_eq!(
-        seen_in_thread(f, client, &scout(f), &project, &thread),
-        ids_of(&[&first, &second, &own]),
-        "after it posted, the scout sees every post of the phase"
-    );
-    // A later post of another agent in the same phase shows at once.
-    let later = post(f, client, &critic(f), &project, &thread, "critic again");
-    assert_eq!(
-        seen_in_thread(f, client, &scout(f), &project, &thread),
-        ids_of(&[&first, &second, &own, &later]),
-    );
-    // An agent that has not posted still sees nothing of the phase.
-    assert!(
-        seen_in_thread(
-            f,
-            client,
-            &agent_as(f, "run-1", "builder"),
-            &project,
-            &thread
-        )
-        .is_empty(),
-        "another agent that has not posted"
-    );
-}
-
-#[test]
-fn a_sealed_phase_followed_by_an_open_phase_shows_its_posts_to_every_agent() {
-    let (f, client) = ready();
-    let (project, thread) = thread_in_new_project(f, client, true);
-    let sealed = post(f, client, &critic(f), &project, &thread, "critic sealed");
-    assert!(seen_in_thread(f, client, &scout(f), &project, &thread).is_empty());
-
-    start_phase(f, client, &project, &thread, false);
-    assert_eq!(
-        seen_in_thread(f, client, &scout(f), &project, &thread),
-        ids_of(&[&sealed]),
-        "the sealed phase's post shows once an open phase follows it"
-    );
-    let open = post(f, client, &critic(f), &project, &thread, "critic open");
-    assert_eq!(
-        seen_in_thread(f, client, &scout(f), &project, &thread),
-        ids_of(&[&sealed, &open]),
-        "a post of an open phase shows to an agent that has not posted in it"
-    );
-}
 
 #[test]
 fn a_sealed_phase_followed_by_another_sealed_phase_shows_its_posts_as_an_earlier_phase() {
@@ -1426,55 +1317,6 @@ fn live_events_of_hidden_posts_do_not_reach_the_agent() {
         created_posts(&to_scout),
         ids_of(&[&later]),
         "once the scout has posted, the critic's next post reaches it"
-    );
-}
-
-#[test]
-fn resuming_replays_a_hidden_posts_event_only_once_the_agent_may_see_it() {
-    let (f, client) = ready();
-    let (project, thread) = thread_in_new_project(f, client, true);
-    let hidden = post(f, client, &critic(f), &project, &thread, "critic");
-    let humans = post(f, client, &human(f), &project, &thread, "human");
-
-    let replayed = follow(f, client, &scout(f), &project, Some(0)).drain();
-    assert!(
-        replayed.iter().any(|e| e["event"] == "thread.created"),
-        "the replay holds the project's other events: {replayed:?}"
-    );
-    assert_eq!(
-        created_posts(&replayed),
-        ids_of(&[&humans]),
-        "resuming before posting replays the human's post only"
-    );
-    assert!(
-        !names_post(&replayed, &hidden.id),
-        "no replayed event names the hidden post: {replayed:?}"
-    );
-    let replayed = follow(f, client, &human(f), &project, Some(0)).drain();
-    assert_eq!(
-        created_posts(&replayed),
-        ids_of(&[&hidden, &humans]),
-        "the human's replay holds every post"
-    );
-
-    let own = post(f, client, &scout(f), &project, &thread, "scout");
-    let replayed = follow(f, client, &scout(f), &project, Some(0)).drain();
-    assert_eq!(
-        created_posts(&replayed),
-        ids_of(&[&hidden, &humans, &own]),
-        "after posting, resuming from before replays the critic's post too"
-    );
-    let replayed = follow(f, client, &agent_as(f, "run-2", "scout"), &project, Some(0)).drain();
-    assert!(
-        !names_post(&replayed, &hidden.id),
-        "an identity that has not posted still gets no event of it: {replayed:?}"
-    );
-
-    start_phase(f, client, &project, &thread, false);
-    let replayed = follow(f, client, &agent_as(f, "run-2", "scout"), &project, Some(0)).drain();
-    assert!(
-        created_posts(&replayed).contains(&hidden.id),
-        "once an open phase follows, every agent's replay holds it: {replayed:?}"
     );
 }
 

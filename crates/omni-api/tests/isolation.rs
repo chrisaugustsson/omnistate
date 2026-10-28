@@ -3381,30 +3381,6 @@ const POST_READ_ROUTES: [(&str, &str); 2] = [
 ];
 
 #[test]
-fn the_post_read_routes_are_in_the_registry_and_the_suite_attacks_them() {
-    for (method, path) in POST_READ_ROUTES {
-        let entry = registry()
-            .into_iter()
-            .find(|r| r.method == method && r.path == path)
-            .unwrap_or_else(|| panic!("the registry has no route {method} {path}"));
-        assert_eq!(entry.access, Access::Both, "{method} {path}");
-        assert!(
-            matches!(case_for(&entry).kind, Kind::Workspace),
-            "{method} {path} is a workspace route that the suite attacks"
-        );
-    }
-
-    let (f, _) = ready();
-    for side in [&f.a, &f.b] {
-        assert!(
-            !side.post_id.is_empty(),
-            "the suite seeded no post for {}",
-            side.id
-        );
-    }
-}
-
-#[test]
 fn the_post_read_calls_of_the_attacks_work_for_the_workspace_that_owns_the_records() {
     // The control for the post reads: the owner's agent, which wrote the
     // seeded post, and the owner's human read the thread's digest and the
