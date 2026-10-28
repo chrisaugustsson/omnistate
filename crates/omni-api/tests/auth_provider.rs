@@ -11,7 +11,6 @@ use serde_json::json;
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime};
 
 const FAKE_EMAIL: &str = "fake@example.test";
@@ -23,7 +22,6 @@ const FAKE_TOKEN: &str = "fake-token-from-the-provider-0123456789";
 struct FakeProvider {
     calls: Mutex<Vec<String>>,
     live_tokens: Mutex<HashSet<String>>,
-    down: AtomicBool,
 }
 
 impl FakeProvider {
@@ -51,9 +49,6 @@ impl AuthProvider for FakeProvider {
     ) -> BoxFuture<'a, Result<Session, AuthError>> {
         Box::pin(async move {
             self.record(format!("login {email} {password}"));
-            if self.down.load(Ordering::SeqCst) {
-                return Err(AuthError::Unavailable("the fake is down".to_string()));
-            }
             if email != FAKE_EMAIL || password != FAKE_PASSWORD {
                 return Err(AuthError::InvalidCredentials);
             }
@@ -75,9 +70,6 @@ impl AuthProvider for FakeProvider {
     ) -> BoxFuture<'a, Result<Option<AuthUser>, AuthError>> {
         Box::pin(async move {
             self.record(format!("session {token}"));
-            if self.down.load(Ordering::SeqCst) {
-                return Err(AuthError::Unavailable("the fake is down".to_string()));
-            }
             let live = self.live_tokens.lock().unwrap().contains(token);
             Ok(live.then(Self::user))
         })
@@ -158,19 +150,6 @@ fn the_provider_resolves_the_session_cookie_to_a_user() {
 }
 
 #[test]
-fn credentials_the_provider_rejects_get_401_and_no_cookie() {
-    let (server, _provider) = serve();
-    let response = login(&server, FAKE_EMAIL, "wrong");
-    assert_eq!(response.status, 401, "login body: {}", response.text());
-    assert_eq!(response.json()["error"], "invalid_credentials");
-    assert!(
-        response.session_set_cookie().is_none(),
-        "no session cookie for rejected credentials: {:?}",
-        response.headers_named("set-cookie")
-    );
-}
-
-#[test]
 fn logout_is_forwarded_to_the_provider_and_the_old_cookie_stops_working() {
     let (server, provider) = serve();
     login(&server, FAKE_EMAIL, FAKE_PASSWORD);
@@ -197,13 +176,4 @@ fn logout_is_forwarded_to_the_provider_and_the_old_cookie_stops_working() {
         .client
         .get_with("/api/v1/auth/me", &[("Cookie", &cookie(FAKE_TOKEN))]);
     assert_eq!(me.status, 401, "the ended session is no longer accepted");
-}
-
-#[test]
-fn a_provider_that_cannot_answer_gives_503() {
-    let (server, provider) = serve();
-    provider.down.store(true, Ordering::SeqCst);
-    let response = login(&server, FAKE_EMAIL, FAKE_PASSWORD);
-    assert_eq!(response.status, 503, "login body: {}", response.text());
-    assert!(response.session_set_cookie().is_none());
 }

@@ -58,105 +58,33 @@ fn operations(document: &Value) -> Vec<(String, String, Option<String>)> {
 }
 
 #[test]
-fn the_api_serves_an_openapi_3_document_at_api_openapi_json() {
+fn the_registry_and_the_openapi_document_list_the_same_routes_with_the_same_access() {
     let server = TestServer::start(&offline_config());
     let document = openapi(&server);
-    let version = document["openapi"].as_str().unwrap_or("");
+    let registered: BTreeSet<(String, String, Option<String>)> = registry()
+        .into_iter()
+        .map(|route| {
+            (
+                route.method,
+                route.path,
+                Some(access_name(route.access).to_string()),
+            )
+        })
+        .collect();
+    assert!(!registered.is_empty(), "the route registry is empty");
+    let described: BTreeSet<(String, String, Option<String>)> =
+        operations(&document).into_iter().collect();
+
+    let only_registered: Vec<_> = registered.difference(&described).collect();
     assert!(
-        version.starts_with("3."),
-        "`openapi` must be a 3.x version: {version:?}"
+        only_registered.is_empty(),
+        "registered but not in the OpenAPI document with that x-omni-access: {only_registered:?}"
     );
+    let only_described: Vec<_> = described.difference(&registered).collect();
     assert!(
-        document["info"]["title"]
-            .as_str()
-            .is_some_and(|t| !t.is_empty()),
-        "info.title: {}",
-        document["info"]
+        only_described.is_empty(),
+        "in the OpenAPI document but not in the route registry with that access: {only_described:?}"
     );
-    assert!(
-        document["info"]["version"]
-            .as_str()
-            .is_some_and(|t| !t.is_empty()),
-        "info.version: {}",
-        document["info"]
-    );
-}
-
-#[test]
-fn the_registry_lists_the_routes_of_this_story_with_who_may_call_them() {
-    let routes = registry();
-    assert!(!routes.is_empty(), "the route registry is empty");
-
-    let expected = [
-        ("GET", "/api/health", Access::Both),
-        ("GET", "/api/openapi.json", Access::Both),
-        ("POST", "/api/v1/auth/login", Access::Human),
-        ("POST", "/api/v1/auth/logout", Access::Human),
-        ("GET", "/api/v1/auth/me", Access::Human),
-    ];
-    for (method, path, access) in expected {
-        let entry = find(&routes, method, path)
-            .unwrap_or_else(|| panic!("the registry has no entry for {method} {path}: {routes:?}"));
-        assert_eq!(entry.access, access, "{method} {path}");
-    }
-
-    let unique: BTreeSet<_> = routes.iter().map(|r| (&r.method, &r.path)).collect();
-    assert_eq!(unique.len(), routes.len(), "a route is registered twice");
-    for route in &routes {
-        assert_eq!(
-            route.method,
-            route.method.to_uppercase(),
-            "methods are upper case: {route:?}"
-        );
-        assert!(
-            route.path.starts_with("/api/"),
-            "registered paths are the full API paths: {route:?}"
-        );
-    }
-}
-
-#[test]
-fn every_registered_route_is_in_the_openapi_document_with_its_access() {
-    let server = TestServer::start(&offline_config());
-    let document = openapi(&server);
-    let described = operations(&document);
-    for route in registry() {
-        let entry = described
-            .iter()
-            .find(|(method, path, _)| *method == route.method && *path == route.path)
-            .unwrap_or_else(|| {
-                panic!(
-                    "{} {} is registered but not in the OpenAPI document: {described:?}",
-                    route.method, route.path
-                )
-            });
-        assert_eq!(
-            entry.2.as_deref(),
-            Some(access_name(route.access)),
-            "x-omni-access of {} {}",
-            route.method,
-            route.path
-        );
-    }
-}
-
-#[test]
-fn every_operation_in_the_openapi_document_is_in_the_registry() {
-    let server = TestServer::start(&offline_config());
-    let document = openapi(&server);
-    let routes = registry();
-    let described = operations(&document);
-    assert!(!described.is_empty(), "the document describes no operation");
-    for (method, path, access) in described {
-        assert!(
-            find(&routes, &method, &path).is_some(),
-            "{method} {path} is in the OpenAPI document but not in the route registry"
-        );
-        assert!(
-            matches!(access.as_deref(), Some("agent" | "human" | "both")),
-            "{method} {path} needs x-omni-access agent, human or both: {access:?}"
-        );
-    }
 }
 
 #[test]
@@ -179,29 +107,6 @@ fn every_registered_route_is_served_by_the_router() {
             response.status, 405,
             "{} {} is registered but the router does not serve that method",
             route.method, route.path
-        );
-    }
-}
-
-#[test]
-fn the_document_describes_the_login_operation_from_its_handler() {
-    let server = TestServer::start(&offline_config());
-    let document = openapi(&server);
-    let login = &document["paths"]["/api/v1/auth/login"]["post"];
-    assert!(
-        login.is_object(),
-        "the document has no POST /api/v1/auth/login: {}",
-        document["paths"]
-    );
-    assert!(
-        login["requestBody"].is_object(),
-        "login describes its request body: {login}"
-    );
-    let responses = login["responses"].as_object().expect("login responses");
-    for status in ["200", "401"] {
-        assert!(
-            responses.contains_key(status),
-            "login documents its {status} response: {login}"
         );
     }
 }

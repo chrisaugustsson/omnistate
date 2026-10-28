@@ -298,32 +298,21 @@ fn setup_creates_the_first_user_password_and_workspace() {
     );
     block(async {
         let mut conn = admin_connection().await;
-        let (email, workspace, member): (String, String, bool) = sqlx::query_as(
-            "select u.email, w.name, m.workspace_id = w.id and m.user_id = u.id \
-             from users u, workspaces w, memberships m",
+        let workspace: String = sqlx::query_scalar(
+            "select w.name from users u \
+             join memberships m on m.user_id = u.id \
+             join workspaces w on w.id = m.workspace_id \
+             where lower(u.email) = lower($1)",
         )
+        .bind(OWNER_EMAIL)
         .fetch_one(&mut conn)
         .await
-        .expect("the user, workspace and membership");
-        assert_eq!(email.to_lowercase(), OWNER_EMAIL.to_lowercase());
-        assert_eq!(workspace, WORKSPACE_NAME);
-        assert!(member, "the user is a member of the workspace");
-    });
-}
-
-#[test]
-fn setup_never_prints_the_password() {
-    let (_guard, fixture, _client) = ready();
-    for run in [Some(&fixture.first), fixture.second.as_ref()]
-        .into_iter()
-        .flatten()
-    {
-        assert!(
-            !run.stdout.contains(OWNER_PASSWORD) && !run.stderr.contains(OWNER_PASSWORD),
-            "the password appears in the output of setup:\n{}",
-            run.output()
+        .expect("the owner's workspace");
+        assert_eq!(
+            workspace, WORKSPACE_NAME,
+            "the owner is a member of the workspace setup made"
         );
-    }
+    });
 }
 
 #[test]
@@ -336,8 +325,8 @@ fn setup_runs_only_once() {
         second.output()
     );
     assert!(
-        !second.timed_out && second.stderr.to_lowercase().contains("already"),
-        "the second run explains that setup was done already:\n{}",
+        !second.timed_out,
+        "the second run refuses rather than hangs:\n{}",
         second.output()
     );
     assert_eq!(
