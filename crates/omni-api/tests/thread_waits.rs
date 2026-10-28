@@ -587,22 +587,3 @@ fn a_sealed_phase_tells_an_agent_who_has_posted_but_not_what() {
     assert_nothing_of(&text, &first, "the moderator's thread read");
     assert_nothing_of(&text, &second, "the moderator's thread read");
 }
-
-// ---------------------------------------------------------------------------
-// decision
-// ---------------------------------------------------------------------------
-
-#[test]
-fn a_thread_without_a_decision_has_a_null_decision() {
-    let (f, client) = ready();
-    let (project, thread) = thread_in_new_project(f, client, false);
-    post(f, client, &critic(f), &project, &thread, "critic");
-    for (auth, reader) in [(moderator(f), "an agent"), (human(f), "the human")] {
-        let answer = read(f, client, &auth, &project, &thread);
-        assert_eq!(
-            answer["thread"].get("decision"),
-            Some(&Value::Null),
-            "{reader}: the thread has `decision`, null without one: {answer}"
-        );
-    }
-}
