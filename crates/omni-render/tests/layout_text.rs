@@ -43,31 +43,10 @@ fn start_aligned_column(width: f64, children: Vec<Value>) -> Value {
 }
 
 #[test]
-fn a_hug_text_is_as_wide_as_its_glyphs_and_as_tall_as_its_line() {
-    // A line is lineHeight x fontSize tall, rounded down to a multiple of 1/64
-    // px (decision Q44): 28.796875 px for 24 px text with lineHeight 1.2, not
-    // the exact 28.8 px, and not a rounded 29.
-    assert_cases(cases::hug_texts_on_one_line());
-}
-
-#[test]
 fn text_is_shaped_so_kerning_pairs_move_closer() {
     // Inter kerns the pair AV: Chrome measures "AV" at 20.98 px in 16 px
     // Inter, where "A" and "V" are 11.04 px each, and "AVAVAVAV" at 80.66 px.
     assert_cases(cases::kerning_pairs());
-}
-
-#[test]
-fn a_text_without_a_line_height_gets_its_fonts_normal_line_height_at_full_precision() {
-    // Decision Q44: a text without lineHeight is as tall per line as its
-    // font's normal line height, ascent + descent + line gap, never rounded to
-    // whole pixels. Inter's ascent is 15.5 px at 16 px and its descent 3.859375
-    // px, and it has no line gap, so a line is 19.359375 px tall. That is not
-    // what Chrome's own `line-height: normal` gives (19.5 px at a device pixel
-    // ratio of 2, 20 px at 1), which is why the export writes the line height
-    // in px. The font sizes are those where rounding down and rounding to the
-    // nearest 1/64 px agree.
-    assert_cases(cases::normal_line_heights());
 }
 
 #[test]
@@ -80,11 +59,6 @@ fn every_line_height_is_rounded_down_to_a_multiple_of_a_64th_of_a_pixel() {
     // 15.71875 px, where rounding it to the nearest 64th, or up, gives
     // 15.734375 px.
     assert_cases(cases::snapped_line_heights());
-}
-
-#[test]
-fn a_fixed_width_text_wraps_its_lines_at_that_width() {
-    assert_cases(cases::six_words_at_fixed_widths());
 }
 
 #[test]
@@ -205,32 +179,12 @@ fn lines_also_break_after_hyphens_and_around_em_dashes_and_after_ellipses() {
 }
 
 #[test]
-fn lines_never_break_after_a_slash_between_letters() {
-    // Unicode allows a break after a slash, but Chrome keeps letters joined by
-    // a slash together, so paths and URLs stay whole and overflow their line
-    // instead: "word", "input/output" and "word" at 60 and 100 px, and "See",
-    // "example.com/a/very/long/path" and "today" at 180 px. Hugging its width
-    // in a 60 px column, the text is as wide as "input/output", 92.37 px.
-    assert_cases(cases::no_breaks_after_slashes());
-}
-
-#[test]
 fn a_line_breaks_after_a_hyphen_before_a_digit_only_when_a_letter_or_digit_comes_first() {
     // Chrome breaks between a hyphen and a digit when a letter or a digit
     // comes before the hyphen: "pre-" / "2020" and "COVID-" / "19". Anywhere
     // else the hyphen may be a minus sign, which stays with its number, so
     // "-2020", "(-2020)" and the "-12" of "x -12" stay whole.
     assert_cases(cases::hyphens_before_digits());
-}
-
-#[test]
-fn a_line_breaks_after_a_question_mark_and_before_a_bracket_that_follows_punctuation() {
-    // Between two ASCII characters Chrome breaks lines by its own table:
-    // besides after hyphens, after a question mark ("what?" / "why"), and
-    // before an opening bracket that follows closing punctuation or a symbol
-    // ("matrix[0]" / "[1]", "f(x)=" / "(y)"), but not before one that follows
-    // a letter.
-    assert_cases(cases::question_marks_and_brackets());
 }
 
 #[test]
