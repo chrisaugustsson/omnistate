@@ -20,6 +20,7 @@ use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 const TEST_DB: &str = "omni_us059_cli";
+const TEST_BUCKET: &str = "omni-us059-cli";
 const KEY_PREFIX: &str = "omniustest59";
 const HUMAN_TOKEN: &str = "us059-cli-human-session-0123456789abcdef0123456789abcdef0123456789";
 
@@ -60,11 +61,14 @@ fn config() -> Config {
         ),
         admin_database_url: format!("{server}/{TEST_DB}"),
         api_db_password: api_password(),
-        // Nothing here reaches RustFS: projects and features only use Postgres.
-        s3_endpoint: "http://127.0.0.1:1".to_string(),
-        s3_access_key: "none".to_string(),
-        s3_secret_key: "none".to_string(),
-        s3_bucket: "omni".to_string(),
+        // Creating a live doc reaches RustFS, so it needs a scratch bucket.
+        s3_endpoint: std::env::var("OMNI_S3_ENDPOINT")
+            .unwrap_or_else(|_| "http://rustfs:9000".to_string()),
+        s3_access_key: std::env::var("OMNI_S3_ACCESS_KEY")
+            .unwrap_or_else(|_| "omni-dev".to_string()),
+        s3_secret_key: std::env::var("OMNI_S3_SECRET_KEY")
+            .unwrap_or_else(|_| "omni-dev-secret".to_string()),
+        s3_bucket: TEST_BUCKET.to_string(),
     }
 }
 
@@ -157,6 +161,9 @@ fn fixture() -> &'static Fixture {
             // The connection pool needs a runtime to be created in.
             let _guard = runtime.enter();
             let state = omni_api::AppState::new(&config()).expect("build the API state");
+            runtime
+                .block_on(state.ensure_bucket(&config(), 30))
+                .expect("create the scratch bucket");
             omni_api::router(state)
         };
         runtime.spawn(async move {
