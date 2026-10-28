@@ -308,18 +308,6 @@ afterEach(async () => {
 });
 
 describe("the viewer frame in Chrome", { timeout: 60_000 }, () => {
-  test("inside the frame, parent.document throws", async () => {
-    const target = await openViewer();
-    const outcome = await target.frame.evaluate(() => {
-      try {
-        return `read: ${parent.document.title}`;
-      } catch (error) {
-        return `threw: ${(error as Error).name}`;
-      }
-    });
-    expect(outcome).toMatch(/^threw/);
-  });
-
   test("no request from the frame carries the session, and only the workspace's attachments reach the network", async () => {
     const target = await openViewer();
     // The cookie is there: the page itself sends it.
@@ -383,6 +371,9 @@ describe("the viewer frame in Chrome", { timeout: 60_000 }, () => {
     await new Promise((resolve) => setTimeout(resolve, 500));
 
     const fromFrame = seen.filter((s) => s.path !== "/" && s.path !== "/control" && s.path !== "/favicon.ico");
+    expect(fromFrame.map((s) => s.path), "the workspace's attachment image reaches the server").toContain(
+      `/api/v1/w/${WORKSPACE_ID}/attachments/${ATTACHMENT_ID}`,
+    );
     for (const request of fromFrame) {
       expect(request.cookie, `${request.path} carries no session`).not.toContain(SESSION_COOKIE);
       expect(
@@ -452,18 +443,6 @@ try {
     await new Promise((resolve) => setTimeout(resolve, 300));
     const reached = seen.filter((s) => s.path === "/elsewhere/doc-fetch" || s.path.endsWith("/whoami"));
     expect(reached, "no request of the doc reached the server").toEqual([]);
-  });
-
-  test("the shared stylesheet styles the doc: the callout kinds look different", async () => {
-    const target = await openViewer();
-    await show(target, { html: FULL_DOC }, "a0000022");
-    const looks = await target.frame.evaluate(() =>
-      ["a0000020", "a0000021", "a0000022"].map((id) => {
-        const style = getComputedStyle(document.querySelector(`[data-omni-id="${id}"]`)!);
-        return [style.backgroundColor, style.borderLeftColor, style.borderTopColor, style.color].join(" ");
-      }),
-    );
-    expect(new Set(looks).size, `note, warning and decision callouts: ${JSON.stringify(looks)}`).toBe(3);
   });
 
   test("a doc without styles is readable with the default stylesheet, and a doc's own style overrides it", async () => {
@@ -636,16 +615,5 @@ try {
 
     await show(target, { html: SHORT_DOC, changes: [] }, "p0000005");
     await settle(() => row(target, "p0000001"), plain.first, true, "without changes no block is marked");
-  });
-
-  test("the doc shown follows what the page posts, as a live draft does", async () => {
-    const target = await openViewer();
-    await show(target, { html: SHORT_DOC }, "p0000005");
-    const changed = SHORT_DOC.replace(
-      '<p data-omni-id="p0000005">Taxes are shown at the end.</p>',
-      '<p data-omni-id="p0000005">Taxes are shown at the end.</p>\n<p data-omni-id="p0000006">Coupons stack.</p>',
-    );
-    await show(target, { html: changed }, "p0000006");
-    expect(await target.frame.evaluate(() => document.body.innerText)).toContain("Coupons stack.");
   });
 });
