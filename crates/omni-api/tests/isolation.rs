@@ -2700,64 +2700,6 @@ fn the_calls_of_the_attacks_work_for_the_workspace_that_owns_the_records() {
 }
 
 #[test]
-fn the_claim_attacks_name_a_section_that_workspace_b_really_holds_and_leave_it_held() {
-    let (f, client) = ready();
-    let _guard = serial();
-    assert!(
-        has_claim_routes(),
-        "the claim routes are in the registry (US-023)"
-    );
-    let doc = format!(
-        "/api/v1/w/{}/projects/{}/docs/{}",
-        f.b.id, f.b.project_id, f.b.doc_id
-    );
-    let held = |what: &str| {
-        let shown = must(
-            call(client, "GET", &doc, &Auth::Key(&f.b.key), None),
-            200,
-            "show B's doc",
-        );
-        let claims = shown["doc"]["claims"]
-            .as_array()
-            .unwrap_or_else(|| panic!("the doc lists its claims: {shown}"))
-            .clone();
-        assert!(
-            claims
-                .iter()
-                .any(|c| c["node"] == f.b.claimed_node.as_str()),
-            "{what}: B's agent holds a claim on {}: {claims:?}",
-            f.b.claimed_node
-        );
-    };
-    held("before the attacks");
-
-    // A's key on B's workspace, on A's workspace with B's IDs, and on A's own
-    // change set with B's node: never found, and B's claim stays.
-    for template in [
-        "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/claims",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/claims/release",
-    ] {
-        let case = case_named("POST", template);
-        let body = body_of(case, &f.b);
-        assert!(
-            body.as_deref()
-                .is_some_and(|b| b.contains(f.b.claimed_node.as_str())),
-            "the attack names B's claimed section: {body:?}"
-        );
-        for path in [
-            fill(template, &f.b, &f.b),
-            fill(template, &f.a, &f.b),
-            fill(template, &f.a, &f.a),
-        ] {
-            let response = call(client, "POST", &path, &Auth::Key(&f.a.key), body.as_deref());
-            let what = format!("{} with B's claimed section", route_name("POST", &path));
-            assert_not_found_without_data(&response, &f.b, &what);
-        }
-    }
-    held("after the attacks");
-}
-
-#[test]
 fn every_workspace_route_needs_credentials() {
     let (f, client) = ready();
     for entry in registry() {

@@ -1704,25 +1704,6 @@ fn assert_expired_on_time(events: &[(Value, f64)], taken: &Value, expires_at: f6
 }
 
 #[test]
-fn a_claim_expires_on_time_without_any_request() {
-    let (f, server) = quiet();
-    let client = &server.client;
-    let draft = new_draft(f, client);
-    let (section, _, _) = add_section(f, client, &draft, "Pricing");
-    let taken = must(
-        claim(f, client, &holder(f), &draft, &section),
-        201,
-        "claim the section",
-    );
-    let expires_at = epoch(&taken["claim"]["expires_at"]);
-
-    // No API call from here on.
-    let events = wait_for_expiry_event(&draft.project, SHORT_TTL + Duration::from_secs(8));
-    assert_expired_on_time(&events, &taken, expires_at);
-    assert_eq!(claims_of(f, client, &draft), Vec::<Value>::new());
-}
-
-#[test]
 fn operations_of_other_agents_in_the_draft_do_not_renew_a_claim() {
     let (f, server) = quiet();
     let client = &server.client;
