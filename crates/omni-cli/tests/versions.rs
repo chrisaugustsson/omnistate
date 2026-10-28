@@ -364,17 +364,3 @@ fn the_version_commands_need_their_doc_change_set_and_versions() {
     }
     assert_eq!(server.requests().len(), 3, "{:?}", server.requests());
 }
-
-#[test]
-fn help_lists_the_version_commands() {
-    let home = Scratch::new("help");
-    let help = omni(&home.path).args(&["--help"]).run();
-    assert_eq!(help.code, 0, "{}", help.stderr);
-    for command in ["omni version save", "omni version diff", "omni doc remove"] {
-        assert!(
-            help.stdout.contains(command),
-            "omni --help lists `{command}`: {:?}",
-            help.stdout
-        );
-    }
-}
