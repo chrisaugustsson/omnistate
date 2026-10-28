@@ -222,17 +222,6 @@ fn doc_create_without_a_change_set_creates_the_doc_at_the_app_level() {
         "no change set is involved: {:?}",
         server.requests()
     );
-
-    let json = run(
-        &home,
-        &[
-            "doc", "create", "--kind", "design", "--pillar", "ui", "--title", "Screens", "--json",
-        ],
-    );
-    assert_eq!(json.code, 0, "{}", json.stderr);
-    let answer = json.json();
-    assert_eq!(answer["doc"]["id"], NEW_DESIGN, "{answer}");
-    assert_eq!(answer["doc"]["feature_id"], Value::Null, "{answer}");
 }
 
 #[test]

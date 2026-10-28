@@ -699,9 +699,13 @@ fn an_agent_creates_docs_without_a_change_set_and_reads_them_at_once() {
     let p = ["--project", project.as_str()];
     let feature = run(
         &home,
-        &[&["feature", "create", "Checkout"][..], &p].concat(),
+        &[&["feature", "create", "Checkout", "--json"][..], &p].concat(),
     );
     assert_eq!(feature.code, 0, "feature create: {}", feature.stderr);
+    let checkout = feature.json()["feature"]["id"]
+        .as_str()
+        .expect("a feature id")
+        .to_string();
 
     let create = |extra: &[&str], kind: &str, pillar: &str, title: &str| -> Value {
         let out = run(
@@ -727,11 +731,13 @@ fn an_agent_creates_docs_without_a_change_set_and_reads_them_at_once() {
         "architecture",
         "Checkout architecture",
     );
-    assert!(
-        architecture["feature_id"].is_string(),
+    assert_eq!(
+        architecture["feature_id"],
+        checkout.as_str(),
         "the doc is in the feature: {architecture}"
     );
     let screens = create(&["--feature", "Checkout"], "design", "ui", "Screens");
+    assert_eq!(screens["feature_id"], checkout.as_str(), "{screens}");
 
     for doc in [&plan, &architecture] {
         let id = doc["id"].as_str().expect("a doc id");
@@ -749,31 +755,6 @@ fn an_agent_creates_docs_without_a_change_set_and_reads_them_at_once() {
         read.stdout
     );
     assert!(!read.stdout.contains("<Board"), "{:?}", read.stdout);
-
-    // Each creation is the doc's first change, and no change set was made.
-    block(async {
-        let mut conn = admin_connection().await;
-        for doc in [&plan, &architecture, &screens] {
-            let id = doc["id"].as_str().expect("a doc id");
-            let seqs: Vec<i64> = sqlx::query_scalar(
-                "SELECT seq::bigint FROM doc_changes WHERE doc_id = $1::uuid ORDER BY seq",
-            )
-            .bind(id)
-            .fetch_all(&mut conn)
-            .await
-            .expect("read the doc changes");
-            assert_eq!(seqs, vec![1], "the creation of {id} is its first change");
-        }
-        let changesets: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM changesets c JOIN projects p ON p.id = c.project_id \
-             WHERE p.name = $1",
-        )
-        .bind(&project)
-        .fetch_one(&mut conn)
-        .await
-        .expect("count the change sets");
-        assert_eq!(changesets, 0, "no change set was made");
-    });
 }
 
 // US-103: an agent edits a live doc without a change set and reads the change

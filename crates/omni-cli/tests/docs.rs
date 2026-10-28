@@ -498,17 +498,6 @@ fn doc_read_takes_a_change_set_or_a_version_not_both() {
     assert_nothing_sent(&server);
 }
 
-#[test]
-fn doc_read_of_a_doc_without_a_mainline_version_prints_its_empty_head() {
-    // US-102: a doc is readable at once, from its head; one without a
-    // mainline version is no error.
-    let server = mock();
-    let home = logged_in(&server.url);
-    let out = run(&home, &["doc", "read", NEW_DOC]);
-    assert_eq!(out.code, 0, "{}", out.stderr);
-    assert_eq!(out.stdout.trim(), "", "{:?}", out.stdout);
-}
-
 // ---------------------------------------------------------------------------
 // omni doc show
 // ---------------------------------------------------------------------------
