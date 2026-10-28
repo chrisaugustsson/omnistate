@@ -310,55 +310,36 @@ fn doc_list_prints_the_scope_of_each_doc_from_the_command_line() {
     );
     assert_eq!(created.code, 0, "feature create: {}", created.stderr);
 
-    let changeset = |extra: &[&str]| {
+    let doc = |scope: &[&str], kind: &str, pillar: &str, title: &str| {
         let out = run(
             &home,
             &[
+                &["doc", "create"][..],
+                scope,
                 &[
-                    "changeset",
-                    "create",
+                    "--kind",
+                    kind,
+                    "--pillar",
+                    pillar,
                     "--title",
-                    "Docs",
+                    title,
                     "--project",
                     &project,
                     "--json",
                 ][..],
-                extra,
             ]
             .concat(),
-        );
-        assert_eq!(out.code, 0, "changeset create {extra:?}: {}", out.stderr);
-        out.json()["changeset"]["id"]
-            .as_str()
-            .expect("an id")
-            .to_string()
-    };
-    let global = changeset(&["--global"]);
-    let checkout = changeset(&["--feature", "Checkout"]);
-    let doc = |changeset: &str, kind: &str, pillar: &str, title: &str| {
-        let out = run(
-            &home,
-            &[
-                "doc",
-                "create",
-                "--changeset",
-                changeset,
-                "--kind",
-                kind,
-                "--pillar",
-                pillar,
-                "--title",
-                title,
-                "--project",
-                &project,
-                "--json",
-            ],
         );
         assert_eq!(out.code, 0, "doc create {title}: {}", out.stderr);
         out.json()["doc"]["id"].as_str().expect("an id").to_string()
     };
-    let prd = doc(&global, "html", "spec", "Brand PRD");
-    let architecture = doc(&checkout, "html", "architecture", "Checkout architecture");
+    let prd = doc(&["--global"], "html", "spec", "Brand PRD");
+    let architecture = doc(
+        &["--feature", "Checkout"],
+        "html",
+        "architecture",
+        "Checkout architecture",
+    );
 
     let listed = run(&home, &["doc", "list", "--project", &project]);
     assert_eq!(listed.code, 0, "doc list: {}", listed.stderr);
@@ -371,20 +352,24 @@ fn doc_list_prints_the_scope_of_each_doc_from_the_command_line() {
         "the docs in creation order with their scope"
     );
     for (filter, expected) in [
-        (&["--feature", "Checkout"][..], &architecture),
-        (&["--global"][..], &prd),
+        (
+            &["--feature", "Checkout"][..],
+            format!("{architecture}  Checkout  html  architecture  Checkout architecture"),
+        ),
+        (
+            &["--global"][..],
+            format!("{prd}  project  html  spec  Brand PRD"),
+        ),
     ] {
         let out = run(
             &home,
             &[&["doc", "list", "--project", &project][..], filter].concat(),
         );
         assert_eq!(out.code, 0, "doc list {filter:?}: {}", out.stderr);
-        let lines = non_empty_lines(&out.stdout);
-        assert_eq!(lines.len(), 1, "doc list {filter:?}: {:?}", out.stdout);
-        assert!(
-            lines[0].starts_with(expected.as_str()),
-            "doc list {filter:?} lists {expected}: {:?}",
-            lines[0]
+        assert_eq!(
+            non_empty_lines(&out.stdout),
+            [expected],
+            "doc list {filter:?}"
         );
     }
 }

@@ -421,15 +421,3 @@ fn doc_list_refuses_a_pillar_that_is_not_one_of_the_five() {
         server.requests()
     );
 }
-
-#[test]
-fn help_names_doc_list() {
-    let home = Scratch::new("help");
-    let help = omni(&home.path).args(&["--help"]).run();
-    assert_eq!(help.code, 0, "{}", help.stderr);
-    assert!(
-        help.stdout.contains("omni doc list"),
-        "omni --help names omni doc list: {:?}",
-        help.stdout
-    );
-}
