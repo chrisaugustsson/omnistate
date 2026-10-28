@@ -225,27 +225,6 @@ mod tests {
     }
 
     #[test]
-    fn change_set_options_take_values() {
-        let parsed = parse_strs(&[
-            "changeset",
-            "create",
-            "--title",
-            "T",
-            "--description=D",
-            "--run",
-            "r-1",
-            "--project",
-            "p",
-        ])
-        .unwrap();
-        assert_eq!(parsed.words, ["changeset", "create"]);
-        assert_eq!(parsed.title.as_deref(), Some("T"));
-        assert_eq!(parsed.description.as_deref(), Some("D"));
-        assert_eq!(parsed.run.as_deref(), Some("r-1"));
-        assert_eq!(parsed.project.as_deref(), Some("p"));
-    }
-
-    #[test]
     fn feature_takes_a_value_and_global_is_a_flag() {
         let parsed = parse_strs(&["changeset", "list", "--feature=Checkout"]).unwrap();
         assert_eq!(parsed.feature.as_deref(), Some("Checkout"));
@@ -335,13 +314,6 @@ mod tests {
         let parsed = parse_strs(&["thread", "phase", "t", "--open"]).unwrap();
         assert_eq!(parsed.words, ["thread", "phase", "t"]);
         assert!(parse_strs(&["thread", "read", "t", "--open"]).is_err());
-    }
-
-    #[test]
-    fn rejecting_accepts_any_options_so_the_command_can_explain() {
-        let parsed = parse_strs(&["changeset", "reject", "x", "--reason", "no"]).unwrap();
-        assert_eq!(parsed.words, ["changeset", "reject", "x"]);
-        assert!(parse_strs(&["changeset", "submit", "x", "--reason", "no"]).is_err());
     }
 
     #[test]

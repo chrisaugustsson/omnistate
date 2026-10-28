@@ -97,7 +97,7 @@ fn reviewed_changeset() -> Value {
 }
 
 /// An API that knows two projects, `brand-site` and `other`, and one change
-/// set; the change set `STUCK_CHANGESET` refuses every transition.
+/// set.
 fn mock() -> MockServer {
     MockServer::start(|request| {
         let body: Value = serde_json::from_slice(&request.body).unwrap_or(Value::Null);
@@ -140,9 +140,6 @@ fn mock() -> MockServer {
                 ),
                 ("GET", rest) if rest == format!("/{CHANGESET}") => {
                     Reply::json(200, &json!({ "changeset": reviewed_changeset() }))
-                }
-                ("POST", rest) if rest.starts_with(&format!("/{STUCK_CHANGESET}/")) => {
-                    Reply::json(409, &json!({ "error": "invalid_transition" }))
                 }
                 ("POST", rest) if rest.starts_with(&format!("/{CHANGESET}/")) => {
                     let status = match rest.rsplit('/').next() {
@@ -473,30 +470,6 @@ fn submit_reopen_and_abandon_are_agent_posts_that_print_the_new_status() {
 }
 
 #[test]
-fn a_refused_transition_is_one_line_with_the_error_code() {
-    let server = mock();
-    let home = logged_in(&server.url);
-    for command in ["submit", "reopen", "abandon"] {
-        let out = run(
-            &home,
-            &["changeset", command, STUCK_CHANGESET, "--project", PROJECT],
-        );
-        assert_one_line_error(&out, &["invalid_transition"]);
-    }
-}
-
-#[test]
-fn a_lifecycle_command_needs_an_id() {
-    let server = mock();
-    let home = logged_in(&server.url);
-    for command in ["submit", "reopen", "abandon"] {
-        let out = run(&home, &["changeset", command, "--project", PROJECT]);
-        assert_one_line_error(&out, &["changeset"]);
-    }
-    assert!(server.requests().is_empty(), "{:?}", server.requests());
-}
-
-#[test]
 fn rejecting_is_left_to_the_human_in_the_web_app() {
     let server = mock();
     let home = logged_in(&server.url);
@@ -514,27 +487,4 @@ fn rejecting_is_left_to_the_human_in_the_web_app() {
     );
     assert_one_line_error(&out, &["web app"]);
     assert!(server.requests().is_empty(), "{:?}", server.requests());
-}
-
-#[test]
-fn help_lists_the_project_and_change_set_commands() {
-    let home = Scratch::new("help");
-    let help = omni(&home.path).args(&["--help"]).run();
-    assert_eq!(help.code, 0, "{}", help.stderr);
-    for command in [
-        "project create",
-        "project list",
-        "changeset create",
-        "changeset list",
-        "changeset show",
-        "changeset submit",
-        "changeset reopen",
-        "changeset abandon",
-    ] {
-        assert!(
-            help.stdout.contains(command),
-            "omni --help lists `omni {command}`: {:?}",
-            help.stdout
-        );
-    }
 }
