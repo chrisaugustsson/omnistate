@@ -796,6 +796,38 @@ fn a_set_of_a_property_that_the_tag_does_not_take_is_refused_naming_it() {
 }
 
 #[test]
+fn a_move_puts_a_node_under_a_new_parent_and_raises_only_its_revision() {
+    let (f, client) = ready();
+    let design = new_design(f, client);
+    let results = applied(
+        f,
+        client,
+        &design,
+        json!([move_to(
+            &design.id("Shipping"),
+            1,
+            &design.id("Actions"),
+            None
+        )]),
+    );
+    assert_eq!(results[0]["node"], design.id("Shipping"), "{results:?}");
+    assert_eq!(results[0]["revision"], 2, "{results:?}");
+
+    let pages = draft_pages(f, client, &design);
+    let summary = find_node(&pages, &design.id("Summary")).expect("Summary");
+    let actions = find_node(&pages, &design.id("Actions")).expect("Actions");
+    assert_eq!(child_ids(&summary), vec![design.id("Total")], "{summary}");
+    assert_eq!(
+        child_ids(&actions),
+        vec![design.id("Shipping")],
+        "{actions}"
+    );
+    let tags = board_tags(f, client, &design, &design.id("Cart"));
+    assert_eq!(rev_in(&tags, &design.id("Summary")), 1, "{tags}");
+    assert_eq!(rev_in(&tags, &design.id("Actions")), 1, "{tags}");
+}
+
+#[test]
 fn an_operation_that_refers_to_an_unknown_id_is_an_error_that_names_it() {
     let (f, client) = ready();
     let design = new_design(f, client);
