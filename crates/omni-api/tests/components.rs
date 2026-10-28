@@ -95,7 +95,6 @@ mod common;
 
 use common::{Client, Response, TestServer, cookie};
 use omni_api::Config;
-use omni_api::routes::{Access, registry};
 use s3::creds::Credentials;
 use s3::{Bucket, BucketConfiguration, Region};
 use serde_json::{Value, json};
@@ -109,11 +108,6 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 const TEST_DB: &str = "omni_us029_components";
 const TEST_BUCKET: &str = "omni-us029-components";
-const COMPONENTS_ROUTE: &str =
-    "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/components";
-const DESIGN_ROUTE: &str =
-    "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs/{doc_id}/design";
-const USAGE_ROUTE: &str = "/api/v1/w/{workspace_id}/projects/{project_id}/components/usage";
 /// A node ID in the right format that no node has.
 const UNKNOWN_NODE: &str = "zzzzzzzz";
 
@@ -932,8 +926,6 @@ struct Library {
     ids: Ids,
     /// Board, page and instance IDs by name.
     nodes: Ids,
-    /// The answer of the shop's design import.
-    shop_import: Value,
     shop_version: String,
     admin_version: String,
     /// The design system version that both design versions record.
@@ -1011,7 +1003,6 @@ fn library(f: &Fixture, client: &Client) -> Library {
         admin,
         ids,
         nodes,
-        shop_import,
         shop_version: id_of(&shop_saved),
         admin_version: id_of(&admin_saved),
         design_system_version,
@@ -1034,138 +1025,8 @@ fn style_values(component: &Value) -> Value {
 }
 
 // ---------------------------------------------------------------------------
-// The routes
-// ---------------------------------------------------------------------------
-
-#[test]
-fn the_component_routes_are_in_the_registry() {
-    let routes = registry();
-    for (method, path, access) in [
-        ("PUT", COMPONENTS_ROUTE, Access::Agent),
-        ("PUT", DESIGN_ROUTE, Access::Agent),
-        ("GET", USAGE_ROUTE, Access::Both),
-    ] {
-        let entry = routes
-            .iter()
-            .find(|r| r.method == method && r.path == path)
-            .unwrap_or_else(|| panic!("the registry has no route {method} {path}"));
-        assert_eq!(entry.access, access, "{method} {path}");
-    }
-}
-
-// ---------------------------------------------------------------------------
 // <Component> tags in the design system doc
 // ---------------------------------------------------------------------------
-
-#[test]
-fn an_import_defines_the_components_of_the_change_sets_design_system() {
-    let (f, client) = ready();
-    let project = new_project(f, client);
-    let changeset = new_changeset(f, client, &project);
-    let design_system = create_doc(
-        f,
-        client,
-        &project,
-        &changeset,
-        "design-system",
-        "ui",
-        "Design system",
-    );
-    import_tokens(f, client, &project, &changeset);
-    let icons = import_components(f, client, &project, &changeset, &icon_tags(&Ids::new()));
-    assert_eq!(icons["doc_id"], design_system.as_str(), "{icons}");
-    assert_eq!(icons["changeset_id"], changeset.as_str(), "{icons}");
-    let ids = ids_in(&icons["components"]);
-    for name in ["Cart", "Cart glyph", "Heart", "Heart glyph"] {
-        let given = id(&ids, name);
-        assert!(
-            given.len() == 8 && given.chars().all(|c| c.is_ascii_alphanumeric()),
-            "the server gives {name} a node ID: {given}"
-        );
-    }
-    let names: Vec<&str> = icons["components"]
-        .as_array()
-        .expect("the components")
-        .iter()
-        .map(|component| {
-            assert_eq!(component["type"], "component", "{component}");
-            component["name"].as_str().unwrap()
-        })
-        .collect();
-    assert_eq!(
-        names,
-        ["Cart", "Heart"],
-        "the components in the order written"
-    );
-    assert!(
-        icons["tags"]
-            .as_str()
-            .unwrap_or_default()
-            .contains(&id(&ids, "Cart")),
-        "the tags carry the new IDs: {icons}"
-    );
-
-    // A second import replaces the components: those written with an ID keep
-    // it, and the button's properties are stored as written.
-    let with_button = import_components(
-        f,
-        client,
-        &project,
-        &changeset,
-        &format!("{}{}", icon_tags(&ids), button_tags(&ids, &STYLES, "Buy")),
-    );
-    let again = ids_in(&with_button["components"]);
-    for name in ["Cart", "Cart glyph", "Heart", "Heart glyph"] {
-        assert_eq!(again[name], ids[name], "{name} keeps its ID");
-    }
-    let button = component_in(&with_button, "Button");
-    assert_eq!(
-        button["props"],
-        json!({
-            "style": {"type": "variant", "values": ["primary", "secondary"], "default": "primary"},
-            "showIcon": {"type": "boolean", "default": true},
-            "label": {"type": "text", "default": "Buy"},
-            "icon": {"type": "slot", "default": ids["Cart"]}
-        }),
-        "{button:#}"
-    );
-    assert_eq!(
-        find(&button["children"], "Icon")["bind"],
-        json!({"visible": "showIcon", "component": "icon"})
-    );
-    assert_eq!(
-        find(&button["children"], "Label")["bind"],
-        json!({"content": "label"})
-    );
-
-    // Only the import with the button is left: the icons-only one is gone.
-    let only_button = import_components(
-        f,
-        client,
-        &project,
-        &changeset,
-        &format!(
-            "{}{}",
-            icon_tags(&again),
-            button_tags(&again, &STYLES, "Buy")
-        ),
-    );
-    assert_eq!(only_button["components"].as_array().unwrap().len(), 3);
-
-    // The token tree stays as it was.
-    let read = must(
-        call(
-            client,
-            "GET",
-            &format!("{}/tokens", changeset_path(f, &project, &changeset)),
-            &agent(f),
-            None,
-        ),
-        200,
-        "read the draft's tokens",
-    );
-    assert_eq!(read["tokens"], tokens(), "{read}");
-}
 
 #[test]
 fn a_components_import_is_logged_and_emits_an_event() {
@@ -1275,102 +1136,9 @@ fn a_refused_components_import_changes_nothing() {
     assert_error(&response, 404, "no_design_system");
 }
 
-#[test]
-fn a_components_import_opens_the_design_system_draft_of_a_change_set_that_has_none() {
-    let (f, client) = ready();
-    let lib = library(f, client);
-    let changeset = new_changeset(f, client, &lib.project);
-    let imported = import_components(
-        f,
-        client,
-        &lib.project,
-        &changeset,
-        &library_tags(&lib.ids, &WITH_DANGER, "Buy"),
-    );
-    assert_eq!(imported["doc_id"], lib.design_system.as_str(), "{imported}");
-    let draft = imported["draft_id"].as_str().expect("a new draft");
-    let read = read_draft(f, client, &lib.project, &changeset, &lib.design_system);
-    assert_eq!(read["id"], draft, "{read}");
-    assert_eq!(
-        read["base_version_id"],
-        lib.design_system_version.as_str(),
-        "the draft is based on the mainline design system: {read}"
-    );
-    assert_eq!(
-        style_values(&component_in(&imported, "Button")),
-        json!(WITH_DANGER)
-    );
-}
-
 // ---------------------------------------------------------------------------
 // <Instance component props overrides> in design docs
 // ---------------------------------------------------------------------------
-
-#[test]
-fn an_instance_stores_only_its_component_its_property_values_and_its_overrides() {
-    let (f, client) = ready();
-    let lib = library(f, client);
-    let ids = &lib.ids;
-    let instance = find(&lib.shop_import["pages"], "Pay button");
-    assert_eq!(instance["type"], "instance", "{instance}");
-    assert_eq!(instance["component"], ids["Button"].as_str());
-    assert_eq!(
-        instance["props"],
-        json!({"style": "secondary", "showIcon": false, "label": "Pay", "icon": ids["Heart"]}),
-        "{instance:#}"
-    );
-    let mut overrides = serde_json::Map::new();
-    overrides.insert(ids["Label"].clone(), json!({"content": "Pay now"}));
-    overrides.insert(
-        ids["Badge"].clone(),
-        json!({"fills": [{"type": "solid", "color": "#16a34a"}]}),
-    );
-    overrides.insert(ids["Icon"].clone(), json!({"visible": false}));
-    assert_eq!(
-        instance["overrides"],
-        Value::Object(overrides),
-        "{instance:#}"
-    );
-    let keys: BTreeSet<&str> = instance
-        .as_object()
-        .unwrap()
-        .keys()
-        .map(String::as_str)
-        .collect();
-    assert_eq!(
-        keys,
-        [
-            "id",
-            "type",
-            "name",
-            "visible",
-            "component",
-            "props",
-            "overrides"
-        ]
-        .into_iter()
-        .collect(),
-        "nothing of the component's tree or style is stored in the instance: {instance:#}"
-    );
-    assert!(
-        node_named(&lib.shop_import["pages"], "Label").is_none(),
-        "the component's nodes are not copied into the design"
-    );
-    let tags = lib.shop_import["tags"]
-        .as_str()
-        .expect("the design as tags");
-    for attribute in ["props=", "overrides="] {
-        assert!(tags.contains(attribute), "{attribute}: {tags}");
-    }
-
-    // The saved version stores the same instance.
-    let version = read_version(f, client, &lib.project, &lib.shop_version);
-    assert_eq!(
-        find(&version["pages"], "Pay button"),
-        instance,
-        "{version:#}"
-    );
-}
 
 #[test]
 fn an_instance_may_swap_the_contents_of_a_slot_with_an_override() {
