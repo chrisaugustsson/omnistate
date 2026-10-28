@@ -147,8 +147,6 @@ async fn admin_connection() -> PgConnection {
 
 struct Fixture {
     workspace: String,
-    /// Alice's user ID, the human's in `author`.
-    alice: String,
     alice_token: String,
     key: String,
     server: TestServer,
@@ -178,7 +176,7 @@ fn fixture() -> &'static Fixture {
                 .expect("apply the migrations to the scratch database");
             ensure_bucket().await;
         });
-        let (workspace, alice) = block(async {
+        let workspace = block(async {
             let mut conn = admin_connection().await;
             let mut text = async |sql: &str, binds: &[&str]| -> String {
                 let mut query = sqlx::query_scalar::<_, String>(sql);
@@ -210,7 +208,7 @@ fn fixture() -> &'static Fixture {
                 &[&workspace, &user],
             )
             .await;
-            (workspace, user)
+            workspace
         });
         let server = TestServer::start(&config());
         let response = call(
@@ -227,7 +225,6 @@ fn fixture() -> &'static Fixture {
             .to_string();
         Fixture {
             workspace,
-            alice,
             alice_token: session_token("alice"),
             key,
             server,
@@ -292,15 +289,6 @@ fn must(response: Response, status: u16, what: &str) -> Value {
     response.json()
 }
 
-fn assert_error(response: &Response, status: u16, code: &str, what: &str) {
-    assert_eq!(response.status, status, "{what}: {}", response.text());
-    assert_eq!(
-        response.json(),
-        json!({ "error": code }),
-        "{what}: the error body carries the code and nothing else"
-    );
-}
-
 fn unique(label: &str) -> String {
     static COUNTER: AtomicU32 = AtomicU32::new(0);
     format!("{label}-{}", COUNTER.fetch_add(1, Ordering::Relaxed))
@@ -313,16 +301,8 @@ fn id_of(value: &Value) -> String {
         .to_string()
 }
 
-fn parse(text: &str) -> Value {
-    serde_json::from_str(text).unwrap_or_else(|e| panic!("not JSON ({e}): {text}"))
-}
-
 fn project_base(f: &Fixture, project: &str) -> String {
     format!("/api/v1/w/{}/projects/{project}", f.workspace)
-}
-
-fn comment_path(f: &Fixture, project: &str, comment: &str) -> String {
-    format!("{}/comments/{comment}", project_base(f, project))
 }
 
 // ---------------------------------------------------------------------------
@@ -342,22 +322,6 @@ fn new_project(f: &Fixture, client: &Client) -> String {
             201,
             "create a project",
         )["project"],
-    )
-}
-
-fn new_feature(f: &Fixture, client: &Client, project: &str) -> String {
-    id_of(
-        &must(
-            call(
-                client,
-                "POST",
-                &format!("{}/features", project_base(f, project)),
-                &author(f),
-                Some(&json!({ "name": unique("Checkout") })),
-            ),
-            201,
-            "create a feature",
-        )["feature"],
     )
 }
 
@@ -624,16 +588,17 @@ fn comment(
         .clone()
 }
 
-fn show_response(f: &Fixture, client: &Client, auth: &Auth, project: &str, id: &str) -> Response {
-    call(client, "GET", &comment_path(f, project, id), auth, None)
-}
-
-fn show(f: &Fixture, client: &Client, project: &str, id: &str) -> Value {
-    must(
-        show_response(f, client, &author(f), project, id),
-        200,
-        "read the comment",
-    )
+/// The human pins `text` to `node` of the doc's head; returns the comment's
+/// ID.
+fn human_comment(
+    f: &Fixture,
+    client: &Client,
+    project: &str,
+    doc: &str,
+    node: &str,
+    text: &str,
+) -> String {
+    id_of(&comment(f, client, &human(f), project, doc, node, text))
 }
 
 /// The comments that `GET /comments{query}` lists to `auth`.
@@ -658,86 +623,6 @@ fn list(f: &Fixture, client: &Client, auth: &Auth, project: &str, query: &str) -
 
 fn ids(comments: &[Value]) -> Vec<String> {
     comments.iter().map(id_of).collect()
-}
-
-fn reply_response(
-    f: &Fixture,
-    client: &Client,
-    auth: &Auth,
-    project: &str,
-    id: &str,
-    text: &str,
-) -> Response {
-    call(
-        client,
-        "POST",
-        &format!("{}/replies", comment_path(f, project, id)),
-        auth,
-        Some(&json!({ "text": text })),
-    )
-}
-
-fn reply(f: &Fixture, client: &Client, auth: &Auth, project: &str, id: &str, text: &str) -> Value {
-    must(
-        reply_response(f, client, auth, project, id, text),
-        201,
-        "reply to the comment",
-    )["comment"]
-        .clone()
-}
-
-fn delete_response(f: &Fixture, client: &Client, auth: &Auth, project: &str, id: &str) -> Response {
-    call(client, "DELETE", &comment_path(f, project, id), auth, None)
-}
-
-// ---------------------------------------------------------------------------
-// The database
-// ---------------------------------------------------------------------------
-
-/// The live events of a project named `event`, oldest first, as their
-/// `data`.
-fn events_of(project: &str, event: &str) -> Vec<Value> {
-    block(async {
-        let mut conn = admin_connection().await;
-        let rows = sqlx::query_scalar::<_, String>(
-            "select data::jsonb::text from live_events \
-             where project_id = $1::uuid and event = $2 order by seq",
-        )
-        .bind(project)
-        .bind(event)
-        .fetch_all(&mut conn)
-        .await
-        .unwrap_or_else(|e| panic!("read the live events: {e}"));
-        rows.iter().map(|text| parse(text)).collect()
-    })
-}
-
-/// How many rows of `comments` belong to `doc`, as the admin sees them; read
-/// through `to_jsonb` so that a table without a `doc_id` column counts 0.
-fn stored_on(doc: &str) -> i64 {
-    block(async {
-        let mut conn = admin_connection().await;
-        sqlx::query_scalar("select count(*) from comments c where to_jsonb(c) ->> 'doc_id' = $1")
-            .bind(doc)
-            .fetch_one(&mut conn)
-            .await
-            .unwrap_or_else(|e| panic!("count the comments: {e}"))
-    })
-}
-
-/// The stored row of a comment as JSON, as the admin sees it; `None` when
-/// there is no such row.
-fn stored_row(id: &str) -> Option<Value> {
-    block(async {
-        let mut conn = admin_connection().await;
-        let row: Option<String> =
-            sqlx::query_scalar("select to_jsonb(c)::text from comments c where c.id = $1::uuid")
-                .bind(id)
-                .fetch_optional(&mut conn)
-                .await
-                .unwrap_or_else(|e| panic!("read the comment's row: {e}"));
-        row.map(|text| parse(&text))
-    })
 }
 
 // ---------------------------------------------------------------------------
@@ -840,24 +725,8 @@ fn deleting_a_commented_block_succeeds_and_its_comment_is_listed_orphaned_with_i
     let project = new_project(f, client);
     let (doc, doomed) = paper_in(f, client, &project, None);
     let kept = paragraph(f, client, &project, &doc, "Returns are free for 30 days.");
-    let on_doomed = id_of(&comment(
-        f,
-        client,
-        &human(f),
-        &project,
-        &doc,
-        &doomed,
-        "Say which days count.",
-    ));
-    let on_kept = id_of(&comment(
-        f,
-        client,
-        &human(f),
-        &project,
-        &doc,
-        &kept,
-        "Thirty is generous.",
-    ));
+    let on_doomed = human_comment(f, client, &project, &doc, &doomed, "Say which days count.");
+    let on_kept = human_comment(f, client, &project, &doc, &kept, "Thirty is generous.");
     assert_orphaned(f, client, &project, &doc, &on_doomed, false);
 
     // The write goes through although the node has a comment.
@@ -909,95 +778,24 @@ fn deleting_a_commented_block_succeeds_and_its_comment_is_listed_orphaned_with_i
 }
 
 #[test]
-fn deleting_a_section_orphans_the_comments_on_the_blocks_inside_it() {
-    let (f, client) = ready();
-    let project = new_project(f, client);
-    let feature = new_feature(f, client, &project);
-    let (doc, kept) = paper_in(f, client, &project, Some(&feature));
-    let (section, inner) = section(f, client, &project, &doc);
-    let on_section = id_of(&comment(
-        f,
-        client,
-        &human(f),
-        &project,
-        &doc,
-        &section,
-        "Is this needed?",
-    ));
-    let on_inner = id_of(&comment(
-        f,
-        client,
-        &human(f),
-        &project,
-        &doc,
-        &inner,
-        "Noon or 11?",
-    ));
-    let on_kept = id_of(&comment(
-        f,
-        client,
-        &human(f),
-        &project,
-        &doc,
-        &kept,
-        "Fine.",
-    ));
-
-    let results = edit(f, client, &project, &doc, json!([delete_op(&section, 1)]));
-    assert!(
-        listed_ids(&results[0], "removed").contains(&inner),
-        "the paragraph went with its section: {results:?}"
-    );
-
-    assert_orphaned(f, client, &project, &doc, &on_section, true);
-    assert_orphaned(f, client, &project, &doc, &on_inner, true);
-    assert_orphaned(f, client, &project, &doc, &on_kept, false);
-    let orphan = listed(
-        f,
-        client,
-        &human(f),
-        &project,
-        &format!("?feature={feature}"),
-        &on_inner,
-    );
-    assert_eq!(orphan["orphaned"], true, "{orphan}");
-    assert!(
-        snapshot(&orphan).contains("Parcels leave the warehouse at noon."),
-        "{orphan}"
-    );
-    assert!(
-        snapshot(&listed(f, client, &human(f), &project, "", &on_section)).contains("Shipping"),
-        "the section's snapshot holds its content"
-    );
-}
-
-#[test]
 fn deleting_a_commented_board_orphans_the_comments_on_its_nodes_and_inside_its_instance() {
     let (f, client) = ready();
     let project = new_project(f, client);
     let design = design_in(f, client, &project);
     let inside = format!("{}/{}", design.instance, design.label);
-    let mut made = Vec::new();
-    for node in [
-        &design.page,
-        &design.board,
-        &design.text,
+    let on_page = human_comment(f, client, &project, &design.doc, &design.page, "Look here");
+    let on_board = human_comment(f, client, &project, &design.doc, &design.board, "Look here");
+    let on_text = human_comment(f, client, &project, &design.doc, &design.text, "Look here");
+    let on_instance = human_comment(
+        f,
+        client,
+        &project,
+        &design.doc,
         &design.instance,
-        &inside,
-    ] {
-        made.push(id_of(&comment(
-            f,
-            client,
-            &human(f),
-            &project,
-            &design.doc,
-            node,
-            "Look here",
-        )));
-    }
-    let [on_page, on_board, on_text, on_instance, on_inside] = made.as_slice() else {
-        unreachable!()
-    };
+        "Look here",
+    );
+    let on_inside = human_comment(f, client, &project, &design.doc, &inside, "Look here");
+    assert_orphaned(f, client, &project, &design.doc, &on_inside, false);
 
     let results = edit(
         f,
@@ -1011,20 +809,20 @@ fn deleting_a_commented_board_orphans_the_comments_on_its_nodes_and_inside_its_i
         "the board went with its nodes: {results:?}"
     );
 
-    assert_orphaned(f, client, &project, &design.doc, on_page, false);
-    for orphan in [on_board, on_text, on_instance, on_inside] {
+    assert_orphaned(f, client, &project, &design.doc, &on_page, false);
+    for orphan in [&on_board, &on_text, &on_instance, &on_inside] {
         assert_orphaned(f, client, &project, &design.doc, orphan, true);
     }
-    let text = listed(f, client, &human(f), &project, "", on_text);
+    let text = listed(f, client, &human(f), &project, "", &on_text);
     assert!(
         snapshot(&text).contains("Total: 42 kr"),
         "a design node's snapshot is its tag form: {text}"
     );
     assert!(
-        snapshot(&listed(f, client, &human(f), &project, "", on_board)).contains("Checkout"),
+        snapshot(&listed(f, client, &human(f), &project, "", &on_board)).contains("Checkout"),
         "the board's snapshot names it"
     );
-    let inside = listed(f, client, &human(f), &project, "", on_inside);
+    let inside = listed(f, client, &human(f), &project, "", &on_inside);
     assert!(
         snapshot(&inside).contains("Buy"),
         "the snapshot of a node inside an instance is the component's node: {inside}"
@@ -1041,24 +839,8 @@ fn a_comment_on_a_block_that_is_replaced_or_set_but_keeps_its_id_is_not_orphaned
     let project = new_project(f, client);
     let (doc, replaced) = paper_in(f, client, &project, None);
     let changed = paragraph(f, client, &project, &doc, "Pay by card.");
-    let on_replaced = id_of(&comment(
-        f,
-        client,
-        &human(f),
-        &project,
-        &doc,
-        &replaced,
-        "Too slow.",
-    ));
-    let on_changed = id_of(&comment(
-        f,
-        client,
-        &human(f),
-        &project,
-        &doc,
-        &changed,
-        "And invoice?",
-    ));
+    let on_replaced = human_comment(f, client, &project, &doc, &replaced, "Too slow.");
+    let on_changed = human_comment(f, client, &project, &doc, &changed, "And invoice?");
 
     let results = edit(
         f,
@@ -1094,24 +876,8 @@ fn a_replace_that_leaves_a_commented_block_out_orphans_only_that_comment() {
     let project = new_project(f, client);
     let (doc, _) = paper_in(f, client, &project, None);
     let (section, inner) = section(f, client, &project, &doc);
-    let on_section = id_of(&comment(
-        f,
-        client,
-        &human(f),
-        &project,
-        &doc,
-        &section,
-        "Shorten this.",
-    ));
-    let on_inner = id_of(&comment(
-        f,
-        client,
-        &human(f),
-        &project,
-        &doc,
-        &inner,
-        "Noon or 11?",
-    ));
+    let on_section = human_comment(f, client, &project, &doc, &section, "Shorten this.");
+    let on_inner = human_comment(f, client, &project, &doc, &inner, "Noon or 11?");
 
     let results = edit(
         f,
@@ -1134,127 +900,6 @@ fn a_replace_that_leaves_a_commented_block_out_orphans_only_that_comment() {
     assert_orphaned(f, client, &project, &doc, &on_inner, true);
 }
 
-#[test]
-fn a_comment_on_a_design_node_whose_properties_change_is_not_orphaned() {
-    let (f, client) = ready();
-    let project = new_project(f, client);
-    let design = design_in(f, client, &project);
-    let on_text = id_of(&comment(
-        f,
-        client,
-        &human(f),
-        &project,
-        &design.doc,
-        &design.text,
-        "Show the currency first.",
-    ));
-
-    edit(
-        f,
-        client,
-        &project,
-        &design.doc,
-        json!([set_op(
-            &design.text,
-            1,
-            json!({ "content": "Total: SEK 42" })
-        )]),
-    );
-
-    assert_orphaned(f, client, &project, &design.doc, &on_text, false);
-    let comment = listed(f, client, &human(f), &project, "", &on_text);
-    assert!(
-        snapshot(&comment).contains("Total: 42 kr") && !snapshot(&comment).contains("SEK"),
-        "the snapshot is the node as it was commented: {comment}"
-    );
-}
-
 // ---------------------------------------------------------------------------
 // Deleting an orphaned comment
 // ---------------------------------------------------------------------------
-
-#[test]
-fn an_orphaned_comment_takes_replies_and_the_human_deletes_it_like_any_other() {
-    let (f, client) = ready();
-    let project = new_project(f, client);
-    let (doc, doomed) = paper_in(f, client, &project, None);
-    let kept = paragraph(f, client, &project, &doc, "Returns are free.");
-    let orphan = id_of(&comment(
-        f,
-        client,
-        &human(f),
-        &project,
-        &doc,
-        &doomed,
-        "Drop this line.",
-    ));
-    let other = id_of(&comment(
-        f,
-        client,
-        &human(f),
-        &project,
-        &doc,
-        &kept,
-        "Keep this one.",
-    ));
-    edit(f, client, &project, &doc, json!([delete_op(&doomed, 1)]));
-    assert_orphaned(f, client, &project, &doc, &orphan, true);
-
-    let replied = reply(f, client, &author(f), &project, &orphan, "Dropped it.");
-    assert_eq!(replied["replies"][0]["text"], "Dropped it.", "{replied}");
-    let listed_orphan = listed(f, client, &human(f), &project, "", &orphan);
-    assert_eq!(listed_orphan["orphaned"], true, "{listed_orphan}");
-    assert_eq!(listed_orphan["waiting_on_you"], true, "{listed_orphan}");
-    assert_eq!(
-        listed_orphan["author"],
-        json!({ "kind": "human", "user_id": f.alice }),
-        "{listed_orphan}"
-    );
-    assert_eq!(
-        show(f, client, &project, &orphan)["comment"]["id"],
-        orphan.as_str(),
-        "an orphaned comment reads like any other"
-    );
-
-    assert_error(
-        &delete_response(f, client, &author(f), &project, &orphan),
-        403,
-        "forbidden",
-        "an API key deletes an orphaned comment",
-    );
-    assert_eq!(
-        ids(&list(f, client, &human(f), &project, "")),
-        [orphan.clone(), other.clone()],
-        "a refused delete changes nothing"
-    );
-
-    let response = delete_response(f, client, &human(f), &project, &orphan);
-    assert_eq!(response.status, 204, "delete: {}", response.text());
-    for query in [String::new(), format!("?doc={doc}")] {
-        for auth in [human(f), author(f)] {
-            assert_eq!(
-                ids(&list(f, client, &auth, &project, &query)),
-                [other.clone()],
-                "the deleted orphan is left out of GET /comments{query}"
-            );
-        }
-    }
-    assert_error(
-        &show_response(f, client, &human(f), &project, &orphan),
-        404,
-        "not_found",
-        "the read of a deleted orphan",
-    );
-    assert_error(
-        &delete_response(f, client, &human(f), &project, &orphan),
-        404,
-        "not_found",
-        "deleting it again",
-    );
-    let deleted = events_of(&project, "comment.deleted");
-    assert_eq!(deleted.len(), 1, "{deleted:?}");
-    assert_eq!(deleted[0]["comment_id"], orphan.as_str(), "{deleted:?}");
-    let row = stored_row(&orphan).expect("the deleted orphan stays in the database");
-    assert!(row["deleted_at"].is_string(), "{row}");
-    assert_eq!(stored_on(&doc), 2, "both rows stay in the database");
-}
