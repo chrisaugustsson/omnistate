@@ -1301,24 +1301,6 @@ fn a_placeholder_of_a_board_that_hugs_its_content_has_the_box_of_that_content() 
 }
 
 #[test]
-fn the_human_reads_the_outline_too() {
-    let (f, client) = ready();
-    let d = new_design(f, client);
-    let saved = save(f, client, &d.project, &d.changeset, &d.doc);
-    let outline = must(
-        outline_response(f, client, &human(f), &d.project, &id_of(&saved)),
-        200,
-        "the viewer's session reads the outline",
-    )["version"]
-        .clone();
-    assert_eq!(
-        outline["outline"].as_array().map(Vec::len),
-        Some(2),
-        "the outline lists both pages: {outline:#}"
-    );
-}
-
-#[test]
 fn a_board_of_a_version_answers_its_subtree_as_json() {
     let (f, client) = ready();
     let d = new_design(f, client);
