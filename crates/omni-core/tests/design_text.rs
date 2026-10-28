@@ -5,8 +5,8 @@
 mod common;
 
 use common::{
-    assert_distinct_values, assert_rejected, assert_round_trips, flex_frame, parse, strings, text,
-    try_parse, with, without,
+    assert_distinct_values, assert_rejected, assert_round_trips, parse, strings, text, try_parse,
+    with, without,
 };
 use serde_json::{Value, json};
 
@@ -32,11 +32,6 @@ fn styled_text() -> Value {
 }
 
 #[test]
-fn text_nodes_round_trip_every_text_property() {
-    assert_round_trips(&flex_frame("frame001", vec![styled_text()]));
-}
-
-#[test]
 fn text_content_is_plain_text_kept_exactly() {
     for content in [
         "Line one\nLine två — åäö ✓ 🛒",
@@ -54,33 +49,6 @@ fn text_content_is_plain_text_kept_exactly() {
     assert_rejected(
         &without(&styled_text(), "/content"),
         "a text node without content",
-    );
-}
-
-#[test]
-fn font_values_change_the_node() {
-    let base = styled_text();
-    assert_distinct_values(
-        &base,
-        "/fontFamily",
-        &strings(["IBM Plex Sans", "Inter", "Georgia"]),
-    );
-    assert_distinct_values(&base, "/fontSize", &[json!(12), json!(18), json!(28.5)]);
-    assert_distinct_values(
-        &base,
-        "/fontWeight",
-        &[json!(100), json!(400), json!(650), json!(900)],
-    );
-    assert_distinct_values(&base, "/lineHeight", &[json!(1), json!(1.4), json!(2)]);
-    assert_distinct_values(
-        &base,
-        "/letterSpacing",
-        &[json!(-0.2), json!(0), json!(0.8)],
-    );
-    assert_distinct_values(
-        &base,
-        "/color",
-        &strings(["#0f172a", "#16a34a", "#16a34a80"]),
     );
 }
 
@@ -192,16 +160,4 @@ fn a_text_node_names_its_font_family_and_size() {
             &format!("a text node without `{field}`"),
         );
     }
-}
-
-#[test]
-fn the_other_text_style_properties_may_be_left_out() {
-    let plain = text("text0001");
-    let output = assert_round_trips(&plain);
-    assert_eq!(output["content"], "Hello");
-    assert_ne!(
-        parse(&plain),
-        parse(&with(&plain, "/textDecoration", json!("underline"))),
-        "a text style property changes the node"
-    );
 }

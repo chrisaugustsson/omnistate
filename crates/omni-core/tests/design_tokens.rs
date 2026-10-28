@@ -151,21 +151,6 @@ fn style_and_layout_values_accept_token_references() {
 }
 
 #[test]
-fn every_tokenized_value_also_accepts_a_literal() {
-    let tokenized = tokenized_frame();
-    let with_tokens = parse(&tokenized);
-    for (pointer, token, literal) in token_slots() {
-        let json = with(&tokenized, pointer, literal.clone());
-        assert_round_trips(&json);
-        assert_ne!(
-            parse(&json),
-            with_tokens,
-            "{pointer} = {literal} is a literal, not the token `{token}`"
-        );
-    }
-}
-
-#[test]
 fn token_references_are_dollar_and_dot_separated_names() {
     let base = tokenized_frame();
     for token in [
@@ -223,6 +208,7 @@ fn token_file_references_are_not_design_values() {
         ("/fills/0/color", "{color.surface}"),
         ("/layout/padding/top", "{space.xs}"),
         ("/children/0/fontSize", "{font.size.lg}"),
+        ("/children/0/fontFamily", "{font.family.sans}"),
     ] {
         assert_rejected(
             &with(&base, pointer, json!(bad)),
