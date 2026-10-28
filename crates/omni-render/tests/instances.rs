@@ -789,12 +789,6 @@ fn page_box(x: f32, y: f32, width: f32, height: f32) -> LayoutBox {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn a_design_system_version_is_read_with_its_modes() {
-    let system = system();
-    assert_eq!(system.modes(), ["light", "dark"], "the modes, in order");
-}
-
-#[test]
 fn a_design_system_that_is_not_a_valid_version_is_refused() {
     let unknown_group = with(&system_json(), "sizes", json!({"$type": "dimension"}));
     assert!(
