@@ -46,7 +46,8 @@ test("the HTML doc stylesheet is doc content styling, not app styling", () => {
     ),
   );
   expect(loads.length, "some source reads src/viewer/doc.css").toBeGreaterThan(0);
-  for (const load of loads) {
-    expect(load, "doc.css is read as text, never loaded into the app").toMatch(/\?(raw|inline)$/);
-  }
+  expect(
+    loads.filter((load) => !/\?(raw|inline)$/.test(load)),
+    "doc.css is read as text, never loaded into the app",
+  ).toEqual([]);
 });
