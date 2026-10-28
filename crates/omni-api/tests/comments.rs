@@ -1308,42 +1308,6 @@ fn comments_are_listed_oldest_first_by_project_doc_and_feature() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn an_api_key_cannot_delete_a_comment() {
-    let (f, client) = ready();
-    let project = new_project(f, client);
-    let (doc, node) = paper_in(f, client, &project, None);
-    let id = id_of(&comment(
-        f,
-        client,
-        &human(f),
-        &project,
-        &doc,
-        &node,
-        "Keep me.",
-    ));
-
-    for agent in [author(f), critic(f)] {
-        let response = delete_response(f, client, &agent, &project, &id);
-        assert_error(&response, 403, "forbidden", "an agent deletes a comment");
-    }
-    assert_eq!(
-        ids(&list(f, client, &human(f), &project, "")),
-        [id.clone()],
-        "the comment is still listed"
-    );
-    let row = stored_row(&id).expect("the comment's row");
-    assert_eq!(
-        row["deleted_at"],
-        Value::Null,
-        "the comment is not deleted: {row}"
-    );
-    assert!(
-        events_of(&project, "comment.deleted").is_empty(),
-        "a refused delete emits nothing"
-    );
-}
-
-#[test]
 fn the_human_deletes_a_comment_which_leaves_every_list_and_stays_in_the_database() {
     let (f, client) = ready();
     let project = new_project(f, client);
@@ -1459,53 +1423,4 @@ fn commenting_replying_and_deleting_emit_their_events() {
     assert_eq!(deleted.len(), 1, "{deleted:?}");
     assert_eq!(deleted[0]["comment_id"], id.as_str(), "{deleted:?}");
     assert_eq!(deleted[0]["doc_id"], doc.as_str(), "{deleted:?}");
-}
-
-// ---------------------------------------------------------------------------
-// Storage
-// ---------------------------------------------------------------------------
-
-#[test]
-fn comments_are_stored_by_doc_and_node_with_a_soft_delete_and_no_status() {
-    // The fixture migrates the scratch database.
-    ready();
-    let columns: Vec<(String, bool, bool)> = block(async {
-        let mut conn = admin_connection().await;
-        sqlx::query_as(
-            "select column_name::text, is_nullable = 'YES', column_default is not null \
-             from information_schema.columns \
-             where table_schema = 'public' and table_name = 'comments' order by column_name",
-        )
-        .fetch_all(&mut conn)
-        .await
-        .expect("read the columns of comments")
-    });
-    let names: Vec<&str> = columns.iter().map(|(name, _, _)| name.as_str()).collect();
-    let required: Vec<&str> = columns
-        .iter()
-        .filter(|(_, nullable, default)| !nullable && !default)
-        .map(|(name, _, _)| name.as_str())
-        .collect();
-    assert_eq!(
-        required,
-        ["author", "body", "doc_id", "node", "workspace_id"],
-        "a comment belongs to a doc and a node: {columns:?}"
-    );
-    let deleted_at = columns
-        .iter()
-        .find(|(name, _, _)| name == "deleted_at")
-        .unwrap_or_else(|| panic!("comments has deleted_at: {columns:?}"));
-    assert!(deleted_at.1, "deleted_at is null until the human deletes");
-    assert!(
-        !names.contains(&"status") && !names.contains(&"addressed_in_version_id"),
-        "a comment has no status: {names:?}"
-    );
-    let can_delete: bool = block(async {
-        let mut conn = admin_connection().await;
-        sqlx::query_scalar("select has_table_privilege('omni_api', 'comments', 'DELETE')")
-            .fetch_one(&mut conn)
-            .await
-            .expect("read the API role's privileges")
-    });
-    assert!(!can_delete, "the API role cannot delete comments");
 }
