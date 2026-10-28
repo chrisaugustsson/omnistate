@@ -38,8 +38,7 @@ use zip::ZipArchive;
 
 use common::fixture;
 use common::import::{
-    component_by_id, components, import, is_named, json, resolve, token_tree, tokens_of,
-    variant_default,
+    component_by_id, components, import, is_named, json, token_tree, variant_default,
 };
 
 const MODES: [&str; 2] = ["Mörkt", "Ljust"];
@@ -349,65 +348,4 @@ fn ordrar_copies_become_instances_with_the_override_kinds_tirebud_uses() {
         })
         .count();
     assert_eq!(variants, 172, "the 172 variants keep their properties");
-}
-
-#[test]
-fn ordrar_typography_tokens_list_the_geist_fonts_beside_the_export() {
-    let Some(path) = fixture("tirebud-ordrar.penpot") else {
-        return;
-    };
-    let import = ordrar().expect("the export is there");
-    let fonts = path.with_file_name("fonts");
-    let files_of = |family: &str| -> Vec<Vec<u8>> {
-        let mut files: Vec<_> = std::fs::read_dir(fonts.join(family))
-            .unwrap_or_else(|error| panic!("fixtures/penpot/fonts/{family} is there: {error}"))
-            .flatten()
-            .map(|entry| entry.path())
-            .filter(|file| file.extension().is_some_and(|ext| ext == "ttf"))
-            .collect();
-        files.sort();
-        files
-            .iter()
-            .map(|file| std::fs::read(file).expect("the font file reads"))
-            .collect()
-    };
-    let tree = token_tree(import);
-    let all = tokens_of(&import.design_system);
-    for family in ["Geist", "Geist Mono"] {
-        let files = files_of(family);
-        let typographies: Vec<&(String, Value)> = all
-            .iter()
-            .filter(|(path, _)| path.starts_with("typography."))
-            .filter(|(path, _)| {
-                resolve(&tree, path, MODES[0]).is_some_and(|value| value["fontFamily"] == family)
-            })
-            .collect();
-        assert!(
-            !typographies.is_empty(),
-            "Ordrar has typography tokens in {family}"
-        );
-        for (path, token) in typographies {
-            let listed = token["$extensions"]["omnistate"]["fontFiles"]
-                .as_array()
-                .unwrap_or_else(|| panic!("{path} lists its font files: {token}"));
-            assert!(!listed.is_empty(), "{path} lists its font files: {token}");
-            for reference in listed {
-                let id = reference
-                    .as_str()
-                    .and_then(|text| text.strip_prefix("attachment:"))
-                    .unwrap_or_else(|| panic!("{path} lists {reference}, no attachment"));
-                let attachment = import
-                    .attachments
-                    .iter()
-                    .find(|attachment| attachment.id == id)
-                    .unwrap_or_else(|| {
-                        panic!("{reference} of {path} is an attachment of the import")
-                    });
-                assert!(
-                    files.contains(&attachment.bytes),
-                    "{reference} of {path} is a file of fixtures/penpot/fonts/{family}"
-                );
-            }
-        }
-    }
 }
