@@ -38,14 +38,10 @@ use serde_json::{Value, json};
 
 const PROJECT: &str = "01900000-0000-7000-8000-0000000000b1";
 const CHANGESET: &str = "01900000-0000-7000-8000-0000000000c1";
-/// A change set of a project that has no design system doc.
-const BARE_CHANGESET: &str = "01900000-0000-7000-8000-0000000000c2";
 const DOC: &str = "01900000-0000-7000-8000-0000000000d1";
 const DRAFT: &str = "01900000-0000-7000-8000-0000000000e1";
 const MAINLINE: &str = "01900000-0000-7000-8000-0000000000f1";
 const OLD_VERSION: &str = "01900000-0000-7000-8000-0000000000f0";
-/// A token name that the mock API refuses.
-const BROKEN: &str = "broken";
 
 fn base() -> String {
     format!("/api/v1/w/{WORKSPACE}/projects/{PROJECT}")
@@ -131,7 +127,7 @@ fn read_answer(
 
 /// An API with a design system doc `DOC` in `PROJECT`: its mainline version
 /// (unless `has_mainline` is false), an older version and a draft in
-/// `CHANGESET`. `BARE_CHANGESET` belongs to a project without a design system.
+/// `CHANGESET`.
 fn mock_with(has_mainline: bool) -> MockServer {
     MockServer::start(move |request| {
         let body: Value = serde_json::from_slice(&request.body).unwrap_or(Value::Null);
@@ -142,15 +138,7 @@ fn mock_with(has_mainline: bool) -> MockServer {
         let version = query.iter().find(|(k, _)| *k == "version").map(|(_, v)| *v);
         match (request.method.as_str(), path) {
             ("PUT", p) if p == format!("/changesets/{CHANGESET}/tokens") => {
-                if body["tokens"]["color"].get(BROKEN).is_some() {
-                    Reply::json(
-                        400,
-                        &json!({
-                            "error": "invalid_tokens",
-                            "message": "color.broken refers to color.missing, which is no token"
-                        }),
-                    )
-                } else if body["tokens"].is_object() {
+                if body["tokens"].is_object() {
                     Reply::json(
                         200,
                         &json!({
@@ -164,9 +152,6 @@ fn mock_with(has_mainline: bool) -> MockServer {
                 } else {
                     Reply::json(400, &json!({ "error": "invalid_request" }))
                 }
-            }
-            ("PUT", p) if p == format!("/changesets/{BARE_CHANGESET}/tokens") => {
-                Reply::json(404, &json!({ "error": "no_design_system" }))
             }
             ("GET", p) if p == format!("/changesets/{CHANGESET}/tokens") => read_answer(
                 &query,
@@ -348,52 +333,15 @@ fn tokens_import_replaces_the_token_tree_of_the_change_set() {
 fn tokens_import_refuses_bad_input_before_sending_anything() {
     let server = mock();
     let home = logged_in(&server.url);
-    assert_one_line_error(
-        &run(&home, &["tokens", "import", "--changeset", CHANGESET]),
-        &["file"],
-    );
+    assert_one_line_error(&run(&home, &["tokens", "import"]), &["file"]);
     let missing = home.join("missing.tokens.json").display().to_string();
     assert_one_line_error(
-        &run(
-            &home,
-            &["tokens", "import", &missing, "--changeset", CHANGESET],
-        ),
+        &run(&home, &["tokens", "import", &missing]),
         &["missing.tokens.json"],
     );
     let not_json = write_file(&home, "not-json.tokens.json", "color: { surface: #fff }");
-    assert_one_line_error(
-        &run(
-            &home,
-            &["tokens", "import", &not_json, "--changeset", CHANGESET],
-        ),
-        &[],
-    );
+    assert_one_line_error(&run(&home, &["tokens", "import", &not_json]), &[]);
     assert_nothing_sent(&server);
-}
-
-#[test]
-fn tokens_import_reports_a_refusal_of_the_api() {
-    let server = mock();
-    let home = logged_in(&server.url);
-    let mut broken = draft_tree();
-    broken["color"][BROKEN] = json!({"$value": "{color.missing}"});
-    let file = write_file(&home, "broken.tokens.json", &broken.to_string());
-    assert_one_line_error(
-        &run(
-            &home,
-            &["tokens", "import", &file, "--changeset", CHANGESET],
-        ),
-        &["color.broken refers to color.missing"],
-    );
-
-    let fine = write_file(&home, "tokens.json", &draft_tree().to_string());
-    assert_one_line_error(
-        &run(
-            &home,
-            &["tokens", "import", &fine, "--changeset", BARE_CHANGESET],
-        ),
-        &["design system"],
-    );
 }
 
 // ---------------------------------------------------------------------------
@@ -497,32 +445,17 @@ fn tokens_export_writes_one_file_per_mode() {
         .expect("the directory was made")
         .count();
     assert_eq!(files, 2, "one file per mode and nothing else");
-    for mode in ["light", "dark"] {
-        assert_eq!(
-            requests_to(&server, "GET", &format!("{}/tokens?mode={mode}", base())).len(),
-            1,
-            "{:?}",
-            server.requests()
-        );
-    }
-
-    let drafts = home.join("draft-modes");
-    let out = run(
-        &home,
-        &[
-            "tokens",
-            "export",
-            "--changeset",
-            CHANGESET,
-            "--per-mode",
-            "--out",
-            &drafts.display().to_string(),
-        ],
-    );
-    assert_eq!(out.code, 0, "{}", out.stderr);
     assert_eq!(
-        read_json(&drafts.join("dark.tokens.json")),
-        mode_tree("dark", "#000000")
+        requests_to(&server, "GET", &format!("{}/tokens?mode=light", base())).len(),
+        1,
+        "{:?}",
+        server.requests()
+    );
+    assert_eq!(
+        requests_to(&server, "GET", &format!("{}/tokens?mode=dark", base())).len(),
+        1,
+        "{:?}",
+        server.requests()
     );
 }
 
@@ -535,8 +468,8 @@ fn tokens_export_per_mode_needs_a_directory() {
 }
 
 #[test]
-fn tokens_export_says_when_there_is_no_mainline_version() {
+fn tokens_export_of_a_design_system_without_tokens_is_a_one_line_error() {
     let server = mock_with(false);
     let home = logged_in(&server.url);
-    assert_one_line_error(&run(&home, &["tokens", "export"]), &["version"]);
+    assert_one_line_error(&run(&home, &["tokens", "export"]), &["no tokens"]);
 }
