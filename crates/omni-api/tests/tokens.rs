@@ -34,6 +34,12 @@
 //!   emits one `tokens.imported` event with `data` `{"doc_id",
 //!   "changeset_id", "draft_id", "modes"}`; a refused one logs and emits
 //!   nothing.
+//! - `PUT /tokens` (agent) takes the same `{"tokens": <DTCG tree>}` and
+//!   replaces the token tree of the design system's head, with no change set,
+//!   in one all-or-nothing batch: 200 `{"project_id", "doc_id", "head",
+//!   "modes", "tokens"}` with the tree as stored. The refusals are those of
+//!   the change set route. The write adds one row of `doc_changes` and emits
+//!   `doc.changed`; a refused one changes, logs and emits nothing.
 //! - `GET /changesets/{changeset_id}/tokens` (both) answers the change set's
 //!   draft: `{"doc_id", "changeset_id", "draft_id", "modes", "tokens"}`.
 //! - `GET /tokens` (both) answers the mainline version of the design system:
@@ -60,7 +66,6 @@ mod common;
 
 use common::{Client, Response, TestServer, cookie};
 use omni_api::Config;
-use omni_api::routes::{Access, registry};
 use s3::creds::Credentials;
 use s3::{Bucket, BucketConfiguration, Region};
 use serde_json::{Value, json};
@@ -75,9 +80,6 @@ const TEST_DB: &str = "omni_us028_tokens";
 const TEST_BUCKET: &str = "omni-us028-tokens";
 /// An attachment ID that no row has.
 const UNKNOWN_ID: &str = "01900000-0000-7000-8000-000000000000";
-const IMPORT_ROUTE: &str =
-    "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/tokens";
-const MAINLINE_ROUTE: &str = "/api/v1/w/{workspace_id}/projects/{project_id}/tokens";
 
 // ---------------------------------------------------------------------------
 // Plumbing
@@ -415,6 +417,31 @@ fn design_system(f: &Fixture, client: &Client) -> (String, String, String) {
     (project, changeset, doc)
 }
 
+/// Creates a doc with no change set (`POST /docs`), in the `ui` pillar.
+fn create_live_doc_response(f: &Fixture, client: &Client, project: &str, kind: &str) -> Response {
+    call(
+        client,
+        "POST",
+        &format!("{}/docs", project_base(f, project)),
+        &agent(f),
+        Some(&json!({ "kind": kind, "pillar": "ui", "title": unique(kind) })),
+    )
+}
+
+/// A project with a design system doc created with no change set; returns
+/// (project, doc).
+fn live_design_system(f: &Fixture, client: &Client) -> (String, String) {
+    let project = new_project(f, client);
+    let doc = id_of(
+        &must(
+            create_live_doc_response(f, client, &project, "design-system"),
+            201,
+            "create the design system doc",
+        )["doc"],
+    );
+    (project, doc)
+}
+
 fn import_response(
     f: &Fixture,
     client: &Client,
@@ -440,17 +467,28 @@ fn import(f: &Fixture, client: &Client, project: &str, changeset: &str, tokens: 
     )
 }
 
-fn draft_tokens(f: &Fixture, client: &Client, project: &str, changeset: &str) -> Value {
+fn head_import_response(
+    f: &Fixture,
+    client: &Client,
+    auth: &Auth,
+    project: &str,
+    tokens: &Value,
+) -> Response {
+    call(
+        client,
+        "PUT",
+        &format!("{}/tokens", project_base(f, project)),
+        auth,
+        Some(&json!({ "tokens": tokens })),
+    )
+}
+
+/// Imports the tokens into the design system's head, with no change set.
+fn head_import(f: &Fixture, client: &Client, project: &str, tokens: &Value) -> Value {
     must(
-        call(
-            client,
-            "GET",
-            &format!("{}/tokens", changeset_path(f, project, changeset)),
-            &agent(f),
-            None,
-        ),
+        head_import_response(f, client, &agent(f), project, tokens),
         200,
-        "read the draft's tokens",
+        "import the tokens into the head",
     )
 }
 
@@ -639,39 +677,16 @@ fn with_typography_font(file: &str) -> Value {
 }
 
 // ---------------------------------------------------------------------------
-// The routes
-// ---------------------------------------------------------------------------
-
-#[test]
-fn the_token_routes_are_in_the_registry() {
-    let routes = registry();
-    for (method, path, access) in [
-        ("PUT", IMPORT_ROUTE, Access::Agent),
-        ("GET", IMPORT_ROUTE, Access::Both),
-        ("GET", MAINLINE_ROUTE, Access::Both),
-    ] {
-        let entry = routes
-            .iter()
-            .find(|r| r.method == method && r.path == path)
-            .unwrap_or_else(|| panic!("the registry has no route {method} {path}"));
-        assert_eq!(entry.access, access, "{method} {path}");
-    }
-}
-
-// ---------------------------------------------------------------------------
-// One design system doc per project, created through a change set
+// One design system doc per project
 // ---------------------------------------------------------------------------
 
 #[test]
 fn a_project_has_at_most_one_design_system_doc() {
     let (f, client) = ready();
-    let (project, changeset, _doc) = design_system(f, client);
+    let (project, _doc) = live_design_system(f, client);
 
-    let again = create_doc_response(f, client, &project, &changeset, "design-system");
+    let again = create_live_doc_response(f, client, &project, "design-system");
     assert_error(&again, 409, "design_system_exists");
-    let other_changeset = new_changeset(f, client, &project);
-    let elsewhere = create_doc_response(f, client, &project, &other_changeset, "design-system");
-    assert_error(&elsewhere, 409, "design_system_exists");
     assert_eq!(
         count(
             "select count(*) from docs where project_id = $1::uuid and kind = 'design-system'",
@@ -683,37 +698,17 @@ fn a_project_has_at_most_one_design_system_doc() {
 
     for _ in 0..2 {
         must(
-            create_doc_response(f, client, &project, &changeset, "design"),
+            create_live_doc_response(f, client, &project, "design"),
             201,
             "a project has any number of design docs",
         );
     }
     let other_project = new_project(f, client);
-    let other_project_changeset = new_changeset(f, client, &other_project);
     must(
-        create_doc_response(
-            f,
-            client,
-            &other_project,
-            &other_project_changeset,
-            "design-system",
-        ),
+        create_live_doc_response(f, client, &other_project, "design-system"),
         201,
         "another project has a design system of its own",
     );
-}
-
-#[test]
-fn a_merged_design_system_still_stops_a_second_one() {
-    let (f, client) = ready();
-    let (project, changeset, doc) = design_system(f, client);
-    import(f, client, &project, &changeset, &light_and_dark());
-    save(f, client, &project, &changeset, &doc);
-    merge(f, client, &project, &changeset);
-
-    let next = new_changeset(f, client, &project);
-    let again = create_doc_response(f, client, &project, &next, "design-system");
-    assert_error(&again, 409, "design_system_exists");
 }
 
 // ---------------------------------------------------------------------------
@@ -721,26 +716,20 @@ fn a_merged_design_system_still_stops_a_second_one() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn an_import_replaces_the_token_tree_of_the_change_sets_draft() {
+fn an_import_replaces_the_token_tree_of_the_design_systems_head() {
     let (f, client) = ready();
-    let (project, changeset, doc) = design_system(f, client);
+    let (project, doc) = live_design_system(f, client);
+    let before = mainline_tokens(f, client, &project, "");
+    assert_eq!(before["doc_id"], doc.as_str(), "{before}");
+    assert_eq!(before["modes"], json!([]), "{before}");
+    assert_eq!(before["tokens"], Value::Null, "{before}");
 
-    let answer = import(f, client, &project, &changeset, &light_and_dark());
-    assert_eq!(answer["doc_id"], doc.as_str(), "{answer}");
-    assert_eq!(answer["changeset_id"], changeset.as_str(), "{answer}");
-    assert!(answer["draft_id"].is_string(), "{answer}");
+    let answer = head_import(f, client, &project, &light_and_dark());
     assert_eq!(answer["modes"], json!(["light", "dark"]), "{answer}");
     assert_eq!(answer["tokens"], light_and_dark(), "{answer}");
 
-    let read = draft_tokens(f, client, &project, &changeset);
-    assert_eq!(read["doc_id"], doc.as_str(), "{read}");
-    assert_eq!(read["draft_id"], answer["draft_id"], "{read}");
-    assert_eq!(read["modes"], json!(["light", "dark"]), "{read}");
-    assert_eq!(read["tokens"], light_and_dark(), "{read}");
-
-    let replaced = import(f, client, &project, &changeset, &two_brands());
-    assert_eq!(replaced["modes"], json!(["acme", "globex"]), "{replaced}");
-    let read = draft_tokens(f, client, &project, &changeset);
+    head_import(f, client, &project, &two_brands());
+    let read = mainline_tokens(f, client, &project, "");
     assert_eq!(
         read["tokens"],
         two_brands(),
@@ -752,48 +741,37 @@ fn an_import_replaces_the_token_tree_of_the_change_sets_draft() {
 #[test]
 fn a_refused_import_changes_nothing() {
     let (f, client) = ready();
-    let (project, changeset, _doc) = design_system(f, client);
-    let answer = import(f, client, &project, &changeset, &light_and_dark());
-    let draft = answer["draft_id"].as_str().expect("a draft").to_string();
-    let logged = logged_ops(&draft);
-    let events = events_of(&project, "tokens.imported").len();
+    let (project, doc) = live_design_system(f, client);
+    head_import(f, client, &project, &light_and_dark());
+    let changes_sql = "select count(*) from doc_changes where doc_id = $1::uuid";
+    let changes = count(changes_sql, &[&doc]);
+    let events = events_of(&project, "doc.changed").len();
 
     let mut unknown = two_brands();
     unknown["color"]["accent"] = json!({"$value": "{color.missing}"});
-    let mut looped = two_brands();
-    looped["color"]["a"] = json!({"$value": "{color.b}"});
-    looped["color"]["b"] = json!({"$value": "{color.a}"});
-    let mut no_line_height = light_and_dark();
-    no_line_height["typography"]["body"]["$value"]
-        .as_object_mut()
-        .unwrap()
-        .remove("lineHeight");
-    for (tree, needles) in [
-        (unknown, vec!["color.missing"]),
-        (looped, vec!["color."]),
-        (no_line_height, vec!["typography.body", "lineHeight"]),
-    ] {
-        let response = import_response(f, client, &agent(f), &project, &changeset, &tree);
-        assert_invalid_tokens(&response, &needles);
-    }
+    let response = head_import_response(f, client, &agent(f), &project, &unknown);
+    assert_invalid_tokens(&response, &["color.missing"]);
     let response = call(
         client,
         "PUT",
-        &format!("{}/tokens", changeset_path(f, &project, &changeset)),
+        &format!("{}/tokens", project_base(f, &project)),
         &agent(f),
         Some(&json!({ "tree": light_and_dark() })),
     );
     assert_error(&response, 400, "invalid_request");
 
-    let read = draft_tokens(f, client, &project, &changeset);
     assert_eq!(
-        read["tokens"],
+        mainline_tokens(f, client, &project, "")["tokens"],
         light_and_dark(),
         "a refused import leaves the tree as it was"
     );
-    assert_eq!(logged_ops(&draft), logged, "a refused import logs nothing");
     assert_eq!(
-        events_of(&project, "tokens.imported").len(),
+        count(changes_sql, &[&doc]),
+        changes,
+        "a refused import logs nothing"
+    );
+    assert_eq!(
+        events_of(&project, "doc.changed").len(),
         events,
         "a refused import emits nothing"
     );
@@ -836,27 +814,12 @@ fn an_import_is_logged_with_its_agent_and_emits_an_event() {
 #[test]
 fn importing_is_for_agents_and_needs_a_design_system() {
     let (f, client) = ready();
-    let (project, changeset, _doc) = design_system(f, client);
-    let response = import_response(
-        f,
-        client,
-        &human(f),
-        &project,
-        &changeset,
-        &light_and_dark(),
-    );
+    let (project, _doc) = live_design_system(f, client);
+    let response = head_import_response(f, client, &human(f), &project, &light_and_dark());
     assert_error(&response, 403, "forbidden");
 
     let bare = new_project(f, client);
-    let bare_changeset = new_changeset(f, client, &bare);
-    let response = import_response(
-        f,
-        client,
-        &agent(f),
-        &bare,
-        &bare_changeset,
-        &light_and_dark(),
-    );
+    let response = head_import_response(f, client, &agent(f), &bare, &light_and_dark());
     assert_error(&response, 404, "no_design_system");
 }
 
@@ -906,23 +869,23 @@ fn an_import_opens_the_draft_of_a_change_set_that_has_none() {
 #[test]
 fn typography_tokens_use_fonts_attached_to_the_workspace() {
     let (f, client) = ready();
-    let (project, changeset, _doc) = design_system(f, client);
+    let (project, _doc) = live_design_system(f, client);
     let font = upload_font(f, client);
     let tree = with_typography_font(&format!("attachment:{font}"));
-    let answer = import(f, client, &project, &changeset, &tree);
+    let answer = head_import(f, client, &project, &tree);
     assert_eq!(answer["tokens"], tree, "{answer}");
 
     let unknown = with_typography_font(&format!("attachment:{UNKNOWN_ID}"));
-    let response = import_response(f, client, &agent(f), &project, &changeset, &unknown);
+    let response = head_import_response(f, client, &agent(f), &project, &unknown);
     assert_invalid_tokens(&response, &[UNKNOWN_ID]);
 
     let notes = upload(f, client, b"plain notes, not a font", "notes.txt");
     let not_a_font = with_typography_font(&format!("attachment:{notes}"));
-    let response = import_response(f, client, &agent(f), &project, &changeset, &not_a_font);
+    let response = head_import_response(f, client, &agent(f), &project, &not_a_font);
     assert_invalid_tokens(&response, &[notes.as_str()]);
 
     assert_eq!(
-        draft_tokens(f, client, &project, &changeset)["tokens"],
+        mainline_tokens(f, client, &project, "")["tokens"],
         tree,
         "the refused imports changed nothing"
     );
@@ -980,23 +943,10 @@ fn the_mainline_tokens_are_those_of_the_merged_version() {
 #[test]
 fn a_read_can_give_the_tree_of_one_mode() {
     let (f, client) = ready();
-    let (project, changeset, doc) = design_system(f, client);
-    import(f, client, &project, &changeset, &light_and_dark());
+    let (project, _doc) = live_design_system(f, client);
+    head_import(f, client, &project, &light_and_dark());
 
-    let dark = must(
-        call(
-            client,
-            "GET",
-            &format!(
-                "{}/tokens?mode=dark",
-                changeset_path(f, &project, &changeset)
-            ),
-            &agent(f),
-            None,
-        ),
-        200,
-        "read the draft's dark mode",
-    );
+    let dark = mainline_tokens(f, client, &project, "?mode=dark");
     assert_eq!(dark["mode"], "dark", "{dark}");
     assert_eq!(
         dark["tokens"]["color"]["surface"]["$value"], "#0f172a",
@@ -1011,19 +961,6 @@ fn a_read_can_give_the_tree_of_one_mode() {
             .pointer("/$extensions/omnistate/modes")
             .is_none(),
         "the tree of one mode has no mode values: {dark}"
-    );
-
-    save(f, client, &project, &changeset, &doc);
-    merge(f, client, &project, &changeset);
-    let light = mainline_tokens(f, client, &project, "?mode=light");
-    assert_eq!(light["mode"], "light", "{light}");
-    assert_eq!(
-        light["tokens"]["color"]["surface"]["$value"], "#ffffff",
-        "{light}"
-    );
-    assert_eq!(
-        light["tokens"]["color"]["text"]["$value"], "{color.ink}",
-        "{light}"
     );
 
     let response = call(
