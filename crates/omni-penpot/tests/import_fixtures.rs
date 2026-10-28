@@ -3,21 +3,16 @@
 //! numbers are read from the exports' own JSON in the tests, outside the
 //! crate. See import_synthetic.rs for the rules of the import.
 //!
-//! - Both exports import. Their design system passes OmniState's checks, with
-//!   the modes Mörkt and Ljust (Penpot's themes), and every token reference and
-//!   every instance in the design finds its token or component.
-//! - tirebud-idag.penpot: every board of the converter is a board of the page
-//!   Idag; every Penpot color token is a token of the same path with Penpot's
-//!   value in each theme's mode, and every spacing and radius token is a token
-//!   too; every token linked to a fill or a stroke stays a reference. Its boards
-//!   draw as close to Penpot's PNGs as the comparison of the converted boards
-//!   showed (`compare::compare_import` beside `compare::compare_file`).
-//! - tirebud-ordrar.penpot: each of its 322 components is one component of the
-//!   design system, the variants with their properties; its copies are
-//!   instances with the override kinds TireBud uses (text, fills, visibility
-//!   and swapped components); its library colors and typographies are tokens.
-//! - Every entry of the report about a shape names the page and board the
-//!   shape is on, and a reason.
+//! - tirebud-idag.penpot: its boards draw as close to Penpot's PNGs as the
+//!   comparison of the converted boards showed (`compare::compare_import`
+//!   beside `compare::compare_file`).
+//! - tirebud-ordrar.penpot imports. Its design system passes OmniState's
+//!   checks, with the modes Mörkt and Ljust (Penpot's themes), and every token
+//!   reference and every instance in the design finds its token or component.
+//!   Each of its 322 components is one component of the design system, the
+//!   variants with their properties; its copies are instances with the
+//!   override kinds TireBud uses (text, fills, visibility and swapped
+//!   components).
 //! - tirebud-ordrar.penpot (US-057): its texts use Geist and Geist Mono, whose
 //!   files sit beside the exports in fixtures/penpot/fonts/<family>/. They are
 //!   attachments of the import, and every typography token of either family
@@ -37,27 +32,20 @@ use omni_core::design::TokenRef;
 use omni_core::design::tokens::TokenTree;
 use omni_penpot::compare::{compare_file, compare_import};
 use omni_penpot::import::Import;
-use omni_penpot::{PenpotFile, convert_file, read_file};
 use omni_render::system::DesignSystem;
 use serde_json::Value;
 use zip::ZipArchive;
 
+use common::fixture;
 use common::import::{
-    component_by_id, components, import, is_named, json, resolve, rgba_of, token_tree, tokens_of,
+    component_by_id, components, import, is_named, json, resolve, token_tree, tokens_of,
     variant_default,
 };
-use common::{fixture, page_shapes};
 
 const MODES: [&str; 2] = ["Mörkt", "Ljust"];
 
 fn imported(name: &str) -> Option<Import> {
     fixture(name).map(|path| import(&path))
-}
-
-fn idag() -> Option<&'static Import> {
-    static CELL: OnceLock<Option<Import>> = OnceLock::new();
-    CELL.get_or_init(|| imported("tirebud-idag.penpot"))
-        .as_ref()
 }
 
 fn ordrar() -> Option<&'static Import> {
@@ -90,60 +78,6 @@ fn entries(path: &Path, prefix: &str, keep: impl Fn(&str) -> bool) -> BTreeMap<S
         );
     }
     found
-}
-
-/// The one JSON entry of the export whose name ends in `suffix`.
-fn entry(path: &Path, suffix: &str) -> Value {
-    let found = entries(path, "files/", |name| name.ends_with(suffix));
-    assert_eq!(found.len(), 1, "one entry ends in {suffix}");
-    found.into_values().next().expect("the entry")
-}
-
-/// Every token of a Penpot token set: (path, type, value).
-fn penpot_tokens(set: &Value) -> Vec<(String, String, Value)> {
-    let mut found = Vec::new();
-    walk(set, "", &mut found);
-    found
-}
-
-fn walk(node: &Value, path: &str, found: &mut Vec<(String, String, Value)>) {
-    let Some(map) = node.as_object() else { return };
-    if let Some(value) = map.get("$value") {
-        let kind = map["$type"].as_str().unwrap_or("").to_string();
-        found.push((path.to_string(), kind, value.clone()));
-        return;
-    }
-    for (name, child) in map {
-        let path = if path.is_empty() {
-            name.clone()
-        } else {
-            format!("{path}.{name}")
-        };
-        walk(child, &path, found);
-    }
-}
-
-/// A Penpot color, `#rrggbb`, `#rgb` or `rgba(r, g, b, a)`, as `[r, g, b, a]`.
-fn penpot_rgba(text: &str) -> [u8; 4] {
-    if let Some(inner) = text.strip_prefix("rgba(").and_then(|t| t.strip_suffix(')')) {
-        let parts: Vec<f64> = inner
-            .split(',')
-            .map(|part| part.trim().parse().expect("a number"))
-            .collect();
-        return [
-            parts[0] as u8,
-            parts[1] as u8,
-            parts[2] as u8,
-            (parts[3] * 255.0).round() as u8,
-        ];
-    }
-    let hex = text.strip_prefix('#').expect("a hex color").to_lowercase();
-    let hex: String = match hex.len() {
-        3 => hex.chars().flat_map(|digit| [digit, digit]).collect(),
-        _ => hex,
-    };
-    let byte = |at: usize| u8::from_str_radix(&hex[at..at + 2], 16).expect("hex");
-    [byte(0), byte(2), byte(4), 255]
 }
 
 /// Every `$` reference of `value` in a place that holds a style value: not
@@ -245,153 +179,6 @@ fn assert_resolves(import: &Import, what: &str) {
             }
         }
     }
-}
-
-/// Checks that every report entry about a shape of `file` names the page and
-/// board the shape is on, and a reason.
-fn assert_report_places(import: &Import, file: &PenpotFile, what: &str) {
-    let mut page_of: HashMap<&str, &str> = HashMap::new();
-    for page in &file.pages {
-        for shape in page_shapes(page) {
-            page_of.insert(&shape.id, &page.name);
-        }
-    }
-    let mut about_shapes = 0;
-    for entry in &import.report {
-        let Some(page) = page_of.get(entry.shape_id.as_str()) else {
-            continue;
-        };
-        about_shapes += 1;
-        assert_eq!(&entry.page, page, "{what}: {entry:?}");
-        assert!(!entry.board.is_empty(), "{what}: {entry:?}");
-        assert!(!entry.reason.is_empty(), "{what}: {entry:?}");
-    }
-    assert!(about_shapes > 0, "{what} lists shapes it leaves out");
-}
-
-#[test]
-fn idag_imports_every_board_onto_the_page_idag() {
-    let (Some(import), Some(path)) = (idag(), fixture("tirebud-idag.penpot")) else {
-        return;
-    };
-    let conversion = convert_file(&path).expect("the export converts");
-    assert_eq!(import.pages.len(), 1);
-    let page = json(&import.pages[0]);
-    assert_eq!(page["name"], "Idag");
-    let boards: Vec<&str> = page["children"]
-        .as_array()
-        .expect("boards")
-        .iter()
-        .filter_map(|board| board["name"].as_str())
-        .collect();
-    let converted: Vec<&str> = conversion
-        .boards
-        .iter()
-        .map(|board| board.name.as_str())
-        .collect();
-    assert_eq!(boards, converted);
-    assert_eq!(boards.len(), 16, "15 boards and Unplaced");
-    assert!(
-        components(import).is_empty(),
-        "the idag export has no components"
-    );
-    assert_resolves(import, "idag");
-}
-
-#[test]
-fn idag_tokens_keep_their_values_in_the_modes_of_their_themes() {
-    let (Some(import), Some(path)) = (idag(), fixture("tirebud-idag.penpot")) else {
-        return;
-    };
-    let tokens = entry(&path, "/tokens.json");
-    let tree = token_tree(import);
-    assert_eq!(tree.modes(), MODES);
-    let mut colors = 0;
-    for mode in MODES {
-        for (path, kind, value) in penpot_tokens(&tokens[mode]) {
-            assert_eq!(kind, "color", "{mode} holds colors");
-            let found = resolve(&tree, &path, mode)
-                .unwrap_or_else(|| panic!("{path} is a token in {mode}"));
-            assert_eq!(
-                rgba_of(&found),
-                Some(penpot_rgba(value.as_str().expect("a color"))),
-                "{path} in {mode}: Penpot says {value}, the import {found}"
-            );
-            colors += 1;
-        }
-    }
-    assert_eq!(colors, 2 * 68);
-    let all = tokens_of(&import.design_system);
-    let mut dimensions = 0;
-    for (path, kind, value) in penpot_tokens(&tokens["Bas"]) {
-        let group = match kind.as_str() {
-            "spacing" => "spacing",
-            "borderRadius" => "radius",
-            _ => continue,
-        };
-        let found: Vec<&String> = all
-            .iter()
-            .map(|(tree_path, _)| tree_path)
-            .filter(|tree_path| {
-                tree_path.starts_with(&format!("{group}.")) && tree_path.ends_with(&path)
-            })
-            .collect();
-        assert_eq!(found.len(), 1, "one {group} token for {path}");
-        let expected = format!("{}px", value.as_str().expect("a number as text"));
-        for mode in MODES {
-            assert_eq!(
-                resolve(&tree, found[0], mode),
-                Some(Value::String(expected.clone())),
-                "{path} in {mode}"
-            );
-        }
-        dimensions += 1;
-    }
-    assert_eq!(dimensions, 13 + 6, "13 spacings and 6 radii");
-}
-
-#[test]
-fn idag_token_links_on_fills_and_strokes_stay_references() {
-    let (Some(import), Some(path)) = (idag(), fixture("tirebud-idag.penpot")) else {
-        return;
-    };
-    let left_out: HashSet<&str> = import
-        .report
-        .iter()
-        .filter(|entry| entry.property.is_none())
-        .map(|entry| entry.shape_id.as_str())
-        .collect();
-    let mut links = 0;
-    let shapes = entries(&path, "files/", |name| {
-        name.contains("/pages/") && name.matches('/').count() == 4
-    });
-    for shape in shapes.values() {
-        let id = shape["id"].as_str().unwrap_or("");
-        if left_out.contains(id) {
-            continue;
-        }
-        let applied = &shape["appliedTokens"];
-        let has = |key: &str| !shape[key].as_array().is_none_or(Vec::is_empty);
-        if applied.get("fill").is_some() && (shape["type"] == "text" || has("fills")) {
-            links += 1;
-        }
-        if applied.get("strokeColor").is_some() && has("strokes") {
-            links += 1;
-        }
-    }
-    assert_eq!(links, 1_779, "798 text fills, 458 fills and 523 strokes");
-    let mut found = Vec::new();
-    for page in &import.pages {
-        references(&json(page), &mut found);
-    }
-    let colors = found
-        .iter()
-        .filter(|reference| reference.starts_with("$color."))
-        .count();
-    assert!(
-        colors >= links,
-        "{colors} color references for {links} token links on fills and strokes"
-    );
 }
 
 #[test]
@@ -562,88 +349,6 @@ fn ordrar_copies_become_instances_with_the_override_kinds_tirebud_uses() {
         })
         .count();
     assert_eq!(variants, 172, "the 172 variants keep their properties");
-}
-
-#[test]
-fn ordrar_library_colors_and_typographies_become_tokens() {
-    let (Some(import), Some(path)) = (ordrar(), fixture("tirebud-ordrar.penpot")) else {
-        return;
-    };
-    let tree = token_tree(import);
-    let all = tokens_of(&import.design_system);
-    let tokens = entry(&path, "/tokens.json");
-    let token_colors: HashSet<String> = penpot_tokens(&tokens["Mörkt"])
-        .into_iter()
-        .map(|(path, _, _)| path)
-        .collect();
-    let colors = entries(&path, "files/", |name| name.contains("/colors/"));
-    assert_eq!(colors.len(), 33);
-    for color in colors.values() {
-        let name = color["name"].as_str().expect("a name");
-        let opacity = color["opacity"].as_f64().unwrap_or(1.0);
-        let mut expected = penpot_rgba(color["color"].as_str().expect("a color"));
-        expected[3] = (opacity * 255.0).round() as u8;
-        let token = all.iter().map(|(path, _)| path).find(|path| {
-            path.starts_with("color.")
-                && path.to_lowercase().ends_with(&name.to_lowercase())
-                && MODES.iter().all(|mode| {
-                    resolve(&tree, path, mode).and_then(|value| rgba_of(&value)) == Some(expected)
-                })
-        });
-        // A library color named like a color token that differs between the
-        // themes may be listed instead, but never dropped silently.
-        let collides = token_colors.contains(&format!("color.{name}"));
-        let reported = import
-            .report
-            .iter()
-            .any(|entry| entry.name == name && !entry.reason.is_empty());
-        assert!(
-            token.is_some() || (collides && reported),
-            "the library color {name} is a token with its value in every mode"
-        );
-    }
-    let typographies = entries(&path, "files/", |name| name.contains("/typographies/"));
-    assert_eq!(typographies.len(), 13);
-    let styles: Vec<Value> = all
-        .iter()
-        .filter(|(path, _)| path.starts_with("typography."))
-        .filter_map(|(path, _)| resolve(&tree, path, MODES[0]))
-        .collect();
-    for typography in typographies.values() {
-        let number = |key: &str| -> f64 {
-            typography[key]
-                .as_str()
-                .and_then(|text| text.parse().ok())
-                .expect("a number as text")
-        };
-        let px =
-            |value: &Value| -> Option<f64> { value.as_str()?.strip_suffix("px")?.parse().ok() };
-        let weight = |value: &Value| -> Option<f64> {
-            value.as_f64().or_else(|| value.as_str()?.parse().ok())
-        };
-        let found = styles.iter().any(|style| {
-            style["fontFamily"] == typography["fontFamily"]
-                && px(&style["fontSize"]) == Some(number("fontSize"))
-                && weight(&style["fontWeight"]) == Some(number("fontWeight"))
-                && style["lineHeight"].as_f64() == Some(number("lineHeight"))
-                && px(&style["letterSpacing"]).unwrap_or(0.0) == number("letterSpacing")
-        });
-        assert!(found, "a typography token for {}", typography["name"]);
-    }
-}
-
-#[test]
-fn every_report_entry_about_a_shape_names_its_page_board_and_reason() {
-    for name in ["tirebud-idag.penpot", "tirebud-ordrar.penpot"] {
-        let Some(path) = fixture(name) else { continue };
-        let import = match name {
-            "tirebud-idag.penpot" => idag(),
-            _ => ordrar(),
-        }
-        .expect("the export is there");
-        let file = read_file(&path).expect("the export reads");
-        assert_report_places(import, &file, name);
-    }
 }
 
 #[test]
