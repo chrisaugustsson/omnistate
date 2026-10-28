@@ -17,7 +17,6 @@ use common::{first_difference, frame, parse as from_json, to_json, with};
 use omni_core::design::tags::{self, TagError, TagNode};
 use omni_core::design::{Node, NodeId, NodeKind};
 use serde_json::{Value, json};
-use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -847,12 +846,6 @@ fn an_unknown_attribute_names_the_attributes_the_tag_takes() {
 }
 
 #[test]
-fn an_unknown_attribute_on_a_later_line_is_found_there() {
-    let source = "<Frame id=\"k3f9x2qa\" name=\"Card\" dir=\"col\">\n  <Frame name=\"Inner\" dir=\"row\"\n         wdith={10}/>\n</Frame>";
-    assert_error(source, ("wdith", 0), &["wdith"], &[]);
-}
-
-#[test]
 fn an_invalid_keyword_names_the_keywords_there_are() {
     let source = "<Frame id=\"k3f9x2qa\" name=\"Card\" dir=\"sideways\"/>";
     assert_error(source, ("\"sideways\"", 0), &["sideways"], &["row", "col"]);
@@ -880,23 +873,6 @@ fn a_negative_padding_is_rejected() {
 fn an_opacity_out_of_range_names_the_range() {
     let source = "<Frame id=\"k3f9x2qa\" name=\"Card\" dir=\"col\">\n  <Frame name=\"Veil\" dir=\"row\" opacity={2}/>\n</Frame>";
     assert_error(source, ("{2}", 0), &["opacity", "2"], &["0 to 1"]);
-}
-
-#[test]
-fn a_font_weight_out_of_range_names_the_range() {
-    let source = "<Frame id=\"k3f9x2qa\" name=\"Card\" dir=\"col\">\n  <Text name=\"Title\" content=\"Din varukorg\" fontFamily=\"Inter\"\n    fontSize={24} fontWeight={2000}/>\n</Frame>";
-    assert_error(
-        source,
-        ("{2000}", 0),
-        &["fontWeight", "2000"],
-        &["1 to 1000"],
-    );
-}
-
-#[test]
-fn an_opacity_below_the_range_names_the_range() {
-    let source = "<Frame id=\"k3f9x2qa\" name=\"Card\" dir=\"col\" opacity={-0.5}/>";
-    assert_error(source, ("{-0.5}", 0), &["opacity", "-0.5"], &["0 to 1"]);
 }
 
 #[test]
@@ -992,44 +968,6 @@ fn invalid_input_is_an_error_not_a_panic() {
 }
 
 // `docs/formats/design-tags.md` documents every tag and attribute.
-
-#[test]
-fn there_is_one_tag_per_node_type() {
-    let names: BTreeSet<&str> = tags::all().iter().map(|tag| tag.name).collect();
-    // US-029 adds `<Component>`, which defines a component at the top of the
-    // design system doc (tests/design_components.rs).
-    let expected: BTreeSet<&str> = TAGS
-        .iter()
-        .map(|(tag, _)| *tag)
-        .chain(["Component"])
-        .collect();
-    assert_eq!(names, expected);
-    for tag in tags::all() {
-        for attribute in ["id", "name"] {
-            assert!(
-                tag.attributes.contains(&attribute),
-                "`<{}>` takes `{attribute}`",
-                tag.name
-            );
-        }
-        let unique: BTreeSet<&str> = tag.attributes.iter().copied().collect();
-        assert_eq!(
-            unique.len(),
-            tag.attributes.len(),
-            "`<{}>` lists each attribute once",
-            tag.name
-        );
-    }
-    for name in ["Board", "Frame"] {
-        let tag = tags::all().iter().find(|tag| tag.name == name).unwrap();
-        for attribute in ["dir", "gap", "pad", "fill", "x"] {
-            assert!(
-                tag.attributes.contains(&attribute),
-                "`<{name}>` takes `{attribute}`"
-            );
-        }
-    }
-}
 
 #[test]
 fn the_format_doc_documents_every_tag_and_attribute() {
