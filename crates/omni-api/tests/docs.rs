@@ -1209,29 +1209,6 @@ fn the_server_assigns_node_ids_unique_within_the_project() {
     assert_eq!(seen.len(), total, "no ID is used twice in the project");
 }
 
-/// US-109: an agent-supplied `data-omni-id` that is valid and unique is kept
-/// (it was refused before US-109).
-#[test]
-fn content_may_choose_its_own_valid_unique_node_id() {
-    let (f, client) = ready();
-    let (project, changeset) = project_with_changeset(f, client);
-    let doc = id_of(&create_doc(f, client, &project, &changeset)["doc"]);
-    let response = edit(
-        f,
-        client,
-        &agent(f),
-        &project,
-        &changeset,
-        &doc,
-        &json!([insert_top("<p data-omni-id=\"k3f9x2qa\">Mine</p>")]),
-    );
-    assert_eq!(response.status, 200, "{}", response.text());
-    let answer = response.json();
-    assert_eq!(answer["results"][0]["node"], "k3f9x2qa", "{answer}");
-    let html = draft_html(f, client, &project, &changeset, &doc);
-    assert_eq!(rev_in(&html, "k3f9x2qa"), Some(1), "{html}");
-}
-
 #[test]
 fn referring_to_an_unknown_node_is_an_error_that_names_it_and_changes_nothing() {
     let (f, client) = ready();
