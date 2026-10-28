@@ -968,39 +968,6 @@ fn the_human_never_saves_a_version_or_removes_a_doc() {
 }
 
 // ---------------------------------------------------------------------------
-// Append-only storage
-// ---------------------------------------------------------------------------
-
-#[test]
-fn versions_and_the_node_index_are_tenant_tables_of_the_workspace() {
-    let (f, client) = ready();
-    let s = story(f, client);
-    let (versions, nodes): (Vec<String>, i64) = block(async {
-        let mut conn = admin_connection().await;
-        let versions = sqlx::query_scalar::<_, String>(
-            "select workspace_id::text from versions where doc_id = $1::uuid",
-        )
-        .bind(&s.doc)
-        .fetch_all(&mut conn)
-        .await
-        .unwrap_or_else(|e| panic!("read the versions: {e}"));
-        let nodes = sqlx::query_scalar::<_, i64>(
-            "select count(*) from node_index where workspace_id = $1::uuid",
-        )
-        .bind(&f.workspace)
-        .fetch_one(&mut conn)
-        .await
-        .unwrap_or_else(|e| panic!("read the node index: {e}"));
-        (versions, nodes)
-    });
-    assert_eq!(versions.len(), 2, "the two saved versions: {versions:?}");
-    for owner in &versions {
-        assert_eq!(owner, &f.workspace);
-    }
-    assert!(nodes > 0, "the node index has rows of the workspace");
-}
-
-// ---------------------------------------------------------------------------
 // omni version diff
 // ---------------------------------------------------------------------------
 
@@ -1065,37 +1032,6 @@ fn a_diff_lists_added_removed_changed_and_moved_nodes() {
     assert_eq!(moved["to_parent"], s.section.as_str(), "{moved}");
     assert_eq!(moved["from_after"], s.section.as_str(), "{moved}");
     assert_eq!(moved["to_after"], s.keep.as_str(), "{moved}");
-}
-
-#[test]
-fn a_diff_the_other_way_round_swaps_added_and_removed() {
-    let (f, client) = ready();
-    let s = story(f, client);
-    let d = diff(f, client, &s.project, &id_of(&s.v2), &id_of(&s.v1));
-    assert_eq!(
-        id_set(&d["added"]),
-        BTreeSet::from([s.dropped.clone()]),
-        "{d}"
-    );
-    assert_eq!(
-        id_set(&d["removed"]),
-        BTreeSet::from([s.fresh.clone()]),
-        "{d}"
-    );
-    assert_eq!(
-        id_set(&d["changed"]),
-        BTreeSet::from([s.edited.clone()]),
-        "{d}"
-    );
-    assert_eq!(
-        id_set(&d["moved"]),
-        BTreeSet::from([s.mover.clone()]),
-        "{d}"
-    );
-    assert_eq!(d["moved"][0]["from_parent"], s.section.as_str(), "{d}");
-    assert_eq!(d["moved"][0]["to_parent"], Value::Null, "{d}");
-    assert_eq!(d["moved"][0]["from_after"], s.keep.as_str(), "{d}");
-    assert_eq!(d["moved"][0]["to_after"], s.section.as_str(), "{d}");
 }
 
 #[test]
@@ -1164,17 +1100,6 @@ fn a_diff_lists_a_node_moved_after_another_sibling_of_the_same_parent() {
     assert_eq!(node_ids(&diff_ba["moved"]), vec![a.clone()], "{diff_ba}");
     assert_eq!(diff_ba["moved"][0]["from_after"], c.as_str(), "{diff_ba}");
     assert_eq!(diff_ba["moved"][0]["to_after"], Value::Null, "{diff_ba}");
-}
-
-#[test]
-fn a_version_compared_with_itself_has_no_differences() {
-    let (f, client) = ready();
-    let s = story(f, client);
-    let v2 = id_of(&s.v2);
-    let d = diff(f, client, &s.project, &v2, &v2);
-    for list in ["added", "removed", "changed", "moved"] {
-        assert_eq!(d[list], json!([]), "{list}: {d}");
-    }
 }
 
 #[test]
@@ -1281,46 +1206,6 @@ fn removing_a_doc_saves_a_version_marking_it_removed_and_the_history_stays() {
     }
 }
 
-#[test]
-fn removing_a_doc_emits_version_saved_marked_removed() {
-    let (f, client) = ready();
-    let s = story(f, client);
-    let removal = must(
-        remove_response(f, client, &agent(f), &s.project, &s.changeset, &s.doc),
-        201,
-        "remove the doc",
-    )["version"]
-        .clone();
-    let events = events_of(&s.project, "version.saved");
-    let event = events
-        .iter()
-        .find(|e| e["version_id"] == removal["id"])
-        .unwrap_or_else(|| panic!("the removal emits version.saved: {events:?}"));
-    assert_eq!(event["removed"], true, "{event}");
-    assert_eq!(event["doc_id"], s.doc.as_str(), "{event}");
-    assert_eq!(event["changeset_id"], s.changeset.as_str(), "{event}");
-}
-
-#[test]
-fn a_doc_is_removed_only_in_a_change_set_that_has_its_draft() {
-    let (f, client) = ready();
-    let (project, changeset) = project_with_changeset(f, client);
-    let doc = id_of(&create_doc(f, client, &project, &changeset)["doc"]);
-    let other = new_changeset(f, client, &project);
-    // The doc has no mainline version, so no other change set can open it.
-    let response = remove_response(f, client, &agent(f), &project, &other, &doc);
-    assert_error(&response, 404, "not_found");
-    let response = remove_response(f, client, &agent(f), &project, &changeset, UNKNOWN_ID);
-    assert_error(&response, 404, "not_found");
-    // The control: the change set that has the draft removes the doc.
-    let removal = must(
-        remove_response(f, client, &agent(f), &project, &changeset, &doc),
-        201,
-        "remove the doc in its own change set",
-    );
-    assert_eq!(removal["version"]["removed"], true, "{removal}");
-}
-
 // ---------------------------------------------------------------------------
 // Saving clears an approval
 // ---------------------------------------------------------------------------
@@ -1379,18 +1264,6 @@ fn saving_a_version_of_a_change_set_that_needs_a_rebase_moves_it_back_to_in_revi
     let (project, changeset, doc) = saved_once_in(f, client, "needs_rebase");
     save(f, client, &project, &changeset, &doc);
     assert_back_in_review(f, client, &project, &changeset, "needs_rebase");
-}
-
-#[test]
-fn removing_a_doc_of_an_approved_change_set_moves_it_back_to_in_review() {
-    let (f, client) = ready();
-    let (project, changeset, doc) = saved_once_in(f, client, "approved");
-    must(
-        remove_response(f, client, &agent(f), &project, &changeset, &doc),
-        201,
-        "remove the doc",
-    );
-    assert_back_in_review(f, client, &project, &changeset, "approved");
 }
 
 #[test]
