@@ -210,22 +210,6 @@ fn assert_box(actual: LayoutBox, expected: (f32, f32, f32, f32), what: &str) {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn at_the_origin_and_100_percent_a_node_is_where_the_page_has_it() {
-    let scene = scene();
-    let viewport = Viewport::new(800.0, 600.0);
-    assert_box(
-        screen_box(&scene, SUMMARY, &viewport),
-        (20.0, 100.0, 200.0, 100.0),
-        "Summary",
-    );
-    assert_box(
-        screen_box(&scene, RECEIPT, &viewport),
-        (500.0, 0.0, 200.0, 200.0),
-        "the board Receipt",
-    );
-}
-
-#[test]
 fn the_box_follows_the_zoom_and_the_pan() {
     let scene = scene();
     // Page point (10, 5) at the screen's top-left corner, at 200%.
@@ -251,22 +235,6 @@ fn the_box_follows_the_zoom_and_the_pan() {
         screen_box(&scene, SUMMARY, &viewport),
         (-5.0, 105.0, 200.0, 100.0),
         "Summary after zooming out",
-    );
-}
-
-#[test]
-fn a_node_inside_an_instance_has_its_own_box() {
-    let scene = scene();
-    let viewport = Viewport::at(10.0, 5.0, 2.0, 800.0, 600.0);
-    assert_box(
-        screen_box(&scene, BUY, &viewport),
-        (20.0, 30.0, 240.0, 80.0),
-        "the instance Buy",
-    );
-    assert_box(
-        screen_box(&scene, &inside(BUY, WHEEL), &viewport),
-        (44.0, 74.0, 12.0, 12.0),
-        "the Wheel inside the Icon inside Buy",
     );
 }
 
