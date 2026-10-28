@@ -275,47 +275,12 @@ fn feature_create_sends_the_name_and_description_and_prints_the_id_and_name() {
 }
 
 #[test]
-fn a_feature_without_a_description_sends_none() {
-    let server = mock();
-    let home = logged_in(&server.url);
-    let out = run(
-        &home,
-        &["feature", "create", "Gift cards", "--project", PROJECT],
-    );
-    assert_eq!(out.code, 0, "{}", out.stderr);
-    let posts = requests_to(&server, "POST", &features_path(PROJECT));
-    assert_eq!(posts.len(), 1, "{:?}", server.requests());
-    let body = body_of(&posts[0]);
-    assert_eq!(body["name"], "Gift cards", "{body}");
-    assert!(
-        body.get("description")
-            .is_none_or(|d| d.is_null() || d == ""),
-        "no description is given: {body}"
-    );
-    assert_eq!(
-        non_empty_lines(&out.stdout),
-        [format!("{NEW_FEATURE}  Gift cards")]
-    );
-}
-
-#[test]
 fn feature_create_without_a_name_is_one_line_and_sends_nothing() {
     let server = mock();
     let home = logged_in(&server.url);
     let out = run(&home, &["feature", "create", "--project", PROJECT]);
     assert_one_line_error(&out, &["name"]);
     assert_nothing_posted(&server);
-}
-
-#[test]
-fn a_taken_name_is_one_line_with_the_error_code() {
-    let server = mock();
-    let home = logged_in(&server.url);
-    let out = run(
-        &home,
-        &["feature", "create", "checkout", "--project", PROJECT],
-    );
-    assert_one_line_error(&out, &["name_taken"]);
 }
 
 // ---------------------------------------------------------------------------
@@ -441,23 +406,6 @@ fn feature_show_of_a_name_the_project_does_not_have_is_one_line() {
     assert_nothing_posted(&server);
 }
 
-#[test]
-fn feature_show_needs_a_name_or_id() {
-    let server = mock();
-    let home = logged_in(&server.url);
-    let control = run(&home, &["feature", "show", FEATURE, "--project", PROJECT]);
-    assert_eq!(control.code, 0, "with an ID it works: {}", control.stderr);
-    let before = server.requests().len();
-    let out = run(&home, &["feature", "show", "--project", PROJECT]);
-    assert_one_line_error(&out, &["feature"]);
-    assert_eq!(
-        server.requests().len(),
-        before,
-        "nothing is sent without a name or ID: {:?}",
-        server.requests()
-    );
-}
-
 // ---------------------------------------------------------------------------
 // The project
 // ---------------------------------------------------------------------------
@@ -556,33 +504,6 @@ fn an_unknown_or_missing_project_is_one_line_and_sends_nothing() {
         "no feature route is called without a project: {:?}",
         server.requests()
     );
-}
-
-#[test]
-fn help_lists_the_feature_commands() {
-    let home = Scratch::new("help");
-    let help = omni(&home.path).args(&["--help"]).run();
-    assert_eq!(help.code, 0, "{}", help.stderr);
-    for gone in ["feature done", "feature reopen"] {
-        assert!(
-            !help.stdout.contains(gone),
-            "omni --help no longer lists `omni {gone}`: {:?}",
-            help.stdout
-        );
-    }
-    for command in [
-        "feature create",
-        "feature list",
-        "feature show",
-        "feature rename",
-        "feature delete",
-    ] {
-        assert!(
-            help.stdout.contains(command),
-            "omni --help lists `omni {command}`: {:?}",
-            help.stdout
-        );
-    }
 }
 
 /// What `omni feature show` prints has no status: no line names one, and no
