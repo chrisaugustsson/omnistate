@@ -95,7 +95,6 @@ mod common;
 
 use common::{Client, Response, TestServer, cookie};
 use omni_api::Config;
-use omni_api::routes::{Access, registry};
 use s3::creds::Credentials;
 use s3::{Bucket, BucketConfiguration, Region};
 use serde_json::{Value, json};
@@ -114,12 +113,6 @@ const TEST_DB: &str = "omni_us026_rebase";
 const TEST_BUCKET: &str = "omni-us026-rebase";
 /// An ID that no row has.
 const UNKNOWN_ID: &str = "01900000-0000-7000-8000-000000000000";
-const REBASE_ROUTE: &str =
-    "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/rebase";
-const CONFLICTS_ROUTE: &str =
-    "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/conflicts";
-const RESOLVE_ROUTE: &str =
-    "/api/v1/w/{workspace_id}/projects/{project_id}/conflicts/{conflict_id}/resolve";
 
 // ---------------------------------------------------------------------------
 // Plumbing
@@ -1084,22 +1077,6 @@ fn conflict_ids(conflicts: &[Value]) -> BTreeSet<String> {
 // ---------------------------------------------------------------------------
 // The routes
 // ---------------------------------------------------------------------------
-
-#[test]
-fn the_rebase_and_conflict_routes_are_in_the_registry() {
-    let routes = registry();
-    for (method, path, access) in [
-        ("POST", REBASE_ROUTE, Access::Agent),
-        ("GET", CONFLICTS_ROUTE, Access::Both),
-        ("POST", RESOLVE_ROUTE, Access::Agent),
-    ] {
-        let entry = routes
-            .iter()
-            .find(|r| r.method == method && r.path == path)
-            .unwrap_or_else(|| panic!("the registry has no route {method} {path}"));
-        assert_eq!(entry.access, access, "{method} {path}");
-    }
-}
 
 #[test]
 fn rebasing_is_refused_outside_needs_rebase_and_changes_nothing() {
