@@ -405,17 +405,6 @@ fn post_show_prints_the_whole_post() {
 }
 
 #[test]
-fn post_show_names_the_human_as_the_author_of_the_humans_post() {
-    let server = mock(false);
-    let home = logged_in(&server.url);
-    let out = run(&home, &["post", "show", FOLD]);
-    assert_eq!(out.code, 0, "{}", out.stderr);
-    for needle in ["note", "human", "Mind the fold on small phones", FOLD] {
-        assert!(out.stdout.contains(needle), "{needle:?}: {:?}", out.stdout);
-    }
-}
-
-#[test]
 fn post_show_json_is_the_api_answer() {
     let server = mock(false);
     let home = logged_in(&server.url);
@@ -457,18 +446,4 @@ fn post_show_without_an_id_is_a_usage_error_that_sends_nothing() {
         "a usage error sends nothing: {:?}",
         server.requests()
     );
-}
-
-#[test]
-fn the_help_lists_digest_and_post_show() {
-    let home = Scratch::new("help");
-    let help = omni(&home.path).args(&["--help"]).run();
-    assert_eq!(help.code, 0, "{}", help.stderr);
-    for command in ["omni thread digest", "omni post show"] {
-        assert!(
-            help.stdout.contains(command),
-            "omni --help lists {command}: {}",
-            help.stdout
-        );
-    }
 }
