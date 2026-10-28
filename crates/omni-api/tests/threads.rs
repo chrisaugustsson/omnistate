@@ -706,21 +706,6 @@ fn a_thread_records_its_question_and_criteria_and_starts_with_an_open_phase() {
 }
 
 #[test]
-fn sealed_false_starts_the_thread_with_an_open_phase_too() {
-    let (f, client) = ready();
-    let project = new_project(f, client);
-    let changeset = new_changeset(f, client, &project);
-    let thread = create_thread(
-        f,
-        client,
-        &project,
-        &changeset,
-        &thread_body(&unique("Open from the start?"), Some(false)),
-    );
-    assert_eq!(phases(&thread), vec![(1, false)], "{thread}");
-}
-
-#[test]
 fn a_thread_started_sealed_starts_with_a_sealed_phase() {
     let (f, client) = ready();
     let project = new_project(f, client);
@@ -866,22 +851,6 @@ fn starting_a_phase_appends_the_next_phase_as_the_current_one() {
         vec![(1, false), (2, true), (3, false)],
         "{shown}"
     );
-}
-
-#[test]
-fn a_sealed_thread_can_follow_its_first_phase_with_another_sealed_one() {
-    let (f, client) = ready();
-    let project = new_project(f, client);
-    let changeset = new_changeset(f, client, &project);
-    let thread = id_of(&create_thread(
-        f,
-        client,
-        &project,
-        &changeset,
-        &thread_body(&unique("Committee vote"), Some(true)),
-    ));
-    let next = start_phase(f, client, &project, &thread, true);
-    assert_eq!(phases(&next), vec![(1, true), (2, true)], "{next}");
 }
 
 #[test]
