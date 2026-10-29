@@ -207,7 +207,7 @@ describe("a doc's activity", () => {
     expect(within(list).queryByRole("button", { name: "Load more" }), "the last page has been read").toBeNull();
   });
 
-  test("an HTML write shows each changed element before and after in sandboxed frames with the doc's own style, an inserted one Not present before", async () => {
+  test("an HTML write shows each changed element before and after in sandboxed frames with the doc's own style, an inserted one Not present before and a deleted one Not present after", async () => {
     const style = "<style>.lead{color:teal}</style>";
     fakeApi(doc("html", "Checkout PRD"), {
       [`${API}/docs/${DOC_ID}/html`]: {
@@ -219,6 +219,7 @@ describe("a doc's activity", () => {
         items: [
           { node: "p0000001", before: '<p data-omni-id="p0000001" class="lead">Ship in a day.</p>', after: '<p data-omni-id="p0000001" class="lead">Ship in two days.</p>' },
           { node: "p0000002", before: null, after: '<p data-omni-id="p0000002">Returns are free.</p>' },
+          { node: "p0000003", before: '<p data-omni-id="p0000003">Gone.</p>', after: null },
         ],
       },
     });
@@ -226,9 +227,10 @@ describe("a doc's activity", () => {
 
     const changed = await screen.findByRole("region", { name: "Element p0000001" });
     const inserted = await screen.findByRole("region", { name: "Element p0000002" });
+    const deleted = await screen.findByRole("region", { name: "Element p0000003" });
     const frames = Array.from(document.querySelectorAll("iframe"));
-    expect(frames).toHaveLength(3);
-    expect(frames.map((frame) => frame.getAttribute("sandbox"))).toEqual(["allow-scripts", "allow-scripts", "allow-scripts"]);
+    expect(frames).toHaveLength(4);
+    expect(frames.map((frame) => frame.getAttribute("sandbox"))).toEqual(["allow-scripts", "allow-scripts", "allow-scripts", "allow-scripts"]);
 
     const before = side(changed, "Before").querySelector("iframe")!;
     const after = side(changed, "After").querySelector("iframe")!;
@@ -241,6 +243,9 @@ describe("a doc's activity", () => {
     expect(side(inserted, "Before").textContent).toContain("Not present");
     expect(side(inserted, "Before").querySelector("iframe")).toBeNull();
     await waitFor(() => expect(shownIn(side(inserted, "After").querySelector("iframe")!)).toContain("Returns are free."));
+    expect(side(deleted, "After").textContent).toContain("Not present");
+    expect(side(deleted, "After").querySelector("iframe")).toBeNull();
+    await waitFor(() => expect(shownIn(side(deleted, "Before").querySelector("iframe")!)).toContain("Gone."));
   });
 
   test("a rename shows the old and the new title as plain text, without frames", async () => {
@@ -260,10 +265,11 @@ describe("a doc's activity", () => {
     expect(document.querySelector("iframe")).toBeNull();
   });
 
-  test("a design write draws each changed board as it was before and after, an added one Not present before", async () => {
+  test("a design write draws each changed board as it was before and after, an added one Not present before and a removed one Not present after", async () => {
     const before = '<Board id="b0000001" name="Cart, old" width={390} height={844}/>';
     const after = '<Board id="b0000001" name="Cart, new" width={390} height={844}/>';
     const added = '<Board id="b0000002" name="Receipt" width={390} height={844}/>';
+    const removed = '<Board id="b0000003" name="Coupon" width={390} height={844}/>';
     const board = (id: string, tags: string) => ({ board_id: id, doc_id: DOC_ID, page_id: "p0000001", node: {}, tags });
     const requested = fakeApi(doc("design", "Cart screens"), {
       [`${API}/docs/${DOC_ID}/activity/7`]: {
@@ -271,28 +277,36 @@ describe("a doc's activity", () => {
         items: [
           { board: "b0000001", before_at: 6, after_at: 7 },
           { board: "b0000002", before_at: null, after_at: 7 },
+          { board: "b0000003", before_at: 6, after_at: null },
         ],
       },
       [`${API}/docs/${DOC_ID}/boards/b0000001?at=6`]: board("b0000001", before),
       [`${API}/docs/${DOC_ID}/boards/b0000001?at=7`]: board("b0000001", after),
       [`${API}/docs/${DOC_ID}/boards/b0000002?at=7`]: board("b0000002", added),
+      [`${API}/docs/${DOC_ID}/boards/b0000003?at=6`]: board("b0000003", removed),
     });
     renderAt(`${ACTIVITY_PATH}/7`);
 
     const cart = await screen.findByRole("region", { name: "Board b0000001" });
     const receipt = await screen.findByRole("region", { name: "Board b0000002" });
+    const coupon = await screen.findByRole("region", { name: "Board b0000003" });
     await waitFor(() => expect(within(side(cart, "Before")).getByRole("img", { name: "Picture of Cart, old" })).toBeTruthy());
     expect(within(side(cart, "After")).getByRole("img", { name: "Picture of Cart, new" })).toBeTruthy();
     await waitFor(() => expect(within(side(receipt, "After")).getByRole("img", { name: "Picture of Receipt" })).toBeTruthy());
-    expect(fake.tagsShown).toEqual(expect.arrayContaining([before, after, added]));
+    await waitFor(() => expect(within(side(coupon, "Before")).getByRole("img", { name: "Picture of Coupon" })).toBeTruthy());
+    expect(fake.tagsShown).toEqual(expect.arrayContaining([before, after, added, removed]));
     expect(side(receipt, "Before").textContent).toContain("Not present");
     expect(within(side(receipt, "Before")).queryByRole("img")).toBeNull();
     expect(requested.filter((path) => path.includes("/boards/b0000002"))).toEqual([`${API}/docs/${DOC_ID}/boards/b0000002?at=7`]);
+    expect(side(coupon, "After").textContent).toContain("Not present");
+    expect(within(side(coupon, "After")).queryByRole("img")).toBeNull();
+    expect(requested.filter((path) => path.includes("/boards/b0000003"))).toEqual([`${API}/docs/${DOC_ID}/boards/b0000003?at=6`]);
   });
 
-  test("a design-system write draws each changed component at before_at and after_at, and the tokens as formatted JSON", async () => {
+  test("a design-system write draws each changed component at before_at and after_at, a removed one Not present after, and the tokens as formatted JSON", async () => {
     const oldButton = { id: "c0000001", type: "component", name: "Button, old", children: [] };
     const newButton = { id: "c0000001", type: "component", name: "Button, new", children: [] };
+    const badge = { id: "c0000002", type: "component", name: "Badge", children: [] };
     const oldTokens = { color: { brand: { $type: "color", $value: "#0f766e" } } };
     const newTokens = { color: { brand: { $type: "color", $value: "#be185d" } } };
     const component = (node: Record<string, unknown>, at: number) => ({ component_id: "c0000001", doc_id: DOC_ID, at, node, tags: "" });
@@ -300,11 +314,15 @@ describe("a doc's activity", () => {
       [`${API}/docs/${DOC_ID}/html`]: { doc_id: DOC_ID, html: JSON.stringify({ ...newTokens, $components: [newButton] }) },
       [`${API}/docs/${DOC_ID}/activity/9`]: {
         ...entry(9, "Changed the button and the brand colour"),
-        items: [{ component: "c0000001", before_at: 8, after_at: 9 }],
+        items: [
+          { component: "c0000001", before_at: 8, after_at: 9 },
+          { component: "c0000002", before_at: 8, after_at: null },
+        ],
         tokens: { before: oldTokens, after: newTokens },
       },
       [`${API}/components/c0000001?at=8`]: component(oldButton, 8),
       [`${API}/components/c0000001?at=9`]: component(newButton, 9),
+      [`${API}/components/c0000002?at=8`]: { ...component(badge, 8), component_id: "c0000002" },
     });
     renderAt(`${ACTIVITY_PATH}/9`);
 
@@ -313,6 +331,11 @@ describe("a doc's activity", () => {
     await waitFor(() => expect(within(side(button, "After")).getByRole("img", { name: "Picture of Button, new" })).toBeTruthy());
     expect(requested).toEqual(expect.arrayContaining([`${API}/components/c0000001?at=8`, `${API}/components/c0000001?at=9`]));
     expect(fake.componentsShown).toEqual(expect.arrayContaining([oldButton, newButton]));
+    const removed = screen.getByRole("region", { name: "Component c0000002" });
+    await waitFor(() => expect(within(side(removed, "Before")).getByRole("img", { name: "Picture of Badge" })).toBeTruthy());
+    expect(side(removed, "After").textContent).toContain("Not present");
+    expect(within(side(removed, "After")).queryByRole("img")).toBeNull();
+    expect(requested.filter((path) => path.includes("/components/c0000002"))).toEqual([`${API}/components/c0000002?at=8`]);
 
     const tokens = screen.getByRole("region", { name: "Tokens" });
     const json = (caption: "Before" | "After") => side(tokens, caption).querySelector("pre")!.textContent!;

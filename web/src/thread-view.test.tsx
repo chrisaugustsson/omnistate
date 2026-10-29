@@ -390,11 +390,14 @@ describe("threads in the web app", () => {
       const sent = api.calls.filter((call) => call.method === "POST" && call.path === `${API}/threads/${opened.id}/posts`);
       expect(sent.map((call) => call.body)).toEqual([{ summary: " Add Klarna ", body: "- Germany\n- Austria\n" }]);
 
-      // The post's own live event comes in too.
+      await waitFor(() => expect(postSummaries(main)).toEqual(["Apple Pay covers most phones", "Add Swish too", " Add Klarna "]));
+
+      // The post's own live event comes in too, and the thread is read again.
+      const reads = () => api.calls.filter((call) => call.method === "GET" && call.path === `${API}/threads/${opened.id}`).length;
+      const readsBefore = reads();
       const mine = api.opened!.posts[2];
       socket.receive(postCreated(21, opened.id, mine.id));
-      await waitFor(() => expect(postSummaries(main)).toEqual(["Apple Pay covers most phones", "Add Swish too", " Add Klarna "]));
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      await waitFor(() => expect(reads()).toBe(readsBefore + 1));
       expect(postSummaries(main)).toEqual(["Apple Pay covers most phones", "Add Swish too", " Add Klarna "]);
     });
 
