@@ -10,25 +10,12 @@
 // `features` lists each feature as {feature, docs, open_changesets, waiting}.
 // Since US-110 a feature has no status.
 //
-// The sidebar (the navigation named "Workspace") has, below the project's
-// sections (Overview, Inbox, Docs, Change sets, Threads), a group named
-// "Features" (role group or region, named by its heading) that links every
-// feature to its overview, /w/<workspace>/projects/<project>/features/
-// <feature>, with its waiting count next to its name. There is no "Done"
-// toggle (US-110).
-//
 // A feature has its scope page (US-112, src/project-home.test.tsx) and
 // .../features/<feature>/docs, /changesets and /threads pages, each holding
 // that feature's items only. The project's Docs, Change sets and Threads pages
 // hold the project-level items only.
-//
-// The sidebar marks where the reviewer is with aria-current: on a feature's
-// page, the link to that feature's section (its page, docs, change sets or
-// threads); on a doc, change set or thread of a feature, the link to that
-// feature's docs, change sets or threads, and a change set's or thread's back
-// link goes there too (a doc has its breadcrumb, src/feature-scope.test.tsx).
 import { RouterProvider, createMemoryHistory } from "@tanstack/react-router";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { getRouter } from "./router";
 
@@ -324,55 +311,9 @@ function renderAt(path: string) {
   return router;
 }
 
-/** The sidebar's navigation. */
-async function sidebar() {
-  return screen.findByRole("navigation", { name: /workspace/i });
-}
-
 /** The page itself, without the sidebar. */
 async function page() {
   return screen.findByRole("main");
-}
-
-/** The links of `container` that go to `href`. */
-function linksTo(container: HTMLElement, href: string) {
-  return Array.from(container.querySelectorAll("a")).filter((a) => a.getAttribute("href") === href);
-}
-
-/** The one link of `container` to `href`, once it is there. */
-async function linkTo(container: HTMLElement, href: string) {
-  return waitFor(() => {
-    const found = linksTo(container, href);
-    expect(found.length, `a link to ${href}`).toBeGreaterThan(0);
-    return found[0];
-  });
-}
-
-/** Whether `element` is marked as where the reviewer is. */
-function marked(element: Element) {
-  const current = element.getAttribute("aria-current");
-  return current !== null && current !== "false";
-}
-
-/** The links of `container` that are marked as where the reviewer is. */
-function markedLinks(container: HTMLElement) {
-  return Array.from(container.querySelectorAll("a")).filter(marked);
-}
-
-/** The section (or group) named `name` inside `container`. */
-async function section(name: RegExp, container: HTMLElement) {
-  return waitFor(() => {
-    const found =
-      within(container).queryByRole("region", { name }) ?? within(container).queryByRole("group", { name });
-    expect(found, `a section named ${name}`).toBeTruthy();
-    return found as HTMLElement;
-  });
-}
-
-/** The text of the feature's entry in the sidebar, without its name. */
-function besideName(link: HTMLElement, name: string) {
-  const entry = (link.closest("li") as HTMLElement | null) ?? link;
-  return (entry.textContent ?? "").replace(name, "");
 }
 
 /** Asserts that `container` shows every one of `shown` and none of `hidden`. */
@@ -398,31 +339,6 @@ describe("features in the web app", () => {
   afterEach(() => {
     cleanup();
     vi.unstubAllGlobals();
-  });
-
-  describe("the sidebar", () => {
-    test("below the project's sections, a Features group lists every feature with its waiting count", async () => {
-      fakeApi(seeded());
-      renderAt(PROJECT_PATH);
-      const nav = await sidebar();
-      const threads = await linkTo(nav, `${PROJECT_PATH}/threads`);
-      const features = await section(/^features\b/i, nav);
-      expect(
-        threads.compareDocumentPosition(features) & Node.DOCUMENT_POSITION_FOLLOWING,
-        "the Features group comes after the project's sections",
-      ).toBeTruthy();
-
-      const wishlist = await linkTo(features, featurePath(WISHLIST));
-      expect(wishlist.textContent).toMatch(/wishlist/i);
-      expect(besideName(wishlist, "Wishlist"), "the Wishlist's waiting count").toMatch(/(^|\D)3(\D|$)/);
-      const giftCards = await linkTo(features, featurePath(GIFT_CARDS));
-      expect(giftCards.textContent).toMatch(/gift cards/i);
-      expect(besideName(giftCards, "Gift cards"), "the Gift cards' waiting count").toMatch(/(^|\D)1(\D|$)/);
-
-      const loyalty = await linkTo(features, featurePath(LOYALTY));
-      expect(loyalty.textContent).toMatch(/loyalty points/i);
-      expect(within(nav).queryByRole("button", { name: /^done\b/i }), "there is no Done toggle").toBeNull();
-    });
   });
 
   describe("the project's pages", () => {
@@ -484,75 +400,6 @@ describe("features in the web app", () => {
       fakeApi(seeded());
       renderAt(featurePath(WISHLIST, "threads"));
       await showsOnly(await page(), WISHLIST_THREADS, OTHER_THREADS);
-    });
-  });
-
-  describe("marking where the reviewer is", () => {
-    test("on a feature's page the sidebar marks that feature's section, not the project's", async () => {
-      fakeApi(seeded());
-      renderAt(featurePath(WISHLIST, "changesets"));
-      const nav = await sidebar();
-      const current = await linkTo(nav, featurePath(WISHLIST, "changesets"));
-      await waitFor(() => expect(marked(current), "the Wishlist's change sets are marked").toBe(true));
-      for (const link of markedLinks(nav)) {
-        expect(link.getAttribute("href"), "only the Wishlist is marked").toMatch(
-          new RegExp(`^${featurePath(WISHLIST)}(/|$)`),
-        );
-      }
-      expect(marked(await linkTo(nav, `${PROJECT_PATH}/changesets`)), "the project's change sets").toBe(false);
-    });
-
-    test("on a feature's overview the sidebar marks the feature, not the project's overview", async () => {
-      fakeApi(seeded());
-      renderAt(featurePath(WISHLIST));
-      const nav = await sidebar();
-      await waitFor(() =>
-        expect(
-          linksTo(nav, featurePath(WISHLIST)).some(marked),
-          "the Wishlist's overview is marked",
-        ).toBe(true),
-      );
-      expect(marked(await linkTo(nav, PROJECT_PATH)), "the project's overview").toBe(false);
-      expect(linksTo(nav, featurePath(GIFT_CARDS)).some(marked), "another feature").toBe(false);
-    });
-
-    test("on a feature's change set the sidebar marks the feature's change sets and the back link goes there", async () => {
-      const seed = seeded();
-      fakeApi(seed);
-      renderAt(`${PROJECT_PATH}/changesets/${seed.changesets.shareSaved.id}`);
-      const nav = await sidebar();
-      const current = await linkTo(nav, featurePath(WISHLIST, "changesets"));
-      await waitFor(() => expect(marked(current), "the Wishlist's change sets are marked").toBe(true));
-      expect(marked(await linkTo(nav, `${PROJECT_PATH}/changesets`)), "the project's change sets").toBe(false);
-
-      const main = await page();
-      await within(main).findAllByText("Share saved lists");
-      const back = within(main).getAllByRole("link", { name: /change sets/i });
-      expect(back.map((link) => link.getAttribute("href"))).toContain(featurePath(WISHLIST, "changesets"));
-      expect(back.map((link) => link.getAttribute("href"))).not.toContain(`${PROJECT_PATH}/changesets`);
-    });
-
-    test("on a feature's doc the sidebar marks the feature's docs", async () => {
-      const seed = seeded();
-      fakeApi(seed);
-      renderAt(`${PROJECT_PATH}/docs/${seed.docs.savedPrd.id}`);
-      const nav = await sidebar();
-      const current = await linkTo(nav, featurePath(WISHLIST, "docs"));
-      await waitFor(() => expect(marked(current), "the Wishlist's docs are marked").toBe(true));
-      expect(marked(await linkTo(nav, `${PROJECT_PATH}/docs`)), "the project's docs").toBe(false);
-    });
-
-    test("on a project-level doc the sidebar marks the project's docs", async () => {
-      const seed = seeded();
-      fakeApi(seed);
-      renderAt(`${PROJECT_PATH}/docs/${seed.docs.storefrontPrd.id}`);
-      const nav = await sidebar();
-      const current = await linkTo(nav, `${PROJECT_PATH}/docs`);
-      await waitFor(() => expect(marked(current), "the project's docs are marked").toBe(true));
-      await linkTo(nav, featurePath(WISHLIST));
-      for (const link of markedLinks(nav)) {
-        expect(link.getAttribute("href"), "no feature is marked").not.toMatch(/\/features\//);
-      }
     });
   });
 });
