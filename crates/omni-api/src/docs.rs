@@ -196,6 +196,18 @@ pub struct MainlineHtmlResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schema(value_type = Option<Vec<Object>>)]
     pub components: Option<Vec<Value>>,
+    /// A design's head as its outline: the pages in order, each as its own JSON
+    /// with its boards under `children` as placeholders (the board's own JSON
+    /// without its children); only for the head of a design read with
+    /// `?view=outline`, which leaves out `tags` and `pages`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<Vec<Object>>)]
+    pub outline: Option<Vec<Value>>,
+    /// The boards of the outline in page order, each with the chunk that holds
+    /// it, so that a viewer reads again only the boards whose chunk changed;
+    /// only with `outline`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub boards: Option<Vec<boards::HeadBoard>>,
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -1786,6 +1798,7 @@ pub async fn delete_doc(
         ("project_id" = String, Path, description = "The project's UUID"),
         ("doc_id" = String, Path, description = "The doc's UUID"),
         ("version" = Option<String>, Query, description = "The version to read instead of the head"),
+        ("view" = Option<String>, Query, description = "`outline` for the head of a design as its outline (its pages with their boards as placeholders, and the chunk of each board) instead of its whole body; the boards come one by one from `GET .../docs/{doc_id}/boards/{board_id}`"),
     ),
     responses(
         (status = 200, description = "The head's or version's HTML", body = MainlineHtmlResponse),
@@ -1806,7 +1819,8 @@ pub async fn read_doc_html(
     let Some(version) = query.get("version") else {
         let version_id = head_version(&mut tx, &row).await?;
         tx.commit().await.map_err(ApiError::database)?;
-        return read_head(&state, &request.workspace_id, row, version_id)
+        let outline = query.get("view").map(String::as_str) == Some("outline");
+        return read_head(&state, &request.workspace_id, row, version_id, outline)
             .await
             .map(Json);
     };
@@ -1826,6 +1840,8 @@ pub async fn read_doc_html(
         pages: None,
         tokens: None,
         components: None,
+        outline: None,
+        boards: None,
     }))
 }
 
@@ -1849,6 +1865,7 @@ async fn read_head(
     workspace_id: &str,
     row: DocRow,
     version_id: Option<String>,
+    outline: bool,
 ) -> Result<MainlineHtmlResponse, ApiError> {
     let mut answer = MainlineHtmlResponse {
         doc_id: row.id,
@@ -1858,8 +1875,21 @@ async fn read_head(
         pages: None,
         tokens: None,
         components: None,
+        outline: None,
+        boards: None,
     };
-    if row.kind == "design" {
+    if row.kind == "design" && outline {
+        let view =
+            design::outline_of_head(state, workspace_id, &row.project_id, row.head.as_deref())
+                .await?;
+        answer.boards = Some(match &row.head {
+            Some(head) => boards::head_boards(state, workspace_id, head).await?,
+            None => Vec::new(),
+        });
+        answer.outline = Some(view.outline);
+        answer.tokens = view.tokens;
+        answer.components = Some(view.components);
+    } else if row.kind == "design" {
         let pages = match &row.head {
             Some(head) => {
                 let what = format!("the head of doc {}", answer.doc_id);

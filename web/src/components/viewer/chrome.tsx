@@ -1,65 +1,92 @@
-import type { ReactNode, SelectHTMLAttributes } from "react";
+import { Fragment, type ReactNode, type SelectHTMLAttributes } from "react";
 import { Link } from "@tanstack/react-router";
-import { ArrowLeft, ChevronDown, TriangleAlert } from "lucide-react";
-import { AgentAvatar } from "@/components/agent-chip";
-import { Trail } from "@/components/trail";
-import { sectionLink } from "@/components/project/items";
+import { ChevronDown, ChevronRight, TriangleAlert } from "lucide-react";
+import { PILLARS } from "@/components/project/items";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import { useHome } from "@/lib/use-home";
 import { cn } from "@/lib/utils";
 
-// The chrome the doc and design viewers share: a slim toolbar over the view,
-// compact selects, the live-draft indicator, side-pane sections with small
+// The chrome the doc and design viewers share: a slim toolbar over the view
+// with the doc's breadcrumb, compact selects, side-pane sections with small
 // uppercase labels, and alerts that float over the work.
 
+/** The part of a doc that its breadcrumb shows. */
+export type CrumbedDoc = { feature_id?: string | null; pillar: string; title: string };
+
 /**
- * The slim bar over a viewer: a back link, the doc's title and the viewer's
- * controls on the right. The back link goes to the docs of the doc's feature,
- * or to the project's docs for a project-level doc.
+ * The slim bar over a viewer: the doc's breadcrumb, scope › pillar › title, and
+ * the viewer's controls on the right. The scope links to its page and the
+ * pillar to the pillar's section on it; the app level reads "App".
  */
 export function ViewerToolbar({
   workspaceId,
   projectId,
-  featureId,
+  doc,
   icon,
-  title,
-  status,
   children,
 }: {
   workspaceId: string;
   projectId: string;
-  /** The doc's feature; `null` or absent for a project-level doc. */
-  featureId?: string | null;
+  /** The doc; `null` while it loads. */
+  doc: CrumbedDoc | null;
   icon?: ReactNode;
-  /** The doc's title; `null` while it loads. */
-  title: ReactNode | null;
-  /** Shown after the title: the live-draft indicator. */
-  status?: ReactNode;
   /** The controls on the right. */
   children?: ReactNode;
 }) {
+  const { home } = useHome(workspaceId, projectId);
+  const featureId = doc?.feature_id ?? null;
+  const scopeName = featureId
+    ? (home?.features?.find((summary) => summary.feature.id === featureId)?.feature.name ?? "Feature")
+    : "App";
+  const scope = featureId
+    ? {
+        to: "/w/$workspaceId/projects/$projectId/features/$featureId",
+        params: { workspaceId, projectId, featureId },
+      }
+    : { to: "/w/$workspaceId/projects/$projectId/app", params: { workspaceId, projectId } };
+  const pillar = PILLARS.find((candidate) => candidate.pillar === doc?.pillar);
+  const link =
+    "block max-w-48 truncate rounded transition-colors hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-none";
   return (
     <header className="sticky top-0 z-30 flex min-h-12 shrink-0 flex-wrap items-center gap-x-3 gap-y-2 border-b bg-background/95 px-3 py-2 backdrop-blur supports-[backdrop-filter]:bg-background/80 lg:static">
-      <Link
-        {...sectionLink("docs", { workspaceId, projectId }, featureId)}
-        aria-label="Back to the docs"
-        className="-ml-1 flex h-8 shrink-0 items-center gap-1.5 rounded-md px-2 text-[13px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-none"
-      >
-        <ArrowLeft className="size-4" />
-        <span className="hidden sm:inline">Docs</span>
-      </Link>
-      <span aria-hidden className="h-4 w-px shrink-0 bg-border" />
-      <div className="flex min-w-0 flex-1 basis-48 items-center gap-2">
-        {icon && <span className="flex shrink-0 text-muted-foreground [&_svg]:size-4">{icon}</span>}
-        {title === null ? (
-          <span aria-hidden className="h-3.5 w-40 animate-pulse rounded bg-muted" />
+      <nav aria-label="Breadcrumb" className="min-w-0 flex-1 basis-48">
+        {doc === null ? (
+          <span aria-hidden className="block h-3.5 w-40 animate-pulse rounded bg-muted" />
         ) : (
-          <h1 className="min-w-0 truncate text-sm font-semibold tracking-tight">{title}</h1>
+          <ol className="flex min-w-0 flex-wrap items-center gap-x-1 gap-y-0.5 text-xs font-medium text-muted-foreground">
+            <li className="min-w-0">
+              <Link {...scope} className={link}>
+                {scopeName}
+              </Link>
+            </li>
+            <Crumb>
+              <Link {...scope} hash={doc.pillar} className={link}>
+                {pillar?.title ?? doc.pillar}
+              </Link>
+            </Crumb>
+            <Crumb>
+              <span className="flex min-w-0 items-center gap-2 text-foreground [&_svg]:size-4 [&_svg]:text-muted-foreground">
+                {icon}
+                <h1 aria-current="page" className="min-w-0 truncate text-sm font-semibold tracking-tight">
+                  {doc.title}
+                </h1>
+              </span>
+            </Crumb>
+          </ol>
         )}
-        {status}
-      </div>
-      <Trail workspaceId={workspaceId} projectId={projectId} featureId={featureId} section="docs" />
+      </nav>
       {children && <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:flex-nowrap">{children}</div>}
     </header>
+  );
+}
+
+/** A crumb after the first: a chevron and the crumb. */
+function Crumb({ children }: { children: ReactNode }) {
+  return (
+    <Fragment>
+      <ChevronRight aria-hidden className="size-3 shrink-0 text-muted-foreground/50" />
+      <li className="min-w-0">{children}</li>
+    </Fragment>
   );
 }
 
@@ -90,40 +117,6 @@ export function ToolbarSelect({
         />
       </div>
     </div>
-  );
-}
-
-/** A pulsing signal dot. */
-export function PulseDot({ className }: { className?: string }) {
-  return (
-    <span aria-hidden className={cn("relative flex size-1.5 shrink-0", className)}>
-      <span className="absolute inline-flex size-full animate-ping rounded-full bg-signal opacity-60" />
-      <span className="relative inline-flex size-1.5 rounded-full bg-signal" />
-    </span>
-  );
-}
-
-/**
- * Says that a live draft is shown, with the avatars of the agents that hold
- * claims on it. The holders are named in the Claims section; here they are
- * faces only, named by their tooltips.
- */
-export function LiveIndicator({ holders }: { holders: string[] }) {
-  const unique = Array.from(new Set(holders));
-  return (
-    <span className="flex shrink-0 items-center gap-2 rounded-full bg-signal-soft py-0.5 pr-1 pl-2 text-[11px] font-medium text-signal ring-1 ring-signal/20 ring-inset">
-      <PulseDot />
-      <span className={unique.length ? "" : "pr-1"}>Live</span>
-      {unique.length > 0 && (
-        <span className="flex -space-x-1">
-          {unique.slice(0, 4).map((holder) => (
-            <span key={holder} title={`${holder} holds a claim`} className="rounded-full ring-2 ring-signal-soft">
-              <AgentAvatar name={holder} className="size-4 text-[8px]" />
-            </span>
-          ))}
-        </span>
-      )}
-    </span>
   );
 }
 

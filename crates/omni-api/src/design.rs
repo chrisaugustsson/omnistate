@@ -725,6 +725,40 @@ pub(crate) async fn outline_of_version(
     })
 }
 
+/// What the design viewer reads of a design's head first: the outline of its
+/// pages, and the head of the project's design system as it is now.
+pub(crate) async fn outline_of_head(
+    state: &AppState,
+    workspace_id: &str,
+    project_id: &str,
+    head: Option<&str>,
+) -> Result<VersionOutline, ApiError> {
+    let mut tx = state.workspace_tx(workspace_id).await?;
+    let found = design_system_row(&mut tx, project_id, false).await?;
+    tx.commit().await.map_err(ApiError::database)?;
+    let (system, key) = match found {
+        Some((doc_id, system_head)) => (
+            read_system_head(state, workspace_id, &doc_id, system_head.as_deref()).await?,
+            system_head,
+        ),
+        None => (SystemHead::default(), None),
+    };
+    let components = nodes_values(&system.library.0);
+    let tokens = system.tokens_json();
+    // The placeholders are laid out against the design system head the viewer
+    // resolves the boards against.
+    let sizing = Sizing::new(key.as_deref(), tokens.as_ref(), &components).await;
+    let outline = match head {
+        Some(head) => boards::read_outline(state, workspace_id, head, "the head", &sizing).await?,
+        None => Vec::new(),
+    };
+    Ok(VersionOutline {
+        outline,
+        components,
+        tokens,
+    })
+}
+
 /// The component that the instance `instance` places, looked for in every
 /// node of the pages.
 fn component_of_instance(nodes: &[Node], instance: &str) -> Option<NodeId> {

@@ -21,6 +21,7 @@ const draft = operations["GET /api/v1/w/{workspace_id}/projects/{project_id}/cha
 const changesets = operations["GET /api/v1/w/{workspace_id}/projects/{project_id}/changesets"];
 const comments = operations["GET /api/v1/w/{workspace_id}/projects/{project_id}/comments"];
 const comment = operations["POST /api/v1/w/{workspace_id}/projects/{project_id}/versions/{version_id}/comments"];
+const headComment = operations["POST /api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}/comments"];
 
 /** A doc with its drafts and live claims. */
 export async function loadDoc(workspaceId: string, projectId: string, docId: string): Promise<DocBody> {
@@ -72,6 +73,45 @@ export async function loadBoard(
     `${base(workspaceId, projectId)}/docs/${docId}/boards/${boardId}?version=${encodeURIComponent(versionId)}`,
     { response: board.responses["200"] },
   );
+  return loaded.node;
+}
+
+/** The HTML of the doc's head, as the agents have written it now; empty for a doc with no content yet. */
+export async function loadHeadHtml(workspaceId: string, projectId: string, docId: string): Promise<string> {
+  const loaded = await callApi("GET", `${base(workspaceId, projectId)}/docs/${docId}/html`, {
+    response: html.responses["200"],
+  });
+  return loaded.html;
+}
+
+/**
+ * A design's head as its outline: its pages with their boards as placeholders
+ * (`outline`), the chunk of each board (`boards`, which changes with the
+ * board), and the components and tokens of the design system head. The boards
+ * come one by one from `loadHeadBoard`.
+ */
+export async function loadHeadOutline(workspaceId: string, projectId: string, docId: string) {
+  const loaded = await callApi("GET", `${base(workspaceId, projectId)}/docs/${docId}/html?view=outline`, {
+    response: html.responses["200"],
+  });
+  return {
+    pages: loaded.outline ?? [],
+    boards: loaded.boards ?? [],
+    components: loaded.components ?? [],
+    tokens: loaded.tokens ?? null,
+  };
+}
+
+/** One board of a design's head, with everything below it, as JSON. */
+export async function loadHeadBoard(
+  workspaceId: string,
+  projectId: string,
+  docId: string,
+  boardId: string,
+): Promise<Record<string, unknown>> {
+  const loaded = await callApi("GET", `${base(workspaceId, projectId)}/docs/${docId}/boards/${boardId}`, {
+    response: board.responses["200"],
+  });
   return loaded.node;
 }
 
@@ -141,6 +181,20 @@ export async function createComment(
   const created = await callApi("POST", `${base(workspaceId, projectId)}/versions/${versionId}/comments`, {
     body: fields,
     response: comment.responses["201"],
+  });
+  return created.comment;
+}
+
+/** Comments on a node of the doc's head. */
+export async function createDocComment(
+  workspaceId: string,
+  projectId: string,
+  docId: string,
+  fields: { node: string; text: string },
+): Promise<CommentBody> {
+  const created = await callApi("POST", `${base(workspaceId, projectId)}/docs/${docId}/comments`, {
+    body: fields,
+    response: headComment.responses["201"],
   });
   return created.comment;
 }

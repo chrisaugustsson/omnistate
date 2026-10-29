@@ -85,6 +85,11 @@ export const ApiKeyBodySchema = z.object({
 });
 export type ApiKeyBody = z.infer<typeof ApiKeyBodySchema>;
 
+export const AppSummarySchema = z.object({
+  last_activity: z.string().nullable().optional(),
+});
+export type AppSummary = z.infer<typeof AppSummarySchema>;
+
 export const ApprovedVersionSchema = z.object({
   doc_id: z.string(),
   version_id: z.string(),
@@ -552,10 +557,24 @@ export type FeatureResponse = z.infer<typeof FeatureResponseSchema>;
 export const FeatureSummarySchema = z.object({
   docs: z.number().int(),
   feature: FeatureBodySchema,
+  last_activity: z.string().nullable().optional(),
   open_changesets: z.number().int(),
   waiting: z.number().int(),
 });
 export type FeatureSummary = z.infer<typeof FeatureSummarySchema>;
+
+export const HeadBoardSchema = z.object({
+  chunk: z.string(),
+  id: z.string(),
+});
+export type HeadBoard = z.infer<typeof HeadBoardSchema>;
+
+export const HomeDocSchema = z.intersection(DocBodySchema, z.object({
+  last_writer_role: z.string().optional(),
+  updated_at: z.string().optional(),
+  waiting: z.number().int().optional(),
+}));
+export type HomeDoc = z.infer<typeof HomeDocSchema>;
 
 export const PosterBodySchema = z.object({
   role: z.string().nullable().optional(),
@@ -607,6 +626,12 @@ export const ThreadBodySchema = z.object({
 });
 export type ThreadBody = z.infer<typeof ThreadBodySchema>;
 
+export const HomeThreadSchema = z.intersection(ThreadBodySchema, z.object({
+  last_post_at: z.string().nullable().optional(),
+  post_count: z.number().int().optional(),
+}));
+export type HomeThread = z.infer<typeof HomeThreadSchema>;
+
 export const WaitingBodySchema = z.object({
   changesets: z.array(ChangesetBodySchema),
   comments: z.array(CommentBodySchema),
@@ -616,11 +641,15 @@ export const WaitingBodySchema = z.object({
 export type WaitingBody = z.infer<typeof WaitingBodySchema>;
 
 export const HomeResponseSchema = z.object({
+  app: z.union([
+    z.null(),
+    AppSummarySchema,
+  ]).optional(),
   changesets: z.array(ChangesetBodySchema),
-  docs: z.array(DocBodySchema),
+  docs: z.array(HomeDocSchema),
   features: z.array(FeatureSummarySchema).optional(),
   project_id: z.string(),
-  threads: z.array(ThreadBodySchema),
+  threads: z.array(HomeThreadSchema),
   waiting: WaitingBodySchema,
 });
 export type HomeResponse = z.infer<typeof HomeResponseSchema>;
@@ -740,9 +769,11 @@ export const LoginRequestSchema = z.object({
 export type LoginRequest = z.infer<typeof LoginRequestSchema>;
 
 export const MainlineHtmlResponseSchema = z.object({
+  boards: z.array(HeadBoardSchema).nullable().optional(),
   components: z.array(z.record(z.string(), z.unknown())).nullable().optional(),
   doc_id: z.string(),
   html: z.string(),
+  outline: z.array(z.record(z.string(), z.unknown())).nullable().optional(),
   pages: z.array(z.record(z.string(), z.unknown())).nullable().optional(),
   tags: z.string().nullable().optional(),
   tokens: z.record(z.string(), z.unknown()).nullable().optional(),
@@ -1028,6 +1059,7 @@ export const schemas = {
   ActivityListResponse: ActivityListResponseSchema,
   ActorBody: ActorBodySchema,
   ApiKeyBody: ApiKeyBodySchema,
+  AppSummary: AppSummarySchema,
   ApprovedVersion: ApprovedVersionSchema,
   AttachmentBody: AttachmentBodySchema,
   AttachmentResponse: AttachmentResponseSchema,
@@ -1083,8 +1115,11 @@ export const schemas = {
   FeatureListResponse: FeatureListResponseSchema,
   FeatureResponse: FeatureResponseSchema,
   FeatureSummary: FeatureSummarySchema,
+  HeadBoard: HeadBoardSchema,
   HistoryEntry: HistoryEntrySchema,
+  HomeDoc: HomeDocSchema,
   HomeResponse: HomeResponseSchema,
+  HomeThread: HomeThreadSchema,
   ImportTagsRequest: ImportTagsRequestSchema,
   ImportTokensRequest: ImportTokensRequestSchema,
   ImportedComponents: ImportedComponentsSchema,

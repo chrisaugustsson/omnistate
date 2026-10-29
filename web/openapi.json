@@ -274,6 +274,19 @@
         ],
         "type": "object"
       },
+      "AppSummary": {
+        "description": "The app level of the project.",
+        "properties": {
+          "last_activity": {
+            "description": "The time of the latest write to an app-level doc or thread, counted as\na feature's `last_activity` is; `null` while there is none.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
       "ApprovedVersion": {
         "description": "The version of a doc that the human approved.",
         "properties": {
@@ -1807,6 +1820,13 @@
           "feature": {
             "$ref": "#/components/schemas/FeatureBody"
           },
+          "last_activity": {
+            "description": "The time of the latest write to one of the feature's docs (a row of\n`doc_changes`: create, edit, rename or delete) or its threads (a\nthread's creation, a post or a conclusion); comments and replies do not\ncount. `null` while there is none. The API always sends it.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "open_changesets": {
             "description": "The feature's change sets that are open, in review, approved or need a\nrebase.",
             "format": "int64",
@@ -1823,6 +1843,24 @@
           "docs",
           "open_changesets",
           "waiting"
+        ],
+        "type": "object"
+      },
+      "HeadBoard": {
+        "description": "A board of a design's head and the chunk that holds it.",
+        "properties": {
+          "chunk": {
+            "description": "The BLAKE3 hash of the board's bytes; it changes when the board does.",
+            "type": "string"
+          },
+          "id": {
+            "description": "The board's node ID.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "chunk"
         ],
         "type": "object"
       },
@@ -1860,8 +1898,45 @@
         ],
         "type": "object"
       },
+      "HomeDoc": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/DocBody"
+          },
+          {
+            "properties": {
+              "last_writer_role": {
+                "description": "The role of the agent that made that write; empty when it declared none.",
+                "type": "string"
+              },
+              "updated_at": {
+                "description": "When the doc was last written: the time of its newest row of\n`doc_changes`, or its creation for a doc that has none. The API always\nsends it.",
+                "type": "string"
+              },
+              "waiting": {
+                "description": "The doc's comments whose latest reply is an agent's.",
+                "format": "int64",
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          }
+        ],
+        "description": "A doc of the project with what the scope pages show of it."
+      },
       "HomeResponse": {
         "properties": {
+          "app": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/AppSummary",
+                "description": "The app level. The API always sends it."
+              }
+            ]
+          },
           "changesets": {
             "description": "Every change set of the project, oldest first, with its status.",
             "items": {
@@ -1872,7 +1947,7 @@
           "docs": {
             "description": "Every doc of the project, oldest first, as `GET /docs/{doc_id}` answers it.",
             "items": {
-              "$ref": "#/components/schemas/DocBody"
+              "$ref": "#/components/schemas/HomeDoc"
             },
             "type": "array"
           },
@@ -1889,7 +1964,7 @@
           "threads": {
             "description": "Every thread of the project, oldest first, without its posts.",
             "items": {
-              "$ref": "#/components/schemas/ThreadBody"
+              "$ref": "#/components/schemas/HomeThread"
             },
             "type": "array"
           },
@@ -1905,6 +1980,31 @@
           "waiting"
         ],
         "type": "object"
+      },
+      "HomeThread": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/ThreadBody"
+          },
+          {
+            "properties": {
+              "last_post_at": {
+                "description": "When its newest post was made; `null` for a thread without posts.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "post_count": {
+                "description": "How many posts the thread has.",
+                "format": "int64",
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          }
+        ],
+        "description": "A thread of the project with what the scope pages show of its posts."
       },
       "ImportTagsRequest": {
         "properties": {
@@ -2356,6 +2456,16 @@
       },
       "MainlineHtmlResponse": {
         "properties": {
+          "boards": {
+            "description": "The boards of the outline in page order, each with the chunk that holds\nit, so that a viewer reads again only the boards whose chunk changed;\nonly with `outline`.",
+            "items": {
+              "$ref": "#/components/schemas/HeadBoard"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
           "components": {
             "description": "The components that the design's instances use, as the design system's\nhead defines them; only for the head of a design.",
             "items": {
@@ -2372,6 +2482,16 @@
           "html": {
             "description": "The head or version as HTML with `data-omni-id`; the empty text for an\nempty doc, and for a design's head, whose content is `tags` and `pages`.",
             "type": "string"
+          },
+          "outline": {
+            "description": "A design's head as its outline: the pages in order, each as its own JSON\nwith its boards under `children` as placeholders (the board's own JSON\nwithout its children); only for the head of a design read with\n`?view=outline`, which leaves out `tags` and `pages`.",
+            "items": {
+              "type": "object"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
           },
           "pages": {
             "description": "A design's head as JSON nodes, each page with its boards under\n`children`; only for the head of a design.",
@@ -9843,6 +9963,15 @@
             "description": "The version to read instead of the head",
             "in": "query",
             "name": "version",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "`outline` for the head of a design as its outline (its pages with their boards as placeholders, and the chunk of each board) instead of its whole body; the boards come one by one from `GET .../docs/{doc_id}/boards/{board_id}`",
+            "in": "query",
+            "name": "view",
             "required": false,
             "schema": {
               "type": "string"

@@ -14,6 +14,7 @@ export function ViewerFrame({
   selected,
   claims,
   changes,
+  reveal,
   onSelect,
   className = "h-[75vh] w-full rounded-md border bg-white",
   title = "Doc",
@@ -25,6 +26,8 @@ export function ViewerFrame({
   claims: ClaimBody[];
   /** The blocks that a change set added, changed or removed, which the frame marks; left out, none is. */
   changes?: BlockChange[];
+  /** A block that the frame scrolls into view and keeps in place once it has; left out, none is. */
+  reveal?: string | null;
   onSelect: (node: string) => void;
   /** The frame's class names; the doc viewer's tall frame at first. */
   className?: string;
@@ -70,9 +73,9 @@ export function ViewerFrame({
   useEffect(() => {
     if (shown === null || !ready) return;
     // The frame's origin is opaque, so "*" is the only target a page can name.
-    const message = { type: "viewer.show", html: shown, pins, selected, claims, ...(changes ? { changes } : {}) };
+    const message = { type: "viewer.show", html: shown, pins, selected, claims, ...(changes ? { changes } : {}), ...(reveal ? { reveal } : {}) };
     frame.current?.contentWindow?.postMessage(message, "*");
-  }, [shown, pins, selected, claims, changes, ready]);
+  }, [shown, pins, selected, claims, changes, reveal, ready]);
 
   return (
     <iframe

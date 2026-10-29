@@ -1,4 +1,4 @@
-// Showing a big design board by board. A saved design version is read as its
+// Showing a big design board by board. A design's head is read as its
 // outline first (pages with their boards as placeholders, no board content);
 // the renderer is shown a page with every board as a placeholder, and the
 // boards that its view shows are read one by one, `READS_AT_ONCE` at a time,
@@ -23,18 +23,39 @@ const MOST_IN_VIEW = 48;
 /** How long to wait for more boards to arrive before showing the page again. */
 const SHOW_AFTER_MS = 16;
 
-/** The boards of one saved version that have been read, and the reads under way. */
+/**
+ * The boards of one design that have been read, and the reads under way. A
+ * design's head changes: `update` tells the cache the chunk each board has now,
+ * and a board whose chunk changed is read again while the old one stays in
+ * place, so that a page does not flicker or lose its selection. A board whose
+ * chunk is the same is never read again.
+ */
 export class BoardCache {
-  private readonly boards = new Map<string, Json>();
+  private readonly boards = new Map<string, { board: Json; chunk: string | undefined }>();
   private readonly reading = new Map<string, Promise<Json>>();
   private readonly failed = new Set<string>();
   private readonly listeners = new Set<(id: string) => void>();
+  /** The chunk each board has now; empty for a design that is not updated. */
+  private chunks = new Map<string, string>();
 
   constructor(private readonly read: (boardId: string) => Promise<Json>) {}
 
-  /** The board `id` once it has been read. */
+  /** The board `id` once it has been read; an out-of-date board until the new one is read. */
   get(id: string): Json | undefined {
-    return this.boards.get(id);
+    return this.boards.get(id)?.board;
+  }
+
+  /** Whether the board `id` has to be read: it has not been, or its chunk changed since. */
+  needsRead(id: string): boolean {
+    const held = this.boards.get(id);
+    return !held || (this.chunks.has(id) && held.chunk !== this.chunks.get(id));
+  }
+
+  /** The chunks the design's boards have now, by board ID; boards no longer in it are forgotten. */
+  update(chunks: ReadonlyMap<string, string>): void {
+    this.chunks = new Map(chunks);
+    for (const id of Array.from(this.boards.keys())) if (!chunks.has(id)) this.boards.delete(id);
+    for (const id of Array.from(this.failed)) if (this.needsRead(id)) this.failed.delete(id);
   }
 
   /** How many reads are under way. */
@@ -65,10 +86,11 @@ export class BoardCache {
    * as read. A board that could not be read is not tried again.
    */
   fetch(id: string, prepare: (board: Json) => Promise<unknown>): Promise<Json> {
-    const loaded = this.boards.get(id);
-    if (loaded) return Promise.resolve(loaded);
+    const held = this.boards.get(id);
+    if (held && !this.needsRead(id)) return Promise.resolve(held.board);
     const running = this.reading.get(id);
     if (running) return running;
+    const chunk = this.chunks.get(id);
     const started = this.read(id)
       .then(async (board) => {
         await prepare(board);
@@ -76,7 +98,7 @@ export class BoardCache {
       })
       .then(
         (board) => {
-          this.boards.set(id, board);
+          this.boards.set(id, { board, chunk });
           this.reading.delete(id);
           for (const listener of Array.from(this.listeners)) listener(id);
           return board;
@@ -198,7 +220,7 @@ export function showBoardwise(options: BoardwiseOptions): () => void {
     viewFailure = null;
     const wanted = visible.filter((id) => boardIds.has(id)).slice(0, MOST_IN_VIEW);
     for (const id of wanted) {
-      if (cache.get(id) || cache.hasFailed(id) || waiting.has(id)) continue;
+      if (!cache.needsRead(id) || cache.hasFailed(id) || waiting.has(id)) continue;
       // A read that another page of the version started is waited for, not counted again.
       if (!cache.isReading(id) && cache.busy >= READS_AT_ONCE) continue;
       waiting.add(id);
@@ -248,6 +270,7 @@ const MOST_SEARCHED = 120;
  * `pages` (an outline's pages) in order, a few at a time, until one holds it;
  * `null` when none of the first `MOST_SEARCHED` does. A page or a board of the
  * outline itself is found without a read. The boards read are in `cache`.
+ * `firstBoard`, a board the node is expected to be in, is read before the rest.
  */
 export async function findPageHolding(
   cache: BoardCache,
@@ -255,10 +278,12 @@ export async function findPageHolding(
   id: string,
   prepare: (board: Json) => Promise<unknown>,
   cancelled: () => boolean,
+  firstBoard?: string | null,
 ): Promise<Json | null> {
-  const boards = pages.flatMap((page) =>
+  const listed = pages.flatMap((page) =>
     (Array.isArray(page.children) ? (page.children as Json[]) : []).map((board) => ({ page, id: String(board.id) })),
   );
+  const boards = [...listed.filter((entry) => entry.id === firstBoard), ...listed.filter((entry) => entry.id !== firstBoard)];
   const own = pages.find((page) => page.id === id || (Array.isArray(page.children) && (page.children as Json[]).some((board) => board.id === id)));
   if (own) return own;
   const searched = boards.slice(0, MOST_SEARCHED);

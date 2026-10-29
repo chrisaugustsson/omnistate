@@ -1048,12 +1048,14 @@ pub async fn conclude_thread(
     let mut tx = state.workspace_tx(&workspace_id).await?;
     let thread = load_thread(&mut tx, &project_id, &thread_id, Some("FOR UPDATE")).await?;
     let conclusion = non_blank(new?.conclusion).ok_or_else(invalid)?;
-    sqlx::query("UPDATE threads SET conclusion = $2 WHERE id = $1::uuid")
-        .bind(&thread_id)
-        .bind(&conclusion)
-        .execute(&mut *tx)
-        .await
-        .map_err(ApiError::database)?;
+    sqlx::query(
+        "UPDATE threads SET conclusion = $2, concluded_at = clock_timestamp() WHERE id = $1::uuid",
+    )
+    .bind(&thread_id)
+    .bind(&conclusion)
+    .execute(&mut *tx)
+    .await
+    .map_err(ApiError::database)?;
     live::emit(
         &mut tx,
         &workspace_id,

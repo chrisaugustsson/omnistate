@@ -14,13 +14,16 @@
 // - from the page: `viewer.show` with the doc's `html`, the `pins`
 //   (`[{ node, count }]`), the `selected` node, the live `claims` and, for a
 //   change set's review, the `changes` (`[{ node, change }]`, `change` being
-//   `added`, `changed` or `removed`), which the frame marks block by block.
+//   `added`, `changed` or `removed`), which the frame marks block by block,
+//   and `reveal`, a node ID that the frame scrolls into view when it is not
+//   the one it revealed last. When the doc's `html` changes, the frame draws it
+//   again and puts the scroll position back where it was.
 export const FRAME_SCRIPT = String.raw`(function () {
   "use strict";
   var page = window.parent;
   var doc = document.getElementById("doc");
   var pinLayer = document.getElementById("pins");
-  var shown = { html: null, pins: [], selected: null, claims: [], changes: [] };
+  var shown = { html: null, pins: [], selected: null, claims: [], changes: [], revealed: null };
   var hovered = null;
   var drawn = {};
   var counter = 0;
@@ -161,14 +164,25 @@ export const FRAME_SCRIPT = String.raw`(function () {
     shown.claims = Array.isArray(message.claims) ? message.claims : [];
     shown.changes = Array.isArray(message.changes) ? message.changes : [];
     if (typeof message.html === "string" && message.html !== shown.html) {
+      var scrollX = window.scrollX;
+      var scrollY = window.scrollY;
       shown.html = message.html;
       doc.replaceChildren.apply(doc, Array.from(parse(message.html).childNodes));
       revive(doc);
       drawDiagrams();
       var again = hovered && find(hovered);
       if (again) again.classList.add("is-hover");
+      window.scrollTo(scrollX, scrollY);
     }
     markBlocks();
+    if (typeof message.reveal !== "string") shown.revealed = null;
+    else if (message.reveal !== shown.revealed) {
+      var target = find(message.reveal);
+      if (target) {
+        shown.revealed = message.reveal;
+        target.scrollIntoView({ block: "center" });
+      }
+    }
   }
 
   window.addEventListener("message", function (event) {

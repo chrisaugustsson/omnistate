@@ -15,6 +15,7 @@ import { Route as LoginRouteImport } from './routes/login'
 import { Route as WWorkspaceIdRouteImport } from './routes/w.$workspaceId'
 import { Route as WWorkspaceIdIndexRouteImport } from './routes/w.$workspaceId.index'
 import { Route as WWorkspaceIdProjectsProjectIdRouteImport } from './routes/w.$workspaceId.projects.$projectId'
+import { Route as WWorkspaceIdProjectsProjectIdAppRouteImport } from './routes/w.$workspaceId.projects.$projectId_.app'
 import { Route as WWorkspaceIdProjectsProjectIdInboxRouteImport } from './routes/w.$workspaceId.projects.$projectId_.inbox'
 import { Route as WWorkspaceIdProjectsProjectIdChangesetsIndexRouteImport } from './routes/w.$workspaceId.projects.$projectId_.changesets.index'
 import { Route as WWorkspaceIdProjectsProjectIdChangesetsChangesetIdRouteImport } from './routes/w.$workspaceId.projects.$projectId_.changesets.$changesetId'
@@ -56,6 +57,12 @@ const WWorkspaceIdProjectsProjectIdRoute =
   WWorkspaceIdProjectsProjectIdRouteImport.update({
     id: '/projects/$projectId',
     path: '/projects/$projectId',
+    getParentRoute: () => WWorkspaceIdRoute,
+  } as any)
+const WWorkspaceIdProjectsProjectIdAppRoute =
+  WWorkspaceIdProjectsProjectIdAppRouteImport.update({
+    id: '/projects/$projectId_/app',
+    path: '/projects/$projectId/app',
     getParentRoute: () => WWorkspaceIdRoute,
   } as any)
 const WWorkspaceIdProjectsProjectIdInboxRoute =
@@ -134,6 +141,7 @@ export interface FileRoutesByFullPath {
   '/w/$workspaceId': typeof WWorkspaceIdRouteWithChildren
   '/w/$workspaceId/': typeof WWorkspaceIdIndexRoute
   '/w/$workspaceId/projects/$projectId': typeof WWorkspaceIdProjectsProjectIdRoute
+  '/w/$workspaceId/projects/$projectId/app': typeof WWorkspaceIdProjectsProjectIdAppRoute
   '/w/$workspaceId/projects/$projectId/inbox': typeof WWorkspaceIdProjectsProjectIdInboxRoute
   '/w/$workspaceId/projects/$projectId/changesets/$changesetId': typeof WWorkspaceIdProjectsProjectIdChangesetsChangesetIdRoute
   '/w/$workspaceId/projects/$projectId/docs/$docId': typeof WWorkspaceIdProjectsProjectIdDocsDocIdRoute
@@ -152,6 +160,7 @@ export interface FileRoutesByTo {
   '/login': typeof LoginRoute
   '/w/$workspaceId': typeof WWorkspaceIdIndexRoute
   '/w/$workspaceId/projects/$projectId': typeof WWorkspaceIdProjectsProjectIdRoute
+  '/w/$workspaceId/projects/$projectId/app': typeof WWorkspaceIdProjectsProjectIdAppRoute
   '/w/$workspaceId/projects/$projectId/inbox': typeof WWorkspaceIdProjectsProjectIdInboxRoute
   '/w/$workspaceId/projects/$projectId/changesets/$changesetId': typeof WWorkspaceIdProjectsProjectIdChangesetsChangesetIdRoute
   '/w/$workspaceId/projects/$projectId/docs/$docId': typeof WWorkspaceIdProjectsProjectIdDocsDocIdRoute
@@ -172,6 +181,7 @@ export interface FileRoutesById {
   '/w/$workspaceId': typeof WWorkspaceIdRouteWithChildren
   '/w/$workspaceId/': typeof WWorkspaceIdIndexRoute
   '/w/$workspaceId/projects/$projectId': typeof WWorkspaceIdProjectsProjectIdRoute
+  '/w/$workspaceId/projects/$projectId_/app': typeof WWorkspaceIdProjectsProjectIdAppRoute
   '/w/$workspaceId/projects/$projectId_/inbox': typeof WWorkspaceIdProjectsProjectIdInboxRoute
   '/w/$workspaceId/projects/$projectId_/changesets/$changesetId': typeof WWorkspaceIdProjectsProjectIdChangesetsChangesetIdRoute
   '/w/$workspaceId/projects/$projectId_/docs/$docId': typeof WWorkspaceIdProjectsProjectIdDocsDocIdRoute
@@ -193,6 +203,7 @@ export interface FileRouteTypes {
     | '/w/$workspaceId'
     | '/w/$workspaceId/'
     | '/w/$workspaceId/projects/$projectId'
+    | '/w/$workspaceId/projects/$projectId/app'
     | '/w/$workspaceId/projects/$projectId/inbox'
     | '/w/$workspaceId/projects/$projectId/changesets/$changesetId'
     | '/w/$workspaceId/projects/$projectId/docs/$docId'
@@ -211,6 +222,7 @@ export interface FileRouteTypes {
     | '/login'
     | '/w/$workspaceId'
     | '/w/$workspaceId/projects/$projectId'
+    | '/w/$workspaceId/projects/$projectId/app'
     | '/w/$workspaceId/projects/$projectId/inbox'
     | '/w/$workspaceId/projects/$projectId/changesets/$changesetId'
     | '/w/$workspaceId/projects/$projectId/docs/$docId'
@@ -230,6 +242,7 @@ export interface FileRouteTypes {
     | '/w/$workspaceId'
     | '/w/$workspaceId/'
     | '/w/$workspaceId/projects/$projectId'
+    | '/w/$workspaceId/projects/$projectId_/app'
     | '/w/$workspaceId/projects/$projectId_/inbox'
     | '/w/$workspaceId/projects/$projectId_/changesets/$changesetId'
     | '/w/$workspaceId/projects/$projectId_/docs/$docId'
@@ -292,6 +305,13 @@ declare module '@tanstack/react-router' {
       path: '/projects/$projectId'
       fullPath: '/w/$workspaceId/projects/$projectId'
       preLoaderRoute: typeof WWorkspaceIdProjectsProjectIdRouteImport
+      parentRoute: typeof WWorkspaceIdRoute
+    }
+    '/w/$workspaceId/projects/$projectId_/app': {
+      id: '/w/$workspaceId/projects/$projectId_/app'
+      path: '/projects/$projectId/app'
+      fullPath: '/w/$workspaceId/projects/$projectId/app'
+      preLoaderRoute: typeof WWorkspaceIdProjectsProjectIdAppRouteImport
       parentRoute: typeof WWorkspaceIdRoute
     }
     '/w/$workspaceId/projects/$projectId_/inbox': {
@@ -377,6 +397,7 @@ declare module '@tanstack/react-router' {
 interface WWorkspaceIdRouteChildren {
   WWorkspaceIdIndexRoute: typeof WWorkspaceIdIndexRoute
   WWorkspaceIdProjectsProjectIdRoute: typeof WWorkspaceIdProjectsProjectIdRoute
+  WWorkspaceIdProjectsProjectIdAppRoute: typeof WWorkspaceIdProjectsProjectIdAppRoute
   WWorkspaceIdProjectsProjectIdInboxRoute: typeof WWorkspaceIdProjectsProjectIdInboxRoute
   WWorkspaceIdProjectsProjectIdChangesetsChangesetIdRoute: typeof WWorkspaceIdProjectsProjectIdChangesetsChangesetIdRoute
   WWorkspaceIdProjectsProjectIdDocsDocIdRoute: typeof WWorkspaceIdProjectsProjectIdDocsDocIdRoute
@@ -393,6 +414,7 @@ interface WWorkspaceIdRouteChildren {
 const WWorkspaceIdRouteChildren: WWorkspaceIdRouteChildren = {
   WWorkspaceIdIndexRoute: WWorkspaceIdIndexRoute,
   WWorkspaceIdProjectsProjectIdRoute: WWorkspaceIdProjectsProjectIdRoute,
+  WWorkspaceIdProjectsProjectIdAppRoute: WWorkspaceIdProjectsProjectIdAppRoute,
   WWorkspaceIdProjectsProjectIdInboxRoute:
     WWorkspaceIdProjectsProjectIdInboxRoute,
   WWorkspaceIdProjectsProjectIdChangesetsChangesetIdRoute:

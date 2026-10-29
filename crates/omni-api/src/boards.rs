@@ -32,6 +32,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use omni_core::design::tags;
 use omni_core::design::{Node, NodeId};
+use omni_core::hash::blake3_hex;
 use omni_core::ops::IndexedNode;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -43,6 +44,15 @@ use utoipa::ToSchema;
 const CONCURRENCY: usize = 16;
 
 // The manifest ---------------------------------------------------------------------------
+
+/// A board of a design's head and the chunk that holds it.
+#[derive(Serialize, ToSchema)]
+pub struct HeadBoard {
+    /// The board's node ID.
+    pub id: String,
+    /// The BLAKE3 hash of the board's bytes; it changes when the board does.
+    pub chunk: String,
+}
 
 /// A board of a page in a manifest.
 #[derive(Clone, Serialize, Deserialize, ToSchema)]
@@ -616,6 +626,42 @@ fn read_whole_pages(text: &str, what: &str) -> Result<Vec<Node>, ApiError> {
         .get("pages")
         .ok_or_else(|| unavailable(what, "it has no pages"))?;
     nodes_from(pages).map_err(|e| unavailable(what, e))
+}
+
+/// The boards of the design whose head is `chunk`, in page order, each with its
+/// chunk: only the manifest is read. A head in the older form, every page in
+/// the one chunk, has the hash of each board's JSON.
+pub(crate) async fn head_boards(
+    state: &AppState,
+    workspace_id: &str,
+    chunk: &str,
+) -> Result<Vec<HeadBoard>, ApiError> {
+    let what = format!("the chunk {chunk}");
+    let text = read_chunk(state, workspace_id, chunk).await?;
+    let Ok(manifest) = serde_json::from_str::<Manifest>(&text) else {
+        let pages = read_whole_pages(&text, &what)?;
+        return Ok(pages
+            .iter()
+            .flat_map(|page| page.children())
+            .map(|board| HeadBoard {
+                id: board.id().to_string(),
+                chunk: blake3_hex(
+                    serde_json::to_string(board)
+                        .expect("a node serializes to JSON")
+                        .as_bytes(),
+                ),
+            })
+            .collect());
+    };
+    Ok(manifest
+        .pages
+        .iter()
+        .flat_map(|page| &page.boards)
+        .map(|board| HeadBoard {
+            id: board.id.clone(),
+            chunk: board.chunk.clone(),
+        })
+        .collect())
 }
 
 /// A board of a saved version and the page that holds it: the manifest and the
