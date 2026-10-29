@@ -8,7 +8,7 @@
     "start": "node .output/server/index.mjs",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
-    "test": "vitest run",
+    "test": "NODE_OPTIONS=--max-old-space-size=1536 vitest run --maxWorkers=2",
     "generate": "node --experimental-strip-types --no-warnings scripts/generate-api.ts"
   },
   "dependencies": {
