@@ -8,6 +8,7 @@ pub mod paint;
 mod resolve;
 pub mod sandbox;
 pub mod select;
+pub mod snapshot;
 pub mod system;
 pub mod text;
 pub mod view;

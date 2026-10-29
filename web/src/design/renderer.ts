@@ -57,6 +57,14 @@ export type DesignRenderer = {
    */
   show(page: unknown, system: unknown): void;
   /**
+   * Shows the node in `tags` (one tag and its subtree, the form the API gives
+   * the snapshot of a comment) alone, fitted to the canvas, and draws it at
+   * once. A node that is not a board sits on a board of its own size, and the
+   * node's instances and token references resolve against no design system.
+   * Throws when the tags are not a node.
+   */
+  showTags(tags: string): void;
+  /**
    * The IDs of the shown page's boards that the current view shows, in page
    * order: the boards a viewer reads when they come into view. A page that was
    * just shown is drawn first, so that the answer is for its first view.
@@ -109,6 +117,7 @@ type OmniRender = {
   _omni_render_add_image(attachment: number, attachmentLength: number, data: number, dataLength: number): boolean;
   _omni_render_add_font(family: number, familyLength: number, data: number, dataLength: number): boolean;
   _omni_render_scene_load(pointer: number, length: number): boolean;
+  _omni_render_scene_load_tags(pointer: number, length: number): boolean;
   _omni_render_scene_set_system(pointer: number, length: number): boolean;
   _omni_render_scene_set_mode(pointer: number, length: number): boolean;
   _omni_render_inspect(pointer: number, length: number): number;
@@ -138,6 +147,7 @@ const FUNCTIONS: Record<Extract<keyof OmniRender, `_omni_render_${string}`>, tru
   _omni_render_add_image: true,
   _omni_render_add_font: true,
   _omni_render_scene_load: true,
+  _omni_render_scene_load_tags: true,
   _omni_render_scene_set_system: true,
   _omni_render_scene_set_mode: true,
   _omni_render_inspect: true,
@@ -424,6 +434,12 @@ export async function createDesignRenderer(canvas: HTMLCanvasElement): Promise<D
       }
       loaded = true;
       requestFrame();
+    },
+    showTags(tags) {
+      if (!withText(tags, (pointer, length) => module._omni_render_scene_load_tags(pointer, length))) throw failure();
+      loaded = true;
+      dirty = false;
+      drawFrame();
     },
     visibleBoards() {
       if (!loaded) return [];

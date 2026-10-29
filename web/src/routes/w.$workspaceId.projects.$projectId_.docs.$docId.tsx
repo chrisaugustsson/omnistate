@@ -1,14 +1,13 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import {
-  createDocComment,
   loadDoc,
   loadDocComments,
   loadHeadBoard,
   loadHeadHtml,
   loadHeadOutline,
 } from "@/api/docs";
-import type { CommentBody, DocBody } from "@/api/generated";
+import type { DocBody } from "@/api/generated";
 import {
   createDesignRenderer,
   type DesignRenderer,
@@ -18,18 +17,7 @@ import {
 } from "@/design/renderer";
 import { createAssetLoader } from "@/design/assets";
 import { BoardCache, findPageHolding, showBoardwise } from "@/design/boards";
-import {
-  FileText,
-  Files,
-  Layers as LayersIcon,
-  MessageSquare,
-  MousePointerClick,
-  PenTool,
-  Send,
-  SlidersHorizontal,
-} from "lucide-react";
-import { AgentChip } from "@/components/agent-chip";
-import { Button } from "@/components/ui/button";
+import { FileText, Files, Layers as LayersIcon, PenTool, SlidersHorizontal } from "lucide-react";
 import {
   FloatingAlert,
   FloatingAlerts,
@@ -39,8 +27,8 @@ import {
   ToolbarSelect,
   ViewerToolbar,
 } from "@/components/viewer/chrome";
+import { CommentsPanel } from "@/components/viewer/comments";
 import { LayerIcon, MonoValue, PropertyTable, TokenChip } from "@/components/viewer/design";
-import { timeAgo } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { useReloading, type Reloading } from "@/lib/reloading";
 import { useProjectEvents } from "@/live/context";
@@ -68,23 +56,23 @@ import { blockIds } from "@/viewer/html";
 // board that holds the selection (a design shows the page of that board) and
 // the selected node address. They are read when the doc opens, and kept up to
 // date with a history replace whenever the board or the selection changes.
+//
+// The `comment` search parameter opens a comment, as the Inbox links to it:
+// the comment's node is selected (a design shows its board, an HTML doc scrolls
+// to its block) and the comment is marked in the comments panel. A comment
+// whose node an agent removed opens in the panel with nothing selected, and a
+// comment that is not there (deleted, or of another doc) is left out.
 export const Route = createFileRoute("/w/$workspaceId/projects/$projectId_/docs/$docId")({
   component: DocPage,
-  validateSearch: (search: Record<string, unknown>): { board?: string; node?: string } => ({
+  validateSearch: (search: Record<string, unknown>): { board?: string; node?: string; comment?: string } => ({
     board: typeof search.board === "string" && search.board ? search.board : undefined,
     node: typeof search.node === "string" && search.node ? search.node : undefined,
+    comment: typeof search.comment === "string" && search.comment ? search.comment : undefined,
   }),
 });
 
-const TEXTAREA_CLASS =
-  "block min-h-20 w-full resize-none bg-transparent px-3 pt-2.5 pb-1 text-[13px] leading-relaxed outline-none placeholder:text-muted-foreground";
-
 /** No claims: a head has no drafts to hold them. */
 const NO_CLAIMS: never[] = [];
-
-function holderOfComment(author: Record<string, unknown>): string {
-  return author.kind === "human" ? "Reviewer" : `${String(author.run)}/${String(author.role)}`;
-}
 
 /** Where the address bar says the reviewer is in the doc. */
 type Place = { board?: string; node?: string };
@@ -101,9 +89,16 @@ function DocPage() {
   // Puts the place in the address bar, replacing the entry, so that it is always a link to where the reviewer is.
   const place = useCallback((next: Place) => {
     const { search: now, navigate: go } = current.current;
-    if (next.board === now.board && next.node === now.node) return;
+    if (next.board === now.board && next.node === now.node && now.comment === undefined) return;
     void go({ search: next, replace: true });
   }, []);
+  // The comment a link named, until the viewer has opened it: the address bar
+  // stops naming it as soon as the viewer puts the place there.
+  const [comment, setComment] = useState(search.comment);
+  useEffect(() => {
+    if (search.comment) setComment(search.comment);
+  }, [search.comment]);
+  const opened = useCallback(() => setComment(undefined), []);
   if (doc.value?.kind === "design") {
     return (
       <DesignViewer
@@ -113,6 +108,8 @@ function DocPage() {
         doc={doc}
         board={search.board}
         node={search.node}
+        comment={comment}
+        onOpened={opened}
         onPlace={place}
       />
     );
@@ -136,6 +133,8 @@ function DocPage() {
       docId={docId}
       doc={doc}
       node={search.node}
+      comment={comment}
+      onOpened={opened}
       onPlace={place}
     />
   );
@@ -147,6 +146,8 @@ function HtmlDocViewer({
   docId,
   doc,
   node,
+  comment,
+  onOpened,
   onPlace,
 }: {
   workspaceId: string;
@@ -154,6 +155,8 @@ function HtmlDocViewer({
   docId: string;
   doc: Reloading<DocBody>;
   node: string | undefined;
+  comment: string | undefined;
+  onOpened: () => void;
   onPlace: (place: Place) => void;
 }) {
   const head = useReloading(useCallback(() => loadHeadHtml(workspaceId, projectId, docId), [workspaceId, projectId, docId]));
@@ -167,6 +170,7 @@ function HtmlDocViewer({
   useEffect(() => {
     selectedRef.current = selected;
   });
+  const [openComment, setOpenComment] = useState<string | null>(null);
 
   // A link to another block of the doc selects that block and scrolls to it.
   useEffect(() => {
@@ -175,6 +179,19 @@ function HtmlDocViewer({
       setReveal(node);
     }
   }, [node]);
+
+  // A link to a comment scrolls to its block and selects it, once the comments are there to say which block it is on.
+  useEffect(() => {
+    if (!comment || !comments.value) return;
+    const found = comments.value.find((candidate) => candidate.id === comment);
+    onOpened();
+    if (!found) return;
+    setOpenComment(found.id);
+    if (!found.orphaned && found.node !== selectedRef.current) {
+      setSelected(found.node);
+      setReveal(found.node);
+    }
+  }, [comment, comments.value, onOpened]);
 
   const html = head.value;
   const present = useMemo(() => (html === null ? null : blockIds(html)), [html]);
@@ -191,9 +208,10 @@ function HtmlDocViewer({
   }, [selected, present, onPlace]);
 
   const commentsOnSelected = useMemo(
-    () => (comments.value ?? []).filter((comment) => comment.node === selected),
+    () => (comments.value ?? []).filter((on) => on.node === selected && !on.orphaned),
     [comments.value, selected],
   );
+  const removed = useMemo(() => (comments.value ?? []).filter((on) => on.orphaned), [comments.value]);
 
   useProjectEvents(projectId, (event) => {
     const { doc_id: eventDoc } = event.data;
@@ -207,8 +225,8 @@ function HtmlDocViewer({
   const pins = useMemo(() => {
     if (present === null) return [];
     const counts = new Map<string, number>();
-    for (const comment of comments.value ?? []) {
-      if (present.has(comment.node)) counts.set(comment.node, (counts.get(comment.node) ?? 0) + 1);
+    for (const on of comments.value ?? []) {
+      if (present.has(on.node)) counts.set(on.node, (counts.get(on.node) ?? 0) + 1);
     }
     return Array.from(counts, ([node, count]) => ({ node, count }));
   }, [present, comments.value]);
@@ -249,131 +267,17 @@ function HtmlDocViewer({
             workspaceId={workspaceId}
             projectId={projectId}
             docId={docId}
+            kind="html"
             selected={selected}
             comments={commentsOnSelected}
+            removed={removed}
+            open={openComment}
             noun="block"
-            onPosted={comments.reload}
+            onChanged={comments.reload}
           />
         </aside>
       </div>
     </main>
-  );
-}
-
-function CommentsPanel({
-  workspaceId,
-  projectId,
-  docId,
-  selected,
-  comments,
-  noun,
-  onPosted,
-}: {
-  workspaceId: string;
-  projectId: string;
-  docId: string;
-  selected: string | null;
-  comments: CommentBody[];
-  /** What a comment is on: a block of a doc, a node of a design. */
-  noun: string;
-  onPosted: () => void;
-}) {
-  const [text, setText] = useState("");
-  const [posting, setPosting] = useState(false);
-  const [failed, setFailed] = useState(false);
-
-  async function submit(event: FormEvent) {
-    event.preventDefault();
-    const said = text.trim();
-    if (!selected || !said || posting) return;
-    setPosting(true);
-    setFailed(false);
-    try {
-      await createDocComment(workspaceId, projectId, docId, { node: selected, text: said });
-      setText("");
-      onPosted();
-    } catch {
-      setFailed(true);
-    } finally {
-      setPosting(false);
-    }
-  }
-
-  return (
-    <PaneSection
-      id="comments"
-      title="Comments"
-      aside={
-        selected ? (
-          <span className="max-w-32 truncate font-mono text-[10.5px]" title={selected}>
-            {selected}
-          </span>
-        ) : undefined
-      }
-    >
-      {!selected && (
-        <PaneEmpty icon={<MousePointerClick />}>Select a {noun} to see its comments.</PaneEmpty>
-      )}
-      {selected && comments.length === 0 && (
-        <PaneEmpty icon={<MessageSquare />}>No comments on this {noun} yet.</PaneEmpty>
-      )}
-      <ul className="space-y-2 empty:hidden">
-        {comments.map((comment) => (
-          <li key={comment.id} className="space-y-2 rounded-lg border bg-card p-3 text-[13px]">
-            <div className="flex items-center justify-between gap-2">
-              <AgentChip name={holderOfComment(comment.author)} />
-              <div className="flex shrink-0 items-center gap-1.5">
-                <span className="text-[11px] text-muted-foreground">{timeAgo(comment.created_at)}</span>
-                {comment.waiting_on_you && (
-                  <span className="rounded-full bg-signal-soft px-1.5 text-[11px] font-medium">Waiting on you</span>
-                )}
-              </div>
-            </div>
-            <p className="leading-relaxed break-words whitespace-pre-wrap">{comment.text}</p>
-            {comment.replies.length > 0 && (
-              <ul className="space-y-2 border-l-2 pl-2.5">
-                {comment.replies.map((reply) => (
-                  <li key={reply.id} className="space-y-0.5">
-                    <AgentChip name={holderOfComment(reply.author)} />
-                    <p className="leading-relaxed break-words whitespace-pre-wrap text-muted-foreground">
-                      {reply.text}
-                    </p>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </li>
-        ))}
-      </ul>
-      {selected && (
-        <form
-          onSubmit={submit}
-          className="mt-3 overflow-hidden rounded-lg border bg-background shadow-xs transition-shadow focus-within:border-ring focus-within:ring-[3px] focus-within:ring-ring/20"
-        >
-          <label htmlFor="new-comment" className="sr-only">
-            Comment
-          </label>
-          <textarea
-            id="new-comment"
-            className={TEXTAREA_CLASS}
-            placeholder={`Comment on this ${noun}…`}
-            value={text}
-            onChange={(event) => setText(event.target.value)}
-          />
-          {failed && (
-            <p role="alert" className="px-3 pb-1 text-[12px] text-destructive">
-              The comment could not be saved.
-            </p>
-          )}
-          <div className="flex items-center justify-end gap-2 px-2 pb-2">
-            <Button type="submit" size="sm" className="h-7 gap-1.5 px-2.5 text-[12px]" disabled={posting || !text.trim()}>
-              <Send aria-hidden className="size-3" />
-              Comment
-            </Button>
-          </div>
-        </form>
-      )}
-    </PaneSection>
   );
 }
 
@@ -591,6 +495,8 @@ function DesignViewer({
   doc,
   board: boardParam,
   node,
+  comment,
+  onOpened,
   onPlace,
 }: {
   workspaceId: string;
@@ -599,6 +505,8 @@ function DesignViewer({
   doc: Reloading<DocBody>;
   board: string | undefined;
   node: string | undefined;
+  comment: string | undefined;
+  onOpened: () => void;
   onPlace: (place: Place) => void;
 }) {
   const outline = useReloading(
@@ -623,6 +531,7 @@ function DesignViewer({
   const [target, setTarget] = useState<string | null>(node ?? null);
   const [boardTarget, setBoardTarget] = useState<string | null>(boardParam ?? null);
   const boardHint = useRef<string | null>(boardParam ?? null);
+  const [openComment, setOpenComment] = useState<string | null>(null);
   const [chosenMode, setChosenMode] = useState<string | null>(null);
   // Counts the times the renderer drew a page or another mode, so that the inspect panel asks again.
   const [drawn, setDrawn] = useState(0);
@@ -752,6 +661,15 @@ function DesignViewer({
   useEffect(() => {
     if (node && node !== selectedRef.current) setTarget(node);
   }, [node]);
+  // A link to a comment: once the comments are there to say which node it is on, that node is the link's.
+  useEffect(() => {
+    if (!comment || !comments.value) return;
+    const found = comments.value.find((candidate) => candidate.id === comment);
+    onOpened();
+    if (!found) return;
+    setOpenComment(found.id);
+    if (!found.orphaned && found.node !== selectedRef.current) setTarget(found.node);
+  }, [comment, comments.value, onOpened]);
   // A link to a board shows the page that holds it; a board that is not there leaves the first page.
   useEffect(() => {
     if (!boardTarget || pages.length === 0) return;
@@ -851,16 +769,17 @@ function DesignViewer({
   }, [renderer, selected, drawn]);
 
   const commentsOnSelected = useMemo(
-    () => (comments.value ?? []).filter((comment) => comment.node === selected),
+    () => (comments.value ?? []).filter((on) => on.node === selected && !on.orphaned),
     [comments.value, selected],
   );
+  const removed = useMemo(() => (comments.value ?? []).filter((on) => on.orphaned), [comments.value]);
 
   // One pin on each node of the page shown that has comments.
   const pins = useMemo(() => {
     const names = new Map(rows.map(({ layer }) => [layer.address, layer.name]));
     const counts = new Map<string, number>();
-    for (const comment of comments.value ?? []) {
-      if (names.has(comment.node)) counts.set(comment.node, (counts.get(comment.node) ?? 0) + 1);
+    for (const on of comments.value ?? []) {
+      if (names.has(on.node)) counts.set(on.node, (counts.get(on.node) ?? 0) + 1);
     }
     return Array.from(counts, ([address, count]) => ({ address, count, name: names.get(address) ?? address }));
   }, [rows, comments.value]);
@@ -1005,10 +924,13 @@ function DesignViewer({
             workspaceId={workspaceId}
             projectId={projectId}
             docId={docId}
+            kind="design"
             selected={selected}
             comments={commentsOnSelected}
+            removed={removed}
+            open={openComment}
             noun="node"
-            onPosted={comments.reload}
+            onChanged={comments.reload}
           />
           <InspectPanel inspection={inspection} />
         </aside>

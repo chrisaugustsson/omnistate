@@ -2,21 +2,16 @@ import type { ReactNode } from "react";
 import { Link } from "@tanstack/react-router";
 import {
   ChevronRight,
-  CircleHelp,
   FileText,
   GitPullRequestArrow,
   Layers,
-  MessageSquareText,
   MessagesSquare,
   PenTool,
-  Scale,
   type LucideIcon,
 } from "lucide-react";
 import type { ChangesetBody, DocBody, HomeResponse, ThreadBody } from "@/api/generated";
-import { AgentChip } from "@/components/agent-chip";
-import { Eyebrow } from "@/components/page-header";
 import { StatusBadge } from "@/components/status-badge";
-import { authorName, timeAgo } from "@/lib/format";
+import { timeAgo } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
 // The rows that the project's pages list: docs, change sets, threads and what
@@ -93,10 +88,9 @@ export const PILLARS = [
   { pillar: "research", title: "Research", blurb: "What was learned along the way" },
 ];
 
-/** How many things wait for the reviewer. */
+/** How many things wait for the reviewer: the comments whose latest reply is an agent's, which are all the Inbox holds. */
 export function waitingCount(home: HomeResponse): number {
-  const { decisions, changesets, comments, questions } = home.waiting;
-  return decisions.length + changesets.length + comments.length + questions.length;
+  return home.waiting.comments.length;
 }
 
 /** A rounded list with hairline rules between its rows. */
@@ -182,135 +176,6 @@ const TONES = {
   violet: "bg-violet-50 text-violet-700 dark:bg-violet-400/10 dark:text-violet-300",
   plain: "bg-secondary text-muted-foreground ring-1 ring-border ring-inset",
 };
-
-type WaitingItem = { id: string; text: string; meta?: ReactNode; link: ReactNode };
-
-/** One kind of thing that waits for the reviewer: its title, icon and items. */
-export type WaitingGroup = {
-  kind: "decisions" | "changesets" | "comments" | "questions";
-  title: string;
-  icon: LucideIcon;
-  tone: string;
-  items: WaitingItem[];
-};
-
-/** What waits for the reviewer, by kind, each item linking to where it is decided. */
-export function waitingGroups(home: HomeResponse, params: ProjectParams, names?: FeatureNames): WaitingGroup[] {
-  const { decisions, changesets, comments, questions } = home.waiting;
-  const cover = "absolute inset-0 rounded-[inherit]";
-  const tagged = (item: Scoped, meta: ReactNode) => {
-    const tag = tagOf(item, names);
-    return tag ? (
-      <>
-        <FeatureTag name={tag} />
-        {meta}
-      </>
-    ) : (
-      meta
-    );
-  };
-  return [
-    {
-      kind: "decisions",
-      title: "Decisions to approve",
-      icon: Scale,
-      tone: TONES.signal,
-      items: decisions.map((d) => ({
-        id: d.id,
-        text: d.direction,
-        meta: tagged(d, <AgentChip name={authorName(d.author)} />),
-        link: (
-          <Link
-            to="/w/$workspaceId/projects/$projectId/threads/$threadId"
-            params={{ ...params, threadId: d.thread_id }}
-            aria-label="Open the decision"
-            className={cover}
-          />
-        ),
-      })),
-    },
-    {
-      kind: "changesets",
-      title: "Change sets in review",
-      icon: GitPullRequestArrow,
-      tone: TONES.amber,
-      items: changesets.map((c) => ({
-        id: c.id,
-        text: c.title,
-        meta: tagged(c, <span>{timeAgo(c.created_at)}</span>),
-        link: (
-          <Link
-            to="/w/$workspaceId/projects/$projectId/changesets/$changesetId"
-            params={{ ...params, changesetId: c.id }}
-            aria-label="Open the change set"
-            className={cover}
-          />
-        ),
-      })),
-    },
-    {
-      kind: "comments",
-      title: "Comments waiting on you",
-      icon: MessageSquareText,
-      tone: TONES.sky,
-      items: comments.map((c) => ({
-        id: c.id,
-        text: c.text,
-        meta: tagged(c, <span className="font-mono text-[11px]">{c.node}</span>),
-        link: (
-          <Link
-            to="/w/$workspaceId/projects/$projectId/docs/$docId"
-            params={{ ...params, docId: c.doc_id }}
-            aria-label="Open the comment"
-            className={cover}
-          />
-        ),
-      })),
-    },
-    {
-      kind: "questions",
-      title: "Questions from agents",
-      icon: CircleHelp,
-      tone: TONES.violet,
-      items: questions.map((q) => ({
-        id: q.id,
-        text: q.summary,
-        meta: tagged(q, <AgentChip name={authorName(q.author)} />),
-        link: (
-          <Link
-            to="/w/$workspaceId/projects/$projectId/threads/$threadId"
-            params={{ ...params, threadId: q.thread_id }}
-            aria-label="Answer the question"
-            className={cover}
-          />
-        ),
-      })),
-    },
-  ];
-}
-
-/** The items of one kind of waiting thing under its title; nothing when there are none. */
-export function WaitingList({ group, showTitle = true }: { group: WaitingGroup; showTitle?: boolean }) {
-  if (!group.items.length) return null;
-  return (
-    <div className="space-y-2">
-      {showTitle && <Eyebrow>{group.title}</Eyebrow>}
-      <List>
-        {group.items.map((item) => (
-          <li key={item.id} className={cn(rowClass, "relative items-start")}>
-            <Glyph icon={group.icon} tone={group.tone} />
-            <div className="min-w-0 flex-1 space-y-1">
-              <div className="leading-snug font-medium text-foreground">{item.text}</div>
-              {item.meta && <div className="flex items-center gap-2 text-xs text-muted-foreground">{item.meta}</div>}
-            </div>
-            <Chevron className="mt-2" />
-            {item.link}
-          </li>
-        ))}
-      </List>
-    </div>
-  );
-}
 
 /** Whether a doc is drawn on a canvas: a design doc or the design system, not a written doc. */
 export function isDesign(doc: DocBody): boolean {

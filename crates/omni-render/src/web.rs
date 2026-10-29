@@ -17,6 +17,7 @@ use crate::nesting::{self, MAX_NESTING};
 use crate::paint::{self, Assets};
 use crate::sandbox::{self, SandboxScene};
 use crate::select::{Event, Layer, Modifiers, NodeAddress, Outline, OutlineKind};
+use crate::snapshot;
 use crate::system::{DesignSystem, Missing};
 use crate::view::{Controls, Detail, FrameStats, Scene, Viewport};
 use serde_json::{Value, json};
@@ -104,6 +105,16 @@ pub fn draw_design(
 /// as JSON (see [`sandbox::layout_json`]).
 pub fn layout_design(design_json: &str) -> Result<String, String> {
     ASSETS.with_borrow(|assets| sandbox::layout_json(design_json, assets.fonts()))
+}
+
+/// Loads the node in `tags` (one tag and its subtree, the form the API gives
+/// the snapshot of a comment) as a scene of its own, as [`scene_load`] loads a
+/// page; see [`snapshot::page_of_tags`].
+pub fn scene_load_tags(tags: &str) -> Result<(), String> {
+    let page = snapshot::page_of_tags(tags)?;
+    // Every snapshot is on the same page, whose view is fitted afresh.
+    STAGE.set(None);
+    scene_load(&page)
 }
 
 /// Loads `design_json`, a page, into the scene that `scene_draw` draws, with

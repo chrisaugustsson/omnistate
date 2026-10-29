@@ -175,6 +175,20 @@ mod exports {
         succeeded(result)
     }
 
+    /// Loads the node in the tags (one tag and its subtree) as a scene of its
+    /// own, as `omni_render_scene_load` loads a page. A node that is not a
+    /// board is shown on a board of its own size. Returns whether the tags
+    /// were a node.
+    ///
+    /// # Safety
+    /// The pointer and length must be a block from `omni_render_alloc`.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn omni_render_scene_load_tags(tags: *const u8, tags_len: usize) -> bool {
+        // SAFETY: the caller promises the block is there.
+        let result = unsafe { text(tags, tags_len) }.and_then(omni_render::web::scene_load_tags);
+        succeeded(result)
+    }
+
     /// Reads the design system version, JSON in the format of
     /// `omni_render::system::DesignSystem::from_json` (a DTCG token tree with
     /// the components under `$components`), and makes the loaded scene and

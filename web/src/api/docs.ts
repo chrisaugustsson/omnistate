@@ -22,6 +22,7 @@ const changesets = operations["GET /api/v1/w/{workspace_id}/projects/{project_id
 const comments = operations["GET /api/v1/w/{workspace_id}/projects/{project_id}/comments"];
 const comment = operations["POST /api/v1/w/{workspace_id}/projects/{project_id}/versions/{version_id}/comments"];
 const headComment = operations["POST /api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}/comments"];
+const reply = operations["POST /api/v1/w/{workspace_id}/projects/{project_id}/comments/{comment_id}/replies"];
 
 /** A doc with its drafts and live claims. */
 export async function loadDoc(workspaceId: string, projectId: string, docId: string): Promise<DocBody> {
@@ -163,7 +164,7 @@ export async function loadChangesets(workspaceId: string, projectId: string): Pr
   return loaded.changesets;
 }
 
-/** The comments on every version of a doc. */
+/** The comments on a doc, those whose element an agent removed too. */
 export async function loadDocComments(workspaceId: string, projectId: string, docId: string): Promise<CommentBody[]> {
   const loaded = await callApi("GET", `${base(workspaceId, projectId)}/comments?doc=${encodeURIComponent(docId)}`, {
     response: comments.responses["200"],
@@ -197,6 +198,25 @@ export async function createDocComment(
     response: headComment.responses["201"],
   });
   return created.comment;
+}
+
+/** Replies to a comment; the comment's replies, the new one last, come back with it. */
+export async function replyToComment(
+  workspaceId: string,
+  projectId: string,
+  commentId: string,
+  text: string,
+): Promise<CommentBody> {
+  const replied = await callApi("POST", `${base(workspaceId, projectId)}/comments/${commentId}/replies`, {
+    body: { text },
+    response: reply.responses["201"],
+  });
+  return replied.comment;
+}
+
+/** Deletes a comment, with its replies; only the human can. */
+export async function deleteComment(workspaceId: string, projectId: string, commentId: string): Promise<void> {
+  await callApi("DELETE", `${base(workspaceId, projectId)}/comments/${commentId}`);
 }
 
 /** The holder of a claim as `<run>/<role>`. */
