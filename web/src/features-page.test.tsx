@@ -200,7 +200,7 @@ describe("the Features page", () => {
     expect(within(main()).getByText("2 of 5")).toBeTruthy();
 
     filter("  WALLETS a");
-    expect(within(main()).queryByRole("list")).toBeNull();
+    expect(within(main()).queryAllByRole("link")).toEqual([]);
     expect(within(main()).getByText("0 of 5")).toBeTruthy();
 
     filter("");
