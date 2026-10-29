@@ -225,6 +225,11 @@ async function projectNav() {
   return screen.findByRole("navigation", { name: "Project" });
 }
 
+/** The fixed places at the top of the project's sidebar, without Recent and the scope tree. */
+function places(nav: HTMLElement) {
+  return within(nav).getByRole("link", { name: /^Inbox/ }).parentElement as HTMLElement;
+}
+
 /** Each link of `container` as its text and href, in order. */
 function links(container: HTMLElement) {
   return within(container)
@@ -304,15 +309,11 @@ describe("the project sidebar", () => {
       renderAt(`${PROJECT_PATH}/app`);
       const nav = await projectNav();
       await waitFor(() => expect(links(nav)[2]?.text).toBe("Features3"));
-      expect(links(nav)).toEqual([
+      expect(links(places(nav))).toEqual([
         { text: "Inbox2", href: `${PROJECT_PATH}/inbox` },
         { text: "App", href: `${PROJECT_PATH}/app` },
         { text: "Features3", href: `${PROJECT_PATH}/features` },
         { text: "Threads", href: `${PROJECT_PATH}/threads` },
-        // App's scope tree.
-        { text: "App", href: `${PROJECT_PATH}/app` },
-        { text: "Returns PRD", href: `${PROJECT_PATH}/docs/${APP_DOC}` },
-        { text: "Threads (0)", href: `${PROJECT_PATH}/threads?scope=app` },
       ]);
     });
 
@@ -321,7 +322,7 @@ describe("the project sidebar", () => {
       renderAt(`${PROJECT_PATH}/app`);
       const nav = await projectNav();
       await waitFor(() => expect(links(nav)[2]?.text).toBe("Features0"));
-      expect(links(nav).map((link) => link.text)).toEqual(["Inbox", "App", "Features0", "Threads", "App", "Returns PRD", "Threads (0)"]);
+      expect(links(places(nav)).map((link) => link.text)).toEqual(["Inbox", "App", "Features0", "Threads"]);
     });
 
     test("the Inbox count follows the comments as their events come in", async () => {

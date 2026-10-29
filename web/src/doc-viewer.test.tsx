@@ -647,14 +647,17 @@ describe("the doc viewer", () => {
   });
 
   test("when an agent deletes another doc, the open doc stays shown", async () => {
-    fakeApi();
+    const api = fakeApi();
     renderAt(DOC_PATH);
     const frame = await findFrame();
     const socket = await openSocket();
     await shown((s) => expect(s.html).toBe(HEAD_HTML));
 
     socket.receive(event(41, "doc.deleted", { doc_id: "0192d7a0-5555-7000-8000-000000000009" }));
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    const changed = HEAD_HTML.replace("Refunds take a week.", "Refunds take five days.");
+    api.head = changed;
+    socket.receive(event(42, "doc.changed", { doc_id: DOC_ID, agent: WRITER }));
+    await shown((s) => expect(s.html).toBe(changed));
     expect(document.querySelector("iframe")).toBe(frame);
     expect(screen.getByRole("heading", { name: DOC_TITLE })).toBeTruthy();
     expect(screen.queryByText("The doc could not be loaded. Try again in a moment.")).toBeNull();
