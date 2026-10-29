@@ -5,11 +5,10 @@ import {
   FileText,
   GitPullRequestArrow,
   Layers,
-  MessagesSquare,
   PenTool,
   type LucideIcon,
 } from "lucide-react";
-import type { ChangesetBody, DocBody, HomeResponse, ThreadBody } from "@/api/generated";
+import type { ChangesetBody, DocBody, HomeResponse } from "@/api/generated";
 import { StatusBadge } from "@/components/status-badge";
 import { timeAgo } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -268,59 +267,6 @@ export function ChangesetRow({
         </span>{" "}
         {tag && <FeatureTag name={tag} />}
         <StatusBadge status={changeset.status} />
-      </Link>
-    </li>
-  );
-}
-
-/** The decision status of a thread, when it has a decision. */
-function decisionStatus(thread: ThreadBody): string | undefined {
-  const status = thread.decision?.status;
-  return typeof status === "string" ? status : undefined;
-}
-
-/** A thread's row: its question, its current phase and, when asked, its decision's status. */
-export function ThreadRow({
-  thread,
-  params,
-  detailed,
-  names,
-}: {
-  thread: ThreadBody;
-  params: ProjectParams;
-  detailed?: boolean;
-  /** The project's features: given, a thread of a feature carries the feature's name. */
-  names?: FeatureNames;
-}) {
-  const phase = thread.phases?.at(-1);
-  const tag = tagOf(thread, names);
-  const decided = detailed ? decisionStatus(thread) : undefined;
-  return (
-    <li>
-      <Link
-        to="/w/$workspaceId/projects/$projectId/threads/$threadId"
-        params={{ ...params, threadId: thread.id }}
-        aria-label={thread.question}
-        className={cn(rowClass, "items-start")}
-      >
-        <MessagesSquare className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
-        <span className="min-w-0 flex-1 space-y-1">
-          <span className="block leading-snug font-medium">{thread.question}</span>
-          <span className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-            {tag && <FeatureTag name={tag} />}
-            {phase && (
-              <span>
-                Phase {phase.number}
-                {phase.sealed ? " · sealed" : ""}
-              </span>
-            )}
-            {!phase && thread.sealed && <span>Sealed</span>}
-            {detailed && thread.criteria && <span>· {thread.criteria.length} criteria</span>}
-            {detailed && <span>· started {timeAgo(thread.created_at)}</span>}
-            {thread.run_tag && <span className="font-mono text-[11px]">{detailed && "· "}{thread.run_tag}</span>}
-          </span>
-        </span>
-        {decided && <StatusBadge status={decided} />}
       </Link>
     </li>
   );

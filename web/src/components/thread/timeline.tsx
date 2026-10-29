@@ -1,35 +1,9 @@
 import { Link } from "@tanstack/react-router";
-import { CornerDownRight, Crosshair, Link2, Lock, Paperclip, Reply } from "lucide-react";
-import type { PhaseBody, PostBody, ThreadBody } from "@/api/generated";
+import { Crosshair, Link2, Paperclip } from "lucide-react";
+import type { PostBody } from "@/api/generated";
 import { AgentAvatar } from "@/components/agent-chip";
-import { Badge } from "@/components/ui/badge";
-import { authorName, timeAgo } from "@/lib/format";
+import { timeAgo } from "@/lib/format";
 import { cn } from "@/lib/utils";
-
-type Variant = "default" | "secondary" | "outline" | "amber" | "green" | "violet" | "blue" | "red";
-
-/** The colour of each post type. A directive is the human's, in ink. */
-const TYPE_VARIANTS: Record<string, Variant> = {
-  directive: "default",
-  note: "outline",
-  finding: "blue",
-  position: "secondary",
-  proposal: "secondary",
-  objection: "red",
-  support: "green",
-  question: "amber",
-  verdict: "violet",
-};
-
-/** A post's type as a small coloured pill; a post of a thread without a change set has none. */
-export function PostTypeBadge({ type }: { type?: string | null }) {
-  if (!type) return null;
-  return (
-    <Badge variant={TYPE_VARIANTS[type] ?? "outline"} className="px-1.5 py-0 text-[11px] leading-[18px]">
-      {type}
-    </Badge>
-  );
-}
 
 /** Styles for a post's body, Markdown the API has rendered to safe HTML. */
 const PROSE =
@@ -38,93 +12,33 @@ const PROSE =
 const CHIP =
   "inline-flex max-w-full items-center gap-1 rounded-md bg-secondary px-1.5 py-0.5 text-[11px] text-muted-foreground ring-1 ring-border ring-inset";
 
-/** The posts grouped by phase, each phase a section with its posts as a timeline. */
-export function Phases({
+/** Who wrote a post: "You" for the human, otherwise the agent's role and model. */
+export function postAuthor(author: Record<string, unknown>): { name: string; label: string } {
+  if (author.kind === "human") return { name: "You", label: "You" };
+  const role = typeof author.role === "string" && author.role ? author.role : "agent";
+  const model = typeof author.model === "string" && author.model ? author.model : null;
+  return { name: role, label: model ? `${role} · ${model}` : role };
+}
+
+/** The thread's posts, oldest first; the one named by `highlighted` stands out. */
+export function Posts({
   workspaceId,
   projectId,
-  thread,
-  summariesOnly,
-  onReply,
+  posts,
+  highlighted,
 }: {
   workspaceId: string;
   projectId: string;
-  thread: ThreadBody;
-  summariesOnly: boolean;
-  onReply: (post: PostBody) => void;
+  posts: PostBody[];
+  highlighted: string | null;
 }) {
-  const posts = thread.posts ?? [];
-  const phases = thread.phases ?? [];
-  const list = (inList: PostBody[]) => (
+  if (posts.length === 0) return <p className="text-sm text-muted-foreground">No posts yet.</p>;
+  return (
     <ol className="relative before:absolute before:top-3 before:bottom-3 before:left-[13px] before:w-px before:bg-border">
-      {inList.map((post) => (
-        <PostItem
-          key={post.id}
-          workspaceId={workspaceId}
-          projectId={projectId}
-          post={post}
-          posts={posts}
-          summariesOnly={summariesOnly}
-          onReply={onReply}
-        />
+      {posts.map((post) => (
+        <PostItem key={post.id} workspaceId={workspaceId} projectId={projectId} post={post} highlighted={post.id === highlighted} />
       ))}
     </ol>
-  );
-  // A thread without a change set has no phases: its posts are one timeline.
-  if (phases.length === 0) {
-    return posts.length === 0 ? (
-      <p className="text-sm text-muted-foreground">No posts yet.</p>
-    ) : (
-      list(posts)
-    );
-  }
-  return (
-    <div className="space-y-10">
-      {phases.map((phase) => {
-        const inPhase = posts.filter((post) => post.phase === phase.number);
-        return (
-          <section key={phase.number} aria-labelledby={`phase-${phase.number}`} className="space-y-4">
-            <PhaseHeader phase={phase} count={inPhase.length} />
-            {inPhase.length === 0 ? (
-              <p className="pl-10 text-sm text-muted-foreground">No posts in this phase yet.</p>
-            ) : (
-              list(inPhase)
-            )}
-          </section>
-        );
-      })}
-    </div>
-  );
-}
-
-function PhaseHeader({ phase, count }: { phase: PhaseBody; count: number }) {
-  const posters = phase.posted_by.map((poster) => poster.role ?? poster.run ?? "agent");
-  return (
-    <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b pb-3">
-      <h2 id={`phase-${phase.number}`} className="text-[15px] font-semibold tracking-tight">
-        Phase {phase.number}
-      </h2>
-      {phase.sealed && (
-        <Badge variant="violet" className="px-1.5 py-0 text-[11px] leading-[18px]">
-          <Lock />
-          Sealed
-        </Badge>
-      )}
-      <span className="text-xs text-muted-foreground tabular-nums">
-        {count} {count === 1 ? "post" : "posts"} · {timeAgo(phase.started_at)}
-      </span>
-      {posters.length > 0 && (
-        <span className="ml-auto flex items-center" title={`Posted by ${posters.join(", ")}`}>
-          <span className="sr-only">Posted by {posters.join(", ")}</span>
-          {posters.map((name, index) => (
-            <AgentAvatar
-              key={`${name}-${index}`}
-              name={name}
-              className={cn("size-6 text-[9px] ring-2 ring-background", index > 0 && "-ml-1.5")}
-            />
-          ))}
-        </span>
-      )}
-    </div>
   );
 }
 
@@ -132,65 +46,47 @@ function PostItem({
   workspaceId,
   projectId,
   post,
-  posts,
-  summariesOnly,
-  onReply,
+  highlighted,
 }: {
   workspaceId: string;
   projectId: string;
   post: PostBody;
-  posts: PostBody[];
-  summariesOnly: boolean;
-  onReply: (post: PostBody) => void;
+  highlighted: boolean;
 }) {
-  const author = authorName(post.author);
+  const { name, label } = postAuthor(post.author);
   const human = post.author.kind === "human";
-  const repliesTo = post.links.flatMap((link) =>
-    link.kind === "post" && typeof link.post_id === "string"
-      ? posts.filter((other) => other.id === link.post_id)
-      : [],
-  );
   return (
-    <li className="group relative flex gap-3 pb-6 last:pb-0">
+    <li id={`post-${post.id}`} className="relative flex scroll-mt-6 gap-3 pb-6 last:pb-0">
       <AgentAvatar
-        name={author}
+        name={name}
         className={cn(
           "relative z-10 size-7 text-[10px] ring-4 ring-background",
           human && "bg-signal! text-signal-foreground!",
         )}
       />
-      <div className={cn("min-w-0 flex-1 rounded-lg", human && "-mt-1.5 bg-signal-soft/60 px-3 py-2 ring-1 ring-signal/10 ring-inset")}>
+      <div
+        className={cn(
+          "min-w-0 flex-1 rounded-lg",
+          human && "-mt-1.5 bg-signal-soft/60 px-3 py-2 ring-1 ring-signal/10 ring-inset",
+          highlighted && "bg-accent/70 px-3 py-2 ring-2 ring-signal/40",
+        )}
+        data-highlighted={highlighted || undefined}
+      >
         <div className="flex min-h-7 flex-wrap items-center gap-x-2 gap-y-1">
           <span className={cn("font-mono text-[12px]", human ? "font-medium text-foreground" : "text-foreground/80")}>
-            {author}
+            {label}
           </span>
-          <PostTypeBadge type={post.type} />
-          {typeof post.confidence === "number" && (
-            <span className="text-[11px] text-muted-foreground tabular-nums" title="How sure the agent is">
-              {Math.round(post.confidence * 100)}% sure
-            </span>
-          )}
-          <span className="text-[11px] text-muted-foreground">{timeAgo(post.created_at)}</span>
-          <button
-            type="button"
-            onClick={() => onReply(post)}
-            className="ml-auto inline-flex h-6 items-center gap-1 rounded-md px-1.5 text-[12px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:outline-none"
+          <time
+            dateTime={post.created_at}
+            title={new Date(post.created_at).toLocaleString()}
+            className="text-[11px] text-muted-foreground"
           >
-            <Reply className="size-3.5" />
-            Reply
-          </button>
+            {timeAgo(post.created_at)}
+          </time>
         </div>
-        {repliesTo.map((other) => (
-          <p key={other.id} className="mt-0.5 flex min-w-0 items-center gap-1 text-[12px] text-muted-foreground">
-            <CornerDownRight className="size-3 shrink-0" />
-            <span className="truncate">{`In reply to ${authorName(other.author)}: ${other.summary}`}</span>
-          </p>
-        ))}
-        <p className="mt-1 text-[14px] leading-snug font-medium text-foreground">{post.summary}</p>
-        {!summariesOnly && (
-          // The API has already made the body safe: Markdown without raw HTML.
-          <div className={cn("mt-1.5", PROSE)} dangerouslySetInnerHTML={{ __html: post.body_html }} />
-        )}
+        <h3 className="mt-1 text-[14px] leading-snug font-medium text-foreground">{post.summary}</h3>
+        {/* The API has already made the body safe: Markdown without raw HTML. */}
+        <div className={cn("mt-1.5", PROSE)} dangerouslySetInnerHTML={{ __html: post.body_html }} />
         <PostRefs workspaceId={workspaceId} projectId={projectId} post={post} />
       </div>
     </li>

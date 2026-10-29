@@ -33,7 +33,7 @@ function inOrder(docs: HomeDoc[]): HomeDoc[] {
 }
 
 /** When the thread was last written to: its newest post, or its start while it has none. */
-function threadTime(thread: HomeThread): string {
+export function threadTime(thread: HomeThread): string {
   return thread.last_post_at ?? thread.created_at;
 }
 
@@ -73,7 +73,8 @@ function DocRow({ doc, params }: { doc: HomeDoc; params: Params }) {
   );
 }
 
-function ThreadRow({ thread, params }: { thread: HomeThread; params: Params }) {
+/** A thread's row; `scopeName` adds the scope that the thread belongs to, for lists that mix scopes. */
+export function ThreadRow({ thread, params, scopeName }: { thread: HomeThread; params: Params; scopeName?: string }) {
   const flag = flagOf(thread);
   const posts = thread.post_count ?? 0;
   return (
@@ -84,6 +85,9 @@ function ThreadRow({ thread, params }: { thread: HomeThread; params: Params }) {
         className={rowClass}
       >
         <span className="min-w-0 flex-1 truncate font-medium">{thread.question}</span>
+        {scopeName && (
+          <span className="hidden max-w-40 shrink-0 truncate text-xs text-muted-foreground sm:inline">{scopeName}</span>
+        )}
         <span className="hidden w-20 shrink-0 text-xs text-muted-foreground sm:inline">
           {posts} {posts === 1 ? "post" : "posts"}
         </span>

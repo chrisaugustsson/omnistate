@@ -117,7 +117,7 @@ function DocPage() {
   if (!doc.value) {
     return (
       <main className="flex min-h-full flex-col">
-        <ViewerToolbar workspaceId={workspaceId} projectId={projectId} doc={null} />
+        <ViewerToolbar workspaceId={workspaceId} projectId={projectId} doc={null} docId={docId} />
         <div className="relative flex-1 bg-canvas">
           <FloatingAlerts>
             {doc.failed && <FloatingAlert>The doc could not be loaded. Try again in a moment.</FloatingAlert>}
@@ -233,7 +233,7 @@ function HtmlDocViewer({
 
   return (
     <main className="flex min-h-full flex-col lg:h-full lg:min-h-[560px]">
-      <ViewerToolbar workspaceId={workspaceId} projectId={projectId} doc={doc.value} icon={<FileText />} />
+      <ViewerToolbar workspaceId={workspaceId} projectId={projectId} doc={doc.value} icon={<FileText />} docId={docId} />
       <div className="flex min-h-0 flex-1 flex-col lg:grid lg:grid-cols-[minmax(0,1fr)_20rem]">
         <div className="relative flex min-h-0 flex-col bg-canvas px-3 py-4 sm:px-6 sm:py-6 lg:px-8">
           <FloatingAlerts>
@@ -791,6 +791,7 @@ function DesignViewer({
         projectId={projectId}
         doc={doc.value}
         icon={<PenTool />}
+        docId={docId}
       >
         {doc.value && mode !== null && (
           <ToolbarSelect

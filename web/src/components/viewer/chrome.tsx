@@ -23,6 +23,8 @@ export function ViewerToolbar({
   projectId,
   doc,
   icon,
+  docId,
+  view = "doc",
   children,
 }: {
   workspaceId: string;
@@ -30,6 +32,9 @@ export function ViewerToolbar({
   /** The doc; `null` while it loads. */
   doc: CrumbedDoc | null;
   icon?: ReactNode;
+  /** The doc's ID; given, the bar has the doc's Doc and Activity tabs, `view` being the open one. */
+  docId?: string;
+  view?: "doc" | "activity";
   /** The controls on the right. */
   children?: ReactNode;
 }) {
@@ -75,6 +80,29 @@ export function ViewerToolbar({
           </ol>
         )}
       </nav>
+      {docId && (
+        <nav aria-label="Doc views" className="flex items-center gap-1 text-[13px] font-medium">
+          {(
+            [
+              ["doc", "Doc", "/w/$workspaceId/projects/$projectId/docs/$docId"],
+              ["activity", "Activity", "/w/$workspaceId/projects/$projectId/docs/$docId/activity"],
+            ] as const
+          ).map(([tab, label, to]) => (
+            <Link
+              key={tab}
+              to={to}
+              params={{ workspaceId, projectId, docId }}
+              aria-current={view === tab ? "page" : undefined}
+              className={cn(
+                "rounded-md px-2.5 py-1 transition-colors hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-none",
+                view === tab ? "bg-accent text-foreground" : "text-muted-foreground",
+              )}
+            >
+              {label}
+            </Link>
+          ))}
+        </nav>
+      )}
       {children && <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:flex-nowrap">{children}</div>}
     </header>
   );
