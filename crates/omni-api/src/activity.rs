@@ -160,12 +160,17 @@ impl Change {
         }
     }
 
+    /// A doc's creation, rename and deletion are each logged as one operation
+    /// without a `node`; a node `delete` names its node and is an edit.
     fn kind(&self) -> &'static str {
         let operations = self.operations();
-        match operations
-            .first()
-            .and_then(|operation| operation["op"].as_str())
-        {
+        let Some(first) = operations.first() else {
+            return "edit";
+        };
+        if first.get("node").is_some() {
+            return "edit";
+        }
+        match first["op"].as_str() {
             Some("create") => "create",
             Some("rename") => "rename",
             Some("delete") => "delete",
@@ -295,39 +300,54 @@ fn design_summary(boards: &[Value]) -> String {
 struct SystemContent {
     components: Vec<(String, Value)>,
     tokens: BTreeMap<Vec<String>, Value>,
+    /// The `$` properties of each group (such as its `$type`) by its path.
+    groups: BTreeMap<Vec<String>, Map<String, Value>>,
 }
 
-fn collect_tokens(
-    path: &mut Vec<String>,
-    group: &Map<String, Value>,
-    out: &mut BTreeMap<Vec<String>, Value>,
-) {
+fn collect_tokens(path: &mut Vec<String>, group: &Map<String, Value>, content: &mut SystemContent) {
     for (name, child) in group {
         let Some(object) = child.as_object().filter(|_| !name.starts_with('$')) else {
             continue;
         };
         path.push(name.clone());
         if object.contains_key("$value") {
-            out.insert(path.clone(), child.clone());
+            content.tokens.insert(path.clone(), child.clone());
         } else {
-            collect_tokens(path, object, out);
+            let properties: Map<String, Value> = object
+                .iter()
+                .filter(|(key, _)| key.starts_with('$'))
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect();
+            content.groups.insert(path.clone(), properties);
+            collect_tokens(path, object, content);
         }
         path.pop();
     }
 }
 
-/// The tokens as a DTCG tree that holds only them, in their groups.
-fn token_tree<'a>(tokens: impl IntoIterator<Item = (&'a Vec<String>, &'a Value)>) -> Value {
+/// The tokens as a DTCG tree that holds only them, in their groups, each group
+/// with its `$` properties as `groups` holds them.
+fn token_tree<'a>(
+    tokens: impl IntoIterator<Item = (&'a Vec<String>, &'a Value)>,
+    groups: &BTreeMap<Vec<String>, Map<String, Value>>,
+) -> Value {
     let mut root = Map::new();
     for (path, token) in tokens {
-        let Some((name, groups)) = path.split_last() else {
+        let Some((name, path_groups)) = path.split_last() else {
             continue;
         };
         let mut level = &mut root;
-        for group in groups {
+        for (depth, group) in path_groups.iter().enumerate() {
             level = level
                 .entry(group.clone())
-                .or_insert_with(|| Value::Object(Map::new()))
+                .or_insert_with(|| {
+                    Value::Object(
+                        groups
+                            .get(&path_groups[..=depth])
+                            .cloned()
+                            .unwrap_or_default(),
+                    )
+                })
                 .as_object_mut()
                 .expect("a group is an object");
         }
@@ -344,7 +364,7 @@ impl SystemContent {
         if let Some(tree) = tokens
             && let Value::Object(root) = tree.to_json()
         {
-            collect_tokens(&mut Vec::new(), &root, &mut content.tokens);
+            collect_tokens(&mut Vec::new(), &root, &mut content);
         }
         content.components = components
             .iter()
@@ -412,8 +432,8 @@ fn diff_systems(before: &SystemContent, after: &SystemContent) -> SystemDiff {
     SystemDiff {
         components,
         tokens,
-        before: token_tree(was_tokens),
-        after: token_tree(is_tokens),
+        before: token_tree(was_tokens, &before.groups),
+        after: token_tree(is_tokens, &after.groups),
     }
 }
 
@@ -772,7 +792,7 @@ pub async fn show_activity(
                     after_at: creation.then_some(seq),
                 })
                 .collect();
-            let full = Some(token_tree(content.tokens.iter()));
+            let full = Some(token_tree(content.tokens.iter(), &content.groups));
             detail.tokens = Some(if creation {
                 TokensChange {
                     before: None,
