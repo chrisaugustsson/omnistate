@@ -81,6 +81,8 @@ const fake = vi.hoisted(() => {
     layersByPage: new Map<string, FakeLayer[]>(),
     /** The page boxes of each page's nodes, by the page's ID and the node's address. */
     boxesByPage: new Map<string, Map<string, FakeBox>>(),
+    /** The tags of the snapshots the renderer was asked to draw (`showTags`). */
+    tagsShown: [] as string[],
   };
 });
 
@@ -111,6 +113,9 @@ vi.mock("@/design/renderer", () => {
         show(page: unknown, system: unknown) {
           instance.shown.push({ page, system });
           for (const listener of Array.from(instance.viewListeners)) listener();
+        },
+        showTags(tags: string) {
+          fake.tagsShown.push(tags);
         },
         layers() {
           const id = lastPage()?.id;
@@ -408,6 +413,7 @@ function comment(docId: string, node: string, text: string) {
     orphaned: false,
     waiting_on_you: false,
     created_at: AT,
+    snapshot: undefined as string | undefined,
   };
 }
 
@@ -797,6 +803,7 @@ beforeEach(() => {
   fake.instances.length = 0;
   fake.layersByPage.clear();
   fake.boxesByPage.clear();
+  fake.tagsShown.length = 0;
   seedRenderer();
   api = fakeApi();
   FakeWebSocket.instances = [];
@@ -951,5 +958,46 @@ describe("links to node addresses from posts", () => {
     const comments = await section(COMMENTS);
     await waitFor(() => expect(within(comments).getByText(ON_REFUNDS), "the block's comments are open").toBeTruthy());
     expect(fake.instances.filter((instance) => !instance.destroyed), "no design canvas for an HTML doc").toEqual([]);
+  });
+});
+
+// Links to comments ----------------------------------------------------------------------
+
+describe("links to comments", () => {
+  test("?comment shows the page of the comment's node, selects the node and opens its comments", async () => {
+    const onHeading = api.comments.find((c) => c.text === ON_HEADING)!;
+    renderAt(`${DOC_PATH}?comment=${onHeading.id}`);
+    const renderer = await findRenderer();
+    await findShown((shown) => expect(pageId(shown), "Heading is on the Desktop page").toBe(DESKTOP));
+    await waitFor(() => expect(renderer.selected[renderer.selected.length - 1]).toBe(HEADING));
+    await waitFor(() => expect(treeItem("Heading").getAttribute("aria-selected")).toBe("true"));
+    const comments = await section(COMMENTS);
+    await waitFor(() => expect(within(comments).getByText(ON_HEADING)).toBeTruthy());
+  });
+
+  test("?comment of a comment whose node was removed opens the first page with nothing selected, and shows the node's picture and name", async () => {
+    const tags = '<Text id="f0000009" name="Old total" content="Total 96 kr" fontFamily="Inter" fontSize={14}/>';
+    const gone = { ...comment(DOC_ID, "f0000009", "Show the VAT too."), orphaned: true, snapshot: tags };
+    api.comments = [...api.comments, gone];
+    renderAt(`${DOC_PATH}?comment=${gone.id}`);
+    const renderer = await findRenderer();
+    await findShown((shown) => expect(pageId(shown)).toBe(MOBILE));
+    const card = (await screen.findByText("Show the VAT too.")).closest("li") as HTMLElement;
+    expect(within(card).getByText("Element removed")).toBeTruthy();
+    expect(within(card).getByText("Old total")).toBeTruthy();
+    await waitFor(() => expect(fake.tagsShown, "the renderer draws the node from its tag form").toContain(tags));
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(renderer.selected.filter((address) => address !== null), "nothing is selected").toEqual([]);
+    expect(pageId(renderer.shown[renderer.shown.length - 1])).toBe(MOBILE);
+  });
+
+  test("a ?comment the doc does not have opens the first page with nothing selected", async () => {
+    renderAt(`${DOC_PATH}?comment=0192d7a0-6666-7000-8000-0000000fffff`);
+    const renderer = await findRenderer();
+    await findShown((shown) => expect(pageId(shown)).toBe(MOBILE));
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(renderer.selected.filter((address) => address !== null), "nothing is selected").toEqual([]);
+    expect(pageId(renderer.shown[renderer.shown.length - 1])).toBe(MOBILE);
+    expect(screen.queryByRole("alert"), "no error").toBeNull();
   });
 });

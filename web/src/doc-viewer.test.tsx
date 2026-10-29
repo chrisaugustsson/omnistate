@@ -81,7 +81,18 @@ function comment(node: string, text: string) {
     orphaned: false,
     waiting_on_you: false,
     created_at: AT,
+    snapshot: undefined as string | undefined,
   };
+}
+
+/** A reply to a comment, by an agent of `role`. */
+function agentReply(role: string, text: string, at: string) {
+  return { id: newId(), author: { ...WRITER, kind: "agent", role }, text, created_at: at };
+}
+
+/** A comment on the block `node`, which an agent removed: its snapshot is the block's HTML. */
+function orphan(node: string, text: string, snapshot: string) {
+  return { ...comment(node, text), orphaned: true, snapshot };
 }
 
 /** The doc's two comments, one on each paragraph. */
@@ -163,8 +174,21 @@ function fakeApi() {
         return json(201, { comment: created });
       }
       default:
-        return json(404, { error: "not_found" });
+        break;
     }
+    const replied = api.comments.find((c) => path === `${API}/comments/${c.id}/replies`);
+    if (method === "POST" && replied) {
+      const reply = { id: newId(), author: HUMAN, text: String(body?.text ?? ""), created_at: new Date().toISOString() };
+      replied.replies = [...replied.replies, reply];
+      replied.waiting_on_you = false;
+      return json(201, { comment: replied });
+    }
+    const deleted = api.comments.find((c) => path === `${API}/comments/${c.id}`);
+    if (method === "DELETE" && deleted) {
+      api.comments = api.comments.filter((c) => c !== deleted);
+      return new Response(null, { status: 204 });
+    }
+    return json(404, { error: "not_found" });
   });
   vi.stubGlobal("fetch", fetch);
   return api;
@@ -371,6 +395,7 @@ describe("the doc viewer", () => {
   afterEach(() => {
     observer?.disconnect();
     cleanup();
+    vi.useRealTimers();
     vi.unstubAllGlobals();
   });
 
@@ -498,5 +523,109 @@ describe("the doc viewer", () => {
     await select("p0000001");
     await waitFor(() => expect(router.state.location.search).toEqual({ node: "p0000001" }));
     expect(router.history.length, "the entry is replaced, not added").toBe(entries);
+  });
+
+  test("a comment shows its replies oldest first with who wrote them and when, and a reply of yours comes last", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-10-21T15:00:00Z"));
+    const api = fakeApi();
+    const asked = api.comments[1];
+    asked.replies = [
+      agentReply("writer", "Changed it to seven days.", "2026-10-21T12:00:00Z"),
+      agentReply("editor", "Linked the refund policy too.", "2026-10-21T14:00:00Z"),
+    ];
+    renderAt(DOC_PATH);
+    await findFrame();
+    await select("p0000002");
+    const comments = await section(COMMENTS);
+    const card = (await within(comments).findByText("Say which week.")).closest("li") as HTMLElement;
+    const replies = () => within(card).getAllByRole("listitem").map((item) => item.textContent);
+    expect(replies()).toEqual([
+      expect.stringMatching(/writer\s*3 h ago\s*Changed it to seven days\.$/),
+      expect.stringMatching(/editor\s*1 h ago\s*Linked the refund policy too\.$/),
+    ]);
+
+    fireEvent.change(within(card).getByRole("textbox", { name: /^reply$/i }), { target: { value: "Thanks, that reads well." } });
+    fireEvent.click(within(card).getByRole("button", { name: /^reply$/i }));
+    await waitFor(() =>
+      expect(callsTo(api, "POST", `${API}/comments/${asked.id}/replies`).map((call) => call.body)).toEqual([
+        { text: "Thanks, that reads well." },
+      ]),
+    );
+    await waitFor(() => expect(replies()).toHaveLength(3));
+    expect(replies()[2]).toMatch(/You\s*just now\s*Thanks, that reads well\.$/);
+  });
+
+  test("Delete removes the comment and its pin straight away, without asking", async () => {
+    const api = fakeApi();
+    const confirm = vi.fn(() => false);
+    vi.stubGlobal("confirm", confirm);
+    const doomed = api.comments[1];
+    renderAt(DOC_PATH);
+    await findFrame();
+    await select("p0000002");
+    const comments = await section(COMMENTS);
+    const card = (await within(comments).findByText("Say which week.")).closest("li") as HTMLElement;
+    fireEvent.click(within(card).getByRole("button", { name: /^delete$/i }));
+
+    await waitFor(() => expect(callsTo(api, "DELETE", `${API}/comments/${doomed.id}`)).toHaveLength(1));
+    await waitFor(() => expect(within(comments).queryByText("Say which week.")).toBeNull());
+    await shown((s) => expect(s.pins).toEqual([{ node: "p0000001", count: 1 }]));
+    expect(confirm).not.toHaveBeenCalled();
+  });
+
+  test("?comment opens the doc on the comment's block, scrolled into view and selected, with its comments", async () => {
+    const api = fakeApi();
+    renderAt(`${DOC_PATH}?comment=${api.comments[1].id}`);
+    await findFrame();
+    const show = await shown((s) => expect(s.selected).toBe("p0000002"));
+    expect(show.reveal, "the frame is told to scroll the block into view").toBe("p0000002");
+    const comments = await section(COMMENTS);
+    await waitFor(() => expect(within(comments).getByText("Say which week.")).toBeTruthy());
+    expect(within(comments).queryByText("Is one day right?")).toBeNull();
+  });
+
+  test("?comment of a comment whose block was removed opens the doc at the top with nothing selected, the comment listed", async () => {
+    const api = fakeApi();
+    const gone = orphan("p0000009", "Shorten this note.", '<p data-omni-id="p0000009">Prices include VAT.</p>');
+    api.comments = [...api.comments, gone];
+    renderAt(`${DOC_PATH}?comment=${gone.id}`);
+    await findFrame();
+    await shown((s) => expect(s.html).toBe(HEAD_HTML));
+    expect(await screen.findByText("Shorten this note.")).toBeTruthy();
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const latest = shows()[shows().length - 1];
+    expect(latest.selected, "nothing is selected").toBeNull();
+    expect(latest.reveal ?? null, "the frame stays at the top").toBeNull();
+  });
+
+  test("a ?comment the doc does not have opens the doc as without it", async () => {
+    fakeApi();
+    renderAt(`${DOC_PATH}?comment=0192d7a0-6666-7000-8000-0000000fffff`);
+    await findFrame();
+    await shown((s) => expect(s.html).toBe(HEAD_HTML));
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const latest = shows()[shows().length - 1];
+    expect(latest.selected).toBeNull();
+    expect(latest.reveal ?? null).toBeNull();
+    expect(screen.queryByRole("alert"), "no error").toBeNull();
+    expect(await within(await section(COMMENTS)).findByText(/select a block/i)).toBeTruthy();
+  });
+
+  test("a comment whose block was removed shows the block's tag and the start of its text as plain text, with a reply box and Delete", async () => {
+    const api = fakeApi();
+    const snapshot =
+      '<p data-omni-id="p0000009"><img src="x" onerror="window.hacked = true">Refunds take <b>a week</b> from the day the parcel is back with us, and the money goes back the way it was paid, card or invoice.</p>';
+    api.comments = [...api.comments, orphan("p0000009", "Shorten this note.", snapshot)];
+    renderAt(DOC_PATH);
+    await findFrame();
+    const card = (await screen.findByText("Shorten this note.")).closest("li") as HTMLElement;
+    expect(within(card).getByText("Element removed")).toBeTruthy();
+    expect(within(card).getByText("<p>")).toBeTruthy();
+    const text = within(card).getByText(/^Refunds take a week from the day the parcel is back with us/);
+    expect(text.textContent, "only the start of the text").not.toMatch(/card or invoice/);
+    expect(card.querySelector("img, b"), "the snapshot is not put into the page as HTML").toBeNull();
+    expect(within(card).getByRole("textbox", { name: /^reply$/i })).toBeTruthy();
+    expect(within(card).getByRole("button", { name: /^delete$/i })).toBeTruthy();
   });
 });

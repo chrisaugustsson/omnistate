@@ -20,8 +20,7 @@
 // A feature has its scope page (US-112, src/project-home.test.tsx) and
 // .../features/<feature>/docs, /changesets and /threads pages, each holding
 // that feature's items only. The project's Docs, Change sets and Threads pages
-// hold the project-level items only; its inbox holds everything, each
-// feature's items tagged with the feature's name.
+// hold the project-level items only.
 //
 // The sidebar marks where the reviewer is with aria-current: on a feature's
 // page, the link to that feature's section (its page, docs, change sets or
@@ -45,7 +44,6 @@ const HUMAN = { kind: "human", user_id: USER.id };
 const WISHLIST = "0192d7a0-7777-7000-8000-000000000001";
 const GIFT_CARDS = "0192d7a0-7777-7000-8000-000000000002";
 const LOYALTY = "0192d7a0-7777-7000-8000-000000000003";
-const FEATURE_NAMES = /wishlist|gift cards|loyalty points/i;
 
 let counter = 0;
 /** A UUIDv7-shaped ID that no other fixture has. */
@@ -371,14 +369,6 @@ async function section(name: RegExp, container: HTMLElement) {
   });
 }
 
-/** The list item or table row of `container` that shows `text`. */
-function itemShowing(container: HTMLElement, text: string) {
-  const element = within(container).getByText(text);
-  const item = element.closest('li, tr, [role="listitem"], [role="row"]');
-  expect(item, `"${text}" is in a list item or a table row`).toBeTruthy();
-  return item as HTMLElement;
-}
-
 /** The text of the feature's entry in the sidebar, without its name. */
 function besideName(link: HTMLElement, name: string) {
   const entry = (link.closest("li") as HTMLElement | null) ?? link;
@@ -480,20 +470,6 @@ describe("features in the web app", () => {
       fakeApi(seeded());
       renderAt(`${PROJECT_PATH}/threads`);
       await showsOnly(await page(), ["Which hero layout?"], [...WISHLIST_THREADS, "How do vouchers expire?"]);
-    });
-
-    test("the inbox shows everything that waits, each feature's tagged with the feature's name", async () => {
-      fakeApi(seeded());
-      renderAt(`${PROJECT_PATH}/inbox`);
-      const main = await page();
-      await within(main).findByText("Keep saved lists private");
-      expect(itemShowing(main, "Keep saved lists private").textContent).toMatch(/wishlist/i);
-      expect(itemShowing(main, "Share saved lists").textContent).toMatch(/wishlist/i);
-      expect(itemShowing(main, "The save button moved").textContent).toMatch(/wishlist/i);
-      expect(itemShowing(main, "Do vouchers stack?").textContent).toMatch(/gift cards/i);
-      expect(itemShowing(main, "Use the split hero").textContent).not.toMatch(FEATURE_NAMES);
-      expect(itemShowing(main, "Rework the hero").textContent).not.toMatch(FEATURE_NAMES);
-      expect(itemShowing(main, "The hero copy is shorter now").textContent).not.toMatch(FEATURE_NAMES);
     });
   });
 
