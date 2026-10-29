@@ -843,6 +843,26 @@ describe("the design as agents change it", () => {
     expect(renderer.selected[renderer.selected.length - 1]).toBe(TOTAL);
   });
 
+  test("when an agent changes a board on a page of many boards, that board is read again and an unchanged one is not", async () => {
+    api = fakeApi([...PAGES, GRID_PAGE]);
+    seedGridLayers();
+    // The search for T199 reads every board of the design, so all 200 are drawn.
+    renderAt(`${DOC_PATH}?node=${T199}`);
+    const send = await openSocket();
+    await findShownWhole(GRID_PAGE);
+    const reads = (board: string) => api.calls.filter((call) => call.path.endsWith(`/boards/${board}`));
+    expect(reads(B199)).toHaveLength(1);
+
+    // An agent changes the text on B199.
+    const changedB199 = { ...GRID_BOARDS[199], children: [{ ...GRID_BOARDS[199].children[0], content: "Changed" }] };
+    const changedGrid = { ...GRID_PAGE, children: [...GRID_BOARDS.slice(0, 199), changedB199] };
+    api.pages = [...PAGES, changedGrid];
+    send();
+    await findShownWhole(changedGrid);
+    expect(reads(B199), "the changed board is read again").toHaveLength(2);
+    expect(reads("b0000150"), "an unchanged board is not").toHaveLength(1);
+  });
+
   test("when an agent removes the selected node, the selection is cleared and the view stays", async () => {
     renderAt(DOC_PATH);
     const send = await openSocket();

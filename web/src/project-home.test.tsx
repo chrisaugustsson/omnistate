@@ -262,6 +262,9 @@ function rowTitles(container: HTMLElement) {
 
 describe("the scope pages", () => {
   beforeEach(() => {
+    // Three hours after the hero thread's newest post, five after the docs were written.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-10-21T15:00:00.000Z"));
     vi.stubGlobal("scrollTo", () => {});
     FakeWebSocket.instances = [];
     vi.stubGlobal("WebSocket", FakeWebSocket);
@@ -269,12 +272,16 @@ describe("the scope pages", () => {
 
   afterEach(() => {
     cleanup();
+    vi.useRealTimers();
     vi.unstubAllGlobals();
   });
 
   test("a project opens at its App page", async () => {
     fakeApi(seededHome().home);
-    const router = renderAt(PROJECT_PATH);
+    const router = renderAt(`/w/${WORKSPACE_ID}`);
+    const project = await screen.findByRole("link", { name: "Storefront" });
+    expect(project.getAttribute("href")).toBe(PROJECT_PATH);
+    fireEvent.click(project);
     await waitFor(() => expect(router.state.location.pathname).toBe(APP_PATH));
     expect(await within(await page()).findByRole("heading", { level: 1, name: "Storefront" })).toBeTruthy();
   });
@@ -338,6 +345,7 @@ describe("the scope pages", () => {
     const ui = await section(main, /^ui\b/i);
     expect(rowLink(ui, "Tokens").textContent).toMatch(/design system/i);
     expect(rowLink(ui, "Cart screens").textContent).toContain("designer");
+    expect(within(returns).getByText(/^5 h ago · author$/).getAttribute("title"), "the absolute time in a tooltip").toContain("2026");
 
     expect(returns.getAttribute("href")).toBe(`${PROJECT_PATH}/docs/${docs.returns.id}`);
     fireEvent.click(returns);
@@ -365,6 +373,7 @@ describe("the scope pages", () => {
     expect(flags("What goes in the footer?")).toEqual(["Sealed"]);
     expect(flags("Do we need search?")).toEqual(["Open"]);
     expect(rowLink(listed, "Which hero layout?").textContent).toMatch(/\b3 posts/);
+    expect(within(rowLink(listed, "Which hero layout?")).getByText(/^3 h ago$/).getAttribute("title"), "the absolute time in a tooltip").toContain("2026");
     expect(rowLink(listed, "Do we need search?").textContent).toMatch(/\b0 posts/);
     expect(rowLink(listed, "Which hero layout?").getAttribute("href")).toBe(`${PROJECT_PATH}/threads/${threads.hero.id}`);
   });
@@ -377,8 +386,11 @@ describe("the scope pages", () => {
     const main = await page();
     const heading = await within(main).findByRole("heading", { level: 1, name: "Checkout" });
     const header = heading.closest("header") ?? heading.parentElement!;
-    expect(header.textContent).toContain("Pay in one step.\nNo account needed.");
-    expect(header.textContent).not.toContain("No activity yet");
+    const description = within(header).getByText(/Pay in one step\./);
+    expect(description.textContent).toBe("Pay in one step.\nNo account needed.");
+    expect(description.className, "the line break is kept").toMatch(/\bwhitespace-pre-(line|wrap)\b/);
+    const activity = within(header).getByText(/^Last change 2 h ago$/);
+    expect(activity.getAttribute("title"), "the absolute time in a tooltip").toContain("2026");
     expect(rowTitles(await section(main, /^spec\b/i))).toEqual(["Pay in one step"]);
     expect((await section(main, /^ui\b/i)).textContent).toContain("No docs yet");
     expect((await section(main, /^threads\b/i)).textContent).toContain("No threads yet");
