@@ -611,7 +611,14 @@ function DesignViewer({
   const [renderer, setRenderer] = useState<DesignRenderer | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
   const [layers, setLayers] = useState<Layer[]>([]);
-  const [selected, setSelected] = useState<string | null>(null);
+  const [selected, setSelectedState] = useState<string | null>(null);
+  // The selection as it is now, which a board read that shows the page again
+  // reads before React renders: it is set together with the state.
+  const selectedRef = useRef(selected);
+  const setSelected = useCallback((address: string | null) => {
+    selectedRef.current = address;
+    setSelectedState(address);
+  }, []);
   // The node and the board the address bar named, until they are shown.
   const [target, setTarget] = useState<string | null>(node ?? null);
   const [boardTarget, setBoardTarget] = useState<string | null>(boardParam ?? null);
@@ -648,10 +655,6 @@ function DesignViewer({
   useEffect(() => {
     modeRef.current = mode;
   });
-  const selectedRef = useRef(selected);
-  useEffect(() => {
-    selectedRef.current = selected;
-  });
 
   const pages = useMemo(() => source?.pages ?? [], [source]);
   const page = useMemo(() => pages.find((candidate) => candidate.id === chosen) ?? pages[0] ?? null, [pages, chosen]);
@@ -686,7 +689,7 @@ function DesignViewer({
   }, []);
 
   // A node selected on the canvas is the selected layer.
-  useEffect(() => renderer?.onSelect(setSelected), [renderer]);
+  useEffect(() => renderer?.onSelect(setSelected), [renderer, setSelected]);
 
   const assets = useMemo(() => (renderer ? createAssetLoader(renderer, workspaceId) : null), [renderer, workspaceId]);
 
@@ -743,7 +746,7 @@ function DesignViewer({
       cancelled = true;
       stopBoards?.();
     };
-  }, [renderer, assets, page, system, modes, cache]);
+  }, [renderer, assets, page, system, modes, cache, setSelected]);
 
   // A link to a node: its page is shown, then it is selected.
   useEffect(() => {
@@ -795,7 +798,7 @@ function DesignViewer({
     setSelected(target);
     renderer.select(target);
     setTarget(null);
-  }, [renderer, target, layers]);
+  }, [renderer, target, layers, setSelected]);
 
   // The address bar follows the page and the selection, once the ones it named are shown.
   useEffect(() => {

@@ -218,7 +218,9 @@ export function showBoardwise(options: BoardwiseOptions): () => void {
       return;
     }
     viewFailure = null;
-    const wanted = visible.filter((id) => boardIds.has(id)).slice(0, MOST_IN_VIEW);
+    const inView = visible.filter((id) => boardIds.has(id));
+    // A board beyond those that is drawn already is read again when its chunk changed, so that it does not stay out of date.
+    const wanted = [...inView.slice(0, MOST_IN_VIEW), ...inView.slice(MOST_IN_VIEW).filter((id) => cache.get(id) !== undefined)];
     for (const id of wanted) {
       if (!cache.needsRead(id) || cache.hasFailed(id) || waiting.has(id)) continue;
       // A read that another page of the version started is waited for, not counted again.
@@ -262,13 +264,10 @@ function contains(node: Json, id: string): boolean {
   return false;
 }
 
-/** How many boards a search for a node reads at most. */
-const MOST_SEARCHED = 120;
-
 /**
  * The page whose boards hold the node `id`, found by reading the boards of
  * `pages` (an outline's pages) in order, a few at a time, until one holds it;
- * `null` when none of the first `MOST_SEARCHED` does. A page or a board of the
+ * `null` when none does. A page or a board of the
  * outline itself is found without a read. The boards read are in `cache`.
  * `firstBoard`, a board the node is expected to be in, is read before the rest.
  */
@@ -286,10 +285,9 @@ export async function findPageHolding(
   const boards = [...listed.filter((entry) => entry.id === firstBoard), ...listed.filter((entry) => entry.id !== firstBoard)];
   const own = pages.find((page) => page.id === id || (Array.isArray(page.children) && (page.children as Json[]).some((board) => board.id === id)));
   if (own) return own;
-  const searched = boards.slice(0, MOST_SEARCHED);
-  for (let start = 0; start < searched.length; start += READS_AT_ONCE) {
+  for (let start = 0; start < boards.length; start += READS_AT_ONCE) {
     const found = await Promise.all(
-      searched.slice(start, start + READS_AT_ONCE).map(async (entry) => {
+      boards.slice(start, start + READS_AT_ONCE).map(async (entry) => {
         try {
           return contains(await cache.fetch(entry.id, prepare), id) ? entry.page : null;
         } catch {
