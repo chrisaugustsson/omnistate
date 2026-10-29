@@ -7,6 +7,7 @@ import { PageHeader } from "@/components/page-header";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { timeAgo } from "@/lib/format";
 import { useHome, useProjectName } from "@/lib/use-home";
+import { useVisit } from "@/lib/visits";
 import { cn } from "@/lib/utils";
 
 // The scope page: the app level of a project or one of its features, on one
@@ -178,6 +179,7 @@ export function ScopePage({ workspaceId, projectId, featureId }: Params & { feat
   const missing = home !== null && featureId !== null && !summary;
   const ready = home !== null && !missing;
   useScrollToHash(ready);
+  useVisit(projectId, ready ? (featureId ?? "app") : undefined);
 
   const title = featureId ? (summary?.feature.name ?? "") : (projectName ?? "");
   const description = featureId ? summary?.feature.description : undefined;

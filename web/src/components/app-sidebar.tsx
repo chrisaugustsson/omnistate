@@ -1,21 +1,14 @@
-import { useId, useState, type ReactNode } from "react";
-import { Link, useNavigate, useParams, useRouterState } from "@tanstack/react-router";
-import {
-  FileText,
-  GitPullRequestArrow,
-  Inbox,
-  Layers,
-  LayoutDashboard,
-  LayoutGrid,
-  LogOut,
-  MessagesSquare,
-} from "lucide-react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { Link, useNavigate, useParams } from "@tanstack/react-router";
+import { Check, ChevronsUpDown, Inbox, KeyRound, Layers, LayoutGrid, LogOut, MessagesSquare } from "lucide-react";
 import { logOut } from "@/api/auth";
+import { loadProjects } from "@/api/home";
 import { AgentAvatar } from "@/components/agent-chip";
 import { Button } from "@/components/ui/button";
-import type { FeatureSummary, HomeResponse } from "@/api/generated";
+import type { ProjectBody } from "@/api/generated";
 import { waitingCount } from "@/components/project/items";
-import { useHome, useProjectName } from "@/lib/use-home";
+import { useReloading } from "@/lib/reloading";
+import { useHome } from "@/lib/use-home";
 import { cn } from "@/lib/utils";
 
 type Workspace = { id: string; name: string };
@@ -36,8 +29,9 @@ function WorkspaceMark({ name }: { name: string }) {
 const itemClass =
   "group flex h-8 items-center gap-2.5 rounded-md px-2 text-[13px] font-medium text-sidebar-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground [&>svg]:size-4 [&>svg]:shrink-0 [&>svg]:text-muted-foreground";
 
-function Count({ value, signal }: { value?: number; signal?: boolean }) {
-  if (!value) return null;
+/** A count at the end of an item: hidden at zero unless `zero`, and while it is unknown. */
+function Count({ value, signal, zero }: { value?: number; signal?: boolean; zero?: boolean }) {
+  if (value === undefined || (value === 0 && !zero)) return null;
   return (
     <span
       className={cn(
@@ -50,188 +44,191 @@ function Count({ value, signal }: { value?: number; signal?: boolean }) {
   );
 }
 
-/** The sections of a project, each a page of its own; the detail pages belong to theirs. */
-const SECTIONS = [
-  { section: "", label: "Overview", icon: LayoutDashboard, to: "/w/$workspaceId/projects/$projectId" },
-  { section: "inbox", label: "Inbox", icon: Inbox, to: "/w/$workspaceId/projects/$projectId/inbox" },
-  { section: "docs", label: "Docs", icon: FileText, to: "/w/$workspaceId/projects/$projectId/docs" },
-  {
-    section: "changesets",
-    label: "Change sets",
-    icon: GitPullRequestArrow,
-    to: "/w/$workspaceId/projects/$projectId/changesets",
-  },
-  { section: "threads", label: "Threads", icon: MessagesSquare, to: "/w/$workspaceId/projects/$projectId/threads" },
-] as const;
+const activeLink = { exact: true, includeSearch: false } as const;
+const activeClass = "bg-sidebar-accent text-foreground [&>svg]:text-foreground";
 
-/** The pages of a feature, each a page of its own under the feature. */
-const FEATURE_SECTIONS = [
-  { section: "docs", label: "Docs", to: "/w/$workspaceId/projects/$projectId/features/$featureId/docs" },
-  {
-    section: "changesets",
-    label: "Change sets",
-    to: "/w/$workspaceId/projects/$projectId/features/$featureId/changesets",
-  },
-  { section: "threads", label: "Threads", to: "/w/$workspaceId/projects/$projectId/features/$featureId/threads" },
-] as const;
-
-/** Where the reviewer is in a project: a feature (null for the project's own pages) and a section of it ("" is the overview). */
-type Place = { feature: string | null; section: string };
-
-/**
- * The place that `pathname` is in. A detail page (a doc, change set or thread)
- * belongs to the section of its kind, in the feature that it belongs to, which
- * the project's home tells.
- */
-function placeOf(pathname: string, projectId: string, home: HomeResponse | null | undefined): Place {
-  const rest = (pathname.split(`/projects/${projectId}`)[1] ?? "").split("/").filter(Boolean);
-  if (rest[0] === "features") return { feature: rest[1] ?? null, section: rest[2] ?? "" };
-  const [section = "", id] = rest;
-  const items = { docs: home?.docs, changesets: home?.changesets, threads: home?.threads }[section as "docs"];
-  return { feature: (id && items?.find((item) => item.id === id)?.feature_id) || null, section };
-}
-
-/** A feature in the sidebar: its overview with its waiting count, and while it is the current one, its pages. */
-function FeatureItem({
-  summary,
-  workspaceId,
-  projectId,
-  place,
-}: {
-  summary: FeatureSummary;
-  workspaceId: string;
-  projectId: string;
-  place: Place;
-}) {
-  const { id, name } = summary.feature;
-  const here = place.feature === id;
-  const overview = here && place.section === "";
-  return (
-    <li className="space-y-0.5">
-      <Link
-        to="/w/$workspaceId/projects/$projectId/features/$featureId"
-        params={{ workspaceId, projectId, featureId: id }}
-        activeOptions={{ exact: true }}
-        aria-current={overview ? "page" : undefined}
-        className={cn(itemClass, here && "text-foreground", overview && "bg-sidebar-accent [&>svg]:text-foreground")}
-      >
-        <Layers />
-        <span className="min-w-0 truncate">{name}</span>
-        <Count value={summary.waiting} />
-      </Link>
-      {here &&
-        FEATURE_SECTIONS.map(({ section, label, to }) => {
-          const active = place.section === section;
-          return (
-            <Link
-              key={section}
-              to={to}
-              params={{ workspaceId, projectId, featureId: id }}
-              activeOptions={{ exact: true }}
-              aria-current={active ? "page" : undefined}
-              className={cn(itemClass, "pl-9", active && "bg-sidebar-accent text-foreground")}
-            >
-              {label}
-            </Link>
-          );
-        })}
-    </li>
-  );
-}
-
-/** The project's features below its sections, every one of them: a feature has no status. */
-function Features({
-  features,
-  workspaceId,
-  projectId,
-  place,
-}: {
-  features: FeatureSummary[];
-  workspaceId: string;
-  projectId: string;
-  place: Place;
-}) {
-  const titleId = useId();
-  if (!features.length) return null;
-
-  return (
-    <div role="group" aria-labelledby={titleId} className="space-y-0.5">
-      <div
-        id={titleId}
-        className="flex h-7 items-center px-2 text-[11px] font-medium tracking-[0.08em] text-muted-foreground uppercase"
-      >
-        Features
-      </div>
-      <ul className="space-y-0.5">
-        {features.map((summary) => (
-          <FeatureItem key={summary.feature.id} summary={summary} workspaceId={workspaceId} projectId={projectId} place={place} />
-        ))}
-      </ul>
-    </div>
-  );
-}
-
-/** The navigation of one project: its sections, with counts, and its features, the current place marked. */
+/** The places of a project: Inbox with what waits on the reviewer, App, Features with their number, and Threads. No feature is listed. */
 function ProjectNav({ workspaceId, projectId }: { workspaceId: string; projectId: string }) {
   const { home } = useHome(workspaceId, projectId);
-  const name = useProjectName(workspaceId, projectId);
-  const pathname = useRouterState({ select: (state) => state.location.pathname });
-  const place = placeOf(pathname, projectId, home);
-  const ownCount = (items: { feature_id?: string | null }[] | undefined) => items?.filter((item) => !item.feature_id).length;
-  const counts: Record<string, number | undefined> = {
-    inbox: home ? waitingCount(home) : undefined,
-    docs: ownCount(home?.docs),
-    changesets: ownCount(home?.changesets),
-    threads: ownCount(home?.threads),
-  };
-
+  const params = { workspaceId, projectId };
   return (
-    <div className="space-y-3">
-      <div className="space-y-1">
-        <div className="flex h-7 items-center gap-2 px-2">
-          <span
-            aria-hidden
-            className="flex size-4 items-center justify-center rounded-[5px] bg-signal text-[9px] font-semibold text-signal-foreground"
-          >
-            {(name ?? "P").slice(0, 1).toUpperCase()}
-          </span>
-          <span className="truncate text-[11px] font-medium tracking-[0.08em] text-muted-foreground uppercase">
-            {name ?? "Project"}
-          </span>
-        </div>
-        <div className="space-y-0.5">
-          {SECTIONS.map(({ section, label, icon: Icon, to }) => {
-            const active = place.feature === null && place.section === section;
-            return (
-              <Link
-                key={section || "overview"}
-                to={to}
-                params={{ workspaceId, projectId }}
-                activeOptions={{ exact: true }}
-                aria-current={active ? "page" : undefined}
-                className={cn(itemClass, active && "bg-sidebar-accent text-foreground [&>svg]:text-foreground")}
-              >
-                <Icon />
-                {label}
-                <Count value={counts[section]} signal={section === "inbox"} />
-              </Link>
-            );
-          })}
-        </div>
-      </div>
-      <Features features={home?.features ?? []} workspaceId={workspaceId} projectId={projectId} place={place} />
+    <div className="space-y-0.5">
+      <Link
+        to="/w/$workspaceId/projects/$projectId/inbox"
+        params={params}
+        activeOptions={activeLink}
+        activeProps={{ className: activeClass }}
+        className={itemClass}
+      >
+        <Inbox />
+        Inbox
+        <Count value={home ? waitingCount(home) : undefined} signal />
+      </Link>
+      <Link
+        to="/w/$workspaceId/projects/$projectId/app"
+        params={params}
+        activeOptions={activeLink}
+        activeProps={{ className: activeClass }}
+        className={itemClass}
+      >
+        <LayoutGrid />
+        App
+      </Link>
+      <Link
+        to="/w/$workspaceId/projects/$projectId/features"
+        params={params}
+        activeOptions={activeLink}
+        activeProps={{ className: activeClass }}
+        className={itemClass}
+      >
+        <Layers />
+        Features
+        <Count value={home ? (home.features ?? []).length : undefined} zero />
+      </Link>
+      <Link
+        to="/w/$workspaceId/projects/$projectId/threads"
+        params={params}
+        activeOptions={activeLink}
+        activeProps={{ className: activeClass }}
+        className={itemClass}
+      >
+        <MessagesSquare />
+        Threads
+      </Link>
     </div>
   );
 }
 
-/** The left column of every workspace page: the workspace, the project's navigation and the account. */
+const menuItemClass =
+  "flex h-8 items-center gap-2 rounded-md px-2 text-[13px] text-foreground transition-colors hover:bg-accent focus-visible:bg-accent focus-visible:outline-none";
+
+function MenuLabel({ children }: { children: ReactNode }) {
+  return (
+    <div className="px-2 pt-2 pb-1 text-[11px] font-medium tracking-[0.08em] text-muted-foreground uppercase">
+      {children}
+    </div>
+  );
+}
+
+/**
+ * The header: the workspace name above the project's, and the menu of the
+ * workspace's projects, All projects, and the account's workspaces when it
+ * has more than one. Outside a project it shows the workspace name only.
+ */
+function Switcher({
+  workspace,
+  workspaces,
+  projectId,
+  projects,
+  open,
+  onOpen,
+  onClose,
+}: {
+  workspace: Workspace;
+  workspaces: Workspace[];
+  projectId?: string;
+  projects: ProjectBody[];
+  open: boolean;
+  onOpen: () => void;
+  onClose: () => void;
+}) {
+  const root = useRef<HTMLDivElement>(null);
+  const project = projects.find((candidate) => candidate.id === projectId);
+  const mark = (project?.name ?? workspace.name).slice(0, 1).toUpperCase();
+
+  useEffect(() => {
+    if (!open) return;
+    function outside(event: PointerEvent) {
+      if (!root.current?.contains(event.target as Node)) onClose();
+    }
+    document.addEventListener("pointerdown", outside);
+    return () => document.removeEventListener("pointerdown", outside);
+  }, [open, onClose]);
+
+  return (
+    <div ref={root} className="relative pb-3">
+      <button
+        type="button"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-label="Switch project"
+        onClick={open ? onClose : onOpen}
+        className="flex w-full items-center gap-2.5 rounded-lg px-1 py-1 text-left transition-colors hover:bg-sidebar-accent focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-none"
+      >
+        <WorkspaceMark name={mark} />
+        <span className="min-w-0 flex-1 leading-tight">
+          <span className="block truncate text-[11px] text-muted-foreground">{workspace.name}</span>
+          {projectId && <span className="block truncate text-[13px] font-semibold">{project?.name ?? "Project"}</span>}
+        </span>
+        <ChevronsUpDown aria-hidden className="size-4 shrink-0 text-muted-foreground" />
+      </button>
+      {open && (
+        <div
+          role="menu"
+          aria-label="Projects"
+          className="absolute inset-x-0 top-full z-50 max-h-[70dvh] overflow-y-auto rounded-xl border bg-popover p-1 shadow-lg"
+          onClick={(event) => {
+            if ((event.target as HTMLElement).closest("a")) onClose();
+          }}
+        >
+          <MenuLabel>Projects</MenuLabel>
+          {projects.map((candidate) => (
+            <Link
+              key={candidate.id}
+              role="menuitem"
+              to="/w/$workspaceId/projects/$projectId"
+              params={{ workspaceId: workspace.id, projectId: candidate.id }}
+              aria-current={candidate.id === projectId ? "true" : undefined}
+              className={cn(menuItemClass, candidate.id === projectId && "font-medium")}
+            >
+              <span className="min-w-0 flex-1 truncate">{candidate.name}</span>
+              {candidate.id === projectId && <Check aria-hidden className="size-3.5" />}
+            </Link>
+          ))}
+          <Link
+            role="menuitem"
+            to="/w/$workspaceId"
+            params={{ workspaceId: workspace.id }}
+            className={cn(menuItemClass, "mt-1 border-t pt-1")}
+          >
+            <LayoutGrid aria-hidden className="size-3.5 text-muted-foreground" />
+            All projects
+          </Link>
+          {workspaces.length > 1 && (
+            <>
+              <MenuLabel>Workspaces</MenuLabel>
+              {workspaces.map((candidate) => (
+                <Link
+                  key={candidate.id}
+                  role="menuitem"
+                  to="/w/$workspaceId"
+                  params={{ workspaceId: candidate.id }}
+                  aria-current={candidate.id === workspace.id ? "true" : undefined}
+                  className={cn(menuItemClass, candidate.id === workspace.id && "font-medium")}
+                >
+                  <span className="min-w-0 flex-1 truncate">{candidate.name}</span>
+                  {candidate.id === workspace.id && <Check aria-hidden className="size-3.5" />}
+                </Link>
+              ))}
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** The left column of every workspace page: the header, the project's places and the account. */
 export function AppSidebar({
   workspace,
+  workspaces,
   user,
   open,
   onClose,
 }: {
   workspace: Workspace;
+  /** Every workspace of the account; the menu lists them when there is more than one. */
+  workspaces: Workspace[];
   user: User;
   /** On small screens the sidebar is a drawer, shown while `open`. */
   open: boolean;
@@ -240,6 +237,21 @@ export function AppSidebar({
   const { projectId } = useParams({ strict: false }) as { projectId?: string };
   const navigate = useNavigate();
   const [busy, setBusy] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const closeMenu = useCallback(() => setMenuOpen(false), []);
+  const load = useCallback(() => loadProjects(workspace.id), [workspace.id]);
+  const { value: projects, reload } = useReloading(load);
+
+  useEffect(() => {
+    if (!menuOpen && !open) return;
+    function onKey(event: KeyboardEvent) {
+      if (event.key !== "Escape") return;
+      if (menuOpen) setMenuOpen(false);
+      else onClose();
+    }
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [menuOpen, open, onClose]);
 
   async function logOutNow() {
     setBusy(true);
@@ -256,58 +268,60 @@ export function AppSidebar({
       {open && (
         <div aria-hidden className="fixed inset-0 z-30 bg-foreground/20 backdrop-blur-[1px] md:hidden" onClick={onClose} />
       )}
-    <aside
-      className={cn(
-        "fixed inset-y-0 left-0 z-40 w-64 shrink-0 flex-col bg-sidebar px-3 py-3 shadow-xl md:static md:z-auto md:flex md:w-60 md:shadow-none",
-        open ? "flex" : "hidden",
-      )}
-      onClick={(event) => {
-        if ((event.target as HTMLElement).closest("a")) onClose();
-      }}
-    >
-      <div className="flex items-center gap-2.5 px-1 pb-4">
-        <WorkspaceMark name={workspace.name} />
-        <div className="min-w-0 leading-tight">
-          <div className="truncate text-[13px] font-semibold">{workspace.name}</div>
-          <div className="text-[11px] text-muted-foreground">OmniState</div>
-        </div>
-      </div>
+      <aside
+        className={cn(
+          "fixed inset-y-0 left-0 z-40 w-64 shrink-0 flex-col bg-sidebar px-3 py-3 shadow-xl md:static md:z-auto md:flex md:w-60 md:shadow-none",
+          open ? "flex" : "hidden",
+        )}
+        onClick={(event) => {
+          if ((event.target as HTMLElement).closest("a")) onClose();
+        }}
+      >
+        <Switcher
+          workspace={workspace}
+          workspaces={workspaces}
+          projectId={projectId}
+          projects={projects ?? []}
+          open={menuOpen}
+          onOpen={() => {
+            reload();
+            setMenuOpen(true);
+          }}
+          onClose={closeMenu}
+        />
 
-      <nav aria-label="Workspace" className="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto">
-        <div className="space-y-0.5">
-          <Link
-            to="/w/$workspaceId"
-            params={{ workspaceId: workspace.id }}
-            className={itemClass}
-            activeOptions={{ exact: true }}
-            activeProps={{ className: "bg-sidebar-accent text-foreground" }}
-          >
-            <LayoutGrid />
-            All projects
-          </Link>
-        </div>
-        {projectId && <ProjectNav workspaceId={workspace.id} projectId={projectId} />}
-      </nav>
+        <nav aria-label="Project" className="min-h-0 flex-1 overflow-y-auto">
+          {projectId && <ProjectNav workspaceId={workspace.id} projectId={projectId} />}
+        </nav>
 
-      <SidebarFooter>
-        <AgentAvatar name={user.email} className="size-6 text-[10px]" />
-        <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">{user.email}</span>
-        <Button
-          variant="ghost"
-          size="sm"
-          className="h-7 px-2 text-xs text-muted-foreground"
-          onClick={logOutNow}
-          disabled={busy}
-        >
-          <LogOut className="size-3.5" />
-          Log out
-        </Button>
-      </SidebarFooter>
-    </aside>
+        <div className="mt-3 space-y-2 border-t pt-3">
+          <div className="flex items-center gap-2 pl-1">
+            <AgentAvatar name={user.email} className="size-6 text-[10px]" />
+            <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">{user.email}</span>
+          </div>
+          <div className="flex items-center gap-1">
+            <Link
+              to="/w/$workspaceId/api-keys"
+              params={{ workspaceId: workspace.id }}
+              activeProps={{ className: "bg-sidebar-accent text-foreground" }}
+              className="inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-xs text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground"
+            >
+              <KeyRound className="size-3.5" />
+              API keys
+            </Link>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 px-2 text-xs text-muted-foreground"
+              onClick={logOutNow}
+              disabled={busy}
+            >
+              <LogOut className="size-3.5" />
+              Log out
+            </Button>
+          </div>
+        </div>
+      </aside>
     </>
   );
-}
-
-function SidebarFooter({ children }: { children: ReactNode }) {
-  return <div className="mt-3 flex items-center gap-2 border-t pt-3 pl-1">{children}</div>;
 }

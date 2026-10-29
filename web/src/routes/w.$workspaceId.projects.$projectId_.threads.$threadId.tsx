@@ -10,6 +10,7 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { useHome } from "@/lib/use-home";
 import { useReloading } from "@/lib/reloading";
+import { useVisit } from "@/lib/visits";
 import { cn } from "@/lib/utils";
 import { useProjectEvents } from "@/live/context";
 
@@ -79,6 +80,8 @@ function ThreadView() {
   const hash = useLocation({ select: (location) => location.hash });
   const loaded = useReloading(useCallback(() => loadThread(workspaceId, projectId, threadId), [workspaceId, projectId, threadId]));
   const { value: thread, failed, reload } = loaded;
+  const known = thread?.id === threadId ? thread : null;
+  useVisit(projectId, known ? (known.feature_id ?? "app") : undefined, undefined, known ? threadId : undefined);
   useProjectEvents(projectId, reload);
 
   const wanted = hash.startsWith("post-") ? hash.slice("post-".length) : null;

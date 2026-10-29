@@ -18,6 +18,7 @@ import { designSnapshotName } from "@/components/viewer/comments";
 import { drawComponent, drawSnapshot } from "@/design/thumbnail";
 import { timeAgo } from "@/lib/format";
 import { useReloading } from "@/lib/reloading";
+import { useVisit } from "@/lib/visits";
 import { cn } from "@/lib/utils";
 import { ViewerFrame } from "@/viewer/frame";
 
@@ -44,6 +45,8 @@ function agentLabel(agent: ActivityAgent): string {
 /** The doc, for the toolbar's breadcrumb, with the Activity tab open. */
 function DocShell({ workspaceId, projectId, docId, children }: Params & { children: (doc: DocBody) => ReactNode }) {
   const doc = useReloading(useCallback(() => loadDoc(workspaceId, projectId, docId), [workspaceId, projectId, docId]));
+  const loaded = doc.value?.id === docId ? doc.value : null;
+  useVisit(projectId, loaded ? (loaded.feature_id ?? "app") : undefined, loaded ? docId : undefined);
   return (
     <main className="flex min-h-full flex-col">
       <ViewerToolbar

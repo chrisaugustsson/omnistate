@@ -14,6 +14,7 @@ import { Route as HealthRouteImport } from './routes/health'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as WWorkspaceIdRouteImport } from './routes/w.$workspaceId'
 import { Route as WWorkspaceIdIndexRouteImport } from './routes/w.$workspaceId.index'
+import { Route as WWorkspaceIdApiKeysRouteImport } from './routes/w.$workspaceId.api-keys'
 import { Route as WWorkspaceIdProjectsProjectIdRouteImport } from './routes/w.$workspaceId.projects.$projectId'
 import { Route as WWorkspaceIdProjectsProjectIdAppRouteImport } from './routes/w.$workspaceId.projects.$projectId_.app'
 import { Route as WWorkspaceIdProjectsProjectIdInboxRouteImport } from './routes/w.$workspaceId.projects.$projectId_.inbox'
@@ -21,6 +22,7 @@ import { Route as WWorkspaceIdProjectsProjectIdChangesetsIndexRouteImport } from
 import { Route as WWorkspaceIdProjectsProjectIdChangesetsChangesetIdRouteImport } from './routes/w.$workspaceId.projects.$projectId_.changesets.$changesetId'
 import { Route as WWorkspaceIdProjectsProjectIdDocsIndexRouteImport } from './routes/w.$workspaceId.projects.$projectId_.docs.index'
 import { Route as WWorkspaceIdProjectsProjectIdDocsDocIdRouteImport } from './routes/w.$workspaceId.projects.$projectId_.docs.$docId'
+import { Route as WWorkspaceIdProjectsProjectIdFeaturesIndexRouteImport } from './routes/w.$workspaceId.projects.$projectId_.features.index'
 import { Route as WWorkspaceIdProjectsProjectIdThreadsIndexRouteImport } from './routes/w.$workspaceId.projects.$projectId_.threads.index'
 import { Route as WWorkspaceIdProjectsProjectIdThreadsThreadIdRouteImport } from './routes/w.$workspaceId.projects.$projectId_.threads.$threadId'
 import { Route as WWorkspaceIdProjectsProjectIdFeaturesFeatureIdIndexRouteImport } from './routes/w.$workspaceId.projects.$projectId_.features.$featureId.index'
@@ -53,6 +55,11 @@ const WWorkspaceIdRoute = WWorkspaceIdRouteImport.update({
 const WWorkspaceIdIndexRoute = WWorkspaceIdIndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => WWorkspaceIdRoute,
+} as any)
+const WWorkspaceIdApiKeysRoute = WWorkspaceIdApiKeysRouteImport.update({
+  id: '/api-keys',
+  path: '/api-keys',
   getParentRoute: () => WWorkspaceIdRoute,
 } as any)
 const WWorkspaceIdProjectsProjectIdRoute =
@@ -95,6 +102,12 @@ const WWorkspaceIdProjectsProjectIdDocsDocIdRoute =
   WWorkspaceIdProjectsProjectIdDocsDocIdRouteImport.update({
     id: '/projects/$projectId_/docs/$docId',
     path: '/projects/$projectId/docs/$docId',
+    getParentRoute: () => WWorkspaceIdRoute,
+  } as any)
+const WWorkspaceIdProjectsProjectIdFeaturesIndexRoute =
+  WWorkspaceIdProjectsProjectIdFeaturesIndexRouteImport.update({
+    id: '/projects/$projectId_/features/',
+    path: '/projects/$projectId/features/',
     getParentRoute: () => WWorkspaceIdRoute,
   } as any)
 const WWorkspaceIdProjectsProjectIdThreadsIndexRoute =
@@ -153,6 +166,7 @@ export interface FileRoutesByFullPath {
   '/health': typeof HealthRoute
   '/login': typeof LoginRoute
   '/w/$workspaceId': typeof WWorkspaceIdRouteWithChildren
+  '/w/$workspaceId/api-keys': typeof WWorkspaceIdApiKeysRoute
   '/w/$workspaceId/': typeof WWorkspaceIdIndexRoute
   '/w/$workspaceId/projects/$projectId': typeof WWorkspaceIdProjectsProjectIdRoute
   '/w/$workspaceId/projects/$projectId/app': typeof WWorkspaceIdProjectsProjectIdAppRoute
@@ -162,6 +176,7 @@ export interface FileRoutesByFullPath {
   '/w/$workspaceId/projects/$projectId/threads/$threadId': typeof WWorkspaceIdProjectsProjectIdThreadsThreadIdRoute
   '/w/$workspaceId/projects/$projectId/changesets/': typeof WWorkspaceIdProjectsProjectIdChangesetsIndexRoute
   '/w/$workspaceId/projects/$projectId/docs/': typeof WWorkspaceIdProjectsProjectIdDocsIndexRoute
+  '/w/$workspaceId/projects/$projectId/features/': typeof WWorkspaceIdProjectsProjectIdFeaturesIndexRoute
   '/w/$workspaceId/projects/$projectId/threads/': typeof WWorkspaceIdProjectsProjectIdThreadsIndexRoute
   '/w/$workspaceId/projects/$projectId/features/$featureId/': typeof WWorkspaceIdProjectsProjectIdFeaturesFeatureIdIndexRoute
   '/w/$workspaceId/projects/$projectId/docs/$docId/activity/$seq': typeof WWorkspaceIdProjectsProjectIdDocsDocIdActivitySeqRoute
@@ -174,6 +189,7 @@ export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/health': typeof HealthRoute
   '/login': typeof LoginRoute
+  '/w/$workspaceId/api-keys': typeof WWorkspaceIdApiKeysRoute
   '/w/$workspaceId': typeof WWorkspaceIdIndexRoute
   '/w/$workspaceId/projects/$projectId': typeof WWorkspaceIdProjectsProjectIdRoute
   '/w/$workspaceId/projects/$projectId/app': typeof WWorkspaceIdProjectsProjectIdAppRoute
@@ -183,6 +199,7 @@ export interface FileRoutesByTo {
   '/w/$workspaceId/projects/$projectId/threads/$threadId': typeof WWorkspaceIdProjectsProjectIdThreadsThreadIdRoute
   '/w/$workspaceId/projects/$projectId/changesets': typeof WWorkspaceIdProjectsProjectIdChangesetsIndexRoute
   '/w/$workspaceId/projects/$projectId/docs': typeof WWorkspaceIdProjectsProjectIdDocsIndexRoute
+  '/w/$workspaceId/projects/$projectId/features': typeof WWorkspaceIdProjectsProjectIdFeaturesIndexRoute
   '/w/$workspaceId/projects/$projectId/threads': typeof WWorkspaceIdProjectsProjectIdThreadsIndexRoute
   '/w/$workspaceId/projects/$projectId/features/$featureId': typeof WWorkspaceIdProjectsProjectIdFeaturesFeatureIdIndexRoute
   '/w/$workspaceId/projects/$projectId/docs/$docId/activity/$seq': typeof WWorkspaceIdProjectsProjectIdDocsDocIdActivitySeqRoute
@@ -197,6 +214,7 @@ export interface FileRoutesById {
   '/health': typeof HealthRoute
   '/login': typeof LoginRoute
   '/w/$workspaceId': typeof WWorkspaceIdRouteWithChildren
+  '/w/$workspaceId/api-keys': typeof WWorkspaceIdApiKeysRoute
   '/w/$workspaceId/': typeof WWorkspaceIdIndexRoute
   '/w/$workspaceId/projects/$projectId': typeof WWorkspaceIdProjectsProjectIdRoute
   '/w/$workspaceId/projects/$projectId_/app': typeof WWorkspaceIdProjectsProjectIdAppRoute
@@ -206,6 +224,7 @@ export interface FileRoutesById {
   '/w/$workspaceId/projects/$projectId_/threads/$threadId': typeof WWorkspaceIdProjectsProjectIdThreadsThreadIdRoute
   '/w/$workspaceId/projects/$projectId_/changesets/': typeof WWorkspaceIdProjectsProjectIdChangesetsIndexRoute
   '/w/$workspaceId/projects/$projectId_/docs/': typeof WWorkspaceIdProjectsProjectIdDocsIndexRoute
+  '/w/$workspaceId/projects/$projectId_/features/': typeof WWorkspaceIdProjectsProjectIdFeaturesIndexRoute
   '/w/$workspaceId/projects/$projectId_/threads/': typeof WWorkspaceIdProjectsProjectIdThreadsIndexRoute
   '/w/$workspaceId/projects/$projectId_/features/$featureId/': typeof WWorkspaceIdProjectsProjectIdFeaturesFeatureIdIndexRoute
   '/w/$workspaceId/projects/$projectId_/docs/$docId_/activity/$seq': typeof WWorkspaceIdProjectsProjectIdDocsDocIdActivitySeqRoute
@@ -221,6 +240,7 @@ export interface FileRouteTypes {
     | '/health'
     | '/login'
     | '/w/$workspaceId'
+    | '/w/$workspaceId/api-keys'
     | '/w/$workspaceId/'
     | '/w/$workspaceId/projects/$projectId'
     | '/w/$workspaceId/projects/$projectId/app'
@@ -230,6 +250,7 @@ export interface FileRouteTypes {
     | '/w/$workspaceId/projects/$projectId/threads/$threadId'
     | '/w/$workspaceId/projects/$projectId/changesets/'
     | '/w/$workspaceId/projects/$projectId/docs/'
+    | '/w/$workspaceId/projects/$projectId/features/'
     | '/w/$workspaceId/projects/$projectId/threads/'
     | '/w/$workspaceId/projects/$projectId/features/$featureId/'
     | '/w/$workspaceId/projects/$projectId/docs/$docId/activity/$seq'
@@ -242,6 +263,7 @@ export interface FileRouteTypes {
     | '/'
     | '/health'
     | '/login'
+    | '/w/$workspaceId/api-keys'
     | '/w/$workspaceId'
     | '/w/$workspaceId/projects/$projectId'
     | '/w/$workspaceId/projects/$projectId/app'
@@ -251,6 +273,7 @@ export interface FileRouteTypes {
     | '/w/$workspaceId/projects/$projectId/threads/$threadId'
     | '/w/$workspaceId/projects/$projectId/changesets'
     | '/w/$workspaceId/projects/$projectId/docs'
+    | '/w/$workspaceId/projects/$projectId/features'
     | '/w/$workspaceId/projects/$projectId/threads'
     | '/w/$workspaceId/projects/$projectId/features/$featureId'
     | '/w/$workspaceId/projects/$projectId/docs/$docId/activity/$seq'
@@ -264,6 +287,7 @@ export interface FileRouteTypes {
     | '/health'
     | '/login'
     | '/w/$workspaceId'
+    | '/w/$workspaceId/api-keys'
     | '/w/$workspaceId/'
     | '/w/$workspaceId/projects/$projectId'
     | '/w/$workspaceId/projects/$projectId_/app'
@@ -273,6 +297,7 @@ export interface FileRouteTypes {
     | '/w/$workspaceId/projects/$projectId_/threads/$threadId'
     | '/w/$workspaceId/projects/$projectId_/changesets/'
     | '/w/$workspaceId/projects/$projectId_/docs/'
+    | '/w/$workspaceId/projects/$projectId_/features/'
     | '/w/$workspaceId/projects/$projectId_/threads/'
     | '/w/$workspaceId/projects/$projectId_/features/$featureId/'
     | '/w/$workspaceId/projects/$projectId_/docs/$docId_/activity/$seq'
@@ -326,6 +351,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof WWorkspaceIdIndexRouteImport
       parentRoute: typeof WWorkspaceIdRoute
     }
+    '/w/$workspaceId/api-keys': {
+      id: '/w/$workspaceId/api-keys'
+      path: '/api-keys'
+      fullPath: '/w/$workspaceId/api-keys'
+      preLoaderRoute: typeof WWorkspaceIdApiKeysRouteImport
+      parentRoute: typeof WWorkspaceIdRoute
+    }
     '/w/$workspaceId/projects/$projectId': {
       id: '/w/$workspaceId/projects/$projectId'
       path: '/projects/$projectId'
@@ -373,6 +405,13 @@ declare module '@tanstack/react-router' {
       path: '/projects/$projectId/docs/$docId'
       fullPath: '/w/$workspaceId/projects/$projectId/docs/$docId'
       preLoaderRoute: typeof WWorkspaceIdProjectsProjectIdDocsDocIdRouteImport
+      parentRoute: typeof WWorkspaceIdRoute
+    }
+    '/w/$workspaceId/projects/$projectId_/features/': {
+      id: '/w/$workspaceId/projects/$projectId_/features/'
+      path: '/projects/$projectId/features'
+      fullPath: '/w/$workspaceId/projects/$projectId/features/'
+      preLoaderRoute: typeof WWorkspaceIdProjectsProjectIdFeaturesIndexRouteImport
       parentRoute: typeof WWorkspaceIdRoute
     }
     '/w/$workspaceId/projects/$projectId_/threads/': {
@@ -435,6 +474,7 @@ declare module '@tanstack/react-router' {
 }
 
 interface WWorkspaceIdRouteChildren {
+  WWorkspaceIdApiKeysRoute: typeof WWorkspaceIdApiKeysRoute
   WWorkspaceIdIndexRoute: typeof WWorkspaceIdIndexRoute
   WWorkspaceIdProjectsProjectIdRoute: typeof WWorkspaceIdProjectsProjectIdRoute
   WWorkspaceIdProjectsProjectIdAppRoute: typeof WWorkspaceIdProjectsProjectIdAppRoute
@@ -444,6 +484,7 @@ interface WWorkspaceIdRouteChildren {
   WWorkspaceIdProjectsProjectIdThreadsThreadIdRoute: typeof WWorkspaceIdProjectsProjectIdThreadsThreadIdRoute
   WWorkspaceIdProjectsProjectIdChangesetsIndexRoute: typeof WWorkspaceIdProjectsProjectIdChangesetsIndexRoute
   WWorkspaceIdProjectsProjectIdDocsIndexRoute: typeof WWorkspaceIdProjectsProjectIdDocsIndexRoute
+  WWorkspaceIdProjectsProjectIdFeaturesIndexRoute: typeof WWorkspaceIdProjectsProjectIdFeaturesIndexRoute
   WWorkspaceIdProjectsProjectIdThreadsIndexRoute: typeof WWorkspaceIdProjectsProjectIdThreadsIndexRoute
   WWorkspaceIdProjectsProjectIdFeaturesFeatureIdIndexRoute: typeof WWorkspaceIdProjectsProjectIdFeaturesFeatureIdIndexRoute
   WWorkspaceIdProjectsProjectIdDocsDocIdActivitySeqRoute: typeof WWorkspaceIdProjectsProjectIdDocsDocIdActivitySeqRoute
@@ -454,6 +495,7 @@ interface WWorkspaceIdRouteChildren {
 }
 
 const WWorkspaceIdRouteChildren: WWorkspaceIdRouteChildren = {
+  WWorkspaceIdApiKeysRoute: WWorkspaceIdApiKeysRoute,
   WWorkspaceIdIndexRoute: WWorkspaceIdIndexRoute,
   WWorkspaceIdProjectsProjectIdRoute: WWorkspaceIdProjectsProjectIdRoute,
   WWorkspaceIdProjectsProjectIdAppRoute: WWorkspaceIdProjectsProjectIdAppRoute,
@@ -469,6 +511,8 @@ const WWorkspaceIdRouteChildren: WWorkspaceIdRouteChildren = {
     WWorkspaceIdProjectsProjectIdChangesetsIndexRoute,
   WWorkspaceIdProjectsProjectIdDocsIndexRoute:
     WWorkspaceIdProjectsProjectIdDocsIndexRoute,
+  WWorkspaceIdProjectsProjectIdFeaturesIndexRoute:
+    WWorkspaceIdProjectsProjectIdFeaturesIndexRoute,
   WWorkspaceIdProjectsProjectIdThreadsIndexRoute:
     WWorkspaceIdProjectsProjectIdThreadsIndexRoute,
   WWorkspaceIdProjectsProjectIdFeaturesFeatureIdIndexRoute:

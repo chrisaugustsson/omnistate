@@ -31,6 +31,7 @@ import { CommentsPanel } from "@/components/viewer/comments";
 import { LayerIcon, MonoValue, PropertyTable, TokenChip } from "@/components/viewer/design";
 import { cn } from "@/lib/utils";
 import { useReloading, type Reloading } from "@/lib/reloading";
+import { useVisit } from "@/lib/visits";
 import { useProjectEvents } from "@/live/context";
 import { ViewerFrame } from "@/viewer/frame";
 import { blockIds } from "@/viewer/html";
@@ -82,6 +83,8 @@ function DocPage() {
   const search = Route.useSearch();
   const navigate = Route.useNavigate();
   const doc = useReloading(useCallback(() => loadDoc(workspaceId, projectId, docId), [workspaceId, projectId, docId]));
+  const loaded = doc.value?.id === docId ? doc.value : null;
+  useVisit(projectId, loaded ? (loaded.feature_id ?? "app") : undefined, loaded ? docId : undefined);
   const current = useRef({ search, navigate });
   useEffect(() => {
     current.current = { search, navigate };

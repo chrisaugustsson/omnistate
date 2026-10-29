@@ -14,7 +14,7 @@ export const Route = createFileRoute("/w/$workspaceId")({
     if (!session) throw redirect({ to: "/login" });
     const workspace = session.workspaces.find((candidate) => candidate.id === params.workspaceId);
     if (!workspace) throw notFound();
-    return { user: session.user, workspace };
+    return { user: session.user, workspace, workspaces: session.workspaces };
   },
   component: WorkspaceLayout,
   notFoundComponent: WorkspaceNotFound,
@@ -24,13 +24,13 @@ export const Route = createFileRoute("/w/$workspaceId")({
 // inset next to it. The panel is the page's scroll container, so the viewers
 // can fill its height.
 function WorkspaceLayout() {
-  const { user, workspace } = Route.useRouteContext();
+  const { user, workspace, workspaces } = Route.useRouteContext();
   const [menuOpen, setMenuOpen] = useState(false);
 
   return (
     <LiveProvider workspaceId={workspace.id}>
       <div className="flex h-dvh bg-canvas">
-        <AppSidebar workspace={workspace} user={user} open={menuOpen} onClose={() => setMenuOpen(false)} />
+        <AppSidebar workspace={workspace} workspaces={workspaces} user={user} open={menuOpen} onClose={() => setMenuOpen(false)} />
         <div className="flex min-w-0 flex-1 flex-col md:py-2 md:pr-2">
           <div className="flex h-12 shrink-0 items-center gap-2 border-b bg-background px-3 md:hidden">
             <button
