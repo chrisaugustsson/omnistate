@@ -102,7 +102,13 @@ function DocPage() {
     if (search.comment) setComment(search.comment);
   }, [search.comment]);
   const opened = useCallback(() => setComment(undefined), []);
-  if (doc.value?.kind === "design") {
+  // A doc an agent deletes while it is open shows as a doc that is not there.
+  const [deleted, setDeleted] = useState<string | null>(null);
+  useProjectEvents(projectId, (event) => {
+    if (event.event === "doc.deleted" && event.data.doc_id === docId) setDeleted(docId);
+  });
+  const gone = deleted === docId;
+  if (doc.value?.kind === "design" && !gone) {
     return (
       <DesignViewer
         workspaceId={workspaceId}
@@ -117,13 +123,13 @@ function DocPage() {
       />
     );
   }
-  if (!doc.value) {
+  if (!doc.value || gone) {
     return (
       <main className="flex min-h-full flex-col">
         <ViewerToolbar workspaceId={workspaceId} projectId={projectId} doc={null} docId={docId} />
         <div className="relative flex-1 bg-canvas">
           <FloatingAlerts>
-            {doc.failed && <FloatingAlert>The doc could not be loaded. Try again in a moment.</FloatingAlert>}
+            {(doc.failed || gone) && <FloatingAlert>The doc could not be loaded. Try again in a moment.</FloatingAlert>}
           </FloatingAlerts>
         </div>
       </main>
