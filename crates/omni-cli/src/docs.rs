@@ -1,7 +1,7 @@
 //! `omni doc`: create a doc (live, or in a change set), list the project's docs,
 //! open a doc there, read it (its head, a version or a change set's draft), show
 //! its metadata, edit a doc (live, or a draft in a change set) with a batch of
-//! operations, and rename or delete it. The project is found as for `omni
+//! operations, rename or delete it, and list what was written to it. The project is found as for `omni
 //! changeset`.
 
 use crate::args::Args;
@@ -489,6 +489,69 @@ pub fn delete(args: &Args, doc: Option<&str>) -> Result<()> {
         say(&format!("{{\"deleted\":{}}}", quote(&doc)));
     } else {
         say(&format!("deleted doc {doc}"));
+    }
+    Ok(())
+}
+
+/// A whole number from `--limit` or `--before`, for the query of `activity`.
+fn count_option(value: &str, name: &str) -> Result<u32> {
+    match value.parse::<u32>() {
+        Ok(count) if count >= 1 => Ok(count),
+        _ => bail!("{name} {value:?} is not a number of 1 or more"),
+    }
+}
+
+/// `omni doc activity <doc> [--limit <n>] [--before <seq>]`
+pub fn activity(args: &Args, doc: Option<&str>) -> Result<()> {
+    const USAGE: &str = "omni doc activity <doc> [--limit <n>] [--before <seq>]";
+    let doc = doc_id(doc, USAGE)?;
+    let mut query = Vec::new();
+    if let Some(limit) = args.limit.as_deref() {
+        query.push(format!("limit={}", count_option(limit, "--limit")?));
+    }
+    if let Some(before) = args.before.as_deref() {
+        query.push(format!("before={}", count_option(before, "--before")?));
+    }
+    let agent = agent(args)?;
+    let project = project_id(args, &agent)?;
+    let mut path = format!("{}/docs/{doc}/activity", project_path(&agent, &project));
+    if !query.is_empty() {
+        path.push('?');
+        path.push_str(&query.join("&"));
+    }
+    let response = agent.request("GET", &path, None)?;
+    let text = response.text();
+    if args.json {
+        print_json(&text);
+        return Ok(());
+    }
+    let answer = parsed(&text, "the activity")?;
+    let entries = answer
+        .get("entries")
+        .and_then(Value::as_array)
+        .unwrap_or_default();
+    if entries.is_empty() {
+        say("no activity");
+    }
+    for entry in entries {
+        let seq = match entry.get("seq") {
+            Some(Value::Number(seq)) => seq.as_str(),
+            _ => "?",
+        };
+        let role = entry
+            .get("agent")
+            .and_then(|agent| agent.str_at("role"))
+            .unwrap_or("-");
+        say(&format!(
+            "{seq}  {}  {role}  {}",
+            entry.str_at("created_at").unwrap_or("?"),
+            entry.str_at("summary").unwrap_or("?")
+        ));
+    }
+    if let Some(Value::Number(next)) = answer.get("next_before") {
+        say(&format!(
+            "older entries: omni doc activity {doc} --before {next}"
+        ));
     }
     Ok(())
 }

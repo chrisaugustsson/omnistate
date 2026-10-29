@@ -2,6 +2,73 @@
 // Run `make web-api` (or `pnpm generate` for a new web/openapi.json) to update it.
 import { z } from "zod";
 
+export const ActivityAgentSchema = z.object({
+  harness: z.string().nullable().optional(),
+  model: z.string().nullable().optional(),
+  role: z.string().nullable().optional(),
+  run: z.string().nullable().optional(),
+});
+export type ActivityAgent = z.infer<typeof ActivityAgentSchema>;
+
+export const ActivityEntrySchema = z.object({
+  agent: ActivityAgentSchema,
+  created_at: z.string(),
+  kind: z.string(),
+  seq: z.number().int(),
+  summary: z.string(),
+});
+export type ActivityEntry = z.infer<typeof ActivityEntrySchema>;
+
+export const ActivityItemSchema = z.union([
+  z.object({
+    after: z.string().nullable().optional(),
+    before: z.string().nullable().optional(),
+    node: z.string().nullable().optional(),
+  }),
+  z.object({
+    after_at: z.number().int().nullable().optional(),
+    before_at: z.number().int().nullable().optional(),
+    board: z.string(),
+  }),
+  z.object({
+    after_at: z.number().int().nullable().optional(),
+    before_at: z.number().int().nullable().optional(),
+    component: z.string(),
+  }),
+]);
+export type ActivityItem = z.infer<typeof ActivityItemSchema>;
+
+export const TitleChangeSchema = z.object({
+  after: z.string(),
+  before: z.string(),
+});
+export type TitleChange = z.infer<typeof TitleChangeSchema>;
+
+export const TokensChangeSchema = z.object({
+  after: z.record(z.string(), z.unknown()).nullable().optional(),
+  before: z.record(z.string(), z.unknown()).nullable().optional(),
+});
+export type TokensChange = z.infer<typeof TokensChangeSchema>;
+
+export const ActivityDetailSchema = z.intersection(ActivityEntrySchema, z.object({
+  items: z.array(ActivityItemSchema),
+  title: z.union([
+    z.null(),
+    TitleChangeSchema,
+  ]).optional(),
+  tokens: z.union([
+    z.null(),
+    TokensChangeSchema,
+  ]).optional(),
+}));
+export type ActivityDetail = z.infer<typeof ActivityDetailSchema>;
+
+export const ActivityListResponseSchema = z.object({
+  entries: z.array(ActivityEntrySchema),
+  next_before: z.number().int().nullable().optional(),
+});
+export type ActivityListResponse = z.infer<typeof ActivityListResponseSchema>;
+
 export const ActorBodySchema = z.object({
   kind: z.string(),
   user_id: z.string().nullable().optional(),
@@ -158,6 +225,15 @@ export const CommentResponseSchema = z.object({
   comment: CommentBodySchema,
 });
 export type CommentResponse = z.infer<typeof CommentResponseSchema>;
+
+export const ComponentBodySchema = z.object({
+  at: z.number().int().nullable().optional(),
+  component_id: z.string(),
+  doc_id: z.string(),
+  node: z.record(z.string(), z.unknown()),
+  tags: z.string(),
+});
+export type ComponentBody = z.infer<typeof ComponentBodySchema>;
 
 export const ConcludeThreadRequestSchema = z.object({
   conclusion: z.string().nullable().optional(),
@@ -945,6 +1021,11 @@ export type WorkspaceListResponse = z.infer<typeof WorkspaceListResponseSchema>;
 
 /** Every component schema by name. */
 export const schemas = {
+  ActivityAgent: ActivityAgentSchema,
+  ActivityDetail: ActivityDetailSchema,
+  ActivityEntry: ActivityEntrySchema,
+  ActivityItem: ActivityItemSchema,
+  ActivityListResponse: ActivityListResponseSchema,
   ActorBody: ActorBodySchema,
   ApiKeyBody: ApiKeyBodySchema,
   ApprovedVersion: ApprovedVersionSchema,
@@ -961,6 +1042,7 @@ export const schemas = {
   CommentBody: CommentBodySchema,
   CommentListResponse: CommentListResponseSchema,
   CommentResponse: CommentResponseSchema,
+  ComponentBody: ComponentBodySchema,
   ConcludeThreadRequest: ConcludeThreadRequestSchema,
   ConflictBody: ConflictBodySchema,
   ConflictDetails: ConflictDetailsSchema,
@@ -1057,6 +1139,8 @@ export const schemas = {
   ThreadBody: ThreadBodySchema,
   ThreadListResponse: ThreadListResponseSchema,
   ThreadResponse: ThreadResponseSchema,
+  TitleChange: TitleChangeSchema,
+  TokensChange: TokensChangeSchema,
   UsageBoard: UsageBoardSchema,
   UsageResponse: UsageResponseSchema,
   UserBody: UserBodySchema,
@@ -1465,6 +1549,13 @@ export const operations = {
       "404": ErrorBodySchema,
     },
   },
+  "GET /api/v1/w/{workspace_id}/projects/{project_id}/components/{component_id}": {
+    responses: {
+      "200": ComponentBodySchema,
+      "401": ErrorBodySchema,
+      "404": ErrorBodySchema,
+    },
+  },
   "POST /api/v1/w/{workspace_id}/projects/{project_id}/conflicts/{conflict_id}/resolve": {
     request: ResolveConflictRequestSchema,
     responses: {
@@ -1544,6 +1635,21 @@ export const operations = {
       "400": ErrorBodySchema,
       "401": ErrorBodySchema,
       "403": ErrorBodySchema,
+      "404": ErrorBodySchema,
+    },
+  },
+  "GET /api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}/activity": {
+    responses: {
+      "200": ActivityListResponseSchema,
+      "400": ErrorBodySchema,
+      "401": ErrorBodySchema,
+      "404": ErrorBodySchema,
+    },
+  },
+  "GET /api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}/activity/{seq}": {
+    responses: {
+      "200": ActivityDetailSchema,
+      "401": ErrorBodySchema,
       "404": ErrorBodySchema,
     },
   },

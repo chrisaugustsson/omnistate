@@ -95,6 +95,11 @@ Usage:
   omni doc rename <doc> <title>       rename a doc; its ID, head and comments stay
   omni doc delete <doc>               delete a doc (it is kept, hidden from every list and
                                       read; the deletion is logged)
+  omni doc activity <doc> [--limit <n>] [--before <seq>]
+                                      list what was written to a doc, newest first: number,
+                                      time, the writing agent's role and a one-line summary.
+                                      --limit (1 to 200, 50 by default) and --before page
+                                      back through the older entries
   omni version save <doc> --changeset <id>
                                       save the change set's draft of a doc as a version, an
                                       unchangeable snapshot; prints the version's ID

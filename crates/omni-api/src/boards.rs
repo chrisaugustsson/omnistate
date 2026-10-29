@@ -20,6 +20,7 @@
 //! Reading one board of a version reads its manifest and that one chunk.
 
 use crate::AppState;
+use crate::activity::head_at;
 use crate::design::nodes_from;
 use crate::docs::{current_draft, ensure_loaded, find_doc, find_draft, head_version};
 use crate::placeholders::{self, Sizing};
@@ -647,6 +648,29 @@ async fn read_board(
     Ok((page.id.clone(), node))
 }
 
+/// The IDs of the boards that a head of a design lists, in order: its manifest
+/// is read, and no board.
+pub(crate) async fn board_ids_of(
+    state: &AppState,
+    workspace_id: &str,
+    chunk: &str,
+) -> Result<Vec<String>, ApiError> {
+    let what = format!("the chunk {chunk}");
+    let text = read_chunk(state, workspace_id, chunk).await?;
+    let Ok(manifest) = serde_json::from_str::<Manifest>(&text) else {
+        // The older form: every page is in the one chunk.
+        return Ok(read_whole_pages(&text, &what)?
+            .iter()
+            .flat_map(|page| page.children().iter().map(|node| node.id().to_string()))
+            .collect());
+    };
+    Ok(manifest
+        .pages
+        .iter()
+        .flat_map(|page| page.boards.iter().map(|board| board.id.clone()))
+        .collect())
+}
+
 // Reading one board ---------------------------------------------------------------------
 
 #[derive(Serialize, ToSchema)]
@@ -771,12 +795,13 @@ pub async fn read_draft_board(
         ("doc_id" = String, Path, description = "The design doc's UUID"),
         ("board_id" = String, Path, description = "The board's node ID"),
         ("version" = Option<String>, Query, description = "The version to read instead of the head"),
+        ("at" = Option<i64>, Query, description = "Read the board as it was right after this write of the doc's activity (`seq`, from 1), instead of the head"),
     ),
     responses(
         (status = 200, description = "The board", body = BoardBody),
         (status = 400, description = "The doc is no design (`not_a_design`)", body = ErrorBody),
         (status = 401, description = "No valid API key or session", body = ErrorBody),
-        (status = 404, description = "No such doc in this project and workspace, the doc has no such version (`not_found`), or the head or version has no such board: an unknown node, a page, a frame, a text (`unknown_board`)", body = ErrorBody),
+        (status = 404, description = "No such doc in this project and workspace, the doc has no such version or no write `at` (`not_found`), or the head, version or write has no such board: an unknown node, a page, a frame, a text (`unknown_board`)", body = ErrorBody),
     )
 )]
 pub async fn read_board_of_version(
@@ -792,13 +817,14 @@ pub async fn read_board_of_version(
     if doc.kind != "design" {
         return Err(ApiError::bad_request("not_a_design"));
     }
-    let (version_id, chunk) = match query.get("version") {
-        Some(version) => {
+    let (version_id, chunk) = match (query.get("at"), query.get("version")) {
+        (Some(at), _) => (None, Some(head_at(&mut tx, &doc_id, at).await?)),
+        (None, Some(version)) => {
             let version_id = parse_uuid(version).ok_or(ApiError::NotFound)?;
             let chunk = chunk_of_version(&mut tx, &doc_id, &version_id).await?;
             (Some(version_id), chunk)
         }
-        None => (head_version(&mut tx, &doc).await?, doc.head.clone()),
+        (None, None) => (head_version(&mut tx, &doc).await?, doc.head.clone()),
     };
     tx.commit().await.map_err(ApiError::database)?;
     let board = board_id(&board)?;

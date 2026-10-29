@@ -1,6 +1,220 @@
 {
   "components": {
     "schemas": {
+      "ActivityAgent": {
+        "properties": {
+          "harness": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "model": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "role": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "run": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "ActivityDetail": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/ActivityEntry"
+          },
+          {
+            "properties": {
+              "items": {
+                "description": "What the write changed, in the order it touched it; empty for a rename.",
+                "items": {
+                  "$ref": "#/components/schemas/ActivityItem"
+                },
+                "type": "array"
+              },
+              "title": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/components/schemas/TitleChange",
+                    "description": "The old and new title; only on a rename."
+                  }
+                ]
+              },
+              "tokens": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/components/schemas/TokensChange",
+                    "description": "The tokens the write changed; only on a write to a design system that\nchanged a token, made it or deleted it."
+                  }
+                ]
+              }
+            },
+            "required": [
+              "items"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "ActivityEntry": {
+        "properties": {
+          "agent": {
+            "$ref": "#/components/schemas/ActivityAgent",
+            "description": "The agent as it declared itself; not verified."
+          },
+          "created_at": {
+            "description": "The time of the write, ISO 8601 in UTC.",
+            "type": "string"
+          },
+          "kind": {
+            "description": "`create`, `edit`, `rename` or `delete`.",
+            "type": "string"
+          },
+          "seq": {
+            "description": "The write's number in the doc: 1 for its creation, rising by one with\nevery write, with no gaps.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "summary": {
+            "description": "One line about the write, such as `3 nodes changed, 1 inserted`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "seq",
+          "kind",
+          "agent",
+          "created_at",
+          "summary"
+        ],
+        "type": "object"
+      },
+      "ActivityItem": {
+        "description": "One thing a write changed. Which one an item is shows in its key: `node`\nfor an HTML doc, `board` for a design, `component` for a design system.",
+        "oneOf": [
+          {
+            "description": "An element of an HTML doc, as outer HTML with `data-omni-id`. `before`\nis `null` for an inserted element and `after` for a deleted one. The\ncreation or deletion of a doc is one item whose `node` is `null` and\nwhose HTML is the whole doc.",
+            "properties": {
+              "after": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "before": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "node": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "type": "object"
+          },
+          {
+            "description": "A board of a design. `before_at` and `after_at` are the `seq` to read\nthe board at with `/boards/{board}?at=`, `null` for a board the write\nadded (`before_at`) or removed (`after_at`).",
+            "properties": {
+              "after_at": {
+                "format": "int64",
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "before_at": {
+                "format": "int64",
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "board": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "board"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A component of a design system, to read at `/components/{component}?at=`\nas boards are.",
+            "properties": {
+              "after_at": {
+                "format": "int64",
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "before_at": {
+                "format": "int64",
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "component": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "component"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "ActivityListResponse": {
+        "properties": {
+          "entries": {
+            "description": "The doc's writes, newest first.",
+            "items": {
+              "$ref": "#/components/schemas/ActivityEntry"
+            },
+            "type": "array"
+          },
+          "next_before": {
+            "description": "The `before` that lists the next, older page; `null` on the last page.",
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "entries"
+        ],
+        "type": "object"
+      },
       "ActorBody": {
         "properties": {
           "kind": {
@@ -466,6 +680,40 @@
         },
         "required": [
           "comment"
+        ],
+        "type": "object"
+      },
+      "ComponentBody": {
+        "properties": {
+          "at": {
+            "description": "The `seq` that was read; `null` for the head.",
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "component_id": {
+            "type": "string"
+          },
+          "doc_id": {
+            "description": "The project's design system doc.",
+            "type": "string"
+          },
+          "node": {
+            "description": "The same component as a JSON node.",
+            "type": "object"
+          },
+          "tags": {
+            "description": "The component and its subtree in the tag format.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "doc_id",
+          "component_id",
+          "tags",
+          "node"
         ],
         "type": "object"
       },
@@ -3088,6 +3336,40 @@
         "required": [
           "thread"
         ],
+        "type": "object"
+      },
+      "TitleChange": {
+        "properties": {
+          "after": {
+            "type": "string"
+          },
+          "before": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "before",
+          "after"
+        ],
+        "type": "object"
+      },
+      "TokensChange": {
+        "properties": {
+          "after": {
+            "description": "DTCG JSON of the tokens the write added or changed, as they are now;\n`null` for a design system that was deleted.",
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "before": {
+            "description": "DTCG JSON of the tokens the write changed or removed, as they were, in\ntheir groups and with every mode; `null` for a design system that was\njust made. For a deleted design system, every token.",
+            "type": [
+              "object",
+              "null"
+            ]
+          }
+        },
         "type": "object"
       },
       "UsageBoard": {
@@ -8011,6 +8293,87 @@
         "x-omni-access": "both"
       }
     },
+    "/api/v1/w/{workspace_id}/projects/{project_id}/components/{component_id}": {
+      "get": {
+        "operationId": "read_component",
+        "parameters": [
+          {
+            "description": "The workspace's UUID",
+            "in": "path",
+            "name": "workspace_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The project's UUID",
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The component's node ID",
+            "in": "path",
+            "name": "component_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Read the component as it was right after this write of the design system's activity, instead of its head",
+            "in": "query",
+            "name": "at",
+            "required": false,
+            "schema": {
+              "format": "int64",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ComponentBody"
+                }
+              }
+            },
+            "description": "The component"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No valid API key or session"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The project has no design system, the design system has no write `at`, or the head or that write has no such component (`unknown_component`)"
+          }
+        },
+        "summary": "Reads one component of the project's design system: its head, or with\n`?at=<seq>` the component as it was right after write `seq` of the design\nsystem. Only the component's own content is versioned: the tokens and\ncomponents it refers to are those of the head.",
+        "tags": [
+          "crate::activity"
+        ],
+        "x-omni-access": "both"
+      }
+    },
     "/api/v1/w/{workspace_id}/projects/{project_id}/conflicts/{conflict_id}/resolve": {
       "post": {
         "operationId": "resolve",
@@ -9005,6 +9368,188 @@
         "x-omni-access": "agent"
       }
     },
+    "/api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}/activity": {
+      "get": {
+        "operationId": "list_activity",
+        "parameters": [
+          {
+            "description": "The workspace's UUID",
+            "in": "path",
+            "name": "workspace_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The project's UUID",
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The doc's UUID",
+            "in": "path",
+            "name": "doc_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The most entries to list: 1 to 200, 50 by default",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "format": "int64",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "List only the entries with a `seq` below this one: the `next_before` of the page before",
+            "in": "query",
+            "name": "before",
+            "required": false,
+            "schema": {
+              "format": "int64",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ActivityListResponse"
+                }
+              }
+            },
+            "description": "The doc's writes, newest first"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "`limit` or `before` is not a number in range (`invalid_request`)"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No valid API key or session"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No such doc in this project and workspace, or it was deleted"
+          }
+        },
+        "summary": "Lists the writes to a doc, newest first, a page at a time: one entry for\neach row of the doc's log, with the agent's identity, the time and a\none-line summary.",
+        "tags": [
+          "crate::activity"
+        ],
+        "x-omni-access": "both"
+      }
+    },
+    "/api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}/activity/{seq}": {
+      "get": {
+        "operationId": "show_activity",
+        "parameters": [
+          {
+            "description": "The workspace's UUID",
+            "in": "path",
+            "name": "workspace_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The project's UUID",
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The doc's UUID",
+            "in": "path",
+            "name": "doc_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The write's number in the doc",
+            "in": "path",
+            "name": "seq",
+            "required": true,
+            "schema": {
+              "format": "int64",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ActivityDetail"
+                }
+              }
+            },
+            "description": "The write"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No valid API key or session"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No such doc in this project and workspace, it was deleted, or it has no write with this `seq`"
+          }
+        },
+        "summary": "Answers one write to a doc: the entry of the list and what the write\nchanged. For an HTML doc each element the write acted on, as HTML before\nand after. For a design the changed boards and the `seq` to read each at.\nFor a design system the changed components and the `seq` to read each at,\nand the tokens that changed.",
+        "tags": [
+          "crate::activity"
+        ],
+        "x-omni-access": "both"
+      }
+    },
     "/api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}/boards/{board_id}": {
       "get": {
         "operationId": "read_board_of_version",
@@ -9053,6 +9598,16 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "description": "Read the board as it was right after this write of the doc's activity (`seq`, from 1), instead of the head",
+            "in": "query",
+            "name": "at",
+            "required": false,
+            "schema": {
+              "format": "int64",
+              "type": "integer"
+            }
           }
         ],
         "responses": {
@@ -9094,7 +9649,7 @@
                 }
               }
             },
-            "description": "No such doc in this project and workspace, the doc has no such version (`not_found`), or the head or version has no such board: an unknown node, a page, a frame, a text (`unknown_board`)"
+            "description": "No such doc in this project and workspace, the doc has no such version or no write `at` (`not_found`), or the head, version or write has no such board: an unknown node, a page, a frame, a text (`unknown_board`)"
           }
         },
         "summary": "Reads one board of a design doc's head, or of the version named by\n`?version=`, in the tag format. The head is read, never the mainline\nversion. Only the manifest and the board's one chunk are read.",

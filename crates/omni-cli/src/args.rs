@@ -53,6 +53,10 @@ pub struct Args {
     /// board in it to read.
     pub doc: Option<String>,
     pub board: Option<String>,
+    /// `omni doc activity <doc> --limit <n> --before <seq>`: how many entries
+    /// to list and where the page ends.
+    pub limit: Option<String>,
+    pub before: Option<String>,
     /// `omni tokens export --out <file or directory>`: where to write.
     pub out: Option<String>,
     /// `omni tokens export --per-mode`: one file per mode.
@@ -173,6 +177,8 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Args> {
             "--changeset" => &mut parsed.changeset,
             "--doc" => &mut parsed.doc,
             "--board" => &mut parsed.board,
+            "--limit" => &mut parsed.limit,
+            "--before" => &mut parsed.before,
             "--kind" => &mut parsed.kind,
             "--pillar" => &mut parsed.pillar,
             "--module" => {

@@ -3,6 +3,10 @@
 //! in the route registry (`agent`, `human` or `both`), so the document and the
 //! registry cannot disagree about who may call a route.
 
+use crate::activity::{
+    ActivityAgent, ActivityDetail, ActivityEntry, ActivityItem, ActivityListResponse,
+    ComponentBody, TitleChange, TokensChange,
+};
 use crate::api_keys::{ApiKeyBody, CreatedKeyResponse, KeyListResponse, KeyResponse};
 use crate::attachments::{AttachmentBody, AttachmentResponse};
 use crate::boards::{BoardBody, Manifest, ManifestBoard, ManifestPage};
@@ -112,6 +116,9 @@ use utoipa::OpenApi;
         crate::docs::read_draft,
         crate::docs::edit_draft,
         crate::docs::edit_doc,
+        crate::activity::list_activity,
+        crate::activity::show_activity,
+        crate::activity::read_component,
         crate::claims::take_claim,
         crate::claims::release_claim,
         crate::versions::save_version,
@@ -202,6 +209,14 @@ use utoipa::OpenApi;
         EditRequest,
         OpResultBody,
         EditResponse,
+        ActivityAgent,
+        ActivityEntry,
+        ActivityListResponse,
+        ActivityItem,
+        TitleChange,
+        TokensChange,
+        ActivityDetail,
+        ComponentBody,
         ConflictDetails,
         ConflictBody,
         InvalidOperationBody,

@@ -1129,12 +1129,14 @@ pub(crate) async fn log_change(
         head_before,
         head_after,
         None,
+        None,
     )
     .await
 }
 
 /// Like `log_change`, for a write to a design: `boards` lists each board whose
-/// chunk the write changed as `{board, before, after}`.
+/// chunk the write changed as `{board, before, after}`. For a write to an HTML
+/// doc, `results` lists what each operation did, as the edit answered it.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn log_change_of_boards(
     tx: &mut Tx,
@@ -1145,13 +1147,14 @@ pub(crate) async fn log_change_of_boards(
     head_before: Option<&str>,
     head_after: &str,
     boards: Option<&Value>,
+    results: Option<&Value>,
 ) -> Result<(), ApiError> {
     sqlx::query(
         "INSERT INTO doc_changes \
-         (workspace_id, doc_id, seq, agent, operations, head_before, head_after, boards) \
+         (workspace_id, doc_id, seq, agent, operations, head_before, head_after, boards, results) \
          VALUES ($1::uuid, $2::uuid, \
                  (SELECT COALESCE(MAX(seq), 0) + 1 FROM doc_changes WHERE doc_id = $2::uuid), \
-                 $3::text::jsonb, $4::text::jsonb, $5, $6, $7::text::jsonb)",
+                 $3::text::jsonb, $4::text::jsonb, $5, $6, $7::text::jsonb, $8::text::jsonb)",
     )
     .bind(workspace_id)
     .bind(doc_id)
@@ -1160,6 +1163,7 @@ pub(crate) async fn log_change_of_boards(
     .bind(head_before)
     .bind(head_after)
     .bind(boards.map(Value::to_string))
+    .bind(results.map(Value::to_string))
     .execute(&mut **tx)
     .await
     .map_err(ApiError::database)?;
@@ -2295,7 +2299,7 @@ pub async fn edit_doc(
         .execute(&mut *tx)
         .await
         .map_err(ApiError::database)?;
-    log_change(
+    log_change_of_boards(
         &mut tx,
         &workspace_id,
         &doc_id,
@@ -2303,6 +2307,8 @@ pub async fn edit_doc(
         &Value::Array(sent),
         head_before.as_deref(),
         &head_after,
+        None,
+        Some(&json!(results)),
     )
     .await?;
     live::emit(

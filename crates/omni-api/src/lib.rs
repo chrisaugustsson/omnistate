@@ -6,6 +6,7 @@
 //! bypass row-level security (migrations/README.md). Only start-up uses the
 //! owner's login: it applies the migrations and sets the API role's password.
 
+mod activity;
 mod api_keys;
 mod attachments;
 pub mod auth;
@@ -361,6 +362,14 @@ pub fn router(state: AppState) -> Router {
             post(docs::edit_doc),
         )
         .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}/activity",
+            get(activity::list_activity),
+        )
+        .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}/activity/{seq}",
+            get(activity::show_activity),
+        )
+        .route(
             "/api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}/html",
             get(docs::read_doc_html),
         )
@@ -435,6 +444,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/v1/w/{workspace_id}/projects/{project_id}/components/usage",
             get(design::component_usage),
+        )
+        .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/components/{component_id}",
+            get(activity::read_component),
         )
         .route(
             "/api/v1/w/{workspace_id}/attachments",

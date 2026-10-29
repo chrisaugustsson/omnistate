@@ -110,9 +110,11 @@ pub fn run(args: &Args) -> Result<()> {
         ["doc", "rename", doc, title] => docs::rename(args, Some(doc), Some(title)),
         ["doc", "delete"] => docs::delete(args, None),
         ["doc", "delete", doc] => docs::delete(args, Some(doc)),
+        ["doc", "activity"] => docs::activity(args, None),
+        ["doc", "activity", doc] => docs::activity(args, Some(doc)),
         ["doc", ..] => {
             bail!(
-                "usage: omni doc create|list|open|read|show|edit|remove|rename|delete; see `omni --help`"
+                "usage: omni doc create|list|open|read|show|edit|remove|rename|delete|activity; see `omni --help`"
             )
         }
         ["version", "save"] => versions::save(args, None),

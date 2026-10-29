@@ -1716,6 +1716,7 @@ pub(crate) async fn edit_head(
         head_before,
         &head_after,
         Some(&boards),
+        None,
     )
     .await?;
     live::emit(
