@@ -630,6 +630,26 @@ fn head_of(doc: &str) -> String {
         .unwrap_or_else(|| panic!("the doc {doc} has a head"))
 }
 
+/// The `data` of every `doc.changed` event of the project that names `doc`,
+/// oldest first.
+fn doc_changed_events(project: &str, doc: &str) -> Vec<Value> {
+    block(async {
+        let mut conn = admin_connection().await;
+        let rows = sqlx::query_scalar::<_, String>(
+            "SELECT data::jsonb::text FROM live_events WHERE project_id = $1::uuid \
+             AND event = 'doc.changed' AND data ->> 'doc_id' = $2 ORDER BY seq",
+        )
+        .bind(project)
+        .bind(doc)
+        .fetch_all(&mut conn)
+        .await
+        .unwrap_or_else(|e| panic!("read the live events: {e}"));
+        rows.iter()
+            .map(|text| serde_json::from_str(text).expect("the data is JSON"))
+            .collect()
+    })
+}
+
 /// The `deleted_at` of a row of `table`, as text; `None` while it is not
 /// deleted (or while the table has no such column).
 fn deleted_at(table: &str, id: &str) -> Option<String> {
@@ -911,6 +931,46 @@ fn deleting_a_doc_is_soft_and_records_one_doc_changes_row() {
     assert_eq!(last.operations, json!([{ "op": "delete" }]), "{last:?}");
     assert_eq!(last.head_before.as_deref(), Some(head.as_str()), "{last:?}");
     assert_writer(last);
+}
+
+#[test]
+fn creating_renaming_and_deleting_a_doc_each_send_doc_changed_with_the_doc_and_its_head() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    let doc = new_doc(f, client, &project, None, "Live plan");
+    let sent = |what: &str, head: &str| {
+        let events = doc_changed_events(&project, &doc);
+        let last = events
+            .last()
+            .unwrap_or_else(|| panic!("{what}: no doc.changed was sent"));
+        assert_eq!(last["doc_id"], json!(doc), "{what}: {last}");
+        assert_eq!(last["head"], json!(head), "{what}: {last}");
+        events.len()
+    };
+    assert_eq!(sent("the creation", &head_of(&doc)), 1);
+
+    write_paragraph(f, client, &project, &doc, "Pay in one step.");
+    let head = head_of(&doc);
+    let written = doc_changed_events(&project, &doc).len();
+    must(
+        rename_doc(
+            f,
+            client,
+            &agent(f),
+            &project,
+            &doc,
+            &json!({ "title": "Live plan, renamed" }),
+        ),
+        200,
+        "rename the doc",
+    );
+    assert_eq!(sent("the rename", &head), written + 1);
+
+    assert_deleted(
+        &delete_doc(f, client, &agent(f), &project, &doc),
+        "delete the doc",
+    );
+    assert_eq!(sent("the delete", &head), written + 2);
 }
 
 #[test]

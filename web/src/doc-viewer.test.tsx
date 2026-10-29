@@ -107,6 +107,7 @@ function fakeApi() {
   const api = {
     comments: seededComments() as Comment[],
     head: HEAD_HTML,
+    deleted: false,
     calls: [] as Call[],
   };
   const json = (status: number, body: unknown) =>
@@ -140,6 +141,7 @@ function fakeApi() {
       body = null;
     }
     api.calls.push({ method, path, search: url.searchParams, body });
+    if (api.deleted && path.startsWith(`${API}/docs/${DOC_ID}`)) return json(404, { error: "not_found" });
 
     switch (`${method} ${path}`) {
       case "GET /api/v1/auth/me":
@@ -151,7 +153,7 @@ function fakeApi() {
       case `GET ${API}/home`:
         return json(200, {
           project_id: PROJECT_ID,
-          docs: [doc],
+          docs: api.deleted ? [] : [doc],
           changesets: [],
           threads: [],
           waiting: { decisions: [], changesets: [], comments: [], questions: [] },
@@ -627,5 +629,34 @@ describe("the doc viewer", () => {
     expect(card.querySelector("img, b"), "the snapshot is not put into the page as HTML").toBeNull();
     expect(within(card).getByRole("textbox", { name: /^reply$/i })).toBeTruthy();
     expect(within(card).getByRole("button", { name: /^delete$/i })).toBeTruthy();
+  });
+
+  test("when an agent deletes the open doc, the page shows it as not found", async () => {
+    const api = fakeApi();
+    renderAt(DOC_PATH);
+    await findFrame();
+    const socket = await openSocket();
+    await shown((s) => expect(s.html).toBe(HEAD_HTML));
+
+    api.deleted = true;
+    socket.receive(event(41, "doc.deleted", { doc_id: DOC_ID }));
+    socket.receive(event(42, "doc.changed", { doc_id: DOC_ID, head: "0".repeat(64) }));
+    await screen.findByText("The doc could not be loaded. Try again in a moment.");
+    await waitFor(() => expect(document.querySelector("iframe"), "the deleted doc's content is gone").toBeNull());
+    expect(screen.queryByText(DOC_TITLE), "and so is its title").toBeNull();
+  });
+
+  test("when an agent deletes another doc, the open doc stays shown", async () => {
+    fakeApi();
+    renderAt(DOC_PATH);
+    const frame = await findFrame();
+    const socket = await openSocket();
+    await shown((s) => expect(s.html).toBe(HEAD_HTML));
+
+    socket.receive(event(41, "doc.deleted", { doc_id: "0192d7a0-5555-7000-8000-000000000009" }));
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(document.querySelector("iframe")).toBe(frame);
+    expect(screen.getByRole("heading", { name: DOC_TITLE })).toBeTruthy();
+    expect(screen.queryByText("The doc could not be loaded. Try again in a moment.")).toBeNull();
   });
 });

@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 // US-123: the project sidebar (the navigation named "Project" below the
 // switcher) and the visit history in localStorage, omni:visits:<project id>.
+// US-124: the sidebar's Recent and scope tree.
 import { RouterProvider, createMemoryHistory } from "@tanstack/react-router";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -18,6 +19,10 @@ const CHECKOUT_DOC = "0192d7a0-5555-7000-8000-000000000002";
 const CHECKOUT_THREAD = "0192d7a0-6666-7000-8000-000000000001";
 const SAY_WEEK = "0192d7a0-7777-7000-8000-000000000001";
 const INDEX_DATE = "0192d7a0-7777-7000-8000-000000000002";
+const RETURNS = "0192d7a0-4444-7000-8000-000000000004";
+const GIFT_CARDS = "0192d7a0-4444-7000-8000-000000000005";
+const LOYALTY = "0192d7a0-4444-7000-8000-000000000006";
+const GONE = "0192d7a0-4444-7000-8000-000000000009";
 const MISSING = "0192d7a0-9999-7000-8000-000000000001";
 const USER = { id: "0192d7a0-1111-7000-8000-000000000001", email: "alice@example.com" };
 const WORKSPACE_PATH = `/w/${WORKSPACE_ID}`;
@@ -38,13 +43,14 @@ function feature(id: string, name: string) {
   };
 }
 
-function doc(id: string, featureId: string | null, title: string) {
+function doc(id: string, featureId: string | null, title: string, fields: { pillar?: string; kind?: string; waiting?: number } = {}) {
   return {
     id,
     project_id: PROJECT_ID,
     feature_id: featureId,
-    kind: "html",
-    pillar: "spec",
+    kind: fields.kind ?? "html",
+    pillar: fields.pillar ?? "spec",
+    waiting: fields.waiting ?? 0,
     title,
     created_at: AT,
     drafts: [],
@@ -87,14 +93,21 @@ function waiting(id: string, text: string) {
 const docs = [doc(APP_DOC, null, "Returns PRD"), doc(CHECKOUT_DOC, CHECKOUT, "Pay in one step")];
 const threads = [thread(CHECKOUT_THREAD, CHECKOUT, "Which wallets?")];
 
-function home(fields: { features?: ReturnType<typeof feature>[]; waiting?: ReturnType<typeof waiting>[] } = {}) {
+function home(
+  fields: {
+    features?: ReturnType<typeof feature>[];
+    waiting?: ReturnType<typeof waiting>[];
+    docs?: ReturnType<typeof doc>[];
+    threads?: ReturnType<typeof thread>[];
+  } = {},
+) {
   return {
     project_id: PROJECT_ID,
     app: { last_activity: null },
     features: fields.features ?? [feature(CHECKOUT, "Checkout")],
-    docs,
+    docs: fields.docs ?? docs,
     changesets: [],
-    threads,
+    threads: fields.threads ?? threads,
     waiting: { decisions: [], changesets: [], comments: fields.waiting ?? [], questions: [] },
   };
 }
@@ -296,6 +309,10 @@ describe("the project sidebar", () => {
         { text: "App", href: `${PROJECT_PATH}/app` },
         { text: "Features3", href: `${PROJECT_PATH}/features` },
         { text: "Threads", href: `${PROJECT_PATH}/threads` },
+        // App's scope tree.
+        { text: "App", href: `${PROJECT_PATH}/app` },
+        { text: "Returns PRD", href: `${PROJECT_PATH}/docs/${APP_DOC}` },
+        { text: "Threads (0)", href: `${PROJECT_PATH}/threads?scope=app` },
       ]);
     });
 
@@ -304,7 +321,7 @@ describe("the project sidebar", () => {
       renderAt(`${PROJECT_PATH}/app`);
       const nav = await projectNav();
       await waitFor(() => expect(links(nav)[2]?.text).toBe("Features0"));
-      expect(links(nav).map((link) => link.text)).toEqual(["Inbox", "App", "Features0", "Threads"]);
+      expect(links(nav).map((link) => link.text)).toEqual(["Inbox", "App", "Features0", "Threads", "App", "Returns PRD", "Threads (0)"]);
     });
 
     test("the Inbox count follows the comments as their events come in", async () => {
@@ -471,5 +488,246 @@ describe("the visit history", () => {
     renderAt(`${PROJECT_PATH}/features/${CHECKOUT}`);
     await waitFor(() => expect(storedVisits()[0]).toEqual({ scope: CHECKOUT, at: Date.parse("2026-10-21T10:00:00Z") }));
     expect(storedVisits()).toEqual([{ scope: CHECKOUT, at: Date.parse("2026-10-21T10:00:00Z") }, ...earlier.slice(0, 49)]);
+  });
+});
+
+/** Stores `places` as the project's visit history, newest first, a minute apart. */
+function seedVisits(...places: { scope: string; doc?: string; thread?: string }[]) {
+  const visits = places.map((place, index) => ({ ...place, at: Date.parse("2026-10-21T09:00:00Z") - index * 60_000 }));
+  localStorage.setItem(VISITS_KEY, JSON.stringify(visits));
+}
+
+/** Opens `path` afresh, as a reload of the page does. */
+function reload(path: string) {
+  cleanup();
+  return renderAt(path);
+}
+
+/** The Recent label, a button. */
+async function recentLabel() {
+  return within(await projectNav()).findByRole("button", { name: "Recent" });
+}
+
+/** Recent's label with what it lists. */
+async function recent() {
+  return (await recentLabel()).parentElement as HTMLElement;
+}
+
+/**
+ * The rows of the scope tree, from its name down to its Threads row: a link,
+ * a pillar's fold button, or an empty pillar's row, each as its shown text and
+ * its href when it has one.
+ */
+async function treeRows() {
+  const nav = await projectNav();
+  const tree = (await within(nav).findByRole("link", { name: /^Threads \(\d+\)$/ })).parentElement as HTMLElement;
+  return Array.from(tree.querySelectorAll<HTMLElement>("a, button, div"))
+    .filter((row) => row.matches("a, button") || (row.childElementCount > 0 && !row.querySelector("a, button, div")))
+    .map((row) => ({ text: shownText(row), href: row.getAttribute("href") }));
+}
+
+/** The tree's first row: the scope's name. */
+async function treeHead() {
+  return (await treeRows())[0];
+}
+
+describe("the sidebar's Recent", () => {
+  const sixFeatures = [
+    feature(CHECKOUT, "Checkout"),
+    feature(WALLETS, "Wallets"),
+    feature(SEARCH, "Search"),
+    feature(RETURNS, "Returns"),
+    feature(GIFT_CARDS, "Gift cards"),
+    feature(LOYALTY, "Loyalty"),
+  ];
+
+  beforeEach(() => {
+    vi.stubGlobal("scrollTo", () => {});
+    FakeWebSocket.instances = [];
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    localStorage.clear();
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+    localStorage.clear();
+  });
+
+  test("lists the last 5 features visited, newest first and each once, by name, each opening its page", async () => {
+    fakeApi({ home: home({ features: sixFeatures }) });
+    seedVisits(
+      { scope: CHECKOUT, thread: CHECKOUT_THREAD },
+      { scope: "app", doc: APP_DOC },
+      { scope: WALLETS },
+      { scope: CHECKOUT, doc: CHECKOUT_DOC },
+      { scope: SEARCH, doc: "0192d7a0-5555-7000-8000-000000000003" },
+      { scope: "app" },
+      { scope: RETURNS },
+      { scope: GIFT_CARDS, thread: "0192d7a0-6666-7000-8000-000000000002" },
+      { scope: LOYALTY },
+    );
+    renderAt(`${PROJECT_PATH}/inbox`);
+    const list = await recent();
+    await waitFor(() => expect(links(list)).toHaveLength(5));
+    expect(links(list)).toEqual([
+      { text: "Checkout", href: `${PROJECT_PATH}/features/${CHECKOUT}` },
+      { text: "Wallets", href: `${PROJECT_PATH}/features/${WALLETS}` },
+      { text: "Search", href: `${PROJECT_PATH}/features/${SEARCH}` },
+      { text: "Returns", href: `${PROJECT_PATH}/features/${RETURNS}` },
+      { text: "Gift cards", href: `${PROJECT_PATH}/features/${GIFT_CARDS}` },
+    ]);
+  });
+
+  test("a visited feature that is gone is skipped, and an older one takes its place", async () => {
+    fakeApi({ home: home({ features: sixFeatures }) });
+    seedVisits({ scope: GONE }, { scope: CHECKOUT }, { scope: WALLETS }, { scope: SEARCH }, { scope: RETURNS }, { scope: GIFT_CARDS });
+    renderAt(`${PROJECT_PATH}/inbox`);
+    const list = await recent();
+    await waitFor(() => expect(links(list)).toHaveLength(5));
+    expect(links(list).map((link) => link.text)).toEqual(["Checkout", "Wallets", "Search", "Returns", "Gift cards"]);
+  });
+
+  test("with no feature visited it says No recent features, until one is visited", async () => {
+    fakeApi();
+    seedVisits({ scope: "app", doc: APP_DOC });
+    const router = renderAt(`${PROJECT_PATH}/app`);
+    const list = await recent();
+    await within(list).findByText("No recent features");
+    expect(links(list)).toEqual([]);
+
+    await router.navigate({ href: `${PROJECT_PATH}/features/${CHECKOUT}` });
+    await waitFor(async () =>
+      expect(links(await recent())).toEqual([{ text: "Checkout", href: `${PROJECT_PATH}/features/${CHECKOUT}` }]),
+    );
+  });
+
+  test("its label folds and unfolds the list, unfolded at first, and the fold survives a reload", async () => {
+    fakeApi();
+    seedVisits({ scope: CHECKOUT });
+    renderAt(`${PROJECT_PATH}/inbox`);
+    await within(await recent()).findByRole("link", { name: "Checkout" });
+    expect((await recentLabel()).getAttribute("aria-expanded")).toBe("true");
+
+    fireEvent.click(await recentLabel());
+    await waitFor(async () => expect(links(await recent())).toEqual([]));
+    reload(`${PROJECT_PATH}/inbox`);
+    await waitFor(async () => expect((await recentLabel()).getAttribute("aria-expanded")).toBe("false"));
+    expect(links(await recent())).toEqual([]);
+
+    fireEvent.click(await recentLabel());
+    await within(await recent()).findByRole("link", { name: "Checkout" });
+    reload(`${PROJECT_PATH}/inbox`);
+    await within(await recent()).findByRole("link", { name: "Checkout" });
+  });
+});
+
+describe("the sidebar's scope tree", () => {
+  const PLAN = "0192d7a0-5555-7000-8000-000000000011";
+  const NOTES = "0192d7a0-5555-7000-8000-000000000012";
+  const CART_SCREENS = "0192d7a0-5555-7000-8000-000000000013";
+  const TOKENS = "0192d7a0-5555-7000-8000-000000000014";
+  const LOAD_TEST = "0192d7a0-5555-7000-8000-000000000015";
+  const appTree = home({
+    docs: [
+      doc(APP_DOC, null, "Returns PRD", { waiting: 2 }),
+      doc(NOTES, null, "beta notes"),
+      doc(CART_SCREENS, null, "Cart screens", { pillar: "ui", kind: "design" }),
+      doc(PLAN, null, "Alpha plan"),
+      doc(LOAD_TEST, null, "Load test", { pillar: "research" }),
+      doc(TOKENS, null, "Tokens", { pillar: "ui", kind: "design-system" }),
+      doc(CHECKOUT_DOC, CHECKOUT, "Pay in one step"),
+    ],
+    threads: [
+      thread("0192d7a0-6666-7000-8000-000000000011", null, "Which carriers?"),
+      thread(CHECKOUT_THREAD, CHECKOUT, "Which wallets?"),
+      thread("0192d7a0-6666-7000-8000-000000000012", null, "Keep the old URLs?"),
+    ],
+  });
+  const docRow = (id: string, text: string) => ({ text, href: `${PROJECT_PATH}/docs/${id}` });
+
+  beforeEach(() => {
+    vi.stubGlobal("scrollTo", () => {});
+    FakeWebSocket.instances = [];
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    localStorage.clear();
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+    localStorage.clear();
+  });
+
+  test("App's tree: its name, the five pillars with their doc counts and docs by title, the design system first, what waits, and its Threads", async () => {
+    fakeApi({ home: appTree });
+    renderAt(`${PROJECT_PATH}/app`);
+    await waitFor(async () => expect((await treeRows())[1]?.text).toBe("Spec3"));
+    expect(await treeRows()).toEqual([
+      { text: "App", href: `${PROJECT_PATH}/app` },
+      { text: "Spec3", href: null },
+      docRow(PLAN, "Alpha plan"),
+      docRow(NOTES, "beta notes"),
+      docRow(APP_DOC, "Returns PRD2"),
+      { text: "UI2", href: null },
+      docRow(TOKENS, "Tokens"),
+      docRow(CART_SCREENS, "Cart screens"),
+      { text: "Architectureempty", href: null },
+      { text: "DBempty", href: null },
+      { text: "Research1", href: null },
+      docRow(LOAD_TEST, "Load test"),
+      { text: "Threads (2)", href: `${PROJECT_PATH}/threads?scope=app` },
+    ]);
+  });
+
+  test("on a feature's thread or doc page it shows that feature, its Threads row filtered to it", async () => {
+    fakeApi({ home: appTree });
+    const router = renderAt(`${PROJECT_PATH}/threads/${CHECKOUT_THREAD}`);
+    await waitFor(async () => expect((await treeHead()).href).toBe(`${PROJECT_PATH}/features/${CHECKOUT}`));
+    expect((await treeHead()).text).toMatch(/^Checkout/);
+    expect((await treeRows()).at(-1)).toEqual({ text: "Threads (1)", href: `${PROJECT_PATH}/threads?scope=${CHECKOUT}` });
+
+    await router.navigate({ href: `${PROJECT_PATH}/docs/${CHECKOUT_DOC}` });
+    await waitFor(docShown);
+    expect((await treeRows()).filter((row) => row.href?.includes("/docs/"))).toEqual([docRow(CHECKOUT_DOC, "Pay in one step")]);
+    expect((await treeHead()).href).toBe(`${PROJECT_PATH}/features/${CHECKOUT}`);
+  });
+
+  test("on the Features page it shows the scope visited last", async () => {
+    fakeApi({ home: appTree });
+    seedVisits({ scope: CHECKOUT, doc: CHECKOUT_DOC }, { scope: "app" });
+    renderAt(`${PROJECT_PATH}/features`);
+    await waitFor(async () => expect((await treeHead()).href).toBe(`${PROJECT_PATH}/features/${CHECKOUT}`));
+  });
+
+  test("with no visit, or with a last visited feature that is gone, it shows App", async () => {
+    fakeApi({ home: appTree });
+    renderAt(`${PROJECT_PATH}/inbox`);
+    expect(await treeHead()).toEqual({ text: "App", href: `${PROJECT_PATH}/app` });
+
+    seedVisits({ scope: GONE }, { scope: CHECKOUT });
+    reload(`${PROJECT_PATH}/threads`);
+    expect(await treeHead()).toEqual({ text: "App", href: `${PROJECT_PATH}/app` });
+  });
+
+  test("a pillar folds on its own, unfolded at first, and its fold survives a reload", async () => {
+    fakeApi({ home: appTree });
+    renderAt(`${PROJECT_PATH}/app`);
+    const nav = await projectNav();
+    await within(nav).findByRole("link", { name: "Alpha plan" });
+    expect(within(nav).getByRole("button", { name: /^Spec/ }).getAttribute("aria-expanded")).toBe("true");
+
+    fireEvent.click(within(nav).getByRole("button", { name: /^Spec/ }));
+    await waitFor(() => expect(within(nav).queryByRole("link", { name: "Alpha plan" })).toBeNull());
+    expect(within(nav).getByRole("link", { name: "Tokens" }), "UI stays unfolded").toBeTruthy();
+
+    const router = reload(`${PROJECT_PATH}/app`);
+    const reloaded = await projectNav();
+    await within(reloaded).findByRole("link", { name: "Tokens" });
+    expect(within(reloaded).queryByRole("link", { name: "Alpha plan" }), "Spec is still folded").toBeNull();
+    expect(within(reloaded).getByRole("button", { name: /^Spec/ }).getAttribute("aria-expanded")).toBe("false");
+
+    await router.navigate({ href: `${PROJECT_PATH}/features/${CHECKOUT}` });
+    await within(await projectNav()).findByRole("link", { name: "Pay in one step" });
   });
 });

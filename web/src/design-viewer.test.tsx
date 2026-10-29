@@ -883,4 +883,16 @@ describe("the design as agents change it", () => {
     expect(await screen.findByText(/select a node/i)).toBeTruthy();
     expect(fake.instances.filter((instance) => !instance.destroyed), "the same renderer, so the zoom and pan stay").toEqual([renderer]);
   });
+
+  test("when an agent deletes the open design, the page shows it as not found", async () => {
+    renderAt(DOC_PATH);
+    await openSocket();
+    const renderer = await findRenderer();
+    await findShownWhole(PAGES[0]);
+
+    const socket = FakeWebSocket.instances[FakeWebSocket.instances.length - 1];
+    socket.receive({ type: "event", seq: 41, event: "doc.deleted", project_id: PROJECT_ID, at: AT, data: { doc_id: DOC_ID } });
+    await screen.findByText("The doc could not be loaded. Try again in a moment.");
+    expect(document.body.contains(renderer.canvas), "the deleted design is no longer drawn").toBe(false);
+  });
 });
