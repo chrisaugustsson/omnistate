@@ -37,9 +37,14 @@ export function threadTime(thread: HomeThread): string {
   return thread.last_post_at ?? thread.created_at;
 }
 
-function flagOf(thread: HomeThread): "Concluded" | "Sealed" | "Open" {
-  if (thread.conclusion) return "Concluded";
-  return thread.sealed ? "Sealed" : "Open";
+type Flag = "Concluded" | "Sealed" | "Open";
+
+/** The thread's flags: the one that matters most, or with `each` both sealed and concluded when they hold. */
+function flagsOf(thread: HomeThread, each: boolean): Flag[] {
+  const flags: Flag[] = [];
+  if (thread.conclusion) flags.push("Concluded");
+  if (thread.sealed && (each || flags.length === 0)) flags.unshift("Sealed");
+  return flags.length > 0 ? flags : ["Open"];
 }
 
 function DocRow({ doc, params }: { doc: HomeDoc; params: Params }) {
@@ -73,9 +78,22 @@ function DocRow({ doc, params }: { doc: HomeDoc; params: Params }) {
   );
 }
 
-/** A thread's row; `scopeName` adds the scope that the thread belongs to, for lists that mix scopes. */
-export function ThreadRow({ thread, params, scopeName }: { thread: HomeThread; params: Params; scopeName?: string }) {
-  const flag = flagOf(thread);
+/**
+ * A thread's row; `scopeName` adds the scope that the thread belongs to, for lists that mix scopes, and
+ * `eachFlag` shows both Sealed and Concluded when they hold, where otherwise only Concluded shows.
+ */
+export function ThreadRow({
+  thread,
+  params,
+  scopeName,
+  eachFlag = false,
+}: {
+  thread: HomeThread;
+  params: Params;
+  scopeName?: string;
+  eachFlag?: boolean;
+}) {
+  const flags = flagsOf(thread, eachFlag);
   const posts = thread.post_count ?? 0;
   return (
     <li>
@@ -99,13 +117,23 @@ export function ThreadRow({ thread, params, scopeName }: { thread: HomeThread; p
         </span>
         <span
           className={cn(
-            "flex w-24 shrink-0 items-center justify-end gap-1 text-xs text-muted-foreground",
-            flag === "Concluded" && "text-emerald-700 dark:text-emerald-400",
+            "flex shrink-0 items-center justify-end gap-3 text-xs text-muted-foreground",
+            eachFlag ? "w-44" : "w-24",
           )}
         >
-          {flag === "Concluded" && <Check aria-hidden className="size-3.5" />}
-          {flag === "Sealed" && <Lock aria-hidden className="size-3.5" />}
-          {flag}
+          {flags.map((flag) => (
+            <span
+              key={flag}
+              className={cn(
+                "flex items-center gap-1",
+                flag === "Concluded" && "text-emerald-700 dark:text-emerald-400",
+              )}
+            >
+              {flag === "Concluded" && <Check aria-hidden className="size-3.5" />}
+              {flag === "Sealed" && <Lock aria-hidden className="size-3.5" />}
+              {flag}
+            </span>
+          ))}
         </span>
       </Link>
     </li>

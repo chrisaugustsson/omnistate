@@ -166,7 +166,7 @@ export function ThreadsPage({
             ) : (
               <List>
                 {shown.map((thread) => (
-                  <ThreadRow key={thread.id} thread={thread} params={params} scopeName={scopeName(thread.feature_id)} />
+                  <ThreadRow key={thread.id} thread={thread} params={params} scopeName={scopeName(thread.feature_id)} eachFlag />
                 ))}
               </List>
             )}
