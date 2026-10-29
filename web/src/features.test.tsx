@@ -465,12 +465,6 @@ describe("features in the web app", () => {
         [...WISHLIST_CHANGESETS, "Voucher balance", "Points ledger"],
       );
     });
-
-    test("the project's Threads page shows project-level threads only", async () => {
-      fakeApi(seeded());
-      renderAt(`${PROJECT_PATH}/threads`);
-      await showsOnly(await page(), ["Which hero layout?"], [...WISHLIST_THREADS, "How do vouchers expire?"]);
-    });
   });
 
   describe("a feature's pages", () => {
@@ -536,22 +530,6 @@ describe("features in the web app", () => {
       const back = within(main).getAllByRole("link", { name: /change sets/i });
       expect(back.map((link) => link.getAttribute("href"))).toContain(featurePath(WISHLIST, "changesets"));
       expect(back.map((link) => link.getAttribute("href"))).not.toContain(`${PROJECT_PATH}/changesets`);
-    });
-
-    test("on a feature's thread the sidebar marks the feature's threads and the back link goes there", async () => {
-      const seed = seeded();
-      fakeApi(seed);
-      renderAt(`${PROJECT_PATH}/threads/${seed.threads.savedThread.id}`);
-      const nav = await sidebar();
-      const current = await linkTo(nav, featurePath(WISHLIST, "threads"));
-      await waitFor(() => expect(marked(current), "the Wishlist's threads are marked").toBe(true));
-      expect(marked(await linkTo(nav, `${PROJECT_PATH}/threads`)), "the project's threads").toBe(false);
-
-      const main = await page();
-      await within(main).findByRole("heading", { level: 1, name: "Should saved lists be public?" });
-      const back = within(main).getAllByRole("link", { name: /threads/i });
-      expect(back.map((link) => link.getAttribute("href"))).toContain(featurePath(WISHLIST, "threads"));
-      expect(back.map((link) => link.getAttribute("href"))).not.toContain(`${PROJECT_PATH}/threads`);
     });
 
     test("on a feature's doc the sidebar marks the feature's docs", async () => {

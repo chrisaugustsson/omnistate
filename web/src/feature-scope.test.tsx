@@ -360,37 +360,6 @@ function hasGlobalBadge(container: HTMLElement) {
   return within(container).queryAllByText(/^\s*global\s*$/i).length > 0;
 }
 
-type Crumb = { name: RegExp; href: string };
-
-/**
- * Asserts that the breadcrumb shows `crumbs` in order, each a link to its
- * href, then `section`, which goes to `sectionHref` if it is a link.
- */
-async function expectTrail(crumbs: Crumb[], section: RegExp, sectionHref: string) {
-  const trail = await screen.findByRole("navigation", { name: /breadcrumb/i });
-  await waitFor(() => {
-    const text = trail.textContent ?? "";
-    let from = 0;
-    for (const name of [...crumbs.map((crumb) => crumb.name), section]) {
-      const match = name.exec(text.slice(from));
-      expect(match, `${name} in the breadcrumb, after what comes before it (${text})`).toBeTruthy();
-      from += (match?.index ?? 0) + (match?.[0].length ?? 0);
-    }
-  });
-  for (const crumb of crumbs) {
-    const links = Array.from(trail.querySelectorAll("a")).filter((a) => crumb.name.test(a.textContent ?? ""));
-    expect(
-      links.map((a) => a.getAttribute("href")),
-      `the breadcrumb links ${crumb.name} to ${crumb.href}`,
-    ).toContain(crumb.href);
-  }
-  for (const element of textElements(trail, section)) {
-    const link = element.closest("a");
-    if (link) expect(link.getAttribute("href"), `the breadcrumb's ${section}`).toBe(sectionHref);
-  }
-  return trail;
-}
-
 /** Asserts that a doc's breadcrumb is exactly `crumbs`, the scope and the pillar linking to `hrefs`. */
 async function expectDocTrail(crumbs: string[], hrefs: string[]) {
   const trail = await screen.findByRole("navigation", { name: /breadcrumb/i });
@@ -402,9 +371,6 @@ async function expectDocTrail(crumbs: string[], hrefs: string[]) {
     [crumbs[1], hrefs[1]],
   ]);
 }
-
-const PROJECT_CRUMB = { name: new RegExp(PROJECT_NAME), href: PROJECT_PATH };
-const WISHLIST_CRUMB = { name: /wishlist/i, href: featurePath(WISHLIST) };
 
 describe("feature scope in reviews", () => {
   beforeEach(() => {
@@ -478,26 +444,6 @@ describe("feature scope in reviews", () => {
   });
 
   describe("where an item lives", () => {
-    test("a feature's thread: project › feature › Threads", async () => {
-      const seed = seeded();
-      fakeApi(seed);
-      renderAt(`${PROJECT_PATH}/threads/${seed.threads.savedThread.id}`);
-      await within(await page()).findByRole("heading", { level: 1, name: "Should saved lists be public?" });
-      await expectTrail([PROJECT_CRUMB, WISHLIST_CRUMB], /threads/i, featurePath(WISHLIST, "threads"));
-    });
-
-    test("a project-level thread: project › Threads, no feature", async () => {
-      const seed = seeded();
-      fakeApi(seed);
-      renderAt(`${PROJECT_PATH}/threads/${seed.threads.heroThread.id}`);
-      await within(await page()).findByRole("heading", { level: 1, name: "Which hero layout?" });
-      const trail = await expectTrail([PROJECT_CRUMB], /threads/i, `${PROJECT_PATH}/threads`);
-      expect(trail.textContent).not.toMatch(/wishlist|loyalty points/i);
-      for (const link of Array.from(trail.querySelectorAll("a"))) {
-        expect(link.getAttribute("href"), "no crumb goes to a feature").not.toMatch(/\/features\//);
-      }
-    });
-
     test("a feature's doc in the doc viewer: feature › pillar › title, linking the feature's page and the pillar on it", async () => {
       const seed = seeded();
       fakeApi(seed);

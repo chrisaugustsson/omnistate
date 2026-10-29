@@ -1,43 +1,8 @@
 // @vitest-environment jsdom
-// US-041: the thread view, where the reviewer follows a thread live and
-// decides on it. It is /w/<workspace id>/projects/<project id>/threads/<thread
-// id>, and the scope pages link each thread's question there. The app is
-// rendered with its own router on a memory history, the browser's fetch is
-// replaced by a fake of the API, and the browser's WebSocket by a fake socket
-// that the test drives.
-//
-// The page loads GET /api/v1/w/<workspace>/projects/<project>/threads/<thread>
-// (crates/omni-api/src/threads.rs), which answers {thread} with its question,
-// criteria, phases, every post (the human reads sealed phases too) and its
-// current decision, a Decision body or null. The page shows:
-//
-// - the thread's question as a heading;
-// - one section (or group) per phase, named "Phase <number>", holding the
-//   posts of that phase; a sealed phase says so ("sealed") in its name or
-//   inside it, an open phase does not. A post is a list item or an article
-//   that shows its summary and, unless the reader asked for summaries only,
-//   its body (`body_html`, which the API has already made safe);
-// - a toggle named for summaries ("Summaries only", a switch, checkbox, radio
-//   or pressed button) that switches between full posts and summaries only;
-// - a form to post: a "Type" choice (a select whose option values are
-//   `directive`, `note` and `question`, or radios named so), a "Summary" field,
-//   a "Body" field and a "Post" button. Each post has a "Reply" button; a post
-//   written after it links to that post. A directive is sent to POST
-//   .../threads/<thread>/directives {summary, body} (or to .../posts with type
-//   `directive`), a note or question to POST .../threads/<thread>/posts {type,
-//   summary, body, links}, a reply carrying {"kind": "post", "post_id"} in
-//   `links`;
-// - a section named "Decision" with every field of the current decision: its
-//   status, direction, chosen option, author, criteria, one row (list item or
-//   table row) per option with its scores and why it lost, the assumptions,
-//   the open questions, the dissent and the posts it relies on (by their
-//   summaries). While it is proposed it has "Approve" and "Reject" buttons:
-//   Approve calls POST .../decisions/<id>/approve, and Reject needs a reason
-//   (a field named "Reason") before it calls POST .../decisions/<id>/reject
-//   {reason}.
-//
-// The page subscribes to the project's live events and loads the thread again
-// when one comes, so posts, phases and decisions appear without a reload.
+// US-114: the thread page (/…/threads/<thread>) and the Threads page
+// (/…/threads?scope=app|<feature>). The app is rendered with its own router on
+// a memory history, fetch is replaced by a fake of the API and WebSocket by a
+// fake socket that the test drives.
 import { RouterProvider, createMemoryHistory } from "@tanstack/react-router";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -45,229 +10,131 @@ import { getRouter } from "./router";
 
 const WORKSPACE_ID = "0192d7a0-0000-7000-8000-00000000000a";
 const PROJECT_ID = "0192d7a0-2222-7000-8000-000000000001";
-const CHANGESET_ID = "0192d7a0-2222-7000-8000-000000000002";
-const THREAD_ID = "0192d7a0-2222-7000-8000-000000000003";
+const CHECKOUT_ID = "0192d7a0-4444-7000-8000-000000000001";
+const SEARCH_ID = "0192d7a0-4444-7000-8000-000000000002";
 const USER = { id: "0192d7a0-1111-7000-8000-000000000001", email: "alice@example.com" };
-const THREAD_PATH = `/w/${WORKSPACE_ID}/projects/${PROJECT_ID}/threads/${THREAD_ID}`;
+const PROJECT_PATH = `/w/${WORKSPACE_ID}/projects/${PROJECT_ID}`;
+const THREADS_PATH = `${PROJECT_PATH}/threads`;
 const API = `/api/v1/w/${WORKSPACE_ID}/projects/${PROJECT_ID}`;
-const AT = "2026-10-21T10:00:00Z";
-const QUESTION = "Which hero layout?";
-const CRITERIA = ["Readable at 320 px", "Fast to build"];
+const NOW = "2026-10-21T15:00:00.000Z";
 const HUMAN = { kind: "human", user_id: USER.id };
 
-function agent(role: string) {
-  return { kind: "agent", run: "run-1", role, model: "test-model", harness: "test-harness" };
+function agent(role: string, model: string) {
+  return { kind: "agent", run: "run-1", role, model, harness: "claude-code" };
 }
 
 let counter = 0;
 /** A UUIDv7-shaped ID that no other fixture has. */
 function newId() {
   counter += 1;
-  return `0192d7a0-4444-7000-8000-${counter.toString(16).padStart(12, "0")}`;
+  return `0192d7a0-3333-7000-8000-${counter.toString(16).padStart(12, "0")}`;
+}
+
+function post(threadId: string, author: Record<string, unknown>, summary: string, bodyHtml: string, createdAt: string) {
+  return {
+    id: newId(),
+    thread_id: threadId,
+    author,
+    summary,
+    body: bodyHtml.replace(/<[^>]+>/g, ""),
+    body_html: bodyHtml,
+    links: [] as Record<string, unknown>[],
+    attachments: [] as string[],
+    created_at: createdAt,
+  };
 }
 
 type Post = ReturnType<typeof post>;
 
-function post(
-  phase: number,
-  type: string,
-  author: Record<string, unknown>,
-  summary: string,
-  body: string,
-  links: Record<string, unknown>[] = [],
+function thread(
+  question: string,
+  fields: {
+    feature?: string;
+    createdAt?: string;
+    posts?: number;
+    lastPostAt?: string | null;
+    sealed?: boolean;
+    conclusion?: string | null;
+  } = {},
 ) {
   return {
     id: newId(),
-    thread_id: THREAD_ID,
-    phase,
-    type,
-    author,
-    summary,
-    body,
-    body_html: `<p>${body}</p>`,
-    links,
-    attachments: [] as string[],
-    confidence: null as number | null,
-    replaces: null as string | null,
-    created_at: AT,
-  };
-}
-
-function phase(number: number, sealed: boolean, posts: Post[]) {
-  const posters = new Map<string, { run: string | null; role: string | null }>();
-  for (const p of posts) {
-    if (p.author.kind !== "agent") continue;
-    const run = (p.author.run as string) ?? null;
-    const role = (p.author.role as string) ?? null;
-    posters.set(`${run}/${role}`, { run, role });
-  }
-  return { number, sealed, started_at: AT, posted_by: [...posters.values()] };
-}
-
-type Decision = ReturnType<typeof decision>;
-
-function decision(direction: string, reliesOn: string[], status = "proposed") {
-  return {
-    id: newId(),
     project_id: PROJECT_ID,
-    thread_id: THREAD_ID,
-    changeset_id: CHANGESET_ID,
-    status,
-    author: agent("moderator"),
-    direction,
-    chosen: "Split hero",
-    criteria: CRITERIA,
-    options: [
-      {
-        name: "Split hero",
-        scores: { "Readable at 320 px": 9, "Fast to build": 6 },
-        lost_because: null as string | null,
-      },
-      {
-        name: "Carousel",
-        scores: { "Readable at 320 px": 3, "Fast to build": 7 },
-        lost_because: "Only the first slide is seen on phones",
-      },
-    ],
-    assumptions: ["Most visitors arrive on phones"],
-    open_questions: ["Does the hero need a video variant?"],
-    dissent: [{ by: "run-1/critic", text: "The split hero crops the product shot" }],
-    posts: reliesOn,
-    rejection_reason: null as string | null,
-    created_at: AT,
+    feature_id: fields.feature ?? null,
+    question,
+    sealed: fields.sealed ?? false,
+    conclusion: fields.conclusion ?? null,
+    run_tag: null as string | null,
+    created_at: fields.createdAt ?? "2026-10-21T08:00:00.000Z",
+    post_count: fields.posts ?? 0,
+    last_post_at: fields.lastPostAt ?? null,
   };
 }
 
-/**
- * A thread with an open first phase and a sealed second one, two agents
- * posting in each, and a proposed decision that relies on two of the posts.
- */
-function seededThread() {
-  const finding = post(
-    1,
-    "finding",
-    agent("critic"),
-    "Most visits come from phones",
-    "Analytics show seven of ten visits from phones.",
-  );
-  const position = post(
-    1,
-    "position",
-    agent("designer"),
-    "The split hero reads best on phones",
-    "Split keeps the copy beside the product shot.",
-  );
-  const objection = post(
-    2,
-    "objection",
-    agent("critic"),
-    "The carousel hides the offer",
-    "Only the first slide is ever looked at.",
-  );
-  const support = post(
-    2,
-    "support",
-    agent("designer"),
-    "Backing the split hero",
-    "It matches the brand guide.",
-  );
-  const posts = [finding, position, objection, support];
-  const current = decision("Use the split hero with the copy on the left", [finding.id, objection.id]);
+type HomeThread = ReturnType<typeof thread>;
+type Opened = HomeThread & { posts: Post[] };
+
+function feature(id: string, name: string) {
   return {
-    id: THREAD_ID,
-    project_id: PROJECT_ID,
-    changeset_id: CHANGESET_ID,
-    question: QUESTION,
-    criteria: CRITERIA,
-    run_tag: "run-1",
-    created_at: AT,
-    phases: [phase(1, false, [finding, position]), phase(2, true, [objection, support])],
-    decision: current as Decision | null,
-    posts,
+    feature: { id, project_id: PROJECT_ID, name, description: "", created_at: "2026-10-20T08:00:00.000Z" },
+    docs: 0,
+    open_changesets: 0,
+    waiting: 0,
+    last_activity: null,
   };
 }
 
-type Thread = ReturnType<typeof seededThread>;
+function home(threads: HomeThread[]) {
+  return {
+    project_id: PROJECT_ID,
+    app: { last_activity: null },
+    features: [feature(CHECKOUT_ID, "Checkout"), feature(SEARCH_ID, "Search")],
+    docs: [],
+    changesets: [],
+    threads,
+    waiting: { decisions: [], changesets: [], comments: [], questions: [] },
+  };
+}
+
 type Call = { method: string; path: string; body: Record<string, unknown> | null };
 
-/** A fake of the API: the auth routes, the project's home and the thread, which the test may change, and the calls it got. */
-function fakeApi(thread: Thread) {
-  const api = { thread, calls: [] as Call[] };
+/**
+ * A fake of the API: the auth routes, the project's home and the opened
+ * thread, which the test may change. A post is stored and answered 201 unless
+ * `failPosts` is set, then 500.
+ */
+function fakeApi(threads: HomeThread[], opened: Opened | null = null) {
+  const api = { home: home(threads), opened, failPosts: false, calls: [] as Call[] };
   const json = (status: number, body: unknown) =>
-    new Response(JSON.stringify(body), {
-      status,
-      headers: { "content-type": "application/json" },
-    });
-  const decisionPath = (id: string, action: string) => `${API}/decisions/${id}/${action}`;
-
+    new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
   const fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-    const url =
-      typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
     const path = new URL(url, "http://localhost:3000").pathname;
     const method = (init?.method ?? (input instanceof Request ? input.method : "GET")).toUpperCase();
-    let text: string | null = null;
-    if (typeof init?.body === "string") text = init.body;
-    else if (input instanceof Request) text = await input.clone().text();
-    let body: Record<string, unknown> | null;
-    try {
-      body = text ? JSON.parse(text) : null;
-    } catch {
-      body = null;
-    }
+    const text = typeof init?.body === "string" ? init.body : input instanceof Request ? await input.clone().text() : "";
+    const body = text ? (JSON.parse(text) as Record<string, unknown>) : null;
     api.calls.push({ method, path, body });
-
-    const current = api.thread.decision;
     switch (`${method} ${path}`) {
       case "GET /api/v1/auth/me":
         return json(200, { user: USER });
       case "GET /api/v1/auth/workspaces":
         return json(200, { workspaces: [{ id: WORKSPACE_ID, name: "Acme" }] });
       case `GET /api/v1/w/${WORKSPACE_ID}/projects`:
-        return json(200, { projects: [{ id: PROJECT_ID, name: "Storefront", created_at: AT }] });
-      case `GET ${API}/home`: {
-        const listed = { ...api.thread, decision: null };
-        delete (listed as Partial<Thread>).posts;
-        return json(200, {
-          project_id: PROJECT_ID,
-          docs: [],
-          changesets: [],
-          threads: [listed],
-          waiting: { decisions: [], changesets: [], comments: [], questions: [] },
-        });
-      }
-      case `GET ${API}/threads/${THREAD_ID}`:
-        return json(200, { thread: api.thread });
-      case `POST ${API}/threads/${THREAD_ID}/posts`:
-      case `POST ${API}/threads/${THREAD_ID}/directives`: {
-        const sent = body ?? {};
-        const type = path.endsWith("/directives") ? "directive" : String(sent.type);
-        const phases = api.thread.phases;
-        const created = post(
-          phases[phases.length - 1].number,
-          type,
-          HUMAN,
-          String(sent.summary),
-          String(sent.body),
-          (sent.links as Record<string, unknown>[] | undefined) ?? [],
-        );
-        api.thread = { ...api.thread, posts: [...api.thread.posts, created] };
-        return json(201, { post: created });
-      }
+        return json(200, { projects: [{ id: PROJECT_ID, name: "Storefront", created_at: "2026-10-20T08:00:00.000Z" }] });
+      case `GET ${API}/home`:
+        return json(200, api.home);
       default:
         break;
     }
-    if (current && method === "POST" && path === decisionPath(current.id, "approve")) {
-      api.thread = { ...api.thread, decision: { ...current, status: "approved" } };
-      return json(200, { decision: api.thread.decision });
+    const current = api.opened;
+    if (current && method === "GET" && path === `${API}/threads/${current.id}`) {
+      return json(200, { thread: current });
     }
-    if (current && method === "POST" && path === decisionPath(current.id, "reject")) {
-      const reason = typeof body?.reason === "string" ? body.reason.trim() : "";
-      if (!reason) return json(400, { error: "invalid_request" });
-      api.thread = {
-        ...api.thread,
-        decision: { ...current, status: "rejected", rejection_reason: reason },
-      };
-      return json(200, { decision: api.thread.decision });
+    if (current && method === "POST" && path === `${API}/threads/${current.id}/posts`) {
+      if (api.failPosts) return json(500, { error: "internal" });
+      const created = post(current.id, HUMAN, String(body?.summary), `<p>${String(body?.body)}</p>`, NOW);
+      api.opened = { ...current, posts: [...current.posts, created] };
+      return json(201, { post: created });
     }
     return json(404, { error: "not_found" });
   });
@@ -331,117 +198,76 @@ class FakeWebSocket extends EventTarget {
   }
 }
 
-function renderAt(path: string) {
-  const router = getRouter();
-  router.update({
-    ...router.options,
-    history: createMemoryHistory({ initialEntries: [path] }),
-  });
-  render(<RouterProvider router={router} />);
-  return router;
-}
-
-/** The page's section (or group) named `name`, inside `container` when given. */
-async function section(name: RegExp, container?: HTMLElement) {
-  const scope = container ? within(container) : screen;
-  return waitFor(() => {
-    const found = scope.queryByRole("region", { name }) ?? scope.queryByRole("group", { name });
-    expect(found, `a section named ${name}`).toBeTruthy();
-    return found as HTMLElement;
-  });
-}
-
-/** The page's section (or group) named `name` as it is now. */
-function sectionNow(name: RegExp) {
-  const found = screen.queryByRole("region", { name }) ?? screen.queryByRole("group", { name });
-  expect(found, `a section named ${name}`).toBeTruthy();
-  return found as HTMLElement;
-}
-
-const ITEM = 'li, tr, article, [role="listitem"], [role="row"], [role="article"]';
-
-/** The post (a list item or article) of `container` whose summary is `summary`. */
-function postShowing(container: HTMLElement, summary: string) {
-  const element = within(container).getByText(summary);
-  const item = element.closest(ITEM);
-  expect(item, `the post "${summary}" is a list item or an article`).toBeTruthy();
-  return item as HTMLElement;
-}
-
-const PHASE_1 = /^phase 1\b/i;
-const PHASE_2 = /^phase 2\b/i;
-const DECISION = /^(current )?decision\b/i;
-
-/** Whether a phase's section says it is sealed, in its name or in a text inside it. */
-function saysSealed(phaseSection: HTMLElement) {
-  const sealed = /\bsealed\b/i;
-  const labelledBy = phaseSection.getAttribute("aria-labelledby");
-  const label = labelledBy ? (document.getElementById(labelledBy)?.textContent ?? "") : "";
-  return (
-    sealed.test(phaseSection.getAttribute("aria-label") ?? "") ||
-    sealed.test(label) ||
-    within(phaseSection).queryAllByText(sealed).length > 0
-  );
-}
-
-/** Whether an element of `container` (or it) shows the word, in its own text. */
-function showsWord(container: HTMLElement, word: RegExp) {
-  return within(container).queryAllByText(word).length > 0;
-}
-
-/** The control that switches the posts to summaries only. */
-function summariesToggle() {
-  for (const role of ["switch", "checkbox", "radio", "button"] as const) {
-    const found = screen.queryByRole(role, { name: /summar/i });
-    if (found) return found;
-  }
-  throw new Error("no toggle named for summaries");
-}
-
-/** Chooses the type of the post to write: a radio named so, or the "Type" select. */
-function chooseType(type: "directive" | "note" | "question") {
-  const radio = screen.queryByRole("radio", { name: new RegExp(`^${type}\\b`, "i") });
-  if (radio) {
-    fireEvent.click(radio);
-    return;
-  }
-  const select = screen.getByRole("combobox", { name: /^(post )?type\b/i });
-  fireEvent.change(select, { target: { value: type } });
-  expect((select as HTMLSelectElement).value).toBe(type);
-}
-
-/** Fills in the post form and sends it. */
-function writePost(summary: string, body: string) {
-  fireEvent.change(screen.getByRole("textbox", { name: /^summary\b/i }), {
-    target: { value: summary },
-  });
-  fireEvent.change(screen.getByRole("textbox", { name: /^(body|text|message|markdown)\b/i }), {
-    target: { value: body },
-  });
-  fireEvent.click(screen.getByRole("button", { name: /^(post|send)\b/i }));
-}
-
-/** The calls the page made to `path` with `method`. */
-function callsTo(api: ReturnType<typeof fakeApi>, method: string, path: string) {
-  return api.calls.filter((call) => call.method === method && call.path === path);
-}
-
-/** Opens the live socket and confirms the page's subscription to the project. */
+/** Opens the live socket and confirms the subscription to the project. */
 async function openSocket() {
   await waitFor(() => expect(FakeWebSocket.instances.length).toBeGreaterThan(0));
   const socket = FakeWebSocket.instances[FakeWebSocket.instances.length - 1];
   socket.open();
   await waitFor(() =>
-    expect(socket.sent).toContainEqual(
-      expect.objectContaining({ type: "subscribe", project_id: PROJECT_ID }),
-    ),
+    expect(socket.sent).toContainEqual(expect.objectContaining({ type: "subscribe", project_id: PROJECT_ID })),
   );
   socket.receive({ type: "subscribed", project_id: PROJECT_ID, last_seq: 20 });
   return socket;
 }
 
-describe("the thread view", () => {
+function postCreated(seq: number, threadId: string, postId: string) {
+  return {
+    type: "event",
+    seq,
+    event: "post.created",
+    project_id: PROJECT_ID,
+    at: NOW,
+    data: { post_id: postId, thread_id: threadId },
+  };
+}
+
+function renderAt(path: string) {
+  const router = getRouter();
+  router.update({ ...router.options, history: createMemoryHistory({ initialEntries: [path] }) });
+  render(<RouterProvider router={router} />);
+  return router;
+}
+
+/** The posts of the thread page, in order. */
+function postItems(main: HTMLElement) {
+  return Array.from(main.querySelectorAll<HTMLElement>('li[id^="post-"]'));
+}
+
+/** The summaries of the thread page's posts, in order. */
+function postSummaries(main: HTMLElement) {
+  return postItems(main).map((item) => within(item).getByRole("heading", { level: 3 }).textContent);
+}
+
+function summaryField() {
+  return screen.getByRole("textbox", { name: "Summary" });
+}
+
+function bodyField() {
+  return screen.getByRole("textbox", { name: "Body" });
+}
+
+function postButton() {
+  return screen.getByRole("button", { name: /^post\b/i }) as HTMLButtonElement;
+}
+
+/** A Threads page row's link, by the question it shows. */
+function threadRow(main: HTMLElement, question: string) {
+  const link = within(main).getByText(question).closest("a");
+  expect(link, `the row of ${question} is a link`).toBeTruthy();
+  return link as HTMLAnchorElement;
+}
+
+/** The questions of the Threads page's rows, in order. */
+function rowQuestions(main: HTMLElement) {
+  return within(main)
+    .getAllByRole("listitem")
+    .map((item) => (item.querySelector("a span")?.textContent ?? "").trim());
+}
+
+describe("threads in the web app", () => {
   beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(NOW));
     vi.stubGlobal("scrollTo", () => {});
     FakeWebSocket.instances = [];
     vi.stubGlobal("WebSocket", FakeWebSocket);
@@ -449,171 +275,291 @@ describe("the thread view", () => {
 
   afterEach(() => {
     cleanup();
+    vi.useRealTimers();
     vi.unstubAllGlobals();
+    vi.restoreAllMocks();
   });
 
-  test("the posts are grouped by phase and a sealed phase is labeled but shows every post", async () => {
-    const thread = seededThread();
-    fakeApi(thread);
-    renderAt(THREAD_PATH);
-    expect(await screen.findByRole("heading", { name: QUESTION })).toBeTruthy();
+  describe("the thread page", () => {
+    /** A thread of Checkout with an agent's post and then one of yours. */
+    function openedThread(fields: Partial<Opened> = {}): Opened {
+      const listed = thread("Which wallets do we take?", { feature: CHECKOUT_ID });
+      const posts = [
+        post(listed.id, agent("critic", "claude-opus-4"), "Apple Pay covers most phones", "<p>Seven of ten visits are <strong>iPhones</strong>.</p>", "2026-10-21T12:00:00.000Z"),
+        post(listed.id, HUMAN, "Add Swish too", "<p>Most Swedish shoppers use it.</p>", "2026-10-21T14:00:00.000Z"),
+      ];
+      return { ...listed, posts, ...fields };
+    }
 
-    const first = await section(PHASE_1);
-    const second = await section(PHASE_2);
-    const [finding, position, objection, support] = thread.posts;
+    test("the posts come oldest first, each with its summary as a heading, its Markdown body, who wrote it and when", async () => {
+      const opened = openedThread();
+      fakeApi([opened], opened);
+      renderAt(`${THREADS_PATH}/${opened.id}`);
+      const main = await screen.findByRole("main");
+      await within(main).findByRole("heading", { level: 1, name: "Which wallets do we take?" });
 
-    expect(postShowing(first, finding.summary)).toBeTruthy();
-    expect(postShowing(first, position.summary)).toBeTruthy();
-    expect(within(first).queryByText(objection.summary)).toBeNull();
-    expect(within(first).queryByText(support.summary)).toBeNull();
-
-    // The human reads the sealed phase whole: both agents' posts, with their text.
-    expect(postShowing(second, objection.summary).textContent).toContain(objection.body);
-    expect(postShowing(second, support.summary).textContent).toContain(support.body);
-    expect(within(second).queryByText(finding.summary)).toBeNull();
-
-    expect(saysSealed(second), "the sealed phase is labeled as sealed").toBe(true);
-    expect(saysSealed(first), "the open phase is not labeled as sealed").toBe(false);
-  });
-
-  test("a new post appears live", async () => {
-    const api = fakeApi(seededThread());
-    renderAt(THREAD_PATH);
-    await section(PHASE_2);
-    const socket = await openSocket();
-
-    // An agent posts in the sealed phase.
-    const late = post(2, "position", agent("analyst"), "Phones need the offer above the fold", "Keep the price in view.");
-    api.thread = {
-      ...api.thread,
-      phases: [api.thread.phases[0], phase(2, true, [...api.thread.posts.slice(2), late])],
-      posts: [...api.thread.posts, late],
-    };
-    socket.receive({
-      type: "event",
-      seq: 21,
-      event: "post.created",
-      project_id: PROJECT_ID,
-      at: AT,
-      data: { post_id: late.id, thread_id: THREAD_ID, changeset_id: CHANGESET_ID, phase: 2, type: "position" },
-    });
-    await waitFor(() => expect(within(sectionNow(PHASE_2)).getByText(late.summary)).toBeTruthy());
-  });
-
-  test("a toggle switches between full posts and summaries only", async () => {
-    const thread = seededThread();
-    fakeApi(thread);
-    renderAt(THREAD_PATH);
-    await section(PHASE_2);
-    const [, , objection] = thread.posts;
-    expect(postShowing(sectionNow(PHASE_2), objection.summary).textContent).toContain(objection.body);
-
-    fireEvent.click(summariesToggle());
-    await waitFor(() => {
-      expect(screen.queryByText(objection.body), "summaries only hide the body").toBeNull();
-      expect(postShowing(sectionNow(PHASE_2), objection.summary)).toBeTruthy();
+      await waitFor(() => expect(postSummaries(main)).toEqual(["Apple Pay covers most phones", "Add Swish too"]));
+      const [first, second] = postItems(main);
+      expect(within(first).getByText("iPhones").tagName).toBe("STRONG");
+      expect(first.textContent).toContain("critic · claude-opus-4");
+      expect(within(first).getByText("3 h ago").getAttribute("title")).toContain("2026");
+      expect(second.textContent).toContain("You");
+      expect(second.textContent).toContain("Most Swedish shoppers use it.");
+      expect(second.textContent).toContain("1 h ago");
     });
 
-    const full = screen.queryByRole("radio", { name: /full/i });
-    fireEvent.click(full ?? summariesToggle());
-    await waitFor(() =>
-      expect(postShowing(sectionNow(PHASE_2), objection.summary).textContent).toContain(objection.body),
-    );
-  });
+    test("a post that arrives is added at the bottom", async () => {
+      const opened = openedThread();
+      const api = fakeApi([opened], opened);
+      renderAt(`${THREADS_PATH}/${opened.id}`);
+      const main = await screen.findByRole("main");
+      await waitFor(() => expect(postItems(main)).toHaveLength(2));
+      const socket = await openSocket();
 
-  test("the reviewer posts a directive", async () => {
-    const api = fakeApi(seededThread());
-    renderAt(THREAD_PATH);
-    await section(PHASE_1);
+      const late = post(opened.id, agent("designer", "gpt-5"), "Klarna is wanted in Germany", "<p>Half of the orders there.</p>", "2026-10-21T14:59:00.000Z");
+      api.opened = { ...opened, posts: [...opened.posts, late] };
+      socket.receive(postCreated(21, opened.id, late.id));
 
-    chooseType("directive");
-    writePost("Keep the hero under 600 px tall", "Phones must see the offer without scrolling.");
-
-    await waitFor(() => {
-      const viaDirectives = callsTo(api, "POST", `${API}/threads/${THREAD_ID}/directives`);
-      const viaPosts = callsTo(api, "POST", `${API}/threads/${THREAD_ID}/posts`).filter(
-        (call) => call.body?.type === "directive",
+      await waitFor(() =>
+        expect(postSummaries(main)).toEqual(["Apple Pay covers most phones", "Add Swish too", "Klarna is wanted in Germany"]),
       );
-      const sent = [...viaDirectives, ...viaPosts];
-      expect(sent).toHaveLength(1);
-      expect(sent[0].body).toMatchObject({
-        summary: "Keep the hero under 600 px tall",
-        body: "Phones must see the offer without scrolling.",
+    });
+
+    test("the conclusion shows once written, and nothing of criteria, phases, directives or decisions", async () => {
+      // An old API body still carrying the fields that v2 dropped.
+      const opened = {
+        ...openedThread({ conclusion: "We take Apple Pay and Swish." }),
+        criteria: ["Readable at 320 px"],
+        phases: [{ number: 2, sealed: true, started_at: "2026-10-21T09:00:00.000Z", posted_by: [] }],
+        decision: { id: newId(), status: "proposed", direction: "Take every wallet", options: [] },
+      };
+      fakeApi([opened], opened);
+      renderAt(`${THREADS_PATH}/${opened.id}`);
+      const main = await screen.findByRole("main");
+
+      const conclusion = await within(main).findByRole("region", { name: "Conclusion" });
+      expect(conclusion.textContent).toContain("We take Apple Pay and Swish.");
+      expect(main.textContent).not.toContain("Readable at 320 px");
+      expect(main.textContent).not.toMatch(/phase/i);
+      expect(main.textContent).not.toMatch(/directive/i);
+      expect(main.textContent).not.toContain("Take every wallet");
+      expect(within(main).queryByRole("button", { name: /approve|reject/i })).toBeNull();
+    });
+
+    test("a thread without a conclusion shows none", async () => {
+      const opened = openedThread();
+      fakeApi([opened], opened);
+      renderAt(`${THREADS_PATH}/${opened.id}`);
+      const main = await screen.findByRole("main");
+      await waitFor(() => expect(postItems(main)).toHaveLength(2));
+      expect(within(main).queryByRole("region", { name: "Conclusion" })).toBeNull();
+    });
+
+    test("Post stays off until both the summary and the body have text", async () => {
+      const opened = openedThread();
+      fakeApi([opened], opened);
+      renderAt(`${THREADS_PATH}/${opened.id}`);
+      await screen.findByRole("textbox", { name: "Summary" });
+
+      expect(postButton().disabled).toBe(true);
+      fireEvent.change(summaryField(), { target: { value: "Add Klarna" } });
+      expect(postButton().disabled, "the body is empty").toBe(true);
+      fireEvent.change(bodyField(), { target: { value: "  \n " } });
+      expect(postButton().disabled, "the body is only whitespace").toBe(true);
+      fireEvent.change(bodyField(), { target: { value: "For Germany." } });
+      fireEvent.change(summaryField(), { target: { value: "   " } });
+      expect(postButton().disabled, "the summary is only whitespace").toBe(true);
+      fireEvent.change(summaryField(), { target: { value: "Add Klarna" } });
+      expect(postButton().disabled).toBe(false);
+    });
+
+    test("your post is sent as written, the fields clear and it shows once at the bottom", async () => {
+      const opened = openedThread();
+      const api = fakeApi([opened], opened);
+      renderAt(`${THREADS_PATH}/${opened.id}`);
+      const main = await screen.findByRole("main");
+      await waitFor(() => expect(postItems(main)).toHaveLength(2));
+      const socket = await openSocket();
+
+      fireEvent.change(summaryField(), { target: { value: " Add Klarna " } });
+      fireEvent.change(bodyField(), { target: { value: "- Germany\n- Austria\n" } });
+      fireEvent.click(postButton());
+
+      await waitFor(() => expect((summaryField() as HTMLInputElement).value).toBe(""));
+      expect((bodyField() as HTMLTextAreaElement).value).toBe("");
+      const sent = api.calls.filter((call) => call.method === "POST" && call.path === `${API}/threads/${opened.id}/posts`);
+      expect(sent.map((call) => call.body)).toEqual([{ summary: " Add Klarna ", body: "- Germany\n- Austria\n" }]);
+
+      // The post's own live event comes in too.
+      const mine = api.opened!.posts[2];
+      socket.receive(postCreated(21, opened.id, mine.id));
+      await waitFor(() => expect(postSummaries(main)).toEqual(["Apple Pay covers most phones", "Add Swish too", " Add Klarna "]));
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(postSummaries(main)).toEqual(["Apple Pay covers most phones", "Add Swish too", " Add Klarna "]);
+    });
+
+    test("a post that cannot be sent keeps your text and says so", async () => {
+      const opened = openedThread();
+      const api = fakeApi([opened], opened);
+      api.failPosts = true;
+      renderAt(`${THREADS_PATH}/${opened.id}`);
+      const main = await screen.findByRole("main");
+      await waitFor(() => expect(postItems(main)).toHaveLength(2));
+
+      fireEvent.change(summaryField(), { target: { value: "Add Klarna" } });
+      fireEvent.change(bodyField(), { target: { value: "For Germany." } });
+      fireEvent.click(postButton());
+
+      const alert = await within(main).findByRole("alert");
+      expect(alert.textContent).toContain("could not be sent");
+      expect((summaryField() as HTMLInputElement).value).toBe("Add Klarna");
+      expect((bodyField() as HTMLTextAreaElement).value).toBe("For Germany.");
+      expect(postItems(main)).toHaveLength(2);
+    });
+
+    test("a feature's thread: Checkout › Threads › question, linking the feature's page and its threads", async () => {
+      const opened = openedThread();
+      fakeApi([opened], opened);
+      renderAt(`${THREADS_PATH}/${opened.id}`);
+      const trail = await screen.findByRole("navigation", { name: "Breadcrumb" });
+
+      await waitFor(() => expect(within(trail).getByRole("link", { name: "Checkout" })).toBeTruthy());
+      expect(Array.from(trail.querySelectorAll("li"), (item) => item.textContent)).toEqual([
+        "Checkout",
+        "Threads",
+        "Which wallets do we take?",
+      ]);
+      expect(within(trail).getByRole("link", { name: "Checkout" }).getAttribute("href")).toBe(
+        `${PROJECT_PATH}/features/${CHECKOUT_ID}`,
+      );
+      expect(within(trail).getByRole("link", { name: "Threads" }).getAttribute("href")).toBe(
+        `${THREADS_PATH}?scope=${CHECKOUT_ID}`,
+      );
+    });
+
+    test("an app-level thread: App › Threads › question, linking the App page and the app's threads", async () => {
+      const opened = { ...thread("Which fonts?"), posts: [] as Post[] };
+      fakeApi([opened], opened);
+      renderAt(`${THREADS_PATH}/${opened.id}`);
+      const trail = await screen.findByRole("navigation", { name: "Breadcrumb" });
+
+      expect(Array.from(trail.querySelectorAll("li"), (item) => item.textContent)).toEqual(["App", "Threads", "Which fonts?"]);
+      expect(within(trail).getByRole("link", { name: "App" }).getAttribute("href")).toBe(`${PROJECT_PATH}/app`);
+      expect(within(trail).getByRole("link", { name: "Threads" }).getAttribute("href")).toBe(`${THREADS_PATH}?scope=app`);
+    });
+
+    test("#post-<id> scrolls to that post and highlights it", async () => {
+      const opened = openedThread();
+      const scrolled: Element[] = [];
+      Element.prototype.scrollIntoView = vi.fn(function (this: Element) {
+        scrolled.push(this);
       });
+      fakeApi([opened], opened);
+      const [first, second] = opened.posts;
+      renderAt(`${THREADS_PATH}/${opened.id}#post-${first.id}`);
+      const main = await screen.findByRole("main");
+
+      await waitFor(() => expect(scrolled.map((element) => element.id)).toContain(`post-${first.id}`));
+      expect(scrolled.map((element) => element.id)).not.toContain(`post-${second.id}`);
+      const [shownFirst, shownSecond] = postItems(main);
+      expect(shownFirst.querySelector("[data-highlighted]"), "the linked post is highlighted").toBeTruthy();
+      expect(shownSecond.querySelector("[data-highlighted]"), "another post is not").toBeNull();
     });
   });
 
-  test("a reply links to the post it answers", async () => {
-    const thread = seededThread();
-    const api = fakeApi(thread);
-    renderAt(THREAD_PATH);
-    const second = await section(PHASE_2);
-    const [, , objection] = thread.posts;
+  describe("the Threads page", () => {
+    test("a sealed thread with a conclusion shows both Sealed and Concluded", async () => {
+      const both = thread("Sealed and concluded?", {
+        feature: CHECKOUT_ID,
+        posts: 1,
+        lastPostAt: "2026-10-21T14:57:00.000Z",
+        sealed: true,
+        conclusion: "We pick sealed and concluded.",
+      });
+      fakeApi([both]);
+      renderAt(THREADS_PATH);
+      const main = await screen.findByRole("main");
 
-    const item = postShowing(second, objection.summary);
-    fireEvent.click(within(item).getByRole("button", { name: /^reply\b/i }));
-    chooseType("question");
-    writePost("Which slide did the analytics count?", "Was it the first one only?");
-
-    const posts = () => callsTo(api, "POST", `${API}/threads/${THREAD_ID}/posts`);
-    await waitFor(() => expect(posts()).toHaveLength(1));
-    expect(posts()[0].body).toMatchObject({
-      type: "question",
-      summary: "Which slide did the analytics count?",
-      body: "Was it the first one only?",
+      const row = await waitFor(() => threadRow(main, "Sealed and concluded?"));
+      expect(within(row).getByText("Sealed")).toBeTruthy();
+      expect(within(row).getByText("Concluded")).toBeTruthy();
     });
-    expect(posts()[0].body?.links).toContainEqual({ kind: "post", post_id: objection.id });
-  });
 
-  test("approving the proposed decision calls the API and shows it approved", async () => {
-    const thread = seededThread();
-    const api = fakeApi(thread);
-    renderAt(THREAD_PATH);
-    const shown = await section(DECISION);
-    const current = thread.decision as Decision;
+    test("the threads of every scope come newest post first, a thread without posts at its start, each with its scope and post count", async () => {
+      const fonts = thread("Which fonts?", { posts: 3, lastPostAt: "2026-10-21T11:00:00.000Z" });
+      const wallets = thread("Which wallets?", { feature: CHECKOUT_ID, posts: 1, lastPostAt: "2026-10-21T13:00:00.000Z" });
+      const footer = thread("What goes in the footer?", { createdAt: "2026-10-21T12:00:00.000Z" });
+      const ranking = thread("How do we rank results?", {
+        feature: SEARCH_ID,
+        createdAt: "2026-10-21T07:00:00.000Z",
+        posts: 2,
+        lastPostAt: "2026-10-21T10:00:00.000Z",
+      });
+      fakeApi([fonts, wallets, footer, ranking]);
+      renderAt(THREADS_PATH);
+      const main = await screen.findByRole("main");
 
-    const approve = await within(shown).findByRole("button", { name: /^approve\b/i });
-    expect(within(shown).getByRole("button", { name: /^reject\b/i })).toBeTruthy();
-    fireEvent.click(approve);
-
-    await waitFor(() => expect(callsTo(api, "POST", `${API}/decisions/${current.id}/approve`)).toHaveLength(1));
-    await waitFor(() => {
-      const now = sectionNow(DECISION);
-      expect(showsWord(now, /\bapproved\b/i), "the status").toBe(true);
-      expect(within(now).queryByRole("button", { name: /^approve\b/i }), "an approved decision is not approved again").toBeNull();
-      expect(within(now).queryByRole("button", { name: /^reject\b/i })).toBeNull();
+      await waitFor(() =>
+        expect(rowQuestions(main)).toEqual(["Which wallets?", "What goes in the footer?", "Which fonts?", "How do we rank results?"]),
+      );
+      expect(threadRow(main, "Which wallets?").textContent).toContain("Checkout");
+      expect(threadRow(main, "Which wallets?").textContent).toContain("1 post");
+      expect(threadRow(main, "Which fonts?").textContent).toContain("App");
+      expect(threadRow(main, "Which fonts?").textContent).toContain("3 posts");
+      expect(threadRow(main, "What goes in the footer?").textContent).toContain("0 posts");
+      expect(threadRow(main, "How do we rank results?").textContent).toContain("Search");
+      expect(threadRow(main, "Which wallets?").getAttribute("href")).toBe(`${THREADS_PATH}/${wallets.id}`);
     });
-  });
 
-  test("rejecting the proposed decision requires a reason", async () => {
-    const thread = seededThread();
-    const api = fakeApi(thread);
-    renderAt(THREAD_PATH);
-    const shown = await section(DECISION);
-    const current = thread.decision as Decision;
-    const rejects = () => callsTo(api, "POST", `${API}/decisions/${current.id}/reject`);
+    test("?scope=app lists the app's threads only", async () => {
+      const fonts = thread("Which fonts?", { posts: 1, lastPostAt: "2026-10-21T11:00:00.000Z" });
+      const wallets = thread("Which wallets?", { feature: CHECKOUT_ID, posts: 1, lastPostAt: "2026-10-21T13:00:00.000Z" });
+      fakeApi([fonts, wallets]);
+      renderAt(`${THREADS_PATH}?scope=app`);
+      const main = await screen.findByRole("main");
 
-    fireEvent.click(await within(shown).findByRole("button", { name: /^reject\b/i }));
-    const reason = await within(shown).findByRole("textbox", { name: /reason/i });
+      await waitFor(() => expect(rowQuestions(main)).toEqual(["Which fonts?"]));
+      expect(within(main).getByRole("button", { name: "Scope" }).textContent).toBe("App");
+    });
 
-    // Without a reason nothing is sent.
-    const confirm = () => {
-      const buttons = within(shown).getAllByRole("button", { name: /^reject\b/i });
-      return buttons[buttons.length - 1];
-    };
-    fireEvent.click(confirm());
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    expect(rejects(), "a rejection without a reason is not sent").toHaveLength(0);
+    test("choosing a feature in the scope filter narrows the list and keeps it in ?scope=, All scopes takes it out", async () => {
+      const fonts = thread("Which fonts?", { posts: 1, lastPostAt: "2026-10-21T11:00:00.000Z" });
+      const wallets = thread("Which wallets?", { feature: CHECKOUT_ID, posts: 1, lastPostAt: "2026-10-21T13:00:00.000Z" });
+      const ranking = thread("How do we rank results?", { feature: SEARCH_ID, posts: 1, lastPostAt: "2026-10-21T10:00:00.000Z" });
+      fakeApi([fonts, wallets, ranking]);
+      const router = renderAt(THREADS_PATH);
+      const main = await screen.findByRole("main");
+      await waitFor(() => expect(rowQuestions(main)).toHaveLength(3));
 
-    fireEvent.change(reason, { target: { value: "The product shot must stay whole" } });
-    fireEvent.click(confirm());
-    await waitFor(() => expect(rejects()).toHaveLength(1));
-    expect(rejects()[0].body).toEqual({ reason: "The product shot must stay whole" });
+      fireEvent.click(within(main).getByRole("button", { name: "Scope" }));
+      fireEvent.change(within(main).getByRole("combobox", { name: "Search scopes" }), { target: { value: "check" } });
+      expect(within(main).getAllByRole("option").map((option) => option.textContent)).toEqual(["Checkout"]);
+      fireEvent.click(within(main).getByRole("option", { name: "Checkout" }));
 
-    await waitFor(() => {
-      const now = sectionNow(DECISION);
-      expect(showsWord(now, /\brejected\b/i), "the status").toBe(true);
-      expect(now.textContent, "the rejection's reason").toContain("The product shot must stay whole");
+      await waitFor(() => expect(router.state.location.search).toEqual({ scope: CHECKOUT_ID }));
+      await waitFor(() => expect(rowQuestions(main)).toEqual(["Which wallets?"]));
+
+      fireEvent.click(within(main).getByRole("button", { name: "Scope" }));
+      fireEvent.click(within(main).getByRole("option", { name: "All scopes" }));
+      await waitFor(() => expect(router.state.location.search).toEqual({}));
+      expect(router.state.location.href).not.toContain("scope=");
+      await waitFor(() => expect(rowQuestions(main)).toEqual(["Which wallets?", "Which fonts?", "How do we rank results?"]));
+    });
+
+    test("a new post moves its thread to the top and counts it", async () => {
+      const fonts = thread("Which fonts?", { posts: 1, lastPostAt: "2026-10-21T11:00:00.000Z" });
+      const wallets = thread("Which wallets?", { feature: CHECKOUT_ID, posts: 1, lastPostAt: "2026-10-21T13:00:00.000Z" });
+      const api = fakeApi([fonts, wallets]);
+      renderAt(THREADS_PATH);
+      const main = await screen.findByRole("main");
+      await waitFor(() => expect(rowQuestions(main)).toEqual(["Which wallets?", "Which fonts?"]));
+      const socket = await openSocket();
+
+      api.home = home([{ ...fonts, post_count: 2, last_post_at: "2026-10-21T14:30:00.000Z" }, wallets]);
+      socket.receive(postCreated(21, fonts.id, newId()));
+
+      await waitFor(() => expect(rowQuestions(main)).toEqual(["Which fonts?", "Which wallets?"]));
+      expect(threadRow(main, "Which fonts?").textContent).toContain("2 posts");
     });
   });
 });
