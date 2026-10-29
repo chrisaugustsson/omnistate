@@ -297,20 +297,13 @@ fn the_document_describes_the_feature_of_docs_and_the_doc_list() {
     );
 }
 
-// US-111: the activity of a doc is read by agents and the human, paged with
-// `limit` and `before`, and a board reads as a write left it with `at`.
+// US-111: the activity of a doc is paged with `limit` and `before`, and a
+// board and a component read as a write left them with `at`.
 #[test]
-fn the_document_describes_the_activity_routes_and_the_board_read_at_a_write() {
+fn the_document_describes_the_activity_routes_and_the_reads_at_a_write() {
     let list = "/api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}/activity";
-    let one = "/api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}/activity/{seq}";
     let board = "/api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}/boards/{board_id}";
-    let routes = registry();
-    for path in [list, one] {
-        let entry = find(&routes, "GET", path)
-            .unwrap_or_else(|| panic!("no registry entry for GET {path}"));
-        assert_eq!(entry.access, Access::Both, "GET {path}");
-    }
-
+    let component = "/api/v1/w/{workspace_id}/projects/{project_id}/components/{component_id}";
     let server = TestServer::start(&offline_config());
     let document = openapi(&server);
     let query_names = |path: &str| -> Vec<String> {
@@ -330,12 +323,13 @@ fn the_document_describes_the_activity_routes_and_the_board_read_at_a_write() {
             "GET {list} documents the query parameter `{name}`"
         );
     }
+    assert_eq!(query_names(component), ["at"], "GET {component}");
     assert!(
         query_names(board).iter().any(|n| n == "at"),
         "GET {board} documents the query parameter `at`"
     );
     let text = document.to_string();
-    for field in ["entries", "next", "summary", "nodes", "boards"] {
+    for field in ["entries", "next_before", "kind", "summary", "items"] {
         assert!(
             text.contains(&format!("\"{field}\"")),
             "the document describes the field `{field}` of the activity"

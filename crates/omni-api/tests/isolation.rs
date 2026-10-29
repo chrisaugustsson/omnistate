@@ -673,6 +673,12 @@ const CASES: &[Case] = &[
         None,
         Kind::Workspace,
     ),
+    case(
+        "GET",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/components/{component_id}",
+        None,
+        Kind::Workspace,
+    ),
 ];
 
 /// The human routes that an API key may still reach: the login checks a
@@ -2102,6 +2108,9 @@ fn fill(template: &str, workspace: &Side, record: &Side) -> String {
             // project, before any board is looked up, so a node ID that no
             // board has stands in for one.
             "board_id" => UNKNOWN_NODE,
+            // US-111: a component read is refused the same way, before the
+            // design system is looked up.
+            "component_id" => UNKNOWN_NODE,
             // US-111: every doc's log starts with its creation, seq 1.
             "seq" => "1",
             other => panic!(
@@ -2399,6 +2408,11 @@ fn the_lists_of_a_workspace_hold_nothing_of_the_other() {
             if entry.path.contains("/boards/") {
                 continue;
             }
+            // US-111: the same for a component read, whose control is
+            // the_component_reads_of_a_workspace_show_its_own_component_...
+            if entry.path.contains("/components/{component_id}") {
+                continue;
+            }
             let path = fill(&entry.path, own, own);
             for auth in credentials(entry.access, own) {
                 let what = format!("{} with {}", route_name(&entry.method, &path), auth.label());
@@ -2416,6 +2430,14 @@ fn the_lists_of_a_workspace_hold_nothing_of_the_other() {
                         response.text(),
                         own.attachment_text,
                         "{what}: the control call returns the workspace's own file"
+                    );
+                } else if entry.path.contains("/activity") {
+                    // US-111: an activity entry names no record; the control
+                    // call shows the seeded doc's first write.
+                    let text = response.text();
+                    assert!(
+                        text.contains("\"seq\":1,"),
+                        "{what}: the control call shows the doc's first write: {text}"
                     );
                 } else if names_a_record(&entry.path)
                     || entry.path.ends_with("/projects")
@@ -4700,7 +4722,7 @@ fn the_activity_calls_of_the_attacks_work_for_the_workspace_that_owns_the_record
             200,
             "read the doc's first write",
         );
-        assert_eq!(first["entry"]["seq"], 1, "{first}");
+        assert_eq!(first["seq"], 1, "{first}");
         for path in ACTIVITY_ROUTES {
             must(
                 call(client, "GET", &fill(path, &f.a, &f.a), auth, None),
@@ -4708,5 +4730,112 @@ fn the_activity_calls_of_the_attacks_work_for_the_workspace_that_owns_the_record
                 "read the activity of the seeded doc",
             );
         }
+    }
+}
+
+#[test]
+fn the_component_reads_of_a_workspace_show_its_own_component_and_nothing_of_the_other() {
+    // The control for the component read, which the generic one skips: the
+    // owner's agent makes a design system in a project of its own and imports
+    // a component, and the agent and the human read it from the head and at
+    // the write that imported it. The other workspace's credentials on the
+    // same paths, and the owner's workspace with the other's IDs, are 404.
+    let (f, client) = ready();
+    let _guard = serial();
+    for (own, other) in [(&f.a, &f.b), (&f.b, &f.a)] {
+        let key = Auth::Key(&own.key);
+        let human = Auth::Session(&own.token);
+        let body = json!({ "name": unique("owner-component") }).to_string();
+        let project = must(
+            call(
+                client,
+                "POST",
+                &format!("/api/v1/w/{}/projects", own.id),
+                &key,
+                Some(&body),
+            ),
+            201,
+            "create a project",
+        );
+        let project = project["project"]["id"].as_str().expect("an id");
+        let base = format!("/api/v1/w/{}/projects/{project}", own.id);
+        let body = json!({ "kind": "design-system", "pillar": "ui", "title": unique("owner-ds") })
+            .to_string();
+        must(
+            call(client, "POST", &format!("{base}/docs"), &key, Some(&body)),
+            201,
+            "create a design system without a change set",
+        );
+        let text = unique("owner-component-text");
+        let tags = format!(
+            "<Component name=\"Owner\" dir=\"row\" fill=\"#000000\">\n  <Text name=\"Owner label\" content=\"{text}\" fontFamily=\"Inter\" fontSize={{12}}/>\n</Component>"
+        );
+        let imported = must(
+            call(
+                client,
+                "PUT",
+                &format!("{base}/components"),
+                &key,
+                Some(&json!({ "tags": tags }).to_string()),
+            ),
+            200,
+            "import the component",
+        );
+        let component = imported["components"][0]["id"]
+            .as_str()
+            .unwrap_or_else(|| panic!("the import answers the component's ID: {imported}"))
+            .to_string();
+        let path = |workspace: &str| {
+            format!("/api/v1/w/{workspace}/projects/{project}/components/{component}")
+        };
+        for read in [path(&own.id), format!("{}?at=2", path(&own.id))] {
+            for auth in [&key, &human] {
+                let what = format!("{} with {}", route_name("GET", &read), auth.label());
+                let response = call(client, "GET", &read, auth, None);
+                assert_eq!(response.status, 200, "{what}: {}", response.text());
+                let answer = response.json();
+                assert_eq!(
+                    answer["component_id"],
+                    component.as_str(),
+                    "{what}: {answer}"
+                );
+                assert!(
+                    answer["tags"].as_str().unwrap_or_default().contains(&text),
+                    "{what}: the answer holds the component's own content: {answer}"
+                );
+                for marker in other.markers() {
+                    assert!(
+                        !response.text().contains(marker),
+                        "{what} shows {marker} of the other workspace: {}",
+                        response.text()
+                    );
+                }
+            }
+            for auth in [Auth::Key(&other.key), Auth::Session(&other.token)] {
+                let what = format!(
+                    "{} with {} of the other workspace",
+                    route_name("GET", &read),
+                    auth.label()
+                );
+                let response = call(client, "GET", &read, &auth, None);
+                assert_not_found_without_data(&response, own, &what);
+                assert!(
+                    !response.text().contains(&text),
+                    "{what}: {}",
+                    response.text()
+                );
+            }
+        }
+        let response = call(client, "GET", &path(&other.id), &key, None);
+        let what = format!(
+            "{} with the owner's key",
+            route_name("GET", &path(&other.id))
+        );
+        assert_not_found_without_data(&response, own, &what);
+        assert!(
+            !response.text().contains(&text),
+            "{what}: {}",
+            response.text()
+        );
     }
 }

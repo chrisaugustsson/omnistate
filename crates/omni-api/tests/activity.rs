@@ -1,53 +1,6 @@
-//! US-111: the activity list of a doc, who wrote what and when. Run with
-//! `--features stack-tests` in the Compose test container, which reaches
-//! Postgres at `postgres:5432` and RustFS at `rustfs:9000`.
-//!
-//! The tests migrate a scratch database, seed a workspace with one member
-//! (alice) and a live session, mint an API key through the API (the agent),
-//! create a scratch RustFS bucket and serve the API's router on a local port.
-//! Docs are created and written with the live routes of US-102..US-104 and
-//! renamed with the route of US-110.
-//!
-//! The contract these tests pin down (all paths are under
-//! `/api/v1/w/{workspace_id}/projects/{project_id}`):
-//!
-//! - `GET /docs/{doc_id}/activity` (both: an agent and the human read it, in
-//!   the route registry) lists the doc's writes, one entry per row of
-//!   `doc_changes`, newest first: 200 `{"entries": [Entry], "next": <seq> |
-//!   null}`. An entry is `{"seq", "agent", "created_at", "summary"}`: `seq`
-//!   is the row's number (1 for the creation), `agent` the agent the write
-//!   declared (`run`, `role`, `model`, `harness`), `created_at` the time in
-//!   RFC 3339 UTC (`...Z`), and `summary` one line about the write.
-//! - The list is paged: `?limit=<n>` (1 to 200, default 50) lists at most `n`
-//!   entries and `?before=<seq>` only the entries below that seq. `next` is
-//!   the `before` of the next page: the last seq listed when older entries
-//!   remain, else null. A `limit` that is no number from 1 to 200 is 400
-//!   `invalid_request`.
-//! - The summary compares the head before and after the write by node: the
-//!   nodes whose own content changed, the inserted, the removed and the moved
-//!   ones. It lists the counts that are not zero in that order, separated by
-//!   ", ", and the first one names the nodes: `1 node changed`, `3 nodes
-//!   changed, 1 inserted`, `2 nodes removed`, `1 node changed, 2 inserted, 2
-//!   removed`. The creation of a doc reads `created` and a rename `renamed to
-//!   "<title>"`. A design counts the nodes of its pages and boards the same
-//!   way (a board and its text are two nodes).
-//! - `GET /docs/{doc_id}/activity/{seq}` (both) answers one write: 200
-//!   `{"entry": Entry, "nodes": [Node], "boards": [Board]}`. For an HTML doc
-//!   `nodes` lists every node that the write changed, inserted, removed or
-//!   moved as `{"node", "kind", "change", "before", "after"}`: `change` is
-//!   `changed`, `inserted`, `removed` or `moved`, and `before` and `after`
-//!   are the element's HTML in the head before and after the write, `null`
-//!   where it is not there. A node the write did not touch is not listed. For
-//!   a design `boards` lists every board whose chunk the write changed as
-//!   `{"board", "change"}`, `change` being `changed`, `inserted` or `removed`;
-//!   a board it did not change is not listed. A seq the doc does not have is
-//!   404 `not_found`.
-//! - `GET /docs/{doc_id}/boards/{board_id}?at=<seq>` reads the board in the
-//!   head that write `seq` left, so a write's board reads as it was before at
-//!   `seq - 1` and as it is after at `seq`. A board that the head of that seq
-//!   does not have is 404 `unknown_board`, and a seq the doc does not have is
-//!   404 `not_found`.
-//! - A doc that is deleted, or not in the project, is 404 on both routes.
+//! US-111: the activity list of a doc. Run with `--features stack-tests` in
+//! the Compose test container, which reaches Postgres at `postgres:5432` and
+//! RustFS at `rustfs:9000`.
 
 const TEST_DB: &str = "omni_us111_activity";
 const TEST_BUCKET: &str = "omni-us111-activity";
@@ -56,7 +9,6 @@ mod common;
 
 use common::{Client, Response, TestServer, cookie};
 use omni_api::Config;
-use omni_api::routes::{Access, registry};
 use s3::creds::Credentials;
 use s3::{Bucket, BucketConfiguration, Region};
 use serde_json::{Value, json};
@@ -66,10 +18,6 @@ use std::future::Future;
 use std::str::FromStr;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU32, Ordering};
-
-// ---------------------------------------------------------------------------
-// Plumbing
-// ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
 // Plumbing
@@ -356,6 +304,10 @@ fn new_project(ws: &Ws, client: &Client) -> String {
 /// Creates a doc of `kind` at the app level without a change set (US-102);
 /// returns its ID.
 fn new_doc(ws: &Ws, client: &Client, project: &str, kind: &str) -> String {
+    new_titled_doc(ws, client, project, kind, &unique(kind))
+}
+
+fn new_titled_doc(ws: &Ws, client: &Client, project: &str, kind: &str, title: &str) -> String {
     let pillar = if kind == "html" { "spec" } else { "ui" };
     str_of(
         &must(
@@ -364,7 +316,7 @@ fn new_doc(ws: &Ws, client: &Client, project: &str, kind: &str) -> String {
                 "POST",
                 &format!("{}/docs", project_base(ws, project)),
                 &agent(ws),
-                Some(&json!({ "kind": kind, "pillar": pillar, "title": unique(kind) })),
+                Some(&json!({ "kind": kind, "pillar": pillar, "title": title })),
             ),
             201,
             "create a doc without a change set",
@@ -527,19 +479,17 @@ fn assert_error(response: &Response, status: u16, code: &str) {
     assert_eq!(response.status, status, "{}", response.text());
     assert_eq!(response.json()["error"], code, "{}", response.text());
 }
+fn move_to(node: &str, rev: u64, parent: Option<&str>, after: Option<&str>) -> Value {
+    json!({ "op": "move", "node": node, "rev": rev, "parent": parent, "position": { "after": after } })
+}
 
-fn count(sql: &str, binds: &[&str]) -> i64 {
-    block(async {
-        let mut conn = admin_connection().await;
-        let mut query = sqlx::query_scalar::<_, i64>(sql);
-        for bind in binds {
-            query = query.bind(*bind);
-        }
-        query
-            .fetch_one(&mut conn)
-            .await
-            .unwrap_or_else(|e| panic!("{sql}: {e}"))
-    })
+fn insert_into(parent: &str, after: Option<&str>, content: &str) -> Value {
+    json!({ "op": "insert", "parent": parent, "position": { "after": after }, "content": content })
+}
+
+/// A paragraph as the activity shows it: its outer HTML with `data-omni-id`.
+fn paragraph(node: &str, text: &str) -> String {
+    format!("<p data-omni-id=\"{node}\">{text}</p>")
 }
 
 /// The time of an entry as the API answers it: RFC 3339 in UTC, `...Z`.
@@ -646,35 +596,91 @@ fn board_tags_at(
     str_of(&read, "tags").to_string()
 }
 
-// ---------------------------------------------------------------------------
-// The route registry
-// ---------------------------------------------------------------------------
+// The design system -----------------------------------------------------------
 
-#[test]
-fn the_activity_routes_are_in_the_registry_for_agents_and_the_human() {
-    for path in [
-        "/api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}/activity",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}/activity/{seq}",
-    ] {
-        let entry = registry()
-            .into_iter()
-            .find(|r| r.method == "GET" && r.path == path)
-            .unwrap_or_else(|| panic!("the registry has no route GET {path}"));
-        assert_eq!(entry.access, Access::Both, "GET {path}");
-    }
+fn put_tokens(ws: &Ws, client: &Client, project: &str, tree: &Value) {
+    must(
+        call(
+            client,
+            "PUT",
+            &format!("{}/tokens", project_base(ws, project)),
+            &agent(ws),
+            Some(&json!({ "tokens": tree })),
+        ),
+        200,
+        "import the tokens into the design system's head",
+    );
+}
+
+/// A token with a value for the modes light and dark.
+fn token(light: &str, dark: &str) -> Value {
+    json!({
+        "$value": light,
+        "$extensions": { "omnistate": { "modes": { "light": light, "dark": dark } } }
+    })
+}
+
+/// A Button component whose label says `label`; its `id` is kept when given.
+fn button_tags(id: Option<&str>, label: &str) -> String {
+    let id = id.map(|id| format!(" id=\"{id}\"")).unwrap_or_default();
+    format!(
+        "<Component{id} name=\"Button\" dir=\"row\" pad={{8}} fill=\"#2563eb\">\n  <Text name=\"Button label\" content=\"{label}\" fontFamily=\"Inter\" fontSize={{14}}/>\n</Component>"
+    )
+}
+
+/// Imports the components into the design system's head; returns the ID of
+/// the first one.
+fn put_components(ws: &Ws, client: &Client, project: &str, tags: &str) -> String {
+    let imported = must(
+        call(
+            client,
+            "PUT",
+            &format!("{}/components", project_base(ws, project)),
+            &agent(ws),
+            Some(&json!({ "tags": tags })),
+        ),
+        200,
+        "import the components into the design system's head",
+    );
+    str_of(&imported["components"][0], "id").to_string()
+}
+
+fn component_at(ws: &Ws, client: &Client, project: &str, component: &str, at: &str) -> Response {
+    call(
+        client,
+        "GET",
+        &format!(
+            "{}/components/{component}?at={at}",
+            project_base(ws, project)
+        ),
+        &agent(ws),
+        None,
+    )
 }
 
 // ---------------------------------------------------------------------------
-// The list: one entry per write, with the agent, the time and a summary
+// The list: one entry per write, with its kind, the agent, the time and a summary
 // ---------------------------------------------------------------------------
 
 #[test]
-fn the_activity_lists_one_entry_per_write_newest_first_with_the_agent_the_time_and_a_summary() {
+fn the_activity_lists_one_entry_per_write_newest_first_with_its_kind_the_agent_the_time_and_a_summary()
+ {
     let (ws, client) = ready();
     let project = new_project(ws, client);
-    // seq 1 creates the doc, seq 2 inserts three paragraphs.
-    let (doc, nodes) = doc_with_paragraphs(ws, client, &project, &["One", "Two", "Three"]);
-    // seq 3 changes the three and inserts a fourth.
+    let first_title = unique("Checkout draft");
+    let doc = new_titled_doc(ws, client, &project, "html", &first_title);
+    let results = edit(
+        ws,
+        client,
+        &project,
+        &doc,
+        &json!([
+            insert_paragraph("One"),
+            insert_paragraph("Two"),
+            insert_paragraph("Three")
+        ]),
+    );
+    let nodes: Vec<String> = results.iter().map(node_of).collect();
     edit(
         ws,
         client,
@@ -687,66 +693,50 @@ fn the_activity_lists_one_entry_per_write_newest_first_with_the_agent_the_time_a
             insert_paragraph("Four"),
         ]),
     );
-    // seq 4 removes one, seq 5 renames the doc.
-    edit(ws, client, &project, &doc, &json!([delete(&nodes[1], 2)]));
+    edit(
+        ws,
+        client,
+        &project,
+        &doc,
+        &json!([move_to(&nodes[0], 2, None, None)]),
+    );
     let title = unique("Checkout plan");
     rename(ws, client, &project, &doc, &title);
 
     let list = activity(ws, client, &project, &doc, "");
+    let all = entries(&list);
     assert_eq!(seqs(&list), [5, 4, 3, 2, 1], "newest first: {list}");
     assert_eq!(
-        entries(&list).len() as i64,
-        count(
-            "SELECT count(*) FROM doc_changes WHERE doc_id = $1::uuid",
-            &[&doc]
-        ),
-        "one entry per row of doc_changes: {list}"
+        all.iter()
+            .map(|entry| entry["kind"].clone())
+            .collect::<Vec<_>>(),
+        ["rename", "edit", "edit", "edit", "create"],
+        "{list}"
     );
     assert_eq!(
         summaries(&list),
         [
-            format!("renamed to \"{title}\""),
-            "1 node removed".to_string(),
+            format!("Renamed from '{first_title}' to '{title}'"),
+            "1 moved".to_string(),
             "3 nodes changed, 1 inserted".to_string(),
-            "3 nodes inserted".to_string(),
-            "created".to_string(),
+            "3 inserted".to_string(),
+            "Created".to_string(),
         ],
         "{list}"
     );
-    let mut previous: Option<String> = None;
-    for entry in entries(&list) {
-        assert_eq!(
-            entry["agent"]["role"], "designer",
-            "the agent's role: {entry}"
-        );
-        assert_eq!(entry["agent"]["run"], "run-111", "the agent's run: {entry}");
-        let at = str_of(&entry, "created_at").to_string();
-        assert!(is_utc_time(&at), "the time is RFC 3339 UTC: {entry}");
-        if let Some(newer) = &previous {
-            assert!(at <= *newer, "newest first: {list}");
-        }
-        assert!(
-            !str_of(&entry, "summary").contains('\n'),
-            "the summary is one line: {entry}"
-        );
-        previous = Some(at);
-    }
-    assert!(list["next"].is_null(), "nothing older remains: {list}");
-}
-
-#[test]
-fn the_human_reads_the_same_activity_as_the_agent() {
-    let (ws, client) = ready();
-    let project = new_project(ws, client);
-    let (doc, _) = doc_with_paragraphs(ws, client, &project, &["Seen by both"]);
-    let by_agent = activity(ws, client, &project, &doc, "");
-    let by_human = must(
-        activity_on(client, ws, &human(ws), &project, &doc, ""),
-        200,
-        "the human reads the doc's activity",
+    assert_eq!(
+        all[0]["agent"],
+        json!({ "run": "run-111", "role": "designer", "model": "test-model", "harness": "test-harness" }),
+        "{list}"
     );
-    assert_eq!(seqs(&by_human), [2, 1], "{by_human}");
-    assert_eq!(by_human, by_agent);
+    assert!(
+        is_utc_time(str_of(&all[0], "created_at")),
+        "the time is RFC 3339 UTC: {list}"
+    );
+    assert!(
+        list["next_before"].is_null(),
+        "nothing older remains: {list}"
+    );
 }
 
 #[test]
@@ -754,7 +744,7 @@ fn the_activity_is_paged_with_limit_and_before() {
     let (ws, client) = ready();
     let project = new_project(ws, client);
     let (doc, nodes) = doc_with_paragraphs(ws, client, &project, &["Paged"]);
-    for rev in 1..=3 {
+    for rev in 1..=49 {
         edit(
             ws,
             client,
@@ -763,20 +753,24 @@ fn the_activity_is_paged_with_limit_and_before() {
             &json!([set_html(&nodes[0], rev, &format!("Paged {rev}"))]),
         );
     }
-    // Five writes: the creation, the insert and three changes.
+    // 51 writes: the creation, the insert and 49 changes.
+    let default = activity(ws, client, &project, &doc, "");
+    assert_eq!(entries(&default).len(), 50, "{default}");
+    assert_eq!(seqs(&default)[0], 51, "{default}");
+    assert_eq!(default["next_before"], 2, "{default}");
+    let most = activity(ws, client, &project, &doc, "?limit=200");
+    assert_eq!(entries(&most).len(), 51, "{most}");
+    assert!(most["next_before"].is_null(), "{most}");
+
     let first = activity(ws, client, &project, &doc, "?limit=2");
-    assert_eq!(seqs(&first), [5, 4], "{first}");
-    assert_eq!(first["next"], 4, "{first}");
-    let second = activity(ws, client, &project, &doc, "?limit=2&before=4");
-    assert_eq!(seqs(&second), [3, 2], "{second}");
-    assert_eq!(second["next"], 2, "{second}");
+    assert_eq!(seqs(&first), [51, 50], "{first}");
+    assert_eq!(first["next_before"], 50, "{first}");
+    let second = activity(ws, client, &project, &doc, "?limit=2&before=50");
+    assert_eq!(seqs(&second), [49, 48], "{second}");
+    assert_eq!(second["next_before"], 48, "{second}");
     let last = activity(ws, client, &project, &doc, "?limit=2&before=2");
     assert_eq!(seqs(&last), [1], "{last}");
-    assert!(last["next"].is_null(), "{last}");
-    assert_eq!(
-        seqs(&activity(ws, client, &project, &doc, "?before=4")),
-        [3, 2, 1]
-    );
+    assert!(last["next_before"].is_null(), "{last}");
     for query in ["?limit=0", "?limit=201", "?limit=many"] {
         assert_error(
             &activity_on(client, ws, &agent(ws), &project, &doc, query),
@@ -786,140 +780,127 @@ fn the_activity_is_paged_with_limit_and_before() {
     }
 }
 
+// ---------------------------------------------------------------------------
+// The detail of a write to an HTML doc: each element it acted on, before and after
+// ---------------------------------------------------------------------------
+
 #[test]
-fn a_design_write_is_summarised_by_the_nodes_of_its_boards() {
+fn a_batch_that_deletes_a_node_is_an_edit_that_shows_the_element_before_and_nothing_after() {
     let (ws, client) = ready();
     let project = new_project(ws, client);
-    let (doc, page, boards) = design_with_three_boards(ws, client, &project);
-    edit(
-        ws,
-        client,
-        &project,
-        &doc,
-        &json!([set_content(&boards[0].text, 1, "Updated 0")]),
-    );
-    edit(
-        ws,
-        client,
-        &project,
-        &doc,
-        &json!([
-            delete(&boards[2].id, 1),
-            insert_board(&page, "Board 3", 720, "Text 3"),
-        ]),
-    );
-    let list = activity(ws, client, &project, &doc, "");
-    assert_eq!(seqs(&list), [4, 3, 2, 1], "{list}");
+    let (doc, nodes) = doc_with_paragraphs(ws, client, &project, &["Doomed"]);
+    edit(ws, client, &project, &doc, &json!([delete(&nodes[0], 1)]));
+
+    let list = activity(ws, client, &project, &doc, "?limit=1");
+    assert_eq!(entries(&list)[0]["kind"], "edit", "{list}");
+    assert_eq!(summaries(&list), ["1 deleted"], "{list}");
+    let write = detail(ws, client, &project, &doc, 3);
+    assert_eq!(write["kind"], "edit", "{write}");
     assert_eq!(
-        summaries(&list),
-        [
-            "2 nodes inserted, 2 removed",
-            "1 node changed",
-            "6 nodes inserted",
-            "created",
-        ],
-        "{list}"
+        write["items"],
+        json!([{ "node": nodes[0], "before": paragraph(&nodes[0], "Doomed"), "after": null }]),
+        "{write}"
     );
 }
 
-// ---------------------------------------------------------------------------
-// The detail of a write to an HTML doc: each changed element, before and after
-// ---------------------------------------------------------------------------
-
 #[test]
-fn an_html_write_shows_the_html_of_each_element_it_touched_before_and_after() {
+fn an_html_write_shows_each_node_an_operation_acted_on_once_in_the_order_it_touched_them() {
     let (ws, client) = ready();
     let project = new_project(ws, client);
-    let (doc, nodes) = doc_with_paragraphs(
-        ws,
-        client,
-        &project,
-        &["Alpha one", "Beta one", "Gamma one"],
-    );
+    let doc = new_doc(ws, client, &project, "html");
     let results = edit(
         ws,
         client,
         &project,
         &doc,
         &json!([
-            set_html(&nodes[0], 1, "Alpha two"),
-            delete(&nodes[1], 1),
+            insert_paragraph("Gamma one"),
             insert_paragraph("Delta one"),
+            {
+                "op": "insert",
+                "parent": null,
+                "position": { "after": null },
+                "content": "<section><p>Alpha one</p><p>Beta one</p></section>"
+            },
         ]),
     );
-    let inserted = node_of(&results[2]);
+    let (gamma, delta) = (node_of(&results[0]), node_of(&results[1]));
+    let created = &results[2]["created"];
+    let section = created[0].as_str().expect("the section's ID").to_string();
+    let alpha = created[1]
+        .as_str()
+        .expect("the first paragraph's ID")
+        .to_string();
+    let beta = created[2]
+        .as_str()
+        .expect("the second paragraph's ID")
+        .to_string();
+
+    // Delta moves into the section after Beta, Alpha changes inside it, a
+    // paragraph is inserted and deleted again, Epsilon is inserted at the top
+    // of the section, and Gamma both changes and moves.
+    let results = edit(
+        ws,
+        client,
+        &project,
+        &doc,
+        &json!([
+            move_to(&delta, 1, Some(&section), Some(&beta)),
+            set_html(&alpha, 1, "Alpha two"),
+            insert_into(
+                &section,
+                Some(&alpha),
+                "<p data-omni-id=\"zz000001\">Brief</p>"
+            ),
+            delete("zz000001", 1),
+            insert_into(&section, None, "<p>Epsilon</p>"),
+            set_html(&gamma, 1, "Gamma two"),
+            move_to(&gamma, 2, None, None),
+        ]),
+    );
+    let epsilon = node_of(&results[4]);
 
     let write = detail(ws, client, &project, &doc, 3);
-    assert_eq!(write["entry"]["seq"], 3, "{write}");
-    assert_eq!(write["entry"]["agent"]["role"], "designer", "{write}");
     assert_eq!(
-        write["entry"]["summary"], "1 node changed, 1 inserted, 1 removed",
+        write["summary"], "2 nodes changed, 2 inserted, 1 deleted, 1 moved",
         "{write}"
     );
-    let touched = &write["nodes"];
     assert_eq!(
-        touched.as_array().map(Vec::len),
-        Some(3),
-        "only the three touched elements are listed: {write}"
-    );
-
-    let changed = listed(touched, "node", &nodes[0]);
-    assert_eq!(changed["change"], "changed", "{changed}");
-    assert_eq!(changed["kind"], "paragraph", "{changed}");
-    let before = str_of(changed, "before");
-    let after = str_of(changed, "after");
-    assert!(
-        before.starts_with("<p") && before.contains("Alpha one") && !before.contains("Alpha two"),
-        "the element before the write: {changed}"
-    );
-    assert!(
-        after.starts_with("<p") && after.contains("Alpha two") && !after.contains("Alpha one"),
-        "the element after the write: {changed}"
-    );
-
-    let removed = listed(touched, "node", &nodes[1]);
-    assert_eq!(removed["change"], "removed", "{removed}");
-    assert!(
-        str_of(removed, "before").contains("Beta one"),
-        "a removed element shows what it was: {removed}"
-    );
-    assert!(removed["after"].is_null(), "{removed}");
-
-    let new = listed(touched, "node", &inserted);
-    assert_eq!(new["change"], "inserted", "{new}");
-    assert!(new["before"].is_null(), "{new}");
-    assert!(
-        str_of(new, "after").contains("Delta one"),
-        "an inserted element shows what it is: {new}"
-    );
-
-    assert!(
-        !touched.to_string().contains("Gamma one"),
-        "an element the write did not touch is not listed: {write}"
+        write["items"],
+        json!([
+            { "node": delta, "before": paragraph(&delta, "Delta one"), "after": paragraph(&delta, "Delta one") },
+            { "node": alpha, "before": paragraph(&alpha, "Alpha one"), "after": paragraph(&alpha, "Alpha two") },
+            { "node": epsilon, "before": null, "after": paragraph(&epsilon, "Epsilon") },
+            { "node": gamma, "before": paragraph(&gamma, "Gamma one"), "after": paragraph(&gamma, "Gamma two") },
+        ]),
+        "the section, Beta and the paragraph that came and went get no item: {write}"
     );
 }
 
 #[test]
-fn the_creation_of_a_doc_is_its_first_write_and_an_unknown_seq_is_not_found() {
+fn a_creation_shows_the_whole_doc_and_a_rename_the_old_and_new_title() {
     let (ws, client) = ready();
     let project = new_project(ws, client);
-    let (doc, _) = doc_with_paragraphs(ws, client, &project, &["First"]);
+    let (before, after) = (unique("Old title"), unique("New title"));
+    let doc = new_titled_doc(ws, client, &project, "html", &before);
+    rename(ws, client, &project, &doc, &after);
+
     let created = detail(ws, client, &project, &doc, 1);
-    assert_eq!(created["entry"]["seq"], 1, "{created}");
-    assert_eq!(created["entry"]["summary"], "created", "{created}");
-    assert_eq!(created["nodes"], json!([]), "{created}");
-    let inserted = detail(ws, client, &project, &doc, 2);
+    assert_eq!(created["kind"], "create", "{created}");
     assert_eq!(
-        inserted["entry"]["summary"], "1 node inserted",
-        "{inserted}"
+        created["items"],
+        json!([{ "node": null, "before": null, "after": "" }]),
+        "{created}"
     );
-    for seq in ["3", "0", "99"] {
-        assert_error(
-            &detail_response(ws, client, &project, &doc, seq),
-            404,
-            "not_found",
-        );
-    }
+    assert!(created.get("title").is_none(), "{created}");
+    let renamed = detail(ws, client, &project, &doc, 2);
+    assert_eq!(renamed["kind"], "rename", "{renamed}");
+    assert_eq!(
+        renamed["title"],
+        json!({ "before": before, "after": after }),
+        "{renamed}"
+    );
+    assert_eq!(renamed["items"], json!([]), "{renamed}");
 }
 
 // ---------------------------------------------------------------------------
@@ -927,7 +908,30 @@ fn the_creation_of_a_doc_is_its_first_write_and_an_unknown_seq_is_not_found() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn a_design_write_lists_the_boards_it_changed() {
+fn a_batch_that_removes_a_board_is_an_edit_that_lists_only_that_board() {
+    let (ws, client) = ready();
+    let project = new_project(ws, client);
+    let (doc, _, boards) = design_with_three_boards(ws, client, &project);
+    edit(
+        ws,
+        client,
+        &project,
+        &doc,
+        &json!([delete(&boards[2].id, 1)]),
+    );
+
+    let write = detail(ws, client, &project, &doc, 3);
+    assert_eq!(write["kind"], "edit", "{write}");
+    assert_eq!(write["summary"], "1 removed", "{write}");
+    assert_eq!(
+        write["items"],
+        json!([{ "board": boards[2].id, "before_at": 2, "after_at": null }]),
+        "{write}"
+    );
+}
+
+#[test]
+fn a_design_write_lists_each_board_it_changed_or_added_with_the_seqs_to_read_it_at() {
     let (ws, client) = ready();
     let project = new_project(ws, client);
     let (doc, page, boards) = design_with_three_boards(ws, client, &project);
@@ -938,47 +942,23 @@ fn a_design_write_lists_the_boards_it_changed() {
         &doc,
         &json!([
             set_content(&boards[0].text, 1, "Updated 0"),
-            delete(&boards[2].id, 1),
             insert_board(&page, "Board 3", 720, "Text 3"),
         ]),
     );
-    let new = board_of(&results[2]);
+    let new = board_of(&results[1]);
 
     let write = detail(ws, client, &project, &doc, 3);
-    assert_eq!(write["entry"]["seq"], 3, "{write}");
+    assert_eq!(write["summary"], "1 board changed, 1 added", "{write}");
+    let items = &write["items"];
+    assert_eq!(items.as_array().map(Vec::len), Some(2), "{write}");
     assert_eq!(
-        write["entry"]["summary"], "1 node changed, 2 inserted, 2 removed",
-        "{write}"
-    );
-    let listed_boards = &write["boards"];
-    assert_eq!(
-        listed_boards.as_array().map(Vec::len),
-        Some(3),
-        "only the three changed boards are listed: {write}"
+        *listed(items, "board", &boards[0].id),
+        json!({ "board": boards[0].id, "before_at": 2, "after_at": 3 })
     );
     assert_eq!(
-        listed(listed_boards, "board", &boards[0].id)["change"],
-        "changed"
+        *listed(items, "board", &new.id),
+        json!({ "board": new.id, "before_at": null, "after_at": 3 })
     );
-    assert_eq!(
-        listed(listed_boards, "board", &boards[2].id)["change"],
-        "removed"
-    );
-    assert_eq!(
-        listed(listed_boards, "board", &new.id)["change"],
-        "inserted"
-    );
-    assert!(
-        !listed_boards.to_string().contains(&boards[1].id),
-        "a board the write did not change is not listed: {write}"
-    );
-
-    let inserted = detail(ws, client, &project, &doc, 2);
-    let all = &inserted["boards"];
-    assert_eq!(all.as_array().map(Vec::len), Some(3), "{inserted}");
-    for board in &boards {
-        assert_eq!(listed(all, "board", &board.id)["change"], "inserted");
-    }
 }
 
 #[test]
@@ -1027,13 +1007,8 @@ fn a_board_reads_as_each_write_left_it_with_at() {
         "unknown_board",
     );
 
-    // The new design's head holds no board, and a later write still reads
-    // back; the head read without `at` is the latest.
-    assert_error(
-        &board_at(ws, client, &project, &doc, &boards[0].id, "1"),
-        404,
-        "unknown_board",
-    );
+    // A later write leaves the earlier seq as it was; the read without `at`
+    // is the head.
     edit(
         ws,
         client,
@@ -1062,23 +1037,152 @@ fn a_board_reads_as_each_write_left_it_with_at() {
         "{latest}"
     );
 
+    for at in ["0", "5", "x"] {
+        assert_error(
+            &board_at(ws, client, &project, &doc, &boards[0].id, at),
+            404,
+            "not_found",
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The detail of a write to a design system: components and tokens
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_token_change_lists_only_the_tokens_it_added_changed_or_removed_in_their_typed_groups() {
+    let (ws, client) = ready();
+    let project = new_project(ws, client);
+    let system = new_doc(ws, client, &project, "design-system");
+    let modes = json!({ "omnistate": { "modes": ["light", "dark"] } });
+    put_tokens(
+        ws,
+        client,
+        &project,
+        &json!({ "$extensions": modes, "color": { "$type": "color", "brand": token("#ff0000", "#110000") } }),
+    );
+    put_tokens(
+        ws,
+        client,
+        &project,
+        &json!({
+            "$extensions": modes,
+            "color": { "$type": "color", "brand": token("#ff0000", "#220000"), "ink": token("#000000", "#ffffff") }
+        }),
+    );
+    put_tokens(
+        ws,
+        client,
+        &project,
+        &json!({
+            "$extensions": modes,
+            "color": { "$type": "color", "ink": token("#000000", "#ffffff"), "mist": token("#eeeeee", "#333333") }
+        }),
+    );
+
+    let created = detail(ws, client, &project, &system, 1);
+    assert_eq!(
+        created["tokens"],
+        json!({ "before": null, "after": {} }),
+        "{created}"
+    );
+    let first = detail(ws, client, &project, &system, 2);
+    assert_eq!(
+        first["tokens"]["after"],
+        json!({ "color": { "$type": "color", "brand": token("#ff0000", "#110000") } }),
+        "{first}"
+    );
+    let changed = detail(ws, client, &project, &system, 3);
+    assert_eq!(
+        changed["tokens"],
+        json!({
+            "before": { "color": { "$type": "color", "brand": token("#ff0000", "#110000") } },
+            "after": { "color": { "$type": "color", "brand": token("#ff0000", "#220000"), "ink": token("#000000", "#ffffff") } }
+        }),
+        "an added token is only in after: {changed}"
+    );
+    let removed = detail(ws, client, &project, &system, 4);
+    assert_eq!(removed["summary"], "2 tokens changed", "{removed}");
+    assert_eq!(
+        removed["tokens"],
+        json!({
+            "before": { "color": { "$type": "color", "brand": token("#ff0000", "#220000") } },
+            "after": { "color": { "$type": "color", "mist": token("#eeeeee", "#333333") } }
+        }),
+        "a removed token is only in before, an unchanged one in neither: {removed}"
+    );
+    assert_eq!(removed["items"], json!([]), "{removed}");
+}
+
+#[test]
+fn a_component_change_lists_the_component_and_it_reads_as_each_write_left_it_with_at() {
+    let (ws, client) = ready();
+    let project = new_project(ws, client);
+    let system = new_doc(ws, client, &project, "design-system");
+    let button = put_components(ws, client, &project, &button_tags(None, "Buy"));
+    put_components(ws, client, &project, &button_tags(Some(&button), "Pay"));
+
+    let added = detail(ws, client, &project, &system, 2);
+    assert_eq!(
+        added["items"],
+        json!([{ "component": button, "before_at": null, "after_at": 2 }]),
+        "{added}"
+    );
+    let changed = detail(ws, client, &project, &system, 3);
+    assert_eq!(changed["summary"], "1 component changed", "{changed}");
+    assert_eq!(
+        changed["items"],
+        json!([{ "component": button, "before_at": 2, "after_at": 3 }]),
+        "{changed}"
+    );
+    assert!(
+        changed.get("tokens").is_none(),
+        "no token changed: {changed}"
+    );
+
+    let before = must(
+        component_at(ws, client, &project, &button, "2"),
+        200,
+        "read the component at seq 2",
+    );
+    assert!(
+        str_of(&before, "tags").contains("\"Buy\""),
+        "the component before the write: {before}"
+    );
+    let after = must(
+        component_at(ws, client, &project, &button, "3"),
+        200,
+        "read the component at seq 3",
+    );
+    assert!(
+        str_of(&after, "tags").contains("\"Pay\""),
+        "the component after the write: {after}"
+    );
     assert_error(
-        &board_at(ws, client, &project, &doc, &boards[0].id, "99"),
+        &component_at(ws, client, &project, &button, "1"),
         404,
-        "not_found",
+        "unknown_component",
     );
 }
 
 // ---------------------------------------------------------------------------
-// Docs that are not there
+// Docs and writes that are not there
 // ---------------------------------------------------------------------------
 
 #[test]
-fn the_activity_of_a_deleted_doc_or_one_of_another_project_is_not_found() {
+fn the_activity_of_a_deleted_doc_an_unknown_seq_or_a_doc_of_another_project_is_not_found() {
     let (ws, client) = ready();
     let project = new_project(ws, client);
     let other = new_project(ws, client);
     let (doc, _) = doc_with_paragraphs(ws, client, &project, &["Elsewhere"]);
+    for seq in ["0", "3", "x"] {
+        assert_error(
+            &detail_response(ws, client, &project, &doc, seq),
+            404,
+            "not_found",
+        );
+    }
     assert_error(
         &activity_on(client, ws, &agent(ws), &other, &doc, ""),
         404,

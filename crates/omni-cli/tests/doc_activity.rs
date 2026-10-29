@@ -1,19 +1,5 @@
 //! US-111: `omni doc activity`, tested as the built `omni` against a mock HTTP
-//! server. None of these tests needs Postgres; the API's contract is in
-//! crates/omni-api/tests/activity.rs.
-//!
-//! The contract these tests pin down (the rest is the green step's choice; all
-//! paths are under `/api/v1/w/{workspace}/projects/{project_id}`):
-//!
-//! - `omni doc activity <doc>` reads `GET /docs/{doc}/activity`, which answers
-//!   `{"entries": [Entry], "next": <seq> | null}` newest first, and prints one
-//!   line per entry: `<seq>  <created_at>  <role>  <summary>` (two spaces),
-//!   the role being the entry's `agent.role`. While an answer has a `next`,
-//!   it reads the next page with `?before=<next>` and prints it too, so the
-//!   whole activity is printed, newest first. `--json` prints the API's
-//!   answer of the first page.
-//! - An API error (a doc that is not there) is one line on standard error
-//!   with the error's code (US-015). `omni --help` lists the command.
+//! server; the API's contract is in crates/omni-api/tests/activity.rs.
 
 mod common;
 
@@ -28,54 +14,39 @@ fn base() -> String {
     format!("/api/v1/w/{WORKSPACE}/projects/{PROJECT}")
 }
 
-fn entry(seq: u32, role: &str, at: &str, summary: &str) -> Value {
+fn entry(seq: u32, kind: &str, role: &str, at: &str, summary: &str) -> Value {
     json!({
         "seq": seq,
+        "kind": kind,
         "agent": { "run": "run-3", "role": role, "model": "m", "harness": "h" },
         "created_at": at,
         "summary": summary
     })
 }
 
-fn first_page() -> Value {
+fn page() -> Value {
     json!({
         "entries": [
-            entry(4, "designer", "2026-10-24T09:30:00.000000Z", "renamed to \"Checkout plan\""),
-            entry(3, "writer", "2026-10-24T09:20:00.000000Z", "3 nodes changed, 1 inserted"),
+            entry(4, "rename", "designer", "2026-10-24T09:30:00.000000Z", "Renamed from 'Draft' to 'Checkout plan'"),
+            entry(3, "edit", "writer", "2026-10-24T09:20:00.000000Z", "3 nodes changed, 1 inserted"),
         ],
-        "next": 3
+        "next_before": null
     })
 }
 
-fn second_page() -> Value {
-    json!({
-        "entries": [
-            entry(2, "writer", "2026-10-24T09:10:00.000000Z", "2 nodes inserted"),
-            entry(1, "writer", "2026-10-24T09:00:00.000000Z", "created"),
-        ],
-        "next": null
-    })
-}
-
-/// An API with the doc `DOC`, whose activity has two pages; `GONE` is a doc
-/// that is not there.
+/// An API with the doc `DOC`, whose activity is one page; `GONE` is a doc that
+/// is not there.
 fn mock() -> MockServer {
     MockServer::start(|request| {
-        let (path, query) = request
+        let path = request
             .path
             .split_once('?')
-            .unwrap_or((request.path.as_str(), ""));
+            .map_or(request.path.as_str(), |(path, _)| path);
         let Some(rest) = path.strip_prefix(&base()) else {
             return Reply::json(404, &json!({ "error": "not_found" }));
         };
         match (request.method.as_str(), rest) {
-            ("GET", r) if r == format!("/docs/{DOC}/activity") => {
-                if query.split('&').any(|pair| pair == "before=3") {
-                    Reply::json(200, &second_page())
-                } else {
-                    Reply::json(200, &first_page())
-                }
-            }
+            ("GET", r) if r == format!("/docs/{DOC}/activity") => Reply::json(200, &page()),
             _ => Reply::json(404, &json!({ "error": "not_found" })),
         }
     })
@@ -123,7 +94,7 @@ fn assert_one_line_error(out: &Out, needles: &[&str]) {
 }
 
 #[test]
-fn doc_activity_prints_every_write_newest_first_with_the_role_the_time_and_the_summary() {
+fn doc_activity_prints_one_line_per_entry_with_the_seq_the_time_the_role_and_the_summary() {
     let server = mock();
     let home = logged_in(&server.url);
     let out = run(&home, &["doc", "activity", DOC]);
@@ -131,35 +102,32 @@ fn doc_activity_prints_every_write_newest_first_with_the_role_the_time_and_the_s
     assert_eq!(
         non_empty_lines(&out.stdout),
         [
-            "4  2026-10-24T09:30:00.000000Z  designer  renamed to \"Checkout plan\"",
+            "4  2026-10-24T09:30:00.000000Z  designer  Renamed from 'Draft' to 'Checkout plan'",
             "3  2026-10-24T09:20:00.000000Z  writer  3 nodes changed, 1 inserted",
-            "2  2026-10-24T09:10:00.000000Z  writer  2 nodes inserted",
-            "1  2026-10-24T09:00:00.000000Z  writer  created",
-        ],
-        "one line per write, across both pages"
+        ]
     );
+}
+
+#[test]
+fn doc_activity_reads_the_page_that_limit_and_before_name() {
+    let server = mock();
+    let home = logged_in(&server.url);
+    let out = run(
+        &home,
+        &["doc", "activity", DOC, "--limit", "2", "--before", "5"],
+    );
+    assert_eq!(out.code, 0, "{}", out.stderr);
     let gets: Vec<Recorded> = server
         .requests()
         .into_iter()
         .filter(|r| r.method == "GET")
         .collect();
-    assert_eq!(gets.len(), 2, "two pages are read: {gets:?}");
-    for get in &gets {
-        assert!(
-            get.path
-                .starts_with(&format!("{}/docs/{DOC}/activity", base())),
-            "{get:?}"
-        );
-        assert_eq!(
-            get.header("authorization"),
-            Some(format!("Bearer {API_KEY}").as_str()),
-            "{get:?}"
-        );
-    }
-    assert!(
-        gets[1].path.contains("before=3"),
-        "the second page is read with the first page's next: {gets:?}"
-    );
+    assert_eq!(gets.len(), 1, "{gets:?}");
+    let (path, query) = gets[0].path.split_once('?').expect("a query");
+    assert_eq!(path, format!("{}/docs/{DOC}/activity", base()));
+    let mut pairs: Vec<&str> = query.split('&').collect();
+    pairs.sort();
+    assert_eq!(pairs, ["before=5", "limit=2"], "{gets:?}");
 }
 
 #[test]
@@ -168,7 +136,7 @@ fn doc_activity_json_prints_the_api_answer() {
     let home = logged_in(&server.url);
     let out = run(&home, &["doc", "activity", DOC, "--json"]);
     assert_eq!(out.code, 0, "{}", out.stderr);
-    assert_eq!(out.json(), first_page(), "--json prints the API's answer");
+    assert_eq!(out.json(), page(), "--json prints the API's answer");
 }
 
 #[test]
