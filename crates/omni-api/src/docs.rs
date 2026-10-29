@@ -1319,6 +1319,14 @@ async fn insert_doc(
         }),
     )
     .await?;
+    live::emit(
+        tx,
+        workspace_id,
+        project_id,
+        "doc.changed",
+        &json!({ "doc_id": row.id, "head": empty.name }),
+    )
+    .await?;
     Ok(row)
 }
 
@@ -1716,6 +1724,14 @@ pub async fn rename_doc(
         &json!({ "doc_id": doc_id, "title": title }),
     )
     .await?;
+    live::emit(
+        &mut tx,
+        &request.workspace_id,
+        &project_id,
+        "doc.changed",
+        &json!({ "doc_id": doc_id, "head": head.clone().unwrap_or_else(empty_head) }),
+    )
+    .await?;
     let row = find_doc(&mut tx, &project_id, &doc_id).await?;
     let drafts = drafts_of(&mut tx, &row.id).await?;
     tx.commit().await.map_err(ApiError::database)?;
@@ -1779,6 +1795,14 @@ pub async fn delete_doc(
         &project_id,
         "doc.deleted",
         &json!({ "doc_id": doc_id }),
+    )
+    .await?;
+    live::emit(
+        &mut tx,
+        &request.workspace_id,
+        &project_id,
+        "doc.changed",
+        &json!({ "doc_id": doc_id, "head": head.clone().unwrap_or_else(empty_head) }),
     )
     .await?;
     tx.commit().await.map_err(ApiError::database)?;

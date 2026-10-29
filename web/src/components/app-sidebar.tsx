@@ -1,14 +1,26 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { Link, useNavigate, useParams } from "@tanstack/react-router";
-import { Check, ChevronsUpDown, Inbox, KeyRound, Layers, LayoutGrid, LogOut, MessagesSquare } from "lucide-react";
+import { Link, useNavigate, useParams, useRouterState } from "@tanstack/react-router";
+import {
+  Check,
+  ChevronRight,
+  ChevronsUpDown,
+  Inbox,
+  KeyRound,
+  Layers,
+  LayoutGrid,
+  LogOut,
+  MessagesSquare,
+} from "lucide-react";
 import { logOut } from "@/api/auth";
 import { loadProjects } from "@/api/home";
 import { AgentAvatar } from "@/components/agent-chip";
 import { Button } from "@/components/ui/button";
-import type { ProjectBody } from "@/api/generated";
+import type { HomeResponse, ProjectBody } from "@/api/generated";
 import { waitingCount } from "@/components/project/items";
+import { ScopeTree, useFold } from "@/components/scope-tree";
 import { useReloading } from "@/lib/reloading";
 import { useHome } from "@/lib/use-home";
+import { useVisits, type Visit } from "@/lib/visits";
 import { cn } from "@/lib/utils";
 
 type Workspace = { id: string; name: string };
@@ -48,8 +60,7 @@ const activeLink = { exact: true, includeSearch: false } as const;
 const activeClass = "bg-sidebar-accent text-foreground [&>svg]:text-foreground";
 
 /** The places of a project: Inbox with what waits on the reviewer, App, Features with their number, and Threads. No feature is listed. */
-function ProjectNav({ workspaceId, projectId }: { workspaceId: string; projectId: string }) {
-  const { home } = useHome(workspaceId, projectId);
+function ProjectNav({ workspaceId, projectId, home }: { workspaceId: string; projectId: string; home: HomeResponse | null }) {
   const params = { workspaceId, projectId };
   return (
     <div className="space-y-0.5">
@@ -95,6 +106,104 @@ function ProjectNav({ workspaceId, projectId }: { workspaceId: string; projectId
         <MessagesSquare />
         Threads
       </Link>
+    </div>
+  );
+}
+
+const MOST_RECENT = 5;
+
+/** The features of the visits that the project still has, newest first and each once: the last five. */
+function recentFeatures(home: HomeResponse, visits: Visit[]): { id: string; name: string }[] {
+  const names = new Map((home.features ?? []).map(({ feature }) => [feature.id, feature.name]));
+  const ids = [...new Set(visits.map((visit) => visit.scope))].filter((scope) => names.has(scope));
+  return ids.slice(0, MOST_RECENT).map((id) => ({ id, name: names.get(id) ?? "" }));
+}
+
+/** The features visited last, for getting back to them; the label folds the list. */
+function Recent({ workspaceId, projectId, home, visits }: { workspaceId: string; projectId: string; home: HomeResponse; visits: Visit[] }) {
+  const [open, toggle] = useFold(`omni:fold:${projectId}:recent`);
+  const features = recentFeatures(home, visits);
+  return (
+    <div>
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={toggle}
+        className="flex h-[26px] w-full items-center gap-1 rounded-md px-2 text-left text-[11.5px] font-medium text-muted-foreground transition-colors hover:text-foreground"
+      >
+        Recent
+        <ChevronRight aria-hidden className={cn("size-3 shrink-0 transition-transform", open && "rotate-90")} />
+      </button>
+      {open &&
+        (features.length === 0 ? (
+          <p className="px-2 py-1 text-xs text-muted-foreground">No recent features</p>
+        ) : (
+          <div className="space-y-px">
+            {features.map((feature) => (
+              <Link
+                key={feature.id}
+                to="/w/$workspaceId/projects/$projectId/features/$featureId"
+                params={{ workspaceId, projectId, featureId: feature.id }}
+                activeOptions={activeLink}
+                activeProps={{ className: activeClass }}
+                className={itemClass}
+              >
+                <Layers />
+                <span className="min-w-0 flex-1 truncate">{feature.name}</span>
+              </Link>
+            ))}
+          </div>
+        ))}
+    </div>
+  );
+}
+
+/**
+ * The scope that the sidebar's tree shows: the feature or App of the current
+ * page, and on a page of no scope (Inbox, Features, Threads) the last one
+ * visited. It is App when there is none, or when the feature is gone.
+ */
+function treeScope(
+  home: HomeResponse,
+  visits: Visit[],
+  at: { featureId?: string; docId?: string; threadId?: string; onApp: boolean },
+): string {
+  let scope: string | undefined;
+  if (at.featureId) scope = at.featureId;
+  else if (at.docId) scope = scopeOf(home.docs.find((doc) => doc.id === at.docId));
+  else if (at.threadId) scope = scopeOf(home.threads.find((thread) => thread.id === at.threadId));
+  else if (at.onApp) scope = "app";
+  scope ??= visits[0]?.scope ?? "app";
+  const exists = scope === "app" || (home.features ?? []).some(({ feature }) => feature.id === scope);
+  return exists ? scope : "app";
+}
+
+function scopeOf(item?: { feature_id?: string | null }): string | undefined {
+  return item ? (item.feature_id ?? "app") : undefined;
+}
+
+/** What the sidebar shows of a project: its places, the features visited last, and the tree of the current scope. */
+function ProjectSection({ workspaceId, projectId }: { workspaceId: string; projectId: string }) {
+  const { home } = useHome(workspaceId, projectId);
+  const visits = useVisits(projectId);
+  const { featureId, docId, threadId } = useParams({ strict: false }) as {
+    featureId?: string;
+    docId?: string;
+    threadId?: string;
+  };
+  const onApp = useRouterState({ select: (state) => state.location.pathname.replace(/\/$/, "").endsWith("/app") });
+  return (
+    <div className="space-y-3">
+      <ProjectNav workspaceId={workspaceId} projectId={projectId} home={home} />
+      {home && <Recent workspaceId={workspaceId} projectId={projectId} home={home} visits={visits} />}
+      {home && (
+        <ScopeTree
+          workspaceId={workspaceId}
+          projectId={projectId}
+          scope={treeScope(home, visits, { featureId, docId, threadId, onApp })}
+          home={home}
+        />
+      )}
     </div>
   );
 }
@@ -291,7 +400,7 @@ export function AppSidebar({
         />
 
         <nav aria-label="Project" className="min-h-0 flex-1 overflow-y-auto">
-          {projectId && <ProjectNav workspaceId={workspace.id} projectId={projectId} />}
+          {projectId && <ProjectSection workspaceId={workspace.id} projectId={projectId} />}
         </nav>
 
         <div className="mt-3 space-y-2 border-t pt-3">

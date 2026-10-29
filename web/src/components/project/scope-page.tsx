@@ -25,7 +25,7 @@ const rowClass =
   "group flex items-center gap-3 px-4 py-3 text-sm transition-colors hover:bg-accent/60 focus-visible:bg-accent/60 focus-visible:outline-none";
 
 /** The docs of a pillar, by title, with the design system first. */
-function inOrder(docs: HomeDoc[]): HomeDoc[] {
+export function inOrder(docs: HomeDoc[]): HomeDoc[] {
   return [...docs].sort(
     (a, b) =>
       Number(b.kind === "design-system") - Number(a.kind === "design-system") ||
