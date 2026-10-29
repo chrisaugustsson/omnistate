@@ -51,7 +51,10 @@ function DocRow({ doc, params }: { doc: HomeDoc; params: Params }) {
         <span className="hidden w-28 shrink-0 text-xs text-muted-foreground sm:inline">
           {KIND_LABELS[doc.kind] ?? "HTML doc"}
         </span>
-        <span className="hidden w-52 shrink-0 truncate text-xs text-muted-foreground md:inline">
+        <span
+          title={doc.updated_at ? new Date(doc.updated_at).toLocaleString() : undefined}
+          className="hidden w-52 shrink-0 truncate text-xs text-muted-foreground md:inline"
+        >
           {doc.updated_at ? timeAgo(doc.updated_at) : ""}
           {doc.last_writer_role ? ` · ${doc.last_writer_role}` : ""}
         </span>
@@ -84,7 +87,12 @@ function ThreadRow({ thread, params }: { thread: HomeThread; params: Params }) {
         <span className="hidden w-20 shrink-0 text-xs text-muted-foreground sm:inline">
           {posts} {posts === 1 ? "post" : "posts"}
         </span>
-        <span className="hidden w-24 shrink-0 text-xs text-muted-foreground md:inline">{timeAgo(threadTime(thread))}</span>
+        <span
+          title={new Date(threadTime(thread)).toLocaleString()}
+          className="hidden w-24 shrink-0 text-xs text-muted-foreground md:inline"
+        >
+          {timeAgo(threadTime(thread))}
+        </span>
         <span
           className={cn(
             "flex w-24 shrink-0 items-center justify-end gap-1 text-xs text-muted-foreground",
@@ -140,7 +148,7 @@ export function ScopePage({ workspaceId, projectId, featureId }: Params & { feat
   useScrollToHash(ready);
 
   const title = featureId ? (summary?.feature.name ?? "") : (projectName ?? "");
-  const description = featureId ? summary?.feature.description : "The app as intended now.";
+  const description = featureId ? summary?.feature.description : undefined;
   const lastActivity = featureId ? summary?.last_activity : home?.app?.last_activity;
   const { docs, threads } = home && ready ? inScope(home, featureId) : { docs: [], threads: [] };
 
@@ -173,8 +181,8 @@ export function ScopePage({ workspaceId, projectId, featureId }: Params & { feat
             title={title}
             description={
               <>
-                {description && <p>{description}</p>}
-                <p className="mt-2 text-xs text-muted-foreground">
+                {description && <p className="whitespace-pre-line">{description}</p>}
+                <p className="mt-2 text-xs text-muted-foreground" title={lastActivity ? new Date(lastActivity).toLocaleString() : undefined}>
                   {lastActivity ? `Last change ${timeAgo(lastActivity)}` : "No activity yet"}
                 </p>
               </>
