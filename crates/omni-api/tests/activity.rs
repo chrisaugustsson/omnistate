@@ -878,6 +878,28 @@ fn an_html_write_shows_each_node_an_operation_acted_on_once_in_the_order_it_touc
 }
 
 #[test]
+fn a_set_to_the_same_value_counts_as_one_node_changed() {
+    let (ws, client) = ready();
+    let project = new_project(ws, client);
+    let (doc, nodes) = doc_with_paragraphs(ws, client, &project, &["Same"]);
+    edit(
+        ws,
+        client,
+        &project,
+        &doc,
+        &json!([set_html(&nodes[0], 1, "Same")]),
+    );
+
+    let write = detail(ws, client, &project, &doc, 3);
+    assert_eq!(write["summary"], "1 node changed", "{write}");
+    assert_eq!(
+        write["items"],
+        json!([{ "node": nodes[0], "before": paragraph(&nodes[0], "Same"), "after": paragraph(&nodes[0], "Same") }]),
+        "{write}"
+    );
+}
+
+#[test]
 fn a_creation_shows_the_whole_doc_and_a_rename_the_old_and_new_title() {
     let (ws, client) = ready();
     let project = new_project(ws, client);
@@ -928,6 +950,47 @@ fn a_batch_that_removes_a_board_is_an_edit_that_lists_only_that_board() {
         json!([{ "board": boards[2].id, "before_at": 2, "after_at": null }]),
         "{write}"
     );
+}
+
+#[test]
+fn a_design_write_that_only_moves_a_board_lists_no_board_and_says_no_changes() {
+    let (ws, client) = ready();
+    let project = new_project(ws, client);
+    let (doc, page, boards) = design_with_three_boards(ws, client, &project);
+    edit(
+        ws,
+        client,
+        &project,
+        &doc,
+        &json!([move_to(&boards[0].id, 1, Some(&page), Some(&boards[2].id))]),
+    );
+    let head = must(
+        call(
+            client,
+            "GET",
+            &format!("{}/html", doc_path(ws, &project, &doc)),
+            &agent(ws),
+            None,
+        ),
+        200,
+        "read the design's head",
+    );
+    let order: Vec<&str> = head["pages"][0]["children"]
+        .as_array()
+        .unwrap_or_else(|| panic!("the page lists its boards: {head}"))
+        .iter()
+        .map(|board| str_of(board, "id"))
+        .collect();
+    assert_eq!(
+        order,
+        [&boards[2].id, &boards[0].id, &boards[1].id],
+        "each insert went first, then Board 0 moved after Board 2"
+    );
+
+    let write = detail(ws, client, &project, &doc, 3);
+    assert_eq!(write["kind"], "edit", "{write}");
+    assert_eq!(write["summary"], "No changes", "{write}");
+    assert_eq!(write["items"], json!([]), "{write}");
 }
 
 #[test]
