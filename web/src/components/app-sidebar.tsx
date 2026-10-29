@@ -10,10 +10,12 @@ import {
   LayoutGrid,
   LogOut,
   MessagesSquare,
+  Search,
 } from "lucide-react";
 import { logOut } from "@/api/auth";
 import { loadProjects } from "@/api/home";
 import { AgentAvatar } from "@/components/agent-chip";
+import { Palette, isMac, useSearchShortcut } from "@/components/palette/palette";
 import { Button } from "@/components/ui/button";
 import type { HomeResponse, ProjectBody } from "@/api/generated";
 import { waitingCount } from "@/components/project/items";
@@ -59,11 +61,26 @@ function Count({ value, signal, zero }: { value?: number; signal?: boolean; zero
 const activeLink = { exact: true, includeSearch: false } as const;
 const activeClass = "bg-sidebar-accent text-foreground [&>svg]:text-foreground";
 
-/** The places of a project: Inbox with what waits on the reviewer, App, Features with their number, and Threads. No feature is listed. */
-function ProjectNav({ workspaceId, projectId, home }: { workspaceId: string; projectId: string; home: HomeResponse | null }) {
+/** The places of a project: Search, Inbox with what waits on the reviewer, App, Features with their number, and Threads. No feature is listed. */
+function ProjectNav({
+  workspaceId,
+  projectId,
+  home,
+  onSearch,
+}: {
+  workspaceId: string;
+  projectId: string;
+  home: HomeResponse | null;
+  onSearch: () => void;
+}) {
   const params = { workspaceId, projectId };
   return (
     <div className="space-y-0.5">
+      <button type="button" aria-keyshortcuts={isMac() ? "Meta+K" : "Control+K"} onClick={onSearch} className={cn(itemClass, "w-full text-left")}>
+        <Search />
+        Search
+        <kbd className="ml-auto font-sans text-[11px] font-normal text-muted-foreground">{isMac() ? "⌘K" : "Ctrl K"}</kbd>
+      </button>
       <Link
         to="/w/$workspaceId/projects/$projectId/inbox"
         params={params}
@@ -182,9 +199,20 @@ function scopeOf(item?: { feature_id?: string | null }): string | undefined {
   return item ? (item.feature_id ?? "app") : undefined;
 }
 
-/** What the sidebar shows of a project: its places, the features visited last, and the tree of the current scope. */
-function ProjectSection({ workspaceId, projectId }: { workspaceId: string; projectId: string }) {
+/** What the sidebar shows of a project: its places (and the palette they open), the features visited last, and the tree of the current scope. */
+function ProjectSection({
+  workspaceId,
+  projectId,
+  onCloseDrawer,
+}: {
+  workspaceId: string;
+  projectId: string;
+  onCloseDrawer: () => void;
+}) {
   const { home } = useHome(workspaceId, projectId);
+  const [searching, setSearching] = useState(false);
+  const closeSearch = useCallback(() => setSearching(false), []);
+  useSearchShortcut(useCallback(() => setSearching((open) => !open), []));
   const visits = useVisits(projectId);
   const { featureId, docId, threadId } = useParams({ strict: false }) as {
     featureId?: string;
@@ -194,7 +222,16 @@ function ProjectSection({ workspaceId, projectId }: { workspaceId: string; proje
   const onApp = useRouterState({ select: (state) => state.location.pathname.replace(/\/$/, "").endsWith("/app") });
   return (
     <div className="space-y-3">
-      <ProjectNav workspaceId={workspaceId} projectId={projectId} home={home} />
+      <ProjectNav
+        workspaceId={workspaceId}
+        projectId={projectId}
+        home={home}
+        onSearch={() => {
+          setSearching(true);
+          onCloseDrawer();
+        }}
+      />
+      <Palette home={home} workspaceId={workspaceId} projectId={projectId} open={searching} onClose={closeSearch} />
       {home && <Recent workspaceId={workspaceId} projectId={projectId} home={home} visits={visits} />}
       {home && (
         <ScopeTree
@@ -400,7 +437,7 @@ export function AppSidebar({
         />
 
         <nav aria-label="Project" className="min-h-0 flex-1 overflow-y-auto">
-          {projectId && <ProjectSection workspaceId={workspace.id} projectId={projectId} />}
+          {projectId && <ProjectSection workspaceId={workspace.id} projectId={projectId} onCloseDrawer={onClose} />}
         </nav>
 
         <div className="mt-3 space-y-2 border-t pt-3">
