@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
-// US-058: big design docs load board by board. The design viewer (US-043) and
-// the change set review's canvases (US-046) read a version's outline first and
-// then the boards they show, never the whole version body at once
-// (src/testing/design-boards.ts has the two reads):
+// US-058: big design docs load board by board. The design viewer (US-043)
+// reads the head's outline first (US-112) and the change set review's canvases
+// (US-046) a version's, and then the boards they show, never the whole body at
+// once (src/testing/design-boards.ts has the reads):
 //
 // - GET .../versions/<version>?view=outline: the version without `pages` and
 //   `tags`, with `outline`, its pages in order, each with its boards under
@@ -204,14 +204,15 @@ type Call = { method: string; path: string; params: URLSearchParams };
 /**
  * A fake of the API: the auth routes, the project home, the design doc with
  * its versions V1 (mainline) and V2 (under review in CS_ID), the change set's
- * review, and the board-by-board reads of both versions. A whole version is
+ * review, the board-by-board reads of both versions and of the doc's head,
+ * `headPages` (V1's pages until the test changes them). A whole version is
  * served too, for a page that still asks for it. With `holdBoards`, board
  * reads wait until `releaseBoards` is called.
  */
 function fakeApi({ holdBoards = false }: { holdBoards?: boolean } = {}) {
   let release: () => void = () => {};
   const gate = holdBoards ? new Promise<void>((resolve) => (release = resolve)) : Promise.resolve();
-  const api = { calls: [] as Call[], releaseBoards: () => release() };
+  const api = { calls: [] as Call[], releaseBoards: () => release(), headPages: PAGES_OF[V1] };
   const json = (status: number, body: unknown) =>
     new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
   const doc = {
@@ -276,7 +277,9 @@ function fakeApi({ holdBoards = false }: { holdBoards?: boolean } = {}) {
     const method = (init?.method ?? (input instanceof Request ? input.method : "GET")).toUpperCase();
     api.calls.push({ method, path, params: url.searchParams });
 
-    const read = answerDesignRead(API, method, url, version);
+    const read = answerDesignRead(API, method, url, version, (id) =>
+      id === DOC_ID ? { ...version(V1), pages: api.headPages } : null,
+    );
     if (read) {
       if (path.includes("/boards/")) await gate;
       return json(read.status, read.body);
@@ -344,18 +347,20 @@ function fakeApi({ holdBoards = false }: { holdBoards?: boolean } = {}) {
   return api;
 }
 
-/** A WebSocket that stays connecting: these pages need no live events. */
+/** A WebSocket the test drives: it records what the client sends. */
 class FakeWebSocket extends EventTarget {
   static readonly CONNECTING = 0;
   static readonly OPEN = 1;
   static readonly CLOSING = 2;
   static readonly CLOSED = 3;
+  static instances: FakeWebSocket[] = [];
 
   readonly CONNECTING = 0;
   readonly OPEN = 1;
   readonly CLOSING = 2;
   readonly CLOSED = 3;
   readyState = FakeWebSocket.CONNECTING;
+  sent: unknown[] = [];
   onopen: ((event: Event) => void) | null = null;
   onmessage: ((event: Event) => void) | null = null;
   onclose: ((event: Event) => void) | null = null;
@@ -363,12 +368,38 @@ class FakeWebSocket extends EventTarget {
 
   constructor(readonly url: string) {
     super();
+    FakeWebSocket.instances.push(this);
   }
 
-  send() {}
+  send(data: string) {
+    if (this.readyState !== FakeWebSocket.OPEN) {
+      throw new Error("InvalidStateError: the socket is not open");
+    }
+    this.sent.push(JSON.parse(data));
+  }
 
   close() {
+    if (this.readyState === FakeWebSocket.CLOSED) return;
     this.readyState = FakeWebSocket.CLOSED;
+    this.fire("close", { code: 1000, reason: "", wasClean: true });
+  }
+
+  /** The server accepted the connection. */
+  open() {
+    this.readyState = FakeWebSocket.OPEN;
+    this.fire("open", {});
+  }
+
+  /** The server sent a JSON text frame. */
+  receive(message: unknown) {
+    this.fire("message", { data: JSON.stringify(message) });
+  }
+
+  private fire(type: string, fields: Record<string, unknown>) {
+    const event = Object.assign(new Event(type), fields);
+    const handler = (this as unknown as Record<string, unknown>)[`on${type}`];
+    if (typeof handler === "function") handler.call(this, event);
+    this.dispatchEvent(event);
   }
 }
 
@@ -480,6 +511,10 @@ function boardReads(api: ReturnType<typeof fakeApi>, id?: string) {
   );
 }
 
+function headReads(api: ReturnType<typeof fakeApi>) {
+  return api.calls.filter((call) => call.method === "GET" && call.path === `${API}/docs/${DOC_ID}/html`);
+}
+
 function versionReads(api: ReturnType<typeof fakeApi>, version: string) {
   return api.calls.filter((call) => call.method === "GET" && call.path === `${API}/versions/${version}`);
 }
@@ -498,6 +533,7 @@ beforeEach(() => {
   fake.visible = null;
   fake.asked = 0;
   fake.stale = false;
+  FakeWebSocket.instances = [];
   vi.stubGlobal("WebSocket", FakeWebSocket);
   window.scrollTo = vi.fn() as unknown as typeof window.scrollTo;
 });
@@ -510,7 +546,7 @@ afterEach(() => {
 // The design viewer -----------------------------------------------------------------------
 
 describe("the design viewer", () => {
-  test("reads the version's outline first and never the whole version body", async () => {
+  test("reads the head's outline first and never the whole body", async () => {
     api = fakeApi();
     fake.visible = [ORDER_1];
     renderAt(DOC_PATH);
@@ -518,12 +554,13 @@ describe("the design viewer", () => {
     await loaded(renderer, ORDRAR, V1, ORDER_1);
     await settle();
 
-    const reads = versionReads(api, V1);
-    expect(reads.length, "the mainline version is read by ID").toBeGreaterThan(0);
+    const reads = headReads(api);
+    expect(reads.length, "the head is read").toBeGreaterThan(0);
     for (const read of reads) {
-      expect(read.params.get("view"), `every read of the version asks for its outline: ?${read.params}`).toBe("outline");
+      expect(read.params.get("view"), `every read of the head asks for its outline: ?${read.params}`).toBe("outline");
     }
-    expect(versionReads(api, V2), "the other version is not read").toEqual([]);
+    expect(versionReads(api, V1), "no version is read").toEqual([]);
+    expect(versionReads(api, V2), "no version is read").toEqual([]);
   });
 
   test("shows the page with every board as a placeholder until the boards are loaded", async () => {
@@ -564,7 +601,7 @@ describe("the design viewer", () => {
     expect(screen.getAllByRole("alert"), "said once, however often the view changes").toHaveLength(1);
   });
 
-  test("reads only the boards in view, each from the version's board route", async () => {
+  test("reads only the boards in view, each from the head's board route", async () => {
     api = fakeApi();
     fake.visible = [ORDER_1];
     renderAt(DOC_PATH);
@@ -574,7 +611,7 @@ describe("the design viewer", () => {
 
     const reads = boardReads(api);
     expect(reads.map((call) => call.path), "only the board in view is read").toEqual([`${API}/docs/${DOC_ID}/boards/${ORDER_1}`]);
-    expect(reads[0].params.get("version"), "the board of the version shown").toBe(V1);
+    expect(reads[0].params.get("version"), "the board of the head").toBeNull();
     expect(boardReads(api, ORDER_2), "a board out of view is not read").toEqual([]);
     expect(boardReads(api, ORDER_3), "a board out of view is not read").toEqual([]);
   });
@@ -598,6 +635,35 @@ describe("the design viewer", () => {
     expect(boardReads(api, ORDER_1), "a loaded board is read once").toHaveLength(1);
     expect(boardReads(api, ORDER_2)).toHaveLength(1);
     expect(boardReads(api, ORDER_3)).toHaveLength(1);
+  });
+
+  test("when an agent changes a board, the head is read again and only that board with it", async () => {
+    api = fakeApi();
+    renderAt(DOC_PATH);
+    const renderer = await viewerRenderer();
+    await loaded(renderer, ORDRAR, V1, ORDER_1);
+    await loaded(renderer, ORDRAR, V1, ORDER_3);
+    await settle();
+    const before = headReads(api).length;
+
+    await waitFor(() => expect(FakeWebSocket.instances.length).toBeGreaterThan(0));
+    const socket = FakeWebSocket.instances[FakeWebSocket.instances.length - 1];
+    socket.open();
+    await waitFor(() =>
+      expect(socket.sent).toContainEqual(expect.objectContaining({ type: "subscribe", project_id: PROJECT_ID })),
+    );
+    socket.receive({ type: "subscribed", project_id: PROJECT_ID, last_seq: 40 });
+    // An agent renames the first order: only its board changes.
+    api.headPages = PAGES_OF[V2];
+    socket.receive({ type: "event", seq: 41, event: "doc.changed", project_id: PROJECT_ID, at: AT, data: { doc_id: DOC_ID, agent: AUTHOR } });
+
+    await loaded(renderer, ORDRAR, V2, ORDER_1);
+    await settle();
+    expect(headReads(api).length, "the head's outline is read again").toBeGreaterThan(before);
+    expect(boardReads(api, ORDER_1), "the changed board is read again").toHaveLength(2);
+    expect(boardReads(api, ORDER_2), "an unchanged board is not").toHaveLength(1);
+    expect(boardReads(api, ORDER_3), "an unchanged board is not").toHaveLength(1);
+    expect(fake.instances.filter((instance) => !instance.destroyed), "the same renderer, so the zoom and pan stay").toEqual([renderer]);
   });
 });
 

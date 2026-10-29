@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 // US-041: the thread view, where the reviewer follows a thread live and
 // decides on it. It is /w/<workspace id>/projects/<project id>/threads/<thread
-// id>, and the project home links each thread's question there. The app is
+// id>, and the scope pages link each thread's question there. The app is
 // rendered with its own router on a memory history, the browser's fetch is
 // replaced by a fake of the API, and the browser's WebSocket by a fake socket
 // that the test drives.
@@ -450,16 +450,6 @@ describe("the thread view", () => {
   afterEach(() => {
     cleanup();
     vi.unstubAllGlobals();
-  });
-
-  test("the project home links each thread to its view", async () => {
-    fakeApi(seededThread());
-    const router = renderAt(`/w/${WORKSPACE_ID}/projects/${PROJECT_ID}`);
-    const link = await screen.findByRole("link", { name: QUESTION });
-    expect(link.getAttribute("href")).toBe(THREAD_PATH);
-    fireEvent.click(link);
-    await waitFor(() => expect(router.state.location.pathname).toBe(THREAD_PATH));
-    await section(PHASE_1);
   });
 
   test("the posts are grouped by phase and a sealed phase is labeled but shows every post", async () => {

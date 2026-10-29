@@ -362,7 +362,13 @@ function fakeApi({
     api.calls.push({ method, path });
 
     // US-058: a version's outline and its boards, one by one.
-    const read = answerDesignRead(API, method, url, (id) => (id === V1 || id === V2 ? version(id) : null));
+    const read = answerDesignRead(
+      API,
+      method,
+      url,
+      (id) => (id === V1 || id === V2 ? version(id) : null),
+      (id) => (id === DOC_ID ? version(V1) : null),
+    );
     if (read) return json(read.status, read.body);
     if (method === "GET" && path.startsWith(ATTACHMENTS)) {
       const id = path.slice(ATTACHMENTS.length);

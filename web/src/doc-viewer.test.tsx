@@ -25,31 +25,19 @@
 //   the shown HTML that have comments, and how many) and `selected` is the
 //   selected block's node ID or `null`.
 //
-// The page loads the doc (GET .../docs/<doc>, with its drafts and live
-// claims), its versions (GET .../docs/<doc>/versions, crates/omni-api/tests/
-// doc_versions.rs: `{doc_id, versions}`, oldest first, each with `id`,
-// `doc_id`, `changeset_id`, `draft_id`, `removed`, `created_at` and `agent`),
-// the HTML of the version shown (GET .../docs/<doc>/html?version=<id>, or
-// without `version` for the mainline version) and the doc's comments (GET
-// .../comments?doc=<doc>). It shows:
+// The page loads the doc (GET .../docs/<doc>), the HTML of its head (GET
+// .../docs/<doc>/html, US-112: there is no version picker and no draft view)
+// and the doc's comments (GET .../comments?doc=<doc>). It shows:
 //
 // - the doc's title as a heading;
-// - a version picker: a select named "Version" with one option per saved
-//   version, whose value is the version's ID, and one option per draft of the
-//   doc, whose text says "draft" (the live draft of that change set). The
-//   mainline version is shown first;
 // - a section named "Comments" (a heading names it) with the comments of the
 //   selected block and, once a block is selected, a field named "Comment" and
 //   a button "Comment" (or "Add comment", or "Post") that sends POST
-//   .../versions/<version shown>/comments {node, text}. A comment made on an
-//   older version than the one shown shows that version of its block (read
-//   from GET .../docs/<doc>/html?version=<the comment's version>) next to the
-//   block as it is now;
-// - in the live draft (GET .../changesets/<change set>/docs/<doc>), the draft
-//   as it changes: the page subscribes to the project's live events and loads
-//   the draft again when an operation is applied (`op.applied`), and it shows
-//   the draft's claims, each holder named `<run>/<role>`, as they are taken and
-//   released (`claim.taken`, `claim.released`, `claim.expired`).
+//   .../docs/<doc>/comments {node, text};
+// - the head as agents write it: the page subscribes to the project's live
+//   events and reads the head again on `doc.changed`, keeping the selected
+//   block while it is still there. `?node=<block>` opens the doc with that
+//   block selected, and the frame is told to scroll it into view (`reveal`).
 import { RouterProvider, createMemoryHistory } from "@tanstack/react-router";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -59,77 +47,19 @@ import { viewerPolicyProblems } from "./testing/viewer-policy";
 const WORKSPACE_ID = "0192d7a0-0000-7000-8000-00000000000a";
 const PROJECT_ID = "0192d7a0-2222-7000-8000-000000000001";
 const DOC_ID = "0192d7a0-5555-7000-8000-000000000001";
-const CS_FIRST = "0192d7a0-5555-7000-8000-000000000011";
-const CS_SECOND = "0192d7a0-5555-7000-8000-000000000012";
-const CS_OPEN = "0192d7a0-5555-7000-8000-000000000013";
-const V1 = "0192d7a0-5555-7000-8000-000000000021";
-const V2 = "0192d7a0-5555-7000-8000-000000000022";
-const DRAFT_ID = "0192d7a0-5555-7000-8000-000000000031";
 const USER = { id: "0192d7a0-1111-7000-8000-000000000001", email: "alice@example.com" };
 const DOC_TITLE = "Checkout PRD";
 const DOC_PATH = `/w/${WORKSPACE_ID}/projects/${PROJECT_ID}/docs/${DOC_ID}`;
-const HOME_PATH = `/w/${WORKSPACE_ID}/projects/${PROJECT_ID}`;
 const API = `/api/v1/w/${WORKSPACE_ID}/projects/${PROJECT_ID}`;
 const AT = "2026-10-21T10:00:00Z";
 const HUMAN = { kind: "human", user_id: USER.id };
-const AUTHOR = { run: "run-1", role: "author", model: "test-model", harness: "test-harness" };
 const WRITER = { run: "run-1", role: "writer", model: "test-model", harness: "test-harness" };
 
-const V1_HTML = `<section data-omni-id="s0000001">
+const HEAD_HTML = `<section data-omni-id="s0000001">
 <h1 data-omni-id="h0000001">Checkout</h1>
-<p data-omni-id="p0000001">Orders ship in two days.</p>
+<p data-omni-id="p0000001">Orders ship in one day.</p>
 <p data-omni-id="p0000002">Refunds take a week.</p>
 </section>`;
-const V2_HTML = V1_HTML.replace("Orders ship in two days.", "Orders ship in one day.");
-
-function draftHtml(extra: string) {
-  return `<section data-omni-id="s0000001" data-rev="3">
-<h1 data-omni-id="h0000001" data-rev="1">Checkout</h1>
-<p data-omni-id="p0000001" data-rev="2">Orders ship in one day.</p>
-<p data-omni-id="p0000002" data-rev="1">Refunds take a week.</p>
-${extra}
-</section>`;
-}
-
-function version(id: string, changesetId: string, createdAt: string) {
-  return {
-    id,
-    doc_id: DOC_ID,
-    changeset_id: changesetId,
-    draft_id: `${id.slice(0, -2)}99`,
-    removed: false,
-    created_at: createdAt,
-    agent: AUTHOR,
-  };
-}
-
-function changeset(id: string, title: string, status: string) {
-  return {
-    id,
-    project_id: PROJECT_ID,
-    title,
-    description: "",
-    status,
-    run_tag: "run-1",
-    created_at: AT,
-    history: [],
-    approved_versions: [],
-    decisions: [],
-  };
-}
-
-function claim(node: string) {
-  return {
-    id: "0192d7a0-5555-7000-8000-000000000041",
-    doc_id: DOC_ID,
-    draft_id: DRAFT_ID,
-    changeset_id: CS_OPEN,
-    node,
-    agent: WRITER,
-    taken_at: AT,
-    expires_at: "2026-10-21T10:10:00Z",
-  };
-}
 
 let counter = 0;
 function newId() {
@@ -139,42 +69,33 @@ function newId() {
 
 type Comment = ReturnType<typeof comment>;
 
-function comment(versionId: string, node: string, text: string, nodeStatus: string) {
+function comment(node: string, text: string) {
   return {
     id: newId(),
     project_id: PROJECT_ID,
     doc_id: DOC_ID,
-    version_id: versionId,
     node,
-    changeset_id: null as string | null,
     author: HUMAN,
     text,
-    status: "open",
-    addressed_in: null as string | null,
     replies: [] as unknown[],
-    node_status: nodeStatus,
-    compared_to: V2 as string | null,
+    orphaned: false,
+    waiting_on_you: false,
     created_at: AT,
   };
 }
 
-/** The doc's two comments: one made on the older version, on a block that changed since, and one on the mainline. */
+/** The doc's two comments, one on each paragraph. */
 function seededComments() {
-  return [
-    comment(V1, "p0000001", "Is two days right?", "changed"),
-    comment(V2, "p0000002", "Say which week.", "current"),
-  ];
+  return [comment("p0000001", "Is one day right?"), comment("p0000002", "Say which week.")];
 }
 
 type Call = { method: string; path: string; search: URLSearchParams; body: Record<string, unknown> | null };
 
-/** A fake of the API: the auth routes, the project, the doc with its versions, draft and comments, and the calls it got. */
+/** A fake of the API: the auth routes, the project, the doc with its head and comments, and the calls it got. */
 function fakeApi() {
   const api = {
     comments: seededComments() as Comment[],
-    claims: [] as ReturnType<typeof claim>[],
-    draft: draftHtml('<p data-omni-id="p0000003" data-rev="1">Returns are free.</p>'),
-    draftLoads: 0,
+    head: HEAD_HTML,
     calls: [] as Call[],
   };
   const json = (status: number, body: unknown) =>
@@ -182,24 +103,16 @@ function fakeApi() {
       status,
       headers: { "content-type": "application/json" },
     });
-  const doc = () => ({
+  const doc = {
     id: DOC_ID,
     project_id: PROJECT_ID,
     kind: "html",
     pillar: "spec",
     title: DOC_TITLE,
     created_at: AT,
-    mainline_version_id: V2,
-    drafts: [{ id: DRAFT_ID, doc_id: DOC_ID, changeset_id: CS_OPEN, base_version_id: V2 }],
-    claims: api.claims,
-  });
-  const changesets = [
-    changeset(CS_FIRST, "Write the checkout PRD", "merged"),
-    changeset(CS_SECOND, "Ship faster", "merged"),
-    changeset(CS_OPEN, "Add a returns policy", "open"),
-  ];
-  const versions = [version(V1, CS_FIRST, "2026-10-20T09:00:00Z"), version(V2, CS_SECOND, "2026-10-21T09:00:00Z")];
-  const htmlOf: Record<string, string> = { [V1]: V1_HTML, [V2]: V2_HTML };
+    drafts: [],
+    claims: [],
+  };
 
   const fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const raw = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
@@ -227,57 +140,31 @@ function fakeApi() {
       case `GET ${API}/home`:
         return json(200, {
           project_id: PROJECT_ID,
-          docs: [doc()],
-          changesets,
+          docs: [doc],
+          changesets: [],
           threads: [],
           waiting: { decisions: [], changesets: [], comments: [], questions: [] },
         });
-      case `GET ${API}/changesets`:
-        return json(200, { changesets });
       case `GET ${API}/docs/${DOC_ID}`:
-        return json(200, { doc: doc() });
-      case `GET ${API}/docs/${DOC_ID}/versions`:
-        return json(200, { doc_id: DOC_ID, versions });
-      case `GET ${API}/docs/${DOC_ID}/html`: {
-        const id = url.searchParams.get("version") ?? V2;
-        if (!htmlOf[id]) return json(404, { error: "not_found" });
-        return json(200, { doc_id: DOC_ID, version_id: id, html: htmlOf[id] });
-      }
-      case `GET ${API}/changesets/${CS_OPEN}/docs/${DOC_ID}`:
-        api.draftLoads += 1;
-        return json(200, {
-          draft: { id: DRAFT_ID, doc_id: DOC_ID, changeset_id: CS_OPEN, base_version_id: V2, html: api.draft },
-        });
+        return json(200, { doc });
+      case `GET ${API}/docs/${DOC_ID}/html`:
+        return json(200, { doc_id: DOC_ID, html: api.head });
       case `GET ${API}/comments`: {
         const docFilter = url.searchParams.get("doc");
         const listed = api.comments.filter((c) => !docFilter || c.doc_id === docFilter);
         return json(200, { project_id: PROJECT_ID, comments: listed });
       }
+      case `POST ${API}/docs/${DOC_ID}/comments`: {
+        const node = typeof body?.node === "string" ? body.node : "";
+        const said = typeof body?.text === "string" ? body.text.trim() : "";
+        if (!node || !said) return json(400, { error: "invalid_request" });
+        const created = comment(node, said);
+        api.comments = [...api.comments, created];
+        return json(201, { comment: created });
+      }
       default:
-        break;
+        return json(404, { error: "not_found" });
     }
-    const single = changesets.find((c) => path === `${API}/changesets/${c.id}`);
-    if (method === "GET" && single) return json(200, { changeset: single });
-    const read = versions.find((v) => path === `${API}/versions/${v.id}`);
-    if (method === "GET" && read) {
-      const nodes = Array.from(htmlOf[read.id].matchAll(/<(\w+)[^>]*data-omni-id="(\w+)"/g), (m) => ({
-        id: m[2],
-        type: m[1] === "h1" ? "heading" : m[1] === "p" ? "paragraph" : "section",
-        parent: m[2] === "s0000001" ? null : "s0000001",
-        fingerprint: `${read.id}-${m[2]}`,
-      }));
-      return json(200, { version: { ...read, design_system_version_id: null, nodes } });
-    }
-    const commentOn = versions.find((v) => path === `${API}/versions/${v.id}/comments`);
-    if (method === "POST" && commentOn) {
-      const node = typeof body?.node === "string" ? body.node : "";
-      const said = typeof body?.text === "string" ? body.text.trim() : "";
-      if (!node || !said) return json(400, { error: "invalid_request" });
-      const created = comment(commentOn.id, node, said, "current");
-      api.comments = [...api.comments, created];
-      return json(201, { comment: created });
-    }
-    return json(404, { error: "not_found" });
   });
   vi.stubGlobal("fetch", fetch);
   return api;
@@ -357,6 +244,7 @@ type Show = {
   pins: { node: string; count: number }[];
   selected: string | null;
   claims?: unknown;
+  reveal?: string;
 };
 
 /** What the page posted to each frame window, recorded from the moment the frame exists. */
@@ -443,17 +331,6 @@ async function section(name: RegExp) {
 
 const COMMENTS = /^comments\b/i;
 
-async function versionPicker() {
-  return (await screen.findByRole("combobox", { name: /^version\b/i })) as HTMLSelectElement;
-}
-
-/** Picks the option of the version picker whose value is `value`. */
-async function pick(value: string) {
-  const picker = await versionPicker();
-  fireEvent.change(picker, { target: { value } });
-  expect(picker.value).toBe(value);
-}
-
 /** Writes a comment in the comments section and sends it. */
 async function writeComment(text: string) {
   const comments = await section(COMMENTS);
@@ -497,16 +374,6 @@ describe("the doc viewer", () => {
     vi.unstubAllGlobals();
   });
 
-  test("the project home links each doc to its viewer", async () => {
-    fakeApi();
-    const router = renderAt(HOME_PATH);
-    const link = await screen.findByRole("link", { name: DOC_TITLE });
-    expect(link.getAttribute("href")).toBe(DOC_PATH);
-    fireEvent.click(link);
-    await waitFor(() => expect(router.state.location.pathname).toBe(DOC_PATH));
-    expect(await screen.findByRole("heading", { name: DOC_TITLE })).toBeTruthy();
-  });
-
   test("the doc renders in a frame sandboxed to scripts alone, under the viewer's policy", async () => {
     fakeApi();
     renderAt(DOC_PATH);
@@ -519,38 +386,18 @@ describe("the doc viewer", () => {
     expect(viewerPolicyProblems(srcdoc, { workspaceId: WORKSPACE_ID, origin: window.location.origin })).toEqual([]);
   });
 
-  test("the frame is shown the mainline version, and the picker lists every version and draft", async () => {
-    fakeApi();
+  test("the frame is shown the doc's head, and there is no version picker", async () => {
+    const api = fakeApi();
     renderAt(DOC_PATH);
     expect(await screen.findByRole("heading", { name: DOC_TITLE })).toBeTruthy();
     await findFrame();
-    const show = await shown((s) => expect(s.html).toContain("Orders ship in one day."));
-    expect(show.html).toContain('data-omni-id="p0000002"');
-
-    const picker = await versionPicker();
-    await waitFor(() => expect(picker.value).toBe(V2));
-    const options = Array.from(picker.options);
-    expect(options.map((o) => o.value)).toEqual(expect.arrayContaining([V1, V2]));
+    const show = await shown((s) => expect(s.html).toBe(HEAD_HTML));
+    expect(show.selected).toBeNull();
+    expect(screen.queryByRole("combobox", { name: /version/i }), "no version picker").toBeNull();
     expect(
-      options.filter((o) => /draft/i.test(o.textContent ?? "")).length,
-      "one option for the doc's draft",
-    ).toBe(1);
-  });
-
-  test("picking an older version shows that version", async () => {
-    const api = fakeApi();
-    renderAt(DOC_PATH);
-    await findFrame();
-    await shown((s) => expect(s.html).toContain("Orders ship in one day."));
-
-    await pick(V1);
-    await shown((s) => {
-      expect(s.html).toContain("Orders ship in two days.");
-      expect(s.html).not.toContain("Orders ship in one day.");
-    });
-    expect(
-      callsTo(api, "GET", `${API}/docs/${DOC_ID}/html`).some((call) => call.search.get("version") === V1),
-    ).toBe(true);
+      callsTo(api, "GET", `${API}/docs/${DOC_ID}/html`).map((call) => call.search.get("version")),
+      "the head is read, never a version",
+    ).not.toContainEqual(expect.any(String));
   });
 
   test("selecting a block in the frame opens its comments, and the frame is told it is selected", async () => {
@@ -561,14 +408,14 @@ describe("the doc viewer", () => {
 
     const comments = await section(COMMENTS);
     await waitFor(() => expect(within(comments).getByText("Say which week.")).toBeTruthy());
-    expect(within(comments).queryByText("Is two days right?")).toBeNull();
+    expect(within(comments).queryByText("Is one day right?")).toBeNull();
     await shown((s) => expect(s.selected).toBe("p0000002"));
 
     // A message from any other window is not the frame's.
     fromFrame({ type: "viewer.select", node: "p0000001" }, window);
     await new Promise((resolve) => setTimeout(resolve, 100));
     expect(within(comments).getByText("Say which week.")).toBeTruthy();
-    expect(within(comments).queryByText("Is two days right?")).toBeNull();
+    expect(within(comments).queryByText("Is one day right?")).toBeNull();
     expect(shows()[shows().length - 1].selected).toBe("p0000002");
   });
 
@@ -577,133 +424,79 @@ describe("the doc viewer", () => {
     renderAt(DOC_PATH);
     await findFrame();
     const show = await shown((s) => {
-      expect(s.html).toContain("Orders ship in one day.");
+      expect(s.html).toBe(HEAD_HTML);
       expect(s.pins).toContainEqual({ node: "p0000002", count: 1 });
     });
     expect(show.pins.filter((pin) => pin.node === "h0000001" && pin.count > 0)).toEqual([]);
     expect(show.pins.filter((pin) => pin.node === "s0000001" && pin.count > 0)).toEqual([]);
   });
 
-  test("a new comment attaches to the selected block and the version shown", async () => {
+  test("a new comment attaches to the selected block of the doc", async () => {
     const api = fakeApi();
     renderAt(DOC_PATH);
     await findFrame();
     await select("p0000002");
     await writeComment("Name the week in days.");
     await waitFor(() =>
-      expect(callsTo(api, "POST", `${API}/versions/${V2}/comments`).map((call) => call.body)).toEqual([
+      expect(callsTo(api, "POST", `${API}/docs/${DOC_ID}/comments`).map((call) => call.body)).toEqual([
         { node: "p0000002", text: "Name the week in days." },
       ]),
     );
     const comments = await section(COMMENTS);
     await waitFor(() => expect(within(comments).getByText("Name the week in days.")).toBeTruthy());
     await shown((s) => expect(s.pins).toContainEqual({ node: "p0000002", count: 2 }));
-
-    await pick(V1);
-    await shown((s) => expect(s.html).toContain("Orders ship in two days."));
-    await select("p0000001");
-    await writeComment("Two days was right.");
-    await waitFor(() =>
-      expect(callsTo(api, "POST", `${API}/versions/${V1}/comments`).map((call) => call.body)).toEqual([
-        { node: "p0000001", text: "Two days was right." },
-      ]),
-    );
   });
 
-  test("a comment made on an older version shows that version of the block next to the current one", async () => {
+  test("when an agent changes the doc, the frame is shown the new head and the selected block stays selected", async () => {
+    const api = fakeApi();
+    renderAt(DOC_PATH);
+    const frame = await findFrame();
+    const socket = await openSocket();
+    await select("p0000002");
+    await shown((s) => expect(s.selected).toBe("p0000002"));
+
+    api.head = HEAD_HTML.replace("Refunds take a week.", "Refunds take five days.");
+    socket.receive(event(41, "doc.changed", { doc_id: DOC_ID, agent: WRITER }));
+    const show = await shown((s) => expect(s.html).toContain("Refunds take five days."));
+    expect(show.selected, "the selection is kept").toBe("p0000002");
+    expect(document.querySelector("iframe"), "the same frame draws the new head, so it keeps its scroll").toBe(frame);
+  });
+
+  test("when an agent removes the selected block, the selection is cleared", async () => {
     const api = fakeApi();
     renderAt(DOC_PATH);
     await findFrame();
-    await shown((s) => expect(s.html).toContain("Orders ship in one day."));
-    await select("p0000001");
+    const socket = await openSocket();
+    await select("p0000002");
+    await shown((s) => expect(s.selected).toBe("p0000002"));
 
+    api.head = HEAD_HTML.replace('<p data-omni-id="p0000002">Refunds take a week.</p>\n', "");
+    socket.receive(event(41, "doc.changed", { doc_id: DOC_ID, agent: WRITER }));
+    await shown((s) => {
+      expect(s.html).not.toContain("p0000002");
+      expect(s.selected, "nothing is selected").toBeNull();
+    });
+    expect(await within(await section(COMMENTS)).findByText(/select a block/i)).toBeTruthy();
+  });
+
+  test("a link with ?node opens the doc with that block selected, and the frame scrolls it into view", async () => {
+    fakeApi();
+    renderAt(`${DOC_PATH}?node=p0000002`);
+    await findFrame();
+    const show = await shown((s) => expect(s.html).toBe(HEAD_HTML));
+    expect(show.selected).toBe("p0000002");
+    expect(show.reveal, "the frame is told to scroll the block into view").toBe("p0000002");
     const comments = await section(COMMENTS);
-    await waitFor(() => {
-      expect(within(comments).getByText("Is two days right?")).toBeTruthy();
-      expect(comments.textContent).toContain("Orders ship in two days.");
-      expect(comments.textContent).toContain("Orders ship in one day.");
-    });
-    expect(
-      callsTo(api, "GET", `${API}/docs/${DOC_ID}/html`).some((call) => call.search.get("version") === V1),
-    ).toBe(true);
+    await waitFor(() => expect(within(comments).getByText("Say which week.")).toBeTruthy());
   });
 
-  test("the live draft follows the agents' operations", async () => {
-    const api = fakeApi();
-    renderAt(DOC_PATH);
+  test("selecting a block puts it in the address bar, in place of the entry", async () => {
+    fakeApi();
+    const router = renderAt(DOC_PATH);
     await findFrame();
-    const socket = await openSocket();
-
-    const picker = await versionPicker();
-    const draft = await waitFor(() => {
-      const option = Array.from(picker.options).find((o) => /draft/i.test(o.textContent ?? ""));
-      expect(option, "an option for the draft").toBeTruthy();
-      return option as HTMLOptionElement;
-    });
-    await pick(draft.value);
-    await shown((s) => expect(s.html).toContain("Returns are free."));
-    expect(api.draftLoads).toBeGreaterThan(0);
-
-    const before = api.draftLoads;
-    api.draft = draftHtml(
-      '<p data-omni-id="p0000003" data-rev="1">Returns are free.</p>\n<p data-omni-id="p0000004" data-rev="1">Coupons stack.</p>',
-    );
-    socket.receive(
-      event(41, "op.applied", {
-        doc_id: DOC_ID,
-        changeset_id: CS_OPEN,
-        draft_id: DRAFT_ID,
-        node: "p0000004",
-        revision: 1,
-        created: ["p0000004"],
-        removed: [],
-        agent: WRITER,
-      }),
-    );
-    await shown((s) => expect(s.html).toContain("Coupons stack."));
-    expect(api.draftLoads).toBeGreaterThan(before);
-  });
-
-  test("the live draft shows claims as they are taken and released", async () => {
-    const api = fakeApi();
-    renderAt(DOC_PATH);
-    await findFrame();
-    const socket = await openSocket();
-    const picker = await versionPicker();
-    const draft = await waitFor(() => {
-      const option = Array.from(picker.options).find((o) => /draft/i.test(o.textContent ?? ""));
-      expect(option, "an option for the draft").toBeTruthy();
-      return option as HTMLOptionElement;
-    });
-    await pick(draft.value);
-    await shown((s) => expect(s.html).toContain("Returns are free."));
-    expect(screen.queryByText(/run-1\/writer/)).toBeNull();
-
-    const held = claim("s0000001");
-    api.claims = [held];
-    socket.receive(
-      event(41, "claim.taken", {
-        claim_id: held.id,
-        doc_id: DOC_ID,
-        draft_id: DRAFT_ID,
-        changeset_id: CS_OPEN,
-        node: "s0000001",
-        agent: WRITER,
-      }),
-    );
-    expect(await screen.findByText(/run-1\/writer/)).toBeTruthy();
-
-    api.claims = [];
-    socket.receive(
-      event(42, "claim.released", {
-        claim_id: held.id,
-        doc_id: DOC_ID,
-        draft_id: DRAFT_ID,
-        changeset_id: CS_OPEN,
-        node: "s0000001",
-        agent: WRITER,
-      }),
-    );
-    await waitFor(() => expect(screen.queryByText(/run-1\/writer/)).toBeNull());
+    const entries = router.history.length;
+    await select("p0000001");
+    await waitFor(() => expect(router.state.location.search).toEqual({ node: "p0000001" }));
+    expect(router.history.length, "the entry is replaced, not added").toBe(entries);
   });
 });

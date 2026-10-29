@@ -1,9 +1,8 @@
 // @vitest-environment jsdom
 // US-046: the change set review, where the reviewer sees exactly what a change
 // set changes and approves or rejects it in one place. It is
-// /w/<workspace id>/projects/<project id>/changesets/<change set id>, and the
-// project home (US-040) links each change set's title in its "Change sets"
-// section there. The app is rendered with its own router on a memory history,
+// /w/<workspace id>/projects/<project id>/changesets/<change set id>. The app
+// is rendered with its own router on a memory history,
 // the browser's fetch is replaced by a fake of the API, and the browser's
 // WebSocket by a fake socket.
 //
@@ -773,16 +772,6 @@ afterEach(() => {
 // The page ------------------------------------------------------------------------------
 
 describe("the change set review page", () => {
-  test("the project home links each change set's title to its review", async () => {
-    const router = renderAt(HOME_PATH);
-    const changesets = await findSection(/^change sets$/i);
-    const link = await within(changesets).findByRole("link", { name: new RegExp(CS_TITLE, "i") });
-    expect(link.getAttribute("href")).toBe(REVIEW_PATH);
-    fireEvent.click(link);
-    await findReview();
-    expect(router.state.location.pathname).toBe(REVIEW_PATH);
-  });
-
   test("it lists each doc the change set changes with a summary of its node changes", async () => {
     renderAt(REVIEW_PATH);
     await findReview();

@@ -8,12 +8,10 @@
 // history, the browser's fetch is replaced by a fake of the API, and the
 // browser's WebSocket by a fake socket.
 //
-// The page loads the doc (GET .../docs/<doc>) and its mainline version by ID
-// (GET .../versions/<mainline_version_id>), which for a design version holds
-// `pages` (the pages as JSON nodes, each with its boards), `components` (the
-// components its instances use, from the design system version it recorded)
-// and `tokens` (that design system version's whole DTCG token tree,
-// crates/omni-api/tests/components.rs).
+// The page loads the doc (GET .../docs/<doc>) and its head (US-112), board by
+// board (src/testing/design-boards.ts): its pages, `components` (the
+// components its instances use, from the design system) and `tokens` (the
+// design system's whole DTCG token tree, crates/omni-api/tests/components.rs).
 //
 // The canvas is drawn by the Phase 0 renderer (omni-render, WebAssembly on
 // WebGL), which jsdom cannot run. The page reaches it only through the module
@@ -322,9 +320,15 @@ function seedLayers() {
 
 type Call = { method: string; path: string };
 
-/** A fake of the API: the auth routes, the project, the design doc and its mainline version. */
-function fakeApi() {
-  const api = { calls: [] as Call[] };
+/**
+ * A fake of the API: the auth routes, the project, the design doc and its
+ * head, `pages`, which the test may change. A read of the board `held` waits
+ * until `release` is called.
+ */
+function fakeApi(pages: unknown[] = PAGES, held: string | null = null) {
+  let release: () => void = () => {};
+  const gate = held ? new Promise<void>((resolve) => (release = resolve)) : Promise.resolve();
+  const api = { calls: [] as Call[], pages, release: () => release() };
   const json = (status: number, body: unknown) =>
     new Response(JSON.stringify(body), {
       status,
@@ -376,7 +380,7 @@ function fakeApi() {
     },
   ];
   const manifest = {
-    pages: PAGES.map((page) => ({
+    pages: (PAGES as { id: string; children: { id: string }[] }[]).map((page) => ({
       id: page.id,
       chunk: "0".repeat(64),
       boards: page.children.map((board) => ({ id: board.id, chunk: "1".repeat(64) })),
@@ -388,7 +392,7 @@ function fakeApi() {
     manifest,
     nodes: [],
     tags: "<Page name=\"Mobile\"/>",
-    pages: PAGES,
+    pages: PAGES as unknown[],
     components: COMPONENTS,
     tokens: TOKENS,
   };
@@ -399,9 +403,16 @@ function fakeApi() {
     const path = url.pathname;
     const method = (init?.method ?? (input instanceof Request ? input.method : "GET")).toUpperCase();
     api.calls.push({ method, path });
+    if (held && path.endsWith(`/boards/${held}`)) await gate;
 
     // US-058: the version's outline and its boards, one by one.
-    const read = answerDesignRead(API, method, url, (id) => (id === V1 ? version : null));
+    const read = answerDesignRead(
+      API,
+      method,
+      url,
+      (id) => (id === V1 ? version : null),
+      (id) => (id === DOC_ID ? { ...version, pages: api.pages } : null),
+    );
     if (read) return json(read.status, read.body);
     switch (`${method} ${path}`) {
       case "GET /api/v1/auth/me":
@@ -439,18 +450,20 @@ function fakeApi() {
   return api;
 }
 
-/** A WebSocket that connects and stays quiet. */
+/** A WebSocket the test drives: it records what the client sends. */
 class FakeWebSocket extends EventTarget {
   static readonly CONNECTING = 0;
   static readonly OPEN = 1;
   static readonly CLOSING = 2;
   static readonly CLOSED = 3;
+  static instances: FakeWebSocket[] = [];
 
   readonly CONNECTING = 0;
   readonly OPEN = 1;
   readonly CLOSING = 2;
   readonly CLOSED = 3;
   readyState = FakeWebSocket.CONNECTING;
+  sent: unknown[] = [];
   onopen: ((event: Event) => void) | null = null;
   onmessage: ((event: Event) => void) | null = null;
   onclose: ((event: Event) => void) | null = null;
@@ -458,13 +471,55 @@ class FakeWebSocket extends EventTarget {
 
   constructor(readonly url: string) {
     super();
+    FakeWebSocket.instances.push(this);
   }
 
-  send() {}
+  send(data: string) {
+    if (this.readyState !== FakeWebSocket.OPEN) {
+      throw new Error("InvalidStateError: the socket is not open");
+    }
+    this.sent.push(JSON.parse(data));
+  }
 
   close() {
+    if (this.readyState === FakeWebSocket.CLOSED) return;
     this.readyState = FakeWebSocket.CLOSED;
+    this.fire("close", { code: 1000, reason: "", wasClean: true });
   }
+
+  /** The server accepted the connection. */
+  open() {
+    this.readyState = FakeWebSocket.OPEN;
+    this.fire("open", {});
+  }
+
+  /** The server sent a JSON text frame. */
+  receive(message: unknown) {
+    this.fire("message", { data: JSON.stringify(message) });
+  }
+
+  private fire(type: string, fields: Record<string, unknown>) {
+    const event = Object.assign(new Event(type), fields);
+    const handler = (this as unknown as Record<string, unknown>)[`on${type}`];
+    if (typeof handler === "function") handler.call(this, event);
+    this.dispatchEvent(event);
+  }
+}
+
+/** Opens the live socket, confirms the page's subscription to the project, and returns a sender of `doc.changed`. */
+async function openSocket() {
+  await waitFor(() => expect(FakeWebSocket.instances.length).toBeGreaterThan(0));
+  const socket = FakeWebSocket.instances[FakeWebSocket.instances.length - 1];
+  socket.open();
+  await waitFor(() =>
+    expect(socket.sent).toContainEqual(expect.objectContaining({ type: "subscribe", project_id: PROJECT_ID })),
+  );
+  socket.receive({ type: "subscribed", project_id: PROJECT_ID, last_seq: 40 });
+  let seq = 40;
+  return () => {
+    seq += 1;
+    socket.receive({ type: "event", seq, event: "doc.changed", project_id: PROJECT_ID, at: AT, data: { doc_id: DOC_ID, agent: AUTHOR } });
+  };
 }
 
 function renderAt(path: string) {
@@ -585,11 +640,13 @@ beforeEach(() => {
   fake.layersByPage.clear();
   seedLayers();
   api = fakeApi();
+  FakeWebSocket.instances = [];
   vi.stubGlobal("WebSocket", FakeWebSocket);
   window.scrollTo = vi.fn() as unknown as typeof window.scrollTo;
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   cleanup();
   vi.unstubAllGlobals();
 });
@@ -597,14 +654,14 @@ afterEach(() => {
 // The canvas -----------------------------------------------------------------------------
 
 describe("the design on the renderer's canvas", () => {
-  test("the first page of the mainline version is shown, resolved against the version's design system", async () => {
+  test("the first page of the head is shown, resolved against the design system", async () => {
     renderAt(DOC_PATH);
     const shown = await findShownWhole(PAGES[0]);
-    expect(shown.page, "the page as the version holds it, with its boards").toEqual(PAGES[0]);
+    expect(shown.page, "the page as the head holds it, with its boards").toEqual(PAGES[0]);
     expect(
-      api.calls.some((call) => call.method === "GET" && call.path === `${API}/versions/${V1}`),
-      "the page reads the mainline version by ID",
-    ).toBe(true);
+      api.calls.some((call) => call.method === "GET" && call.path.startsWith(`${API}/versions/`)),
+      "the page reads no version",
+    ).toBe(false);
     const system = shown.system as Record<string, unknown>;
     expect(system, "the design system: the version's tokens with its components").toBeTruthy();
     expect(system.$components, "the components under $components").toEqual(COMPONENTS);
@@ -696,5 +753,114 @@ describe("selection between the canvas and the layers panel", () => {
 
     selectOnCanvas(null);
     await waitFor(() => expect(selectedNames(), "a click on no board clears the selection").toEqual([]));
+  });
+});
+
+// Links to a place in the design ---------------------------------------------------------
+
+/** A page of 200 boards, B0 to B199, each holding one text, T0 to T199. */
+const GRID = "pg000003";
+const GRID_BOARDS = Array.from({ length: 200 }, (_, i) => ({
+  id: `b${String(i).padStart(7, "0")}`,
+  type: "board",
+  name: `B${i}`,
+  x: (i % 20) * 120,
+  y: Math.floor(i / 20) * 120,
+  width: fixed(100),
+  height: fixed(100),
+  layout: { mode: "none" },
+  children: [{ id: `t${String(i).padStart(7, "0")}`, type: "text", name: `T${i}`, content: `T${i}`, fontFamily: "Inter", fontSize: 14, lineHeight: 1.25 }],
+}));
+const GRID_PAGE = { id: GRID, type: "page", name: "Grid", children: GRID_BOARDS };
+const B199 = "b0000199";
+const T199 = "t0000199";
+
+function seedGridLayers() {
+  fake.layersByPage.set(
+    GRID,
+    GRID_BOARDS.map((board) => layer(board.id, board.name, "board", [layer(board.children[0].id, board.children[0].name, "text")])),
+  );
+}
+
+describe("a link to a place in the design", () => {
+  test("?node alone opens the page whose board holds the node, however many boards come before it", async () => {
+    api = fakeApi([...PAGES, GRID_PAGE]);
+    seedGridLayers();
+    const router = renderAt(`${DOC_PATH}?node=${T199}`);
+    await findShown(GRID);
+    await waitFor(() => expect(selectedNames()).toEqual(["2:T199"]), { timeout: 5000 });
+    await waitFor(() => expect(router.state.location.search).toEqual({ board: B199, node: T199 }));
+  });
+
+  test("?board alone shows the page that holds the board, with nothing selected", async () => {
+    const router = renderAt(`${DOC_PATH}?board=${WIDE_CART}`);
+    await findShownWhole(PAGES[1]);
+    await waitFor(() => expect(router.state.location.search).toEqual({ board: WIDE_CART }));
+    expect(selectedNames()).toEqual([]);
+  });
+
+  test("a board and a node that the design does not have open the first page with nothing selected", async () => {
+    const router = renderAt(`${DOC_PATH}?board=zzzzzzzz&node=yyyyyyyy`);
+    await findShownWhole(PAGES[0]);
+    await waitFor(() => expect(router.state.location.search).toEqual({ board: CART_BOARD }));
+    expect(selectedNames()).toEqual([]);
+  });
+});
+
+// Agents writing while the reviewer looks ----------------------------------------------
+
+/** Waits, without the clock, until the page has set a timer. */
+async function untilTimerPending() {
+  for (let tick = 0; vi.getTimerCount() === 0 && tick < 1000; tick += 1) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  expect(vi.getTimerCount(), "the page is about to show the board that arrived").toBeGreaterThan(0);
+}
+
+describe("the design as agents change it", () => {
+  test("a node selected on the canvas stays selected when a board arrives at that moment", async () => {
+    api = fakeApi(PAGES, RECEIPT);
+    renderAt(DOC_PATH);
+    const renderer = await findRenderer();
+    await waitFor(() => expect(treeItem("Total")).toBeTruthy());
+    await waitFor(() => {
+      const cart = ((renderer.shown[renderer.shown.length - 1].page as { children: { id: string; children?: unknown[] }[] }).children)[0];
+      expect(cart.children, "Cart is loaded and shown").toBeTruthy();
+    });
+
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    api.release();
+    await untilTimerPending();
+    // The reviewer clicks Total just before the page shows Receipt.
+    act(() => {
+      for (const listener of Array.from(renderer.listeners)) listener(TOTAL);
+      vi.runOnlyPendingTimers();
+    });
+    vi.useRealTimers();
+
+    await findShownWhole(PAGES[0]);
+    await waitFor(() => expect(selectedNames()).toEqual(["3:Total"]));
+    expect(renderer.selected[renderer.selected.length - 1]).toBe(TOTAL);
+  });
+
+  test("when an agent removes the selected node, the selection is cleared and the view stays", async () => {
+    renderAt(DOC_PATH);
+    const send = await openSocket();
+    const renderer = await findRenderer();
+    await findShownWhole(PAGES[0]);
+    await waitFor(() => expect(renderer.listeners.size).toBeGreaterThan(0));
+    selectOnCanvas(TOTAL);
+    await waitFor(() => expect(selectedNames()).toEqual(["3:Total"]));
+
+    // An agent deletes Summary, and Total with it.
+    const cart = PAGES[0].children[0];
+    const changed = [{ ...PAGES[0], children: [{ ...cart, children: [cart.children![0]] }, PAGES[0].children[1]] }, PAGES[1]];
+    api.pages = changed;
+    fake.layersByPage.set(MOBILE, [layer(CART_BOARD, "Cart", "board", [layer(BUY, "Buy", "instance")]), layer(RECEIPT, "Receipt", "board")]);
+    send();
+    await findShownWhole(changed[0]);
+    await waitFor(() => expect(selectedNames()).toEqual([]));
+    expect(await screen.findByText(/select a node/i)).toBeTruthy();
+    expect(fake.instances.filter((instance) => !instance.destroyed), "the same renderer, so the zoom and pan stay").toEqual([renderer]);
   });
 });

@@ -24,11 +24,13 @@
 // - its merge box says "Changes N global docs" ahead of the Approve button,
 //   N being the global docs the feature's change set changes.
 //
-// The thread page and the doc and design viewers show where the item lives, a
-// navigation named "Breadcrumb": the project's name linking to the project's
-// overview, then the feature's name linking to the feature's overview (only
-// for an item of a feature), then the section ("Threads" or "Docs"; as a link,
-// it goes to that section of the item's feature, or of the project).
+// The thread page shows where the thread lives, a navigation named
+// "Breadcrumb": the project's name linking to the project, then the feature's
+// name linking to the feature's page (only for a thread of a feature), then
+// "Threads" (as a link, to the threads of the thread's feature, or of the
+// project). The doc and design viewers show the doc's breadcrumb (US-112):
+// scope › pillar › title, the scope ("App" at the app level, else the
+// feature's name) linking to its page and the pillar to its section there.
 import { RouterProvider, createMemoryHistory } from "@tanstack/react-router";
 import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -215,7 +217,7 @@ function seeded() {
     home,
     features: [wishlist, loyalty],
     reviews,
-    docs: { savedPrd, savedScreens },
+    docs: { savedPrd, savedScreens, shopPrd },
     changesets: { shareSaved, hero },
     threads: { savedThread, heroThread },
   };
@@ -389,6 +391,18 @@ async function expectTrail(crumbs: Crumb[], section: RegExp, sectionHref: string
   return trail;
 }
 
+/** Asserts that a doc's breadcrumb is exactly `crumbs`, the scope and the pillar linking to `hrefs`. */
+async function expectDocTrail(crumbs: string[], hrefs: string[]) {
+  const trail = await screen.findByRole("navigation", { name: /breadcrumb/i });
+  await waitFor(() =>
+    expect(within(trail).getAllByRole("listitem").map((item) => (item.textContent ?? "").trim())).toEqual(crumbs),
+  );
+  expect(Array.from(trail.querySelectorAll("a")).map((a) => [a.textContent, a.getAttribute("href")])).toEqual([
+    [crumbs[0], hrefs[0]],
+    [crumbs[1], hrefs[1]],
+  ]);
+}
+
 const PROJECT_CRUMB = { name: new RegExp(PROJECT_NAME), href: PROJECT_PATH };
 const WISHLIST_CRUMB = { name: /wishlist/i, href: featurePath(WISHLIST) };
 
@@ -484,22 +498,28 @@ describe("feature scope in reviews", () => {
       }
     });
 
-    test("a feature's doc in the doc viewer: project › feature › Docs", async () => {
+    test("a feature's doc in the doc viewer: feature › pillar › title, linking the feature's page and the pillar on it", async () => {
       const seed = seeded();
       fakeApi(seed);
       renderAt(`${PROJECT_PATH}/docs/${seed.docs.savedPrd.id}`);
-      // The doc viewer replaces its loading page once the doc is there.
       await screen.findByRole("heading", { level: 1, name: "Saved items PRD" });
-      await expectTrail([PROJECT_CRUMB, WISHLIST_CRUMB], /docs/i, featurePath(WISHLIST, "docs"));
+      await expectDocTrail(["Wishlist", "Spec", "Saved items PRD"], [featurePath(WISHLIST), `${featurePath(WISHLIST)}#spec`]);
     });
 
-    test("a feature's design in the design viewer: project › feature › Docs", async () => {
+    test("a feature's design in the design viewer: feature › UI › title", async () => {
       const seed = seeded();
       fakeApi(seed);
       renderAt(`${PROJECT_PATH}/docs/${seed.docs.savedScreens.id}`);
-      // The doc viewer replaces its loading page once the doc is there.
       await screen.findByRole("heading", { level: 1, name: "Saved items screens" });
-      await expectTrail([PROJECT_CRUMB, WISHLIST_CRUMB], /docs/i, featurePath(WISHLIST, "docs"));
+      await expectDocTrail(["Wishlist", "UI", "Saved items screens"], [featurePath(WISHLIST), `${featurePath(WISHLIST)}#ui`]);
+    });
+
+    test("an app-level doc: App › pillar › title, linking the App page", async () => {
+      const seed = seeded();
+      fakeApi(seed);
+      renderAt(`${PROJECT_PATH}/docs/${seed.docs.shopPrd.id}`);
+      await screen.findByRole("heading", { level: 1, name: "Shop PRD" });
+      await expectDocTrail(["App", "Spec", "Shop PRD"], [`${PROJECT_PATH}/app`, `${PROJECT_PATH}/app#spec`]);
     });
   });
 });

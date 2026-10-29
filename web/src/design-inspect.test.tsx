@@ -532,7 +532,7 @@ function fakeApi() {
     const method = (init?.method ?? (input instanceof Request ? input.method : "GET")).toUpperCase();
 
     // US-058: the version's outline and its boards, one by one.
-    const read = answerDesignRead(API, method, url, (id) => (id === V1 ? version : null));
+    const read = answerDesignRead(API, method, url, (id) => (id === V1 ? version : null), (id) => (id === DOC_ID ? version : null));
     if (read) return json(read.status, read.body);
     switch (`${method} ${path}`) {
       case "GET /api/v1/auth/me":

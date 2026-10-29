@@ -13,8 +13,13 @@
 //   "node"}`, where `node` is the board and its subtree as JSON, as the whole
 //   read's `pages` hold it.
 //
-// The fakes of the API in the design tests serve both reads from the whole
-// versions they hold, with this module.
+// US-112: the design viewer reads the doc's head the same way, without a
+// version: GET .../docs/<doc>/html?view=outline answers the head's `outline`
+// with `boards`, the chunk of each board, and GET .../docs/<doc>/boards/<board>
+// answers one board of the head.
+//
+// The fakes of the API in the design tests serve these reads from the whole
+// versions and heads they hold, with this module.
 
 export type JsonNode = Record<string, unknown> & { id?: unknown; children?: unknown };
 
@@ -62,20 +67,48 @@ export function boardOf(version: JsonNode, boardId: string): JsonNode | null {
   return null;
 }
 
+/** A name for the content of `board` that changes when the board does, as a chunk's hash does. */
+export function chunkOf(board: JsonNode): string {
+  let hash = 0x811c9dc5;
+  for (const char of JSON.stringify(board)) hash = Math.imul(hash ^ char.charCodeAt(0), 0x01000193) >>> 0;
+  return hash.toString(16).padStart(8, "0");
+}
+
+/** What GET .../docs/<doc>/html?view=outline answers for a design whose head is `head` (pages, components, tokens). */
+export function outlineHead(head: JsonNode): JsonNode {
+  const pages = Array.isArray(head.pages) ? (head.pages as JsonNode[]) : [];
+  return {
+    doc_id: head.doc_id,
+    html: "",
+    outline: outlineOf(pages),
+    boards: pages.flatMap((page) => childrenOf(page).map((board) => ({ id: board.id, chunk: chunkOf(board) }))),
+    components: head.components ?? [],
+    tokens: head.tokens ?? null,
+  };
+}
+
 /**
  * Answers the board-by-board reads of a fake API from the whole design
  * versions that `versionOf` finds by ID: the outline of a version, and one
- * board of a version. `null` when the request is neither, so that the fake
- * answers it as before.
+ * board of a version; and from the heads that `headOf` finds by doc ID: the
+ * outline of the head, and one board of the head. `null` when the request is
+ * none of these, so that the fake answers it as before.
  */
 export function answerDesignRead(
   api: string,
   method: string,
   url: URL,
   versionOf: (id: string) => JsonNode | null | undefined,
+  headOf: (docId: string) => JsonNode | null | undefined = () => null,
 ): { status: number; body: unknown } | null {
   if (method !== "GET") return null;
   const path = url.pathname;
+  const escaped = api.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const html = path.match(new RegExp(`^${escaped}/docs/([^/]+)/html$`));
+  if (html && url.searchParams.get("view") === "outline") {
+    const head = headOf(html[1]);
+    return head ? { status: 200, body: outlineHead({ ...head, doc_id: html[1] }) } : null;
+  }
   const versionPath = path.startsWith(`${api}/versions/`) ? path.slice(`${api}/versions/`.length) : null;
   if (versionPath && !versionPath.includes("/") && url.searchParams.get("view") === "outline") {
     const version = versionOf(versionPath);
@@ -86,6 +119,11 @@ export function answerDesignRead(
   if (board) {
     const [, docId, boardId] = board;
     const versionId = url.searchParams.get("version");
+    const head = versionId ? null : headOf(docId);
+    if (head) {
+      const found = boardOf({ ...head, doc_id: docId }, boardId);
+      return found ? { status: 200, body: found } : { status: 404, body: { error: "unknown_board" } };
+    }
     const version = versionId ? versionOf(versionId) : null;
     if (!version || version.doc_id !== docId) return { status: 404, body: { error: "not_found" } };
     const found = boardOf(version, boardId);

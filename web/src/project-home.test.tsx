@@ -1,30 +1,15 @@
 // @vitest-environment jsdom
-// US-040: the project home, the reviewer's page of one project. It is
-// /w/<workspace id>/projects/<project id>, and the workspace page links each
-// project there. The app is rendered with its own router on a memory history,
-// the browser's fetch is replaced by a fake of the API, and the browser's
-// WebSocket by a fake socket that the test drives.
+// US-112: the scope pages. A project opens at its App page,
+// /w/<workspace id>/projects/<project id>/app, and each feature has its page at
+// .../features/<feature id>; both share one layout. The app is rendered with
+// its own router on a memory history, the browser's fetch is replaced by a fake
+// of the API, and the browser's WebSocket by a fake socket that the test drives.
 //
-// The page loads GET /api/v1/w/<workspace>/projects/<project>/home
-// (crates/omni-api/tests/project_home.rs), which answers {project_id, docs,
-// changesets, threads, waiting: {decisions, changesets, comments,
-// questions}}, each item the body that the API's own read of it answers (Doc,
-// Changeset, Thread, Decision, Comment, Post). The page shows:
-//
-// - a section named "Docs" in which each pillar that has docs is a group
-//   (a section or group named "Spec", "UI", "Architecture", "DB" or
-//   "Research", US-101) listing the titles of that pillar's docs;
-// - a section named "Change sets" listing each change set's title with its
-//   status, one list item (or table row) per change set;
-// - a section named "Threads" listing each thread's question;
-// - a section named "Waiting for you" listing what `waiting` holds: each
-//   decision's direction, each change set's title, each comment's text and
-//   each question's summary, and nothing else.
-//
-// A section is named by its heading (`<section aria-labelledby>`), so it has
-// the role region. The page subscribes to the project's live events through
-// the workspace's live client (src/live/context.tsx) and loads the home again
-// when an event comes, so items appear and disappear without a reload.
+// The pages load GET .../projects/<project>/home (crates/omni-api/tests/
+// project_home.rs): its `app.last_activity`, its `features` with each one's
+// `last_activity`, its `docs` with each one's `updated_at`, `last_writer_role`
+// and `waiting`, and its `threads` with each one's `post_count` and
+// `last_post_at`. A section is named by its heading, so it has the role region.
 import { RouterProvider, createMemoryHistory } from "@tanstack/react-router";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -32,11 +17,12 @@ import { getRouter } from "./router";
 
 const WORKSPACE_ID = "0192d7a0-0000-7000-8000-00000000000a";
 const PROJECT_ID = "0192d7a0-2222-7000-8000-000000000001";
+const FEATURE_ID = "0192d7a0-4444-7000-8000-000000000001";
 const USER = { id: "0192d7a0-1111-7000-8000-000000000001", email: "alice@example.com" };
-const HOME_PATH = `/w/${WORKSPACE_ID}/projects/${PROJECT_ID}`;
-const AT = "2026-10-21T10:00:00Z";
-const AGENT = { kind: "agent", run: "run-1", role: "critic", model: "test-model", harness: "test-harness" };
-const HUMAN = { kind: "human", user_id: USER.id };
+const PROJECT_PATH = `/w/${WORKSPACE_ID}/projects/${PROJECT_ID}`;
+const APP_PATH = `${PROJECT_PATH}/app`;
+const FEATURE_PATH = `${PROJECT_PATH}/features/${FEATURE_ID}`;
+const AT = "2026-10-21T10:00:00.000000Z";
 
 let counter = 0;
 /** A UUIDv7-shaped ID that no other fixture has. */
@@ -45,135 +31,108 @@ function newId() {
   return `0192d7a0-3333-7000-8000-${counter.toString(16).padStart(12, "0")}`;
 }
 
-function doc(pillar: string, title: string) {
+function doc(pillar: string, kind: string, title: string, fields: { feature?: string; role?: string; waiting?: number } = {}) {
   return {
     id: newId(),
     project_id: PROJECT_ID,
-    kind: pillar === "ui" ? "design" : "html",
+    feature_id: fields.feature ?? null,
+    kind,
     pillar,
     title,
     created_at: AT,
-    mainline_version_id: null,
     drafts: [],
     claims: [],
+    updated_at: AT,
+    last_writer_role: fields.role ?? "writer",
+    waiting: fields.waiting ?? 0,
   };
 }
 
-function changeset(title: string, status: string) {
+function thread(
+  question: string,
+  fields: { feature?: string; createdAt?: string; posts?: number; lastPostAt?: string | null; sealed?: boolean; conclusion?: string | null },
+) {
   return {
     id: newId(),
     project_id: PROJECT_ID,
-    title,
-    description: "",
-    status,
-    run_tag: "run-1",
-    created_at: AT,
-    history: [],
-    approved_versions: [],
-    decisions: [],
-  };
-}
-
-function thread(changesetId: string, question: string) {
-  return {
-    id: newId(),
-    project_id: PROJECT_ID,
-    changeset_id: changesetId,
+    feature_id: fields.feature ?? null,
     question,
-    criteria: ["Readable at 320 px"],
-    run_tag: "run-1",
-    created_at: AT,
-    phases: [{ number: 1, sealed: false, started_at: AT, posted_by: [] }],
-    decision: null,
+    sealed: fields.sealed ?? false,
+    conclusion: fields.conclusion ?? null,
+    run_tag: null,
+    created_at: fields.createdAt ?? AT,
+    post_count: fields.posts ?? 0,
+    last_post_at: fields.lastPostAt ?? null,
   };
 }
 
-function decision(threadId: string, changesetId: string, direction: string) {
-  return {
-    id: newId(),
-    project_id: PROJECT_ID,
-    thread_id: threadId,
-    changeset_id: changesetId,
-    status: "proposed",
-    author: AGENT,
-    direction,
-    chosen: "Split hero",
-    criteria: ["Readable at 320 px"],
-    options: [{ name: "Split hero", scores: { "Readable at 320 px": 8 }, lost_because: null }],
-    assumptions: [],
-    open_questions: [],
-    dissent: [],
-    posts: [],
-    rejection_reason: null,
-    created_at: AT,
-  };
-}
-
-function comment(docId: string, changesetId: string, text: string) {
-  return {
-    id: newId(),
-    project_id: PROJECT_ID,
-    doc_id: docId,
-    version_id: newId(),
-    node: "abcdefgh",
-    changeset_id: changesetId,
-    author: HUMAN,
-    text,
-    status: "addressed",
-    addressed_in: newId(),
-    replies: [],
-    node_status: "current",
-    compared_to: null,
-    created_at: AT,
-  };
-}
-
-function question(threadId: string, summary: string) {
-  return {
-    id: newId(),
-    thread_id: threadId,
-    phase: 1,
-    type: "question",
-    author: AGENT,
-    summary,
-    body: "Which breakpoint matters most?",
-    body_html: "<p>Which breakpoint matters most?</p>",
-    links: [],
-    attachments: [],
-    confidence: null,
-    replaces: null,
-    created_at: AT,
-  };
-}
-
-/** A project with docs of four pillars, change sets of four statuses, two threads and one item of each kind waiting. */
+/**
+ * A project whose app level has docs in four pillars (none in Architecture)
+ * and four threads, and one feature, Checkout, with a doc and a thread of its
+ * own. Nothing at the app level has been written yet that counts as activity.
+ */
 function seededHome() {
-  const prdHero = doc("spec", "Hero PRD");
-  const prdCheckout = doc("spec", "Checkout PRD");
-  const dbSchema = doc("db", "Orders schema");
-  const uiDesign = doc("ui", "Storefront design");
-  const interviews = doc("research", "Shopper interviews");
-  const open = changeset("Draft the footer", "open");
-  const inReview = changeset("Rework the hero", "in_review");
-  const rejected = changeset("Carousel hero", "rejected");
-  const merged = changeset("First storefront", "merged");
-  const heroThread = thread(inReview.id, "Which hero layout?");
-  const footerThread = thread(open.id, "Should the footer hold the newsletter form?");
-  return {
-    project_id: PROJECT_ID,
-    docs: [prdHero, prdCheckout, dbSchema, uiDesign, interviews],
-    changesets: [open, inReview, rejected, merged],
-    threads: [heroThread, footerThread],
-    waiting: {
-      decisions: [decision(heroThread.id, inReview.id, "Use the split hero with the copy on the left")],
-      changesets: [inReview],
-      comments: [comment(prdHero.id, inReview.id, "The hero copy is shorter now")],
-      questions: [question(footerThread.id, "Does the newsletter form need a consent box?")],
-    },
+  const docs = {
+    returns: doc("spec", "html", "Returns PRD", { role: "author", waiting: 2 }),
+    checkout: doc("spec", "html", "Checkout PRD", { role: "author" }),
+    cart: doc("ui", "design", "Cart screens", { role: "designer" }),
+    account: doc("ui", "design", "account screens", { role: "designer" }),
+    system: doc("ui", "design-system", "Tokens", { role: "designer" }),
+    schema: doc("db", "html", "Orders schema"),
+    interviews: doc("research", "html", "Shopper interviews"),
+    pay: doc("spec", "html", "Pay in one step", { feature: FEATURE_ID }),
   };
+  const threads = {
+    // Concluded wins over sealed; its newest post is the newest of all.
+    hero: thread("Which hero layout?", {
+      createdAt: "2026-10-21T09:00:00.000000Z",
+      posts: 3,
+      lastPostAt: "2026-10-21T12:00:00.000000Z",
+      sealed: true,
+      conclusion: "The split hero.",
+    }),
+    footer: thread("What goes in the footer?", {
+      createdAt: "2026-10-21T08:00:00.000000Z",
+      posts: 1,
+      lastPostAt: "2026-10-21T11:00:00.000000Z",
+      sealed: true,
+    }),
+    // Without posts, the thread counts from its start.
+    search: thread("Do we need search?", { createdAt: "2026-10-21T11:30:00.000000Z" }),
+    fonts: thread("Which fonts?", {
+      createdAt: "2026-10-21T07:00:00.000000Z",
+      posts: 2,
+      lastPostAt: "2026-10-21T10:00:00.000000Z",
+    }),
+    wallets: thread("Which wallets?", { feature: FEATURE_ID, posts: 1, lastPostAt: "2026-10-21T13:00:00.000000Z" }),
+  };
+  const home = {
+    project_id: PROJECT_ID,
+    app: { last_activity: null as string | null },
+    features: [
+      {
+        feature: {
+          id: FEATURE_ID,
+          project_id: PROJECT_ID,
+          name: "Checkout",
+          description: "Pay in one step.\nNo account needed.",
+          created_at: AT,
+        },
+        docs: 1,
+        open_changesets: 0,
+        waiting: 0,
+        last_activity: "2026-10-21T13:00:00.000000Z" as string | null,
+      },
+    ],
+    docs: Object.values(docs),
+    changesets: [],
+    threads: Object.values(threads),
+    waiting: { decisions: [], changesets: [], comments: [], questions: [] },
+  };
+  return { home, docs, threads };
 }
 
-type Home = ReturnType<typeof seededHome>;
+type Home = ReturnType<typeof seededHome>["home"];
 
 /** A fake of the API: the auth routes, the workspace's one project and its home, which the test may change. */
 function fakeApi(home: Home) {
@@ -184,8 +143,7 @@ function fakeApi(home: Home) {
       headers: { "content-type": "application/json" },
     });
   const fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-    const url =
-      typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
     const path = new URL(url, "http://localhost:3000").pathname;
     const method = (init?.method ?? (input instanceof Request ? input.method : "GET")).toUpperCase();
     switch (`${method} ${path}`) {
@@ -271,20 +229,38 @@ function renderAt(path: string) {
   return router;
 }
 
-/** The page's section (or group) named `name`, inside `container` when given. */
-async function section(name: RegExp, container?: HTMLElement) {
-  const scope = container ? within(container) : screen;
-  return waitFor(() => {
-    const found = scope.queryByRole("region", { name }) ?? scope.queryByRole("group", { name });
-    expect(found, `a section named ${name}`).toBeTruthy();
-    return found as HTMLElement;
-  });
+/** The page itself, without the sidebar. */
+async function page() {
+  return screen.findByRole("main");
 }
 
-const DOCS = /^docs\b/i;
-const WAITING = /^waiting for you\b/i;
+/** The section named `name` in `container`, once it is there. */
+async function section(container: HTMLElement, name: RegExp) {
+  return within(container).findByRole("region", { name });
+}
 
-describe("the project home", () => {
+/** The names of the sections of `container`, in order. */
+function sectionNames(container: HTMLElement) {
+  return within(container)
+    .getAllByRole("region")
+    .map((region) => (region.querySelector("h2")?.textContent ?? "").trim());
+}
+
+/** The link of the row that shows `title`. */
+function rowLink(container: HTMLElement, title: string) {
+  const link = within(container).getByText(title).closest("a");
+  expect(link, `the row of ${title} is a link`).toBeTruthy();
+  return link as HTMLAnchorElement;
+}
+
+/** The titles of the rows of `container`, in order. */
+function rowTitles(container: HTMLElement) {
+  return within(container)
+    .getAllByRole("listitem")
+    .map((item) => (item.querySelector("a span")?.textContent ?? "").trim());
+}
+
+describe("the scope pages", () => {
   beforeEach(() => {
     vi.stubGlobal("scrollTo", () => {});
     FakeWebSocket.instances = [];
@@ -296,52 +272,124 @@ describe("the project home", () => {
     vi.unstubAllGlobals();
   });
 
-  test("the workspace page links each project to its home", async () => {
-    fakeApi(seededHome());
-    const router = renderAt(`/w/${WORKSPACE_ID}`);
-    const link = await screen.findByRole("link", { name: /storefront/i });
-    expect(link.getAttribute("href")).toBe(HOME_PATH);
-    fireEvent.click(link);
-    await waitFor(() => expect(router.state.location.pathname).toBe(HOME_PATH));
-    await section(DOCS);
+  test("a project opens at its App page", async () => {
+    fakeApi(seededHome().home);
+    const router = renderAt(PROJECT_PATH);
+    await waitFor(() => expect(router.state.location.pathname).toBe(APP_PATH));
+    expect(await within(await page()).findByRole("heading", { level: 1, name: "Storefront" })).toBeTruthy();
   });
 
-  test("the docs are listed grouped by pillar", async () => {
-    fakeApi(seededHome());
-    renderAt(HOME_PATH);
-    const docs = await section(DOCS);
-
-    const spec = await section(/^spec\b/i, docs);
-    expect(within(spec).getByText("Hero PRD")).toBeTruthy();
-    expect(within(spec).getByText("Checkout PRD")).toBeTruthy();
-    expect(within(spec).queryByText("Orders schema")).toBeNull();
-    expect(within(spec).queryByText("Storefront design")).toBeNull();
-    expect(within(spec).queryByText("Shopper interviews")).toBeNull();
-
-    const research = await section(/^research\b/i, docs);
-    expect(within(research).getByText("Shopper interviews")).toBeTruthy();
-    expect(within(research).queryByText("Hero PRD")).toBeNull();
-
-    const db = await section(/^(db|database)\b/i, docs);
-    expect(within(db).getByText("Orders schema")).toBeTruthy();
-    expect(within(db).queryByText("Hero PRD")).toBeNull();
-
-    const ui = await section(/^ui\b/i, docs);
-    expect(within(ui).getByText("Storefront design")).toBeTruthy();
-    expect(within(ui).queryByText("Hero PRD")).toBeNull();
-
-    expect(
-      within(docs).queryByRole("region", { name: /^architecture\b/i }) ??
-        within(docs).queryByRole("group", { name: /^architecture\b/i }),
-      "a pillar without docs has no group",
-    ).toBeNull();
+  test("the App page's header has the project's name and no description, and says when nothing happened yet", async () => {
+    fakeApi(seededHome().home);
+    renderAt(APP_PATH);
+    const main = await page();
+    const heading = await within(main).findByRole("heading", { level: 1, name: "Storefront" });
+    const header = heading.closest("header") ?? heading.parentElement!;
+    expect(header.textContent).toContain("No activity yet");
+    expect(main.textContent).not.toContain("The app as intended now.");
   });
 
-  test("the home updates live as the project's events come in", async () => {
-    const api = fakeApi(seededHome());
-    renderAt(HOME_PATH);
-    const waiting = await section(WAITING);
-    await within(waiting).findByText("The hero copy is shorter now");
+  test("the five pillars come in order, an empty one saying No docs yet", async () => {
+    fakeApi(seededHome().home);
+    renderAt(APP_PATH);
+    const main = await page();
+    await section(main, /^spec\b/i);
+    expect(sectionNames(main)).toEqual(["Spec", "UI", "Architecture", "DB", "Research", "Threads"]);
+    const architecture = await section(main, /^architecture\b/i);
+    expect(architecture.textContent).toContain("No docs yet");
+    expect(within(architecture).queryAllByRole("listitem")).toEqual([]);
+  });
+
+  test("the chips count each pillar's docs and jump to its section", async () => {
+    fakeApi(seededHome().home);
+    renderAt(APP_PATH);
+    const chips = await screen.findByRole("navigation", { name: /^pillars$/i });
+    const links = within(chips).getAllByRole("link");
+    expect(links.map((link) => [link.getAttribute("href"), (link.textContent ?? "").replace(/\s+/g, " ").trim()])).toEqual([
+      ["#spec", "Spec2"],
+      ["#ui", "UI3"],
+      ["#architecture", "Architecture0"],
+      ["#db", "DB1"],
+      ["#research", "Research1"],
+    ]);
+  });
+
+  test("a pillar lists its docs by title, the design system first", async () => {
+    fakeApi(seededHome().home);
+    renderAt(APP_PATH);
+    const main = await page();
+    const spec = await section(main, /^spec\b/i);
+    await within(spec).findByText("Returns PRD");
+    expect(rowTitles(spec), "the feature's doc is not the app's").toEqual(["Checkout PRD", "Returns PRD"]);
+    expect(rowTitles(await section(main, /^ui\b/i))).toEqual(["Tokens", "account screens", "Cart screens"]);
+  });
+
+  test("a doc's row shows its kind, the role that last wrote it and how many comments wait, and opens the doc", async () => {
+    const { home, docs } = seededHome();
+    fakeApi(home);
+    const router = renderAt(APP_PATH);
+    const main = await page();
+    const spec = await section(main, /^spec\b/i);
+    const returns = await waitFor(() => rowLink(spec, "Returns PRD"));
+    expect(returns.textContent).toMatch(/html/i);
+    expect(returns.textContent).toContain("author");
+    expect(within(returns).getByText("2", { exact: true }), "two comments wait").toBeTruthy();
+    expect(within(rowLink(spec, "Checkout PRD")).queryByText("0", { exact: true }), "no badge for none").toBeNull();
+    const ui = await section(main, /^ui\b/i);
+    expect(rowLink(ui, "Tokens").textContent).toMatch(/design system/i);
+    expect(rowLink(ui, "Cart screens").textContent).toContain("designer");
+
+    expect(returns.getAttribute("href")).toBe(`${PROJECT_PATH}/docs/${docs.returns.id}`);
+    fireEvent.click(returns);
+    await waitFor(() => expect(router.state.location.pathname).toBe(`${PROJECT_PATH}/docs/${docs.returns.id}`));
+  });
+
+  test("the threads come newest post first, a thread without posts at its start, each with its count and one flag", async () => {
+    const { home, threads } = seededHome();
+    fakeApi(home);
+    renderAt(APP_PATH);
+    const main = await page();
+    const listed = await section(main, /^threads\b/i);
+    await within(listed).findByText("Which hero layout?");
+    expect(rowTitles(listed), "the feature's thread is not the app's").toEqual([
+      "Which hero layout?",
+      "Do we need search?",
+      "What goes in the footer?",
+      "Which fonts?",
+    ]);
+    const flags = (title: string) => {
+      const text = rowLink(listed, title).textContent ?? "";
+      return ["Concluded", "Sealed", "Open"].filter((flag) => text.includes(flag));
+    };
+    expect(flags("Which hero layout?")).toEqual(["Concluded"]);
+    expect(flags("What goes in the footer?")).toEqual(["Sealed"]);
+    expect(flags("Do we need search?")).toEqual(["Open"]);
+    expect(rowLink(listed, "Which hero layout?").textContent).toMatch(/\b3 posts/);
+    expect(rowLink(listed, "Do we need search?").textContent).toMatch(/\b0 posts/);
+    expect(rowLink(listed, "Which hero layout?").getAttribute("href")).toBe(`${PROJECT_PATH}/threads/${threads.hero.id}`);
+  });
+
+  test("a feature's page has the feature's name and description, and only its own docs and threads", async () => {
+    const { home } = seededHome();
+    home.threads = home.threads.filter((listed) => listed.feature_id === null);
+    fakeApi(home);
+    renderAt(FEATURE_PATH);
+    const main = await page();
+    const heading = await within(main).findByRole("heading", { level: 1, name: "Checkout" });
+    const header = heading.closest("header") ?? heading.parentElement!;
+    expect(header.textContent).toContain("Pay in one step.\nNo account needed.");
+    expect(header.textContent).not.toContain("No activity yet");
+    expect(rowTitles(await section(main, /^spec\b/i))).toEqual(["Pay in one step"]);
+    expect((await section(main, /^ui\b/i)).textContent).toContain("No docs yet");
+    expect((await section(main, /^threads\b/i)).textContent).toContain("No threads yet");
+  });
+
+  test("the page updates live as the project's events come in", async () => {
+    const api = fakeApi(seededHome().home);
+    renderAt(APP_PATH);
+    const main = await page();
+    const research = await section(main, /^research\b/i);
+    await within(research).findByText("Shopper interviews");
 
     await waitFor(() => expect(FakeWebSocket.instances.length).toBeGreaterThan(0));
     const socket = FakeWebSocket.instances[FakeWebSocket.instances.length - 1];
@@ -351,23 +399,17 @@ describe("the project home", () => {
     );
     socket.receive({ type: "subscribed", project_id: PROJECT_ID, last_seq: 10 });
 
-    // The human resolves the addressed comment; an agent asks a new question.
-    const asked = question(api.home.threads[0].id, "Is the product shot ready for dark mode?");
-    api.home = {
-      ...api.home,
-      waiting: { ...api.home.waiting, comments: [], questions: [...api.home.waiting.questions, asked] },
-    };
+    // An agent starts a doc in Research.
+    const started = doc("research", "html", "Competitor notes");
+    api.home = { ...api.home, docs: [...api.home.docs, started] };
     socket.receive({
       type: "event",
       seq: 11,
-      event: "comment.status_changed",
+      event: "doc.created",
       project_id: PROJECT_ID,
       at: AT,
-      data: { comment_id: "x", doc_id: "y", from_status: "addressed", status: "resolved" },
+      data: { doc_id: started.id },
     });
-    await waitFor(() => {
-      expect(within(waiting).queryByText("The hero copy is shorter now")).toBeNull();
-      expect(within(waiting).getByText("Is the product shot ready for dark mode?")).toBeTruthy();
-    });
+    await waitFor(() => expect(rowTitles(research)).toEqual(["Competitor notes", "Shopper interviews"]));
   });
 });

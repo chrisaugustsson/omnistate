@@ -72,6 +72,18 @@
 //!   the version). `null` is project level.
 //! - `docs`, `changesets` and `threads` stay complete, project level and every
 //!   feature, each item with its `feature_id`.
+//!
+//! US-112 adds what the scope pages show:
+//!
+//! - `app.last_activity` and each feature's `last_activity`: the time of the
+//!   scope's latest write, a row of `doc_changes` (create, edit, rename or
+//!   delete) of one of its docs, or a thread's creation, post or conclusion;
+//!   comments and replies do not count. `null` while there is none.
+//! - each doc's `updated_at` and `last_writer_role`, the time and the agent's
+//!   role of its latest write, and `waiting`, how many of its comments wait
+//!   for the human.
+//! - each thread's `post_count`, and `last_post_at`, the time of its newest
+//!   post (`null` without posts).
 
 mod common;
 
@@ -924,8 +936,15 @@ fn the_home_lists_every_doc_of_the_project_with_its_pillar() {
     ] {
         let listed = item_at(&home, "/docs", doc);
         assert_eq!(listed["pillar"], pillar, "{listed}");
+        // US-112 adds what the scope pages show of the doc to the read's body.
+        let mut body = listed.clone();
+        for field in ["updated_at", "last_writer_role", "waiting"] {
+            body.as_object_mut()
+                .expect("a doc is an object")
+                .remove(field);
+        }
         assert_eq!(
-            listed,
+            body,
             read(f, client, &human(f), &project, &format!("/docs/{doc}"))["doc"],
             "the home lists the doc as its read answers it"
         );
@@ -1684,4 +1703,309 @@ fn the_home_lists_the_docs_change_sets_and_threads_of_the_project_and_every_feat
             );
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// US-112: what the scope pages show
+// ---------------------------------------------------------------------------
+
+/// Starts a live HTML doc at the app level or in `feature`; returns its ID.
+fn live_doc_in(f: &Fixture, client: &Client, project: &str, feature: Option<&str>) -> String {
+    let path = match feature {
+        None => format!("{}/docs", project_base(f, project)),
+        Some(feature) => format!("{}/features/{feature}/docs", project_base(f, project)),
+    };
+    id_of(
+        &must(
+            call(
+                client,
+                "POST",
+                &path,
+                &author(f),
+                Some(&json!({ "kind": "html", "pillar": "spec", "title": unique("Doc") })),
+            ),
+            201,
+            "create a live doc",
+        )["doc"],
+    )
+}
+
+/// `auth` writes a paragraph to the head of the doc; returns its node ID.
+fn write_paragraph(f: &Fixture, client: &Client, auth: &Auth, project: &str, doc: &str) -> String {
+    let answer = must(
+        call(
+            client,
+            "POST",
+            &format!("{}/docs/{doc}/ops", project_base(f, project)),
+            auth,
+            Some(&json!({ "ops": [{
+                "op": "insert",
+                "parent": null,
+                "position": { "after": null },
+                "content": format!("<p>{}</p>", unique("Orders ship in a day"))
+            }] })),
+        ),
+        200,
+        "write to the doc",
+    );
+    answer["results"][0]["node"]
+        .as_str()
+        .unwrap_or_else(|| panic!("the insert names its node: {answer}"))
+        .to_string()
+}
+
+/// The time of the doc's latest write, as its activity list gives it.
+fn latest_write(f: &Fixture, client: &Client, project: &str, doc: &str) -> String {
+    let activity = read(
+        f,
+        client,
+        &human(f),
+        project,
+        &format!("/docs/{doc}/activity"),
+    );
+    activity["entries"][0]["created_at"]
+        .as_str()
+        .unwrap_or_else(|| panic!("the doc has a write: {activity}"))
+        .to_string()
+}
+
+/// The author starts a thread at the app level or in `feature`; returns the thread.
+fn scope_thread(f: &Fixture, client: &Client, project: &str, feature: Option<&str>) -> Value {
+    let path = match feature {
+        None => format!("{}/threads", project_base(f, project)),
+        Some(feature) => format!("{}/features/{feature}/threads", project_base(f, project)),
+    };
+    must(
+        call(
+            client,
+            "POST",
+            &path,
+            &author(f),
+            Some(&json!({ "question": unique("Which way?"), "sealed": false })),
+        ),
+        201,
+        "start a thread",
+    )["thread"]
+        .clone()
+}
+
+/// The critic posts in the thread; returns the post.
+fn post_in(f: &Fixture, client: &Client, project: &str, thread: &str) -> Value {
+    must(
+        call(
+            client,
+            "POST",
+            &format!("{}/posts", thread_path(f, project, thread)),
+            &critic(f),
+            Some(&json!({
+                "type": "finding",
+                "summary": unique("A finding"),
+                "body": "What it says",
+                "links": []
+            })),
+        ),
+        201,
+        "post in the thread",
+    )["post"]
+        .clone()
+}
+
+fn conclude(f: &Fixture, client: &Client, project: &str, thread: &str) {
+    must(
+        call(
+            client,
+            "PUT",
+            &format!("{}/conclusion", thread_path(f, project, thread)),
+            &author(f),
+            Some(&json!({ "conclusion": "Go with the split hero." })),
+        ),
+        200,
+        "conclude the thread",
+    );
+}
+
+/// The human comments on `node` of the doc's head; returns the comment's ID.
+fn comment_on_head(f: &Fixture, client: &Client, project: &str, doc: &str, node: &str) -> String {
+    id_of(
+        &must(
+            call(
+                client,
+                "POST",
+                &format!("{}/docs/{doc}/comments", project_base(f, project)),
+                &human(f),
+                Some(&json!({ "node": node, "text": unique("Say more") })),
+            ),
+            201,
+            "comment on the doc",
+        )["comment"],
+    )
+}
+
+fn app_activity(home: &Value) -> Value {
+    home["app"]["last_activity"].clone()
+}
+
+fn feature_activity(home: &Value, feature: &str) -> Value {
+    list_at(home, "/features")
+        .into_iter()
+        .find(|summary| summary["feature"]["id"] == feature)
+        .unwrap_or_else(|| panic!("the home lists the feature {feature}: {home}"))["last_activity"]
+        .clone()
+}
+
+fn at(value: &Value) -> String {
+    value
+        .as_str()
+        .unwrap_or_else(|| panic!("a time: {value}"))
+        .to_string()
+}
+
+#[test]
+fn each_scope_has_the_time_of_its_latest_doc_or_thread_write_as_its_last_activity() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    let feature = new_feature(f, client, &project);
+    let home_now = || home(f, client, &project);
+    assert_eq!(
+        app_activity(&home_now()),
+        Value::Null,
+        "nothing written yet"
+    );
+    assert_eq!(feature_activity(&home_now(), &feature), Value::Null);
+
+    let doc = live_doc_in(f, client, &project, None);
+    let created = latest_write(f, client, &project, &doc);
+    assert_eq!(at(&app_activity(&home_now())), created, "a doc's creation");
+    assert_eq!(
+        feature_activity(&home_now(), &feature),
+        Value::Null,
+        "the app's doc is not the feature's"
+    );
+
+    let thread = scope_thread(f, client, &project, None);
+    assert_eq!(
+        at(&app_activity(&home_now())),
+        at(&thread["created_at"]),
+        "a thread's start"
+    );
+    let posted = at(&post_in(f, client, &project, &id_of(&thread))["created_at"]);
+    assert_eq!(at(&app_activity(&home_now())), posted, "a post");
+    conclude(f, client, &project, &id_of(&thread));
+    let concluded = at(&app_activity(&home_now()));
+    assert!(
+        concluded > posted,
+        "a conclusion: {concluded} after {posted}"
+    );
+
+    write_paragraph(f, client, &critic(f), &project, &doc);
+    let edited = latest_write(f, client, &project, &doc);
+    assert!(edited > concluded, "{edited}");
+    assert_eq!(at(&app_activity(&home_now())), edited, "an edit");
+
+    let feature_doc = live_doc_in(f, client, &project, Some(&feature));
+    assert_eq!(
+        at(&feature_activity(&home_now(), &feature)),
+        latest_write(f, client, &project, &feature_doc),
+        "the feature's own doc"
+    );
+    let feature_thread = scope_thread(f, client, &project, Some(&feature));
+    assert_eq!(
+        at(&feature_activity(&home_now(), &feature)),
+        at(&feature_thread["created_at"]),
+        "the feature's own thread"
+    );
+    assert_eq!(
+        at(&app_activity(&home_now())),
+        edited,
+        "the feature's doc and thread are not the app's"
+    );
+
+    let response = call(
+        client,
+        "DELETE",
+        &format!("{}/docs/{doc}", project_base(f, &project)),
+        &author(f),
+        None,
+    );
+    assert!(response.status < 300, "delete the doc: {}", response.text());
+    let deleted = at(&app_activity(&home_now()));
+    assert!(
+        deleted > edited,
+        "a deleted doc's delete counts: {deleted} after {edited}"
+    );
+}
+
+#[test]
+fn comments_and_replies_are_no_activity() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    let doc = live_doc_in(f, client, &project, None);
+    let node = write_paragraph(f, client, &author(f), &project, &doc);
+    let before = app_activity(&home(f, client, &project));
+    assert_eq!(at(&before), latest_write(f, client, &project, &doc));
+
+    let comment = comment_on_head(f, client, &project, &doc, &node);
+    reply_to_comment(f, client, &critic(f), &project, &comment, "Done.");
+    reply_to_comment(f, client, &human(f), &project, &comment, "Thanks.");
+    assert_eq!(app_activity(&home(f, client, &project)), before);
+}
+
+#[test]
+fn each_doc_has_when_and_by_which_role_it_was_last_written_and_how_many_of_its_comments_wait() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    let doc = live_doc_in(f, client, &project, None);
+    let other = live_doc_in(f, client, &project, None);
+    let listed = item_at(&home(f, client, &project), "/docs", &doc);
+    assert_eq!(
+        listed["updated_at"],
+        latest_write(f, client, &project, &doc),
+        "{listed}"
+    );
+    assert_eq!(listed["last_writer_role"], "author", "{listed}");
+    assert_eq!(listed["waiting"], 0, "{listed}");
+
+    let node = write_paragraph(f, client, &critic(f), &project, &doc);
+    let elsewhere = write_paragraph(f, client, &author(f), &project, &other);
+    // Two comments on the doc that an agent replied to last, one that no one
+    // replied to, and one waiting on the other doc.
+    let first = comment_on_head(f, client, &project, &doc, &node);
+    reply_to_comment(f, client, &author(f), &project, &first, "Done.");
+    let second = comment_on_head(f, client, &project, &doc, &node);
+    reply_to_comment(f, client, &author(f), &project, &second, "Done.");
+    comment_on_head(f, client, &project, &doc, &node);
+    let third = comment_on_head(f, client, &project, &other, &elsewhere);
+    reply_to_comment(f, client, &author(f), &project, &third, "Done.");
+
+    let home = home(f, client, &project);
+    let listed = item_at(&home, "/docs", &doc);
+    assert_eq!(
+        listed["updated_at"],
+        latest_write(f, client, &project, &doc),
+        "{listed}"
+    );
+    assert_eq!(
+        listed["last_writer_role"], "critic",
+        "the role of the latest write: {listed}"
+    );
+    assert_eq!(listed["waiting"], 2, "{listed}");
+    assert_eq!(item_at(&home, "/docs", &other)["waiting"], 1, "{home}");
+}
+
+#[test]
+fn each_thread_has_its_post_count_and_the_time_of_its_newest_post() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    let quiet = id_of(&scope_thread(f, client, &project, None));
+    let busy = id_of(&scope_thread(f, client, &project, None));
+    post_in(f, client, &project, &busy);
+    let newest = post_in(f, client, &project, &busy);
+
+    let home = home(f, client, &project);
+    let listed = item_at(&home, "/threads", &quiet);
+    assert_eq!(listed["post_count"], 0, "{listed}");
+    assert_eq!(listed["last_post_at"], Value::Null, "{listed}");
+    let listed = item_at(&home, "/threads", &busy);
+    assert_eq!(listed["post_count"], 2, "{listed}");
+    assert_eq!(listed["last_post_at"], newest["created_at"], "{listed}");
 }

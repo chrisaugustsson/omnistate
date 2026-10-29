@@ -33,6 +33,7 @@
 //     the blocks that a change set added, changed or removed (`change` is
 //     `"added"`, `"changed"` or `"removed"`), which the frame marks, each kind
 //     of change in its own way. Left out or empty, no block is marked.
+//   - `reveal` (US-112): a block's node ID, which the frame scrolls into view.
 //
 // What the frame does, tested here:
 //
@@ -123,6 +124,11 @@ const SHORT_DOC = `<section data-omni-id="s0000001">
 <p data-omni-id="p0000003">Returns are free.</p>
 <p data-omni-id="p0000004">Gift wrap is extra.</p>
 <p data-omni-id="p0000005">Taxes are shown at the end.</p>
+</section>`;
+
+/** A doc several frames tall: sixty paragraphs, p0000101 to p0000160. */
+const TALL_DOC = `<section data-omni-id="s0000002">
+${Array.from({ length: 60 }, (_, i) => `<p data-omni-id="p${String(101 + i).padStart(7, "0")}">Paragraph ${101 + i} of the tall doc, long enough to wrap onto a second line in the frame so that the doc is several frames tall.</p>`).join("\n")}
 </section>`;
 
 /** A one-pixel PNG. */
@@ -228,6 +234,7 @@ async function show(
     html: string;
     pins?: { node: string; count: number }[];
     selected?: string | null;
+    reveal?: string;
     changes?: { node: string; change: "added" | "changed" | "removed" }[];
   },
   waitFor: string,
@@ -569,5 +576,35 @@ document.getElementById("by-script").textContent = "Ran.";
 
     await show(target, { html: SHORT_DOC, changes: [] }, "p0000005");
     await settle(() => row(target, "p0000001"), plain.first, true, "without changes no block is marked");
+  });
+
+  test("a block named to reveal is scrolled into view", async () => {
+    const target = await openViewer();
+    await show(target, { html: TALL_DOC }, "p0000160");
+    expect(await target.frame.evaluate(() => window.scrollY)).toBe(0);
+    await show(target, { html: TALL_DOC, reveal: "p0000150" }, "p0000160");
+    await expect
+      .poll(
+        () =>
+          target.frame.evaluate(() => {
+            const box = document.querySelector('[data-omni-id="p0000150"]')!.getBoundingClientRect();
+            return box.top >= 0 && box.bottom <= window.innerHeight;
+          }),
+        { timeout: PATIENCE },
+      )
+      .toBe(true);
+  });
+
+  test("a new head of the doc is drawn where the reader had scrolled to", async () => {
+    const target = await openViewer();
+    await show(target, { html: TALL_DOC }, "p0000160");
+    await target.frame.evaluate(() => window.scrollTo(0, 1200));
+    expect(await target.frame.evaluate(() => window.scrollY)).toBe(1200);
+    const changed = TALL_DOC.replace(
+      "</section>",
+      '<p data-omni-id="p0000161">A paragraph an agent added at the end.</p>\n</section>',
+    );
+    await show(target, { html: changed }, "p0000161");
+    expect(await target.frame.evaluate(() => window.scrollY)).toBe(1200);
   });
 });

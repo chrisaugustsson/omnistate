@@ -17,18 +17,17 @@
 // <feature>, with its waiting count next to its name. There is no "Done"
 // toggle (US-110).
 //
-// A feature has an overview page (its name as the page's heading, its
-// description, and sections named "Waiting for you", "Docs", "Change sets" and
-// "Threads") and .../features/<feature>/docs, /changesets and /threads pages,
-// each holding that feature's items only. The project's Docs, Change sets and
-// Threads pages hold the project-level items only; its overview and inbox hold
-// everything, each feature's items tagged with the feature's name.
+// A feature has its scope page (US-112, src/project-home.test.tsx) and
+// .../features/<feature>/docs, /changesets and /threads pages, each holding
+// that feature's items only. The project's Docs, Change sets and Threads pages
+// hold the project-level items only; its inbox holds everything, each
+// feature's items tagged with the feature's name.
 //
 // The sidebar marks where the reviewer is with aria-current: on a feature's
-// page, the link to that feature's section (its overview, docs, change sets
-// or threads); on a doc, change set or thread of a feature, the link to that
-// feature's docs, change sets or threads, and that page's back link goes there
-// too (for a doc, the viewer toolbar's "Back to the docs" link).
+// page, the link to that feature's section (its page, docs, change sets or
+// threads); on a doc, change set or thread of a feature, the link to that
+// feature's docs, change sets or threads, and a change set's or thread's back
+// link goes there too (a doc has its breadcrumb, src/feature-scope.test.tsx).
 import { RouterProvider, createMemoryHistory } from "@tanstack/react-router";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -483,38 +482,6 @@ describe("features in the web app", () => {
       await showsOnly(await page(), ["Which hero layout?"], [...WISHLIST_THREADS, "How do vouchers expire?"]);
     });
 
-    test("the overview shows every item, each feature's tagged with the feature's name", async () => {
-      fakeApi(seeded());
-      renderAt(PROJECT_PATH);
-      const main = await page();
-
-      const docs = await section(/^docs\b/i, main);
-      await within(docs).findByText("Saved items PRD");
-      expect(itemShowing(docs, "Saved items PRD").textContent).toMatch(/wishlist/i);
-      expect(itemShowing(docs, "Voucher PRD").textContent).toMatch(/gift cards/i);
-      expect(itemShowing(docs, "Points PRD").textContent).toMatch(/loyalty points/i);
-      expect(itemShowing(docs, "Storefront PRD").textContent).not.toMatch(FEATURE_NAMES);
-
-      const changesets = await section(/^change ?sets\b/i, main);
-      expect(itemShowing(changesets, "Draft saved items").textContent).toMatch(/wishlist/i);
-      expect(itemShowing(changesets, "Voucher balance").textContent).toMatch(/gift cards/i);
-      expect(itemShowing(changesets, "Tidy the footer").textContent).not.toMatch(FEATURE_NAMES);
-
-      const threads = await section(/^threads\b/i, main);
-      expect(itemShowing(threads, "Should saved lists be public?").textContent).toMatch(/wishlist/i);
-      expect(itemShowing(threads, "How do vouchers expire?").textContent).toMatch(/gift cards/i);
-      expect(itemShowing(threads, "Which hero layout?").textContent).not.toMatch(FEATURE_NAMES);
-
-      const waiting = await section(/^waiting for you\b/i, main);
-      expect(itemShowing(waiting, "Keep saved lists private").textContent).toMatch(/wishlist/i);
-      expect(itemShowing(waiting, "Share saved lists").textContent).toMatch(/wishlist/i);
-      expect(itemShowing(waiting, "The save button moved").textContent).toMatch(/wishlist/i);
-      expect(itemShowing(waiting, "Do vouchers stack?").textContent).toMatch(/gift cards/i);
-      expect(itemShowing(waiting, "Use the split hero").textContent).not.toMatch(FEATURE_NAMES);
-      expect(itemShowing(waiting, "Rework the hero").textContent).not.toMatch(FEATURE_NAMES);
-      expect(itemShowing(waiting, "The hero copy is shorter now").textContent).not.toMatch(FEATURE_NAMES);
-    });
-
     test("the inbox shows everything that waits, each feature's tagged with the feature's name", async () => {
       fakeApi(seeded());
       renderAt(`${PROJECT_PATH}/inbox`);
@@ -531,24 +498,6 @@ describe("features in the web app", () => {
   });
 
   describe("a feature's pages", () => {
-    test("the feature's overview shows its description, what waits, its docs, change sets and threads", async () => {
-      fakeApi(seeded());
-      renderAt(featurePath(WISHLIST));
-      const main = await page();
-      expect(await within(main).findByRole("heading", { level: 1, name: /wishlist/i })).toBeTruthy();
-      expect(within(main).getByText("Shoppers save products for later.")).toBeTruthy();
-
-      const waiting = await section(/^waiting for you\b/i, main);
-      await showsOnly(
-        waiting,
-        ["Keep saved lists private", "Share saved lists", "The save button moved"],
-        ["Use the split hero", "Rework the hero", "The hero copy is shorter now", "Do vouchers stack?"],
-      );
-      await showsOnly(await section(/^docs\b/i, main), WISHLIST_DOCS, OTHER_DOCS);
-      await showsOnly(await section(/^change ?sets\b/i, main), WISHLIST_CHANGESETS, OTHER_CHANGESETS);
-      await showsOnly(await section(/^threads\b/i, main), WISHLIST_THREADS, OTHER_THREADS);
-    });
-
     test("the feature's Docs page shows its own docs only", async () => {
       fakeApi(seeded());
       renderAt(featurePath(WISHLIST, "docs"));
@@ -629,7 +578,7 @@ describe("features in the web app", () => {
       expect(back.map((link) => link.getAttribute("href"))).not.toContain(`${PROJECT_PATH}/threads`);
     });
 
-    test("on a feature's doc the sidebar marks the feature's docs and the back link goes there", async () => {
+    test("on a feature's doc the sidebar marks the feature's docs", async () => {
       const seed = seeded();
       fakeApi(seed);
       renderAt(`${PROJECT_PATH}/docs/${seed.docs.savedPrd.id}`);
@@ -637,17 +586,9 @@ describe("features in the web app", () => {
       const current = await linkTo(nav, featurePath(WISHLIST, "docs"));
       await waitFor(() => expect(marked(current), "the Wishlist's docs are marked").toBe(true));
       expect(marked(await linkTo(nav, `${PROJECT_PATH}/docs`)), "the project's docs").toBe(false);
-
-      const main = await page();
-      await within(main).findByRole("heading", { level: 1, name: "Saved items PRD" });
-      await waitFor(() => {
-        const back = within(main).getAllByRole("link", { name: /docs/i });
-        expect(back.map((link) => link.getAttribute("href"))).toContain(featurePath(WISHLIST, "docs"));
-        expect(back.map((link) => link.getAttribute("href"))).not.toContain(`${PROJECT_PATH}/docs`);
-      });
     });
 
-    test("on a project-level doc the sidebar marks the project's docs and the back link goes there", async () => {
+    test("on a project-level doc the sidebar marks the project's docs", async () => {
       const seed = seeded();
       fakeApi(seed);
       renderAt(`${PROJECT_PATH}/docs/${seed.docs.storefrontPrd.id}`);
@@ -657,14 +598,6 @@ describe("features in the web app", () => {
       await linkTo(nav, featurePath(WISHLIST));
       for (const link of markedLinks(nav)) {
         expect(link.getAttribute("href"), "no feature is marked").not.toMatch(/\/features\//);
-      }
-
-      const main = await page();
-      await within(main).findByRole("heading", { level: 1, name: "Storefront PRD" });
-      const back = within(main).getAllByRole("link", { name: /docs/i });
-      expect(back.map((link) => link.getAttribute("href"))).toContain(`${PROJECT_PATH}/docs`);
-      for (const link of back) {
-        expect(link.getAttribute("href"), "no back link to a feature").not.toMatch(/\/features\//);
       }
     });
   });
