@@ -7,60 +7,32 @@
 //! scratch RustFS bucket and serve the API's router on a local port.
 //!
 //! The contract these tests pin down (all paths are under
-//! `/api/v1/w/{workspace_id}/projects/{project_id}`; docs and drafts are those
-//! of US-022, versions of US-024 and approvals of US-025; the token format is
-//! that of docs/formats/tokens.md, checked by `omni_core::design::tokens`):
+//! `/api/v1/w/{workspace_id}/projects/{project_id}`; the token format is that
+//! of docs/formats/tokens.md, checked by `omni_core::design::tokens`):
 //!
-//! - A project has at most one design system doc. `POST
-//!   /changesets/{changeset_id}/docs` with `"kind": "design-system"` in a
-//!   project that already has one (started in any change set, merged or not)
-//!   is 409 `{"error": "design_system_exists"}` and stores nothing. Another
-//!   project may have its own, and a project may have any number of `design`
-//!   docs.
-//! - `PUT /changesets/{changeset_id}/tokens` (agent) takes `{"tokens":
-//!   <DTCG tree>}` and replaces the whole token tree of the change set's draft
-//!   of the project's design system doc, in one all-or-nothing batch. A change
-//!   set without a draft of the doc gets one, based on the doc's mainline
-//!   version, as `POST /docs/{doc_id}/open` would make it. The answer is 200
-//!   `{"doc_id", "changeset_id", "draft_id", "modes", "tokens"}` with the tree
-//!   as stored. A tree that the rules refuse (an unknown reference, a loop, a
+//! - A project has at most one design system doc. `POST /docs` with `"kind":
+//!   "design-system"` in a project that already has one is 409 `{"error":
+//!   "design_system_exists"}` and stores nothing. Another project may have its
+//!   own, and a project may have any number of `design` docs.
+//! - `PUT /tokens` (agent) takes `{"tokens": <DTCG tree>}` and replaces the
+//!   token tree of the design system's head, in one all-or-nothing batch: 200
+//!   `{"project_id", "doc_id", "head", "modes", "tokens"}` with the tree as
+//!   stored. A tree that the rules refuse (an unknown reference, a loop, a
 //!   typography token without a line height, ...) or that names a font file
 //!   which is not a font attached to the workspace is 400 `{"error":
 //!   "invalid_tokens", "message"}`, where the message names the token or the
 //!   attachment, and nothing changes. A body without `tokens` is 400
 //!   `{"error": "invalid_request"}`. A project without a design system doc is
-//!   404 `{"error": "no_design_system"}`. A session is 403 `forbidden`. An
-//!   import is logged in the draft's log (`draft_ops`, with the agent) and
-//!   emits one `tokens.imported` event with `data` `{"doc_id",
-//!   "changeset_id", "draft_id", "modes"}`; a refused one logs and emits
-//!   nothing.
-//! - `PUT /tokens` (agent) takes the same `{"tokens": <DTCG tree>}` and
-//!   replaces the token tree of the design system's head, with no change set,
-//!   in one all-or-nothing batch: 200 `{"project_id", "doc_id", "head",
-//!   "modes", "tokens"}` with the tree as stored. The refusals are those of
-//!   the change set route. The write adds one row of `doc_changes` and emits
-//!   `doc.changed`; a refused one changes, logs and emits nothing.
-//! - `GET /changesets/{changeset_id}/tokens` (both) answers the change set's
-//!   draft: `{"doc_id", "changeset_id", "draft_id", "modes", "tokens"}`.
-//! - `GET /tokens` (both) answers the mainline version of the design system:
-//!   `{"doc_id", "version_id", "modes", "tokens"}`, or `"version_id": null`,
-//!   `"modes": []` and `"tokens": null` before the doc has one; `?version=<id>`
-//!   answers that version instead. Saving a version of the design system's
-//!   draft (`POST /changesets/{changeset_id}/docs/{doc_id}/versions`) keeps
-//!   its token tree, and merging it makes the tree the mainline one.
-//! - Both reads take `?mode=<mode>`: `"tokens"` is then the tree of that one
+//!   404 `{"error": "no_design_system"}`. A session is 403 `forbidden`. The
+//!   write adds one row of `doc_changes` with the agent and emits `doc.changed`;
+//!   a refused one changes, logs and emits nothing.
+//! - `GET /tokens` (both) answers the head of the design system: `{"doc_id",
+//!   "modes", "tokens"}`, with `"modes": []` and `"tokens": null` before the
+//!   first import.
+//! - The read takes `?mode=<mode>`: `"tokens"` is then the tree of that one
 //!   mode (each `$value` is the mode's value, no token has
 //!   `$extensions.omnistate.modes`) and the answer adds `"mode"`. A mode that
 //!   the design system does not list is 400 `{"error": "unknown_mode"}`.
-//! - A change set whose design system draft is behind the mainline rebases
-//!   like any other (`POST /changesets/{changeset_id}/rebase`, US-026): the
-//!   change set's token changes since the draft's base (each token it added,
-//!   changed or removed) are replayed onto the mainline tree, and a token
-//!   that only the mainline changed keeps its mainline value. Without a token
-//!   changed on both sides, the rebase answers `"conflicts": []` and merges,
-//!   and the mainline tree has the changes of both change sets.
-//! - The three routes are in the route registry: the import as `agent`, the
-//!   reads as `both`.
 
 mod common;
 
@@ -134,7 +106,7 @@ fn config() -> Config {
         ),
         admin_database_url: format!("{server}/{TEST_DB}"),
         api_db_password: api_password(),
-        // Versions and attachments keep their content in RustFS, so the API
+        // Heads and attachments keep their content in RustFS, so the API
         // gets a real bucket.
         s3_endpoint: s3_endpoint(),
         s3_access_key: s3_access_key(),
@@ -350,10 +322,6 @@ fn project_base(f: &Fixture, project: &str) -> String {
     format!("/api/v1/w/{}/projects/{project}", f.workspace)
 }
 
-fn changeset_path(f: &Fixture, project: &str, changeset: &str) -> String {
-    format!("{}/changesets/{changeset}", project_base(f, project))
-}
-
 fn new_project(f: &Fixture, client: &Client) -> String {
     id_of(
         &must(
@@ -370,54 +338,7 @@ fn new_project(f: &Fixture, client: &Client) -> String {
     )
 }
 
-fn new_changeset(f: &Fixture, client: &Client, project: &str) -> String {
-    id_of(
-        &must(
-            call(
-                client,
-                "POST",
-                &format!("{}/changesets", project_base(f, project)),
-                &agent(f),
-                Some(&json!({ "title": unique("change"), "run_tag": "run-28" })),
-            ),
-            201,
-            "create a change set",
-        )["changeset"],
-    )
-}
-
-fn create_doc_response(
-    f: &Fixture,
-    client: &Client,
-    project: &str,
-    changeset: &str,
-    kind: &str,
-) -> Response {
-    call(
-        client,
-        "POST",
-        &format!("{}/docs", changeset_path(f, project, changeset)),
-        &agent(f),
-        Some(&json!({ "kind": kind, "pillar": "ui", "title": unique(kind) })),
-    )
-}
-
-/// A project with an open change set that started its design system doc;
-/// returns (project, change set, doc).
-fn design_system(f: &Fixture, client: &Client) -> (String, String, String) {
-    let project = new_project(f, client);
-    let changeset = new_changeset(f, client, &project);
-    let doc = id_of(
-        &must(
-            create_doc_response(f, client, &project, &changeset, "design-system"),
-            201,
-            "start the design system doc",
-        )["doc"],
-    );
-    (project, changeset, doc)
-}
-
-/// Creates a doc with no change set (`POST /docs`), in the `ui` pillar.
+/// Creates a doc (`POST /docs`), in the `ui` pillar.
 fn create_live_doc_response(f: &Fixture, client: &Client, project: &str, kind: &str) -> Response {
     call(
         client,
@@ -428,8 +349,7 @@ fn create_live_doc_response(f: &Fixture, client: &Client, project: &str, kind: &
     )
 }
 
-/// A project with a design system doc created with no change set; returns
-/// (project, doc).
+/// A project with a design system doc; returns (project, doc).
 fn live_design_system(f: &Fixture, client: &Client) -> (String, String) {
     let project = new_project(f, client);
     let doc = id_of(
@@ -440,31 +360,6 @@ fn live_design_system(f: &Fixture, client: &Client) -> (String, String) {
         )["doc"],
     );
     (project, doc)
-}
-
-fn import_response(
-    f: &Fixture,
-    client: &Client,
-    auth: &Auth,
-    project: &str,
-    changeset: &str,
-    tokens: &Value,
-) -> Response {
-    call(
-        client,
-        "PUT",
-        &format!("{}/tokens", changeset_path(f, project, changeset)),
-        auth,
-        Some(&json!({ "tokens": tokens })),
-    )
-}
-
-fn import(f: &Fixture, client: &Client, project: &str, changeset: &str, tokens: &Value) -> Value {
-    must(
-        import_response(f, client, &agent(f), project, changeset, tokens),
-        200,
-        "import the tokens",
-    )
 }
 
 fn head_import_response(
@@ -483,7 +378,7 @@ fn head_import_response(
     )
 }
 
-/// Imports the tokens into the design system's head, with no change set.
+/// Imports the tokens into the design system's head.
 fn head_import(f: &Fixture, client: &Client, project: &str, tokens: &Value) -> Value {
     must(
         head_import_response(f, client, &agent(f), project, tokens),
@@ -492,7 +387,7 @@ fn head_import(f: &Fixture, client: &Client, project: &str, tokens: &Value) -> V
     )
 }
 
-fn mainline_tokens(f: &Fixture, client: &Client, project: &str, query: &str) -> Value {
+fn head_tokens(f: &Fixture, client: &Client, project: &str, query: &str) -> Value {
     must(
         call(
             client,
@@ -502,56 +397,8 @@ fn mainline_tokens(f: &Fixture, client: &Client, project: &str, query: &str) -> 
             None,
         ),
         200,
-        "read the mainline tokens",
+        "read the tokens",
     )
-}
-
-fn save(f: &Fixture, client: &Client, project: &str, changeset: &str, doc: &str) -> String {
-    id_of(
-        &must(
-            call(
-                client,
-                "POST",
-                &format!(
-                    "{}/docs/{doc}/versions",
-                    changeset_path(f, project, changeset)
-                ),
-                &agent(f),
-                Some(&json!({})),
-            ),
-            201,
-            "save a version",
-        )["version"],
-    )
-}
-
-/// Submits the change set and has the human approve it; returns the change
-/// set as the approval left it.
-fn submit_and_approve(f: &Fixture, client: &Client, project: &str, changeset: &str) -> Value {
-    let path = changeset_path(f, project, changeset);
-    must(
-        call(client, "POST", &format!("{path}/submit"), &agent(f), None),
-        200,
-        "submit the change set",
-    );
-    must(
-        call(
-            client,
-            "POST",
-            &format!("{path}/approve"),
-            &human(f),
-            Some(&json!({})),
-        ),
-        200,
-        "the human approves",
-    )["changeset"]
-        .clone()
-}
-
-/// Submits the change set and has the human approve it, which merges it.
-fn merge(f: &Fixture, client: &Client, project: &str, changeset: &str) {
-    let approved = submit_and_approve(f, client, project, changeset);
-    assert_eq!(approved["status"], "merged", "{approved}");
 }
 
 fn count(sql: &str, binds: &[&str]) -> i64 {
@@ -566,13 +413,6 @@ fn count(sql: &str, binds: &[&str]) -> i64 {
             .await
             .unwrap_or_else(|e| panic!("count with {sql}: {e}"))
     })
-}
-
-fn logged_ops(draft: &str) -> i64 {
-    count(
-        "select count(*) from draft_ops where draft_id = $1::uuid",
-        &[draft],
-    )
 }
 
 /// The `data` of the project's live events named `event`, oldest first.
@@ -719,7 +559,7 @@ fn a_project_has_at_most_one_design_system_doc() {
 fn an_import_replaces_the_token_tree_of_the_design_systems_head() {
     let (f, client) = ready();
     let (project, doc) = live_design_system(f, client);
-    let before = mainline_tokens(f, client, &project, "");
+    let before = head_tokens(f, client, &project, "");
     assert_eq!(before["doc_id"], doc.as_str(), "{before}");
     assert_eq!(before["modes"], json!([]), "{before}");
     assert_eq!(before["tokens"], Value::Null, "{before}");
@@ -729,7 +569,7 @@ fn an_import_replaces_the_token_tree_of_the_design_systems_head() {
     assert_eq!(answer["tokens"], light_and_dark(), "{answer}");
 
     head_import(f, client, &project, &two_brands());
-    let read = mainline_tokens(f, client, &project, "");
+    let read = head_tokens(f, client, &project, "");
     assert_eq!(
         read["tokens"],
         two_brands(),
@@ -761,7 +601,7 @@ fn a_refused_import_changes_nothing() {
     assert_error(&response, 400, "invalid_request");
 
     assert_eq!(
-        mainline_tokens(f, client, &project, "")["tokens"],
+        head_tokens(f, client, &project, "")["tokens"],
         light_and_dark(),
         "a refused import leaves the tree as it was"
     );
@@ -780,35 +620,22 @@ fn a_refused_import_changes_nothing() {
 #[test]
 fn an_import_is_logged_with_its_agent_and_emits_an_event() {
     let (f, client) = ready();
-    let (project, changeset, doc) = design_system(f, client);
-    let answer = import(f, client, &project, &changeset, &light_and_dark());
-    let draft = answer["draft_id"].as_str().expect("a draft");
-    assert!(logged_ops(draft) >= 1, "the import is in the draft's log");
+    let (project, doc) = live_design_system(f, client);
+    let answer = head_import(f, client, &project, &light_and_dark());
+    let head = answer["head"].as_str().expect("the new head");
     assert_eq!(
         count(
-            "select count(*) from draft_ops where draft_id = $1::uuid \
+            "select count(*) from doc_changes where doc_id = $1::uuid and head_after = $2 \
              and agent->>'run' = 'run-28' and agent->>'role' = 'designer'",
-            &[draft],
+            &[&doc, head],
         ),
-        logged_ops(draft),
+        1,
         "the log names the agent that imported"
     );
-    let events = events_of(&project, "tokens.imported");
-    assert_eq!(events.len(), 1, "{events:?}");
-    assert_eq!(events[0]["doc_id"], doc.as_str(), "{}", events[0]);
-    assert_eq!(
-        events[0]["changeset_id"],
-        changeset.as_str(),
-        "{}",
-        events[0]
-    );
-    assert_eq!(events[0]["draft_id"], draft, "{}", events[0]);
-    assert_eq!(
-        events[0]["modes"],
-        json!(["light", "dark"]),
-        "{}",
-        events[0]
-    );
+    let events = events_of(&project, "doc.changed");
+    let imported: Vec<&Value> = events.iter().filter(|e| e["head"] == head).collect();
+    assert_eq!(imported.len(), 1, "{events:?}");
+    assert_eq!(imported[0]["doc_id"], doc.as_str(), "{}", imported[0]);
 }
 
 #[test]
@@ -821,45 +648,6 @@ fn importing_is_for_agents_and_needs_a_design_system() {
     let bare = new_project(f, client);
     let response = head_import_response(f, client, &agent(f), &bare, &light_and_dark());
     assert_error(&response, 404, "no_design_system");
-}
-
-#[test]
-fn an_import_opens_the_draft_of_a_change_set_that_has_none() {
-    let (f, client) = ready();
-    let (project, changeset, doc) = design_system(f, client);
-    import(f, client, &project, &changeset, &light_and_dark());
-    let version = save(f, client, &project, &changeset, &doc);
-    merge(f, client, &project, &changeset);
-
-    let next = new_changeset(f, client, &project);
-    let answer = import(f, client, &project, &next, &two_brands());
-    let shown = must(
-        call(
-            client,
-            "GET",
-            &format!("{}/docs/{doc}", project_base(f, &project)),
-            &agent(f),
-            None,
-        ),
-        200,
-        "show the design system doc",
-    );
-    let drafts = shown["doc"]["drafts"].as_array().expect("drafts");
-    let draft = drafts
-        .iter()
-        .find(|d| d["changeset_id"] == next.as_str())
-        .unwrap_or_else(|| panic!("the import made a draft in the change set: {shown}"));
-    assert_eq!(draft["id"], answer["draft_id"], "{shown}");
-    assert_eq!(
-        draft["base_version_id"],
-        version.as_str(),
-        "the new draft is based on the mainline version"
-    );
-    assert_eq!(
-        mainline_tokens(f, client, &project, "")["tokens"],
-        light_and_dark(),
-        "the import changes only the change set's draft, not the mainline"
-    );
 }
 
 // ---------------------------------------------------------------------------
@@ -885,60 +673,15 @@ fn typography_tokens_use_fonts_attached_to_the_workspace() {
     assert_invalid_tokens(&response, &[notes.as_str()]);
 
     assert_eq!(
-        mainline_tokens(f, client, &project, "")["tokens"],
+        head_tokens(f, client, &project, "")["tokens"],
         tree,
         "the refused imports changed nothing"
     );
 }
 
 // ---------------------------------------------------------------------------
-// Reading the tokens: drafts, mainline, versions and modes
+// Reading the tokens
 // ---------------------------------------------------------------------------
-
-#[test]
-fn the_mainline_tokens_are_those_of_the_merged_version() {
-    let (f, client) = ready();
-    let (project, changeset, doc) = design_system(f, client);
-    let before = mainline_tokens(f, client, &project, "");
-    assert_eq!(before["doc_id"], doc.as_str(), "{before}");
-    assert_eq!(before["version_id"], Value::Null, "{before}");
-    assert_eq!(before["modes"], json!([]), "{before}");
-    assert_eq!(before["tokens"], Value::Null, "{before}");
-
-    import(f, client, &project, &changeset, &light_and_dark());
-    let first = save(f, client, &project, &changeset, &doc);
-    merge(f, client, &project, &changeset);
-    let mainline = mainline_tokens(f, client, &project, "");
-    assert_eq!(mainline["version_id"], first.as_str(), "{mainline}");
-    assert_eq!(mainline["modes"], json!(["light", "dark"]), "{mainline}");
-    assert_eq!(mainline["tokens"], light_and_dark(), "{mainline}");
-
-    let next = new_changeset(f, client, &project);
-    import(f, client, &project, &next, &two_brands());
-    let second = save(f, client, &project, &next, &doc);
-    merge(f, client, &project, &next);
-    let mainline = mainline_tokens(f, client, &project, "");
-    assert_eq!(mainline["version_id"], second.as_str(), "{mainline}");
-    assert_eq!(mainline["tokens"], two_brands(), "{mainline}");
-
-    let old = mainline_tokens(f, client, &project, &format!("?version={first}"));
-    assert_eq!(old["version_id"], first.as_str(), "{old}");
-    assert_eq!(old["tokens"], light_and_dark(), "{old}");
-
-    for auth in [agent(f), human(f)] {
-        must(
-            call(
-                client,
-                "GET",
-                &format!("{}/tokens", project_base(f, &project)),
-                &auth,
-                None,
-            ),
-            200,
-            "the agent and the human read the tokens",
-        );
-    }
-}
 
 #[test]
 fn a_read_can_give_the_tree_of_one_mode() {
@@ -946,7 +689,7 @@ fn a_read_can_give_the_tree_of_one_mode() {
     let (project, _doc) = live_design_system(f, client);
     head_import(f, client, &project, &light_and_dark());
 
-    let dark = mainline_tokens(f, client, &project, "?mode=dark");
+    let dark = head_tokens(f, client, &project, "?mode=dark");
     assert_eq!(dark["mode"], "dark", "{dark}");
     assert_eq!(
         dark["tokens"]["color"]["surface"]["$value"], "#0f172a",
@@ -973,75 +716,3 @@ fn a_read_can_give_the_tree_of_one_mode() {
     assert_error(&response, 400, "unknown_mode");
 }
 
-// ---------------------------------------------------------------------------
-// Rebasing a design system change set
-// ---------------------------------------------------------------------------
-
-#[test]
-fn a_design_system_change_set_rebases_onto_the_mainline_tokens() {
-    let (f, client) = ready();
-    let (project, first, doc) = design_system(f, client);
-    import(f, client, &project, &first, &light_and_dark());
-    save(f, client, &project, &first, &doc);
-    merge(f, client, &project, &first);
-
-    // Both change sets start from the same mainline tree; one adds a spacing
-    // token, the other changes the dark surface.
-    let behind = new_changeset(f, client, &project);
-    let mut wider = light_and_dark();
-    wider["spacing"]["lg"] = json!({"$value": "24px"});
-    import(f, client, &project, &behind, &wider);
-    let behind_version = save(f, client, &project, &behind, &doc);
-
-    let ahead = new_changeset(f, client, &project);
-    let mut darker = light_and_dark();
-    darker["color"]["surface"]["$extensions"]["omnistate"]["modes"]["dark"] = json!("#111827");
-    import(f, client, &project, &ahead, &darker);
-    let ahead_version = save(f, client, &project, &ahead, &doc);
-    merge(f, client, &project, &ahead);
-
-    let approved = submit_and_approve(f, client, &project, &behind);
-    assert_eq!(
-        approved["status"], "needs_rebase",
-        "set up a change set behind the mainline: {approved}"
-    );
-
-    let answer = must(
-        call(
-            client,
-            "POST",
-            &format!("{}/rebase", changeset_path(f, &project, &behind)),
-            &agent(f),
-            Some(&json!({})),
-        ),
-        200,
-        "rebase the design system change set",
-    );
-    assert_eq!(
-        answer["conflicts"],
-        json!([]),
-        "no token changed on both sides: {answer}"
-    );
-    assert_eq!(answer["changeset"]["status"], "merged", "{answer}");
-
-    let mut both = light_and_dark();
-    both["spacing"]["lg"] = json!({"$value": "24px"});
-    both["color"]["surface"]["$extensions"]["omnistate"]["modes"]["dark"] = json!("#111827");
-    let mainline = mainline_tokens(f, client, &project, "");
-    assert_eq!(
-        mainline["tokens"], both,
-        "the mainline tree has the changes of both change sets: {mainline}"
-    );
-    assert_eq!(mainline["modes"], json!(["light", "dark"]), "{mainline}");
-    let version = mainline["version_id"].as_str().expect("a mainline version");
-    assert_ne!(
-        version,
-        ahead_version.as_str(),
-        "the rebased change set merged a version of its own"
-    );
-    assert_ne!(
-        version,
-        behind_version.as_str(),
-        "what merged is the rebased tree, not the version on the old base"
-    );
-}

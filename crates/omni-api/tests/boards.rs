@@ -7,67 +7,39 @@
 //! scratch RustFS bucket and serve the API's router on a local port.
 //!
 //! The contract these tests pin down (all paths are under
-//! `/api/v1/w/{workspace_id}/projects/{project_id}`; docs and drafts are those
-//! of US-022, versions of US-024, approvals of US-025 and design imports
-//! (`PUT /changesets/{changeset_id}/docs/{doc_id}/design`) of US-029; the
-//! tags are those of docs/formats/design-tags.md):
+//! `/api/v1/w/{workspace_id}/projects/{project_id}`; the tags are those of
+//! docs/formats/design-tags.md):
 //!
-//! - A design doc holds pages, and pages hold boards. A version of a design
-//!   doc is a manifest: `GET /versions/{version_id}` of a design version
-//!   answers `"manifest": {"pages": [{"id", "chunk", "boards": [{"id",
-//!   "chunk"}]}]}`, the pages in order and the boards of each page in order,
-//!   where `id` is the node ID and `chunk` the name of the stored chunk.
-//! - Every page and every board is its own chunk in RustFS, at
-//!   `ws/{workspace_id}/chunks/{chunk}`, where `chunk` is the BLAKE3 hash of
-//!   the stored bytes in lowercase hex (64 characters). A board's chunk holds
-//!   that board and its subtree and nothing of the other boards; a page's
-//!   chunk holds none of its boards' content.
+//! - A design doc holds pages, and pages hold boards. Every page and every
+//!   board is its own chunk in RustFS, at `ws/{workspace_id}/chunks/{chunk}`,
+//!   where `chunk` is the BLAKE3 hash of the stored bytes in lowercase hex (64
+//!   characters).
 //! - The chunk index is the tenant table `chunks`, keyed by `(workspace_id,
-//!   hash)`: one row per chunk of a workspace, whatever number of versions use
-//!   it. The columns without a default are `workspace_id` and `hash`. Its rows
-//!   are never changed, so the API role has no UPDATE privilege on it
-//!   (crates/omni-core/tests/tenancy.rs).
-//! - Unchanged boards (and pages) keep their chunk: a later version, in the
-//!   same change set or another, lists the same chunk for them.
-//! - The node index (`node_index`, US-024) is stored per chunk: the rows of a
-//!   board's chunk are exactly the board and its descendants, written once and
-//!   shared by every version that uses the chunk. A version's `nodes` are
-//!   still every node of the design in document order with its parent, and a
-//!   comparison of two versions still names only what changed.
-//! - `GET /changesets/{changeset_id}/docs/{doc_id}/boards/{board_id}` (both)
-//!   reads one board of the change set's draft, unsaved changes included, and
-//!   `GET /docs/{doc_id}/boards/{board_id}` (both) one board of the mainline
-//!   version, or with `?version=<v>` of that version of the doc. The answer is
-//!   200 `{"doc_id", "page_id", "board_id", "version_id", "tags"}` (with
-//!   `"changeset_id"` and `"draft_id"` for a draft, whose `version_id` is
-//!   `null`): `tags` is the board alone in the tag format, starting with its
-//!   `<Board id="...">` tag, with no `<Page>`. When reading a draft, every tag
-//!   carries a `rev` attribute, the node's revision (`rev={3}` or `rev="3"`);
-//!   a version or the mainline has none. An ID that names no board of the doc
-//!   (an unknown node, a page, a frame) is 404 `{"error": "unknown_board"}`,
-//!   a doc of another kind 400 `{"error": "not_a_design"}`, and a version
-//!   that is not one of the doc's 404 `{"error": "not_found"}`. Without
-//!   `?version=` the board is read from the doc's head (US-102), which is
-//!   empty until the change set that started the doc merges, so such a doc
-//!   has no board there yet (404 `unknown_board`).
-//! - Both routes are in the route registry as `both`.
-//!
-//! US-058: the design viewer and the change set review read a version board by
-//! board, never its whole body at once:
-//!
-//! - `GET /versions/{version_id}?view=outline` of a design version answers the
-//!   version without `pages` and `tags`, and with `"outline"`: its pages in
-//!   order, each page as its own JSON with its boards in order under
-//!   `children`, every board as its own JSON (its name, box, layout and
-//!   fills) without its children. A width or height that is not fixed (a
-//!   board that hugs its content) is the fixed size that the board is laid
-//!   out in with its content, so that its placeholder takes the board's room
-//!   on the canvas; fixed sizes are as stored. The `manifest` is the whole read's, and
-//!   nothing below a board (no ID, no content) is in the answer, so `nodes`
-//!   lists no node below a board either.
-//! - The board of a version (`GET /docs/{doc_id}/boards/{board_id}`, with or
-//!   without `?version=`) also answers `"node"`: the board and its subtree as
-//!   JSON, as the whole read's `pages` hold it.
+//!   hash)`: one row per chunk of a workspace. The columns without a default
+//!   are `workspace_id` and `hash`. Its rows are never changed, so the API role
+//!   has no UPDATE privilege on it (crates/omni-core/tests/tenancy.rs).
+//! - Unchanged boards keep their chunk: a later head lists the same chunk for
+//!   them.
+//! - The node index (`node_index`) is stored per chunk: the rows of a board's
+//!   chunk are exactly the board and its descendants, written once and shared
+//!   by every head that uses the chunk.
+//! - `GET /docs/{doc_id}/boards/{board_id}` (both) reads one board of the head.
+//!   The answer is 200 `{"doc_id", "page_id", "board_id", "tags", "node"}`:
+//!   `tags` is the board alone in the tag format, starting with its `<Board
+//!   id="...">` tag, with no `<Page>`, and `node` the board and its subtree as
+//!   JSON, as the whole read's `pages` hold it. An ID that names no board of
+//!   the doc (an unknown node, a page, a frame) is 404 `{"error":
+//!   "unknown_board"}` and a doc of another kind 400 `{"error":
+//!   "not_a_design"}`.
+//! - `GET /docs/{doc_id}/html?view=outline` of a design answers its head
+//!   without `pages` and `tags`, and with `"outline"`: its pages in order, each
+//!   page as its own JSON with its boards in order under `children`, every
+//!   board as its own JSON (its name, box, layout and fills) without its
+//!   children, and `"boards"`: the boards in page order, each `{"id", "chunk"}`.
+//!   A width or height that is not fixed (a board that hugs its content) is the
+//!   fixed size that the board is laid out in with its content, so that its
+//!   placeholder takes the board's room on the canvas; fixed sizes are as
+//!   stored. Nothing below a board (no ID, no content) is in the answer.
 
 mod common;
 
@@ -142,7 +114,7 @@ fn config() -> Config {
         ),
         admin_database_url: format!("{server}/{TEST_DB}"),
         api_db_password: api_password(),
-        // Versions keep their content in RustFS, so the API gets a real bucket.
+        // Heads keep their content in RustFS, so the API gets a real bucket.
         s3_endpoint: s3_endpoint(),
         s3_access_key: s3_access_key(),
         s3_secret_key: s3_secret_key(),
@@ -359,10 +331,6 @@ fn project_base(f: &Fixture, project: &str) -> String {
     format!("/api/v1/w/{}/projects/{project}", f.workspace)
 }
 
-fn changeset_path(f: &Fixture, project: &str, changeset: &str) -> String {
-    format!("{}/changesets/{changeset}", project_base(f, project))
-}
-
 fn new_project(f: &Fixture, client: &Client) -> String {
     id_of(
         &must(
@@ -379,179 +347,6 @@ fn new_project(f: &Fixture, client: &Client) -> String {
     )
 }
 
-fn new_changeset(f: &Fixture, client: &Client, project: &str) -> String {
-    id_of(
-        &must(
-            call(
-                client,
-                "POST",
-                &format!("{}/changesets", project_base(f, project)),
-                &agent(f),
-                Some(&json!({ "title": unique("change"), "run_tag": "run-30" })),
-            ),
-            201,
-            "create a change set",
-        )["changeset"],
-    )
-}
-
-fn create_doc(
-    f: &Fixture,
-    client: &Client,
-    project: &str,
-    changeset: &str,
-    kind: &str,
-    pillar: &str,
-) -> String {
-    id_of(
-        &must(
-            call(
-                client,
-                "POST",
-                &format!("{}/docs", changeset_path(f, project, changeset)),
-                &agent(f),
-                Some(&json!({ "kind": kind, "pillar": pillar, "title": unique("doc") })),
-            ),
-            201,
-            "create a doc",
-        )["doc"],
-    )
-}
-
-/// Replaces the pages of the change set's draft of `doc`; returns the answer.
-fn import_design(
-    f: &Fixture,
-    client: &Client,
-    project: &str,
-    changeset: &str,
-    doc: &str,
-    tags: &str,
-) -> Value {
-    must(
-        call(
-            client,
-            "PUT",
-            &format!(
-                "{}/docs/{doc}/design",
-                changeset_path(f, project, changeset)
-            ),
-            &agent(f),
-            Some(&json!({ "tags": tags })),
-        ),
-        200,
-        "import the design",
-    )
-}
-
-/// Saves a version of the change set's draft of `doc`; returns the version.
-fn save(f: &Fixture, client: &Client, project: &str, changeset: &str, doc: &str) -> Value {
-    must(
-        call(
-            client,
-            "POST",
-            &format!(
-                "{}/docs/{doc}/versions",
-                changeset_path(f, project, changeset)
-            ),
-            &agent(f),
-            Some(&json!({})),
-        ),
-        201,
-        "save a version",
-    )["version"]
-        .clone()
-}
-
-fn read_version(f: &Fixture, client: &Client, project: &str, version: &str) -> Value {
-    must(
-        call(
-            client,
-            "GET",
-            &format!("{}/versions/{version}", project_base(f, project)),
-            &agent(f),
-            None,
-        ),
-        200,
-        "read a version",
-    )["version"]
-        .clone()
-}
-
-fn diff(f: &Fixture, client: &Client, project: &str, from: &str, to: &str) -> Value {
-    must(
-        call(
-            client,
-            "GET",
-            &format!("{}/versions/{from}/diff/{to}", project_base(f, project)),
-            &agent(f),
-            None,
-        ),
-        200,
-        "compare two versions",
-    )["diff"]
-        .clone()
-}
-
-/// Submits the change set and has the human approve it, which merges it.
-fn merge(f: &Fixture, client: &Client, project: &str, changeset: &str) {
-    let path = changeset_path(f, project, changeset);
-    must(
-        call(client, "POST", &format!("{path}/submit"), &agent(f), None),
-        200,
-        "submit the change set",
-    );
-    let approved = must(
-        call(
-            client,
-            "POST",
-            &format!("{path}/approve"),
-            &human(f),
-            Some(&json!({})),
-        ),
-        200,
-        "the human approves",
-    );
-    assert_eq!(approved["changeset"]["status"], "merged", "{approved}");
-}
-
-fn mainline_of(f: &Fixture, client: &Client, project: &str, doc: &str) -> String {
-    must(
-        call(
-            client,
-            "GET",
-            &format!("{}/docs/{doc}", project_base(f, project)),
-            &agent(f),
-            None,
-        ),
-        200,
-        "read the doc",
-    )["doc"]["mainline_version_id"]
-        .as_str()
-        .unwrap_or_else(|| panic!("the doc {doc} has a mainline version"))
-        .to_string()
-}
-
-fn draft_board_response(
-    f: &Fixture,
-    client: &Client,
-    project: &str,
-    changeset: &str,
-    doc: &str,
-    board: &str,
-) -> Response {
-    call(
-        client,
-        "GET",
-        &format!(
-            "{}/docs/{doc}/boards/{board}",
-            changeset_path(f, project, changeset)
-        ),
-        &agent(f),
-        None,
-    )
-}
-
-/// `query` is empty for the mainline, or `?version=<v>`.
 fn board_response(
     f: &Fixture,
     client: &Client,
@@ -569,6 +364,68 @@ fn board_response(
             project_base(f, project)
         ),
         auth,
+        None,
+    )
+}
+
+/// Creates an empty design doc; a new design has one page.
+fn new_design_doc(f: &Fixture, client: &Client, project: &str) -> String {
+    id_of(
+        &must(
+            call(
+                client,
+                "POST",
+                &format!("{}/docs", project_base(f, project)),
+                &agent(f),
+                Some(&json!({ "kind": "design", "pillar": "ui", "title": unique("doc") })),
+            ),
+            201,
+            "create a design doc",
+        )["doc"],
+    )
+}
+
+/// Applies a batch of operations to the doc's head.
+fn edit(f: &Fixture, client: &Client, project: &str, doc: &str, ops: &Value) -> Value {
+    must(
+        call(
+            client,
+            "POST",
+            &format!("{}/docs/{doc}/ops", project_base(f, project)),
+            &agent(f),
+            Some(&json!({ "ops": ops })),
+        ),
+        200,
+        "edit the doc's head",
+    )
+}
+
+/// The whole read of the doc's head.
+fn read_head(f: &Fixture, client: &Client, project: &str, doc: &str) -> Value {
+    must(
+        call(
+            client,
+            "GET",
+            &format!("{}/docs/{doc}/html", project_base(f, project)),
+            &agent(f),
+            None,
+        ),
+        200,
+        "read the doc's head",
+    )
+}
+
+fn first_page(f: &Fixture, client: &Client, project: &str, doc: &str) -> String {
+    id_of(&read_head(f, client, project, doc)["pages"][0])
+}
+
+/// The outline read of the doc's head.
+fn read_outline(f: &Fixture, client: &Client, project: &str, doc: &str) -> Response {
+    call(
+        client,
+        "GET",
+        &format!("{}/docs/{doc}/html?view=outline", project_base(f, project)),
+        &agent(f),
         None,
     )
 }
@@ -626,105 +483,64 @@ fn ids_in(nodes: &Value) -> Ids {
     ids
 }
 
-/// ` id="<id>"` for a node the draft already has, nothing for a new one.
-fn id_attr(ids: &Ids, name: &str) -> String {
-    ids.get(name)
-        .map(|id| format!(r#" id="{id}""#))
-        .unwrap_or_default()
-}
-
 fn id(ids: &Ids, name: &str) -> String {
     ids.get(name)
         .unwrap_or_else(|| panic!("the node {name} has an ID: {ids:?}"))
         .clone()
 }
 
-/// The names of the design's nodes in document order, each with its parent's
-/// name.
-const DOCUMENT_ORDER: [(&str, Option<&str>); 10] = [
-    ("Checkout", None),
-    ("Cart", Some("Checkout")),
-    ("Summary", Some("Cart")),
-    ("Total", Some("Summary")),
-    ("Shipping", Some("Summary")),
-    ("Payment", Some("Checkout")),
-    ("Pay", Some("Payment")),
-    ("Account", None),
-    ("Profile", Some("Account")),
-    ("Hello", Some("Profile")),
-];
-
-/// Two pages: Checkout with the boards Cart and Payment, Account with the
-/// board Profile. `total` and `hello` are the texts of the Total and Hello
-/// texts, which the tests change.
-fn design_tags(ids: &Ids, total: &str, hello: &str) -> String {
-    format!(
-        r##"<Page{} name="Checkout">
-  <Board{} name="Cart" x={{0}} y={{0}} width={{360}} height={{640}} dir="col" gap={{8}}>
-    <Frame{} name="Summary" dir="col" gap={{4}}>
-      <Text{} name="Total" content="{total}" fontFamily="Inter" fontSize={{16}}/>
-      <Text{} name="Shipping" content="Frakt ingår" fontFamily="Inter" fontSize={{14}}/>
-    </Frame>
-  </Board>
-  <Board{} name="Payment" x={{400}} y={{0}} width={{360}} height={{640}} dir="col">
-    <Text{} name="Pay" content="Betala nu" fontFamily="Inter" fontSize={{16}}/>
-  </Board>
-</Page>
-<Page{} name="Account">
-  <Board{} name="Profile" x={{0}} y={{0}} width={{360}} height={{640}} dir="col">
-    <Text{} name="Hello" content="{hello}" fontFamily="Inter" fontSize={{16}}/>
-  </Board>
-</Page>
-"##,
-        id_attr(ids, "Checkout"),
-        id_attr(ids, "Cart"),
-        id_attr(ids, "Summary"),
-        id_attr(ids, "Total"),
-        id_attr(ids, "Shipping"),
-        id_attr(ids, "Payment"),
-        id_attr(ids, "Pay"),
-        id_attr(ids, "Account"),
-        id_attr(ids, "Profile"),
-        id_attr(ids, "Hello"),
-    )
-}
-
 const TOTAL: &str = "Summa 10 kr";
 const NEW_TOTAL: &str = "Summa 12 kr";
 const HELLO: &str = "Hej Alice";
 
-/// A project with a design doc started in an open change set and the design
-/// imported into its draft.
+/// A project with a design doc of two pages: its first page, here Checkout,
+/// with the boards Cart and Payment, and Account with the board Profile.
 struct Design {
     project: String,
-    changeset: String,
     doc: String,
     ids: Ids,
 }
 
 fn new_design(f: &Fixture, client: &Client) -> Design {
     let project = new_project(f, client);
-    let changeset = new_changeset(f, client, &project);
-    let doc = create_doc(f, client, &project, &changeset, "design", "ui");
-    let imported = import_design(
+    let doc = new_design_doc(f, client, &project);
+    let page = first_page(f, client, &project, &doc);
+    let cart = format!(
+        r#"<Board name="Cart" x={{0}} y={{0}} width={{360}} height={{640}} dir="col" gap={{8}}>
+  <Frame name="Summary" dir="col" gap={{4}}>
+    <Text name="Total" content="{TOTAL}" fontFamily="Inter" fontSize={{16}}/>
+    <Text name="Shipping" content="Frakt ingår" fontFamily="Inter" fontSize={{14}}/>
+  </Frame>
+</Board>"#
+    );
+    let payment = r#"<Board name="Payment" x={400} y={0} width={360} height={640} dir="col">
+  <Text name="Pay" content="Betala nu" fontFamily="Inter" fontSize={16}/>
+</Board>"#;
+    let account = format!(
+        r#"<Page name="Account">
+  <Board name="Profile" x={{0}} y={{0}} width={{360}} height={{640}} dir="col">
+    <Text name="Hello" content="{HELLO}" fontFamily="Inter" fontSize={{16}}/>
+  </Board>
+</Page>"#
+    );
+    edit(
         f,
         client,
         &project,
-        &changeset,
         &doc,
-        &design_tags(&Ids::new(), TOTAL, HELLO),
+        &json!([
+            { "op": "insert", "parent": page, "position": { "after": null }, "content": payment },
+            { "op": "insert", "parent": page, "position": { "after": null }, "content": cart },
+            { "op": "insert", "parent": null, "position": { "after": page }, "content": account }
+        ]),
     );
-    let ids = ids_in(&imported["pages"]);
-    assert_eq!(ids.len(), DOCUMENT_ORDER.len(), "{imported}");
-    Design {
-        project,
-        changeset,
-        doc,
-        ids,
-    }
+    let mut ids = ids_in(&read_head(f, client, &project, &doc)["pages"]);
+    ids.insert("Checkout".to_string(), page);
+    assert_eq!(ids.len(), 11, "the first page's own name, then 10 nodes: {ids:?}");
+    Design { project, doc, ids }
 }
 
-/// A design doc created without a change set (US-102), with the boards Cart
+/// A design doc with the boards Cart
 /// (Frame Summary holding Text Total) and Payment inserted into its head.
 struct LiveDesign {
     project: String,
@@ -748,7 +564,7 @@ fn live_design(f: &Fixture, client: &Client) -> LiveDesign {
                 Some(&json!({ "kind": "design", "pillar": "ui", "title": unique("doc") })),
             ),
             201,
-            "create a design without a change set",
+            "create a design",
         )["doc"],
     );
     let head = must(
@@ -802,35 +618,10 @@ fn live_design(f: &Fixture, client: &Client) -> LiveDesign {
     }
 }
 
-/// The page entries of a version's manifest.
-fn manifest_pages(version: &Value) -> Vec<Value> {
-    version["manifest"]["pages"]
-        .as_array()
-        .unwrap_or_else(|| {
-            panic!("a design version answers a manifest with its pages: {version:#}")
-        })
-        .clone()
-}
-
-/// The chunk of every page and board of a version's manifest, by node ID.
-fn chunks_by_node(version: &Value) -> HashMap<String, String> {
-    let mut chunks = HashMap::new();
-    for page in manifest_pages(version) {
-        chunks.insert(id_of(&page), chunk_of(&page));
-        for board in page["boards"]
-            .as_array()
-            .unwrap_or_else(|| panic!("a page of the manifest lists its boards: {page}"))
-        {
-            chunks.insert(id_of(board), chunk_of(board));
-        }
-    }
-    chunks
-}
-
 fn chunk_of(entry: &Value) -> String {
     let chunk = entry["chunk"]
         .as_str()
-        .unwrap_or_else(|| panic!("a manifest entry names its chunk: {entry}"))
+        .unwrap_or_else(|| panic!("a board names its chunk: {entry}"))
         .to_string();
     assert!(
         chunk.len() == 64
@@ -842,11 +633,26 @@ fn chunk_of(entry: &Value) -> String {
     chunk
 }
 
-/// The chunk of the node named `name` in a version's manifest.
+/// The chunk of every board of the head, by board ID.
+fn chunks_by_board(f: &Fixture, client: &Client, design: &Design) -> HashMap<String, String> {
+    let outline = must(
+        read_outline(f, client, &design.project, &design.doc),
+        200,
+        "read the head's outline",
+    );
+    outline["boards"]
+        .as_array()
+        .unwrap_or_else(|| panic!("the outline lists its boards: {outline:#}"))
+        .iter()
+        .map(|board| (id_of(board), chunk_of(board)))
+        .collect()
+}
+
+/// The chunk of the board named `name`.
 fn chunk_named(chunks: &HashMap<String, String>, ids: &Ids, name: &str) -> String {
     chunks
         .get(&id(ids, name))
-        .unwrap_or_else(|| panic!("the manifest lists {name}: {chunks:?}"))
+        .unwrap_or_else(|| panic!("the head lists {name}: {chunks:?}"))
         .clone()
 }
 
@@ -856,20 +662,6 @@ fn opening_tags(tags: &str) -> Vec<&str> {
         .map(str::trim)
         .filter(|line| line.starts_with('<') && !line.starts_with("</"))
         .collect()
-}
-
-/// The value of the `rev` attribute of a tag, `rev={3}` or `rev="3"`.
-fn rev_of(tag: &str) -> Option<u64> {
-    let start = tag.find(" rev=")? + " rev=".len();
-    let rest = &tag[start..];
-    let (open, close) = match rest.chars().next()? {
-        '{' => ('{', '}'),
-        '"' => ('"', '"'),
-        _ => return None,
-    };
-    let rest = rest.strip_prefix(open)?;
-    let end = rest.find(close)?;
-    rest[..end].parse().ok()
 }
 
 /// Asserts that `tags` is the board `board` alone: its tag first, the nodes
@@ -930,11 +722,10 @@ fn the_chunk_index_is_keyed_by_workspace_and_hash() {
 }
 
 #[test]
-fn the_node_index_is_stored_per_chunk_and_shared_by_the_versions_that_use_it() {
+fn the_node_index_is_stored_per_chunk_and_shared_by_the_heads_that_use_it() {
     let (f, client) = ready();
     let d = new_design(f, client);
-    let first = id_of(&save(f, client, &d.project, &d.changeset, &d.doc));
-    let first_chunks = chunks_by_node(&read_version(f, client, &d.project, &first));
+    let first_chunks = chunks_by_board(f, client, &d);
     let names = |names: &[&str]| -> BTreeSet<String> {
         names.iter().map(|name| id(&d.ids, name)).collect()
     };
@@ -948,17 +739,19 @@ fn the_node_index_is_stored_per_chunk_and_shared_by_the_versions_that_use_it() {
     let payment = chunk_named(&first_chunks, &d.ids, "Payment");
     assert_eq!(indexed_nodes(f, &payment), names(&["Payment", "Pay"]));
 
-    import_design(
+    edit(
         f,
         client,
         &d.project,
-        &d.changeset,
         &d.doc,
-        &design_tags(&d.ids, NEW_TOTAL, HELLO),
+        &json!([{
+            "op": "set",
+            "node": id(&d.ids, "Total"),
+            "rev": 1,
+            "properties": { "content": NEW_TOTAL }
+        }]),
     );
-    let second = id_of(&save(f, client, &d.project, &d.changeset, &d.doc));
-    let second_version = read_version(f, client, &d.project, &second);
-    let second_chunks = chunks_by_node(&second_version);
+    let second_chunks = chunks_by_board(f, client, &d);
     assert_eq!(
         chunk_named(&second_chunks, &d.ids, "Payment"),
         payment,
@@ -970,101 +763,19 @@ fn the_node_index_is_stored_per_chunk_and_shared_by_the_versions_that_use_it() {
             &[&f.workspace, &payment],
         ),
         2,
-        "the shared chunk's nodes are indexed once, for both versions"
+        "the shared chunk's nodes are indexed once, for both heads"
     );
     let new_cart = chunk_named(&second_chunks, &d.ids, "Cart");
+    assert_ne!(new_cart, cart, "the changed board has a new chunk");
     assert_eq!(
         indexed_nodes(f, &new_cart),
         names(&["Cart", "Summary", "Total", "Shipping"])
     );
-
-    // The version still lists every node in document order with its parent.
-    let nodes = second_version["nodes"]
-        .as_array()
-        .unwrap_or_else(|| panic!("the version lists its nodes: {second_version:#}"));
-    let listed: Vec<(String, Option<String>)> = nodes
-        .iter()
-        .map(|node| (id_of(node), node["parent"].as_str().map(str::to_string)))
-        .collect();
-    let expected: Vec<(String, Option<String>)> = DOCUMENT_ORDER
-        .iter()
-        .map(|(name, parent)| (id(&d.ids, name), parent.map(|p| id(&d.ids, p))))
-        .collect();
-    assert_eq!(listed, expected, "{second_version:#}");
-
-    // A comparison names only the text that changed.
-    let d2 = diff(f, client, &d.project, &first, &second);
-    let changed: Vec<String> = d2["changed"]
-        .as_array()
-        .unwrap_or_else(|| panic!("{d2}"))
-        .iter()
-        .map(id_of)
-        .collect();
-    assert_eq!(changed, [id(&d.ids, "Total")], "{d2}");
-    for list in ["added", "removed", "moved"] {
-        assert_eq!(d2[list], json!([]), "{list}: {d2}");
-    }
 }
 
 // ---------------------------------------------------------------------------
 // Reading one board
 // ---------------------------------------------------------------------------
-
-#[test]
-fn reading_a_board_of_a_draft_gives_its_tags_with_a_rev_on_every_tag() {
-    let (f, client) = ready();
-    let d = new_design(f, client);
-    let cart = id(&d.ids, "Cart");
-    let answer = must(
-        draft_board_response(f, client, &d.project, &d.changeset, &d.doc, &cart),
-        200,
-        "read a board of the draft",
-    );
-    assert_eq!(answer["doc_id"], d.doc.as_str(), "{answer}");
-    assert_eq!(answer["changeset_id"], d.changeset.as_str(), "{answer}");
-    assert_eq!(answer["board_id"], cart.as_str(), "{answer}");
-    assert_eq!(
-        answer["page_id"],
-        id(&d.ids, "Checkout").as_str(),
-        "{answer}"
-    );
-    assert_eq!(answer["version_id"], Value::Null, "{answer}");
-    let tags = answer["tags"].as_str().expect("the board's tags");
-    assert_board_alone(
-        tags,
-        &cart,
-        &[
-            &id(&d.ids, "Summary"),
-            &id(&d.ids, "Total"),
-            &id(&d.ids, "Shipping"),
-            TOTAL,
-        ],
-        &[&id(&d.ids, "Payment"), "Betala nu", HELLO],
-    );
-    let opening = opening_tags(tags);
-    assert_eq!(opening.len(), 4, "one tag per node of the board: {tags}");
-    for tag in opening {
-        let rev = rev_of(tag).unwrap_or_else(|| panic!("a draft's tag carries a rev: {tag}"));
-        assert!(rev >= 1, "{tag}");
-    }
-
-    // Unsaved changes are read.
-    import_design(
-        f,
-        client,
-        &d.project,
-        &d.changeset,
-        &d.doc,
-        &design_tags(&d.ids, NEW_TOTAL, HELLO),
-    );
-    let answer = must(
-        draft_board_response(f, client, &d.project, &d.changeset, &d.doc, &cart),
-        200,
-        "read the board again",
-    );
-    let tags = answer["tags"].as_str().expect("the board's tags");
-    assert!(tags.contains(NEW_TOTAL) && !tags.contains(TOTAL), "{tags}");
-}
 
 #[test]
 fn reading_a_board_of_the_head_gives_that_board_alone() {
@@ -1126,27 +837,8 @@ fn reading_a_board_of_a_doc_that_is_no_design_is_refused() {
 }
 
 // ---------------------------------------------------------------------------
-// US-058: reading a version board by board
+// Reading a design board by board
 // ---------------------------------------------------------------------------
-
-fn outline_response(
-    f: &Fixture,
-    client: &Client,
-    auth: &Auth,
-    project: &str,
-    version: &str,
-) -> Response {
-    call(
-        client,
-        "GET",
-        &format!(
-            "{}/versions/{version}?view=outline",
-            project_base(f, project)
-        ),
-        auth,
-        None,
-    )
-}
 
 /// A node's JSON without its children.
 fn own_json(node: &Value) -> Value {
@@ -1161,29 +853,27 @@ fn children_of(node: &Value) -> Vec<Value> {
     node["children"].as_array().cloned().unwrap_or_default()
 }
 
-/// The board `board` of the whole read of a version.
-fn whole_board(version: &Value, board: &str) -> Value {
-    version["pages"]
+/// The board `board` of the whole read of a head.
+fn whole_board(head: &Value, board: &str) -> Value {
+    head["pages"]
         .as_array()
-        .unwrap_or_else(|| panic!("the whole read has pages: {version:#}"))
+        .unwrap_or_else(|| panic!("the whole read has pages: {head:#}"))
         .iter()
         .flat_map(children_of)
         .find(|node| node["id"] == board)
-        .unwrap_or_else(|| panic!("the whole read has the board {board}: {version:#}"))
+        .unwrap_or_else(|| panic!("the whole read has the board {board}: {head:#}"))
 }
 
 #[test]
-fn the_outline_of_a_design_version_lists_its_pages_and_boards_without_their_content() {
+fn the_outline_of_a_design_lists_its_pages_and_boards_without_their_content() {
     let (f, client) = ready();
     let d = new_design(f, client);
-    let saved = save(f, client, &d.project, &d.changeset, &d.doc);
-    let version_id = id_of(&saved);
-    let whole = read_version(f, client, &d.project, &version_id);
+    let whole = read_head(f, client, &d.project, &d.doc);
 
-    let response = outline_response(f, client, &agent(f), &d.project, &version_id);
+    let response = read_outline(f, client, &d.project, &d.doc);
     let text = response.text();
-    let outline = must(response, 200, "read the version's outline")["version"].clone();
-    assert_eq!(outline["id"], version_id.as_str(), "{outline:#}");
+    let outline = must(response, 200, "read the head's outline");
+    assert_eq!(outline["doc_id"], d.doc.as_str(), "{outline:#}");
     assert!(
         outline.get("pages").is_none_or(Value::is_null),
         "the outline has no pages body: {outline:#}"
@@ -1192,9 +882,20 @@ fn the_outline_of_a_design_version_lists_its_pages_and_boards_without_their_cont
         outline.get("tags").is_none_or(Value::is_null),
         "the outline has no tags: {outline:#}"
     );
+    let listed: Vec<String> = outline["boards"]
+        .as_array()
+        .unwrap_or_else(|| panic!("the outline lists its boards: {outline:#}"))
+        .iter()
+        .map(id_of)
+        .collect();
     assert_eq!(
-        outline["manifest"], whole["manifest"],
-        "the outline carries the version's manifest"
+        listed,
+        [
+            id(&d.ids, "Cart"),
+            id(&d.ids, "Payment"),
+            id(&d.ids, "Profile")
+        ],
+        "the outline carries the chunk of each board, in page order: {outline:#}"
     );
 
     let pages = outline["outline"]
@@ -1236,7 +937,7 @@ fn the_outline_of_a_design_version_lists_its_pages_and_boards_without_their_cont
         }
     }
 
-    // Nothing below a board is in the answer, `nodes` included.
+    // Nothing below a board is in the answer.
     for name in ["Summary", "Total", "Shipping", "Pay", "Hello"] {
         assert!(
             !text.contains(&id(&d.ids, name)),
@@ -1255,29 +956,33 @@ fn the_outline_of_a_design_version_lists_its_pages_and_boards_without_their_cont
 fn a_placeholder_of_a_board_that_hugs_its_content_has_the_box_of_that_content() {
     let (f, client) = ready();
     let project = new_project(f, client);
-    let changeset = new_changeset(f, client, &project);
-    let doc = create_doc(f, client, &project, &changeset, "design", "ui");
+    let doc = new_design_doc(f, client, &project);
+    let page = first_page(f, client, &project, &doc);
     // Status hugs its width: 12 + 60 + 12 = 84 wide, 32 tall as fixed.
     // Outline hugs both: 10 + 120 + 10 = 140 wide, 10 + 40 + 8 + 30 + 10 = 98 tall.
-    let tags = r##"<Page name="Ordrar">
-  <Board name="Status" x={2000} y={0} width="hug" height={32} dir="row" pad={{left: 12, right: 12}}>
-    <Frame name="Dot" width={60} height={20}/>
-  </Board>
-  <Board name="Outline" x={0} y={300000} width="hug" height="hug" dir="col" gap={8} pad={10}>
-    <Frame name="Head" width={120} height={40}/>
-    <Frame name="Body" width={80} height={30}/>
-  </Board>
-</Page>
-"##;
-    import_design(f, client, &project, &changeset, &doc, tags);
-    let version_id = id_of(&save(f, client, &project, &changeset, &doc));
-    let whole = read_version(f, client, &project, &version_id);
+    let status = r##"<Board name="Status" x={2000} y={0} width="hug" height={32} dir="row" pad={{left: 12, right: 12}}>
+  <Frame name="Dot" width={60} height={20}/>
+</Board>"##;
+    let hugging = r##"<Board name="Outline" x={0} y={300000} width="hug" height="hug" dir="col" gap={8} pad={10}>
+  <Frame name="Head" width={120} height={40}/>
+  <Frame name="Body" width={80} height={30}/>
+</Board>"##;
+    edit(
+        f,
+        client,
+        &project,
+        &doc,
+        &json!([
+            { "op": "insert", "parent": page, "position": { "after": null }, "content": hugging },
+            { "op": "insert", "parent": page, "position": { "after": null }, "content": status }
+        ]),
+    );
+    let whole = read_head(f, client, &project, &doc);
     let outline = must(
-        outline_response(f, client, &agent(f), &project, &version_id),
+        read_outline(f, client, &project, &doc),
         200,
-        "read the version's outline",
-    )["version"]
-        .clone();
+        "read the head's outline",
+    );
     let boards = children_of(&outline["outline"][0]);
     let whole_boards = children_of(&whole["pages"][0]);
     assert_eq!(boards.len(), 2, "{outline:#}");
@@ -1301,13 +1006,10 @@ fn a_placeholder_of_a_board_that_hugs_its_content_has_the_box_of_that_content() 
 }
 
 #[test]
-fn a_board_of_a_version_answers_its_subtree_as_json() {
+fn a_board_answers_its_subtree_as_json() {
     let (f, client) = ready();
     let d = new_design(f, client);
-    let saved = save(f, client, &d.project, &d.changeset, &d.doc);
-    let version_id = id_of(&saved);
-    let whole = read_version(f, client, &d.project, &version_id);
-    let query = format!("?version={version_id}");
+    let whole = read_head(f, client, &d.project, &d.doc);
 
     for (board, page) in [
         ("Cart", "Checkout"),
@@ -1316,9 +1018,9 @@ fn a_board_of_a_version_answers_its_subtree_as_json() {
     ] {
         let board_id = id(&d.ids, board);
         let body = must(
-            board_response(f, client, &human(f), &d.project, &d.doc, &board_id, &query),
+            board_response(f, client, &human(f), &d.project, &d.doc, &board_id, ""),
             200,
-            "read a board of the version",
+            "read a board of the head",
         );
         assert_eq!(body["page_id"], id(&d.ids, page).as_str(), "{body}");
         assert_eq!(
@@ -1327,16 +1029,4 @@ fn a_board_of_a_version_answers_its_subtree_as_json() {
             "the board {board} and its subtree as JSON, as the whole read holds it: {body:#}"
         );
     }
-
-    // The mainline's board answers its node too.
-    merge(f, client, &d.project, &d.changeset);
-    let mainline = mainline_of(f, client, &d.project, &d.doc);
-    assert_eq!(mainline, version_id);
-    let cart = id(&d.ids, "Cart");
-    let body = must(
-        board_response(f, client, &agent(f), &d.project, &d.doc, &cart, ""),
-        200,
-        "read a board of the mainline",
-    );
-    assert_eq!(body["node"], whole_board(&whole, &cart), "{body:#}");
 }

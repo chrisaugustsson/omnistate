@@ -62,16 +62,6 @@ const TEST_DB: &str = "omni_us034_posts";
 const TEST_BUCKET: &str = "omni-us034-posts";
 /// An ID that no row has.
 const UNKNOWN_ID: &str = "01900000-0000-7000-8000-000000000000";
-/// The post types an agent may post.
-const AGENT_TYPES: [&str; 7] = [
-    "note",
-    "finding",
-    "position",
-    "objection",
-    "support",
-    "question",
-    "verdict",
-];
 /// The smallest PNG: one transparent pixel.
 const PNG: &[u8] = &[
     0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
@@ -333,20 +323,6 @@ fn assert_error(response: &Response, status: u16, code: &str, what: &str) {
     );
 }
 
-fn assert_uuid_v7(id: &Value) {
-    let id = id
-        .as_str()
-        .unwrap_or_else(|| panic!("an ID is a string: {id}"));
-    let bytes = id.as_bytes();
-    assert!(
-        bytes.len() == 36
-            && bytes[14] == b'7'
-            && matches!(bytes[19], b'8' | b'9' | b'a' | b'b')
-            && id.chars().all(|c| c == '-' || c.is_ascii_hexdigit()),
-        "{id:?} is not a UUIDv7"
-    );
-}
-
 fn unique(label: &str) -> String {
     static COUNTER: AtomicU32 = AtomicU32::new(0);
     format!("{label}-{}", COUNTER.fetch_add(1, Ordering::Relaxed))
@@ -510,10 +486,6 @@ fn doc_with_node(f: &Fixture, client: &Client, project: &str) -> (String, String
         .unwrap_or_else(|| panic!("the insert created a node: {answer}"))
         .to_string();
     (doc, node)
-}
-
-fn ids(posts: &[Value]) -> Vec<String> {
-    posts.iter().map(id_of).collect()
 }
 
 /// How many posts the thread has, as the admin role sees them.
