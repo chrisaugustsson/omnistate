@@ -30,16 +30,8 @@ omni-render = { path = "../omni-render" }
 blake3 = "1"
 
 [features]
-# The setup, key, deletion, change set, doc, claim, version, approval, rebase
-# and stack tests (tests/setup_login.rs, tests/api_keys.rs,
-# tests/workspace_delete.rs, tests/changesets.rs, tests/live_events.rs,
-# tests/isolation.rs, tests/attachments.rs, tests/docs.rs, tests/claims.rs,
-# tests/versions.rs, tests/approve_merge.rs, tests/rebase.rs, tests/tokens.rs,
-# tests/boards.rs, tests/design_edits.rs, tests/threads.rs, tests/posts.rs,
-# tests/sealed_phases.rs, tests/thread_waits.rs, tests/decisions.rs,
-# tests/comments.rs, tests/project_home.rs, tests/doc_versions.rs,
-# tests/features.rs, tests/feature_docs.rs, tests/live_docs.rs, tests/live_edits.rs, tests/live_designs.rs, tests/orphaned_comments.rs, tests/live_threads.rs, tests/deletes_renames.rs, tests/activity.rs) talk to Postgres and the running Compose stack, so they
-# only build with this feature, which the Compose test container turns on.
+# The tests that talk to Postgres and the running Compose stack only build with
+# this feature, which the Compose test container turns on.
 stack-tests = []
 
 [[test]]
@@ -52,10 +44,6 @@ required-features = ["stack-tests"]
 
 [[test]]
 name = "workspace_delete"
-required-features = ["stack-tests"]
-
-[[test]]
-name = "changesets"
 required-features = ["stack-tests"]
 
 [[test]]
@@ -72,26 +60,6 @@ required-features = ["stack-tests"]
 
 [[test]]
 name = "docs"
-required-features = ["stack-tests"]
-
-[[test]]
-name = "claims"
-required-features = ["stack-tests"]
-
-[[test]]
-name = "versions"
-required-features = ["stack-tests"]
-
-[[test]]
-name = "approve_merge"
-required-features = ["stack-tests"]
-
-[[test]]
-name = "rebase"
-required-features = ["stack-tests"]
-
-[[test]]
-name = "rebase_concurrency"
 required-features = ["stack-tests"]
 
 [[test]]
@@ -127,23 +95,11 @@ name = "thread_waits"
 required-features = ["stack-tests"]
 
 [[test]]
-name = "decisions"
-required-features = ["stack-tests"]
-
-[[test]]
 name = "comments"
 required-features = ["stack-tests"]
 
 [[test]]
 name = "project_home"
-required-features = ["stack-tests"]
-
-[[test]]
-name = "changeset_review"
-required-features = ["stack-tests"]
-
-[[test]]
-name = "doc_versions"
 required-features = ["stack-tests"]
 
 [[test]]

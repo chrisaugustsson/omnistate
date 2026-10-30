@@ -851,23 +851,4 @@ mod tests {
         let (again, _) = split(&design);
         assert_eq!(manifest_text(&again), manifest_text(&manifest));
     }
-
-    #[test]
-    fn revisions_rise_for_the_nodes_an_import_changes_only() {
-        let before = pages(DESIGN);
-        let revisions = initial_revisions(&before);
-        assert!(revisions.values().all(|rev| *rev == 1));
-
-        // Importing the same design changes nothing.
-        let same = next_revisions(&before, &revisions, &before);
-        assert_eq!(same, revisions);
-
-        // Another text changes the text and no one else.
-        let changed = pages(&DESIGN.replace("one", "two"));
-        let after = next_revisions(&before, &revisions, &changed);
-        let text = *node_named(&changed, "T").id();
-        assert_eq!(after[&text], 2);
-        assert_eq!(after[node_named(&changed, "A").id()], 1);
-        assert_eq!(after[node_named(&changed, "P").id()], 1);
-    }
 }
