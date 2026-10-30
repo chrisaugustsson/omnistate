@@ -1,20 +1,20 @@
 //! `omni wait --thread <id> --posts <n>` and `--concluded`: blocks until a
 //! thread has enough posts that this agent may read, or until it has a
 //! conclusion, so a workflow can pause until the others have spoken. It only
-//! reads the thread, again and again, and ends as `omni wait --changeset`
-//! does: 0 when the condition is met and 2 when `--timeout` ran out.
+//! reads the thread, again and again, and ends with a code a script can branch
+//! on: 0 when the condition is met and 2 when `--timeout` ran out.
 //!
 //! The thread read is the agent's own, so a sealed thread counts no post of
 //! another agent until this agent has posted itself.
 
 use crate::args::Args;
-use crate::changesets::{is_uuid, project_id};
 use crate::commands::{agent, say};
 use crate::error::{CliError, Result, bail};
 use crate::json::Value;
+use crate::projects::{is_uuid, project_id};
 use std::time::{Duration, Instant};
 
-pub const USAGE: &str = "omni wait --thread <id> --posts <n> [--concluded] [--timeout <seconds>]";
+const USAGE: &str = "omni wait --thread <id> --posts <n> [--concluded] [--timeout <seconds>]";
 const TIMED_OUT: u8 = 2;
 /// How long to wait between two reads of the thread.
 const POLL: Duration = Duration::from_millis(500);
@@ -29,11 +29,6 @@ struct Condition {
 
 impl Condition {
     fn new(args: &Args) -> Result<Condition> {
-        if args.until.is_some() {
-            bail!(
-                "--until is for change sets; a thread is waited on with --posts <n> or --concluded: {USAGE}"
-            );
-        }
         let posts = args
             .posts
             .as_deref()
@@ -86,10 +81,10 @@ fn timeout(text: &str) -> Result<Duration> {
 }
 
 /// `omni wait --thread <id> --posts <n> [--concluded] [--timeout <seconds>]`
-pub fn run(args: &Args, thread: &str) -> Result<()> {
-    if args.changeset.is_some() {
-        bail!("--thread and --changeset cannot go together; wait for one of them: {USAGE}");
-    }
+pub fn run(args: &Args) -> Result<()> {
+    let Some(thread) = args.thread.as_deref() else {
+        bail!("this command needs --thread <id>: {USAGE}");
+    };
     if !is_uuid(thread) {
         bail!("{thread:?} is not a thread ID: {USAGE}");
     }

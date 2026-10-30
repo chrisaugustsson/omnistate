@@ -211,9 +211,6 @@ pub(crate) enum Kind {
     Text(String),
     Comment(String),
     Element(Element),
-    /// The place of a node in a copy of an element's own content (a rebase
-    /// copies content without the nodes inside).
-    Slot(NodeId),
 }
 
 #[derive(Clone, Debug)]
@@ -360,20 +357,12 @@ impl Tree {
     }
 
     /// Copies the subtree of `ix` in `from` into this tree, as an item with no
-    /// parent. With `slots`, each node below the copy's root becomes a
-    /// [`Kind::Slot`] and what was inside it is left out.
-    pub fn copy_from(&mut self, from: &Tree, ix: usize, slots: bool) -> usize {
+    /// parent.
+    pub fn copy_from(&mut self, from: &Tree, ix: usize) -> usize {
         let mut stack = vec![(ix, None::<usize>)];
         let mut top = None;
         while let Some((source, parent)) = stack.pop() {
-            let kind = match &from.items[source].kind {
-                Kind::Element(element) if slots && parent.is_some() && element.id.is_some() => {
-                    Kind::Slot(element.id.expect("checked"))
-                }
-                other => other.clone(),
-            };
-            let skip_children = matches!(kind, Kind::Slot(_));
-            let copy = self.push(kind);
+            let copy = self.push(from.items[source].kind.clone());
             match parent {
                 Some(parent) => {
                     self.items[copy].parent = Some(parent);
@@ -381,11 +370,9 @@ impl Tree {
                 }
                 None => top = Some(copy),
             }
-            if !skip_children {
-                // Pushed in reverse so that the children are copied in order.
-                for child in from.items[source].children.iter().rev() {
-                    stack.push((*child, Some(copy)));
-                }
+            // Pushed in reverse so that the children are copied in order.
+            for child in from.items[source].children.iter().rev() {
+                stack.push((*child, Some(copy)));
             }
         }
         top.expect("a subtree has a root")
@@ -612,7 +599,6 @@ impl Tree {
                 out.push_str(text);
                 out.push_str("-->");
             }
-            Kind::Slot(_) => {}
             Kind::Element(element) => {
                 // The content of a node without the nodes inside it.
                 if how.own.is_some_and(|top| top != ix) && element.id.is_some() {

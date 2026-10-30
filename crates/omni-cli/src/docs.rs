@@ -1,14 +1,12 @@
-//! `omni doc`: create a doc (live, or in a change set), list the project's docs,
-//! open a doc there, read it (its head, a version or a change set's draft), show
-//! its metadata, edit a doc (live, or a draft in a change set) with a batch of
-//! operations, rename or delete it, and list what was written to it. The project is found as for `omni
-//! changeset`.
+//! `omni doc`: create a doc, list the project's docs, read its head, show its
+//! metadata, edit it with a batch of operations, rename or delete it, and list
+//! what was written to it. The project is found as for `omni project`.
 
 use crate::args::Args;
-use crate::changesets::{creation_feature, is_uuid, project_features, project_id, resolve_feature};
 use crate::commands::{Agent, agent, read_body, say};
 use crate::error::{CliError, Result, bail};
 use crate::json::{Value, quote};
+use crate::projects::{creation_feature, is_uuid, project_features, project_id, resolve_feature};
 use std::io::IsTerminal;
 
 const KINDS: &str = "html, design or design-system";
@@ -43,33 +41,13 @@ fn doc_id(id: Option<&str>, usage: &str) -> Result<String> {
     }
 }
 
-fn changeset_option(args: &Args, usage: &str) -> Result<String> {
-    match args.changeset.as_deref() {
-        None => bail!("this command needs --changeset <id>: {usage}"),
-        Some(id) if is_uuid(id) => Ok(id.to_ascii_lowercase()),
-        Some(id) => {
-            bail!("--changeset {id:?} is not a change set ID; `omni changeset list` shows them")
-        }
-    }
-}
-
 fn project_path(agent: &Agent, project: &str) -> String {
     format!("/api/v1/w/{}/projects/{project}", agent.workspace_id)
 }
 
-/// `omni doc create [--feature <name or id>] --kind <kind> --pillar <pillar> --title <text>`,
-/// or with `--changeset <id>` to start the doc in that change set.
+/// `omni doc create [--feature <name or id>] --kind <kind> --pillar <pillar> --title <text>`
 pub fn create(args: &Args) -> Result<()> {
     const USAGE: &str = "omni doc create [--feature <name|id>] --kind html|design|design-system --pillar spec|ui|architecture|db|research --title <text>";
-    let changeset = match args.changeset {
-        Some(_) => Some(changeset_option(args, USAGE)?),
-        None => None,
-    };
-    if changeset.is_some() && (args.feature.is_some() || args.global) {
-        bail!(
-            "give --changeset or --feature, not both: a doc in a change set belongs to the change set's feature"
-        );
-    }
     let kind = match args.kind.as_deref() {
         None => bail!("a doc needs --kind, one of {KINDS}: {USAGE}"),
         Some(kind @ ("html" | "design" | "design-system")) => kind,
@@ -97,15 +75,9 @@ pub fn create(args: &Args) -> Result<()> {
         quote(pillar),
         quote(title)
     );
-    let path = match &changeset {
-        Some(changeset) => format!(
-            "{}/changesets/{changeset}/docs",
-            project_path(&agent, &project)
-        ),
-        None => match creation_feature(args, &agent, &project)? {
-            Some(feature) => format!("{}/features/{feature}/docs", project_path(&agent, &project)),
-            None => format!("{}/docs", project_path(&agent, &project)),
-        },
+    let path = match creation_feature(args, &agent, &project)? {
+        Some(feature) => format!("{}/features/{feature}/docs", project_path(&agent, &project)),
+        None => format!("{}/docs", project_path(&agent, &project)),
     };
     let response = agent.request("POST", &path, Some(body.as_bytes()))?;
     let text = response.text();
@@ -122,13 +94,6 @@ pub fn create(args: &Args) -> Result<()> {
         field(doc, "kind"),
         field(doc, "title")
     ));
-    if let Some(draft) = answer.get("draft") {
-        say(&format!(
-            "draft {} in change set {}",
-            field(draft, "id"),
-            field(draft, "changeset_id")
-        ));
-    }
     Ok(())
 }
 
@@ -197,66 +162,12 @@ pub fn list(args: &Args) -> Result<()> {
     Ok(())
 }
 
-/// `omni doc open <doc> --changeset <id>`
-pub fn open(args: &Args, doc: Option<&str>) -> Result<()> {
-    const USAGE: &str = "omni doc open <doc> --changeset <id>";
-    let doc = doc_id(doc, USAGE)?;
-    let changeset = changeset_option(args, USAGE)?;
-    let agent = agent(args)?;
-    let project = project_id(args, &agent)?;
-    let response = agent.request(
-        "POST",
-        &format!(
-            "{}/changesets/{changeset}/docs/{doc}/open",
-            project_path(&agent, &project)
-        ),
-        Some(b"{}"),
-    )?;
-    let text = response.text();
-    if args.json {
-        print_json(&text);
-        return Ok(());
-    }
-    let answer = parsed(&text, "the draft")?;
-    let draft = answer.get("draft").unwrap_or(&answer);
-    let base = match draft.str_at("base_version_id") {
-        Some(version) => format!("based on version {version}"),
-        None => "based on no version".to_string(),
-    };
-    say(&format!(
-        "draft {} of doc {doc} in change set {changeset}, {base}",
-        draft.str_at("id").unwrap_or("?")
-    ));
-    Ok(())
-}
-
-/// `omni doc read <doc> [--changeset <id> | --version <v>]`
+/// `omni doc read <doc>`
 pub fn read(args: &Args, doc: Option<&str>) -> Result<()> {
-    const USAGE: &str = "omni doc read <doc> [--changeset <id> | --version <v>]";
-    let doc = doc_id(doc, USAGE)?;
-    if args.changeset.is_some() && args.doc_version.is_some() {
-        bail!(
-            "give --changeset or --version, not both: --changeset reads a draft, --version reads a saved version"
-        );
-    }
-    let draft_of = match args.changeset.is_some() {
-        true => Some(changeset_option(args, USAGE)?),
-        false => None,
-    };
-    let version = match args.doc_version.as_deref() {
-        Some(version) if is_uuid(version) => Some(version.to_ascii_lowercase()),
-        Some(version) => bail!("--version {version:?} is not a version ID (a UUID)"),
-        None => None,
-    };
-
+    let doc = doc_id(doc, "omni doc read <doc>")?;
     let agent = agent(args)?;
     let project = project_id(args, &agent)?;
-    let base = project_path(&agent, &project);
-    let path = match (&draft_of, &version) {
-        (Some(changeset), _) => format!("{base}/changesets/{changeset}/docs/{doc}"),
-        (None, Some(version)) => format!("{base}/docs/{doc}/html?version={version}"),
-        (None, None) => format!("{base}/docs/{doc}/html"),
-    };
+    let path = format!("{}/docs/{doc}/html", project_path(&agent, &project));
     let response = agent.request("GET", &path, None)?;
     let text = response.text();
     if args.json {
@@ -264,20 +175,14 @@ pub fn read(args: &Args, doc: Option<&str>) -> Result<()> {
         return Ok(());
     }
     let answer = parsed(&text, "the doc")?;
-    let (holder, what) = match draft_of {
-        Some(_) => (answer.get("draft").unwrap_or(&answer), "the draft"),
-        None => (&answer, "the doc"),
-    };
     // The head of a design is its tags; every other doc is its HTML, as the API
     // gave it, and nothing else.
-    if draft_of.is_none()
-        && let Some(tags) = holder.str_at("tags")
-    {
+    if let Some(tags) = answer.str_at("tags") {
         say(tags);
         return Ok(());
     }
-    let Some(html) = holder.str_at("html") else {
-        bail!("the server's answer has no HTML for {what}; is it an OmniState API?");
+    let Some(html) = answer.str_at("html") else {
+        bail!("the server's answer has no HTML for the doc; is it an OmniState API?");
     };
     say(html);
     Ok(())
@@ -311,73 +216,20 @@ pub fn show(args: &Args, doc: Option<&str>) -> Result<()> {
         field(doc, "kind"),
         field(doc, "pillar")
     ));
-    say(&format!(
-        "mainline version: {}",
-        doc.str_at("mainline_version_id").unwrap_or("none")
-    ));
-    let drafts = doc
-        .get("drafts")
-        .and_then(Value::as_array)
-        .unwrap_or_default();
-    if drafts.is_empty() {
-        say("drafts: none");
-    } else {
-        say("drafts:");
-    }
-    for draft in drafts {
-        let base = match draft.str_at("base_version_id") {
-            Some(version) => format!("  based on version {version}"),
-            None => String::new(),
-        };
-        say(&format!(
-            "  {}  change set {}{base}",
-            field(draft, "id"),
-            field(draft, "changeset_id")
-        ));
-    }
-    let claims = doc
-        .get("claims")
-        .and_then(Value::as_array)
-        .unwrap_or_default();
-    if claims.is_empty() {
-        say("claims: none");
-    } else {
-        say("claims:");
-    }
-    for claim in claims {
-        let agent = claim.get("agent");
-        let part = |name: &str| agent.and_then(|a| a.str_at(name)).unwrap_or("?");
-        say(&format!(
-            "  {}  {}/{}  until {}",
-            field(claim, "node"),
-            part("run"),
-            part("role"),
-            field(claim, "expires_at")
-        ));
-    }
     Ok(())
 }
 
-/// `omni doc edit <doc> [--changeset <id>] [--body-file <path|->]`: without
-/// `--changeset` the batch applies to the live doc, with it to the change set's
-/// draft.
+/// `omni doc edit <doc> [--body-file <path|->]`: the batch applies to the doc
+/// at once.
 pub fn edit(args: &Args, doc: Option<&str>) -> Result<()> {
-    const USAGE: &str = "omni doc edit <doc> [--changeset <id>] [--body-file <path|->]";
+    const USAGE: &str = "omni doc edit <doc> [--body-file <path|->]";
     let doc = doc_id(doc, USAGE)?;
-    let changeset = match args.changeset {
-        Some(_) => Some(changeset_option(args, USAGE)?),
-        None => None,
-    };
     let batch = read_batch(args)?;
 
     let agent = agent(args)?;
     let project = project_id(args, &agent)?;
     let body = format!("{{\"ops\":{}}}", batch.trim());
-    let base = project_path(&agent, &project);
-    let path = match &changeset {
-        Some(changeset) => format!("{base}/changesets/{changeset}/docs/{doc}/ops"),
-        None => format!("{base}/docs/{doc}/ops"),
-    };
+    let path = format!("{}/docs/{doc}/ops", project_path(&agent, &project));
     let response = agent.request("POST", &path, Some(body.as_bytes()))?;
     print_edit(args, &response.text())
 }

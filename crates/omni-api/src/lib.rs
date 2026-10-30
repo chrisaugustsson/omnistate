@@ -11,13 +11,10 @@ mod api_keys;
 mod attachments;
 pub mod auth;
 mod boards;
-mod changesets;
-mod claims;
+mod chunks;
 mod comments;
-mod decisions;
 pub mod delete_workspace;
 mod design;
-mod directives;
 mod docs;
 mod features;
 mod home;
@@ -25,14 +22,12 @@ pub mod live;
 pub mod openapi;
 pub mod password;
 mod placeholders;
-mod rebase;
-mod review;
+mod projects;
 pub mod routes;
 mod session;
 pub mod setup;
 mod threads;
 mod tokens;
-mod versions;
 mod workspace;
 
 use axum::extract::{DefaultBodyLimit, Request, State};
@@ -97,10 +92,6 @@ pub struct AppState {
     auth: Arc<dyn auth::AuthProvider>,
     /// Wakes the open WebSockets when a project has new live events.
     live: live::LiveBus,
-    /// The drafts that are in memory, and the node IDs in use.
-    drafts: docs::DraftStore,
-    /// The claims that agents hold on sections of drafts.
-    claims: claims::ClaimStore,
 }
 
 impl AppState {
@@ -123,13 +114,6 @@ impl AppState {
     /// can size it (one connection) and keep a handle on the same connections.
     pub fn with_pool(config: &Config, pool: PgPool) -> Result<Self, String> {
         Self::build_over(config, pool, None)
-    }
-
-    /// Sets how long a claim lasts without an operation from its holder in its
-    /// draft (US-023). Without it a claim lasts 10 minutes.
-    pub fn with_claim_ttl(mut self, ttl: Duration) -> Self {
-        self.claims = claims::ClaimStore::new(ttl);
-        self
     }
 
     fn build(
@@ -161,8 +145,6 @@ impl AppState {
             bucket,
             auth,
             live: live::LiveBus::new(),
-            drafts: docs::DraftStore::default(),
-            claims: claims::ClaimStore::default(),
         })
     }
 
@@ -259,8 +241,6 @@ async fn check<T, E>(call: impl Future<Output = Result<T, E>>) -> bool {
 }
 
 pub fn router(state: AppState) -> Router {
-    // Claims end on time without a request (US-023).
-    claims::start_sweep(state.clone());
     Router::new()
         .route("/api/health", get(health))
         .route("/api/openapi.json", get(openapi::document))
@@ -279,7 +259,7 @@ pub fn router(state: AppState) -> Router {
         )
         .route(
             "/api/v1/w/{workspace_id}/projects",
-            get(changesets::list_projects).post(changesets::create_project),
+            get(projects::list_projects).post(projects::create_project),
         )
         .route(
             "/api/v1/w/{workspace_id}/projects/{project_id}/features",
@@ -294,54 +274,6 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/v1/w/{workspace_id}/projects/{project_id}/home",
             get(home::show),
-        )
-        .route(
-            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets",
-            get(changesets::list_changesets).post(changesets::create_changeset),
-        )
-        .route(
-            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}",
-            get(changesets::show_changeset),
-        )
-        .route(
-            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/review",
-            get(review::show),
-        )
-        .route(
-            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/submit",
-            post(changesets::submit),
-        )
-        .route(
-            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/reject",
-            post(changesets::reject),
-        )
-        .route(
-            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/approve",
-            post(changesets::approve),
-        )
-        .route(
-            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/rebase",
-            post(rebase::rebase),
-        )
-        .route(
-            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/conflicts",
-            get(rebase::list_conflicts),
-        )
-        .route(
-            "/api/v1/w/{workspace_id}/projects/{project_id}/conflicts/{conflict_id}/resolve",
-            post(rebase::resolve),
-        )
-        .route(
-            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/reopen",
-            post(changesets::reopen),
-        )
-        .route(
-            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/abandon",
-            post(changesets::abandon),
-        )
-        .route(
-            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs",
-            post(docs::create_doc),
         )
         .route(
             "/api/v1/w/{workspace_id}/projects/{project_id}/docs",
@@ -374,72 +306,16 @@ pub fn router(state: AppState) -> Router {
             get(docs::read_doc_html),
         )
         .route(
-            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs/{doc_id}",
-            get(docs::read_draft),
-        )
-        .route(
-            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs/{doc_id}/open",
-            post(docs::open_draft),
-        )
-        .route(
-            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs/{doc_id}/ops",
-            post(docs::edit_draft),
-        )
-        .route(
-            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/claims",
-            post(claims::take_claim),
-        )
-        .route(
-            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/claims/release",
-            post(claims::release_claim),
-        )
-        .route(
-            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs/{doc_id}/versions",
-            post(versions::save_version),
-        )
-        .route(
-            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs/{doc_id}/remove",
-            post(versions::remove_doc),
-        )
-        .route(
-            "/api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}/versions",
-            get(versions::list_versions),
-        )
-        .route(
-            "/api/v1/w/{workspace_id}/projects/{project_id}/versions/{version_id}",
-            get(versions::show_version),
-        )
-        .route(
-            "/api/v1/w/{workspace_id}/projects/{project_id}/versions/{version_id}/diff/{other_version_id}",
-            get(versions::diff_versions),
-        )
-        .route(
-            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/tokens",
-            get(tokens::read_draft_tokens).put(tokens::import_tokens),
-        )
-        .route(
             "/api/v1/w/{workspace_id}/projects/{project_id}/tokens",
-            get(tokens::read_mainline_tokens).put(tokens::import_head_tokens),
+            get(tokens::read_head_tokens).put(tokens::import_head_tokens),
         )
         .route(
             "/api/v1/w/{workspace_id}/projects/{project_id}/components",
             put(design::import_head_components).layer(DefaultBodyLimit::max(IMPORT_MAX_BYTES)),
         )
         .route(
-            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/components",
-            put(design::import_components).layer(DefaultBodyLimit::max(IMPORT_MAX_BYTES)),
-        )
-        .route(
-            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs/{doc_id}/design",
-            put(design::import_design).layer(DefaultBodyLimit::max(IMPORT_MAX_BYTES)),
-        )
-        .route(
-            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs/{doc_id}/boards/{board_id}",
-            get(boards::read_draft_board),
-        )
-        .route(
             "/api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}/boards/{board_id}",
-            get(boards::read_board_of_version),
+            get(boards::read_head_board),
         )
         .route(
             "/api/v1/w/{workspace_id}/projects/{project_id}/components/usage",
@@ -456,10 +332,6 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/v1/w/{workspace_id}/attachments/{attachment_id}",
             get(attachments::download),
-        )
-        .route(
-            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/threads",
-            post(threads::create_thread),
         )
         .route(
             "/api/v1/w/{workspace_id}/projects/{project_id}/threads",
@@ -486,40 +358,8 @@ pub fn router(state: AppState) -> Router {
             get(threads::show_post),
         )
         .route(
-            "/api/v1/w/{workspace_id}/projects/{project_id}/threads/{thread_id}/phases",
-            post(threads::start_phase),
-        )
-        .route(
             "/api/v1/w/{workspace_id}/projects/{project_id}/threads/{thread_id}/posts",
             post(threads::create_post),
-        )
-        .route(
-            "/api/v1/w/{workspace_id}/projects/{project_id}/threads/{thread_id}/directives",
-            post(threads::create_directive),
-        )
-        .route(
-            "/api/v1/w/{workspace_id}/projects/{project_id}/threads/{thread_id}/decisions",
-            post(decisions::propose),
-        )
-        .route(
-            "/api/v1/w/{workspace_id}/projects/{project_id}/decisions/{decision_id}",
-            get(decisions::show),
-        )
-        .route(
-            "/api/v1/w/{workspace_id}/projects/{project_id}/decisions/{decision_id}/approve",
-            post(decisions::approve),
-        )
-        .route(
-            "/api/v1/w/{workspace_id}/projects/{project_id}/decisions/{decision_id}/reject",
-            post(decisions::reject),
-        )
-        .route(
-            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/decisions/{decision_id}",
-            post(decisions::link),
-        )
-        .route(
-            "/api/v1/w/{workspace_id}/projects/{project_id}/versions/{version_id}/comments",
-            post(comments::create),
         )
         .route(
             "/api/v1/w/{workspace_id}/projects/{project_id}/comments",
@@ -539,10 +379,6 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/ws/w/{workspace_id}", get(live::socket))
         .fallback(not_found)
-        .layer(middleware::from_fn_with_state(
-            state.clone(),
-            directives::attach,
-        ))
         .layer(middleware::from_fn(harden))
         .with_state(state)
 }

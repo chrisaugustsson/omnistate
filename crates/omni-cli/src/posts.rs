@@ -1,16 +1,15 @@
 //! `omni post <thread>`: posts to a thread, a message with a one-line summary
 //! and a Markdown body. The body is the argument after the thread, else
 //! `--body-file`, else standard input; each `--attach` file is uploaded first,
-//! and everything that
-//! can be checked here is checked before anything is sent. The project is found
-//! as for `omni changeset`.
+//! and everything that can be checked here is checked before anything is sent.
+//! The project is found as for `omni project`.
 
 use crate::args::Args;
 use crate::attach;
-use crate::changesets::{is_uuid, project_id};
 use crate::commands::{agent, read_body, say};
 use crate::error::{CliError, Result, bail};
 use crate::json::{Value, quote};
+use crate::projects::{is_uuid, project_id};
 use std::io::IsTerminal;
 use std::path::Path;
 
@@ -253,19 +252,12 @@ pub fn show(args: &Args, post: Option<&str>) -> Result<()> {
         CliError::new("the server's answer about the post is not readable; is it an OmniState API?")
     })?;
     let shown = answer.get("post").unwrap_or(&answer);
-    let kind = shown
-        .str_at("type")
-        .map(|kind| format!("{kind}  "))
-        .unwrap_or_default();
     say(&format!(
-        "{kind}{}  {}",
+        "{}  {}",
         role(shown),
         shown.str_at("summary").unwrap_or_default()
     ));
     say(&format!("id: {}", shown.str_at("id").unwrap_or("?")));
-    if let Some(Value::Number(n)) = shown.get("phase") {
-        say(&format!("phase: {n}"));
-    }
     if let Some(Value::Number(n)) = shown.get("confidence") {
         say(&format!("confidence: {n}"));
     }

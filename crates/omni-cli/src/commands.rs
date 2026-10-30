@@ -1,7 +1,6 @@
 //! The commands: `login`, `key list|revoke`, `whoami`, `api` and `config show`;
-//! the project and change set commands are in `changesets`, the doc commands in
-//! `docs`, the version commands in `versions`, the token commands in `tokens`
-//! and the Penpot import in `import`.
+//! the project commands are in `projects`, the doc commands in `docs`, the
+//! token commands in `tokens` and the Penpot import in `import`.
 //!
 //! Standard output holds only the result of a command (short text, or the API's
 //! JSON with `--json`), so a script can parse it. Prompts, notices and errors go
@@ -9,8 +8,6 @@
 
 use crate::args::Args;
 use crate::attach;
-use crate::changesets;
-use crate::claims;
 use crate::comments;
 use crate::components;
 use crate::config::{self, Stored};
@@ -23,10 +20,10 @@ use crate::identity::Identity;
 use crate::import;
 use crate::json::{Value, quote};
 use crate::posts;
+use crate::projects;
+use crate::thread_wait;
 use crate::threads;
 use crate::tokens;
-use crate::versions;
-use crate::wait;
 use std::io::{BufRead, IsTerminal, Read, Write};
 use std::process::{Command, Stdio};
 
@@ -49,8 +46,8 @@ pub fn run(args: &Args) -> Result<()> {
         ["project", "create"] => {
             bail!("`omni project create` needs a name: omni project create <name>")
         }
-        ["project", "create", name] => changesets::project_create(args, name),
-        ["project", "list"] => changesets::project_list(args),
+        ["project", "create", name] => projects::project_create(args, name),
+        ["project", "list"] => projects::project_list(args),
         ["project", ..] => bail!("usage: omni project create <name> | omni project list"),
         ["feature", "create"] => features::create(args, None),
         ["feature", "create", name] => features::create(args, Some(name)),
@@ -65,46 +62,14 @@ pub fn run(args: &Args) -> Result<()> {
         ["feature", ..] => {
             bail!("usage: omni feature create|list|show|rename|delete; see `omni --help`")
         }
-        ["changeset", "create"] => changesets::create(args),
-        ["changeset", "list"] => changesets::list(args),
-        ["changeset", "show", id] => changesets::show(args, id),
-        ["changeset", "submit", id] => changesets::act(args, id, "submit"),
-        ["changeset", "reopen", id] => changesets::act(args, id, "reopen"),
-        ["changeset", "abandon", id] => changesets::act(args, id, "abandon"),
-        ["changeset", "rebase", id] => changesets::rebase(args, id),
-        ["changeset", "conflicts", id] => changesets::conflicts(args, id),
-        ["changeset", "resolve", id] => changesets::resolve(args, id),
-        [
-            "changeset",
-            action @ ("show" | "submit" | "reopen" | "abandon" | "rebase" | "conflicts"),
-        ] => {
-            bail!(
-                "`omni changeset {action}` needs the change set's ID; `omni changeset list` shows them"
-            )
-        }
-        ["changeset", "resolve"] => bail!(
-            "`omni changeset resolve` needs the conflict's ID; `omni changeset conflicts <id>` lists them"
-        ),
-        ["changeset", "reject", ..] => bail!(
-            "rejecting a change set is the human's decision and is made in the web app; an agent cannot"
-        ),
-        ["changeset", ..] => {
-            bail!(
-                "usage: omni changeset create|list|show|submit|reopen|abandon|rebase|conflicts|resolve; see `omni --help`"
-            )
-        }
         ["doc", "create"] => docs::create(args),
         ["doc", "list"] => docs::list(args),
-        ["doc", "open"] => docs::open(args, None),
-        ["doc", "open", doc] => docs::open(args, Some(doc)),
         ["doc", "read"] => docs::read(args, None),
         ["doc", "read", doc] => docs::read(args, Some(doc)),
         ["doc", "show"] => docs::show(args, None),
         ["doc", "show", doc] => docs::show(args, Some(doc)),
         ["doc", "edit"] => docs::edit(args, None),
         ["doc", "edit", doc] => docs::edit(args, Some(doc)),
-        ["doc", "remove"] => versions::remove(args, None),
-        ["doc", "remove", doc] => versions::remove(args, Some(doc)),
         ["doc", "rename"] => docs::rename(args, None, None),
         ["doc", "rename", doc] => docs::rename(args, Some(doc), None),
         ["doc", "rename", doc, title] => docs::rename(args, Some(doc), Some(title)),
@@ -114,26 +79,20 @@ pub fn run(args: &Args) -> Result<()> {
         ["doc", "activity", doc] => docs::activity(args, Some(doc)),
         ["doc", ..] => {
             bail!(
-                "usage: omni doc create|list|open|read|show|edit|remove|rename|delete|activity; see `omni --help`"
+                "usage: omni doc create|list|read|show|edit|rename|delete|activity; see `omni --help`"
             )
         }
-        ["version", "save"] => versions::save(args, None),
-        ["version", "save", doc] => versions::save(args, Some(doc)),
-        ["version", "diff"] => versions::diff(args, None, None),
-        ["version", "diff", from] => versions::diff(args, Some(from), None),
-        ["version", "diff", from, to] => versions::diff(args, Some(from), Some(to)),
-        ["version", ..] => bail!("usage: omni version save|diff; see `omni --help`"),
         ["tokens", "import"] => tokens::import(args, None),
         ["tokens", "import", file] => tokens::import(args, Some(file)),
         ["tokens", "export"] => tokens::export(args),
         ["tokens", ..] => bail!(
-            "usage: omni tokens import <file> [--changeset <id>] | omni tokens export [--changeset <id> | --version <v>] [--out <file>] [--per-mode]"
+            "usage: omni tokens import <file> | omni tokens export [--out <file>] [--per-mode]"
         ),
         ["design", "read"] => design::read(args),
         ["design", "edit"] => design::edit(args, None),
         ["design", "edit", doc] => design::edit(args, Some(doc)),
         ["design", ..] => bail!(
-            "usage: omni design read --doc <id> --board <id> [--changeset <id> | --version <v>] | omni design edit <doc> [--changeset <id>] [--board <id>] [--body-file <path|->]"
+            "usage: omni design read --doc <id> --board <id> | omni design edit <doc> [--board <id>] [--body-file <path|->]"
         ),
         ["component", "usage"] => components::usage(args, None),
         ["component", "usage", component] => components::usage(args, Some(component)),
@@ -159,9 +118,6 @@ pub fn run(args: &Args) -> Result<()> {
         ["thread", ..] => {
             bail!("usage: omni thread create|list|read|conclude|digest; see `omni --help`")
         }
-        ["decision", ..] => bail!(
-            "`omni decision` is gone: a thread ends in a conclusion; write it with `omni thread conclude <thread> <text>`"
-        ),
         ["comment", "list"] => comments::list(args),
         ["comment", "reply"] => comments::reply(args, None, None),
         ["comment", "reply", comment] => comments::reply(args, Some(comment), None),
@@ -180,16 +136,10 @@ pub fn run(args: &Args) -> Result<()> {
         ["post", ..] => {
             bail!("usage: omni post <thread> --summary <text> [<body>]; see `omni --help`")
         }
-        ["wait"] => wait::run(args),
-        ["wait", ..] => bail!(
-            "usage: omni wait --changeset <id> --until <status> [--timeout <s>] | omni wait --thread <id> --posts <n>|--concluded [--timeout <s>]"
-        ),
-        ["claim"] => claims::take(args, None),
-        ["claim", node] => claims::take(args, Some(node)),
-        ["claim", ..] => bail!("usage: omni claim <node> --changeset <id>"),
-        ["release"] => claims::release(args, None),
-        ["release", node] => claims::release(args, Some(node)),
-        ["release", ..] => bail!("usage: omni release <node> --changeset <id>"),
+        ["wait"] => thread_wait::run(args),
+        ["wait", ..] => {
+            bail!("usage: omni wait --thread <id> --posts <n>|--concluded [--timeout <s>]")
+        }
         ["attach", file] => attach::run(args, file),
         ["attach", ..] => bail!("usage: omni attach <file>"),
         ["whoami"] => whoami(args),
@@ -365,40 +315,9 @@ pub(crate) fn checked(response: Response) -> Result<Response> {
         eprintln!("notice: {notice}");
     }
     if response.is_success() {
-        show_directives(&response);
         Ok(response)
     } else {
         Err(api_error(&response))
-    }
-}
-
-/// Prints the directives of the human that the API gave with an answer, on
-/// standard error so that standard output stays the result of the command: one
-/// line with the summary, then the Markdown body indented.
-fn show_directives(response: &Response) {
-    const FIELD: &[u8] = b"\"directives\"";
-    if !response
-        .body
-        .windows(FIELD.len())
-        .any(|window| window == FIELD)
-    {
-        return;
-    }
-    let Ok(body) = Value::parse(&response.text()) else {
-        return;
-    };
-    for directive in body
-        .get("directives")
-        .and_then(Value::as_array)
-        .unwrap_or_default()
-    {
-        eprintln!(
-            "directive from the human: {}",
-            directive.str_at("summary").unwrap_or("?")
-        );
-        for line in directive.str_at("body").unwrap_or_default().lines() {
-            eprintln!("  {line}");
-        }
     }
 }
 
@@ -429,9 +348,6 @@ fn api_error(response: &Response) -> CliError {
         (404, _) => format!(
             "{code}: there is no such workspace or record, or you cannot reach it; check `omni config show`"
         ),
-        (409, "no_mainline_version") => format!(
-            "{code}: the doc has no mainline version yet, so only the change set that started it has a draft of it"
-        ),
         (503, _) => format!(
             "{code}: the server cannot reach its database or storage right now; try again shortly"
         ),
@@ -450,21 +366,12 @@ fn refused_operation(body: &Value) -> Option<String> {
                 _ => "?".to_string(),
             };
             Some(format!(
-                "conflict: operation {} expected node {} at revision {}, but it is at revision {}; read the draft again and send the operation with the new revision",
+                "conflict: operation {} expected node {} at revision {}, but it is at revision {}; read the doc again and send the operation with the new revision",
                 number("index"),
                 conflict.str_at("node").unwrap_or("?"),
                 number("expected"),
                 number("current_revision")
             ))
-        }
-        "claimed" => {
-            let message = body.str_at("message").unwrap_or("a claim is in the way");
-            Some(match body.get("index") {
-                Some(Value::Number(index)) => {
-                    format!("claimed: operation {index}: {message}; nothing was applied")
-                }
-                _ => format!("claimed: {message}"),
-            })
         }
         "invalid_tokens" => Some(format!(
             "invalid_tokens: {}; nothing was imported",

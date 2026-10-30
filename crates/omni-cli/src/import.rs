@@ -25,10 +25,10 @@ use omni_penpot::import::{Ids, Import, ImportEntry, PageTags, import_file};
 
 use crate::args::Args;
 use crate::attach;
-use crate::changesets::{creation_feature, project_id};
 use crate::commands::{Agent, agent, say};
 use crate::error::{CliError, Result, bail};
 use crate::json::{Value, quote};
+use crate::projects::{creation_feature, project_id};
 
 /// How many times the components are sent: the first time without the
 /// instances in them, which wait for the IDs of the components they place.

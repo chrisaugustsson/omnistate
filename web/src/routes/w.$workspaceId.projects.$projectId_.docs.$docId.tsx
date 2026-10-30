@@ -72,9 +72,6 @@ export const Route = createFileRoute("/w/$workspaceId/projects/$projectId_/docs/
   }),
 });
 
-/** No claims: a head has no drafts to hold them. */
-const NO_CLAIMS: never[] = [];
-
 /** Where the address bar says the reviewer is in the doc. */
 type Place = { board?: string; node?: string };
 
@@ -261,7 +258,6 @@ function HtmlDocViewer({
               html={html}
               pins={pins}
               selected={selected}
-              claims={NO_CLAIMS}
               reveal={reveal}
               onSelect={setSelected}
               className="block min-h-0 w-full flex-1 bg-white"
@@ -746,7 +742,6 @@ function DesignViewer({
     if (name === "doc.changed") outline.reload();
     else if (name.startsWith("comment.")) comments.reload();
     else if (name.startsWith("doc.")) doc.reload();
-    else if (name === "tokens.imported" || name === "components.imported") outline.reload();
   });
 
   function choose(address: string | null) {

@@ -78,10 +78,6 @@ pub enum ApiError {
     /// The request is refused with a status of its own and a stable code, such
     /// as 409 `invalid_transition`.
     Refused(StatusCode, &'static str),
-    /// As `Refused`, and the body names a record next to the code, such as 409
-    /// `decision_not_approved` with its `decision_id`: the status, the code,
-    /// the name of the field and the record's ID.
-    Naming(StatusCode, &'static str, &'static str, String),
     Unavailable,
 }
 
@@ -114,7 +110,6 @@ impl IntoResponse for ApiError {
             Self::Forbidden => (StatusCode::FORBIDDEN, json!({ "error": "forbidden" })),
             Self::NotFound => (StatusCode::NOT_FOUND, json!({ "error": "not_found" })),
             Self::Refused(status, code) => (status, json!({ "error": code })),
-            Self::Naming(status, code, field, id) => (status, json!({ "error": code, field: id })),
             Self::Unavailable => (
                 StatusCode::SERVICE_UNAVAILABLE,
                 json!({ "error": "unavailable" }),

@@ -80,71 +80,6 @@ pub fn registry() -> Vec<RouteEntry> {
             Access::Human,
         ),
         (
-            "GET",
-            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets",
-            Access::Both,
-        ),
-        (
-            "POST",
-            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets",
-            Access::Agent,
-        ),
-        (
-            "GET",
-            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}",
-            Access::Both,
-        ),
-        (
-            "GET",
-            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/review",
-            Access::Human,
-        ),
-        (
-            "POST",
-            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/submit",
-            Access::Agent,
-        ),
-        (
-            "POST",
-            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/reject",
-            Access::Human,
-        ),
-        (
-            "POST",
-            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/approve",
-            Access::Human,
-        ),
-        (
-            "POST",
-            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/rebase",
-            Access::Agent,
-        ),
-        (
-            "GET",
-            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/conflicts",
-            Access::Both,
-        ),
-        (
-            "POST",
-            "/api/v1/w/{workspace_id}/projects/{project_id}/conflicts/{conflict_id}/resolve",
-            Access::Agent,
-        ),
-        (
-            "POST",
-            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/reopen",
-            Access::Agent,
-        ),
-        (
-            "POST",
-            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/abandon",
-            Access::Agent,
-        ),
-        (
-            "POST",
-            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs",
-            Access::Agent,
-        ),
-        (
             "POST",
             "/api/v1/w/{workspace_id}/projects/{project_id}/docs",
             Access::Agent,
@@ -195,66 +130,6 @@ pub fn registry() -> Vec<RouteEntry> {
             Access::Both,
         ),
         (
-            "POST",
-            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs/{doc_id}/open",
-            Access::Agent,
-        ),
-        (
-            "GET",
-            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs/{doc_id}",
-            Access::Both,
-        ),
-        (
-            "POST",
-            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs/{doc_id}/ops",
-            Access::Agent,
-        ),
-        (
-            "POST",
-            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/claims",
-            Access::Agent,
-        ),
-        (
-            "POST",
-            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/claims/release",
-            Access::Agent,
-        ),
-        (
-            "POST",
-            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs/{doc_id}/versions",
-            Access::Agent,
-        ),
-        (
-            "POST",
-            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs/{doc_id}/remove",
-            Access::Agent,
-        ),
-        (
-            "GET",
-            "/api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}/versions",
-            Access::Both,
-        ),
-        (
-            "GET",
-            "/api/v1/w/{workspace_id}/projects/{project_id}/versions/{version_id}",
-            Access::Both,
-        ),
-        (
-            "GET",
-            "/api/v1/w/{workspace_id}/projects/{project_id}/versions/{version_id}/diff/{other_version_id}",
-            Access::Both,
-        ),
-        (
-            "PUT",
-            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/tokens",
-            Access::Agent,
-        ),
-        (
-            "GET",
-            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/tokens",
-            Access::Both,
-        ),
-        (
             "GET",
             "/api/v1/w/{workspace_id}/projects/{project_id}/tokens",
             Access::Both,
@@ -268,21 +143,6 @@ pub fn registry() -> Vec<RouteEntry> {
             "PUT",
             "/api/v1/w/{workspace_id}/projects/{project_id}/components",
             Access::Agent,
-        ),
-        (
-            "PUT",
-            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/components",
-            Access::Agent,
-        ),
-        (
-            "PUT",
-            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs/{doc_id}/design",
-            Access::Agent,
-        ),
-        (
-            "GET",
-            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs/{doc_id}/boards/{board_id}",
-            Access::Both,
         ),
         (
             "GET",
@@ -308,11 +168,6 @@ pub fn registry() -> Vec<RouteEntry> {
             "GET",
             "/api/v1/w/{workspace_id}/attachments/{attachment_id}",
             Access::Both,
-        ),
-        (
-            "POST",
-            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/threads",
-            Access::Agent,
         ),
         (
             "POST",
@@ -351,47 +206,7 @@ pub fn registry() -> Vec<RouteEntry> {
         ),
         (
             "POST",
-            "/api/v1/w/{workspace_id}/projects/{project_id}/threads/{thread_id}/phases",
-            Access::Agent,
-        ),
-        (
-            "POST",
             "/api/v1/w/{workspace_id}/projects/{project_id}/threads/{thread_id}/posts",
-            Access::Both,
-        ),
-        (
-            "POST",
-            "/api/v1/w/{workspace_id}/projects/{project_id}/threads/{thread_id}/directives",
-            Access::Human,
-        ),
-        (
-            "POST",
-            "/api/v1/w/{workspace_id}/projects/{project_id}/threads/{thread_id}/decisions",
-            Access::Agent,
-        ),
-        (
-            "GET",
-            "/api/v1/w/{workspace_id}/projects/{project_id}/decisions/{decision_id}",
-            Access::Both,
-        ),
-        (
-            "POST",
-            "/api/v1/w/{workspace_id}/projects/{project_id}/decisions/{decision_id}/approve",
-            Access::Human,
-        ),
-        (
-            "POST",
-            "/api/v1/w/{workspace_id}/projects/{project_id}/decisions/{decision_id}/reject",
-            Access::Human,
-        ),
-        (
-            "POST",
-            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/decisions/{decision_id}",
-            Access::Agent,
-        ),
-        (
-            "POST",
-            "/api/v1/w/{workspace_id}/projects/{project_id}/versions/{version_id}/comments",
             Access::Both,
         ),
         (

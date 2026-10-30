@@ -14,7 +14,7 @@ a negative revision are all errors when the batch is read.
 ## Where a batch goes
 
 A batch applies to the live doc: `POST .../docs/{doc_id}/ops` with the body
-`{"ops": [...]}`, or `omni doc edit <doc>` without `--changeset`. It is applied to
+`{"ops": [...]}`, or `omni doc edit <doc>`. It is applied to
 the doc's head all or nothing, under a lock on the doc, so batches of agents that
 write one doc at once are applied one after the other, each to the head the one
 before made. The answer is 200 `{"results": [...]}`, one result per operation
@@ -229,22 +229,15 @@ top only, and every other node under a board or a frame.
 - `move` puts the node and its subtree under a new parent that accepts it, and
   `delete` removes it with its descendants, listed in `removed` in document order.
 
-An ID that is in no node of the draft (an operation's `node` or `parent`, an
+An ID that is in no node of the doc (an operation's `node` or `parent`, an
 `id` in a replace's content, the `component` of an `<Instance>`) is a 400
 `invalid_operation` whose message names it; a parent or neighbour that is not in
-the draft is named before a stale `rev` is.
+the doc is named before a stale `rev` is.
 
 The body may add `"board": "<board ID>"`. Every operation of the batch must then
 stay inside that board: its node, and its parent for an insert or a move, are the
 board or in it, or the batch is refused (400 `invalid_operation`, naming the node).
 An ID that is no board of the doc is a 404 `unknown_board`.
-
-Boards are claimed as sections are (`omni claim <board>`). While another agent
-holds a claim, a batch that changes, moves or deletes a node of the board,
-inserts or moves a node into it, or replaces or deletes its page is a 409
-`claimed` that names the holder. Edits on other boards apply, and an applied
-operation of the holder renews the claim. Each applied operation emits
-`op.applied`.
 
 ## Conflicts
 

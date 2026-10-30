@@ -1,10 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { ClaimBody } from "@/api/generated";
 import { viewerDocument } from "./document";
 import { attachmentIds, loadAttachmentImage, withAttachmentImages } from "./html";
-
-/** A block that a change set added, changed or removed, as the frame marks it. */
-export type BlockChange = { node: string; change: "added" | "changed" | "removed" };
 
 /** The sandboxed frame that shows the doc, and the messages between it and the page. */
 export function ViewerFrame({
@@ -12,8 +8,6 @@ export function ViewerFrame({
   html,
   pins,
   selected,
-  claims,
-  changes,
   reveal,
   onSelect,
   className = "h-[75vh] w-full rounded-md border bg-white",
@@ -23,9 +17,6 @@ export function ViewerFrame({
   html: string | null;
   pins: { node: string; count: number }[];
   selected: string | null;
-  claims: ClaimBody[];
-  /** The blocks that a change set added, changed or removed, which the frame marks; left out, none is. */
-  changes?: BlockChange[];
   /** A block that the frame scrolls into view and keeps in place once it has; left out, none is. */
   reveal?: string | null;
   onSelect: (node: string) => void;
@@ -73,9 +64,9 @@ export function ViewerFrame({
   useEffect(() => {
     if (shown === null || !ready) return;
     // The frame's origin is opaque, so "*" is the only target a page can name.
-    const message = { type: "viewer.show", html: shown, pins, selected, claims, ...(changes ? { changes } : {}), ...(reveal ? { reveal } : {}) };
+    const message = { type: "viewer.show", html: shown, pins, selected, ...(reveal ? { reveal } : {}) };
     frame.current?.contentWindow?.postMessage(message, "*");
-  }, [shown, pins, selected, claims, changes, reveal, ready]);
+  }, [shown, pins, selected, reveal, ready]);
 
   return (
     <iframe

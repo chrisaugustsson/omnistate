@@ -10,54 +10,34 @@ use crate::activity::{
 use crate::api_keys::{ApiKeyBody, CreatedKeyResponse, KeyListResponse, KeyResponse};
 use crate::attachments::{AttachmentBody, AttachmentResponse};
 use crate::boards::{BoardBody, Manifest, ManifestBoard, ManifestPage};
-use crate::changesets::{
-    ApprovedVersion, ChangesetBody, ChangesetListResponse, ChangesetResponse,
-    CreateChangesetRequest, CreateProjectRequest, HistoryEntry, LinkedDecision, ProjectBody,
-    ProjectListResponse, ProjectResponse, RejectRequest,
-};
-use crate::claims::{ClaimBody, ClaimRequest, ClaimResponse, ClaimedBody};
 use crate::comments::{
     CommentBody, CommentListResponse, CommentResponse, CreateCommentRequest, ReplyBody,
     ReplyRequest, SingleCommentResponse,
 };
-use crate::decisions::{
-    DecisionBody, DecisionFile, DecisionOption, DecisionResponse, Dissent, RejectDecisionRequest,
-};
 use crate::design::{
-    ImportTagsRequest, ImportedComponents, ImportedDesign, ImportedHeadComponents,
-    InvalidDesignBody, UsageBoard, UsageResponse,
+    ImportTagsRequest, ImportedHeadComponents, InvalidDesignBody, UsageBoard, UsageResponse,
 };
 use crate::docs::{
-    ConflictBody, ConflictDetails, CreateDocRequest, CreatedDocResponse, DocBody, DocListResponse,
-    DocResponse, DraftBody, DraftHtmlResponse, DraftResponse, DraftWithHtml, EditRequest,
-    EditResponse, InvalidOperationBody, MainlineHtmlResponse, OpResultBody, RenameDocRequest,
+    ConflictBody, ConflictDetails, CreateDocRequest, DocBody, DocListResponse, DocResponse,
+    EditRequest, EditResponse, InvalidOperationBody, MainlineHtmlResponse, OpResultBody,
+    RenameDocRequest,
 };
 use crate::features::{
     CreateFeatureRequest, FeatureBody, FeatureListResponse, FeatureResponse, RenameFeatureRequest,
 };
 use crate::home::{FeatureSummary, HomeResponse, WaitingBody};
 use crate::live::{LiveClientMessage, LiveErrorCode, LiveEventName, LiveServerMessage};
-use crate::rebase::{
-    ConflictKind, ConflictResolution, ConflictSide, RebaseResponse, RecordedConflict,
-    RecordedConflictListResponse, RecordedConflictResponse, ResolveConflictRequest,
-};
-use crate::review::{ReviewChanges, ReviewResponse, ReviewedDoc};
+use crate::projects::{CreateProjectRequest, ProjectBody, ProjectListResponse, ProjectResponse};
 use crate::routes::{Access, registry};
 use crate::session::{
     ErrorBody, LoginRequest, UserBody, UserResponse, WorkspaceBody, WorkspaceListResponse,
 };
 use crate::threads::{
-    ConcludeThreadRequest, CreateDirectiveRequest, CreatePostRequest, CreateThreadRequest,
-    DigestEntry, DigestResponse, PhaseBody, PostBody, PostResponse, PosterBody, SinglePostResponse,
-    StartPhaseRequest, StartThreadRequest, ThreadBody, ThreadListResponse, ThreadResponse,
+    ConcludeThreadRequest, CreatePostRequest, DigestEntry, DigestResponse, PostBody, PostResponse,
+    SinglePostResponse, StartThreadRequest, ThreadBody, ThreadListResponse, ThreadResponse,
 };
 use crate::tokens::{
-    DraftTokensResponse, ImportTokensRequest, ImportedHeadTokens, InvalidTokensBody,
-    MainlineTokensResponse,
-};
-use crate::versions::{
-    DiffBody, DiffResponse, MovedNode, NodeEntry, SaveVersionRequest, VersionBody, VersionItem,
-    VersionListResponse, VersionResponse,
+    HeadTokensResponse, ImportTokensRequest, ImportedHeadTokens, InvalidTokensBody,
 };
 use crate::workspace::{ActorBody, WhoamiResponse};
 use axum::Json;
@@ -69,7 +49,7 @@ use utoipa::OpenApi;
 #[openapi(
     info(
         title = "OmniState API",
-        description = "The HTTP API behind the OmniState web app and the `omni` command line. An agent request that succeeds inside a change set (a path under `/changesets/{changeset_id}` or `/threads/{thread_id}`) is answered with a `directives` list next to its usual fields: the human's directive posts that the agent identity (run and role) has not been given yet, oldest first. The field is left out when there are none."
+        description = "The HTTP API behind the OmniState web app and the `omni` command line."
     ),
     paths(
         crate::health,
@@ -88,23 +68,10 @@ use utoipa::OpenApi;
         crate::features::show_feature,
         crate::features::rename_feature,
         crate::features::delete_feature,
-        crate::changesets::list_projects,
-        crate::changesets::create_project,
-        crate::changesets::list_changesets,
-        crate::changesets::create_changeset,
-        crate::changesets::show_changeset,
-        crate::review::show,
-        crate::changesets::submit,
-        crate::changesets::reject,
-        crate::changesets::approve,
-        crate::rebase::rebase,
-        crate::rebase::list_conflicts,
-        crate::rebase::resolve,
-        crate::changesets::reopen,
-        crate::changesets::abandon,
+        crate::projects::list_projects,
+        crate::projects::create_project,
         crate::attachments::upload,
         crate::attachments::download,
-        crate::docs::create_doc,
         crate::docs::create_app_doc,
         crate::docs::create_feature_doc,
         crate::docs::list_docs,
@@ -112,31 +79,15 @@ use utoipa::OpenApi;
         crate::docs::rename_doc,
         crate::docs::delete_doc,
         crate::docs::read_doc_html,
-        crate::docs::open_draft,
-        crate::docs::read_draft,
-        crate::docs::edit_draft,
         crate::docs::edit_doc,
         crate::activity::list_activity,
         crate::activity::show_activity,
         crate::activity::read_component,
-        crate::claims::take_claim,
-        crate::claims::release_claim,
-        crate::versions::save_version,
-        crate::versions::remove_doc,
-        crate::versions::list_versions,
-        crate::versions::show_version,
-        crate::versions::diff_versions,
-        crate::tokens::import_tokens,
-        crate::tokens::read_draft_tokens,
-        crate::tokens::read_mainline_tokens,
+        crate::tokens::read_head_tokens,
         crate::tokens::import_head_tokens,
         crate::design::import_head_components,
-        crate::design::import_components,
-        crate::design::import_design,
         crate::design::component_usage,
-        crate::boards::read_draft_board,
-        crate::boards::read_board_of_version,
-        crate::threads::create_thread,
+        crate::boards::read_head_board,
         crate::threads::create_app_thread,
         crate::threads::create_feature_thread,
         crate::threads::list_threads,
@@ -144,15 +95,7 @@ use utoipa::OpenApi;
         crate::threads::show_thread,
         crate::threads::digest,
         crate::threads::show_post,
-        crate::threads::start_phase,
         crate::threads::create_post,
-        crate::threads::create_directive,
-        crate::decisions::propose,
-        crate::decisions::show,
-        crate::decisions::approve,
-        crate::decisions::reject,
-        crate::decisions::link,
-        crate::comments::create,
         crate::comments::list,
         crate::comments::show,
         crate::comments::reply,
@@ -185,14 +128,6 @@ use utoipa::OpenApi;
         RenameFeatureRequest,
         FeatureListResponse,
         CreateFeatureRequest,
-        CreateChangesetRequest,
-        RejectRequest,
-        HistoryEntry,
-        ApprovedVersion,
-        LinkedDecision,
-        ChangesetBody,
-        ChangesetResponse,
-        ChangesetListResponse,
         AttachmentBody,
         AttachmentResponse,
         CreateDocRequest,
@@ -200,11 +135,6 @@ use utoipa::OpenApi;
         DocBody,
         DocResponse,
         DocListResponse,
-        CreatedDocResponse,
-        DraftBody,
-        DraftResponse,
-        DraftWithHtml,
-        DraftHtmlResponse,
         MainlineHtmlResponse,
         EditRequest,
         OpResultBody,
@@ -220,36 +150,12 @@ use utoipa::OpenApi;
         ConflictDetails,
         ConflictBody,
         InvalidOperationBody,
-        ClaimBody,
-        ClaimRequest,
-        ClaimResponse,
-        ClaimedBody,
-        NodeEntry,
-        VersionBody,
-        VersionResponse,
-        VersionItem,
-        VersionListResponse,
-        MovedNode,
-        DiffBody,
-        DiffResponse,
-        SaveVersionRequest,
-        ConflictKind,
-        ConflictSide,
-        ConflictResolution,
-        RecordedConflict,
-        RebaseResponse,
-        RecordedConflictResponse,
-        RecordedConflictListResponse,
-        ResolveConflictRequest,
         ImportTokensRequest,
-        DraftTokensResponse,
         ImportedHeadTokens,
-        MainlineTokensResponse,
+        HeadTokensResponse,
         InvalidTokensBody,
         ImportTagsRequest,
-        ImportedComponents,
         ImportedHeadComponents,
-        ImportedDesign,
         InvalidDesignBody,
         UsageBoard,
         UsageResponse,
@@ -257,28 +163,17 @@ use utoipa::OpenApi;
         Manifest,
         ManifestPage,
         ManifestBoard,
-        PhaseBody,
-        PosterBody,
         ThreadBody,
         ThreadResponse,
         ThreadListResponse,
         StartThreadRequest,
         ConcludeThreadRequest,
-        CreateThreadRequest,
-        StartPhaseRequest,
         CreatePostRequest,
-        CreateDirectiveRequest,
         PostBody,
         PostResponse,
         DigestEntry,
         DigestResponse,
         SinglePostResponse,
-        DecisionOption,
-        Dissent,
-        DecisionFile,
-        DecisionBody,
-        DecisionResponse,
-        RejectDecisionRequest,
         ReplyBody,
         CommentBody,
         CommentResponse,
@@ -288,9 +183,6 @@ use utoipa::OpenApi;
         ReplyRequest,
         WaitingBody,
         FeatureSummary,
-        ReviewChanges,
-        ReviewedDoc,
-        ReviewResponse,
         HomeResponse
     ))
 )]

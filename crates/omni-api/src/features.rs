@@ -1,14 +1,14 @@
 //! Features (Q51, FR-52). A project holds global docs and features; a feature
-//! is the same thing one level deeper, with its own docs, change sets and
-//! threads, so several features can be worked on at once. A feature has a name
-//! that is unique in its project ignoring case and a description, and no
-//! status (V7). Agents create, rename and delete features. A delete is soft
-//! (`deleted_at`) and takes the feature's docs and threads with it.
+//! is the same thing one level deeper, with its own docs and threads, so
+//! several features can be worked on at once. A feature has a name that is
+//! unique in its project ignoring case and a description, and no status (V7).
+//! Agents create, rename and delete features. A delete is soft (`deleted_at`)
+//! and takes the feature's docs and threads with it.
 
 use crate::AppState;
-use crate::changesets::{non_blank, parse_body, require_project};
 use crate::docs::{AgentIdentity, Tx, empty_head, log_change};
 use crate::live;
+use crate::projects::{non_blank, parse_body, require_project};
 use crate::session::{ApiError, ErrorBody};
 use crate::workspace::{AgentRequest, WorkspaceRequest, parse_uuid};
 use axum::Json;

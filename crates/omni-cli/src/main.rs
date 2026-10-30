@@ -7,8 +7,6 @@
 
 mod args;
 mod attach;
-mod changesets;
-mod claims;
 mod commands;
 mod comments;
 mod components;
@@ -22,12 +20,11 @@ mod identity;
 mod import;
 mod json;
 mod posts;
+mod projects;
 mod thread_wait;
 mod threads;
 mod tokens;
 mod toml;
-mod versions;
-mod wait;
 
 use std::process::ExitCode;
 
@@ -48,50 +45,21 @@ Usage:
                                       rename a feature; its ID, docs and threads stay
   omni feature delete <name|id>       delete a feature with its docs, threads and comments (they
                                       are kept, hidden; the name can be used again)
-  omni changeset create --title <t>   create a change set [--description <d>] [--run <tag>];
-                                      in the feature of --feature or .omni.toml, or at project
-                                      level with --global
-  omni changeset list                 list the project's change sets: ID, status, scope (project
-                                      or the feature's name) and title; --feature <name|id> or
-                                      --global list one scope only
-  omni changeset show <id>            show a change set with its status history
-  omni changeset submit <id>          send an open change set to review
-  omni changeset reopen <id>          reopen a rejected change set
-  omni changeset abandon <id>         abandon a change set (it is kept, never deleted)
-  omni changeset rebase <id>          replay a change set that needs a rebase onto the current
-                                      mainline; with no conflicts it merges, else it is open
-                                      again and each node changed on both sides is a conflict
-  omni changeset conflicts <id>       list the change set's conflicts, with the node on the
-                                      mainline side and on the change set's side
-  omni changeset resolve <conflict-id> --note <text>
-                                      resolve a conflict once the draft is fixed with `omni doc
-                                      edit`; a change set cannot be submitted until every
-                                      conflict is resolved
   omni doc create [--feature <name|id>] --kind html|design|design-system
                 --pillar spec|ui|architecture|db|research --title <text>
                                       create a doc at the app level, or in a feature; it is
-                                      readable at once, with no change set (--changeset <id>
-                                      starts it in a change set instead)
+                                      readable at once
   omni doc list                       list the project's docs: ID, scope (project or the
                                       feature's name), kind, pillar and title; --feature
                                       <name|id> or --global list one scope only; --pillar
                                       <pillar> lists one pillar only
-  omni doc open <doc> --changeset <id>
-                                      make (or reuse) the change set's draft of a doc
-  omni doc read <doc> [--changeset <id> | --version <v>]
-                                      print the doc as HTML with data-omni-id (data-rev too
-                                      for a draft); without options, the doc's head (a
-                                      design's tags)
-  omni doc show <doc>                 show the doc's metadata, mainline version, drafts, claims
-  omni doc edit <doc> [--changeset <id>]
-                                      apply a batch of operations (a JSON array, from
-                                      --body-file or standard input) to the live doc, at
-                                      once and all or nothing (--changeset <id> edits that
-                                      change set's draft instead); prints each node's new
-                                      revision and the IDs of new nodes
-  omni doc remove <doc> --changeset <id>
-                                      remove a doc in a change set: saves a version that
-                                      marks it removed; the doc and its history stay
+  omni doc read <doc>                 print the doc's head: HTML with data-omni-id and
+                                      data-rev (a design's tags)
+  omni doc show <doc>                 show the doc's metadata
+  omni doc edit <doc>                 apply a batch of operations (a JSON array, from
+                                      --body-file or standard input) to the doc, at once and
+                                      all or nothing; prints each node's new revision and the
+                                      IDs of new nodes
   omni doc rename <doc> <title>       rename a doc; its ID, head and comments stay
   omni doc delete <doc>               delete a doc (it is kept, hidden from every list and
                                       read; the deletion is logged)
@@ -100,41 +68,30 @@ Usage:
                                       time, the writing agent's role and a one-line summary.
                                       --limit (1 to 200, 50 by default) and --before page
                                       back through the older entries
-  omni version save <doc> --changeset <id>
-                                      save the change set's draft of a doc as a version, an
-                                      unchangeable snapshot; prints the version's ID
-  omni version diff <a> <b>           list the nodes added, removed, changed and moved from
-                                      version <a> to version <b> of a doc
-  omni design read --doc <id> --board <id> [--changeset <id> | --version <v>]
-                                      print one board of a design doc in the tag format (a
-                                      rev on every tag for a draft); without options, the
-                                      mainline version
-  omni design edit <doc> [--changeset <id>] [--board <id>]
+  omni design read --doc <id> --board <id>
+                                      print one board of a design doc's head in the tag format
+  omni design edit <doc> [--board <id>]
                                       apply a batch of operations (a JSON array, from
-                                      --body-file or standard input) to the design's head, or
-                                      with --changeset to the change set's draft: insert a
-                                      subtree in the tag format (a new board under a page
-                                      too), replace, set, move and delete, each with the rev
-                                      you have; the server assigns the IDs of new nodes and
-                                      prints them. A write stores only the boards it changes.
-                                      With --board the batch must stay inside that board
+                                      --body-file or standard input) to the design's head:
+                                      insert a subtree in the tag format (a new board under a
+                                      page too), replace, set, move and delete, each with the
+                                      rev you have; the server assigns the IDs of new nodes
+                                      and prints them. A write stores only the boards it
+                                      changes. With --board the batch must stay inside that
+                                      board
   omni component usage <component>    list every board of the project's designs that uses a
                                       component, from the heads: an instance in a board, in
                                       another component's tree, or a slot value
-  omni tokens import <file> [--changeset <id>]
-                                      replace the whole design token tree (DTCG JSON, with a
-                                      value per mode) of the design system's head, or with
-                                      --changeset of the change set's draft, in one
+  omni tokens import <file>           replace the whole design token tree (DTCG JSON, with a
+                                      value per mode) of the design system's head, in one
                                       all-or-nothing batch
-  omni tokens export [--changeset <id> | --version <v>] [--out <file>]
-                                      print the design tokens as DTCG JSON: the design
-                                      system's head, a change set's draft or a saved version
+  omni tokens export [--out <file>]   print the design tokens of the design system's head as
+                                      DTCG JSON
   omni tokens export --per-mode --out <dir>
                                       write one file per mode, <dir>/<mode>.tokens.json
   omni import penpot <file.penpot> --project <id> [--feature <name>]
                                       import a Penpot export (made with 'Export file + libraries')
-                                      straight into the project, with no change set: the
-                                      pages and boards as a design doc (in the feature's UI
+                                      straight into the project: the pages and boards as a design doc (in the feature's UI
                                       pillar with --feature), the components, design tokens
                                       (themes become modes), colors and typographies as the
                                       app-level design system, added to the one the project
@@ -142,9 +99,9 @@ Usage:
                                       report of what could not be imported
   omni thread create <question> [--feature <name|id>] [--sealed]
                                       start a thread, a question that agents work out together,
-                                      at the app level or in a feature, with no change set;
-                                      with --sealed an agent reads no other agent's posts
-                                      until it has posted itself; prints its ID
+                                      at the app level or in a feature; with --sealed an
+                                      agent reads no other agent's posts until it has posted
+                                      itself; prints its ID
   omni thread list                    list the project's threads, of every scope: ID, scope,
                                       whether it is sealed or concluded, and the question
   omni thread read <thread>           print the question, the posts you may read (a sealed
@@ -163,10 +120,7 @@ Usage:
                                       post's ID. Each --attach uploads a file first; a --link
                                       is post:<id>, attachment:<id>, node:<doc>/<address> or
                                       an http(s) address; --replaces names your earlier post in
-                                      the thread. Posts are never edited or deleted. Only the
-                                      human posts directives; one that is new to you comes
-                                      with the answer to your next request in the change set
-                                      and is printed on standard error
+                                      the thread. Posts are never edited or deleted
   omni post show <post>               print one whole post: author role, summary, ID and the
                                       Markdown body; a post you may not read yet is reported
                                       as not found
@@ -182,18 +136,10 @@ Usage:
   omni comment reply <comment> <text>
                                       reply to a comment; without <text> it is read from
                                       --body-file or standard input
-  omni wait --changeset <id> --until approved|rejected|merged|needs_rebase [--timeout <s>]
-                                      wait until the change set is approved (by the human),
-                                      rejected, merged or needs a rebase; prints its status
   omni wait --thread <id> --posts <n> [--concluded] [--timeout <s>]
                                       wait until the thread has n posts that you may read (a
                                       sealed thread counts none of the others' posts until you
                                       have posted) and, with --concluded, a conclusion
-  omni claim <node> --changeset <id>  claim a board or section of the change set's draft, so
-                                      that no other agent changes it; a claim lasts 10 minutes
-                                      after your last operation in the draft
-  omni release <node> --changeset <id>
-                                      end your claim on a board or section
   omni attach <file>                  upload a file (at most 20 MB) and print attachment:<id>,
                                       how docs, designs and posts refer to it
   omni whoami                         show the workspace and who the key acts as
@@ -206,14 +152,12 @@ Options (before or after the command):
   --harness <name>      the harness that runs the agent (fallback: OMNI_HARNESS)
   --server <url>        the API address (fallback: OMNI_SERVER, then the config file)
   --project <name|id>   the project to work in (fallback: project in .omni.toml)
-  --feature <name|id>   the feature that `omni changeset create` opens a change set in
-                        (fallback: feature in .omni.toml); `omni changeset list` shows its
-                        change sets or docs only
-  --global              `omni changeset create` opens a project-level change set, whatever
-                        .omni.toml says; `omni changeset list` and `omni doc list` show those only
-  --body-file <path>    send this file as the request body (for a change set: its
-                        description; for `doc edit` and `design edit`: the operations); -
-                        reads standard input
+  --feature <name|id>   the feature that `omni doc create` creates a doc in and `omni doc
+                        list` shows (fallback: feature in .omni.toml)
+  --global              `omni doc create` creates an app-level doc, whatever .omni.toml says;
+                        `omni doc list` shows those only
+  --body-file <path>    send this file as the request body (for `doc edit` and `design
+                        edit`: the operations); - reads standard input
   --sealed              `omni thread create`: a sealed thread hides the posts of other agents
                         from an agent until it has posted
   --summary <text>      the one-line summary of the post
@@ -222,19 +166,14 @@ Options (before or after the command):
                         node:<doc>/<address> or an http(s) address (repeat for more)
   --confidence <n>      how sure the post is, from 0 to 1
   --replaces <post>     your earlier post in the thread that this one replaces
-  --note <text>         how a conflict was resolved (`omni changeset resolve`)
-  --changeset <id>      the change set a doc, design edit, tokens, claim, release or wait command works in
   --doc <id>            the design doc that `omni design read` reads or `omni design edit` edits
                         (`omni design edit` also takes it as an argument), or the doc whose
                         comments `omni comment list` shows
   --board <id>          the board of that doc that `omni design read` prints, or that a
                         `omni design edit` batch stays inside
-  --version <v>         the version that `omni doc read`, `omni design read` or
-                        `omni tokens export` reads
   --out <path>          where `omni tokens export` writes: a file, or with --per-mode a directory
   --per-mode            `omni tokens export`: one file per mode
-  --until <status>      the status or condition `omni wait` waits for
-  --thread <id>         the thread that `omni wait` waits on, instead of a change set
+  --thread <id>         the thread that `omni wait` waits on
   --posts <n>           `omni wait --thread`: wait for this many posts that you may read
   --concluded           `omni wait --thread`: wait for the thread's conclusion
   --timeout <seconds>   how long `omni wait` waits; without it, as long as it takes
@@ -244,7 +183,7 @@ Options (before or after the command):
 
 Output:
   Results go to standard output: short text by default, the API's JSON with --json.
-  Prompts, notices (such as directives) and errors go to standard error.
+  Prompts, notices and errors go to standard error.
   An error is one line saying what went wrong and how to fix it.
 
 Files:
@@ -252,14 +191,10 @@ Files:
   .omni.toml                   in a project directory: project = \"name\", the default project there,
                                and optionally feature = \"name\", the default feature there
 
-Rejecting and approving are the human's, in the web app; an agent cannot do them.
-
 Exit codes:
   0  success
   1  the command failed: usage, login, network or API error (the message says which)
   2  `omni wait` timed out before its condition was met
-  3  `omni wait --changeset`: the status can no longer be reached (the change set is
-     abandoned, or merged while you wait for rejected or needs_rebase)
 ";
 
 fn main() -> ExitCode {

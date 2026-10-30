@@ -4,8 +4,7 @@ A project's design system doc holds its design tokens as one JSON tree in the
 W3C Design Tokens (DTCG) format, with one value per mode (Q27). The checks in
 `omni_core::design::tokens` (`TokenTree::from_json`) decide what a tree may
 say; the API runs them on every import, so a tree that is stored always passes.
-A project has at most one design system doc, started in a change set like any
-doc, and `omni tokens import` replaces its whole token tree in one batch.
+A project has at most one design system doc, and `omni tokens import` replaces its whole token tree in one batch.
 
 ```json
 {
@@ -159,27 +158,10 @@ font size, also in each mode's value. A value without one, or with `"normal"`,
 is refused, so text that uses a typography token never falls back to the font's
 normal line height (Q44).
 
-## Rebasing
+## Components in a design system head
 
-A design system change set that is behind the mainline rebases like any other
-(`omni changeset rebase`). Its token changes since the draft's base, each token
-it added, changed or removed, are replayed onto the mainline tree, and a token
-that only the mainline changed keeps its mainline value. A token that both
-sides changed differently is a conflict named by its path (`color.surface`),
-with each side's token as JSON, and keeps its mainline value. When the merged
-tree fails the checks above, the mainline tree stays and every token that the
-change set changed is a conflict.
-
-The components of the design system (`docs/formats/design-tags.md`) are replayed
-the same way, component by component: one that only a side changed takes that
-side's state, and one that both changed differently is a conflict named by the
-component's node ID that keeps its mainline state.
-
-## Components in a design system version
-
-A saved version of the design system holds the token tree above, and the
-design system's components under the top-level key `$components`, a list of
+The head of the design system holds the token tree above, and the design
+system's components under the top-level key `$components`, a list of
 `component` nodes in the JSON form of `omni_core::design` (a token tree has no
-key of its own that starts with `$`). A design version records the ID of the
-design system version it was saved against, so its instances resolve against
-the components of that version.
+key of its own that starts with `$`). A design resolves its instances against
+the components of the design system's head when it is read.

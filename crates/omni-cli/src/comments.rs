@@ -1,13 +1,13 @@
 //! `omni comment list` and `omni comment reply`: the comments that the human
 //! pins to nodes of the live docs. An agent lists them and answers with a
 //! reply; the human deletes a comment when satisfied, in the web app. A comment
-//! has no status. The project is found as for `omni changeset`.
+//! has no status. The project is found as for `omni project`.
 
 use crate::args::Args;
-use crate::changesets::{is_uuid, project_id, resolve_feature};
 use crate::commands::{agent, read_body, say};
 use crate::error::{CliError, Result, bail};
 use crate::json::{Value, quote};
+use crate::projects::{is_uuid, project_id, resolve_feature};
 use std::io::IsTerminal;
 
 const LIST_USAGE: &str = "omni comment list [--doc <id>] [--feature <name|id>]";

@@ -1,14 +1,13 @@
 //! `omni tokens import` and `omni tokens export`: replace the design tokens of
-//! the design system's head (or, with `--changeset`, of a change set's draft)
-//! with a DTCG file, and write the tokens of the head, a draft or a version as
-//! DTCG JSON, whole or one file per mode (docs/formats/tokens.md). The project
-//! is found as for `omni changeset`.
+//! the design system's head with a DTCG file, and write the tokens of the head
+//! as DTCG JSON, whole or one file per mode (docs/formats/tokens.md). The
+//! project is found as for `omni project`.
 
 use crate::args::Args;
-use crate::changesets::{is_uuid, project_id};
 use crate::commands::{Agent, agent, say};
 use crate::error::{CliError, Result, bail};
 use crate::json::Value;
+use crate::projects::project_id;
 use std::path::Path;
 
 fn parsed(text: &str, what: &str) -> Result<Value> {
@@ -29,16 +28,9 @@ fn modes_of(answer: &Value) -> Vec<&str> {
         .collect()
 }
 
-/// `omni tokens import <file> [--changeset <id>]`
+/// `omni tokens import <file>`
 pub fn import(args: &Args, file: Option<&str>) -> Result<()> {
-    const USAGE: &str = "omni tokens import <file> [--changeset <id>]";
-    let changeset = match args.changeset.as_deref() {
-        None => None,
-        Some(id) if is_uuid(id) => Some(id.to_ascii_lowercase()),
-        Some(id) => {
-            bail!("--changeset {id:?} is not a change set ID; `omni changeset list` shows them")
-        }
-    };
+    const USAGE: &str = "omni tokens import <file>";
     let Some(file) = file else {
         bail!("this command needs the token file to import: {USAGE}");
     };
@@ -53,11 +45,7 @@ pub fn import(args: &Args, file: Option<&str>) -> Result<()> {
     let agent = agent(args)?;
     let project = project_id(args, &agent)?;
     let body = format!("{{\"tokens\":{}}}", text.trim());
-    let base = project_path(&agent, &project);
-    let path = match &changeset {
-        Some(changeset) => format!("{base}/changesets/{changeset}/tokens"),
-        None => format!("{base}/tokens"),
-    };
+    let path = format!("{}/tokens", project_path(&agent, &project));
     let response = agent.request("PUT", &path, Some(body.as_bytes()))?;
     let text = response.text();
     if args.json {
@@ -65,13 +53,7 @@ pub fn import(args: &Args, file: Option<&str>) -> Result<()> {
         return Ok(());
     }
     let answer = parsed(&text, "the tokens")?;
-    match &changeset {
-        Some(changeset) => say(&format!(
-            "imported the token tree into draft {} of the design system, in change set {changeset}",
-            answer.str_at("draft_id").unwrap_or("?")
-        )),
-        None => say("imported the token tree into the head of the design system"),
-    }
+    say("imported the token tree into the head of the design system");
     say(&format!("modes: {}", modes_of(&answer).join(", ")));
     Ok(())
 }
@@ -99,38 +81,17 @@ fn write(path: &Path, tokens: &Value) -> Result<()> {
         .map_err(|e| CliError::new(format!("cannot write {}: {e}", path.display())))
 }
 
-/// `omni tokens export [--changeset <id> | --version <v>] [--out <file>] [--per-mode --out <dir>]`
+/// `omni tokens export [--out <file>] [--per-mode --out <dir>]`
 pub fn export(args: &Args) -> Result<()> {
-    const USAGE: &str = "omni tokens export [--changeset <id> | --version <v>] [--out <file>] [--per-mode --out <dir>]";
-    if args.changeset.is_some() && args.doc_version.is_some() {
-        bail!(
-            "give --changeset or --version, not both: --changeset reads a draft, --version reads a saved version"
-        );
-    }
+    const USAGE: &str = "omni tokens export [--out <file>] [--per-mode --out <dir>]";
     if args.per_mode && args.out.is_none() {
         bail!("--per-mode writes one file per mode, so it needs --out <directory>: {USAGE}");
     }
-    let changeset = match args.changeset.as_deref() {
-        Some(id) if is_uuid(id) => Some(id.to_ascii_lowercase()),
-        Some(id) => {
-            bail!("--changeset {id:?} is not a change set ID; `omni changeset list` shows them")
-        }
-        None => None,
-    };
-    let version = match args.doc_version.as_deref() {
-        Some(version) if is_uuid(version) => Some(version.to_ascii_lowercase()),
-        Some(version) => bail!("--version {version:?} is not a version ID (a UUID)"),
-        None => None,
-    };
 
     let agent = agent(args)?;
     let project = project_id(args, &agent)?;
-    let base = project_path(&agent, &project);
-    let (path, mut query) = match (&changeset, &version) {
-        (Some(changeset), _) => (format!("{base}/changesets/{changeset}/tokens"), Vec::new()),
-        (None, Some(version)) => (format!("{base}/tokens"), vec![format!("version={version}")]),
-        (None, None) => (format!("{base}/tokens"), Vec::new()),
-    };
+    let path = format!("{}/tokens", project_path(&agent, &project));
+    let mut query: Vec<String> = Vec::new();
     let read = |query: &[String]| -> Result<crate::http::Response> {
         let full = match query {
             [] => path.clone(),
@@ -150,14 +111,9 @@ pub fn export(args: &Args) -> Result<()> {
         .get("tokens")
         .filter(|tokens| **tokens != Value::Null)
     else {
-        match changeset {
-            Some(changeset) => bail!(
-                "change set {changeset} has no tokens in its draft yet; `omni tokens import <file> --changeset <id>` adds them"
-            ),
-            None => bail!(
-                "the design system has no tokens in its head yet (no version holds any), so there are none to export; `omni tokens import <file>` adds them"
-            ),
-        }
+        bail!(
+            "the design system has no tokens in its head yet, so there are none to export; `omni tokens import <file>` adds them"
+        )
     };
 
     if !args.per_mode {

@@ -12,18 +12,16 @@
 // - to the page: `viewer.ready` once the script runs, and `viewer.select` with
 //   the node ID of the innermost block that the reviewer clicked;
 // - from the page: `viewer.show` with the doc's `html`, the `pins`
-//   (`[{ node, count }]`), the `selected` node, the live `claims` and, for a
-//   change set's review, the `changes` (`[{ node, change }]`, `change` being
-//   `added`, `changed` or `removed`), which the frame marks block by block,
-//   and `reveal`, a node ID that the frame scrolls into view when it is not
-//   the one it revealed last. When the doc's `html` changes, the frame draws it
-//   again and puts the scroll position back where it was.
+//   (`[{ node, count }]`), the `selected` node and `reveal`, a node ID that the
+//   frame scrolls into view when it is not the one it revealed last. When the
+//   doc's `html` changes, the frame draws it again and puts the scroll
+//   position back where it was.
 export const FRAME_SCRIPT = String.raw`(function () {
   "use strict";
   var page = window.parent;
   var doc = document.getElementById("doc");
   var pinLayer = document.getElementById("pins");
-  var shown = { html: null, pins: [], selected: null, claims: [], changes: [], revealed: null };
+  var shown = { html: null, pins: [], selected: null, revealed: null };
   var hovered = null;
   var drawn = {};
   var counter = 0;
@@ -134,35 +132,17 @@ export const FRAME_SCRIPT = String.raw`(function () {
   }
 
   function markBlocks() {
-    Array.prototype.forEach.call(doc.querySelectorAll(".is-selected, .is-claimed"), function (block) {
-      block.classList.remove("is-selected", "is-claimed");
-      block.removeAttribute("title");
-    });
-    Array.prototype.forEach.call(doc.querySelectorAll(".is-added, .is-changed, .is-removed"), function (block) {
-      block.classList.remove("is-added", "is-changed", "is-removed");
-    });
-    shown.changes.forEach(function (entry) {
-      var block = entry && find(entry.node);
-      if (block && (entry.change === "added" || entry.change === "changed" || entry.change === "removed")) {
-        block.classList.add("is-" + entry.change);
-      }
+    Array.prototype.forEach.call(doc.querySelectorAll(".is-selected"), function (block) {
+      block.classList.remove("is-selected");
     });
     var selected = shown.selected && find(shown.selected);
     if (selected) selected.classList.add("is-selected");
-    shown.claims.forEach(function (claim) {
-      var block = claim && find(claim.node);
-      if (!block || !claim.agent) return;
-      block.classList.add("is-claimed");
-      block.setAttribute("title", "Claimed by " + claim.agent.run + "/" + claim.agent.role);
-    });
     layoutPins();
   }
 
   function show(message) {
     shown.pins = Array.isArray(message.pins) ? message.pins : [];
     shown.selected = typeof message.selected === "string" ? message.selected : null;
-    shown.claims = Array.isArray(message.claims) ? message.claims : [];
-    shown.changes = Array.isArray(message.changes) ? message.changes : [];
     if (typeof message.html === "string" && message.html !== shown.html) {
       var scrollX = window.scrollX;
       var scrollY = window.scrollY;

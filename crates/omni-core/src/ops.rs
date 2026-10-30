@@ -15,10 +15,6 @@ use serde_json::{Map, Value};
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 
-mod rebase;
-
-pub use rebase::Rebased;
-
 /// Where a node goes among the children of its parent: right after the child
 /// `after`, or first when `after` is `null`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
@@ -662,7 +658,7 @@ impl EditDoc {
         };
         let created: Vec<NodeId> = blocks.iter().filter_map(|ix| frag.id_of(*ix)).collect();
         let key = self.key_for(parent, after);
-        let item = self.tree.copy_from(&frag, top, false);
+        let item = self.tree.copy_from(&frag, top);
         self.tree.attach(holder, at, item);
         self.register(item);
         let node = created[0];
@@ -724,7 +720,7 @@ impl EditDoc {
         let ids: Vec<NodeId> = blocks.iter().filter_map(|ix| frag.id_of(*ix)).collect();
         let before = self.states_of(ids.iter().filter(|other| own.contains(*other)));
 
-        let new_item = self.tree.copy_from(&frag, top, false);
+        let new_item = self.tree.copy_from(&frag, top);
         let at = self.tree.position(old_item);
         self.tree.detach(old_item);
         self.tree.attach(holder, at, new_item);
@@ -852,7 +848,7 @@ impl EditDoc {
             self.nodes.remove(gone);
         }
         for root in roots {
-            let copy = self.tree.copy_from(&frag, root, false);
+            let copy = self.tree.copy_from(&frag, root);
             let at = self.tree.items[item].children.len();
             self.tree.attach(item, at, copy);
         }
@@ -960,31 +956,6 @@ fn one_element(tree: &Tree) -> Result<usize, String> {
     found.ok_or_else(|| {
         "the content holds no element the HTML parser can place there: an operation inserts or replaces one element".to_string()
     })
-}
-
-/// Which items of `values` belong to one longest strictly increasing
-/// subsequence of them.
-pub fn longest_increasing(values: Vec<usize>) -> Vec<bool> {
-    // tails[k]: the index of the smallest last value of an increasing run of
-    // length k + 1; previous[i]: the item before i in its run.
-    let mut tails: Vec<usize> = Vec::new();
-    let mut previous: Vec<Option<usize>> = vec![None; values.len()];
-    for (i, &v) in values.iter().enumerate() {
-        let k = tails.partition_point(|&t| values[t] < v);
-        previous[i] = k.checked_sub(1).map(|j| tails[j]);
-        if k == tails.len() {
-            tails.push(i);
-        } else {
-            tails[k] = i;
-        }
-    }
-    let mut stays = vec![false; values.len()];
-    let mut at = tails.last().copied();
-    while let Some(i) = at {
-        stays[i] = true;
-        at = previous[i];
-    }
-    stays
 }
 
 // --- Fractional indexes ---

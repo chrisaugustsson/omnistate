@@ -90,12 +90,6 @@ export const AppSummarySchema = z.object({
 });
 export type AppSummary = z.infer<typeof AppSummarySchema>;
 
-export const ApprovedVersionSchema = z.object({
-  doc_id: z.string(),
-  version_id: z.string(),
-});
-export type ApprovedVersion = z.infer<typeof ApprovedVersionSchema>;
-
 export const AttachmentBodySchema = z.object({
   content_type: z.string(),
   created_at: z.string(),
@@ -114,86 +108,12 @@ export type AttachmentResponse = z.infer<typeof AttachmentResponseSchema>;
 
 export const BoardBodySchema = z.object({
   board_id: z.string(),
-  changeset_id: z.string().nullable().optional(),
   doc_id: z.string(),
-  draft_id: z.string().nullable().optional(),
   node: z.record(z.string(), z.unknown()),
   page_id: z.string(),
   tags: z.string(),
-  version_id: z.string().nullable().optional(),
 });
 export type BoardBody = z.infer<typeof BoardBodySchema>;
-
-export const HistoryEntrySchema = z.object({
-  actor: z.string(),
-  at: z.string(),
-  from_status: z.string().nullable().optional(),
-  reason: z.string().nullable().optional(),
-  to_status: z.string(),
-});
-export type HistoryEntry = z.infer<typeof HistoryEntrySchema>;
-
-export const LinkedDecisionSchema = z.object({
-  id: z.string(),
-  status: z.string(),
-  thread_id: z.string(),
-});
-export type LinkedDecision = z.infer<typeof LinkedDecisionSchema>;
-
-export const ChangesetBodySchema = z.object({
-  approved_versions: z.array(ApprovedVersionSchema),
-  created_at: z.string(),
-  decisions: z.array(LinkedDecisionSchema),
-  description: z.string(),
-  feature_id: z.string().nullable().optional(),
-  history: z.array(HistoryEntrySchema),
-  id: z.string(),
-  project_id: z.string(),
-  run_tag: z.string().nullable().optional(),
-  status: z.string(),
-  title: z.string(),
-});
-export type ChangesetBody = z.infer<typeof ChangesetBodySchema>;
-
-export const ChangesetListResponseSchema = z.object({
-  changesets: z.array(ChangesetBodySchema),
-});
-export type ChangesetListResponse = z.infer<typeof ChangesetListResponseSchema>;
-
-export const ChangesetResponseSchema = z.object({
-  changeset: ChangesetBodySchema,
-});
-export type ChangesetResponse = z.infer<typeof ChangesetResponseSchema>;
-
-export const ClaimBodySchema = z.object({
-  agent: z.record(z.string(), z.unknown()),
-  changeset_id: z.string(),
-  doc_id: z.string(),
-  draft_id: z.string(),
-  expires_at: z.string(),
-  id: z.string(),
-  node: z.string(),
-  taken_at: z.string(),
-});
-export type ClaimBody = z.infer<typeof ClaimBodySchema>;
-
-export const ClaimRequestSchema = z.object({
-  node: z.string().nullable().optional(),
-});
-export type ClaimRequest = z.infer<typeof ClaimRequestSchema>;
-
-export const ClaimResponseSchema = z.object({
-  claim: ClaimBodySchema,
-});
-export type ClaimResponse = z.infer<typeof ClaimResponseSchema>;
-
-export const ClaimedBodySchema = z.object({
-  claim: ClaimBodySchema,
-  error: z.string(),
-  index: z.number().int().nullable().optional(),
-  message: z.string(),
-});
-export type ClaimedBody = z.infer<typeof ClaimedBodySchema>;
 
 export const ReplyBodySchema = z.object({
   author: z.record(z.string(), z.unknown()),
@@ -215,7 +135,6 @@ export const CommentBodySchema = z.object({
   replies: z.array(ReplyBodySchema),
   snapshot: z.string().optional(),
   text: z.string(),
-  version_id: z.string().nullable().optional(),
   waiting_on_you: z.boolean().optional(),
 });
 export type CommentBody = z.infer<typeof CommentBodySchema>;
@@ -260,42 +179,11 @@ export const ConflictBodySchema = z.object({
 });
 export type ConflictBody = z.infer<typeof ConflictBodySchema>;
 
-export const ConflictKindSchema = z.enum(["both_changed", "unplaced"]);
-export type ConflictKind = z.infer<typeof ConflictKindSchema>;
-
-export const ConflictResolutionSchema = z.object({
-  note: z.string(),
-  resolved_at: z.string(),
-});
-export type ConflictResolution = z.infer<typeof ConflictResolutionSchema>;
-
-export const ConflictSideSchema = z.object({
-  html: z.string().nullable().optional(),
-  version_id: z.string(),
-});
-export type ConflictSide = z.infer<typeof ConflictSideSchema>;
-
-export const CreateChangesetRequestSchema = z.object({
-  description: z.string().nullable().optional(),
-  feature_id: z.string().nullable().optional(),
-  run_tag: z.string().nullable().optional(),
-  title: z.string().nullable().optional(),
-});
-export type CreateChangesetRequest = z.infer<typeof CreateChangesetRequestSchema>;
-
 export const CreateCommentRequestSchema = z.object({
   node: z.string().nullable().optional(),
   text: z.string().nullable().optional(),
 });
 export type CreateCommentRequest = z.infer<typeof CreateCommentRequestSchema>;
-
-export const CreateDirectiveRequestSchema = z.object({
-  attachments: z.array(z.string()).nullable().optional(),
-  body: z.string().nullable().optional(),
-  links: z.array(z.record(z.string(), z.unknown())).nullable().optional(),
-  summary: z.string().nullable().optional(),
-});
-export type CreateDirectiveRequest = z.infer<typeof CreateDirectiveRequestSchema>;
 
 export const CreateDocRequestSchema = z.object({
   kind: z.string().nullable().optional(),
@@ -317,7 +205,6 @@ export const CreatePostRequestSchema = z.object({
   links: z.array(z.record(z.string(), z.unknown())).nullable().optional(),
   replaces: z.string().nullable().optional(),
   summary: z.string().nullable().optional(),
-  type: z.string().nullable().optional(),
 });
 export type CreatePostRequest = z.infer<typeof CreatePostRequestSchema>;
 
@@ -326,141 +213,17 @@ export const CreateProjectRequestSchema = z.object({
 });
 export type CreateProjectRequest = z.infer<typeof CreateProjectRequestSchema>;
 
-export const CreateThreadRequestSchema = z.object({
-  criteria: z.array(z.string()).nullable().optional(),
-  question: z.string().nullable().optional(),
-  sealed: z.boolean().nullable().optional(),
-});
-export type CreateThreadRequest = z.infer<typeof CreateThreadRequestSchema>;
-
-export const DraftBodySchema = z.object({
-  base_version_id: z.string().nullable().optional(),
-  changeset_id: z.string(),
-  doc_id: z.string(),
-  id: z.string(),
-});
-export type DraftBody = z.infer<typeof DraftBodySchema>;
-
-export const DocBodySchema = z.object({
-  claims: z.array(ClaimBodySchema),
-  created_at: z.string(),
-  drafts: z.array(DraftBodySchema),
-  feature_id: z.string().nullable().optional(),
-  id: z.string(),
-  kind: z.string(),
-  mainline_version_id: z.string().nullable().optional(),
-  pillar: z.string(),
-  project_id: z.string(),
-  title: z.string(),
-});
-export type DocBody = z.infer<typeof DocBodySchema>;
-
-export const CreatedDocResponseSchema = z.object({
-  doc: DocBodySchema,
-  draft: DraftBodySchema,
-});
-export type CreatedDocResponse = z.infer<typeof CreatedDocResponseSchema>;
-
 export const CreatedKeyResponseSchema = z.object({
   key: ApiKeyBodySchema,
   secret: z.string(),
 });
 export type CreatedKeyResponse = z.infer<typeof CreatedKeyResponseSchema>;
 
-export const DecisionOptionSchema = z.strictObject({
-  lost_because: z.string().nullable().optional(),
-  name: z.string(),
-  scores: z.record(z.string(), z.unknown()),
-});
-export type DecisionOption = z.infer<typeof DecisionOptionSchema>;
-
-export const DissentSchema = z.strictObject({
-  by: z.string(),
-  text: z.string(),
-});
-export type Dissent = z.infer<typeof DissentSchema>;
-
-export const DecisionBodySchema = z.object({
-  assumptions: z.array(z.string()),
-  author: z.record(z.string(), z.unknown()),
-  changeset_id: z.string(),
-  chosen: z.string(),
-  created_at: z.string(),
-  criteria: z.array(z.string()),
-  direction: z.string(),
-  dissent: z.array(DissentSchema),
-  feature_id: z.string().nullable().optional(),
-  id: z.string(),
-  open_questions: z.array(z.string()),
-  options: z.array(DecisionOptionSchema),
-  posts: z.array(z.string()),
-  project_id: z.string(),
-  rejection_reason: z.string().nullable().optional(),
-  status: z.string(),
-  thread_id: z.string(),
-});
-export type DecisionBody = z.infer<typeof DecisionBodySchema>;
-
-export const DecisionFileSchema = z.strictObject({
-  assumptions: z.array(z.string()),
-  chosen: z.string(),
-  criteria: z.array(z.string()),
-  direction: z.string(),
-  dissent: z.array(DissentSchema),
-  open_questions: z.array(z.string()),
-  options: z.array(DecisionOptionSchema),
-  posts: z.array(z.string()),
-});
-export type DecisionFile = z.infer<typeof DecisionFileSchema>;
-
-export const DecisionResponseSchema = z.object({
-  decision: DecisionBodySchema,
-});
-export type DecisionResponse = z.infer<typeof DecisionResponseSchema>;
-
-export const MovedNodeSchema = z.object({
-  from_after: z.string().nullable().optional(),
-  from_parent: z.string().nullable().optional(),
-  id: z.string(),
-  to_after: z.string().nullable().optional(),
-  to_parent: z.string().nullable().optional(),
-  type: z.string(),
-});
-export type MovedNode = z.infer<typeof MovedNodeSchema>;
-
-export const NodeEntrySchema = z.object({
-  fingerprint: z.string(),
-  id: z.string(),
-  parent: z.string().nullable().optional(),
-  type: z.string(),
-});
-export type NodeEntry = z.infer<typeof NodeEntrySchema>;
-
-export const DiffBodySchema = z.object({
-  added: z.array(NodeEntrySchema),
-  changed: z.array(NodeEntrySchema),
-  doc_id: z.string(),
-  from: z.string(),
-  from_design_system_version_id: z.string().nullable().optional(),
-  moved: z.array(MovedNodeSchema),
-  removed: z.array(NodeEntrySchema),
-  to: z.string(),
-  to_design_system_version_id: z.string().nullable().optional(),
-});
-export type DiffBody = z.infer<typeof DiffBodySchema>;
-
-export const DiffResponseSchema = z.object({
-  diff: DiffBodySchema,
-});
-export type DiffResponse = z.infer<typeof DiffResponseSchema>;
-
 export const DigestEntrySchema = z.object({
   author: z.record(z.string(), z.unknown()),
   created_at: z.string(),
   id: z.string(),
-  phase: z.number().int().nullable().optional(),
   summary: z.string(),
-  type: z.string().nullable().optional(),
 });
 export type DigestEntry = z.infer<typeof DigestEntrySchema>;
 
@@ -471,6 +234,17 @@ export const DigestResponseSchema = z.object({
 });
 export type DigestResponse = z.infer<typeof DigestResponseSchema>;
 
+export const DocBodySchema = z.object({
+  created_at: z.string(),
+  feature_id: z.string().nullable().optional(),
+  id: z.string(),
+  kind: z.string(),
+  pillar: z.string(),
+  project_id: z.string(),
+  title: z.string(),
+});
+export type DocBody = z.infer<typeof DocBodySchema>;
+
 export const DocListResponseSchema = z.object({
   docs: z.array(DocBodySchema),
 });
@@ -480,36 +254,6 @@ export const DocResponseSchema = z.object({
   doc: DocBodySchema,
 });
 export type DocResponse = z.infer<typeof DocResponseSchema>;
-
-export const DraftWithHtmlSchema = z.intersection(DraftBodySchema, z.object({
-  components: z.array(z.record(z.string(), z.unknown())).nullable().optional(),
-  design_system: z.record(z.string(), z.unknown()).nullable().optional(),
-  html: z.string(),
-  pages: z.array(z.record(z.string(), z.unknown())).nullable().optional(),
-  tags: z.string().nullable().optional(),
-  tokens: z.record(z.string(), z.unknown()).nullable().optional(),
-}));
-export type DraftWithHtml = z.infer<typeof DraftWithHtmlSchema>;
-
-export const DraftHtmlResponseSchema = z.object({
-  draft: DraftWithHtmlSchema,
-});
-export type DraftHtmlResponse = z.infer<typeof DraftHtmlResponseSchema>;
-
-export const DraftResponseSchema = z.object({
-  draft: DraftBodySchema,
-});
-export type DraftResponse = z.infer<typeof DraftResponseSchema>;
-
-export const DraftTokensResponseSchema = z.object({
-  changeset_id: z.string(),
-  doc_id: z.string().nullable().optional(),
-  draft_id: z.string().nullable().optional(),
-  mode: z.string().nullable().optional(),
-  modes: z.array(z.string()),
-  tokens: z.record(z.string(), z.unknown()).nullable().optional(),
-});
-export type DraftTokensResponse = z.infer<typeof DraftTokensResponseSchema>;
 
 export const EditRequestSchema = z.object({
   board: z.string().nullable().optional(),
@@ -558,7 +302,6 @@ export const FeatureSummarySchema = z.object({
   docs: z.number().int(),
   feature: FeatureBodySchema,
   last_activity: z.string().nullable().optional(),
-  open_changesets: z.number().int(),
   waiting: z.number().int(),
 });
 export type FeatureSummary = z.infer<typeof FeatureSummarySchema>;
@@ -569,26 +312,21 @@ export const HeadBoardSchema = z.object({
 });
 export type HeadBoard = z.infer<typeof HeadBoardSchema>;
 
+export const HeadTokensResponseSchema = z.object({
+  doc_id: z.string().nullable().optional(),
+  mode: z.string().nullable().optional(),
+  modes: z.array(z.string()),
+  project_id: z.string(),
+  tokens: z.record(z.string(), z.unknown()).nullable().optional(),
+});
+export type HeadTokensResponse = z.infer<typeof HeadTokensResponseSchema>;
+
 export const HomeDocSchema = z.intersection(DocBodySchema, z.object({
   last_writer_role: z.string().optional(),
   updated_at: z.string().optional(),
   waiting: z.number().int().optional(),
 }));
 export type HomeDoc = z.infer<typeof HomeDocSchema>;
-
-export const PosterBodySchema = z.object({
-  role: z.string().nullable().optional(),
-  run: z.string().nullable().optional(),
-});
-export type PosterBody = z.infer<typeof PosterBodySchema>;
-
-export const PhaseBodySchema = z.object({
-  number: z.number().int(),
-  posted_by: z.array(PosterBodySchema),
-  sealed: z.boolean(),
-  started_at: z.string(),
-});
-export type PhaseBody = z.infer<typeof PhaseBodySchema>;
 
 export const PostBodySchema = z.object({
   attachments: z.array(z.string()),
@@ -600,23 +338,17 @@ export const PostBodySchema = z.object({
   feature_id: z.string().nullable().optional(),
   id: z.string(),
   links: z.array(z.record(z.string(), z.unknown())),
-  phase: z.number().int().nullable().optional(),
   replaces: z.string().nullable().optional(),
   summary: z.string(),
   thread_id: z.string(),
-  type: z.string().nullable().optional(),
 });
 export type PostBody = z.infer<typeof PostBodySchema>;
 
 export const ThreadBodySchema = z.object({
-  changeset_id: z.string().nullable().optional(),
   conclusion: z.string().nullable().optional(),
   created_at: z.string(),
-  criteria: z.array(z.string()).nullable().optional(),
-  decision: z.record(z.string(), z.unknown()).nullable().optional(),
   feature_id: z.string().nullable().optional(),
   id: z.string(),
-  phases: z.array(PhaseBodySchema).nullable().optional(),
   posts: z.array(PostBodySchema).nullable().optional(),
   project_id: z.string(),
   question: z.string(),
@@ -633,10 +365,7 @@ export const HomeThreadSchema = z.intersection(ThreadBodySchema, z.object({
 export type HomeThread = z.infer<typeof HomeThreadSchema>;
 
 export const WaitingBodySchema = z.object({
-  changesets: z.array(ChangesetBodySchema),
   comments: z.array(CommentBodySchema),
-  decisions: z.array(DecisionBodySchema),
-  questions: z.array(PostBodySchema),
 });
 export type WaitingBody = z.infer<typeof WaitingBodySchema>;
 
@@ -645,7 +374,6 @@ export const HomeResponseSchema = z.object({
     z.null(),
     AppSummarySchema,
   ]).optional(),
-  changesets: z.array(ChangesetBodySchema),
   docs: z.array(HomeDocSchema),
   features: z.array(FeatureSummarySchema).optional(),
   project_id: z.string(),
@@ -663,24 +391,6 @@ export const ImportTokensRequestSchema = z.object({
   tokens: z.record(z.string(), z.unknown()),
 });
 export type ImportTokensRequest = z.infer<typeof ImportTokensRequestSchema>;
-
-export const ImportedComponentsSchema = z.object({
-  changeset_id: z.string(),
-  components: z.array(z.record(z.string(), z.unknown())),
-  doc_id: z.string(),
-  draft_id: z.string(),
-  tags: z.string(),
-});
-export type ImportedComponents = z.infer<typeof ImportedComponentsSchema>;
-
-export const ImportedDesignSchema = z.object({
-  changeset_id: z.string(),
-  doc_id: z.string(),
-  draft_id: z.string(),
-  pages: z.array(z.record(z.string(), z.unknown())),
-  tags: z.string(),
-});
-export type ImportedDesign = z.infer<typeof ImportedDesignSchema>;
 
 export const ImportedHeadComponentsSchema = z.object({
   components: z.array(z.record(z.string(), z.unknown())),
@@ -738,7 +448,7 @@ export type LiveClientMessage = z.infer<typeof LiveClientMessageSchema>;
 export const LiveErrorCodeSchema = z.enum(["not_found", "invalid_request", "unavailable"]);
 export type LiveErrorCode = z.infer<typeof LiveErrorCodeSchema>;
 
-export const LiveEventNameSchema = z.enum(["changeset.open", "changeset.in_review", "changeset.approved", "changeset.rejected", "changeset.merged", "changeset.needs_rebase", "changeset.abandoned", "claim.taken", "claim.released", "claim.expired", "comment.created", "comment.replied", "comment.deleted", "comment.status_changed", "components.imported", "conflict.recorded", "conflict.resolved", "decision.proposed", "decision.superseded", "decision.approved", "decision.rejected", "design.imported", "doc.changed", "doc.created", "doc.deleted", "doc.renamed", "draft.opened", "draft.rebased", "feature.created", "feature.deleted", "feature.renamed", "op.applied", "phase.started", "post.created", "thread.concluded", "thread.created", "tokens.imported", "version.saved"]);
+export const LiveEventNameSchema = z.enum(["comment.created", "comment.replied", "comment.deleted", "comment.status_changed", "doc.changed", "doc.created", "doc.deleted", "doc.renamed", "feature.created", "feature.deleted", "feature.renamed", "post.created", "thread.concluded", "thread.created"]);
 export type LiveEventName = z.infer<typeof LiveEventNameSchema>;
 
 export const LiveServerMessageSchema = z.union([
@@ -777,19 +487,8 @@ export const MainlineHtmlResponseSchema = z.object({
   pages: z.array(z.record(z.string(), z.unknown())).nullable().optional(),
   tags: z.string().nullable().optional(),
   tokens: z.record(z.string(), z.unknown()).nullable().optional(),
-  version_id: z.string().nullable().optional(),
 });
 export type MainlineHtmlResponse = z.infer<typeof MainlineHtmlResponseSchema>;
-
-export const MainlineTokensResponseSchema = z.object({
-  doc_id: z.string().nullable().optional(),
-  mode: z.string().nullable().optional(),
-  modes: z.array(z.string()),
-  project_id: z.string(),
-  tokens: z.record(z.string(), z.unknown()).nullable().optional(),
-  version_id: z.string().nullable().optional(),
-});
-export type MainlineTokensResponse = z.infer<typeof MainlineTokensResponseSchema>;
 
 export const ManifestBoardSchema = z.object({
   chunk: z.string(),
@@ -833,47 +532,6 @@ export const ProjectResponseSchema = z.object({
 });
 export type ProjectResponse = z.infer<typeof ProjectResponseSchema>;
 
-export const RecordedConflictSchema = z.object({
-  changeset: ConflictSideSchema,
-  changeset_id: z.string(),
-  doc_id: z.string(),
-  id: z.string(),
-  kind: ConflictKindSchema,
-  mainline: ConflictSideSchema,
-  node: z.string(),
-  resolution: z.union([
-    z.null(),
-    ConflictResolutionSchema,
-  ]).optional(),
-});
-export type RecordedConflict = z.infer<typeof RecordedConflictSchema>;
-
-export const RebaseResponseSchema = z.object({
-  changeset: ChangesetBodySchema,
-  conflicts: z.array(RecordedConflictSchema),
-});
-export type RebaseResponse = z.infer<typeof RebaseResponseSchema>;
-
-export const RecordedConflictListResponseSchema = z.object({
-  conflicts: z.array(RecordedConflictSchema),
-});
-export type RecordedConflictListResponse = z.infer<typeof RecordedConflictListResponseSchema>;
-
-export const RecordedConflictResponseSchema = z.object({
-  conflict: RecordedConflictSchema,
-});
-export type RecordedConflictResponse = z.infer<typeof RecordedConflictResponseSchema>;
-
-export const RejectDecisionRequestSchema = z.object({
-  reason: z.string().nullable().optional(),
-});
-export type RejectDecisionRequest = z.infer<typeof RejectDecisionRequestSchema>;
-
-export const RejectRequestSchema = z.object({
-  reason: z.string().nullable().optional(),
-});
-export type RejectRequest = z.infer<typeof RejectRequestSchema>;
-
 export const RenameDocRequestSchema = z.object({
   title: z.string().nullable().optional(),
 });
@@ -889,43 +547,6 @@ export const ReplyRequestSchema = z.object({
 });
 export type ReplyRequest = z.infer<typeof ReplyRequestSchema>;
 
-export const ResolveConflictRequestSchema = z.object({
-  note: z.string().nullable().optional(),
-});
-export type ResolveConflictRequest = z.infer<typeof ResolveConflictRequestSchema>;
-
-export const ReviewChangesSchema = z.object({
-  added: z.array(NodeEntrySchema),
-  changed: z.array(NodeEntrySchema),
-  moved: z.array(MovedNodeSchema),
-  removed: z.array(NodeEntrySchema),
-});
-export type ReviewChanges = z.infer<typeof ReviewChangesSchema>;
-
-export const ReviewedDocSchema = z.object({
-  base_version_id: z.string().nullable().optional(),
-  changes: ReviewChangesSchema,
-  doc_id: z.string(),
-  kind: z.string(),
-  pillar: z.string(),
-  removed: z.boolean(),
-  title: z.string(),
-  version_id: z.string(),
-});
-export type ReviewedDoc = z.infer<typeof ReviewedDocSchema>;
-
-export const ReviewResponseSchema = z.object({
-  changeset: ChangesetBodySchema,
-  decisions: z.array(DecisionBodySchema),
-  docs: z.array(ReviewedDocSchema),
-});
-export type ReviewResponse = z.infer<typeof ReviewResponseSchema>;
-
-export const SaveVersionRequestSchema = z.object({
-  remove_commented: z.boolean().nullable().optional(),
-});
-export type SaveVersionRequest = z.infer<typeof SaveVersionRequestSchema>;
-
 export const SingleCommentResponseSchema = z.object({
   comment: CommentBodySchema,
   project_id: z.string(),
@@ -937,11 +558,6 @@ export const SinglePostResponseSchema = z.object({
   project_id: z.string(),
 });
 export type SinglePostResponse = z.infer<typeof SinglePostResponseSchema>;
-
-export const StartPhaseRequestSchema = z.object({
-  sealed: z.boolean().nullable().optional(),
-});
-export type StartPhaseRequest = z.infer<typeof StartPhaseRequestSchema>;
 
 export const StartThreadRequestSchema = z.object({
   question: z.string().nullable().optional(),
@@ -967,7 +583,6 @@ export const UsageBoardSchema = z.object({
   doc_title: z.string(),
   page_id: z.string(),
   page_name: z.string(),
-  version_id: z.string().nullable().optional(),
 });
 export type UsageBoard = z.infer<typeof UsageBoardSchema>;
 
@@ -988,50 +603,6 @@ export const UserResponseSchema = z.object({
   user: UserBodySchema,
 });
 export type UserResponse = z.infer<typeof UserResponseSchema>;
-
-export const VersionBodySchema = z.object({
-  agent: z.record(z.string(), z.unknown()),
-  changeset_id: z.string(),
-  components: z.array(z.record(z.string(), z.unknown())).nullable().optional(),
-  created_at: z.string(),
-  design_system_version_id: z.string().nullable().optional(),
-  doc_id: z.string(),
-  draft_id: z.string().nullable().optional(),
-  id: z.string(),
-  manifest: z.union([
-    z.null(),
-    ManifestSchema,
-  ]).optional(),
-  nodes: z.array(NodeEntrySchema),
-  outline: z.array(z.record(z.string(), z.unknown())).nullable().optional(),
-  pages: z.array(z.record(z.string(), z.unknown())).nullable().optional(),
-  removed: z.boolean(),
-  tags: z.string().nullable().optional(),
-  tokens: z.record(z.string(), z.unknown()).nullable().optional(),
-});
-export type VersionBody = z.infer<typeof VersionBodySchema>;
-
-export const VersionItemSchema = z.object({
-  agent: z.record(z.string(), z.unknown()),
-  changeset_id: z.string(),
-  created_at: z.string(),
-  doc_id: z.string(),
-  draft_id: z.string().nullable().optional(),
-  id: z.string(),
-  removed: z.boolean(),
-});
-export type VersionItem = z.infer<typeof VersionItemSchema>;
-
-export const VersionListResponseSchema = z.object({
-  doc_id: z.string(),
-  versions: z.array(VersionItemSchema),
-});
-export type VersionListResponse = z.infer<typeof VersionListResponseSchema>;
-
-export const VersionResponseSchema = z.object({
-  version: VersionBodySchema,
-});
-export type VersionResponse = z.infer<typeof VersionResponseSchema>;
 
 export const WhoamiResponseSchema = z.object({
   actor: ActorBodySchema,
@@ -1060,17 +631,9 @@ export const schemas = {
   ActorBody: ActorBodySchema,
   ApiKeyBody: ApiKeyBodySchema,
   AppSummary: AppSummarySchema,
-  ApprovedVersion: ApprovedVersionSchema,
   AttachmentBody: AttachmentBodySchema,
   AttachmentResponse: AttachmentResponseSchema,
   BoardBody: BoardBodySchema,
-  ChangesetBody: ChangesetBodySchema,
-  ChangesetListResponse: ChangesetListResponseSchema,
-  ChangesetResponse: ChangesetResponseSchema,
-  ClaimBody: ClaimBodySchema,
-  ClaimRequest: ClaimRequestSchema,
-  ClaimResponse: ClaimResponseSchema,
-  ClaimedBody: ClaimedBodySchema,
   CommentBody: CommentBodySchema,
   CommentListResponse: CommentListResponseSchema,
   CommentResponse: CommentResponseSchema,
@@ -1078,36 +641,17 @@ export const schemas = {
   ConcludeThreadRequest: ConcludeThreadRequestSchema,
   ConflictBody: ConflictBodySchema,
   ConflictDetails: ConflictDetailsSchema,
-  ConflictKind: ConflictKindSchema,
-  ConflictResolution: ConflictResolutionSchema,
-  ConflictSide: ConflictSideSchema,
-  CreateChangesetRequest: CreateChangesetRequestSchema,
   CreateCommentRequest: CreateCommentRequestSchema,
-  CreateDirectiveRequest: CreateDirectiveRequestSchema,
   CreateDocRequest: CreateDocRequestSchema,
   CreateFeatureRequest: CreateFeatureRequestSchema,
   CreatePostRequest: CreatePostRequestSchema,
   CreateProjectRequest: CreateProjectRequestSchema,
-  CreateThreadRequest: CreateThreadRequestSchema,
-  CreatedDocResponse: CreatedDocResponseSchema,
   CreatedKeyResponse: CreatedKeyResponseSchema,
-  DecisionBody: DecisionBodySchema,
-  DecisionFile: DecisionFileSchema,
-  DecisionOption: DecisionOptionSchema,
-  DecisionResponse: DecisionResponseSchema,
-  DiffBody: DiffBodySchema,
-  DiffResponse: DiffResponseSchema,
   DigestEntry: DigestEntrySchema,
   DigestResponse: DigestResponseSchema,
-  Dissent: DissentSchema,
   DocBody: DocBodySchema,
   DocListResponse: DocListResponseSchema,
   DocResponse: DocResponseSchema,
-  DraftBody: DraftBodySchema,
-  DraftHtmlResponse: DraftHtmlResponseSchema,
-  DraftResponse: DraftResponseSchema,
-  DraftTokensResponse: DraftTokensResponseSchema,
-  DraftWithHtml: DraftWithHtmlSchema,
   EditRequest: EditRequestSchema,
   EditResponse: EditResponseSchema,
   ErrorBody: ErrorBodySchema,
@@ -1116,14 +660,12 @@ export const schemas = {
   FeatureResponse: FeatureResponseSchema,
   FeatureSummary: FeatureSummarySchema,
   HeadBoard: HeadBoardSchema,
-  HistoryEntry: HistoryEntrySchema,
+  HeadTokensResponse: HeadTokensResponseSchema,
   HomeDoc: HomeDocSchema,
   HomeResponse: HomeResponseSchema,
   HomeThread: HomeThreadSchema,
   ImportTagsRequest: ImportTagsRequestSchema,
   ImportTokensRequest: ImportTokensRequestSchema,
-  ImportedComponents: ImportedComponentsSchema,
-  ImportedDesign: ImportedDesignSchema,
   ImportedHeadComponents: ImportedHeadComponentsSchema,
   ImportedHeadTokens: ImportedHeadTokensSchema,
   InvalidDesignBody: InvalidDesignBodySchema,
@@ -1131,45 +673,27 @@ export const schemas = {
   InvalidTokensBody: InvalidTokensBodySchema,
   KeyListResponse: KeyListResponseSchema,
   KeyResponse: KeyResponseSchema,
-  LinkedDecision: LinkedDecisionSchema,
   LiveClientMessage: LiveClientMessageSchema,
   LiveErrorCode: LiveErrorCodeSchema,
   LiveEventName: LiveEventNameSchema,
   LiveServerMessage: LiveServerMessageSchema,
   LoginRequest: LoginRequestSchema,
   MainlineHtmlResponse: MainlineHtmlResponseSchema,
-  MainlineTokensResponse: MainlineTokensResponseSchema,
   Manifest: ManifestSchema,
   ManifestBoard: ManifestBoardSchema,
   ManifestPage: ManifestPageSchema,
-  MovedNode: MovedNodeSchema,
-  NodeEntry: NodeEntrySchema,
   OpResultBody: OpResultBodySchema,
-  PhaseBody: PhaseBodySchema,
   PostBody: PostBodySchema,
   PostResponse: PostResponseSchema,
-  PosterBody: PosterBodySchema,
   ProjectBody: ProjectBodySchema,
   ProjectListResponse: ProjectListResponseSchema,
   ProjectResponse: ProjectResponseSchema,
-  RebaseResponse: RebaseResponseSchema,
-  RecordedConflict: RecordedConflictSchema,
-  RecordedConflictListResponse: RecordedConflictListResponseSchema,
-  RecordedConflictResponse: RecordedConflictResponseSchema,
-  RejectDecisionRequest: RejectDecisionRequestSchema,
-  RejectRequest: RejectRequestSchema,
   RenameDocRequest: RenameDocRequestSchema,
   RenameFeatureRequest: RenameFeatureRequestSchema,
   ReplyBody: ReplyBodySchema,
   ReplyRequest: ReplyRequestSchema,
-  ResolveConflictRequest: ResolveConflictRequestSchema,
-  ReviewChanges: ReviewChangesSchema,
-  ReviewResponse: ReviewResponseSchema,
-  ReviewedDoc: ReviewedDocSchema,
-  SaveVersionRequest: SaveVersionRequestSchema,
   SingleCommentResponse: SingleCommentResponseSchema,
   SinglePostResponse: SinglePostResponseSchema,
-  StartPhaseRequest: StartPhaseRequestSchema,
   StartThreadRequest: StartThreadRequestSchema,
   ThreadBody: ThreadBodySchema,
   ThreadListResponse: ThreadListResponseSchema,
@@ -1180,10 +704,6 @@ export const schemas = {
   UsageResponse: UsageResponseSchema,
   UserBody: UserBodySchema,
   UserResponse: UserResponseSchema,
-  VersionBody: VersionBodySchema,
-  VersionItem: VersionItemSchema,
-  VersionListResponse: VersionListResponseSchema,
-  VersionResponse: VersionResponseSchema,
   WaitingBody: WaitingBodySchema,
   WhoamiResponse: WhoamiResponseSchema,
   WorkspaceBody: WorkspaceBodySchema,
@@ -1287,254 +807,6 @@ export const operations = {
       "409": ErrorBodySchema,
     },
   },
-  "GET /api/v1/w/{workspace_id}/projects/{project_id}/changesets": {
-    responses: {
-      "200": ChangesetListResponseSchema,
-      "400": ErrorBodySchema,
-      "401": ErrorBodySchema,
-      "404": ErrorBodySchema,
-    },
-  },
-  "POST /api/v1/w/{workspace_id}/projects/{project_id}/changesets": {
-    request: CreateChangesetRequestSchema,
-    responses: {
-      "201": ChangesetResponseSchema,
-      "400": ErrorBodySchema,
-      "401": ErrorBodySchema,
-      "403": ErrorBodySchema,
-      "404": ErrorBodySchema,
-      "422": ErrorBodySchema,
-    },
-  },
-  "GET /api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}": {
-    responses: {
-      "200": ChangesetResponseSchema,
-      "401": ErrorBodySchema,
-      "404": ErrorBodySchema,
-    },
-  },
-  "POST /api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/abandon": {
-    responses: {
-      "200": ChangesetResponseSchema,
-      "401": ErrorBodySchema,
-      "403": ErrorBodySchema,
-      "404": ErrorBodySchema,
-      "409": ErrorBodySchema,
-    },
-  },
-  "POST /api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/approve": {
-    responses: {
-      "200": ChangesetResponseSchema,
-      "401": ErrorBodySchema,
-      "403": ErrorBodySchema,
-      "404": ErrorBodySchema,
-      "409": ErrorBodySchema,
-    },
-  },
-  "POST /api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/claims": {
-    request: ClaimRequestSchema,
-    responses: {
-      "200": ClaimResponseSchema,
-      "201": ClaimResponseSchema,
-      "400": ErrorBodySchema,
-      "401": ErrorBodySchema,
-      "403": ErrorBodySchema,
-      "404": ErrorBodySchema,
-      "409": ClaimedBodySchema,
-    },
-  },
-  "POST /api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/claims/release": {
-    request: ClaimRequestSchema,
-    responses: {
-      "200": ClaimResponseSchema,
-      "400": ErrorBodySchema,
-      "401": ErrorBodySchema,
-      "403": ErrorBodySchema,
-      "404": ErrorBodySchema,
-      "409": ClaimedBodySchema,
-    },
-  },
-  "PUT /api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/components": {
-    request: ImportTagsRequestSchema,
-    responses: {
-      "200": ImportedComponentsSchema,
-      "400": InvalidDesignBodySchema,
-      "401": ErrorBodySchema,
-      "403": ErrorBodySchema,
-      "404": ErrorBodySchema,
-      "409": ErrorBodySchema,
-    },
-  },
-  "GET /api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/conflicts": {
-    responses: {
-      "200": RecordedConflictListResponseSchema,
-      "401": ErrorBodySchema,
-      "404": ErrorBodySchema,
-    },
-  },
-  "POST /api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/decisions/{decision_id}": {
-    responses: {
-      "200": ChangesetResponseSchema,
-      "401": ErrorBodySchema,
-      "403": ErrorBodySchema,
-      "404": ErrorBodySchema,
-    },
-  },
-  "POST /api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs": {
-    request: CreateDocRequestSchema,
-    responses: {
-      "201": CreatedDocResponseSchema,
-      "400": ErrorBodySchema,
-      "401": ErrorBodySchema,
-      "403": ErrorBodySchema,
-      "404": ErrorBodySchema,
-      "409": ErrorBodySchema,
-      "422": ErrorBodySchema,
-    },
-  },
-  "GET /api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs/{doc_id}": {
-    responses: {
-      "200": DraftHtmlResponseSchema,
-      "401": ErrorBodySchema,
-      "404": ErrorBodySchema,
-    },
-  },
-  "GET /api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs/{doc_id}/boards/{board_id}": {
-    responses: {
-      "200": BoardBodySchema,
-      "400": ErrorBodySchema,
-      "401": ErrorBodySchema,
-      "404": ErrorBodySchema,
-    },
-  },
-  "PUT /api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs/{doc_id}/design": {
-    request: ImportTagsRequestSchema,
-    responses: {
-      "200": ImportedDesignSchema,
-      "400": InvalidDesignBodySchema,
-      "401": ErrorBodySchema,
-      "403": ErrorBodySchema,
-      "404": ErrorBodySchema,
-      "409": ErrorBodySchema,
-    },
-  },
-  "POST /api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs/{doc_id}/open": {
-    responses: {
-      "200": DraftResponseSchema,
-      "201": DraftResponseSchema,
-      "401": ErrorBodySchema,
-      "403": ErrorBodySchema,
-      "404": ErrorBodySchema,
-      "409": ErrorBodySchema,
-    },
-  },
-  "POST /api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs/{doc_id}/ops": {
-    request: EditRequestSchema,
-    responses: {
-      "200": EditResponseSchema,
-      "400": InvalidOperationBodySchema,
-      "401": ErrorBodySchema,
-      "403": ErrorBodySchema,
-      "404": ErrorBodySchema,
-      "409": ConflictBodySchema,
-    },
-  },
-  "POST /api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs/{doc_id}/remove": {
-    request: SaveVersionRequestSchema,
-    responses: {
-      "201": VersionResponseSchema,
-      "400": ErrorBodySchema,
-      "401": ErrorBodySchema,
-      "403": ErrorBodySchema,
-      "404": ErrorBodySchema,
-    },
-  },
-  "POST /api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs/{doc_id}/versions": {
-    request: SaveVersionRequestSchema,
-    responses: {
-      "201": VersionResponseSchema,
-      "400": ErrorBodySchema,
-      "401": ErrorBodySchema,
-      "403": ErrorBodySchema,
-      "404": ErrorBodySchema,
-      "409": ErrorBodySchema,
-    },
-  },
-  "POST /api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/rebase": {
-    responses: {
-      "200": RebaseResponseSchema,
-      "401": ErrorBodySchema,
-      "403": ErrorBodySchema,
-      "404": ErrorBodySchema,
-      "409": ErrorBodySchema,
-    },
-  },
-  "POST /api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/reject": {
-    request: RejectRequestSchema,
-    responses: {
-      "200": ChangesetResponseSchema,
-      "400": ErrorBodySchema,
-      "401": ErrorBodySchema,
-      "403": ErrorBodySchema,
-      "404": ErrorBodySchema,
-      "409": ErrorBodySchema,
-    },
-  },
-  "POST /api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/reopen": {
-    responses: {
-      "200": ChangesetResponseSchema,
-      "401": ErrorBodySchema,
-      "403": ErrorBodySchema,
-      "404": ErrorBodySchema,
-      "409": ErrorBodySchema,
-    },
-  },
-  "GET /api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/review": {
-    responses: {
-      "200": ReviewResponseSchema,
-      "401": ErrorBodySchema,
-      "403": ErrorBodySchema,
-      "404": ErrorBodySchema,
-    },
-  },
-  "POST /api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/submit": {
-    responses: {
-      "200": ChangesetResponseSchema,
-      "401": ErrorBodySchema,
-      "403": ErrorBodySchema,
-      "404": ErrorBodySchema,
-      "409": ErrorBodySchema,
-    },
-  },
-  "POST /api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/threads": {
-    request: CreateThreadRequestSchema,
-    responses: {
-      "201": ThreadResponseSchema,
-      "400": ErrorBodySchema,
-      "401": ErrorBodySchema,
-      "403": ErrorBodySchema,
-      "404": ErrorBodySchema,
-    },
-  },
-  "GET /api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/tokens": {
-    responses: {
-      "200": DraftTokensResponseSchema,
-      "400": ErrorBodySchema,
-      "401": ErrorBodySchema,
-      "404": ErrorBodySchema,
-    },
-  },
-  "PUT /api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/tokens": {
-    request: ImportTokensRequestSchema,
-    responses: {
-      "200": DraftTokensResponseSchema,
-      "400": InvalidTokensBodySchema,
-      "401": ErrorBodySchema,
-      "403": ErrorBodySchema,
-      "404": ErrorBodySchema,
-      "409": ErrorBodySchema,
-    },
-  },
   "GET /api/v1/w/{workspace_id}/projects/{project_id}/comments": {
     responses: {
       "200": CommentListResponseSchema,
@@ -1589,44 +861,6 @@ export const operations = {
       "200": ComponentBodySchema,
       "401": ErrorBodySchema,
       "404": ErrorBodySchema,
-    },
-  },
-  "POST /api/v1/w/{workspace_id}/projects/{project_id}/conflicts/{conflict_id}/resolve": {
-    request: ResolveConflictRequestSchema,
-    responses: {
-      "200": RecordedConflictResponseSchema,
-      "400": ErrorBodySchema,
-      "401": ErrorBodySchema,
-      "403": ErrorBodySchema,
-      "404": ErrorBodySchema,
-      "409": ErrorBodySchema,
-    },
-  },
-  "GET /api/v1/w/{workspace_id}/projects/{project_id}/decisions/{decision_id}": {
-    responses: {
-      "200": DecisionResponseSchema,
-      "401": ErrorBodySchema,
-      "404": ErrorBodySchema,
-    },
-  },
-  "POST /api/v1/w/{workspace_id}/projects/{project_id}/decisions/{decision_id}/approve": {
-    responses: {
-      "200": DecisionResponseSchema,
-      "401": ErrorBodySchema,
-      "403": ErrorBodySchema,
-      "404": ErrorBodySchema,
-      "409": ErrorBodySchema,
-    },
-  },
-  "POST /api/v1/w/{workspace_id}/projects/{project_id}/decisions/{decision_id}/reject": {
-    request: RejectDecisionRequestSchema,
-    responses: {
-      "200": DecisionResponseSchema,
-      "400": ErrorBodySchema,
-      "401": ErrorBodySchema,
-      "403": ErrorBodySchema,
-      "404": ErrorBodySchema,
-      "409": ErrorBodySchema,
     },
   },
   "GET /api/v1/w/{workspace_id}/projects/{project_id}/docs": {
@@ -1722,13 +956,6 @@ export const operations = {
       "403": ErrorBodySchema,
       "404": ErrorBodySchema,
       "409": ConflictBodySchema,
-    },
-  },
-  "GET /api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}/versions": {
-    responses: {
-      "200": VersionListResponseSchema,
-      "401": ErrorBodySchema,
-      "404": ErrorBodySchema,
     },
   },
   "GET /api/v1/w/{workspace_id}/projects/{project_id}/features": {
@@ -1847,41 +1074,11 @@ export const operations = {
       "404": ErrorBodySchema,
     },
   },
-  "POST /api/v1/w/{workspace_id}/projects/{project_id}/threads/{thread_id}/decisions": {
-    request: DecisionFileSchema,
-    responses: {
-      "201": DecisionResponseSchema,
-      "400": ErrorBodySchema,
-      "401": ErrorBodySchema,
-      "403": ErrorBodySchema,
-      "404": ErrorBodySchema,
-    },
-  },
   "GET /api/v1/w/{workspace_id}/projects/{project_id}/threads/{thread_id}/digest": {
     responses: {
       "200": DigestResponseSchema,
       "400": ErrorBodySchema,
       "401": ErrorBodySchema,
-      "404": ErrorBodySchema,
-    },
-  },
-  "POST /api/v1/w/{workspace_id}/projects/{project_id}/threads/{thread_id}/directives": {
-    request: CreateDirectiveRequestSchema,
-    responses: {
-      "201": PostResponseSchema,
-      "400": ErrorBodySchema,
-      "401": ErrorBodySchema,
-      "403": ErrorBodySchema,
-      "404": ErrorBodySchema,
-    },
-  },
-  "POST /api/v1/w/{workspace_id}/projects/{project_id}/threads/{thread_id}/phases": {
-    request: StartPhaseRequestSchema,
-    responses: {
-      "201": ThreadResponseSchema,
-      "400": ErrorBodySchema,
-      "401": ErrorBodySchema,
-      "403": ErrorBodySchema,
       "404": ErrorBodySchema,
     },
   },
@@ -1891,13 +1088,12 @@ export const operations = {
       "201": PostResponseSchema,
       "400": ErrorBodySchema,
       "401": ErrorBodySchema,
-      "403": ErrorBodySchema,
       "404": ErrorBodySchema,
     },
   },
   "GET /api/v1/w/{workspace_id}/projects/{project_id}/tokens": {
     responses: {
-      "200": MainlineTokensResponseSchema,
+      "200": HeadTokensResponseSchema,
       "400": ErrorBodySchema,
       "401": ErrorBodySchema,
       "404": ErrorBodySchema,
@@ -1910,30 +1106,6 @@ export const operations = {
       "400": InvalidTokensBodySchema,
       "401": ErrorBodySchema,
       "403": ErrorBodySchema,
-      "404": ErrorBodySchema,
-    },
-  },
-  "GET /api/v1/w/{workspace_id}/projects/{project_id}/versions/{version_id}": {
-    responses: {
-      "200": VersionResponseSchema,
-      "401": ErrorBodySchema,
-      "404": ErrorBodySchema,
-    },
-  },
-  "POST /api/v1/w/{workspace_id}/projects/{project_id}/versions/{version_id}/comments": {
-    request: CreateCommentRequestSchema,
-    responses: {
-      "201": CommentResponseSchema,
-      "400": ErrorBodySchema,
-      "401": ErrorBodySchema,
-      "404": ErrorBodySchema,
-    },
-  },
-  "GET /api/v1/w/{workspace_id}/projects/{project_id}/versions/{version_id}/diff/{other_version_id}": {
-    responses: {
-      "200": DiffResponseSchema,
-      "400": ErrorBodySchema,
-      "401": ErrorBodySchema,
       "404": ErrorBodySchema,
     },
   },

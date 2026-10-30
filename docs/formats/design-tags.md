@@ -212,12 +212,8 @@ them.
 The API checks every instance against the component it resolves to, and
 refuses an unknown component, property, variant value or slot target, an
 override of a node that is not in the component, and a `content` override of a
-node that is not text. A draft resolves instances against its change set's
-draft of the design system, and outside a change set against the mainline
-design system; a saved design version records the design system version it
-used, and every view of that version uses it. A change set that has emptied
-its draft of a non-empty design system cannot save a design: the save is
-refused with a 409 `design_system_emptied`.
+node that is not text. A design resolves its instances against the design
+system's head as it is when the design is read.
 
 ### Addresses
 
@@ -261,25 +257,23 @@ leaves out what leaving out means: `visible` when it is true, `width` and
 every side or corner is written as the short form (`pad={16}`), a single solid
 fill as `fill="#2563eb"`, and `true` as the bare attribute.
 
-When an agent reads a board of a draft (`omni design read --changeset`), every
-tag also carries `rev={n}` after its `id`: the node's revision, which an edit
-lists as the revision it expects. A node starts at revision 1, in a draft and
-in the version the draft started from, and each later import that changes what
-the node itself holds (not its children) adds one, as does each `omni design
-edit` operation that changes, replaces or moves the node (docs/formats/
-operations.md, Designs); adding or moving a child leaves its parent's revision
-alone. The tags of a saved version and of the
-mainline carry no `rev`, and `rev` is only read, never written: a tag that
-sets it is refused.
+When an agent reads a board of a design (`omni design read`), every tag also
+carries `rev={n}` after its `id`: the node's revision, which an edit lists as
+the revision it expects. A node starts at revision 1, and each later import
+that changes what the node itself holds (not its children) adds one, as does
+each `omni design edit` operation that changes, replaces or moves the node
+(docs/formats/operations.md, Designs); adding or moving a child leaves its
+parent's revision alone. `rev` is only read, never written: a tag that sets it
+is refused.
 
 ## Boards as chunks
 
-A design version is a manifest of chunks (US-030). Each page and each board is
-stored as a chunk of its own in RustFS, named by the BLAKE3 hash of its bytes: a
-board's chunk holds the board and its subtree, a page's chunk the page without
-its boards, and the version's own chunk lists them all, in order. A page or a
-board that a later version does not change keeps its chunk, so versions share
-them and a new version stores only what it changed. `omni design read` prints
+The head of a design is a manifest of chunks (US-030). Each page and each board
+is stored as a chunk of its own in RustFS, named by the BLAKE3 hash of its
+bytes: a board's chunk holds the board and its subtree, a page's chunk the page
+without its boards, and the head's own chunk lists them all, in order. A page or
+a board that a later write does not change keeps its chunk, so heads share them
+and a new head stores only what changed. `omni design read` prints
 one board in the tag format, from its one chunk; a board is addressed by its
 node ID (`<instanceId>/<componentNodeId>` addresses reach into instances).
 

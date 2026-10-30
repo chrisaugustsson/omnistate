@@ -21,21 +21,17 @@
 //! A comment `waits on you` (`waiting_on_you`) when its latest reply is an
 //! agent's: the human has not answered it yet.
 //!
-//! `POST .../versions/{version_id}/comments` stays until the web app moves to
-//! the live routes (US-113). It pins a comment to a node of that saved version
-//! on the version's doc, and records the version.
-//!
 //! Commenting emits `comment.created`, a reply `comment.replied` and a delete
 //! `comment.deleted`.
 
 use crate::AppState;
 use crate::boards::Manifest;
-use crate::changesets::{non_blank, parse_body, require_project};
+use crate::chunks;
 use crate::design;
 use crate::docs::{AgentIdentity, DocRow, Tx, find_doc};
 use crate::live;
+use crate::projects::{non_blank, parse_body, require_project};
 use crate::session::{ApiError, ErrorBody};
-use crate::versions::{self, nodes_of_version};
 use crate::workspace::{Actor, HumanRequest, WorkspaceRequest, parse_uuid};
 use axum::Json;
 use axum::body::Bytes;
@@ -65,10 +61,6 @@ pub struct CommentBody {
     pub id: String,
     pub project_id: String,
     pub doc_id: String,
-    /// The saved version a comment was pinned to through
-    /// `POST .../versions/{version_id}/comments`; `null` for a comment on the
-    /// doc's head.
-    pub version_id: Option<String>,
     /// The node address as it was sent: a node ID of the doc's head, or
     /// `<instanceId>/<componentNodeId>` inside a component instance.
     pub node: String,
@@ -120,7 +112,7 @@ pub struct CommentListResponse {
 
 #[derive(Deserialize, ToSchema)]
 pub struct CreateCommentRequest {
-    /// A node ID of the head (or of the version), or
+    /// A node ID of the head, or
     /// `<instanceId>/<componentNodeId>` for a node inside a component instance
     /// of a design.
     pub node: Option<String>,
@@ -161,7 +153,6 @@ struct CommentRow {
     id: String,
     project_id: String,
     doc_id: String,
-    version_id: Option<String>,
     node: String,
     feature_id: Option<String>,
     author: String,
@@ -212,7 +203,7 @@ impl Filter {
 async fn fetch_rows(tx: &mut Tx, filter: Filter, lock: &str) -> Result<Vec<CommentRow>, ApiError> {
     let sql = format!(
         "SELECT c.id::text AS id, d.project_id::text AS project_id, c.doc_id::text AS doc_id, \
-                c.version_id::text AS version_id, c.node AS node, \
+                c.node AS node, \
                 d.feature_id::text AS feature_id, \
                 c.author::text AS author, c.body AS text, \
                 COALESCE(c.snapshot, '') AS snapshot, d.kind AS doc_kind, d.head AS doc_head, \
@@ -301,7 +292,6 @@ async fn bodies(tx: &mut Tx, rows: Vec<CommentRow>) -> Result<Vec<Listed>, ApiEr
                     id: row.id,
                     project_id: row.project_id,
                     doc_id: row.doc_id,
-                    version_id: row.version_id,
                     node: row.node,
                     feature_id: row.feature_id,
                     author,
@@ -418,7 +408,7 @@ async fn addresses_in_head(
         return Ok(HashSet::new());
     };
     let manifest = if doc_kind == "design" {
-        versions::head_manifest(state, workspace_id, Some(head)).await?
+        chunks::head_manifest(state, workspace_id, Some(head)).await?
     } else {
         None
     };
@@ -505,8 +495,6 @@ impl<'a> Address<'a> {
 /// A comment about to be stored.
 struct NewComment<'a> {
     doc_id: &'a str,
-    /// The saved version a comment through the version route is pinned to.
-    version_id: Option<&'a str>,
     node: &'a str,
     text: &'a str,
     /// What the node holds now, stored as the comment's snapshot.
@@ -523,12 +511,11 @@ async fn insert_comment(
 ) -> Result<(StatusCode, Json<CommentResponse>), ApiError> {
     let mut tx = state.workspace_tx(workspace_id).await?;
     let comment_id: String = sqlx::query_scalar(
-        "INSERT INTO comments (workspace_id, doc_id, version_id, node, author, body, snapshot) \
-         VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5::text::jsonb, $6, $7) RETURNING id::text",
+        "INSERT INTO comments (workspace_id, doc_id, node, author, body, snapshot) \
+         VALUES ($1::uuid, $2::uuid, $3, $4::text::jsonb, $5, $6) RETURNING id::text",
     )
     .bind(workspace_id)
     .bind(new.doc_id)
-    .bind(new.version_id)
     .bind(new.node)
     .bind(new.author.to_string())
     .bind(new.text)
@@ -557,7 +544,7 @@ async fn block_html(
     chunk: &str,
     id: &str,
 ) -> Result<Option<String>, ApiError> {
-    let text = versions::read_chunk(state, workspace_id, chunk).await?;
+    let text = chunks::read_chunk(state, workspace_id, chunk).await?;
     let doc = EditDoc::from_html(&text).map_err(|e| {
         eprintln!("omni-api: the chunk {chunk} cannot be loaded: {e}");
         ApiError::Unavailable
@@ -580,7 +567,7 @@ async fn head_snapshot(
         return Ok(None);
     };
     let manifest: Option<Manifest> = if doc.kind == "design" {
-        versions::head_manifest(state, workspace_id, Some(head)).await?
+        chunks::head_manifest(state, workspace_id, Some(head)).await?
     } else {
         None
     };
@@ -667,93 +654,9 @@ pub async fn create_on_doc(
     };
     let new = NewComment {
         doc_id: &doc_id,
-        version_id: None,
         node: &node,
         text: &text,
         snapshot,
-        author: &author,
-    };
-    insert_comment(&state, workspace_id, &project_id, new).await
-}
-
-/// Pins a comment to a node of a saved version, on the version's doc. This
-/// route stays until the web app moves to the live routes (US-113).
-#[utoipa::path(
-    post,
-    path = "/api/v1/w/{workspace_id}/projects/{project_id}/versions/{version_id}/comments",
-    params(
-        ("workspace_id" = String, Path, description = "The workspace's UUID"),
-        ("project_id" = String, Path, description = "The project's UUID"),
-        ("version_id" = String, Path, description = "The saved version to comment on"),
-        ("X-Omni-Run" = Option<String>, Header, description = "The agent's run"),
-        ("X-Omni-Role" = Option<String>, Header, description = "The agent's role"),
-        ("X-Omni-Model" = Option<String>, Header, description = "The model behind the agent"),
-        ("X-Omni-Harness" = Option<String>, Header, description = "The harness that runs the agent"),
-    ),
-    request_body = CreateCommentRequest,
-    responses(
-        (status = 201, description = "The new comment", body = CommentResponse),
-        (status = 400, description = "The text is missing or blank, or the node address names a node that the version does not have", body = ErrorBody),
-        (status = 401, description = "No valid API key or session", body = ErrorBody),
-        (status = 404, description = "No such version in this project and workspace", body = ErrorBody),
-    )
-)]
-pub async fn create(
-    State(state): State<AppState>,
-    request: WorkspaceRequest,
-    identity: AgentIdentity,
-    Path((_, project_id, version_id)): Path<(String, String, String)>,
-    body: Bytes,
-) -> Result<(StatusCode, Json<CommentResponse>), ApiError> {
-    let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
-    let version_id = parse_uuid(&version_id).ok_or(ApiError::NotFound)?;
-    let new = parse_body::<CreateCommentRequest>(&body);
-    let author = author_of(&request.actor, &identity);
-    let workspace_id = &request.workspace_id;
-
-    let mut tx = state.workspace_tx(workspace_id).await?;
-    let version = versions::find_version(&mut tx, &project_id, &version_id).await?;
-    let new = new?;
-    let (Some(node), Some(text)) = (non_blank(new.node), non_blank(new.text)) else {
-        return Err(invalid());
-    };
-    let nodes = nodes_of_version(&mut tx, &version).await?;
-    tx.commit().await.map_err(ApiError::database)?;
-    let has = |id: &str, kind: Option<&str>| {
-        nodes
-            .iter()
-            .any(|n| n.id == id && kind.is_none_or(|kind| n.kind == kind))
-    };
-    let snapshot = match Address::parse(&node).ok_or_else(invalid)? {
-        Address::Node(id) if has(id, None) => match version.chunk.as_deref() {
-            Some(chunk) if version.doc_kind == "design" => {
-                design::version_node_tags(&state, workspace_id, &version_id, chunk, id).await?
-            }
-            Some(chunk) => block_html(&state, workspace_id, chunk, id).await?,
-            None => None,
-        },
-        Address::Inside { instance, inner }
-            if version.doc_kind == "design" && has(instance, Some("instance")) =>
-        {
-            design::instance_node(
-                &state,
-                workspace_id,
-                &version_id,
-                version.chunk.as_deref(),
-                version.design_system_version_id.as_deref(),
-                instance,
-                inner,
-            )
-            .await?
-        }
-        _ => None,
-    };
-    let new = NewComment {
-        doc_id: &version.doc_id,
-        version_id: Some(&version_id),
-        node: &node,
-        text: &text,
-        snapshot: snapshot.ok_or_else(invalid)?,
         author: &author,
     };
     insert_comment(&state, workspace_id, &project_id, new).await

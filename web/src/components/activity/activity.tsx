@@ -33,7 +33,6 @@ import { ViewerFrame } from "@/viewer/frame";
 type Params = { workspaceId: string; projectId: string; docId: string };
 
 const NO_PINS: { node: string; count: number }[] = [];
-const NO_CLAIMS: never[] = [];
 /** The size of a board's or component's picture, in CSS pixels. */
 const PICTURE = { width: 360, height: 220 };
 
@@ -439,7 +438,6 @@ function Frame({ html, styles, workspaceId, title }: { html: string; styles: str
       html={shown}
       pins={NO_PINS}
       selected={null}
-      claims={NO_CLAIMS}
       onSelect={noop}
       className="h-48 w-full rounded-md border bg-white"
       title={title}

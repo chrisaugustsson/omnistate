@@ -12,7 +12,7 @@ export async function loadProjects(workspaceId: string): Promise<ProjectBody[]> 
   return list.projects;
 }
 
-/** The project's home: its docs, change sets and threads, and what waits for the human. */
+/** The project's home: its docs and threads, and what waits for the human. */
 export function loadHome(workspaceId: string, projectId: string): Promise<HomeResponse> {
   return callApi("GET", `/api/v1/w/${workspaceId}/projects/${projectId}/home`, {
     response: home.responses["200"],

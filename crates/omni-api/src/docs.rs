@@ -1,28 +1,18 @@
-//! Docs and their drafts. A doc belongs to a project; a change set edits it
-//! through its own draft, with batches of operations (docs/formats/operations.md)
-//! that the operation engine of omni-core applies all or nothing. A doc has a
-//! head, the chunk of its content now (US-102): a new doc is readable at once
-//! as the empty doc of its kind, and `create_app_doc` and `create_feature_doc`
-//! make one with no change set. A doc started in a change set (`create_doc`)
-//! has the empty head too, and gets that change set's draft; its first version
-//! comes through the change set (Q18). Every write to a doc is a row of
+//! Docs. A doc belongs to a project, at its app level or in one of its
+//! features, and is written straight to its head with batches of operations
+//! (docs/formats/operations.md) that the operation engine of omni-core applies
+//! all or nothing. A doc has a head, the chunk of its content now: a new doc is
+//! readable at once as the empty doc of its kind, and `create_app_doc` and
+//! `create_feature_doc` make one. Every write to a doc is a row of
 //! `doc_changes`.
-//!
-//! A draft is kept in memory, keyed by workspace and draft, because an edit
-//! must take well under 50 ms (FR-48). Postgres holds the truth: every applied
-//! operation is a row of `draft_ops` (with the agent and the IDs the server
-//! assigned), written in the transaction of the request, and a draft that is
-//! not in memory (after a restart) is rebuilt by replaying its log. One lock
-//! per draft orders the batches of agents that edit the same draft at once.
 
 use crate::AppState;
 use crate::boards;
-use crate::changesets::{Scope, non_blank, parse_body, require_project};
-use crate::claims::{self, ClaimBody};
-use crate::design::{self, Library};
+use crate::chunks::{self, Snapshot};
+use crate::design;
 use crate::live;
+use crate::projects::{non_blank, parse_body, require_project};
 use crate::session::{ApiError, ErrorBody};
-use crate::versions::{self, Snapshot};
 use crate::workspace::{AgentRequest, WorkspaceRequest, parse_uuid};
 use argon2::password_hash::rand_core::{OsRng, RngCore};
 use axum::Json;
@@ -31,16 +21,14 @@ use axum::extract::{FromRequestParts, Path, Query, State};
 use axum::http::StatusCode;
 use axum::http::request::Parts;
 use axum::response::{IntoResponse, Response};
-use omni_core::design::tokens::TokenTree;
-use omni_core::design::{DesignDoc, Node, NodeId};
+use omni_core::design::NodeId;
 use omni_core::hash::blake3_hex;
 use omni_core::ops::{ApplyError, Conflict, EditDoc, Operation};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sqlx::{Postgres, Transaction};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 use std::convert::Infallible;
-use std::sync::{Arc, Mutex};
 use utoipa::ToSchema;
 
 pub(crate) type Tx = Transaction<'static, Postgres>;
@@ -48,27 +36,10 @@ pub(crate) type Tx = Transaction<'static, Postgres>;
 /// The columns of a doc; `created_at` is ISO 8601 text in UTC.
 const DOC_COLUMNS: &str = "id::text, project_id::text, kind, pillar, title, \
      to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"') AS created_at, \
-     mainline_version_id::text, feature_id::text, head";
-
-const DRAFT_COLUMNS: &str = "id::text, doc_id::text, changeset_id::text, base_version_id::text";
-
-/// The columns of a `DraftRow` for a query that names the draft table `d`.
-pub(crate) const DRAFT_ROW_COLUMNS: &str = "d.id::text AS id, d.doc_id::text AS doc_id, \
-     d.changeset_id::text AS changeset_id, d.base_version_id::text AS base_version_id, \
-     d.content_version_id::text AS content_version_id, d.content_after_seq AS content_after_seq";
+     feature_id::text, head";
 
 /// The alphabet of node IDs: Crockford's base32 in lowercase.
 const NODE_ID_ALPHABET: &[u8; 32] = b"0123456789abcdefghjkmnpqrstvwxyz";
-
-#[derive(Serialize, ToSchema, sqlx::FromRow)]
-pub struct DraftBody {
-    pub id: String,
-    pub doc_id: String,
-    pub changeset_id: String,
-    /// The version the draft started from; `null` for a new doc, whose first
-    /// version comes through this change set.
-    pub base_version_id: Option<String>,
-}
 
 #[derive(sqlx::FromRow)]
 pub(crate) struct DocRow {
@@ -78,10 +49,9 @@ pub(crate) struct DocRow {
     pillar: String,
     title: String,
     created_at: String,
-    pub(crate) mainline_version_id: Option<String>,
     pub(crate) feature_id: Option<String>,
-    /// The chunk of the doc's content now; `None` for a doc that was started in a
-    /// change set before heads existed and never merged, which reads as empty.
+    /// The chunk of the doc's content now; `None` for a doc without one, which
+    /// reads as empty.
     pub(crate) head: Option<String>,
 }
 
@@ -95,15 +65,9 @@ pub struct DocBody {
     pub pillar: String,
     pub title: String,
     pub created_at: String,
-    /// `null` until a change set that holds the doc's first version merges.
-    pub mainline_version_id: Option<String>,
-    /// The feature the doc belongs to; `null` for a global doc of the project.
-    /// Fixed when a change set creates the doc.
+    /// The feature the doc belongs to; `null` for a doc at the app level. Fixed
+    /// when the doc is created.
     pub feature_id: Option<String>,
-    /// The doc's drafts, one per change set, oldest first.
-    pub drafts: Vec<DraftBody>,
-    /// The doc's live claims, oldest first.
-    pub claims: Vec<ClaimBody>,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -117,64 +81,9 @@ pub struct DocListResponse {
 }
 
 #[derive(Serialize, ToSchema)]
-pub struct CreatedDocResponse {
-    pub doc: DocBody,
-    /// The change set's draft of the new doc: empty, and based on no version.
-    pub draft: DraftBody,
-}
-
-#[derive(Serialize, ToSchema)]
-pub struct DraftResponse {
-    pub draft: DraftBody,
-}
-
-#[derive(Serialize, ToSchema)]
-pub struct DraftWithHtml {
-    #[serde(flatten)]
-    pub draft: DraftBody,
-    /// The draft as HTML: `data-omni-id` and `data-rev` (the node's revision)
-    /// on every block; empty for a design doc, whose content is `tags` and
-    /// `pages`.
-    pub html: String,
-    /// A design doc's pages as tags, with every ID.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tags: Option<String>,
-    /// A design doc's pages as JSON nodes.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[schema(value_type = Option<Vec<Object>>)]
-    pub pages: Option<Vec<Value>>,
-    /// The design system that a design doc's instances resolve against:
-    /// `{"doc_id", "source", "draft_id", "version_id"}`, where `source` is
-    /// `draft` (the change set's draft of the design system, with its
-    /// `draft_id`), `mainline` (the mainline version, with its `version_id`) or
-    /// `null` (no components yet).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[schema(value_type = Option<Object>)]
-    pub design_system: Option<Value>,
-    /// The components that a design doc's instances use, as resolved.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[schema(value_type = Option<Vec<Object>>)]
-    pub components: Option<Vec<Value>>,
-    /// The token tree of the design system that a design doc's instances
-    /// resolve against: the change set's draft of it, unsaved changes
-    /// included, else the mainline version's. Absent when it has none.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[schema(value_type = Option<Object>)]
-    pub tokens: Option<Value>,
-}
-
-#[derive(Serialize, ToSchema)]
-pub struct DraftHtmlResponse {
-    pub draft: DraftWithHtml,
-}
-
-#[derive(Serialize, ToSchema)]
 pub struct MainlineHtmlResponse {
     pub doc_id: String,
-    /// The version that was read. For the doc's head, the mainline version when
-    /// the head is its content; `null` for a head that no version holds.
-    pub version_id: Option<String>,
-    /// The head or version as HTML with `data-omni-id`; the empty text for an
+    /// The head as HTML with `data-omni-id`; the empty text for an
     /// empty doc, and for a design's head, whose content is `tags` and `pages`.
     pub html: String,
     /// A design's head as tags, one `<Page>` after the other; only for the
@@ -275,27 +184,16 @@ pub struct InvalidOperationBody {
     pub error: String,
     /// The position of the operation in the batch, counting from 0.
     pub index: usize,
-    /// What is wrong; it names an ID that is not in the draft.
+    /// What is wrong; it names an ID that is not in the doc.
     pub message: String,
 }
 
-/// An error of an edit or a claim: the usual ones, a revision conflict, an
-/// operation that the engine refuses, or a claim of another agent in the way.
-/// Each of the last three changes nothing.
+/// An error of an edit: the usual ones, a revision conflict or an operation
+/// that the engine refuses. Each of the last two changes nothing.
 pub enum DocError {
     Api(ApiError),
     Conflict(Conflict),
-    Invalid {
-        index: usize,
-        message: String,
-    },
-    /// A claim of another agent is in the way (US-023); nothing changed.
-    Claimed {
-        /// The operation that touches the claim; `None` for a claim request.
-        index: Option<usize>,
-        message: String,
-        claim: Box<ClaimBody>,
-    },
+    Invalid { index: usize, message: String },
 }
 
 impl From<ApiError> for DocError {
@@ -331,17 +229,6 @@ impl IntoResponse for DocError {
                 })),
             )
                 .into_response(),
-            Self::Claimed {
-                index,
-                message,
-                claim,
-            } => {
-                let mut body = json!({ "error": "claimed", "message": message, "claim": claim });
-                if let Some(index) = index {
-                    body["index"] = json!(index);
-                }
-                (StatusCode::CONFLICT, Json(body)).into_response()
-            }
         }
     }
 }
@@ -403,144 +290,7 @@ impl<S: Send + Sync> FromRequestParts<S> for AgentIdentity {
     }
 }
 
-// Drafts in memory -----------------------------------------------------------------
-
-/// A draft that is in memory: the doc under edit and the `seq` of the next
-/// operation of its log. The draft of a design system doc holds no blocks: its
-/// content is the token tree of the last import (`None` before one) and the
-/// components of the last components import, kept in the log as `import_tokens`
-/// and `import_components` operations and in a version as one chunk of JSON.
-/// The draft of a design doc holds pages, which an `import_design` operation
-/// of the log replaces and the operations of the log change node by node
-/// (US-031); a version holds them as a manifest of chunks.
-pub(crate) struct DraftState {
-    pub(crate) doc: EditDoc,
-    pub(crate) design_system: bool,
-    pub(crate) design: bool,
-    pub(crate) tokens: Option<TokenTree>,
-    /// The components of a design system draft, in order.
-    pub(crate) components: Vec<Node>,
-    /// The pages of a design draft, in order, with the revision of each node:
-    /// 1 for a node of the version the draft started from or one an import or
-    /// an insert added, and one more for each later import or operation that
-    /// changed the node's own content.
-    pub(crate) design_doc: DesignDoc,
-    pub(crate) next_seq: i64,
-}
-
-impl DraftState {
-    /// What a version of the draft holds, with its node index. `None` for the
-    /// draft of a design system that has neither tokens nor components yet.
-    pub(crate) fn snapshot(&self) -> Option<Snapshot> {
-        if self.design_system {
-            Some(Snapshot::new(self.content()?, Vec::new()))
-        } else if self.design {
-            Some(boards::snapshot_of(self.design_doc.pages()))
-        } else {
-            Some(Snapshot::new(self.doc.to_html(), self.doc.index()))
-        }
-    }
-
-    /// Whether the draft has the node.
-    pub(crate) fn contains(&self, node: NodeId) -> bool {
-        if self.design {
-            self.design_doc.contains(node)
-        } else {
-            self.doc.contains(node)
-        }
-    }
-
-    /// Whether the node can be claimed: a board of a design, a section of an
-    /// HTML doc.
-    pub(crate) fn can_claim(&self, node: NodeId) -> bool {
-        if self.design {
-            self.design_doc.is_board(node)
-        } else {
-            self.doc.is_section(node)
-        }
-    }
-
-    /// The draft's nodes, for the claims on them.
-    pub(crate) fn tree(&self) -> &dyn claims::Tree {
-        if self.design {
-            &self.design_doc
-        } else {
-            &self.doc
-        }
-    }
-
-    /// The chunk text of a version of the draft as it is now.
-    pub(crate) fn content(&self) -> Option<String> {
-        if self.design_system {
-            if self.tokens.is_none() && self.components.is_empty() {
-                return None;
-            }
-            Some(design::design_system_text(
-                self.tokens.as_ref(),
-                &self.components,
-            ))
-        } else if self.design {
-            Some(boards::content_of(self.design_doc.pages()))
-        } else {
-            Some(self.doc.to_html())
-        }
-    }
-}
-
-pub(crate) type Slot = Arc<tokio::sync::Mutex<Option<DraftState>>>;
-pub(crate) type UsedIds = Arc<Mutex<HashSet<NodeId>>>;
-
-/// The drafts that are in memory, and the node IDs of every project in use.
-/// Held by the `AppState`; clones share it.
-#[derive(Clone, Default)]
-pub struct DraftStore {
-    /// One slot per (workspace, draft). Its lock orders the batches of the
-    /// draft, and it holds `None` until the draft is loaded, and again after a
-    /// write that failed in the database, so the next request reloads it.
-    drafts: Arc<Mutex<HashMap<(String, String), Slot>>>,
-    /// The node IDs of each (workspace, project): IDs are unique within a
-    /// project, so a new ID must be new to every doc of it.
-    node_ids: Arc<tokio::sync::Mutex<HashMap<(String, String), UsedIds>>>,
-}
-
-impl DraftStore {
-    pub(crate) fn slot(&self, workspace_id: &str, draft_id: &str) -> Slot {
-        let mut drafts = self.drafts.lock().unwrap_or_else(|e| e.into_inner());
-        drafts
-            .entry((workspace_id.to_string(), draft_id.to_string()))
-            .or_default()
-            .clone()
-    }
-
-    /// The IDs in use in a project, read from the logs of its drafts the first
-    /// time the project needs them.
-    pub(crate) async fn used_ids(
-        &self,
-        tx: &mut Tx,
-        workspace_id: &str,
-        project_id: &str,
-    ) -> Result<UsedIds, ApiError> {
-        let mut projects = self.node_ids.lock().await;
-        let key = (workspace_id.to_string(), project_id.to_string());
-        if let Some(used) = projects.get(&key) {
-            return Ok(used.clone());
-        }
-        let known: Vec<String> = sqlx::query_scalar(
-            "SELECT unnest(o.created) FROM draft_ops o \
-             JOIN drafts d ON d.workspace_id = o.workspace_id AND d.id = o.draft_id \
-             JOIN docs x ON x.workspace_id = d.workspace_id AND x.id = d.doc_id \
-             WHERE x.project_id = $1::uuid",
-        )
-        .bind(project_id)
-        .fetch_all(&mut **tx)
-        .await
-        .map_err(ApiError::database)?;
-        let used: HashSet<NodeId> = known.iter().filter_map(|id| id.parse().ok()).collect();
-        let used = Arc::new(Mutex::new(used));
-        projects.insert(key, used.clone());
-        Ok(used)
-    }
-}
+// Node IDs ----------------------------------------------------------------------
 
 /// A fresh random node ID.
 pub(crate) fn random_node_id() -> NodeId {
@@ -554,359 +304,7 @@ pub(crate) fn random_node_id() -> NodeId {
     id.parse().expect("the alphabet gives a node ID")
 }
 
-/// The token tree that a saved design system version holds, `None` when it
-/// has components only.
-pub(crate) fn read_tokens(text: &str, what: &str) -> Result<Option<TokenTree>, ApiError> {
-    design::read_design_system(text, what).map(|(tokens, _)| tokens)
-}
-
-/// Rebuilds a draft from its base version and its log. The log holds the IDs
-/// that the server assigned, which the replay hands out again in the same order.
-pub(crate) async fn load_state(
-    state: &AppState,
-    tx: &mut Tx,
-    workspace_id: &str,
-    draft: &DraftRow,
-) -> Result<DraftState, ApiError> {
-    let kind: String = sqlx::query_scalar("SELECT kind FROM docs WHERE id = $1::uuid")
-        .bind(&draft.doc_id)
-        .fetch_one(&mut **tx)
-        .await
-        .map_err(ApiError::database)?;
-    let design_system = kind == "design-system";
-    let design = kind == "design";
-    // A rebased draft starts from the version the rebase saved, a draft that
-    // was never rebased from its base.
-    let start = draft
-        .content_version_id
-        .as_ref()
-        .or(draft.base_version_id.as_ref());
-    let mut doc = EditDoc::from_html("").expect("an empty doc parses");
-    let mut tokens = None;
-    let mut components = Vec::new();
-    let mut pages = Vec::new();
-    if let Some(base) = start {
-        let chunk = versions::chunk_of_version(tx, &draft.doc_id, base).await?;
-        let html = match (&chunk, design) {
-            (Some(chunk), false) => versions::read_chunk(state, workspace_id, chunk).await?,
-            _ => String::new(),
-        };
-        if design_system {
-            if !html.is_empty() {
-                let what = format!("the base version {base} of draft {}", draft.id);
-                let (tree, nodes) = design::read_design_system(&html, &what)?;
-                tokens = tree;
-                components = nodes;
-            }
-        } else if design {
-            if let Some(chunk) = &chunk {
-                let what = format!("the base version {base} of draft {}", draft.id);
-                pages = boards::read_pages(state, workspace_id, chunk, &what).await?;
-            }
-        } else {
-            doc = EditDoc::from_html(&html).map_err(|e| {
-                eprintln!(
-                    "omni-api: the base version {base} of draft {} cannot be loaded: {e}",
-                    draft.id
-                );
-                ApiError::Unavailable
-            })?;
-        }
-    }
-    let rows: Vec<(i64, String, Vec<String>)> = sqlx::query_as(
-        "SELECT seq, op::text, created FROM draft_ops \
-         WHERE draft_id = $1::uuid AND seq > $2 ORDER BY seq",
-    )
-    .bind(&draft.id)
-    .bind(draft.content_after_seq)
-    .fetch_all(&mut **tx)
-    .await
-    .map_err(ApiError::database)?;
-    let corrupt = |seq: i64, why: &str| {
-        eprintln!(
-            "omni-api: cannot replay operation {seq} of draft {}: {why}",
-            draft.id
-        );
-        ApiError::Unavailable
-    };
-    let revisions = boards::initial_revisions(&pages);
-    let mut design_doc = DesignDoc::new(pages, revisions);
-    let mut next_seq = draft.content_after_seq + 1;
-    for (seq, op, created) in rows {
-        if design_system {
-            if let Some(imported) = crate::tokens::imported_in(&op) {
-                tokens = Some(
-                    TokenTree::from_json(&imported).map_err(|e| corrupt(seq, &e.to_string()))?,
-                );
-                next_seq = seq + 1;
-                continue;
-            }
-            if let Some(imported) = design::imported_components(&op) {
-                components = imported.map_err(|e| corrupt(seq, &e))?;
-                next_seq = seq + 1;
-                continue;
-            }
-        }
-        if design && let Some(imported) = design::imported_pages(&op) {
-            let imported = imported.map_err(|e| corrupt(seq, &e))?;
-            let revisions =
-                boards::next_revisions(design_doc.pages(), design_doc.revisions(), &imported);
-            design_doc = DesignDoc::new(imported, revisions);
-            next_seq = seq + 1;
-            continue;
-        }
-        let op: Operation = serde_json::from_str(&op).map_err(|e| corrupt(seq, &e.to_string()))?;
-        let mut ids: VecDeque<NodeId> = created.iter().filter_map(|id| id.parse().ok()).collect();
-        let mut ran_out = false;
-        let mut next_id = || {
-            ids.pop_front().unwrap_or_else(|| {
-                ran_out = true;
-                random_node_id()
-            })
-        };
-        // The operations were checked against the design system when they were
-        // applied, which the replay does not need again.
-        let applied = if design {
-            design_doc.apply(&[op], None, &mut next_id, &|_| Ok(()))
-        } else {
-            doc.apply(&[op], &mut next_id)
-        };
-        if let Err(error) = applied {
-            return Err(corrupt(seq, &error.to_string()));
-        }
-        if ran_out {
-            return Err(corrupt(seq, "it created more nodes than the log records"));
-        }
-        next_seq = seq + 1;
-    }
-    Ok(DraftState {
-        doc,
-        design_system,
-        design,
-        tokens,
-        components,
-        design_doc,
-        next_seq,
-    })
-}
-
-/// Loads the draft into its locked slot when it is not in memory.
-pub(crate) async fn ensure_loaded(
-    state: &AppState,
-    workspace_id: &str,
-    draft: &DraftRow,
-    held: &mut Option<DraftState>,
-) -> Result<(), ApiError> {
-    if held.is_none() {
-        let mut tx = state.workspace_tx(workspace_id).await?;
-        *held = Some(load_state(state, &mut tx, workspace_id, draft).await?);
-        tx.commit().await.map_err(ApiError::database)?;
-    }
-    Ok(())
-}
-
 // Looking things up ----------------------------------------------------------------
-
-#[derive(sqlx::FromRow)]
-pub(crate) struct DraftRow {
-    pub(crate) id: String,
-    pub(crate) doc_id: String,
-    pub(crate) changeset_id: String,
-    pub(crate) base_version_id: Option<String>,
-    /// The version a rebase saved as the draft's content, `None` before one.
-    pub(crate) content_version_id: Option<String>,
-    /// The draft's content takes the operations of the log after this `seq`.
-    pub(crate) content_after_seq: i64,
-}
-
-impl From<DraftRow> for DraftBody {
-    fn from(row: DraftRow) -> Self {
-        Self {
-            id: row.id,
-            doc_id: row.doc_id,
-            changeset_id: row.changeset_id,
-            base_version_id: row.base_version_id,
-        }
-    }
-}
-
-/// The draft's row as it is now. A request reads the row before it waits for
-/// the draft's lock, and a rebase that held the lock meanwhile has rewritten
-/// the row, so a request takes the row again once it holds the lock.
-pub(crate) async fn current_draft(tx: &mut Tx, draft_id: &str) -> Result<DraftRow, ApiError> {
-    sqlx::query_as(&format!(
-        "SELECT {DRAFT_ROW_COLUMNS} FROM drafts d WHERE d.id = $1::uuid"
-    ))
-    .bind(draft_id)
-    .fetch_optional(&mut **tx)
-    .await
-    .map_err(ApiError::database)?
-    .ok_or(ApiError::NotFound)
-}
-
-/// The draft that `changeset_id` has of `doc_id`, 404 when the change set, the
-/// doc or the draft is not there (or not in this project).
-pub(crate) async fn find_draft(
-    tx: &mut Tx,
-    project_id: &str,
-    changeset_id: &str,
-    doc_id: &str,
-) -> Result<DraftRow, ApiError> {
-    sqlx::query_as(&format!(
-        "SELECT {DRAFT_ROW_COLUMNS} \
-         FROM drafts d \
-         JOIN docs x ON x.workspace_id = d.workspace_id AND x.id = d.doc_id \
-         JOIN changesets c ON c.workspace_id = d.workspace_id AND c.id = d.changeset_id \
-         WHERE d.changeset_id = $1::uuid AND d.doc_id = $2::uuid \
-           AND x.project_id = $3::uuid AND c.project_id = $3::uuid"
-    ))
-    .bind(changeset_id)
-    .bind(doc_id)
-    .bind(project_id)
-    .fetch_optional(&mut **tx)
-    .await
-    .map_err(ApiError::database)?
-    .ok_or(ApiError::NotFound)
-}
-
-pub(crate) async fn require_changeset(
-    tx: &mut Tx,
-    project_id: &str,
-    changeset_id: &str,
-) -> Result<(), ApiError> {
-    changeset_feature(tx, project_id, changeset_id)
-        .await
-        .map(|_| ())
-}
-
-/// The feature that the change set belongs to, `None` for a project-level one;
-/// 404 when the change set is not in this project or its feature is deleted.
-async fn changeset_feature(
-    tx: &mut Tx,
-    project_id: &str,
-    changeset_id: &str,
-) -> Result<Option<String>, ApiError> {
-    let found: Option<(Option<String>,)> = sqlx::query_as(
-        "SELECT c.feature_id::text FROM changesets c LEFT JOIN features f ON f.id = c.feature_id \
-         WHERE c.id = $1::uuid AND c.project_id = $2::uuid AND f.deleted_at IS NULL",
-    )
-    .bind(changeset_id)
-    .bind(project_id)
-    .fetch_optional(&mut **tx)
-    .await
-    .map_err(ApiError::database)?;
-    found
-        .map(|(feature_id,)| feature_id)
-        .ok_or(ApiError::NotFound)
-}
-
-/// A change set may draft the global docs and the docs of its own feature
-/// (FR-54): a project-level one drafts global docs only. Another scope is 422
-/// `doc_in_other_feature`.
-async fn check_doc_scope(
-    tx: &mut Tx,
-    doc_feature: Option<&str>,
-    changeset_id: &str,
-) -> Result<(), ApiError> {
-    let Some(doc_feature) = doc_feature else {
-        return Ok(());
-    };
-    let same: bool = sqlx::query_scalar(
-        "SELECT feature_id IS NOT DISTINCT FROM $2::uuid FROM changesets WHERE id = $1::uuid",
-    )
-    .bind(changeset_id)
-    .bind(doc_feature)
-    .fetch_optional(&mut **tx)
-    .await
-    .map_err(ApiError::database)?
-    .ok_or(ApiError::NotFound)?;
-    if same {
-        Ok(())
-    } else {
-        Err(ApiError::Refused(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "doc_in_other_feature",
-        ))
-    }
-}
-
-/// The ID of the draft that `changeset_id` has of `doc_id`. A change set that
-/// has none gets one, based on the doc's mainline version (409
-/// `no_mainline_version` when the doc has none, so that only its own change set
-/// has a draft of it), and `draft.opened` is emitted; two requests that open it
-/// at once get the same draft. A doc of another feature than the change set's is
-/// 422 `doc_in_other_feature`.
-pub(crate) async fn ensure_draft(
-    tx: &mut Tx,
-    workspace_id: &str,
-    project_id: &str,
-    doc_id: &str,
-    changeset_id: &str,
-    mainline: Option<&str>,
-) -> Result<String, ApiError> {
-    let doc_feature: Option<String> =
-        sqlx::query_scalar("SELECT feature_id::text FROM docs WHERE id = $1::uuid")
-            .bind(doc_id)
-            .fetch_one(&mut **tx)
-            .await
-            .map_err(ApiError::database)?;
-    check_doc_scope(tx, doc_feature.as_deref(), changeset_id).await?;
-    let existing: Option<String> = sqlx::query_scalar(
-        "SELECT id::text FROM drafts WHERE doc_id = $1::uuid AND changeset_id = $2::uuid",
-    )
-    .bind(doc_id)
-    .bind(changeset_id)
-    .fetch_optional(&mut **tx)
-    .await
-    .map_err(ApiError::database)?;
-    if let Some(draft_id) = existing {
-        return Ok(draft_id);
-    }
-    let Some(mainline) = mainline else {
-        return Err(ApiError::conflict("no_mainline_version"));
-    };
-    // The unique key lets one of two requests make the draft, and the other
-    // reads it.
-    let inserted: Option<String> = sqlx::query_scalar(
-        "INSERT INTO drafts (workspace_id, doc_id, changeset_id, base_version_id) \
-         VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid) \
-         ON CONFLICT (workspace_id, doc_id, changeset_id) DO NOTHING \
-         RETURNING id::text",
-    )
-    .bind(workspace_id)
-    .bind(doc_id)
-    .bind(changeset_id)
-    .bind(mainline)
-    .fetch_optional(&mut **tx)
-    .await
-    .map_err(ApiError::database)?;
-    match inserted {
-        Some(draft_id) => {
-            live::emit(
-                tx,
-                workspace_id,
-                project_id,
-                "draft.opened",
-                &json!({
-                    "doc_id": doc_id,
-                    "changeset_id": changeset_id,
-                    "draft_id": draft_id,
-                    "base_version_id": mainline,
-                }),
-            )
-            .await?;
-            Ok(draft_id)
-        }
-        None => sqlx::query_scalar(
-            "SELECT id::text FROM drafts WHERE doc_id = $1::uuid AND changeset_id = $2::uuid",
-        )
-        .bind(doc_id)
-        .bind(changeset_id)
-        .fetch_one(&mut **tx)
-        .await
-        .map_err(ApiError::database),
-    }
-}
 
 pub(crate) async fn find_doc(
     tx: &mut Tx,
@@ -925,22 +323,21 @@ pub(crate) async fn find_doc(
     .ok_or(ApiError::NotFound)
 }
 
-async fn drafts_of(tx: &mut Tx, doc_id: &str) -> Result<Vec<DraftBody>, ApiError> {
-    sqlx::query_as(&format!(
-        "SELECT {DRAFT_COLUMNS} FROM drafts WHERE doc_id = $1::uuid ORDER BY created_at, id"
-    ))
-    .bind(doc_id)
-    .fetch_all(&mut **tx)
-    .await
-    .map_err(ApiError::database)
+/// Which docs of a project a list asks for.
+#[derive(Clone, Copy)]
+pub(crate) enum Scope<'a> {
+    /// Every doc of the project.
+    Project,
+    /// Only the app-level ones.
+    Global,
+    /// Only the ones of this feature (a UUID).
+    Feature(&'a str),
 }
 
 /// The docs of a project in the scope, oldest first, each as `show_doc` answers
-/// it. Callers sweep the expired claims first.
+/// it.
 pub(crate) async fn docs_of_project(
-    state: &AppState,
     tx: &mut Tx,
-    workspace_id: &str,
     project_id: &str,
     scope: Scope<'_>,
     pillar: Option<&str>,
@@ -962,16 +359,10 @@ pub(crate) async fn docs_of_project(
     .fetch_all(&mut **tx)
     .await
     .map_err(ApiError::database)?;
-    let mut docs = Vec::with_capacity(rows.len());
-    for row in rows {
-        let drafts = drafts_of(tx, &row.id).await?;
-        let claims = state.claims.live_of_doc(workspace_id, &row.id);
-        docs.push(doc_body(row, drafts, claims));
-    }
-    Ok(docs)
+    Ok(rows.into_iter().map(doc_body).collect())
 }
 
-fn doc_body(row: DocRow, drafts: Vec<DraftBody>, claims: Vec<ClaimBody>) -> DocBody {
+fn doc_body(row: DocRow) -> DocBody {
     DocBody {
         id: row.id,
         project_id: row.project_id,
@@ -979,10 +370,7 @@ fn doc_body(row: DocRow, drafts: Vec<DraftBody>, claims: Vec<ClaimBody>) -> DocB
         pillar: row.pillar,
         title: row.title,
         created_at: row.created_at,
-        mainline_version_id: row.mainline_version_id,
         feature_id: row.feature_id,
-        drafts,
-        claims,
     }
 }
 
@@ -1036,10 +424,9 @@ fn design_system_exists() -> ApiError {
     ApiError::conflict("design_system_exists")
 }
 
-/// A project has one design system doc, whichever change set started it and
-/// whether or not it merged: 409 `design_system_exists` when a second one is
-/// asked for. The unique index of the migration settles two requests that
-/// start one at once.
+/// A project has one design system doc: 409 `design_system_exists` when a
+/// second one is asked for. The unique index of the migration settles two
+/// requests that start one at once.
 async fn require_no_design_system(
     tx: &mut Tx,
     project_id: &str,
@@ -1088,35 +475,17 @@ struct EmptyHead {
     /// The name of the head's chunk, the BLAKE3 hash of its text.
     name: String,
     snapshot: Snapshot,
-    /// Whether the chunks are in RustFS.
-    stored: bool,
 }
 
-/// Stores the chunks of an empty doc of `kind`. With `required` false, a
-/// storage that cannot be reached leaves the chunks unstored and the doc with a
-/// null head, which reads as the empty doc all the same: a doc started in a
-/// change set does not need the storage until its first version.
+/// Stores the chunks of an empty doc of `kind`.
 async fn store_empty_head(
     state: &AppState,
     workspace_id: &str,
     kind: &str,
-    required: bool,
 ) -> Result<EmptyHead, ApiError> {
     let snapshot = empty_snapshot(kind);
-    let name = blake3_hex(snapshot.html.as_bytes());
-    match versions::store_snapshot(state, workspace_id, &snapshot).await {
-        Ok(_) => Ok(EmptyHead {
-            name,
-            snapshot,
-            stored: true,
-        }),
-        Err(_) if !required => Ok(EmptyHead {
-            name,
-            snapshot,
-            stored: false,
-        }),
-        Err(error) => Err(error),
-    }
+    let name = chunks::store_snapshot(state, workspace_id, &snapshot).await?;
+    Ok(EmptyHead { name, snapshot })
 }
 
 /// Adds the row of `doc_changes` for a write to a doc, in the transaction of the
@@ -1182,82 +551,14 @@ pub(crate) async fn log_change_of_boards(
     Ok(())
 }
 
-/// Makes `versions[i]` the mainline version of `docs[i]` and its chunk the doc's
-/// head, in the transaction of a merge whose docs are locked. A version that
-/// removes its doc leaves the doc with the empty head of its kind. Each doc
-/// whose head changes gets a row of `doc_changes`.
-pub(crate) async fn set_mainlines(
-    state: &AppState,
-    tx: &mut Tx,
-    workspace_id: &str,
-    docs: &[&str],
-    versions: &[&str],
-) -> Result<(), ApiError> {
-    #[derive(sqlx::FromRow)]
-    struct Merging {
-        doc_id: String,
-        kind: String,
-        head: Option<String>,
-        chunk: Option<String>,
-        version_id: String,
-    }
-    let merging: Vec<Merging> = sqlx::query_as(
-        "SELECT d.id::text AS doc_id, d.kind, d.head, v.chunk, v.id::text AS version_id \
-         FROM unnest($1::text[]::uuid[], $2::text[]::uuid[]) AS a (doc, version) \
-         JOIN docs d ON d.id = a.doc JOIN versions v ON v.id = a.version \
-         ORDER BY d.id",
-    )
-    .bind(docs)
-    .bind(versions)
-    .fetch_all(&mut **tx)
-    .await
-    .map_err(ApiError::database)?;
-    let agent = json!({ "run": null, "role": "merge", "model": null, "harness": null });
-    for doc in merging {
-        let head = match doc.chunk {
-            Some(chunk) => chunk,
-            None => {
-                let empty = store_empty_head(state, workspace_id, &doc.kind, true).await?;
-                versions::index_snapshot(tx, workspace_id, &empty.name, &empty.snapshot).await?;
-                empty.name
-            }
-        };
-        sqlx::query(
-            "UPDATE docs SET mainline_version_id = $2::uuid, head = $3 WHERE id = $1::uuid",
-        )
-        .bind(&doc.doc_id)
-        .bind(&doc.version_id)
-        .bind(&head)
-        .execute(&mut **tx)
-        .await
-        .map_err(ApiError::database)?;
-        if doc.head.as_deref() != Some(head.as_str()) {
-            log_change(
-                tx,
-                workspace_id,
-                &doc.doc_id,
-                &agent,
-                &json!([{ "op": "merge", "version": doc.version_id }]),
-                doc.head.as_deref(),
-                &head,
-            )
-            .await?;
-        }
-    }
-    Ok(())
-}
-
 /// Writes a new doc with its head: the row, the head's chunks in the chunk
 /// index, the first row of `doc_changes` and the `doc.created` event, in the
-/// transaction of the request. `changeset_id` is the change set that starts the
-/// doc, `None` for a doc created live.
-#[allow(clippy::too_many_arguments)]
+/// transaction of the request.
 async fn insert_doc(
     tx: &mut Tx,
     workspace_id: &str,
     project_id: &str,
     feature_id: Option<&str>,
-    changeset_id: Option<&str>,
     new: &NewDoc,
     empty: &EmptyHead,
     agent: &Value,
@@ -1272,7 +573,7 @@ async fn insert_doc(
     .bind(&new.kind)
     .bind(&new.pillar)
     .bind(&new.title)
-    .bind(empty.stored.then_some(empty.name.as_str()))
+    .bind(&empty.name)
     .fetch_one(&mut **tx)
     .await
     .map_err(|error| {
@@ -1285,9 +586,7 @@ async fn insert_doc(
             ApiError::database(error)
         }
     })?;
-    if empty.stored {
-        versions::index_snapshot(tx, workspace_id, &empty.name, &empty.snapshot).await?;
-    }
+    chunks::index_snapshot(tx, workspace_id, &empty.name, &empty.snapshot).await?;
     log_change(
         tx,
         workspace_id,
@@ -1311,7 +610,6 @@ async fn insert_doc(
         "doc.created",
         &json!({
             "doc_id": row.id,
-            "changeset_id": changeset_id,
             "feature_id": feature_id,
             "kind": new.kind,
             "pillar": new.pillar,
@@ -1330,86 +628,9 @@ async fn insert_doc(
     Ok(row)
 }
 
-/// Starts a new doc in a change set. The doc has the empty head of its kind
-/// and no mainline version: its first version comes through the change set,
-/// which gets an empty draft of it. The doc belongs to the change set's feature
-/// (global for a project-level change set) and keeps that scope.
-#[utoipa::path(
-    post,
-    path = "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs",
-    params(
-        ("workspace_id" = String, Path, description = "The workspace's UUID"),
-        ("project_id" = String, Path, description = "The project's UUID"),
-        ("changeset_id" = String, Path, description = "The change set's UUID"),
-    ),
-    request_body = CreateDocRequest,
-    responses(
-        (status = 201, description = "The new doc and the change set's draft of it", body = CreatedDocResponse),
-        (status = 400, description = "The kind, pillar or title is missing or not allowed", body = ErrorBody),
-        (status = 401, description = "No valid API key or session", body = ErrorBody),
-        (status = 403, description = "Called with a session; agents only", body = ErrorBody),
-        (status = 404, description = "No such change set in this project and workspace", body = ErrorBody),
-        (status = 409, description = "The project has a design system doc already (`design_system_exists`)", body = ErrorBody),
-        (status = 422, description = "A design or design-system doc outside the `ui` pillar (`design_needs_ui_pillar`), or a design system in a change set that belongs to a feature, which is always global (`design_system_is_global`)", body = ErrorBody),
-    )
-)]
-pub async fn create_doc(
-    State(state): State<AppState>,
-    request: AgentRequest,
-    identity: AgentIdentity,
-    Path((_, project_id, changeset_id)): Path<(String, String, String)>,
-    body: Bytes,
-) -> Result<(StatusCode, Json<CreatedDocResponse>), ApiError> {
-    let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
-    let changeset_id = parse_uuid(&changeset_id).ok_or(ApiError::NotFound)?;
-    let new = parse_body::<CreateDocRequest>(&body);
-    let mut tx = state.workspace_tx(&request.workspace_id).await?;
-    let feature_id = changeset_feature(&mut tx, &project_id, &changeset_id).await?;
-    let new = check_new_doc(new?, feature_id.is_some())?;
-    require_no_design_system(&mut tx, &project_id, &new).await?;
-    tx.commit().await.map_err(ApiError::database)?;
-
-    let empty = store_empty_head(&state, &request.workspace_id, &new.kind, false).await?;
-    let mut tx = state.workspace_tx(&request.workspace_id).await?;
-    let row = insert_doc(
-        &mut tx,
-        &request.workspace_id,
-        &project_id,
-        feature_id.as_deref(),
-        Some(&changeset_id),
-        &new,
-        &empty,
-        &identity.to_json(),
-    )
-    .await?;
-    let draft: DraftBody = sqlx::query_as(&format!(
-        "INSERT INTO drafts (workspace_id, doc_id, changeset_id) \
-         VALUES ($1::uuid, $2::uuid, $3::uuid) RETURNING {DRAFT_COLUMNS}"
-    ))
-    .bind(&request.workspace_id)
-    .bind(&row.id)
-    .bind(&changeset_id)
-    .fetch_one(&mut *tx)
-    .await
-    .map_err(ApiError::database)?;
-    tx.commit().await.map_err(ApiError::database)?;
-    state.live.announce(&request.workspace_id, &project_id);
-    let doc = doc_body(
-        row,
-        vec![DraftBody {
-            id: draft.id.clone(),
-            doc_id: draft.doc_id.clone(),
-            changeset_id: draft.changeset_id.clone(),
-            base_version_id: None,
-        }],
-        Vec::new(),
-    );
-    Ok((StatusCode::CREATED, Json(CreatedDocResponse { doc, draft })))
-}
-
-/// Creates a doc at the app level of a project or in one of its features,
-/// without a change set. The doc is readable at once: its head is the empty
-/// doc of its kind, and its creation is the first row of its log.
+/// Creates a doc at the app level of a project or in one of its features. The
+/// doc is readable at once: its head is the empty doc of its kind, and its
+/// creation is the first row of its log.
 async fn create_live_doc(
     state: &AppState,
     request: &AgentRequest,
@@ -1437,7 +658,7 @@ async fn create_live_doc(
     require_no_design_system(&mut tx, project_id, &new).await?;
     tx.commit().await.map_err(ApiError::database)?;
 
-    let empty = store_empty_head(state, &request.workspace_id, &new.kind, true).await?;
+    let empty = store_empty_head(state, &request.workspace_id, &new.kind).await?;
     let mut tx = state.workspace_tx(&request.workspace_id).await?;
     if let Some(feature_id) = feature_id {
         // A feature that is deleted in between takes no new doc.
@@ -1456,7 +677,6 @@ async fn create_live_doc(
         &request.workspace_id,
         project_id,
         feature_id,
-        None,
         &new,
         &empty,
         &identity.to_json(),
@@ -1464,12 +684,14 @@ async fn create_live_doc(
     .await?;
     tx.commit().await.map_err(ApiError::database)?;
     state.live.announce(&request.workspace_id, project_id);
-    let doc = doc_body(row, Vec::new(), Vec::new());
-    Ok((StatusCode::CREATED, Json(DocResponse { doc })))
+    Ok((
+        StatusCode::CREATED,
+        Json(DocResponse { doc: doc_body(row) }),
+    ))
 }
 
-/// Creates a doc at the app level of a project, without a change set. The doc
-/// is readable at once, as the empty doc of its kind.
+/// Creates a doc at the app level of a project. The doc is readable at once, as
+/// the empty doc of its kind.
 #[utoipa::path(
     post,
     path = "/api/v1/w/{workspace_id}/projects/{project_id}/docs",
@@ -1503,8 +725,8 @@ pub async fn create_app_doc(
     create_live_doc(&state, &request, &identity, &project_id, None, &body).await
 }
 
-/// Creates a doc in a feature of a project, without a change set. The doc is
-/// readable at once, as the empty doc of its kind.
+/// Creates a doc in a feature of a project. The doc is readable at once, as the
+/// empty doc of its kind.
 #[utoipa::path(
     post,
     path = "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/docs",
@@ -1588,23 +810,14 @@ pub async fn list_docs(
         Some(pillar) if PILLARS.contains(&pillar) => Some(pillar),
         Some(_) => return Err(ApiError::bad_request("invalid_request")),
     };
-    claims::sweep(&state, &request.workspace_id).await;
     let mut tx = state.workspace_tx(&request.workspace_id).await?;
     require_project(&mut tx, &project_id).await?;
-    let docs = docs_of_project(
-        &state,
-        &mut tx,
-        &request.workspace_id,
-        &project_id,
-        scope,
-        pillar,
-    )
-    .await?;
+    let docs = docs_of_project(&mut tx, &project_id, scope, pillar).await?;
     tx.commit().await.map_err(ApiError::database)?;
     Ok(Json(DocListResponse { docs }))
 }
 
-/// A doc's metadata, its mainline version, its drafts and its claims.
+/// A doc's metadata.
 #[utoipa::path(
     get,
     path = "/api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}",
@@ -1626,15 +839,10 @@ pub async fn show_doc(
 ) -> Result<Json<DocResponse>, ApiError> {
     let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
     let doc_id = parse_uuid(&doc_id).ok_or(ApiError::NotFound)?;
-    claims::sweep(&state, &request.workspace_id).await;
     let mut tx = state.workspace_tx(&request.workspace_id).await?;
     let row = find_doc(&mut tx, &project_id, &doc_id).await?;
-    let drafts = drafts_of(&mut tx, &row.id).await?;
     tx.commit().await.map_err(ApiError::database)?;
-    let claims = state.claims.live_of_doc(&request.workspace_id, &row.id);
-    Ok(Json(DocResponse {
-        doc: doc_body(row, drafts, claims),
-    }))
+    Ok(Json(DocResponse { doc: doc_body(row) }))
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -1733,13 +941,9 @@ pub async fn rename_doc(
     )
     .await?;
     let row = find_doc(&mut tx, &project_id, &doc_id).await?;
-    let drafts = drafts_of(&mut tx, &row.id).await?;
     tx.commit().await.map_err(ApiError::database)?;
     state.live.announce(&request.workspace_id, &project_id);
-    let claims = state.claims.live_of_doc(&request.workspace_id, &row.id);
-    Ok(Json(DocResponse {
-        doc: doc_body(row, drafts, claims),
-    }))
+    Ok(Json(DocResponse { doc: doc_body(row) }))
 }
 
 /// Deletes a doc. Nothing is erased: the row gets `deleted_at`, the doc and its
@@ -1810,10 +1014,8 @@ pub async fn delete_doc(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// A doc's head as HTML with `data-omni-id`, or the version named by
-/// `?version=` (a version has no `data-rev`). The head is read, never the
-/// mainline version: a new doc reads as the empty doc. A design's head answers
-/// its `pages` and `tags` and no HTML.
+/// A doc's head as HTML with `data-omni-id`: a new doc reads as the empty doc.
+/// A design's head answers its `pages` and `tags` and no HTML.
 #[utoipa::path(
     get,
     path = "/api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}/html",
@@ -1821,13 +1023,12 @@ pub async fn delete_doc(
         ("workspace_id" = String, Path, description = "The workspace's UUID"),
         ("project_id" = String, Path, description = "The project's UUID"),
         ("doc_id" = String, Path, description = "The doc's UUID"),
-        ("version" = Option<String>, Query, description = "The version to read instead of the head"),
         ("view" = Option<String>, Query, description = "`outline` for the head of a design as its outline (its pages with their boards as placeholders, and the chunk of each board) instead of its whole body; the boards come one by one from `GET .../docs/{doc_id}/boards/{board_id}`"),
     ),
     responses(
-        (status = 200, description = "The head's or version's HTML", body = MainlineHtmlResponse),
+        (status = 200, description = "The head's HTML", body = MainlineHtmlResponse),
         (status = 401, description = "No valid API key or session", body = ErrorBody),
-        (status = 404, description = "No such doc, or the doc has no such version", body = ErrorBody),
+        (status = 404, description = "No such doc in this project and workspace", body = ErrorBody),
     )
 )]
 pub async fn read_doc_html(
@@ -1840,47 +1041,11 @@ pub async fn read_doc_html(
     let doc_id = parse_uuid(&doc_id).ok_or(ApiError::NotFound)?;
     let mut tx = state.workspace_tx(&request.workspace_id).await?;
     let row = find_doc(&mut tx, &project_id, &doc_id).await?;
-    let Some(version) = query.get("version") else {
-        let version_id = head_version(&mut tx, &row).await?;
-        tx.commit().await.map_err(ApiError::database)?;
-        let outline = query.get("view").map(String::as_str) == Some("outline");
-        return read_head(&state, &request.workspace_id, row, version_id, outline)
-            .await
-            .map(Json);
-    };
-    let version_id = parse_uuid(version).ok_or(ApiError::NotFound)?;
-    let chunk = versions::chunk_of_version(&mut tx, &row.id, &version_id).await?;
     tx.commit().await.map_err(ApiError::database)?;
-    // A version that holds no content (the removal of the doc) reads as empty.
-    let html = match chunk {
-        Some(chunk) => versions::read_chunk(&state, &request.workspace_id, &chunk).await?,
-        None => String::new(),
-    };
-    Ok(Json(MainlineHtmlResponse {
-        doc_id: row.id,
-        version_id: Some(version_id),
-        html,
-        tags: None,
-        pages: None,
-        tokens: None,
-        components: None,
-        outline: None,
-        boards: None,
-    }))
-}
-
-/// The version that the doc's head is the content of: the mainline version
-/// when it holds the very chunk of the head, else none.
-pub(crate) async fn head_version(tx: &mut Tx, doc: &DocRow) -> Result<Option<String>, ApiError> {
-    let (Some(mainline), Some(head)) = (&doc.mainline_version_id, &doc.head) else {
-        return Ok(None);
-    };
-    sqlx::query_scalar("SELECT id::text FROM versions WHERE id = $1::uuid AND chunk = $2")
-        .bind(mainline)
-        .bind(head)
-        .fetch_optional(&mut **tx)
+    let outline = query.get("view").map(String::as_str) == Some("outline");
+    read_head(&state, &request.workspace_id, row, outline)
         .await
-        .map_err(ApiError::database)
+        .map(Json)
 }
 
 /// A doc's head as the read of the doc answers it.
@@ -1888,12 +1053,10 @@ async fn read_head(
     state: &AppState,
     workspace_id: &str,
     row: DocRow,
-    version_id: Option<String>,
     outline: bool,
 ) -> Result<MainlineHtmlResponse, ApiError> {
     let mut answer = MainlineHtmlResponse {
         doc_id: row.id,
-        version_id,
         html: String::new(),
         tags: None,
         pages: None,
@@ -1928,302 +1091,15 @@ async fn read_head(
         answer.tokens = system.tokens_json();
         answer.components = Some(system.components_used_by(&pages));
     } else if let Some(head) = &row.head {
-        answer.html = versions::read_chunk(state, workspace_id, head).await?;
+        answer.html = chunks::read_chunk(state, workspace_id, head).await?;
     }
     Ok(answer)
 }
 
-/// Opens a doc in a change set: makes the change set's draft from the doc's
-/// mainline version, or returns the draft the change set already has.
-#[utoipa::path(
-    post,
-    path = "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs/{doc_id}/open",
-    params(
-        ("workspace_id" = String, Path, description = "The workspace's UUID"),
-        ("project_id" = String, Path, description = "The project's UUID"),
-        ("changeset_id" = String, Path, description = "The change set's UUID"),
-        ("doc_id" = String, Path, description = "The doc's UUID"),
-    ),
-    responses(
-        (status = 200, description = "The draft the change set already had", body = DraftResponse),
-        (status = 201, description = "The new draft, based on the doc's mainline version", body = DraftResponse),
-        (status = 401, description = "No valid API key or session", body = ErrorBody),
-        (status = 403, description = "Called with a session; agents only", body = ErrorBody),
-        (status = 404, description = "No such change set or doc in this project and workspace", body = ErrorBody),
-        (status = 409, description = "The doc has no mainline version, so only its own change set has it (`no_mainline_version`)", body = ErrorBody),
-    )
-)]
-pub async fn open_draft(
-    State(state): State<AppState>,
-    request: AgentRequest,
-    Path((_, project_id, changeset_id, doc_id)): Path<(String, String, String, String)>,
-) -> Result<(StatusCode, Json<DraftResponse>), ApiError> {
-    let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
-    let changeset_id = parse_uuid(&changeset_id).ok_or(ApiError::NotFound)?;
-    let doc_id = parse_uuid(&doc_id).ok_or(ApiError::NotFound)?;
-    let mut tx = state.workspace_tx(&request.workspace_id).await?;
-    require_changeset(&mut tx, &project_id, &changeset_id).await?;
-    let doc = find_doc(&mut tx, &project_id, &doc_id).await?;
-    check_doc_scope(&mut tx, doc.feature_id.as_deref(), &changeset_id).await?;
-    let existing = sqlx::query_as::<_, DraftBody>(&format!(
-        "SELECT {DRAFT_COLUMNS} FROM drafts WHERE doc_id = $1::uuid AND changeset_id = $2::uuid"
-    ))
-    .bind(&doc_id)
-    .bind(&changeset_id)
-    .fetch_optional(&mut *tx)
-    .await
-    .map_err(ApiError::database)?;
-    if let Some(draft) = existing {
-        tx.commit().await.map_err(ApiError::database)?;
-        return Ok((StatusCode::OK, Json(DraftResponse { draft })));
-    }
-    let Some(mainline) = doc.mainline_version_id else {
-        return Err(ApiError::conflict("no_mainline_version"));
-    };
-    // Two requests may open the same doc at once: the unique key lets one make
-    // the draft, and the other reads it.
-    let inserted: Option<DraftBody> = sqlx::query_as(&format!(
-        "INSERT INTO drafts (workspace_id, doc_id, changeset_id, base_version_id) \
-         VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid) \
-         ON CONFLICT (workspace_id, doc_id, changeset_id) DO NOTHING \
-         RETURNING {DRAFT_COLUMNS}"
-    ))
-    .bind(&request.workspace_id)
-    .bind(&doc_id)
-    .bind(&changeset_id)
-    .bind(&mainline)
-    .fetch_optional(&mut *tx)
-    .await
-    .map_err(ApiError::database)?;
-    let (status, draft) = match inserted {
-        Some(draft) => {
-            live::emit(
-                &mut tx,
-                &request.workspace_id,
-                &project_id,
-                "draft.opened",
-                &json!({
-                    "doc_id": doc_id,
-                    "changeset_id": changeset_id,
-                    "draft_id": draft.id,
-                    "base_version_id": mainline,
-                }),
-            )
-            .await?;
-            (StatusCode::CREATED, draft)
-        }
-        None => {
-            let draft = sqlx::query_as::<_, DraftBody>(&format!(
-                "SELECT {DRAFT_COLUMNS} FROM drafts \
-                 WHERE doc_id = $1::uuid AND changeset_id = $2::uuid"
-            ))
-            .bind(&doc_id)
-            .bind(&changeset_id)
-            .fetch_one(&mut *tx)
-            .await
-            .map_err(ApiError::database)?;
-            (StatusCode::OK, draft)
-        }
-    };
-    tx.commit().await.map_err(ApiError::database)?;
-    if status == StatusCode::CREATED {
-        state.live.announce(&request.workspace_id, &project_id);
-    }
-    Ok((status, Json(DraftResponse { draft })))
-}
-
-/// A change set's draft of a doc, as HTML with `data-omni-id` and `data-rev` on
-/// every block.
-#[utoipa::path(
-    get,
-    path = "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs/{doc_id}",
-    params(
-        ("workspace_id" = String, Path, description = "The workspace's UUID"),
-        ("project_id" = String, Path, description = "The project's UUID"),
-        ("changeset_id" = String, Path, description = "The change set's UUID"),
-        ("doc_id" = String, Path, description = "The doc's UUID"),
-    ),
-    responses(
-        (status = 200, description = "The draft with its HTML", body = DraftHtmlResponse),
-        (status = 401, description = "No valid API key or session", body = ErrorBody),
-        (status = 404, description = "The change set has no draft of this doc in this project and workspace", body = ErrorBody),
-    )
-)]
-pub async fn read_draft(
-    State(state): State<AppState>,
-    request: WorkspaceRequest,
-    Path((_, project_id, changeset_id, doc_id)): Path<(String, String, String, String)>,
-) -> Result<Json<DraftHtmlResponse>, ApiError> {
-    let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
-    let changeset_id = parse_uuid(&changeset_id).ok_or(ApiError::NotFound)?;
-    let doc_id = parse_uuid(&doc_id).ok_or(ApiError::NotFound)?;
-    let mut tx = state.workspace_tx(&request.workspace_id).await?;
-    let draft = find_draft(&mut tx, &project_id, &changeset_id, &doc_id).await?;
-    tx.commit().await.map_err(ApiError::database)?;
-
-    let slot = state.drafts.slot(&request.workspace_id, &draft.id);
-    let mut held = slot.lock().await;
-    let mut tx = state.workspace_tx(&request.workspace_id).await?;
-    let draft = current_draft(&mut tx, &draft.id).await?;
-    tx.commit().await.map_err(ApiError::database)?;
-    ensure_loaded(&state, &request.workspace_id, &draft, &mut held).await?;
-    let html = held
-        .as_ref()
-        .map(|loaded| loaded.doc.to_html_with_revisions())
-        .unwrap_or_default();
-    // A design doc's draft holds pages, which resolve against the change set's
-    // design system once this draft's lock is let go.
-    let pages = held
-        .as_ref()
-        .filter(|loaded| loaded.design)
-        .map(|loaded| loaded.design_doc.pages().to_vec());
-    drop(held);
-    let view = match pages {
-        Some(pages) => Some(
-            design::view_of_draft(
-                &state,
-                &request.workspace_id,
-                &project_id,
-                &changeset_id,
-                &pages,
-            )
-            .await?,
-        ),
-        None => None,
-    };
-    let (tags, pages, design_system, components, tokens) = match view {
-        Some(view) => (
-            Some(view.tags),
-            Some(view.pages),
-            Some(view.design_system),
-            Some(view.components),
-            view.tokens,
-        ),
-        None => (None, None, None, None, None),
-    };
-    Ok(Json(DraftHtmlResponse {
-        draft: DraftWithHtml {
-            draft: draft.into(),
-            html,
-            tags,
-            pages,
-            design_system,
-            components,
-            tokens,
-        },
-    }))
-}
-
-/// What an edit needs, gathered before the draft is locked.
-struct Edit {
-    workspace_id: String,
-    project_id: String,
-    draft: DraftRow,
-    agent: Value,
-    /// The operations as the agent sent them, kept in the draft's log.
-    sent: Vec<Value>,
-    ops: Vec<Operation>,
-    /// The board that a design batch must stay inside.
-    board: Option<String>,
-    /// The components that the instances of a design batch are checked
-    /// against.
-    library: Library,
-}
-
-/// Applies a batch of operations to a change set's draft, all or nothing. Each
-/// applied operation is logged with the agent identity and emits `op.applied`;
-/// a batch that is refused changes, logs and emits nothing. A design doc's
-/// operations take tags of the tag format as content, and the server assigns
-/// the IDs of the new nodes; `board` keeps a batch inside one board.
-#[utoipa::path(
-    post,
-    path = "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs/{doc_id}/ops",
-    params(
-        ("workspace_id" = String, Path, description = "The workspace's UUID"),
-        ("project_id" = String, Path, description = "The project's UUID"),
-        ("changeset_id" = String, Path, description = "The change set's UUID"),
-        ("doc_id" = String, Path, description = "The doc's UUID"),
-        ("X-Omni-Run" = Option<String>, Header, description = "The agent's run"),
-        ("X-Omni-Role" = Option<String>, Header, description = "The agent's role"),
-        ("X-Omni-Model" = Option<String>, Header, description = "The model behind the agent"),
-        ("X-Omni-Harness" = Option<String>, Header, description = "The harness that runs the agent"),
-    ),
-    request_body = EditRequest,
-    responses(
-        (status = 200, description = "The batch applied; one result per operation", body = EditResponse),
-        (status = 400, description = "The body is not a batch (`invalid_request`), `board` is given for a doc that is no design (`not_a_design`), or an operation is refused (`invalid_operation`, naming an unknown ID; for a design also an insert whose tags carry an `id`, a placement the tags do not allow, a property the node's tag does not take, or an operation outside `board`)", body = InvalidOperationBody),
-        (status = 401, description = "No valid API key or session", body = ErrorBody),
-        (status = 403, description = "Called with a session; agents only", body = ErrorBody),
-        (status = 404, description = "The change set has no draft of this doc in this project and workspace, or `board` is no board of the design (`unknown_board`)", body = ErrorBody),
-        (status = 409, description = "A node is at another revision than the operation expected (`conflict`), or an operation touches a claim of another agent (`claimed`); nothing changed", body = ConflictBody),
-    )
-)]
-pub async fn edit_draft(
-    State(state): State<AppState>,
-    request: AgentRequest,
-    identity: AgentIdentity,
-    Path((_, project_id, changeset_id, doc_id)): Path<(String, String, String, String)>,
-    body: Bytes,
-) -> Result<Json<EditResponse>, DocError> {
-    let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
-    let changeset_id = parse_uuid(&changeset_id).ok_or(ApiError::NotFound)?;
-    let doc_id = parse_uuid(&doc_id).ok_or(ApiError::NotFound)?;
-    let batch = parse_body::<EditRequest>(&body);
-    let mut tx = state.workspace_tx(&request.workspace_id).await?;
-    let draft = find_draft(&mut tx, &project_id, &changeset_id, &doc_id).await?;
-    tx.commit().await.map_err(ApiError::database)?;
-
-    let batch = batch?;
-    let (sent, board) = (batch.ops, batch.board);
-    claims::sweep(&state, &request.workspace_id).await;
-    let mut ops = Vec::with_capacity(sent.len());
-    for (index, op) in sent.iter().enumerate() {
-        match serde_json::from_value::<Operation>(op.clone()) {
-            Ok(op) => ops.push(op),
-            Err(error) => {
-                return Err(DocError::Invalid {
-                    index,
-                    message: error.to_string(),
-                });
-            }
-        }
-    }
-    // The components come first, under no lock of this draft, so that no two
-    // draft locks are ever held together. Only a batch that places or changes
-    // an instance needs them.
-    let library = if places_instances(&sent) {
-        design::resolve(&state, &request.workspace_id, &project_id, &changeset_id)
-            .await?
-            .library
-    } else {
-        Library::default()
-    };
-    let edit = Edit {
-        workspace_id: request.workspace_id,
-        project_id,
-        draft,
-        agent: identity.to_json(),
-        sent,
-        ops,
-        board,
-        library,
-    };
-    // A client that gives up must not leave the draft in memory ahead of its
-    // log, so the batch runs to its end whatever happens to this request.
-    let state_for_task = state.clone();
-    let results = tokio::spawn(async move { apply_batch(&state_for_task, edit).await })
-        .await
-        .map_err(|e| {
-            eprintln!("omni-api: an edit failed: {e}");
-            ApiError::Unavailable
-        })??;
-    Ok(Json(EditResponse { results }))
-}
-
 /// Applies a batch of operations to the head of an HTML doc or a design, all or
-/// nothing, with no change set. The batch runs under the lock on the doc's row,
-/// so batches to one doc are applied one after the other, each to the head the
-/// one before made. The new head of an HTML doc is a chunk in RustFS that holds
+/// nothing. The batch runs under the lock on the doc's row, so batches to one
+/// doc are applied one after the other, each to the head the one before made.
+/// The new head of an HTML doc is a chunk in RustFS that holds
 /// the doc as HTML with `data-omni-id` and `data-rev`, which is where a node's
 /// revision is kept; the new head of a design is a manifest that lists the
 /// chunk of every page and board and the revisions, and only the boards the
@@ -2318,7 +1194,7 @@ pub async fn edit_doc(
     }
 
     let html = match &head_before {
-        Some(head) => versions::read_chunk(&state, &workspace_id, head).await?,
+        Some(head) => chunks::read_chunk(&state, &workspace_id, head).await?,
         None => String::new(),
     };
     let mut doc = EditDoc::from_html(&html).map_err(|e| {
@@ -2345,8 +1221,8 @@ pub async fn edit_doc(
     }
 
     let snapshot = Snapshot::new(doc.to_html_with_revisions(), doc.index());
-    let head_after = versions::store_text(&state, &workspace_id, &snapshot.html).await?;
-    versions::index_snapshot(&mut tx, &workspace_id, &head_after, &snapshot).await?;
+    let head_after = chunks::store_text(&state, &workspace_id, &snapshot.html).await?;
+    chunks::index_snapshot(&mut tx, &workspace_id, &head_after, &snapshot).await?;
     sqlx::query("UPDATE docs SET head = $2 WHERE id = $1::uuid")
         .bind(&doc_id)
         .bind(&head_after)
@@ -2390,174 +1266,4 @@ pub(crate) fn results_of(applied: &omni_core::ops::Applied) -> Vec<OpResultBody>
             removed: result.removed.iter().map(NodeId::to_string).collect(),
         })
         .collect()
-}
-
-/// Whether a batch places an instance of a component or changes one, whose
-/// component, properties and overrides must fit the design system.
-fn places_instances(sent: &[Value]) -> bool {
-    sent.iter().any(|op| match op["op"].as_str() {
-        Some("insert" | "replace") => op["content"]
-            .as_str()
-            .is_some_and(|content| content.contains("<Instance")),
-        Some("set") => op["properties"].as_object().is_some_and(|properties| {
-            ["component", "props", "overrides"]
-                .iter()
-                .any(|name| properties.contains_key(*name))
-        }),
-        _ => false,
-    })
-}
-
-async fn apply_batch(state: &AppState, edit: Edit) -> Result<Vec<OpResultBody>, DocError> {
-    let Edit {
-        workspace_id,
-        project_id,
-        draft,
-        agent,
-        sent,
-        ops,
-        board,
-        library,
-    } = edit;
-    let slot = state.drafts.slot(&workspace_id, &draft.id);
-    let mut held = slot.lock().await;
-    let mut tx = state.workspace_tx(&workspace_id).await?;
-    let draft = current_draft(&mut tx, &draft.id).await?;
-    if held.is_none() {
-        *held = Some(load_state(state, &mut tx, &workspace_id, &draft).await?);
-    }
-    let used = state
-        .drafts
-        .used_ids(&mut tx, &workspace_id, &project_id)
-        .await?;
-    let loaded = held.as_mut().expect("the draft was just loaded");
-    let first_seq = loaded.next_seq;
-
-    let scope = match board {
-        None => None,
-        Some(_) if !loaded.design => return Err(ApiError::bad_request("not_a_design").into()),
-        Some(board) => Some(
-            board
-                .parse::<NodeId>()
-                .ok()
-                .filter(|board| loaded.design_doc.is_board(*board))
-                .ok_or(ApiError::Refused(StatusCode::NOT_FOUND, "unknown_board"))?,
-        ),
-    };
-
-    let live = state.claims.live_in_draft(&workspace_id, &draft.id);
-    if let Some((index, claim)) = claims::blocked(loaded.tree(), &ops, &live, &agent) {
-        return Err(state.claims.refusal(Some(index), claim));
-    }
-
-    let mut new_ids = || loop {
-        let id = random_node_id();
-        if used.lock().unwrap_or_else(|e| e.into_inner()).insert(id) {
-            return id;
-        }
-    };
-    let applied = if loaded.design {
-        let check = |nodes: &[Node]| design::check_instances(nodes, &library);
-        loaded.design_doc.apply(&ops, scope, &mut new_ids, &check)
-    } else {
-        loaded.doc.apply(&ops, &mut new_ids)
-    };
-    let applied = match applied {
-        Ok(applied) => applied,
-        Err(ApplyError::Conflict(conflict)) => return Err(DocError::Conflict(conflict)),
-        Err(ApplyError::Invalid { index, message }) => {
-            return Err(DocError::Invalid { index, message });
-        }
-    };
-
-    let results = results_of(&applied);
-    let persisted = log_and_emit(
-        &mut tx,
-        &workspace_id,
-        &project_id,
-        &draft,
-        &agent,
-        first_seq,
-        &sent,
-        &results,
-    )
-    .await;
-    let committed = match persisted {
-        Ok(()) => tx.commit().await.map_err(ApiError::database),
-        Err(error) => Err(error),
-    };
-    match committed {
-        Ok(()) => {
-            held.as_mut().expect("the draft is loaded").next_seq += results.len() as i64;
-            // The holder's claims are renewed before the draft's lock is let
-            // go, and only the ones that are still live.
-            if !results.is_empty() {
-                state.claims.touch(&workspace_id, &draft.id, &agent);
-            }
-            drop(held);
-            if !results.is_empty() {
-                state.live.announce(&workspace_id, &project_id);
-            }
-            Ok(results)
-        }
-        Err(error) => {
-            // The draft in memory has the batch and the database does not: the
-            // next request loads the draft again from its log.
-            *held = None;
-            Err(error.into())
-        }
-    }
-}
-
-/// Writes one row of the draft's log for each applied operation and emits its
-/// `op.applied`, in the transaction of the batch.
-#[allow(clippy::too_many_arguments)]
-async fn log_and_emit(
-    tx: &mut Tx,
-    workspace_id: &str,
-    project_id: &str,
-    draft: &DraftRow,
-    agent: &Value,
-    first_seq: i64,
-    sent: &[Value],
-    results: &[OpResultBody],
-) -> Result<(), ApiError> {
-    for (offset, (op, result)) in sent.iter().zip(results).enumerate() {
-        let seq = first_seq + offset as i64;
-        sqlx::query(
-            "INSERT INTO draft_ops \
-             (workspace_id, draft_id, seq, op, agent, node, revision, created, removed) \
-             VALUES ($1::uuid, $2::uuid, $3, $4::text::jsonb, $5::text::jsonb, $6, $7, $8, $9)",
-        )
-        .bind(workspace_id)
-        .bind(&draft.id)
-        .bind(seq)
-        .bind(op.to_string())
-        .bind(agent.to_string())
-        .bind(&result.node)
-        .bind(result.revision as i64)
-        .bind(&result.created)
-        .bind(&result.removed)
-        .execute(&mut **tx)
-        .await
-        .map_err(ApiError::database)?;
-        live::emit(
-            tx,
-            workspace_id,
-            project_id,
-            "op.applied",
-            &json!({
-                "doc_id": draft.doc_id,
-                "changeset_id": draft.changeset_id,
-                "draft_id": draft.id,
-                "node": result.node,
-                "revision": result.revision,
-                "created": result.created,
-                "removed": result.removed,
-                "agent": agent,
-            }),
-        )
-        .await?;
-    }
-    Ok(())
 }

@@ -1,15 +1,15 @@
 //! `omni thread create`, `list`, `read`, `conclude` and `digest`: threads at the
-//! app level of a project or in one of its features, with no change set. A
+//! app level of a project or in one of its features. A
 //! thread is a question that agents work out together: they post to it with
 //! `omni post`, and one of them writes the conclusion. A sealed thread hides
 //! the posts of other agents from an agent until it has posted itself. The
-//! project is found as for `omni changeset`.
+//! project is found as for `omni project`.
 
 use crate::args::Args;
-use crate::changesets::{creation_feature, is_uuid, project_id};
 use crate::commands::{agent, say};
 use crate::error::{CliError, Result, bail};
 use crate::json::{Value, quote};
+use crate::projects::{creation_feature, is_uuid, project_id};
 
 const CREATE_USAGE: &str = "omni thread create <question> [--feature <name or id>] [--sealed]";
 const READ_USAGE: &str = "omni thread read <thread>";
@@ -213,8 +213,7 @@ pub fn conclude(args: &Args, thread: Option<&str>, text: Option<&str>) -> Result
 }
 
 /// `omni thread digest <thread>`: one line for each post the caller may read,
-/// oldest first: its type (a post of a thread in a change set has one), its
-/// author's role, its summary and its ID. It reads nothing but the digest, the
+/// oldest first: its author's role, its summary and its ID. It reads nothing but the digest, the
 /// cheap view of a thread.
 pub fn digest(args: &Args, thread: Option<&str>) -> Result<()> {
     let Some(thread) = thread else {
@@ -245,12 +244,8 @@ pub fn digest(args: &Args, thread: Option<&str>) -> Result<()> {
         .and_then(Value::as_array)
         .ok_or_else(unreadable)?;
     for post in posts {
-        let kind = post
-            .str_at("type")
-            .map(|kind| format!("{kind}  "))
-            .unwrap_or_default();
         say(&format!(
-            "{kind}{}  {}  {}",
+            "{}  {}  {}",
             crate::posts::role(post),
             post.str_at("summary").unwrap_or_default(),
             post.str_at("id").unwrap_or("?")

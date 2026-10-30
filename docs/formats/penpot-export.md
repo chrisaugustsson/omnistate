@@ -296,7 +296,7 @@ board come from components. The shapes inside a root get no entry of their own.
 
 `omni import penpot <file.penpot> --project <id> [--feature <name>]` (US-051,
 US-105) imports an export made with "Export file + libraries" straight into the
-project, with no change set. The design doc lands at the app level, or in the
+project. The design doc lands at the app level, or in the
 UI pillar of the feature with `--feature`; the design system doc is always the
 app level's. The reader and the
 converter above do the work, so every rule of "What the converter takes from a

@@ -16,39 +16,25 @@ pub struct Args {
     /// `--project <name or id>`: the project a command works in, instead of
     /// the one in `.omni.toml`.
     pub project: Option<String>,
-    /// `--feature <name or id>`: the feature a change set command works in,
-    /// instead of the one in `.omni.toml`; `--global` works at project level
-    /// whatever `.omni.toml` says.
+    /// `--feature <name or id>`: the feature a command works in, instead of
+    /// the one in `.omni.toml`; `--global` works at the app level whatever
+    /// `.omni.toml` says.
     pub feature: Option<String>,
     pub global: bool,
-    /// `--title`, `--description` and `--run` describe a change set.
+    /// `--title` and `--description` describe a doc or a feature.
     pub title: Option<String>,
     pub description: Option<String>,
-    pub run: Option<String>,
-    /// `omni changeset resolve <conflict-id> --note <text>`: how the conflict
-    /// was resolved.
-    pub note: Option<String>,
-    /// `--changeset <id>`, `--kind` and `--pillar` say which change set a doc
-    /// command works in and what kind of doc `omni doc create` starts; `--pillar`
-    /// also filters `omni doc list`.
-    pub changeset: Option<String>,
+    /// `--kind` and `--pillar` say what kind of doc `omni doc create` starts
+    /// and where; `--pillar` also filters `omni doc list`.
     pub kind: Option<String>,
     pub pillar: Option<String>,
-    /// `omni wait --until <status> --timeout <seconds>`; both are checked by
-    /// the command.
-    pub until: Option<String>,
+    /// `omni wait --timeout <seconds>`; checked by the command.
     pub timeout: Option<String>,
-    /// `omni wait --thread <id> --posts <n> --concluded`: wait on a thread
-    /// instead of a change set, for this many posts or for its conclusion.
+    /// `omni wait --thread <id> --posts <n> --concluded`: wait on a thread for
+    /// this many posts or for its conclusion.
     pub thread: Option<String>,
     pub posts: Option<String>,
     pub concluded: bool,
-    /// `omni doc read --version <v>`, `omni design read --version <v>` and
-    /// `omni tokens export --version <v>`: the version to read; for `omni
-    /// comment addressed --version <v>`, the version that fixes the comment.
-    /// Everywhere else `--version` is the bare flag that shows the version of
-    /// omni.
-    pub doc_version: Option<String>,
     /// `omni design read --doc <id> --board <id>`: the design doc and the
     /// board in it to read.
     pub doc: Option<String>,
@@ -75,26 +61,10 @@ pub struct Args {
     pub version: bool,
 }
 
-/// Whether `--version` names a version to read for this command, instead of
-/// being the flag that shows the version of omni.
-fn takes_a_version(words: &[String]) -> bool {
-    let command: Vec<&str> = words.iter().map(String::as_str).collect();
-    matches!(
-        command.as_slice(),
-        ["doc", "read", ..]
-            | ["design", "read", ..]
-            | ["tokens", "export", ..]
-            | ["comment", "addressed", ..]
-    )
-}
-
 /// Whether the words so far name a command that US-108 removed.
 fn is_gone(words: &[String]) -> bool {
     let command: Vec<&str> = words.iter().map(String::as_str).collect();
-    matches!(
-        command.as_slice(),
-        ["decision", ..] | ["thread", "phase", ..]
-    )
+    matches!(command.as_slice(), ["thread", "phase", ..])
 }
 
 pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Args> {
@@ -118,7 +88,6 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Args> {
                 parsed.help = true;
                 continue;
             }
-            "--version" if takes_a_version(&parsed.words) => &mut parsed.doc_version,
             "--version" | "-V" => {
                 parsed.version = true;
                 continue;
@@ -172,9 +141,6 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Args> {
             "--feature" => &mut parsed.feature,
             "--title" => &mut parsed.title,
             "--description" => &mut parsed.description,
-            "--run" => &mut parsed.run,
-            "--note" => &mut parsed.note,
-            "--changeset" => &mut parsed.changeset,
             "--doc" => &mut parsed.doc,
             "--board" => &mut parsed.board,
             "--limit" => &mut parsed.limit,
@@ -184,21 +150,12 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Args> {
             "--module" => {
                 bail!("--module is now --pillar; use --pillar spec|ui|architecture|db|research")
             }
-            "--until" => &mut parsed.until,
             "--timeout" => &mut parsed.timeout,
             "--thread" => &mut parsed.thread,
             "--posts" => &mut parsed.posts,
-            // `omni thread phase` and `omni decision` are gone, whatever options
-            // they are tried with: the command itself says so.
+            // `omni thread phase` is gone, whatever options it is tried with:
+            // the command itself says so.
             _ if is_gone(&parsed.words) => break,
-            // Rejecting is the human's, whatever options it is tried with:
-            // the command itself explains that.
-            _ if parsed
-                .words
-                .starts_with(&["changeset".to_string(), "reject".to_string()]) =>
-            {
-                break;
-            }
             _ => bail!("unknown option {arg}; see `omni --help`"),
         };
         match inline.or_else(|| args.next()) {

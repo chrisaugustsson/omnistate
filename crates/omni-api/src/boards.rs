@@ -1,31 +1,29 @@
 //! Pages, boards and chunked storage (US-030, Q23). A design doc holds pages
-//! and a page holds boards, and a design version stores each of them as a
+//! and a page holds boards, and the head of a design stores each of them as a
 //! chunk of its own in RustFS, at `ws/{workspace_id}/chunks/{hash}`, named by
 //! the BLAKE3 hash of its bytes:
 //!
 //! - a board's chunk is the board and its subtree as JSON;
 //! - a page's chunk is the page itself as JSON, without its children;
-//! - the version's own chunk is its manifest, which lists the chunk of every
+//! - the head's own chunk is its manifest, which lists the chunk of every
 //!   page and, below it, of every board, in order.
 //!
 //! A chunk's name follows from its content, so a page or a board that a later
-//! version does not change has the same chunk in it, and is stored, indexed
-//! and listed in the node index once, however many versions use it. The node
-//! index of a chunk (`node_index`) lists only the nodes of that chunk, and a
-//! board's root has no parent in it: a board that moves to another page keeps
-//! its chunk, and the manifest says where it sits. The manifest is kept in the
-//! `versions` row as well, so that a version's nodes and a comparison need no
-//! read from RustFS.
+//! write does not change has the same chunk in the new head, and is stored,
+//! indexed and listed in the node index once, however many heads use it. The
+//! node index of a chunk (`node_index`) lists only the nodes of that chunk, and
+//! a board's root has no parent in it: a board that moves to another page keeps
+//! its chunk, and the manifest says where it sits.
 //!
-//! Reading one board of a version reads its manifest and that one chunk.
+//! Reading one board of a head reads its manifest and that one chunk.
 
 use crate::AppState;
 use crate::activity::head_at;
+use crate::chunks::{Part, Snapshot, read_chunk};
 use crate::design::nodes_from;
-use crate::docs::{current_draft, ensure_loaded, find_doc, find_draft, head_version};
+use crate::docs::find_doc;
 use crate::placeholders::{self, Sizing};
 use crate::session::{ApiError, ErrorBody};
-use crate::versions::{Part, Snapshot, chunk_of_version, read_chunk};
 use crate::workspace::{WorkspaceRequest, parse_uuid};
 use axum::Json;
 use axum::extract::{Path, Query, State};
@@ -197,64 +195,15 @@ fn manifest_text(manifest: &Manifest) -> String {
     serde_json::to_string(manifest).expect("a manifest serializes to JSON")
 }
 
-/// What a version of a design holds: its manifest as the version's own chunk
-/// and a chunk for every page and board.
+/// What the head of a design holds: its manifest as the head's own chunk and a
+/// chunk for every page and board.
 pub(crate) fn snapshot_of(pages: &[Node]) -> Snapshot {
     let (manifest, parts) = split(pages);
     Snapshot {
         html: manifest_text(&manifest),
         nodes: Vec::new(),
         parts,
-        manifest: Some(manifest),
     }
-}
-
-/// The text of the version's own chunk for a design: its manifest.
-pub(crate) fn content_of(pages: &[Node]) -> String {
-    manifest_text(&split(pages).0)
-}
-
-// Revisions of the nodes of a draft ----------------------------------------------------
-
-/// The revisions of a design that was just loaded from a version: every node
-/// is at revision 1.
-pub(crate) fn initial_revisions(pages: &[Node]) -> HashMap<NodeId, u64> {
-    pages
-        .iter()
-        .flat_map(index_subtree)
-        .map(|node| (node.id, 1))
-        .collect()
-}
-
-/// The revisions after an import replaced the pages `before` with `after`: a
-/// node whose own content changed is one revision further, a new node starts
-/// at revision 1, and every other node keeps its revision. A child that is
-/// added or moved does not change its parent's content, so it does not change
-/// its revision either.
-pub(crate) fn next_revisions(
-    before: &[Node],
-    revisions: &HashMap<NodeId, u64>,
-    after: &[Node],
-) -> HashMap<NodeId, u64> {
-    let was: HashMap<NodeId, String> = before
-        .iter()
-        .flat_map(index_subtree)
-        .map(|node| (node.id, node.content))
-        .collect();
-    after
-        .iter()
-        .flat_map(index_subtree)
-        .map(|node| {
-            let rev = match was.get(&node.id) {
-                Some(content) => {
-                    let rev = revisions.get(&node.id).copied().unwrap_or(1);
-                    rev + u64::from(*content != node.content)
-                }
-                None => 1,
-            };
-            (node.id, rev)
-        })
-        .collect()
 }
 
 // Writing and reading chunks ------------------------------------------------------------
@@ -436,7 +385,6 @@ fn revs_of(root: &Node, revisions: &HashMap<NodeId, u64>) -> BTreeMap<String, u6
 /// it, the chunks that no chunk of the head before has the name of, and the
 /// boards whose chunk changed.
 pub(crate) struct HeadWrite {
-    pub(crate) manifest: Manifest,
     pub(crate) text: String,
     pub(crate) changed: Vec<Part>,
     /// `[{board, before, after}]`, as `doc_changes.boards` holds it.
@@ -451,7 +399,6 @@ impl HeadWrite {
             html: self.text,
             nodes: Vec::new(),
             parts: self.changed,
-            manifest: Some(self.manifest),
         };
         (snapshot, self.boards)
     }
@@ -483,7 +430,6 @@ pub(crate) fn plan_head_write(
     let boards = board_changes(before, &manifest);
     let text = manifest_text(&manifest);
     HeadWrite {
-        manifest,
         text,
         changed,
         boards,
@@ -725,17 +671,8 @@ pub struct BoardBody {
     /// The page that holds the board.
     pub page_id: String,
     pub board_id: String,
-    /// The version that was read; `null` for a draft.
-    pub version_id: Option<String>,
-    /// The change set whose draft was read; left out for a version.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub changeset_id: Option<String>,
-    /// The draft that was read; left out for a version.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub draft_id: Option<String>,
     /// The board and its subtree in the tag format (docs/formats/design-tags.md),
-    /// without its page. For a draft, every tag carries `rev={n}`, the
-    /// node's revision; a version's tags carry none.
+    /// without its page.
     pub tags: String,
     /// The same board and subtree as JSON nodes, as the whole read of the
     /// version holds it under `pages`: the form the design viewer hands to the
@@ -755,83 +692,9 @@ fn board_id(text: &str) -> Result<String, ApiError> {
         .map_err(|_| unknown_board())
 }
 
-/// Reads one board of the change set's draft of a design doc, unsaved changes
-/// included, in the tag format with a `rev` on every tag.
-#[utoipa::path(
-    get,
-    path = "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs/{doc_id}/boards/{board_id}",
-    params(
-        ("workspace_id" = String, Path, description = "The workspace's UUID"),
-        ("project_id" = String, Path, description = "The project's UUID"),
-        ("changeset_id" = String, Path, description = "The change set's UUID"),
-        ("doc_id" = String, Path, description = "The design doc's UUID"),
-        ("board_id" = String, Path, description = "The board's node ID"),
-    ),
-    responses(
-        (status = 200, description = "The board", body = BoardBody),
-        (status = 400, description = "The doc is no design (`not_a_design`)", body = ErrorBody),
-        (status = 401, description = "No valid API key or session", body = ErrorBody),
-        (status = 404, description = "The change set has no draft of this doc in this project and workspace, or the ID names no board of the draft: an unknown node, a page, a frame, a text (`unknown_board`)", body = ErrorBody),
-    )
-)]
-pub async fn read_draft_board(
-    State(state): State<AppState>,
-    request: WorkspaceRequest,
-    Path((_, project_id, changeset_id, doc_id, board)): Path<(
-        String,
-        String,
-        String,
-        String,
-        String,
-    )>,
-) -> Result<Json<BoardBody>, ApiError> {
-    let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
-    let changeset_id = parse_uuid(&changeset_id).ok_or(ApiError::NotFound)?;
-    let doc_id = parse_uuid(&doc_id).ok_or(ApiError::NotFound)?;
-    let mut tx = state.workspace_tx(&request.workspace_id).await?;
-    let doc = find_doc(&mut tx, &project_id, &doc_id).await?;
-    if doc.kind != "design" {
-        return Err(ApiError::bad_request("not_a_design"));
-    }
-    let draft = find_draft(&mut tx, &project_id, &changeset_id, &doc_id).await?;
-    tx.commit().await.map_err(ApiError::database)?;
-    let board = board_id(&board)?;
-
-    let slot = state.drafts.slot(&request.workspace_id, &draft.id);
-    let mut held = slot.lock().await;
-    let mut tx = state.workspace_tx(&request.workspace_id).await?;
-    let draft = current_draft(&mut tx, &draft.id).await?;
-    tx.commit().await.map_err(ApiError::database)?;
-    ensure_loaded(&state, &request.workspace_id, &draft, &mut held).await?;
-    let loaded = held.as_ref().expect("the draft is loaded");
-    let (page, node) = loaded
-        .design_doc
-        .pages()
-        .iter()
-        .find_map(|page| {
-            page.children()
-                .iter()
-                .find(|node| node.id().to_string() == board)
-                .map(|node| (page, node))
-        })
-        .ok_or_else(unknown_board)?;
-    let revision = |id: &NodeId| loaded.design_doc.revision(id);
-    let tags = tags::print_with(node, Some(&revision));
-    Ok(Json(BoardBody {
-        doc_id,
-        page_id: page.id().to_string(),
-        board_id: board,
-        version_id: None,
-        changeset_id: Some(changeset_id),
-        draft_id: Some(draft.id),
-        tags,
-        node: serde_json::to_value(node).expect("a node serializes to JSON"),
-    }))
-}
-
-/// Reads one board of a design doc's head, or of the version named by
-/// `?version=`, in the tag format. The head is read, never the mainline
-/// version. Only the manifest and the board's one chunk are read.
+/// Reads one board of a design doc's head, or as it was right after the write
+/// named by `?at=`, in the tag format. Only the manifest and the board's one
+/// chunk are read.
 #[utoipa::path(
     get,
     path = "/api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}/boards/{board_id}",
@@ -840,17 +703,16 @@ pub async fn read_draft_board(
         ("project_id" = String, Path, description = "The project's UUID"),
         ("doc_id" = String, Path, description = "The design doc's UUID"),
         ("board_id" = String, Path, description = "The board's node ID"),
-        ("version" = Option<String>, Query, description = "The version to read instead of the head"),
         ("at" = Option<i64>, Query, description = "Read the board as it was right after this write of the doc's activity (`seq`, from 1), instead of the head"),
     ),
     responses(
         (status = 200, description = "The board", body = BoardBody),
         (status = 400, description = "The doc is no design (`not_a_design`)", body = ErrorBody),
         (status = 401, description = "No valid API key or session", body = ErrorBody),
-        (status = 404, description = "No such doc in this project and workspace, the doc has no such version or no write `at` (`not_found`), or the head, version or write has no such board: an unknown node, a page, a frame, a text (`unknown_board`)", body = ErrorBody),
+        (status = 404, description = "No such doc in this project and workspace, the doc has no write `at` (`not_found`), or the head or write has no such board: an unknown node, a page, a frame, a text (`unknown_board`)", body = ErrorBody),
     )
 )]
-pub async fn read_board_of_version(
+pub async fn read_head_board(
     State(state): State<AppState>,
     request: WorkspaceRequest,
     Path((_, project_id, doc_id, board)): Path<(String, String, String, String)>,
@@ -863,28 +725,19 @@ pub async fn read_board_of_version(
     if doc.kind != "design" {
         return Err(ApiError::bad_request("not_a_design"));
     }
-    let (version_id, chunk) = match (query.get("at"), query.get("version")) {
-        (Some(at), _) => (None, Some(head_at(&mut tx, &doc_id, at).await?)),
-        (None, Some(version)) => {
-            let version_id = parse_uuid(version).ok_or(ApiError::NotFound)?;
-            let chunk = chunk_of_version(&mut tx, &doc_id, &version_id).await?;
-            (Some(version_id), chunk)
-        }
-        (None, None) => (head_version(&mut tx, &doc).await?, doc.head.clone()),
+    let chunk = match query.get("at") {
+        Some(at) => Some(head_at(&mut tx, &doc_id, at).await?),
+        None => doc.head.clone(),
     };
     tx.commit().await.map_err(ApiError::database)?;
     let board = board_id(&board)?;
-    // A version that removes the doc holds no boards, and neither does a doc
-    // with no head.
+    // A doc with no head holds no boards.
     let chunk = chunk.ok_or_else(unknown_board)?;
     let (page_id, node) = read_board(&state, &request.workspace_id, &chunk, &board).await?;
     Ok(Json(BoardBody {
         doc_id,
         page_id,
         board_id: board,
-        version_id,
-        changeset_id: None,
-        draft_id: None,
         tags: tags::print(&node),
         node: serde_json::to_value(&node).expect("a node serializes to JSON"),
     }))

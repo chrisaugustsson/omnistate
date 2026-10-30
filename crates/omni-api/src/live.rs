@@ -35,7 +35,7 @@
 use crate::AppState;
 use crate::docs::AgentIdentity;
 use crate::session::ApiError;
-use crate::threads::{Viewer, bind_viewer, require_identity, visible, visible_decision};
+use crate::threads::{Viewer, bind_viewer, require_identity, visible};
 use crate::workspace::{Actor, WorkspaceRequest, parse_uuid};
 use axum::extract::State;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
@@ -105,30 +105,9 @@ pub enum LiveErrorCode {
     Unavailable,
 }
 
-/// Every event the API emits, as `<entity>.<action>`. The `changeset.*` events
-/// are named after the status the change set moved to.
+/// Every event the API emits, as `<entity>.<action>`.
 #[derive(Serialize, ToSchema)]
 pub enum LiveEventName {
-    #[serde(rename = "changeset.open")]
-    ChangesetOpen,
-    #[serde(rename = "changeset.in_review")]
-    ChangesetInReview,
-    #[serde(rename = "changeset.approved")]
-    ChangesetApproved,
-    #[serde(rename = "changeset.rejected")]
-    ChangesetRejected,
-    #[serde(rename = "changeset.merged")]
-    ChangesetMerged,
-    #[serde(rename = "changeset.needs_rebase")]
-    ChangesetNeedsRebase,
-    #[serde(rename = "changeset.abandoned")]
-    ChangesetAbandoned,
-    #[serde(rename = "claim.taken")]
-    ClaimTaken,
-    #[serde(rename = "claim.released")]
-    ClaimReleased,
-    #[serde(rename = "claim.expired")]
-    ClaimExpired,
     #[serde(rename = "comment.created")]
     CommentCreated,
     #[serde(rename = "comment.replied")]
@@ -139,22 +118,6 @@ pub enum LiveEventName {
     /// still names it until it moves to the live routes (US-113).
     #[serde(rename = "comment.status_changed")]
     CommentStatusChanged,
-    #[serde(rename = "components.imported")]
-    ComponentsImported,
-    #[serde(rename = "conflict.recorded")]
-    ConflictRecorded,
-    #[serde(rename = "conflict.resolved")]
-    ConflictResolved,
-    #[serde(rename = "decision.proposed")]
-    DecisionProposed,
-    #[serde(rename = "decision.superseded")]
-    DecisionSuperseded,
-    #[serde(rename = "decision.approved")]
-    DecisionApproved,
-    #[serde(rename = "decision.rejected")]
-    DecisionRejected,
-    #[serde(rename = "design.imported")]
-    DesignImported,
     #[serde(rename = "doc.changed")]
     DocChanged,
     #[serde(rename = "doc.created")]
@@ -163,30 +126,18 @@ pub enum LiveEventName {
     DocDeleted,
     #[serde(rename = "doc.renamed")]
     DocRenamed,
-    #[serde(rename = "draft.opened")]
-    DraftOpened,
-    #[serde(rename = "draft.rebased")]
-    DraftRebased,
     #[serde(rename = "feature.created")]
     FeatureCreated,
     #[serde(rename = "feature.deleted")]
     FeatureDeleted,
     #[serde(rename = "feature.renamed")]
     FeatureRenamed,
-    #[serde(rename = "op.applied")]
-    OpApplied,
-    #[serde(rename = "phase.started")]
-    PhaseStarted,
     #[serde(rename = "post.created")]
     PostCreated,
     #[serde(rename = "thread.concluded")]
     ThreadConcluded,
     #[serde(rename = "thread.created")]
     ThreadCreated,
-    #[serde(rename = "tokens.imported")]
-    TokensImported,
-    #[serde(rename = "version.saved")]
-    VersionSaved,
 }
 
 /// How many events a socket reads from the table at a time.
@@ -546,8 +497,8 @@ async fn deliver_all(
 }
 
 /// The events of the project above `after`, and those of `withheld` that the
-/// viewer may read by now, oldest first. An event that names a post or a
-/// decision is visible to the callers that may read it.
+/// viewer may read by now, oldest first. An event that names a post is visible
+/// to the callers that may read it.
 async fn read_events(
     state: &AppState,
     workspace_id: &str,
@@ -566,15 +517,11 @@ async fn read_events(
                  (SELECT * FROM live_events WHERE project_id = $1::uuid AND seq = ANY($4)) \
              ) \
              SELECT e.seq, e.event, e.data::text AS data, {AT} AS at, e.seq > $2 AS fresh, \
-                 ((e.data->>'post_id' IS NULL OR EXISTS (\
+                 (e.data->>'post_id' IS NULL OR EXISTS (\
                      SELECT 1 FROM posts p WHERE p.workspace_id = e.workspace_id \
-                       AND p.id = (e.data->>'post_id')::uuid AND {})) \
-                  AND (e.data->>'decision_id' IS NULL OR EXISTS (\
-                     SELECT 1 FROM decisions d WHERE d.workspace_id = e.workspace_id \
-                       AND d.id = (e.data->>'decision_id')::uuid AND {}))) AS visible \
+                       AND p.id = (e.data->>'post_id')::uuid AND {})) AS visible \
              FROM candidates e ORDER BY e.seq",
-            visible("p", 5),
-            visible_decision("d", 5)
+            visible("p", 5)
         ))
         .bind(project_id)
         .bind(after)
@@ -594,12 +541,10 @@ async fn read_events(
 }
 
 /// The events at or below `from` that a client resuming from `from` cannot
-/// have got: those that name a post or a decision the viewer might not read
-/// when the event `from` happened. A post was readable then if the human wrote
-/// it, its phase is open, a later phase had started, or the viewer had posted
-/// in its phase; a decision, by the same rule, if the phase it was proposed in
-/// is open, a later phase had started, or the viewer had posted in it. Anything
-/// else is withheld until `deliver` finds it readable.
+/// have got: those that name a post the viewer might not read when the event
+/// `from` happened. A post was readable then if the human wrote it, its phase
+/// is open, a later phase had started, or the viewer had posted in its phase.
+/// Anything else is withheld until `deliver` finds it readable.
 async fn withheld_before(
     state: &AppState,
     workspace_id: &str,
@@ -629,22 +574,6 @@ async fn withheld_before(
                        OR EXISTS (SELECT 1 FROM posts mine \
                            WHERE mine.workspace_id = p.workspace_id AND mine.thread_id = p.thread_id \
                              AND mine.phase = p.phase AND mine.author->>'kind' = 'agent' \
-                             AND mine.created_at <= r.created_at \
-                             AND mine.author->>'run' IS NOT DISTINCT FROM $4::text \
-                             AND mine.author->>'role' IS NOT DISTINCT FROM $5::text)))) \
-               OR (e.data->>'decision_id' IS NOT NULL AND NOT EXISTS (\
-                   SELECT 1 FROM decisions d, resumed r WHERE d.workspace_id = e.workspace_id \
-                     AND d.id = (e.data->>'decision_id')::uuid \
-                     AND ($3::bool \
-                       OR NOT COALESCE((SELECT ph.sealed FROM thread_phases ph \
-                           WHERE ph.workspace_id = d.workspace_id AND ph.thread_id = d.thread_id \
-                             AND ph.number = d.phase), true) \
-                       OR EXISTS (SELECT 1 FROM thread_phases ph \
-                           WHERE ph.workspace_id = d.workspace_id AND ph.thread_id = d.thread_id \
-                             AND ph.number > d.phase AND ph.started_at <= r.created_at) \
-                       OR EXISTS (SELECT 1 FROM posts mine \
-                           WHERE mine.workspace_id = d.workspace_id AND mine.thread_id = d.thread_id \
-                             AND mine.phase = d.phase AND mine.author->>'kind' = 'agent' \
                              AND mine.created_at <= r.created_at \
                              AND mine.author->>'run' IS NOT DISTINCT FROM $4::text \
                              AND mine.author->>'role' IS NOT DISTINCT FROM $5::text)))))",

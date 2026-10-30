@@ -1,13 +1,13 @@
 //! `omni feature`: create, list, show, rename and delete the features of a
-//! project (Q51). A feature is a part of a project with docs, change sets and
-//! threads of its own. It has no status (V7); a delete is soft and takes its
+//! project (Q51). A feature is a part of a project with docs and threads of
+//! its own. It has no status (V7); a delete is soft and takes its
 //! docs and threads with it.
 
 use crate::args::Args;
-use crate::changesets::{is_uuid, project_id, projects_path, resolve_feature};
 use crate::commands::{Agent, agent, say};
 use crate::error::{CliError, Result, bail};
 use crate::json::{Value, quote};
+use crate::projects::{is_uuid, project_id, projects_path, resolve_feature};
 
 /// The text of an API response, for `--json`.
 fn print_json(text: &str) {

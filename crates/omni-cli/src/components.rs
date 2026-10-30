@@ -1,12 +1,12 @@
 //! `omni component usage <component>`: lists the boards of the project's design
 //! docs that use a component (US-029). The project is found as for `omni
-//! changeset`.
+//! project`.
 
 use crate::args::Args;
-use crate::changesets::project_id;
 use crate::commands::{Agent, agent, say};
 use crate::error::{CliError, Result, bail};
 use crate::json::Value;
+use crate::projects::project_id;
 
 /// The alphabet of node IDs: Crockford's base32 in lowercase.
 const NODE_ID_ALPHABET: &str = "0123456789abcdefghjkmnpqrstvwxyz";
