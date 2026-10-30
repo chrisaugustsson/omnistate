@@ -5,9 +5,8 @@
 //! The tests migrate a scratch database, seed a workspace with an API key (the
 //! agents, told apart by `--as`), create a scratch RustFS bucket and serve the
 //! API's router on a local port against both. The built `omni` runs against
-//! that address with the key in its config file. Each design is imported with
-//! `omni api PUT .../design` (US-029). The contract of the CLI is in
-//! tests/design_edits.rs and tests/claims.rs, and the API's in
+//! that address with the key in its config file. The contract of the CLI is
+//! in tests/design_edits.rs and tests/live_designs.rs, and the API's in
 //! crates/omni-api/tests/design_edits.rs.
 
 mod common;
@@ -199,25 +198,21 @@ fn collect_ids(nodes: &Value, ids: &mut Ids) {
     }
 }
 
-/// One page, Checkout, with the boards Cart and Payment.
-const DESIGN: &str = r##"<Page name="Checkout">
-  <Board name="Cart" x={0} y={0} width={360} height={640} dir="col" gap={8}>
-    <Frame name="Summary" dir="col" gap={4}>
-      <Text name="Total" content="Summa 10 kr" fontFamily="Inter" fontSize={16}/>
-    </Frame>
-  </Board>
-  <Board name="Payment" x={400} y={0} width={360} height={640} dir="col">
-    <Text name="Pay" content="Betala nu" fontFamily="Inter" fontSize={16}/>
-  </Board>
-</Page>
-"##;
+const CART: &str = r##"<Board name="Cart" x={0} y={0} width={360} height={640} dir="col" gap={8}>
+  <Frame name="Summary" dir="col" gap={4}>
+    <Text name="Total" content="Summa 10 kr" fontFamily="Inter" fontSize={16}/>
+  </Frame>
+</Board>"##;
+const PAYMENT: &str = r##"<Board name="Payment" x={400} y={0} width={360} height={640} dir="col">
+  <Text name="Pay" content="Betala nu" fontFamily="Inter" fontSize={16}/>
+</Board>"##;
 
-/// A project (by name) with a design doc started in an open change set and
-/// `DESIGN` imported into its draft.
+/// A project (by name) with a design doc whose one page holds the boards
+/// `CART` and `PAYMENT`.
 struct Design {
     project: String,
-    changeset: String,
     doc: String,
+    page: String,
     ids: Ids,
 }
 
@@ -229,24 +224,26 @@ impl Design {
             .clone()
     }
 
-    /// `--project <name> --changeset <id>`, and `--doc <id>` too with `doc`.
-    fn target(&self, doc: bool) -> Vec<String> {
-        let mut target = vec![
-            "--project".to_string(),
-            self.project.clone(),
-            "--changeset".to_string(),
-            self.changeset.clone(),
-        ];
-        if doc {
-            target.extend(["--doc".to_string(), self.doc.clone()]);
-        }
-        target
+    /// `--project <name> --doc <id>`.
+    fn target(&self) -> [&str; 4] {
+        ["--project", &self.project, "--doc", &self.doc]
     }
 }
 
-fn new_design(f: &Fixture, home: &Scratch) -> Design {
+/// The head of the design, as `omni doc read --json` prints it.
+fn read_head(home: &Scratch, project: &str, doc: &str) -> Value {
+    let out = run_as(
+        home,
+        HOLDER,
+        &["doc", "read", doc, "--project", project, "--json"],
+        b"",
+    );
+    json_of(&out, "doc read")
+}
+
+fn new_design(home: &Scratch) -> Design {
     let project = unique("checkout");
-    let created = json_of(
+    json_of(
         &run_as(
             home,
             HOLDER,
@@ -255,28 +252,6 @@ fn new_design(f: &Fixture, home: &Scratch) -> Design {
         ),
         "project create",
     );
-    let project_id = created["project"]["id"]
-        .as_str()
-        .expect("a project id")
-        .to_string();
-    let out = run_as(
-        home,
-        HOLDER,
-        &[
-            "changeset",
-            "create",
-            "--project",
-            &project,
-            "--title",
-            "Screens",
-            "--json",
-        ],
-        b"",
-    );
-    let changeset = json_of(&out, "changeset create")["changeset"]["id"]
-        .as_str()
-        .expect("a change set id")
-        .to_string();
     let out = run_as(
         home,
         HOLDER,
@@ -285,8 +260,6 @@ fn new_design(f: &Fixture, home: &Scratch) -> Design {
             "create",
             "--project",
             &project,
-            "--changeset",
-            &changeset,
             "--kind",
             "design",
             "--pillar",
@@ -301,43 +274,43 @@ fn new_design(f: &Fixture, home: &Scratch) -> Design {
         .as_str()
         .expect("a doc id")
         .to_string();
-    let path = format!(
-        "/api/v1/w/{}/projects/{project_id}/changesets/{changeset}/docs/{doc}/design",
-        f.workspace
-    );
-    let body = json!({ "tags": DESIGN }).to_string();
+    let page = read_head(home, &project, &doc)["pages"][0]["id"]
+        .as_str()
+        .expect("a new design has a page")
+        .to_string();
+    let insert = |content: &str| json!({ "op": "insert", "parent": page, "position": { "after": null }, "content": content });
+    let ops = json!([insert(CART), insert(PAYMENT)]);
     let out = run_as(
         home,
         HOLDER,
-        &["api", "PUT", &path, "--body-file", "-"],
-        body.as_bytes(),
+        &["design", "edit", &doc, "--project", &project],
+        ops.to_string().as_bytes(),
     );
-    let imported = json_of(&out, "import the design");
+    assert_eq!(out.code, 0, "add the boards: {}", out.stderr);
+    let head = read_head(home, &project, &doc);
     let mut ids = Ids::new();
-    collect_ids(&imported["pages"], &mut ids);
-    assert_eq!(ids.len(), 6, "{imported}");
+    collect_ids(&head["pages"], &mut ids);
+    assert_eq!(ids.len(), 6, "{head}");
     Design {
         project,
-        changeset,
         doc,
+        page,
         ids,
     }
 }
 
 /// `omni design edit` as `agent` with the batch on standard input.
 fn design_edit(home: &Scratch, agent: &str, design: &Design, extra: &[&str], ops: &Value) -> Out {
-    let target = design.target(true);
     let mut args: Vec<&str> = vec!["design", "edit"];
-    args.extend(target.iter().map(String::as_str));
+    args.extend(design.target());
     args.extend(extra);
     run_as(home, agent, &args, ops.to_string().as_bytes())
 }
 
-/// `omni design read` of one board of the draft.
+/// `omni design read` of one board of the head.
 fn read_board(home: &Scratch, design: &Design, board: &str) -> String {
-    let target = design.target(true);
     let mut args: Vec<&str> = vec!["design", "read", "--board", board];
-    args.extend(target.iter().map(String::as_str));
+    args.extend(design.target());
     let out = run_as(home, HOLDER, &args, b"");
     assert_eq!(out.code, 0, "design read: {}", out.stderr);
     out.stdout
@@ -355,7 +328,7 @@ fn text_tag(name: &str, content: &str) -> String {
 fn an_agent_edits_a_design_from_the_command_line_and_gets_the_new_ids() {
     let f = fixture();
     let home = agent_home(f);
-    let design = new_design(f, &home);
+    let design = new_design(&home);
     let board = format!(
         "<Board name=\"Receipt\" x={{800}} y={{0}} width={{360}} height={{640}} dir=\"col\">\n  {}\n</Board>",
         text_tag("Thanks", "Tack för ditt köp")
@@ -364,7 +337,7 @@ fn an_agent_edits_a_design_from_the_command_line_and_gets_the_new_ids() {
         set_content(&design.id("Total"), 1, "Summa 12 kr"),
         {
             "op": "insert",
-            "parent": design.id("Checkout"),
+            "parent": design.page,
             "position": { "after": design.id("Payment") },
             "content": board
         }

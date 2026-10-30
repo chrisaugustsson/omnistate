@@ -15,9 +15,8 @@
 //! as an agent's edits do since US-102..US-104):
 //!
 //! - `omni import penpot <file> --project <id>` writes the export straight into
-//!   the project, with no change set: the project has no change set after it.
-//!   The design doc (kind `design`, pillar `ui`, at the app level) holds the
-//!   pages and boards in its head, and the project's design system doc (kind
+//!   the project. The design doc (kind `design`, pillar `ui`, at the app level)
+//!   holds the pages and boards in its head, and the project's design system doc (kind
 //!   `design-system`, pillar `ui`, always at the app level) holds the tokens,
 //!   with Penpot's themes Mörkt and Ljust as modes, and the components in its
 //!   head. Both read back at once: `GET /docs/{id}/html` of the design answers
@@ -29,12 +28,11 @@
 //! - With `--json` it prints one JSON object with `design_doc_id`,
 //!   `design_system_doc_id` and `report`, the list of what could not be
 //!   imported, each entry with `page`, `board`, `shape_id`, `name` and
-//!   `reason`, and no `changeset_id`. Without `--json` it prints the design
-//!   doc's ID.
+//!   `reason`. Without `--json` it prints the design doc's ID.
 //! - The images of the export are uploaded as workspace attachments, and the
 //!   design refers to them as `attachment:<id>`.
 //! - A file that is not a Penpot export fails with one line on standard error
-//!   that names the file, and leaves no doc and no change set behind.
+//!   that names the file, and leaves no doc behind.
 //! - An import into a project that already has a design system (one an earlier
 //!   import wrote, or one an agent made with `PUT /tokens` and `PUT
 //!   /components`) writes into that same doc: its tokens and components stay,
@@ -1032,38 +1030,6 @@ fn import(home: &Scratch, project: &str, file: &Path) -> Imported {
     import_with(home, project, file, &[])
 }
 
-/// The IDs of the project's change sets.
-fn changesets(home: &Scratch, project: &str) -> Vec<String> {
-    let listed = json_of(
-        &run(home, &["changeset", "list", "--project", project, "--json"]),
-        "changeset list",
-    );
-    listed["changesets"]
-        .as_array()
-        .unwrap_or_else(|| panic!("change sets: {listed}"))
-        .iter()
-        .filter_map(|changeset| changeset["id"].as_str().map(str::to_string))
-        .collect()
-}
-
-/// Checks that the import wrote the live docs: no change set in the project,
-/// and none named in the answer.
-fn assert_no_change_set(home: &Scratch, imported: &Imported) {
-    assert!(
-        imported
-            .answer
-            .get("changeset_id")
-            .is_none_or(Value::is_null),
-        "the import names no change set: {}",
-        imported.answer
-    );
-    assert_eq!(
-        changesets(home, &imported.project),
-        Vec::<String>::new(),
-        "the import leaves no change set in the project"
-    );
-}
-
 /// The doc's record: `GET /docs/{doc}`.
 fn doc_of(f: &Fixture, home: &Scratch, project: &str, doc: &str) -> Value {
     get(f, home, project, &format!("/docs/{doc}"))["doc"].clone()
@@ -1178,12 +1144,11 @@ fn ids_named(components: &[Value], name: &str) -> Vec<String> {
 }
 
 #[test]
-fn import_penpot_writes_the_design_and_its_design_system_with_no_change_set() {
+fn import_penpot_writes_the_design_and_its_design_system() {
     let f = fixture();
     let home = agent_home(f);
     let project = new_project(&home);
     let imported = import(&home, &project, &write_export(&home));
-    assert_no_change_set(&home, &imported);
 
     let design = doc_of(f, &home, &project, &imported.design_doc);
     assert_eq!(
@@ -1306,7 +1271,6 @@ fn the_tirebud_idag_export_imports_into_an_empty_project_and_every_board_reads()
     let home = agent_home(f);
     let project = new_project(&home);
     let imported = import(&home, &project, &path);
-    assert_no_change_set(&home, &imported);
     let system = doc_of(f, &home, &project, &imported.design_system_doc);
     assert_eq!(system["kind"], "design-system", "{system}");
     let tokens = get(f, &home, &project, "/tokens");
@@ -1341,7 +1305,6 @@ fn a_second_import_merges_into_the_design_system_of_the_first() {
     // The project has a design system now; the second import adds to it and
     // takes nothing of it away.
     let second = import(&home, &project, &write_kassa_export(&home));
-    assert_no_change_set(&home, &second);
     assert_eq!(
         second.design_system_doc, first.design_system_doc,
         "a project has one design system doc"
@@ -1425,7 +1388,6 @@ fn with_feature_the_design_lands_in_the_feature_and_the_design_system_at_the_app
         .to_string();
 
     let imported = import_with(&home, &project, &write_export(&home), &["--feature", &name]);
-    assert_no_change_set(&home, &imported);
     let design = doc_of(f, &home, &project, &imported.design_doc);
     assert_eq!(
         (&design["kind"], &design["pillar"], &design["feature_id"]),
@@ -1520,7 +1482,6 @@ fn the_tirebud_ordrar_export_imports_with_its_components() {
     let home = agent_home(f);
     let project = new_project(&home);
     let imported = import(&home, &project, &path);
-    assert_no_change_set(&home, &imported);
     let report = imported.answer["report"].as_array().expect("a report");
     assert_eq!(
         report.len(),

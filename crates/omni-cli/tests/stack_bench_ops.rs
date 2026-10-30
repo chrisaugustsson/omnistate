@@ -4,11 +4,11 @@
 //! test target of its own, so no other test runs next to it and skews the
 //! times.
 //!
-//! The test builds a 1,000-block doc in a draft and then applies 500 single
+//! The test builds a 1,000-block live doc and then applies 500 single
 //! `set` operations one after the other, each with its own run of the built
 //! `omni doc edit`, timed at the command line as an agent sees it. The 95th
 //! percentile must be under 50 ms. `make bench-ops` measures the same against
-//! the warm local stack (tests/docs.rs checks that the target exists).
+//! the warm local stack.
 
 mod common;
 
@@ -187,30 +187,10 @@ fn single_set_operations_take_under_50_ms_at_the_95th_percentile() {
     let out = run(
         &home,
         &[
-            "changeset",
-            "create",
-            "--project",
-            project,
-            "--title",
-            "Bench",
-            "--json",
-        ],
-        b"",
-    );
-    assert_eq!(out.code, 0, "changeset create: {}", out.stderr);
-    let changeset = out.json()["changeset"]["id"]
-        .as_str()
-        .expect("a change set id")
-        .to_string();
-    let out = run(
-        &home,
-        &[
             "doc",
             "create",
             "--project",
             project,
-            "--changeset",
-            &changeset,
             "--kind",
             "html",
             "--pillar",
@@ -226,7 +206,7 @@ fn single_set_operations_take_under_50_ms_at_the_95th_percentile() {
         .as_str()
         .expect("a doc id")
         .to_string();
-    let target = ["--project", project, "--changeset", changeset.as_str()];
+    let target = ["--project", project];
 
     // The 1,000-block doc, in batches of 100 inserts.
     let mut nodes = Vec::new();

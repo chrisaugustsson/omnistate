@@ -1,6 +1,6 @@
-//! US-108: threads without change sets from the command line, against the
-//! real API. Run with `--features stack-tests` in the Compose test container,
-//! which reaches Postgres at `postgres:5432`.
+//! US-108: threads from the command line, against the real API. Run with
+//! `--features stack-tests` in the Compose test container, which reaches
+//! Postgres at `postgres:5432`.
 //!
 //! The tests migrate a scratch database, seed a workspace with an API key and
 //! serve the API's router on a local port against that database. The built
@@ -10,8 +10,7 @@
 //! tests/thread_waits.rs, the API's in crates/omni-api/tests/live_threads.rs.
 //!
 //! What these tests add is the round trip: `omni thread create` starts
-//! threads at the app level and in a feature with no change set, `omni thread
-//! read` and `omni wait --thread --posts` keep to a sealed thread (an agent
+//! threads at the app level and in a feature, `omni thread read` and `omni wait --thread --posts` keep to a sealed thread (an agent
 //! that has not posted reads no other agent's posts, and counts none of
 //! them), and `omni thread conclude` writes a conclusion that leaves the
 //! thread open to posts.
@@ -295,7 +294,7 @@ fn wait_posts(
 }
 
 #[test]
-fn an_agent_starts_threads_at_the_app_level_and_in_a_feature_without_a_change_set() {
+fn an_agent_starts_threads_at_the_app_level_and_in_a_feature() {
     let f = fixture();
     let home = agent_home(f);
     let project = new_project(&home);

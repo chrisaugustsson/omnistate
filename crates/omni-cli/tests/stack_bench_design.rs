@@ -4,7 +4,7 @@
 //! of its own with a single test, so no other test runs next to it and skews
 //! the times.
 //!
-//! The test imports a design with one page (US-029), then inserts three
+//! The test creates a design, which starts with one page, then inserts three
 //! boards of 300 nodes each under the page, each with its own run of the built
 //! `omni design edit`, timed at the command line as an agent sees it: every
 //! insert must take under 500 ms. Then it applies 500 single `set`
@@ -210,31 +210,10 @@ fn a_300_node_board_inserts_in_under_500_ms_and_single_operations_take_under_50_
     let home = Scratch::new("agent");
     write_config(&home.path, &f.url, &f.workspace, &f.secret);
     let project = "bench-design";
-    let created = json_of(
+    json_of(
         &run(&home, &["project", "create", project, "--json"], b""),
         "project create",
     );
-    let project_id = created["project"]["id"]
-        .as_str()
-        .expect("a project id")
-        .to_string();
-    let out = run(
-        &home,
-        &[
-            "changeset",
-            "create",
-            "--project",
-            project,
-            "--title",
-            "Bench",
-            "--json",
-        ],
-        b"",
-    );
-    let changeset = json_of(&out, "changeset create")["changeset"]["id"]
-        .as_str()
-        .expect("a change set id")
-        .to_string();
     let out = run(
         &home,
         &[
@@ -242,8 +221,6 @@ fn a_300_node_board_inserts_in_under_500_ms_and_single_operations_take_under_50_
             "create",
             "--project",
             project,
-            "--changeset",
-            &changeset,
             "--kind",
             "design",
             "--pillar",
@@ -258,33 +235,19 @@ fn a_300_node_board_inserts_in_under_500_ms_and_single_operations_take_under_50_
         .as_str()
         .expect("a doc id")
         .to_string();
-    let path = format!(
-        "/api/v1/w/{}/projects/{project_id}/changesets/{changeset}/docs/{doc}/design",
-        f.workspace
-    );
-    let body = json!({ "tags": "<Page name=\"Screens\"/>" }).to_string();
-    let imported = json_of(
+    let head = json_of(
         &run(
             &home,
-            &["api", "PUT", &path, "--body-file", "-"],
-            body.as_bytes(),
+            &["doc", "read", &doc, "--project", project, "--json"],
+            b"",
         ),
-        "import a page",
+        "read the new design",
     );
-    let page = imported["pages"][0]["id"]
+    let page = head["pages"][0]["id"]
         .as_str()
         .expect("the page has an ID")
         .to_string();
-    let edit: Vec<&str> = vec![
-        "design",
-        "edit",
-        "--project",
-        project,
-        "--changeset",
-        &changeset,
-        "--doc",
-        &doc,
-    ];
+    let edit: Vec<&str> = vec!["design", "edit", "--project", project, "--doc", &doc];
 
     let mut nodes = Vec::new();
     let mut board_times = Vec::new();

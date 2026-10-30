@@ -7,7 +7,7 @@
 //! a member (alice) with a live session, create a scratch RustFS bucket and
 //! serve the API's router on a local port against both. The built `omni`
 //! runs against that address with the key in its config file and writes the
-//! docs straight to their heads (no change set); the human's steps
+//! docs straight to their heads; the human's steps
 //! (commenting on a node of a doc's head, replying, deleting a comment), which
 //! no command does, are plain HTTP requests with alice's session cookie. The
 //! CLI's contract is in tests/comments.rs, the API's in

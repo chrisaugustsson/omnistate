@@ -302,8 +302,8 @@ fn a_feature_is_created_listed_and_shown_from_the_command_line() {
     assert_eq!(shown.json()["feature"]["id"], wish_list.as_str());
 }
 
-// US-061: `omni doc list` against the real API: a doc takes the scope of the
-// change set that creates it, and the list prints it.
+// US-061: `omni doc list` against the real API: a doc takes the scope it was
+// created in, and the list prints it.
 #[test]
 fn doc_list_prints_the_scope_of_each_doc_from_the_command_line() {
     let f = fixture();
