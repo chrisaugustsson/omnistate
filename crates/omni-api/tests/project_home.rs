@@ -9,69 +9,36 @@
 //! The web app's side is web/src/project-home.test.tsx.
 //!
 //! The contract these tests pin down (all paths are under
-//! `/api/v1/w/{workspace_id}/projects/{project_id}`; change sets are those of
-//! US-016 and US-025, docs and versions those of US-022 and US-024, threads
-//! and posts those of US-033 to US-035, decisions those of US-037 and comments
-//! those of US-038):
+//! `/api/v1/w/{workspace_id}/projects/{project_id}`; docs are those of
+//! tests/live_docs.rs, threads those of tests/live_threads.rs and comments
+//! those of tests/comments.rs):
 //!
-//! - `GET /home` (human) answers the reviewer's page of the project in one
-//!   call: 200 `{"project_id", "docs", "changesets", "threads", "waiting"}`.
-//!   An API key is 403 `{"error": "forbidden"}` (the page is the human's, and
-//!   an agent must not read past a sealed phase through it); an unknown
-//!   project is 404 `{"error": "not_found"}`.
+//! - `GET /home` (human) answers the project's page in one call: 200
+//!   `{"project_id", "features", "app", "docs", "threads", "waiting"}`. An API
+//!   key is 403 `{"error": "forbidden"}` (the page is the human's, and an agent
+//!   must not read past a sealed thread through it); an unknown project is 404
+//!   `{"error": "not_found"}`.
 //! - `docs` lists every doc of the project, oldest first, each the Doc that
-//!   `GET /docs/{doc_id}` answers (so with its `pillar`, `kind`, `title` and
-//!   `mainline_version_id`, which is `null` while its first version has not
-//!   merged). The web app groups them by pillar.
-//! - `changesets` lists every change set of the project, oldest first, each
-//!   the Changeset that `GET /changesets/{changeset_id}` answers the human,
-//!   with its `status`.
+//!   `GET /docs/{doc_id}` answers (so with its `pillar`, `kind` and `title`).
+//!   The web app groups them by pillar.
 //! - `threads` lists every thread of the project, oldest first, each with at
-//!   least the `id`, `changeset_id` and `question` of the Thread that `GET
+//!   least the `id`, `feature_id` and `question` of the Thread that `GET
 //!   /threads/{thread_id}` answers.
-//! - `waiting` is what waits for the human, each list oldest first:
-//!   - `decisions`: the decisions whose status is `proposed`, each the
-//!     Decision that `GET /decisions/{decision_id}` answers the human. One
-//!     that the human approved or rejected, or that a later proposal
-//!     superseded, is not listed.
-//!   - `changesets`: the change sets whose status is `in_review`, each as in
-//!     `changesets`.
-//!   - `comments`: the comments whose latest reply is an agent's (US-106:
-//!     comments have no status any more, and their `waiting_on_you` is
-//!     `true`), each the Comment that `GET /comments/{comment_id}` answers. A
-//!     comment without replies, one whose latest reply is the human's and one
-//!     that the human deleted are not listed.
-//!   - `questions`: the posts of type `question` that an agent wrote, in any
-//!     phase (the human sees sealed phases too), each the Post that `GET
-//!     /posts/{post_id}` answers the human, until a post of the human links to
-//!     it as a reply: a post with `{"kind": "post", "post_id"}` naming it in
-//!     its `links`, made with the posts route or the directives route. An
-//!     agent's post that links to it does not take it off the list, and the
-//!     human's own questions are never listed.
+//! - `waiting.comments` is what waits for the human, oldest first: the comments
+//!   whose latest reply is an agent's, each the Comment that `GET
+//!   /comments/{comment_id}` answers. A comment without replies, one whose
+//!   latest reply is the human's and one that the human deleted are not listed.
 //!
 //!   Nothing of another project is listed anywhere.
-//! - Every change that moves an item onto or off these lists already emits
-//!   its event on the project's live channel (`decision.*`, `changeset.*`,
-//!   `comment.replied`, `comment.deleted`, `post.created`); the web app reloads the home
-//!   on the project's events.
-//!
-//! US-063 ties the home to the project's features (Q51; features are those of
-//! US-059 to US-062):
-//!
-//! - `features` lists every feature of the project in creation order (US-110:
-//!   a feature has no status, so there are no done ones), each a FeatureSummary `{"feature", "docs",
-//!   "open_changesets", "waiting"}`: `feature` is the Feature that `GET
-//!   /features/{feature_id}` answers, `docs` the number of the feature's own
-//!   docs (not the global docs its change sets draft), `open_changesets` the
-//!   number of its change sets that are `open`, `in_review`, `approved` or
-//!   `needs_rebase` (not `merged`, `rejected` or `abandoned`), and `waiting`
-//!   the number of the items of `waiting` that carry its ID.
-//! - Every item of `waiting` carries `feature_id`: a decision, change set or
-//!   question that of its change set, a comment that of its doc (so a comment
-//!   on a global doc is project level even when a feature's change set saved
-//!   the version). `null` is project level.
-//! - `docs`, `changesets` and `threads` stay complete, project level and every
-//!   feature, each item with its `feature_id`.
+//! - `features` lists every feature of the project in creation order, each a
+//!   FeatureSummary `{"feature", "docs", "waiting"}`: `feature` is the Feature
+//!   that `GET /features/{feature_id}` answers, `docs` the number of the
+//!   feature's own docs, and `waiting` the number of the items of `waiting`
+//!   that carry its ID.
+//! - Every item of `waiting` carries `feature_id`, that of its doc. `null` is
+//!   the app level.
+//! - `docs` and `threads` stay complete, app level and every feature, each item
+//!   with its `feature_id`.
 //!
 //! US-112 adds what the scope pages show:
 //!
@@ -317,7 +284,7 @@ impl Auth<'_> {
     }
 }
 
-/// The agent that writes docs, starts threads and proposes decisions:
+/// The agent that writes docs and starts threads:
 /// `run-1/author`.
 fn author(f: &Fixture) -> Auth<'_> {
     Auth::Agent {
@@ -377,10 +344,6 @@ fn project_base(f: &Fixture, project: &str) -> String {
     format!("/api/v1/w/{}/projects/{project}", f.workspace)
 }
 
-fn changeset_path(f: &Fixture, project: &str, changeset: &str) -> String {
-    format!("{}/changesets/{changeset}", project_base(f, project))
-}
-
 fn thread_path(f: &Fixture, project: &str, thread: &str) -> String {
     format!("{}/threads/{thread}", project_base(f, project))
 }
@@ -425,7 +388,7 @@ fn home(f: &Fixture, client: &Client, project: &str) -> Value {
     answer
 }
 
-/// The list at `pointer` (such as `/docs` or `/waiting/decisions`) of a home.
+/// The list at `pointer` (such as `/docs` or `/waiting/comments`) of a home.
 fn list_at(home: &Value, pointer: &str) -> Vec<Value> {
     home.pointer(pointer)
         .and_then(Value::as_array)
@@ -447,7 +410,7 @@ fn item_at(home: &Value, pointer: &str, id: &str) -> Value {
 }
 
 // ---------------------------------------------------------------------------
-// Projects, change sets and docs
+// Projects and docs
 // ---------------------------------------------------------------------------
 
 fn new_project(f: &Fixture, client: &Client) -> String {
@@ -466,55 +429,7 @@ fn new_project(f: &Fixture, client: &Client) -> String {
     )
 }
 
-fn new_changeset(f: &Fixture, client: &Client, project: &str) -> String {
-    new_changeset_in(f, client, project, None)
-}
-
-/// Opens a change set in `feature`, or at project level without one.
-fn new_changeset_in(f: &Fixture, client: &Client, project: &str, feature: Option<&str>) -> String {
-    let mut body = json!({ "title": unique("change"), "run_tag": "run-1" });
-    if let Some(feature) = feature {
-        body["feature_id"] = json!(feature);
-    }
-    id_of(
-        &must(
-            call(
-                client,
-                "POST",
-                &format!("{}/changesets", project_base(f, project)),
-                &author(f),
-                Some(&body),
-            ),
-            201,
-            "create a change set",
-        )["changeset"],
-    )
-}
-
-fn create_doc(
-    f: &Fixture,
-    client: &Client,
-    project: &str,
-    changeset: &str,
-    kind: &str,
-    pillar: &str,
-) -> String {
-    id_of(
-        &must(
-            call(
-                client,
-                "POST",
-                &format!("{}/docs", changeset_path(f, project, changeset)),
-                &author(f),
-                Some(&json!({ "kind": kind, "pillar": pillar, "title": unique("Doc") })),
-            ),
-            201,
-            "create a doc",
-        )["doc"],
-    )
-}
-
-/// Starts a live doc in the project, outside any change set; returns its ID.
+/// Creates a doc in the project; returns its ID.
 fn create_live(f: &Fixture, client: &Client, project: &str, kind: &str, pillar: &str) -> String {
     id_of(
         &must(
@@ -526,318 +441,18 @@ fn create_live(f: &Fixture, client: &Client, project: &str, kind: &str, pillar: 
                 Some(&json!({ "kind": kind, "pillar": pillar, "title": unique("Doc") })),
             ),
             201,
-            "create a live doc",
+            "create a doc",
         )["doc"],
     )
-}
-
-/// Inserts one paragraph into the change set's draft of the HTML doc `doc`;
-/// returns the new node's ID.
-fn insert_paragraph(
-    f: &Fixture,
-    client: &Client,
-    project: &str,
-    changeset: &str,
-    doc: &str,
-) -> String {
-    let edited = must(
-        call(
-            client,
-            "POST",
-            &format!("{}/docs/{doc}/ops", changeset_path(f, project, changeset)),
-            &author(f),
-            Some(&json!({ "ops": [{
-                "op": "insert",
-                "parent": null,
-                "position": { "after": null },
-                "content": format!("<p>{}</p>", unique("The hero is split"))
-            }] })),
-        ),
-        200,
-        "edit the draft",
-    );
-    edited["results"][0]["node"]
-        .as_str()
-        .unwrap_or_else(|| panic!("an insert names its node: {edited}"))
-        .to_string()
-}
-
-/// Saves the change set's draft of `doc`; returns the version's ID.
-fn save(f: &Fixture, client: &Client, project: &str, changeset: &str, doc: &str) -> String {
-    id_of(
-        &must(
-            call(
-                client,
-                "POST",
-                &format!(
-                    "{}/docs/{doc}/versions",
-                    changeset_path(f, project, changeset)
-                ),
-                &author(f),
-                Some(&json!({})),
-            ),
-            201,
-            "save a version",
-        )["version"],
-    )
-}
-
-/// A change set of `project` with one saved version of a new PRD doc, still
-/// open: (change set, doc, paragraph node, version).
-fn changeset_with_version(
-    f: &Fixture,
-    client: &Client,
-    project: &str,
-) -> (String, String, String, String) {
-    changeset_with_version_in(f, client, project, None)
-}
-
-/// As `changeset_with_version`, with the change set in `feature` or at
-/// project level without one.
-fn changeset_with_version_in(
-    f: &Fixture,
-    client: &Client,
-    project: &str,
-    feature: Option<&str>,
-) -> (String, String, String, String) {
-    let changeset = new_changeset_in(f, client, project, feature);
-    let doc = create_doc(f, client, project, &changeset, "html", "spec");
-    let node = insert_paragraph(f, client, project, &changeset, &doc);
-    let version = save(f, client, project, &changeset, &doc);
-    (changeset, doc, node, version)
-}
-
-/// `auth` moves the change set on with `action` (`submit`, `approve`,
-/// `reject`, `reopen`); returns the status it has after that.
-fn act_on_changeset(
-    f: &Fixture,
-    client: &Client,
-    auth: &Auth,
-    project: &str,
-    changeset: &str,
-    action: &str,
-    body: Option<&Value>,
-) -> String {
-    let answer = must(
-        call(
-            client,
-            "POST",
-            &format!("{}/{action}", changeset_path(f, project, changeset)),
-            auth,
-            body,
-        ),
-        200,
-        &format!("{action} the change set"),
-    );
-    answer["changeset"]["status"]
-        .as_str()
-        .unwrap_or_else(|| panic!("the change set has a status: {answer}"))
-        .to_string()
-}
-
-fn submit(f: &Fixture, client: &Client, project: &str, changeset: &str) {
-    let status = act_on_changeset(f, client, &author(f), project, changeset, "submit", None);
-    assert_eq!(status, "in_review");
-}
-
-/// The human approves the change set, which merges it.
-fn approve_changeset(f: &Fixture, client: &Client, project: &str, changeset: &str) {
-    let status = act_on_changeset(
-        f,
-        client,
-        &human(f),
-        project,
-        changeset,
-        "approve",
-        Some(&json!({})),
-    );
-    assert_eq!(status, "merged");
-}
-
-fn reject_changeset(f: &Fixture, client: &Client, project: &str, changeset: &str) {
-    let status = act_on_changeset(
-        f,
-        client,
-        &human(f),
-        project,
-        changeset,
-        "reject",
-        Some(&json!({ "reason": "The hero needs a dark variant." })),
-    );
-    assert_eq!(status, "rejected");
-}
-
-fn reopen_changeset(f: &Fixture, client: &Client, project: &str, changeset: &str) {
-    let status = act_on_changeset(f, client, &author(f), project, changeset, "reopen", None);
-    assert_eq!(status, "open");
-}
-
-// ---------------------------------------------------------------------------
-// Threads, posts and decisions
-// ---------------------------------------------------------------------------
-
-/// The author starts a thread in the change set; returns its ID.
-fn new_thread(
-    f: &Fixture,
-    client: &Client,
-    project: &str,
-    changeset: &str,
-    sealed: bool,
-) -> String {
-    id_of(
-        &must(
-            call(
-                client,
-                "POST",
-                &format!("{}/threads", changeset_path(f, project, changeset)),
-                &author(f),
-                Some(&json!({
-                    "question": unique("Which hero layout?"),
-                    "criteria": ["Readable at 320 px", "Fits above the fold"],
-                    "sealed": sealed
-                })),
-            ),
-            201,
-            "start a thread",
-        )["thread"],
-    )
-}
-
-/// `auth` posts a post of `kind` that links to `links` in the thread; returns
-/// the post's ID.
-fn post(
-    f: &Fixture,
-    client: &Client,
-    auth: &Auth,
-    project: &str,
-    thread: &str,
-    kind: &str,
-    links: &[&str],
-) -> String {
-    let links: Vec<Value> = links
-        .iter()
-        .map(|id| json!({ "kind": "post", "post_id": id }))
-        .collect();
-    id_of(
-        &must(
-            call(
-                client,
-                "POST",
-                &format!("{}/posts", thread_path(f, project, thread)),
-                auth,
-                Some(&json!({
-                    "type": kind,
-                    "summary": unique(&format!("A {kind}")),
-                    "body": unique("What the post says"),
-                    "links": links
-                })),
-            ),
-            201,
-            &format!("post a {kind}"),
-        )["post"],
-    )
-}
-
-/// The human gives a directive in the thread that links to `links`; returns
-/// the post's ID.
-fn directive(f: &Fixture, client: &Client, project: &str, thread: &str, links: &[&str]) -> String {
-    let links: Vec<Value> = links
-        .iter()
-        .map(|id| json!({ "kind": "post", "post_id": id }))
-        .collect();
-    id_of(
-        &must(
-            call(
-                client,
-                "POST",
-                &format!("{}/directives", thread_path(f, project, thread)),
-                &human(f),
-                Some(&json!({
-                    "summary": unique("Use the split hero"),
-                    "body": "Go with the split hero; the photo fails contrast.",
-                    "links": links
-                })),
-            ),
-            201,
-            "give a directive",
-        )["post"],
-    )
-}
-
-/// The author proposes a decision for the thread; returns its ID.
-fn propose(f: &Fixture, client: &Client, project: &str, thread: &str) -> String {
-    let body = json!({
-        "direction": unique("Use the split hero: copy on the left, product shot on the right"),
-        "chosen": "Split hero",
-        "criteria": ["Readable at 320 px"],
-        "options": [
-            { "name": "Split hero", "scores": { "Readable at 320 px": 8 }, "lost_because": null },
-            {
-                "name": "Full-bleed photo",
-                "scores": { "Readable at 320 px": 5 },
-                "lost_because": "Text over the photo fails contrast at 320 px."
-            }
-        ],
-        "assumptions": [],
-        "open_questions": [],
-        "dissent": [],
-        "posts": []
-    });
-    id_of(
-        &must(
-            call(
-                client,
-                "POST",
-                &format!("{}/decisions", thread_path(f, project, thread)),
-                &author(f),
-                Some(&body),
-            ),
-            201,
-            "propose a decision",
-        )["decision"],
-    )
-}
-
-/// The human approves or rejects the decision.
-fn decide(f: &Fixture, client: &Client, project: &str, decision: &str, action: &str) {
-    let body = if action == "reject" {
-        json!({ "reason": "The photo is off-brand." })
-    } else {
-        json!({})
-    };
-    must(
-        call(
-            client,
-            "POST",
-            &format!("{}/decisions/{decision}/{action}", project_base(f, project)),
-            &human(f),
-            Some(&body),
-        ),
-        200,
-        &format!("the human acts on the decision: {action}"),
-    );
 }
 
 // ---------------------------------------------------------------------------
 // Comments
 // ---------------------------------------------------------------------------
 
-/// The human comments on `node` of `version`; returns the comment's ID.
-fn comment(f: &Fixture, client: &Client, project: &str, version: &str, node: &str) -> String {
-    id_of(
-        &must(
-            call(
-                client,
-                "POST",
-                &format!("{}/versions/{version}/comments", project_base(f, project)),
-                &human(f),
-                Some(&json!({ "node": node, "text": unique("Make the copy shorter") })),
-            ),
-            201,
-            "comment on a node",
-        )["comment"],
-    )
-}
+// ---------------------------------------------------------------------------
+// Comments
+// ---------------------------------------------------------------------------
 
 /// `auth` replies `text` to the comment.
 fn reply_to_comment(
@@ -886,9 +501,6 @@ fn delete_comment(f: &Fixture, client: &Client, project: &str, comment: &str) {
 fn an_api_key_is_refused_the_home_and_an_unknown_project_is_not_found() {
     let (f, client) = ready();
     let project = new_project(f, client);
-    let (changeset, _, _, _) = changeset_with_version(f, client, &project);
-    let thread = new_thread(f, client, &project, &changeset, true);
-    post(f, client, &critic(f), &project, &thread, "question", &[]);
 
     assert_error(
         &home_response(f, client, &author(f), &project),
@@ -905,7 +517,7 @@ fn an_api_key_is_refused_the_home_and_an_unknown_project_is_not_found() {
 }
 
 // ---------------------------------------------------------------------------
-// Docs, change sets and threads
+// Docs and threads
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -952,75 +564,21 @@ fn the_home_lists_every_doc_of_the_project_with_its_pillar() {
 }
 
 #[test]
-fn the_home_lists_every_change_set_with_its_status_oldest_first() {
-    let (f, client) = ready();
-    let project = new_project(f, client);
-    let open = new_changeset(f, client, &project);
-    let (in_review, _, _, _) = changeset_with_version(f, client, &project);
-    submit(f, client, &project, &in_review);
-    let (rejected, _, _, _) = changeset_with_version(f, client, &project);
-    submit(f, client, &project, &rejected);
-    reject_changeset(f, client, &project, &rejected);
-    let (merged, _, _, _) = changeset_with_version(f, client, &project);
-    submit(f, client, &project, &merged);
-    approve_changeset(f, client, &project, &merged);
-    let elsewhere = new_project(f, client);
-    let foreign = new_changeset(f, client, &elsewhere);
-
-    let home = home(f, client, &project);
-    assert_eq!(
-        ids_at(&home, "/changesets"),
-        vec![
-            open.clone(),
-            in_review.clone(),
-            rejected.clone(),
-            merged.clone()
-        ],
-        "every change set of the project, oldest first: {home}"
-    );
-    assert!(!home.to_string().contains(&foreign), "{home}");
-    for (changeset, status) in [
-        (&open, "open"),
-        (&in_review, "in_review"),
-        (&rejected, "rejected"),
-        (&merged, "merged"),
-    ] {
-        let listed = item_at(&home, "/changesets", changeset);
-        assert_eq!(listed["status"], status, "{listed}");
-        assert_eq!(
-            listed,
-            read(
-                f,
-                client,
-                &human(f),
-                &project,
-                &format!("/changesets/{changeset}")
-            )["changeset"],
-            "the home lists the change set as its read answers the human"
-        );
-    }
-}
-
-#[test]
 fn the_home_lists_every_thread_of_the_project() {
     let (f, client) = ready();
     let project = new_project(f, client);
-    let (merged, _, _, _) = changeset_with_version(f, client, &project);
-    let first = new_thread(f, client, &project, &merged, false);
-    submit(f, client, &project, &merged);
-    approve_changeset(f, client, &project, &merged);
-    let open = new_changeset(f, client, &project);
-    let second = new_thread(f, client, &project, &open, true);
-    let third = new_thread(f, client, &project, &open, false);
+    let feature = new_feature(f, client, &project);
+    let first = id_of(&scope_thread(f, client, &project, None));
+    let second = id_of(&scope_thread(f, client, &project, Some(&feature)));
+    let third = id_of(&scope_thread(f, client, &project, None));
     let elsewhere = new_project(f, client);
-    let foreign_changeset = new_changeset(f, client, &elsewhere);
-    let foreign = new_thread(f, client, &elsewhere, &foreign_changeset, false);
+    let foreign = id_of(&scope_thread(f, client, &elsewhere, None));
 
     let home = home(f, client, &project);
     assert_eq!(
         ids_at(&home, "/threads"),
         vec![first.clone(), second.clone(), third.clone()],
-        "every thread of the project, those of a merged change set too, oldest first: {home}"
+        "every thread of the project, oldest first: {home}"
     );
     assert!(!home.to_string().contains(&foreign), "{home}");
     for thread in [&first, &second, &third] {
@@ -1033,7 +591,7 @@ fn the_home_lists_every_thread_of_the_project() {
             &format!("/threads/{thread}"),
         )["thread"]
             .clone();
-        for field in ["id", "changeset_id", "question"] {
+        for field in ["id", "feature_id", "question"] {
             assert_eq!(listed[field], read[field], "{field} of {listed}");
         }
     }
@@ -1044,110 +602,15 @@ fn the_home_lists_every_thread_of_the_project() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn decisions_wait_for_the_human_while_they_are_proposed() {
-    let (f, client) = ready();
-    let project = new_project(f, client);
-    let changeset = new_changeset(f, client, &project);
-    let approving = new_thread(f, client, &project, &changeset, false);
-    let rejecting = new_thread(f, client, &project, &changeset, false);
-    let superseding = new_thread(f, client, &project, &changeset, false);
-    let to_approve = propose(f, client, &project, &approving);
-    let to_reject = propose(f, client, &project, &rejecting);
-    let superseded = propose(f, client, &project, &superseding);
-    let elsewhere = new_project(f, client);
-    let foreign_changeset = new_changeset(f, client, &elsewhere);
-    let foreign_thread = new_thread(f, client, &elsewhere, &foreign_changeset, false);
-    let foreign = propose(f, client, &elsewhere, &foreign_thread);
-
-    let first = home(f, client, &project);
-    assert_eq!(
-        ids_at(&first, "/waiting/decisions"),
-        vec![to_approve.clone(), to_reject.clone(), superseded.clone()],
-        "the proposed decisions of the project wait, oldest first: {first}"
-    );
-    assert!(!first.to_string().contains(&foreign), "{first}");
-    assert_eq!(
-        item_at(&first, "/waiting/decisions", &to_approve),
-        read(
-            f,
-            client,
-            &human(f),
-            &project,
-            &format!("/decisions/{to_approve}")
-        )["decision"],
-        "the home lists the decision as its read answers the human"
-    );
-
-    decide(f, client, &project, &to_approve, "approve");
-    decide(f, client, &project, &to_reject, "reject");
-    let successor = propose(f, client, &project, &superseding);
-
-    let after = home(f, client, &project);
-    assert_eq!(
-        ids_at(&after, "/waiting/decisions"),
-        vec![successor.clone()],
-        "approved, rejected and superseded decisions no longer wait; the new proposal does: {after}"
-    );
-}
-
-#[test]
-fn change_sets_wait_for_the_human_while_they_are_in_review() {
-    let (f, client) = ready();
-    let project = new_project(f, client);
-    let (open, _, _, _) = changeset_with_version(f, client, &project);
-    let (approving, _, _, _) = changeset_with_version(f, client, &project);
-    let (rejecting, _, _, _) = changeset_with_version(f, client, &project);
-    for changeset in [&approving, &rejecting] {
-        submit(f, client, &project, changeset);
-    }
-
-    let first = home(f, client, &project);
-    assert_eq!(
-        ids_at(&first, "/waiting/changesets"),
-        vec![approving.clone(), rejecting.clone()],
-        "the change sets in review wait, oldest first, and the open one does not: {first}"
-    );
-    assert_eq!(
-        item_at(&first, "/waiting/changesets", &approving),
-        read(
-            f,
-            client,
-            &human(f),
-            &project,
-            &format!("/changesets/{approving}")
-        )["changeset"],
-        "the home lists the change set as its read answers the human"
-    );
-
-    approve_changeset(f, client, &project, &approving);
-    reject_changeset(f, client, &project, &rejecting);
-    let decided = home(f, client, &project);
-    assert_eq!(
-        ids_at(&decided, "/waiting/changesets"),
-        Vec::<String>::new(),
-        "merged and rejected change sets no longer wait: {decided}"
-    );
-
-    reopen_changeset(f, client, &project, &rejecting);
-    submit(f, client, &project, &rejecting);
-    submit(f, client, &project, &open);
-    let again = home(f, client, &project);
-    assert_eq!(
-        ids_at(&again, "/waiting/changesets"),
-        vec![open.clone(), rejecting.clone()],
-        "a change set submitted again waits again: {again}"
-    );
-}
-
-#[test]
 fn comments_wait_for_the_human_while_an_agent_replied_last() {
     let (f, client) = ready();
     let project = new_project(f, client);
-    let (_, _, node, v1) = changeset_with_version(f, client, &project);
-    let unanswered = comment(f, client, &project, &v1, &node);
-    let answered = comment(f, client, &project, &v1, &node);
-    let answered_back = comment(f, client, &project, &v1, &node);
-    let deleting = comment(f, client, &project, &v1, &node);
+    let doc = live_doc_in(f, client, &project, None);
+    let node = write_paragraph(f, client, &author(f), &project, &doc);
+    let unanswered = comment_on_head(f, client, &project, &doc, &node);
+    let answered = comment_on_head(f, client, &project, &doc, &node);
+    let answered_back = comment_on_head(f, client, &project, &doc, &node);
+    let deleting = comment_on_head(f, client, &project, &doc, &node);
     for replied in [&answered, &answered_back, &deleting] {
         reply_to_comment(f, client, &author(f), &project, replied, "Shorter now.");
     }
@@ -1192,138 +655,8 @@ fn comments_wait_for_the_human_while_an_agent_replied_last() {
     );
 }
 
-#[test]
-fn agents_questions_wait_until_a_human_post_links_to_them_as_a_reply() {
-    let (f, client) = ready();
-    let project = new_project(f, client);
-    let changeset = new_changeset(f, client, &project);
-    let open_thread = new_thread(f, client, &project, &changeset, false);
-    let sealed_thread = new_thread(f, client, &project, &changeset, true);
-
-    let question = post(
-        f,
-        client,
-        &critic(f),
-        &project,
-        &open_thread,
-        "question",
-        &[],
-    );
-    // In a sealed phase that no other agent has posted in: the human sees it.
-    let sealed = post(
-        f,
-        client,
-        &critic(f),
-        &project,
-        &sealed_thread,
-        "question",
-        &[],
-    );
-    let position = post(
-        f,
-        client,
-        &critic(f),
-        &project,
-        &open_thread,
-        "position",
-        &[],
-    );
-    let own = post(
-        f,
-        client,
-        &human(f),
-        &project,
-        &open_thread,
-        "question",
-        &[],
-    );
-    let elsewhere = new_project(f, client);
-    let foreign_changeset = new_changeset(f, client, &elsewhere);
-    let foreign_thread = new_thread(f, client, &elsewhere, &foreign_changeset, false);
-    let foreign = post(
-        f,
-        client,
-        &critic(f),
-        &elsewhere,
-        &foreign_thread,
-        "question",
-        &[],
-    );
-
-    let first = home(f, client, &project);
-    assert_eq!(
-        ids_at(&first, "/waiting/questions"),
-        vec![question.clone(), sealed.clone()],
-        "the agents' questions wait, oldest first; other posts and the human's own question do not: {first}"
-    );
-    for not_waiting in [&position, &own, &foreign] {
-        assert!(
-            !ids_at(&first, "/waiting/questions").contains(not_waiting),
-            "{first}"
-        );
-    }
-    assert_eq!(
-        item_at(&first, "/waiting/questions", &sealed),
-        read(f, client, &human(f), &project, &format!("/posts/{sealed}"))["post"],
-        "the home lists the question as the post's read answers the human"
-    );
-
-    // An agent's answer, and a human post that links to another post, are no
-    // reply of the human to the question.
-    post(
-        f,
-        client,
-        &author(f),
-        &project,
-        &open_thread,
-        "note",
-        &[&question],
-    );
-    post(
-        f,
-        client,
-        &human(f),
-        &project,
-        &open_thread,
-        "note",
-        &[&position],
-    );
-    let unanswered = home(f, client, &project);
-    assert_eq!(
-        ids_at(&unanswered, "/waiting/questions"),
-        vec![question.clone(), sealed.clone()],
-        "no human post links to either question yet: {unanswered}"
-    );
-
-    // The human replies with a post that links to the question.
-    post(
-        f,
-        client,
-        &human(f),
-        &project,
-        &open_thread,
-        "note",
-        &[&question],
-    );
-    let replied = home(f, client, &project);
-    assert_eq!(
-        ids_at(&replied, "/waiting/questions"),
-        vec![sealed.clone()],
-        "a human post that links to the question takes it off the list: {replied}"
-    );
-
-    // A directive that links to the question is a reply too.
-    directive(f, client, &project, &sealed_thread, &[&sealed]);
-    let answered = home(f, client, &project);
-    assert_eq!(
-        ids_at(&answered, "/waiting/questions"),
-        Vec::<String>::new(),
-        "a directive that links to the question takes it off the list: {answered}"
-    );
-}
-
 // ---------------------------------------------------------------------------
-// Features (US-063)
+// Features
 // ---------------------------------------------------------------------------
 
 /// Creates a feature as the author; returns its ID.
@@ -1343,41 +676,6 @@ fn new_feature(f: &Fixture, client: &Client, project: &str) -> String {
     )
 }
 
-/// The change set opens a draft of the existing doc `doc`.
-fn open_draft(f: &Fixture, client: &Client, project: &str, changeset: &str, doc: &str) {
-    must(
-        call(
-            client,
-            "POST",
-            &format!("{}/docs/{doc}/open", changeset_path(f, project, changeset)),
-            &author(f),
-            None,
-        ),
-        201,
-        "open a draft of an existing doc",
-    );
-}
-
-/// The author abandons the change set.
-fn abandon_changeset(f: &Fixture, client: &Client, project: &str, changeset: &str) {
-    let status = act_on_changeset(f, client, &author(f), project, changeset, "abandon", None);
-    assert_eq!(status, "abandoned");
-}
-
-/// Puts the change set in status `approved`. The API passes through it only
-/// inside the transaction of an approval, so the test sets it directly.
-fn force_status(changeset: &str, status: &str) {
-    block(async {
-        let mut conn = admin_connection().await;
-        sqlx::query("update changesets set status = $2 where id = $1::uuid")
-            .bind(changeset)
-            .bind(status)
-            .execute(&mut conn)
-            .await
-            .expect("set the change set's status");
-    });
-}
-
 /// The FeatureSummary of `feature` in the home's `features`.
 fn summary_of(home: &Value, feature: &str) -> Value {
     list_at(home, "/features")
@@ -1394,13 +692,9 @@ fn feature_ids(home: &Value) -> Vec<String> {
         .collect()
 }
 
-/// (docs, open_changesets, waiting) of a FeatureSummary.
-fn counts(summary: &Value) -> (Value, Value, Value) {
-    (
-        summary["docs"].clone(),
-        summary["open_changesets"].clone(),
-        summary["waiting"].clone(),
-    )
+/// (docs, waiting) of a FeatureSummary.
+fn counts(summary: &Value) -> (Value, Value) {
+    (summary["docs"].clone(), summary["waiting"].clone())
 }
 
 /// Asserts that the item with `id` of the list at `pointer` carries
@@ -1425,67 +719,19 @@ fn the_home_lists_the_features_in_creation_order_with_their_counts() {
     let second = new_feature(f, client, &project);
     let quiet = new_feature(f, client, &project);
 
-    // A global doc that merged, and project-level change sets that count for
-    // no feature.
-    let (global_changeset, global, _, _) = changeset_with_version(f, client, &project);
-    submit(f, client, &project, &global_changeset);
-    approve_changeset(f, client, &project, &global_changeset);
-    let (project_in_review, _, _, _) = changeset_with_version(f, client, &project);
-    submit(f, client, &project, &project_in_review);
-    new_changeset(f, client, &project);
+    // A doc at the app level, whose waiting comment counts for no feature.
+    let global = live_doc_in(f, client, &project, None);
+    waiting_comment(f, client, &project, &global);
 
-    // The first feature: a doc that merged ...
-    let (merged, base, _, _) = changeset_with_version_in(f, client, &project, Some(&first));
-    submit(f, client, &project, &merged);
-    approve_changeset(f, client, &project, &merged);
-    // ... an open change set that drafts its doc and the global doc and
-    // creates a second doc ...
-    let open = new_changeset_in(f, client, &project, Some(&first));
-    open_draft(f, client, &project, &open, &base);
-    open_draft(f, client, &project, &open, &global);
-    create_doc(f, client, &project, &open, "html", "architecture");
-    let thread = new_thread(f, client, &project, &open, false);
-    propose(f, client, &project, &thread);
-    // ... one in review with a third doc ...
-    let (in_review, _, _, _) = changeset_with_version_in(f, client, &project, Some(&first));
-    submit(f, client, &project, &in_review);
-    // ... two on the merged doc, of which the second needs a rebase once the
-    // first merges ...
-    let ahead = new_changeset_in(f, client, &project, Some(&first));
-    let behind = new_changeset_in(f, client, &project, Some(&first));
-    for changeset in [&ahead, &behind] {
-        open_draft(f, client, &project, changeset, &base);
-        insert_paragraph(f, client, &project, changeset, &base);
-        save(f, client, &project, changeset, &base);
-        submit(f, client, &project, changeset);
-    }
-    approve_changeset(f, client, &project, &ahead);
-    let status = act_on_changeset(
-        f,
-        client,
-        &human(f),
-        &project,
-        &behind,
-        "approve",
-        Some(&json!({})),
-    );
-    assert_eq!(status, "needs_rebase");
-    // ... one approved, one rejected and one abandoned.
-    let approved = new_changeset_in(f, client, &project, Some(&first));
-    open_draft(f, client, &project, &approved, &base);
-    force_status(&approved, "approved");
-    let rejected = new_changeset_in(f, client, &project, Some(&first));
-    open_draft(f, client, &project, &rejected, &base);
-    insert_paragraph(f, client, &project, &rejected, &base);
-    save(f, client, &project, &rejected, &base);
-    submit(f, client, &project, &rejected);
-    reject_changeset(f, client, &project, &rejected);
-    let abandoned = new_changeset_in(f, client, &project, Some(&first));
-    abandon_changeset(f, client, &project, &abandoned);
+    // The first feature: three docs, of which two have a comment that waits.
+    let with_comment = live_doc_in(f, client, &project, Some(&first));
+    let with_comments = live_doc_in(f, client, &project, Some(&first));
+    live_doc_in(f, client, &project, Some(&first));
+    waiting_comment(f, client, &project, &with_comment);
+    waiting_comment(f, client, &project, &with_comments);
 
-    // The second feature: one open change set with one doc.
-    let second_open = new_changeset_in(f, client, &project, Some(&second));
-    create_doc(f, client, &project, &second_open, "html", "spec");
+    // The second feature: one doc.
+    live_doc_in(f, client, &project, Some(&second));
 
     // The third has nothing.
 
@@ -1523,39 +769,19 @@ fn the_home_lists_the_features_in_creation_order_with_their_counts() {
     }
     assert_eq!(
         counts(&summary_of(&home, &first)),
-        (json!(3), json!(4), json!(2)),
-        "the first feature: 3 docs of its own (not the global one it drafts); open, in review, \
-         needs rebase and approved change sets (not merged, rejected or abandoned); the proposed \
-         decision and the change set in review wait: {home}"
+        (json!(3), json!(2)),
+        "the first feature: 3 docs of its own, and the 2 comments that wait on them: {home}"
     );
     assert_eq!(
         counts(&summary_of(&home, &second)),
-        (json!(1), json!(1), json!(0)),
+        (json!(1), json!(0)),
         "the second feature: {home}"
     );
     assert_eq!(
         counts(&summary_of(&home, &quiet)),
-        (json!(0), json!(0), json!(0)),
-        "the feature without docs or change sets: {home}"
+        (json!(0), json!(0)),
+        "the feature without docs: {home}"
     );
-}
-
-/// One of each waiting kind in a change set of `feature` (or at project
-/// level): (decision, change set, comment, question).
-fn one_of_each_waiting(
-    f: &Fixture,
-    client: &Client,
-    project: &str,
-    feature: Option<&str>,
-) -> (String, String, String, String) {
-    let (changeset, _, node, v1) = changeset_with_version_in(f, client, project, feature);
-    let thread = new_thread(f, client, project, &changeset, false);
-    let question = post(f, client, &critic(f), project, &thread, "question", &[]);
-    let decision = propose(f, client, project, &thread);
-    let comment = comment(f, client, project, &v1, &node);
-    reply_to_comment(f, client, &author(f), project, &comment, "Shorter now.");
-    submit(f, client, project, &changeset);
-    (decision, changeset, comment, question)
 }
 
 #[test]
@@ -1564,30 +790,24 @@ fn every_waiting_item_carries_its_feature_and_counts_for_it() {
     let project = new_project(f, client);
     let feature = new_feature(f, client, &project);
     let idle = new_feature(f, client, &project);
-    let (p_decision, p_changeset, p_comment, p_question) =
-        one_of_each_waiting(f, client, &project, None);
-    let (f_decision, f_changeset, f_comment, f_question) =
-        one_of_each_waiting(f, client, &project, Some(&feature));
+    let app_doc = live_doc_in(f, client, &project, None);
+    let feature_doc = live_doc_in(f, client, &project, Some(&feature));
+    let at_app_level = waiting_comment(f, client, &project, &app_doc);
+    let in_feature = waiting_comment(f, client, &project, &feature_doc);
 
     let home = home(f, client, &project);
-    for (pointer, project_level, in_feature) in [
-        ("/waiting/decisions", &p_decision, &f_decision),
-        ("/waiting/changesets", &p_changeset, &f_changeset),
-        ("/waiting/comments", &p_comment, &f_comment),
-        ("/waiting/questions", &p_question, &f_question),
-    ] {
-        assert_eq!(
-            ids_at(&home, pointer),
-            vec![project_level.clone(), in_feature.clone()],
-            "{pointer} lists both, oldest first: {home}"
-        );
-        assert_feature_of(&home, pointer, project_level, &Value::Null);
-        assert_feature_of(&home, pointer, in_feature, &json!(feature));
-    }
+    let pointer = "/waiting/comments";
+    assert_eq!(
+        ids_at(&home, pointer),
+        vec![at_app_level.clone(), in_feature.clone()],
+        "{pointer} lists both, oldest first: {home}"
+    );
+    assert_feature_of(&home, pointer, &at_app_level, &Value::Null);
+    assert_feature_of(&home, pointer, &in_feature, &json!(feature));
     assert_eq!(
         summary_of(&home, &feature)["waiting"],
-        json!(4),
-        "the decision, change set, comment and question of the feature wait for it: {home}"
+        json!(1),
+        "the comment of the feature waits for it: {home}"
     );
     assert_eq!(
         summary_of(&home, &idle)["waiting"],
@@ -1597,59 +817,17 @@ fn every_waiting_item_carries_its_feature_and_counts_for_it() {
 }
 
 #[test]
-fn a_comment_takes_its_feature_from_its_doc() {
-    let (f, client) = ready();
-    let project = new_project(f, client);
-    let feature = new_feature(f, client, &project);
-    let (global_changeset, global, _, _) = changeset_with_version(f, client, &project);
-    submit(f, client, &project, &global_changeset);
-    approve_changeset(f, client, &project, &global_changeset);
-
-    // A feature's change set saves a version of the global doc, which the
-    // human comments on.
-    let changeset = new_changeset_in(f, client, &project, Some(&feature));
-    open_draft(f, client, &project, &changeset, &global);
-    let node = insert_paragraph(f, client, &project, &changeset, &global);
-    let v1 = save(f, client, &project, &changeset, &global);
-    let on_global = comment(f, client, &project, &v1, &node);
-    reply_to_comment(f, client, &author(f), &project, &on_global, "Shorter now.");
-
-    let home = home(f, client, &project);
-    assert_eq!(
-        ids_at(&home, "/waiting/comments"),
-        vec![on_global.clone()],
-        "{home}"
-    );
-    assert_eq!(
-        item_at(&home, "/waiting/comments", &on_global)["doc_id"],
-        global,
-        "the comment is on the global doc: {home}"
-    );
-    assert_feature_of(&home, "/waiting/comments", &on_global, &Value::Null);
-    assert_eq!(
-        summary_of(&home, &feature)["waiting"],
-        json!(0),
-        "a comment on a global doc waits at project level, not for the feature: {home}"
-    );
-}
-
-#[test]
-fn the_home_lists_the_docs_change_sets_and_threads_of_the_project_and_every_feature() {
+fn the_home_lists_the_docs_and_threads_of_the_project_and_every_feature() {
     let (f, client) = ready();
     let project = new_project(f, client);
     let first = new_feature(f, client, &project);
     let second = new_feature(f, client, &project);
-    let (global_changeset, global, _, _) = changeset_with_version(f, client, &project);
-    let global_thread = new_thread(f, client, &project, &global_changeset, false);
-    let (first_changeset, first_doc, _, _) =
-        changeset_with_version_in(f, client, &project, Some(&first));
-    let first_thread = new_thread(f, client, &project, &first_changeset, false);
-    let (second_changeset, second_doc, _, _) =
-        changeset_with_version_in(f, client, &project, Some(&second));
-    let second_thread = new_thread(f, client, &project, &second_changeset, true);
-    // A merged change set of a feature stays listed, with its doc and thread.
-    submit(f, client, &project, &first_changeset);
-    approve_changeset(f, client, &project, &first_changeset);
+    let global = live_doc_in(f, client, &project, None);
+    let global_thread = id_of(&scope_thread(f, client, &project, None));
+    let first_doc = live_doc_in(f, client, &project, Some(&first));
+    let first_thread = id_of(&scope_thread(f, client, &project, Some(&first)));
+    let second_doc = live_doc_in(f, client, &project, Some(&second));
+    let second_thread = id_of(&scope_thread(f, client, &project, Some(&second)));
 
     let home = home(f, client, &project);
     let none = Value::Null;
@@ -1664,15 +842,6 @@ fn the_home_lists_the_docs_change_sets_and_threads_of_the_project_and_every_feat
                 (&second_doc, &second_id),
             ],
             "docs",
-        ),
-        (
-            "/changesets",
-            [
-                (&global_changeset, &none),
-                (&first_changeset, &first_id),
-                (&second_changeset, &second_id),
-            ],
-            "changesets",
         ),
         (
             "/threads",
@@ -1690,7 +859,7 @@ fn the_home_lists_the_docs_change_sets_and_threads_of_the_project_and_every_feat
                 .iter()
                 .map(|(id, _)| (*id).clone())
                 .collect::<Vec<_>>(),
-            "{pointer}: project level and every feature, oldest first: {home}"
+            "{pointer}: the app level and every feature, oldest first: {home}"
         );
         for (id, feature) in items {
             assert_feature_of(&home, pointer, id, feature);
@@ -1709,7 +878,7 @@ fn the_home_lists_the_docs_change_sets_and_threads_of_the_project_and_every_feat
 // US-112: what the scope pages show
 // ---------------------------------------------------------------------------
 
-/// Starts a live HTML doc at the app level or in `feature`; returns its ID.
+/// Creates an HTML doc at the app level or in `feature`; returns its ID.
 fn live_doc_in(f: &Fixture, client: &Client, project: &str, feature: Option<&str>) -> String {
     let path = match feature {
         None => format!("{}/docs", project_base(f, project)),
@@ -1725,7 +894,7 @@ fn live_doc_in(f: &Fixture, client: &Client, project: &str, feature: Option<&str
                 Some(&json!({ "kind": "html", "pillar": "spec", "title": unique("Doc") })),
             ),
             201,
-            "create a live doc",
+            "create a doc",
         )["doc"],
     )
 }
@@ -1798,7 +967,6 @@ fn post_in(f: &Fixture, client: &Client, project: &str, thread: &str) -> Value {
             &format!("{}/posts", thread_path(f, project, thread)),
             &critic(f),
             Some(&json!({
-                "type": "finding",
                 "summary": unique("A finding"),
                 "body": "What it says",
                 "links": []
@@ -1822,6 +990,15 @@ fn conclude(f: &Fixture, client: &Client, project: &str, thread: &str) {
         200,
         "conclude the thread",
     );
+}
+
+/// A comment on a new paragraph of the doc that waits for the human: the human
+/// made it and an agent replied last. Returns the comment's ID.
+fn waiting_comment(f: &Fixture, client: &Client, project: &str, doc: &str) -> String {
+    let node = write_paragraph(f, client, &author(f), project, doc);
+    let comment = comment_on_head(f, client, project, doc, &node);
+    reply_to_comment(f, client, &author(f), project, &comment, "Shorter now.");
+    comment
 }
 
 /// The human comments on `node` of the doc's head; returns the comment's ID.
