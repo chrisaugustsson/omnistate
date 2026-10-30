@@ -1,26 +1,18 @@
-//! US-034: posts and directives through the API. Run with `--features
-//! stack-tests` in the Compose test container, which reaches Postgres at
-//! `postgres:5432` and RustFS at `rustfs:9000`.
+//! US-034: posts through the API. Run with `--features stack-tests` in the
+//! Compose test container, which reaches Postgres at `postgres:5432` and RustFS
+//! at `rustfs:9000`.
 //!
 //! The tests migrate a scratch database, seed a workspace with one member
 //! (alice) and a live session, mint an API key through the API, create a
 //! scratch RustFS bucket and serve the API's router on a local port.
 //!
 //! The contract these tests pin down (all paths are under
-//! `/api/v1/w/{workspace_id}/projects/{project_id}`; threads and their phases
-//! are those of US-033, tests/threads.rs, and attachments those of US-019,
-//! tests/attachments.rs):
+//! `/api/v1/w/{workspace_id}/projects/{project_id}`; threads are those of
+//! tests/live_threads.rs and attachments those of tests/attachments.rs):
 //!
-//! - `POST /threads/{thread_id}/posts` (both) records a post in the thread's
-//!   current phase: 201 `{"post": Post}`. It takes `{"type", "summary",
-//!   "body"}` and, optionally, `links`, `attachments`, `confidence` and
-//!   `replaces`.
-//!   - `type` is one of `note`, `finding`, `position`, `objection`,
-//!     `support`, `question`, `directive` and `verdict`, written exactly so;
-//!     anything else is 400 `invalid_request`. `directive` is the human's: an
-//!     API key that posts one here is 403 `{"error": "forbidden"}`. Since
-//!     US-108 removed post types, a post may also leave `type` out
-//!     (tests/live_threads.rs).
+//! - `POST /threads/{thread_id}/posts` (both) records a post in the thread: 201
+//!   `{"post": Post}`. It takes `{"summary", "body"}` and, optionally, `links`,
+//!   `attachments`, `confidence` and `replaces`.
 //!   - `summary` is one line (no line break) of at most 200 characters and not
 //!     blank; `body` is a string of Markdown. Anything else is 400.
 //!   - `links` is a list (default `[]`) of `{"kind": "post", "post_id"}` (a
@@ -28,51 +20,28 @@
 //!     source), `{"kind": "node", "doc_id", "address"}` (a doc of the project
 //!     and a node address: a node ID of 8 lowercase base32 characters, or
 //!     `<instanceId>/<componentNodeId>`; the address is checked for its form
-//!     only, since the node may be in any version) and `{"kind": "attachment",
-//!     "attachment_id"}` (an attachment of the workspace).
+//!     only) and `{"kind": "attachment", "attachment_id"}` (an attachment of
+//!     the workspace).
 //!   - `attachments` is a list (default `[]`) of IDs of the workspace's
 //!     attachments, kept in order.
 //!   - `confidence` is a number from 0 to 1, both included (default `null`).
 //!   - `replaces` is the ID of an earlier post in the same thread by the same
-//!     agent identity, its run and role as for claims (default `null`). The
-//!     earlier post stays as it was.
+//!     agent identity, its run and role (default `null`). The earlier post
+//!     stays as it was.
 //!   - A link, attachment, confidence or replaced post that breaks these rules
 //!     is 400 `invalid_request`, and a refused post records nothing and emits
 //!     nothing.
-//! - A Post is `{"id" (UUIDv7), "thread_id", "phase", "type", "author",
-//!   "summary", "body", "body_html", "links", "attachments", "confidence",
-//!   "replaces", "created_at"}`. `author` is `{"kind": "agent", "run", "role",
-//!   "model", "harness"}` (the identity headers of the request, `null` when
-//!   missing) or `{"kind": "human", "user_id"}`. `body` is the Markdown as
-//!   sent; `body_html` is it rendered by `omni_core::markdown::render`, with
-//!   raw HTML switched off, links only to http, https and mailto, and images
-//!   only from `attachment:<id>` (tests/markdown.rs of omni-core). `links` and
+//! - A Post is `{"id" (UUIDv7), "thread_id", "author", "summary", "body",
+//!   "body_html", "links", "attachments", "confidence", "replaces",
+//!   "created_at"}`. `author` is `{"kind": "agent", "run", "role", "model",
+//!   "harness"}` (the identity headers of the request, `null` when missing) or
+//!   `{"kind": "human", "user_id"}`. `body` is the Markdown as sent; `body_html`
+//!   is it rendered by `omni_core::markdown::render`, with raw HTML switched
+//!   off, links only to http, https and mailto, and images only from
+//!   `attachment:<id>` (tests/markdown.rs of omni-core). `links` and
 //!   `attachments` are the lists as given.
 //! - Posts are never edited or deleted: no route changes or removes one, and
 //!   the API role has no UPDATE, DELETE or TRUNCATE privilege on `posts`.
-//! - `POST /threads/{thread_id}/directives` (human) takes `{"summary",
-//!   "body"}` (and `links` and `attachments` as for a post) and records a post
-//!   of type `directive` by the human in the thread's current phase: 201
-//!   `{"post": Post}`. An API key is 403 `forbidden`.
-//! - Every agent request inside a change set, which is one whose path names a
-//!   change set (`/changesets/{changeset_id}` and below) or a thread of one
-//!   (`/threads/{thread_id}` and below), answers, next to its usual JSON, a
-//!   `directives` field: the directive Posts of the change set's threads that
-//!   the request's agent identity (run and role) has not been given yet,
-//!   oldest first. A directive is given to each identity once. When there is
-//!   none the field is left out, so earlier answers stay as they were (the
-//!   tests accept an empty list too). A refused request gets none and uses
-//!   none up, and so do the human's requests.
-//! - Recording a post (directives included) emits `post.created` with `data`
-//!   that has at least `{"post_id", "thread_id", "changeset_id", "phase",
-//!   "type"}`.
-//! - Posts stay in the table `posts` of US-033: any column added to it has a
-//!   default or is nullable, and a post's links and attachments are kept in
-//!   it, not in tables of their own. Which directive was given to which agent
-//!   identity is kept in the tenant table `directive_receipts`, whose columns
-//!   without a default are `workspace_id`, `post_id` (the directive) and
-//!   `agent` (jsonb, the identity). tests/workspace_delete.rs and the
-//!   isolation suite seed it.
 
 mod common;
 
@@ -394,10 +363,6 @@ fn project_base(f: &Fixture, project: &str) -> String {
     format!("/api/v1/w/{}/projects/{project}", f.workspace)
 }
 
-fn changeset_path(f: &Fixture, project: &str, changeset: &str) -> String {
-    format!("{}/changesets/{changeset}", project_base(f, project))
-}
-
 fn thread_path(f: &Fixture, project: &str, thread: &str) -> String {
     format!("{}/threads/{thread}", project_base(f, project))
 }
@@ -418,34 +383,15 @@ fn new_project(f: &Fixture, client: &Client) -> String {
     )
 }
 
-fn new_changeset(f: &Fixture, client: &Client, project: &str) -> String {
+fn new_thread(f: &Fixture, client: &Client, project: &str) -> String {
     id_of(
         &must(
             call(
                 client,
                 "POST",
-                &format!("{}/changesets", project_base(f, project)),
+                &format!("{}/threads", project_base(f, project)),
                 &agent(f),
-                Some(&json!({ "title": unique("change"), "run_tag": "run-1" })),
-            ),
-            201,
-            "create a change set",
-        )["changeset"],
-    )
-}
-
-fn new_thread(f: &Fixture, client: &Client, project: &str, changeset: &str) -> String {
-    id_of(
-        &must(
-            call(
-                client,
-                "POST",
-                &format!("{}/threads", changeset_path(f, project, changeset)),
-                &agent(f),
-                Some(&json!({
-                    "question": unique("Which hero layout?"),
-                    "criteria": ["Readable at 320 px"]
-                })),
+                Some(&json!({ "question": unique("Which hero layout?") })),
             ),
             201,
             "start a thread",
@@ -453,13 +399,11 @@ fn new_thread(f: &Fixture, client: &Client, project: &str, changeset: &str) -> S
     )
 }
 
-/// A project with a change set and a thread in it: (project, change set,
-/// thread).
-fn setting(f: &Fixture, client: &Client) -> (String, String, String) {
+/// A project with a thread in it: (project, thread).
+fn setting(f: &Fixture, client: &Client) -> (String, String) {
     let project = new_project(f, client);
-    let changeset = new_changeset(f, client, &project);
-    let thread = new_thread(f, client, &project, &changeset);
-    (project, changeset, thread)
+    let thread = new_thread(f, client, &project);
+    (project, thread)
 }
 
 fn post_response(
@@ -509,44 +453,9 @@ fn post(
 
 fn note(summary: &str) -> Value {
     json!({
-        "type": "note",
         "summary": summary,
         "body": format!("Some *reasoning* about {summary}.")
     })
-}
-
-fn directive_response(
-    f: &Fixture,
-    client: &Client,
-    auth: &Auth,
-    project: &str,
-    thread: &str,
-    body: &Value,
-) -> Response {
-    call(
-        client,
-        "POST",
-        &format!("{}/directives", thread_path(f, project, thread)),
-        auth,
-        Some(body),
-    )
-}
-
-/// The human posts a directive; returns the Post.
-fn directive(f: &Fixture, client: &Client, project: &str, thread: &str, summary: &str) -> Value {
-    must(
-        directive_response(
-            f,
-            client,
-            &human(f),
-            project,
-            thread,
-            &json!({ "summary": summary, "body": format!("Please: {summary}.") }),
-        ),
-        201,
-        "the human posts a directive",
-    )["post"]
-        .clone()
 }
 
 /// Uploads a file to the workspace's attachments as the agent; returns its ID.
@@ -564,9 +473,9 @@ fn upload(f: &Fixture, client: &Client, bytes: &[u8], filename: &str) -> String 
     id_of(&must(response, 201, "upload an attachment")["attachment"])
 }
 
-/// A doc of the change set with one block: (doc, the block's node ID).
-fn doc_with_node(f: &Fixture, client: &Client, project: &str, changeset: &str) -> (String, String) {
-    let path = changeset_path(f, project, changeset);
+/// A doc of the project with one block: (doc, the block's node ID).
+fn doc_with_node(f: &Fixture, client: &Client, project: &str) -> (String, String) {
+    let path = project_base(f, project);
     let doc = id_of(
         &must(
             call(
@@ -594,22 +503,13 @@ fn doc_with_node(f: &Fixture, client: &Client, project: &str, changeset: &str) -
             }] })),
         ),
         200,
-        "edit the draft",
+        "edit the doc",
     );
     let node = answer["results"][0]["created"][0]
         .as_str()
         .unwrap_or_else(|| panic!("the insert created a node: {answer}"))
         .to_string();
     (doc, node)
-}
-
-/// The directives of an answer: none when the field is left out.
-fn directives_of(answer: &Value) -> Vec<Value> {
-    match answer.get("directives") {
-        None => Vec::new(),
-        Some(Value::Array(directives)) => directives.clone(),
-        Some(other) => panic!("`directives` is a list: {other}"),
-    }
 }
 
 fn ids(posts: &[Value]) -> Vec<String> {
@@ -679,80 +579,13 @@ fn assert_refused(
 }
 
 // ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-
-#[test]
-fn an_agent_may_post_every_type_but_directive() {
-    let (f, client) = ready();
-    let (project, _, thread) = setting(f, client);
-    for kind in AGENT_TYPES {
-        let posted = post(
-            f,
-            client,
-            &agent(f),
-            &project,
-            &thread,
-            &json!({ "type": kind, "summary": format!("A {kind}"), "body": "Why." }),
-        );
-        assert_eq!(posted["type"], kind, "{posted}");
-    }
-    assert_eq!(posts_in(&thread), 7, "every post was recorded");
-}
-
-#[test]
-fn a_type_that_is_not_a_post_type_is_refused() {
-    let (f, client) = ready();
-    let (project, _, thread) = setting(f, client);
-    let bodies: Vec<Value> = [
-        json!("rant"),
-        json!("Note"),
-        json!("NOTE"),
-        json!(" note"),
-        json!("notes"),
-        json!(""),
-        json!(7),
-        json!(null),
-    ]
-    .into_iter()
-    .map(|kind| json!({ "type": kind, "summary": "A post", "body": "Why." }))
-    .collect();
-    for auth in [agent(f), human(f)] {
-        assert_refused(
-            f,
-            client,
-            &auth,
-            (&project, &thread),
-            &bodies,
-            400,
-            "invalid_request",
-        );
-    }
-}
-
-#[test]
-fn an_agent_cannot_post_a_directive() {
-    let (f, client) = ready();
-    let (project, _, thread) = setting(f, client);
-    assert_refused(
-        f,
-        client,
-        &agent(f),
-        (&project, &thread),
-        &[json!({ "type": "directive", "summary": "Do as I say", "body": "Now." })],
-        403,
-        "forbidden",
-    );
-}
-
-// ---------------------------------------------------------------------------
 // What every post has
 // ---------------------------------------------------------------------------
 
 #[test]
 fn a_posts_author_is_the_agent_identity_of_the_request_or_the_human_user() {
     let (f, client) = ready();
-    let (project, _, thread) = setting(f, client);
+    let (project, thread) = setting(f, client);
     let body = "## Why\n\nThe *left* layout reads better at 320 px.\n";
     let posted = post(
         f,
@@ -798,7 +631,7 @@ fn a_posts_author_is_the_agent_identity_of_the_request_or_the_human_user() {
 #[test]
 fn the_summary_is_one_line_of_at_most_200_characters_and_the_body_is_required() {
     let (f, client) = ready();
-    let (project, _, thread) = setting(f, client);
+    let (project, thread) = setting(f, client);
     let longest = "é".repeat(200);
     let posted = post(
         f,
@@ -806,7 +639,7 @@ fn the_summary_is_one_line_of_at_most_200_characters_and_the_body_is_required() 
         &agent(f),
         &project,
         &thread,
-        &json!({ "type": "note", "summary": longest, "body": "Long." }),
+        &json!({ "summary": longest, "body": "Long." }),
     );
     assert_eq!(
         posted["summary"],
@@ -819,15 +652,15 @@ fn the_summary_is_one_line_of_at_most_200_characters_and_the_body_is_required() 
         &agent(f),
         (&project, &thread),
         &[
-            json!({ "type": "note", "summary": "é".repeat(201), "body": "Long." }),
-            json!({ "type": "note", "summary": "Two\nlines", "body": "Long." }),
-            json!({ "type": "note", "summary": "", "body": "Long." }),
-            json!({ "type": "note", "summary": "   ", "body": "Long." }),
-            json!({ "type": "note", "body": "Long." }),
-            json!({ "type": "note", "summary": 7, "body": "Long." }),
-            json!({ "type": "note", "summary": "No body" }),
-            json!({ "type": "note", "summary": "No body", "body": null }),
-            json!({ "type": "note", "summary": "No body", "body": 7 }),
+            json!({ "summary": "é".repeat(201), "body": "Long." }),
+            json!({ "summary": "Two\nlines", "body": "Long." }),
+            json!({ "summary": "", "body": "Long." }),
+            json!({ "summary": "   ", "body": "Long." }),
+            json!({ "body": "Long." }),
+            json!({ "summary": 7, "body": "Long." }),
+            json!({ "summary": "No body" }),
+            json!({ "summary": "No body", "body": null }),
+            json!({ "summary": "No body", "body": 7 }),
         ],
         400,
         "invalid_request",
@@ -841,7 +674,7 @@ fn the_summary_is_one_line_of_at_most_200_characters_and_the_body_is_required() 
 #[test]
 fn a_post_may_link_to_posts_web_sources_nodes_and_attachments() {
     let (f, client) = ready();
-    let (project, changeset, thread) = setting(f, client);
+    let (project, thread) = setting(f, client);
     let earlier = id_of(&post(
         f,
         client,
@@ -851,7 +684,7 @@ fn a_post_may_link_to_posts_web_sources_nodes_and_attachments() {
         &note("Earlier"),
     ));
     // A post of another thread of the project may be linked too.
-    let other_thread = new_thread(f, client, &project, &changeset);
+    let other_thread = new_thread(f, client, &project);
     let elsewhere = id_of(&post(
         f,
         client,
@@ -860,7 +693,7 @@ fn a_post_may_link_to_posts_web_sources_nodes_and_attachments() {
         &other_thread,
         &note("Elsewhere"),
     ));
-    let (doc, node) = doc_with_node(f, client, &project, &changeset);
+    let (doc, node) = doc_with_node(f, client, &project);
     let attachment = upload(f, client, PNG, "hero.png");
     let links = json!([
         { "kind": "post", "post_id": earlier },
@@ -877,7 +710,7 @@ fn a_post_may_link_to_posts_web_sources_nodes_and_attachments() {
         &agent(f),
         &project,
         &thread,
-        &json!({ "type": "finding", "summary": "Sources", "body": "See the links.", "links": links }),
+        &json!({ "summary": "Sources", "body": "See the links.", "links": links }),
     );
     assert_eq!(posted["links"], links, "the links, as given: {posted}");
 }
@@ -885,10 +718,10 @@ fn a_post_may_link_to_posts_web_sources_nodes_and_attachments() {
 #[test]
 fn a_link_that_points_nowhere_or_outside_the_project_is_refused() {
     let (f, client) = ready();
-    let (project, changeset, thread) = setting(f, client);
-    let (doc, _) = doc_with_node(f, client, &project, &changeset);
+    let (project, thread) = setting(f, client);
+    let (doc, _) = doc_with_node(f, client, &project);
     // Records of another project of the workspace.
-    let (other_project, other_changeset, other_thread) = setting(f, client);
+    let (other_project, other_thread) = setting(f, client);
     let foreign_post = id_of(&post(
         f,
         client,
@@ -897,7 +730,7 @@ fn a_link_that_points_nowhere_or_outside_the_project_is_refused() {
         &other_thread,
         &note("Foreign"),
     ));
-    let (foreign_doc, _) = doc_with_node(f, client, &other_project, &other_changeset);
+    let (foreign_doc, _) = doc_with_node(f, client, &other_project);
     let bodies: Vec<Value> = [
         json!({ "kind": "post", "post_id": UNKNOWN_ID }),
         json!({ "kind": "post", "post_id": foreign_post }),
@@ -921,9 +754,8 @@ fn a_link_that_points_nowhere_or_outside_the_project_is_refused() {
         json!("https://example.com"),
     ]
     .into_iter()
-    .map(|link| json!({ "type": "finding", "summary": "Bad link", "body": "x", "links": [link] }))
+    .map(|link| json!({ "summary": "Bad link", "body": "x", "links": [link] }))
     .chain([json!({
-        "type": "finding",
         "summary": "Links that are no list",
         "body": "x",
         "links": { "kind": "url", "url": "https://example.com" }
@@ -943,7 +775,7 @@ fn a_link_that_points_nowhere_or_outside_the_project_is_refused() {
 #[test]
 fn a_post_may_carry_attachments_and_a_confidence_between_0_and_1() {
     let (f, client) = ready();
-    let (project, _, thread) = setting(f, client);
+    let (project, thread) = setting(f, client);
     let sketch = upload(f, client, PNG, "sketch.png");
     let notes = upload(f, client, b"plain notes", "notes.txt");
     let posted = post(
@@ -953,7 +785,6 @@ fn a_post_may_carry_attachments_and_a_confidence_between_0_and_1() {
         &project,
         &thread,
         &json!({
-            "type": "position",
             "summary": "With evidence",
             "body": "See the files.",
             "attachments": [notes, sketch],
@@ -973,7 +804,7 @@ fn a_post_may_carry_attachments_and_a_confidence_between_0_and_1() {
             &agent(f),
             &project,
             &thread,
-            &json!({ "type": "verdict", "summary": "Sure", "body": "x", "confidence": confidence }),
+            &json!({ "summary": "Sure", "body": "x", "confidence": confidence }),
         );
         assert_eq!(
             posted["confidence"].as_f64(),
@@ -988,13 +819,13 @@ fn a_post_may_carry_attachments_and_a_confidence_between_0_and_1() {
         &agent(f),
         (&project, &thread),
         &[
-            json!({ "type": "verdict", "summary": "x", "body": "x", "confidence": -0.01 }),
-            json!({ "type": "verdict", "summary": "x", "body": "x", "confidence": 1.01 }),
-            json!({ "type": "verdict", "summary": "x", "body": "x", "confidence": 75 }),
-            json!({ "type": "verdict", "summary": "x", "body": "x", "confidence": "0.5" }),
-            json!({ "type": "note", "summary": "x", "body": "x", "attachments": [UNKNOWN_ID] }),
-            json!({ "type": "note", "summary": "x", "body": "x", "attachments": [sketch, "nope"] }),
-            json!({ "type": "note", "summary": "x", "body": "x", "attachments": sketch }),
+            json!({ "summary": "x", "body": "x", "confidence": -0.01 }),
+            json!({ "summary": "x", "body": "x", "confidence": 1.01 }),
+            json!({ "summary": "x", "body": "x", "confidence": 75 }),
+            json!({ "summary": "x", "body": "x", "confidence": "0.5" }),
+            json!({ "summary": "x", "body": "x", "attachments": [UNKNOWN_ID] }),
+            json!({ "summary": "x", "body": "x", "attachments": [sketch, "nope"] }),
+            json!({ "summary": "x", "body": "x", "attachments": sketch }),
         ],
         400,
         "invalid_request",
@@ -1004,14 +835,14 @@ fn a_post_may_carry_attachments_and_a_confidence_between_0_and_1() {
 #[test]
 fn a_post_may_replace_an_earlier_post_by_the_same_agent_identity() {
     let (f, client) = ready();
-    let (project, changeset, thread) = setting(f, client);
+    let (project, thread) = setting(f, client);
     let first = id_of(&post(
         f,
         client,
         &agent(f),
         &project,
         &thread,
-        &json!({ "type": "position", "summary": "Left layout", "body": "First take." }),
+        &json!({ "summary": "Left layout", "body": "First take." }),
     ));
     let row_before = post_row(&first);
     let second = post(
@@ -1021,7 +852,6 @@ fn a_post_may_replace_an_earlier_post_by_the_same_agent_identity() {
         &project,
         &thread,
         &json!({
-            "type": "position",
             "summary": "Left layout, with a smaller hero",
             "body": "Second take.",
             "replaces": first
@@ -1055,7 +885,7 @@ fn a_post_may_replace_an_earlier_post_by_the_same_agent_identity() {
         &thread,
         &note("The human's take"),
     ));
-    let other_thread = new_thread(f, client, &project, &changeset);
+    let other_thread = new_thread(f, client, &project);
     let in_other_thread = id_of(&post(
         f,
         client,
@@ -1074,7 +904,7 @@ fn a_post_may_replace_an_earlier_post_by_the_same_agent_identity() {
     ]
     .into_iter()
     .map(|replaces| {
-        json!({ "type": "position", "summary": "Replacing", "body": "x", "replaces": replaces })
+        json!({ "summary": "Replacing", "body": "x", "replaces": replaces })
     })
     .collect();
     assert_refused(
@@ -1092,7 +922,7 @@ fn a_post_may_replace_an_earlier_post_by_the_same_agent_identity() {
         client,
         &agent_as(f, "run-2", "moderator"),
         (&project, &thread),
-        &[json!({ "type": "position", "summary": "Replacing", "body": "x", "replaces": first })],
+        &[json!({ "summary": "Replacing", "body": "x", "replaces": first })],
         400,
         "invalid_request",
     );
@@ -1105,7 +935,7 @@ fn a_post_may_replace_an_earlier_post_by_the_same_agent_identity() {
 #[test]
 fn posts_can_never_be_edited_or_deleted() {
     for entry in registry() {
-        let names_a_post = entry.path.contains("/posts") || entry.path.contains("/directives");
+        let names_a_post = entry.path.contains("/posts");
         assert!(
             !names_a_post || entry.method == "GET" || entry.method == "POST",
             "{} {} could change or remove a post",
@@ -1121,7 +951,7 @@ fn posts_can_never_be_edited_or_deleted() {
     }
 
     let (f, client) = ready();
-    let (project, _, thread) = setting(f, client);
+    let (project, thread) = setting(f, client);
     let posted = id_of(&post(
         f,
         client,
@@ -1172,7 +1002,7 @@ fn posts_can_never_be_edited_or_deleted() {
 #[test]
 fn the_body_is_rendered_without_raw_html_and_with_safe_links_and_images() {
     let (f, client) = ready();
-    let (project, _, thread) = setting(f, client);
+    let (project, thread) = setting(f, client);
     let sketch = upload(f, client, PNG, "sketch.png");
     let body = format!(
         "Some **bold** text. <script>alert(1)</script> <b onclick=\"x()\">raw</b>\n\n\
@@ -1185,7 +1015,7 @@ fn the_body_is_rendered_without_raw_html_and_with_safe_links_and_images() {
         &agent(f),
         &project,
         &thread,
-        &json!({ "type": "finding", "summary": "Rendered", "body": body }),
+        &json!({ "summary": "Rendered", "body": body }),
     );
     assert_eq!(
         posted["body"],
@@ -1216,267 +1046,5 @@ fn the_body_is_rendered_without_raw_html_and_with_safe_links_and_images() {
     assert!(
         !html.contains("src=\"https://example.com/pixel.png\""),
         "an image from the web is not drawn: {html}"
-    );
-}
-
-// ---------------------------------------------------------------------------
-// Directives
-// ---------------------------------------------------------------------------
-
-#[test]
-fn only_the_human_posts_directives() {
-    let (f, client) = ready();
-    let (project, _, thread) = setting(f, client);
-    let body =
-        json!({ "summary": "Keep the hero under 600 px", "body": "It must fit above the fold." });
-
-    let posts_before = posts_in(&thread);
-    let events_before = event_count(&project);
-    let response = directive_response(f, client, &agent(f), &project, &thread, &body);
-    assert_error(&response, 403, "forbidden", "an agent posts a directive");
-    assert_eq!(posts_in(&thread), posts_before, "nothing was recorded");
-    assert_eq!(event_count(&project), events_before, "nothing was emitted");
-
-    let posted = must(
-        directive_response(f, client, &human(f), &project, &thread, &body),
-        201,
-        "the human posts a directive",
-    )["post"]
-        .clone();
-    assert_uuid_v7(&posted["id"]);
-    assert_eq!(posted["type"], "directive", "{posted}");
-    assert_eq!(posted["thread_id"], thread.as_str(), "{posted}");
-    assert_eq!(posted["phase"], 1, "{posted}");
-    assert_eq!(posted["summary"], "Keep the hero under 600 px", "{posted}");
-    assert_eq!(posted["body"], "It must fit above the fold.", "{posted}");
-    assert_eq!(
-        posted["author"],
-        json!({ "kind": "human", "user_id": f.alice }),
-        "{posted}"
-    );
-    assert_eq!(
-        posts_in(&thread),
-        posts_before + 1,
-        "the directive was recorded"
-    );
-
-    for bad in [
-        json!({ "body": "No summary." }),
-        json!({ "summary": "Two\nlines", "body": "x" }),
-        json!({ "summary": "x".repeat(201), "body": "x" }),
-        json!({ "summary": "No body" }),
-    ] {
-        let response = directive_response(f, client, &human(f), &project, &thread, &bad);
-        assert_error(&response, 400, "invalid_request", &bad.to_string());
-    }
-    let response = directive_response(f, client, &human(f), &project, UNKNOWN_ID, &body);
-    assert_error(
-        &response,
-        404,
-        "not_found",
-        "a directive in an unknown thread",
-    );
-    assert_eq!(
-        posts_in(&thread),
-        posts_before + 1,
-        "nothing more was recorded"
-    );
-}
-
-#[test]
-fn every_agent_request_inside_the_change_set_gets_the_directives_its_identity_has_not_seen() {
-    let (f, client) = ready();
-    let (project, changeset, thread) = setting(f, client);
-    let changeset_url = changeset_path(f, &project, &changeset);
-    let first = directive(f, client, &project, &thread, "Use the brand's blue");
-    let first_id = id_of(&first);
-
-    // run-1/moderator reads the change set: the directive comes with it, once.
-    let moderator = agent(f);
-    let answer = must(
-        call(client, "GET", &changeset_url, &moderator, None),
-        200,
-        "show the change set",
-    );
-    assert_eq!(answer["changeset"]["id"], changeset.as_str(), "{answer}");
-    let given = directives_of(&answer);
-    assert_eq!(ids(&given), vec![first_id.clone()], "{answer}");
-    assert_eq!(given[0]["type"], "directive", "{answer}");
-    assert_eq!(given[0]["summary"], "Use the brand's blue", "{answer}");
-    assert_eq!(
-        given[0]["body"], "Please: Use the brand's blue.",
-        "{answer}"
-    );
-    assert_eq!(given[0]["thread_id"], thread.as_str(), "{answer}");
-    let again = must(
-        call(client, "GET", &changeset_url, &moderator, None),
-        200,
-        "show the change set again",
-    );
-    assert!(
-        directives_of(&again).is_empty(),
-        "a directive is given to an identity once: {again}"
-    );
-
-    // Another role of the same run is another identity: it gets the
-    // directive with its post.
-    let answer = post_answer(
-        f,
-        client,
-        &agent_as(f, "run-1", "critic"),
-        &project,
-        &thread,
-        &note("The critic speaks"),
-    );
-    assert_eq!(answer["post"]["summary"], "The critic speaks", "{answer}");
-    assert_eq!(
-        ids(&directives_of(&answer)),
-        vec![first_id.clone()],
-        "{answer}"
-    );
-
-    // Another run with the same role gets it when it starts a doc in the
-    // change set.
-    let answer = must(
-        call(
-            client,
-            "POST",
-            &format!("{changeset_url}/docs"),
-            &agent_as(f, "run-2", "moderator"),
-            Some(&json!({ "kind": "html", "pillar": "spec", "title": unique("Plan") })),
-        ),
-        201,
-        "create a doc",
-    );
-    assert!(answer["doc"]["id"].is_string(), "{answer}");
-    assert_eq!(
-        ids(&directives_of(&answer)),
-        vec![first_id.clone()],
-        "{answer}"
-    );
-
-    // A second directive: run-1/moderator gets only the new one, with the
-    // phase it starts.
-    let second = directive(f, client, &project, &thread, "Drop the carousel");
-    let second_id = id_of(&second);
-    let answer = must(
-        call(
-            client,
-            "POST",
-            &format!("{}/phases", thread_path(f, &project, &thread)),
-            &moderator,
-            Some(&json!({ "sealed": false })),
-        ),
-        201,
-        "start the next phase",
-    );
-    assert_eq!(
-        ids(&directives_of(&answer)),
-        vec![second_id.clone()],
-        "{answer}"
-    );
-
-    // An identity that has seen none gets both, oldest first.
-    let newcomer = agent_as(f, "run-3", "writer");
-    let answer = must(
-        call(client, "GET", &changeset_url, &newcomer, None),
-        200,
-        "show the change set",
-    );
-    assert_eq!(
-        ids(&directives_of(&answer)),
-        vec![first_id.clone(), second_id.clone()],
-        "{answer}"
-    );
-}
-
-#[test]
-fn directives_stay_in_their_change_set_and_the_human_does_not_use_them_up() {
-    let (f, client) = ready();
-    let (project, changeset, thread) = setting(f, client);
-    let other_changeset = new_changeset(f, client, &project);
-    let given = directive(f, client, &project, &thread, "Shorter headlines");
-
-    // The human reads the change set: no directives for the human, and none
-    // used up.
-    let answer = must(
-        call(
-            client,
-            "GET",
-            &changeset_path(f, &project, &changeset),
-            &human(f),
-            None,
-        ),
-        200,
-        "the human shows the change set",
-    );
-    assert!(
-        directives_of(&answer).is_empty(),
-        "the human gets no directives: {answer}"
-    );
-
-    // A request in another change set of the project gets nothing of this one.
-    let reader = agent_as(f, "run-4", "reader");
-    let answer = must(
-        call(
-            client,
-            "GET",
-            &changeset_path(f, &project, &other_changeset),
-            &reader,
-            None,
-        ),
-        200,
-        "show the other change set",
-    );
-    assert!(
-        directives_of(&answer).is_empty(),
-        "a directive stays in its change set: {answer}"
-    );
-
-    let answer = must(
-        call(
-            client,
-            "GET",
-            &changeset_path(f, &project, &changeset),
-            &reader,
-            None,
-        ),
-        200,
-        "show the change set",
-    );
-    assert_eq!(
-        ids(&directives_of(&answer)),
-        vec![id_of(&given)],
-        "the identity still gets the directive in its change set: {answer}"
-    );
-}
-
-#[test]
-fn a_refused_request_does_not_use_up_a_directive() {
-    let (f, client) = ready();
-    let (project, _, thread) = setting(f, client);
-    let given = directive(f, client, &project, &thread, "Cite your sources");
-    let agent = agent_as(f, "run-5", "researcher");
-    let response = post_response(
-        f,
-        client,
-        &agent,
-        &project,
-        &thread,
-        &json!({ "type": "rant", "summary": "x", "body": "x" }),
-    );
-    assert_eq!(response.status, 400, "{}", response.text());
-    let answer = post_answer(
-        f,
-        client,
-        &agent,
-        &project,
-        &thread,
-        &note("A sourced note"),
-    );
-    assert_eq!(
-        ids(&directives_of(&answer)),
-        vec![id_of(&given)],
-        "the directive comes with the next successful request: {answer}"
     );
 }

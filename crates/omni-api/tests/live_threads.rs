@@ -1044,6 +1044,35 @@ fn the_thread_list_has_the_threads_of_every_scope() {
     }
 }
 
+#[test]
+fn a_thread_that_the_project_does_not_have_is_not_found_on_every_thread_route() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    let (other_project, elsewhere) = thread_in_new_project(f, client, false);
+
+    for thread in [UNKNOWN_ID, elsewhere.as_str()] {
+        let path = thread_path(f, &project, thread);
+        let response = call(client, "GET", &path, &moderator(f), None);
+        assert_eq!(response.status, 404, "read: {}", response.text());
+        assert_eq!(response.json()["error"], "not_found");
+        let response = call(
+            client,
+            "POST",
+            &format!("{path}/posts"),
+            &moderator(f),
+            Some(&json!({ "summary": "Anyone there?", "body": "Hello." })),
+        );
+        assert_eq!(response.status, 404, "post: {}", response.text());
+        assert_eq!(response.json()["error"], "not_found");
+    }
+    let untouched = read_thread(f, client, &human(f), &other_project, &elsewhere);
+    assert_eq!(
+        thread_posts(&untouched),
+        Vec::<Value>::new(),
+        "the thread under the other project got no post"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Posts by agents and by the human
 // ---------------------------------------------------------------------------
