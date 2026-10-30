@@ -995,6 +995,19 @@
             "description": "The head as HTML with `data-omni-id`; the empty text for an\nempty doc, and for a design's head, whose content is `tags` and `pages`.",
             "type": "string"
           },
+          "node_boxes": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/NodeBox"
+            },
+            "description": "Where nodes of a design's head sit on their boards, by node address, for\na viewer to pin a node on a board it has not read; only with\n`?view=node-boxes`.",
+            "propertyNames": {
+              "type": "string"
+            },
+            "type": [
+              "object",
+              "null"
+            ]
+          },
           "outline": {
             "description": "A design's head as its outline: the pages in order, each as its own JSON\nwith its boards under `children` as placeholders (the board's own JSON\nwithout its children); only for the head of a design read with\n`?view=outline`, which leaves out `tags` and `pages`.",
             "items": {
@@ -1604,6 +1617,52 @@
           "id",
           "chunk",
           "boards"
+        ],
+        "type": "object"
+      },
+      "NodeBox": {
+        "description": "Where a node sits on its board.",
+        "properties": {
+          "board": {
+            "description": "The ID of the board that holds the node.",
+            "type": "string"
+          },
+          "board_width": {
+            "description": "The width of the board, which says how the box scales with the board.",
+            "format": "float",
+            "type": "number"
+          },
+          "height": {
+            "format": "float",
+            "type": "number"
+          },
+          "name": {
+            "description": "The node's layer name.",
+            "type": "string"
+          },
+          "width": {
+            "format": "float",
+            "type": "number"
+          },
+          "x": {
+            "description": "The left of the node's box, from the board's left.",
+            "format": "float",
+            "type": "number"
+          },
+          "y": {
+            "description": "The top of the node's box, from the board's top.",
+            "format": "float",
+            "type": "number"
+          }
+        },
+        "required": [
+          "board",
+          "board_width",
+          "x",
+          "y",
+          "width",
+          "height",
+          "name"
         ],
         "type": "object"
       },
@@ -4635,7 +4694,7 @@
             }
           },
           {
-            "description": "`outline` for the head of a design as its outline (its pages with their boards as placeholders, and the chunk of each board) instead of its whole body; the boards come one by one from `GET .../docs/{doc_id}/boards/{board_id}`. `previews` for small pictures of the boards that `boards` names instead",
+            "description": "`outline` for the head of a design as its outline (its pages with their boards as placeholders, and the chunk of each board) instead of its whole body; the boards come one by one from `GET .../docs/{doc_id}/boards/{board_id}`. `previews` for small pictures of the boards that `boards` names instead. `node-boxes` for where the nodes that `nodes` names sit on their boards instead",
             "in": "query",
             "name": "view",
             "required": false,
@@ -4647,6 +4706,15 @@
             "description": "With `view=previews`, the IDs of the boards, separated by commas",
             "in": "query",
             "name": "boards",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "With `view=node-boxes`, the node addresses, separated by commas",
+            "in": "query",
+            "name": "nodes",
             "required": false,
             "schema": {
               "type": "string"

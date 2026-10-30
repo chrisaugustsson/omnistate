@@ -631,6 +631,40 @@ pub fn board_preview(
     png_encoder::encode(&pixels, &mut png, &png_encoder::Options::default()).then_some(png)
 }
 
+/// A board's width and, for each address asked for, the node's box from the
+/// board's top-left corner with its name, or `None` when the board has no node
+/// there.
+pub type NodesOnBoard = (f32, Vec<Option<(LayoutBox, String)>>);
+
+/// Where the nodes at `addresses` sit on `board`, a board of a page with all its
+/// content, laid out as `board_preview` lays it out, so that a viewer can pin a
+/// node on a board it has not read. `None` when `board` has no box.
+pub fn nodes_on_board(
+    board: Node,
+    assets: &Assets,
+    system: Option<&DesignSystem>,
+    addresses: &[NodeAddress],
+) -> Option<NodesOnBoard> {
+    let scene = match system {
+        Some(system) => Scene::with_system(board, assets.clone(), system.clone()),
+        None => Scene::new(board, assets.clone()),
+    };
+    let bounds = scene.boards.first()?.bounds;
+    let nodes = addresses
+        .iter()
+        .map(|address| {
+            let rect = scene.bounds_of(address)?;
+            let placed = LayoutBox {
+                x: rect.x - bounds.x,
+                y: rect.y - bounds.y,
+                ..rect
+            };
+            Some((placed, scene.name_of(address)?.to_string()))
+        })
+        .collect();
+    Some((bounds.width, nodes))
+}
+
 /// The images that drawing `board` calls for, as `attachment:<id>`: its own and
 /// those of the components it places, with its instances expanded against
 /// `system` when there is one.

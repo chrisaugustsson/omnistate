@@ -1,5 +1,5 @@
 import { callApi } from "./client";
-import { operations, type CommentBody, type DocBody } from "./generated";
+import { operations, type CommentBody, type DocBody, type NodeBox } from "./generated";
 
 const base = (workspaceId: string, projectId: string) => `/api/v1/w/${workspaceId}/projects/${projectId}`;
 
@@ -60,6 +60,33 @@ export async function loadHeadPreviews(
     { response: html.responses["200"] },
   );
   return loaded.previews ?? {};
+}
+
+/** How many node addresses one request asks for, which keeps its address short. */
+const NODE_BOXES_AT_ONCE = 200;
+
+/**
+ * Where `nodes` (node addresses) of a design's head sit on their boards, by
+ * address, without reading the boards. A node the head does not have is left out.
+ */
+export async function loadHeadNodeBoxes(
+  workspaceId: string,
+  projectId: string,
+  docId: string,
+  nodes: string[],
+): Promise<Record<string, NodeBox>> {
+  const requests: Promise<Record<string, NodeBox>>[] = [];
+  for (let start = 0; start < nodes.length; start += NODE_BOXES_AT_ONCE) {
+    const batch = nodes.slice(start, start + NODE_BOXES_AT_ONCE);
+    requests.push(
+      callApi(
+        "GET",
+        `${base(workspaceId, projectId)}/docs/${docId}/html?view=node-boxes&nodes=${batch.map(encodeURIComponent).join(",")}`,
+        { response: html.responses["200"] },
+      ).then((loaded) => loaded.node_boxes ?? {}),
+    );
+  }
+  return Object.assign({}, ...(await Promise.all(requests)));
 }
 
 /** One board of a design's head, with everything below it, as JSON. */

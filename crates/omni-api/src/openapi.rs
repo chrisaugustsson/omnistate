@@ -27,6 +27,7 @@ use crate::features::{
 };
 use crate::home::{FeatureSummary, HomeResponse, WaitingBody};
 use crate::live::{LiveClientMessage, LiveErrorCode, LiveEventName, LiveServerMessage};
+use crate::pins::NodeBox;
 use crate::projects::{CreateProjectRequest, ProjectBody, ProjectListResponse, ProjectResponse};
 use crate::routes::{Access, registry};
 use crate::session::{
@@ -136,6 +137,7 @@ use utoipa::OpenApi;
         DocResponse,
         DocListResponse,
         HeadHtmlResponse,
+        NodeBox,
         EditRequest,
         OpResultBody,
         EditResponse,

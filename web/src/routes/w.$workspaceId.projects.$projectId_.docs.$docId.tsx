@@ -6,10 +6,11 @@ import {
   loadDocComments,
   loadHeadBoard,
   loadHeadHtml,
+  loadHeadNodeBoxes,
   loadHeadOutline,
   loadHeadPreviews,
 } from "@/api/docs";
-import type { DocBody } from "@/api/generated";
+import type { DocBody, NodeBox } from "@/api/generated";
 import {
   createDesignRenderer,
   type DesignRenderer,
@@ -440,9 +441,33 @@ function holds(page: JsonNode, id: string): boolean {
 }
 
 
+/** A commented node, with where it sits on its board when the API has said so. */
+type Pin = { address: string; name: string; count: number; place?: NodeBox };
+
+/**
+ * The box of a pin's node on the canvas, as `boxOf` gives it. A board drawn from
+ * its preview has no nodes yet, so the node's box comes from where the node sits
+ * on the board and where the board is now.
+ */
+function boxOfPin(renderer: DesignRenderer, pin: Pin): ReturnType<DesignRenderer["boxOf"]> {
+  const box = renderer.boxOf(pin.address);
+  if (box || !pin.place) return box;
+  const board = renderer.boxOf(pin.place.board);
+  if (!board) return null;
+  const scale = board.width / pin.place.board_width;
+  return {
+    x: board.x + pin.place.x * scale,
+    y: board.y + pin.place.y * scale,
+    width: pin.place.width * scale,
+    height: pin.place.height * scale,
+    name: pin.place.name,
+  };
+}
+
 /**
  * Buttons over the canvas, one on each commented node, that sit on the node's
- * box and follow it as the view changes (zooming, panning, another page).
+ * box and follow it as the view changes (zooming, panning, another page),
+ * whether its board has been read or is drawn from its preview.
  */
 function CommentPins({
   renderer,
@@ -451,7 +476,7 @@ function CommentPins({
   onPick,
 }: {
   renderer: DesignRenderer | null;
-  pins: { address: string; name: string; count: number }[];
+  pins: Pin[];
   selected: string | null;
   onPick: (address: string) => void;
 }) {
@@ -464,7 +489,7 @@ function CommentPins({
       {pins.map((pin) => {
         let box: ReturnType<DesignRenderer["boxOf"]>;
         try {
-          box = renderer.boxOf(pin.address);
+          box = boxOfPin(renderer, pin);
         } catch {
           return null;
         }
@@ -542,6 +567,8 @@ function DesignViewer({
   }, []);
   // The node and the board the address bar named, until they are shown.
   const [target, setTarget] = useState<string | null>(node ?? null);
+  // The node of a pin picked on a board that is not read, until the board is in place.
+  const picked = useRef<string | null>(null);
   const [boardTarget, setBoardTarget] = useState<string | null>(boardParam ?? null);
   // The board a link named, until a node is selected or another page is shown.
   const boardHint = useRef<string | null>(boardParam ?? null);
@@ -660,6 +687,13 @@ function DesignViewer({
     });
     const shown = (incremental: boolean) => {
       if (incremental) {
+        // A picked pin does not wait for the layers panel, which waits for the view to be still.
+        if (picked.current && renderer.boxOf(picked.current)) {
+          setSelected(picked.current);
+          renderer.select(picked.current);
+          picked.current = null;
+          setTarget(null);
+        }
         refreshLayersSoon();
         return;
       }
@@ -770,6 +804,7 @@ function DesignViewer({
     if (!renderer || !target || !rowsOf(layers).some((row) => row.layer.address === target)) return;
     setSelected(target);
     renderer.select(target, true);
+    picked.current = null;
     setTarget(null);
   }, [renderer, target, layers, setSelected]);
 
@@ -782,6 +817,28 @@ function DesignViewer({
     const board = holder?.address ?? boardHint.current ?? (boards[0] ? String(boards[0].id) : undefined);
     onPlace({ board, node: selected ?? undefined });
   }, [target, boardTarget, page, layers, selected, drawn, onPlace]);
+
+  // Where the commented nodes sit on their boards, so that a board drawn from its
+  // preview has its pins. They are read again when the comments or the head change.
+  const commented = useMemo(
+    () => Array.from(new Set((comments.value ?? []).filter((on) => !on.orphaned).map((on) => on.node))).sort().join(","),
+    [comments.value],
+  );
+  const [nodeBoxes, setNodeBoxes] = useState<Record<string, NodeBox>>({});
+  useEffect(() => {
+    if (commented === "" || !outline.value) return;
+    let cancelled = false;
+    loadHeadNodeBoxes(workspaceId, projectId, docId, commented.split(",")).then(
+      (boxes) => {
+        if (!cancelled) setNodeBoxes(boxes);
+      },
+      // A pin then comes with its board, when the board is read.
+      () => undefined,
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [workspaceId, projectId, docId, commented, outline.value]);
 
   useProjectEvents(projectId, (event) => {
     const { doc_id: eventDoc } = event.data;
@@ -798,6 +855,20 @@ function DesignViewer({
   function choose(address: string | null) {
     setSelected(address);
     renderer?.select(address);
+  }
+
+  // A pin on a board drawn from its preview has no node to select until the board
+  // is read, so it asks for the node as a link does, with that board first.
+  function pick(address: string) {
+    const place = nodeBoxes[address];
+    if (place && !renderer?.boxOf(address)) {
+      boardHint.current = place.board;
+      picked.current = address;
+      setTarget(address);
+    } else {
+      picked.current = null;
+      choose(address);
+    }
   }
 
   function chooseMode(next: string) {
@@ -837,8 +908,13 @@ function DesignViewer({
     for (const on of comments.value ?? []) {
       if (!on.orphaned) counts.set(on.node, (counts.get(on.node) ?? 0) + 1);
     }
-    return Array.from(counts, ([address, count]) => ({ address, count, name: names.get(address) ?? address }));
-  }, [rows, comments.value]);
+    return Array.from(counts, ([address, count]) => ({
+      address,
+      count,
+      name: names.get(address) ?? address,
+      place: nodeBoxes[address],
+    }));
+  }, [rows, comments.value, nodeBoxes]);
 
   return (
     <main className="flex min-h-full flex-col lg:h-full lg:min-h-[560px]">
@@ -874,7 +950,7 @@ function DesignViewer({
           }}
         >
           <canvas ref={canvas} aria-label="Design canvas" className="absolute inset-0 size-full touch-none" />
-          <CommentPins renderer={renderer} pins={pins} selected={selected} onPick={choose} />
+          <CommentPins renderer={renderer} pins={pins} selected={selected} onPick={pick} />
           {outline.value && pages.length === 0 && (
             <div className="pointer-events-none absolute inset-0 flex items-center justify-center p-6">
               <p className="rounded-xl bg-background/90 px-4 py-3 text-[13px] text-muted-foreground shadow-panel">

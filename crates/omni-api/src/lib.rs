@@ -21,6 +21,7 @@ mod home;
 pub mod live;
 pub mod openapi;
 pub mod password;
+mod pins;
 mod placeholders;
 mod previews;
 mod projects;

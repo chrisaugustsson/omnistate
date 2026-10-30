@@ -11,6 +11,7 @@ use crate::boards;
 use crate::chunks::{self, Snapshot};
 use crate::design;
 use crate::live;
+use crate::pins;
 use crate::previews;
 use crate::projects::{non_blank, parse_body, require_project};
 use crate::session::{ApiError, ErrorBody};
@@ -123,6 +124,11 @@ pub struct HeadHtmlResponse {
     /// `?view=previews`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub previews: Option<BTreeMap<String, String>>,
+    /// Where nodes of a design's head sit on their boards, by node address, for
+    /// a viewer to pin a node on a board it has not read; only with
+    /// `?view=node-boxes`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub node_boxes: Option<BTreeMap<String, pins::NodeBox>>,
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -1029,8 +1035,9 @@ pub async fn delete_doc(
         ("workspace_id" = String, Path, description = "The workspace's UUID"),
         ("project_id" = String, Path, description = "The project's UUID"),
         ("doc_id" = String, Path, description = "The doc's UUID"),
-        ("view" = Option<String>, Query, description = "`outline` for the head of a design as its outline (its pages with their boards as placeholders, and the chunk of each board) instead of its whole body; the boards come one by one from `GET .../docs/{doc_id}/boards/{board_id}`. `previews` for small pictures of the boards that `boards` names instead"),
+        ("view" = Option<String>, Query, description = "`outline` for the head of a design as its outline (its pages with their boards as placeholders, and the chunk of each board) instead of its whole body; the boards come one by one from `GET .../docs/{doc_id}/boards/{board_id}`. `previews` for small pictures of the boards that `boards` names instead. `node-boxes` for where the nodes that `nodes` names sit on their boards instead"),
         ("boards" = Option<String>, Query, description = "With `view=previews`, the IDs of the boards, separated by commas"),
+        ("nodes" = Option<String>, Query, description = "With `view=node-boxes`, the node addresses, separated by commas"),
     ),
     responses(
         (status = 200, description = "The head's HTML", body = HeadHtmlResponse),
@@ -1076,6 +1083,36 @@ pub async fn read_doc_html(
             outline: None,
             boards: None,
             previews: Some(previews),
+            node_boxes: None,
+        }));
+    }
+    if view == Some("node-boxes") && row.kind == "design" {
+        let wanted = query.get("nodes").map(String::as_str).unwrap_or_default();
+        let wanted: Vec<&str> = wanted.split(',').filter(|node| !node.is_empty()).collect();
+        let boxes = match &row.head {
+            Some(head) if !wanted.is_empty() => {
+                pins::of_nodes(
+                    &state,
+                    &request.workspace_id,
+                    &row.project_id,
+                    head,
+                    &wanted,
+                )
+                .await?
+            }
+            _ => BTreeMap::new(),
+        };
+        return Ok(Json(HeadHtmlResponse {
+            doc_id: row.id,
+            html: String::new(),
+            tags: None,
+            pages: None,
+            tokens: None,
+            components: None,
+            outline: None,
+            boards: None,
+            previews: None,
+            node_boxes: Some(boxes),
         }));
     }
     let outline = view == Some("outline");
@@ -1101,6 +1138,7 @@ async fn read_head(
         outline: None,
         boards: None,
         previews: None,
+        node_boxes: None,
     };
     if row.kind == "design" && outline {
         let view =

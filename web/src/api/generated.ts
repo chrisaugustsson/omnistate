@@ -312,11 +312,23 @@ export const HeadBoardSchema = z.object({
 });
 export type HeadBoard = z.infer<typeof HeadBoardSchema>;
 
+export const NodeBoxSchema = z.object({
+  board: z.string(),
+  board_width: z.number(),
+  height: z.number(),
+  name: z.string(),
+  width: z.number(),
+  x: z.number(),
+  y: z.number(),
+});
+export type NodeBox = z.infer<typeof NodeBoxSchema>;
+
 export const HeadHtmlResponseSchema = z.object({
   boards: z.array(HeadBoardSchema).nullable().optional(),
   components: z.array(z.record(z.string(), z.unknown())).nullable().optional(),
   doc_id: z.string(),
   html: z.string(),
+  node_boxes: z.record(z.string(), NodeBoxSchema).nullable().optional(),
   outline: z.array(z.record(z.string(), z.unknown())).nullable().optional(),
   pages: z.array(z.record(z.string(), z.unknown())).nullable().optional(),
   previews: z.record(z.string(), z.string()).nullable().optional(),
@@ -683,6 +695,7 @@ export const schemas = {
   Manifest: ManifestSchema,
   ManifestBoard: ManifestBoardSchema,
   ManifestPage: ManifestPageSchema,
+  NodeBox: NodeBoxSchema,
   OpResultBody: OpResultBodySchema,
   PostBody: PostBodySchema,
   PostResponse: PostResponseSchema,
