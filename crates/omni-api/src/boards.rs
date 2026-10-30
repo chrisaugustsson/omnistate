@@ -763,13 +763,6 @@ mod tests {
             .collect()
     }
 
-    const DESIGN: &str = r#"<Page name="P">
-  <Board name="A" x={0} y={0} width={10} height={10}>
-    <Text name="T" content="one" fontFamily="Inter" fontSize={12}/>
-  </Board>
-  <Board name="B" x={20} y={0} width={10} height={10}/>
-</Page>"#;
-
     fn node_named<'a>(pages: &'a [Node], name: &str) -> &'a Node {
         let mut pending: Vec<&Node> = pages.iter().collect();
         while let Some(node) = pending.pop() {

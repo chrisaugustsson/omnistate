@@ -443,7 +443,13 @@ fn set_html(node: &str, rev: u64, html: &str) -> Value {
 /// Inserts a top-level paragraph into the doc; returns its ID.
 fn a_paragraph(f: &Fixture, client: &Client, project: &str, doc: &str) -> String {
     let answer = must(
-        edit(f, client, project, doc, &json!([insert_top("<p>First</p>")])),
+        edit(
+            f,
+            client,
+            project,
+            doc,
+            &json!([insert_top("<p>First</p>")]),
+        ),
         200,
         "insert a paragraph",
     );

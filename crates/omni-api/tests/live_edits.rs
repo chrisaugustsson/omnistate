@@ -477,20 +477,6 @@ fn scalar(sql: &str, binds: &[&str]) -> Option<String> {
     })
 }
 
-fn count(sql: &str, binds: &[&str]) -> i64 {
-    block(async {
-        let mut conn = admin_connection().await;
-        let mut query = sqlx::query_scalar::<_, i64>(sql);
-        for bind in binds {
-            query = query.bind(*bind);
-        }
-        query
-            .fetch_one(&mut conn)
-            .await
-            .unwrap_or_else(|e| panic!("{sql}: {e}"))
-    })
-}
-
 /// The doc's head as the database holds it.
 fn head_of(doc: &str) -> String {
     scalar("SELECT head::text FROM docs WHERE id = $1::uuid", &[doc])

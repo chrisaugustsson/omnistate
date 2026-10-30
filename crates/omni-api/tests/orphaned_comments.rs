@@ -325,7 +325,7 @@ fn new_project(f: &Fixture, client: &Client) -> String {
     )
 }
 
-/// Creates a doc without a change set (US-102), at the app level or in
+/// Creates a doc (US-102), at the app level or in
 /// `feature`; returns its ID.
 fn new_doc(
     f: &Fixture,
@@ -349,7 +349,7 @@ fn new_doc(
                 Some(&json!({ "kind": kind, "pillar": pillar, "title": unique(kind) })),
             ),
             201,
-            "create a doc without a change set",
+            "create a doc",
         )["doc"],
     )
 }

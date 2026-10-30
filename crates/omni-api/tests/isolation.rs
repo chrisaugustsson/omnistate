@@ -649,7 +649,6 @@ fn must(response: Response, status: u16, what: &str) -> Value {
     response.json()
 }
 
-
 /// Uploads `bytes` as `name` with an API key; the raw bytes are the body.
 fn upload_attachment(
     client: &Client,
@@ -995,10 +994,7 @@ fn fixture() -> &'static Fixture {
                 201,
                 "start a thread",
             );
-            let thread_id = created["thread"]["id"]
-                .as_str()
-                .expect("an id")
-                .to_string();
+            let thread_id = created["thread"]["id"].as_str().expect("an id").to_string();
             let post_summary = unique(&format!("{name}-summary"));
             let body = json!({
                 "summary": post_summary,
@@ -1651,7 +1647,10 @@ fn the_doc_write_calls_of_the_attacks_work_for_the_workspace_that_owns_the_recor
     let human = Auth::Session(&f.a.token);
     let project = format!("/api/v1/w/{}/projects/{}", f.a.id, f.a.project_id);
 
-    let docs = case_named("POST", "/api/v1/w/{workspace_id}/projects/{project_id}/docs");
+    let docs = case_named(
+        "POST",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/docs",
+    );
     let body = docs.body.map(|b| b.replace("intruder", &unique("owner")));
     let created = must(
         call(
@@ -1804,8 +1803,8 @@ fn the_component_calls_of_the_attacks_work_for_the_workspace_that_owns_the_recor
     );
     let project = project["project"]["id"].as_str().expect("an id");
     let base = format!("/api/v1/w/{}/projects/{project}", f.a.id);
-    let body = json!({ "kind": "design-system", "pillar": "ui", "title": unique("owner-ds") })
-        .to_string();
+    let body =
+        json!({ "kind": "design-system", "pillar": "ui", "title": unique("owner-ds") }).to_string();
     must(
         call(client, "POST", &format!("{base}/docs"), &key, Some(&body)),
         201,
@@ -2700,10 +2699,7 @@ fn a_socket_of_workspace_a_cannot_subscribe_to_a_project_of_workspace_b() {
     let created = call(
         client,
         "POST",
-        &format!(
-            "/api/v1/w/{}/projects/{}/features",
-            f.b.id, f.b.project_id
-        ),
+        &format!("/api/v1/w/{}/projects/{}/features", f.b.id, f.b.project_id),
         &Auth::Key(&f.b.key),
         Some(&json!({ "name": unique("b-only") }).to_string()),
     );
@@ -2718,10 +2714,7 @@ fn a_socket_of_workspace_a_cannot_subscribe_to_a_project_of_workspace_b() {
     let created = call(
         client,
         "POST",
-        &format!(
-            "/api/v1/w/{}/projects/{}/features",
-            f.a.id, f.a.project_id
-        ),
+        &format!("/api/v1/w/{}/projects/{}/features", f.a.id, f.a.project_id),
         &Auth::Key(&f.a.key),
         Some(&json!({ "name": unique("a-only") }).to_string()),
     );

@@ -715,4 +715,3 @@ fn a_read_can_give_the_tree_of_one_mode() {
     );
     assert_error(&response, 400, "unknown_mode");
 }
-

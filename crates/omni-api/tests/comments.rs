@@ -56,11 +56,7 @@
 //!   `comment.deleted` with at least `{"comment_id", "doc_id"}`. A refused
 //!   call emits nothing.
 //! - There is no status any more: the `addressed`, `resolve` and `reopen`
-//!   routes are gone from the registry. `POST /versions/{version_id}/comments`
-//!   stays (both) until the web app moves to the live routes (US-113): it pins
-//!   a comment to a node of that saved version, on the version's doc, and the
-//!   comment is then like any other (tests/feature_docs.rs and
-//!   tests/project_home.rs use it).
+//!   routes are gone from the registry.
 //! - Storage: comments live in the tenant table `comments`, whose columns
 //!   without a default that must be given are `workspace_id`, `doc_id`,
 //!   `node`, `author` (jsonb) and `body`, plus the nullable `deleted_at`; it
@@ -424,7 +420,7 @@ fn new_feature(f: &Fixture, client: &Client, project: &str) -> String {
     )
 }
 
-/// Creates a doc without a change set (US-102), at the app level or in
+/// Creates a doc (US-102), at the app level or in
 /// `feature`; returns its ID.
 fn new_doc(
     f: &Fixture,
@@ -448,7 +444,7 @@ fn new_doc(
                 Some(&json!({ "kind": kind, "pillar": pillar, "title": unique(kind) })),
             ),
             201,
-            "create a doc without a change set",
+            "create a doc",
         )["doc"],
     )
 }

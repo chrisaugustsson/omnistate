@@ -18,7 +18,7 @@
 //!   (`node`, `revision`, `created`, `removed`), and the next read of the
 //!   design (`GET /docs/{doc_id}/html`, `GET /docs/{doc_id}/boards/{board}`)
 //!   has the change. The body may carry `"board"`, which keeps the batch inside
-//!   that board as for a draft: an operation outside it is 400
+//!   that board: an operation outside it is 400
 //!   `invalid_operation` naming the node, and an ID that is no board of the
 //!   head is 404 `unknown_board`.
 //! - A design's head is a manifest chunk (`{"pages": [{"id", "chunk",

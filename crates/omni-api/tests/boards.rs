@@ -536,7 +536,11 @@ fn new_design(f: &Fixture, client: &Client) -> Design {
     );
     let mut ids = ids_in(&read_head(f, client, &project, &doc)["pages"]);
     ids.insert("Checkout".to_string(), page);
-    assert_eq!(ids.len(), 11, "the first page's own name, then 10 nodes: {ids:?}");
+    assert_eq!(
+        ids.len(),
+        11,
+        "the first page's own name, then 10 nodes: {ids:?}"
+    );
     Design { project, doc, ids }
 }
 

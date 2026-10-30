@@ -301,7 +301,7 @@ fn new_project(ws: &Ws, client: &Client) -> String {
     .to_string()
 }
 
-/// Creates a doc of `kind` at the app level without a change set (US-102);
+/// Creates a doc of `kind` at the app level (US-102);
 /// returns its ID.
 fn new_doc(ws: &Ws, client: &Client, project: &str, kind: &str) -> String {
     new_titled_doc(ws, client, project, kind, &unique(kind))
@@ -319,7 +319,7 @@ fn new_titled_doc(ws: &Ws, client: &Client, project: &str, kind: &str, title: &s
                 Some(&json!({ "kind": kind, "pillar": pillar, "title": title })),
             ),
             201,
-            "create a doc without a change set",
+            "create a doc",
         )["doc"],
         "id",
     )

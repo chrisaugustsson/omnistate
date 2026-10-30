@@ -875,9 +875,7 @@ fn a_post_may_replace_an_earlier_post_by_the_same_agent_identity() {
         json!(7),
     ]
     .into_iter()
-    .map(|replaces| {
-        json!({ "summary": "Replacing", "body": "x", "replaces": replaces })
-    })
+    .map(|replaces| json!({ "summary": "Replacing", "body": "x", "replaces": replaces }))
     .collect();
     assert_refused(
         f,

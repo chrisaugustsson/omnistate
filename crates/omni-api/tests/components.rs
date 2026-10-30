@@ -7,89 +7,47 @@
 //! scratch RustFS bucket and serve the API's router on a local port.
 //!
 //! The contract these tests pin down (all paths are under
-//! `/api/v1/w/{workspace_id}/projects/{project_id}`; docs and drafts are those
-//! of US-022, versions of US-024, approvals of US-025 and the design system
-//! doc and its tokens of US-028; the tags are those of
-//! docs/formats/design-tags.md, checked by `omni_core::design::tags`):
+//! `/api/v1/w/{workspace_id}/projects/{project_id}`; the design system doc and
+//! its tokens are those of tests/tokens.rs, the writes to heads those of
+//! tests/live_designs.rs; the tags are those of docs/formats/design-tags.md,
+//! checked by `omni_core::design::tags`):
 //!
-//! - `PUT /changesets/{changeset_id}/components` (agent) takes `{"tags":
-//!   "<Component ...>...</Component> ..."}`, zero or more `<Component>` tags,
-//!   and replaces every component of the change set's draft of the project's
-//!   design system doc in one all-or-nothing batch; the token tree stays as
-//!   it is. A tag with an `id` names a node that the draft already has, which
+//! - `PUT /components` (agent) takes `{"tags": "<Component ...>...</Component>
+//!   ..."}`, zero or more `<Component>` tags, and replaces every component of
+//!   the design system's head in one all-or-nothing batch; the token tree stays
+//!   as it is. A tag with an `id` names a node that the head already has, which
 //!   keeps its ID; a tag without one is new and gets its ID from the server.
-//!   A change set without a draft of the design system gets one, as for a
-//!   token import. The answer is 200 `{"doc_id", "changeset_id", "draft_id",
-//!   "tags", "components"}`: the components as tags with every ID, and as
-//!   JSON nodes of type `component`, in the order written. Tags that do not
-//!   parse, or a nested instance or slot default that names no component of
-//!   the import, are 400 `{"error": "invalid_components", "message"}` (the
-//!   message names the problem) and change nothing. A body without `tags` is
-//!   400 `invalid_request`, a project without a design system 404
-//!   `no_design_system`, a session 403 `forbidden`. An import is logged in
-//!   the draft's log and emits one `components.imported` event with `data`
-//!   `{"doc_id", "changeset_id", "draft_id"}`.
-//! - `PUT /changesets/{changeset_id}/docs/{doc_id}/design` (agent) takes
-//!   `{"tags": "<Page ...>...</Page> ..."}`, one or more `<Page>` tags, and
-//!   replaces the content of the change set's draft of the design doc,
-//!   assigning IDs to new nodes. The answer is 200 `{"doc_id",
-//!   "changeset_id", "draft_id", "tags", "pages"}`. Every instance is checked
-//!   against the components that the draft resolves to (below): a component
-//!   that is not there, a property that the component does not define, a
-//!   value outside a variant's values, or an override of a node that is not
-//!   in the component (or of `content` on a node that is no text) is 400
-//!   `{"error": "invalid_design", "message"}` naming the component, the
-//!   property, the value or the node, and so is a `<Component>` tag. The doc
-//!   of another kind is 400 `not_a_design`. A refused import changes
-//!   nothing. An import emits one `design.imported` event with `data`
-//!   `{"doc_id", "changeset_id", "draft_id"}`.
-//! - A draft resolves instances against the change set's draft of the design
-//!   system, unsaved changes included; a change set without one resolves
-//!   against the mainline design system. `GET
-//!   /changesets/{changeset_id}/docs/{doc_id}` of a design doc's draft adds
-//!   to the draft `"tags"`, `"pages"`, `"design_system": {"doc_id",
-//!   "source": "draft" | "mainline", "draft_id", "version_id"}` (the draft's
-//!   ID for `draft`, the mainline version's for `mainline`) and
-//!   `"components"`, the JSON of the components its instances use, as
-//!   resolved, and `"tokens"`: the whole token tree of that design system
-//!   (the draft's, unsaved changes included, or the mainline version's), which
-//!   the design viewer's live draft view (US-045) hands the renderer with the
-//!   components.
-//! - Saving a version of a design doc (`POST
-//!   /changesets/{changeset_id}/docs/{doc_id}/versions`) records the design
-//!   system version it uses, as `"design_system_version_id"` of the version:
-//!   the change set's design system draft's, which is saved first when it has
-//!   changes that no version holds yet (so the change set's approval holds
-//!   that version too), or the mainline one without a draft. `GET
-//!   /versions/{version_id}` answers `design_system_version_id` (`null` for
-//!   other docs) and, for a design version, `"tags"`, `"pages"` and
-//!   `"components"` resolved from the recorded version, whatever the
-//!   mainline is now, and `"tokens"`: the recorded design system version's
-//!   whole token tree in every mode (`null` for a design system of components
-//!   only), which the design viewer (US-043) hands the renderer with the
-//!   components. A comparison (`GET /versions/{a}/diff/{b}`) names the
-//!   design system version of each side, `from_design_system_version_id` and
-//!   `to_design_system_version_id`.
+//!   The answer is 200 `{"project_id", "doc_id", "head", "tags",
+//!   "components"}`. Tags that do not parse, or a nested instance or slot
+//!   default that names no component of the import, are 400 `{"error":
+//!   "invalid_components", "message"}` (the message names the problem) and
+//!   change nothing. A body without `tags` is 400 `invalid_request`, a project
+//!   without a design system 404 `no_design_system`, a session 403 `forbidden`.
+//!   An import adds one row of `doc_changes` and emits `doc.changed`.
+//! - `POST /docs/{doc_id}/ops` of a design checks every instance against the
+//!   components of the design system's head: a component that is not there, a
+//!   property that the component does not define, a value outside a variant's
+//!   values, or an override of a node that is not in the component (or of
+//!   `content` on a node that is no text) is 400 `{"error":
+//!   "invalid_operation", "message"}` naming the component, the property, the
+//!   value or the node, and so is a `<Component>` tag. A refused batch changes
+//!   nothing.
 //! - `GET /components/usage?component=<id>` (both) lists every board of the
-//!   mainline versions of the project's design docs that uses the component:
-//!   through an instance anywhere in the board, a slot value of an instance,
-//!   or an instance of another component whose tree uses it. The answer is
-//!   200 `{"project_id", "component", "boards": [{"doc_id", "doc_title",
-//!   "version_id", "page_id", "page_name", "board_id", "board_name",
-//!   "components"}]}`, where `components` lists every component the board
-//!   uses. Without `component`, every board that uses a component is listed
-//!   and `component` is `null`. A component that the mainline design system
-//!   does not define is 404 `{"error": "unknown_component"}`, and text that
-//!   is no node ID 400 `invalid_request`. Drafts are not listed.
-//! - The three routes are in the route registry: the imports as `agent`, the
-//!   usage as `both`.
-//! - US-058: the outline of a design version (`GET
-//!   /versions/{version_id}?view=outline`, tests/boards.rs), which the design
-//!   viewer reads before the boards it shows, carries the same
-//!   `design_system_version_id` and `tokens` as the whole read, and in
-//!   `components` every component that the whole read lists, defined the same
-//!   (it may list more of the recorded design system version), so that a board
-//!   read later resolves its instances against it.
+//!   heads of the project's design docs that uses the component: through an
+//!   instance anywhere in the board, a slot value of an instance, or an
+//!   instance of another component whose tree uses it. The answer is 200
+//!   `{"project_id", "component", "boards": [{"doc_id", "doc_title", "page_id",
+//!   "page_name", "board_id", "board_name", "components"}]}`, where `components`
+//!   lists every component the board uses. Without `component`, every board
+//!   that uses a component is listed and `component` is `null`. A component
+//!   that the design system does not define is 404 `{"error":
+//!   "unknown_component"}`, and text that is no node ID 400 `invalid_request`.
+//! - The outline of a design (`GET /docs/{doc_id}/html?view=outline`,
+//!   tests/boards.rs), which the design viewer reads before the boards it
+//!   shows, carries the same `tokens` as the whole read, and in `components`
+//!   every component that the whole read lists, defined the same (it may list
+//!   more of the design system), so that a board read later resolves its
+//!   instances against it.
 
 mod common;
 
@@ -164,7 +122,7 @@ fn config() -> Config {
         ),
         admin_database_url: format!("{server}/{TEST_DB}"),
         api_db_password: api_password(),
-        // Versions and attachments keep their content in RustFS, so the API
+        // Heads and attachments keep their content in RustFS, so the API
         // gets a real bucket.
         s3_endpoint: s3_endpoint(),
         s3_access_key: s3_access_key(),
@@ -380,10 +338,6 @@ fn project_base(f: &Fixture, project: &str) -> String {
     format!("/api/v1/w/{}/projects/{project}", f.workspace)
 }
 
-fn changeset_path(f: &Fixture, project: &str, changeset: &str) -> String {
-    format!("{}/changesets/{changeset}", project_base(f, project))
-}
-
 fn new_project(f: &Fixture, client: &Client) -> String {
     id_of(
         &must(
@@ -400,27 +354,11 @@ fn new_project(f: &Fixture, client: &Client) -> String {
     )
 }
 
-fn new_changeset(f: &Fixture, client: &Client, project: &str) -> String {
-    id_of(
-        &must(
-            call(
-                client,
-                "POST",
-                &format!("{}/changesets", project_base(f, project)),
-                &agent(f),
-                Some(&json!({ "title": unique("change"), "run_tag": "run-29" })),
-            ),
-            201,
-            "create a change set",
-        )["changeset"],
-    )
-}
-
+/// Creates a doc; returns its ID.
 fn create_doc(
     f: &Fixture,
     client: &Client,
     project: &str,
-    changeset: &str,
     kind: &str,
     pillar: &str,
     title: &str,
@@ -430,7 +368,7 @@ fn create_doc(
             call(
                 client,
                 "POST",
-                &format!("{}/docs", changeset_path(f, project, changeset)),
+                &format!("{}/docs", project_base(f, project)),
                 &agent(f),
                 Some(&json!({ "kind": kind, "pillar": pillar, "title": title })),
             ),
@@ -440,47 +378,14 @@ fn create_doc(
     )
 }
 
-fn open_draft(f: &Fixture, client: &Client, project: &str, changeset: &str, doc: &str) {
-    let response = call(
-        client,
-        "POST",
-        &format!("{}/docs/{doc}/open", changeset_path(f, project, changeset)),
-        &agent(f),
-        None,
-    );
-    assert!(
-        response.status == 200 || response.status == 201,
-        "open a draft of the doc: {}",
-        response.text()
-    );
-}
-
-/// A small token tree, which a design system version needs.
-fn tokens() -> Value {
-    json!({
-        "$extensions": {"omnistate": {"modes": ["light", "dark"]}},
-        "color": {
-            "$type": "color",
-            "surface": {
-                "$value": "#ffffff",
-                "$extensions": {"omnistate": {"modes": {"light": "#ffffff", "dark": "#0f172a"}}}
-            }
-        }
-    })
-}
-
-fn import_tokens(f: &Fixture, client: &Client, project: &str, changeset: &str) {
-    import_token_tree(f, client, project, changeset, &tokens());
-}
-
-fn import_token_tree(f: &Fixture, client: &Client, project: &str, changeset: &str, tree: &Value) {
+fn import_tokens(f: &Fixture, client: &Client, project: &str) {
     must(
         call(
             client,
             "PUT",
-            &format!("{}/tokens", changeset_path(f, project, changeset)),
+            &format!("{}/tokens", project_base(f, project)),
             &agent(f),
-            Some(&json!({ "tokens": tree })),
+            Some(&json!({ "tokens": tokens() })),
         ),
         200,
         "import the tokens",
@@ -492,162 +397,87 @@ fn components_response(
     client: &Client,
     auth: &Auth,
     project: &str,
-    changeset: &str,
     tags: &str,
 ) -> Response {
     call(
         client,
         "PUT",
-        &format!("{}/components", changeset_path(f, project, changeset)),
+        &format!("{}/components", project_base(f, project)),
         auth,
         Some(&json!({ "tags": tags })),
     )
 }
 
-fn import_components(
-    f: &Fixture,
-    client: &Client,
-    project: &str,
-    changeset: &str,
-    tags: &str,
-) -> Value {
+fn import_components(f: &Fixture, client: &Client, project: &str, tags: &str) -> Value {
     must(
-        components_response(f, client, &agent(f), project, changeset, tags),
+        components_response(f, client, &agent(f), project, tags),
         200,
         "import the components",
     )
 }
 
-fn design_response(
-    f: &Fixture,
-    client: &Client,
-    auth: &Auth,
-    project: &str,
-    changeset: &str,
-    doc: &str,
-    tags: &str,
-) -> Response {
+fn edit_response(f: &Fixture, client: &Client, project: &str, doc: &str, ops: &Value) -> Response {
     call(
         client,
-        "PUT",
-        &format!(
-            "{}/docs/{doc}/design",
-            changeset_path(f, project, changeset)
-        ),
-        auth,
-        Some(&json!({ "tags": tags })),
+        "POST",
+        &format!("{}/docs/{doc}/ops", project_base(f, project)),
+        &agent(f),
+        Some(&json!({ "ops": ops })),
     )
 }
 
-fn import_design(
-    f: &Fixture,
-    client: &Client,
-    project: &str,
-    changeset: &str,
-    doc: &str,
-    tags: &str,
-) -> Value {
+fn edit(f: &Fixture, client: &Client, project: &str, doc: &str, ops: &Value) {
     must(
-        design_response(f, client, &agent(f), project, changeset, doc, tags),
+        edit_response(f, client, project, doc, ops),
         200,
-        "import the design",
-    )
-}
-
-fn read_draft(f: &Fixture, client: &Client, project: &str, changeset: &str, doc: &str) -> Value {
-    must(
-        call(
-            client,
-            "GET",
-            &format!("{}/docs/{doc}", changeset_path(f, project, changeset)),
-            &agent(f),
-            None,
-        ),
-        200,
-        "read the draft",
-    )["draft"]
-        .clone()
-}
-
-/// Saves a version of the change set's draft of `doc`; returns the version.
-fn save(f: &Fixture, client: &Client, project: &str, changeset: &str, doc: &str) -> Value {
-    must(
-        call(
-            client,
-            "POST",
-            &format!(
-                "{}/docs/{doc}/versions",
-                changeset_path(f, project, changeset)
-            ),
-            &agent(f),
-            Some(&json!({})),
-        ),
-        201,
-        "save a version",
-    )["version"]
-        .clone()
-}
-
-fn read_version(f: &Fixture, client: &Client, project: &str, version: &str) -> Value {
-    must(
-        call(
-            client,
-            "GET",
-            &format!("{}/versions/{version}", project_base(f, project)),
-            &agent(f),
-            None,
-        ),
-        200,
-        "read a version",
-    )["version"]
-        .clone()
-}
-
-/// Submits the change set and has the human approve it; returns the change
-/// set as the approval left it.
-fn submit_and_approve(f: &Fixture, client: &Client, project: &str, changeset: &str) -> Value {
-    let path = changeset_path(f, project, changeset);
-    must(
-        call(client, "POST", &format!("{path}/submit"), &agent(f), None),
-        200,
-        "submit the change set",
+        "edit the design",
     );
-    must(
-        call(
-            client,
-            "POST",
-            &format!("{path}/approve"),
-            &human(f),
-            Some(&json!({})),
-        ),
-        200,
-        "the human approves",
-    )["changeset"]
-        .clone()
 }
 
-/// Submits the change set and has the human approve it, which merges it.
-fn merge(f: &Fixture, client: &Client, project: &str, changeset: &str) -> Value {
-    let approved = submit_and_approve(f, client, project, changeset);
-    assert_eq!(approved["status"], "merged", "{approved}");
-    approved
-}
-
-fn mainline_of(f: &Fixture, client: &Client, project: &str, doc: &str) -> String {
+/// The whole read of a design's head.
+fn read_head(f: &Fixture, client: &Client, project: &str, doc: &str) -> Value {
     must(
         call(
             client,
             "GET",
-            &format!("{}/docs/{doc}", project_base(f, project)),
+            &format!("{}/docs/{doc}/html", project_base(f, project)),
             &agent(f),
             None,
         ),
         200,
-        "read the doc",
-    )["doc"]["mainline_version_id"]
-        .as_str()
-        .unwrap_or_else(|| panic!("the doc {doc} has a mainline version"))
-        .to_string()
+        "read the design's head",
+    )
+}
+
+/// The ID of the first page of a design.
+fn first_page(f: &Fixture, client: &Client, project: &str, doc: &str) -> String {
+    id_of(&read_head(f, client, project, doc)["pages"][0])
+}
+
+fn insert(parent: &str, content: &str) -> Value {
+    json!({ "op": "insert", "parent": parent, "position": { "after": null }, "content": content })
+}
+
+/// How many writes the doc's log holds.
+fn logged_writes(doc: &str) -> i64 {
+    count(
+        "select count(*) from doc_changes where doc_id = $1::uuid",
+        &[doc],
+    )
+}
+
+/// A small token tree.
+fn tokens() -> Value {
+    json!({
+        "$extensions": {"omnistate": {"modes": ["light", "dark"]}},
+        "color": {
+            "$type": "color",
+            "surface": {
+                "$value": "#ffffff",
+                "$extensions": {"omnistate": {"modes": {"light": "#ffffff", "dark": "#0f172a"}}}
+            }
+        }
+    })
 }
 
 fn usage_response(
@@ -712,20 +542,6 @@ fn count(sql: &str, binds: &[&str]) -> i64 {
     })
 }
 
-fn logged_ops(draft: &str) -> i64 {
-    count(
-        "select count(*) from draft_ops where draft_id = $1::uuid",
-        &[draft],
-    )
-}
-
-fn versions_of(doc: &str, changeset: &str) -> i64 {
-    count(
-        "select count(*) from versions where doc_id = $1::uuid and changeset_id = $2::uuid",
-        &[doc, changeset],
-    )
-}
-
 /// The `data` of the project's live events named `event`, oldest first.
 fn events_of(project: &str, event: &str) -> Vec<Value> {
     block(async {
@@ -768,7 +584,7 @@ fn ids_in(nodes: &Value) -> Ids {
     ids
 }
 
-/// ` id="<id>"` for a node the draft already has, nothing for a new one.
+/// ` id="<id>"` for a node the head already has, nothing for a new one.
 fn id_attr(ids: &Ids, name: &str) -> String {
     ids.get(name)
         .map(|id| format!(r#" id="{id}""#))
@@ -878,150 +694,121 @@ fn pay_button(ids: &Ids, style: &str) -> String {
     )
 }
 
-/// The shop: a checkout board with the pay button, a product board with a
-/// card, and a board without instances.
-fn shop_tags(ids: &Ids, instance: &str) -> String {
-    format!(
-        r##"<Page name="Home">
-  <Board name="Checkout" x={{0}} y={{0}} width={{375}} height={{812}} dir="col" gap={{16}}>
-    <Frame name="Footer" dir="row" gap={{8}}>
-      {instance}
-    </Frame>
-  </Board>
-  <Board name="Product" x={{400}} y={{0}} width={{375}} height={{812}} dir="col">
-    <Instance name="Product card" component="{}"/>
-  </Board>
-  <Board name="Empty" x={{800}} y={{0}} width={{375}} height={{812}} dir="col">
-    <Text name="Nothing" content="Tomt" fontFamily="Inter" fontSize={{14}}/>
-  </Board>
-</Page>
-"##,
-        id(ids, "Card"),
-    )
+/// The three boards of the shop: a checkout board with `instance`, a product
+/// board with a card, and a board without instances.
+fn shop_boards(ids: &Ids, instance: &str) -> [String; 3] {
+    [
+        format!(
+            r##"<Board name="Checkout" x={{0}} y={{0}} width={{375}} height={{812}} dir="col" gap={{16}}>
+  <Frame name="Footer" dir="row" gap={{8}}>
+    {instance}
+  </Frame>
+</Board>"##
+        ),
+        format!(
+            r##"<Board name="Product" x={{400}} y={{0}} width={{375}} height={{812}} dir="col">
+  <Instance name="Product card" component="{}"/>
+</Board>"##,
+            id(ids, "Card"),
+        ),
+        r##"<Board name="Empty" x={800} y={0} width={375} height={812} dir="col">
+  <Text name="Nothing" content="Tomt" fontFamily="Inter" fontSize={14}/>
+</Board>"##
+            .to_string(),
+    ]
 }
 
-/// The admin: one board with a plain button.
-fn admin_tags(ids: &Ids) -> String {
+/// The one board of the admin, with a plain button.
+fn admin_board(ids: &Ids) -> String {
     format!(
-        r#"<Page name="Admin">
-  <Board name="Settings" x={{0}} y={{0}} width={{1280}} height={{800}} dir="col">
-    <Instance name="Save" component="{}"/>
-  </Board>
-</Page>
-"#,
+        r#"<Board name="Settings" x={{0}} y={{0}} width={{1280}} height={{800}} dir="col">
+  <Instance name="Save" component="{}"/>
+</Board>"#,
         id(ids, "Button"),
     )
 }
 
+/// A board with one instance, to try an instance out on.
+fn board_with(instance: &str) -> String {
+    format!(
+        r#"<Board name="Trial" x={{2000}} y={{0}} width={{375}} height={{812}} dir="col">
+  {instance}
+</Board>"#
+    )
+}
+
 const STYLES: [&str; 2] = ["primary", "secondary"];
-const WITH_DANGER: [&str; 3] = ["primary", "secondary", "danger"];
 
 struct Library {
     project: String,
-    design_system: String,
     shop: String,
     shop_title: String,
-    admin: String,
+    /// The first page of the shop, named Home.
+    shop_page: String,
     /// Component and layer IDs by name.
     ids: Ids,
     /// Board, page and instance IDs by name.
     nodes: Ids,
-    shop_version: String,
-    admin_version: String,
-    /// The design system version that both design versions record.
-    design_system_version: String,
 }
 
-/// A project whose merged change set made the design system (tokens and the
-/// five components) and two design docs that use them.
+/// A project with a design system (tokens and the five components) and two
+/// design docs that use them.
 fn library(f: &Fixture, client: &Client) -> Library {
     let project = new_project(f, client);
-    let changeset = new_changeset(f, client, &project);
-    let design_system = create_doc(
-        f,
-        client,
-        &project,
-        &changeset,
-        "design-system",
-        "ui",
-        "Design system",
-    );
-    import_tokens(f, client, &project, &changeset);
+    create_doc(f, client, &project, "design-system", "ui", "Design system");
+    import_tokens(f, client, &project);
     // New components get their IDs from the server, so a component that
     // places another is written once the other has its ID.
-    let icons = import_components(f, client, &project, &changeset, &icon_tags(&Ids::new()));
+    let icons = import_components(f, client, &project, &icon_tags(&Ids::new()));
     let mut ids = ids_in(&icons["components"]);
     let with_button = import_components(
         f,
         client,
         &project,
-        &changeset,
         &format!("{}{}", icon_tags(&ids), button_tags(&ids, &STYLES, "Buy")),
     );
     ids = ids_in(&with_button["components"]);
-    let all = import_components(
-        f,
-        client,
-        &project,
-        &changeset,
-        &library_tags(&ids, &STYLES, "Buy"),
-    );
+    let all = import_components(f, client, &project, &library_tags(&ids, &STYLES, "Buy"));
     ids = ids_in(&all["components"]);
     for name in ["Cart", "Heart", "Button", "Card", "Tag"] {
         assert!(ids.contains_key(name), "the import holds {name}: {all}");
     }
 
     let shop_title = unique("Shop");
-    let shop = create_doc(f, client, &project, &changeset, "design", "ui", &shop_title);
-    let shop_import = import_design(
+    let shop = create_doc(f, client, &project, "design", "ui", &shop_title);
+    let shop_page = first_page(f, client, &project, &shop);
+    let boards = shop_boards(&ids, &pay_button(&ids, "secondary"));
+    edit(
         f,
         client,
         &project,
-        &changeset,
         &shop,
-        &shop_tags(&ids, &pay_button(&ids, "secondary")),
+        &json!([
+            { "op": "set", "node": shop_page, "rev": 1, "properties": { "name": "Home" } },
+            insert(&shop_page, &boards[2]),
+            insert(&shop_page, &boards[1]),
+            insert(&shop_page, &boards[0])
+        ]),
     );
-    let admin = create_doc(f, client, &project, &changeset, "design", "ui", "Admin");
-    let admin_import = import_design(f, client, &project, &changeset, &admin, &admin_tags(&ids));
-    let mut nodes = ids_in(&shop_import["pages"]);
-    nodes.extend(ids_in(&admin_import["pages"]));
-
-    let shop_saved = save(f, client, &project, &changeset, &shop);
-    let admin_saved = save(f, client, &project, &changeset, &admin);
-    let design_system_version = shop_saved["design_system_version_id"]
-        .as_str()
-        .unwrap_or_else(|| {
-            panic!("a design version records its design system version: {shop_saved}")
-        })
-        .to_string();
-    merge(f, client, &project, &changeset);
+    let admin = create_doc(f, client, &project, "design", "ui", "Admin");
+    let admin_page = first_page(f, client, &project, &admin);
+    edit(
+        f,
+        client,
+        &project,
+        &admin,
+        &json!([insert(&admin_page, &admin_board(&ids))]),
+    );
+    let mut nodes = ids_in(&read_head(f, client, &project, &shop)["pages"]);
+    nodes.extend(ids_in(&read_head(f, client, &project, &admin)["pages"]));
     Library {
         project,
-        design_system,
         shop,
         shop_title,
-        admin,
+        shop_page,
         ids,
         nodes,
-        shop_version: id_of(&shop_saved),
-        admin_version: id_of(&admin_saved),
-        design_system_version,
     }
-}
-
-/// The definition of `name` among the components of an answer.
-fn component_in(answer: &Value, name: &str) -> Value {
-    answer["components"]
-        .as_array()
-        .unwrap_or_else(|| panic!("the answer lists components: {answer}"))
-        .iter()
-        .find(|component| component["name"] == name)
-        .cloned()
-        .unwrap_or_else(|| panic!("the answer holds the component {name}: {answer:#}"))
-}
-
-fn style_values(component: &Value) -> Value {
-    component["props"]["style"]["values"].clone()
 }
 
 // ---------------------------------------------------------------------------
@@ -1032,42 +819,33 @@ fn style_values(component: &Value) -> Value {
 fn a_components_import_is_logged_and_emits_an_event() {
     let (f, client) = ready();
     let project = new_project(f, client);
-    let changeset = new_changeset(f, client, &project);
-    create_doc(f, client, &project, &changeset, "design-system", "ui", "DS");
-    let before = events_of(&project, "components.imported").len();
-    let imported = import_components(f, client, &project, &changeset, &icon_tags(&Ids::new()));
-    let draft = imported["draft_id"]
-        .as_str()
-        .expect("the draft")
-        .to_string();
-    let logged = logged_ops(&draft);
-    assert!(logged >= 1, "the import is in the draft's log");
-    let events = events_of(&project, "components.imported");
-    assert_eq!(events.len(), before + 1, "{events:?}");
-    let data = events.last().unwrap();
-    assert_eq!(data["doc_id"], imported["doc_id"], "{data}");
-    assert_eq!(data["changeset_id"], changeset.as_str(), "{data}");
-    assert_eq!(data["draft_id"], draft.as_str(), "{data}");
+    let doc = create_doc(f, client, &project, "design-system", "ui", "DS");
+    let before = logged_writes(&doc);
+    let imported = import_components(f, client, &project, &icon_tags(&Ids::new()));
+    assert_eq!(imported["doc_id"], doc.as_str(), "{imported}");
+    assert_eq!(logged_writes(&doc), before + 1, "the import is in the log");
+    let events = events_of(&project, "doc.changed");
+    let data = events.last().expect("the import emits doc.changed");
+    assert_eq!(data["doc_id"], doc.as_str(), "{data}");
+    assert_eq!(data["head"], imported["head"], "{data}");
 }
 
 #[test]
 fn a_refused_components_import_changes_nothing() {
     let (f, client) = ready();
     let project = new_project(f, client);
-    let changeset = new_changeset(f, client, &project);
-    create_doc(f, client, &project, &changeset, "design-system", "ui", "DS");
-    let first = import_components(f, client, &project, &changeset, &icon_tags(&Ids::new()));
-    let draft = first["draft_id"].as_str().unwrap().to_string();
+    let doc = create_doc(f, client, &project, "design-system", "ui", "DS");
+    let first = import_components(f, client, &project, &icon_tags(&Ids::new()));
     let ids = ids_in(&first["components"]);
-    let ops = logged_ops(&draft);
-    let events = events_of(&project, "components.imported").len();
+    let writes = logged_writes(&doc);
+    let events = events_of(&project, "doc.changed").len();
 
     let other_kind = icon_tags(&ids).replace(
         r#"name="Cart" width"#,
         r#"name="Cart" props={{size: {type: "number", default: 1}}} width"#,
     );
     assert_refused(
-        &components_response(f, client, &agent(f), &project, &changeset, &other_kind),
+        &components_response(f, client, &agent(f), &project, &other_kind),
         "invalid_components",
         &["number"],
     );
@@ -1076,7 +854,7 @@ fn a_refused_components_import_changes_nothing() {
         &format!(r#"default: "{UNKNOWN_NODE}""#),
     );
     assert_refused(
-        &components_response(f, client, &agent(f), &project, &changeset, &unknown_slot),
+        &components_response(f, client, &agent(f), &project, &unknown_slot),
         "invalid_components",
         &[UNKNOWN_NODE],
     );
@@ -1086,53 +864,37 @@ fn a_refused_components_import_changes_nothing() {
             &format!(r#"name="Icon" component="{UNKNOWN_NODE}""#),
         );
     assert_refused(
-        &components_response(f, client, &agent(f), &project, &changeset, &unknown_nested),
+        &components_response(f, client, &agent(f), &project, &unknown_nested),
         "invalid_components",
         &[UNKNOWN_NODE],
     );
     assert_refused(
-        &components_response(
-            f,
-            client,
-            &agent(f),
-            &project,
-            &changeset,
-            "<Component name=",
-        ),
+        &components_response(f, client, &agent(f), &project, "<Component name="),
         "invalid_components",
         &["line 1"],
     );
-    assert_eq!(logged_ops(&draft), ops, "a refused import logs nothing");
+    assert_eq!(logged_writes(&doc), writes, "a refused import logs nothing");
     assert_eq!(
-        events_of(&project, "components.imported").len(),
+        events_of(&project, "doc.changed").len(),
         events,
         "a refused import emits nothing"
     );
-    let unchanged = import_components(f, client, &project, &changeset, &icon_tags(&ids));
+    let unchanged = import_components(f, client, &project, &icon_tags(&ids));
     assert_eq!(ids_in(&unchanged["components"]), ids);
 
     // Who may import, and what an import needs.
-    let response =
-        components_response(f, client, &human(f), &project, &changeset, &icon_tags(&ids));
+    let response = components_response(f, client, &human(f), &project, &icon_tags(&ids));
     assert_error(&response, 403, "forbidden");
     let response = call(
         client,
         "PUT",
-        &format!("{}/components", changeset_path(f, &project, &changeset)),
+        &format!("{}/components", project_base(f, &project)),
         &agent(f),
         Some(&json!({})),
     );
     assert_error(&response, 400, "invalid_request");
     let bare = new_project(f, client);
-    let bare_changeset = new_changeset(f, client, &bare);
-    let response = components_response(
-        f,
-        client,
-        &agent(f),
-        &bare,
-        &bare_changeset,
-        &icon_tags(&Ids::new()),
-    );
+    let response = components_response(f, client, &agent(f), &bare, &icon_tags(&Ids::new()));
     assert_error(&response, 404, "no_design_system");
 }
 
@@ -1145,21 +907,19 @@ fn an_instance_may_swap_the_contents_of_a_slot_with_an_override() {
     let (f, client) = ready();
     let lib = library(f, client);
     let ids = &lib.ids;
-    let changeset = new_changeset(f, client, &lib.project);
-    open_draft(f, client, &lib.project, &changeset, &lib.shop);
     let swapped = format!(
-        r#"<Instance name="Pay button" component="{}" overrides={{{{"{}": {{component: "{}"}}}}}}/>"#,
+        r#"<Instance name="Swapped button" component="{}" overrides={{{{"{}": {{component: "{}"}}}}}}/>"#,
         ids["Button"], ids["Icon"], ids["Heart"]
     );
-    let imported = import_design(
+    edit(
         f,
         client,
         &lib.project,
-        &changeset,
         &lib.shop,
-        &shop_tags(ids, &swapped),
+        &json!([insert(&lib.shop_page, &board_with(&swapped))]),
     );
-    let instance = find(&imported["pages"], "Pay button");
+    let head = read_head(f, client, &lib.project, &lib.shop);
+    let instance = find(&head["pages"], "Swapped button");
     assert_eq!(
         instance["overrides"][ids["Icon"].as_str()],
         json!({"component": ids["Heart"]}),
@@ -1168,866 +928,76 @@ fn an_instance_may_swap_the_contents_of_a_slot_with_an_override() {
 }
 
 #[test]
-fn a_design_import_is_logged_and_emits_an_event() {
-    let (f, client) = ready();
-    let lib = library(f, client);
-    let changeset = new_changeset(f, client, &lib.project);
-    open_draft(f, client, &lib.project, &changeset, &lib.shop);
-    let before = events_of(&lib.project, "design.imported").len();
-    let imported = import_design(
-        f,
-        client,
-        &lib.project,
-        &changeset,
-        &lib.shop,
-        &shop_tags(&lib.ids, &pay_button(&lib.ids, "primary")),
-    );
-    assert_eq!(imported["doc_id"], lib.shop.as_str());
-    assert_eq!(imported["changeset_id"], changeset.as_str());
-    let events = events_of(&lib.project, "design.imported");
-    assert_eq!(events.len(), before + 1, "{events:?}");
-    let data = events.last().unwrap();
-    assert_eq!(data["doc_id"], lib.shop.as_str(), "{data}");
-    assert_eq!(data["changeset_id"], changeset.as_str(), "{data}");
-    assert_eq!(data["draft_id"], imported["draft_id"], "{data}");
-}
-
-#[test]
-fn a_design_import_refuses_instances_that_do_not_fit_their_component() {
+fn an_edit_refuses_instances_that_do_not_fit_their_component() {
     let (f, client) = ready();
     let lib = library(f, client);
     let ids = &lib.ids;
-    let changeset = new_changeset(f, client, &lib.project);
-    open_draft(f, client, &lib.project, &changeset, &lib.shop);
-    let fine = import_design(
-        f,
-        client,
-        &lib.project,
-        &changeset,
-        &lib.shop,
-        &shop_tags(ids, &pay_button(ids, "primary")),
-    );
-    let draft = fine["draft_id"].as_str().unwrap().to_string();
-    let before = read_draft(f, client, &lib.project, &changeset, &lib.shop);
-    let ops = logged_ops(&draft);
-    let events = events_of(&lib.project, "design.imported").len();
-    let refuse = |tags: String, needles: &[&str]| {
+    let before = read_head(f, client, &lib.project, &lib.shop);
+    let writes = logged_writes(&lib.shop);
+    let events = events_of(&lib.project, "doc.changed").len();
+    let refuse_content = |content: &str, needles: &[&str]| {
         assert_refused(
-            &design_response(
+            &edit_response(
                 f,
                 client,
-                &agent(f),
                 &lib.project,
-                &changeset,
                 &lib.shop,
-                &tags,
+                &json!([insert(&lib.shop_page, content)]),
             ),
-            "invalid_design",
+            "invalid_operation",
             needles,
         );
     };
+    let refuse = |instance: &str, needles: &[&str]| refuse_content(&board_with(instance), needles);
 
     let unknown_component = format!(r#"<Instance name="Pay button" component="{UNKNOWN_NODE}"/>"#);
-    refuse(shop_tags(ids, &unknown_component), &[UNKNOWN_NODE]);
+    refuse(&unknown_component, &[UNKNOWN_NODE]);
     let unknown_prop = format!(
         r#"<Instance name="Pay button" component="{}" props={{{{colour: "red"}}}}/>"#,
         ids["Button"]
     );
-    refuse(shop_tags(ids, &unknown_prop), &["colour"]);
-    refuse(
-        shop_tags(ids, &pay_button(ids, "ghost")),
-        &["ghost", "primary"],
-    );
+    refuse(&unknown_prop, &["colour"]);
+    refuse(&pay_button(ids, "ghost"), &["ghost", "primary"]);
     let boolean_as_text = format!(
         r#"<Instance name="Pay button" component="{}" props={{{{showIcon: "no"}}}}/>"#,
         ids["Button"]
     );
-    refuse(shop_tags(ids, &boolean_as_text), &["showIcon"]);
+    refuse(&boolean_as_text, &["showIcon"]);
     let slot_of_nothing = format!(
         r#"<Instance name="Pay button" component="{}" props={{{{icon: "{UNKNOWN_NODE}"}}}}/>"#,
         ids["Button"]
     );
-    refuse(shop_tags(ids, &slot_of_nothing), &[UNKNOWN_NODE]);
+    refuse(&slot_of_nothing, &[UNKNOWN_NODE]);
     let override_of_nothing = format!(
         r#"<Instance name="Pay button" component="{}" overrides={{{{"{UNKNOWN_NODE}": {{visible: false}}}}}}/>"#,
         ids["Button"]
     );
-    refuse(shop_tags(ids, &override_of_nothing), &[UNKNOWN_NODE]);
+    refuse(&override_of_nothing, &[UNKNOWN_NODE]);
     let text_on_a_frame = format!(
         r#"<Instance name="Pay button" component="{}" overrides={{{{"{}": {{content: "Hej"}}}}}}/>"#,
         ids["Button"], ids["Badge"]
     );
-    refuse(shop_tags(ids, &text_on_a_frame), &["content"]);
-    refuse(
-        r##"<Component name="Inline" fill="#ffffff"/>"##.to_string(),
+    refuse(&text_on_a_frame, &["content"]);
+    refuse_content(
+        r##"<Component name="Inline" fill="#ffffff"/>"##,
         &["Component"],
     );
-    refuse("<Page name=".to_string(), &["line 1"]);
+    refuse_content("<Board name=", &["line 1"]);
 
-    let after = read_draft(f, client, &lib.project, &changeset, &lib.shop);
+    let after = read_head(f, client, &lib.project, &lib.shop);
     assert_eq!(
         after["tags"], before["tags"],
-        "a refused import changes nothing"
+        "a refused edit changes nothing"
     );
-    assert_eq!(logged_ops(&draft), ops, "a refused import logs nothing");
     assert_eq!(
-        events_of(&lib.project, "design.imported").len(),
+        logged_writes(&lib.shop),
+        writes,
+        "a refused edit logs nothing"
+    );
+    assert_eq!(
+        events_of(&lib.project, "doc.changed").len(),
         events,
-        "a refused import emits nothing"
-    );
-
-    // Who may import, and into what.
-    let tags = shop_tags(ids, &pay_button(ids, "primary"));
-    assert_error(
-        &design_response(
-            f,
-            client,
-            &human(f),
-            &lib.project,
-            &changeset,
-            &lib.shop,
-            &tags,
-        ),
-        403,
-        "forbidden",
-    );
-    let html = create_doc(f, client, &lib.project, &changeset, "html", "spec", "PRD");
-    assert_error(
-        &design_response(f, client, &agent(f), &lib.project, &changeset, &html, &tags),
-        400,
-        "not_a_design",
-    );
-}
-
-// ---------------------------------------------------------------------------
-// Resolving instances: the change set's design system draft, else the mainline
-// ---------------------------------------------------------------------------
-
-#[test]
-fn a_draft_resolves_instances_against_the_change_sets_design_system_draft() {
-    let (f, client) = ready();
-    let lib = library(f, client);
-    let ids = &lib.ids;
-    let changeset = new_changeset(f, client, &lib.project);
-    // The change set's design system draft gives the button a `danger`
-    // style, which no version holds yet.
-    let imported = import_components(
-        f,
-        client,
-        &lib.project,
-        &changeset,
-        &library_tags(ids, &WITH_DANGER, "Buy"),
-    );
-    let design_system_draft = imported["draft_id"].as_str().unwrap().to_string();
-    open_draft(f, client, &lib.project, &changeset, &lib.shop);
-    import_design(
-        f,
-        client,
-        &lib.project,
-        &changeset,
-        &lib.shop,
-        &shop_tags(ids, &pay_button(ids, "danger")),
-    );
-    let draft = read_draft(f, client, &lib.project, &changeset, &lib.shop);
-    assert_eq!(
-        draft["design_system"]["source"], "draft",
-        "{:#}",
-        draft["design_system"]
-    );
-    assert_eq!(
-        draft["design_system"]["draft_id"],
-        design_system_draft.as_str()
-    );
-    assert_eq!(draft["design_system"]["doc_id"], lib.design_system.as_str());
-    assert_eq!(
-        style_values(&component_in(&draft, "Button")),
-        json!(WITH_DANGER),
-        "the draft's instances resolve to the change set's draft of the button"
-    );
-    assert!(
-        draft["tags"]
-            .as_str()
-            .unwrap_or_default()
-            .contains("danger"),
-        "{draft:#}"
-    );
-}
-
-#[test]
-fn a_change_set_without_a_design_system_draft_resolves_against_the_mainline() {
-    let (f, client) = ready();
-    let lib = library(f, client);
-    let ids = &lib.ids;
-    // Another change set has a `danger` style in its own draft only.
-    let other = new_changeset(f, client, &lib.project);
-    import_components(
-        f,
-        client,
-        &lib.project,
-        &other,
-        &library_tags(ids, &WITH_DANGER, "Buy"),
-    );
-
-    let changeset = new_changeset(f, client, &lib.project);
-    open_draft(f, client, &lib.project, &changeset, &lib.shop);
-    assert_refused(
-        &design_response(
-            f,
-            client,
-            &agent(f),
-            &lib.project,
-            &changeset,
-            &lib.shop,
-            &shop_tags(ids, &pay_button(ids, "danger")),
-        ),
-        "invalid_design",
-        &["danger"],
-    );
-    import_design(
-        f,
-        client,
-        &lib.project,
-        &changeset,
-        &lib.shop,
-        &shop_tags(ids, &pay_button(ids, "primary")),
-    );
-    let draft = read_draft(f, client, &lib.project, &changeset, &lib.shop);
-    assert_eq!(
-        draft["design_system"]["source"], "mainline",
-        "{:#}",
-        draft["design_system"]
-    );
-    assert_eq!(
-        draft["design_system"]["version_id"],
-        lib.design_system_version.as_str()
-    );
-    assert_eq!(draft["design_system"]["draft_id"], Value::Null);
-    assert_eq!(
-        style_values(&component_in(&draft, "Button")),
-        json!(STYLES),
-        "the mainline button has no danger style"
-    );
-}
-
-// ---------------------------------------------------------------------------
-// Saving a design version records the design system version
-// ---------------------------------------------------------------------------
-
-#[test]
-fn saving_a_design_version_saves_the_design_system_draft_first_and_records_it() {
-    let (f, client) = ready();
-    let lib = library(f, client);
-    let ids = &lib.ids;
-    let changeset = new_changeset(f, client, &lib.project);
-    import_components(
-        f,
-        client,
-        &lib.project,
-        &changeset,
-        &library_tags(ids, &WITH_DANGER, "Buy"),
-    );
-    open_draft(f, client, &lib.project, &changeset, &lib.shop);
-    import_design(
-        f,
-        client,
-        &lib.project,
-        &changeset,
-        &lib.shop,
-        &shop_tags(ids, &pay_button(ids, "danger")),
-    );
-    assert_eq!(versions_of(&lib.design_system, &changeset), 0);
-
-    let first = save(f, client, &lib.project, &changeset, &lib.shop);
-    let recorded = first["design_system_version_id"]
-        .as_str()
-        .unwrap_or_else(|| panic!("the version records its design system version: {first}"))
-        .to_string();
-    assert_ne!(
-        recorded, lib.design_system_version,
-        "the draft's unsaved changes are in a new version, not the mainline one"
-    );
-    let design_system_version = read_version(f, client, &lib.project, &recorded);
-    assert_eq!(design_system_version["doc_id"], lib.design_system.as_str());
-    assert_eq!(design_system_version["changeset_id"], changeset.as_str());
-    assert_eq!(
-        versions_of(&lib.design_system, &changeset),
-        1,
-        "the design system draft was saved first"
-    );
-    let viewed = read_version(f, client, &lib.project, &id_of(&first));
-    assert_eq!(viewed["design_system_version_id"], recorded.as_str());
-    assert_eq!(
-        style_values(&component_in(&viewed, "Button")),
-        json!(WITH_DANGER)
-    );
-
-    // Without changes since, the saved design system version is recorded
-    // again and nothing more is saved.
-    let second = save(f, client, &lib.project, &changeset, &lib.shop);
-    assert_eq!(second["design_system_version_id"], recorded.as_str());
-    assert_eq!(versions_of(&lib.design_system, &changeset), 1);
-
-    // New changes to the design system are saved by the next design save.
-    import_components(
-        f,
-        client,
-        &lib.project,
-        &changeset,
-        &library_tags(ids, &WITH_DANGER, "Köp"),
-    );
-    let third = save(f, client, &lib.project, &changeset, &lib.shop);
-    let newer = third["design_system_version_id"]
-        .as_str()
-        .expect("the third version records one too")
-        .to_string();
-    assert_ne!(newer, recorded, "the changed draft was saved again");
-    assert_eq!(versions_of(&lib.design_system, &changeset), 2);
-
-    // The approval holds that design system version, and it merges with the
-    // design.
-    let approved = merge(f, client, &lib.project, &changeset);
-    let approved_versions = approved["approved_versions"]
-        .as_array()
-        .unwrap_or_else(|| panic!("the approval lists versions: {approved}"));
-    assert!(
-        approved_versions.iter().any(|v| v["doc_id"] == lib.design_system.as_str()
-            && v["version_id"] == newer.as_str()),
-        "{approved:#}"
-    );
-    assert_eq!(
-        mainline_of(f, client, &lib.project, &lib.design_system),
-        newer
-    );
-}
-
-#[test]
-fn saving_a_design_version_without_a_design_system_draft_records_the_mainline_one() {
-    let (f, client) = ready();
-    let lib = library(f, client);
-    assert_eq!(
-        read_version(f, client, &lib.project, &lib.admin_version)["design_system_version_id"],
-        lib.design_system_version.as_str(),
-        "every design version of a change set records the same saved version"
-    );
-    let changeset = new_changeset(f, client, &lib.project);
-    open_draft(f, client, &lib.project, &changeset, &lib.admin);
-    import_design(
-        f,
-        client,
-        &lib.project,
-        &changeset,
-        &lib.admin,
-        &admin_tags(&lib.ids),
-    );
-    let saved = save(f, client, &lib.project, &changeset, &lib.admin);
-    assert_eq!(
-        saved["design_system_version_id"],
-        lib.design_system_version.as_str(),
-        "{saved}"
-    );
-    assert_eq!(versions_of(&lib.design_system, &changeset), 0);
-}
-
-#[test]
-fn a_design_system_of_components_without_tokens_is_saved_with_the_design_that_uses_it() {
-    let (f, client) = ready();
-    let project = new_project(f, client);
-    let changeset = new_changeset(f, client, &project);
-    let design_system = create_doc(
-        f,
-        client,
-        &project,
-        &changeset,
-        "design-system",
-        "ui",
-        "Design system",
-    );
-    // Components only: the change set imports no tokens.
-    let icons = import_components(f, client, &project, &changeset, &icon_tags(&Ids::new()));
-    let ids = ids_in(&icons["components"]);
-    let design = create_doc(f, client, &project, &changeset, "design", "ui", "Icons");
-    import_design(
-        f,
-        client,
-        &project,
-        &changeset,
-        &design,
-        &format!(
-            r#"<Page name="Home">
-  <Board name="Toolbar" x={{0}} y={{0}} width={{375}} height={{64}} dir="row" gap={{8}}>
-    <Instance name="Cart button" component="{}"/>
-  </Board>
-</Page>
-"#,
-            id(&ids, "Cart")
-        ),
-    );
-    assert_eq!(versions_of(&design_system, &changeset), 0);
-
-    // The design save does not dead-end on the missing tokens: it saves the
-    // design system draft first and records that version.
-    let saved = save(f, client, &project, &changeset, &design);
-    let recorded = saved["design_system_version_id"]
-        .as_str()
-        .unwrap_or_else(|| panic!("the version records its design system version: {saved}"))
-        .to_string();
-    assert_eq!(
-        versions_of(&design_system, &changeset),
-        1,
-        "the design system draft was saved first"
-    );
-    let design_system_version = read_version(f, client, &project, &recorded);
-    assert_eq!(design_system_version["doc_id"], design_system.as_str());
-    assert_eq!(design_system_version["changeset_id"], changeset.as_str());
-    let viewed = read_version(f, client, &project, &id_of(&saved));
-    assert_eq!(viewed["design_system_version_id"], recorded.as_str());
-    assert_eq!(
-        component_in(&viewed, "Cart")["id"],
-        id(&ids, "Cart").as_str(),
-        "the instance resolves against the recorded components: {viewed:#}"
-    );
-
-    // Both merge, and the design system's mainline is the recorded version.
-    let approved = merge(f, client, &project, &changeset);
-    let approved_versions = approved["approved_versions"]
-        .as_array()
-        .unwrap_or_else(|| panic!("the approval lists versions: {approved}"));
-    assert!(
-        approved_versions
-            .iter()
-            .any(|v| v["doc_id"] == design_system.as_str() && v["version_id"] == recorded.as_str()),
-        "{approved:#}"
-    );
-    assert_eq!(mainline_of(f, client, &project, &design_system), recorded);
-}
-
-#[test]
-fn an_empty_design_system_draft_does_not_stop_a_design_save() {
-    let (f, client) = ready();
-    let project = new_project(f, client);
-    let changeset = new_changeset(f, client, &project);
-    // The design system doc is new and its draft holds neither tokens nor
-    // components; it has no mainline version either.
-    let design_system = create_doc(
-        f,
-        client,
-        &project,
-        &changeset,
-        "design-system",
-        "ui",
-        "Design system",
-    );
-    let design = create_doc(f, client, &project, &changeset, "design", "ui", "Blank");
-    import_design(
-        f,
-        client,
-        &project,
-        &changeset,
-        &design,
-        r#"<Page name="Home">
-  <Board name="Blank" x={0} y={0} width={375} height={64}>
-    <Text name="Title" content="Hello" fontFamily="Inter" fontSize={14}/>
-  </Board>
-</Page>
-"#,
-    );
-
-    // A design that uses no component saves, and there is no design system
-    // version to record.
-    let saved = save(f, client, &project, &changeset, &design);
-    assert!(
-        saved["design_system_version_id"].is_null(),
-        "nothing to record: {saved}"
-    );
-    assert_eq!(
-        versions_of(&design_system, &changeset),
-        0,
-        "the empty design system draft is not saved"
-    );
-    assert_eq!(
-        read_version(f, client, &project, &id_of(&saved))["design_system_version_id"],
-        Value::Null
-    );
-}
-
-#[test]
-fn a_design_save_never_records_the_mainline_design_system_that_the_draft_emptied() {
-    let (f, client) = ready();
-    let project = new_project(f, client);
-    // The mainline design system holds components and no tokens.
-    let first = new_changeset(f, client, &project);
-    let design_system = create_doc(
-        f,
-        client,
-        &project,
-        &first,
-        "design-system",
-        "ui",
-        "Design system",
-    );
-    import_components(f, client, &project, &first, &icon_tags(&Ids::new()));
-    let saved_design_system = save(f, client, &project, &first, &design_system);
-    merge(f, client, &project, &first);
-    let mainline = mainline_of(f, client, &project, &design_system);
-    assert_eq!(mainline, id_of(&saved_design_system));
-    assert!(
-        !read_version(f, client, &project, &mainline)["components"]
-            .as_array()
-            .is_none_or(Vec::is_empty),
-        "the mainline design system has components"
-    );
-
-    // A change set empties its draft of the design system, then saves a
-    // design that uses no component.
-    let changeset = new_changeset(f, client, &project);
-    let emptied = import_components(f, client, &project, &changeset, "");
-    assert_eq!(emptied["components"], json!([]), "{emptied}");
-    let design = create_doc(f, client, &project, &changeset, "design", "ui", "Blank");
-    import_design(
-        f,
-        client,
-        &project,
-        &changeset,
-        &design,
-        r#"<Page name="Home">
-  <Board name="Blank" x={0} y={0} width={375} height={64}>
-    <Text name="Title" content="Hello" fontFamily="Inter" fontSize={14}/>
-  </Board>
-</Page>
-"#,
-    );
-    let response = call(
-        client,
-        "POST",
-        &format!(
-            "{}/docs/{design}/versions",
-            changeset_path(f, &project, &changeset)
-        ),
-        &agent(f),
-        Some(&json!({})),
-    );
-
-    // The save either records a design system version that holds the draft
-    // as it is, without components, or refuses with a specific 409; it never
-    // records the mainline version, whose components the draft removed.
-    match response.status {
-        201 => {
-            let saved = response.json()["version"].clone();
-            let recorded = saved["design_system_version_id"]
-                .as_str()
-                .unwrap_or_else(|| {
-                    panic!("the version records the design system version it uses: {saved}")
-                })
-                .to_string();
-            assert_ne!(
-                recorded, mainline,
-                "the design records the mainline design system although the change set's draft of it differs"
-            );
-            let design_system_version = read_version(f, client, &project, &recorded);
-            assert_eq!(design_system_version["doc_id"], design_system.as_str());
-            assert_eq!(design_system_version["changeset_id"], changeset.as_str());
-            assert_eq!(
-                design_system_version["components"],
-                json!([]),
-                "the recorded version holds the draft as it is: {design_system_version}"
-            );
-            assert_eq!(
-                read_version(f, client, &project, &id_of(&saved))["design_system_version_id"],
-                recorded.as_str()
-            );
-        }
-        409 => {
-            let body = response.json();
-            let code = body["error"].as_str().unwrap_or_default();
-            assert!(
-                !code.is_empty() && code != "conflict",
-                "the refusal names why: {body}"
-            );
-            assert_eq!(
-                versions_of(&design, &changeset),
-                0,
-                "a refused save saves no design version"
-            );
-            assert_eq!(
-                versions_of(&design_system, &changeset),
-                0,
-                "a refused save saves no design system version"
-            );
-        }
-        status => panic!(
-            "the save answers 201 or 409, not {status}: {}",
-            response.text()
-        ),
-    }
-}
-
-#[test]
-fn viewers_and_comparisons_use_the_recorded_design_system_version() {
-    let (f, client) = ready();
-    let lib = library(f, client);
-    let ids = &lib.ids;
-    assert_eq!(
-        mainline_of(f, client, &lib.project, &lib.shop),
-        lib.shop_version
-    );
-
-    // A later change set gives the button a danger style and merges it.
-    let restyle = new_changeset(f, client, &lib.project);
-    import_components(
-        f,
-        client,
-        &lib.project,
-        &restyle,
-        &library_tags(ids, &WITH_DANGER, "Köp"),
-    );
-    let newer = id_of(&save(f, client, &lib.project, &restyle, &lib.design_system));
-    merge(f, client, &lib.project, &restyle);
-    assert_eq!(
-        mainline_of(f, client, &lib.project, &lib.design_system),
-        newer
-    );
-
-    // The shop's first version still shows the button as it was.
-    let first = read_version(f, client, &lib.project, &lib.shop_version);
-    assert_eq!(
-        first["design_system_version_id"],
-        lib.design_system_version.as_str()
-    );
-    let button = component_in(&first, "Button");
-    assert_eq!(style_values(&button), json!(STYLES), "{button:#}");
-    assert_eq!(button["props"]["label"]["default"], "Buy", "{button:#}");
-    assert!(
-        first["tags"]
-            .as_str()
-            .unwrap_or_default()
-            .contains("Pay button"),
-        "{first:#}"
-    );
-
-    // A new version uses the danger style of the newer design system.
-    let changeset = new_changeset(f, client, &lib.project);
-    open_draft(f, client, &lib.project, &changeset, &lib.shop);
-    import_design(
-        f,
-        client,
-        &lib.project,
-        &changeset,
-        &lib.shop,
-        &shop_tags(ids, &pay_button(ids, "danger")),
-    );
-    let second = save(f, client, &lib.project, &changeset, &lib.shop);
-    assert_eq!(second["design_system_version_id"], newer.as_str());
-    let viewed = read_version(f, client, &lib.project, &id_of(&second));
-    assert_eq!(
-        style_values(&component_in(&viewed, "Button")),
-        json!(WITH_DANGER)
-    );
-
-    // Comparing the two names the design system version of each side.
-    let diff = must(
-        call(
-            client,
-            "GET",
-            &format!(
-                "{}/versions/{}/diff/{}",
-                project_base(f, &lib.project),
-                lib.shop_version,
-                id_of(&second)
-            ),
-            &agent(f),
-            None,
-        ),
-        200,
-        "compare the two versions",
-    )["diff"]
-        .clone();
-    assert_eq!(
-        diff["from_design_system_version_id"],
-        lib.design_system_version.as_str(),
-        "{diff:#}"
-    );
-    assert_eq!(
-        diff["to_design_system_version_id"],
-        newer.as_str(),
-        "{diff:#}"
-    );
-
-    // A human viewer sees the same.
-    let seen = must(
-        call(
-            client,
-            "GET",
-            &format!(
-                "{}/versions/{}",
-                project_base(f, &lib.project),
-                lib.shop_version
-            ),
-            &human(f),
-            None,
-        ),
-        200,
-        "the human reads the version",
-    )["version"]
-        .clone();
-    assert_eq!(style_values(&component_in(&seen, "Button")), json!(STYLES));
-}
-
-/// The light and dark values of `color.surface` in a token tree.
-fn surface_modes(tree: &Value) -> Value {
-    tree["color"]["surface"]["$extensions"]["omnistate"]["modes"].clone()
-}
-
-#[test]
-fn a_design_version_carries_the_tokens_of_its_recorded_design_system_version() {
-    let (f, client) = ready();
-    let lib = library(f, client);
-    let ids = &lib.ids;
-
-    // A later change set darkens the dark surface and merges.
-    let retoken = new_changeset(f, client, &lib.project);
-    let mut darker = tokens();
-    darker["color"]["surface"]["$extensions"]["omnistate"]["modes"]["dark"] = json!("#020617");
-    import_token_tree(f, client, &lib.project, &retoken, &darker);
-    let newer = id_of(&save(f, client, &lib.project, &retoken, &lib.design_system));
-    merge(f, client, &lib.project, &retoken);
-    assert_eq!(
-        mainline_of(f, client, &lib.project, &lib.design_system),
-        newer
-    );
-
-    // The shop's first version still has the tokens it was saved with, in
-    // every mode.
-    let first = read_version(f, client, &lib.project, &lib.shop_version);
-    assert!(
-        first["tokens"].is_object(),
-        "a design version read by ID carries the token tree of its design system version: {first:#}"
-    );
-    assert_eq!(
-        first["tokens"]["$extensions"]["omnistate"]["modes"],
-        json!(["light", "dark"]),
-        "{first:#}"
-    );
-    assert_eq!(
-        surface_modes(&first["tokens"]),
-        json!({"light": "#ffffff", "dark": "#0f172a"}),
-        "{first:#}"
-    );
-
-    // A version saved now has the newer tokens.
-    let changeset = new_changeset(f, client, &lib.project);
-    open_draft(f, client, &lib.project, &changeset, &lib.shop);
-    import_design(
-        f,
-        client,
-        &lib.project,
-        &changeset,
-        &lib.shop,
-        &shop_tags(ids, &pay_button(ids, "primary")),
-    );
-    let second = save(f, client, &lib.project, &changeset, &lib.shop);
-    assert_eq!(second["design_system_version_id"], newer.as_str());
-    let viewed = read_version(f, client, &lib.project, &id_of(&second));
-    assert_eq!(
-        surface_modes(&viewed["tokens"]),
-        json!({"light": "#ffffff", "dark": "#020617"}),
-        "{viewed:#}"
-    );
-
-    // The human's design viewer reads the same.
-    let seen = must(
-        call(
-            client,
-            "GET",
-            &format!(
-                "{}/versions/{}",
-                project_base(f, &lib.project),
-                lib.shop_version
-            ),
-            &human(f),
-            None,
-        ),
-        200,
-        "the human reads the version",
-    )["version"]
-        .clone();
-    assert_eq!(
-        surface_modes(&seen["tokens"]),
-        json!({"light": "#ffffff", "dark": "#0f172a"}),
-        "{seen:#}"
-    );
-}
-
-#[test]
-fn a_design_draft_carries_the_tokens_of_the_design_system_it_resolves_against() {
-    let (f, client) = ready();
-    let lib = library(f, client);
-    let ids = &lib.ids;
-
-    // A change set that darkens the dark surface in its design system draft:
-    // the live draft of the shop is drawn with those tokens (US-045).
-    let retoken = new_changeset(f, client, &lib.project);
-    let mut darker = tokens();
-    darker["color"]["surface"]["$extensions"]["omnistate"]["modes"]["dark"] = json!("#020617");
-    import_token_tree(f, client, &lib.project, &retoken, &darker);
-    open_draft(f, client, &lib.project, &retoken, &lib.shop);
-    import_design(
-        f,
-        client,
-        &lib.project,
-        &retoken,
-        &lib.shop,
-        &shop_tags(ids, &pay_button(ids, "primary")),
-    );
-    let draft = read_draft(f, client, &lib.project, &retoken, &lib.shop);
-    assert_eq!(draft["design_system"]["source"], "draft", "{draft:#}");
-    assert!(
-        draft["tokens"].is_object(),
-        "a design draft carries the token tree that its instances resolve against: {draft:#}"
-    );
-    assert_eq!(
-        draft["tokens"]["$extensions"]["omnistate"]["modes"],
-        json!(["light", "dark"]),
-        "{draft:#}"
-    );
-    assert_eq!(
-        surface_modes(&draft["tokens"]),
-        json!({"light": "#ffffff", "dark": "#020617"}),
-        "the change set's design system draft, unsaved changes included"
-    );
-
-    // A change set without a design system draft draws with the mainline
-    // tokens, and the human's live draft view reads the same.
-    let changeset = new_changeset(f, client, &lib.project);
-    open_draft(f, client, &lib.project, &changeset, &lib.shop);
-    import_design(
-        f,
-        client,
-        &lib.project,
-        &changeset,
-        &lib.shop,
-        &shop_tags(ids, &pay_button(ids, "primary")),
-    );
-    let seen = must(
-        call(
-            client,
-            "GET",
-            &format!(
-                "{}/docs/{}",
-                changeset_path(f, &lib.project, &changeset),
-                lib.shop
-            ),
-            &human(f),
-            None,
-        ),
-        200,
-        "the human reads the live draft",
-    )["draft"]
-        .clone();
-    assert_eq!(seen["design_system"]["source"], "mainline", "{seen:#}");
-    assert_eq!(
-        surface_modes(&seen["tokens"]),
-        json!({"light": "#ffffff", "dark": "#0f172a"}),
-        "the mainline design system's tokens: {seen:#}"
+        "a refused edit emits nothing"
     );
 }
 
@@ -2059,11 +1029,6 @@ fn usage_lists_every_board_of_the_project_that_uses_the_component() {
         .clone();
     assert_eq!(checkout["doc_id"], lib.shop.as_str(), "{checkout}");
     assert_eq!(checkout["doc_title"], lib.shop_title.as_str(), "{checkout}");
-    assert_eq!(
-        checkout["version_id"],
-        lib.shop_version.as_str(),
-        "{checkout}"
-    );
     assert_eq!(checkout["page_id"], nodes["Home"].as_str(), "{checkout}");
     assert_eq!(checkout["page_name"], "Home", "{checkout}");
     assert_eq!(
@@ -2120,47 +1085,6 @@ fn usage_without_a_component_lists_every_board_that_uses_one() {
 }
 
 #[test]
-fn usage_counts_the_mainline_and_not_drafts() {
-    let (f, client) = ready();
-    let lib = library(f, client);
-    let changeset = new_changeset(f, client, &lib.project);
-    let doc = create_doc(
-        f,
-        client,
-        &lib.project,
-        &changeset,
-        "design",
-        "ui",
-        "Labels",
-    );
-    import_design(
-        f,
-        client,
-        &lib.project,
-        &changeset,
-        &doc,
-        &format!(
-            r#"<Page name="Labels">
-  <Board name="Tags" x={{0}} y={{0}} width={{375}} height={{812}} dir="col">
-    <Instance name="New" component="{}"/>
-  </Board>
-</Page>
-"#,
-            lib.ids["Tag"]
-        ),
-    );
-    save(f, client, &lib.project, &changeset, &doc);
-    let tag = usage(f, client, &lib.project, &lib.ids["Tag"]);
-    assert_eq!(tag["boards"], json!([]), "a draft is no use yet: {tag}");
-    merge(f, client, &lib.project, &changeset);
-    assert_eq!(
-        board_names(&usage(f, client, &lib.project, &lib.ids["Tag"])),
-        set(&["Tags"]),
-        "once merged, it is"
-    );
-}
-
-#[test]
 fn usage_of_an_unknown_component_is_refused() {
     let (f, client) = ready();
     let lib = library(f, client);
@@ -2183,27 +1107,27 @@ fn usage_of_an_unknown_component_is_refused() {
 }
 
 // ---------------------------------------------------------------------------
-// US-058: the outline that the design viewer reads first
+// The outline that the design viewer reads first
 // ---------------------------------------------------------------------------
 
 #[test]
-fn the_outline_of_a_design_version_carries_its_design_system_as_the_whole_read_does() {
+fn the_outline_of_a_design_carries_its_design_system_as_the_whole_read_does() {
     let (f, client) = ready();
     let lib = library(f, client);
-    let whole = read_version(f, client, &lib.project, &lib.shop_version);
+    let whole = read_head(f, client, &lib.project, &lib.shop);
     let response = call(
         client,
         "GET",
         &format!(
-            "{}/versions/{}?view=outline",
+            "{}/docs/{}/html?view=outline",
             project_base(f, &lib.project),
-            lib.shop_version
+            lib.shop
         ),
         &human(f),
         None,
     );
     let text = response.text();
-    let outline = must(response, 200, "the viewer reads the version's outline")["version"].clone();
+    let outline = must(response, 200, "the viewer reads the design's outline");
     assert!(
         outline["outline"].is_array(),
         "the answer is the outline: {outline:#}"
@@ -2213,12 +1137,8 @@ fn the_outline_of_a_design_version_carries_its_design_system_as_the_whole_read_d
         "the outline has no pages body: {outline:#}"
     );
     assert_eq!(
-        outline["design_system_version_id"],
-        lib.design_system_version.as_str()
-    );
-    assert_eq!(
         outline["tokens"], whole["tokens"],
-        "the recorded design system version's tokens"
+        "the design system's tokens"
     );
     let listed = outline["components"]
         .as_array()
