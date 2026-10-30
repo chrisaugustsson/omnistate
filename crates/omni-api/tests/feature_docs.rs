@@ -7,36 +7,20 @@
 //! scratch RustFS bucket and serve the API's router on a local port.
 //!
 //! The contract these tests pin down (all paths are under
-//! `/api/v1/w/{workspace_id}/projects/{project_id}`; features and change sets
-//! in a feature are those of US-059 and US-060, docs and drafts those of
-//! US-022):
+//! `/api/v1/w/{workspace_id}/projects/{project_id}`; features are those of
+//! tests/features.rs, the doc routes those of tests/live_docs.rs):
 //!
 //! - `docs.feature_id` is nullable (null is a global doc of the project) with
 //!   the foreign key `(workspace_id, project_id, feature_id)` to `features
 //!   (workspace_id, project_id, id)`.
-//! - A doc created through `POST /changesets/{changeset_id}/docs` takes its
-//!   change set's `feature_id` and never changes scope. A Doc (`DocBody`)
-//!   carries `feature_id`, and so does the `data` of `doc.created`.
-//! - The design system is always global: creating a `design-system` doc in a
-//!   feature's change set is 422 `{"error": "design_system_is_global"}` and
-//!   creates nothing, whether or not the project has one already. The project
-//!   keeps at most one design system. A design doc in a feature resolves its
-//!   instances against the project's design system.
-//! - A feature's change set may draft its own feature's docs and the
-//!   project's global docs. Drafting a doc of another feature, or a feature's
-//!   doc from a project-level change set, is 422 `{"error":
-//!   "doc_in_other_feature"}` and creates no draft. That holds for every way
-//!   a change set gets a draft of an existing doc: `POST
-//!   /changesets/{changeset_id}/docs/{doc_id}/open` and the design import
-//!   `PUT /changesets/{changeset_id}/docs/{doc_id}/design`.
+//! - A Doc (`DocBody`) carries `feature_id`, and so does the `data` of
+//!   `doc.created`.
+//! - A design doc in a feature resolves its instances against the project's
+//!   design system.
 //! - `GET /docs` (both) answers `{"docs": [Doc, ...]}`, every doc of the
 //!   project oldest first; `?feature=<id>` lists that feature's docs only and
 //!   `?feature=global` the global ones only. Another value is 400, an unknown
 //!   project 404 `not_found`.
-//!
-//! US-062 added finishing a feature (done and reopen); US-110 removed it again,
-//! since a feature has no status. tests/deletes_renames.rs checks that the
-//! routes are gone.
 
 mod common;
 
@@ -47,7 +31,6 @@ use s3::{Bucket, BucketConfiguration, Region};
 use serde_json::{Value, json};
 use sqlx::Connection;
 use sqlx::postgres::{PgConnectOptions, PgConnection};
-use std::collections::HashMap;
 use std::future::Future;
 use std::str::FromStr;
 use std::sync::OnceLock;
@@ -321,10 +304,6 @@ fn project_base(f: &Fixture, project: &str) -> String {
     format!("/api/v1/w/{}/projects/{project}", f.workspace)
 }
 
-fn changeset_path(f: &Fixture, project: &str, changeset: &str) -> String {
-    format!("{}/changesets/{changeset}", project_base(f, project))
-}
-
 fn docs_path(f: &Fixture, project: &str) -> String {
     format!("{}/docs", project_base(f, project))
 }
@@ -362,62 +341,8 @@ fn new_feature(f: &Fixture, client: &Client, project: &str, name: &str) -> Strin
     )
 }
 
-/// Opens a change set in `feature`, or at project level without one.
-fn new_changeset(f: &Fixture, client: &Client, project: &str, feature: Option<&str>) -> String {
-    let mut body = json!({ "title": unique("change"), "run_tag": "run-61" });
-    if let Some(feature) = feature {
-        body["feature_id"] = json!(feature);
-    }
-    let created = must(
-        call(
-            client,
-            "POST",
-            &format!("{}/changesets", project_base(f, project)),
-            &agent(f),
-            Some(&body),
-        ),
-        201,
-        "create a change set",
-    );
-    assert_feature_id(&created["changeset"], &json!(feature), "the new change set");
-    id_of(&created["changeset"])
-}
-
-fn create_doc_response(
-    f: &Fixture,
-    client: &Client,
-    project: &str,
-    changeset: &str,
-    kind: &str,
-    pillar: &str,
-) -> Response {
-    call(
-        client,
-        "POST",
-        &format!("{}/docs", changeset_path(f, project, changeset)),
-        &agent(f),
-        Some(&json!({ "kind": kind, "pillar": pillar, "title": unique(pillar) })),
-    )
-}
-
-/// Starts a doc in the change set; returns the whole answer.
-fn create_doc(
-    f: &Fixture,
-    client: &Client,
-    project: &str,
-    changeset: &str,
-    kind: &str,
-    pillar: &str,
-) -> Value {
-    must(
-        create_doc_response(f, client, project, changeset, kind, pillar),
-        201,
-        "create a doc",
-    )
-}
-
-/// Creates a live doc as the agent, in `feature` or at project level without
-/// one; returns the doc of the answer.
+/// Creates a doc as the agent, in `feature` or at project level without one;
+/// returns the doc of the answer.
 fn create_live(
     f: &Fixture,
     client: &Client,
@@ -439,87 +364,9 @@ fn create_live(
             Some(&json!({ "kind": kind, "pillar": pillar, "title": unique(pillar) })),
         ),
         201,
-        "create a doc without a change set",
+        "create a doc",
     )["doc"]
         .clone()
-}
-
-fn add_paragraph(
-    f: &Fixture,
-    client: &Client,
-    project: &str,
-    changeset: &str,
-    doc: &str,
-    text: &str,
-) {
-    must(
-        call(
-            client,
-            "POST",
-            &format!("{}/docs/{doc}/ops", changeset_path(f, project, changeset)),
-            &agent(f),
-            Some(&json!({ "ops": [{
-                "op": "insert",
-                "parent": null,
-                "position": { "after": null },
-                "content": format!("<p>{text}</p>")
-            }] })),
-        ),
-        200,
-        "insert a paragraph",
-    );
-}
-
-/// Saves a version of the change set's draft of `doc`; returns the version.
-fn save(f: &Fixture, client: &Client, project: &str, changeset: &str, doc: &str) -> Value {
-    must(
-        call(
-            client,
-            "POST",
-            &format!(
-                "{}/docs/{doc}/versions",
-                changeset_path(f, project, changeset)
-            ),
-            &agent(f),
-            Some(&json!({})),
-        ),
-        201,
-        "save a version",
-    )["version"]
-        .clone()
-}
-
-/// Submits the change set and has the human approve it, which merges it.
-fn merge(f: &Fixture, client: &Client, project: &str, changeset: &str) {
-    let path = changeset_path(f, project, changeset);
-    must(
-        call(client, "POST", &format!("{path}/submit"), &agent(f), None),
-        200,
-        "submit the change set",
-    );
-    let approved = must(
-        call(
-            client,
-            "POST",
-            &format!("{path}/approve"),
-            &human(f),
-            Some(&json!({})),
-        ),
-        200,
-        "the human approves",
-    );
-    assert_eq!(approved["changeset"]["status"], "merged", "{approved}");
-}
-
-/// A PRD doc started in a change set of `feature` (project level without
-/// one), with a paragraph, saved and merged; returns the doc's ID.
-fn merged_doc(f: &Fixture, client: &Client, project: &str, feature: Option<&str>) -> String {
-    let changeset = new_changeset(f, client, project, feature);
-    let doc = id_of(&create_doc(f, client, project, &changeset, "html", "spec")["doc"]);
-    add_paragraph(f, client, project, &changeset, &doc, "Pay in one step.");
-    save(f, client, project, &changeset, &doc);
-    merge(f, client, project, &changeset);
-    doc
 }
 
 fn show_doc(f: &Fixture, client: &Client, auth: &Auth, project: &str, doc: &str) -> Value {
@@ -537,42 +384,6 @@ fn show_doc(f: &Fixture, client: &Client, auth: &Auth, project: &str, doc: &str)
         .clone()
 }
 
-fn open_response(
-    f: &Fixture,
-    client: &Client,
-    project: &str,
-    changeset: &str,
-    doc: &str,
-) -> Response {
-    call(
-        client,
-        "POST",
-        &format!("{}/docs/{doc}/open", changeset_path(f, project, changeset)),
-        &agent(f),
-        None,
-    )
-}
-
-fn design_response(
-    f: &Fixture,
-    client: &Client,
-    project: &str,
-    changeset: &str,
-    doc: &str,
-    tags: &str,
-) -> Response {
-    call(
-        client,
-        "PUT",
-        &format!(
-            "{}/docs/{doc}/design",
-            changeset_path(f, project, changeset)
-        ),
-        &agent(f),
-        Some(&json!({ "tags": tags })),
-    )
-}
-
 fn list_docs(client: &Client, auth: &Auth, path: &str) -> Vec<Value> {
     let listed = must(call(client, "GET", path, auth, None), 200, "list the docs");
     listed["docs"]
@@ -583,37 +394,6 @@ fn list_docs(client: &Client, auth: &Auth, path: &str) -> Vec<Value> {
 
 fn ids(items: &[Value]) -> Vec<String> {
     items.iter().map(id_of).collect()
-}
-
-/// Counts rows as the admin role.
-fn count(sql: &str, binds: &[&str]) -> i64 {
-    block(async {
-        let mut conn = admin_connection().await;
-        let mut query = sqlx::query_scalar::<_, i64>(sql);
-        for bind in binds {
-            query = query.bind(*bind);
-        }
-        query
-            .fetch_one(&mut conn)
-            .await
-            .unwrap_or_else(|e| panic!("count: {e}"))
-    })
-}
-
-/// How many drafts the change set has of the doc.
-fn drafts_of(doc: &str, changeset: &str) -> i64 {
-    count(
-        "select count(*) from drafts where doc_id = $1::uuid and changeset_id = $2::uuid",
-        &[doc, changeset],
-    )
-}
-
-/// How many docs of `kind` the project has.
-fn docs_of_kind(project: &str, kind: &str) -> i64 {
-    count(
-        "select count(*) from docs where project_id = $1::uuid and kind = $2",
-        &[project, kind],
-    )
 }
 
 /// The `data` of the live events of a project named `event`, oldest first.
@@ -654,29 +434,24 @@ fn accepted(sql: &str, binds: &[&str]) -> bool {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn a_doc_takes_the_feature_of_the_change_set_that_creates_it() {
+fn a_doc_takes_the_feature_it_is_created_in() {
     let (f, client) = ready();
     let project = new_project(f, client);
     let feature = new_feature(f, client, &project, "Checkout");
-    let in_feature = new_changeset(f, client, &project, Some(&feature));
-    let global = new_changeset(f, client, &project, None);
 
-    for (changeset, expected) in [(&in_feature, json!(feature)), (&global, Value::Null)] {
+    for (scope, expected) in [
+        (Some(feature.as_str()), json!(feature)),
+        (None, Value::Null),
+    ] {
         for (kind, pillar) in [
             ("html", "spec"),
             ("html", "architecture"),
             ("html", "db"),
             ("design", "ui"),
         ] {
-            let created = create_doc(f, client, &project, changeset, kind, pillar);
-            let doc = &created["doc"];
-            assert_feature_id(doc, &expected, &format!("a new {kind} {pillar} doc"));
-            assert_eq!(
-                created["draft"]["changeset_id"],
-                changeset.as_str(),
-                "{created}"
-            );
-            let id = id_of(doc);
+            let doc = create_live(f, client, &project, scope, kind, pillar);
+            assert_feature_id(&doc, &expected, &format!("a new {kind} {pillar} doc"));
+            let id = id_of(&doc);
             for auth in [agent(f), human(f)] {
                 let shown = show_doc(f, client, &auth, &project, &id);
                 assert_feature_id(&shown, &expected, "the shown doc");
@@ -723,161 +498,63 @@ fn the_docs_table_ties_a_doc_to_a_feature_of_its_own_project() {
 }
 
 // ---------------------------------------------------------------------------
-// The design system is global
 // ---------------------------------------------------------------------------
-
-#[test]
-fn a_feature_change_set_cannot_create_the_design_system() {
-    let (f, client) = ready();
-    let project = new_project(f, client);
-    let feature = new_feature(f, client, &project, "Checkout");
-    let in_feature = new_changeset(f, client, &project, Some(&feature));
-
-    // The control: a design doc may start in the feature.
-    create_doc(f, client, &project, &in_feature, "design", "ui");
-    let created_before = events_of(&project, "doc.created").len();
-
-    let response = create_doc_response(f, client, &project, &in_feature, "design-system", "ui");
-    assert_error(&response, 422, "design_system_is_global");
-    assert_eq!(
-        docs_of_kind(&project, "design-system"),
-        0,
-        "a refused request creates no doc"
-    );
-    assert_eq!(
-        events_of(&project, "doc.created").len(),
-        created_before,
-        "a refused request emits nothing"
-    );
-
-    // A project-level change set starts the one design system.
-    let global = new_changeset(f, client, &project, None);
-    let design_system = create_doc(f, client, &project, &global, "design-system", "ui");
-    assert_feature_id(&design_system["doc"], &Value::Null, "the design system");
-
-    // With a design system in the project, a feature still cannot start one,
-    // and a second project-level one is the usual conflict.
-    let response = create_doc_response(f, client, &project, &in_feature, "design-system", "ui");
-    assert_error(&response, 422, "design_system_is_global");
-    let again = new_changeset(f, client, &project, None);
-    let response = create_doc_response(f, client, &project, &again, "design-system", "ui");
-    assert_error(&response, 409, "design_system_exists");
-    assert_eq!(
-        docs_of_kind(&project, "design-system"),
-        1,
-        "the project keeps one design system"
-    );
-}
-
-/// ` id="<id>"` for a node the draft already has, nothing for a new one.
-fn id_attr(ids: &HashMap<String, String>, name: &str) -> String {
-    ids.get(name)
-        .map(|id| format!(r#" id="{id}""#))
-        .unwrap_or_default()
-}
-
-/// The ID of every node in `nodes` and their subtrees, by name.
-fn ids_by_name(nodes: &Value) -> HashMap<String, String> {
-    let mut ids = HashMap::new();
-    let mut stack: Vec<&Value> = nodes
-        .as_array()
-        .map(|a| a.iter().collect())
-        .unwrap_or_default();
-    while let Some(node) = stack.pop() {
-        if let (Some(name), Some(id)) = (node["name"].as_str(), node["id"].as_str()) {
-            ids.insert(name.to_string(), id.to_string());
-        }
-        if let Some(children) = node["children"].as_array() {
-            stack.extend(children);
-        }
-    }
-    ids
-}
-
-fn cart_tags(ids: &HashMap<String, String>) -> String {
-    format!(
-        r#"<Component{} name="Cart" width={{16}} height={{16}}>
-  <Vector{} name="Cart glyph" x={{0}} y={{0}} width={{16}} height={{16}} path="M0 0 L16 16"/>
-</Component>
-"#,
-        id_attr(ids, "Cart"),
-        id_attr(ids, "Cart glyph"),
-    )
-}
-
-fn pay_page(component: &str) -> String {
-    format!(
-        r#"<Page name="Checkout">
-  <Board name="Pay" x={{0}} y={{0}} width={{375}} height={{812}} dir="col">
-    <Instance name="Cart icon" component="{component}"/>
-  </Board>
-</Page>
-"#
-    )
-}
 
 #[test]
 fn a_design_in_a_feature_resolves_its_instances_against_the_project_design_system() {
     let (f, client) = ready();
     let project = new_project(f, client);
     let feature = new_feature(f, client, &project, "Checkout");
+    let base = project_base(f, &project);
 
-    // The project's design system, with one component, merged at project
-    // level.
-    let global = new_changeset(f, client, &project, None);
-    let design_system =
-        id_of(&create_doc(f, client, &project, &global, "design-system", "ui")["doc"]);
-    must(
-        call(
-            client,
-            "PUT",
-            &format!("{}/tokens", changeset_path(f, &project, &global)),
-            &agent(f),
-            Some(&json!({ "tokens": {
-                "$extensions": {"omnistate": {"modes": ["light", "dark"]}},
-                "color": {
-                    "$type": "color",
-                    "surface": {
-                        "$value": "#ffffff",
-                        "$extensions": {"omnistate": {"modes": {"light": "#ffffff", "dark": "#0f172a"}}}
-                    }
-                }
-            } })),
-        ),
-        200,
-        "import the tokens",
-    );
+    // The project's design system, with one component.
+    create_live(f, client, &project, None, "design-system", "ui");
+    let tags = r#"<Component name="Cart" width={16} height={16}>
+  <Vector name="Cart glyph" x={0} y={0} width={16} height={16} path="M0 0 L16 16"/>
+</Component>
+"#;
     let imported = must(
         call(
             client,
             "PUT",
-            &format!("{}/components", changeset_path(f, &project, &global)),
+            &format!("{base}/components"),
             &agent(f),
-            Some(&json!({ "tags": cart_tags(&HashMap::new()) })),
+            Some(&json!({ "tags": tags })),
         ),
         200,
         "import the components",
     );
-    let cart = ids_by_name(&imported["components"])
-        .get("Cart")
-        .unwrap_or_else(|| panic!("the import holds Cart: {imported}"))
-        .clone();
-    let design_system_version = id_of(&save(f, client, &project, &global, &design_system));
-    merge(f, client, &project, &global);
+    let cart = id_of(&imported["components"][0]);
 
     // A design doc of the feature draws an instance of the project's
     // component.
-    let in_feature = new_changeset(f, client, &project, Some(&feature));
-    let design = create_doc(f, client, &project, &in_feature, "design", "ui");
-    assert_feature_id(&design["doc"], &json!(feature), "the feature's design");
-    let design = id_of(&design["doc"]);
-    let unknown = design_response(
-        f,
+    let design = create_live(f, client, &project, Some(&feature), "design", "ui");
+    assert_feature_id(&design, &json!(feature), "the feature's design");
+    let doc = format!("{base}/docs/{}", id_of(&design));
+    let head = must(
+        call(client, "GET", &format!("{doc}/html"), &agent(f), None),
+        200,
+        "read the design's head",
+    );
+    let page = id_of(&head["pages"][0]);
+    let pay_board = |component: &str| {
+        json!({ "ops": [{
+            "op": "insert",
+            "parent": page,
+            "position": { "after": null },
+            "content": format!(
+                r#"<Board name="Pay" x={{0}} y={{0}} width={{375}} height={{812}} dir="col">
+  <Instance name="Cart icon" component="{component}"/>
+</Board>"#
+            )
+        }] })
+    };
+    let unknown = call(
         client,
-        &project,
-        &in_feature,
-        &design,
-        &pay_page("zzzzzzzz"),
+        "POST",
+        &format!("{doc}/ops"),
+        &agent(f),
+        Some(&pay_board("zzzzzzzz")),
     );
     assert_eq!(
         unknown.status,
@@ -887,191 +564,34 @@ fn a_design_in_a_feature_resolves_its_instances_against_the_project_design_syste
     );
     assert_eq!(
         unknown.json()["error"],
-        "invalid_design",
+        "invalid_operation",
         "{}",
         unknown.text()
     );
     must(
-        design_response(f, client, &project, &in_feature, &design, &pay_page(&cart)),
-        200,
-        "import a design with an instance of the project's component",
-    );
-
-    let draft = must(
         call(
             client,
-            "GET",
-            &format!("{}/docs/{design}", changeset_path(f, &project, &in_feature)),
+            "POST",
+            &format!("{doc}/ops"),
             &agent(f),
-            None,
+            Some(&pay_board(&cart)),
         ),
         200,
-        "read the draft",
-    )["draft"]
-        .clone();
-    assert_eq!(
-        draft["design_system"]["doc_id"],
-        design_system.as_str(),
-        "the design resolves against the project's design system: {draft}"
+        "add a board with an instance of the project's component",
     );
-    assert_eq!(draft["design_system"]["source"], "mainline", "{draft}");
-    let components = draft["components"]
+
+    let head = must(
+        call(client, "GET", &format!("{doc}/html"), &agent(f), None),
+        200,
+        "read the design's head",
+    );
+    let components = head["components"]
         .as_array()
-        .unwrap_or_else(|| panic!("the draft lists its components: {draft}"));
+        .unwrap_or_else(|| panic!("the head lists its components: {head}"));
     assert!(
         components.iter().any(|c| c["id"] == cart.as_str()),
-        "the instance resolves to the project's Cart: {draft}"
+        "the instance resolves to the project's Cart: {head}"
     );
-
-    let saved = save(f, client, &project, &in_feature, &design);
-    assert_eq!(
-        saved["design_system_version_id"],
-        design_system_version.as_str(),
-        "the feature's design version records the project's design system version: {saved}"
-    );
-}
-
-// ---------------------------------------------------------------------------
-// Which docs a change set may draft
-// ---------------------------------------------------------------------------
-
-/// A project with the features Checkout and Search, and a merged PRD doc of
-/// each scope: global, Checkout's and Search's.
-struct Scoped {
-    project: String,
-    checkout: String,
-    global_doc: String,
-    checkout_doc: String,
-    search_doc: String,
-}
-
-fn scoped(f: &Fixture, client: &Client) -> Scoped {
-    let project = new_project(f, client);
-    let checkout = new_feature(f, client, &project, "Checkout");
-    let search = new_feature(f, client, &project, "Search");
-    let global_doc = merged_doc(f, client, &project, None);
-    let checkout_doc = merged_doc(f, client, &project, Some(&checkout));
-    let search_doc = merged_doc(f, client, &project, Some(&search));
-    Scoped {
-        project,
-        checkout,
-        global_doc,
-        checkout_doc,
-        search_doc,
-    }
-}
-
-#[test]
-fn a_feature_change_set_drafts_its_own_feature_docs_and_the_global_docs() {
-    let (f, client) = ready();
-    let s = scoped(f, client);
-    let changeset = new_changeset(f, client, &s.project, Some(&s.checkout));
-    for doc in [&s.checkout_doc, &s.global_doc] {
-        let opened = open_response(f, client, &s.project, &changeset, doc);
-        assert_eq!(opened.status, 201, "open {doc}: {}", opened.text());
-        assert_eq!(drafts_of(doc, &changeset), 1, "the change set drafts {doc}");
-        add_paragraph(
-            f,
-            client,
-            &s.project,
-            &changeset,
-            doc,
-            "Edited in the feature.",
-        );
-    }
-}
-
-#[test]
-fn a_feature_change_set_cannot_draft_a_doc_of_another_feature() {
-    let (f, client) = ready();
-    let s = scoped(f, client);
-    let changeset = new_changeset(f, client, &s.project, Some(&s.checkout));
-    let opened_before = events_of(&s.project, "draft.opened").len();
-
-    let response = open_response(f, client, &s.project, &changeset, &s.search_doc);
-    assert_error(&response, 422, "doc_in_other_feature");
-    assert_eq!(
-        drafts_of(&s.search_doc, &changeset),
-        0,
-        "a refused request creates no draft"
-    );
-    assert_eq!(
-        events_of(&s.project, "draft.opened").len(),
-        opened_before,
-        "a refused request emits nothing"
-    );
-}
-
-#[test]
-fn a_project_level_change_set_cannot_draft_a_feature_doc() {
-    let (f, client) = ready();
-    let s = scoped(f, client);
-    let changeset = new_changeset(f, client, &s.project, None);
-
-    // The control: a project-level change set drafts a global doc.
-    let opened = open_response(f, client, &s.project, &changeset, &s.global_doc);
-    assert_eq!(opened.status, 201, "{}", opened.text());
-    let opened_before = events_of(&s.project, "draft.opened").len();
-
-    for doc in [&s.checkout_doc, &s.search_doc] {
-        let response = open_response(f, client, &s.project, &changeset, doc);
-        assert_error(&response, 422, "doc_in_other_feature");
-        assert_eq!(
-            drafts_of(doc, &changeset),
-            0,
-            "a refused request creates no draft of {doc}"
-        );
-    }
-    assert_eq!(
-        events_of(&s.project, "draft.opened").len(),
-        opened_before,
-        "a refused request emits nothing"
-    );
-}
-
-#[test]
-fn a_design_import_cannot_draft_a_design_of_another_scope() {
-    let (f, client) = ready();
-    let project = new_project(f, client);
-    let checkout = new_feature(f, client, &project, "Checkout");
-    let search = new_feature(f, client, &project, "Search");
-
-    // Search has a merged design.
-    let in_search = new_changeset(f, client, &project, Some(&search));
-    let design = id_of(&create_doc(f, client, &project, &in_search, "design", "ui")["doc"]);
-    let tags = r#"<Page name="Search">
-  <Board name="Results" x={0} y={0} width={375} height={812} dir="col">
-    <Text name="Heading" content="Results" fontFamily="Inter" fontSize={14}/>
-  </Board>
-</Page>
-"#;
-    must(
-        design_response(f, client, &project, &in_search, &design, tags),
-        200,
-        "import Search's design",
-    );
-    save(f, client, &project, &in_search, &design);
-    merge(f, client, &project, &in_search);
-
-    // The control: another change set of Search imports into it.
-    let next = new_changeset(f, client, &project, Some(&search));
-    must(
-        design_response(f, client, &project, &next, &design, tags),
-        200,
-        "import into Search's design from Search",
-    );
-
-    let in_checkout = new_changeset(f, client, &project, Some(&checkout));
-    let global = new_changeset(f, client, &project, None);
-    for changeset in [&in_checkout, &global] {
-        let response = design_response(f, client, &project, changeset, &design, tags);
-        assert_error(&response, 422, "doc_in_other_feature");
-        assert_eq!(
-            drafts_of(&design, changeset),
-            0,
-            "a refused import creates no draft"
-        );
-    }
 }
 
 // ---------------------------------------------------------------------------

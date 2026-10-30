@@ -936,10 +936,10 @@ fn an_agent_starts_a_thread_at_the_app_level() {
 
     let replayed = follow(f, client, &human(f), &project, Some(0)).drain();
     assert!(
-        replayed
-            .iter()
-            .any(|e| e["event"] == "thread.created" && e["data"]["thread_id"] == id.as_str()),
-        "starting the thread emitted thread.created: {replayed:?}"
+        replayed.iter().any(|e| e["event"] == "thread.created"
+            && e["data"]["thread_id"] == id.as_str()
+            && e["data"]["feature_id"].is_null()),
+        "starting the thread emitted thread.created at the app level: {replayed:?}"
     );
 }
 
@@ -954,6 +954,13 @@ fn an_agent_starts_a_thread_in_a_feature_of_the_project() {
     assert_live_thread(&thread, Some(&feature));
     let read = read_thread(f, client, &human(f), &project, &id);
     assert_live_thread(&read["thread"], Some(&feature));
+    let replayed = follow(f, client, &human(f), &project, Some(0)).drain();
+    assert!(
+        replayed.iter().any(|e| e["event"] == "thread.created"
+            && e["data"]["thread_id"] == id.as_str()
+            && e["data"]["feature_id"] == feature.as_str()),
+        "the data of thread.created names the feature: {replayed:?}"
+    );
 
     let other_project = new_project(f, client);
     let elsewhere = new_feature(f, client, &other_project);

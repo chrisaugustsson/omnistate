@@ -1,4 +1,4 @@
-//! US-102: live docs, created and read without a change set. Run with
+//! US-102: live docs, created and read. Run with
 //! `--features stack-tests` in the Compose test container, which reaches
 //! Postgres at `postgres:5432` and RustFS at `rustfs:9000`.
 //!
@@ -11,12 +11,10 @@
 //!
 //! - `POST /docs` (agent) creates a doc at the app level and `POST
 //!   /features/{feature_id}/docs` (agent) one in that feature, with the body
-//!   of US-101 (`{"kind", "pillar", "title"}`) and no change set: 201
-//!   `{"doc": Doc}`, where the Doc is the one `GET /docs/{doc_id}` answers,
-//!   with `feature_id` `null` at the app level and the feature's ID in a
-//!   feature. No change set and no draft is made. The refusals are those of
-//!   the change set route: 400 `invalid_request` for a missing or unknown
-//!   kind, pillar or title, 422 `design_needs_ui_pillar` for a design kind
+//!   of US-101 (`{"kind", "pillar", "title"}`): 201 `{"doc": Doc}`, where the
+//!   Doc is the one `GET /docs/{doc_id}` answers, with `feature_id` `null` at
+//!   the app level and the feature's ID in a feature. The refusals are 400
+//!   `invalid_request` for a missing or unknown kind, pillar or title, 422 `design_needs_ui_pillar` for a design kind
 //!   outside `ui`, 422 `design_system_is_global` for a design system in a
 //!   feature, 409 `design_system_exists` for a second design system, and 404
 //!   `not_found` for a project or feature that is not there. A refusal
@@ -25,17 +23,11 @@
 //! - Every doc has a head: the column `docs.head`, the name of a chunk (64
 //!   lowercase hex characters, the BLAKE3 hash of its bytes) stored in RustFS
 //!   at `ws/{workspace_id}/chunks/{head}`. A new HTML doc's head is the empty
-//!   doc, a new design's head is a manifest with one page and no boards. A
-//!   doc started in a change set has the empty head too until its change set
-//!   merges.
+//!   doc, a new design's head is a manifest with one page and no boards.
 //! - The doc is readable at once. `GET /docs/{doc_id}/html` reads the head:
 //!   `"html": ""` for a new HTML doc, and for a design also `"pages"` (the
 //!   head's pages as JSON nodes) and `"tags"` (the same pages in the tag
 //!   format), which for a new design is one page without boards.
-//! - `GET /docs/{doc_id}`, `/html` and `/boards/{board_id}` (without
-//!   `?version=`) read the head and never `mainline_version_id`: a doc whose
-//!   head holds content reads as that content with no mainline version, and a
-//!   doc whose mainline version holds content reads as its empty head.
 //! - `doc_changes` is the append-only tenant table of the writes to docs:
 //!   `workspace_id`, `doc_id`, `seq` (rising by one per doc, from 1), `agent`
 //!   (`{"run", "role", "model", "harness"}` as the agent declared them),
@@ -358,10 +350,6 @@ fn doc_path(f: &Fixture, project: &str, doc: &str) -> String {
     format!("{}/docs/{doc}", project_base(f, project))
 }
 
-fn changeset_path(f: &Fixture, project: &str, changeset: &str) -> String {
-    format!("{}/changesets/{changeset}", project_base(f, project))
-}
-
 fn new_project(f: &Fixture, client: &Client) -> String {
     id_of(
         &must(
@@ -391,22 +379,6 @@ fn new_feature(f: &Fixture, client: &Client, project: &str) -> String {
             201,
             "create a feature",
         )["feature"],
-    )
-}
-
-fn new_changeset(f: &Fixture, client: &Client, project: &str) -> String {
-    id_of(
-        &must(
-            call(
-                client,
-                "POST",
-                &format!("{}/changesets", project_base(f, project)),
-                &agent(f),
-                Some(&json!({ "title": unique("change"), "run_tag": "run-102" })),
-            ),
-            201,
-            "create a change set",
-        )["changeset"],
     )
 }
 
@@ -455,53 +427,9 @@ fn create_live(
             &json!({ "kind": kind, "pillar": pillar, "title": title }),
         ),
         201,
-        "create a doc without a change set",
+        "create a doc",
     )["doc"]
         .clone()
-}
-
-/// Starts a doc in a change set (the route of US-022); returns its ID.
-fn create_in_changeset(
-    f: &Fixture,
-    client: &Client,
-    project: &str,
-    changeset: &str,
-    kind: &str,
-    pillar: &str,
-) -> String {
-    id_of(
-        &must(
-            call(
-                client,
-                "POST",
-                &format!("{}/docs", changeset_path(f, project, changeset)),
-                &agent(f),
-                Some(&json!({ "kind": kind, "pillar": pillar, "title": unique("doc") })),
-            ),
-            201,
-            "create a doc in a change set",
-        )["doc"],
-    )
-}
-
-/// Saves a version of the change set's draft of `doc`; returns its ID.
-fn save(f: &Fixture, client: &Client, project: &str, changeset: &str, doc: &str) -> String {
-    id_of(
-        &must(
-            call(
-                client,
-                "POST",
-                &format!(
-                    "{}/docs/{doc}/versions",
-                    changeset_path(f, project, changeset)
-                ),
-                &agent(f),
-                Some(&json!({})),
-            ),
-            201,
-            "save a version",
-        )["version"],
-    )
 }
 
 fn read_html(f: &Fixture, client: &Client, auth: &Auth, project: &str, doc: &str) -> Value {
@@ -515,16 +443,6 @@ fn read_html(f: &Fixture, client: &Client, auth: &Auth, project: &str, doc: &str
         ),
         200,
         "read the doc's HTML",
-    )
-}
-
-fn board_response(f: &Fixture, client: &Client, project: &str, doc: &str, board: &str) -> Response {
-    call(
-        client,
-        "GET",
-        &format!("{}/boards/{board}", doc_path(f, project, doc)),
-        &agent(f),
-        None,
     )
 }
 
@@ -556,30 +474,10 @@ fn count(sql: &str, binds: &[&str]) -> i64 {
     })
 }
 
-fn execute(sql: &str, binds: &[&str]) {
-    block(async {
-        let mut conn = admin_connection().await;
-        let mut query = sqlx::query(sql);
-        for bind in binds {
-            query = query.bind(*bind);
-        }
-        query
-            .execute(&mut conn)
-            .await
-            .unwrap_or_else(|e| panic!("{sql}: {e}"));
-    });
-}
-
 /// The doc's head as the database holds it.
 fn head_of(doc: &str) -> String {
     scalar("SELECT head::text FROM docs WHERE id = $1::uuid", &[doc])
         .unwrap_or_else(|| panic!("the doc {doc} has a head"))
-}
-
-/// The chunk that a saved version stored.
-fn chunk_of_version(version: &str) -> String {
-    scalar("SELECT chunk FROM versions WHERE id = $1::uuid", &[version])
-        .unwrap_or_else(|| panic!("the version {version} holds a chunk"))
 }
 
 /// One row of `doc_changes`.
@@ -687,20 +585,6 @@ fn assert_created_by_first_change(doc: &str) {
     assert!(first.has_created_at, "the change has its time");
 }
 
-fn changeset_count(project: &str) -> i64 {
-    count(
-        "SELECT count(*) FROM changesets WHERE project_id = $1::uuid",
-        &[project],
-    )
-}
-
-fn draft_count(doc: &str) -> i64 {
-    count(
-        "SELECT count(*) FROM drafts WHERE doc_id = $1::uuid",
-        &[doc],
-    )
-}
-
 fn listed_ids(f: &Fixture, client: &Client, project: &str, query: &str) -> Vec<String> {
     let listed = must(
         call(
@@ -737,11 +621,11 @@ fn the_scope_level_create_routes_are_agent_routes_of_the_registry() {
 }
 
 // ---------------------------------------------------------------------------
-// Creating a doc without a change set
+// Creating a doc
 // ---------------------------------------------------------------------------
 
 #[test]
-fn an_agent_creates_an_html_doc_at_the_app_level_without_a_change_set() {
+fn an_agent_creates_an_html_doc_at_the_app_level() {
     let (f, client) = ready();
     let project = new_project(f, client);
     let title = unique("Checkout plan");
@@ -753,9 +637,6 @@ fn an_agent_creates_an_html_doc_at_the_app_level_without_a_change_set() {
     assert_eq!(doc["title"], title.as_str(), "{doc}");
     assert_eq!(doc["feature_id"], Value::Null, "an app-level doc: {doc}");
     let id = id_of(&doc);
-
-    assert_eq!(changeset_count(&project), 0, "no change set was made");
-    assert_eq!(draft_count(&id), 0, "no draft was made");
 
     let shown = must(
         call(client, "GET", &doc_path(f, &project, &id), &agent(f), None),
@@ -779,7 +660,7 @@ fn an_agent_creates_an_html_doc_at_the_app_level_without_a_change_set() {
 }
 
 #[test]
-fn an_agent_creates_a_doc_in_a_feature_without_a_change_set() {
+fn an_agent_creates_a_doc_in_a_feature() {
     let (f, client) = ready();
     let project = new_project(f, client);
     let feature = new_feature(f, client, &project);
@@ -796,9 +677,6 @@ fn an_agent_creates_a_doc_in_a_feature_without_a_change_set() {
     assert_eq!(doc["feature_id"], feature.as_str(), "{doc}");
     assert_eq!(doc["pillar"], "architecture", "{doc}");
     let id = id_of(&doc);
-
-    assert_eq!(changeset_count(&project), 0, "no change set was made");
-    assert_eq!(draft_count(&id), 0, "no draft was made");
 
     let shown = must(
         call(client, "GET", &doc_path(f, &project, &id), &agent(f), None),
@@ -1028,140 +906,3 @@ fn the_human_cannot_create_a_doc() {
 // Reads follow the head
 // ---------------------------------------------------------------------------
 
-#[test]
-fn the_html_read_follows_the_head_never_the_mainline_version() {
-    let (f, client) = ready();
-    let project = new_project(f, client);
-    let changeset = new_changeset(f, client, &project);
-    let text = unique("Pay in one step");
-    // A version of a doc started in a change set, which holds the text.
-    let started = create_in_changeset(f, client, &project, &changeset, "html", "spec");
-    must(
-        call(
-            client,
-            "POST",
-            &format!(
-                "{}/docs/{started}/ops",
-                changeset_path(f, &project, &changeset)
-            ),
-            &agent(f),
-            Some(&json!({ "ops": [{
-                "op": "insert",
-                "parent": null,
-                "position": { "after": null },
-                "content": format!("<p>{text}</p>")
-            }] })),
-        ),
-        200,
-        "edit the draft",
-    );
-    let version = save(f, client, &project, &changeset, &started);
-    let content = chunk_of_version(&version);
-
-    // A live doc whose head is that content and that has no mainline version
-    // reads as the content.
-    let live = id_of(&create_live(
-        f, client, &project, None, "html", "spec", "Plan",
-    ));
-    execute(
-        "UPDATE docs SET head = $1 WHERE id = $2::uuid",
-        &[&content, &live],
-    );
-    let read = read_html(f, client, &agent(f), &project, &live);
-    assert!(
-        read["html"]
-            .as_str()
-            .is_some_and(|html| html.contains(&text)),
-        "the doc reads as its head: {read}"
-    );
-
-    // The doc started in the change set has its empty head, whatever its
-    // mainline version holds.
-    execute(
-        "UPDATE docs SET mainline_version_id = $1::uuid WHERE id = $2::uuid",
-        &[&version, &started],
-    );
-    let read = read_html(f, client, &agent(f), &project, &started);
-    assert_eq!(
-        read["html"], "",
-        "the doc reads as its head, not its mainline version: {read}"
-    );
-}
-
-#[test]
-fn the_board_read_follows_the_head_never_the_mainline_version() {
-    let (f, client) = ready();
-    let project = new_project(f, client);
-    let changeset = new_changeset(f, client, &project);
-    let started = create_in_changeset(f, client, &project, &changeset, "design", "ui");
-    let imported = must(
-        call(
-            client,
-            "PUT",
-            &format!(
-                "{}/docs/{started}/design",
-                changeset_path(f, &project, &changeset)
-            ),
-            &agent(f),
-            Some(&json!({ "tags": r#"<Page name="Checkout">
-  <Board name="Cart" x={0} y={0} width={360} height={640} dir="col">
-    <Text name="Total" content="Summa 10 kr" fontFamily="Inter" fontSize={16}/>
-  </Board>
-</Page>
-"# })),
-        ),
-        200,
-        "import the design",
-    );
-    let board = imported["pages"][0]["children"][0]["id"]
-        .as_str()
-        .unwrap_or_else(|| panic!("the import has the board: {imported}"))
-        .to_string();
-    let version = save(f, client, &project, &changeset, &started);
-    let manifest = chunk_of_version(&version);
-
-    // A live design whose head is that manifest has the board.
-    let live = id_of(&create_live(
-        f, client, &project, None, "design", "ui", "Screens",
-    ));
-    assert_error(
-        &board_response(f, client, &project, &live, &board),
-        404,
-        "unknown_board",
-    );
-    execute(
-        "UPDATE docs SET head = $1 WHERE id = $2::uuid",
-        &[&manifest, &live],
-    );
-    let read = must(
-        board_response(f, client, &project, &live, &board),
-        200,
-        "read the board of the head",
-    );
-    assert_eq!(read["board_id"], board.as_str(), "{read}");
-    assert!(
-        read["tags"]
-            .as_str()
-            .is_some_and(|tags| tags.contains("Summa 10 kr")),
-        "{read}"
-    );
-    let whole = read_html(f, client, &agent(f), &project, &live);
-    assert!(
-        whole["tags"]
-            .as_str()
-            .is_some_and(|tags| tags.contains("Summa 10 kr")),
-        "the whole read of the design is its head: {whole}"
-    );
-
-    // The design started in the change set has its empty head, whatever its
-    // mainline version holds.
-    execute(
-        "UPDATE docs SET mainline_version_id = $1::uuid WHERE id = $2::uuid",
-        &[&version, &started],
-    );
-    assert_error(
-        &board_response(f, client, &project, &started, &board),
-        404,
-        "unknown_board",
-    );
-}
