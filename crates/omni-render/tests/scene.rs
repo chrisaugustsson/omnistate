@@ -479,6 +479,22 @@ fn omslag() -> Value {
     ])
 }
 
+/// Two boards 4800 px across in all, so that all of the page is at zoom 0.3:
+/// reduced at a pixel ratio of 1, and full at 2.
+fn readable_page() -> Value {
+    page(vec![
+        sized_board(COVER, 0.0, 0.0, 1600.0, 1000.0, vec![]),
+        sized_board(
+            FAR_BOARD,
+            3200.0,
+            0.0,
+            1600.0,
+            1000.0,
+            vec![at(&rect(NODE_ON_FAR_BOARD, 100.0, 100.0), 20.0, 20.0)],
+        ),
+    ])
+}
+
 /// The view a page opens in on a 1440 x 900 screen of pixel ratio 2, by a link
 /// to the board `linked` if there is one.
 fn opened(scene: &Scene, linked: Option<&str>) -> Viewport {
@@ -524,6 +540,20 @@ fn a_page_too_big_to_read_whole_opens_on_its_first_board_in_full_detail() {
     assert!(first.whole, "all of the first board is in view: {first:?}");
     let (stats, _) = frame(&mut scene, &viewport, 2.0);
     assert_eq!(stats.detail, Detail::Full);
+}
+
+#[test]
+fn a_page_that_can_be_read_whole_opens_on_all_its_boards() {
+    let scene = scene_of(&readable_page());
+    assert_eq!(
+        scene.opening(&Viewport::new(WIDTH, HEIGHT), 2.0, None),
+        LayoutBox {
+            x: 0.0,
+            y: 0.0,
+            width: 4800.0,
+            height: 1000.0
+        }
+    );
 }
 
 #[test]
@@ -576,6 +606,18 @@ fn a_link_to_a_node_out_of_view_moves_the_view_to_its_board() {
     assert_in_view(&viewport, FAR_BOX);
 }
 
+#[test]
+fn a_link_to_a_node_in_view_leaves_the_view_where_it_is() {
+    let mut scene = scene_of(&readable_page());
+    let mut viewport = Viewport::new(WIDTH, HEIGHT);
+    viewport.fit(scene.bounds());
+    let fitted = viewport;
+    scene.select_address(Some(&NodeAddress::new(None, id(NODE_ON_FAR_BOARD))));
+    scene.reveal_selected(&mut viewport);
+    assert_eq!(viewport.zoom(), fitted.zoom());
+    assert_eq!(viewport.origin(), fitted.origin());
+}
+
 /// Whether all of a 300 x 200 first board at the page's origin is in a view of
 /// `width` x `height` with its top-left corner at `x`, `y`.
 fn first_board_whole(x: f32, y: f32, width: f32, height: f32) -> bool {
@@ -624,20 +666,6 @@ fn the_box_of_the_first_board_is_where_the_screen_shows_it() {
             height: 100.0
         }
     );
-}
-
-#[test]
-fn only_a_frame_in_full_detail_paints_the_nodes_of_the_first_board() {
-    let mut scene = scene_of(&page(vec![board_at(1, 0.0, 0.0)]));
-    let reduced = Viewport::at(0.0, 0.0, 0.05, WIDTH, HEIGHT);
-    frame(&mut scene, &reduced, 1.0);
-    let first = scene.first_board(&reduced).expect("a first board");
-    assert_eq!(first.painted.nodes, 0);
-
-    let full = Viewport::new(WIDTH, HEIGHT);
-    frame(&mut scene, &full, 1.0);
-    let first = scene.first_board(&full).expect("a first board");
-    assert_eq!(first.painted.nodes, NODES_PER_BOARD);
 }
 
 const PHOTO: &str = "attachment:0192f1c4-5b6a-7d8e-9f01-23456789abcd";

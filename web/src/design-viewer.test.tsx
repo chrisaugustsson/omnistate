@@ -771,7 +771,7 @@ describe("a link to a place in the design", () => {
     expect((await findRenderer()).revealed, "a link moves the view to the node it names").toEqual([T199]);
   });
 
-  test("?board alone opens the view on that board, keeps it in the address and selects nothing", async () => {
+  test("?board alone opens the page that holds the board with the view on it, keeps it in the address and selects nothing", async () => {
     api = fakeApi([...PAGES, GRID_PAGE]);
     seedGridLayers();
     const router = renderAt(`${DOC_PATH}?board=${B199}`);
@@ -782,13 +782,6 @@ describe("a link to a place in the design", () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
     expect(router.state.location.search).toEqual({ board: B199 });
-    expect(selectedNames()).toEqual([]);
-  });
-
-  test("?board alone shows the page that holds the board, with nothing selected", async () => {
-    const router = renderAt(`${DOC_PATH}?board=${WIDE_CART}`);
-    await findShownWhole(PAGES[1]);
-    await waitFor(() => expect(router.state.location.search).toEqual({ board: WIDE_CART }));
     expect(selectedNames()).toEqual([]);
   });
 
