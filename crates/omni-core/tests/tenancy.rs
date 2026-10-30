@@ -20,9 +20,8 @@
 //!   the user's `memberships` rows with at least `id` and `workspace_id`.
 //! - The API role is `omni_api`: it can log in, may SELECT, INSERT and UPDATE
 //!   the tenant tables, and may not DELETE from or TRUNCATE them. The
-//!   append-only tables (US-024, FR-18) are the exception to UPDATE: the
-//!   operation log `draft_ops`, the `versions` and the `node_index` exist, and
-//!   the API role may only SELECT and INSERT them.
+//!   append-only tables are the exception to UPDATE: the API role may only
+//!   SELECT and INSERT them.
 
 use sqlx::migrate::Migrator;
 use sqlx::postgres::{PgConnectOptions, PgConnection};
@@ -38,16 +37,13 @@ const API_ROLE: &str = "omni_api";
 const GLOBAL_TABLES: [&str; 3] = ["users", "login_identities", "sessions"];
 const TENANT_TABLES: [&str; 3] = ["workspaces", "memberships", "api_keys"];
 /// The tenant tables whose rows are never changed: the API role may not UPDATE
-/// them (US-024), the chunk index of US-030, the forum's posts (US-033), the
-/// links of change sets to the decisions they carry out (US-037), the
-/// replies to comments (US-038) and the log of the writes to docs (US-102).
-const APPEND_ONLY_TABLES: [&str; 8] = [
-    "draft_ops",
-    "versions",
+/// them. They are the node index, the chunk index of US-030, the forum's posts
+/// (US-033), the replies to comments (US-038) and the log of the writes to docs
+/// (US-102).
+const APPEND_ONLY_TABLES: [&str; 5] = [
     "node_index",
     "chunks",
     "posts",
-    "changeset_decisions",
     "comment_replies",
     "doc_changes",
 ];
