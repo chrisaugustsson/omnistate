@@ -800,6 +800,85 @@ fn a_design_system_that_is_not_a_valid_version_is_refused() {
     );
 }
 
+#[test]
+fn a_token_tree_that_lists_no_modes_is_refused() {
+    let no_modes = json!({
+        "color": {"$type": "color", "ink": {"$value": "#000000"}},
+        "$components": []
+    });
+    let error = DesignSystem::from_json(&no_modes).err();
+    assert!(
+        error
+            .as_deref()
+            .is_some_and(|error| error.contains("modes")),
+        "only a design system without tokens goes without modes, but the error is {error:?}"
+    );
+}
+
+#[test]
+fn a_design_in_a_project_without_tokens_is_drawn() {
+    let system = DesignSystem::from_json(&json!({"$components": []}))
+        .unwrap_or_else(|error| panic!("a design system without tokens must be read: {error}"));
+    assert_eq!(system.modes(), [] as [String; 0]);
+    let page = board_page("p0000005", "a0000005", "#ff0000", vec![]);
+    let mut scene = Scene::with_system(node(&page), Assets::new(), system);
+    let pixels = render(&mut scene);
+    assert_rgb(&pixels, (200, 150), RED, "the board");
+    assert!(scene.errors().is_empty(), "nothing is missing");
+}
+
+#[test]
+fn a_component_without_tokens_is_placed_by_its_instances() {
+    let system = DesignSystem::from_json(
+        &json!({"$components": [component(CHIP, "Chip", 100.0, 40.0, "#0000ff")]}),
+    )
+    .unwrap_or_else(|error| panic!("a design system without tokens must be read: {error}"));
+    let chip = json!({
+        "id": "e0000040",
+        "type": "instance",
+        "name": "Chip",
+        "component": CHIP,
+        "x": 20,
+        "y": 20
+    });
+    let page = board_page("p0000006", "a0000006", "#ffffff", vec![chip]);
+    let mut scene = Scene::with_system(node(&page), Assets::new(), system);
+    let pixels = render(&mut scene);
+    assert_rgb(&pixels, (70, 40), BLUE, "the instance of Chip");
+    assert!(scene.errors().is_empty(), "nothing is missing");
+}
+
+#[test]
+fn a_token_reference_without_tokens_is_drawn_as_an_error_placeholder_and_reported() {
+    let system = DesignSystem::from_json(&json!({"$components": []}))
+        .unwrap_or_else(|error| panic!("a design system without tokens must be read: {error}"));
+    let swatch = json!({
+        "id": "f0000040",
+        "type": "frame",
+        "name": "Swatch",
+        "x": 20,
+        "y": 20,
+        "width": fixed(100.0),
+        "height": fixed(40.0),
+        "layout": {"mode": "none"},
+        "fills": solid("$color.brand")
+    });
+    let page = board_page("p0000007", "a0000007", "#ffffff", vec![swatch]);
+    let mut scene = Scene::with_system(node(&page), Assets::new(), system);
+    let pixels = render(&mut scene);
+    assert!(
+        pixels.marked_share([20, 20, 100, 40]) >= 0.05,
+        "the frame is visibly marked"
+    );
+    assert_eq!(
+        scene.errors(),
+        [RenderError {
+            node: addr("f0000040"),
+            missing: Missing::Token(token("$color.brand")),
+        }]
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Expanding instances
 // ---------------------------------------------------------------------------
