@@ -1,82 +1,38 @@
-//! US-022: docs and their drafts through the API. Run with `--features
-//! stack-tests` in the Compose test container, which reaches Postgres at
-//! `postgres:5432` and RustFS at `rustfs:9000`.
+//! US-022: docs through the API. Run with `--features stack-tests` in the
+//! Compose test container, which reaches Postgres at `postgres:5432` and RustFS
+//! at `rustfs:9000`.
 //!
 //! The tests migrate a scratch database, seed a workspace with one member
-//! (alice) and a live session, mint two API keys through the API (two agents),
+//! (alice) and a live session, mint an API key through the API (the agent),
 //! create a scratch RustFS bucket and serve the API's router on a local port.
 //!
 //! The contract these tests pin down (all paths are under
 //! `/api/v1/w/{workspace_id}/projects/{project_id}`; the HTML is the format of
 //! docs/formats/html-docs.md and the operations are those of
-//! docs/formats/operations.md):
+//! docs/formats/operations.md; the routes are those of tests/live_docs.rs and
+//! tests/live_edits.rs):
 //!
-//! - `POST /changesets/{changeset_id}/docs` (agent) takes `{"kind", "pillar",
-//!   "title"}` and starts a new doc in that change set: 201 `{"doc": Doc,
-//!   "draft": Draft}`. `kind` is `html`, `design` or `design-system`, `pillar`
-//!   is one of the five pillars `spec`, `ui`, `architecture`, `db` and
-//!   `research` (US-101; the old `module` field and its value `prd` are gone),
-//!   and `title` is not blank; anything else is 400 `{"error":
-//!   "invalid_request"}` and creates nothing. An HTML doc goes in any pillar; a
-//!   `design` or `design-system` doc outside `ui` is 422 and creates nothing.
-//!   The doc's first version comes through the change set (Q18): the new doc
-//!   has no mainline version, and the change set has its draft, which is empty
-//!   and based on no version. Creating a doc emits `doc.created` with `data`
-//!   `{"doc_id", "changeset_id", "kind", "pillar", "title"}`.
+//! - `pillar` is one of the five pillars `spec`, `ui`, `architecture`, `db` and
+//!   `research` (US-101; the old `module` field and its value `prd` are gone).
+//!   An HTML doc goes in any pillar. Creating a doc emits `doc.created` with
+//!   `data` `{"doc_id", "feature_id", "kind", "pillar", "title"}`.
 //! - `GET /docs?pillar=<pillar>` (both) lists only that pillar's docs; a
 //!   pillar that is not one of the five is 400 `invalid_request`.
 //! - The migration of US-101 renames the `docs` column `module` to `pillar`,
 //!   turns `prd` into `spec` and keeps the other values, and the column only
 //!   accepts the five pillar names.
-//! - A Doc is `{"id" (UUIDv7), "project_id", "kind", "pillar", "title",
-//!   "created_at", "mainline_version_id", "drafts", "claims"}`:
-//!   `mainline_version_id` is `null` until a version is merged, `drafts` lists
-//!   the doc's drafts (one per change set) and `claims` its claims (US-023; an
-//!   empty array until then). A Draft is `{"id" (UUIDv7), "doc_id",
-//!   "changeset_id", "base_version_id"}`: the version it started from, `null`
-//!   for a new doc.
-//! - `GET /docs/{doc_id}` (both) answers `{"doc": Doc}`.
-//! - `GET /docs/{doc_id}/html` (both) answers the mainline version as
-//!   `{"doc_id", "version_id", "html"}`, with `data-omni-id` on every block and
-//!   no `data-rev`. A doc without a mainline version answers `"version_id":
-//!   null` and `"html": ""`. With `?version=<id>` it answers that version
-//!   instead; a version that the doc does not have is 404 `not_found`.
-//! - `POST /changesets/{changeset_id}/docs/{doc_id}/open` (agent) answers 200
-//!   or 201 `{"draft": Draft}`: the change set's draft of the doc, made from the
-//!   doc's mainline version, or the one the change set already has (same `id`,
-//!   never a second one). A doc without a mainline version exists only in the
-//!   change set that created it: opening it in another change set is 409
-//!   `{"error": "no_mainline_version"}` and makes no draft.
-//! - `GET /changesets/{changeset_id}/docs/{doc_id}` (both) answers `{"draft":
-//!   Draft + "html"}`: the draft as HTML with `data-omni-id` and `data-rev`
-//!   (the node's revision) on every block.
-//! - `POST /changesets/{changeset_id}/docs/{doc_id}/ops` (agent) takes `{"ops":
-//!   [...]}`, a batch of operations, and applies it to the change set's draft,
-//!   all or nothing. 200 `{"results": [...]}` has one result per operation,
-//!   in order: `{"node", "revision", "created", "removed"}`, where `created`
-//!   lists the IDs that the server assigned to new nodes (8 lowercase base32
-//!   characters, unique within the project). A revision mismatch is 409
-//!   `{"error": "conflict", "conflict": {"index", "node", "expected",
-//!   "current_revision", "current_html"}}`; any other refusal is 400 `{"error":
-//!   "invalid_operation", "index", "message"}`, and a message about an ID that
-//!   is not in the draft names that ID. Either way nothing changes. The human
-//!   never edits: a session is 403 `forbidden`.
-//! - The agent identity of a request is in the headers `X-Omni-Run`,
-//!   `X-Omni-Role`, `X-Omni-Model` and `X-Omni-Harness` (US-015). Every applied
-//!   operation is one row of the draft's log, the tenant table `draft_ops`
-//!   (`workspace_id`, `draft_id`, `seq`, `op` (the operation's JSON), `agent`
-//!   (`{"run", "role", "model", "harness"}`), `applied_at`), with `seq` rising
-//!   by one per operation of the draft, and emits one `op.applied` event with
-//!   `data` `{"doc_id", "changeset_id", "draft_id", "node", "revision",
-//!   "created", "removed", "agent"}`. A refused batch logs and emits nothing.
-//! - The story's tenant tables are `docs`, `drafts` and `draft_ops`; the
-//!   isolation suite and the deletion tests seed them.
+//! - `GET /docs/{doc_id}/html` (both) answers the head as `{"doc_id", "html"}`,
+//!   with `data-omni-id` and `data-rev` (the node's revision) on every block.
+//! - `POST /docs/{doc_id}/ops` (agent) assigns every new node an ID of 8
+//!   lowercase base32 characters, unique within the project. An operation that
+//!   names a node the head does not have is 400 `{"error":
+//!   "invalid_operation", "index", "message"}` whose message names that ID, and
+//!   nothing changes.
 
 mod common;
 
 use common::{Client, Response, TestServer, cookie};
 use omni_api::Config;
-use omni_api::routes::{Access, registry};
 use s3::creds::Credentials;
 use s3::{Bucket, BucketConfiguration, Region};
 use serde_json::{Value, json};
@@ -90,8 +46,6 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 const TEST_DB: &str = "omni_us022_docs";
 const TEST_BUCKET: &str = "omni-us022-docs";
-/// An ID that no row has.
-const UNKNOWN_ID: &str = "01900000-0000-7000-8000-000000000000";
 /// Node IDs in the right format that no node has.
 const UNKNOWN_NODE: &str = "zzzzzzzz";
 const OTHER_UNKNOWN_NODE: &str = "yyyyyyyy";
@@ -149,7 +103,7 @@ fn config() -> Config {
         ),
         admin_database_url: format!("{server}/{TEST_DB}"),
         api_db_password: api_password(),
-        // Drafts may keep checkpoints in RustFS, so the API gets a real bucket.
+        // Heads keep their content in RustFS, so the API gets a real bucket.
         s3_endpoint: s3_endpoint(),
         s3_access_key: s3_access_key(),
         s3_secret_key: s3_secret_key(),
@@ -196,7 +150,6 @@ struct Fixture {
     alice_token: String,
     /// Two API keys of the workspace: two agents.
     key: String,
-    other_key: String,
     server: TestServer,
 }
 
@@ -274,12 +227,10 @@ fn fixture() -> &'static Fixture {
                 .to_string()
         };
         let key = mint();
-        let other_key = mint();
         Fixture {
             workspace,
             alice_token: session_token("alice"),
             key,
-            other_key,
             server,
         }
     })
@@ -340,20 +291,6 @@ fn assert_error(response: &Response, status: u16, code: &str) {
     );
 }
 
-fn assert_uuid_v7(id: &Value) {
-    let id = id
-        .as_str()
-        .unwrap_or_else(|| panic!("an ID is a string: {id}"));
-    let bytes = id.as_bytes();
-    assert!(
-        bytes.len() == 36
-            && bytes[14] == b'7'
-            && matches!(bytes[19], b'8' | b'9' | b'a' | b'b')
-            && id.chars().all(|c| c == '-' || c.is_ascii_hexdigit()),
-        "{id:?} is not a UUIDv7"
-    );
-}
-
 /// 8 characters of lowercase base32: 0-9 and a-z without i, l, o and u.
 fn is_node_id(id: &str) -> bool {
     id.len() == 8
@@ -375,16 +312,10 @@ fn doc_path(f: &Fixture, project: &str, doc: &str) -> String {
     format!("{}/docs/{doc}", project_base(f, project))
 }
 
-fn draft_path(f: &Fixture, project: &str, changeset: &str, doc: &str) -> String {
-    format!(
-        "{}/changesets/{changeset}/docs/{doc}",
-        project_base(f, project)
-    )
-}
-
-/// A new project with an open change set; returns (project ID, change set ID).
-fn project_with_changeset(f: &Fixture, client: &Client) -> (String, String) {
-    let project = must(
+/// Creates a doc in the project.
+/// A new project; returns its ID.
+fn new_project(f: &Fixture, client: &Client) -> String {
+    must(
         call(
             client,
             "POST",
@@ -397,45 +328,9 @@ fn project_with_changeset(f: &Fixture, client: &Client) -> (String, String) {
     )["project"]["id"]
         .as_str()
         .expect("a project id")
-        .to_string();
-    let changeset = new_changeset(f, client, &project);
-    (project, changeset)
-}
-
-fn new_changeset(f: &Fixture, client: &Client, project: &str) -> String {
-    must(
-        call(
-            client,
-            "POST",
-            &format!("{}/changesets", project_base(f, project)),
-            &agent(f),
-            Some(&json!({ "title": unique("change"), "run_tag": "run-1" })),
-        ),
-        201,
-        "create a change set",
-    )["changeset"]["id"]
-        .as_str()
-        .expect("a change set id")
         .to_string()
 }
 
-fn create_doc_response(
-    f: &Fixture,
-    client: &Client,
-    project: &str,
-    changeset: &str,
-    body: &Value,
-) -> Response {
-    call(
-        client,
-        "POST",
-        &format!("{}/changesets/{changeset}/docs", project_base(f, project)),
-        &agent(f),
-        Some(body),
-    )
-}
-
-/// Starts a live doc in the project, outside any change set.
 fn create_live_response(f: &Fixture, client: &Client, project: &str, body: &Value) -> Response {
     call(
         client,
@@ -446,21 +341,6 @@ fn create_live_response(f: &Fixture, client: &Client, project: &str, body: &Valu
     )
 }
 
-/// Creates an HTML Spec doc in the change set; returns the whole answer.
-fn create_doc(f: &Fixture, client: &Client, project: &str, changeset: &str) -> Value {
-    must(
-        create_doc_response(
-            f,
-            client,
-            project,
-            changeset,
-            &json!({ "kind": "html", "pillar": "spec", "title": unique("Checkout PRD") }),
-        ),
-        201,
-        "create a doc",
-    )
-}
-
 fn id_of(value: &Value) -> String {
     value["id"]
         .as_str()
@@ -468,45 +348,58 @@ fn id_of(value: &Value) -> String {
         .to_string()
 }
 
-fn edit(
-    f: &Fixture,
-    client: &Client,
-    auth: &Auth,
-    project: &str,
-    changeset: &str,
-    doc: &str,
-    ops: &Value,
-) -> Response {
+/// Creates an HTML Spec doc; returns the whole answer.
+fn create_doc(f: &Fixture, client: &Client, project: &str) -> Value {
+    must(
+        create_live_response(
+            f,
+            client,
+            project,
+            &json!({ "kind": "html", "pillar": "spec", "title": unique("Checkout PRD") }),
+        ),
+        201,
+        "create a doc",
+    )
+}
+
+fn edit(f: &Fixture, client: &Client, project: &str, doc: &str, ops: &Value) -> Response {
     call(
         client,
         "POST",
-        &format!("{}/ops", draft_path(f, project, changeset, doc)),
-        auth,
+        &format!("{}/ops", doc_path(f, project, doc)),
+        &agent(f),
         Some(&json!({ "ops": ops })),
     )
 }
 
-/// The draft as the API reads it back.
-fn read_draft(f: &Fixture, client: &Client, project: &str, changeset: &str, doc: &str) -> Value {
+/// The head of the doc as HTML, as `auth` reads it.
+fn head_html(f: &Fixture, client: &Client, auth: &Auth, project: &str, doc: &str) -> String {
     must(
         call(
             client,
             "GET",
-            &draft_path(f, project, changeset, doc),
-            &agent(f),
+            &format!("{}/html", doc_path(f, project, doc)),
+            auth,
             None,
         ),
         200,
-        "read the draft",
-    )["draft"]
-        .clone()
+        "read the doc's head",
+    )["html"]
+        .as_str()
+        .expect("the head has its html")
+        .to_string()
 }
 
-fn draft_html(f: &Fixture, client: &Client, project: &str, changeset: &str, doc: &str) -> String {
-    read_draft(f, client, project, changeset, doc)["html"]
-        .as_str()
-        .expect("the draft has its html")
-        .to_string()
+/// How many writes the doc's log holds.
+fn logged_writes(doc: &str) -> i64 {
+    block(async {
+        let mut conn = admin_connection().await;
+        sqlx::query_scalar("select count(*) from doc_changes where doc_id = $1::uuid")
+            .bind(doc)
+            .fetch_one(&mut conn)
+            .await
+            .unwrap_or_else(|e| panic!("count the doc's log: {e}"))
+    })
 }
 
 /// The value of `name` in one start tag, if it has the attribute.
@@ -535,15 +428,6 @@ fn tagged(html: &str) -> Vec<(String, Option<String>)> {
     found
 }
 
-/// The revision of `node` in the HTML of a draft.
-fn rev_in(html: &str, node: &str) -> Option<u64> {
-    tagged(html)
-        .into_iter()
-        .find(|(id, _)| id == node)
-        .and_then(|(_, rev)| rev)
-        .and_then(|rev| rev.parse().ok())
-}
-
 fn insert_top(content: &str) -> Value {
     json!({ "op": "insert", "parent": null, "position": { "after": null }, "content": content })
 }
@@ -556,72 +440,21 @@ fn set_html(node: &str, rev: u64, html: &str) -> Value {
     json!({ "op": "set", "node": node, "rev": rev, "properties": { "html": html } })
 }
 
-/// Inserts two top-level paragraphs into a draft; returns their IDs.
-fn two_paragraphs(
-    f: &Fixture,
-    client: &Client,
-    project: &str,
-    changeset: &str,
-    doc: &str,
-) -> (String, String) {
+/// Inserts a top-level paragraph into the doc; returns its ID.
+fn a_paragraph(f: &Fixture, client: &Client, project: &str, doc: &str) -> String {
     let answer = must(
-        edit(
-            f,
-            client,
-            &agent(f),
-            project,
-            changeset,
-            doc,
-            &json!([insert_top("<p>First</p>")]),
-        ),
+        edit(f, client, project, doc, &json!([insert_top("<p>First</p>")])),
         200,
-        "insert the first paragraph",
+        "insert a paragraph",
     );
-    let first = answer["results"][0]["node"]
+    answer["results"][0]["node"]
         .as_str()
         .expect("the new node")
-        .to_string();
-    let answer = must(
-        edit(
-            f,
-            client,
-            &agent(f),
-            project,
-            changeset,
-            doc,
-            &json!([insert_after(&first, "<p>Second</p>")]),
-        ),
-        200,
-        "insert the second paragraph",
-    );
-    let second = answer["results"][0]["node"]
-        .as_str()
-        .expect("the new node")
-        .to_string();
-    (first, second)
+        .to_string()
 }
 
 fn parse(text: &str) -> Value {
     serde_json::from_str(text).unwrap_or_else(|e| panic!("not JSON ({e}): {text}"))
-}
-
-/// The rows of a draft's log: (seq, op, agent, seconds since applied_at).
-fn log_of(draft: &str) -> Vec<(i64, Value, Value, f64)> {
-    block(async {
-        let mut conn = admin_connection().await;
-        let rows = sqlx::query_as::<_, (i64, String, String, f64)>(
-            "select seq::bigint, op::jsonb::text, agent::jsonb::text, \
-             extract(epoch from (now() - applied_at))::float8 \
-             from draft_ops where draft_id = $1::uuid order by seq",
-        )
-        .bind(draft)
-        .fetch_all(&mut conn)
-        .await
-        .unwrap_or_else(|e| panic!("read the draft's log in draft_ops: {e}"));
-        rows.into_iter()
-            .map(|(seq, op, agent, age)| (seq, parse(&op), parse(&agent), age))
-            .collect()
-    })
 }
 
 /// The live events of a project named `event`, oldest first, as their `data`.
@@ -642,121 +475,14 @@ fn events_of(project: &str, event: &str) -> Vec<Value> {
 }
 
 // ---------------------------------------------------------------------------
-// The routes
+// Creating a doc
 // ---------------------------------------------------------------------------
-
-#[test]
-fn the_doc_and_draft_routes_are_in_the_registry_with_their_access() {
-    let wanted = [
-        (
-            "POST",
-            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs",
-            Access::Agent,
-        ),
-        (
-            "GET",
-            "/api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}",
-            Access::Both,
-        ),
-        (
-            "GET",
-            "/api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}/html",
-            Access::Both,
-        ),
-        (
-            "POST",
-            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs/{doc_id}/open",
-            Access::Agent,
-        ),
-        (
-            "GET",
-            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs/{doc_id}",
-            Access::Both,
-        ),
-        (
-            "POST",
-            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs/{doc_id}/ops",
-            Access::Agent,
-        ),
-    ];
-    let routes = registry();
-    for (method, path, access) in wanted {
-        let entry = routes
-            .iter()
-            .find(|r| r.method == method && r.path == path)
-            .unwrap_or_else(|| panic!("the registry has no {method} {path}"));
-        assert_eq!(entry.access, access, "{method} {path}");
-    }
-}
-
-// ---------------------------------------------------------------------------
-// omni doc create
-// ---------------------------------------------------------------------------
-
-#[test]
-fn a_new_doc_starts_in_its_change_set_without_a_mainline_version() {
-    let (f, client) = ready();
-    let (project, changeset) = project_with_changeset(f, client);
-    let title = unique("Checkout PRD");
-    let answer = must(
-        create_doc_response(
-            f,
-            client,
-            &project,
-            &changeset,
-            &json!({ "kind": "html", "pillar": "spec", "title": title }),
-        ),
-        201,
-        "create a doc",
-    );
-    let doc = &answer["doc"];
-    assert_uuid_v7(&doc["id"]);
-    assert_eq!(doc["project_id"], project.as_str(), "{doc}");
-    assert_eq!(doc["kind"], "html", "{doc}");
-    assert_eq!(doc["pillar"], "spec", "{doc}");
-    assert!(
-        doc.get("module").is_none(),
-        "the pillar replaces the old module: {doc}"
-    );
-    assert_eq!(doc["title"], title.as_str(), "{doc}");
-    assert!(doc["created_at"].is_string(), "{doc}");
-    assert_eq!(
-        doc["mainline_version_id"],
-        Value::Null,
-        "the first version comes through the change set, not straight into mainline: {doc}"
-    );
-    let draft = &answer["draft"];
-    assert_uuid_v7(&draft["id"]);
-    assert_eq!(draft["doc_id"], doc["id"], "{draft}");
-    assert_eq!(draft["changeset_id"], changeset.as_str(), "{draft}");
-    assert_eq!(draft["base_version_id"], Value::Null, "{draft}");
-
-    // The draft is empty, and mainline has nothing of the doc yet.
-    let doc_id = id_of(doc);
-    let read = read_draft(f, client, &project, &changeset, &doc_id);
-    assert_eq!(read["id"], draft["id"], "{read}");
-    assert_eq!(read["html"].as_str().map(str::trim), Some(""), "{read}");
-    let mainline = must(
-        call(
-            client,
-            "GET",
-            &format!("{}/html", doc_path(f, &project, &doc_id)),
-            &agent(f),
-            None,
-        ),
-        200,
-        "read mainline",
-    );
-    assert_eq!(mainline["doc_id"], doc_id.as_str(), "{mainline}");
-    assert_eq!(mainline["version_id"], Value::Null, "{mainline}");
-    assert_eq!(mainline["html"], "", "{mainline}");
-}
 
 // US-101: the five pillars.
 #[test]
 fn an_html_doc_starts_in_each_of_the_five_pillars() {
     let (f, client) = ready();
-    let (project, _changeset) = project_with_changeset(f, client);
+    let project = new_project(f, client);
     for pillar in ["spec", "ui", "architecture", "db", "research"] {
         let answer = must(
             create_live_response(
@@ -786,164 +512,37 @@ fn an_html_doc_starts_in_each_of_the_five_pillars() {
 }
 
 #[test]
-fn design_docs_outside_the_ui_pillar_are_422_and_create_nothing() {
-    let (f, client) = ready();
-    let (project, _changeset) = project_with_changeset(f, client);
-    for kind in ["design", "design-system"] {
-        for pillar in ["spec", "architecture", "db", "research"] {
-            let response = create_live_response(
-                f,
-                client,
-                &project,
-                &json!({ "kind": kind, "pillar": pillar, "title": unique(kind) }),
-            );
-            assert_error(&response, 422, "design_needs_ui_pillar");
-        }
-    }
-    let docs: i64 = block(async {
-        let mut conn = admin_connection().await;
-        sqlx::query_scalar("select count(*) from docs where project_id = $1::uuid")
-            .bind(&project)
-            .fetch_one(&mut conn)
-            .await
-            .expect("count the project's docs")
-    });
-    assert_eq!(docs, 0, "a refused doc is not stored");
-}
-
-#[test]
-fn a_doc_starts_only_in_a_change_set_of_its_project() {
-    let (f, client) = ready();
-    let (project, _changeset) = project_with_changeset(f, client);
-    let (_other_project, other_changeset) = project_with_changeset(f, client);
-    for changeset in [UNKNOWN_ID, other_changeset.as_str()] {
-        let response = create_doc_response(
-            f,
-            client,
-            &project,
-            changeset,
-            &json!({ "kind": "html", "pillar": "spec", "title": "T" }),
-        );
-        assert_error(&response, 404, "not_found");
-    }
-}
-
-#[test]
 fn creating_a_doc_emits_doc_created() {
     let (f, client) = ready();
-    let (project, changeset) = project_with_changeset(f, client);
-    let answer = create_doc(f, client, &project, &changeset);
+    let project = new_project(f, client);
+    let answer = create_doc(f, client, &project);
     let doc = id_of(&answer["doc"]);
     let events = events_of(&project, "doc.created");
     assert_eq!(events.len(), 1, "{events:?}");
     assert_eq!(events[0]["doc_id"], doc.as_str(), "{}", events[0]);
-    assert_eq!(
-        events[0]["changeset_id"],
-        changeset.as_str(),
-        "{}",
-        events[0]
-    );
     assert_eq!(events[0]["kind"], "html", "{}", events[0]);
     assert_eq!(events[0]["pillar"], "spec", "{}", events[0]);
     assert_eq!(events[0]["title"], answer["doc"]["title"], "{}", events[0]);
 }
 
 // ---------------------------------------------------------------------------
-// omni doc open
+// Reading
 // ---------------------------------------------------------------------------
-
-#[test]
-fn opening_a_doc_in_its_change_set_reuses_the_draft_it_has() {
-    let (f, client) = ready();
-    let (project, changeset) = project_with_changeset(f, client);
-    let answer = create_doc(f, client, &project, &changeset);
-    let doc = id_of(&answer["doc"]);
-    let draft = id_of(&answer["draft"]);
-    for attempt in 0..2 {
-        let response = call(
-            client,
-            "POST",
-            &format!("{}/open", draft_path(f, &project, &changeset, &doc)),
-            &agent(f),
-            None,
-        );
-        assert!(
-            matches!(response.status, 200 | 201),
-            "open #{attempt}: {}",
-            response.text()
-        );
-        let opened = response.json()["draft"].clone();
-        assert_eq!(opened["id"], draft.as_str(), "the same draft: {opened}");
-        assert_eq!(opened["changeset_id"], changeset.as_str(), "{opened}");
-        assert_eq!(opened["doc_id"], doc.as_str(), "{opened}");
-        assert_eq!(opened["base_version_id"], Value::Null, "{opened}");
-    }
-    let shown = must(
-        call(client, "GET", &doc_path(f, &project, &doc), &agent(f), None),
-        200,
-        "show the doc",
-    );
-    let drafts = shown["doc"]["drafts"].as_array().expect("drafts").clone();
-    assert_eq!(drafts.len(), 1, "never a second draft: {drafts:?}");
-}
-
-#[test]
-fn a_doc_without_a_mainline_version_cannot_be_opened_in_another_change_set() {
-    let (f, client) = ready();
-    let (project, changeset) = project_with_changeset(f, client);
-    let doc = id_of(&create_doc(f, client, &project, &changeset)["doc"]);
-    let other = new_changeset(f, client, &project);
-    let response = call(
-        client,
-        "POST",
-        &format!("{}/open", draft_path(f, &project, &other, &doc)),
-        &agent(f),
-        None,
-    );
-    assert_error(&response, 409, "no_mainline_version");
-    let shown = must(
-        call(client, "GET", &doc_path(f, &project, &doc), &agent(f), None),
-        200,
-        "show the doc",
-    );
-    let drafts = shown["doc"]["drafts"].as_array().expect("drafts").clone();
-    assert_eq!(drafts.len(), 1, "no draft was made: {drafts:?}");
-    assert_eq!(drafts[0]["changeset_id"], changeset.as_str());
-}
-
-#[test]
-fn opening_an_unknown_doc_or_change_set_is_not_found() {
-    let (f, client) = ready();
-    let (project, changeset) = project_with_changeset(f, client);
-    let doc = id_of(&create_doc(f, client, &project, &changeset)["doc"]);
-    for (changeset, doc) in [(changeset.as_str(), UNKNOWN_ID), (UNKNOWN_ID, doc.as_str())] {
-        let response = call(
-            client,
-            "POST",
-            &format!("{}/open", draft_path(f, &project, changeset, doc)),
-            &agent(f),
-            None,
-        );
-        assert_error(&response, 404, "not_found");
-    }
-}
 
 // ---------------------------------------------------------------------------
 // omni doc read and show
 // ---------------------------------------------------------------------------
 
 #[test]
-fn reading_a_draft_gives_every_block_its_node_id_and_revision() {
+fn reading_a_doc_gives_every_block_its_node_id_and_revision() {
     let (f, client) = ready();
-    let (project, changeset) = project_with_changeset(f, client);
-    let doc = id_of(&create_doc(f, client, &project, &changeset)["doc"]);
+    let project = new_project(f, client);
+    let doc = id_of(&create_doc(f, client, &project)["doc"]);
     let answer = must(
         edit(
             f,
             client,
-            &agent(f),
             &project,
-            &changeset,
             &doc,
             &json!([insert_top(
                 "<section><h2>Goals</h2><p>Faster checkout</p><ul><li>One</li><li>Two</li></ul></section>"
@@ -964,7 +563,7 @@ fn reading_a_draft_gives_every_block_its_node_id_and_revision() {
         "section, heading, paragraph, list, two items"
     );
 
-    let html = draft_html(f, client, &project, &changeset, &doc);
+    let html = head_html(f, client, &agent(f), &project, &doc);
     let tags = tagged(&html);
     assert_eq!(
         tags.iter().map(|(id, _)| id.clone()).collect::<Vec<_>>(),
@@ -976,80 +575,9 @@ fn reading_a_draft_gives_every_block_its_node_id_and_revision() {
     }
     assert!(html.contains("Faster checkout"), "{html}");
 
-    // The human reads the same draft.
-    let response = call(
-        client,
-        "GET",
-        &draft_path(f, &project, &changeset, &doc),
-        &Auth::Session(&f.alice_token),
-        None,
-    );
-    let human = must(response, 200, "the human reads the draft");
-    assert_eq!(human["draft"]["html"], html.as_str());
-}
-
-#[test]
-fn a_change_set_without_a_draft_of_the_doc_has_nothing_to_read() {
-    let (f, client) = ready();
-    let (project, changeset) = project_with_changeset(f, client);
-    let doc = id_of(&create_doc(f, client, &project, &changeset)["doc"]);
-    let other = new_changeset(f, client, &project);
-    let response = call(
-        client,
-        "GET",
-        &draft_path(f, &project, &other, &doc),
-        &agent(f),
-        None,
-    );
-    assert_error(&response, 404, "not_found");
-}
-
-#[test]
-fn reading_a_version_the_doc_does_not_have_is_not_found() {
-    let (f, client) = ready();
-    let (project, changeset) = project_with_changeset(f, client);
-    let doc = id_of(&create_doc(f, client, &project, &changeset)["doc"]);
-    let response = call(
-        client,
-        "GET",
-        &format!("{}/html?version={UNKNOWN_ID}", doc_path(f, &project, &doc)),
-        &agent(f),
-        None,
-    );
-    assert_error(&response, 404, "not_found");
-}
-
-#[test]
-fn showing_a_doc_gives_its_metadata_mainline_drafts_and_claims() {
-    let (f, client) = ready();
-    let (project, changeset) = project_with_changeset(f, client);
-    let created = create_doc(f, client, &project, &changeset);
-    let doc = id_of(&created["doc"]);
-    for auth in [agent(f), Auth::Session(&f.alice_token)] {
-        let shown = must(
-            call(client, "GET", &doc_path(f, &project, &doc), &auth, None),
-            200,
-            "show the doc",
-        )["doc"]
-            .clone();
-        for field in ["id", "project_id", "kind", "pillar", "title", "created_at"] {
-            assert_eq!(shown[field], created["doc"][field], "{field}: {shown}");
-        }
-        assert_eq!(shown["mainline_version_id"], Value::Null, "{shown}");
-        let drafts = shown["drafts"].as_array().expect("drafts");
-        assert_eq!(drafts.len(), 1, "{shown}");
-        assert_eq!(drafts[0]["id"], created["draft"]["id"], "{shown}");
-        assert_eq!(drafts[0]["changeset_id"], changeset.as_str(), "{shown}");
-        assert_eq!(shown["claims"], json!([]), "no claims yet: {shown}");
-    }
-    let response = call(
-        client,
-        "GET",
-        &doc_path(f, &project, UNKNOWN_ID),
-        &agent(f),
-        None,
-    );
-    assert_error(&response, 404, "not_found");
+    // The human reads the same head.
+    let human = head_html(f, client, &Auth::Session(&f.alice_token), &project, &doc);
+    assert_eq!(human, html);
 }
 
 // ---------------------------------------------------------------------------
@@ -1057,66 +585,9 @@ fn showing_a_doc_gives_its_metadata_mainline_drafts_and_claims() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn an_edit_returns_the_new_revisions_and_the_ids_of_new_nodes() {
-    let (f, client) = ready();
-    let (project, changeset) = project_with_changeset(f, client);
-    let doc = id_of(&create_doc(f, client, &project, &changeset)["doc"]);
-    let (first, second) = two_paragraphs(f, client, &project, &changeset, &doc);
-    assert!(
-        is_node_id(&first) && is_node_id(&second),
-        "{first} {second}"
-    );
-
-    let answer = must(
-        edit(
-            f,
-            client,
-            &agent(f),
-            &project,
-            &changeset,
-            &doc,
-            &json!([
-                set_html(&first, 1, "First, <em>rewritten</em>"),
-                insert_after(&second, "<ul><li>Alpha</li><li>Beta</li></ul>"),
-                { "op": "delete", "node": second, "rev": 1 }
-            ]),
-        ),
-        200,
-        "edit",
-    );
-    let results = answer["results"].as_array().expect("results").clone();
-    assert_eq!(results.len(), 3, "one result per operation: {answer}");
-    assert_eq!(results[0]["node"], first.as_str());
-    assert_eq!(results[0]["revision"], 2, "{answer}");
-    assert_eq!(results[0]["created"], json!([]), "{answer}");
-    let created: Vec<&str> = results[1]["created"]
-        .as_array()
-        .expect("created")
-        .iter()
-        .map(|id| id.as_str().expect("an ID"))
-        .collect();
-    assert_eq!(created.len(), 3, "the list and its two items: {answer}");
-    assert_eq!(results[1]["node"], created[0], "{answer}");
-    assert_eq!(results[1]["revision"], 1, "{answer}");
-    for id in &created {
-        assert!(is_node_id(id), "the server assigns 8-character IDs: {id}");
-    }
-    assert_eq!(results[2]["node"], second.as_str());
-    assert_eq!(results[2]["removed"], json!([second]), "{answer}");
-
-    let html = draft_html(f, client, &project, &changeset, &doc);
-    assert_eq!(rev_in(&html, &first), Some(2), "{html}");
-    assert!(html.contains("<em>rewritten</em>"), "{html}");
-    assert!(!html.contains(&second), "the deleted node is gone: {html}");
-    for id in &created {
-        assert_eq!(rev_in(&html, id), Some(1), "{id}: {html}");
-    }
-}
-
-#[test]
 fn the_server_assigns_node_ids_unique_within_the_project() {
     let (f, client) = ready();
-    let (project, changeset) = project_with_changeset(f, client);
+    let project = new_project(f, client);
     let section = format!(
         "<section><h2>Many</h2>{}</section>",
         (0..60)
@@ -1126,14 +597,12 @@ fn the_server_assigns_node_ids_unique_within_the_project() {
     let mut seen = BTreeSet::new();
     let mut total = 0;
     for _ in 0..2 {
-        let doc = id_of(&create_doc(f, client, &project, &changeset)["doc"]);
+        let doc = id_of(&create_doc(f, client, &project)["doc"]);
         let answer = must(
             edit(
                 f,
                 client,
-                &agent(f),
                 &project,
-                &changeset,
                 &doc,
                 &json!([insert_top(&section), insert_top(&section)]),
             ),
@@ -1159,13 +628,12 @@ fn the_server_assigns_node_ids_unique_within_the_project() {
 #[test]
 fn referring_to_an_unknown_node_is_an_error_that_names_it_and_changes_nothing() {
     let (f, client) = ready();
-    let (project, changeset) = project_with_changeset(f, client);
-    let doc = id_of(&create_doc(f, client, &project, &changeset)["doc"]);
-    let (first, _second) = two_paragraphs(f, client, &project, &changeset, &doc);
-    let draft = id_of(&read_draft(f, client, &project, &changeset, &doc));
-    let html_before = draft_html(f, client, &project, &changeset, &doc);
-    let log_before = log_of(&draft).len();
-    let events_before = events_of(&project, "op.applied").len();
+    let project = new_project(f, client);
+    let doc = id_of(&create_doc(f, client, &project)["doc"]);
+    let first = a_paragraph(f, client, &project, &doc);
+    let html_before = head_html(f, client, &agent(f), &project, &doc);
+    let log_before = logged_writes(&doc);
+    let events_before = events_of(&project, "doc.changed").len();
 
     let cases = [
         (json!([set_html(UNKNOWN_NODE, 1, "x")]), 0, UNKNOWN_NODE),
@@ -1200,7 +668,7 @@ fn referring_to_an_unknown_node_is_an_error_that_names_it_and_changes_nothing() 
         ),
     ];
     for (ops, index, named) in cases {
-        let response = edit(f, client, &agent(f), &project, &changeset, &doc, &ops);
+        let response = edit(f, client, &project, &doc, &ops);
         assert_eq!(response.status, 400, "{ops}: {}", response.text());
         let body = response.json();
         assert_eq!(body["error"], "invalid_operation", "{body}");
@@ -1212,266 +680,16 @@ fn referring_to_an_unknown_node_is_an_error_that_names_it_and_changes_nothing() 
         );
     }
     assert_eq!(
-        draft_html(f, client, &project, &changeset, &doc),
+        head_html(f, client, &agent(f), &project, &doc),
         html_before,
         "nothing changed"
     );
-    assert_eq!(log_of(&draft).len(), log_before, "nothing was logged");
+    assert_eq!(logged_writes(&doc), log_before, "nothing was logged");
     assert_eq!(
-        events_of(&project, "op.applied").len(),
+        events_of(&project, "doc.changed").len(),
         events_before,
         "nothing was emitted"
     );
-}
-
-#[test]
-fn the_human_never_edits_a_draft() {
-    let (f, client) = ready();
-    let (project, changeset) = project_with_changeset(f, client);
-    let doc = id_of(&create_doc(f, client, &project, &changeset)["doc"]);
-    let response = edit(
-        f,
-        client,
-        &Auth::Session(&f.alice_token),
-        &project,
-        &changeset,
-        &doc,
-        &json!([insert_top("<p>The human's words</p>")]),
-    );
-    assert_error(&response, 403, "forbidden");
-    assert_eq!(draft_html(f, client, &project, &changeset, &doc).trim(), "");
-}
-
-#[test]
-fn operations_from_different_agents_on_different_nodes_all_apply() {
-    let (f, client) = ready();
-    let (project, changeset) = project_with_changeset(f, client);
-    let doc = id_of(&create_doc(f, client, &project, &changeset)["doc"]);
-    let (first, second) = two_paragraphs(f, client, &project, &changeset, &doc);
-    const ROUNDS: u64 = 25;
-    let agents = [
-        (
-            Auth::Agent {
-                key: &f.key,
-                run: "run-a",
-                role: "writer",
-            },
-            first.clone(),
-        ),
-        (
-            Auth::Agent {
-                key: &f.other_key,
-                run: "run-b",
-                role: "reviewer",
-            },
-            second.clone(),
-        ),
-    ];
-    std::thread::scope(|scope| {
-        for (auth, node) in &agents {
-            let (project, changeset, doc) = (&project, &changeset, &doc);
-            scope.spawn(move || {
-                for round in 1..=ROUNDS {
-                    let text = format!("{node} round {round}");
-                    let response = edit(
-                        f,
-                        client,
-                        auth,
-                        project,
-                        changeset,
-                        doc,
-                        &json!([
-                            set_html(node, round, &text),
-                            insert_top(&format!("<p>{node} adds {round}</p>"))
-                        ]),
-                    );
-                    assert_eq!(
-                        response.status,
-                        200,
-                        "{node} round {round}: {}",
-                        response.text()
-                    );
-                    assert_eq!(response.json()["results"][0]["revision"], round + 1);
-                }
-            });
-        }
-    });
-    let html = draft_html(f, client, &project, &changeset, &doc);
-    for node in [&first, &second] {
-        assert_eq!(rev_in(&html, node), Some(ROUNDS + 1), "{node}: {html}");
-        assert!(
-            html.contains(&format!("{node} round {ROUNDS}")),
-            "{node}'s last change is in the draft"
-        );
-        for round in 1..=ROUNDS {
-            assert!(
-                html.contains(&format!("{node} adds {round}<")),
-                "{node}'s insert {round} is in the draft"
-            );
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// The draft's log and op.applied
-// ---------------------------------------------------------------------------
-
-#[test]
-fn every_applied_operation_is_logged_with_the_agent_identity_and_time() {
-    let (f, client) = ready();
-    let (project, changeset) = project_with_changeset(f, client);
-    let created = create_doc(f, client, &project, &changeset);
-    let doc = id_of(&created["doc"]);
-    let draft = id_of(&created["draft"]);
-    assert!(log_of(&draft).is_empty(), "a new draft has an empty log");
-
-    let writer = Auth::Agent {
-        key: &f.key,
-        run: "run-41",
-        role: "writer",
-    };
-    let answer = must(
-        edit(
-            f,
-            client,
-            &writer,
-            &project,
-            &changeset,
-            &doc,
-            &json!([insert_top("<p>One</p>"), insert_top("<p>Two</p>")]),
-        ),
-        200,
-        "the writer's batch",
-    );
-    let one = answer["results"][0]["node"]
-        .as_str()
-        .expect("a node")
-        .to_string();
-    let editor = Auth::Agent {
-        key: &f.other_key,
-        run: "run-42",
-        role: "editor",
-    };
-    must(
-        edit(
-            f,
-            client,
-            &editor,
-            &project,
-            &changeset,
-            &doc,
-            &json!([set_html(&one, 1, "One, edited")]),
-        ),
-        200,
-        "the editor's batch",
-    );
-
-    let log = log_of(&draft);
-    assert_eq!(log.len(), 3, "one row per applied operation: {log:?}");
-    let seqs: Vec<i64> = log.iter().map(|(seq, ..)| *seq).collect();
-    assert!(
-        seqs.windows(2).all(|w| w[1] == w[0] + 1),
-        "seq rises by one: {seqs:?}"
-    );
-    let ops: Vec<&str> = log
-        .iter()
-        .map(|(_, op, ..)| op["op"].as_str().unwrap_or("?"))
-        .collect();
-    assert_eq!(ops, ["insert", "insert", "set"], "the operations, in order");
-    assert_eq!(log[2].1["node"], one.as_str(), "{:?}", log[2].1);
-    for (row, (run, role)) in log.iter().zip([
-        ("run-41", "writer"),
-        ("run-41", "writer"),
-        ("run-42", "editor"),
-    ]) {
-        let agent = &row.2;
-        assert_eq!(agent["run"], run, "{agent}");
-        assert_eq!(agent["role"], role, "{agent}");
-        assert_eq!(agent["model"], "test-model", "{agent}");
-        assert_eq!(agent["harness"], "test-harness", "{agent}");
-        assert!(
-            (0.0..300.0).contains(&row.3),
-            "applied_at is the time of the request: {} seconds ago",
-            row.3
-        );
-    }
-}
-
-#[test]
-fn every_applied_operation_emits_op_applied() {
-    let (f, client) = ready();
-    let (project, changeset) = project_with_changeset(f, client);
-    let created = create_doc(f, client, &project, &changeset);
-    let doc = id_of(&created["doc"]);
-    let draft = id_of(&created["draft"]);
-    let writer = Auth::Agent {
-        key: &f.key,
-        run: "run-51",
-        role: "writer",
-    };
-    let answer = must(
-        edit(
-            f,
-            client,
-            &writer,
-            &project,
-            &changeset,
-            &doc,
-            &json!([insert_top("<p>One</p>"), insert_top("<ol><li>A</li></ol>")]),
-        ),
-        200,
-        "a batch of two",
-    );
-    let one = answer["results"][0]["node"]
-        .as_str()
-        .expect("a node")
-        .to_string();
-    must(
-        edit(
-            f,
-            client,
-            &writer,
-            &project,
-            &changeset,
-            &doc,
-            &json!([set_html(&one, 1, "Changed")]),
-        ),
-        200,
-        "a set",
-    );
-
-    let events = events_of(&project, "op.applied");
-    assert_eq!(
-        events.len(),
-        3,
-        "one event per applied operation: {events:?}"
-    );
-    for event in &events {
-        assert_eq!(event["doc_id"], doc.as_str(), "{event}");
-        assert_eq!(event["changeset_id"], changeset.as_str(), "{event}");
-        assert_eq!(event["draft_id"], draft.as_str(), "{event}");
-        assert_eq!(event["agent"]["run"], "run-51", "{event}");
-        assert_eq!(event["agent"]["role"], "writer", "{event}");
-    }
-    assert_eq!(events[0]["node"], one.as_str(), "{}", events[0]);
-    assert_eq!(events[0]["created"], json!([one]), "{}", events[0]);
-    assert_eq!(events[1]["created"].as_array().map(Vec::len), Some(2));
-    assert_eq!(events[2]["node"], one.as_str(), "{}", events[2]);
-    assert_eq!(events[2]["revision"], 2, "{}", events[2]);
-    assert_eq!(events[2]["removed"], json!([]), "{}", events[2]);
-
-    // A conflict emits nothing.
-    let response = edit(
-        f,
-        client,
-        &writer,
-        &project,
-        &changeset,
-        &doc,
-        &json!([set_html(&one, 1, "Stale")]),
-    );
-    assert_eq!(response.status, 409, "{}", response.text());
-    assert_eq!(events_of(&project, "op.applied").len(), 3);
 }
 
 // ---------------------------------------------------------------------------
@@ -1502,7 +720,7 @@ fn listed_titles(f: &Fixture, client: &Client, project: &str, query: &str) -> Ve
 #[test]
 fn the_docs_of_one_pillar_are_listed_with_the_pillar_filter() {
     let (f, client) = ready();
-    let (project, _changeset) = project_with_changeset(f, client);
+    let project = new_project(f, client);
     let mut titles = Vec::new();
     for (kind, pillar, title) in [
         ("html", "spec", "Checkout spec"),

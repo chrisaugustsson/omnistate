@@ -94,8 +94,7 @@ fn config() -> Config {
         ),
         admin_database_url: format!("{server}/{TEST_DB}"),
         api_db_password: api_password(),
-        // Versions keep their content in RustFS, and a doc that another change
-        // set drafts needs a merged version, so the API gets a real bucket.
+        // Heads keep their content in RustFS, so the API gets a real bucket.
         s3_endpoint: s3_endpoint(),
         s3_access_key: s3_access_key(),
         s3_secret_key: s3_secret_key(),
