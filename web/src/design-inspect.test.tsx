@@ -170,7 +170,6 @@ vi.mock("@/design/renderer", () => ({
 const WORKSPACE_ID = "0192d7a0-0000-7000-8000-00000000000a";
 const PROJECT_ID = "0192d7a0-2222-7000-8000-000000000001";
 const DOC_ID = "0192d7a0-7777-7000-8000-000000000001";
-const CS_FIRST = "0192d7a0-7777-7000-8000-000000000011";
 const V1 = "0192d7a0-7777-7000-8000-000000000021";
 const DS_V1 = "0192d7a0-7777-7000-8000-000000000022";
 const USER = { id: "0192d7a0-1111-7000-8000-000000000001", email: "alice@example.com" };
@@ -487,26 +486,11 @@ function fakeApi() {
   const item = {
     id: V1,
     doc_id: DOC_ID,
-    changeset_id: CS_FIRST,
     draft_id: "0192d7a0-7777-7000-8000-000000000031",
     removed: false,
     created_at: AT,
     agent: AUTHOR,
   };
-  const changesets = [
-    {
-      id: CS_FIRST,
-      project_id: PROJECT_ID,
-      title: "Design the checkout",
-      description: "",
-      status: "merged",
-      run_tag: "run-1",
-      created_at: AT,
-      history: [],
-      approved_versions: [],
-      decisions: [],
-    },
-  ];
   const manifest = {
     pages: PAGES.map((page) => ({
       id: page.id,
@@ -531,8 +515,8 @@ function fakeApi() {
     const path = url.pathname;
     const method = (init?.method ?? (input instanceof Request ? input.method : "GET")).toUpperCase();
 
-    // US-058: the version's outline and its boards, one by one.
-    const read = answerDesignRead(API, method, url, (id) => (id === V1 ? version : null), (id) => (id === DOC_ID ? version : null));
+    // US-058: the head's outline and its boards, one by one.
+    const read = answerDesignRead(API, method, url, (id) => (id === DOC_ID ? version : null));
     if (read) return json(read.status, read.body);
     switch (`${method} ${path}`) {
       case "GET /api/v1/auth/me":
@@ -541,8 +525,6 @@ function fakeApi() {
         return json(200, { workspaces: [{ id: WORKSPACE_ID, name: "Acme" }] });
       case `GET /api/v1/w/${WORKSPACE_ID}/projects`:
         return json(200, { projects: [{ id: PROJECT_ID, name: "Storefront", created_at: AT }] });
-      case `GET ${API}/changesets`:
-        return json(200, { changesets });
       case `GET ${API}/docs/${DOC_ID}`:
         return json(200, { doc });
       case `GET ${API}/docs/${DOC_ID}/versions`:

@@ -186,7 +186,6 @@ const WORKSPACE_ID = "0192d7a0-0000-7000-8000-00000000000a";
 const PROJECT_ID = "0192d7a0-2222-7000-8000-000000000001";
 const DOC_ID = "0192d7a0-7777-7000-8000-000000000001";
 const HTML_DOC_ID = "0192d7a0-7777-7000-8000-000000000003";
-const CS_OPEN = "0192d7a0-7777-7000-8000-000000000013";
 const THREAD_ID = "0192d7a0-7777-7000-8000-000000000041";
 const USER = { id: "0192d7a0-1111-7000-8000-000000000001", email: "alice@example.com" };
 const DOC_TITLE = "Checkout screens";
@@ -437,21 +436,6 @@ function seededComments() {
   ];
 }
 
-function changeset(id: string, title: string, status: string) {
-  return {
-    id,
-    project_id: PROJECT_ID,
-    title,
-    description: "",
-    status,
-    run_tag: "run-1",
-    created_at: AT,
-    history: [],
-    approved_versions: [],
-    decisions: [],
-  };
-}
-
 function threadPost(summary: string, links: Record<string, unknown>[]) {
   return {
     id: newId(),
@@ -483,7 +467,6 @@ function seededThread() {
   return {
     id: THREAD_ID,
     project_id: PROJECT_ID,
-    changeset_id: CS_OPEN,
     question: "Is the checkout ready?",
     criteria: ["Readable"],
     run_tag: "run-1",
@@ -536,7 +519,6 @@ function fakeApi() {
     drafts: [],
     claims: [],
   };
-  const changesets = [changeset(CS_OPEN, "Add a receipt", "open")];
   const head = { pages: HEAD_PAGES, components: HEAD_COMPONENTS, tokens: HEAD_TOKENS };
   const thread = seededThread();
 
@@ -557,7 +539,7 @@ function fakeApi() {
     api.calls.push({ method, path, body });
 
     // US-058 and US-112: the head's outline and its boards, one by one.
-    const read = answerDesignRead(API, method, url, () => null, (id) => (id === DOC_ID ? head : null));
+    const read = answerDesignRead(API, method, url, (id) => (id === DOC_ID ? head : null));
     if (read) return json(read.status, read.body);
     switch (`${method} ${path}`) {
       case "GET /api/v1/auth/me":
@@ -572,13 +554,10 @@ function fakeApi() {
         return json(200, {
           project_id: PROJECT_ID,
           docs: [doc, htmlDoc],
-          changesets,
           threads: [listed],
-          waiting: { decisions: [], changesets: [], comments: [], questions: [] },
+          waiting: { comments: [] },
         });
       }
-      case `GET ${API}/changesets`:
-        return json(200, { changesets });
       case `GET ${API}/docs/${DOC_ID}`:
         return json(200, { doc });
       case `GET ${API}/docs/${HTML_DOC_ID}`:
@@ -604,8 +583,6 @@ function fakeApi() {
       default:
         break;
     }
-    const single = changesets.find((c) => path === `${API}/changesets/${c.id}`);
-    if (method === "GET" && single) return json(200, { changeset: single });
     return json(404, { error: "not_found" });
   });
   vi.stubGlobal("fetch", fetch);

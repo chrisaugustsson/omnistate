@@ -1,36 +1,13 @@
 // @vitest-environment jsdom
-// US-065: feature scope in reviews. A feature's change set can change its own
-// docs and the project's global docs (FR-54), so the reviewer has to see when
-// it reaches beyond the feature before approving it. Since US-110 a feature has
-// no status, so nobody marks it done or reopens it. The app is rendered with its own
-// router on a memory history, the browser's fetch is replaced by a fake of the
-// API, and the browser's WebSocket by a fake socket that never opens, so a page
-// shows what it loads itself.
+// Where an item lives. The doc and design viewers show the doc's breadcrumb
+// (US-112): scope › pillar › title, the scope ("App" at the app level, else the
+// feature's name) linking to its page and the pillar to its section there. The
+// app is rendered with its own router on a memory history, the browser's fetch
+// is replaced by a fake of the API, and the browser's WebSocket by a fake socket
+// that never opens, so a page shows what it loads itself.
 //
-// The fake serves the project's home (its docs, change sets and threads with
-// their `feature_id`, and `features`), the features, every doc (GET .../docs and
-// GET .../docs/<doc>, each DocBody with its `feature_id`) and each change set's
-// review. A reviewed doc also carries its `feature_id`; the page may learn a
-// doc's scope from either.
-//
-// The change set review (/w/<workspace>/projects/<project>/changesets/<id>):
-//
-// - names its scope: a feature's change set links its feature by name to the
-//   feature's overview, .../features/<feature>; a project-level change set
-//   names the project and links no feature.
-// - in the entry (a list item or an article) of each doc of its "Docs" section,
-//   a feature's change set marks every global doc with a badge reading
-//   "Global"; the feature's own docs have none.
-// - its merge box says "Changes N global docs" ahead of the Approve button,
-//   N being the global docs the feature's change set changes.
-//
-// The thread page shows where the thread lives, a navigation named
-// "Breadcrumb": the project's name linking to the project, then the feature's
-// name linking to the feature's page (only for a thread of a feature), then
-// "Threads" (as a link, to the threads of the thread's feature, or of the
-// project). The doc and design viewers show the doc's breadcrumb (US-112):
-// scope › pillar › title, the scope ("App" at the app level, else the
-// feature's name) linking to its page and the pillar to its section there.
+// The fake serves the project's home, the features and every doc (GET .../docs
+// and GET .../docs/<doc>, each DocBody with its `feature_id`).
 import { RouterProvider, createMemoryHistory } from "@tanstack/react-router";
 import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -114,68 +91,13 @@ function doc(featureId: string | null, kind: string, pillar: string, title: stri
   };
 }
 
-type Doc = ReturnType<typeof doc>;
-
-function changeset(featureId: string | null, title: string, status: string) {
-  return {
-    id: newId(),
-    project_id: PROJECT_ID,
-    feature_id: featureId,
-    title,
-    description: "",
-    status,
-    run_tag: "run-1",
-    created_at: AT,
-    history: [],
-    approved_versions: [],
-    decisions: [],
-  };
-}
-
-function thread(on: { id: string; feature_id: string | null }, question: string) {
-  return {
-    id: newId(),
-    project_id: PROJECT_ID,
-    feature_id: on.feature_id,
-    changeset_id: on.id,
-    question,
-    criteria: ["Readable at 320 px"],
-    run_tag: "run-1",
-    created_at: AT,
-    phases: [{ number: 1, sealed: false, started_at: AT, posted_by: [] }],
-    decision: null,
-  };
-}
-
 const HTML = '<section data-omni-id="s0000001"><p data-omni-id="p0000001">Saved items.</p></section>';
-
-/** A doc as the review lists it: a changed doc, or a new one when `fresh`. */
-function reviewed(of: Doc, fresh = false) {
-  return {
-    doc_id: of.id,
-    feature_id: of.feature_id,
-    kind: of.kind,
-    pillar: of.pillar,
-    title: of.title,
-    base_version_id: fresh ? null : newId(),
-    version_id: newId(),
-    removed: false,
-    changes: {
-      added: fresh ? [{ id: "p0000001", type: "paragraph", parent: "s0000001", fingerprint: "fp-1" }] : [],
-      removed: [],
-      changed: fresh ? [] : [{ id: "p0000001", type: "paragraph", parent: "s0000001", fingerprint: "fp-2" }],
-      moved: [],
-    },
-  };
-}
 
 /**
  * A project with two global docs (an HTML doc and the design system), a
  * feature (Wishlist) with an HTML doc and a design, and another feature
- * (Loyalty points, whose legacy status says done). The Wishlist's change set "Share saved lists" changes its
- * own PRD and both global docs; its "Draft saved items" changes its own PRD
- * only; the project-level "Rework the hero" changes the shop PRD. No doc's or
- * item's title holds the project's or a feature's name.
+ * (Loyalty points, whose legacy status says done). No doc's title holds the
+ * project's or a feature's name.
  */
 function seeded() {
   const wishlist = feature(WISHLIST, "Wishlist", "Shoppers save products for later.", "active");
@@ -187,39 +109,20 @@ function seeded() {
   const savedScreens = doc(WISHLIST, "design", "ui", "Saved items screens");
   const pointsPrd = doc(LOYALTY, "html", "spec", "Points PRD");
 
-  const shareSaved = changeset(WISHLIST, "Share saved lists", "in_review");
-  const draftSaved = changeset(WISHLIST, "Draft saved items", "in_review");
-  const hero = changeset(null, "Rework the hero", "in_review");
-  const ledger = changeset(LOYALTY, "Points ledger", "merged");
-
-  const savedThread = thread(shareSaved, "Should saved lists be public?");
-  const heroThread = thread(hero, "Which hero layout?");
-  const pointsThread = thread(ledger, "When do points expire?");
-
   const home = {
     project_id: PROJECT_ID,
     docs: [shopPrd, designSystem, savedPrd, savedScreens, pointsPrd],
-    changesets: [shareSaved, draftSaved, hero, ledger],
-    threads: [savedThread, heroThread, pointsThread],
-    waiting: { decisions: [], changesets: [shareSaved, draftSaved, hero], comments: [], questions: [] },
+    threads: [],
+    waiting: { comments: [] },
     features: [
-      { feature: wishlist, docs: 2, open_changesets: 2, waiting: 2 },
-      { feature: loyalty, docs: 1, open_changesets: 0, waiting: 0 },
+      { feature: wishlist, docs: 2, waiting: 0 },
+      { feature: loyalty, docs: 1, waiting: 0 },
     ],
   };
-  const reviews = new Map<string, ReturnType<typeof reviewed>[]>([
-    [shareSaved.id, [reviewed(savedPrd, true), reviewed(shopPrd), reviewed(designSystem)]],
-    [draftSaved.id, [reviewed(savedPrd)]],
-    [hero.id, [reviewed(shopPrd)]],
-    [ledger.id, [reviewed(pointsPrd, true)]],
-  ]);
   return {
     home,
     features: [wishlist, loyalty],
-    reviews,
     docs: { savedPrd, savedScreens, shopPrd },
-    changesets: { shareSaved, hero },
-    threads: { savedThread, heroThread },
   };
 }
 
@@ -251,8 +154,6 @@ function fakeApi(seed: Seeded) {
         return json(200, home);
       case `GET ${API}/features`:
         return json(200, { features: seed.features });
-      case `GET ${API}/changesets`:
-        return json(200, { changesets: home.changesets });
       case `GET ${API}/docs`:
         return json(200, { docs: home.docs });
       case `GET ${API}/comments`:
@@ -269,15 +170,6 @@ function fakeApi(seed: Seeded) {
       if (path === `${API}/docs/${d.id}/versions`) return json(200, { doc_id: d.id, versions: [] });
       if (path === `${API}/docs/${d.id}/html`) return json(200, { doc_id: d.id, html: HTML, version_id: null });
     }
-    for (const c of home.changesets) {
-      if (path === `${API}/changesets/${c.id}`) return json(200, { changeset: c });
-      if (path === `${API}/changesets/${c.id}/review`) {
-        return json(200, { changeset: c, docs: seed.reviews.get(c.id) ?? [], decisions: [] });
-      }
-      if (path === `${API}/changesets/${c.id}/conflicts`) return json(200, { conflicts: [] });
-    }
-    const t = home.threads.find((candidate) => path === `${API}/threads/${candidate.id}`);
-    if (t) return json(200, { thread: { ...t, posts: [] } });
     return json(404, { error: "not_found" });
   });
   vi.stubGlobal("fetch", fetch);
@@ -324,42 +216,6 @@ function renderAt(path: string) {
   return router;
 }
 
-/** The page itself, without the sidebar. */
-async function page() {
-  return screen.findByRole("main");
-}
-
-/** The links of `container` that go to `href`. */
-function linksTo(container: HTMLElement, href: string) {
-  return Array.from(container.querySelectorAll("a")).filter((a) => a.getAttribute("href") === href);
-}
-
-/** The deepest elements of `container` whose text matches `pattern`, however the text is split into elements. */
-function textElements(container: HTMLElement, pattern: RegExp) {
-  return Array.from(container.querySelectorAll("*")).filter(
-    (element) =>
-      pattern.test(element.textContent ?? "") &&
-      !Array.from(element.children).some((child) => pattern.test(child.textContent ?? "")),
-  );
-}
-
-/** The entry of the review's Docs section that shows the doc `title`. */
-async function reviewedEntry(main: HTMLElement, title: string) {
-  const docs = await waitFor(() => {
-    const found = within(main).getByRole("region", { name: /^(docs|changes|changed docs)\b/i });
-    return found;
-  });
-  const shown = await within(docs).findByText(title);
-  const entry = shown.closest('li, article, [role="listitem"]');
-  expect(entry, `"${title}" is in a list item or an article`).toBeTruthy();
-  return entry as HTMLElement;
-}
-
-/** Whether `container` holds a badge that reads "Global". */
-function hasGlobalBadge(container: HTMLElement) {
-  return within(container).queryAllByText(/^\s*global\s*$/i).length > 0;
-}
-
 /** Asserts that a doc's breadcrumb is exactly `crumbs`, the scope and the pillar linking to `hrefs`. */
 async function expectDocTrail(crumbs: string[], hrefs: string[]) {
   const trail = await screen.findByRole("navigation", { name: /breadcrumb/i });
@@ -372,75 +228,15 @@ async function expectDocTrail(crumbs: string[], hrefs: string[]) {
   ]);
 }
 
-describe("feature scope in reviews", () => {
+describe("feature scope", () => {
   beforeEach(() => {
     vi.stubGlobal("scrollTo", () => {});
     vi.stubGlobal("WebSocket", FakeWebSocket);
-    // A confirmation is asked in the page; a browser dialog would answer no.
-    vi.stubGlobal("confirm", () => false);
   });
 
   afterEach(() => {
     cleanup();
     vi.unstubAllGlobals();
-  });
-
-  describe("the change set review", () => {
-    test("a feature's change set links its feature by name", async () => {
-      const seed = seeded();
-      fakeApi(seed);
-      renderAt(`${PROJECT_PATH}/changesets/${seed.changesets.shareSaved.id}`);
-      const main = await page();
-      await within(main).findByRole("heading", { level: 1, name: "Share saved lists" });
-      await waitFor(() => {
-        const links = linksTo(main, featurePath(WISHLIST));
-        expect(links.length, "a link to the Wishlist's overview").toBeGreaterThan(0);
-        expect(links.map((link) => link.textContent).join(" ")).toMatch(/wishlist/i);
-      });
-    });
-
-    test("a project-level change set names the project and links no feature", async () => {
-      const seed = seeded();
-      fakeApi(seed);
-      renderAt(`${PROJECT_PATH}/changesets/${seed.changesets.hero.id}`);
-      const main = await page();
-      await within(main).findByRole("heading", { level: 1, name: "Rework the hero" });
-      await waitFor(() => expect(main.textContent, "the page names the project").toContain(PROJECT_NAME));
-      for (const link of Array.from(main.querySelectorAll("a"))) {
-        expect(link.getAttribute("href"), "no link to a feature").not.toMatch(/\/features\//);
-      }
-      expect(main.textContent).not.toMatch(/wishlist|loyalty points/i);
-    });
-
-    test("each global doc that a feature's change set changes has a Global badge, its own doc none", async () => {
-      const seed = seeded();
-      fakeApi(seed);
-      renderAt(`${PROJECT_PATH}/changesets/${seed.changesets.shareSaved.id}`);
-      const main = await page();
-      const shop = await reviewedEntry(main, "Shop PRD");
-      const system = await reviewedEntry(main, "Design system");
-      const saved = await reviewedEntry(main, "Saved items PRD");
-      await waitFor(() => expect(hasGlobalBadge(shop), "the shop PRD is global").toBe(true));
-      expect(hasGlobalBadge(system), "the design system is global").toBe(true);
-      expect(hasGlobalBadge(saved), "the Wishlist's own PRD is not global").toBe(false);
-    });
-
-    test("the merge box says how many global docs the change set changes, ahead of Approve", async () => {
-      const seed = seeded();
-      fakeApi(seed);
-      renderAt(`${PROJECT_PATH}/changesets/${seed.changesets.shareSaved.id}`);
-      const main = await page();
-      const approve = await within(main).findByRole("button", { name: /^approve/i });
-      const statement = await waitFor(() => {
-        const found = textElements(main, /changes\s+2\s+global\s+docs/i);
-        expect(found.length, 'the merge box says "Changes 2 global docs"').toBeGreaterThan(0);
-        return found[0];
-      });
-      expect(
-        statement.compareDocumentPosition(approve) & Node.DOCUMENT_POSITION_FOLLOWING,
-        "the statement comes before Approve",
-      ).toBeTruthy();
-    });
   });
 
   describe("where an item lives", () => {

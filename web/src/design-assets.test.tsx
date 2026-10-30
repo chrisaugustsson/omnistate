@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
-// US-057: the design viewer (US-043) and the change set review's canvases
-// (US-046) draw a design's own images and fonts. The app is rendered with its
-// own router on a memory history, the browser's fetch is replaced by a fake of
-// the API, and the browser's WebSocket by a fake socket.
+// US-057: the design viewer (US-043) draws a design's own images and fonts.
+// The app is rendered with its own router on a memory history, the browser's
+// fetch is replaced by a fake of the API, and the browser's WebSocket by a fake
+// socket.
 //
 // A design names its images as `attachment:<id>`: an image node's `image`, and
 // the `image` of a fill of type "image" on a board, a frame or a vector, on the
@@ -30,16 +30,13 @@
 //
 // `show` lays a page out and draws it with the images and fonts supplied
 // before it, so a page is shown (again) once its images and fonts are there.
-// Every renderer is a module instance of its own, so each canvas (the
-// review's base and new version each have one) is given what it draws.
 //
 // An image or a font that cannot be loaded (the API answers with an error, or
 // the renderer refuses the bytes) is named in the viewer's error line, by its
 // attachment ID or, for a font, by its family, and the rest of the design
-// still draws: the design viewer's error line is its alert (role "alert"), a
-// review canvas's is the text in its region.
+// still draws: the design viewer's error line is its alert (role "alert").
 import { RouterProvider, createMemoryHistory } from "@tanstack/react-router";
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { getRouter } from "./router";
 import { answerDesignRead } from "./testing/design-boards";
@@ -125,10 +122,7 @@ vi.mock("@/design/renderer", () => {
 const WORKSPACE_ID = "0192d7a0-0000-7000-8000-00000000000a";
 const PROJECT_ID = "0192d7a0-2222-7000-8000-000000000001";
 const DOC_ID = "0192d7a0-5757-7000-8000-000000000001";
-const CS_MERGED = "0192d7a0-5757-7000-8000-000000000011";
-const CS_ID = "0192d7a0-5757-7000-8000-000000000012";
 const V1 = "0192d7a0-5757-7000-8000-000000000021";
-const V2 = "0192d7a0-5757-7000-8000-000000000022";
 const DS_V1 = "0192d7a0-5757-7000-8000-000000000023";
 const USER = { id: "0192d7a0-1111-7000-8000-000000000001", email: "alice@example.com" };
 const AT = "2026-10-22T10:00:00Z";
@@ -137,9 +131,7 @@ const API = `/api/v1/w/${WORKSPACE_ID}/projects/${PROJECT_ID}`;
 const ATTACHMENTS = `/api/v1/w/${WORKSPACE_ID}/attachments/`;
 const HOME_PATH = `/w/${WORKSPACE_ID}/projects/${PROJECT_ID}`;
 const DOC_PATH = `${HOME_PATH}/docs/${DOC_ID}`;
-const REVIEW_PATH = `${HOME_PATH}/changesets/${CS_ID}`;
 const DOC_TITLE = "TireBud Idag";
-const CS_TITLE = "Import of tirebud-idag.penpot";
 
 // The attachments -------------------------------------------------------------------------
 
@@ -286,11 +278,10 @@ type Call = { method: string; path: string };
 
 /**
  * A fake of the API: the auth routes, the project home, the design doc with
- * its versions V1 (mainline) and V2 (under review in CS_ID), the change set's
- * review and the attachments. The attachments in `failing` answer 500 and those
- * in `unreadable` serve bytes the renderer cannot read. With `broken`, the
- * board Hem also holds an image of the attachment MISSING, which the API does
- * not have.
+ * its head V1, and the attachments. The attachments in `failing` answer 500 and
+ * those in `unreadable` serve bytes the renderer cannot read. With `broken`,
+ * the board Hem also holds an image of the attachment MISSING, which the API
+ * does not have.
  */
 function fakeApi({
   broken = false,
@@ -311,32 +302,18 @@ function fakeApi({
     drafts: [],
     claims: [],
   };
-  const versionItem = (id: string, changesetId: string) => ({
+  const versionItem = (id: string) => ({
     id,
     doc_id: DOC_ID,
-    changeset_id: changesetId,
     draft_id: `${id.slice(0, -2)}99`,
     removed: false,
     created_at: AT,
     agent: AUTHOR,
   });
-  const changeset = (id: string, title: string, status: string) => ({
-    id,
-    project_id: PROJECT_ID,
-    title,
-    description: "",
-    status,
-    run_tag: "run-1",
-    created_at: AT,
-    history: [] as unknown[],
-    approved_versions: [] as unknown[],
-    decisions: [] as unknown[],
-  });
-  const changesets = [changeset(CS_MERGED, "Start the design", "merged"), changeset(CS_ID, CS_TITLE, "in_review")];
   const version = (id: string) => {
     const pages = designPages({ broken });
     return {
-      ...versionItem(id, id === V1 ? CS_MERGED : CS_ID),
+      ...versionItem(id),
       design_system_version_id: DS_V1,
       manifest: {
         pages: pages.map((page) => ({
@@ -352,7 +329,6 @@ function fakeApi({
       tokens: TOKENS,
     };
   };
-  const node = (id: string, type: string, parent: string | null) => ({ id, type, parent, fingerprint: `fp-${id}` });
 
   const fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const raw = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
@@ -361,14 +337,8 @@ function fakeApi({
     const method = (init?.method ?? (input instanceof Request ? input.method : "GET")).toUpperCase();
     api.calls.push({ method, path });
 
-    // US-058: a version's outline and its boards, one by one.
-    const read = answerDesignRead(
-      API,
-      method,
-      url,
-      (id) => (id === V1 || id === V2 ? version(id) : null),
-      (id) => (id === DOC_ID ? version(V1) : null),
-    );
+    // US-058: the head's outline and its boards, one by one.
+    const read = answerDesignRead(API, method, url, (id) => (id === DOC_ID ? version(V1) : null));
     if (read) return json(read.status, read.body);
     if (method === "GET" && path.startsWith(ATTACHMENTS)) {
       const id = path.slice(ATTACHMENTS.length);
@@ -389,50 +359,19 @@ function fakeApi({
         return json(200, {
           project_id: PROJECT_ID,
           docs: [doc],
-          changesets,
           threads: [],
-          waiting: { decisions: [], changesets: [], comments: [], questions: [] },
+          waiting: { comments: [] },
         });
-      case `GET ${API}/changesets`:
-        return json(200, { changesets });
-      case `GET ${API}/changesets/${CS_ID}`:
-        return json(200, { changeset: changesets[1] });
-      case `GET ${API}/changesets/${CS_ID}/review`:
-        return json(200, {
-          changeset: changesets[1],
-          docs: [
-            {
-              doc_id: DOC_ID,
-              kind: "design",
-              pillar: "ui",
-              title: DOC_TITLE,
-              base_version_id: V1,
-              version_id: V2,
-              removed: false,
-              changes: {
-                added: [] as unknown[],
-                removed: [] as unknown[],
-                changed: [node("t0000001", "text", HEM)],
-                moved: [] as unknown[],
-              },
-            },
-          ],
-          decisions: [] as unknown[],
-        });
-      case `GET ${API}/changesets/${CS_ID}/conflicts`:
-        return json(200, { conflicts: [] });
       case `GET ${API}/docs/${DOC_ID}`:
         return json(200, { doc });
       case `GET ${API}/docs/${DOC_ID}/versions`:
-        return json(200, { doc_id: DOC_ID, versions: [versionItem(V1, CS_MERGED), versionItem(V2, CS_ID)] });
+        return json(200, { doc_id: DOC_ID, versions: [versionItem(V1)] });
       case `GET ${API}/docs/${DOC_ID}/html`:
         return json(200, { doc_id: DOC_ID, version_id: V1, html: "" });
       case `GET ${API}/comments`:
         return json(200, { project_id: PROJECT_ID, comments: [] });
       case `GET ${API}/versions/${V1}`:
         return json(200, { version: version(V1) });
-      case `GET ${API}/versions/${V2}`:
-        return json(200, { version: version(V2) });
       default:
         return json(404, { error: "not_found" });
     }
@@ -557,19 +496,6 @@ async function findCanvasArea() {
   });
 }
 
-async function findReviewRegions() {
-  const docs = await screen.findByRole("region", { name: /^(docs|changes|changed docs)$/i }, { timeout: 3000 });
-  const entry = await waitFor(() => {
-    const named = within(docs).getAllByText(DOC_TITLE)[0];
-    const found = named.closest("li, article, [role=listitem]");
-    expect(found, "the design's entry").toBeTruthy();
-    return found as HTMLElement;
-  });
-  const base = await within(entry).findByRole("region", { name: /^base\b/i }, { timeout: 3000 });
-  const after = await within(entry).findByRole("region", { name: /^new version\b/i }, { timeout: 3000 });
-  return { base, after };
-}
-
 let api: ReturnType<typeof fakeApi>;
 
 beforeEach(() => {
@@ -598,17 +524,6 @@ describe("images", () => {
       ).toBe(true);
     }
     expect(alertText(), "nothing failed").toBe("");
-  });
-
-  test("both canvases of the change set review are given the images of the version they draw", async () => {
-    api = fakeApi();
-    renderAt(REVIEW_PATH);
-    const { base, after } = await findReviewRegions();
-    const baseRenderer = await rendererIn(base);
-    const newRenderer = await rendererIn(after);
-    expect(baseRenderer, "each side has its own renderer").not.toBe(newRenderer);
-    await drawnWith(baseRenderer, IDAG, [PHOTO, LOGO, ICON], []);
-    await drawnWith(newRenderer, IDAG, [PHOTO, LOGO, ICON], []);
   });
 });
 
@@ -664,14 +579,5 @@ describe("an image or a font that fails to load", () => {
       const said = alertText();
       expect(said.includes("Geist") || said.includes(GEIST_BOLD), `the error line names the font: ${said}`).toBe(true);
     });
-  });
-
-  test("an image that fails on a review canvas is named in that canvas's region, and the rest still draws", async () => {
-    api = fakeApi({ broken: true });
-    renderAt(REVIEW_PATH);
-    const { after } = await findReviewRegions();
-    const renderer = await rendererIn(after);
-    await drawnWith(renderer, IDAG, [PHOTO, LOGO, ICON], ALL_FONTS);
-    await waitFor(() => expect(after.textContent ?? "", "the canvas's error line names the image").toContain(MISSING));
   });
 });

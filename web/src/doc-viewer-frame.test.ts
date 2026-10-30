@@ -29,10 +29,6 @@
 //     as selected;
 //   - `claims`: the doc's live claims, as the API lists them (the page shows
 //     them too);
-//   - `changes` (US-046, left out by the doc viewer): `[{ node, change }]`,
-//     the blocks that a change set added, changed or removed (`change` is
-//     `"added"`, `"changed"` or `"removed"`), which the frame marks, each kind
-//     of change in its own way. Left out or empty, no block is marked.
 //   - `reveal` (US-112): a block's node ID, which the frame scrolls into view.
 //
 // What the frame does, tested here:
@@ -57,8 +53,6 @@
 // - Hovering a block highlights it, and moving on takes the highlight away;
 //   clicking a block selects it (the frame tells the page), a selected block
 //   looks selected, and pins show beside the blocks that have comments.
-// - The blocks named in `changes` look marked, an added, a changed and a
-//   removed block each differently, and the marks follow what the page posts.
 //
 // A highlight, a selection mark or a pin is anything that changes the pixels
 // of the block's row (the frame's width across the block's height): an
@@ -235,7 +229,6 @@ async function show(
     pins?: { node: string; count: number }[];
     selected?: string | null;
     reveal?: string;
-    changes?: { node: string; change: "added" | "changed" | "removed" }[];
   },
   waitFor: string,
 ) {
@@ -533,49 +526,6 @@ document.getElementById("by-script").textContent = "Ran.";
     await settle(() => row(target, "p0000001"), plain, false, "the commented block has a pin");
     await settle(() => boxOf(target, "p0000005"), far, true, "a block without comments has none");
     expect(await target.frame.evaluate(() => document.body.innerText)).toMatch(/(^|\D)2(\D|$)/);
-  });
-
-  test("the blocks a change set added, changed or removed look marked, each kind differently", async () => {
-    const target = await openViewer();
-    await show(target, { html: SHORT_DOC }, "p0000005");
-    const plain = {
-      first: await row(target, "p0000001"),
-      second: await row(target, "p0000002"),
-      third: await row(target, "p0000003"),
-    };
-    const far = await boxOf(target, "p0000005");
-
-    await show(
-      target,
-      {
-        html: SHORT_DOC,
-        changes: [
-          { node: "p0000001", change: "added" },
-          { node: "p0000002", change: "changed" },
-          { node: "p0000003", change: "removed" },
-        ],
-      },
-      "p0000005",
-    );
-    await settle(() => row(target, "p0000001"), plain.first, false, "the added block is marked");
-    await settle(() => row(target, "p0000002"), plain.second, false, "the changed block is marked");
-    await settle(() => row(target, "p0000003"), plain.third, false, "the removed block is marked");
-    await settle(() => boxOf(target, "p0000005"), far, true, "a block the change set did not touch is not");
-
-    // The same block marked as each kind of change in turn looks different
-    // each time: it changes from the plain block to added, from added to
-    // changed, and from changed to removed, and removed is not added either.
-    const marked: Buffer[] = [plain.first];
-    for (const change of ["added", "changed", "removed"] as const) {
-      await show(target, { html: SHORT_DOC, changes: [{ node: "p0000001", change }] }, "p0000005");
-      const before = marked[marked.length - 1];
-      await settle(() => row(target, "p0000001"), before, false, `the block marked ${change} looks different from before`);
-      marked.push(await row(target, "p0000001"));
-    }
-    expect(marked[1].equals(marked[3]), "added and removed look different").toBe(false);
-
-    await show(target, { html: SHORT_DOC, changes: [] }, "p0000005");
-    await settle(() => row(target, "p0000001"), plain.first, true, "without changes no block is marked");
   });
 
   test("a block named to reveal is scrolled into view", async () => {

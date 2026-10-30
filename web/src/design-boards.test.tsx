@@ -1,15 +1,12 @@
 // @vitest-environment jsdom
 // US-058: big design docs load board by board. The design viewer (US-043)
-// reads the head's outline first (US-112) and the change set review's canvases
-// (US-046) a version's, and then the boards they show, never the whole body at
-// once (src/testing/design-boards.ts has the reads):
+// reads the head's outline first (US-112) and then the boards it shows, never
+// the whole body at once (src/testing/design-boards.ts has the reads):
 //
-// - GET .../versions/<version>?view=outline: the version without `pages` and
-//   `tags`, with `outline`, its pages in order, each with its boards under
-//   `children` as placeholders (each board's own JSON, without its children),
-//   and with the version's `components` and `tokens`.
-// - GET .../docs/<doc>/boards/<board>?version=<version>: one board, its
-//   subtree as JSON in `node`.
+// - GET .../docs/<doc>/html?view=outline: the head's `outline`, its pages in
+//   order, each with its boards under `children` as placeholders (each board's
+//   own JSON, without its children), with the head's `components` and `tokens`.
+// - GET .../docs/<doc>/boards/<board>: one board, its subtree as JSON in `node`.
 //
 // The renderer is shown the page with its boards as placeholders at first, so
 // that zoomed out every board has its box on the canvas, and asked which
@@ -42,7 +39,7 @@
 // fetch is replaced by a fake of the API, and the browser's WebSocket by a fake
 // socket.
 import { RouterProvider, createMemoryHistory } from "@tanstack/react-router";
-import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { getRouter } from "./router";
 import { answerDesignRead, own, type JsonNode } from "./testing/design-boards";
@@ -122,8 +119,6 @@ vi.mock("@/design/renderer", () => ({
 const WORKSPACE_ID = "0192d7a0-0000-7000-8000-00000000000a";
 const PROJECT_ID = "0192d7a0-2222-7000-8000-000000000001";
 const DOC_ID = "0192d7a0-5858-7000-8000-000000000001";
-const CS_MERGED = "0192d7a0-5858-7000-8000-000000000011";
-const CS_ID = "0192d7a0-5858-7000-8000-000000000012";
 const V1 = "0192d7a0-5858-7000-8000-000000000021";
 const V2 = "0192d7a0-5858-7000-8000-000000000022";
 const DS_V1 = "0192d7a0-5858-7000-8000-000000000023";
@@ -133,15 +128,12 @@ const AUTHOR = { run: "run-1", role: "importer", model: "test-model", harness: "
 const API = `/api/v1/w/${WORKSPACE_ID}/projects/${PROJECT_ID}`;
 const HOME_PATH = `/w/${WORKSPACE_ID}/projects/${PROJECT_ID}`;
 const DOC_PATH = `${HOME_PATH}/docs/${DOC_ID}`;
-const REVIEW_PATH = `${HOME_PATH}/changesets/${CS_ID}`;
 const DOC_TITLE = "TireBud Ordrar";
-const CS_TITLE = "Rename the first order";
 
 // The design ------------------------------------------------------------------------------
 //
 // Two pages. Ordrar holds three boards side by side, each with a text of its
-// own; Arkiv holds one board. V2 (under review in CS_ID) changes the text of
-// the first board.
+// own; Arkiv holds one board. V2 changes the text of the first board.
 
 const ORDRAR = "pg000001";
 const ARKIV = "pg000002";
@@ -203,8 +195,7 @@ type Call = { method: string; path: string; params: URLSearchParams };
 
 /**
  * A fake of the API: the auth routes, the project home, the design doc with
- * its versions V1 (mainline) and V2 (under review in CS_ID), the change set's
- * review, the board-by-board reads of both versions and of the doc's head,
+ * its versions V1 and V2, the board-by-board reads of the doc's head,
  * `headPages` (V1's pages until the test changes them). A whole version is
  * served too, for a page that still asks for it. With `holdBoards`, board
  * reads wait until `releaseBoards` is called.
@@ -226,33 +217,19 @@ function fakeApi({ holdBoards = false }: { holdBoards?: boolean } = {}) {
     drafts: [],
     claims: [],
   };
-  const versionItem = (id: string, changesetId: string) => ({
+  const versionItem = (id: string) => ({
     id,
     doc_id: DOC_ID,
-    changeset_id: changesetId,
     draft_id: `${id.slice(0, -2)}99`,
     removed: false,
     created_at: AT,
     agent: AUTHOR,
   });
-  const changeset = (id: string, title: string, status: string) => ({
-    id,
-    project_id: PROJECT_ID,
-    title,
-    description: "",
-    status,
-    run_tag: "run-1",
-    created_at: AT,
-    history: [] as unknown[],
-    approved_versions: [] as unknown[],
-    decisions: [] as unknown[],
-  });
-  const changesets = [changeset(CS_MERGED, "Import Ordrar", "merged"), changeset(CS_ID, CS_TITLE, "in_review")];
   const version = (id: string): JsonNode | null => {
     const pages = PAGES_OF[id];
     if (!pages) return null;
     return {
-      ...versionItem(id, id === V1 ? CS_MERGED : CS_ID),
+      ...versionItem(id),
       design_system_version_id: DS_V1,
       manifest: {
         pages: pages.map((page) => ({
@@ -268,7 +245,6 @@ function fakeApi({ holdBoards = false }: { holdBoards?: boolean } = {}) {
       tokens: TOKENS,
     };
   };
-  const node = (id: string, type: string, parent: string | null) => ({ id, type, parent, fingerprint: `fp-${id}` });
 
   const fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const raw = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
@@ -277,7 +253,7 @@ function fakeApi({ holdBoards = false }: { holdBoards?: boolean } = {}) {
     const method = (init?.method ?? (input instanceof Request ? input.method : "GET")).toUpperCase();
     api.calls.push({ method, path, params: url.searchParams });
 
-    const read = answerDesignRead(API, method, url, version, (id) =>
+    const read = answerDesignRead(API, method, url, (id) =>
       id === DOC_ID ? { ...version(V1), pages: api.headPages } : null,
     );
     if (read) {
@@ -295,42 +271,13 @@ function fakeApi({ holdBoards = false }: { holdBoards?: boolean } = {}) {
         return json(200, {
           project_id: PROJECT_ID,
           docs: [doc],
-          changesets,
           threads: [],
-          waiting: { decisions: [], changesets: [], comments: [], questions: [] },
+          waiting: { comments: [] },
         });
-      case `GET ${API}/changesets`:
-        return json(200, { changesets });
-      case `GET ${API}/changesets/${CS_ID}`:
-        return json(200, { changeset: changesets[1] });
-      case `GET ${API}/changesets/${CS_ID}/review`:
-        return json(200, {
-          changeset: changesets[1],
-          docs: [
-            {
-              doc_id: DOC_ID,
-              kind: "design",
-              pillar: "ui",
-              title: DOC_TITLE,
-              base_version_id: V1,
-              version_id: V2,
-              removed: false,
-              changes: {
-                added: [] as unknown[],
-                removed: [] as unknown[],
-                changed: [node(ORDER_1_TEXT, "text", ORDER_1)],
-                moved: [] as unknown[],
-              },
-            },
-          ],
-          decisions: [] as unknown[],
-        });
-      case `GET ${API}/changesets/${CS_ID}/conflicts`:
-        return json(200, { conflicts: [] });
       case `GET ${API}/docs/${DOC_ID}`:
         return json(200, { doc });
       case `GET ${API}/docs/${DOC_ID}/versions`:
-        return json(200, { doc_id: DOC_ID, versions: [versionItem(V1, CS_MERGED), versionItem(V2, CS_ID)] });
+        return json(200, { doc_id: DOC_ID, versions: [versionItem(V1), versionItem(V2)] });
       case `GET ${API}/docs/${DOC_ID}/html`:
         return json(200, { doc_id: DOC_ID, version_id: V1, html: "" });
       case `GET ${API}/comments`:
@@ -434,19 +381,6 @@ async function rendererIn(container: HTMLElement): Promise<Instance> {
 async function viewerRenderer() {
   await screen.findByRole("heading", { name: DOC_TITLE }, { timeout: 3000 });
   return rendererIn(document.body);
-}
-
-async function findReviewRegions() {
-  const docs = await screen.findByRole("region", { name: /^(docs|changes|changed docs)$/i }, { timeout: 3000 });
-  const entry = await waitFor(() => {
-    const named = within(docs).getAllByText(DOC_TITLE)[0];
-    const found = named.closest("li, article, [role=listitem]");
-    expect(found, "the design's entry").toBeTruthy();
-    return found as HTMLElement;
-  });
-  const base = await within(entry).findByRole("region", { name: /^base\b/i }, { timeout: 3000 });
-  const after = await within(entry).findByRole("region", { name: /^new version\b/i }, { timeout: 3000 });
-  return { base, after };
 }
 
 function lastShown(instance: Instance): JsonNode | undefined {
@@ -664,36 +598,5 @@ describe("the design viewer", () => {
     expect(boardReads(api, ORDER_2), "an unchanged board is not").toHaveLength(1);
     expect(boardReads(api, ORDER_3), "an unchanged board is not").toHaveLength(1);
     expect(fake.instances.filter((instance) => !instance.destroyed), "the same renderer, so the zoom and pan stay").toEqual([renderer]);
-  });
-});
-
-// The change set review -------------------------------------------------------------------
-
-describe("the change set review", () => {
-  test("each canvas reads its version's outline and only the boards in view, never a whole version body", async () => {
-    api = fakeApi();
-    fake.visible = [ORDER_1];
-    renderAt(REVIEW_PATH);
-    const { base, after } = await findReviewRegions();
-    const baseRenderer = await rendererIn(base);
-    const newRenderer = await rendererIn(after);
-    await loaded(baseRenderer, ORDRAR, V1, ORDER_1);
-    await loaded(newRenderer, ORDRAR, V2, ORDER_1);
-    expectPlaceholder(boardIn(lastShown(baseRenderer), ORDER_2), V1, ORDER_2);
-    expectPlaceholder(boardIn(lastShown(newRenderer), ORDER_3), V2, ORDER_3);
-    await settle();
-
-    for (const version of [V1, V2]) {
-      const reads = versionReads(api, version);
-      expect(reads.length, `the version ${version} is read`).toBeGreaterThan(0);
-      for (const read of reads) {
-        expect(read.params.get("view"), `every read of ${version} asks for its outline: ?${read.params}`).toBe("outline");
-      }
-    }
-    const reads = boardReads(api);
-    expect(
-      reads.map((call) => `${call.path.slice(call.path.lastIndexOf("/") + 1)}@${call.params.get("version")}`).sort(),
-      "the board in view is read once for each side, from its own version",
-    ).toEqual([`${ORDER_1}@${V1}`, `${ORDER_1}@${V2}`].sort());
   });
 });
