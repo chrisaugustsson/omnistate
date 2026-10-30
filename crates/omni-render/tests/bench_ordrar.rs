@@ -18,8 +18,8 @@ fn node(body: &str) -> Value {
     let root = common::repo_root();
     let url = |path: &str| serde_json::to_string(&format!("file://{}/{path}", root.display()));
     let program = format!(
-        "import {{ config, splitLoad, evaluate }} from {lib};\n\
-         import {{ openPage, frame, framesOf, run, report }} from {harness};\n\
+        "import {{ config, splitLoad, evaluate, memUsageMiB }} from {lib};\n\
+         import {{ openPage, firstBoardShown, frame, framesOf, run, report }} from {harness};\n\
          const result = await (async () => {{ {body} }})();\n\
          console.log(JSON.stringify(result === undefined ? null : result));",
         lib = url("render-sandbox/bench-ordrar-lib.mjs").unwrap(),
@@ -73,17 +73,46 @@ fn time_no_phase_holds_is_the_frames_other_so_its_phases_add_up_to_it() {
     assert_eq!(frame["other"], 200, "{frame}");
 }
 
-#[test]
-fn the_first_board_is_the_first_complete_frame_that_draws_a_board_that_is_read() {
-    let first_board = node(
+/// When the clock stops on a page that draws `frame`, and 60 ms later the first
+/// board complete, which is done 147 ms in, and the first board once more.
+fn clock_stop_after(frame: &str) -> Value {
+    node(&format!(
         "const page = openPage();
-         page.draw({ ms: 40, drawn: { boardsDrawn: 5, nodesPainted: 5 } });
+         page.draw({{ ms: 40, drawn: {frame} }});
          page.stall(60);
-         page.draw({ ms: 40, finish: 7, drawn: { boardsDrawn: 5, nodesPainted: 107 } });
-         page.draw({ ms: 40, finish: 7, drawn: { boardsDrawn: 5, nodesPainted: 107 } });
-         return page.bench.firstBoard;",
+         page.draw({{ ms: 40, finish: 7, drawn: firstBoardShown() }});
+         page.draw({{ ms: 40, finish: 7, drawn: firstBoardShown() }});
+         return page.bench.firstBoard;"
+    ))
+}
+
+#[test]
+fn the_clock_stops_when_the_first_board_stands_complete_and_not_at_its_placeholder() {
+    assert_eq!(clock_stop_after("firstBoardShown({ nodes: 1 })"), 147);
+}
+
+#[test]
+fn the_reduced_snapshot_of_the_first_board_does_not_stop_the_clock() {
+    let frame = "{ ...firstBoardShown(), boardsDrawn: 5, nodesPainted: 107, detail: 'reduced', zoom: 0.0134 }";
+    assert_eq!(clock_stop_after(frame), 147);
+}
+
+#[test]
+fn a_frame_of_another_board_does_not_stop_the_clock() {
+    assert_eq!(clock_stop_after("firstBoardShown({ id: 'nb68dacy' })"), 147);
+}
+
+#[test]
+fn the_first_board_with_an_image_missing_does_not_stop_the_clock() {
+    assert_eq!(
+        clock_stop_after("firstBoardShown({ missingImages: 1 })"),
+        147
     );
-    assert_eq!(first_board, 147);
+}
+
+#[test]
+fn the_first_board_cut_off_by_the_view_does_not_stop_the_clock() {
+    assert_eq!(clock_stop_after("firstBoardShown({ whole: false })"), 147);
 }
 
 /// The view after one wheel event of the path, `at` ms into the page's clock.
@@ -260,7 +289,7 @@ fn the_page_tells_the_phases_of_the_load_apart() {
         "const page = openPage();
          page.stall(200);
          page.sceneLoad({ ms: 100, layoutMs: 40 });
-         page.draw({ ms: 30, submitMs: 4, finish: 6, drawn: { boardsDrawn: 5, nodesPainted: 107 } });
+         page.draw({ ms: 30, submitMs: 4, finish: 6, drawn: firstBoardShown() });
          return splitLoad(page.bench.firstBoard, page.bench.spans, [[0, 200]]);",
     );
     assert_eq!(
@@ -343,6 +372,14 @@ fn the_bench_measures_as_gate_a_does_over_a_10_s_path() {
     assert_eq!(config["deviceScaleFactor"], 2);
     assert_eq!(config["runs"], 5);
     assert_eq!(config["pathMs"], 10_000);
+}
+
+#[test]
+fn the_memory_of_a_line_of_docker_stats_is_its_usage_in_mib() {
+    let usage = node(
+        "return ['127.4MiB / 7.653GiB', '1.5GiB / 7.653GiB', '512KiB / 7.653GiB', '\\u001b[2J\\u001b[H'].map(memUsageMiB);",
+    );
+    assert_eq!(usage, json!([127.4, 1536, 0.5, null]));
 }
 
 /// Whether `run_js` five times over meets the limit the check `name` holds.

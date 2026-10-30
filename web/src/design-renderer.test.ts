@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 // US-058: the renderer's module and .wasm are served at fixed URLs
 // (/render/omni_render.js), so a browser can load an older build of them from
 // its cache, one without functions that the viewer calls (as
@@ -5,8 +6,35 @@
 // board by board, and no board was ever read). `createDesignRenderer` checks
 // the module for every function it calls and fails with the names it lacks
 // (`missingFunctions`), so the viewer says so instead of failing quietly.
-import { describe, expect, test } from "vitest";
-import { missingFunctions } from "./design/renderer";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { createDesignRenderer, missingFunctions } from "./design/renderer";
+
+/** What the viewer asked of the renderer's module, in order, with the text it passed. */
+const calls = vi.hoisted(() => [] as string[]);
+
+vi.mock("/render/omni_render.js", () => {
+  const heap = new Uint8Array(4096);
+  const text = (pointer: number, length: number) => new TextDecoder().decode(heap.subarray(pointer, pointer + length));
+  const called = (name: string) => () => {
+    calls.push(name);
+    return true;
+  };
+  const module = new Proxy<Record<string, unknown>>(
+    {
+      HEAPU8: heap,
+      GL: { registerContext: () => 1, makeContextCurrent: () => true },
+      UTF8ToString: () => "[]",
+      _omni_render_alloc: () => 0,
+      _omni_render_free: () => {},
+      _omni_render_view_open_on: (pointer: number, length: number) => {
+        calls.push(`open on "${text(pointer, length)}"`);
+        return true;
+      },
+    },
+    { get: (target, name: string) => target[name] ?? (name === "then" ? undefined : called(name)) },
+  );
+  return { default: async () => module };
+});
 
 describe("the renderer module's functions", () => {
   test("a module with every function the viewer calls lacks none", () => {
@@ -21,5 +49,48 @@ describe("the renderer module's functions", () => {
     const module: Record<string, unknown> = Object.fromEntries(missingFunctions({}).map((name) => [name, () => 0]));
     delete module._omni_render_visible_boards;
     expect(missingFunctions(module)).toEqual(["_omni_render_visible_boards"]);
+  });
+});
+
+describe("the viewer's renderer", () => {
+  beforeEach(() => {
+    calls.length = 0;
+    vi.stubGlobal("ResizeObserver", class {
+      observe() {}
+      disconnect() {}
+    });
+    vi.stubGlobal("requestAnimationFrame", () => 0);
+    vi.stubGlobal("cancelAnimationFrame", () => {});
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  async function renderer() {
+    const canvas = document.createElement("canvas");
+    document.body.append(canvas);
+    canvas.getContext = (() => ({})) as unknown as HTMLCanvasElement["getContext"];
+    return createDesignRenderer(canvas);
+  }
+
+  test("asks the module to open pages on what can be read, before it shows one", async () => {
+    (await renderer()).show({}, {});
+    const asked = calls.indexOf("_omni_render_view_open_readable");
+    expect(asked).toBeGreaterThanOrEqual(0);
+    expect(asked).toBeLessThan(calls.indexOf("_omni_render_scene_load"));
+  });
+
+  test("tells the module the board a link named before it loads the page", async () => {
+    (await renderer()).show({}, {}, "6j8ex84q");
+    expect(calls.indexOf('open on "6j8ex84q"')).toBeGreaterThanOrEqual(0);
+    expect(calls.indexOf('open on "6j8ex84q"')).toBeLessThan(calls.indexOf("_omni_render_scene_load"));
+  });
+
+  test("a selection with reveal moves the view to the node", async () => {
+    const shown = await renderer();
+    shown.show({}, {});
+    shown.select("n0000001", true);
+    expect(calls).toContain("_omni_render_view_reveal_selected");
   });
 });

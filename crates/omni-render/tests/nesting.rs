@@ -22,6 +22,8 @@
 //!   after it.
 //! - The same browser page runs the module's timings of a change of design
 //!   system, which `make bench-ordrar` charges to its frames.
+//! - A page of its own draws where the module opens a page, for any page and for
+//!   the viewer (US-118).
 
 mod common;
 
@@ -359,6 +361,27 @@ const TIMINGS_STEPS: &str = r#"  const timings = () => JSON.parse(module.UTF8ToS
   result.systemTimings = timings();
 "#;
 
+/// The steps that draw a page each on a WebGL canvas of 1440 x 900 CSS pixels at
+/// pixel ratio 2: as the module opens one for any page, as it opens one once the
+/// viewer asks for what can be read, and with a link to a far board as well.
+const OPENING_STEPS: &str = r#"  const canvas = document.createElement("canvas");
+  canvas.width = 2880;
+  canvas.height = 1800;
+  const gl = canvas.getContext("webgl2", { alpha: true, depth: false, stencil: true, antialias: false });
+  module.GL.makeContextCurrent(module.GL.registerContext(gl, { majorVersion: 2, minorVersion: 0 }));
+  const opened = async (name) => {
+    const loaded = await load(name);
+    if (loaded !== "loaded") throw new Error(loaded);
+    if (!module._omni_render_scene_draw(2880, 1800, 2)) throw new Error(failure());
+    return JSON.parse(module.UTF8ToString(module._omni_render_scene_stats()));
+  };
+  result.anyPage = await opened("any-page.json");
+  module._omni_render_view_open_readable();
+  result.viewer = await opened("viewer.json");
+  withText(await fetched("linked-board.txt"), (pointer, length) => module._omni_render_view_open_on(pointer, length));
+  result.linked = await opened("linked.json");
+"#;
+
 /// The Chrome binary: `CHROME`, or Chrome where it usually is.
 fn chrome() -> PathBuf {
     if let Some(named) = std::env::var_os("CHROME") {
@@ -477,6 +500,8 @@ fn run_in_chrome(folder: &str, steps: &str, files: &[(&str, String)]) -> Value {
             "--headless=new",
             "--no-first-run",
             "--no-default-browser-check",
+            "--use-angle=swiftshader",
+            "--enable-unsafe-swiftshader",
             &format!("--user-data-dir={}", root.join("profile").display()),
             &format!("http://127.0.0.1:{port}/index.html"),
         ])
@@ -572,4 +597,75 @@ fn the_webassembly_module_reports_the_layout_of_a_change_of_design_system() {
         changed["layoutMs"], loaded["layoutMs"],
         "the module must report the layout of the new design system, not of the load before it: {result}"
     );
+}
+
+const COVER: &str = "11qe2xvq";
+const FAR_BOARD: &str = "6j8ex84q";
+
+fn opening_board(id: &str, y: f64, width: f64, height: f64, children: Value) -> Value {
+    json!({
+        "id": id,
+        "type": "board",
+        "name": "Board",
+        "x": 0.0,
+        "y": y,
+        "width": {"fixed": width},
+        "height": {"fixed": height},
+        "layout": {"mode": "none"},
+        "children": children,
+    })
+}
+
+/// A page of Ordrar's shape with the ID `id`: a cover of 1600 x 715 at the top, a
+/// board of 3038 x 1388 at the far end, 62521 px down.
+fn omslag(id: &str) -> String {
+    json!({
+        "id": id,
+        "type": "page",
+        "name": "Omslag",
+        "children": [
+            opening_board(COVER, 0.0, 1600.0, 715.0, json!([leaf_text()])),
+            opening_board(FAR_BOARD, 61133.0, 3038.0, 1388.0, json!([])),
+        ],
+    })
+    .to_string()
+}
+
+fn assert_zoom(stats: &Value, zoom: f64) {
+    let actual = stats["zoom"].as_f64().expect("a frame reports its zoom");
+    assert!(
+        (actual - zoom).abs() < 1e-3,
+        "zoom {zoom} expected: {stats}"
+    );
+}
+
+#[test]
+fn the_webassembly_module_opens_a_page_where_the_viewer_asks_it_to() {
+    let result = run_in_chrome(
+        "opening-wasm",
+        OPENING_STEPS,
+        &[
+            ("any-page.json", omslag("pg000001")),
+            ("viewer.json", omslag("pg000002")),
+            ("linked.json", omslag("pg000003")),
+            ("linked-board.txt", FAR_BOARD.to_string()),
+        ],
+    );
+
+    // Gate A and the stress pages measure all of a page: 900 / 62521.
+    assert_zoom(&result["anyPage"], 0.0144);
+
+    // 1440 / 1600, in full detail: what `make bench-ordrar` waits for.
+    let viewer = &result["viewer"];
+    assert_zoom(viewer, 0.9);
+    assert_eq!(viewer["detail"], "full", "{result}");
+    assert_eq!(viewer["firstBoard"]["id"], COVER, "{result}");
+    assert_eq!(viewer["firstBoard"]["whole"], true, "{result}");
+    assert_eq!(viewer["firstBoard"]["nodes"], 2, "{result}");
+    assert_eq!(viewer["firstBoard"]["missingImages"], 0, "{result}");
+
+    // 1440 / 3038 is the tighter axis of the far board.
+    let linked = &result["linked"];
+    assert_zoom(linked, 0.474);
+    assert_eq!(linked["firstBoard"]["whole"], false, "{result}");
 }

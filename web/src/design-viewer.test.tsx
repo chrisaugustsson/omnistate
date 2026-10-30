@@ -60,15 +60,16 @@ import { getRouter } from "./router";
 import { answerDesignRead } from "./testing/design-boards";
 
 type Layer = { address: string; name: string; type: string; children: Layer[] };
-type Shown = { page: unknown; system: unknown };
+type Shown = { page: unknown; system: unknown; board?: string | null };
 
 /** What the fake renderers were asked to do. */
 const fake = vi.hoisted(() => {
   type FakeLayer = { address: string; name: string; type: string; children: FakeLayer[] };
   type Instance = {
     canvas: HTMLCanvasElement;
-    shown: { page: unknown; system: unknown }[];
+    shown: { page: unknown; system: unknown; board?: string | null }[];
     selected: (string | null)[];
+    revealed: (string | null)[];
     listeners: Set<(address: string | null) => void>;
     destroyed: boolean;
   };
@@ -85,21 +86,23 @@ vi.mock("@/design/renderer", () => ({
       canvas,
       shown: [] as Shown[],
       selected: [] as (string | null)[],
+      revealed: [] as (string | null)[],
       listeners: new Set<(address: string | null) => void>(),
       destroyed: false,
     };
     fake.instances.push(instance);
     return {
-      show(page: unknown, system: unknown) {
-        instance.shown.push({ page, system });
+      show(page: unknown, system: unknown, board?: string | null) {
+        instance.shown.push({ page, system, board });
       },
       layers() {
         const last = instance.shown[instance.shown.length - 1];
         const id = (last?.page as { id?: string } | undefined)?.id;
         return id ? (fake.layersByPage.get(id) ?? []) : [];
       },
-      select(address: string | null) {
+      select(address: string | null, reveal?: boolean) {
         instance.selected.push(address);
+        if (reveal) instance.revealed.push(address);
       },
       onSelect(listener: (address: string | null) => void) {
         instance.listeners.add(listener);
@@ -765,6 +768,21 @@ describe("a link to a place in the design", () => {
     await findShown(GRID);
     await waitFor(() => expect(selectedNames()).toEqual(["2:T199"]), { timeout: 5000 });
     await waitFor(() => expect(router.state.location.search).toEqual({ board: B199, node: T199 }));
+    expect((await findRenderer()).revealed, "a link moves the view to the node it names").toEqual([T199]);
+  });
+
+  test("?board alone opens the view on that board, keeps it in the address and selects nothing", async () => {
+    api = fakeApi([...PAGES, GRID_PAGE]);
+    seedGridLayers();
+    const router = renderAt(`${DOC_PATH}?board=${B199}`);
+    const shown = await findShown(GRID);
+    expect(shown.board).toBe(B199);
+    await waitFor(() => expect(treeItem("B199")).toBeTruthy());
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(router.state.location.search).toEqual({ board: B199 });
+    expect(selectedNames()).toEqual([]);
   });
 
   test("?board alone shows the page that holds the board, with nothing selected", async () => {

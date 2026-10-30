@@ -10,6 +10,9 @@ import { frameProfile, frameStats, renderReport } from '../../../../render-sandb
 
 const PAGE_SCRIPT = new URL('../../../../render-sandbox/bench-ordrar-page.js', import.meta.url);
 
+// The first board of the design's manifest, as bench-ordrar.mjs tells the page.
+const FIRST_BOARD = '11qe2xvq';
+
 // The page of the bench's Ordrar path: 8118 by 329640 px, opening on a board that
 // fills the canvas at zoom 1.
 const ORDRAR = {
@@ -81,6 +84,7 @@ export function openPage() {
     _omni_render_scene_draw: takesTime,
   };
   window.__benchHook(module);
+  window.__bench.firstBoardId = FIRST_BOARD;
   new HTMLCanvasElement().getContext('webgl2');
 
   const call = (name, ms, reported) => {
@@ -127,6 +131,16 @@ export function openPage() {
     },
   };
 }
+
+// What a frame reports that shows the first board complete; `board` changes how
+// that board stands.
+export const firstBoardShown = (board = {}) => ({
+  boardsDrawn: 2,
+  nodesPainted: 98,
+  detail: 'full',
+  zoom: 0.9,
+  firstBoard: { id: FIRST_BOARD, x: 0, y: 128, width: 1440, height: 643, whole: true, nodes: 66, missingImages: 0, ...board },
+});
 
 export const frame = (ms, phases = {}) => ({ ms, zoom: 0.01, boardsDrawn: 350, parse: 0, layout: 0, paint: 0, gpu: 0, other: ms, ...phases });
 

@@ -22,19 +22,23 @@
 //!   drawing: the average color of each board is close to the true one and
 //!   the gaps between boards stay empty.
 //!
+//! A page too big to read whole opens on its first board, and a link to a board
+//! out of that view opens on that board (US-118).
+//!
 //! The 60 frames per second themselves are measured on a GPU in a browser
 //! (US-008), and the smoothness is the human check.
 
 mod common;
 mod design;
 
-use design::{at, board, fixed, node, none, rect, with};
-use omni_core::design::Node;
-use omni_render::layout;
+use design::{at, board, fixed, id, node, none, rect, with};
+use omni_core::design::{AttachmentRef, Node};
+use omni_render::layout::{self, LayoutBox};
 use omni_render::paint::{self, Assets};
+use omni_render::select::NodeAddress;
 use omni_render::view::{Detail, MIN_ZOOM, Scene, Viewport};
 use serde_json::{Value, json};
-use skia_safe::{AlphaType, ColorType, ImageInfo, surfaces};
+use skia_safe::{AlphaType, ColorType, EncodedImageFormat, ImageInfo, surfaces};
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::PathBuf;
@@ -439,6 +443,256 @@ fn a_reduced_frame_still_looks_like_the_full_drawing() {
             drawn.at(x, y)
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// Where a page opens
+// ---------------------------------------------------------------------------
+
+const COVER: &str = "11qe2xvq";
+const INSIDE_COVER: &str = "nb68dacy";
+const FAR_BOARD: &str = "6j8ex84q";
+const NODE_ON_FAR_BOARD: &str = "n0000001";
+
+fn sized_board(id: &str, x: f64, y: f64, width: f64, height: f64, children: Vec<Value>) -> Value {
+    at(
+        &board(id, fixed(width), fixed(height), none(), children),
+        x,
+        y,
+    )
+}
+
+/// The shape of Ordrar's Omslag page, 3038 x 62521 px: a cover of 1600 x 715, a
+/// board on top of it, and a board at the far end.
+fn omslag() -> Value {
+    page(vec![
+        sized_board(COVER, 0.0, 0.0, 1600.0, 715.0, vec![]),
+        sized_board(INSIDE_COVER, 0.0, 0.0, 1440.0, 500.0, vec![]),
+        sized_board(
+            FAR_BOARD,
+            0.0,
+            61133.0,
+            3038.0,
+            1388.0,
+            vec![at(&rect(NODE_ON_FAR_BOARD, 100.0, 100.0), 20.0, 20.0)],
+        ),
+    ])
+}
+
+/// The view a page opens in on a 1440 x 900 screen of pixel ratio 2, by a link
+/// to the board `linked` if there is one.
+fn opened(scene: &Scene, linked: Option<&str>) -> Viewport {
+    let mut viewport = Viewport::new(WIDTH, HEIGHT);
+    viewport.fit(scene.opening(&viewport, 2.0, linked.map(id)));
+    viewport
+}
+
+#[track_caller]
+fn assert_in_view(viewport: &Viewport, board: LayoutBox) {
+    let visible = viewport.visible_rect();
+    assert!(
+        visible.x <= board.x + 1.0
+            && visible.y <= board.y + 1.0
+            && visible.x + visible.width >= board.x + board.width - 1.0
+            && visible.y + visible.height >= board.y + board.height - 1.0,
+        "{board:?} must be wholly in view, but the screen shows {visible:?}"
+    );
+}
+
+const FAR_BOX: LayoutBox = LayoutBox {
+    x: 0.0,
+    y: 61133.0,
+    width: 3038.0,
+    height: 1388.0,
+};
+
+#[test]
+fn a_page_too_big_to_read_whole_opens_on_its_first_board_in_full_detail() {
+    let mut scene = scene_of(&omslag());
+    let viewport = opened(&scene, None);
+    // 1440 / 1600 is the tighter axis of the cover, where all of the page would
+    // be 900 / 62521.
+    assert!(
+        (viewport.zoom() - 0.9).abs() < 1e-3,
+        "the view fits the first board, but its zoom is {}",
+        viewport.zoom()
+    );
+    let first = scene
+        .first_board(&viewport)
+        .expect("the page has a first board");
+    assert_eq!(first.id, id(COVER));
+    assert!(first.whole, "all of the first board is in view: {first:?}");
+    let (stats, _) = frame(&mut scene, &viewport, 2.0);
+    assert_eq!(stats.detail, Detail::Full);
+}
+
+#[test]
+fn a_link_to_a_board_out_of_the_opening_view_opens_on_that_board() {
+    let scene = scene_of(&omslag());
+    let viewport = opened(&scene, Some(FAR_BOARD));
+    assert_in_view(&viewport, FAR_BOX);
+    assert_eq!(
+        ids(&scene.visible_boards(&viewport)),
+        BTreeSet::from([FAR_BOARD.to_string()])
+    );
+}
+
+#[test]
+fn a_link_to_a_board_inside_the_opening_view_leaves_the_view_on_the_first_board() {
+    let scene = scene_of(&omslag());
+    let viewport = opened(&scene, Some(INSIDE_COVER));
+    assert!(
+        (viewport.zoom() - 0.9).abs() < 1e-3,
+        "the view stays fitted to the first board, but its zoom is {}",
+        viewport.zoom()
+    );
+    assert_eq!(
+        ids(&scene.visible_boards(&viewport)),
+        BTreeSet::from([COVER.to_string(), INSIDE_COVER.to_string()])
+    );
+}
+
+#[test]
+fn a_link_to_a_board_the_page_does_not_have_opens_on_the_first_board() {
+    let scene = scene_of(&omslag());
+    let viewport = opened(&scene, Some("zzzzzzzz"));
+    let first = scene
+        .first_board(&viewport)
+        .expect("the page has a first board");
+    assert!(first.whole, "all of the first board is in view: {first:?}");
+    assert!(
+        (viewport.zoom() - 0.9).abs() < 1e-3,
+        "the view fits the first board, but its zoom is {}",
+        viewport.zoom()
+    );
+}
+
+#[test]
+fn a_link_to_a_node_out_of_view_moves_the_view_to_its_board() {
+    let mut scene = scene_of(&omslag());
+    let mut viewport = opened(&scene, None);
+    scene.select_address(Some(&NodeAddress::new(None, id(NODE_ON_FAR_BOARD))));
+    scene.reveal_selected(&mut viewport);
+    assert_in_view(&viewport, FAR_BOX);
+}
+
+/// Whether all of a 300 x 200 first board at the page's origin is in a view of
+/// `width` x `height` with its top-left corner at `x`, `y`.
+fn first_board_whole(x: f32, y: f32, width: f32, height: f32) -> bool {
+    let scene = scene_of(&page(vec![board_at(1, 0.0, 0.0)]));
+    let viewport = Viewport::at(x, y, 1.0, width, height);
+    scene
+        .first_board(&viewport)
+        .expect("the page has a first board")
+        .whole
+}
+
+#[test]
+fn the_first_board_is_whole_only_while_all_of_it_is_in_view() {
+    assert!(first_board_whole(-10.0, -10.0, 400.0, 300.0));
+    assert!(
+        !first_board_whole(5.0, -10.0, 400.0, 300.0),
+        "cut on the left"
+    );
+    assert!(
+        !first_board_whole(-10.0, 5.0, 400.0, 300.0),
+        "cut at the top"
+    );
+    assert!(
+        !first_board_whole(-10.0, -10.0, 300.0, 300.0),
+        "cut on the right"
+    );
+    assert!(
+        !first_board_whole(-10.0, -10.0, 400.0, 200.0),
+        "cut at the bottom"
+    );
+}
+
+#[test]
+fn the_box_of_the_first_board_is_where_the_screen_shows_it() {
+    let scene = scene_of(&page(vec![board_at(1, 40.0, 30.0)]));
+    let viewport = Viewport::at(-100.0, -50.0, 0.5, WIDTH, HEIGHT);
+    let first = scene
+        .first_board(&viewport)
+        .expect("the page has a first board");
+    assert_eq!(
+        first.screen,
+        LayoutBox {
+            x: 70.0,
+            y: 40.0,
+            width: 150.0,
+            height: 100.0
+        }
+    );
+}
+
+#[test]
+fn only_a_frame_in_full_detail_paints_the_nodes_of_the_first_board() {
+    let mut scene = scene_of(&page(vec![board_at(1, 0.0, 0.0)]));
+    let reduced = Viewport::at(0.0, 0.0, 0.05, WIDTH, HEIGHT);
+    frame(&mut scene, &reduced, 1.0);
+    let first = scene.first_board(&reduced).expect("a first board");
+    assert_eq!(first.painted.nodes, 0);
+
+    let full = Viewport::new(WIDTH, HEIGHT);
+    frame(&mut scene, &full, 1.0);
+    let first = scene.first_board(&full).expect("a first board");
+    assert_eq!(first.painted.nodes, NODES_PER_BOARD);
+}
+
+const PHOTO: &str = "attachment:0192f1c4-5b6a-7d8e-9f01-23456789abcd";
+
+/// A board with an image and a rectangle filled with an image, both `PHOTO`.
+fn board_of_photos() -> Value {
+    let image = json!({
+        "id": "m0000001",
+        "type": "image",
+        "name": "Image",
+        "width": fixed(100.0),
+        "height": fixed(100.0),
+        "image": PHOTO,
+        "fit": "cover"
+    });
+    let fill = json!([{"type": "image", "image": PHOTO, "fit": "cover"}]);
+    let filled = with(&rect("m0000002", 100.0, 100.0), "fills", fill);
+    sized_board(
+        COVER,
+        0.0,
+        0.0,
+        300.0,
+        200.0,
+        vec![at(&image, 0.0, 0.0), at(&filled, 120.0, 0.0)],
+    )
+}
+
+/// The images missing from the first board once a frame painted it with `assets`.
+fn missing_images(assets: Assets) -> usize {
+    let mut scene = Scene::new(node(&page(vec![board_of_photos()])), assets);
+    let viewport = Viewport::new(WIDTH, HEIGHT);
+    frame(&mut scene, &viewport, 1.0);
+    let first = scene.first_board(&viewport).expect("a first board");
+    first.painted.missing_images
+}
+
+#[test]
+fn an_image_is_missing_from_the_first_board_until_the_host_supplies_it() {
+    assert_eq!(missing_images(Assets::new()), 2);
+
+    let mut surface = surfaces::raster_n32_premul((2, 2)).expect("a surface");
+    let png = surface
+        .image_snapshot()
+        .encode(
+            None::<&mut skia_safe::gpu::DirectContext>,
+            EncodedImageFormat::PNG,
+            None,
+        )
+        .expect("the image encodes as PNG");
+    let attachment: AttachmentRef = PHOTO.parse().expect("a valid attachment");
+    let mut assets = Assets::new();
+    assets
+        .add_image(&attachment, png.as_bytes())
+        .expect("the host can supply a PNG");
+    assert_eq!(missing_images(assets), 0);
 }
 
 // ---------------------------------------------------------------------------
