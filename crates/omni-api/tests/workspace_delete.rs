@@ -269,10 +269,9 @@ async fn new_membership(conn: &mut PgConnection, workspace: &str, user: &str) ->
     .expect("insert a membership")
 }
 
-/// A key, two projects with two documents each and two versions of each
-/// document, plus one row in every real tenant table that later stories add:
-/// rows in every tenant table, referencing each other and the workspace's
-/// memberships.
+/// A key, two probe projects with two documents each and two versions of each
+/// document, plus one row in every other tenant table: rows in every tenant
+/// table, referencing each other and the workspace's memberships.
 ///
 /// Every story that adds a tenant table must seed it here too, or the
 /// deletion tests fail on purpose: they check that the seeded workspace has
@@ -324,7 +323,9 @@ async fn fill_workspace(conn: &mut PgConnection, workspace: &str, membership: &s
         }
     }
 
-    // US-016: projects, change sets and their status history.
+    // The tables of the API, one row each. A table that a later story adds is
+    // seeded here too, so the deletion tests fail until it is erased with the
+    // rest.
     let project_id: String = sqlx::query_scalar(
         "INSERT INTO projects (workspace_id, name) VALUES ($1::uuid, 'deletion test') RETURNING id::text",
     )
@@ -332,467 +333,125 @@ async fn fill_workspace(conn: &mut PgConnection, workspace: &str, membership: &s
     .fetch_one(&mut *conn)
     .await
     .expect("insert a project");
-    let changeset_id: String = sqlx::query_scalar(
-        "INSERT INTO changesets (workspace_id, project_id, title, status) \
-         VALUES ($1::uuid, $2::uuid, 'deletion test', 'open') RETURNING id::text",
+    sqlx::query(
+        "INSERT INTO live_events (workspace_id, project_id, seq, event, data) \
+         VALUES ($1::uuid, $2::uuid, 1, 'doc.created', '{}'::jsonb)",
+    )
+    .bind(workspace)
+    .bind(&project_id)
+    .execute(&mut *conn)
+    .await
+    .expect("insert a live event");
+    sqlx::query(
+        "INSERT INTO attachments (workspace_id, filename, content_type, size_bytes) \
+         VALUES ($1::uuid, 'deletion-test.txt', 'text/plain', 12)",
+    )
+    .bind(workspace)
+    .execute(&mut *conn)
+    .await
+    .expect("insert an attachment");
+
+    // A doc, one row of the log of its writes, and what its head is stored in.
+    let doc_id: String = sqlx::query_scalar(
+        "INSERT INTO docs (workspace_id, project_id, kind, pillar, title) \
+         VALUES ($1::uuid, $2::uuid, 'html', 'spec', 'deletion test') RETURNING id::text",
     )
     .bind(workspace)
     .bind(&project_id)
     .fetch_one(&mut *conn)
     .await
-    .expect("insert a change set");
+    .expect("insert a doc");
     sqlx::query(
-        "INSERT INTO changeset_status_history (workspace_id, changeset_id, from_status, to_status, actor) \
-         VALUES ($1::uuid, $2::uuid, NULL, 'open', 'agent')",
+        "INSERT INTO doc_changes (workspace_id, doc_id, seq, agent, operations, head_after) \
+         VALUES ($1::uuid, $2::uuid, 1, $3::jsonb, '[]'::jsonb, \
+         'af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262')",
     )
     .bind(workspace)
-    .bind(&changeset_id)
+    .bind(&doc_id)
+    .bind(r#"{"run":"run-1","role":"writer","model":null,"harness":null}"#)
     .execute(&mut *conn)
     .await
-    .expect("insert a change set status");
-
-    // US-017: the live events of a project. The table is seeded as soon as it
-    // exists (tests/live_events.rs pins its name and columns), so a migration
-    // that adds it fails the deletion tests until it is erased with the rest.
-    let live_events_exist: bool =
-        sqlx::query_scalar("SELECT to_regclass('public.live_events') IS NOT NULL")
-            .fetch_one(&mut *conn)
-            .await
-            .expect("look for the live events table");
-    if live_events_exist {
-        sqlx::query(
-            "INSERT INTO live_events (workspace_id, project_id, seq, event, data) \
-             VALUES ($1::uuid, $2::uuid, 1, 'changeset.open', '{}'::jsonb)",
-        )
-        .bind(workspace)
-        .bind(&project_id)
-        .execute(&mut *conn)
-        .await
-        .expect("insert a live event");
-    }
-
-    // US-019: the metadata of an attachment. Seeded as soon as the table
-    // exists (tests/attachments.rs pins its name and columns), for the same
-    // reason as the live events above.
-    let attachments_exist: bool =
-        sqlx::query_scalar("SELECT to_regclass('public.attachments') IS NOT NULL")
-            .fetch_one(&mut *conn)
-            .await
-            .expect("look for the attachments table");
-    if attachments_exist {
-        sqlx::query(
-            "INSERT INTO attachments (workspace_id, filename, content_type, size_bytes) \
-             VALUES ($1::uuid, 'deletion-test.txt', 'text/plain', 12)",
-        )
-        .bind(workspace)
-        .execute(&mut *conn)
-        .await
-        .expect("insert an attachment");
-    }
-
-    // US-022: a doc, its draft in the change set and one row of the draft's
-    // log. Seeded as soon as the tables exist (tests/docs.rs pins their names
-    // and the columns without a default), for the same reason as above.
-    let docs_exist: bool = sqlx::query_scalar(
-        "SELECT to_regclass('public.docs') IS NOT NULL \
-         AND to_regclass('public.drafts') IS NOT NULL \
-         AND to_regclass('public.draft_ops') IS NOT NULL",
+    .expect("insert a doc change");
+    sqlx::query(
+        "INSERT INTO node_index (workspace_id, chunk, node, type, fingerprint) \
+         VALUES ($1::uuid, 'deletion-test-chunk', 'k3f9x2qa', 'paragraph', 'fingerprint')",
     )
+    .bind(workspace)
+    .execute(&mut *conn)
+    .await
+    .expect("insert a node of the node index");
+    sqlx::query(
+        "INSERT INTO chunks (workspace_id, hash) \
+         VALUES ($1::uuid, 'af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262')",
+    )
+    .bind(workspace)
+    .execute(&mut *conn)
+    .await
+    .expect("insert a chunk of the chunk index");
+
+    // A comment on a node of the doc and a reply to it.
+    let comment_id: String = sqlx::query_scalar(
+        "INSERT INTO comments (workspace_id, doc_id, node, author, body) \
+         VALUES ($1::uuid, $2::uuid, 'k3f9x2qa', $3::jsonb, 'deletion test') \
+         RETURNING id::text",
+    )
+    .bind(workspace)
+    .bind(&doc_id)
+    .bind(r#"{"kind":"agent","run":"run-1","role":"critic","model":null,"harness":null}"#)
     .fetch_one(&mut *conn)
     .await
-    .expect("look for the doc tables");
-    if docs_exist {
-        let doc_id: String = sqlx::query_scalar(
-            "INSERT INTO docs (workspace_id, project_id, kind, pillar, title) \
-             VALUES ($1::uuid, $2::uuid, 'html', 'spec', 'deletion test') RETURNING id::text",
-        )
-        .bind(workspace)
-        .bind(&project_id)
-        .fetch_one(&mut *conn)
-        .await
-        .expect("insert a doc");
-        let draft_id: String = sqlx::query_scalar(
-            "INSERT INTO drafts (workspace_id, doc_id, changeset_id) \
-             VALUES ($1::uuid, $2::uuid, $3::uuid) RETURNING id::text",
-        )
-        .bind(workspace)
-        .bind(&doc_id)
-        .bind(&changeset_id)
-        .fetch_one(&mut *conn)
-        .await
-        .expect("insert a draft");
-        sqlx::query(
-            "INSERT INTO draft_ops (workspace_id, draft_id, seq, op, agent) \
-             VALUES ($1::uuid, $2::uuid, 1, $3::jsonb, $4::jsonb)",
-        )
-        .bind(workspace)
-        .bind(&draft_id)
-        .bind(r#"{"op":"delete","node":"k3f9x2qa","rev":1}"#)
-        .bind(r#"{"run":"run-1","role":"writer","model":null,"harness":null}"#)
-        .execute(&mut *conn)
-        .await
-        .expect("insert an operation of the draft's log");
-
-        // US-102: one row of the log of the writes to docs, the append-only
-        // tenant table `doc_changes` (tests/live_docs.rs pins its name and the
-        // columns without a default). Seeded as soon as it exists, for the same
-        // reason as above.
-        let changes_exist: bool =
-            sqlx::query_scalar("SELECT to_regclass('public.doc_changes') IS NOT NULL")
-                .fetch_one(&mut *conn)
-                .await
-                .expect("look for the doc changes table");
-        if changes_exist {
-            sqlx::query(
-                "INSERT INTO doc_changes (workspace_id, doc_id, seq, agent, operations, head_after) \
-                 VALUES ($1::uuid, $2::uuid, 1, $3::jsonb, '[]'::jsonb, \
-                 'af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262')",
-            )
-            .bind(workspace)
-            .bind(&doc_id)
-            .bind(r#"{"run":"run-1","role":"writer","model":null,"harness":null}"#)
-            .execute(&mut *conn)
-            .await
-            .expect("insert a doc change");
-        }
-
-        // US-023: a claim on a node of the draft. Claims may live in memory;
-        // if they live in the tenant table `claims` (tests/claims.rs pins its
-        // name and the columns without a default), it is seeded as soon as it
-        // exists, for the same reason as above.
-        let claims_exist: bool =
-            sqlx::query_scalar("SELECT to_regclass('public.claims') IS NOT NULL")
-                .fetch_one(&mut *conn)
-                .await
-                .expect("look for the claims table");
-        if claims_exist {
-            sqlx::query(
-                "INSERT INTO claims (workspace_id, draft_id, node, agent) \
-                 VALUES ($1::uuid, $2::uuid, 'k3f9x2qa', $3::jsonb)",
-            )
-            .bind(workspace)
-            .bind(&draft_id)
-            .bind(r#"{"run":"run-1","role":"writer","model":null,"harness":null}"#)
-            .execute(&mut *conn)
-            .await
-            .expect("insert a claim");
-        }
-
-        // US-024: a saved version of the doc and one row of the node index.
-        // Seeded as soon as the tables exist (tests/versions.rs pins their names;
-        // the columns without a default are `workspace_id`, `doc_id` and
-        // `changeset_id` for `versions`, and `workspace_id`, `chunk`, `node`,
-        // `type` and `fingerprint` for `node_index`, where `chunk` names the
-        // stored content that the nodes belong to), for the same reason as above.
-        let versions_exist: bool = sqlx::query_scalar(
-            "SELECT to_regclass('public.versions') IS NOT NULL \
-             AND to_regclass('public.node_index') IS NOT NULL",
-        )
-        .fetch_one(&mut *conn)
-        .await
-        .expect("look for the version tables");
-        if versions_exist {
-            let version_id: String = sqlx::query_scalar(
-                "INSERT INTO versions (workspace_id, doc_id, changeset_id) \
-                 VALUES ($1::uuid, $2::uuid, $3::uuid) RETURNING id::text",
-            )
-            .bind(workspace)
-            .bind(&doc_id)
-            .bind(&changeset_id)
-            .fetch_one(&mut *conn)
-            .await
-            .expect("insert a version");
-            sqlx::query(
-                "INSERT INTO node_index (workspace_id, chunk, node, type, fingerprint) \
-                 VALUES ($1::uuid, 'deletion-test-chunk', 'k3f9x2qa', 'paragraph', 'fingerprint')",
-            )
-            .bind(workspace)
-            .execute(&mut *conn)
-            .await
-            .expect("insert a node of the node index");
-
-            // US-030: one row of the chunk index, the tenant table `chunks`
-            // (tests/boards.rs pins its name and the columns without a
-            // default, `workspace_id` and `hash`). Seeded as soon as it
-            // exists, for the same reason as above.
-            let chunks_exist: bool =
-                sqlx::query_scalar("SELECT to_regclass('public.chunks') IS NOT NULL")
-                    .fetch_one(&mut *conn)
-                    .await
-                    .expect("look for the chunk index");
-            if chunks_exist {
-                sqlx::query(
-                    "INSERT INTO chunks (workspace_id, hash) \
-                     VALUES ($1::uuid, 'af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262')",
-                )
-                .bind(workspace)
-                .execute(&mut *conn)
-                .await
-                .expect("insert a chunk of the chunk index");
-            }
-
-            // US-025: the approval of the change set, which records the
-            // version. It may live in the existing tables; if it lives in the
-            // tenant table `approvals` (tests/approve_merge.rs pins its name
-            // and the columns without a default), it is seeded as soon as it
-            // exists, for the same reason as above.
-            let approvals_exist: bool =
-                sqlx::query_scalar("SELECT to_regclass('public.approvals') IS NOT NULL")
-                    .fetch_one(&mut *conn)
-                    .await
-                    .expect("look for the approvals table");
-            if approvals_exist {
-                sqlx::query(
-                    "INSERT INTO approvals (workspace_id, changeset_id, doc_id, version_id) \
-                     VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid)",
-                )
-                .bind(workspace)
-                .bind(&changeset_id)
-                .bind(&doc_id)
-                .bind(&version_id)
-                .execute(&mut *conn)
-                .await
-                .expect("insert an approval");
-            }
-
-            // US-026: a conflict that a rebase recorded on a node of the doc,
-            // with the version of each side. Conflicts may live in the
-            // existing tables; if they live in the tenant table `conflicts`
-            // (tests/rebase.rs pins its name and the columns without a
-            // default), it is seeded as soon as it exists, for the same reason
-            // as above.
-            let conflicts_exist: bool =
-                sqlx::query_scalar("SELECT to_regclass('public.conflicts') IS NOT NULL")
-                    .fetch_one(&mut *conn)
-                    .await
-                    .expect("look for the conflicts table");
-            if conflicts_exist {
-                sqlx::query(
-                    "INSERT INTO conflicts (workspace_id, changeset_id, doc_id, node, \
-                     mainline_version_id, changeset_version_id) \
-                     VALUES ($1::uuid, $2::uuid, $3::uuid, 'k3f9x2qa', $4::uuid, $4::uuid)",
-                )
-                .bind(workspace)
-                .bind(&changeset_id)
-                .bind(&doc_id)
-                .bind(&version_id)
-                .execute(&mut *conn)
-                .await
-                .expect("insert a conflict");
-            }
-
-            // US-038: a comment on a node of the version (of the doc, after
-            // US-106) and a reply to it.
-            // Both are seeded as soon as their tables exist
-            // (tests/comments.rs pins their names and the columns without a
-            // default), for the same reason as above.
-            let comments_exist: bool =
-                sqlx::query_scalar("SELECT to_regclass('public.comments') IS NOT NULL")
-                    .fetch_one(&mut *conn)
-                    .await
-                    .expect("look for the comments table");
-            if comments_exist {
-                // US-106: a comment belongs to a doc and a node of its head
-                // once the table has `doc_id`; before that, to a version.
-                let on_docs: bool = sqlx::query_scalar(
-                    "SELECT EXISTS (SELECT 1 FROM information_schema.columns \
-                     WHERE table_schema = 'public' AND table_name = 'comments' \
-                       AND column_name = 'doc_id')",
-                )
-                .fetch_one(&mut *conn)
-                .await
-                .expect("look for the comments' doc column");
-                let (sql, record) = if on_docs {
-                    (
-                        "INSERT INTO comments (workspace_id, doc_id, node, author, body) \
-                         VALUES ($1::uuid, $2::uuid, 'k3f9x2qa', $3::jsonb, 'deletion test') \
-                         RETURNING id::text",
-                        &doc_id,
-                    )
-                } else {
-                    (
-                        "INSERT INTO comments (workspace_id, version_id, node, author, body) \
-                         VALUES ($1::uuid, $2::uuid, 'k3f9x2qa', $3::jsonb, 'deletion test') \
-                         RETURNING id::text",
-                        &version_id,
-                    )
-                };
-                let comment_id: String = sqlx::query_scalar(sql)
-                    .bind(workspace)
-                    .bind(record)
-                    .bind(
-                        r#"{"kind":"agent","run":"run-1","role":"critic","model":null,"harness":null}"#,
-                    )
-                    .fetch_one(&mut *conn)
-                    .await
-                    .expect("insert a comment");
-                let replies_exist: bool =
-                    sqlx::query_scalar("SELECT to_regclass('public.comment_replies') IS NOT NULL")
-                        .fetch_one(&mut *conn)
-                        .await
-                        .expect("look for the comment replies table");
-                if replies_exist {
-                    sqlx::query(
-                        "INSERT INTO comment_replies (workspace_id, comment_id, author, body) \
-                         VALUES ($1::uuid, $2::uuid, $3::jsonb, 'deletion test')",
-                    )
-                    .bind(workspace)
-                    .bind(&comment_id)
-                    .bind(r#"{"kind":"agent","run":"run-1","role":"writer","model":null,"harness":null}"#)
-                    .execute(&mut *conn)
-                    .await
-                    .expect("insert a reply to a comment");
-                }
-            }
-        }
-    }
-
-    // US-033: a thread of the change set, a phase of it and a post in it.
-    // Seeded as soon as the tables exist (tests/threads.rs pins their names
-    // and the columns without a default; phases may live in `threads`, so
-    // `thread_phases` is seeded only if it exists), for the same reason as
-    // above.
-    let threads_exist: bool = sqlx::query_scalar(
-        "SELECT to_regclass('public.threads') IS NOT NULL \
-         AND to_regclass('public.posts') IS NOT NULL",
+    .expect("insert a comment");
+    sqlx::query(
+        "INSERT INTO comment_replies (workspace_id, comment_id, author, body) \
+         VALUES ($1::uuid, $2::uuid, $3::jsonb, 'deletion test')",
     )
+    .bind(workspace)
+    .bind(&comment_id)
+    .bind(r#"{"kind":"agent","run":"run-1","role":"writer","model":null,"harness":null}"#)
+    .execute(&mut *conn)
+    .await
+    .expect("insert a reply to a comment");
+
+    // A thread, its phase and a post in it.
+    let thread_id: String = sqlx::query_scalar(
+        "INSERT INTO threads (workspace_id, project_id, question, criteria) \
+         VALUES ($1::uuid, $2::uuid, 'deletion test', '[]'::jsonb) RETURNING id::text",
+    )
+    .bind(workspace)
+    .bind(&project_id)
     .fetch_one(&mut *conn)
     .await
-    .expect("look for the thread tables");
-    if threads_exist {
-        let thread_id: String = sqlx::query_scalar(
-            "INSERT INTO threads (workspace_id, project_id, changeset_id, question, criteria) \
-             VALUES ($1::uuid, $2::uuid, $3::uuid, 'deletion test', '[\"deletion test\"]'::jsonb) \
-             RETURNING id::text",
-        )
-        .bind(workspace)
-        .bind(&project_id)
-        .bind(&changeset_id)
-        .fetch_one(&mut *conn)
-        .await
-        .expect("insert a thread");
-        let phases_exist: bool =
-            sqlx::query_scalar("SELECT to_regclass('public.thread_phases') IS NOT NULL")
-                .fetch_one(&mut *conn)
-                .await
-                .expect("look for the thread phases table");
-        if phases_exist {
-            sqlx::query(
-                "INSERT INTO thread_phases (workspace_id, thread_id, number, sealed) \
-                 VALUES ($1::uuid, $2::uuid, 2, true)",
-            )
-            .bind(workspace)
-            .bind(&thread_id)
-            .execute(&mut *conn)
-            .await
-            .expect("insert a thread phase");
-        }
-        sqlx::query(
-            "INSERT INTO posts (workspace_id, thread_id, phase, type, summary, body, author) \
-             VALUES ($1::uuid, $2::uuid, 1, 'note', 'deletion test', 'deletion test', $3::jsonb)",
-        )
-        .bind(workspace)
-        .bind(&thread_id)
-        .bind(r#"{"run":"run-1","role":"writer","model":null,"harness":null}"#)
-        .execute(&mut *conn)
-        .await
-        .expect("insert a post");
+    .expect("insert a thread");
+    sqlx::query(
+        "INSERT INTO thread_phases (workspace_id, thread_id, number, sealed) \
+         VALUES ($1::uuid, $2::uuid, 1, true)",
+    )
+    .bind(workspace)
+    .bind(&thread_id)
+    .execute(&mut *conn)
+    .await
+    .expect("insert a thread phase");
+    sqlx::query(
+        "INSERT INTO posts (workspace_id, thread_id, phase, summary, body, author) \
+         VALUES ($1::uuid, $2::uuid, 1, 'deletion test', 'deletion test', $3::jsonb)",
+    )
+    .bind(workspace)
+    .bind(&thread_id)
+    .bind(r#"{"run":"run-1","role":"writer","model":null,"harness":null}"#)
+    .execute(&mut *conn)
+    .await
+    .expect("insert a post");
 
-        // US-034: a directive of the human and the record that an agent
-        // identity was given it. The receipts are seeded as soon as their
-        // table exists (tests/posts.rs pins its name and the columns without a
-        // default), for the same reason as above.
-        let receipts_exist: bool =
-            sqlx::query_scalar("SELECT to_regclass('public.directive_receipts') IS NOT NULL")
-                .fetch_one(&mut *conn)
-                .await
-                .expect("look for the directive receipts table");
-        if receipts_exist {
-            let post_id: String = sqlx::query_scalar(
-                "INSERT INTO posts (workspace_id, thread_id, phase, type, summary, body, author) \
-                 VALUES ($1::uuid, $2::uuid, 1, 'directive', 'deletion test', 'deletion test', $3::jsonb) \
-                 RETURNING id::text",
-            )
-            .bind(workspace)
-            .bind(&thread_id)
-            .bind(r#"{"kind":"human","user_id":null}"#)
-            .fetch_one(&mut *conn)
-            .await
-            .expect("insert a directive");
-            sqlx::query(
-                "INSERT INTO directive_receipts (workspace_id, post_id, agent) \
-                 VALUES ($1::uuid, $2::uuid, $3::jsonb)",
-            )
-            .bind(workspace)
-            .bind(&post_id)
-            .bind(r#"{"run":"run-1","role":"writer"}"#)
-            .execute(&mut *conn)
-            .await
-            .expect("insert a directive receipt");
-        }
-
-        // US-037: a decision for the thread and the change set's link to it.
-        // Both are seeded as soon as their tables exist (tests/decisions.rs
-        // pins their names and the columns without a default), for the same
-        // reason as above.
-        let decisions_exist: bool =
-            sqlx::query_scalar("SELECT to_regclass('public.decisions') IS NOT NULL")
-                .fetch_one(&mut *conn)
-                .await
-                .expect("look for the decisions table");
-        if decisions_exist {
-            let decision_id: String = sqlx::query_scalar(
-                "INSERT INTO decisions (workspace_id, thread_id, content, author) \
-                 VALUES ($1::uuid, $2::uuid, $3::jsonb, $4::jsonb) RETURNING id::text",
-            )
-            .bind(workspace)
-            .bind(&thread_id)
-            .bind(
-                r#"{"direction":"deletion test","chosen":"deletion test","criteria":["deletion test"],"options":[{"name":"deletion test","scores":{"deletion test":1},"lost_because":null}],"assumptions":[],"open_questions":[],"dissent":[],"posts":[]}"#,
-            )
-            .bind(r#"{"kind":"agent","run":"run-1","role":"writer","model":null,"harness":null}"#)
-            .fetch_one(&mut *conn)
-            .await
-            .expect("insert a decision");
-            let links_exist: bool =
-                sqlx::query_scalar("SELECT to_regclass('public.changeset_decisions') IS NOT NULL")
-                    .fetch_one(&mut *conn)
-                    .await
-                    .expect("look for the change set decisions table");
-            if links_exist {
-                sqlx::query(
-                    "INSERT INTO changeset_decisions (workspace_id, changeset_id, decision_id) \
-                     VALUES ($1::uuid, $2::uuid, $3::uuid)",
-                )
-                .bind(workspace)
-                .bind(&changeset_id)
-                .bind(&decision_id)
-                .execute(&mut *conn)
-                .await
-                .expect("insert a change set's link to a decision");
-            }
-        }
-    }
-
-    // US-059: a feature of the project. Seeded as soon as the table exists
-    // (tests/features.rs pins its name and the columns without a default), for
-    // the same reason as above.
-    let features_exist: bool =
-        sqlx::query_scalar("SELECT to_regclass('public.features') IS NOT NULL")
-            .fetch_one(&mut *conn)
-            .await
-            .expect("look for the features table");
-    if features_exist {
-        sqlx::query(
-            "INSERT INTO features (workspace_id, project_id, name) \
-             VALUES ($1::uuid, $2::uuid, 'deletion test')",
-        )
-        .bind(workspace)
-        .bind(&project_id)
-        .execute(&mut *conn)
-        .await
-        .expect("insert a feature");
-    }
+    // A feature of the project.
+    sqlx::query(
+        "INSERT INTO features (workspace_id, project_id, name) \
+         VALUES ($1::uuid, $2::uuid, 'deletion test')",
+    )
+    .bind(workspace)
+    .bind(&project_id)
+    .execute(&mut *conn)
+    .await
+    .expect("insert a feature");
 }
 
 async fn put_objects(keys: Vec<String>) {
