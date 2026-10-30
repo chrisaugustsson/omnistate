@@ -1,6 +1,7 @@
 //! Drawing on the page's WebGL 2 canvas, in the WebAssembly build.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
+use std::time::Instant;
 
 use omni_core::design::{AttachmentRef, NodeId};
 use skia_safe::{
@@ -54,6 +55,25 @@ thread_local! {
     /// The Skia context on the page's WebGL context. Frames reuse it, so that
     /// compiled shaders and the textures of snapshots stay on the GPU.
     static GPU: RefCell<Option<DirectContext>> = const { RefCell::new(None) };
+    /// Where the time of the last `scene_load` and `scene_draw` went, in
+    /// milliseconds: reading, laying out, painting and submitting to the GPU.
+    static TIMINGS: Cell<Timings> = const { Cell::new(Timings { parse: 0.0, layout: 0.0, paint: 0.0, submit: 0.0 }) };
+    /// How long the last `on_canvas` took to submit its commands to the GPU.
+    static SUBMIT_MS: Cell<f64> = const { Cell::new(0.0) };
+}
+
+/// The phases of the last scene load (`parse`, `layout`) and the last frame
+/// (`paint`, `submit`), in milliseconds (`scene_timings`).
+#[derive(Clone, Copy)]
+struct Timings {
+    parse: f64,
+    layout: f64,
+    paint: f64,
+    submit: f64,
+}
+
+fn millis(since: Instant) -> f64 {
+    since.elapsed().as_secs_f64() * 1000.0
 }
 
 /// Draws the demo sandbox scene on the default framebuffer of the current
@@ -126,16 +146,24 @@ pub fn scene_load_tags(tags: &str) -> Result<(), String> {
 /// `MAX_NESTING` levels deep once its instances are expanded (see
 /// [`nesting`]); the scene is loaded all the same, without the deeper nodes.
 pub fn scene_load(design_json: &str) -> Result<(), String> {
+    let started = Instant::now();
     let page = nesting::read(design_json)?;
     let page_id = *page.id();
     let assets = ASSETS.with_borrow(Assets::clone);
     let system = SYSTEM
         .with_borrow(|system| system.as_ref().map(DesignSystem::from_json))
         .transpose()?;
+    let parse = millis(started);
     let scene = match system {
         Some(system) => Scene::with_system(page, assets, system),
         None => Scene::new(page, assets),
     };
+    let layout = millis(started) - parse;
+    TIMINGS.set(Timings {
+        parse,
+        layout,
+        ..TIMINGS.get()
+    });
     let mut stage = Stage {
         scene,
         page: page_id,
@@ -264,9 +292,17 @@ pub fn scene_draw(width: i32, height: i32, pixel_ratio: f32) -> Result<(), Strin
         }
         let viewport = *stage.controls.viewport();
         let mut stats = None;
+        let mut paint = 0.0;
         let drawn = on_canvas(width, height, pixel_ratio, true, |canvas| {
+            let started = Instant::now();
             canvas.clear(Color::TRANSPARENT);
             stats = Some(stage.scene.render(canvas, &viewport));
+            paint = millis(started);
+        });
+        TIMINGS.set(Timings {
+            paint,
+            submit: SUBMIT_MS.get(),
+            ..TIMINGS.get()
         });
         stage.stats = stats;
         if drawn {
@@ -275,6 +311,21 @@ pub fn scene_draw(width: i32, height: i32, pixel_ratio: f32) -> Result<(), Strin
             Err("Skia could not draw on the WebGL context".to_string())
         }
     })
+}
+
+/// Where the time of the last `scene_load` and `scene_draw` went, as JSON in
+/// milliseconds: `{"parseMs": 12.5, "layoutMs": 80.1, "paintMs": 3.2,
+/// "submitMs": 1.4}`. Parsing the page and the design system and laying the
+/// scene out (resolving its instances and tokens included) belong to the load;
+/// painting (Skia recording and rasterising the boards) and submitting the
+/// commands to the GPU belong to the frame. The GPU finishing them is not
+/// counted: the page waits for it itself (`gl.finish()`).
+pub fn scene_timings() -> String {
+    let t = TIMINGS.get();
+    format!(
+        "{{\"parseMs\": {}, \"layoutMs\": {}, \"paintMs\": {}, \"submitMs\": {}}}",
+        t.parse, t.layout, t.paint, t.submit
+    )
 }
 
 /// What the last `scene_draw` did, as JSON: `{"boardsDrawn": 3,
@@ -550,7 +601,9 @@ fn on_canvas(
     let canvas = surface.canvas();
     canvas.scale((pixel_ratio, pixel_ratio));
     draw(canvas);
+    let started = Instant::now();
     context.flush_and_submit();
+    SUBMIT_MS.set(millis(started));
     true
 }
 

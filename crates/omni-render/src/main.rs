@@ -22,6 +22,8 @@ mod exports {
         static LAYOUT: RefCell<CString> = RefCell::new(CString::default());
         /// The result of the last `omni_render_scene_stats`.
         static STATS: RefCell<CString> = RefCell::new(CString::default());
+        /// The result of the last `omni_render_scene_timings`.
+        static TIMINGS: RefCell<CString> = RefCell::new(CString::default());
         /// The result of the last `omni_render_bounds_of`.
         static BOUNDS: RefCell<CString> = RefCell::new(CString::default());
         /// The result of the last `omni_render_node_box`.
@@ -252,6 +254,16 @@ mod exports {
         };
         STATS.set(CString::new(stats).unwrap_or_default());
         STATS.with_borrow(|stats| stats.as_ptr())
+    }
+
+    /// Where the time of the last scene load and frame went, as a NUL-ended
+    /// JSON object that stays until the next call: `{"parseMs": 12.5,
+    /// "layoutMs": 80.1, "paintMs": 3.2, "submitMs": 1.4}`. `make bench-ordrar`
+    /// reads it.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn omni_render_scene_timings() -> *const c_char {
+        TIMINGS.set(CString::new(omni_render::web::scene_timings()).unwrap_or_default());
+        TIMINGS.with_borrow(|timings| timings.as_ptr())
     }
 
     /// A wheel event at the canvas point `x`, `y` (CSS pixels): Ctrl or Cmd

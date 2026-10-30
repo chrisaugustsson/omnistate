@@ -15,7 +15,7 @@ SANDBOX_BUILD := render-sandbox/build
 # Where the web app's design viewer loads the renderer from (served as /render/).
 WEB_RENDER := web/public/render
 
-.PHONY: lint test web-deps web-api render-wasm chrome-boxes stress-file nodes-boxes bench-render check-layout penpot-compare bench-ops
+.PHONY: lint test web-deps web-api render-wasm chrome-boxes stress-file nodes-boxes bench-render check-layout penpot-compare bench-ops bench-ordrar
 
 # The last clippy run covers the WebAssembly-only code of omni-render.
 lint: web-deps
@@ -109,6 +109,20 @@ check-layout: render-wasm stress-file
 bench-ops:
 	docker compose up --build --wait --detach proxy
 	docker compose run --rm test cargo test --release -p omni-cli --features stack-tests --test stack_bench_ops --test stack_bench_design -- --nocapture
+
+# How Ordrar loads and moves (US-117): starts a stack of its own (Compose project
+# omnistate-bench, a release API and a production web app, fresh volumes), imports
+# fixtures/penpot/tirebud-ordrar.penpot into a new project, and five times opens
+# the design in a new headed Chrome with an empty cache after restarting the API.
+# It prints the cold time to first board, the median and 95th-percentile frame
+# time of a scripted 10 s pan and zoom, and the API's peak memory, and writes
+# docs/bench-ordrar.md. Like `make bench-render` it needs a Mac with a GPU and
+# Chrome, and the first run installs Playwright (without a browser) with npm.
+# It reports the numbers against the limits of FR-28 and does not fail on them.
+bench-ordrar: render-wasm
+	$(CARGO) build --release --quiet -p omni-cli
+	npm install --prefix render-sandbox --no-audit --no-fund --loglevel=error
+	node render-sandbox/bench-ordrar.mjs
 
 # Penpot comparison (US-104): converts every .penpot export in PENPOT_FIXTURES,
 # renders and compares each board with Penpot's own PNG, and writes the report
