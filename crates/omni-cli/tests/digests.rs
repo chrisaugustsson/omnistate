@@ -5,25 +5,24 @@
 //!
 //! The contract these tests pin down (the rest is the green step's choice; all
 //! paths are under `/api/v1/w/{workspace}/projects/{project_id}`, the project
-//! found as for `omni changeset`, from `--project` or `.omni.toml`):
+//! found from `--project` or `.omni.toml`):
 //!
 //! - `omni thread digest <thread>` reads `GET /threads/{thread}/digest` and
 //!   nothing else: no read of the thread or of single posts, since the digest
 //!   is the cheap view. It prints one line per entry of the answer's `posts`,
 //!   in the API's order, and nothing else on standard output. Each line holds
-//!   the post's type, its author's role (`human` for the human's posts), its
-//!   summary and its ID. `--json` prints the API's JSON.
+//!   its author's role (`human` for the human's posts), its summary and its ID.
+//!   `--json` prints the API's JSON.
 //! - `omni post show <id>` reads `GET /posts/{id}` and prints the one post:
-//!   at least its type, its author's role (`human` for the human), its
-//!   summary, its ID and its Markdown body. `--json` prints the API's JSON.
+//!   at least its author's role (`human` for the human), its summary, its ID
+//!   and its Markdown body. `--json` prints the API's JSON.
 //!   It sends nothing but that read.
 //! - A thread or post the API does not know (404, which is also the answer for
 //!   a post the caller may not see yet) is a one-line error that names it. A
 //!   missing `<thread>` or `<id>` is a one-line usage error that names the
 //!   command and sends nothing.
-//! - Both are agent requests with the agent identity headers, directives in an
-//!   answer are printed on standard error as for every command (US-034), and
-//!   errors are one line on standard error, as in US-015 (tests/common/mod.rs).
+//! - Both are agent requests with the agent identity headers, and errors are
+//!   one line on standard error, as in US-015 (tests/common/mod.rs).
 
 mod common;
 
@@ -31,16 +30,13 @@ use common::*;
 use serde_json::{Value, json};
 
 const PROJECT: &str = "01900000-0000-7000-8000-0000000000b1";
-const CHANGESET: &str = "01900000-0000-7000-8000-0000000000c1";
 const THREAD: &str = "01900000-0000-7000-8000-0000000000e1";
 const UNKNOWN_THREAD: &str = "01900000-0000-7000-8000-0000000000e9";
 const LEFT: &str = "01900000-0000-7000-8000-0000000000f1";
 const FOLD: &str = "01900000-0000-7000-8000-0000000000f2";
 const CONTRAST: &str = "01900000-0000-7000-8000-0000000000f3";
 const UNKNOWN_POST: &str = "01900000-0000-7000-8000-0000000000f9";
-const DIRECTIVE: &str = "01900000-0000-7000-8000-0000000000f7";
 const HUMAN_ID: &str = "01900000-0000-7000-8000-0000000000ab";
-const DIRECTIVE_SUMMARY: &str = "Keep the hero under 600 px";
 const LEFT_BODY: &str = "## Why\n\nThe *left* layout reads better at 320 px.\n";
 
 fn base() -> String {
@@ -63,19 +59,13 @@ fn human() -> Value {
     json!({ "kind": "human", "user_id": HUMAN_ID })
 }
 
-/// The visible posts of `THREAD`: (id, type, author, summary).
-fn posts() -> Vec<(&'static str, &'static str, Value, &'static str)> {
+/// The visible posts of `THREAD`: (id, author, summary).
+fn posts() -> Vec<(&'static str, Value, &'static str)> {
     vec![
-        (
-            LEFT,
-            "position",
-            agent("run-7", "critic-a"),
-            "Pick the left layout",
-        ),
-        (FOLD, "note", human(), "Mind the fold on small phones"),
+        (LEFT, agent("run-7", "critic-a"), "Pick the left layout"),
+        (FOLD, human(), "Mind the fold on small phones"),
         (
             CONTRAST,
-            "finding",
             agent("run-8", "scout"),
             "Contrast of the CTA is 3.1:1",
         ),
@@ -85,11 +75,9 @@ fn posts() -> Vec<(&'static str, &'static str, Value, &'static str)> {
 fn digest_json() -> Value {
     let entries: Vec<Value> = posts()
         .into_iter()
-        .map(|(id, kind, author, summary)| {
+        .map(|(id, author, summary)| {
             json!({
                 "id": id,
-                "phase": 1,
-                "type": kind,
                 "author": author,
                 "summary": summary,
                 "created_at": "2026-10-21T10:01:00.000000Z"
@@ -100,7 +88,7 @@ fn digest_json() -> Value {
 }
 
 fn post_json(id: &str) -> Option<Value> {
-    let (id, kind, author, summary) = posts().into_iter().find(|p| p.0 == id)?;
+    let (id, author, summary) = posts().into_iter().find(|p| p.0 == id)?;
     let body = if id == LEFT {
         LEFT_BODY.to_string()
     } else {
@@ -109,8 +97,7 @@ fn post_json(id: &str) -> Option<Value> {
     Some(json!({
         "id": id,
         "thread_id": THREAD,
-        "phase": 1,
-        "type": kind,
+        "feature_id": null,
         "author": author,
         "summary": summary,
         "body": body,
@@ -123,27 +110,8 @@ fn post_json(id: &str) -> Option<Value> {
     }))
 }
 
-fn directive_json() -> Value {
-    json!({
-        "id": DIRECTIVE,
-        "thread_id": THREAD,
-        "phase": 1,
-        "type": "directive",
-        "author": human(),
-        "summary": DIRECTIVE_SUMMARY,
-        "body": "It must fit above the fold.",
-        "body_html": "<p>It must fit above the fold.</p>",
-        "links": [],
-        "attachments": [],
-        "confidence": null,
-        "replaces": null,
-        "created_at": "2026-10-21T10:00:00.000000Z"
-    })
-}
-
-/// An API that knows `THREAD` and its posts. With `directives`, every answer
-/// in the thread carries the directive.
-fn mock(directives: bool) -> MockServer {
+/// An API that knows `THREAD` and its posts.
+fn mock() -> MockServer {
     MockServer::start(move |request| {
         if request.method == "GET" && request.path == format!("/api/v1/w/{WORKSPACE}/projects") {
             return Reply::json(
@@ -160,32 +128,12 @@ fn mock(directives: bool) -> MockServer {
         }
         let path = request.path.as_str();
         if path == digest_path(THREAD) {
-            let mut answer = digest_json();
-            if directives {
-                answer["directives"] = json!([directive_json()]);
-            }
-            return Reply::json(200, &answer);
+            return Reply::json(200, &digest_json());
         }
         if let Some(id) = path.strip_prefix(&post_path("")) {
             if let Some(post) = post_json(id) {
                 return Reply::json(200, &json!({ "project_id": PROJECT, "post": post }));
             }
-        }
-        if path == format!("{}/threads/{THREAD}", base()) {
-            return Reply::json(
-                200,
-                &json!({ "thread": {
-                    "id": THREAD,
-                    "project_id": PROJECT,
-                    "changeset_id": CHANGESET,
-                    "question": "Which hero layout?",
-                    "criteria": [],
-                    "run_tag": "run-7",
-                    "created_at": "2026-10-21T10:00:00.000000Z",
-                    "phases": [],
-                    "posts": []
-                } }),
-            );
         }
         Reply::json(404, &json!({ "error": "not_found" }))
     })
@@ -259,8 +207,8 @@ fn assert_one_line_error(out: &Out, needles: &[&str]) {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn digest_prints_one_line_per_visible_post_with_type_role_summary_and_id() {
-    let server = mock(false);
+fn digest_prints_one_line_per_visible_post_with_role_summary_and_id() {
+    let server = mock();
     let home = logged_in(&server.url);
     let out = run(&home, &["thread", "digest", THREAD]);
     assert_eq!(out.code, 0, "{}", out.stderr);
@@ -271,14 +219,9 @@ fn digest_prints_one_line_per_visible_post_with_type_role_summary_and_id() {
         "one line per post and nothing else: {:?}",
         out.stdout
     );
-    for (line, (id, kind, author, summary)) in lines.iter().zip(posts()) {
+    for (line, (id, author, summary)) in lines.iter().zip(posts()) {
         let role = author["role"].as_str().unwrap_or("human");
-        for (what, needle) in [
-            ("type", kind),
-            ("author role", role),
-            ("summary", summary),
-            ("ID", id),
-        ] {
+        for (what, needle) in [("author role", role), ("summary", summary), ("ID", id)] {
             assert!(
                 line.contains(needle),
                 "the line of post {id} has its {what} {needle:?}: {line:?}"
@@ -289,7 +232,7 @@ fn digest_prints_one_line_per_visible_post_with_type_role_summary_and_id() {
 
 #[test]
 fn digest_reads_only_the_digest_as_the_agent() {
-    let server = mock(false);
+    let server = mock();
     let home = logged_in(&server.url);
     let out = run(&home, &["thread", "digest", THREAD]);
     assert_eq!(out.code, 0, "{}", out.stderr);
@@ -307,7 +250,7 @@ fn digest_reads_only_the_digest_as_the_agent() {
 
 #[test]
 fn digest_json_is_the_api_answer() {
-    let server = mock(false);
+    let server = mock();
     let home = logged_in(&server.url);
     let out = run(&home, &["thread", "digest", THREAD, "--json"]);
     assert_eq!(out.code, 0, "{}", out.stderr);
@@ -322,28 +265,8 @@ fn digest_json_is_the_api_answer() {
 }
 
 #[test]
-fn digest_prints_directives_on_standard_error_only() {
-    let server = mock(true);
-    let home = logged_in(&server.url);
-    let out = run(&home, &["thread", "digest", THREAD]);
-    assert_eq!(out.code, 0, "{}", out.stderr);
-    assert_eq!(
-        non_empty_lines(&out.stdout).len(),
-        3,
-        "standard output is the digest alone: {:?}",
-        out.stdout
-    );
-    assert!(!out.stdout.contains(DIRECTIVE_SUMMARY), "{:?}", out.stdout);
-    assert!(
-        out.stderr.contains(DIRECTIVE_SUMMARY),
-        "the directive is on standard error: {:?}",
-        out.stderr
-    );
-}
-
-#[test]
 fn digest_of_an_unknown_thread_is_one_line_that_names_it() {
-    let server = mock(false);
+    let server = mock();
     let home = logged_in(&server.url);
     let out = run(&home, &["thread", "digest", UNKNOWN_THREAD]);
     assert_one_line_error(&out, &[UNKNOWN_THREAD]);
@@ -358,7 +281,7 @@ fn digest_of_an_unknown_thread_is_one_line_that_names_it() {
 
 #[test]
 fn digest_without_a_thread_is_a_usage_error_that_sends_nothing() {
-    let server = mock(false);
+    let server = mock();
     let home = logged_in(&server.url);
     let out = run(&home, &["thread", "digest"]);
     assert_one_line_error(&out, &["digest"]);
@@ -375,12 +298,11 @@ fn digest_without_a_thread_is_a_usage_error_that_sends_nothing() {
 
 #[test]
 fn post_show_prints_the_whole_post() {
-    let server = mock(false);
+    let server = mock();
     let home = logged_in(&server.url);
     let out = run(&home, &["post", "show", LEFT]);
     assert_eq!(out.code, 0, "{}", out.stderr);
     for (what, needle) in [
-        ("type", "position"),
         ("author role", "critic-a"),
         ("summary", "Pick the left layout"),
         ("ID", LEFT),
@@ -406,18 +328,21 @@ fn post_show_prints_the_whole_post() {
 
 #[test]
 fn post_show_json_is_the_api_answer() {
-    let server = mock(false);
+    let server = mock();
     let home = logged_in(&server.url);
     let out = run(&home, &["post", "show", CONTRAST, "--json"]);
     assert_eq!(out.code, 0, "{}", out.stderr);
     let answer = out.json();
     assert_eq!(answer["post"]["id"], CONTRAST, "{answer}");
-    assert_eq!(answer["post"]["type"], "finding", "{answer}");
+    assert_eq!(
+        answer["post"]["summary"], "Contrast of the CTA is 3.1:1",
+        "{answer}"
+    );
 }
 
 #[test]
 fn post_show_of_an_unknown_or_hidden_post_is_one_line_that_names_it() {
-    let server = mock(false);
+    let server = mock();
     let home = logged_in(&server.url);
     let out = run(&home, &["post", "show", UNKNOWN_POST]);
     assert_one_line_error(&out, &[UNKNOWN_POST]);
@@ -437,7 +362,7 @@ fn post_show_of_an_unknown_or_hidden_post_is_one_line_that_names_it() {
 
 #[test]
 fn post_show_without_an_id_is_a_usage_error_that_sends_nothing() {
-    let server = mock(false);
+    let server = mock();
     let home = logged_in(&server.url);
     let out = run(&home, &["post", "show"]);
     assert_one_line_error(&out, &["post show"]);

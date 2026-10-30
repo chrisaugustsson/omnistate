@@ -21,8 +21,8 @@
 //!   standard input. `omni config show` prints the effective settings (never
 //!   the key) without any request.
 //! - A response header `X-Omni-Notice: <text>` is a notice for the agent: the
-//!   CLI prints it on standard error. It is how notices such as directives
-//!   (US-034) reach the agent without touching standard output.
+//!   CLI prints it on standard error, so a notice reaches the agent without
+//!   touching standard output.
 //! - Errors: one line on standard error, no output on standard output, and an
 //!   exit code that `omni --help` documents under an "Exit codes" heading.
 #![allow(dead_code)]

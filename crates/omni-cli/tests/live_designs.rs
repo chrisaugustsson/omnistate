@@ -1,23 +1,21 @@
-//! US-104: `omni design edit` and `omni tokens import` without a change set,
-//! tested as the built `omni` against a mock HTTP server. None of these tests
-//! needs Postgres; the API's contract is in
-//! crates/omni-api/tests/live_designs.rs.
+//! US-104: `omni design edit` and `omni tokens import`, tested as the built
+//! `omni` against a mock HTTP server. None of these tests needs Postgres; the
+//! API's contract is in crates/omni-api/tests/live_designs.rs.
 //!
 //! The contract these tests pin down (all paths are under
 //! `/api/v1/w/{workspace}/projects/{project_id}`):
 //!
-//! - `omni design edit <doc>` (or `--doc <doc>`), without `--changeset`, sends
-//!   the batch (a JSON array, from `--body-file <path|->` or standard input) to
-//!   `POST /docs/{doc}/ops` as `{"ops": [...]}`, with `"board"` added for
-//!   `--board <id>`, as the agent, and touches no change set. It prints each
-//!   node with its new revision and the IDs of new nodes; `--json` prints the
-//!   API's answer. A conflict (409) is a one-line error that names the
-//!   conflict, the node and its current revision.
-//! - `omni tokens import <file>`, without `--changeset`, sends `PUT /tokens`
-//!   with `{"tokens": <the file's JSON>}`, which replaces the token tree of the
-//!   design system's head. It prints a short plain-text line or two with the
-//!   modes; `--json` prints the API's answer. A refusal (400 `invalid_tokens`)
-//!   is a one-line error that carries the API's message.
+//! - `omni design edit <doc>` (or `--doc <doc>`) sends the batch (a JSON array,
+//!   from `--body-file <path|->` or standard input) to `POST /docs/{doc}/ops` as
+//!   `{"ops": [...]}`, with `"board"` added for `--board <id>`, as the agent. It
+//!   prints each node with its new revision and the IDs of new nodes; `--json`
+//!   prints the API's answer. A conflict (409) is a one-line error that names
+//!   the conflict, the node and its current revision.
+//! - `omni tokens import <file>` sends `PUT /tokens` with `{"tokens": <the
+//!   file's JSON>}`, which replaces the token tree of the design system's head.
+//!   It prints a short plain-text line or two with the modes; `--json` prints
+//!   the API's answer. A refusal (400 `invalid_tokens`) is a one-line error that
+//!   carries the API's message.
 
 mod common;
 
@@ -184,14 +182,6 @@ fn body_of(request: &Recorded) -> Value {
         .unwrap_or_else(|e| panic!("the request body is JSON ({e}): {:?}", request.body))
 }
 
-fn assert_no_change_set(server: &MockServer) {
-    let requests = server.requests();
-    assert!(
-        requests.iter().all(|r| !r.path.contains("/changesets")),
-        "no change set is involved: {requests:?}"
-    );
-}
-
 fn write_file(home: &Scratch, name: &str, text: &str) -> String {
     let path = home.join(name);
     std::fs::write(&path, text).expect("write the file");
@@ -203,7 +193,7 @@ fn write_file(home: &Scratch, name: &str, text: &str) -> String {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn design_edit_without_a_change_set_sends_the_batch_to_the_designs_head() {
+fn design_edit_sends_the_batch_to_the_designs_head() {
     let server = mock();
     let home = logged_in(&server.url);
     let file = write_file(
@@ -239,11 +229,10 @@ fn design_edit_without_a_change_set_sends_the_batch_to_the_designs_head() {
             "the batch goes to the API as it is, with no board"
         );
     }
-    assert_no_change_set(&server);
 }
 
 #[test]
-fn design_edit_without_a_change_set_sends_the_board_along() {
+fn design_edit_sends_the_board_along() {
     let server = mock();
     let home = logged_in(&server.url);
     let out = design_edit(&home, &[DOC, "--board", BOARD], &batch().to_string());
@@ -258,7 +247,7 @@ fn design_edit_without_a_change_set_sends_the_board_along() {
 }
 
 #[test]
-fn design_edit_without_a_change_set_prints_the_new_revisions() {
+fn design_edit_prints_the_new_revisions() {
     let server = mock();
     let home = logged_in(&server.url);
     let out = design_edit(&home, &[DOC], &batch().to_string());
@@ -287,7 +276,7 @@ fn design_edit_without_a_change_set_prints_the_new_revisions() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn tokens_import_without_a_change_set_replaces_the_tokens_of_the_design_systems_head() {
+fn tokens_import_replaces_the_tokens_of_the_design_systems_head() {
     let server = mock();
     let home = logged_in(&server.url);
     let file = write_file(&home, "tokens.json", &tree().to_string());
@@ -320,11 +309,10 @@ fn tokens_import_without_a_change_set_replaces_the_tokens_of_the_design_systems_
     let answer = json.json();
     assert_eq!(answer["doc_id"], DESIGN_SYSTEM, "{answer}");
     assert_eq!(answer["tokens"], tree(), "{answer}");
-    assert_no_change_set(&server);
 }
 
 #[test]
-fn tokens_import_without_a_change_set_reports_a_refusal_of_the_api() {
+fn tokens_import_reports_a_refusal_of_the_api() {
     let server = mock();
     let home = logged_in(&server.url);
     let mut broken = tree();

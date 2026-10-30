@@ -4,7 +4,7 @@
 //!
 //! The contract these tests pin down (the rest is the green step's choice; all
 //! paths are under `/api/v1/w/{workspace}/projects/{project_id}`, the project
-//! found as for `omni changeset`, from `--project` or `.omni.toml`):
+//! found from `--project` or `.omni.toml`):
 //!
 //! - `omni component usage <component>` takes a component's node ID and sends
 //!   `GET /components/usage?component=<component>`. It prints one line per
@@ -26,8 +26,6 @@ use serde_json::{Value, json};
 const PROJECT: &str = "01900000-0000-7000-8000-0000000000b1";
 const SHOP: &str = "01900000-0000-7000-8000-0000000000d1";
 const ADMIN: &str = "01900000-0000-7000-8000-0000000000d2";
-const SHOP_VERSION: &str = "01900000-0000-7000-8000-0000000000f1";
-const ADMIN_VERSION: &str = "01900000-0000-7000-8000-0000000000f2";
 /// The button, which three boards use.
 const BUTTON: &str = "btn00001";
 /// A component ID that the design system does not define.
@@ -41,11 +39,10 @@ fn usage_path(component: &str) -> String {
     format!("{}/components/usage?component={component}", base())
 }
 
-fn board(doc: &str, title: &str, version: &str, page: (&str, &str), id: &str, name: &str) -> Value {
+fn board(doc: &str, title: &str, page: (&str, &str), id: &str, name: &str) -> Value {
     json!({
         "doc_id": doc,
         "doc_title": title,
-        "version_id": version,
         "page_id": page.0,
         "page_name": page.1,
         "board_id": id,
@@ -59,9 +56,9 @@ fn button_usage() -> Value {
         "project_id": PROJECT,
         "component": BUTTON,
         "boards": [
-            board(SHOP, "Shop", SHOP_VERSION, ("page0001", "Home"), "brd00001", "Checkout"),
-            board(SHOP, "Shop", SHOP_VERSION, ("page0001", "Home"), "brd00002", "Product"),
-            board(ADMIN, "Admin", ADMIN_VERSION, ("page0002", "Admin"), "brd00003", "Settings")
+            board(SHOP, "Shop", ("page0001", "Home"), "brd00001", "Checkout"),
+            board(SHOP, "Shop", ("page0001", "Home"), "brd00002", "Product"),
+            board(ADMIN, "Admin", ("page0002", "Admin"), "brd00003", "Settings")
         ]
     })
 }

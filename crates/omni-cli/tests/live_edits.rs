@@ -1,17 +1,15 @@
-//! US-103: `omni doc edit` without a change set, tested as the built `omni`
-//! against a mock HTTP server. None of these tests needs Postgres; the real
-//! round trip against the API is in tests/stack_docs.rs, and the API's
-//! contract in crates/omni-api/tests/live_edits.rs.
+//! US-103: `omni doc edit`, tested as the built `omni` against a mock HTTP
+//! server. None of these tests needs Postgres; the real round trip against the
+//! API is in tests/stack_docs.rs, and the API's contract in
+//! crates/omni-api/tests/live_edits.rs.
 //!
 //! The contract these tests pin down (all paths are under
 //! `/api/v1/w/{workspace}/projects/{project_id}`):
 //!
-//! - `omni doc edit <doc>`, without `--changeset`, sends the batch (a JSON
-//!   array, from `--body-file <path|->` or standard input) to `POST
-//!   /docs/{doc}/ops` as `{"ops": [...]}`, with the agent's key and identity,
-//!   and touches no change set. It prints each node with its new revision and
-//!   the IDs of new nodes; `--json` prints the API's answer. `--changeset <id>`
-//!   still edits that change set's draft.
+//! - `omni doc edit <doc>` sends the batch (a JSON array, from `--body-file
+//!   <path|->` or standard input) to `POST /docs/{doc}/ops` as `{"ops": [...]}`,
+//!   with the agent's key and identity. It prints each node with its new
+//!   revision and the IDs of new nodes; `--json` prints the API's answer.
 //! - A conflict (409) is a one-line error that names the conflict, the node
 //!   and its current revision; a refused operation (400) is a one-line error
 //!   that names the unknown ID. Input that is not a batch is refused before
@@ -151,7 +149,7 @@ fn non_empty_lines(text: &str) -> Vec<&str> {
 }
 
 #[test]
-fn doc_edit_without_a_change_set_sends_the_batch_to_the_doc() {
+fn doc_edit_sends_the_batch_to_the_doc() {
     let server = mock();
     let home = logged_in(&server.url);
     let file = home.join("ops.json");
@@ -177,14 +175,10 @@ fn doc_edit_without_a_change_set_sends_the_batch_to_the_doc() {
             "the batch goes to the API as it is"
         );
     }
-    assert!(
-        requests.iter().all(|r| !r.path.contains("/changesets")),
-        "no change set is involved: {requests:?}"
-    );
 }
 
 #[test]
-fn doc_edit_without_a_change_set_prints_the_new_revisions() {
+fn doc_edit_prints_the_new_revisions() {
     let server = mock();
     let home = logged_in(&server.url);
     let out = edit_with(&home, &[], batch().to_string().as_bytes());
@@ -230,7 +224,7 @@ fn a_refused_operation_on_a_live_doc_is_one_line_that_names_the_unknown_id() {
 }
 
 #[test]
-fn doc_edit_without_a_change_set_refuses_input_that_is_not_a_batch_before_sending_it() {
+fn doc_edit_refuses_input_that_is_not_a_batch_before_sending_it() {
     let server = mock();
     let home = logged_in(&server.url);
     for input in ["", "not json", "{\"op\": \"delete\"}"] {

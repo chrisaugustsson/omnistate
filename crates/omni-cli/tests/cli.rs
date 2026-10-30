@@ -265,7 +265,7 @@ fn output_is_short_text_by_default_and_the_full_json_with_json() {
 
 #[test]
 fn notices_go_to_standard_error_and_leave_standard_output_parseable() {
-    let notice = "directive from the human: keep the grid at 8 px";
+    let notice = "from the server: keep the grid at 8 px";
     let server = MockServer::start(move |_| {
         Reply::json(200, &whoami_body()).with_header("X-Omni-Notice", notice)
     });

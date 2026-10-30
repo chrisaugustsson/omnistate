@@ -38,10 +38,7 @@ fn doc_json(title: &str) -> Value {
         "pillar": "spec",
         "title": title,
         "created_at": "2026-10-23T10:00:00.000000Z",
-        "mainline_version_id": null,
-        "feature_id": null,
-        "drafts": [],
-        "claims": []
+        "feature_id": null
     })
 }
 

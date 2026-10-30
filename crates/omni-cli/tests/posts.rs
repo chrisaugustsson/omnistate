@@ -1,11 +1,10 @@
-//! US-034: `omni post`, and the directives that the API gives an agent with
-//! its requests, tested as the built binary against a mock HTTP server. None
-//! of these tests needs Postgres; the API's contract is in
+//! US-034: `omni post`, tested as the built binary against a mock HTTP server.
+//! None of these tests needs Postgres; the API's contract is in
 //! crates/omni-api/tests/posts.rs.
 //!
 //! The contract these tests pin down (the rest is the green step's choice; all
 //! paths are under `/api/v1/w/{workspace}/projects/{project_id}`, the project
-//! found as for `omni changeset`, from `--project` or `.omni.toml`):
+//! found from `--project` or `.omni.toml`):
 //!
 //! - `omni post <thread> --summary <text> [<body>] [--body-file <path>]
 //!   [--attach <file>]... [--link <target>]... [--confidence <n>] [--replaces
@@ -64,8 +63,6 @@ fn post_json(body: &Value) -> Value {
     json!({
         "id": POST,
         "thread_id": THREAD,
-        "phase": 1,
-        "type": body["type"],
         "author": {
             "kind": "agent",
             "run": "run-7",

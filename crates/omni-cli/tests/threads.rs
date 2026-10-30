@@ -1,9 +1,9 @@
 //! US-108: `omni thread create`, `list`, `read` and `conclude`, threads at the
-//! app level or in a feature with no change set, tested as the built binary
-//! against a mock HTTP server. None of these tests needs Postgres; the API's
-//! contract is in crates/omni-api/tests/live_threads.rs, and the round trip
-//! against the API in tests/stack_threads.rs. `omni post` is in
-//! tests/posts.rs and `omni wait --thread` in tests/thread_waits.rs.
+//! app level or in a feature, tested as the built binary against a mock HTTP
+//! server. None of these tests needs Postgres; the API's contract is in
+//! crates/omni-api/tests/live_threads.rs, and the round trip against the API in
+//! tests/stack_threads.rs. `omni post` is in tests/posts.rs and `omni wait
+//! --thread` in tests/thread_waits.rs.
 //!
 //! The contract these tests pin down (the rest is the green step's choice; all
 //! paths are under `/api/v1/w/{workspace}/projects/{project_id}`, the project
@@ -12,7 +12,7 @@
 //! - `omni thread create <question> [--feature <name or id>] [--sealed]`
 //!   sends `POST /threads` with `{"question", "sealed"}` (`sealed` is `true`
 //!   with `--sealed`, else `false` or left out): a thread at the app level,
-//!   with no change set and no criteria. With `--feature` it sends `POST
+//!   with no criteria. With `--feature` it sends `POST
 //!   /features/{feature_id}/threads` instead; a name is looked up in the
 //!   project's features (`GET /features`) ignoring case, and a name the
 //!   project does not have is a one-line error that names it and starts
@@ -258,8 +258,7 @@ fn started(server: &MockServer, path: &str) -> Value {
     body_of(&sent[0])
 }
 
-/// The body has no change set, no criteria and nothing but the question and
-/// `sealed`.
+/// The body has nothing but the question and `sealed`.
 fn assert_only_question_and_sealed(body: &Value) {
     let keys: Vec<&str> = body
         .as_object()
@@ -279,7 +278,7 @@ fn assert_only_question_and_sealed(body: &Value) {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn thread_create_starts_a_thread_at_the_app_level_or_in_a_feature_without_a_change_set() {
+fn thread_create_starts_a_thread_at_the_app_level_or_in_a_feature() {
     // (extra arguments, path under base(), whether the body says sealed)
     for (extra, path, sealed) in [
         (vec![], "/threads".to_string(), false),

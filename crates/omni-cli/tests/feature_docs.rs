@@ -8,8 +8,7 @@
 //!   between the fields), where the scope is `project` for a global doc or the
 //!   name of the doc's feature. `--json` prints the API's answer.
 //! - `--feature <name or id>` sends `GET .../docs?feature=<id>` (a name is
-//!   looked up in the project's features, as for `omni changeset`) and
-//!   `--global` sends `GET .../docs?feature=global`. A feature name the project
+//!   looked up in the project's features) and `--global` sends `GET .../docs?feature=global`. A feature name the project
 //!   does not have is a one-line error that names it, and no list is asked
 //!   for.
 //! - `--pillar <pillar>` lists only the docs of that pillar, one of `spec`,
@@ -62,10 +61,7 @@ fn doc_json(id: &str, feature: Value, kind: &str, pillar: &str, title: &str) -> 
         "kind": kind,
         "pillar": pillar,
         "title": title,
-        "created_at": "2026-10-23T10:00:00.000000Z",
-        "mainline_version_id": null,
-        "drafts": [],
-        "claims": []
+        "created_at": "2026-10-23T10:00:00.000000Z"
     })
 }
 

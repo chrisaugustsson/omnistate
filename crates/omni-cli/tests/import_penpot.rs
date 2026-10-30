@@ -7,7 +7,7 @@
 //!
 //! - The export is read before anything is sent: a file that is missing, or
 //!   that is not a Penpot export, is a one-line error that names the file and
-//!   sends nothing, so it leaves no change set behind.
+//!   sends nothing.
 //! - Errors are one line on standard error, as in US-015
 //!   (tests/common/mod.rs).
 
