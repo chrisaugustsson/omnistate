@@ -14,14 +14,6 @@ export function blockIds(html: string): Set<string> {
   return ids;
 }
 
-/** The text of the block `node`, with its white space collapsed; `null` when the doc has no such block. */
-export function blockText(html: string, node: string): string | null {
-  for (const block of Array.from(parse(html).querySelectorAll("[data-omni-id]"))) {
-    if (block.getAttribute("data-omni-id") === node) return (block.textContent ?? "").replace(/\s+/g, " ").trim();
-  }
-  return null;
-}
-
 const ATTACHMENT_SOURCE = /\bsrc="attachment:([^"]+)"/g;
 
 /** The IDs of the attachments that images of the doc show. */

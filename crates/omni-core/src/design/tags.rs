@@ -1870,8 +1870,7 @@ pub type Revision<'a> = &'a dyn Fn(&NodeId) -> Option<u64>;
 
 /// Prints `node` and its subtree like [`print`]. With `revision`, a tag also
 /// carries `rev={n}` after its `id`, the revision that `revision` gives the
-/// node: what an agent reads before it edits a draft. The tags of a saved
-/// version have none.
+/// node: what an agent reads before it edits a doc.
 pub fn print_with(node: &Node, revision: Option<Revision>) -> String {
     let json = serde_json::to_value(node).expect("a node serializes to JSON");
     let mut out = String::new();

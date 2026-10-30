@@ -1,7 +1,7 @@
 //! An import onto a design system that the project already has: its tokens and
-//! components are added to the ones of the design system's mainline version,
-//! which all stay, because `PUT .../tokens` and `PUT .../components` replace
-//! the whole draft.
+//! components are added to the ones of the design system's head, which all
+//! stay, because `PUT .../tokens` and `PUT .../components` replace the whole
+//! head.
 
 use omni_core::design::tokens::TokenTree;
 
@@ -247,9 +247,9 @@ impl Import {
 
     /// The import onto the design system that the project already has, so
     /// that sending it keeps what that design system holds. `tokens` is the
-    /// server's answer about the mainline tokens (`GET .../tokens`) and
-    /// `version` its answer about the mainline version of the design system
-    /// (`GET .../versions/{id}`), both as JSON text.
+    /// server's answer about the head's tokens (`GET .../tokens`) and
+    /// `version` holds the head's components under `version.components`, both
+    /// as JSON text.
     ///
     /// The tokens of the import are added to the design system's, a token of
     /// the same path taking the import's value, and its components to the

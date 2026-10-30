@@ -166,8 +166,8 @@ Removes a node and all its descendants.
 
 The result lists the node and its descendants in `removed`, in document order. The
 parent's revision does not change. Later operations that mention a deleted node
-are errors, because it is no longer in the doc. (The history of a project is
-never lost: the version the node was last in keeps it.)
+are errors, because it is no longer in the doc. (The history of a doc is never
+lost: its `doc_changes` rows keep the head from before the delete.)
 
 ## Batches
 

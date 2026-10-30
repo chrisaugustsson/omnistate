@@ -81,7 +81,7 @@ pub struct DocListResponse {
 }
 
 #[derive(Serialize, ToSchema)]
-pub struct MainlineHtmlResponse {
+pub struct HeadHtmlResponse {
     pub doc_id: String,
     /// The head as HTML with `data-omni-id`; the empty text for an
     /// empty doc, and for a design's head, whose content is `tags` and `pages`.
@@ -1026,7 +1026,7 @@ pub async fn delete_doc(
         ("view" = Option<String>, Query, description = "`outline` for the head of a design as its outline (its pages with their boards as placeholders, and the chunk of each board) instead of its whole body; the boards come one by one from `GET .../docs/{doc_id}/boards/{board_id}`"),
     ),
     responses(
-        (status = 200, description = "The head's HTML", body = MainlineHtmlResponse),
+        (status = 200, description = "The head's HTML", body = HeadHtmlResponse),
         (status = 401, description = "No valid API key or session", body = ErrorBody),
         (status = 404, description = "No such doc in this project and workspace", body = ErrorBody),
     )
@@ -1036,7 +1036,7 @@ pub async fn read_doc_html(
     request: WorkspaceRequest,
     Path((_, project_id, doc_id)): Path<(String, String, String)>,
     Query(query): Query<HashMap<String, String>>,
-) -> Result<Json<MainlineHtmlResponse>, ApiError> {
+) -> Result<Json<HeadHtmlResponse>, ApiError> {
     let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
     let doc_id = parse_uuid(&doc_id).ok_or(ApiError::NotFound)?;
     let mut tx = state.workspace_tx(&request.workspace_id).await?;
@@ -1054,8 +1054,8 @@ async fn read_head(
     workspace_id: &str,
     row: DocRow,
     outline: bool,
-) -> Result<MainlineHtmlResponse, ApiError> {
-    let mut answer = MainlineHtmlResponse {
+) -> Result<HeadHtmlResponse, ApiError> {
+    let mut answer = HeadHtmlResponse {
         doc_id: row.id,
         html: String::new(),
         tags: None,

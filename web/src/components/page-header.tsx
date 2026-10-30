@@ -36,12 +36,3 @@ export function PageHeader({
     </header>
   );
 }
-
-/** A small uppercase label over a group of content. */
-export function Eyebrow({ children, className }: { children: ReactNode; className?: string }) {
-  return (
-    <div className={cn("text-[11px] font-medium tracking-[0.08em] text-muted-foreground uppercase", className)}>
-      {children}
-    </div>
-  );
-}

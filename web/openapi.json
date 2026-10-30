@@ -966,6 +966,76 @@
         ],
         "type": "object"
       },
+      "HeadHtmlResponse": {
+        "properties": {
+          "boards": {
+            "description": "The boards of the outline in page order, each with the chunk that holds\nit, so that a viewer reads again only the boards whose chunk changed;\nonly with `outline`.",
+            "items": {
+              "$ref": "#/components/schemas/HeadBoard"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "components": {
+            "description": "The components that the design's instances use, as the design system's\nhead defines them; only for the head of a design.",
+            "items": {
+              "type": "object"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "doc_id": {
+            "type": "string"
+          },
+          "html": {
+            "description": "The head as HTML with `data-omni-id`; the empty text for an\nempty doc, and for a design's head, whose content is `tags` and `pages`.",
+            "type": "string"
+          },
+          "outline": {
+            "description": "A design's head as its outline: the pages in order, each as its own JSON\nwith its boards under `children` as placeholders (the board's own JSON\nwithout its children); only for the head of a design read with\n`?view=outline`, which leaves out `tags` and `pages`.",
+            "items": {
+              "type": "object"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "pages": {
+            "description": "A design's head as JSON nodes, each page with its boards under\n`children`; only for the head of a design.",
+            "items": {
+              "type": "object"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "tags": {
+            "description": "A design's head as tags, one `<Page>` after the other; only for the\nhead of a design.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "tokens": {
+            "description": "The token tree of the project's design system head, in every mode; only\nfor the head of a design, and left out when the design system has none.",
+            "type": [
+              "object",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "doc_id",
+          "html"
+        ],
+        "type": "object"
+      },
       "HeadTokensResponse": {
         "properties": {
           "doc_id": {
@@ -1439,76 +1509,6 @@
         "required": [
           "email",
           "password"
-        ],
-        "type": "object"
-      },
-      "MainlineHtmlResponse": {
-        "properties": {
-          "boards": {
-            "description": "The boards of the outline in page order, each with the chunk that holds\nit, so that a viewer reads again only the boards whose chunk changed;\nonly with `outline`.",
-            "items": {
-              "$ref": "#/components/schemas/HeadBoard"
-            },
-            "type": [
-              "array",
-              "null"
-            ]
-          },
-          "components": {
-            "description": "The components that the design's instances use, as the design system's\nhead defines them; only for the head of a design.",
-            "items": {
-              "type": "object"
-            },
-            "type": [
-              "array",
-              "null"
-            ]
-          },
-          "doc_id": {
-            "type": "string"
-          },
-          "html": {
-            "description": "The head as HTML with `data-omni-id`; the empty text for an\nempty doc, and for a design's head, whose content is `tags` and `pages`.",
-            "type": "string"
-          },
-          "outline": {
-            "description": "A design's head as its outline: the pages in order, each as its own JSON\nwith its boards under `children` as placeholders (the board's own JSON\nwithout its children); only for the head of a design read with\n`?view=outline`, which leaves out `tags` and `pages`.",
-            "items": {
-              "type": "object"
-            },
-            "type": [
-              "array",
-              "null"
-            ]
-          },
-          "pages": {
-            "description": "A design's head as JSON nodes, each page with its boards under\n`children`; only for the head of a design.",
-            "items": {
-              "type": "object"
-            },
-            "type": [
-              "array",
-              "null"
-            ]
-          },
-          "tags": {
-            "description": "A design's head as tags, one `<Page>` after the other; only for the\nhead of a design.",
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "tokens": {
-            "description": "The token tree of the project's design system head, in every mode; only\nfor the head of a design, and left out when the design system has none.",
-            "type": [
-              "object",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "doc_id",
-          "html"
         ],
         "type": "object"
       },
@@ -4636,7 +4636,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/MainlineHtmlResponse"
+                  "$ref": "#/components/schemas/HeadHtmlResponse"
                 }
               }
             },

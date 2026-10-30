@@ -312,6 +312,18 @@ export const HeadBoardSchema = z.object({
 });
 export type HeadBoard = z.infer<typeof HeadBoardSchema>;
 
+export const HeadHtmlResponseSchema = z.object({
+  boards: z.array(HeadBoardSchema).nullable().optional(),
+  components: z.array(z.record(z.string(), z.unknown())).nullable().optional(),
+  doc_id: z.string(),
+  html: z.string(),
+  outline: z.array(z.record(z.string(), z.unknown())).nullable().optional(),
+  pages: z.array(z.record(z.string(), z.unknown())).nullable().optional(),
+  tags: z.string().nullable().optional(),
+  tokens: z.record(z.string(), z.unknown()).nullable().optional(),
+});
+export type HeadHtmlResponse = z.infer<typeof HeadHtmlResponseSchema>;
+
 export const HeadTokensResponseSchema = z.object({
   doc_id: z.string().nullable().optional(),
   mode: z.string().nullable().optional(),
@@ -477,18 +489,6 @@ export const LoginRequestSchema = z.object({
   password: z.string(),
 });
 export type LoginRequest = z.infer<typeof LoginRequestSchema>;
-
-export const MainlineHtmlResponseSchema = z.object({
-  boards: z.array(HeadBoardSchema).nullable().optional(),
-  components: z.array(z.record(z.string(), z.unknown())).nullable().optional(),
-  doc_id: z.string(),
-  html: z.string(),
-  outline: z.array(z.record(z.string(), z.unknown())).nullable().optional(),
-  pages: z.array(z.record(z.string(), z.unknown())).nullable().optional(),
-  tags: z.string().nullable().optional(),
-  tokens: z.record(z.string(), z.unknown()).nullable().optional(),
-});
-export type MainlineHtmlResponse = z.infer<typeof MainlineHtmlResponseSchema>;
 
 export const ManifestBoardSchema = z.object({
   chunk: z.string(),
@@ -660,6 +660,7 @@ export const schemas = {
   FeatureResponse: FeatureResponseSchema,
   FeatureSummary: FeatureSummarySchema,
   HeadBoard: HeadBoardSchema,
+  HeadHtmlResponse: HeadHtmlResponseSchema,
   HeadTokensResponse: HeadTokensResponseSchema,
   HomeDoc: HomeDocSchema,
   HomeResponse: HomeResponseSchema,
@@ -678,7 +679,6 @@ export const schemas = {
   LiveEventName: LiveEventNameSchema,
   LiveServerMessage: LiveServerMessageSchema,
   LoginRequest: LoginRequestSchema,
-  MainlineHtmlResponse: MainlineHtmlResponseSchema,
   Manifest: ManifestSchema,
   ManifestBoard: ManifestBoardSchema,
   ManifestPage: ManifestPageSchema,
@@ -942,7 +942,7 @@ export const operations = {
   },
   "GET /api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}/html": {
     responses: {
-      "200": MainlineHtmlResponseSchema,
+      "200": HeadHtmlResponseSchema,
       "401": ErrorBodySchema,
       "404": ErrorBodySchema,
     },

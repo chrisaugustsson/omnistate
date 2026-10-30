@@ -82,7 +82,7 @@ impl DesignDoc {
         self.places.get(&id).map(|place| place.parent)
     }
 
-    /// Whether the node is a board, which an agent may claim.
+    /// Whether the node is a board.
     pub fn is_board(&self, id: NodeId) -> bool {
         self.places
             .get(&id)

@@ -292,15 +292,6 @@ impl EditDoc {
         self.nodes.get(&id).map(|node| self.parent_of(node.item))
     }
 
-    /// Whether the node is a section, which an agent may claim (US-023).
-    pub fn is_section(&self, id: NodeId) -> bool {
-        self.nodes.get(&id).is_some_and(|node| {
-            self.tree
-                .element(node.item)
-                .is_some_and(|element| element.name == "section")
-        })
-    }
-
     /// The fractional index that orders a node among its siblings.
     pub fn sort_key(&self, id: NodeId) -> Option<String> {
         self.nodes.get(&id).map(|node| node.key.clone())

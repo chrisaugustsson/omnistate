@@ -29,7 +29,7 @@ pub struct Import {
     /// holding its boards.
     pub pages: Vec<Node>,
     /// The design system doc: a DTCG token tree (docs/formats/tokens.md) with
-    /// the components under `$components`, as a design system version holds it.
+    /// the components under `$components`, as the design system's head holds it.
     pub design_system: Value,
     /// The images that the pages and components refer to as `attachment:<id>`,
     /// and the font files of the families the texts use, which the typography
@@ -592,8 +592,7 @@ pub struct Rendered {
 }
 
 impl Import {
-    /// The token tree of the design system, to put into the draft with `PUT
-    /// .../tokens`.
+    /// The token tree of the design system, to send with `PUT .../tokens`.
     pub fn token_tree(&self) -> Value {
         let mut tree = self.design_system.clone();
         if let Some(root) = tree.as_object_mut() {

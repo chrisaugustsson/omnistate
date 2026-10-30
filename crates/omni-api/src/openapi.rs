@@ -19,7 +19,7 @@ use crate::design::{
 };
 use crate::docs::{
     ConflictBody, ConflictDetails, CreateDocRequest, DocBody, DocListResponse, DocResponse,
-    EditRequest, EditResponse, InvalidOperationBody, MainlineHtmlResponse, OpResultBody,
+    EditRequest, EditResponse, HeadHtmlResponse, InvalidOperationBody, OpResultBody,
     RenameDocRequest,
 };
 use crate::features::{
@@ -135,7 +135,7 @@ use utoipa::OpenApi;
         DocBody,
         DocResponse,
         DocListResponse,
-        MainlineHtmlResponse,
+        HeadHtmlResponse,
         EditRequest,
         OpResultBody,
         EditResponse,
