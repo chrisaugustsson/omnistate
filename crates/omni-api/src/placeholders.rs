@@ -11,11 +11,17 @@
 // bundled font), and gives its placeholder that box as a fixed width and
 // height. Sizes that are already fixed are kept as they are.
 //
-// Nothing about the box is stored: the outline reads every board's chunk
-// anyway, and a chunk never changes (it is named by the hash of its bytes),
-// so the box is kept in memory by chunk and design system version, and a
-// board is laid out once for the life of the API process.
+// A chunk never changes (it is named by the hash of its bytes), so a box is
+// kept by chunk and design system version. Writing a design lays out the
+// boards it changed in the background and stores their boxes in RustFS, one
+// object per design system version (`ws/{workspace_id}/boxes/{version}`), so
+// that the first outline after a restart reads them instead of laying every
+// board out. A box that is not stored (the design system changed since, or the
+// write has not finished) is laid out when the outline is read, once for the
+// life of the API process.
 
+use crate::AppState;
+use crate::boards::each_concurrently;
 use omni_render::paint::Assets;
 use omni_render::system::DesignSystem;
 use omni_render::view::board_box;
@@ -46,20 +52,40 @@ pub(crate) struct Sizing {
     system: Option<Arc<DesignSystem>>,
     /// The design system version's ID, or empty without one.
     key: String,
+    /// The boxes stored for this version, by chunk.
+    stored: Arc<HashMap<String, (f32, f32)>>,
 }
 
 impl Sizing {
     /// The sizing for an outline whose design system version is
     /// `design_system_version_id`, with its `tokens` (a token tree as JSON)
-    /// and `components`, read the way the viewer reads them.
+    /// and `components`, read the way the viewer reads them, and the boxes
+    /// stored for that version.
     pub(crate) async fn new(
+        state: &AppState,
+        workspace_id: &str,
+        design_system_version_id: Option<&str>,
+        tokens: Option<&Value>,
+        components: &[Value],
+    ) -> Self {
+        let mut sizing = Self::without_stored(design_system_version_id, tokens, components).await;
+        sizing.stored = Arc::new(read_stored(state, workspace_id, &sizing.key).await);
+        sizing
+    }
+
+    async fn without_stored(
         design_system_version_id: Option<&str>,
         tokens: Option<&Value>,
         components: &[Value],
     ) -> Self {
         let key = design_system_version_id.unwrap_or_default().to_string();
+        let stored = Arc::new(HashMap::new());
         if tokens.is_none() && components.is_empty() {
-            return Self { system: None, key };
+            return Self {
+                system: None,
+                key,
+                stored,
+            };
         }
         let mut json = tokens.cloned().unwrap_or_else(|| json!({}));
         if let Some(object) = json.as_object_mut() {
@@ -70,8 +96,34 @@ impl Sizing {
             .ok()
             .flatten()
             .map(Arc::new);
-        Self { system, key }
+        Self {
+            system,
+            key,
+            stored,
+        }
     }
+}
+
+/// Where the boxes laid out against the design system version `key` are stored.
+fn stored_key(workspace_id: &str, key: &str) -> String {
+    let version = if key.is_empty() { "none" } else { key };
+    format!("ws/{workspace_id}/boxes/{version}")
+}
+
+/// The boxes stored for the design system version `key`, by chunk; none when
+/// there are none or they cannot be read, as they are only a shortcut.
+async fn read_stored(
+    state: &AppState,
+    workspace_id: &str,
+    key: &str,
+) -> HashMap<String, (f32, f32)> {
+    let Ok(object) = state.bucket.get_object(stored_key(workspace_id, key)).await else {
+        return HashMap::new();
+    };
+    if object.status_code() != 200 {
+        return HashMap::new();
+    }
+    serde_json::from_slice(object.as_slice()).unwrap_or_default()
 }
 
 fn is_fixed(size: Option<&Value>) -> bool {
@@ -123,6 +175,7 @@ pub(crate) async fn size_placeholder(
     }
     let key = (chunk.to_string(), sizing.key.clone());
     let known = BOXES.lock().ok().and_then(|boxes| boxes.get(&key).copied());
+    let known = known.or_else(|| sizing.stored.get(chunk).copied());
     let size = match known {
         Some(size) => Some(size),
         None => {
@@ -143,6 +196,86 @@ pub(crate) async fn size_placeholder(
     if let Some(size) = size {
         sized(placeholder, size);
     }
+}
+
+/// Serialises the writes of stored boxes, which add to one object.
+static STORING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// Lays out the boards that a write changed, in the background, and adds their
+/// boxes to those stored for the design system version `design_system_version_id`.
+/// `boards` are the chunk and text of each changed board. A board whose size is
+/// fixed, or whose box is stored already, is left out; nothing is stored when
+/// that leaves no board.
+pub(crate) fn store_boxes(
+    state: &AppState,
+    workspace_id: &str,
+    design_system_version_id: Option<String>,
+    tokens: Option<Value>,
+    components: Vec<Value>,
+    boards: Vec<(String, String)>,
+) {
+    let (state, workspace_id) = (state.clone(), workspace_id.to_string());
+    tokio::spawn(async move {
+        let wanted = tokio::task::spawn_blocking(move || {
+            boards
+                .into_iter()
+                .filter(|(_, text)| {
+                    serde_json::from_str::<Value>(text).is_ok_and(|board| needs_box(&board))
+                })
+                .collect::<Vec<_>>()
+        })
+        .await
+        .unwrap_or_default();
+        if wanted.is_empty() {
+            return;
+        }
+        let _storing = STORING.lock().await;
+        let sizing = Sizing::new(
+            &state,
+            &workspace_id,
+            design_system_version_id.as_deref(),
+            tokens.as_ref(),
+            &components,
+        )
+        .await;
+        let mut stored = (*sizing.stored).clone();
+        let before = stored.len();
+        let missing: Vec<(String, String)> = wanted
+            .into_iter()
+            .filter(|(chunk, _)| !stored.contains_key(chunk))
+            .collect();
+        let system = sizing.system.clone();
+        let laid = each_concurrently(missing, move |(chunk, text)| {
+            let system = system.clone();
+            async move {
+                let size = tokio::task::spawn_blocking(move || lay_out(&text, system.as_deref()))
+                    .await
+                    .ok()
+                    .flatten();
+                Ok((chunk, size))
+            }
+        })
+        .await
+        .unwrap_or_default();
+        for (chunk, size) in laid {
+            if let Some(size) = size {
+                stored.insert(chunk, size);
+            }
+        }
+        if stored.len() == before {
+            return;
+        }
+        let Ok(body) = serde_json::to_vec(&stored) else {
+            return;
+        };
+        if let Err(error) = state
+            .bucket
+            .put_object(stored_key(&workspace_id, &sizing.key), &body)
+            .await
+        {
+            eprintln!("omni-api: cannot store the boxes of the boards: {error}");
+        }
+    });
 }
 
 /// The width and height of the board in `text` (a board with its content).

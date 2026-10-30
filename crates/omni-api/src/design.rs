@@ -18,7 +18,7 @@ use crate::docs::{
     results_of,
 };
 use crate::live;
-use crate::placeholders::Sizing;
+use crate::placeholders::{self, Sizing};
 use crate::projects::{parse_body, require_project};
 use crate::session::{ApiError, ErrorBody};
 use crate::workspace::{AgentRequest, WorkspaceRequest, parse_uuid};
@@ -449,7 +449,14 @@ pub(crate) async fn outline_of_head(
     let tokens = system.tokens_json();
     // The placeholders are laid out against the design system head the viewer
     // resolves the boards against.
-    let sizing = Sizing::new(key.as_deref(), tokens.as_ref(), &components).await;
+    let sizing = Sizing::new(
+        state,
+        workspace_id,
+        key.as_deref(),
+        tokens.as_ref(),
+        &components,
+    )
+    .await;
     let outline = match head {
         Some(head) => boards::read_outline(state, workspace_id, head, "the head", &sizing).await?,
         None => Vec::new(),
@@ -833,11 +840,12 @@ pub(crate) async fn edit_head(
             revisions: HashMap::new(),
         },
     };
-    let system = match design_system_row(tx, project_id, false).await? {
-        Some((system_id, system_head)) => {
-            read_system_head(state, workspace_id, &system_id, system_head.as_deref()).await?
-        }
-        None => SystemHead::default(),
+    let (system, system_key) = match design_system_row(tx, project_id, false).await? {
+        Some((system_id, system_head)) => (
+            read_system_head(state, workspace_id, &system_id, system_head.as_deref()).await?,
+            system_head,
+        ),
+        None => (SystemHead::default(), None),
     };
 
     let manifest = head.manifest;
@@ -889,6 +897,29 @@ pub(crate) async fn edit_head(
     .await?;
     let head_after = store_text(state, workspace_id, &snapshot.html).await?;
     index_snapshot(tx, workspace_id, &head_after, &snapshot).await?;
+    // The boxes of the boards this write changed, for the outline to read.
+    let changed: HashSet<&str> = boards
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|change| change["after"].as_str())
+        .collect();
+    let changed_boards: Vec<(String, String)> = snapshot
+        .parts
+        .iter()
+        .filter(|part| changed.contains(part.hash.as_str()))
+        .map(|part| (part.hash.clone(), part.text.clone()))
+        .collect();
+    if !changed_boards.is_empty() {
+        placeholders::store_boxes(
+            state,
+            workspace_id,
+            system_key,
+            system.tokens_json(),
+            nodes_values(&system.library.0),
+            changed_boards,
+        );
+    }
     sqlx::query("UPDATE docs SET head = $2 WHERE id = $1::uuid")
         .bind(doc_id)
         .bind(&head_after)

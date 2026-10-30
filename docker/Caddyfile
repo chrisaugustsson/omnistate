@@ -7,7 +7,10 @@
 
 :80 {
 	@api path /api /api/*
+	# A design's outline is about 1 MB of JSON; it is the longest request of
+	# opening a big design, and compressed it is a fraction of that.
 	handle @api {
+		encode zstd gzip
 		reverse_proxy api:8080
 	}
 
