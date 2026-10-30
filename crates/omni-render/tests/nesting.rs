@@ -20,6 +20,8 @@
 //!   (the deepest JSON page it reads), refuses a design whose instances nest
 //!   deeper than `MAX_NESTING` with that reason, and loads the next page
 //!   after it.
+//! - The same browser page runs the module's timings of a change of design
+//!   system, which `make bench-ordrar` charges to its frames.
 
 mod common;
 
@@ -35,8 +37,8 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
-use std::sync::mpsc;
+use std::process::{Command, Output, Stdio};
+use std::sync::{OnceLock, mpsc};
 use std::thread;
 use std::time::Duration;
 
@@ -298,10 +300,10 @@ const CHROME_NAMES: &[&str] = &[
     "chromium-browser",
 ];
 
-/// The page that loads the designs of the test into `make render-wasm`'s
-/// module and posts what each load gave to `/result`. Nothing is drawn, so
-/// it needs no WebGL.
-const PAGE: &str = r#"<!doctype html>
+/// The start of a page that runs steps in `make render-wasm`'s module and posts
+/// the `result` they fill in to `/result`. Nothing is drawn, so it needs no
+/// WebGL.
+const PAGE_START: &str = r#"<!doctype html>
 <meta charset="utf-8">
 <script type="module">
 const report = (result) => fetch("/result", { method: "POST", body: JSON.stringify(result) });
@@ -319,16 +321,25 @@ try {
   const failure = () => module.UTF8ToString(module._omni_render_error());
   const setSystem = (text) =>
     withText(text, (pointer, length) => module._omni_render_scene_set_system(pointer, length)) ? "set" : failure();
-  const timings = () => JSON.parse(module.UTF8ToString(module._omni_render_scene_timings()));
   const load = async (name) =>
     withText(await fetched(name), (pointer, length) => module._omni_render_scene_load(pointer, length)) ? "loaded" : failure();
-  const depth = () => {
+  const result = {};
+"#;
+
+const PAGE_END: &str = r#"  report(result);
+} catch (error) {
+  report({ crash: String(error) });
+}
+</script>
+"#;
+
+/// The steps that load the designs of the nesting test, one after another.
+const NESTING_STEPS: &str = r#"  const depth = () => {
     let deepest = 0;
     const walk = (layers, level) => { for (const layer of layers) { deepest = Math.max(deepest, level); walk(layer.children, level + 1); } };
     walk(JSON.parse(module.UTF8ToString(module._omni_render_scene_layers())), 1);
     return deepest;
   };
-  const result = {};
   result.deep = await load("deep.json");
   result.deepDepth = depth();
   result.system = setSystem(await fetched("chain-system.json"));
@@ -336,16 +347,16 @@ try {
   result.chainErrors = JSON.parse(module.UTF8ToString(module._omni_render_scene_errors()));
   result.next = await load("next.json");
   result.nextDepth = depth();
+"#;
+
+/// The steps that read the timings of a load and of the change of design
+/// system after it.
+const TIMINGS_STEPS: &str = r#"  const timings = () => JSON.parse(module.UTF8ToString(module._omni_render_scene_timings()));
   setSystem(JSON.stringify({ $components: [] }));
-  await load("short-chain-page.json");
+  await load("page.json");
   result.loadTimings = timings();
-  result.shortChain = setSystem(await fetched("short-chain-system.json"));
+  result.system = setSystem(await fetched("system.json"));
   result.systemTimings = timings();
-  report(result);
-} catch (error) {
-  report({ crash: String(error) });
-}
-</script>
 "#;
 
 /// The Chrome binary: `CHROME`, or Chrome where it usually is.
@@ -423,15 +434,23 @@ fn answer(stream: TcpStream, root: &Path, results: &mpsc::Sender<String>) {
     stream.write_all(&body).ok();
 }
 
-#[test]
-fn the_webassembly_module_loads_deep_designs_and_refuses_deeper_ones() {
-    let built = common::make(&["render-wasm"]);
+/// Runs `make render-wasm` once for every test in this file that needs it.
+fn render_wasm() -> &'static Output {
+    static BUILD: OnceLock<Output> = OnceLock::new();
+    let output = BUILD.get_or_init(|| common::make(&["render-wasm"]));
     assert!(
-        built.status.success(),
+        output.status.success(),
         "`make render-wasm` failed:\n{}",
-        common::describe(&built)
+        common::describe(output)
     );
-    let root = Path::new(env!("CARGO_TARGET_TMPDIR")).join("nesting-wasm");
+    output
+}
+
+/// Runs `steps` in a page in Chrome, with `files` served beside it in a folder
+/// of this test's own, and gives back the `result` they filled in.
+fn run_in_chrome(folder: &str, steps: &str, files: &[(&str, String)]) -> Value {
+    render_wasm();
+    let root = Path::new(env!("CARGO_TARGET_TMPDIR")).join(folder);
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(&root).expect("the page's folder can be made");
     let build = common::repo_root().join("render-sandbox/build");
@@ -439,17 +458,12 @@ fn the_webassembly_module_loads_deep_designs_and_refuses_deeper_ones() {
         fs::copy(build.join(file), root.join(file))
             .unwrap_or_else(|error| panic!("render-sandbox/build/{file} can be copied: {error}"));
     }
-    let (system, chain) = instance_chain(24, 40);
-    let (short_system, short_chain) = instance_chain(2, 40);
-    for (name, content) in [
-        ("index.html", PAGE.to_string()),
-        ("deep.json", nested_page(62).to_string()),
-        ("chain-system.json", system.to_string()),
-        ("chain-page.json", chain.to_string()),
-        ("next.json", nested_page(12).to_string()),
-        ("short-chain-system.json", short_system.to_string()),
-        ("short-chain-page.json", short_chain.to_string()),
-    ] {
+    fs::write(
+        root.join("index.html"),
+        format!("{PAGE_START}{steps}{PAGE_END}"),
+    )
+    .expect("the page can be written");
+    for (name, content) in files {
         fs::write(root.join(name), content).expect("the page's files can be written");
     }
 
@@ -487,6 +501,22 @@ fn the_webassembly_module_loads_deep_designs_and_refuses_deeper_ones() {
         Value::Null,
         "the module must not crash: {result}"
     );
+    result
+}
+
+#[test]
+fn the_webassembly_module_loads_deep_designs_and_refuses_deeper_ones() {
+    let (system, chain) = instance_chain(24, 40);
+    let result = run_in_chrome(
+        "nesting-wasm",
+        NESTING_STEPS,
+        &[
+            ("deep.json", nested_page(62).to_string()),
+            ("chain-system.json", system.to_string()),
+            ("chain-page.json", chain.to_string()),
+            ("next.json", nested_page(12).to_string()),
+        ],
+    );
     assert_eq!(
         result["deep"], "loaded",
         "a page 62 levels deep, the deepest JSON page, must load: {result}"
@@ -512,11 +542,24 @@ fn the_webassembly_module_loads_deep_designs_and_refuses_deeper_ones() {
         "the module must load the next page after refusing one: {result}"
     );
     assert_eq!(result["nextDepth"], 12, "{result}");
-    assert_eq!(result["shortChain"], "set", "{result}");
+}
+
+#[test]
+fn the_webassembly_module_reports_the_layout_of_a_change_of_design_system() {
+    let (system, page) = instance_chain(2, 40);
+    let result = run_in_chrome(
+        "timings-wasm",
+        TIMINGS_STEPS,
+        &[
+            ("system.json", system.to_string()),
+            ("page.json", page.to_string()),
+        ],
+    );
+    assert_eq!(result["system"], "set", "{result}");
     let (loaded, changed) = (&result["loadTimings"], &result["systemTimings"]);
     assert!(
-        changed["parseMs"].is_number(),
-        "the module must report how long reading a design system took: {result}"
+        changed["submitMs"].is_number(),
+        "the module must report the time submitted to the GPU, which `make bench-ordrar` reads to split painting from uploading: {result}"
     );
     let layout = changed["layoutMs"].as_f64().unwrap_or_else(|| {
         panic!("the module must report how long resolving a design system took: {result}")
