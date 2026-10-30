@@ -35,12 +35,6 @@
 //! - An event is `{"type": "event", "seq", "event", "project_id", "at",
 //!   "data"}`. `event` is `<entity>.<action>`; `seq` is a number that goes up
 //!   by one for every event of a project (so it is per project, and gapless).
-//! - Every status change of a change set (every entry of its history, the
-//!   creation included) emits one `changeset.<status>` event with the new
-//!   status, so a new change set is `changeset.open`, as is a reopened one. Its
-//!   `data` is `{"changeset_id", "from_status", "status", "actor"}`, plus
-//!   `reason` when the human rejected. A request that changes nothing (a 409)
-//!   emits nothing.
 //! - Events are kept in the tenant table `live_events` (columns `workspace_id`,
 //!   `project_id`, `seq`, `event`, `data`), which is how a client resumes. The
 //!   deletion tests seed it once it exists (tests/workspace_delete.rs).
@@ -256,10 +250,6 @@ fn unique(label: &str) -> String {
 // Doing things over HTTP: the changes whose events the tests watch
 // ---------------------------------------------------------------------------
 
-fn changesets_path(workspace: &str, project: &str) -> String {
-    format!("/api/v1/w/{workspace}/projects/{project}/changesets")
-}
-
 /// Creates a project in `workspace` as its agent (`key`); returns its ID.
 fn new_project_in(client: &Client, workspace: &str, key: &str, label: &str) -> String {
     let response = call(
@@ -285,56 +275,57 @@ fn new_project(f: &Fixture, client: &Client, label: &str) -> String {
     new_project_in(client, &f.a, &f.key_a, label)
 }
 
-/// Creates a change set in a project of workspace A as its agent; returns its ID.
-fn new_changeset(f: &Fixture, client: &Client, project: &str) -> String {
+fn features_path(workspace: &str, project: &str) -> String {
+    format!("/api/v1/w/{workspace}/projects/{project}/features")
+}
+
+/// Creates a feature in a project of workspace A as its agent; returns its ID.
+/// This emits `feature.created`.
+fn new_feature(f: &Fixture, client: &Client, project: &str) -> String {
     let response = call(
         client,
         "POST",
-        &changesets_path(&f.a, project),
+        &features_path(&f.a, project),
         &Auth::Key(&f.key_a),
-        Some(&json!({ "title": unique("change"), "run_tag": "run-1" })),
+        Some(&json!({ "name": unique("feature") })),
     );
     assert_eq!(
         response.status,
         201,
-        "create a change set: {}",
+        "create a feature: {}",
         response.text()
     );
-    response.json()["changeset"]["id"]
+    response.json()["feature"]["id"]
         .as_str()
-        .expect("the change set has an id")
+        .expect("the feature has an id")
         .to_string()
 }
 
-/// Calls a lifecycle action of a change set of workspace A and returns the status.
-fn act(
+/// Renames a feature, as `auth`; returns the status.
+fn rename(
     f: &Fixture,
     client: &Client,
     project: &str,
-    changeset: &str,
-    action: &str,
+    feature: &str,
+    name: &str,
     auth: &Auth,
 ) -> u16 {
-    let path = format!("{}/{changeset}/{action}", changesets_path(&f.a, project));
-    let body = json!({ "reason": "not good enough yet" });
-    call(client, "POST", &path, auth, Some(&body)).status
+    let path = format!("{}/{feature}", features_path(&f.a, project));
+    call(client, "PATCH", &path, auth, Some(&json!({ "name": name }))).status
 }
 
-fn agent_acts(f: &Fixture, client: &Client, project: &str, changeset: &str, action: &str) {
-    let status = act(f, client, project, changeset, action, &Auth::Key(&f.key_a));
-    assert_eq!(status, 200, "{action} as the agent");
+/// The agent renames a feature, which emits `feature.renamed`.
+fn renamed(f: &Fixture, client: &Client, project: &str, feature: &str) {
+    let name = unique("renamed");
+    let status = rename(f, client, project, feature, &name, &Auth::Key(&f.key_a));
+    assert_eq!(status, 200, "rename the feature as the agent");
 }
 
-fn human_rejects(f: &Fixture, client: &Client, project: &str, changeset: &str) {
-    let status = act(
-        f,
-        client,
-        project,
-        changeset,
-        "reject",
-        &Auth::Session(&f.alice_token),
-    );
-    assert_eq!(status, 200, "reject as the human");
+/// The agent deletes a feature, which emits `feature.deleted`.
+fn deleted(f: &Fixture, client: &Client, project: &str, feature: &str) {
+    let path = format!("{}/{feature}", features_path(&f.a, project));
+    let response = call(client, "DELETE", &path, &Auth::Key(&f.key_a), None);
+    assert_eq!(response.status, 204, "{}", response.text());
 }
 
 // ---------------------------------------------------------------------------
@@ -643,14 +634,6 @@ fn names(events: &[Value]) -> Vec<&str> {
     events.iter().map(name_of).collect()
 }
 
-fn changeset_events(events: &[Value]) -> Vec<Value> {
-    events
-        .iter()
-        .filter(|e| name_of(e).starts_with("changeset."))
-        .cloned()
-        .collect()
-}
-
 fn assert_gapless(events: &[Value]) {
     for pair in events.windows(2) {
         assert_eq!(
@@ -688,70 +671,18 @@ fn text_that_is_not_a_message_is_an_error_and_the_socket_stays_open() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn every_status_change_of_a_change_set_is_pushed_as_a_changeset_status_event() {
-    let (f, client) = ready();
-    let project = new_project(f, client, "delivery");
-    let mut ws = open(client, &f.a, &Auth::Key(&f.key_a));
-    ws.subscribe(&project, None);
-
-    let changeset = new_changeset(f, client, &project);
-    agent_acts(f, client, &project, &changeset, "submit");
-    human_rejects(f, client, &project, &changeset);
-    agent_acts(f, client, &project, &changeset, "reopen");
-    agent_acts(f, client, &project, &changeset, "abandon");
-
-    let events = ws.events(5);
-    assert_eq!(
-        names(&events),
-        [
-            "changeset.open",
-            "changeset.in_review",
-            "changeset.rejected",
-            "changeset.open",
-            "changeset.abandoned"
-        ]
-    );
-    let steps = [
-        (None, "open", "agent"),
-        (Some("open"), "in_review", "agent"),
-        (Some("in_review"), "rejected", "human"),
-        (Some("rejected"), "open", "agent"),
-        (Some("open"), "abandoned", "agent"),
-    ];
-    for (event, (from, status, actor)) in events.iter().zip(steps) {
-        assert_eq!(event["type"], "event", "{event}");
-        assert_eq!(event["project_id"], project.as_str(), "{event}");
-        assert!(
-            event["at"].as_str().is_some_and(|t| !t.is_empty()),
-            "{event}"
-        );
-        let data = &event["data"];
-        assert_eq!(data["changeset_id"], changeset.as_str(), "{event}");
-        assert_eq!(data["from_status"], json!(from), "{event}");
-        assert_eq!(data["status"], status, "{event}");
-        assert_eq!(data["actor"], actor, "{event}");
-    }
-    assert_eq!(
-        events[2]["data"]["reason"], "not good enough yet",
-        "a rejection carries its reason"
-    );
-    ws.assert_no_event("nothing else happened");
-}
-
-#[test]
 fn a_request_that_changes_nothing_pushes_no_event() {
     let (f, client) = ready();
     let project = new_project(f, client, "nothing");
-    let changeset = new_changeset(f, client, &project);
-    agent_acts(f, client, &project, &changeset, "submit");
+    let feature = new_feature(f, client, &project);
     let mut ws = open(client, &f.a, &Auth::Key(&f.key_a));
     ws.subscribe(&project, None);
 
-    // Submitting twice is a conflict, and so is the agent rejecting.
+    // A blank name is refused, and so is the human renaming.
     let key = Auth::Key(&f.key_a);
-    assert_eq!(act(f, client, &project, &changeset, "submit", &key), 409);
-    assert_eq!(act(f, client, &project, &changeset, "reject", &key), 403);
-    assert_eq!(act(f, client, &project, &changeset, "reopen", &key), 409);
+    let human = Auth::Session(&f.alice_token);
+    assert_eq!(rename(f, client, &project, &feature, "  ", &key), 400);
+    assert_eq!(rename(f, client, &project, &feature, "New", &human), 403);
     ws.assert_no_event("none of those requests changed anything");
 }
 
@@ -764,13 +695,13 @@ fn a_client_only_gets_the_events_of_the_projects_it_subscribed_to() {
     let mut unsubscribed = open(client, &f.a, &Auth::Session(&f.alice_token));
     subscribed.subscribe(&watched, None);
 
-    new_changeset(f, client, &other);
-    let changeset = new_changeset(f, client, &watched);
+    new_feature(f, client, &other);
+    let feature = new_feature(f, client, &watched);
 
     let events = subscribed.events(1);
     assert_eq!(events[0]["project_id"], watched.as_str());
-    assert_eq!(events[0]["data"]["changeset_id"], changeset.as_str());
-    subscribed.assert_no_event("the other project's change set was never announced");
+    assert_eq!(events[0]["data"]["feature_id"], feature.as_str());
+    subscribed.assert_no_event("the other project's feature was never announced");
     unsubscribed.assert_no_event("this client subscribed to no project");
 }
 
@@ -784,17 +715,17 @@ fn events_reach_a_subscribed_client_within_250_ms_of_the_change() {
     let mut slowest = Duration::ZERO;
     for _ in 0..5 {
         let started = Instant::now();
-        let changeset = new_changeset(f, client, &project);
+        let feature = new_feature(f, client, &project);
         let created = ws.events(1);
         let created_in = started.elapsed();
-        assert_eq!(name_of(&created[0]), "changeset.open");
+        assert_eq!(name_of(&created[0]), "feature.created");
 
         let started = Instant::now();
-        agent_acts(f, client, &project, &changeset, "submit");
-        let submitted = ws.events(1);
-        let submitted_in = started.elapsed();
-        assert_eq!(name_of(&submitted[0]), "changeset.in_review");
-        slowest = slowest.max(created_in).max(submitted_in);
+        renamed(f, client, &project, &feature);
+        let changed = ws.events(1);
+        let changed_in = started.elapsed();
+        assert_eq!(name_of(&changed[0]), "feature.renamed");
+        slowest = slowest.max(created_in).max(changed_in);
     }
     assert!(
         slowest < Duration::from_millis(250),
@@ -816,10 +747,10 @@ fn sequence_numbers_go_up_by_one_per_project() {
     let quiet_from = ws.subscribe(&quiet, None)["last_seq"].as_i64().unwrap();
 
     for _ in 0..3 {
-        let changeset = new_changeset(f, client, &busy);
-        agent_acts(f, client, &busy, &changeset, "submit");
+        let feature = new_feature(f, client, &busy);
+        renamed(f, client, &busy, &feature);
     }
-    new_changeset(f, client, &quiet);
+    new_feature(f, client, &quiet);
 
     let events = ws.events(7);
     let of = |project: &str| -> Vec<Value> {
@@ -852,27 +783,27 @@ fn events_of_changes_made_at_the_same_time_arrive_in_sequence_order_without_gaps
     std::thread::scope(|scope| {
         for _ in 0..workers {
             scope.spawn(|| {
-                let changeset = new_changeset(f, client, &project);
-                agent_acts(f, client, &project, &changeset, "submit");
+                let feature = new_feature(f, client, &project);
+                renamed(f, client, &project, &feature);
             });
         }
     });
 
     let events = ws.events(workers * 2);
     assert_gapless(&events);
-    let mut seen_open = Vec::new();
+    let mut seen_created = Vec::new();
     for event in &events {
-        let id = event["data"]["changeset_id"].as_str().unwrap().to_string();
+        let id = event["data"]["feature_id"].as_str().unwrap().to_string();
         match name_of(event) {
-            "changeset.open" => seen_open.push(id),
-            "changeset.in_review" => assert!(
-                seen_open.contains(&id),
-                "a change set is announced as open before it is in review: {events:#?}"
+            "feature.created" => seen_created.push(id),
+            "feature.renamed" => assert!(
+                seen_created.contains(&id),
+                "a feature is announced as created before it is renamed: {events:#?}"
             ),
             other => panic!("unexpected event {other}"),
         }
     }
-    assert_eq!(seen_open.len(), workers);
+    assert_eq!(seen_created.len(), workers);
     ws.assert_no_event("no event is delivered twice");
 }
 
@@ -887,16 +818,16 @@ fn a_client_that_reconnects_with_its_last_sequence_number_gets_everything_after_
     let mut first = open(client, &f.a, &Auth::Key(&f.key_a));
     first.subscribe(&project, None);
 
-    let one = new_changeset(f, client, &project);
-    agent_acts(f, client, &project, &one, "submit");
+    let one = new_feature(f, client, &project);
+    renamed(f, client, &project, &one);
     let seen = first.events(2);
     let last_seen = seq_of(&seen[1]);
     drop(first);
 
     // Changes while the client is away.
-    agent_acts(f, client, &project, &one, "abandon");
-    let two = new_changeset(f, client, &project);
-    agent_acts(f, client, &project, &two, "submit");
+    deleted(f, client, &project, &one);
+    let two = new_feature(f, client, &project);
+    renamed(f, client, &project, &two);
 
     // The human's browser comes back with its last number (the same client
     // type as before is not required: resuming is about the number).
@@ -906,22 +837,18 @@ fn a_client_that_reconnects_with_its_last_sequence_number_gets_everything_after_
     let missed = second.events(3);
     assert_eq!(
         names(&missed),
-        [
-            "changeset.abandoned",
-            "changeset.open",
-            "changeset.in_review"
-        ]
+        ["feature.deleted", "feature.created", "feature.renamed"]
     );
     assert_eq!(seq_of(&missed[0]), last_seen + 1);
     assert_gapless(&missed);
-    assert_eq!(missed[0]["data"]["changeset_id"], one.as_str());
-    assert_eq!(missed[2]["data"]["changeset_id"], two.as_str());
+    assert_eq!(missed[0]["data"]["feature_id"], one.as_str());
+    assert_eq!(missed[2]["data"]["feature_id"], two.as_str());
     second.assert_no_event("each missed event is sent once");
 
     // Live events carry on right after the replay, without a gap or a repeat.
-    human_rejects(f, client, &project, &two);
+    renamed(f, client, &project, &two);
     let live = second.events(1);
-    assert_eq!(name_of(&live[0]), "changeset.rejected");
+    assert_eq!(name_of(&live[0]), "feature.renamed");
     assert_eq!(seq_of(&live[0]), last_seen + 4);
     second.assert_no_event("nothing is repeated after the replay");
 }
@@ -932,9 +859,9 @@ fn resuming_from_zero_replays_the_whole_history_as_it_was_first_sent() {
     let project = new_project(f, client, "history");
     let mut first = open(client, &f.a, &Auth::Key(&f.key_a));
     first.subscribe(&project, None);
-    let changeset = new_changeset(f, client, &project);
-    agent_acts(f, client, &project, &changeset, "submit");
-    human_rejects(f, client, &project, &changeset);
+    let feature = new_feature(f, client, &project);
+    renamed(f, client, &project, &feature);
+    deleted(f, client, &project, &feature);
     let original = first.events(3);
 
     let mut late = open(client, &f.a, &Auth::Session(&f.alice_token));
@@ -942,8 +869,7 @@ fn resuming_from_zero_replays_the_whole_history_as_it_was_first_sent() {
     let replayed = late.drain();
     assert_gapless(&replayed);
     assert_eq!(
-        changeset_events(&replayed),
-        original,
+        replayed, original,
         "a replayed event is the event that was sent live, field for field"
     );
 }
@@ -952,8 +878,8 @@ fn resuming_from_zero_replays_the_whole_history_as_it_was_first_sent() {
 fn resuming_from_the_newest_number_or_without_one_replays_nothing() {
     let (f, client) = ready();
     let project = new_project(f, client, "caught-up");
-    let changeset = new_changeset(f, client, &project);
-    agent_acts(f, client, &project, &changeset, "submit");
+    let feature = new_feature(f, client, &project);
+    renamed(f, client, &project, &feature);
     let newest = open(client, &f.a, &Auth::Key(&f.key_a)).subscribe(&project, None)["last_seq"]
         .as_i64()
         .unwrap();
@@ -968,7 +894,7 @@ fn resuming_from_the_newest_number_or_without_one_replays_nothing() {
     fresh.assert_no_event("without a sequence number only new events are sent");
 
     // Both go on with the next event, which is newest + 1.
-    human_rejects(f, client, &project, &changeset);
+    renamed(f, client, &project, &feature);
     for ws in [&mut caught_up, &mut fresh] {
         let events = ws.events(1);
         assert_eq!(seq_of(&events[0]), newest + 1);
@@ -982,7 +908,7 @@ fn resuming_from_the_newest_number_or_without_one_replays_nothing() {
 fn a_new_feature_is_pushed_and_replayed_to_a_client_that_resumes_before_it() {
     let (f, client) = ready();
     let project = new_project(f, client, "features");
-    new_changeset(f, client, &project);
+    new_feature(f, client, &project);
     let before = open(client, &f.a, &Auth::Key(&f.key_a)).subscribe(&project, None)["last_seq"]
         .as_i64()
         .unwrap();
@@ -994,7 +920,7 @@ fn a_new_feature_is_pushed_and_replayed_to_a_client_that_resumes_before_it() {
     let response = call(
         client,
         "POST",
-        &format!("/api/v1/w/{}/projects/{project}/features", f.a),
+        &features_path(&f.a, &project),
         &Auth::Key(&f.key_a),
         Some(&json!({ "name": name })),
     );
@@ -1010,7 +936,13 @@ fn a_new_feature_is_pushed_and_replayed_to_a_client_that_resumes_before_it() {
         .to_string();
 
     let pushed = live.events(1);
+    assert_eq!(pushed[0]["type"], "event", "{}", pushed[0]);
     assert_eq!(name_of(&pushed[0]), "feature.created", "{}", pushed[0]);
+    assert!(
+        pushed[0]["at"].as_str().is_some_and(|t| !t.is_empty()),
+        "{}",
+        pushed[0]
+    );
     assert_eq!(seq_of(&pushed[0]), before + 1);
     assert_eq!(pushed[0]["project_id"], project.as_str());
     assert_eq!(pushed[0]["data"]["feature_id"], feature.as_str());
