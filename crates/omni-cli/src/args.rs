@@ -188,27 +188,13 @@ mod tests {
     }
 
     #[test]
-    fn doc_options_take_values_and_doc_read_takes_a_version() {
-        let parsed = parse_strs(&[
-            "doc",
-            "create",
-            "--changeset",
-            "c",
-            "--kind=html",
-            "--pillar",
-            "spec",
-        ])
-        .unwrap();
+    fn doc_options_take_values_and_version_shows_omnis_version() {
+        let parsed = parse_strs(&["doc", "create", "--kind=html", "--pillar", "spec"]).unwrap();
         assert_eq!(parsed.words, ["doc", "create"]);
-        assert_eq!(parsed.changeset.as_deref(), Some("c"));
         assert_eq!(parsed.kind.as_deref(), Some("html"));
         assert_eq!(parsed.pillar.as_deref(), Some("spec"));
 
-        let parsed = parse_strs(&["doc", "read", "d", "--version", "v"]).unwrap();
-        assert_eq!(parsed.words, ["doc", "read", "d"]);
-        assert_eq!(parsed.doc_version.as_deref(), Some("v"));
-        assert!(!parsed.version);
-        // Anywhere else it is still the flag that shows omni's version.
+        // Anywhere on the line it is the flag that shows omni's version.
         assert!(parse_strs(&["--version"]).unwrap().version);
         assert!(
             parse_strs(&["doc", "show", "d", "--version"])

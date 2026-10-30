@@ -1,20 +1,20 @@
-//! US-102: `omni doc create` without a change set and `omni doc read` of a
-//! doc's head, tested as the built `omni` against a mock HTTP server. None of
-//! these tests needs Postgres; the real round trip against the API is in
-//! tests/stack_docs.rs, and the API's contract in
-//! crates/omni-api/tests/live_docs.rs.
+//! US-102: `omni doc create` and `omni doc read` of a doc's head, tested as the
+//! built `omni` against a mock HTTP server. None of these tests needs Postgres;
+//! the real round trip against the API is in tests/stack_docs.rs, and the API's
+//! contract in crates/omni-api/tests/live_docs.rs.
 //!
 //! The contract these tests pin down (the rest is the green step's choice; all
 //! paths are under `/api/v1/w/{workspace}/projects/{project_id}`):
 //!
-//! - `omni doc create --kind <kind> --pillar <pillar> --title <text>`, without
-//!   `--changeset`, sends `POST /docs` with `{"kind", "pillar", "title"}`: a
-//!   doc at the app level, with no change set. With `--feature <name or id>`
-//!   it sends `POST /features/{feature_id}/docs` (a name is looked up in the
-//!   project's features, ignoring case, as for `omni doc list`); a name the
-//!   project does not have is a one-line error that names it and creates
-//!   nothing. It prints the new doc's ID and title; `--json` prints the API's
-//!   answer. `--changeset <id>` still starts the doc in that change set.
+//! - `omni doc create --kind <kind> --pillar <pillar> --title <text>` sends
+//!   `POST /docs` with `{"kind", "pillar", "title"}`: a doc at the app level.
+//!   With `--feature <name or id>` it sends `POST /features/{feature_id}/docs`
+//!   (a name is looked up in the project's features, ignoring case, as for
+//!   `omni doc list`); a name the project does not have is a one-line error
+//!   that names it and creates nothing. Without `--feature` the feature is the
+//!   one of the nearest `.omni.toml`, and `--global` means the app level
+//!   whatever `.omni.toml` says. It prints the new doc's ID and title; `--json`
+//!   prints the API's answer.
 //! - `omni doc read <doc>` prints the doc's head from `GET /docs/{doc}/html`:
 //!   the HTML of an HTML doc (nothing for a new, empty one, which is no
 //!   error), and the `tags` of a design (one page for a new one).
@@ -53,10 +53,7 @@ fn doc_json(id: &str, feature: Option<&str>, body: &Value) -> Value {
         "pillar": body["pillar"],
         "title": body["title"],
         "created_at": "2026-10-23T10:00:00.000000Z",
-        "mainline_version_id": null,
-        "feature_id": feature,
-        "drafts": [],
-        "claims": []
+        "feature_id": feature
     })
 }
 
@@ -94,15 +91,13 @@ fn mock() -> MockServer {
             ("POST", r) if r.starts_with("/features/") => {
                 Reply::json(404, &json!({ "error": "not_found" }))
             }
-            ("GET", r) if r == format!("/docs/{NEW_DOC}/html") => Reply::json(
-                200,
-                &json!({ "doc_id": NEW_DOC, "version_id": null, "html": "" }),
-            ),
+            ("GET", r) if r == format!("/docs/{NEW_DOC}/html") => {
+                Reply::json(200, &json!({ "doc_id": NEW_DOC, "html": "" }))
+            }
             ("GET", r) if r == format!("/docs/{NEW_DESIGN}/html") => Reply::json(
                 200,
                 &json!({
                     "doc_id": NEW_DESIGN,
-                    "version_id": null,
                     "html": "",
                     "tags": page_tags(),
                     "pages": [{ "id": PAGE, "type": "page", "name": "Page 1", "children": [] }]
@@ -178,11 +173,11 @@ fn assert_agent_request(request: &Recorded) {
 }
 
 // ---------------------------------------------------------------------------
-// omni doc create without a change set
+// omni doc create
 // ---------------------------------------------------------------------------
 
 #[test]
-fn doc_create_without_a_change_set_creates_the_doc_at_the_app_level() {
+fn doc_create_creates_the_doc_at_the_app_level() {
     let server = mock();
     let home = logged_in(&server.url);
     let out = run(
@@ -213,14 +208,6 @@ fn doc_create_without_a_change_set_creates_the_doc_at_the_app_level() {
         out.stdout.contains(NEW_DOC) && out.stdout.contains("Checkout plan"),
         "the text has the new doc's ID and title: {:?}",
         out.stdout
-    );
-    assert!(
-        server
-            .requests()
-            .iter()
-            .all(|r| !r.path.contains("/changesets")),
-        "no change set is involved: {:?}",
-        server.requests()
     );
 }
 
@@ -288,6 +275,48 @@ fn doc_create_with_an_unknown_feature_is_one_line_and_creates_nothing() {
         posts(&server).is_empty(),
         "nothing is created: {:?}",
         server.requests()
+    );
+}
+
+#[test]
+fn the_feature_comes_from_the_nearest_omni_toml_and_the_flags_win() {
+    let server = mock();
+    let home = logged_in(&server.url);
+    let project_dir = Scratch::new("project");
+    std::fs::write(
+        project_dir.join(".omni.toml"),
+        format!("project = \"{PROJECT}\"\nfeature = \"Checkout\"\n"),
+    )
+    .unwrap();
+    let nested = project_dir.join("docs").join("checkout");
+    std::fs::create_dir_all(&nested).unwrap();
+    let in_nested = |extra: &[&str]| {
+        omni(&home.path)
+            .cwd(&nested)
+            .args(&[
+                "doc", "create", "--kind", "html", "--pillar", "spec", "--title", "Pay page",
+            ])
+            .args(extra)
+            .args(&["--as", "run-7/author"])
+            .run()
+    };
+
+    let out = in_nested(&[]);
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    let out = in_nested(&["--feature", "Search"]);
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    let out = in_nested(&["--global"]);
+    assert_eq!(out.code, 0, "{}", out.stderr);
+
+    let paths: Vec<String> = posts(&server).into_iter().map(|post| post.path).collect();
+    assert_eq!(
+        paths,
+        [
+            format!("{}/features/{CHECKOUT}/docs", base()),
+            format!("{}/features/{SEARCH}/docs", base()),
+            format!("{}/docs", base()),
+        ],
+        "the feature of the nearest .omni.toml, then --feature over it, then --global over it"
     );
 }
 

@@ -2,8 +2,7 @@
 //! against a mock HTTP server. None of these tests needs Postgres; the API's
 //! side (which posts an agent may read in a sealed thread) is in
 //! crates/omni-api/tests/live_threads.rs, and the round trip against the API
-//! in tests/stack_threads.rs. `omni wait --changeset` (US-025) is in
-//! tests/wait.rs and stays as it is.
+//! in tests/stack_threads.rs.
 //!
 //! The contract these tests pin down (the rest is the green step's choice):
 //!
@@ -13,15 +12,15 @@
 //!   again at least once a second, until the thread's `posts` (the posts this
 //!   agent may read, which is what the API answers it) number at least `n`.
 //!   It sends nothing but reads.
-//! - Met: exit 0.
+//! - Met: exit 0, and standard output names the thread and what it waited for
+//!   (the API's JSON of the thread, `{"thread": ...}`, with `--json`).
 //! - `--timeout <seconds>` ran out first: exit 2, nothing on standard output
 //!   and one line on standard error.
 //! - Usage errors are exit 1, one line on standard error that names the
-//!   offending text, and no request at all: a `--posts` that is not a whole
-//!   number of at least 1, and a `--timeout` that is not a number. An unknown
-//!   thread is exit 1 with `not_found`.
-//! - The conditions of the phases and decisions that US-108 removed are not
-//!   pinned any more.
+//!   offending text, and no request at all: a missing `--thread`, a missing
+//!   `--posts` and `--concluded`, a `--posts` that is not a whole number of at
+//!   least 1, and a `--timeout` that is not a number. An unknown thread is exit
+//!   1 with `not_found`.
 //! - `omni --help` lists `omni wait --thread` and `--posts`.
 
 mod common;
@@ -232,6 +231,28 @@ fn wait_posts_exits_0_once_the_thread_has_that_many_posts() {
 }
 
 #[test]
+fn a_met_wait_names_the_thread_and_what_it_waited_for() {
+    let server = mock();
+    let home = logged_in(&server.url);
+    let out = wait_for(&home, THREE, "3", &[]);
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    assert!(
+        out.stdout.contains(THREE) && out.stdout.contains("3 posts"),
+        "{:?}",
+        out.stdout
+    );
+}
+
+#[test]
+fn json_output_is_the_thread_as_the_api_answers_it() {
+    let server = mock();
+    let home = logged_in(&server.url);
+    let out = wait_for(&home, THREE, "3", &["--json"]);
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    assert_eq!(out.json(), thread_json(THREE, 3));
+}
+
+#[test]
 fn wait_posts_exits_2_when_the_timeout_runs_out_first() {
     let server = mock();
     let home = logged_in(&server.url);
@@ -263,6 +284,21 @@ fn wait_posts_needs_a_whole_number_of_at_least_1_and_sends_nothing_otherwise() {
     assert!(
         server.requests().is_empty(),
         "nothing should be sent: {:?}",
+        server.requests()
+    );
+}
+
+#[test]
+fn a_wait_without_its_options_is_a_usage_error_that_sends_nothing() {
+    let server = mock();
+    let home = logged_in(&server.url);
+    let out = wait(&home, &["--posts", "1"]);
+    assert_one_line_failure(&out, 1, &["--thread"]);
+    let out = wait(&home, &["--thread", THREE]);
+    assert_one_line_failure(&out, 1, &["--posts"]);
+    assert!(
+        server.requests().is_empty(),
+        "a usage error sends nothing: {:?}",
         server.requests()
     );
 }
