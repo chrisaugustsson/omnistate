@@ -22,7 +22,7 @@
 use crate::inspect::Inspection;
 use crate::layout::{self, LayoutBox, ShapedTexts};
 use crate::paint::{self, Assets, Painted};
-use crate::resolve::{self, Details, Facts};
+use crate::resolve::{self, Details, Facts, ids_of};
 use crate::select::{Event, Index, Layer, Modifiers, NodeAddress, Outline, OutlineKind};
 use crate::system::{DesignSystem, RenderError};
 use omni_core::design::{Node, NodeData, NodeId};
@@ -30,7 +30,12 @@ use skia_safe::{
     AlphaType, Canvas, ColorType, FilterMode, Image, ImageInfo, MipmapMode, Paint, Picture,
     PictureRecorder, Rect, SamplingOptions, surfaces,
 };
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::time::{Duration, Instant};
+
+/// How long a stage of resolving a board goes on before it leaves the rest to
+/// the next one.
+const RESOLVE_STAGE: Duration = Duration::from_millis(2);
 
 /// The smallest zoom, so that the whole stress file fits in view.
 pub const MIN_ZOOM: f32 = 0.01;
@@ -48,6 +53,9 @@ const REDUCED_BELOW: f32 = 0.5;
 /// The scale of a snapshot. It is the device scale below which snapshots are
 /// used, so a snapshot is only ever reduced, never magnified.
 const SNAPSHOT_SCALE: f32 = REDUCED_BELOW;
+/// The smallest scale of a snapshot made for a viewer (`Scene::set_frame_budget`):
+/// a view zoomed out further than this shows a snapshot of it all the same.
+const SNAPSHOT_SCALE_MIN: f32 = 1.0 / 64.0;
 /// The longest side of a snapshot in pixels; a board larger than this at
 /// `SNAPSHOT_SCALE` is snapshotted at a smaller scale.
 const SNAPSHOT_MAX_SIDE: f32 = 2048.0;
@@ -277,6 +285,10 @@ pub struct FrameStats {
     /// only composited do not count.
     pub nodes_painted: usize,
     pub detail: Detail,
+    /// Whether a board was drawn from an older or smaller picture than the
+    /// view calls for, because the frame's budget (`Scene::set_frame_budget`)
+    /// was spent: drawing again makes the sharper one.
+    pub deferred: bool,
 }
 
 /// How the page's first board stands in a view: what shows that a viewer has
@@ -303,6 +315,9 @@ struct Board {
     reach: Rect,
     /// The board's drawing at full detail, once it has been recorded.
     picture: Option<Picture>,
+    /// Whether `picture` is the drawing of the board that this one replaced,
+    /// kept until the new one is recorded.
+    picture_stale: bool,
     /// What recording that drawing painted.
     painted: Painted,
     /// The board's drawing at reduced detail, once it has been made.
@@ -313,6 +328,11 @@ struct Board {
 struct Snapshot {
     image: Image,
     rect: Rect,
+    /// How much smaller than the board the image is.
+    scale: f32,
+    /// Whether it is the snapshot of the board that this one replaced, kept
+    /// until the new one is made.
+    stale: bool,
 }
 
 impl Board {
@@ -334,7 +354,7 @@ impl Board {
         texts: &ShapedTexts,
         assets: &Assets,
     ) -> usize {
-        if self.picture.is_some() {
+        if self.picture.is_some() && !self.picture_stale {
             return 0;
         }
         let mut recorder = PictureRecorder::new();
@@ -343,6 +363,7 @@ impl Board {
         let canvas = recorder.begin_recording(self.reach, true);
         self.painted = paint::draw_counted(canvas, node, boxes, texts, assets);
         self.picture = recorder.finish_recording_as_picture(None);
+        self.picture_stale = false;
         self.painted.nodes
     }
 
@@ -353,22 +374,45 @@ impl Board {
         }
     }
 
-    /// Makes the snapshot of `node`, the board, unless that is done, and
-    /// returns how many nodes making it painted. It is drawn at reduced detail
-    /// (`paint::draw_reduced`), as it is only ever seen small, so it needs
-    /// neither the board's picture nor the shaping of its text.
+    /// The scale of the snapshot that a view whose device scale is `need`
+    /// calls for. A scene that draws for a viewer (`adaptive`) makes snapshots
+    /// no larger than the view can show, in steps of two, so that the many
+    /// boards of a page zoomed far out cost little to snapshot.
+    fn wanted_scale(&self, need: f32, adaptive: bool) -> f32 {
+        let reach = self.reach;
+        let longest = reach.width().max(reach.height());
+        let scale = if adaptive {
+            2f32.powf(need.log2().ceil())
+                .clamp(SNAPSHOT_SCALE_MIN, SNAPSHOT_SCALE)
+        } else {
+            SNAPSHOT_SCALE
+        };
+        scale.min(SNAPSHOT_MAX_SIDE / longest)
+    }
+
+    /// Whether the snapshot is of this board and sharp enough for `wanted`.
+    fn snapshot_holds(&self, wanted: f32) -> bool {
+        self.snapshot
+            .as_ref()
+            .is_some_and(|snapshot| !snapshot.stale && snapshot.scale >= wanted * 0.99)
+    }
+
+    /// Makes the snapshot of `node`, the board, at `scale` unless the board
+    /// has one that holds (`snapshot_holds`), and returns how many nodes making
+    /// it painted. It is drawn at reduced detail (`paint::draw_reduced`), as it
+    /// is only ever seen small, so it needs neither the board's picture nor the
+    /// shaping of its text.
     fn snapshot(
         &mut self,
         node: &Node,
         boxes: &HashMap<NodeId, LayoutBox>,
         assets: &Assets,
+        scale: f32,
     ) -> usize {
-        if self.snapshot.is_some() {
+        if self.snapshot_holds(scale) {
             return 0;
         }
         let reach = self.reach;
-        let longest = reach.width().max(reach.height());
-        let scale = SNAPSHOT_SCALE.min(SNAPSHOT_MAX_SIDE / longest);
         let size = (
             (reach.width() * scale).ceil().max(1.0) as i32,
             (reach.height() * scale).ceil().max(1.0) as i32,
@@ -388,6 +432,8 @@ impl Board {
                 size.0 as f32 / scale,
                 size.1 as f32 / scale,
             ),
+            scale,
+            stale: false,
         });
         painted
     }
@@ -419,6 +465,18 @@ pub struct Scene {
     errors: Vec<RenderError>,
     /// What resolving noted of the nodes, for the inspect panel.
     details: Details,
+    /// The IDs of the page and those made up for its instances, and how many
+    /// were made up, for the boards that `queue_boards` resolves.
+    taken: HashSet<NodeId>,
+    next_id: u64,
+    /// The stages of boards waiting to be put in place.
+    jobs: VecDeque<Job>,
+    /// How many boards have been put in place.
+    placed: u64,
+    /// How long a frame spends making pictures and snapshots before it leaves
+    /// the rest to the next frames, for a scene drawn for a viewer; `None`
+    /// makes them all in the first frame that needs them.
+    frame_budget: Option<Duration>,
     assets: Assets,
     boxes: HashMap<NodeId, LayoutBox>,
     /// The text nodes, shaped as layout measured them.
@@ -432,6 +490,17 @@ pub struct Scene {
     /// own context), so it is not kept apart.
     selected: Option<usize>,
     events: Vec<Event>,
+}
+
+/// A stage of putting a board in place of the board of the page that has its
+/// ID (`Scene::queue_boards`), by the board's position among the page's children.
+enum Job {
+    /// Resolve the board.
+    Resolve(usize, Node),
+    /// Resolve the board a little more.
+    Resolving(usize, resolve::BoardResolving),
+    /// Lay out the resolved board and put it in place.
+    Place(usize, resolve::ResolvedBoard),
 }
 
 /// The design system that a scene resolves its page against, and the mode it
@@ -487,6 +556,7 @@ fn lay_out(
                 bounds: *boxes.get(node.id())?,
                 reach: paint::reach(node, &boxes)?,
                 picture: None,
+                picture_stale: false,
                 painted: Painted::default(),
                 snapshot: None,
             })
@@ -525,6 +595,11 @@ impl Scene {
             system: None,
             errors: Vec::new(),
             details: Details::default(),
+            taken: HashSet::new(),
+            next_id: 0,
+            jobs: VecDeque::new(),
+            placed: 0,
+            frame_budget: None,
             assets,
             boxes: laid.boxes,
             texts: laid.texts,
@@ -553,6 +628,11 @@ impl Scene {
             system: Some(Resolving { system, mode }),
             errors: resolved.errors,
             details: resolved.details,
+            taken: resolved.taken,
+            next_id: resolved.next,
+            jobs: VecDeque::new(),
+            placed: 0,
+            frame_budget: None,
             assets,
             boxes: laid.boxes,
             texts: laid.texts,
@@ -567,6 +647,7 @@ impl Scene {
     /// Resolves the scene's instances and token references against `system`
     /// from now on, in its first mode, in place of any design system it had.
     pub fn set_system(&mut self, system: DesignSystem) {
+        while self.work() {}
         let page = match self.source.take() {
             Some(page) => page,
             None => self.page.clone(),
@@ -581,6 +662,7 @@ impl Scene {
     /// Resolves token references in `mode` from now on. Fails, and keeps the
     /// current mode, if the design system has no such mode.
     pub fn set_mode(&mut self, mode: &str) -> Result<(), String> {
+        while self.work() {}
         let (Some(resolving), Some(source)) = (&mut self.system, &self.source) else {
             return Err("the scene has no design system, so it has no modes".to_string());
         };
@@ -617,12 +699,216 @@ impl Scene {
         self.page = resolved.page;
         self.errors = resolved.errors;
         self.details = resolved.details;
+        self.taken = resolved.taken;
+        self.next_id = resolved.next;
         self.boxes = laid.boxes;
         self.texts = laid.texts;
         self.boards = laid.boards;
         self.index = laid.index;
         self.hovered = hovered.and_then(|address| self.index.lookup(&address));
         self.selected = selected.and_then(|address| self.index.lookup(&address));
+    }
+
+    /// Makes the scene draw for a viewer: a frame spends about `budget` making
+    /// the pictures and snapshots of the boards it shows, and draws a board
+    /// that has an older or smaller one from that, so that the view keeps
+    /// moving while the sharper ones are made over the next frames
+    /// (`FrameStats::deferred`). Snapshots are made no larger than the view
+    /// can show. A board put in place of another (`queue_boards`) is drawn from
+    /// the old one's pictures until its own are made.
+    pub fn set_frame_budget(&mut self, budget: Duration) {
+        self.frame_budget = Some(budget);
+    }
+
+    /// Queues `boards` to take the place of the boards of the page that have
+    /// their IDs (a board read after the page was shown as a placeholder, or
+    /// read again after it changed), with `assets`. Nothing changes until
+    /// `work` has done the jobs, a stage of one board each, so that a caller
+    /// can spread a board's laying out over several frames. Returns `false`,
+    /// and queues nothing, if the scene is not a page or the page has no board
+    /// with the ID of one of `boards`.
+    pub fn queue_boards(&mut self, boards: Vec<Node>, assets: Assets) -> bool {
+        if !matches!(self.page.data(), NodeData::Page(_)) {
+            return false;
+        }
+        let positions: Option<Vec<usize>> = boards
+            .iter()
+            .map(|board| {
+                board_nodes(&self.page)
+                    .iter()
+                    .position(|held| held.id() == board.id())
+            })
+            .collect();
+        let Some(positions) = positions else {
+            return false;
+        };
+        self.assets = assets;
+        self.jobs.extend(
+            positions
+                .into_iter()
+                .zip(boards)
+                .map(|(position, board)| Job::Resolve(position, board)),
+        );
+        true
+    }
+
+    /// How many boards `work` has put in place so far.
+    pub fn placed(&self) -> u64 {
+        self.placed
+    }
+
+    /// Whether `work` has jobs to do.
+    pub fn has_work(&self) -> bool {
+        !self.jobs.is_empty()
+    }
+
+    /// Does the next stage of the queued boards (`queue_boards`): resolving a
+    /// board a little (about `RESOLVE_STAGE` of its nodes' time), or laying it
+    /// out and putting it in place. Everything else stays as it is: the view,
+    /// the pictures of the other boards, and the hover and the selection while
+    /// their nodes are still there. Returns whether there is more to do.
+    pub fn work(&mut self) -> bool {
+        match self.jobs.pop_front() {
+            Some(Job::Resolve(position, board)) => self.begin_board(position, board),
+            Some(Job::Resolving(position, mut resolving)) => {
+                let finished = match &self.system {
+                    Some(resolving_with) => resolving.step(
+                        &resolving_with.system,
+                        &resolving_with.mode,
+                        RESOLVE_STAGE,
+                        &mut self.taken,
+                        &mut self.next_id,
+                    ),
+                    None => None,
+                };
+                self.jobs.push_front(match finished {
+                    Some(resolved) => Job::Place(position, resolved),
+                    None => Job::Resolving(position, resolving),
+                });
+            }
+            Some(Job::Place(position, resolved)) => {
+                let hovered = self.hovered.map(|at| self.index.address(at));
+                let selected = self.selected.map(|at| self.index.address(at));
+                self.place_board(position, resolved);
+                self.hovered = hovered.and_then(|address| self.index.lookup(&address));
+                self.selected = selected.and_then(|address| self.index.lookup(&address));
+            }
+            None => {}
+        }
+        self.has_work()
+    }
+
+    /// Queues `boards` and does all the jobs (`queue_boards`, `work`).
+    pub fn replace_boards(&mut self, boards: Vec<Node>, assets: Assets) -> bool {
+        let queued = self.queue_boards(boards, assets);
+        while self.work() {}
+        queued
+    }
+
+    /// Starts resolving `board`, which is to take the place of the board at
+    /// `position` among the page's children: its instances are expanded and
+    /// its token references resolved by the jobs that follow (`work`).
+    fn begin_board(&mut self, position: usize, board: Node) {
+        // The IDs of the board that is replaced are free again.
+        for gone in &ids_of(&board_nodes(&self.page)[position]) {
+            self.taken.remove(gone);
+        }
+        let job = match (&mut self.source, &self.system) {
+            (Some(source), Some(_)) => {
+                if let Some(slot) = source
+                    .children_mut()
+                    .and_then(|children| children.get_mut(position))
+                {
+                    *slot = board.clone();
+                }
+                Job::Resolving(
+                    position,
+                    resolve::begin_board(board, &mut self.taken, &mut self.next_id),
+                )
+            }
+            _ => Job::Place(
+                position,
+                resolve::ResolvedBoard {
+                    board,
+                    addresses: HashMap::new(),
+                    instances: HashSet::new(),
+                    details: Details::default(),
+                    errors: Vec::new(),
+                },
+            ),
+        };
+        self.jobs.push_front(job);
+    }
+
+    /// Lays out `resolved`, a resolved board, and puts it in place of the
+    /// board at `position` among the page's children (`work`).
+    fn place_board(&mut self, position: usize, resolved: resolve::ResolvedBoard) {
+        let resolve::ResolvedBoard {
+            board,
+            addresses,
+            instances,
+            details,
+            errors,
+        } = resolved;
+        let id = *board.id();
+        for gone in &ids_of(&board_nodes(&self.page)[position]) {
+            self.boxes.remove(gone);
+            self.texts.remove(gone);
+            self.details.tokens.remove(gone);
+            self.details.instances.remove(gone);
+        }
+        self.details.tokens.extend(details.tokens);
+        self.details.instances.extend(details.instances);
+        let (boxes, texts) = layout::compute_shaped(&board, self.assets.fonts());
+        self.boxes.extend(boxes);
+        self.texts.extend(texts);
+        let removed =
+            self.index
+                .replace_board(position, &board, &self.boxes, &addresses, &instances);
+        if !self.errors.is_empty() {
+            let removed: HashSet<NodeAddress> = removed.into_iter().collect();
+            self.errors.retain(|error| !removed.contains(&error.node));
+        }
+        self.errors.extend(errors);
+        let entry = self.boxes.get(&id).copied().and_then(|bounds| {
+            Some(Board {
+                index: position,
+                id,
+                bounds,
+                reach: paint::reach(&board, &self.boxes)?,
+                picture: None,
+                picture_stale: false,
+                painted: Painted::default(),
+                snapshot: None,
+            })
+        });
+        let held = self.boards.iter().position(|board| board.id == id);
+        match (held, entry) {
+            (Some(at), Some(mut entry)) => {
+                if self.frame_budget.is_some() {
+                    let old = &mut self.boards[at];
+                    entry.picture_stale = old.picture.is_some();
+                    entry.picture = old.picture.take();
+                    entry.snapshot = old.snapshot.take().map(|snapshot| Snapshot {
+                        stale: true,
+                        ..snapshot
+                    });
+                }
+                self.boards[at] = entry;
+            }
+            (Some(at), None) => {
+                self.boards.remove(at);
+            }
+            (None, Some(entry)) => {
+                let at = self.boards.partition_point(|board| board.index < position);
+                self.boards.insert(at, entry);
+            }
+            (None, None) => {}
+        }
+        if let Some(children) = self.page.children_mut() {
+            children[position] = board;
+        }
+        self.placed += 1;
     }
 
     /// The nodes drawn as error placeholders, with what each was missing.
@@ -949,11 +1235,16 @@ impl Scene {
     /// The detail follows the device scale, the zoom times that ratio: below
     /// 50% a board is a snapshot, and otherwise it is drawn in full.
     pub fn render(&mut self, canvas: &Canvas, viewport: &Viewport) -> FrameStats {
-        let detail = if viewport.zoom() * pixel_ratio(canvas) < REDUCED_BELOW {
+        let need = viewport.zoom() * pixel_ratio(canvas);
+        let detail = if need < REDUCED_BELOW {
             Detail::Reduced
         } else {
             Detail::Full
         };
+        let started = Instant::now();
+        let adaptive = self.frame_budget.is_some();
+        let spent =
+            |budget: Option<Duration>| budget.is_some_and(|budget| started.elapsed() >= budget);
         let visible = viewport.visible_rect();
         let Scene {
             page,
@@ -961,6 +1252,7 @@ impl Scene {
             boxes,
             texts,
             boards,
+            frame_budget,
             ..
         } = self;
         let nodes = board_nodes(page);
@@ -968,6 +1260,7 @@ impl Scene {
             boards_drawn: Vec::new(),
             nodes_painted: 0,
             detail,
+            deferred: false,
         };
         let (x, y) = viewport.origin();
         canvas.save();
@@ -978,11 +1271,29 @@ impl Scene {
             let node = &nodes[board.index];
             match detail {
                 Detail::Full => {
-                    stats.nodes_painted += board.record(node, boxes, texts, assets);
-                    board.draw_full(canvas);
+                    let fresh = board.picture.is_some() && !board.picture_stale;
+                    // A board that has some drawing is left with it when the frame has no time for the new one.
+                    let has_other = board.picture.is_some() || board.snapshot.is_some();
+                    if fresh || (has_other && spent(*frame_budget)) {
+                        stats.deferred |= !fresh;
+                    } else {
+                        stats.nodes_painted += board.record(node, boxes, texts, assets);
+                    }
+                    if board.picture.is_some() {
+                        board.draw_full(canvas);
+                    } else {
+                        board.draw_reduced(canvas);
+                    }
                 }
                 Detail::Reduced => {
-                    stats.nodes_painted += board.snapshot(node, boxes, assets);
+                    let wanted = board.wanted_scale(need, adaptive);
+                    if !board.snapshot_holds(wanted) {
+                        if board.snapshot.is_some() && spent(*frame_budget) {
+                            stats.deferred = true;
+                        } else {
+                            stats.nodes_painted += board.snapshot(node, boxes, assets, wanted);
+                        }
+                    }
                     board.draw_reduced(canvas);
                 }
             }

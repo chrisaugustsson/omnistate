@@ -1,7 +1,7 @@
 //! Drawing on the page's WebGL 2 canvas, in the WebAssembly build.
 
 use std::cell::{Cell, RefCell};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use omni_core::design::{AttachmentRef, NodeId};
 use skia_safe::{
@@ -28,6 +28,10 @@ const GL_RGBA8: u32 = 0x8058;
 
 /// The stencil depth the page requests when it creates the WebGL context.
 const STENCIL_BITS: usize = 8;
+
+/// How long a frame of the design viewer spends making the pictures and
+/// snapshots of the boards it shows (`Scene::set_frame_budget`).
+const FRAME_BUDGET: Duration = Duration::from_millis(3);
 
 /// What the stress page looks at: a scene, the controls that move its view,
 /// and what the last frame did.
@@ -174,10 +178,13 @@ pub fn scene_load(design_json: &str) -> Result<(), String> {
         .with_borrow(|system| system.as_ref().map(DesignSystem::from_json))
         .transpose()?;
     let parse = millis(started);
-    let scene = match system {
+    let mut scene = match system {
         Some(system) => Scene::with_system(page, assets, system),
         None => Scene::new(page, assets),
     };
+    if OPEN_READABLE.get() {
+        scene.set_frame_budget(FRAME_BUDGET);
+    }
     let layout = millis(started) - parse;
     TIMINGS.set(Timings {
         parse,
@@ -204,6 +211,46 @@ pub fn scene_load(design_json: &str) -> Result<(), String> {
     let nested = nested_too_deep(&stage.scene);
     STAGE.set(Some(stage));
     nested
+}
+
+/// Queues the boards in `boards_json`, a JSON array of boards, to take the
+/// place of the boards of the loaded page that have their IDs, with the images
+/// and fonts supplied so far (`Scene::queue_boards`): the way to show a board
+/// that was read after the page was shown, without loading the page again.
+/// `scene_update_step` puts them in place. `Ok(false)`, with nothing queued,
+/// if no page is loaded or it has no such board.
+pub fn scene_update_boards(boards_json: &str) -> Result<bool, String> {
+    let boards = nesting::read_all(boards_json)?;
+    let assets = ASSETS.with_borrow(Assets::clone);
+    Ok(STAGE.with_borrow_mut(|stage| {
+        stage
+            .as_mut()
+            .is_some_and(|stage| stage.scene.queue_boards(boards, assets))
+    }))
+}
+
+/// Does the next stage of the boards queued by `scene_update_boards` (a stage
+/// takes a few milliseconds even for a big board, so that a frame can do one
+/// between draws) and returns whether there are more, and whether the stage put
+/// a board in place, which the next frame has to draw. The view, the other
+/// boards' pictures and the selection stay. Fails, as `scene_load` does, if the
+/// page then nests too deeply; the boards are in place all the same.
+pub fn scene_update_step() -> Result<(bool, bool), String> {
+    let started = Instant::now();
+    let stepped = STAGE.with_borrow_mut(|stage| {
+        let Some(stage) = stage else {
+            return Ok((false, false));
+        };
+        let placed = stage.scene.placed();
+        let more = stage.scene.work();
+        let placed = stage.scene.placed() != placed;
+        nested_too_deep(&stage.scene).map(|()| (more, placed))
+    });
+    TIMINGS.set(Timings {
+        layout: millis(started),
+        ..TIMINGS.get()
+    });
+    stepped
 }
 
 /// Fails if `scene` holds nodes deeper than `MAX_NESTING` levels below its
@@ -308,7 +355,10 @@ pub fn scene_errors() -> String {
 /// Draws the scene in its current view on the default framebuffer of the
 /// current WebGL 2 context, which is `width` x `height` device pixels with
 /// `pixel_ratio` device pixels per CSS pixel, on a transparent background.
-pub fn scene_draw(width: i32, height: i32, pixel_ratio: f32) -> Result<(), String> {
+/// Returns whether a board was drawn from an older or smaller picture than
+/// the view calls for, so that drawing again is worth it
+/// (`FrameStats::deferred`).
+pub fn scene_draw(width: i32, height: i32, pixel_ratio: f32) -> Result<bool, String> {
     STAGE.with_borrow_mut(|stage| {
         let stage = stage.as_mut().ok_or("no scene is loaded")?;
         let viewport = stage.controls.viewport_mut();
@@ -337,9 +387,10 @@ pub fn scene_draw(width: i32, height: i32, pixel_ratio: f32) -> Result<(), Strin
             submit: SUBMIT_MS.get(),
             ..TIMINGS.get()
         });
+        let deferred = stats.as_ref().is_some_and(|stats| stats.deferred);
         stage.stats = stats;
         if drawn {
-            Ok(())
+            Ok(deferred)
         } else {
             Err("Skia could not draw on the WebGL context".to_string())
         }

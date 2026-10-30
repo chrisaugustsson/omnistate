@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import { createFileRoute } from "@tanstack/react-router";
 import {
   loadDoc,
@@ -427,6 +428,9 @@ function layerHolds(layer: Layer, address: string): boolean {
 }
 
 /** The pages and boards a design's head is made of, and the design system it resolves against. */
+/** How long the view and the page's boards must have been still before the layers panel lists boards that arrived. */
+const LAYERS_AFTER_STILL_MS = 300;
+
 type DesignSource = { pages: JsonNode[]; components: JsonNode[]; tokens: Record<string, unknown> | null };
 
 /** Whether `page` holds a node with the ID `id`. */
@@ -451,7 +455,8 @@ function CommentPins({
   onPick: (address: string) => void;
 }) {
   const [, setView] = useState(0);
-  useEffect(() => renderer?.onView(() => setView((count) => count + 1)), [renderer]);
+  // The pins move in the frame that moved the view, not a frame later.
+  useEffect(() => renderer?.onView(() => flushSync(() => setView((count) => count + 1))), [renderer]);
   if (!renderer) return null;
   return (
     <div className="pointer-events-none absolute inset-0 overflow-hidden">
@@ -618,9 +623,7 @@ function DesignViewer({
     // named in the error line, and the rest still draws.
     const problems: string[] = [];
     const report = () => setFailure(problems.length > 0 ? problems.join(" ") : null);
-    const shown = () => {
-      // A page is shown in the first mode, so the chosen mode is set again.
-      if (modeRef.current && modeRef.current !== modes[0]) renderer.setMode(modeRef.current);
+    const refreshLayers = () => {
       const shownLayers = renderer.layers();
       // The selection stays while its node is still there, as when an agent changes the design.
       const kept = selectedRef.current;
@@ -630,6 +633,31 @@ function DesignViewer({
       setLayers(shownLayers);
       setSelected(stays ? kept : null);
       report();
+    };
+    // Listing a big page's layers takes the main thread for longer than a frame,
+    // so boards that arrive while the view moves are listed once it has been
+    // still for a moment.
+    let layersTimer: ReturnType<typeof setTimeout> | null = null;
+    const refreshLayersSoon = () => {
+      if (layersTimer !== null) clearTimeout(layersTimer);
+      layersTimer = setTimeout(() => {
+        layersTimer = null;
+        refreshLayers();
+      }, LAYERS_AFTER_STILL_MS);
+    };
+    const stopWatchingView = renderer.onView(() => {
+      if (layersTimer !== null) refreshLayersSoon();
+    });
+    const shown = (incremental: boolean) => {
+      if (incremental) {
+        refreshLayersSoon();
+        return;
+      }
+      if (layersTimer !== null) clearTimeout(layersTimer);
+      layersTimer = null;
+      // A page is shown in the first mode, so the chosen mode is set again.
+      if (modeRef.current && modeRef.current !== modes[0]) renderer.setMode(modeRef.current);
+      refreshLayers();
     };
     const failed = (error: unknown) => {
       problems.push(error instanceof Error ? error.message : "The design could not be drawn.");
@@ -663,6 +691,8 @@ function DesignViewer({
     return () => {
       cancelled = true;
       stopBoards?.();
+      stopWatchingView();
+      if (layersTimer !== null) clearTimeout(layersTimer);
     };
   }, [renderer, assets, page, system, modes, cache, setSelected]);
 

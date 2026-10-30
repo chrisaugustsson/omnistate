@@ -58,6 +58,25 @@ export type DesignRenderer = {
    */
   show(page: unknown, system: unknown, board?: string | null): void;
   /**
+   * Queues `boards` (boards of the shown page, as the API gives them) to take
+   * the place of the boards of the page that have their IDs: the way to show a
+   * board that was read after the page was shown. Nothing changes until
+   * `stepBoards` has done its stages. Returns `false`, with nothing queued,
+   * when no page is shown or it lacks one of the boards, and the caller then
+   * shows the page again. A renderer without it is shown the page again
+   * instead.
+   */
+  updateBoards?(boards: unknown[]): boolean;
+  /**
+   * Does the next stage of the queued boards (resolving a board, then laying
+   * it out and putting it in place: a few milliseconds each even for a big
+   * board, so that a frame of the view can do one between draws) and returns
+   * whether there is more to do. The zoom, the pan, the other boards' pictures
+   * and the selection stay, and the next frame draws what changed. Throws when
+   * the page then nests too deeply (the boards are in place in that case).
+   */
+  stepBoards?(): boolean;
+  /**
    * Shows the node in `tags` (one tag and its subtree, the form the API gives
    * the snapshot of a comment) alone, fitted to the canvas, and draws it at
    * once. A node that is not a board sits on a board of its own size, and the
@@ -124,10 +143,12 @@ type OmniRender = {
   _omni_render_scene_load(pointer: number, length: number): boolean;
   _omni_render_scene_load_tags(pointer: number, length: number): boolean;
   _omni_render_scene_set_system(pointer: number, length: number): boolean;
+  _omni_render_scene_update_boards(pointer: number, length: number): number;
+  _omni_render_scene_update_step(): number;
   _omni_render_scene_set_mode(pointer: number, length: number): boolean;
   _omni_render_inspect(pointer: number, length: number): number;
   _omni_render_node_box(pointer: number, length: number): number;
-  _omni_render_scene_draw(width: number, height: number, pixelRatio: number): boolean;
+  _omni_render_scene_draw(width: number, height: number, pixelRatio: number): number;
   _omni_render_scene_layers(): number;
   _omni_render_visible_boards(): number;
   _omni_render_select_node(pointer: number, length: number): boolean;
@@ -157,6 +178,8 @@ const FUNCTIONS: Record<Extract<keyof OmniRender, `_omni_render_${string}`>, tru
   _omni_render_scene_load: true,
   _omni_render_scene_load_tags: true,
   _omni_render_scene_set_system: true,
+  _omni_render_scene_update_boards: true,
+  _omni_render_scene_update_step: true,
   _omni_render_scene_set_mode: true,
   _omni_render_inspect: true,
   _omni_render_node_box: true,
@@ -247,10 +270,20 @@ export async function createDesignRenderer(canvas: HTMLCanvasElement): Promise<D
   const viewListeners = new Set<() => void>();
   let loaded = false;
   let dirty = true;
+  // Whether the page shown has not been drawn yet, so that its view is not fitted to it.
+  let unfitted = false;
   let frame = 0;
   let destroyed = false;
   let pointer: [number, number] | null = null;
   let keys = { ctrl: false, meta: false };
+  // The canvas's size in CSS pixels. The resize observer keeps it, so that a
+  // frame does not read it from the page, which would lay the page out again
+  // after whatever React changed in it since the last frame.
+  let cssWidth = canvas.clientWidth;
+  let cssHeight = canvas.clientHeight;
+  // The system the module resolves pages against, so that showing a page again
+  // with the same system does not lay out the page that is loaded for nothing.
+  let systemSent: unknown;
 
   const readJson = <T>(pointerToText: number): T => JSON.parse(module.UTF8ToString(pointerToText)) as T;
 
@@ -285,14 +318,18 @@ export async function createDesignRenderer(canvas: HTMLCanvasElement): Promise<D
   }
 
   function drawFrame() {
+    unfitted = false;
     const ratio = window.devicePixelRatio || 1;
-    const width = Math.max(1, Math.round(canvas.clientWidth * ratio));
-    const height = Math.max(1, Math.round(canvas.clientHeight * ratio));
+    const width = Math.max(1, Math.round(cssWidth * ratio));
+    const height = Math.max(1, Math.round(cssHeight * ratio));
     if (canvas.width !== width || canvas.height !== height) {
       canvas.width = width;
       canvas.height = height;
     }
-    if (!module._omni_render_scene_draw(canvas.width, canvas.height, ratio)) throw failure();
+    const drew = module._omni_render_scene_draw(canvas.width, canvas.height, ratio);
+    if (!drew) throw failure();
+    // The renderer says (2) when a board was drawn from a picture older or smaller than the view calls for: it makes the sharper one in the next frame.
+    if (drew === 2) requestFrame();
     drawOverlay();
     // Every frame drawn is a view that may have changed (zoom, pan, resize,
     // another page), and the comment pins sit on the new one.
@@ -327,7 +364,7 @@ export async function createDesignRenderer(canvas: HTMLCanvasElement): Promise<D
   const onWheel = (event: WheelEvent) => {
     if (!loaded) return;
     const [x, y] = position(event);
-    const unit = [1, 16, canvas.clientHeight][event.deltaMode] ?? 1;
+    const unit = [1, 16, cssHeight][event.deltaMode] ?? 1;
     // Ctrl + wheel is also how browsers report a trackpad pinch.
     if (module._omni_render_view_wheel(event.deltaX * unit, event.deltaY * unit, x, y, event.ctrlKey, event.metaKey)) {
       event.preventDefault();
@@ -421,7 +458,11 @@ export async function createDesignRenderer(canvas: HTMLCanvasElement): Promise<D
   window.addEventListener("keydown", onKeyDown);
   window.addEventListener("keyup", onKeyUp);
   window.addEventListener("blur", onBlur);
-  const resizing = new ResizeObserver(requestFrame);
+  const resizing = new ResizeObserver(() => {
+    cssWidth = canvas.clientWidth;
+    cssHeight = canvas.clientHeight;
+    requestFrame();
+  });
   resizing.observe(canvas);
   frame = requestAnimationFrame(loop);
 
@@ -440,13 +481,31 @@ export async function createDesignRenderer(canvas: HTMLCanvasElement): Promise<D
     },
     show(page, system, board) {
       if (!withText(board ?? "", (pointer, length) => module._omni_render_view_open_on(pointer, length))) throw failure();
-      const ok = withText(JSON.stringify(system), (pointer, length) => module._omni_render_scene_set_system(pointer, length));
-      if (!ok) throw failure();
+      if (system !== systemSent) {
+        const ok = withText(JSON.stringify(system), (pointer, length) => module._omni_render_scene_set_system(pointer, length));
+        if (!ok) throw failure();
+        systemSent = system;
+      }
       if (!withText(JSON.stringify(page), (pointer, length) => module._omni_render_scene_load(pointer, length))) {
         throw failure();
       }
       loaded = true;
+      unfitted = true;
       requestFrame();
+    },
+    updateBoards(boards) {
+      if (!loaded) return false;
+      const queued = withText(JSON.stringify(boards), (pointer, length) => module._omni_render_scene_update_boards(pointer, length));
+      if (queued < 0) throw failure();
+      return queued > 0;
+    },
+    stepBoards() {
+      if (!loaded) return false;
+      const done = module._omni_render_scene_update_step();
+      // The bit 2 says a board was put in place: the next frame draws it.
+      if (done !== 0) requestFrame();
+      if (done < 0) throw failure();
+      return (done & 1) !== 0;
     },
     showTags(tags) {
       if (!withText(tags, (pointer, length) => module._omni_render_scene_load_tags(pointer, length))) throw failure();
@@ -457,7 +516,10 @@ export async function createDesignRenderer(canvas: HTMLCanvasElement): Promise<D
     visibleBoards() {
       if (!loaded) return [];
       // A page shown a moment ago has no view yet: draw it, so that the view is fitted to it.
-      if (dirty) {
+      // A page that has been drawn is not drawn here: a frame drawn between the
+      // animation frames would leave the next one with nothing to draw, and
+      // the frames would come at uneven times.
+      if (unfitted) {
         dirty = false;
         drawFrame();
       }

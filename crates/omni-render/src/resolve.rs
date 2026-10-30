@@ -36,6 +36,7 @@ use crate::system::{ComponentDef, DesignSystem, Missing, RenderError};
 use omni_core::design::{Node, NodeAddress, NodeId, PropDef, TokenRef};
 use serde_json::{Map, Value, json};
 use std::collections::{HashMap, HashSet};
+use std::time::{Duration, Instant};
 
 pub(crate) use details::{Details, Facts, UsedToken};
 
@@ -100,6 +101,19 @@ pub(crate) struct Resolved {
     /// What the inspect panel shows of the nodes, by their IDs in `page`.
     pub(crate) details: Details,
     pub(crate) errors: Vec<RenderError>,
+    /// The IDs of `page` and the IDs made up for it, and how many were made
+    /// up, so that boards resolved later (`resolve_board`) make up others.
+    pub(crate) taken: HashSet<NodeId>,
+    pub(crate) next: u64,
+}
+
+/// A board with its instances expanded and its tokens resolved.
+pub(crate) struct ResolvedBoard {
+    pub(crate) board: Node,
+    pub(crate) addresses: HashMap<NodeId, NodeAddress>,
+    pub(crate) instances: HashSet<NodeId>,
+    pub(crate) details: Details,
+    pub(crate) errors: Vec<RenderError>,
 }
 
 /// A property value of an instance.
@@ -147,11 +161,147 @@ pub(crate) fn resolve(page: &Node, system: &DesignSystem, mode: &str) -> Resolve
         instances: resolver.instances,
         details: resolver.details,
         errors: resolver.errors,
+        taken: resolver.used,
+        next: resolver.next,
     }
 }
 
+/// A board being resolved a few nodes at a time (`begin_board`, then
+/// `BoardResolving::step` until it gives the board), so that resolving a big
+/// board does not hold the page for as long as the whole board takes.
+pub(crate) struct BoardResolving {
+    board: Node,
+    /// The board as JSON, until `step` opens it.
+    root: Option<Value>,
+    /// The containers being resolved, outermost first.
+    open: Vec<Partial>,
+    finished: Option<Value>,
+    used: HashSet<NodeId>,
+    next: u64,
+    addresses: HashMap<NodeId, NodeAddress>,
+    instances: HashSet<NodeId>,
+    details: Details,
+    errors: Vec<RenderError>,
+}
+
+/// A container of a board whose children are being resolved one by one.
+struct Partial {
+    /// The container with its token references resolved and no children yet.
+    shell: Value,
+    rest: std::vec::IntoIter<Value>,
+    done: Vec<Value>,
+    /// How many levels below the page the container is.
+    level: usize,
+}
+
+/// Starts resolving `board`, a board of a page that `resolve` resolved before,
+/// as `resolve` does for the whole page. `taken` and `next` are the IDs the
+/// page has and how many were made up (`Resolved::taken`); they go into the
+/// resolving until it is finished and are given back with the board (the
+/// caller takes the IDs of the board that this one replaces out of `taken`
+/// first).
+pub(crate) fn begin_board(
+    board: Node,
+    taken: &mut HashSet<NodeId>,
+    next: &mut u64,
+) -> BoardResolving {
+    taken.extend(ids_of(&board));
+    BoardResolving {
+        root: Some(serde_json::to_value(&board).unwrap_or(Value::Null)),
+        board,
+        open: Vec::new(),
+        finished: None,
+        used: std::mem::take(taken),
+        next: *next,
+        addresses: HashMap::new(),
+        instances: HashSet::new(),
+        details: Details::default(),
+        errors: Vec::new(),
+    }
+}
+
+impl BoardResolving {
+    /// Resolves nodes until `budget` has passed or the board is done, against
+    /// `system` in `mode`. Gives the board, and puts the IDs back in `taken`
+    /// and `next`, when it is done.
+    pub(crate) fn step(
+        &mut self,
+        system: &DesignSystem,
+        mode: &str,
+        budget: Duration,
+        taken: &mut HashSet<NodeId>,
+        next: &mut u64,
+    ) -> Option<ResolvedBoard> {
+        let started = Instant::now();
+        let mut resolver = Resolver {
+            system,
+            mode,
+            used: std::mem::take(&mut self.used),
+            next: self.next,
+            addresses: std::mem::take(&mut self.addresses),
+            instances: std::mem::take(&mut self.instances),
+            details: std::mem::take(&mut self.details),
+            errors: std::mem::take(&mut self.errors),
+        };
+        if let Some(root) = self.root.take() {
+            // A board is one level below its page.
+            match resolver.open(root, 1) {
+                Opened::Whole(value) => self.finished = Some(value),
+                Opened::Partial(partial) => self.open.push(partial),
+            }
+        }
+        while self.finished.is_none() && started.elapsed() < budget {
+            let Some(top) = self.open.last_mut() else {
+                break;
+            };
+            match top.rest.next() {
+                Some(child) => match resolver.open(child, top.level + 1) {
+                    Opened::Whole(value) => top.done.push(value),
+                    Opened::Partial(partial) => self.open.push(partial),
+                },
+                None => {
+                    let Some(mut partial) = self.open.pop() else {
+                        break;
+                    };
+                    partial.shell["children"] = Value::Array(partial.done);
+                    match self.open.last_mut() {
+                        Some(parent) => parent.done.push(partial.shell),
+                        None => self.finished = Some(partial.shell),
+                    }
+                }
+            }
+        }
+        self.used = resolver.used;
+        self.next = resolver.next;
+        self.addresses = resolver.addresses;
+        self.instances = resolver.instances;
+        self.details = resolver.details;
+        self.errors = resolver.errors;
+        let resolved = self.finished.take()?;
+        let node = serde_json::from_value::<Node>(resolved)
+            .or_else(|_| serde_json::from_value::<Node>(serde_json::to_value(&self.board)?))
+            .unwrap_or_else(|_| self.board.clone());
+        *taken = std::mem::take(&mut self.used);
+        *next = self.next;
+        Some(ResolvedBoard {
+            board: node,
+            addresses: std::mem::take(&mut self.addresses),
+            instances: std::mem::take(&mut self.instances),
+            details: std::mem::take(&mut self.details),
+            errors: std::mem::take(&mut self.errors),
+        })
+    }
+}
+
+/// A node being resolved outside of any instance: all of it, or a container
+/// whose children are still to be.
+enum Opened {
+    Whole(Value),
+    Partial(Partial),
+}
+
 /// The IDs of `root` and everything below it.
-fn ids_of(root: &Node) -> HashSet<NodeId> {
+pub(crate) fn ids_of(root: &Node) -> HashSet<NodeId> {
     let mut ids = HashSet::new();
     let mut pending = vec![root];
     while let Some(node) = pending.pop() {
@@ -260,6 +410,46 @@ impl Resolver<'_> {
             value["children"] = Value::Array(children);
         }
         value
+    }
+
+    /// Resolves the node `value`, which is not inside an instance, as `node`
+    /// does, except that a container gives back its children to be resolved
+    /// one by one (`BoardResolving`). An instance is resolved whole.
+    fn open(&mut self, mut value: Value, level: usize) -> Opened {
+        let Some(id) = value
+            .get("id")
+            .and_then(Value::as_str)
+            .and_then(|id| id.parse::<NodeId>().ok())
+        else {
+            return Opened::Whole(value);
+        };
+        if kind_of(&value) == "instance" {
+            return Opened::Whole(self.node(value, None, level));
+        }
+        let address = NodeAddress::new(None, id);
+        let children = value
+            .as_object_mut()
+            .and_then(|node| node.remove("children"));
+        if let Some(node) = value.as_object_mut() {
+            node.remove("bind");
+            node.insert("id".to_string(), json!(id));
+        }
+        self.tokens(&mut value, &address);
+        let Some(Value::Array(children)) = children else {
+            return Opened::Whole(value);
+        };
+        if children.is_empty() || level < MAX_NESTING {
+            Opened::Partial(Partial {
+                shell: value,
+                rest: children.into_iter(),
+                done: Vec::new(),
+                level,
+            })
+        } else {
+            self.too_deep(&mut value, address);
+            value["children"] = Value::Array(Vec::new());
+            Opened::Whole(value)
+        }
     }
 
     /// Draws `node`, which holds nodes deeper than `MAX_NESTING` levels, as
@@ -395,13 +585,24 @@ impl Resolver<'_> {
     /// used (a color for a padding), is drawn as an error placeholder, and the
     /// reference is left in place.
     fn tokens(&mut self, node: &mut Value, address: &NodeAddress) {
+        // Most nodes refer to no token, and they have nothing to resolve.
+        if !node.as_object().is_some_and(|properties| {
+            properties
+                .iter()
+                .any(|(key, setting)| !NOT_TOKENS.contains(&key.as_str()) && refers(setting))
+        }) {
+            return;
+        }
         let mut missing = Vec::new();
         let mut resolved = Vec::new();
         if let Some(properties) = node.as_object_mut() {
+            let mut pointer = String::new();
             for (key, setting) in properties.iter_mut() {
                 if !NOT_TOKENS.contains(&key.as_str()) {
-                    let pointer = format!("/{}", escape(key));
-                    self.resolve_in(setting, key, &pointer, &mut missing, &mut resolved);
+                    pointer.clear();
+                    pointer.push('/');
+                    push_escaped(&mut pointer, key);
+                    self.resolve_in(setting, key, &mut pointer, &mut missing, &mut resolved);
                 }
             }
         }
@@ -451,7 +652,7 @@ impl Resolver<'_> {
         &self,
         value: &mut Value,
         key: &str,
-        pointer: &str,
+        pointer: &mut String,
         missing: &mut Vec<TokenRef>,
         resolved: &mut Vec<Replaced>,
     ) {
@@ -476,21 +677,42 @@ impl Resolver<'_> {
                 }
             }
             Value::Array(items) => {
+                let outer = pointer.len();
                 for (at, item) in items.iter_mut().enumerate() {
-                    let pointer = format!("{pointer}/{at}");
-                    self.resolve_in(item, key, &pointer, missing, resolved);
+                    pointer.truncate(outer);
+                    pointer.push('/');
+                    pointer.push_str(&at.to_string());
+                    self.resolve_in(item, key, pointer, missing, resolved);
                 }
+                pointer.truncate(outer);
             }
             Value::Object(properties) => {
+                let outer = pointer.len();
                 for (key, setting) in properties.iter_mut() {
                     if !NOT_TOKENS.contains(&key.as_str()) {
-                        let pointer = format!("{pointer}/{}", escape(key));
-                        self.resolve_in(setting, key, &pointer, missing, resolved);
+                        pointer.truncate(outer);
+                        pointer.push('/');
+                        push_escaped(pointer, key);
+                        self.resolve_in(setting, key, pointer, missing, resolved);
                     }
                 }
+                pointer.truncate(outer);
             }
             _ => {}
         }
+    }
+}
+
+/// Whether `setting`, a setting of a node, holds a token reference: what
+/// `Resolver::resolve_in` replaces.
+fn refers(setting: &Value) -> bool {
+    match setting {
+        Value::String(text) => text.starts_with('$'),
+        Value::Array(items) => items.iter().any(refers),
+        Value::Object(properties) => properties
+            .iter()
+            .any(|(key, setting)| !NOT_TOKENS.contains(&key.as_str()) && refers(setting)),
+        _ => false,
     }
 }
 
@@ -548,9 +770,15 @@ fn unfit(node: &mut Value, resolved: Vec<Replaced>) -> Vec<(TokenRef, String)> {
     unfit
 }
 
-/// `key` as a step of a JSON pointer.
-fn escape(key: &str) -> String {
-    key.replace('~', "~0").replace('/', "~1")
+/// Appends `key` as a step of a JSON pointer to `pointer`.
+fn push_escaped(pointer: &mut String, key: &str) {
+    for character in key.chars() {
+        match character {
+            '~' => pointer.push_str("~0"),
+            '/' => pointer.push_str("~1"),
+            other => pointer.push(other),
+        }
+    }
 }
 
 fn kind_of(node: &Value) -> String {

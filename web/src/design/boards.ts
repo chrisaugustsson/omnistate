@@ -13,15 +13,18 @@ type Json = Record<string, unknown>;
 /** How many boards are read at the same time. */
 const READS_AT_ONCE = 6;
 
-/**
- * How many of the boards in view are read when more than that are in view,
- * as when the whole design is zoomed out to fit: the first ones in page order.
- * The rest stay placeholders until the reviewer zooms in on them.
- */
-const MOST_IN_VIEW = 48;
-
 /** How long to wait for more boards to arrive before showing the page again. */
 const SHOW_AFTER_MS = 16;
+
+/** How far into a frame the boards are no longer put in place, but in the next frame. */
+const LATE_IN_FRAME_MS = 5;
+
+/**
+ * How long a frame spends putting boards that arrived in place, at most: it
+ * puts one in place, and more while this much time has not passed, so that a
+ * frame of the view does not wait for a crowd of boards.
+ */
+const PUT_IN_PLACE_MS = 1;
 
 /**
  * The boards of one design that have been read, and the reads under way. A
@@ -160,8 +163,12 @@ export type BoardwiseOptions = {
   opening?: string | null;
   /** Gives the renderer what a board draws with (its images) before the board is shown. */
   prepare: (board: Json) => Promise<unknown>;
-  /** The page was shown to the renderer, with this many boards loaded. */
-  onShown: () => void;
+  /**
+   * The page was shown to the renderer with the boards loaded, or, with
+   * `incremental`, boards that arrived were put in place in the page that is
+   * shown.
+   */
+  onShown: (incremental: boolean) => void;
   /** A board could not be read or drawn. */
   onFailure: (message: string) => void;
 };
@@ -181,8 +188,14 @@ export function showBoardwise(options: BoardwiseOptions): () => void {
 
   function show() {
     if (stopped) return;
+    arrived.clear();
+    more = false;
     renderer.show(pageToDraw(page, cache), system, opening);
-    onShown();
+    onShown(false);
+  }
+
+  function failed(error: unknown) {
+    onFailure(error instanceof Error ? error.message : "The design could not be drawn.");
   }
 
   function showSoon() {
@@ -192,14 +205,69 @@ export function showBoardwise(options: BoardwiseOptions): () => void {
       try {
         show();
       } catch (error) {
-        onFailure(error instanceof Error ? error.message : "The design could not be drawn.");
+        failed(error);
       }
     }, SHOW_AFTER_MS);
   }
 
+  // The boards that arrived and are not in the shown page yet.
+  const arrived = new Set<string>();
+  let putting: number | null = null;
+  // Whether the renderer has stages of boards to do.
+  let more = false;
+
+  /**
+   * Puts the boards that arrived in place of their placeholders, a stage per
+   * frame or a few when they are quick, without showing the page again: laying
+   * the whole page out for each board that arrives, or a big board out in one
+   * go, would stall the view for as long as that takes.
+   */
+  function putInPlace(frameStart: number) {
+    putting = null;
+    if (stopped) return;
+    const started = performance.now();
+    // A frame that has used much of its time already (a heavy draw) leaves the stages to the next.
+    if (started - frameStart > LATE_IN_FRAME_MS) {
+      putting = requestAnimationFrame(putInPlace);
+      return;
+    }
+    let stepped = false;
+    try {
+      while (more || arrived.size > 0) {
+        if (more) {
+          more = renderer.stepBoards?.() ?? false;
+        } else {
+          const id = arrived.values().next().value as string;
+          arrived.delete(id);
+          const board = cache.get(id);
+          if (board === undefined) continue;
+          if (!renderer.updateBoards?.([board])) {
+            // The renderer has no such page, so it is shown with every board that is read.
+            show();
+            return;
+          }
+          more = true;
+        }
+        stepped = true;
+        if (performance.now() - started >= PUT_IN_PLACE_MS) break;
+      }
+    } catch (error) {
+      more = false;
+      failed(error);
+    }
+    if (stepped) onShown(true);
+    if (more || arrived.size > 0) putting = requestAnimationFrame(putInPlace);
+  }
+
   // A board read for another reason (a search for a node) is shown too.
   const unsubscribeBoards = cache.subscribe((id) => {
-    if (boardIds.has(id)) showSoon();
+    if (!boardIds.has(id)) return;
+    if (renderer.updateBoards === undefined) {
+      showSoon();
+      return;
+    }
+    arrived.add(id);
+    putting ??= requestAnimationFrame(putInPlace);
   });
 
   // What went wrong asking the renderer for the boards in view, said once.
@@ -221,9 +289,7 @@ export function showBoardwise(options: BoardwiseOptions): () => void {
     }
     viewFailure = null;
     const inView = visible.filter((id) => boardIds.has(id));
-    // A board beyond those that is drawn already is read again when its chunk changed, so that it does not stay out of date.
-    const wanted = [...inView.slice(0, MOST_IN_VIEW), ...inView.slice(MOST_IN_VIEW).filter((id) => cache.get(id) !== undefined)];
-    for (const id of wanted) {
+    for (const id of inView) {
       if (!cache.needsRead(id) || cache.hasFailed(id) || waiting.has(id)) continue;
       // A read that another page of the version started is waited for, not counted again.
       if (!cache.isReading(id) && cache.busy >= READS_AT_ONCE) continue;
@@ -250,6 +316,7 @@ export function showBoardwise(options: BoardwiseOptions): () => void {
   return () => {
     stopped = true;
     if (timer !== null) clearTimeout(timer);
+    if (putting !== null) cancelAnimationFrame(putting);
     unsubscribe();
     unsubscribeBoards();
   };

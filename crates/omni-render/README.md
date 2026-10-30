@@ -176,6 +176,18 @@ not hold all of it (`omni_render_view_open_on`), and a link to a node on another
 board moves the view there (`Scene::reveal_selected`). The test pages and the
 renderer gates keep the fit to all boards.
 
+A board read after the page was shown does not show the page again: the viewer
+queues it with `omni_render_scene_update_boards` (`Scene::queue_boards`) and does
+a stage of the queue per frame with `omni_render_scene_update_step`
+(`Scene::work`). A stage resolves a board's instances and tokens for about 2 ms,
+or lays it out and puts it in place of its placeholder; the view, the other
+boards' pictures and the selection stay. A scene drawn for the viewer
+(`Scene::set_frame_budget`, which `scene_load` sets once the viewer has asked for
+the readable opening) spends about 3 ms of a frame on making pictures and
+snapshots, and draws a board from the older or smaller one it has until the
+sharper one is made (`FrameStats::deferred`, which `omni_render_scene_draw`
+reports as 2).
+
 ### Level of detail
 
 The technique is board snapshots, on top of cached pictures:
@@ -187,7 +199,9 @@ The technique is board snapshots, on top of cached pictures:
   view.
 - **Reduced detail** (below 50%): each board in view is drawn from a snapshot, a
   raster image of the whole board at 50% (at most 2,048 pixels on its longest
-  side), made once. A snapshot is only ever reduced, so it is composited with
+  side), made once; a scene drawn for the viewer makes it no larger than the
+  view can show, from 1/64 to 1/2 in steps of two, and makes it again, sharper,
+  when the view comes closer. A snapshot is only ever reduced, so it is composited with
   mipmaps and looks like the board at any zoom down to the 1% minimum. A frame
   then draws one image per board and no nodes, however many nodes the boards
   have.

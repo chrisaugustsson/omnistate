@@ -48,12 +48,19 @@ pub fn too_deep(at: Option<&str>) -> String {
 /// Reads `json` as a design node. A design too deeply nested to read gets the
 /// reason [`too_deep`] gives in place of `serde_json`'s.
 pub fn read(json: &str) -> Result<Node, String> {
-    serde_json::from_str(json).map_err(|error| {
-        let reason = error.to_string();
-        if reason.starts_with("recursion limit exceeded") {
-            too_deep(None)
-        } else {
-            reason
-        }
-    })
+    serde_json::from_str(json).map_err(reason)
+}
+
+/// Reads `json`, a JSON array, as design nodes, as [`read`] does one.
+pub fn read_all(json: &str) -> Result<Vec<Node>, String> {
+    serde_json::from_str(json).map_err(reason)
+}
+
+fn reason(error: serde_json::Error) -> String {
+    let reason = error.to_string();
+    if reason.starts_with("recursion limit exceeded") {
+        too_deep(None)
+    } else {
+        reason
+    }
 }

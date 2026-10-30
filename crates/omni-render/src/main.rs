@@ -191,6 +191,43 @@ mod exports {
         succeeded(result)
     }
 
+    /// Queues the boards in the JSON array to take the place of the boards of
+    /// the loaded page that have their IDs (`web::scene_update_boards`).
+    /// Returns 1 when they are queued, 0 when no page is loaded or it lacks
+    /// one of the boards, and -1 when they could not be read.
+    ///
+    /// # Safety
+    /// The pointer and length must be a block from `omni_render_alloc`.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn omni_render_scene_update_boards(
+        boards: *const u8,
+        boards_len: usize,
+    ) -> i32 {
+        // SAFETY: the caller promises the block is there.
+        match unsafe { text(boards, boards_len) }.and_then(omni_render::web::scene_update_boards) {
+            Ok(queued) => i32::from(queued),
+            Err(reason) => {
+                fail(&reason);
+                -1
+            }
+        }
+    }
+
+    /// Does the next stage of the queued boards (`web::scene_update_step`).
+    /// Returns the bit 1 when there is more to do and the bit 2 when the stage
+    /// put a board in place, or -1 when the page then nests too deeply (the
+    /// boards are in place).
+    #[unsafe(no_mangle)]
+    pub extern "C" fn omni_render_scene_update_step() -> i32 {
+        match omni_render::web::scene_update_step() {
+            Ok((more, placed)) => i32::from(more) | i32::from(placed) << 1,
+            Err(reason) => {
+                fail(&reason);
+                -1
+            }
+        }
+    }
+
     /// Reads the design system version, JSON in the format of
     /// `omni_render::system::DesignSystem::from_json` (a DTCG token tree with
     /// the components under `$components`), and makes the loaded scene and
@@ -238,10 +275,19 @@ mod exports {
     /// Draws the scene in its current view on the default framebuffer of the
     /// page's current WebGL 2 context: `width` x `height` device pixels, with
     /// `pixel_ratio` device pixels per CSS pixel. The view takes the size of
-    /// the canvas in CSS pixels first. Returns whether Skia drew it.
+    /// the canvas in CSS pixels first. Returns 0 if Skia could not draw it, 1
+    /// if it did, and 2 if it did and a board was drawn from an older or
+    /// smaller picture than the view calls for, so that drawing again is worth
+    /// it (`web::scene_draw`).
     #[unsafe(no_mangle)]
-    pub extern "C" fn omni_render_scene_draw(width: i32, height: i32, pixel_ratio: f32) -> bool {
-        succeeded(omni_render::web::scene_draw(width, height, pixel_ratio))
+    pub extern "C" fn omni_render_scene_draw(width: i32, height: i32, pixel_ratio: f32) -> i32 {
+        match omni_render::web::scene_draw(width, height, pixel_ratio) {
+            Ok(deferred) => 1 + i32::from(deferred),
+            Err(reason) => {
+                fail(&reason);
+                0
+            }
+        }
     }
 
     /// What the last frame did, as a NUL-ended JSON object that stays until

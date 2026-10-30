@@ -214,6 +214,33 @@ impl Index {
         at
     }
 
+    /// Indexes `board` in place of the board at `position` among the page's
+    /// boards, with the `boxes` that layout gave it, and returns the addresses
+    /// of the nodes of the board it replaces. The replaced board's entries stay
+    /// in the index, which names nodes by their position, but nothing reaches
+    /// them any more.
+    pub(crate) fn replace_board(
+        &mut self,
+        position: usize,
+        board: &Node,
+        boxes: &HashMap<NodeId, LayoutBox>,
+        addresses: &HashMap<NodeId, NodeAddress>,
+        instances: &HashSet<NodeId>,
+    ) -> Vec<NodeAddress> {
+        let mut removed = Vec::new();
+        let mut pending = vec![self.boards[position]];
+        while let Some(at) = pending.pop() {
+            removed.push(self.entries[at].address.clone());
+            pending.extend(&self.entries[at].children);
+        }
+        for address in &removed {
+            self.by_address.remove(address);
+        }
+        let at = self.add(board, None, boxes, addresses, instances);
+        self.boards[position] = at;
+        removed
+    }
+
     /// The topmost visible node at the page point `point`: the deepest node
     /// whose box holds it, later siblings above earlier ones.
     pub(crate) fn node_at(&self, point: (f32, f32)) -> Option<usize> {
