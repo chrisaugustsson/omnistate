@@ -7,10 +7,11 @@ use omni_core::design::{Node, NodeAddress, NodeData, NodeId, PropDef, PropDefs, 
 use serde_json::Value;
 use std::collections::HashMap;
 
-/// A design system version: its token tree and its components.
+/// A design system version: its token tree, `None` for a design system
+/// without tokens, and its components.
 #[derive(Clone)]
 pub struct DesignSystem {
-    tokens: TokenTree,
+    tokens: Option<TokenTree>,
     components: Vec<ComponentDef>,
     by_id: HashMap<NodeId, usize>,
 }
@@ -59,8 +60,12 @@ impl DesignSystem {
         };
         let mut tree = root.clone();
         let listed = tree.remove("$components");
-        let tokens =
-            TokenTree::from_json(&Value::Object(tree)).map_err(|error| error.to_string())?;
+        let tokens = if tree.is_empty() {
+            None
+        } else {
+            let tree = TokenTree::from_json(&Value::Object(tree));
+            Some(tree.map_err(|error| error.to_string())?)
+        };
         let listed = match listed {
             None => Vec::new(),
             Some(Value::Array(items)) => items,
@@ -102,7 +107,7 @@ impl DesignSystem {
 
     /// The design system's modes, in the order its token tree lists them.
     pub fn modes(&self) -> &[String] {
-        self.tokens.modes()
+        self.tokens.as_ref().map_or(&[], TokenTree::modes)
     }
 
     /// `page` with its instances expanded and its token references resolved in
@@ -115,7 +120,7 @@ impl DesignSystem {
 
     /// The value of `token` in `mode`, with its references followed.
     pub(crate) fn token(&self, token: &TokenRef, mode: &str) -> Option<Value> {
-        self.tokens.resolve(token, mode)
+        self.tokens.as_ref()?.resolve(token, mode)
     }
 
     pub(crate) fn component(&self, id: &NodeId) -> Option<&ComponentDef> {
