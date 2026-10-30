@@ -1239,10 +1239,24 @@ impl Scene {
         }
     }
 
-    /// The boards of the page in order, each with every node below it, as
-    /// the layers panel of the design viewer lists them (US-043).
+    /// The boards of the page in order, each without its children, as the
+    /// layers panel of the design viewer lists them (US-043).
     pub fn layers(&self) -> Vec<Layer> {
         self.index.layers()
+    }
+
+    /// The node at `address` with every node below it, as a layer; a board
+    /// that is not read has no children. `None` when the address names no
+    /// node of the page.
+    pub fn layers_of(&self, address: &NodeAddress) -> Option<Layer> {
+        Some(self.index.layer(self.index.lookup(address)?))
+    }
+
+    /// The board that holds the node at `address`, or the board itself.
+    /// `None` when the address names no node of the page.
+    pub fn board_of(&self, address: &NodeAddress) -> Option<NodeId> {
+        let at = self.index.lookup(address)?;
+        Some(self.index.page_id(self.index.board(at)))
     }
 
     /// Selects the node at `address`, as the layers panel does (US-043), or

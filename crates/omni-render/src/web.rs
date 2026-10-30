@@ -554,12 +554,31 @@ fn layer_json(layer: &Layer) -> Value {
     })
 }
 
-/// The boards of the loaded scene with every node below them, as a JSON array:
+/// The boards of the loaded scene without their children, as a JSON array:
 /// `[{"address": "<address>", "name": "Cart", "type": "board", "children":
-/// [...]}]`. Empty if no scene is loaded.
+/// []}]`. Empty if no scene is loaded.
 pub fn scene_layers() -> String {
     let layers = with_stage(|scene, _| scene.layers()).unwrap_or_default();
     Value::Array(layers.iter().map(layer_json).collect()).to_string()
+}
+
+/// The node at `address` (`<id>` or `<instanceId>/<componentNodeId>`) with
+/// every node below it, as the JSON object `scene_layers` lists boards with.
+/// `Ok(None)` if the address names no node.
+pub fn scene_layers_of(address: &str) -> Result<Option<String>, String> {
+    let address: NodeAddress = address.parse().map_err(|error| format!("{error}"))?;
+    Ok(with_stage(|scene, _| scene.layers_of(&address))
+        .flatten()
+        .map(|layer| layer_json(&layer).to_string()))
+}
+
+/// The ID of the board that holds the node at `address` (`<id>` or
+/// `<instanceId>/<componentNodeId>`). `Ok(None)` if the address names no node.
+pub fn scene_board_of(address: &str) -> Result<Option<String>, String> {
+    let address: NodeAddress = address.parse().map_err(|error| format!("{error}"))?;
+    Ok(with_stage(|scene, _| scene.board_of(&address))
+        .flatten()
+        .map(|board| board.to_string()))
 }
 
 fn box_json(rect: LayoutBox) -> Value {

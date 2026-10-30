@@ -48,8 +48,8 @@ pub struct Outline {
 }
 
 /// A node of a page as the design viewer's layers panel lists it: a board
-/// and everything below it, nodes inside instances included, by their
-/// addresses.
+/// or a node and everything below it, nodes inside instances included, by
+/// their addresses.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Layer {
     /// The node's ID, or `<instanceId>/<componentNodeId>` for a node inside
@@ -323,12 +323,24 @@ impl Index {
         None
     }
 
-    /// The boards with every node below them, as layers.
+    /// The boards, each without its children, as layers.
     pub(crate) fn layers(&self) -> Vec<Layer> {
-        self.boards.iter().map(|&board| self.layer(board)).collect()
+        self.boards
+            .iter()
+            .map(|&board| {
+                let entry = &self.entries[board];
+                Layer {
+                    address: entry.address.clone(),
+                    name: entry.name.clone(),
+                    kind: entry.kind.to_string(),
+                    children: Vec::new(),
+                }
+            })
+            .collect()
     }
 
-    fn layer(&self, at: usize) -> Layer {
+    /// The node and everything below it, as a layer.
+    pub(crate) fn layer(&self, at: usize) -> Layer {
         let entry = &self.entries[at];
         Layer {
             address: entry.address.clone(),

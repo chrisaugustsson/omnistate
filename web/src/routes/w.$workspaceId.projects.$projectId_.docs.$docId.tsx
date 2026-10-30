@@ -20,7 +20,7 @@ import {
 } from "@/design/renderer";
 import { createAssetLoader } from "@/design/assets";
 import { BoardCache, BoardPreviews, findPageHolding, showBoardwise } from "@/design/boards";
-import { FileText, Files, Layers as LayersIcon, PenTool, SlidersHorizontal } from "lucide-react";
+import { ChevronRight, FileText, Files, Layers as LayersIcon, PenTool, SlidersHorizontal } from "lucide-react";
 import {
   FloatingAlert,
   FloatingAlerts,
@@ -424,15 +424,7 @@ function findNode(nodes: JsonNode[], id: string): JsonNode | null {
 }
 
 
-/** Whether the layer `layer`, or one below it, has the address `address`. */
-function layerHolds(layer: Layer, address: string): boolean {
-  return layer.address === address || layer.children.some((below) => layerHolds(below, address));
-}
-
 /** The pages and boards a design's head is made of, and the design system it resolves against. */
-/** How long the view and the page's boards must have been still before the layers panel lists boards that arrived. */
-const LAYERS_AFTER_STILL_MS = 300;
-
 type DesignSource = { pages: JsonNode[]; components: JsonNode[]; tokens: Record<string, unknown> | null };
 
 /** Whether `page` holds a node with the ID `id`. */
@@ -567,8 +559,13 @@ function DesignViewer({
   }, []);
   // The node and the board the address bar named, until they are shown.
   const [target, setTarget] = useState<string | null>(node ?? null);
-  // The node of a pin picked on a board that is not read, until the board is in place.
-  const picked = useRef<string | null>(null);
+  // The boards the reviewer has unfolded, by board ID, for as long as the doc is open.
+  const [openBoards, setOpenBoards] = useState<ReadonlySet<string>>(new Set());
+  const openBoard = useCallback(
+    (board: string) => setOpenBoards((open) => (open.has(board) ? open : new Set(open).add(board))),
+    [],
+  );
+  const layersList = useRef<HTMLDivElement>(null);
   const [boardTarget, setBoardTarget] = useState<string | null>(boardParam ?? null);
   // The board a link named, until a node is selected or another page is shown.
   const boardHint = useRef<string | null>(boardParam ?? null);
@@ -639,7 +636,15 @@ function DesignViewer({
   }, []);
 
   // A node selected on the canvas is the selected layer.
-  useEffect(() => renderer?.onSelect(setSelected), [renderer, setSelected]);
+  useEffect(
+    () =>
+      renderer?.onSelect((address) => {
+        setSelected(address);
+        const board = address ? renderer.boardOf(address) : null;
+        if (board) openBoard(board);
+      }),
+    [renderer, setSelected, openBoard],
+  );
 
   const assets = useMemo(() => (renderer ? createAssetLoader(renderer, workspaceId) : null), [renderer, workspaceId]);
   const previews = useMemo(
@@ -661,46 +666,18 @@ function DesignViewer({
     const problems: string[] = [];
     const report = () => setFailure(problems.length > 0 ? problems.join(" ") : null);
     const refreshLayers = () => {
-      const shownLayers = renderer.layers();
       // The selection stays while its node is still there, as when an agent changes the design.
       const kept = selectedRef.current;
-      const stays = kept !== null && rowsOf(shownLayers).some((row) => row.layer.address === kept);
+      const stays = kept !== null && renderer.boxOf(kept) !== null;
       if (stays) renderer.select(kept);
       setDrawn((count) => count + 1);
-      setLayers(shownLayers);
+      setLayers(renderer.layers());
       setSelected(stays ? kept : null);
       report();
     };
-    // Listing a big page's layers takes the main thread for longer than a frame,
-    // so boards that arrive while the view moves are listed once it has been
-    // still for a moment.
-    let layersTimer: ReturnType<typeof setTimeout> | null = null;
-    const refreshLayersSoon = () => {
-      if (layersTimer !== null) clearTimeout(layersTimer);
-      layersTimer = setTimeout(() => {
-        layersTimer = null;
-        refreshLayers();
-      }, LAYERS_AFTER_STILL_MS);
-    };
-    const stopWatchingView = renderer.onView(() => {
-      if (layersTimer !== null) refreshLayersSoon();
-    });
     const shown = (incremental: boolean) => {
-      if (incremental) {
-        // A picked pin does not wait for the layers panel, which waits for the view to be still.
-        if (picked.current && renderer.boxOf(picked.current)) {
-          setSelected(picked.current);
-          renderer.select(picked.current);
-          picked.current = null;
-          setTarget(null);
-        }
-        refreshLayersSoon();
-        return;
-      }
-      if (layersTimer !== null) clearTimeout(layersTimer);
-      layersTimer = null;
       // A page is shown in the first mode, so the chosen mode is set again.
-      if (modeRef.current && modeRef.current !== modes[0]) renderer.setMode(modeRef.current);
+      if (!incremental && modeRef.current && modeRef.current !== modes[0]) renderer.setMode(modeRef.current);
       refreshLayers();
     };
     const failed = (error: unknown) => {
@@ -741,8 +718,6 @@ function DesignViewer({
     return () => {
       cancelled = true;
       stopBoards?.();
-      stopWatchingView();
-      if (layersTimer !== null) clearTimeout(layersTimer);
     };
   }, [renderer, assets, previews, page, system, modes, cache, chunks, setSelected]);
 
@@ -800,23 +775,25 @@ function DesignViewer({
       cancelled = true;
     };
   }, [target, assets, system, pages, page, cache]);
+  // Once the renderer has the target node, its board is opened and it is selected.
   useEffect(() => {
-    if (!renderer || !target || !rowsOf(layers).some((row) => row.layer.address === target)) return;
+    if (!renderer || !target || !renderer.boxOf(target)) return;
+    const board = renderer.boardOf(target);
+    if (board) openBoard(board);
     setSelected(target);
     renderer.select(target, true);
-    picked.current = null;
     setTarget(null);
-  }, [renderer, target, layers, setSelected]);
+  }, [renderer, target, drawn, setSelected, openBoard]);
 
   // The address bar follows the page and the selection, once the ones it named are shown.
   useEffect(() => {
     if (target !== null || boardTarget !== null || !page || drawn === 0) return;
     const boards = Array.isArray(page.children) ? (page.children as JsonNode[]) : [];
-    const holder = selected ? layers.find((layer) => layerHolds(layer, selected)) : undefined;
+    const holder = selected ? renderer?.boardOf(selected) : null;
     if (holder || !boards.some((entry) => entry.id === boardHint.current)) boardHint.current = null;
-    const board = holder?.address ?? boardHint.current ?? (boards[0] ? String(boards[0].id) : undefined);
+    const board = holder ?? boardHint.current ?? (boards[0] ? String(boards[0].id) : undefined);
     onPlace({ board, node: selected ?? undefined });
-  }, [target, boardTarget, page, layers, selected, drawn, onPlace]);
+  }, [target, boardTarget, page, renderer, selected, drawn, onPlace]);
 
   // Where the commented nodes sit on their boards, so that a board drawn from its
   // preview has its pins. They are read again when the comments or the head change.
@@ -852,6 +829,14 @@ function DesignViewer({
     else if (name.startsWith("doc.")) doc.reload();
   });
 
+  function toggle(board: string) {
+    setOpenBoards((open) => {
+      const next = new Set(open);
+      if (!next.delete(board)) next.add(board);
+      return next;
+    });
+  }
+
   function choose(address: string | null) {
     setSelected(address);
     renderer?.select(address);
@@ -863,11 +848,11 @@ function DesignViewer({
     const place = nodeBoxes[address];
     if (place && !renderer?.boxOf(address)) {
       boardHint.current = place.board;
-      picked.current = address;
       setTarget(address);
     } else {
-      picked.current = null;
       choose(address);
+      const board = renderer?.boardOf(address);
+      if (board) openBoard(board);
     }
   }
 
@@ -883,7 +868,30 @@ function DesignViewer({
     setDrawn((count) => count + 1);
   }
 
-  const rows = useMemo(() => rowsOf(layers), [layers]);
+  // The layers of each open board are read again after every show.
+  const rows = useMemo(
+    () =>
+      layers.flatMap((board) => {
+        const below = openBoards.has(board.address) && drawn >= 0 ? renderer?.layersOf(board.address) : null;
+        return [{ layer: board, level: 1 }, ...rowsOf(below?.children ?? [], 2)];
+      }),
+    [layers, openBoards, renderer, drawn],
+  );
+  // The selected layer's row comes into view once, when it is listed.
+  const scrolledTo = useRef<string | null>(null);
+  useEffect(() => {
+    if (!selected) {
+      scrolledTo.current = null;
+      return;
+    }
+    if (scrolledTo.current === selected) return;
+    const row = Array.from(layersList.current?.querySelectorAll<HTMLElement>("[role=treeitem]") ?? []).find(
+      (item) => item.dataset.address === selected,
+    );
+    if (!row) return;
+    scrolledTo.current = selected;
+    row.scrollIntoView?.({ block: "nearest" });
+  }, [selected, rows]);
   const inspection = useMemo(() => {
     // `drawn` says the renderer drew again, which changes what it answers.
     if (!renderer || !selected || drawn < 0) return null;
@@ -903,7 +911,6 @@ function DesignViewer({
   // One pin on each node that has comments: CommentPins shows those the page has
   // now, so a pin comes with its board, before the layers panel lists the board.
   const pins = useMemo(() => {
-    const names = new Map(rows.map(({ layer }) => [layer.address, layer.name]));
     const counts = new Map<string, number>();
     for (const on of comments.value ?? []) {
       if (!on.orphaned) counts.set(on.node, (counts.get(on.node) ?? 0) + 1);
@@ -911,10 +918,10 @@ function DesignViewer({
     return Array.from(counts, ([address, count]) => ({
       address,
       count,
-      name: names.get(address) ?? address,
+      name: renderer?.boxOf(address)?.name ?? address,
       place: nodeBoxes[address],
     }));
-  }, [rows, comments.value, nodeBoxes]);
+  }, [renderer, drawn, comments.value, nodeBoxes]);
 
   return (
     <main className="flex min-h-full flex-col lg:h-full lg:min-h-[560px]">
@@ -993,6 +1000,7 @@ function DesignViewer({
             <div
               role="tree"
               aria-label="Layers of the page"
+              ref={layersList}
               className="max-h-96 min-h-0 flex-1 overflow-auto px-1.5 pb-3 text-[12.5px] lg:max-h-none"
             >
               {rows.length === 0 && (
@@ -1010,6 +1018,7 @@ function DesignViewer({
                     tabIndex={0}
                     aria-level={level}
                     aria-selected={layer.address === selected}
+                    data-address={layer.address}
                     style={{ paddingLeft: `${0.5 + (level - 1) * 0.875}rem` }}
                     className={cn(
                       "group relative flex h-7 cursor-pointer items-center gap-1.5 rounded-md pr-2 outline-none hover:bg-accent focus-visible:ring-[3px] focus-visible:ring-ring/40 aria-selected:bg-signal-soft aria-selected:text-signal",
@@ -1032,6 +1041,24 @@ function DesignViewer({
                         style={{ left: `${0.5 + guide * 0.875 + 0.4}rem` }}
                       />
                     ))}
+                    {level === 1 && (
+                      <button
+                        type="button"
+                        aria-expanded={openBoards.has(layer.address)}
+                        aria-label={`${openBoards.has(layer.address) ? "Collapse" : "Expand"} ${layer.name}`}
+                        className="-ml-1 flex size-5 shrink-0 items-center justify-center rounded text-muted-foreground outline-none hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring/40"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          toggle(layer.address);
+                        }}
+                        onKeyDown={(event) => event.stopPropagation()}
+                      >
+                        <ChevronRight
+                          aria-hidden
+                          className={cn("size-3.5 transition-transform", openBoards.has(layer.address) && "rotate-90")}
+                        />
+                      </button>
+                    )}
                     <LayerIcon
                       type={layer.type}
                       className={cn(

@@ -38,6 +38,10 @@ mod exports {
         static VISIBLE: RefCell<CString> = RefCell::new(CString::default());
         /// The result of the last `omni_render_scene_layers`.
         static LAYERS: RefCell<CString> = RefCell::new(CString::default());
+        /// The result of the last `omni_render_scene_layers_of`.
+        static LAYERS_OF: RefCell<CString> = RefCell::new(CString::default());
+        /// The result of the last `omni_render_scene_board_of`.
+        static BOARD_OF: RefCell<CString> = RefCell::new(CString::default());
         /// The result of the last `omni_render_scene_errors`.
         static ERRORS: RefCell<CString> = RefCell::new(CString::default());
     }
@@ -436,14 +440,68 @@ mod exports {
         omni_render::web::select_escape();
     }
 
-    /// The boards of the scene with every node below them, as a NUL-ended JSON
+    /// The boards of the scene without their children, as a NUL-ended JSON
     /// array that stays until the next call: `[{"address": "<address>",
-    /// "name": "Cart", "type": "board", "children": [...]}]`, nodes inside
-    /// instances addressed `<instanceId>/<componentNodeId>`.
+    /// "name": "Cart", "type": "board", "children": []}]`.
     #[unsafe(no_mangle)]
     pub extern "C" fn omni_render_scene_layers() -> *const c_char {
         LAYERS.set(CString::new(omni_render::web::scene_layers()).unwrap_or_default());
         LAYERS.with_borrow(|layers| layers.as_ptr())
+    }
+
+    /// The node at the address (`<id>` or `<instanceId>/<componentNodeId>`)
+    /// with every node below it, as a NUL-ended JSON object like one of
+    /// `omni_render_scene_layers`' that stays until the next call, nodes inside
+    /// instances addressed `<instanceId>/<componentNodeId>`. Null if the
+    /// address names no node.
+    ///
+    /// # Safety
+    /// The pointer and length must be a block from `omni_render_alloc`.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn omni_render_scene_layers_of(
+        address: *const u8,
+        address_len: usize,
+    ) -> *const c_char {
+        // SAFETY: the caller promises the block is there.
+        let found =
+            unsafe { text(address, address_len) }.and_then(omni_render::web::scene_layers_of);
+        match found {
+            Ok(Some(found)) => {
+                LAYERS_OF.set(CString::new(found).unwrap_or_default());
+                LAYERS_OF.with_borrow(|found| found.as_ptr())
+            }
+            Ok(None) => std::ptr::null(),
+            Err(reason) => {
+                fail(&reason);
+                std::ptr::null()
+            }
+        }
+    }
+
+    /// The ID of the board that holds the node at the address, as NUL-ended
+    /// text that stays until the next call. Null if the address names no node.
+    ///
+    /// # Safety
+    /// The pointer and length must be a block from `omni_render_alloc`.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn omni_render_scene_board_of(
+        address: *const u8,
+        address_len: usize,
+    ) -> *const c_char {
+        // SAFETY: the caller promises the block is there.
+        let found =
+            unsafe { text(address, address_len) }.and_then(omni_render::web::scene_board_of);
+        match found {
+            Ok(Some(found)) => {
+                BOARD_OF.set(CString::new(found).unwrap_or_default());
+                BOARD_OF.with_borrow(|found| found.as_ptr())
+            }
+            Ok(None) => std::ptr::null(),
+            Err(reason) => {
+                fail(&reason);
+                std::ptr::null()
+            }
+        }
     }
 
     /// The IDs of the loaded scene's boards that its view shows, in page order,
