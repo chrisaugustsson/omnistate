@@ -156,6 +156,8 @@ export type BoardwiseOptions = {
   page: Json;
   system: unknown;
   cache: BoardCache;
+  /** The board to open the page on, as a link named it. */
+  opening?: string | null;
   /** Gives the renderer what a board draws with (its images) before the board is shown. */
   prepare: (board: Json) => Promise<unknown>;
   /** The page was shown to the renderer, with this many boards loaded. */
@@ -170,7 +172,7 @@ export type BoardwiseOptions = {
  * with the boards that the cache holds, and again whenever boards arrive.
  */
 export function showBoardwise(options: BoardwiseOptions): () => void {
-  const { renderer, page, system, cache, prepare, onShown, onFailure } = options;
+  const { renderer, page, system, cache, opening, prepare, onShown, onFailure } = options;
   const boardIds = new Set((Array.isArray(page.children) ? (page.children as Json[]) : []).map((board) => String(board.id)));
   // The boards this page is waiting for.
   const waiting = new Set<string>();
@@ -179,7 +181,7 @@ export function showBoardwise(options: BoardwiseOptions): () => void {
 
   function show() {
     if (stopped) return;
-    renderer.show(pageToDraw(page, cache), system);
+    renderer.show(pageToDraw(page, cache), system, opening);
     onShown();
   }
 

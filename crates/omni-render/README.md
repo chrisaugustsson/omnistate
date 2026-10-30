@@ -171,9 +171,10 @@ which boards a frame drew, how many nodes it painted and at what detail.
 A page opens fitted to all its boards at the first frame. The design viewer asks
 for an opening that can be read instead (`omni_render_view_open_readable`): a page
 whose boards would then be drawn at reduced detail opens fitted to its first board
-(`Scene::opening`), and a link to a node on another board moves the view there
-(`Scene::reveal_selected`). The test pages and the renderer gates keep the fit to
-all boards.
+(`Scene::opening`). A link to a board opens on that board when the opening would
+not hold all of it (`omni_render_view_open_on`), and a link to a node on another
+board moves the view there (`Scene::reveal_selected`). The test pages and the
+renderer gates keep the fit to all boards.
 
 ### Level of detail
 

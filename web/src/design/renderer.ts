@@ -53,9 +53,10 @@ export type DesignRenderer = {
    * tree with its components under `$components`. The page is laid out and
    * drawn with the images and fonts supplied before this call. Showing the
    * page that is shown again (with more of its boards loaded) keeps the zoom,
-   * the pan and the selection.
+   * the pan and the selection. A page opened with `board`, the ID of a board a
+   * link named, opens with that board in view.
    */
-  show(page: unknown, system: unknown): void;
+  show(page: unknown, system: unknown, board?: string | null): void;
   /**
    * Shows the node in `tags` (one tag and its subtree, the form the API gives
    * the snapshot of a comment) alone, fitted to the canvas, and draws it at
@@ -142,6 +143,7 @@ type OmniRender = {
   _omni_render_view_pointer_up(): void;
   _omni_render_view_space(held: boolean): void;
   _omni_render_view_open_readable(): void;
+  _omni_render_view_open_on(pointer: number, length: number): boolean;
   _omni_render_view_reveal_selected(): void;
 };
 
@@ -174,6 +176,7 @@ const FUNCTIONS: Record<Extract<keyof OmniRender, `_omni_render_${string}`>, tru
   _omni_render_view_pointer_up: true,
   _omni_render_view_space: true,
   _omni_render_view_open_readable: true,
+  _omni_render_view_open_on: true,
   _omni_render_view_reveal_selected: true,
 };
 
@@ -435,7 +438,8 @@ export async function createDesignRenderer(canvas: HTMLCanvasElement): Promise<D
       );
       if (!added) throw failure();
     },
-    show(page, system) {
+    show(page, system, board) {
+      if (!withText(board ?? "", (pointer, length) => module._omni_render_view_open_on(pointer, length))) throw failure();
       const ok = withText(JSON.stringify(system), (pointer, length) => module._omni_render_scene_set_system(pointer, length));
       if (!ok) throw failure();
       if (!withText(JSON.stringify(page), (pointer, length) => module._omni_render_scene_load(pointer, length))) {

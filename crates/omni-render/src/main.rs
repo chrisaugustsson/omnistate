@@ -403,6 +403,26 @@ mod exports {
         omni_render::web::view_open_readable();
     }
 
+    /// Makes the pages opened from now on open on the board with this ID, or
+    /// on no board in particular for an empty text (`web::view_open_on`).
+    ///
+    /// # Safety
+    /// The pointer and length must be a block from `omni_render_alloc`.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn omni_render_view_open_on(board: *const u8, board_len: usize) -> bool {
+        // SAFETY: the caller promises the block is there.
+        match unsafe { text(board, board_len) } {
+            Ok(board) => {
+                omni_render::web::view_open_on(board);
+                true
+            }
+            Err(reason) => {
+                fail(&reason);
+                false
+            }
+        }
+    }
+
     /// Brings the selected node into view (`web::view_reveal_selected`).
     #[unsafe(no_mangle)]
     pub extern "C" fn omni_render_view_reveal_selected() {

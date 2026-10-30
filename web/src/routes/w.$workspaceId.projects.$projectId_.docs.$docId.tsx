@@ -56,7 +56,9 @@ import { blockIds } from "@/viewer/html";
 // The `board` and `node` search parameters say where in the doc to be: the
 // board that holds the selection (a design shows the page of that board) and
 // the selected node address. They are read when the doc opens, and kept up to
-// date with a history replace whenever the board or the selection changes.
+// date with a history replace whenever the board or the selection changes. A
+// `board` alone opens the design on that board, and stays in the address until
+// a node is selected or another page is shown.
 //
 // The `comment` search parameter opens a comment, as the Inbox links to it:
 // the comment's node is selected (a design shows its board, an HTML doc scrolls
@@ -535,6 +537,7 @@ function DesignViewer({
   // The node and the board the address bar named, until they are shown.
   const [target, setTarget] = useState<string | null>(node ?? null);
   const [boardTarget, setBoardTarget] = useState<string | null>(boardParam ?? null);
+  // The board a link named, until a node is selected or another page is shown.
   const boardHint = useRef<string | null>(boardParam ?? null);
   const [openComment, setOpenComment] = useState<string | null>(null);
   const [chosenMode, setChosenMode] = useState<string | null>(null);
@@ -643,6 +646,7 @@ function DesignViewer({
           page,
           system,
           cache,
+          opening: boardHint.current,
           prepare: async (board) => {
             problems.push(...(await assets.load(board, system)));
           },
@@ -728,7 +732,8 @@ function DesignViewer({
     if (target !== null || boardTarget !== null || !page || drawn === 0) return;
     const boards = Array.isArray(page.children) ? (page.children as JsonNode[]) : [];
     const holder = selected ? layers.find((layer) => layerHolds(layer, selected)) : undefined;
-    const board = holder?.address ?? (boards[0] ? String(boards[0].id) : undefined);
+    if (holder || !boards.some((entry) => entry.id === boardHint.current)) boardHint.current = null;
+    const board = holder?.address ?? boardHint.current ?? (boards[0] ? String(boards[0].id) : undefined);
     onPlace({ board, node: selected ?? undefined });
   }, [target, boardTarget, page, layers, selected, drawn, onPlace]);
 

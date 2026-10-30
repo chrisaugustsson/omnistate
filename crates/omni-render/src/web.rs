@@ -47,6 +47,8 @@ thread_local! {
     /// Whether a page opens on what `Scene::opening` says instead of on all its
     /// boards.
     static OPEN_READABLE: Cell<bool> = const { Cell::new(false) };
+    /// The board a link named, which `Scene::opening` opens the page on.
+    static OPEN_ON: Cell<Option<NodeId>> = const { Cell::new(None) };
     /// What the page supplied for drawing: images and fonts, which stay until
     /// the page is closed.
     static ASSETS: RefCell<Assets> = RefCell::new(Assets::new());
@@ -136,6 +138,13 @@ pub fn layout_design(design_json: &str) -> Result<String, String> {
 /// as the design viewer wants, instead of on all its boards.
 pub fn view_open_readable() {
     OPEN_READABLE.set(true);
+}
+
+/// Makes the pages opened from now on open on `board`, the ID of a board a link
+/// named, as far as `Scene::opening` says so. Anything that is not a node ID
+/// (the empty text, for no board) asks for no board.
+pub fn view_open_on(board: &str) {
+    OPEN_ON.set(board.parse().ok());
 }
 
 /// Loads the node in `tags` (one tag and its subtree, the form the API gives
@@ -307,7 +316,7 @@ pub fn scene_draw(width: i32, height: i32, pixel_ratio: f32) -> Result<(), Strin
         // A canvas that has no size yet (a hidden page) has nothing to fit.
         if stage.fit_pending && width >= 2 && height >= 2 {
             let opening = if OPEN_READABLE.get() {
-                stage.scene.opening(viewport, pixel_ratio)
+                stage.scene.opening(viewport, pixel_ratio, OPEN_ON.get())
             } else {
                 stage.scene.bounds()
             };

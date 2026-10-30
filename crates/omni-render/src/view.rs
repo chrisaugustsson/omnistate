@@ -664,13 +664,31 @@ impl Scene {
     /// pixels per CSS pixel: all of it where that draws its boards in full
     /// detail, and otherwise its first board, so that what is on screen first
     /// can be read and a page of hundreds of boards does not open as specks.
-    pub fn opening(&self, viewport: &Viewport, pixel_ratio: f32) -> LayoutBox {
+    /// A page opened by a link to the board `linked` opens on that board when
+    /// the opening would not hold all of it; a board the page does not have
+    /// changes nothing.
+    pub fn opening(
+        &self,
+        viewport: &Viewport,
+        pixel_ratio: f32,
+        linked: Option<NodeId>,
+    ) -> LayoutBox {
         let bounds = self.bounds();
         let mut all = *viewport;
         all.fit(bounds);
-        match self.boards.first() {
+        let opening = match self.boards.first() {
             Some(first) if all.zoom() * pixel_ratio < REDUCED_BELOW => first.bounds,
             _ => bounds,
+        };
+        let holds = |board: &LayoutBox| {
+            board.x >= opening.x
+                && board.y >= opening.y
+                && board.x + board.width <= opening.x + opening.width
+                && board.y + board.height <= opening.y + opening.height
+        };
+        match linked.and_then(|id| self.boards.iter().find(|board| board.id == id)) {
+            Some(board) if !holds(&board.bounds) => board.bounds,
+            _ => opening,
         }
     }
 
