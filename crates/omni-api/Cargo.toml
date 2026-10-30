@@ -91,10 +91,6 @@ name = "sealed_phases"
 required-features = ["stack-tests"]
 
 [[test]]
-name = "thread_waits"
-required-features = ["stack-tests"]
-
-[[test]]
 name = "comments"
 required-features = ["stack-tests"]
 

@@ -1,5 +1,4 @@
-//! US-104: an agent writes designs, tokens and components directly, with no
-//! change set. Run with `--features stack-tests` in the Compose test container,
+//! US-104: an agent writes designs, tokens and components directly. Run with `--features stack-tests` in the Compose test container,
 //! which reaches Postgres at `postgres:5432` and RustFS at `rustfs:9000`.
 //!
 //! The tests migrate a scratch database, seed a workspace with one member
@@ -42,8 +41,7 @@
 //!   one. A board the batch did not change is not listed.
 //! - `PUT /tokens` (agent, `{"tokens": <tree>}`) replaces the token tree of the
 //!   project's design system head, and `PUT /components` (agent, `{"tags":
-//!   "<Component ...>..."}`) replaces its components, all or nothing, with no
-//!   change set (a tag with an `id` keeps that component's ID; the answer lists
+//!   "<Component ...>..."}`) replaces its components, all or nothing (a tag with an `id` keeps that component's ID; the answer lists
 //!   the components as JSON nodes under `components`). Each write makes a new
 //!   head of the design system doc and adds one `doc_changes` row. `GET
 //!   /tokens` reads the tree of the design system's head.
@@ -384,7 +382,7 @@ fn new_feature(ws: &Ws, client: &Client, project: &str) -> String {
     .to_string()
 }
 
-/// Creates a doc of `kind` in the UI pillar without a change set (US-102), at
+/// Creates a doc of `kind` in the UI pillar (US-102), at
 /// the app level or in `feature`; returns its ID.
 fn new_ui_doc(
     ws: &Ws,
@@ -407,7 +405,7 @@ fn new_ui_doc(
                 Some(&json!({ "kind": kind, "pillar": "ui", "title": unique(kind) })),
             ),
             201,
-            "create a doc without a change set",
+            "create a doc",
         )["doc"],
         "id",
     )
@@ -1178,7 +1176,7 @@ fn a_design_edit_logs_each_changed_board_with_its_chunk_before_and_after() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn token_and_component_imports_write_the_design_systems_head_without_a_change_set() {
+fn token_and_component_imports_write_the_design_systems_head() {
     let (ws, client) = ready();
     let project = new_project(ws, client);
     let doc = new_ui_doc(ws, client, &project, None, "design-system");
@@ -1239,15 +1237,6 @@ fn token_and_component_imports_write_the_design_systems_head_without_a_change_se
     assert_eq!(
         changes[rows + 1].head_after.as_deref(),
         Some(after_components.as_str())
-    );
-    assert_eq!(
-        scalar(
-            "SELECT count(*)::text FROM changesets WHERE project_id = $1::uuid",
-            &[&project],
-        )
-        .as_deref(),
-        Some("0"),
-        "no change set was made"
     );
 }
 

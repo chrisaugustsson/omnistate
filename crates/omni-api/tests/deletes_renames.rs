@@ -386,7 +386,7 @@ fn new_doc(
                 Some(&json!({ "kind": "html", "pillar": "spec", "title": title })),
             ),
             201,
-            "create a doc without a change set",
+            "create a doc",
         )["doc"],
     )
 }
@@ -468,27 +468,6 @@ fn new_thread(f: &Fixture, client: &Client, project: &str, feature: Option<&str>
             201,
             "start a thread",
         )["thread"],
-    )
-}
-
-/// Opens a change set in the feature; returns its ID.
-fn new_changeset(f: &Fixture, client: &Client, project: &str, feature: &str) -> String {
-    id_of(
-        &must(
-            call(
-                client,
-                "POST",
-                &format!("{}/changesets", project_base(f, project)),
-                &agent(f),
-                Some(&json!({
-                    "title": unique("change"),
-                    "run_tag": "run-110",
-                    "feature_id": feature
-                })),
-            ),
-            201,
-            "open a change set in the feature",
-        )["changeset"],
     )
 }
 
@@ -1131,25 +1110,13 @@ fn a_deleted_feature_takes_nothing_new() {
     let node = write_paragraph(f, client, &project, &doc, "Pay in one step.");
     let comment = waiting_comment(f, client, &project, &doc, &node);
     let thread = new_thread(f, client, &project, Some(&feature));
-    let changeset = new_changeset(f, client, &project, &feature);
     assert_deleted(
         &delete_feature(f, client, &agent(f), &project, &feature),
         "delete the feature",
     );
     let base = project_base(f, &project);
     let feature_base = feature_path(f, &project, &feature);
-    let changeset_base = format!("{base}/changesets/{changeset}");
     for (auth, path, body) in [
-        (
-            agent(f),
-            format!("{changeset_base}/docs"),
-            json!({ "kind": "html", "pillar": "spec", "title": "Late draft" }),
-        ),
-        (
-            agent(f),
-            format!("{changeset_base}/threads"),
-            json!({ "question": "Too late in the change set?", "criteria": ["Speed"] }),
-        ),
         (
             agent(f),
             format!("{feature_base}/docs"),

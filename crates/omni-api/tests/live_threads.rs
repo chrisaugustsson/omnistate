@@ -1,4 +1,4 @@
-//! US-108: threads without change sets. Run with `--features stack-tests` in
+//! US-108: threads. Run with `--features stack-tests` in
 //! the Compose test container, which reaches Postgres at `postgres:5432` and
 //! RustFS at `rustfs:9000`.
 //!
@@ -15,17 +15,15 @@
 //!
 //! - `POST /threads` (agent) starts a thread at the app level and `POST
 //!   /features/{feature_id}/threads` (agent) one in a feature of the project,
-//!   both with `{"question", "sealed"}` (`sealed` defaults to `false`) and no
-//!   change set. They answer 201 `{"thread": Thread}`. A missing or blank
+//!   both with `{"question", "sealed"}` (`sealed` defaults to `false`). They answer 201 `{"thread": Thread}`. A missing or blank
 //!   question is 400 `invalid_request`, a feature the project does not have is
 //!   404, and a browser session is 403. Starting a thread emits
 //!   `thread.created` with the thread's ID in `data.thread_id`.
 //! - A Thread has `id`, `project_id`, `scope` (`"app"` or `"feature"`),
 //!   `feature_id` (`null` at the app level), `question`, `sealed`,
 //!   `conclusion` (`null` until it is written) and `run_tag` (the run of the
-//!   agent that started it). It has no change set (`changeset_id` is `null` or
-//!   left out), and none of what US-108 removed: no `criteria`, no `phases` and
-//!   no `decision`. The thread's row has no change set either.
+//!   agent that started it). It has none of what US-108 removed: no `criteria`,
+//!   no `phases` and no `decision`.
 //! - `GET /threads` (both) answers `{"threads": [Thread, ...]}`: the threads of
 //!   the project, of every scope.
 //! - `GET /threads/{thread_id}` (both) answers `{"thread": Thread}` with
@@ -430,7 +428,7 @@ fn new_thread(
             &json!({ "question": unique("Which hero layout?"), "sealed": sealed }),
         ),
         201,
-        "start a thread without a change set",
+        "start a thread",
     )["thread"]
         .clone()
 }
@@ -545,18 +543,6 @@ fn conclude(
     )
 }
 
-/// The change set of the thread's row, as the admin role sees it.
-fn changeset_of_row(thread: &str) -> Option<String> {
-    block(async {
-        let mut conn = admin_connection().await;
-        sqlx::query_scalar("select changeset_id::text from threads where id = $1::uuid")
-            .bind(thread)
-            .fetch_one(&mut conn)
-            .await
-            .unwrap_or_else(|e| panic!("read the thread's row: {e}"))
-    })
-}
-
 /// How many threads the project has, as the admin role sees them.
 fn threads_in(project: &str) -> i64 {
     block(async {
@@ -569,8 +555,7 @@ fn threads_in(project: &str) -> i64 {
     })
 }
 
-/// A thread of US-108: its scope, no change set and nothing of what US-108
-/// removed.
+/// A thread of US-108: its scope and nothing of what US-108 removed.
 fn assert_live_thread(thread: &Value, feature: Option<&str>) {
     match feature {
         None => {
@@ -582,10 +567,6 @@ fn assert_live_thread(thread: &Value, feature: Option<&str>) {
             assert_eq!(thread["feature_id"], feature, "{thread}");
         }
     }
-    assert!(
-        thread.get("changeset_id").is_none_or(Value::is_null),
-        "a thread without a change set names none: {thread}"
-    );
     for removed in ["criteria", "phases", "decision"] {
         assert!(
             thread.get(removed).is_none(),
@@ -914,7 +895,7 @@ fn the_thread_routes_are_in_the_registry_with_who_may_call_them() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn an_agent_starts_a_thread_at_the_app_level_without_a_change_set() {
+fn an_agent_starts_a_thread_at_the_app_level() {
     let (f, client) = ready();
     let project = new_project(f, client);
     let question = unique("Which hero layout?");
@@ -941,7 +922,6 @@ fn an_agent_starts_a_thread_at_the_app_level_without_a_change_set() {
     assert_eq!(thread["conclusion"], Value::Null, "{thread}");
     assert_eq!(thread["run_tag"], "run-1", "the starter's run: {thread}");
     assert_live_thread(thread, None);
-    assert_eq!(changeset_of_row(&id), None, "the row has no change set");
 
     for auth in [moderator(f), scout(f), human(f)] {
         let read = read_thread(f, client, &auth, &project, &id);
@@ -972,7 +952,6 @@ fn an_agent_starts_a_thread_in_a_feature_of_the_project() {
     let id = id_of(&thread);
     assert_eq!(thread["sealed"], true, "{thread}");
     assert_live_thread(&thread, Some(&feature));
-    assert_eq!(changeset_of_row(&id), None, "the row has no change set");
     let read = read_thread(f, client, &human(f), &project, &id);
     assert_live_thread(&read["thread"], Some(&feature));
 
@@ -1070,7 +1049,7 @@ fn the_thread_list_has_the_threads_of_every_scope() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn agents_and_the_human_post_in_a_thread_without_a_change_set() {
+fn agents_and_the_human_post_in_a_thread() {
     let (f, client) = ready();
     let project = new_project(f, client);
     let feature = new_feature(f, client, &project);

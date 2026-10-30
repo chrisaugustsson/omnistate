@@ -1,4 +1,4 @@
-//! US-103: an agent writes an HTML doc directly, with no change set. Run with
+//! US-103: an agent writes an HTML doc directly. Run with
 //! `--features stack-tests` in the Compose test container, which reaches
 //! Postgres at `postgres:5432` and RustFS at `rustfs:9000`.
 //!
@@ -10,13 +10,12 @@
 //! The contract these tests pin down (all paths are under
 //! `/api/v1/w/{workspace_id}/projects/{project_id}`):
 //!
-//! - `POST /docs/{doc_id}/ops` (agent, in the route registry) takes the body of
-//!   the change set route, `{"ops": [...]}` with the batch format of
+//! - `POST /docs/{doc_id}/ops` (agent, in the route registry) takes
+//!   `{"ops": [...]}` with the batch format of
 //!   docs/formats/operations.md, and applies it to the doc's head, all or
 //!   nothing. It answers 200 `{"results": [...]}`, one result per operation
 //!   (`node`, `revision`, `created`, `removed`), and the next read of the doc
-//!   (`GET /docs/{doc_id}/html`, by the agent or the human) has the change. No
-//!   change set and no draft is made.
+//!   (`GET /docs/{doc_id}/html`, by the agent or the human) has the change.
 //! - An operation whose `rev` is not the node's revision is 409 `{"error":
 //!   "conflict", "conflict": {"index", "node", "expected", "current_revision",
 //!   "current_html"}}`, where `current_html` is the node as it is now, with its
@@ -367,7 +366,7 @@ fn new_project(f: &Fixture, client: &Client) -> String {
     )
 }
 
-/// Creates an HTML doc at the app level without a change set (US-102);
+/// Creates an HTML doc at the app level (US-102);
 /// returns its ID.
 fn new_doc(f: &Fixture, client: &Client, project: &str) -> String {
     id_of(
@@ -380,7 +379,7 @@ fn new_doc(f: &Fixture, client: &Client, project: &str) -> String {
                 Some(&json!({ "kind": "html", "pillar": "spec", "title": unique("Plan") })),
             ),
             201,
-            "create a doc without a change set",
+            "create a doc",
         )["doc"],
     )
 }
@@ -720,23 +719,6 @@ fn a_batch_applies_to_the_head_and_the_next_read_has_the_change() {
     );
     assert_eq!(results[0]["revision"], 3, "{results:?}");
     assert!(read_html(f, client, &project, &doc).contains(&again));
-
-    assert_eq!(
-        count(
-            "SELECT count(*) FROM changesets WHERE project_id = $1::uuid",
-            &[&project],
-        ),
-        0,
-        "no change set was made"
-    );
-    assert_eq!(
-        count(
-            "SELECT count(*) FROM drafts WHERE doc_id = $1::uuid",
-            &[&doc],
-        ),
-        0,
-        "no draft was made"
-    );
 }
 
 #[test]

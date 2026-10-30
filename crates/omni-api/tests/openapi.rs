@@ -111,45 +111,21 @@ fn every_registered_route_is_served_by_the_router() {
     }
 }
 
-/// Every live event the API emits, by name (`<entity>.<action>`): the
-/// `changeset.<status>` events of every status and the events of US-017 on
-/// (US-106 replaced `comment.status_changed` with `comment.deleted`, and
-/// US-108 added `thread.concluded`; US-110 removed `feature.done` and
-/// `feature.reopened` with the feature's status).
-const LIVE_EVENTS: [&str; 33] = [
-    "changeset.open",
-    "changeset.in_review",
-    "changeset.approved",
-    "changeset.rejected",
-    "changeset.merged",
-    "changeset.needs_rebase",
-    "changeset.abandoned",
-    "claim.taken",
-    "claim.released",
-    "claim.expired",
+/// Every live event the API emits, by name (`<entity>.<action>`).
+const LIVE_EVENTS: [&str; 13] = [
     "comment.created",
     "comment.deleted",
     "comment.replied",
-    "components.imported",
-    "conflict.recorded",
-    "conflict.resolved",
-    "decision.proposed",
-    "decision.superseded",
-    "decision.approved",
-    "decision.rejected",
-    "design.imported",
     "doc.changed",
     "doc.created",
-    "draft.opened",
-    "draft.rebased",
+    "doc.deleted",
+    "doc.renamed",
     "feature.created",
-    "op.applied",
-    "phase.started",
+    "feature.deleted",
+    "feature.renamed",
     "post.created",
-    "thread.created",
     "thread.concluded",
-    "tokens.imported",
-    "version.saved",
+    "thread.created",
 ];
 
 /// Every string that a schema (following `$ref`s into the document's
