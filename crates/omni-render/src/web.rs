@@ -44,6 +44,9 @@ struct Stage {
 }
 
 thread_local! {
+    /// Whether a page opens on what `Scene::opening` says instead of on all its
+    /// boards.
+    static OPEN_READABLE: Cell<bool> = const { Cell::new(false) };
     /// What the page supplied for drawing: images and fonts, which stay until
     /// the page is closed.
     static ASSETS: RefCell<Assets> = RefCell::new(Assets::new());
@@ -129,6 +132,12 @@ pub fn layout_design(design_json: &str) -> Result<String, String> {
     ASSETS.with_borrow(|assets| sandbox::layout_json(design_json, assets.fonts()))
 }
 
+/// Makes every page open on what can be read (`Scene::opening`) from now on,
+/// as the design viewer wants, instead of on all its boards.
+pub fn view_open_readable() {
+    OPEN_READABLE.set(true);
+}
+
 /// Loads the node in `tags` (one tag and its subtree, the form the API gives
 /// the snapshot of a comment) as a scene of its own, as [`scene_load`] loads a
 /// page; see [`snapshot::page_of_tags`].
@@ -141,10 +150,10 @@ pub fn scene_load_tags(tags: &str) -> Result<(), String> {
 
 /// Loads `design_json`, a page, into the scene that `scene_draw` draws, with
 /// the images and fonts that the page has supplied so far, which stay for
-/// every scene loaded after them. The view is fitted to its boards at the
-/// first frame, unless the scene replaces one of the same page (a page shown
-/// again with more of its boards loaded), which keeps its view and its
-/// selection. Fails if the page nests more than
+/// every scene loaded after them. The view is fitted to its boards, or to what
+/// `view_open_readable` says, at the first frame, unless the scene replaces one
+/// of the same page (a page shown again with more of its boards loaded), which
+/// keeps its view and its selection. Fails if the page nests more than
 /// `MAX_NESTING` levels deep once its instances are expanded (see
 /// [`nesting`]); the scene is loaded all the same, without the deeper nodes.
 pub fn scene_load(design_json: &str) -> Result<(), String> {
@@ -297,7 +306,12 @@ pub fn scene_draw(width: i32, height: i32, pixel_ratio: f32) -> Result<(), Strin
         viewport.resize(width as f32 / pixel_ratio, height as f32 / pixel_ratio);
         // A canvas that has no size yet (a hidden page) has nothing to fit.
         if stage.fit_pending && width >= 2 && height >= 2 {
-            viewport.fit(stage.scene.bounds());
+            let opening = if OPEN_READABLE.get() {
+                stage.scene.opening(viewport, pixel_ratio)
+            } else {
+                stage.scene.bounds()
+            };
+            viewport.fit(opening);
             stage.fit_pending = false;
         }
         let viewport = *stage.controls.viewport();
@@ -341,7 +355,12 @@ pub fn scene_timings() -> String {
 
 /// What the last `scene_draw` did, as JSON: `{"boardsDrawn": 3,
 /// "nodesPainted": 640, "detail": "full", "zoom": 1}`, with `detail` either
-/// `"full"` or `"reduced"`. `None` before the first frame.
+/// `"full"` or `"reduced"`. `"firstBoard"` is how the page's first board stands
+/// in the view, or `null` for a page without boards: `{"id": "<id>", "x": 0,
+/// "y": 0, "width": 1200, "height": 536, "whole": true, "nodes": 57,
+/// "missingImages": 0}`, with the box in canvas pixels, and `nodes` and
+/// `missingImages` as far as its full detail was painted (`FirstBoard`).
+/// `None` before the first frame.
 pub fn scene_stats() -> Option<String> {
     STAGE.with_borrow(|stage| {
         let stage = stage.as_ref()?;
@@ -350,8 +369,23 @@ pub fn scene_stats() -> Option<String> {
             Detail::Full => "full",
             Detail::Reduced => "reduced",
         };
+        let first_board = stage
+            .scene
+            .first_board(stage.controls.viewport())
+            .map_or(Value::Null, |first| {
+                json!({
+                    "id": first.id.to_string(),
+                    "x": first.screen.x,
+                    "y": first.screen.y,
+                    "width": first.screen.width,
+                    "height": first.screen.height,
+                    "whole": first.whole,
+                    "nodes": first.painted.nodes,
+                    "missingImages": first.painted.missing_images,
+                })
+            });
         Some(format!(
-            "{{\"boardsDrawn\": {}, \"nodesPainted\": {}, \"detail\": \"{detail}\", \"zoom\": {}}}",
+            "{{\"boardsDrawn\": {}, \"nodesPainted\": {}, \"detail\": \"{detail}\", \"zoom\": {}, \"firstBoard\": {first_board}}}",
             stats.boards_drawn.len(),
             stats.nodes_painted,
             stage.controls.viewport().zoom()
@@ -372,6 +406,16 @@ fn with_stage<T>(handle: impl FnOnce(&mut Scene, &Viewport) -> T) -> Option<T> {
         let viewport = *stage.controls.viewport();
         Some(handle(&mut stage.scene, &viewport))
     })
+}
+
+/// Brings the selected node into view (`Scene::reveal_selected`).
+pub fn view_reveal_selected() {
+    STAGE.with_borrow_mut(|stage| {
+        if let Some(stage) = stage {
+            let viewport = stage.controls.viewport_mut();
+            stage.scene.reveal_selected(viewport);
+        }
+    });
 }
 
 /// The pointer moved to the canvas point `x`, `y` (CSS pixels): hover.

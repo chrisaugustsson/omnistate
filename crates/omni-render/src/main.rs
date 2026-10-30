@@ -246,7 +246,8 @@ mod exports {
 
     /// What the last frame did, as a NUL-ended JSON object that stays until
     /// the next call: `{"boardsDrawn": 3, "nodesPainted": 640, "detail":
-    /// "full", "zoom": 1}`. Null before the first frame.
+    /// "full", "zoom": 1, "firstBoard": {...}}` (`web::scene_stats`). Null
+    /// before the first frame.
     #[unsafe(no_mangle)]
     pub extern "C" fn omni_render_scene_stats() -> *const c_char {
         let Some(stats) = omni_render::web::scene_stats() else {
@@ -393,6 +394,19 @@ mod exports {
                 false
             }
         }
+    }
+
+    /// Makes every page open on what can be read from now on, instead of on
+    /// all its boards (`web::view_open_readable`).
+    #[unsafe(no_mangle)]
+    pub extern "C" fn omni_render_view_open_readable() {
+        omni_render::web::view_open_readable();
+    }
+
+    /// Brings the selected node into view (`web::view_reveal_selected`).
+    #[unsafe(no_mangle)]
+    pub extern "C" fn omni_render_view_reveal_selected() {
+        omni_render::web::view_reveal_selected();
     }
 
     /// The bounds of the node at the address (`<id>` or

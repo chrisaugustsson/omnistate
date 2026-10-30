@@ -103,15 +103,23 @@ pub fn draw(canvas: &Canvas, root: &Node, boxes: &HashMap<NodeId, LayoutBox>, as
     paint_counted(canvas, root, boxes, None, assets, false);
 }
 
-/// As [`draw`], and returns how many nodes it painted: the visible ones that
-/// layout gave a box, below `root` and including it.
+/// What painting a board did.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Painted {
+    /// The visible nodes that layout gave a box, the board included.
+    pub nodes: usize,
+    /// The images among them that the host has not supplied.
+    pub missing_images: usize,
+}
+
+/// As [`draw`], and returns what it painted, below `root` and including it.
 pub(crate) fn draw_counted(
     canvas: &Canvas,
     root: &Node,
     boxes: &HashMap<NodeId, LayoutBox>,
     texts: &ShapedTexts,
     assets: &Assets,
-) -> usize {
+) -> Painted {
     paint_counted(canvas, root, boxes, Some(texts), assets, false)
 }
 
@@ -130,7 +138,7 @@ pub(crate) fn draw_reduced(
     boxes: &HashMap<NodeId, LayoutBox>,
     assets: &Assets,
 ) -> usize {
-    paint_counted(canvas, root, boxes, None, assets, true)
+    paint_counted(canvas, root, boxes, None, assets, true).nodes
 }
 
 /// Paints `root`. `texts` has the text nodes already shaped, as layout shaped
@@ -143,14 +151,14 @@ fn paint_counted(
     texts: Option<&ShapedTexts>,
     assets: &Assets,
     reduced: bool,
-) -> usize {
+) -> Painted {
     let painter = Painter {
         canvas,
         boxes,
         texts,
         assets,
         reduced,
-        painted: Cell::new(0),
+        painted: Cell::new(Painted::default()),
     };
     painter.node(root);
     painter.painted.get()
@@ -277,8 +285,8 @@ struct Painter<'a> {
     assets: &'a Assets,
     /// Whether to draw at the reduced level of detail ([`draw_reduced`]).
     reduced: bool,
-    /// The nodes painted so far.
-    painted: Cell<usize>,
+    /// What was painted so far.
+    painted: Cell<Painted>,
 }
 
 impl Painter<'_> {
@@ -292,7 +300,10 @@ impl Painter<'_> {
             return;
         }
         if !matches!(node.data(), NodeData::Page(_) | NodeData::Instance(_)) {
-            self.painted.set(self.painted.get() + 1);
+            self.painted.set(Painted {
+                nodes: self.painted.get().nodes + 1,
+                ..self.painted.get()
+            });
         }
         let rect = Rect::from_xywh(
             layout_box.x,
@@ -399,6 +410,13 @@ impl Painter<'_> {
         self.canvas.draw_rect(rect, &paint);
     }
 
+    fn missing_image(&self) {
+        self.painted.set(Painted {
+            missing_images: self.painted.get().missing_images + 1,
+            ..self.painted.get()
+        });
+    }
+
     fn image(&self, image: &design::Image, rect: Rect) {
         let rounded = Rounded::new(rect, image.radius.as_ref());
         let shape = Shape::Rounded(rounded);
@@ -406,6 +424,7 @@ impl Painter<'_> {
         // An image that the host did not supply draws nothing, and its
         // shadow is not a shadow of anything.
         let Some(picture) = self.assets.images.get(&image.image) else {
+            self.missing_image();
             return;
         };
         self.drop_shadows(&shape, &shadows);
@@ -499,11 +518,10 @@ impl Painter<'_> {
                     shape.draw(self.canvas, &paint);
                 }
             }
-            Fill::Image { image, fit } => {
-                if let Some(picture) = self.assets.images.get(image) {
-                    self.draw_image(picture, *fit, rect);
-                }
-            }
+            Fill::Image { image, fit } => match self.assets.images.get(image) {
+                Some(picture) => self.draw_image(picture, *fit, rect),
+                None => self.missing_image(),
+            },
         }
     }
 

@@ -6,14 +6,16 @@
 // Chrome with an empty cache (1440x900, device pixel ratio 2):
 //
 // - opens the design at /docs/:doc and times, from the navigation, the first
-//   complete frame that draws a board that is read (the cold time to first board);
+//   complete frame that shows the first board of the design's manifest in full:
+//   read, all of it in view at full detail, with its text and images (the cold
+//   time to first board); a real click on it must then select a node;
 // - opens the page with the most boards and plays a scripted 10 s path over it:
 //   from the opening board out to the viewer's minimum zoom, which on this page
 //   shows about 350 of its 769 boards and not all of them, across the whole page
 //   and back in on the opening board, timing every frame from the end of the
 //   one before to `gl.finish()`;
-// - reads the API process's peak memory (VmHWM) from before the navigation to
-//   the end of the path.
+// - samples the API container's memory as `docker stats` reports it, from before
+//   the navigation to the end of the path, and keeps the highest sample.
 //
 // It prints the medians of the five runs and writes docs/bench-ordrar.md: the
 // baseline numbers and a profile of where the time goes. The page side is
@@ -23,7 +25,7 @@
 //
 // Environment: `OMNI_BENCH_PORT` (default 8083) is the port of the bench stack;
 // `OMNI_BENCH_KEEP=1` leaves the stack running afterwards.
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
@@ -32,7 +34,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright-core';
 import { assertHardwareRenderer } from './bench-render-lib.mjs';
-import { config, evaluate, frameProfile, frameStats, renderReport, splitLoad } from './bench-ordrar-lib.mjs';
+import { config, evaluate, frameProfile, frameStats, memUsageMiB, renderReport, splitLoad } from './bench-ordrar-lib.mjs';
 
 const SANDBOX = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.join(SANDBOX, '..');
@@ -123,6 +125,51 @@ async function hookRenderer(context) {
   });
 }
 
+// Follows the API container's memory with `docker stats`, which reports it about
+// once a second. `ready` resolves with the first sample and `stop` gives the peak.
+function sampleMemory() {
+  const container = compose(['ps', '--quiet', 'api']).stdout.trim();
+  const stats = spawn('docker', ['stats', '--format', '{{.MemUsage}}', container], { stdio: ['ignore', 'pipe', 'ignore'] });
+  let peak = 0;
+  let sampled;
+  const ready = new Promise((resolve) => {
+    sampled = resolve;
+  });
+  stats.stdout.setEncoding('utf8').on('data', (text) => {
+    for (const line of text.split('\n')) {
+      const usage = memUsageMiB(line);
+      if (usage === null) continue;
+      peak = Math.max(peak, usage);
+      sampled();
+    }
+  });
+  return {
+    ready,
+    stop: () => {
+      stats.kill();
+      return peak;
+    },
+  };
+}
+
+// A real click on the middle of the first board, with Cmd held for the deepest
+// node there: the viewer must put the node in the address bar, with that board.
+async function selectOnFirstBoard(page, board, firstBoardId) {
+  const canvas = await page.evaluate(() => {
+    const { left, top } = window.__bench.canvas.getBoundingClientRect();
+    return { left, top };
+  });
+  await page.mouse.click(canvas.left + board.x + board.width / 2, canvas.top + board.y + board.height / 2, { modifiers: ['Meta'] });
+  await page.waitForFunction(
+    (id) => {
+      const { searchParams } = new URL(location.href);
+      return searchParams.get('board') === id && searchParams.has('node');
+    },
+    firstBoardId,
+    { timeout: 10_000 },
+  );
+}
+
 // Waits until the viewer has not loaded a page into the renderer for `quietMs`
 // and has loaded more than `after` pages.
 function settled(page, after, quietMs) {
@@ -133,18 +180,19 @@ function settled(page, after, quietMs) {
   );
 }
 
-async function measureRun({ password, doc, workspace, projectId, view, index }) {
+async function measureRun({ password, doc, workspace, projectId, view, firstBoardId, index }) {
   compose(['restart', 'api']);
   await waitForApi();
-  // Peak memory counts from here; the restart's own start-up is before it.
-  compose(['exec', '-T', 'api', 'sh', '-c', 'echo 5 > /proc/1/clear_refs']);
+  // Peak memory counts from here; the import and the restart are before it.
+  const memory = sampleMemory();
+  await memory.ready;
   const token = await login(password);
 
   const browser = await chromium.launch({ channel: 'chrome', executablePath: process.env.CHROME || undefined, headless: false });
   try {
     const context = await browser.newContext({ viewport: config.viewport, deviceScaleFactor: config.deviceScaleFactor });
     await context.addCookies([{ name: 'omni_session', value: token, url: BASE, httpOnly: true, secure: true, sameSite: 'Lax' }]);
-    await context.addInitScript({ content: `performance.setResourceTimingBufferSize(20000);\n${await readFile(path.join(SANDBOX, 'bench-ordrar-page.js'), 'utf8')}` });
+    await context.addInitScript({ content: `performance.setResourceTimingBufferSize(20000);\n${await readFile(path.join(SANDBOX, 'bench-ordrar-page.js'), 'utf8')}\nwindow.__bench.firstBoardId = ${JSON.stringify(firstBoardId)};` });
     await hookRenderer(context);
     const page = await context.newPage();
     page.on('pageerror', (error) => console.error(`  page error: ${error.message}`));
@@ -168,18 +216,15 @@ async function measureRun({ password, doc, workspace, projectId, view, index }) 
       return gl.getParameter(info ? info.UNMASKED_RENDERER_WEBGL : gl.RENDERER);
     });
     assertHardwareRenderer(renderer);
+    await selectOnFirstBoard(page, first.info.firstBoard, firstBoardId);
 
-    // The big page: shown, then the view put on its opening board.
+    // The big page, which opens on its first board.
     const loaded = await page.evaluate(() => window.__bench.loads ?? 0);
     await page.getByRole('button', { name: view.pageName, exact: true }).click();
     await settled(page, loaded, 1500);
-    const before = await page.evaluate(() => window.__bench.loads ?? 0);
-    await page.evaluate((cfg) => window.__bench.toOpening(cfg), view.cfg);
-    await page.waitForTimeout(500);
-    await settled(page, before - 1, 1500);
 
     const played = await page.evaluate((cfg) => window.__bench.runPath(cfg), view.cfg);
-    const { VmHWM } = parseStatus(compose(['exec', '-T', 'api', 'sh', '-c', 'grep VmHWM /proc/1/status']).stdout);
+    const peakMemoryMiB = memory.stop();
     const requests = await page.evaluate(() => {
       const entries = performance.getEntriesByType('resource').map((entry) => ({
         name: new URL(entry.name).pathname.replace(/[0-9a-f]{8}-[0-9a-f-]{27}/g, ':id'),
@@ -213,7 +258,7 @@ async function measureRun({ password, doc, workspace, projectId, view, index }) 
       calls: Object.entries(played.calls)
         .map(([name, call]) => ({ name, ...call }))
         .sort((a, b) => b.ms - a.ms),
-      peakMemoryMiB: VmHWM / 1024,
+      peakMemoryMiB,
       renderer,
       version: browser.version(),
     };
@@ -222,14 +267,9 @@ async function measureRun({ password, doc, workspace, projectId, view, index }) 
     );
     return result;
   } finally {
+    memory.stop();
     await browser.close();
   }
-}
-
-function parseStatus(text) {
-  const found = /VmHWM:\s+(\d+) kB/.exec(text);
-  if (!found) throw new Error('the API container did not report VmHWM');
-  return { VmHWM: Number(found[1]) };
 }
 
 function machineName() {
@@ -273,13 +313,14 @@ async function main() {
     const outline = (await (await fetch(`${BASE}/api/v1/w/${workspace}/projects/${projectId}/docs/${doc}/html?view=outline`, { headers })).json());
     const boards = outline.boards.length;
     const view = pathOf(outline.outline);
+    const firstBoardId = outline.boards[0].id;
     console.log(`${boards} boards on ${outline.outline.length} pages; the path runs on the page ${view.pageName} (${view.boards} boards)`);
 
     const runs = [];
     let renderer = '';
     let version = '';
     for (let index = 1; index <= config.runs; index += 1) {
-      const result = await measureRun({ password, doc, workspace, projectId, view, index });
+      const result = await measureRun({ password, doc, workspace, projectId, view, firstBoardId, index });
       runs.push(result);
       renderer = result.renderer;
       version = result.version;

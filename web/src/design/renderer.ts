@@ -72,8 +72,12 @@ export type DesignRenderer = {
   visibleBoards(): string[];
   /** The shown page's boards with every node below them. */
   layers(): Layer[];
-  /** Selects the node at `address` on the canvas; `null` clears the selection. */
-  select(address: string | null): void;
+  /**
+   * Selects the node at `address` on the canvas; `null` clears the selection.
+   * With `reveal`, the view moves to the node's board if the node is out of
+   * view, as for a link to it.
+   */
+  select(address: string | null, reveal?: boolean): void;
   /**
    * Resolves the shown page's tokens in `mode` from now on and draws it again.
    * `show` resolves a page in the first mode of its design system, so call
@@ -137,6 +141,8 @@ type OmniRender = {
   _omni_render_view_pointer_move(x: number, y: number): boolean;
   _omni_render_view_pointer_up(): void;
   _omni_render_view_space(held: boolean): void;
+  _omni_render_view_open_readable(): void;
+  _omni_render_view_reveal_selected(): void;
 };
 
 /** Every function of the module that the viewer calls, so that a module without one is caught when it loads. */
@@ -167,6 +173,8 @@ const FUNCTIONS: Record<Extract<keyof OmniRender, `_omni_render_${string}`>, tru
   _omni_render_view_pointer_move: true,
   _omni_render_view_pointer_up: true,
   _omni_render_view_space: true,
+  _omni_render_view_open_readable: true,
+  _omni_render_view_reveal_selected: true,
 };
 
 /**
@@ -224,6 +232,7 @@ export async function createDesignRenderer(canvas: HTMLCanvasElement): Promise<D
   const gl = canvas.getContext("webgl2", { alpha: true, depth: false, stencil: true, antialias: false });
   if (!gl) throw new Error("this browser has no WebGL 2");
   module.GL.makeContextCurrent(module.GL.registerContext(gl, { majorVersion: 2, minorVersion: 0 }));
+  module._omni_render_view_open_readable();
 
   // Hover and selection outlines are elements over the canvas.
   const overlay = document.createElement("div");
@@ -453,11 +462,15 @@ export async function createDesignRenderer(canvas: HTMLCanvasElement): Promise<D
     layers() {
       return loaded ? readJson<Layer[]>(module._omni_render_scene_layers()) : [];
     },
-    select(address) {
+    select(address, reveal = false) {
       if (!loaded) return;
       withText(address ?? "", (pointer, length) => module._omni_render_select_node(pointer, length));
       // The caller knows about this selection, so it is not announced.
       module._omni_render_take_events();
+      if (reveal) {
+        module._omni_render_view_reveal_selected();
+        requestFrame();
+      }
       drawOverlay();
     },
     setMode(mode) {

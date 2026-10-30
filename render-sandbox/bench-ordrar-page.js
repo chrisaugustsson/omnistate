@@ -32,6 +32,9 @@
     longTasks: [],
     // Intervals of the main thread that the phases own, until the first board.
     spans: [],
+    // The ID of the design's first board in its manifest, which bench-ordrar.mjs
+    // sets, and when that board stood complete on the canvas.
+    firstBoardId: null,
     firstBoard: null,
     firstBoardInfo: null,
     lastLoadEnd: 0,
@@ -74,6 +77,21 @@
       bench.canvas = this;
     }
     return context;
+  };
+
+  // Whether a frame shows the design's first board complete: painted by the real
+  // renderer in full detail, so with its text as text, all of it in view, read
+  // (a placeholder is one node), with no image missing, and so with its nodes in
+  // the renderer's index, where a click finds them.
+  const firstBoardDone = (drawn) => {
+    const board = drawn?.firstBoard;
+    return (
+      drawn?.detail === 'full' &&
+      board?.id === bench.firstBoardId &&
+      board.whole &&
+      board.nodes > 1 &&
+      board.missingImages === 0
+    );
   };
 
   window.__benchHook = (module) => {
@@ -141,10 +159,8 @@
         bench.frames.push(frame);
       }
       if (bench.firstBoard === null) {
-        // Boards that are not read yet are drawn as placeholders, which have no
-        // children, so a frame that painted more nodes than boards drew a board.
         const drawn = bench.stats();
-        if (drawn && drawn.nodesPainted > drawn.boardsDrawn) {
+        if (firstBoardDone(drawn)) {
           bench.firstBoard = end;
           bench.firstBoardInfo = drawn;
         }
@@ -192,20 +208,19 @@
   const MAX_ZOOM = 64;
   const clamp = (zoom) => Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, zoom));
 
-  bench.steer = (cfg, from) => {
+  bench.steer = (cfg) => {
     const canvas = bench.canvas;
     const width = canvas.clientWidth;
     const height = canvas.clientHeight;
     const rect = canvas.getBoundingClientRect();
-    const { bounds, opening } = cfg;
+    const { opening } = cfg;
     const fit = (box) => clamp(Math.min(width / box.width, height / box.height));
-    // A page opens on a view that fits all its boards, centered; the path
-    // starts from the opening board at board level (`from` is 'board').
-    const box = from === 'board' ? opening : bounds;
+    // A page too big to read at once opens on its first board, centered, and
+    // that is where the path starts.
     const view = {
-      x: box.x + box.width / 2,
-      y: box.y + box.height / 2,
-      zoom: fit(box),
+      x: opening.x + opening.width / 2,
+      y: opening.y + opening.height / 2,
+      zoom: fit(opening),
     };
     const send = (deltaX, deltaY, ctrlKey) => {
       canvas.dispatchEvent(
@@ -238,7 +253,7 @@
 
   bench.runPath = (cfg) =>
     new Promise((resolve) => {
-      const { moveTo, fit, size } = bench.steer(cfg, 'board');
+      const { moveTo, fit, size } = bench.steer(cfg);
       const { bounds, opening } = cfg;
       const board = [opening.x + opening.width / 2, opening.y + opening.height / 2, fit(opening)];
       // As far out as the page fits, or the viewer's minimum zoom, which on the
@@ -300,11 +315,4 @@
       };
       requestAnimationFrame(tick);
     });
-
-  // Moves the view to the opening board at board level (the start of the path).
-  bench.toOpening = (cfg) => {
-    const { moveTo, fit } = bench.steer(cfg, 'all');
-    const { opening } = cfg;
-    moveTo(opening.x + opening.width / 2, opening.y + opening.height / 2, fit(opening));
-  };
 })();

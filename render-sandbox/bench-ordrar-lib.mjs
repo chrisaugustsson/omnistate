@@ -14,6 +14,14 @@ export const config = {
   limits: { firstBoardMs: 2000, frameP95Ms: 16.7, peakMemoryMiB: 512 },
 };
 
+// The memory that a line of `docker stats` reports (`127.4MiB / 7.653GiB`), in MiB;
+// null for a line without any.
+export function memUsageMiB(line) {
+  const found = /([\d.]+)\s*(B|KiB|MiB|GiB)\s*\//.exec(line);
+  if (!found) return null;
+  return Number(found[1]) * { B: 1 / 2 ** 20, KiB: 1 / 1024, MiB: 1, GiB: 1024 }[found[2]];
+}
+
 export const PHASES = ['network', 'parsing', 'layout', 'painting', 'gpu'];
 export const PHASE_TITLES = {
   network: 'Network',
@@ -189,7 +197,7 @@ export function renderReport({ machine, renderer, apiImage, importMs, fileInfo, 
     '',
     '### Cold load, navigation to the first board',
     '',
-    `Run ${runs.indexOf(coldRun) + 1} of ${config.runs}, the median one: ${number(coldRun.firstBoardMs)} ms from the navigation to \`/docs/:doc\` to the first complete frame that draws a board that is read (${coldRun.firstBoardInfo.boardsDrawn} boards in view, ${coldRun.firstBoardInfo.nodesPainted} nodes painted). Every instant counts once: for the phase the main thread was in, then for other if it was in another renderer call or a long task, else for the network if a request was open, else for other.`,
+    `Run ${runs.indexOf(coldRun) + 1} of ${config.runs}, the median one: ${number(coldRun.firstBoardMs)} ms from the navigation to \`/docs/:doc\` to the first complete frame that shows the design's first board in full: all of it in view at full detail, read, with its text and images (${coldRun.firstBoardInfo.boardsDrawn} boards in view, ${coldRun.firstBoardInfo.nodesPainted} nodes painted); a click on it then selects a node, or the run fails. Every instant counts once: for the phase the main thread was in, then for other if it was in another renderer call or a long task, else for the network if a request was open, else for other.`,
     '',
     '| Phase | ms | Share of the load |',
     '| --- | --- | --- |',

@@ -719,7 +719,7 @@ function DesignViewer({
   useEffect(() => {
     if (!renderer || !target || !rowsOf(layers).some((row) => row.layer.address === target)) return;
     setSelected(target);
-    renderer.select(target);
+    renderer.select(target, true);
     setTarget(null);
   }, [renderer, target, layers, setSelected]);
 

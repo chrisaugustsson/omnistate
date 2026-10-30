@@ -21,7 +21,7 @@
 
 use crate::inspect::Inspection;
 use crate::layout::{self, LayoutBox, ShapedTexts};
-use crate::paint::{self, Assets};
+use crate::paint::{self, Assets, Painted};
 use crate::resolve::{self, Details, Facts};
 use crate::select::{Event, Index, Layer, Modifiers, NodeAddress, Outline, OutlineKind};
 use crate::system::{DesignSystem, RenderError};
@@ -279,6 +279,20 @@ pub struct FrameStats {
     pub detail: Detail,
 }
 
+/// How the page's first board stands in a view: what shows that a viewer has
+/// it on screen complete and can point at its nodes.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FirstBoard {
+    pub id: NodeId,
+    /// Its box on the screen of the view, in CSS pixels from the top-left corner.
+    pub screen: LayoutBox,
+    /// Whether all of it is in the view.
+    pub whole: bool,
+    /// What its picture painted at full detail; nothing before that is
+    /// recorded. A placeholder is one node.
+    pub painted: Painted,
+}
+
 /// A board of the page with what the scene keeps of it.
 struct Board {
     /// Where the board is among the page's children.
@@ -289,6 +303,8 @@ struct Board {
     reach: Rect,
     /// The board's drawing at full detail, once it has been recorded.
     picture: Option<Picture>,
+    /// What recording that drawing painted.
+    painted: Painted,
     /// The board's drawing at reduced detail, once it has been made.
     snapshot: Option<Snapshot>,
 }
@@ -325,9 +341,9 @@ impl Board {
         // The bounding box hierarchy lets a replay skip the parts of the
         // board that are out of view.
         let canvas = recorder.begin_recording(self.reach, true);
-        let painted = paint::draw_counted(canvas, node, boxes, texts, assets);
+        self.painted = paint::draw_counted(canvas, node, boxes, texts, assets);
         self.picture = recorder.finish_recording_as_picture(None);
-        painted
+        self.painted.nodes
     }
 
     /// Draws the recorded board on `canvas`, in page coordinates.
@@ -471,6 +487,7 @@ fn lay_out(
                 bounds: *boxes.get(node.id())?,
                 reach: paint::reach(node, &boxes)?,
                 picture: None,
+                painted: Painted::default(),
                 snapshot: None,
             })
         })
@@ -643,6 +660,45 @@ impl Scene {
         }
     }
 
+    /// What a viewer opens the page on, on a screen of `pixel_ratio` device
+    /// pixels per CSS pixel: all of it where that draws its boards in full
+    /// detail, and otherwise its first board, so that what is on screen first
+    /// can be read and a page of hundreds of boards does not open as specks.
+    pub fn opening(&self, viewport: &Viewport, pixel_ratio: f32) -> LayoutBox {
+        let bounds = self.bounds();
+        let mut all = *viewport;
+        all.fit(bounds);
+        match self.boards.first() {
+            Some(first) if all.zoom() * pixel_ratio < REDUCED_BELOW => first.bounds,
+            _ => bounds,
+        }
+    }
+
+    /// How the page's first board stands in `viewport`; `None` for a page
+    /// without boards.
+    pub fn first_board(&self, viewport: &Viewport) -> Option<FirstBoard> {
+        // The fit of a view is exact only to a fraction of a page pixel.
+        const MARGIN: f32 = 1.0;
+        let first = self.boards.first()?;
+        let visible = viewport.visible_rect();
+        let bounds = first.bounds;
+        let (x, y) = viewport.to_screen((bounds.x, bounds.y));
+        Some(FirstBoard {
+            id: first.id,
+            screen: LayoutBox {
+                x,
+                y,
+                width: bounds.width * viewport.zoom(),
+                height: bounds.height * viewport.zoom(),
+            },
+            whole: bounds.x + MARGIN >= visible.x
+                && bounds.y + MARGIN >= visible.y
+                && bounds.x + bounds.width <= visible.x + visible.width + MARGIN
+                && bounds.y + bounds.height <= visible.y + visible.height + MARGIN,
+            painted: first.painted,
+        })
+    }
+
     /// The boards that `viewport` shows, in page order. A board whose shadow
     /// reaches into the view is shown.
     pub fn visible_boards(&self, viewport: &Viewport) -> Vec<NodeId> {
@@ -707,6 +763,24 @@ impl Scene {
             self.selected = selected;
             let address = selected.map(|at| self.index.address(at));
             self.events.push(Event::Select(address));
+        }
+    }
+
+    /// Fits `viewport` to the board of the selected node, for a link to a node
+    /// that opened somewhere else. A node that is in view already stays where
+    /// it is.
+    pub fn reveal_selected(&self, viewport: &mut Viewport) {
+        let Some(selected) = self.selected else {
+            return;
+        };
+        let visible = viewport.visible_rect();
+        let node = self.index.rect(selected);
+        let in_view = node.x < visible.x + visible.width
+            && node.x + node.width > visible.x
+            && node.y < visible.y + visible.height
+            && node.y + node.height > visible.y;
+        if !in_view {
+            viewport.fit(self.index.rect(self.index.board(selected)));
         }
     }
 
