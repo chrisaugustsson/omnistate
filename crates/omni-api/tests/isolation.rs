@@ -1,67 +1,24 @@
-//! US-018: the cross-workspace and authority suite. Run with `--features
-//! stack-tests` in the Compose test container, which reaches Postgres at
-//! `postgres:5432`. It runs in `make test` and on every build from now on, and
-//! it attacks every route that the API has, so a story that adds a route (or a
+//! The cross-workspace and authority suite. Run with `--features stack-tests`
+//! in the Compose test container, which reaches Postgres at `postgres:5432`. It
+//! attacks every route that the API has, so a story that adds a route (or a
 //! tenant table) extends this file in its red step.
 //!
 //! The suite migrates a scratch database and seeds two workspaces, Alpha (A)
-//! and Beta (B), each with a member (alice, bob), a session, an API key, a spare
-//! key, two projects and two change sets (one of them rejected by the human),
-//! all made through the API itself so that every tenant table has rows of both
-//! workspaces. The API's router is served on a local port.
+//! and Beta (B), through the API itself, so that every tenant table has rows of
+//! both. Each has a member (alice, bob), a session, an API key, a spare key, two
+//! projects, a feature with a doc, a file, a doc with one paragraph (the human
+//! commented on it and the agent replied) and a sealed thread with a post of the
+//! agent. The API's router is served on a local port.
 //!
 //! The contract these tests pin down:
 //!
 //! - `CASES` lists every route of `omni_api::routes::registry()`, each either
 //!   `Workspace` (its path holds `{workspace_id}`, and the suite attacks it) or
-//!   `Global` (no workspace in the path, with the reason). The path may hold
-//!   `{project_id}`, `{changeset_id}`, `{key_id}`, `{attachment_id}`,
-//!   `{doc_id}`, `{version_id}`, `{other_version_id}`, `{conflict_id}`,
-//!   `{thread_id}`, `{post_id}`, `{decision_id}`, `{comment_id}` and
-//!   `{feature_id}`, which the suite fills with the IDs of the seeded
-//!   records, and `{board_id}`, which it fills with a node ID that no board
-//!   has (US-030); a path with another placeholder, or a registry route
-//!   without a case, fails the suite. A body may hold `<claimed_node>`,
-//!   which the suite fills with the section that the record's workspace
-//!   claimed (see below), so that an attack on the claim routes names a node
-//!   that really is claimed, `<comment_node>`, the node of `{version_id}`
-//!   that the seeded comment is pinned to, and `<other_version_id>`, the
-//!   record's `{other_version_id}`.
-//!   The seeded doc (US-022) was created in the open change set `{changeset_id}`,
-//!   which has its draft, and has one applied operation; once the claim routes
-//!   exist (US-023), the draft also has a section that the workspace's agent
-//!   claimed, and once the version routes exist (US-024), the draft was saved
-//!   as `{version_id}`, edited and saved again as `{other_version_id}`. Once
-//!   the approve route exists (US-025), each workspace also has a change set
-//!   with a saved version of a doc of its own that the human approved and that
-//!   merged, so whatever records approvals has rows of both workspaces. Once
-//!   the rebase route exists (US-026), `{changeset_id}` was also submitted,
-//!   approved and rebased with a conflict on a doc whose mainline moved on
-//!   under it, which left it `open` again with the conflict `{conflict_id}`.
-//!   Once the thread routes exist (US-033), `{changeset_id}` also has the
-//!   thread `{thread_id}`, which the workspace's agent started, moved on to a
-//!   sealed second phase and posted in; that post, which the workspace's
-//!   agent (the API key without identity headers) wrote, is `{post_id}`, and
-//!   its summary is text that nothing else holds. Once the directive route exists
-//!   (US-034), the human also posted a directive in it, which the workspace's
-//!   agent was given with its next request in the change set. Once the
-//!   decision routes exist (US-037), the workspace's agent also proposed the
-//!   decision `{decision_id}` for that thread, relying on `{post_id}`, whose
-//!   direction is text that nothing else holds, and linked `{changeset_id}` to
-//!   it; the decision is still `proposed`. Once the comment routes exist
-//!   (US-038), the human also commented on the paragraph of `{version_id}`
-//!   (the comment `{comment_id}`, whose text nothing else holds) and the
-//!   workspace's agent replied to it (and, while comments had a status,
-//!   marked it addressed in `{other_version_id}`; US-106 removed statuses). Once the feature routes exist (US-059), the
-//!   workspace's agent also created the feature `{feature_id}` in
-//!   `{project_id}`, whose name is text that nothing else holds. The doc list
-//!   (US-061) lists `{doc_id}` among the project's docs. Once the scope-level
-//!   doc routes exist (US-102), the workspace's agent also created a doc at the
-//!   app level of `{project_id}` and one in `{feature_id}` without a change
-//!   set, so the log of the writes to docs (`doc_changes`) has rows of the
-//!   workspace. The rename and delete routes of docs and features (US-110)
-//!   are attacked with the seeded `{doc_id}` and `{feature_id}`; their
-//!   controls rename and delete records of their own.
+//!   `Global` (no workspace in the path, with the reason). `fill()` fills the
+//!   placeholders of a path with the IDs of the seeded records; a path with
+//!   another placeholder, or a registry route without a case, fails the suite.
+//!   A body may hold `<comment_node>`, the paragraph of `{doc_id}` that the
+//!   seeded comment is pinned to.
 //! - Workspace A's credentials against workspace B's workspace and IDs, and
 //!   against B's IDs under A's own workspace, are always 404
 //!   `{"error": "not_found"}` with nothing of B in the body, and the answer is
@@ -220,48 +177,6 @@ const CASES: &[Case] = &[
         Kind::Workspace,
     ),
     case(
-        "GET",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/changesets",
-        None,
-        Kind::Workspace,
-    ),
-    case(
-        "POST",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/changesets",
-        Some(r#"{"title":"intruder change","run_tag":"run-1"}"#),
-        Kind::Workspace,
-    ),
-    case(
-        "GET",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}",
-        None,
-        Kind::Workspace,
-    ),
-    case(
-        "POST",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/submit",
-        None,
-        Kind::Workspace,
-    ),
-    case(
-        "POST",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/reject",
-        Some(r#"{"reason":"not good enough yet"}"#),
-        Kind::Workspace,
-    ),
-    case(
-        "POST",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/reopen",
-        None,
-        Kind::Workspace,
-    ),
-    case(
-        "POST",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/abandon",
-        None,
-        Kind::Workspace,
-    ),
-    case(
         "POST",
         "/api/v1/w/{workspace_id}/attachments",
         Some("the bytes of a file"),
@@ -271,12 +186,6 @@ const CASES: &[Case] = &[
         "GET",
         "/api/v1/w/{workspace_id}/attachments/{attachment_id}",
         None,
-        Kind::Workspace,
-    ),
-    case(
-        "POST",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs",
-        Some(r#"{"kind":"html","pillar":"spec","title":"intruder doc"}"#),
         Kind::Workspace,
     ),
     case(
@@ -305,106 +214,6 @@ const CASES: &[Case] = &[
     ),
     case(
         "GET",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}/versions",
-        None,
-        Kind::Workspace,
-    ),
-    case(
-        "POST",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs/{doc_id}/open",
-        None,
-        Kind::Workspace,
-    ),
-    case(
-        "GET",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs/{doc_id}",
-        None,
-        Kind::Workspace,
-    ),
-    case(
-        "POST",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs/{doc_id}/ops",
-        Some(
-            r#"{"ops":[{"op":"insert","parent":null,"position":{"after":null},"content":"<p>intruder</p>"}]}"#,
-        ),
-        Kind::Workspace,
-    ),
-    case(
-        "POST",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/claims",
-        Some(r#"{"node":"<claimed_node>"}"#),
-        Kind::Workspace,
-    ),
-    case(
-        "POST",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/claims/release",
-        Some(r#"{"node":"<claimed_node>"}"#),
-        Kind::Workspace,
-    ),
-    case(
-        "POST",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs/{doc_id}/versions",
-        Some("{}"),
-        Kind::Workspace,
-    ),
-    case(
-        "POST",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs/{doc_id}/remove",
-        Some("{}"),
-        Kind::Workspace,
-    ),
-    case(
-        "GET",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/versions/{version_id}",
-        None,
-        Kind::Workspace,
-    ),
-    case(
-        "GET",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/versions/{version_id}/diff/{other_version_id}",
-        None,
-        Kind::Workspace,
-    ),
-    case(
-        "POST",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/approve",
-        Some("{}"),
-        Kind::Workspace,
-    ),
-    case(
-        "POST",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/rebase",
-        Some("{}"),
-        Kind::Workspace,
-    ),
-    case(
-        "GET",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/conflicts",
-        None,
-        Kind::Workspace,
-    ),
-    case(
-        "POST",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/conflicts/{conflict_id}/resolve",
-        Some(r#"{"note":"intruder"}"#),
-        Kind::Workspace,
-    ),
-    case(
-        "PUT",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/tokens",
-        Some(
-            r##"{"tokens":{"$extensions":{"omnistate":{"modes":["light"]}},"color":{"$type":"color","intruder":{"$value":"#000000"}}}}"##,
-        ),
-        Kind::Workspace,
-    ),
-    case(
-        "GET",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/tokens",
-        None,
-        Kind::Workspace,
-    ),
-    case(
-        "GET",
         "/api/v1/w/{workspace_id}/projects/{project_id}/tokens",
         None,
         Kind::Workspace,
@@ -426,30 +235,8 @@ const CASES: &[Case] = &[
         Kind::Workspace,
     ),
     case(
-        "PUT",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/components",
-        Some(
-            r##"{"tags":"<Component name=\"Intruder\" dir=\"row\" fill=\"#000000\" props={{label: {type: \"text\", default: \"intruder\"}}}>\n  <Text name=\"Intruder label\" content=\"intruder\" fontFamily=\"Inter\" fontSize={12} bind={{content: \"label\"}}/>\n</Component>"}"##,
-        ),
-        Kind::Workspace,
-    ),
-    case(
-        "PUT",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs/{doc_id}/design",
-        Some(
-            r#"{"tags":"<Page name=\"Intruder\">\n  <Board name=\"Intruder board\" x={0} y={0} width={320} height={200}/>\n</Page>"}"#,
-        ),
-        Kind::Workspace,
-    ),
-    case(
         "GET",
         "/api/v1/w/{workspace_id}/projects/{project_id}/components/usage",
-        None,
-        Kind::Workspace,
-    ),
-    case(
-        "GET",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs/{doc_id}/boards/{board_id}",
         None,
         Kind::Workspace,
     ),
@@ -460,12 +247,6 @@ const CASES: &[Case] = &[
         Kind::Workspace,
     ),
     case(
-        "POST",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/threads",
-        Some(r#"{"question":"intruder","criteria":["intruder"]}"#),
-        Kind::Workspace,
-    ),
-    case(
         "GET",
         "/api/v1/w/{workspace_id}/projects/{project_id}/threads/{thread_id}",
         None,
@@ -473,14 +254,8 @@ const CASES: &[Case] = &[
     ),
     case(
         "POST",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/threads/{thread_id}/phases",
-        Some(r#"{"sealed":true}"#),
-        Kind::Workspace,
-    ),
-    case(
-        "POST",
         "/api/v1/w/{workspace_id}/projects/{project_id}/threads/{thread_id}/posts",
-        Some(r#"{"type":"question","summary":"intruder","body":"intruder"}"#),
+        Some(r#"{"summary":"intruder","body":"intruder"}"#),
         Kind::Workspace,
     ),
     case(
@@ -508,12 +283,6 @@ const CASES: &[Case] = &[
         Kind::Workspace,
     ),
     case(
-        "POST",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/threads/{thread_id}/directives",
-        Some(r#"{"summary":"intruder","body":"intruder"}"#),
-        Kind::Workspace,
-    ),
-    case(
         "GET",
         "/api/v1/w/{workspace_id}/projects/{project_id}/threads/{thread_id}/digest",
         None,
@@ -523,44 +292,6 @@ const CASES: &[Case] = &[
         "GET",
         "/api/v1/w/{workspace_id}/projects/{project_id}/posts/{post_id}",
         None,
-        Kind::Workspace,
-    ),
-    case(
-        "POST",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/threads/{thread_id}/decisions",
-        Some(
-            r#"{"direction":"intruder","chosen":"intruder","criteria":["intruder"],"options":[{"name":"intruder","scores":{"intruder":1},"lost_because":null}],"assumptions":[],"open_questions":[],"dissent":[],"posts":[]}"#,
-        ),
-        Kind::Workspace,
-    ),
-    case(
-        "GET",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/decisions/{decision_id}",
-        None,
-        Kind::Workspace,
-    ),
-    case(
-        "POST",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/decisions/{decision_id}/approve",
-        Some("{}"),
-        Kind::Workspace,
-    ),
-    case(
-        "POST",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/decisions/{decision_id}/reject",
-        Some(r#"{"reason":"intruder"}"#),
-        Kind::Workspace,
-    ),
-    case(
-        "POST",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/decisions/{decision_id}",
-        None,
-        Kind::Workspace,
-    ),
-    case(
-        "POST",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/versions/{version_id}/comments",
-        Some(r#"{"node":"<comment_node>","text":"intruder"}"#),
         Kind::Workspace,
     ),
     case(
@@ -596,12 +327,6 @@ const CASES: &[Case] = &[
     case(
         "GET",
         "/api/v1/w/{workspace_id}/projects/{project_id}/home",
-        None,
-        Kind::Workspace,
-    ),
-    case(
-        "GET",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/review",
         None,
         Kind::Workspace,
     ),
@@ -924,292 +649,6 @@ fn must(response: Response, status: u16, what: &str) -> Value {
     response.json()
 }
 
-/// Whether the router has the attachment routes (US-019) yet.
-fn has_attachment_routes() -> bool {
-    registry()
-        .iter()
-        .any(|r| r.method == "POST" && r.path == "/api/v1/w/{workspace_id}/attachments")
-}
-
-/// Whether the router has the doc and draft routes (US-022) yet.
-fn has_doc_routes() -> bool {
-    registry().iter().any(|r| {
-        r.method == "POST"
-            && r.path
-                == "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs"
-    })
-}
-
-/// Whether the router has the claim routes (US-023) yet.
-fn has_claim_routes() -> bool {
-    registry().iter().any(|r| {
-        r.method == "POST"
-            && r.path
-                == "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/claims"
-    })
-}
-
-/// Whether the router has the version routes (US-024) yet.
-fn has_version_routes() -> bool {
-    registry().iter().any(|r| {
-        r.method == "POST"
-            && r.path
-                == "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs/{doc_id}/versions"
-    })
-}
-
-/// Whether the router has the approve route (US-025) yet.
-fn has_approve_route() -> bool {
-    registry().iter().any(|r| {
-        r.method == "POST"
-            && r.path
-                == "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/approve"
-    })
-}
-
-/// Whether the router has the rebase route (US-026) yet.
-fn has_rebase_route() -> bool {
-    registry().iter().any(|r| {
-        r.method == "POST"
-            && r.path
-                == "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/rebase"
-    })
-}
-
-/// Whether the router has the thread routes (US-033) yet.
-fn has_thread_routes() -> bool {
-    registry().iter().any(|r| {
-        r.method == "POST"
-            && r.path
-                == "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/threads"
-    })
-}
-
-/// Whether the router has the directive route (US-034) yet.
-fn has_directive_route() -> bool {
-    registry().iter().any(|r| {
-        r.method == "POST"
-            && r.path
-                == "/api/v1/w/{workspace_id}/projects/{project_id}/threads/{thread_id}/directives"
-    })
-}
-
-/// Whether the router has the decision routes (US-037) yet.
-fn has_decision_routes() -> bool {
-    registry().iter().any(|r| {
-        r.method == "POST"
-            && r.path
-                == "/api/v1/w/{workspace_id}/projects/{project_id}/threads/{thread_id}/decisions"
-    })
-}
-
-/// Whether the router has the comment routes (US-038) yet.
-fn has_comment_routes() -> bool {
-    registry().iter().any(|r| {
-        r.method == "POST"
-            && r.path
-                == "/api/v1/w/{workspace_id}/projects/{project_id}/versions/{version_id}/comments"
-    })
-}
-
-/// Whether the registry has the route `method path`.
-fn has_route(method: &str, path: &str) -> bool {
-    registry()
-        .iter()
-        .any(|r| r.method == method && r.path == path)
-}
-
-/// Whether the router has the feature routes (US-059) yet.
-fn has_feature_routes() -> bool {
-    registry().iter().any(|r| {
-        r.method == "POST" && r.path == "/api/v1/w/{workspace_id}/projects/{project_id}/features"
-    })
-}
-
-/// Whether the router has the scope-level doc routes (US-102) yet.
-fn has_live_doc_routes() -> bool {
-    registry().iter().any(|r| {
-        r.method == "POST"
-            && r.path == "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/docs"
-    })
-}
-
-/// The `data-rev` of the block with `data-omni-id="{node}"` in a draft's HTML.
-fn rev_of(html: &str, node: &str) -> u64 {
-    let at = html
-        .find(&format!("data-omni-id=\"{node}\""))
-        .unwrap_or_else(|| panic!("the draft has {node}: {html}"));
-    let start = html[..at].rfind('<').expect("the start of the tag");
-    let end = at + html[at..].find('>').expect("the end of the tag");
-    let tag = &html[start..end];
-    let rev = tag
-        .find("data-rev=\"")
-        .map(|i| &tag[i + "data-rev=\"".len()..])
-        .and_then(|rest| rest.split('"').next())
-        .unwrap_or_else(|| panic!("{node} has a data-rev: {tag}"));
-    rev.parse().expect("a revision")
-}
-
-/// Leaves a conflict in `target`, an open change set of the project whose
-/// change sets are at `changesets` (US-026): a doc with one paragraph merges,
-/// another change set rewrites the paragraph and merges, `target` rewrites it
-/// too from the same base, the human approves it, it needs a rebase, and the
-/// agent rebases it with the body of the rebase case. Returns the conflict's ID.
-fn seed_conflict(
-    client: &Client,
-    changesets: &str,
-    agent: &Auth,
-    human: &Auth,
-    target: &str,
-    label: &str,
-) -> String {
-    let changeset = || -> String {
-        let body = json!({ "title": unique(&format!("{label}-change")) }).to_string();
-        let created = must(
-            call(client, "POST", changesets, agent, Some(&body)),
-            201,
-            "create a change set",
-        );
-        created["changeset"]["id"]
-            .as_str()
-            .expect("an id")
-            .to_string()
-    };
-    let submit_and_approve = |id: &str| -> Value {
-        let path = format!("{changesets}/{id}");
-        must(
-            call(client, "POST", &format!("{path}/submit"), agent, None),
-            200,
-            "submit",
-        );
-        must(
-            call(
-                client,
-                "POST",
-                &format!("{path}/approve"),
-                human,
-                Some("{}"),
-            ),
-            200,
-            "approve",
-        )
-    };
-    let save = |draft: &str| {
-        must(
-            call(
-                client,
-                "POST",
-                &format!("{draft}/versions"),
-                agent,
-                Some("{}"),
-            ),
-            201,
-            "save a version",
-        );
-    };
-
-    // A doc with one paragraph on the mainline.
-    let first = changeset();
-    let body = json!({ "kind": "html", "pillar": "spec", "title": unique(&format!("{label}-rebased-doc")) })
-        .to_string();
-    let created = must(
-        call(
-            client,
-            "POST",
-            &format!("{changesets}/{first}/docs"),
-            agent,
-            Some(&body),
-        ),
-        201,
-        "create a doc to rebase",
-    );
-    let doc = created["doc"]["id"].as_str().expect("an id").to_string();
-    let ops = json!({ "ops": [{
-        "op": "insert",
-        "parent": null,
-        "position": { "after": null },
-        "content": format!("<p>{}</p>", unique(&format!("{label}-base")))
-    }] })
-    .to_string();
-    let inserted = must(
-        call(
-            client,
-            "POST",
-            &format!("{changesets}/{first}/docs/{doc}/ops"),
-            agent,
-            Some(&ops),
-        ),
-        200,
-        "write the paragraph",
-    );
-    let paragraph = inserted["results"][0]["node"]
-        .as_str()
-        .expect("the new paragraph")
-        .to_string();
-    save(&format!("{changesets}/{first}/docs/{doc}"));
-    let merged = submit_and_approve(&first);
-    assert_eq!(merged["changeset"]["status"], "merged", "{merged}");
-
-    // Two change sets rewrite it from the same base; one merges first.
-    let ahead = changeset();
-    for id in [ahead.as_str(), target] {
-        let opened = call(
-            client,
-            "POST",
-            &format!("{changesets}/{id}/docs/{doc}/open"),
-            agent,
-            Some("{}"),
-        );
-        assert!(
-            matches!(opened.status, 200 | 201),
-            "open the doc: {}",
-            opened.text()
-        );
-    }
-    for id in [ahead.as_str(), target] {
-        let draft = format!("{changesets}/{id}/docs/{doc}");
-        let read = must(call(client, "GET", &draft, agent, None), 200, "read");
-        let html = read["draft"]["html"].as_str().expect("the draft's html");
-        let ops = json!({ "ops": [{
-            "op": "set",
-            "node": paragraph,
-            "rev": rev_of(html, &paragraph),
-            "properties": { "html": unique(&format!("{label}-rewrite")) }
-        }] })
-        .to_string();
-        must(
-            call(client, "POST", &format!("{draft}/ops"), agent, Some(&ops)),
-            200,
-            "rewrite the paragraph",
-        );
-        save(&draft);
-    }
-    let merged = submit_and_approve(&ahead);
-    assert_eq!(merged["changeset"]["status"], "merged", "{merged}");
-    let behind = submit_and_approve(target);
-    assert_eq!(behind["changeset"]["status"], "needs_rebase", "{behind}");
-
-    let rebase = case_named(
-        "POST",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/rebase",
-    );
-    let rebased = must(
-        call(
-            client,
-            "POST",
-            &format!("{changesets}/{target}/rebase"),
-            agent,
-            rebase.body,
-        ),
-        200,
-        "rebase",
-    );
-    assert_eq!(rebased["changeset"]["status"], "open", "{rebased}");
-    rebased["conflicts"][0]["id"]
-        .as_str()
-        .unwrap_or_else(|| panic!("the rebase left a conflict: {rebased}"))
-        .to_string()
-}
 
 /// Uploads `bytes` as `name` with an API key; the raw bytes are the body.
 fn upload_attachment(
@@ -1246,59 +685,33 @@ struct Side {
     project_id: String,
     project_name: String,
     other_project_id: String,
-    changeset_id: String,
-    rejected_changeset_id: String,
-    /// A file that the workspace's agent uploaded (US-019): empty until the
-    /// attachment routes exist.
+    /// A file that the workspace's agent uploaded.
     attachment_id: String,
     attachment_name: String,
     /// The file's content, which is text that nothing else holds.
     attachment_text: String,
-    /// A doc that the workspace's agent started in `changeset_id` (US-022),
-    /// with one applied operation: empty until the doc routes exist.
+    /// A doc that the workspace's agent created at the app level, with one
+    /// applied operation.
     doc_id: String,
     doc_title: String,
     /// The text of the doc's one paragraph, which nothing else holds.
     doc_text: String,
-    /// A section of the doc's draft that the workspace's agent claimed and
-    /// holds (US-023): empty until the claim routes exist.
-    claimed_node: String,
-    /// Two saved versions of the doc's draft (US-024), the second after one
-    /// more paragraph: empty until the version routes exist.
-    version_id: String,
-    other_version_id: String,
-    /// A change set with a saved version of a doc of its own, which the human
-    /// approved and which merged (US-025): empty until the approve route
-    /// exists.
-    merged_changeset_id: String,
-    /// The conflict that a rebase left in `changeset_id` (US-026): empty
-    /// until the rebase route exists.
-    conflict_id: String,
-    /// A thread of `changeset_id` that the workspace's agent started, moved
-    /// on to a sealed second phase and posted in (US-033), and its question,
-    /// which nothing else holds: empty until the thread routes exist.
+    /// A sealed thread that the workspace's agent started, and its question,
+    /// which nothing else holds.
     thread_id: String,
     thread_question: String,
-    /// The post that the workspace's agent made in the thread's sealed second
-    /// phase (US-035), and its summary, which nothing else holds: empty
-    /// until the thread routes exist.
+    /// The post that the workspace's agent made in the thread, and its
+    /// summary, which nothing else holds.
     post_id: String,
     post_summary: String,
-    /// The decision that the workspace's agent proposed for the thread and
-    /// linked `changeset_id` to (US-037), and its direction, which nothing
-    /// else holds: empty until the decision routes exist.
-    decision_id: String,
-    decision_direction: String,
-    /// The comment that the human made on the paragraph of `version_id`, to
-    /// which the workspace's agent replied and which it marked addressed in
-    /// `other_version_id` (US-038), the paragraph's node and the comment's
-    /// text, which nothing else holds: empty until the comment routes exist.
+    /// The comment that the human made on the doc's paragraph, to which the
+    /// workspace's agent replied, the paragraph's node and the comment's text,
+    /// which nothing else holds.
     comment_id: String,
     comment_node: String,
     comment_text: String,
-    /// The feature that the workspace's agent created in `project_id`
-    /// (US-059), and its name, which nothing else holds: empty until the
-    /// feature routes exist.
+    /// The feature that the workspace's agent created in `project_id`, and its
+    /// name, which nothing else holds.
     feature_id: String,
     feature_name: String,
 }
@@ -1317,25 +730,16 @@ impl Side {
             project_id: same(),
             project_name: String::new(),
             other_project_id: same(),
-            changeset_id: same(),
-            rejected_changeset_id: same(),
             attachment_id: same(),
             attachment_name: String::new(),
             attachment_text: String::new(),
             doc_id: same(),
             doc_title: String::new(),
             doc_text: String::new(),
-            claimed_node: UNKNOWN_NODE.to_string(),
-            version_id: same(),
-            other_version_id: same(),
-            merged_changeset_id: same(),
-            conflict_id: same(),
             thread_id: same(),
             thread_question: String::new(),
             post_id: same(),
             post_summary: String::new(),
-            decision_id: same(),
-            decision_direction: String::new(),
             comment_id: same(),
             comment_node: UNKNOWN_NODE.to_string(),
             comment_text: String::new(),
@@ -1355,25 +759,16 @@ impl Side {
             &self.project_id,
             &self.project_name,
             &self.other_project_id,
-            &self.changeset_id,
-            &self.rejected_changeset_id,
             &self.attachment_id,
             &self.attachment_name,
             &self.attachment_text,
             &self.doc_id,
             &self.doc_title,
             &self.doc_text,
-            &self.claimed_node,
-            &self.version_id,
-            &self.other_version_id,
-            &self.merged_changeset_id,
-            &self.conflict_id,
             &self.thread_id,
             &self.thread_question,
             &self.post_id,
             &self.post_summary,
-            &self.decision_id,
-            &self.decision_direction,
             &self.comment_id,
             &self.comment_text,
             &self.feature_id,
@@ -1500,534 +895,157 @@ fn fixture() -> &'static Fixture {
             };
             let (project_id, project_name) = project("roadmap");
             let (other_project_id, _) = project("backlog");
-            let changesets = format!("/api/v1/w/{workspace}/projects/{project_id}/changesets");
-            let changeset = || -> String {
-                let body = json!({ "title": unique(&format!("{name}-change")) }).to_string();
-                let created = must(
-                    call(client, "POST", &changesets, &agent, Some(&body)),
-                    201,
-                    "create a change set",
-                );
-                created["changeset"]["id"]
-                    .as_str()
-                    .expect("an id")
-                    .to_string()
-            };
-            let changeset_id = changeset();
-            let rejected_changeset_id = changeset();
-            let path = format!("{changesets}/{rejected_changeset_id}");
-            must(
-                call(client, "POST", &format!("{path}/submit"), &agent, None),
-                200,
-                "submit",
+            let base = format!("/api/v1/w/{workspace}/projects/{project_id}");
+            // A feature of the project with a doc in it, so the features table
+            // and the docs of a feature have rows of the workspace.
+            let feature_name = unique(&format!("{name}-feature"));
+            let body = json!({ "name": feature_name }).to_string();
+            let created = must(
+                call(
+                    client,
+                    "POST",
+                    &format!("{base}/features"),
+                    &agent,
+                    Some(&body),
+                ),
+                201,
+                "create a feature",
             );
+            let feature_id = created["feature"]["id"]
+                .as_str()
+                .expect("an id")
+                .to_string();
+            let body = json!({
+                "kind": "html",
+                "pillar": "spec",
+                "title": unique(&format!("{name}-feature-doc"))
+            })
+            .to_string();
             must(
                 call(
                     client,
                     "POST",
-                    &format!("{path}/reject"),
-                    &human,
-                    Some(r#"{"reason":"seeded"}"#),
+                    &format!("{base}/features/{feature_id}/docs"),
+                    &agent,
+                    Some(&body),
+                ),
+                201,
+                "create a doc in the feature",
+            );
+            // A file of the workspace's own.
+            let attachment_name = format!("{name}-notes.txt");
+            let attachment_text = unique(&format!("{name}-file-content"));
+            let uploaded = upload_attachment(
+                client,
+                &workspace,
+                &key,
+                attachment_text.as_bytes(),
+                &attachment_name,
+            );
+            let uploaded = must(uploaded, 201, "upload a file");
+            let attachment_id = uploaded["attachment"]["id"]
+                .as_str()
+                .expect("an id")
+                .to_string();
+            // A doc with one applied operation, so the doc, chunk, node index
+            // and write log tables have rows of the workspace.
+            let doc_title = unique(&format!("{name}-doc"));
+            let body = json!({ "kind": "html", "pillar": "spec", "title": doc_title }).to_string();
+            let created = must(
+                call(client, "POST", &format!("{base}/docs"), &agent, Some(&body)),
+                201,
+                "create a doc",
+            );
+            let doc_id = created["doc"]["id"].as_str().expect("an id").to_string();
+            let doc_text = unique(&format!("{name}-doc-content"));
+            let ops = json!({ "ops": [{
+                "op": "insert",
+                "parent": null,
+                "position": { "after": null },
+                "content": format!("<p>{doc_text}</p>")
+            }] })
+            .to_string();
+            let edited = must(
+                call(
+                    client,
+                    "POST",
+                    &format!("{base}/docs/{doc_id}/ops"),
+                    &agent,
+                    Some(&ops),
                 ),
                 200,
-                "reject",
+                "edit the doc",
             );
-            // US-059: a feature of the project, so the features table has rows
-            // of the workspace. Seeded as soon as the registry has the feature
-            // routes.
-            let (feature_id, feature_name) = if has_feature_routes() {
-                let feature_name = unique(&format!("{name}-feature"));
-                let body = json!({ "name": feature_name }).to_string();
-                let created = must(
-                    call(
-                        client,
-                        "POST",
-                        &format!("/api/v1/w/{workspace}/projects/{project_id}/features"),
-                        &agent,
-                        Some(&body),
-                    ),
-                    201,
-                    "create a feature",
-                );
-                let id = created["feature"]["id"].as_str().expect("an id");
-                (id.to_string(), feature_name)
-            } else {
-                (String::new(), String::new())
-            };
-            // US-102: a doc at the app level and one in the feature, made
-            // without a change set, so the log of the writes to docs has rows
-            // of the workspace. Seeded as soon as the registry has the
-            // scope-level doc routes.
-            if has_live_doc_routes() && !feature_id.is_empty() {
-                let project_path = format!("/api/v1/w/{workspace}/projects/{project_id}");
-                for scope in [String::new(), format!("/features/{feature_id}")] {
-                    let body = json!({
-                        "kind": "html",
-                        "pillar": "spec",
-                        "title": unique(&format!("{name}-live-doc"))
-                    })
-                    .to_string();
-                    must(
-                        call(
-                            client,
-                            "POST",
-                            &format!("{project_path}{scope}/docs"),
-                            &agent,
-                            Some(&body),
-                        ),
-                        201,
-                        "create a doc without a change set",
-                    );
-                }
-            }
-            // US-019: a file of the workspace's own. The attachment routes are
-            // seeded as soon as the registry has them; the table behind them
-            // would otherwise make the checks below fail on a tenant table
-            // without rows.
-            let (attachment_id, attachment_name, attachment_text) = if has_attachment_routes() {
-                let file_name = format!("{name}-notes.txt");
-                let text = unique(&format!("{name}-file-content"));
-                let uploaded =
-                    upload_attachment(client, &workspace, &key, text.as_bytes(), &file_name);
-                let uploaded = must(uploaded, 201, "upload a file");
-                let id = uploaded["attachment"]["id"].as_str().expect("an id");
-                (id.to_string(), file_name, text)
-            } else {
-                (String::new(), String::new(), String::new())
-            };
-            // US-022: a doc started in the open change set, with one applied
-            // operation, so the doc, draft and log tables have rows of the
-            // workspace. Seeded as soon as the registry has the doc routes.
-            let (doc_id, doc_title, doc_text, claimed_node) = if has_doc_routes() {
-                let doc_title = unique(&format!("{name}-doc"));
-                let body =
-                    json!({ "kind": "html", "pillar": "spec", "title": doc_title }).to_string();
-                let created = must(
-                    call(
-                        client,
-                        "POST",
-                        &format!("{changesets}/{changeset_id}/docs"),
-                        &agent,
-                        Some(&body),
-                    ),
-                    201,
-                    "create a doc",
-                );
-                let doc_id = created["doc"]["id"].as_str().expect("an id").to_string();
-                let doc_text = unique(&format!("{name}-doc-content"));
-                let ops = json!({ "ops": [{
-                    "op": "insert",
-                    "parent": null,
-                    "position": { "after": null },
-                    "content": format!("<p>{doc_text}</p>")
-                }] })
+            let comment_node = edited["results"][0]["node"]
+                .as_str()
+                .expect("the new paragraph")
                 .to_string();
-                must(
-                    call(
-                        client,
-                        "POST",
-                        &format!("{changesets}/{changeset_id}/docs/{doc_id}/ops"),
-                        &agent,
-                        Some(&ops),
-                    ),
-                    200,
-                    "edit the doc's draft",
-                );
-                // US-023: a section of the draft that the agent claims, so
-                // whatever holds claims has rows of the workspace. Seeded as
-                // soon as the registry has the claim routes.
-                let claimed_node = if has_claim_routes() {
-                    let ops = json!({ "ops": [{
-                        "op": "insert",
-                        "parent": null,
-                        "position": { "after": null },
-                        "content": "<section><h2>Claimed</h2></section>"
-                    }] })
-                    .to_string();
-                    let inserted = must(
-                        call(
-                            client,
-                            "POST",
-                            &format!("{changesets}/{changeset_id}/docs/{doc_id}/ops"),
-                            &agent,
-                            Some(&ops),
-                        ),
-                        200,
-                        "add a section to the doc's draft",
-                    );
-                    let section = inserted["results"][0]["node"]
-                        .as_str()
-                        .expect("the new section");
-                    must(
-                        call(
-                            client,
-                            "POST",
-                            &format!("{changesets}/{changeset_id}/claims"),
-                            &agent,
-                            Some(&json!({ "node": section }).to_string()),
-                        ),
-                        201,
-                        "claim the section",
-                    );
-                    section.to_string()
-                } else {
-                    String::new()
-                };
-                (doc_id, doc_title, doc_text, claimed_node)
-            } else {
-                (String::new(), String::new(), String::new(), String::new())
-            };
-            // US-024: the draft saved as a version, edited and saved again, so
-            // the version and node index tables have rows of the workspace and
-            // the diff route has two versions to compare. Seeded as soon as the
-            // registry has the version routes.
-            let (version_id, other_version_id) = if has_version_routes() {
-                let draft = format!("{changesets}/{changeset_id}/docs/{doc_id}");
-                let save = || -> String {
-                    let saved = must(
-                        call(
-                            client,
-                            "POST",
-                            &format!("{draft}/versions"),
-                            &agent,
-                            Some("{}"),
-                        ),
-                        201,
-                        "save a version of the doc",
-                    );
-                    saved["version"]["id"]
-                        .as_str()
-                        .expect("a version id")
-                        .to_string()
-                };
-                let version_id = save();
-                let ops = json!({ "ops": [{
-                    "op": "insert",
-                    "parent": null,
-                    "position": { "after": null },
-                    "content": format!("<p>{}</p>", unique(&format!("{name}-later")))
-                }] })
-                .to_string();
-                must(
-                    call(client, "POST", &format!("{draft}/ops"), &agent, Some(&ops)),
-                    200,
-                    "edit the doc's draft again",
-                );
-                (version_id, save())
-            } else {
-                (String::new(), String::new())
-            };
-            // US-025: a change set whose one doc was saved, submitted, approved
-            // by the human and merged, so whatever records approvals has rows
-            // of the workspace. Seeded as soon as the registry has the approve
-            // route.
-            let merged_changeset_id = if has_approve_route() {
-                let merged = changeset();
-                let path = format!("{changesets}/{merged}");
-                let body = json!({ "kind": "html", "pillar": "spec", "title": unique(&format!("{name}-merged-doc")) })
-                    .to_string();
-                let created = must(
-                    call(client, "POST", &format!("{path}/docs"), &agent, Some(&body)),
-                    201,
-                    "create a doc to merge",
-                );
-                let doc = created["doc"]["id"].as_str().expect("an id");
-                let ops = json!({ "ops": [{
-                    "op": "insert",
-                    "parent": null,
-                    "position": { "after": null },
-                    "content": format!("<p>{}</p>", unique(&format!("{name}-merged")))
-                }] })
-                .to_string();
-                let draft = format!("{path}/docs/{doc}");
-                must(
-                    call(client, "POST", &format!("{draft}/ops"), &agent, Some(&ops)),
-                    200,
-                    "edit the doc to merge",
-                );
-                must(
-                    call(
-                        client,
-                        "POST",
-                        &format!("{draft}/versions"),
-                        &agent,
-                        Some("{}"),
-                    ),
-                    201,
-                    "save the doc to merge",
-                );
-                must(
-                    call(client, "POST", &format!("{path}/submit"), &agent, None),
-                    200,
-                    "submit the change set to merge",
-                );
-                let approved = must(
-                    call(
-                        client,
-                        "POST",
-                        &format!("{path}/approve"),
-                        &human,
-                        Some("{}"),
-                    ),
-                    200,
-                    "approve the change set",
-                );
-                assert_eq!(approved["changeset"]["status"], "merged", "{approved}");
-                merged
-            } else {
-                String::new()
-            };
-            // US-026: the open change set is approved and rebased onto a
-            // mainline that moved on, with a conflict, so whatever records
-            // conflicts has rows of the workspace and the conflict routes have
-            // a conflict of `{changeset_id}`. Seeded as soon as the registry
-            // has the rebase route.
-            let conflict_id = if has_rebase_route() {
-                seed_conflict(client, &changesets, &agent, &human, &changeset_id, name)
-            } else {
-                String::new()
-            };
-            // US-033: a thread of the open change set, moved on to a sealed
-            // second phase, with a post, so whatever holds threads, phases and
-            // posts has rows of the workspace. Seeded as soon as the registry
-            // has the thread routes.
-            let (thread_id, thread_question, post_id, post_summary, decision_id, decision_direction) = if has_thread_routes() {
-                let question = unique(&format!("{name}-question"));
-                let body = json!({ "question": question, "criteria": [unique(&format!("{name}-criterion"))] })
-                    .to_string();
-                let created = must(
-                    call(
-                        client,
-                        "POST",
-                        &format!("{changesets}/{changeset_id}/threads"),
-                        &agent,
-                        Some(&body),
-                    ),
-                    201,
-                    "start a thread",
-                );
-                let thread = created["thread"]["id"].as_str().expect("an id");
-                let threads = format!("/api/v1/w/{workspace}/projects/{project_id}/threads");
-                must(
-                    call(
-                        client,
-                        "POST",
-                        &format!("{threads}/{thread}/phases"),
-                        &agent,
-                        Some(r#"{"sealed":true}"#),
-                    ),
-                    201,
-                    "start the thread's second phase",
-                );
-                let post_summary = unique(&format!("{name}-summary"));
-                let body = json!({
-                    "type": "position",
-                    "summary": post_summary,
-                    "body": unique(&format!("{name}-post"))
-                })
-                .to_string();
-                let posted = must(
-                    call(
-                        client,
-                        "POST",
-                        &format!("{threads}/{thread}/posts"),
-                        &agent,
-                        Some(&body),
-                    ),
-                    201,
-                    "post in the thread",
-                );
-                let post_id = posted["post"]["id"].as_str().expect("an id").to_string();
-                // US-034: a directive of the human in the thread, which the
-                // agent is given with its next request in the change set, so
-                // whatever records that has rows of the workspace.
-                if has_directive_route() {
-                    let body = json!({
-                        "summary": unique(&format!("{name}-directive")),
-                        "body": unique(&format!("{name}-directive-body"))
-                    })
-                    .to_string();
-                    must(
-                        call(
-                            client,
-                            "POST",
-                            &format!("{threads}/{thread}/directives"),
-                            &human,
-                            Some(&body),
-                        ),
-                        201,
-                        "the human posts a directive",
-                    );
-                    let shown = must(
-                        call(
-                            client,
-                            "GET",
-                            &format!("{changesets}/{changeset_id}"),
-                            &agent,
-                            None,
-                        ),
-                        200,
-                        "show the change set to the agent",
-                    );
-                    assert!(
-                        shown["directives"].as_array().is_some_and(|d| d.len() == 1),
-                        "the agent is given the directive: {shown}"
-                    );
-                }
-                // US-037: a decision for the thread, relying on the agent's
-                // post, and the open change set linked to it, so whatever
-                // holds decisions and their links has rows of the workspace.
-                // Seeded as soon as the registry has the decision routes.
-                let (decision_id, decision_direction) = if has_decision_routes() {
-                    let direction = unique(&format!("{name}-direction"));
-                    let body = json!({
-                        "direction": direction,
-                        "chosen": "Split hero",
-                        "criteria": ["Readable at 320 px"],
-                        "options": [
-                            {
-                                "name": "Split hero",
-                                "scores": { "Readable at 320 px": 8 },
-                                "lost_because": null
-                            },
-                            {
-                                "name": "Carousel",
-                                "scores": { "Readable at 320 px": 4 },
-                                "lost_because": "It hides two of the three messages."
-                            }
-                        ],
-                        "assumptions": [],
-                        "open_questions": [],
-                        "dissent": [],
-                        "posts": [post_id]
-                    })
-                    .to_string();
-                    let proposed = must(
-                        call(
-                            client,
-                            "POST",
-                            &format!("{threads}/{thread}/decisions"),
-                            &agent,
-                            Some(&body),
-                        ),
-                        201,
-                        "propose a decision",
-                    );
-                    let decision = proposed["decision"]["id"]
-                        .as_str()
-                        .expect("an id")
-                        .to_string();
-                    must(
-                        call(
-                            client,
-                            "POST",
-                            &format!("{changesets}/{changeset_id}/decisions/{decision}"),
-                            &agent,
-                            None,
-                        ),
-                        200,
-                        "link the change set to the decision",
-                    );
-                    (decision, direction)
-                } else {
-                    (String::new(), String::new())
-                };
-                (
-                    thread.to_string(),
-                    question,
-                    post_id,
-                    post_summary,
-                    decision_id,
-                    decision_direction,
-                )
-            } else {
-                (
-                    String::new(),
-                    String::new(),
-                    String::new(),
-                    String::new(),
-                    String::new(),
-                    String::new(),
-                )
-            };
-            // US-038: the human's comment on the paragraph of the first saved
-            // version, the agent's reply to it and its mark that the second
-            // version addressed it, so whatever holds comments and replies
-            // has rows of the workspace. Seeded as soon as the registry has
-            // the comment routes.
-            let (comment_id, comment_node, comment_text) = if has_comment_routes()
-                && has_version_routes()
-            {
-                let base = format!("/api/v1/w/{workspace}/projects/{project_id}");
-                let version = must(
-                    call(
-                        client,
-                        "GET",
-                        &format!("{base}/versions/{version_id}"),
-                        &agent,
-                        None,
-                    ),
-                    200,
-                    "read the first saved version",
-                );
-                let node = version["version"]["nodes"]
-                    .as_array()
-                    .and_then(|nodes| nodes.iter().find(|n| n["type"] == "paragraph"))
-                    .and_then(|n| n["id"].as_str())
-                    .unwrap_or_else(|| panic!("the version has a paragraph: {version}"))
-                    .to_string();
-                let text = unique(&format!("{name}-comment"));
-                let body = json!({ "node": node, "text": text }).to_string();
-                let made = must(
-                    call(
-                        client,
-                        "POST",
-                        &format!("{base}/versions/{version_id}/comments"),
-                        &human,
-                        Some(&body),
-                    ),
-                    201,
-                    "the human comments on the paragraph",
-                );
-                let comment = made["comment"]["id"]
-                    .as_str()
-                    .expect("an id")
-                    .to_string();
-                let body = json!({ "text": unique(&format!("{name}-reply")) }).to_string();
-                must(
-                    call(
-                        client,
-                        "POST",
-                        &format!("{base}/comments/{comment}/replies"),
-                        &agent,
-                        Some(&body),
-                    ),
-                    201,
-                    "the agent replies to the comment",
-                );
-                // Comments have no status after US-106; mark it addressed
-                // only while the route exists.
-                if has_route(
+            // A sealed thread with a post, so whatever holds threads, phases
+            // and posts has rows of the workspace.
+            let thread_question = unique(&format!("{name}-question"));
+            let body = json!({ "question": thread_question, "sealed": true }).to_string();
+            let created = must(
+                call(
+                    client,
                     "POST",
-                    "/api/v1/w/{workspace_id}/projects/{project_id}/comments/{comment_id}/addressed",
-                ) {
-                    let body = json!({ "version_id": other_version_id }).to_string();
-                    must(
-                        call(
-                            client,
-                            "POST",
-                            &format!("{base}/comments/{comment}/addressed"),
-                            &agent,
-                            Some(&body),
-                        ),
-                        200,
-                        "the agent marks the comment addressed",
-                    );
-                }
-                (comment, node, text)
-            } else {
-                (String::new(), String::new(), String::new())
-            };
+                    &format!("{base}/threads"),
+                    &agent,
+                    Some(&body),
+                ),
+                201,
+                "start a thread",
+            );
+            let thread_id = created["thread"]["id"]
+                .as_str()
+                .expect("an id")
+                .to_string();
+            let post_summary = unique(&format!("{name}-summary"));
+            let body = json!({
+                "summary": post_summary,
+                "body": unique(&format!("{name}-post"))
+            })
+            .to_string();
+            let posted = must(
+                call(
+                    client,
+                    "POST",
+                    &format!("{base}/threads/{thread_id}/posts"),
+                    &agent,
+                    Some(&body),
+                ),
+                201,
+                "post in the thread",
+            );
+            let post_id = posted["post"]["id"].as_str().expect("an id").to_string();
+            // The human's comment on the doc's paragraph and the agent's reply
+            // to it, so whatever holds comments and replies has rows of the
+            // workspace.
+            let comment_text = unique(&format!("{name}-comment"));
+            let body = json!({ "node": comment_node, "text": comment_text }).to_string();
+            let made = must(
+                call(
+                    client,
+                    "POST",
+                    &format!("{base}/docs/{doc_id}/comments"),
+                    &human,
+                    Some(&body),
+                ),
+                201,
+                "the human comments on the paragraph",
+            );
+            let comment_id = made["comment"]["id"].as_str().expect("an id").to_string();
+            let body = json!({ "text": unique(&format!("{name}-reply")) }).to_string();
+            must(
+                call(
+                    client,
+                    "POST",
+                    &format!("{base}/comments/{comment_id}/replies"),
+                    &agent,
+                    Some(&body),
+                ),
+                201,
+                "the agent replies to the comment",
+            );
             Side {
                 id: workspace,
                 email: format!("{name}@example.test"),
@@ -2041,25 +1059,16 @@ fn fixture() -> &'static Fixture {
                 project_id,
                 project_name,
                 other_project_id,
-                changeset_id,
-                rejected_changeset_id,
                 attachment_id,
                 attachment_name,
                 attachment_text,
                 doc_id,
                 doc_title,
                 doc_text,
-                claimed_node,
-                version_id,
-                other_version_id,
-                merged_changeset_id,
-                conflict_id,
                 thread_id,
                 thread_question,
                 post_id,
                 post_summary,
-                decision_id,
-                decision_direction,
                 comment_id,
                 comment_node,
                 comment_text,
@@ -2092,26 +1101,21 @@ fn fill(template: &str, workspace: &Side, record: &Side) -> String {
         out.push_str(match &rest[start + 1..end] {
             "workspace_id" => &workspace.id,
             "project_id" => &record.project_id,
-            "changeset_id" => &record.changeset_id,
             "key_id" => &record.key_id,
             "attachment_id" => &record.attachment_id,
             "doc_id" => &record.doc_id,
-            "version_id" => &record.version_id,
-            "other_version_id" => &record.other_version_id,
-            "conflict_id" => &record.conflict_id,
             "thread_id" => &record.thread_id,
             "post_id" => &record.post_id,
-            "decision_id" => &record.decision_id,
             "comment_id" => &record.comment_id,
             "feature_id" => &record.feature_id,
-            // US-030: an attack on a board is refused at the workspace or the
+            // An attack on a board is refused at the workspace or the
             // project, before any board is looked up, so a node ID that no
             // board has stands in for one.
             "board_id" => UNKNOWN_NODE,
-            // US-111: a component read is refused the same way, before the
+            // A component read is refused the same way, before the
             // design system is looked up.
             "component_id" => UNKNOWN_NODE,
-            // US-111: every doc's log starts with its creation, seq 1.
+            // Every doc's log starts with its creation, seq 1.
             "seq" => "1",
             other => panic!(
                 "{template} has the placeholder {{{other}}}, for which the suite has no seeded \
@@ -2124,17 +1128,11 @@ fn fill(template: &str, workspace: &Side, record: &Side) -> String {
     out
 }
 
-/// Whether the path names a record besides the workspace.
 /// The body of `case` for calls about the records of `record`: its
-/// `<claimed_node>` is the section that `record`'s workspace claimed, its
-/// `<comment_node>` the node of `record`'s seeded comment and its
-/// `<other_version_id>` `record`'s second saved version.
+/// `<comment_node>` is the node of `record`'s seeded comment.
 fn body_of(case: &Case, record: &Side) -> Option<String> {
-    case.body.map(|body| {
-        body.replace("<claimed_node>", &record.claimed_node)
-            .replace("<comment_node>", &record.comment_node)
-            .replace("<other_version_id>", &record.other_version_id)
-    })
+    case.body
+        .map(|body| body.replace("<comment_node>", &record.comment_node))
 }
 
 fn names_a_record(template: &str) -> bool {
@@ -2402,13 +1400,13 @@ fn the_lists_of_a_workspace_hold_nothing_of_the_other() {
             if !matches!(case.kind, Kind::Workspace) || entry.method != "GET" {
                 continue;
             }
-            // US-030: the seeded doc is an HTML doc and fill() names no board,
+            // The seeded doc is an HTML doc and fill() names no board,
             // so the board reads have a control of their own, against a
             // design of the workspace (the_board_reads_of_a_workspace_...).
             if entry.path.contains("/boards/") {
                 continue;
             }
-            // US-111: the same for a component read, whose control is
+            // The same for a component read, whose control is
             // the_component_reads_of_a_workspace_show_its_own_component_...
             if entry.path.contains("/components/{component_id}") {
                 continue;
@@ -2432,7 +1430,7 @@ fn the_lists_of_a_workspace_hold_nothing_of_the_other() {
                         "{what}: the control call returns the workspace's own file"
                     );
                 } else if entry.path.contains("/activity") {
-                    // US-111: an activity entry names no record; the control
+                    // An activity entry names no record; the control
                     // call shows the seeded doc's first write.
                     let text = response.text();
                     assert!(
@@ -2446,7 +1444,6 @@ fn the_lists_of_a_workspace_hold_nothing_of_the_other() {
                     let text = response.text();
                     assert!(
                         text.contains(&own.project_id)
-                            || text.contains(&own.changeset_id)
                             || text.contains(&own.key_id)
                             || text.contains(&own.doc_id),
                         "{what}: the control call shows none of its own records: {text}"
@@ -2529,7 +1526,7 @@ fn the_workspace_of_a_request_is_the_one_in_the_path_never_one_in_the_body_query
 }
 
 // ---------------------------------------------------------------------------
-// Attachments (US-019)
+// Attachments
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -2641,268 +1638,65 @@ fn the_attachment_routes_are_in_the_registry_and_the_suite_attacks_them() {
 }
 
 // ---------------------------------------------------------------------------
-// Versions (US-024)
+// Doc writes
 // ---------------------------------------------------------------------------
 
 #[test]
-fn the_version_routes_are_in_the_registry_and_the_suite_attacks_them() {
-    let routes = registry();
-    for path in [
-        "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs/{doc_id}/versions",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs/{doc_id}/remove",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/versions/{version_id}",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/versions/{version_id}/diff/{other_version_id}",
-    ] {
-        let entry = routes
-            .iter()
-            .find(|r| r.path == path)
-            .unwrap_or_else(|| panic!("the registry has no route {path}"));
-        assert!(
-            matches!(case_for(entry).kind, Kind::Workspace),
-            "{path} is a workspace route that the suite attacks"
-        );
-    }
-
-    let (f, _) = ready();
-    for side in [&f.a, &f.b] {
-        assert!(
-            !side.version_id.is_empty() && !side.other_version_id.is_empty(),
-            "the suite seeded no versions for {}",
-            side.id
-        );
-    }
-}
-
-#[test]
-fn the_version_calls_of_the_attacks_work_for_the_workspace_that_owns_the_records() {
-    // The control for the version routes: the owner's agent saves a version of
-    // a doc of its own, reads it, compares it and removes the doc, with the
-    // bodies of the cases.
+fn the_doc_write_calls_of_the_attacks_work_for_the_workspace_that_owns_the_records() {
+    // The control for the doc write routes: the owner's agent edits a doc of
+    // its own and deletes it, with the calls of the cases.
     let (f, client) = ready();
     let _guard = serial();
     let key = Auth::Key(&f.a.key);
     let human = Auth::Session(&f.a.token);
-    let path = |template: &str| fill(template, &f.a, &f.a);
+    let project = format!("/api/v1/w/{}/projects/{}", f.a.id, f.a.project_id);
 
-    let docs = case_named(
-        "POST",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs",
-    );
+    let docs = case_named("POST", "/api/v1/w/{workspace_id}/projects/{project_id}/docs");
     let body = docs.body.map(|b| b.replace("intruder", &unique("owner")));
     let created = must(
-        call(client, "POST", &path(docs.path), &key, body.as_deref()),
+        call(
+            client,
+            "POST",
+            &fill(docs.path, &f.a, &f.a),
+            &key,
+            body.as_deref(),
+        ),
         201,
         "create a doc",
     );
     let doc_id = created["doc"]["id"].as_str().expect("an id");
-    let draft = format!(
-        "/api/v1/w/{}/projects/{}/changesets/{}/docs/{doc_id}",
-        f.a.id, f.a.project_id, f.a.changeset_id
-    );
+    let doc = format!("{project}/docs/{doc_id}");
     let ops = case_named(
         "POST",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs/{doc_id}/ops",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}/ops",
     );
     must(
-        call(client, "POST", &format!("{draft}/ops"), &key, ops.body),
+        call(client, "POST", &format!("{doc}/ops"), &key, ops.body),
         200,
-        "edit the draft",
-    );
-    let save = case_named(
-        "POST",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs/{doc_id}/versions",
-    );
-    let saved = must(
-        call(
-            client,
-            "POST",
-            &format!("{draft}/versions"),
-            &key,
-            save.body,
-        ),
-        201,
-        "save a version",
-    );
-    let version = saved["version"]["id"].as_str().expect("an id");
-    let versions = format!(
-        "/api/v1/w/{}/projects/{}/versions/{version}",
-        f.a.id, f.a.project_id
+        "edit the doc",
     );
     for auth in [&key, &human] {
         let read = must(
-            call(client, "GET", &versions, auth, None),
+            call(client, "GET", &format!("{doc}/html"), auth, None),
             200,
-            "read the version",
+            "read the doc",
         );
-        assert_eq!(read["version"]["doc_id"], doc_id, "{read}");
-        must(
-            call(
-                client,
-                "GET",
-                &format!("{versions}/diff/{version}"),
-                auth,
-                None,
-            ),
-            200,
-            "compare the version with itself",
-        );
-    }
-    let remove = case_named(
-        "POST",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs/{doc_id}/remove",
-    );
-    let removed = must(
-        call(
-            client,
-            "POST",
-            &format!("{draft}/remove"),
-            &key,
-            remove.body,
-        ),
-        201,
-        "remove the doc",
-    );
-    assert_eq!(removed["version"]["removed"], true, "{removed}");
-}
-
-// ---------------------------------------------------------------------------
-// Rebase and conflicts (US-026)
-// ---------------------------------------------------------------------------
-
-#[test]
-fn the_rebase_and_conflict_routes_are_in_the_registry_and_the_suite_attacks_them() {
-    for (method, path, access) in [
-        (
-            "POST",
-            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/rebase",
-            Access::Agent,
-        ),
-        (
-            "GET",
-            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/conflicts",
-            Access::Both,
-        ),
-        (
-            "POST",
-            "/api/v1/w/{workspace_id}/projects/{project_id}/conflicts/{conflict_id}/resolve",
-            Access::Agent,
-        ),
-    ] {
-        let entry = registry()
-            .into_iter()
-            .find(|r| r.method == method && r.path == path)
-            .unwrap_or_else(|| panic!("the registry has no route {method} {path}"));
-        assert_eq!(entry.access, access, "{method} {path}");
         assert!(
-            matches!(case_for(&entry).kind, Kind::Workspace),
-            "{path} is a workspace route that the suite attacks"
+            read["html"]
+                .as_str()
+                .is_some_and(|html| html.contains("intruder")),
+            "{read}"
         );
     }
-
-    let (f, _) = ready();
-    for side in [&f.a, &f.b] {
-        assert!(
-            !side.conflict_id.is_empty(),
-            "the suite seeded no conflict for {}",
-            side.id
-        );
-    }
-}
-
-#[test]
-fn the_rebase_and_conflict_calls_of_the_attacks_work_for_the_workspace_that_owns_the_records() {
-    // The control for the rebase, conflicts and resolve routes: the owner's
-    // agent rebases a change set of its own workspace into a conflict, lists
-    // it and resolves it, with the bodies of the cases.
-    let (f, client) = ready();
-    let _guard = serial();
-    let key = Auth::Key(&f.a.key);
-    let human = Auth::Session(&f.a.token);
-    let changesets = format!(
-        "/api/v1/w/{}/projects/{}/changesets",
-        f.a.id, f.a.project_id
-    );
-    let body = json!({ "title": unique("owner-rebase") }).to_string();
-    let created = must(
-        call(client, "POST", &changesets, &key, Some(&body)),
-        201,
-        "create a change set",
-    );
-    let target = created["changeset"]["id"].as_str().expect("an id");
-    let conflict = seed_conflict(client, &changesets, &key, &human, target, "owner");
-
-    let listed = must(
-        call(
-            client,
-            "GET",
-            &format!("{changesets}/{target}/conflicts"),
-            &key,
-            None,
-        ),
-        200,
-        "list the conflicts",
-    );
-    assert!(
-        listed["conflicts"]
-            .as_array()
-            .is_some_and(|all| all.iter().any(|c| c["id"] == conflict.as_str())),
-        "{listed}"
-    );
-    let resolve = case_named(
-        "POST",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/conflicts/{conflict_id}/resolve",
-    );
-    let resolved = must(
-        call(
-            client,
-            "POST",
-            &format!(
-                "/api/v1/w/{}/projects/{}/conflicts/{conflict}/resolve",
-                f.a.id, f.a.project_id
-            ),
-            &key,
-            resolve.body,
-        ),
-        200,
-        "resolve the conflict",
-    );
-    assert_eq!(resolved["conflict"]["id"], conflict.as_str(), "{resolved}");
+    let deleted = call(client, "DELETE", &doc, &key, None);
+    assert_eq!(deleted.status, 204, "delete the doc: {}", deleted.text());
+    let gone = call(client, "GET", &doc, &human, None);
+    assert_eq!(gone.status, 404, "the deleted doc: {}", gone.text());
 }
 
 // ---------------------------------------------------------------------------
-// Design tokens (US-028)
+// Design tokens
 // ---------------------------------------------------------------------------
-
-#[test]
-fn the_token_routes_are_in_the_registry_and_the_suite_attacks_them() {
-    for (method, path, access) in [
-        (
-            "PUT",
-            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/tokens",
-            Access::Agent,
-        ),
-        (
-            "GET",
-            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/tokens",
-            Access::Both,
-        ),
-        (
-            "GET",
-            "/api/v1/w/{workspace_id}/projects/{project_id}/tokens",
-            Access::Both,
-        ),
-    ] {
-        let entry = registry()
-            .into_iter()
-            .find(|r| r.method == method && r.path == path)
-            .unwrap_or_else(|| panic!("the registry has no route {method} {path}"));
-        assert_eq!(entry.access, access, "{method} {path}");
-        assert!(
-            matches!(case_for(&entry).kind, Kind::Workspace),
-            "{path} is a workspace route that the suite attacks"
-        );
-    }
-}
 
 #[test]
 fn the_token_calls_of_the_attacks_work_for_the_workspace_that_owns_the_records() {
@@ -2927,37 +1721,18 @@ fn the_token_calls_of_the_attacks_work_for_the_workspace_that_owns_the_records()
     );
     let project = project["project"]["id"].as_str().expect("an id");
     let base = format!("/api/v1/w/{}/projects/{project}", f.a.id);
-    let body = json!({ "title": unique("owner-tokens") }).to_string();
-    let created = must(
-        call(
-            client,
-            "POST",
-            &format!("{base}/changesets"),
-            &key,
-            Some(&body),
-        ),
-        201,
-        "create a change set",
-    );
-    let changeset = created["changeset"]["id"].as_str().expect("an id");
     let body = json!({ "kind": "design-system", "pillar": "ui", "title": unique("owner-tokens") })
         .to_string();
     must(
-        call(
-            client,
-            "POST",
-            &format!("{base}/changesets/{changeset}/docs"),
-            &key,
-            Some(&body),
-        ),
+        call(client, "POST", &format!("{base}/docs"), &key, Some(&body)),
         201,
         "start the design system doc",
     );
     let import = case_named(
         "PUT",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/tokens",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/tokens",
     );
-    let tokens = format!("{base}/changesets/{changeset}/tokens");
+    let tokens = format!("{base}/tokens");
     let imported = must(
         call(client, "PUT", &tokens, &key, import.body),
         200,
@@ -2968,25 +1743,20 @@ fn the_token_calls_of_the_attacks_work_for_the_workspace_that_owns_the_records()
         let read = must(
             call(client, "GET", &tokens, auth, None),
             200,
-            "read the draft's tokens",
+            "read the tokens",
         );
         assert_eq!(
             read["tokens"]["color"]["intruder"]["$value"], "#000000",
             "{read}"
         );
-        must(
-            call(client, "GET", &format!("{base}/tokens"), auth, None),
-            200,
-            "read the mainline tokens",
-        );
     }
 }
 
 // ---------------------------------------------------------------------------
-// Live design system writes (US-104)
+// Design system writes
 // ---------------------------------------------------------------------------
 
-/// The routes that write the design system's head without a change set.
+/// The routes that write the design system's head.
 const LIVE_DESIGN_SYSTEM_ROUTES: [&str; 2] = [
     "/api/v1/w/{workspace_id}/projects/{project_id}/tokens",
     "/api/v1/w/{workspace_id}/projects/{project_id}/components",
@@ -3008,46 +1778,14 @@ fn the_live_design_system_routes_are_in_the_registry_and_the_suite_attacks_them(
 }
 
 // ---------------------------------------------------------------------------
-// Components and instances (US-029)
+// Components and instances
 // ---------------------------------------------------------------------------
 
 #[test]
-fn the_component_routes_are_in_the_registry_and_the_suite_attacks_them() {
-    for (method, path, access) in [
-        (
-            "PUT",
-            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/components",
-            Access::Agent,
-        ),
-        (
-            "PUT",
-            "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs/{doc_id}/design",
-            Access::Agent,
-        ),
-        (
-            "GET",
-            "/api/v1/w/{workspace_id}/projects/{project_id}/components/usage",
-            Access::Both,
-        ),
-    ] {
-        let entry = registry()
-            .into_iter()
-            .find(|r| r.method == method && r.path == path)
-            .unwrap_or_else(|| panic!("the registry has no route {method} {path}"));
-        assert_eq!(entry.access, access, "{method} {path}");
-        assert!(
-            matches!(case_for(&entry).kind, Kind::Workspace),
-            "{path} is a workspace route that the suite attacks"
-        );
-    }
-}
-
-#[test]
 fn the_component_calls_of_the_attacks_work_for_the_workspace_that_owns_the_records() {
-    // The control for the component routes: the owner's agent starts a
-    // design system and a design doc in a project of its own, imports the
-    // components and the design of the cases' bodies, and the agent and the
-    // human list the boards that use components.
+    // The control for the component routes: the owner's agent starts a design
+    // system in a project of its own and imports the components of the case's
+    // body, and the agent and the human list the boards that use components.
     let (f, client) = ready();
     let _guard = serial();
     let key = Auth::Key(&f.a.key);
@@ -3066,45 +1804,22 @@ fn the_component_calls_of_the_attacks_work_for_the_workspace_that_owns_the_recor
     );
     let project = project["project"]["id"].as_str().expect("an id");
     let base = format!("/api/v1/w/{}/projects/{project}", f.a.id);
-    let body = json!({ "title": unique("owner-components") }).to_string();
-    let created = must(
-        call(
-            client,
-            "POST",
-            &format!("{base}/changesets"),
-            &key,
-            Some(&body),
-        ),
+    let body = json!({ "kind": "design-system", "pillar": "ui", "title": unique("owner-ds") })
+        .to_string();
+    must(
+        call(client, "POST", &format!("{base}/docs"), &key, Some(&body)),
         201,
-        "create a change set",
+        "start the design system doc",
     );
-    let changeset = created["changeset"]["id"].as_str().expect("an id");
-    let mut docs = Vec::new();
-    for (kind, title) in [("design-system", "owner-ds"), ("design", "owner-design")] {
-        let body = json!({ "kind": kind, "pillar": "ui", "title": unique(title) }).to_string();
-        let created = must(
-            call(
-                client,
-                "POST",
-                &format!("{base}/changesets/{changeset}/docs"),
-                &key,
-                Some(&body),
-            ),
-            201,
-            "start a doc",
-        );
-        docs.push(created["doc"]["id"].as_str().expect("an id").to_string());
-    }
-    let design_doc = &docs[1];
     let import = case_named(
         "PUT",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/components",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/components",
     );
     let imported = must(
         call(
             client,
             "PUT",
-            &format!("{base}/changesets/{changeset}/components"),
+            &format!("{base}/components"),
             &key,
             import.body,
         ),
@@ -3112,22 +1827,6 @@ fn the_component_calls_of_the_attacks_work_for_the_workspace_that_owns_the_recor
         "import the components",
     );
     assert_eq!(imported["components"][0]["name"], "Intruder", "{imported}");
-    let design = case_named(
-        "PUT",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs/{doc_id}/design",
-    );
-    let placed = must(
-        call(
-            client,
-            "PUT",
-            &format!("{base}/changesets/{changeset}/docs/{design_doc}/design"),
-            &key,
-            design.body,
-        ),
-        200,
-        "import the design",
-    );
-    assert_eq!(placed["pages"][0]["name"], "Intruder", "{placed}");
     for auth in [&key, &human] {
         let usage = must(
             call(
@@ -3145,35 +1844,19 @@ fn the_component_calls_of_the_attacks_work_for_the_workspace_that_owns_the_recor
 }
 
 // ---------------------------------------------------------------------------
-// Pages and boards (US-030)
+// Pages and boards
 // ---------------------------------------------------------------------------
 
-const DRAFT_BOARD_ROUTE: &str = "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/docs/{doc_id}/boards/{board_id}";
 const BOARD_ROUTE: &str =
     "/api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}/boards/{board_id}";
 
 #[test]
-fn the_board_routes_are_in_the_registry_and_the_suite_attacks_them() {
-    for path in [DRAFT_BOARD_ROUTE, BOARD_ROUTE] {
-        let entry = registry()
-            .into_iter()
-            .find(|r| r.method == "GET" && r.path == path)
-            .unwrap_or_else(|| panic!("the registry has no route GET {path}"));
-        assert_eq!(entry.access, Access::Both, "GET {path}");
-        assert!(
-            matches!(case_for(&entry).kind, Kind::Workspace),
-            "{path} is a workspace route that the suite attacks"
-        );
-    }
-}
-
-#[test]
 fn the_board_reads_of_a_workspace_show_its_own_board_and_nothing_of_the_other() {
-    // The control for the board routes, which the generic one skips: the
-    // owner's agent imports a design into a doc of its own, and the agent and
-    // the human read its board from the draft and, once it is saved and
-    // merged, from the mainline and the version. The other workspace's credentials on the same
-    // paths, and the owner's workspace with the other's IDs, are 404.
+    // The control for the board route, which the generic one skips: the
+    // owner's agent adds a board to a design of its own, and the agent and the
+    // human read it from the head and at the write that added it. The other
+    // workspace's credentials on the same paths, and the owner's workspace
+    // with the other's IDs, are 404.
     let (f, client) = ready();
     let _guard = serial();
     for (own, other) in [(&f.a, &f.b), (&f.b, &f.a)] {
@@ -3193,57 +1876,58 @@ fn the_board_reads_of_a_workspace_show_its_own_board_and_nothing_of_the_other() 
         );
         let project = project["project"]["id"].as_str().expect("an id");
         let base = format!("/api/v1/w/{}/projects/{project}", own.id);
-        let body = json!({ "title": unique("owner-boards") }).to_string();
-        let created = must(
-            call(
-                client,
-                "POST",
-                &format!("{base}/changesets"),
-                &key,
-                Some(&body),
-            ),
-            201,
-            "create a change set",
-        );
-        let changeset = created["changeset"]["id"].as_str().expect("an id");
         let body = json!({ "kind": "design", "pillar": "ui", "title": unique("owner-boards") })
             .to_string();
         let created = must(
-            call(
-                client,
-                "POST",
-                &format!("{base}/changesets/{changeset}/docs"),
-                &key,
-                Some(&body),
-            ),
+            call(client, "POST", &format!("{base}/docs"), &key, Some(&body)),
             201,
             "start a design doc",
         );
         let doc = created["doc"]["id"].as_str().expect("an id");
+        let head = must(
+            call(
+                client,
+                "GET",
+                &format!("{base}/docs/{doc}/html"),
+                &key,
+                None,
+            ),
+            200,
+            "read the design's head",
+        );
+        let page = head["pages"][0]["id"]
+            .as_str()
+            .unwrap_or_else(|| panic!("a new design has a page: {head}"));
         let text = unique("owner-board-text");
         let tags = format!(
-            "<Page name=\"Owner page\">\n  <Board name=\"Owner board\" x={{0}} y={{0}} width={{320}} height={{200}}>\n    <Text name=\"Owner text\" content=\"{text}\" fontFamily=\"Inter\" fontSize={{12}}/>\n  </Board>\n</Page>"
+            "<Board name=\"Owner board\" x={{0}} y={{0}} width={{320}} height={{200}}>\n  <Text name=\"Owner text\" content=\"{text}\" fontFamily=\"Inter\" fontSize={{12}}/>\n</Board>"
         );
+        let ops = json!({ "ops": [{
+            "op": "insert",
+            "parent": page,
+            "position": { "after": null },
+            "content": tags
+        }] })
+        .to_string();
         let placed = must(
             call(
                 client,
-                "PUT",
-                &format!("{base}/changesets/{changeset}/docs/{doc}/design"),
+                "POST",
+                &format!("{base}/docs/{doc}/ops"),
                 &key,
-                Some(&json!({ "tags": tags }).to_string()),
+                Some(&ops),
             ),
             200,
-            "import the design",
+            "add a board to the design",
         );
-        let board = placed["pages"][0]["children"][0]["id"]
+        let board = placed["results"][0]["node"]
             .as_str()
-            .unwrap_or_else(|| panic!("the import answers the board's ID: {placed}"))
+            .unwrap_or_else(|| panic!("the write answers the board's ID: {placed}"))
             .to_string();
-        let fill_board = |template: &str, workspace: &str| {
-            template
+        let fill_board = |workspace: &str| {
+            BOARD_ROUTE
                 .replace("{workspace_id}", workspace)
                 .replace("{project_id}", project)
-                .replace("{changeset_id}", changeset)
                 .replace("{doc_id}", doc)
                 .replace("{board_id}", &board)
         };
@@ -3284,111 +1968,24 @@ fn the_board_reads_of_a_workspace_show_its_own_board_and_nothing_of_the_other() 
                 );
             }
         };
-        check(&fill_board(DRAFT_BOARD_ROUTE, &own.id));
-
-        let saved = must(
-            call(
-                client,
-                "POST",
-                &format!("{base}/changesets/{changeset}/docs/{doc}/versions"),
-                &key,
-                Some("{}"),
-            ),
-            201,
-            "save a version",
-        );
-        let version = saved["version"]["id"].as_str().expect("an id").to_string();
-        must(
-            call(
-                client,
-                "POST",
-                &format!("{base}/changesets/{changeset}/submit"),
-                &key,
-                None,
-            ),
-            200,
-            "submit the change set",
-        );
-        let approved = must(
-            call(
-                client,
-                "POST",
-                &format!("{base}/changesets/{changeset}/approve"),
-                &human,
-                Some("{}"),
-            ),
-            200,
-            "the human approves",
-        );
-        assert_eq!(approved["changeset"]["status"], "merged", "{approved}");
-        check(&fill_board(BOARD_ROUTE, &own.id));
-        check(&format!(
-            "{}?version={version}",
-            fill_board(BOARD_ROUTE, &own.id)
-        ));
+        check(&fill_board(&own.id));
+        check(&format!("{}?at=2", fill_board(&own.id)));
 
         // The owner's key, with the owner's IDs under the other workspace.
-        for path in [
-            fill_board(DRAFT_BOARD_ROUTE, &other.id),
-            fill_board(BOARD_ROUTE, &other.id),
-        ] {
-            let response = call(client, "GET", &path, &key, None);
-            let what = format!("{} with the owner's key", route_name("GET", &path));
-            assert_not_found_without_data(&response, own, &what);
-            assert!(
-                !response.text().contains(&text),
-                "{what}: {}",
-                response.text()
-            );
-        }
+        let path = fill_board(&other.id);
+        let response = call(client, "GET", &path, &key, None);
+        let what = format!("{} with the owner's key", route_name("GET", &path));
+        assert_not_found_without_data(&response, own, &what);
+        assert!(
+            !response.text().contains(&text),
+            "{what}: {}",
+            response.text()
+        );
     }
 }
 
 // ---------------------------------------------------------------------------
-// Threads and phases (US-033)
-// ---------------------------------------------------------------------------
-
-const THREAD_ROUTES: [(&str, &str); 4] = [
-    (
-        "POST",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/threads",
-    ),
-    (
-        "GET",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/threads/{thread_id}",
-    ),
-    (
-        "POST",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/threads/{thread_id}/phases",
-    ),
-    (
-        "POST",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/threads/{thread_id}/posts",
-    ),
-];
-
-// ---------------------------------------------------------------------------
-// Directives (US-034)
-// ---------------------------------------------------------------------------
-
-const DIRECTIVES_ROUTE: &str =
-    "/api/v1/w/{workspace_id}/projects/{project_id}/threads/{thread_id}/directives";
-
-#[test]
-fn the_directive_route_is_a_human_route_that_the_suite_attacks() {
-    let entry = registry()
-        .into_iter()
-        .find(|r| r.method == "POST" && r.path == DIRECTIVES_ROUTE)
-        .unwrap_or_else(|| panic!("the registry has no route POST {DIRECTIVES_ROUTE}"));
-    assert_eq!(entry.access, Access::Human, "POST {DIRECTIVES_ROUTE}");
-    assert!(
-        matches!(case_for(&entry).kind, Kind::Workspace),
-        "POST {DIRECTIVES_ROUTE} is a workspace route that the suite attacks"
-    );
-}
-
-// ---------------------------------------------------------------------------
-// Reading posts (US-035)
+// Reading posts
 // ---------------------------------------------------------------------------
 
 const POST_READ_ROUTES: [(&str, &str); 2] = [
@@ -3439,198 +2036,13 @@ fn the_post_read_calls_of_the_attacks_work_for_the_workspace_that_owns_the_recor
 }
 
 // ---------------------------------------------------------------------------
-// Decisions (US-037)
+// Comments
 // ---------------------------------------------------------------------------
 
-const DECISION_ROUTES: [(&str, &str, Access); 5] = [
+const COMMENT_ROUTES: [(&str, &str, Access); 5] = [
     (
         "POST",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/threads/{thread_id}/decisions",
-        Access::Agent,
-    ),
-    (
-        "GET",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/decisions/{decision_id}",
-        Access::Both,
-    ),
-    (
-        "POST",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/decisions/{decision_id}/approve",
-        Access::Human,
-    ),
-    (
-        "POST",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/decisions/{decision_id}/reject",
-        Access::Human,
-    ),
-    (
-        "POST",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/decisions/{decision_id}",
-        Access::Agent,
-    ),
-];
-
-#[test]
-fn the_decision_routes_are_in_the_registry_and_the_suite_attacks_them() {
-    for (method, path, access) in DECISION_ROUTES {
-        let entry = registry()
-            .into_iter()
-            .find(|r| r.method == method && r.path == path)
-            .unwrap_or_else(|| panic!("the registry has no route {method} {path}"));
-        assert_eq!(entry.access, access, "{method} {path}");
-        assert!(
-            matches!(case_for(&entry).kind, Kind::Workspace),
-            "{method} {path} is a workspace route that the suite attacks"
-        );
-    }
-
-    let (f, _) = ready();
-    for side in [&f.a, &f.b] {
-        assert!(
-            !side.decision_id.is_empty(),
-            "the suite seeded no decision for {}",
-            side.id
-        );
-    }
-}
-
-#[test]
-fn the_decision_calls_of_the_attacks_work_for_the_workspace_that_owns_the_records() {
-    // The control for the decision routes: in the owner's workspace, the
-    // owner's agent proposes a decision with the body of the case for a new
-    // thread of the seeded change set and links the change set to it, both
-    // the agent and the human read it and the seeded decision, and the human
-    // approves it with the body of the case; a second proposal is rejected
-    // with the body of the case.
-    let (f, client) = ready();
-    let _guard = serial();
-    let key = Auth::Key(&f.a.key);
-    let human = Auth::Session(&f.a.token);
-    let path = |template: &str| fill(template, &f.a, &f.a);
-    let body = |method: &str, template: &str| case_named(method, template).body;
-
-    let (method, template) = THREAD_ROUTES[0];
-    let created = must(
-        call(
-            client,
-            method,
-            &path(template),
-            &key,
-            body(method, template),
-        ),
-        201,
-        "start a thread",
-    );
-    let thread = created["thread"]["id"].as_str().expect("an id");
-    let project = format!("/api/v1/w/{}/projects/{}", f.a.id, f.a.project_id);
-    let (propose, _, _) = DECISION_ROUTES[0];
-    let propose_body = body(propose, DECISION_ROUTES[0].1);
-    let proposed = must(
-        call(
-            client,
-            propose,
-            &format!("{project}/threads/{thread}/decisions"),
-            &key,
-            propose_body,
-        ),
-        201,
-        "propose a decision",
-    );
-    let decision = proposed["decision"]["id"].as_str().expect("an id");
-    for auth in [&key, &human] {
-        let read = must(
-            call(
-                client,
-                "GET",
-                &format!("{project}/decisions/{decision}"),
-                auth,
-                None,
-            ),
-            200,
-            "read the decision",
-        );
-        assert_eq!(read["decision"]["id"], decision, "{read}");
-        let seeded = must(
-            call(client, "GET", &path(DECISION_ROUTES[1].1), auth, None),
-            200,
-            "read the seeded decision",
-        );
-        assert_eq!(
-            seeded["decision"]["direction"],
-            f.a.decision_direction.as_str(),
-            "{seeded}"
-        );
-    }
-    let (method, template, _) = DECISION_ROUTES[4];
-    let linked = must(
-        call(
-            client,
-            method,
-            &format!(
-                "{project}/changesets/{}/decisions/{decision}",
-                f.a.changeset_id
-            ),
-            &key,
-            body(method, template),
-        ),
-        200,
-        "link the change set to the decision",
-    );
-    assert!(
-        linked["changeset"]["decisions"]
-            .as_array()
-            .is_some_and(|list| list.iter().any(|d| d["id"] == decision)),
-        "{linked}"
-    );
-    let (method, template, _) = DECISION_ROUTES[2];
-    let approved = must(
-        call(
-            client,
-            method,
-            &format!("{project}/decisions/{decision}/approve"),
-            &human,
-            body(method, template),
-        ),
-        200,
-        "approve the decision",
-    );
-    assert_eq!(approved["decision"]["status"], "approved", "{approved}");
-
-    let proposed = must(
-        call(
-            client,
-            propose,
-            &format!("{project}/threads/{thread}/decisions"),
-            &key,
-            propose_body,
-        ),
-        201,
-        "propose a second decision",
-    );
-    let second = proposed["decision"]["id"].as_str().expect("an id");
-    let (method, template, _) = DECISION_ROUTES[3];
-    let rejected = must(
-        call(
-            client,
-            method,
-            &format!("{project}/decisions/{second}/reject"),
-            &human,
-            body(method, template),
-        ),
-        200,
-        "reject the decision",
-    );
-    assert_eq!(rejected["decision"]["status"], "rejected", "{rejected}");
-}
-
-// ---------------------------------------------------------------------------
-// Comments (US-038)
-// ---------------------------------------------------------------------------
-
-const COMMENT_ROUTES: [(&str, &str, Access); 6] = [
-    (
-        "POST",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/versions/{version_id}/comments",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}/comments",
         Access::Both,
     ),
     (
@@ -3648,12 +2060,6 @@ const COMMENT_ROUTES: [(&str, &str, Access); 6] = [
         "/api/v1/w/{workspace_id}/projects/{project_id}/comments/{comment_id}/replies",
         Access::Both,
     ),
-    // US-106: comments on the live head, and the human's delete.
-    (
-        "POST",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}/comments",
-        Access::Both,
-    ),
     (
         "DELETE",
         "/api/v1/w/{workspace_id}/projects/{project_id}/comments/{comment_id}",
@@ -3664,12 +2070,11 @@ const COMMENT_ROUTES: [(&str, &str, Access); 6] = [
 #[test]
 fn the_comment_calls_of_the_attacks_work_for_the_workspace_that_owns_the_records() {
     // The control for the comment routes: in the owner's workspace, the
-    // owner's human comments on the seeded version with the body of the case,
-    // both the agent and the human reply with the body of the case and read
-    // the comment, the seeded comment and the list; the agent comments on a
-    // paragraph of a live doc's head with the body of the case (its node put
-    // in for `<comment_node>`), and the human deletes that comment with the
-    // call of the case.
+    // owner's human comments on the seeded paragraph with the body of the
+    // case, both the agent and the human reply with the body of the case and
+    // read the comment, the seeded comment and the list; the agent comments on
+    // the paragraph too, and the human deletes that comment with the call of
+    // the case.
     let (f, client) = ready();
     let _guard = serial();
     let key = Auth::Key(&f.a.key);
@@ -3690,7 +2095,7 @@ fn the_comment_calls_of_the_attacks_work_for_the_workspace_that_owns_the_records
             body(0).as_deref(),
         ),
         201,
-        "comment on the seeded version",
+        "comment on the seeded paragraph",
     );
     let comment = made["comment"]["id"].as_str().expect("an id");
     for auth in [&key, &human] {
@@ -3741,56 +2146,16 @@ fn the_comment_calls_of_the_attacks_work_for_the_workspace_that_owns_the_records
         );
     }
 
-    // A live doc of the owner's with one paragraph in its head.
-    let created = must(
-        call(
-            client,
-            "POST",
-            &format!("{project}/docs"),
-            &key,
-            Some(
-                &json!({ "kind": "html", "pillar": "spec", "title": unique("owner-live-doc") })
-                    .to_string(),
-            ),
-        ),
-        201,
-        "create a doc without a change set",
-    );
-    let live = created["doc"]["id"].as_str().expect("an id").to_string();
-    let edited = must(
-        call(
-            client,
-            "POST",
-            &format!("{project}/docs/{live}/ops"),
-            &key,
-            Some(
-                &json!({ "ops": [{
-                    "op": "insert",
-                    "parent": null,
-                    "position": { "after": null },
-                    "content": "<p>The owner's paragraph.</p>"
-                }] })
-                .to_string(),
-            ),
-        ),
-        200,
-        "write a paragraph to the live doc's head",
-    );
-    let node = edited["results"][0]["node"].as_str().expect("a node");
-    let (_, template, _) = COMMENT_ROUTES[4];
-    let live_body = case_named("POST", template)
-        .body
-        .map(|b| b.replace("<comment_node>", node));
     let pinned = must(
         call(
             client,
             "POST",
-            &format!("{project}/docs/{live}/comments"),
+            &path(COMMENT_ROUTES[0].1),
             &key,
-            live_body.as_deref(),
+            body(0).as_deref(),
         ),
         201,
-        "comment on the live doc's head",
+        "the agent comments on the seeded paragraph",
     );
     let pinned = pinned["comment"]["id"].as_str().expect("an id");
     let response = call(
@@ -3820,27 +2185,7 @@ fn the_comment_calls_of_the_attacks_work_for_the_workspace_that_owns_the_records
 }
 
 // ---------------------------------------------------------------------------
-// The change set review (US-046)
-// ---------------------------------------------------------------------------
-
-const REVIEW_ROUTE: &str =
-    "/api/v1/w/{workspace_id}/projects/{project_id}/changesets/{changeset_id}/review";
-
-#[test]
-fn the_review_route_is_a_human_route_that_the_suite_attacks() {
-    let entry = registry()
-        .into_iter()
-        .find(|r| r.method == "GET" && r.path == REVIEW_ROUTE)
-        .unwrap_or_else(|| panic!("the registry has no route GET {REVIEW_ROUTE}"));
-    assert_eq!(entry.access, Access::Human, "GET {REVIEW_ROUTE}");
-    assert!(
-        matches!(case_for(&entry).kind, Kind::Workspace),
-        "GET {REVIEW_ROUTE} is a workspace route that the suite attacks"
-    );
-}
-
-// ---------------------------------------------------------------------------
-// Features (US-059, US-110)
+// Features
 // ---------------------------------------------------------------------------
 
 const FEATURE_ROUTES: [(&str, &str, Access); 5] = [
@@ -4356,13 +2701,13 @@ fn a_socket_of_workspace_a_cannot_subscribe_to_a_project_of_workspace_b() {
         client,
         "POST",
         &format!(
-            "/api/v1/w/{}/projects/{}/changesets",
+            "/api/v1/w/{}/projects/{}/features",
             f.b.id, f.b.project_id
         ),
         &Auth::Key(&f.b.key),
-        Some(&json!({ "title": unique("b-only") }).to_string()),
+        Some(&json!({ "name": unique("b-only") }).to_string()),
     );
-    must(created, 201, "B's agent creates a change set");
+    must(created, 201, "B's agent creates a feature");
     let heard = ws.drain();
     assert!(
         heard.is_empty(),
@@ -4374,16 +2719,16 @@ fn a_socket_of_workspace_a_cannot_subscribe_to_a_project_of_workspace_b() {
         client,
         "POST",
         &format!(
-            "/api/v1/w/{}/projects/{}/changesets",
+            "/api/v1/w/{}/projects/{}/features",
             f.a.id, f.a.project_id
         ),
         &Auth::Key(&f.a.key),
-        Some(&json!({ "title": unique("a-only") }).to_string()),
+        Some(&json!({ "name": unique("a-only") }).to_string()),
     );
-    must(created, 201, "A's agent creates a change set");
+    must(created, 201, "A's agent creates a feature");
     let event = ws.next(PATIENCE).expect("A hears its own event");
     assert_eq!(event["type"], "event", "{event}");
-    assert_eq!(event["event"], "changeset.open", "{event}");
+    assert_eq!(event["event"], "feature.created", "{event}");
 }
 
 // ---------------------------------------------------------------------------
@@ -4579,7 +2924,7 @@ fn row_level_security_stops_workspace_a_from_changing_inserting_moving_or_deleti
 }
 
 // ---------------------------------------------------------------------------
-// Docs without a change set (US-102)
+// Docs at the app level and in a feature
 // ---------------------------------------------------------------------------
 
 const LIVE_DOC_ROUTES: [&str; 2] = [
@@ -4614,7 +2959,7 @@ fn the_scope_level_doc_calls_of_the_attacks_work_for_the_workspace_that_owns_the
                 body.as_deref(),
             ),
             201,
-            "create a doc without a change set",
+            "create a doc",
         );
         let doc = created["doc"]["id"].as_str().expect("an id");
         assert_eq!(created["doc"]["feature_id"], feature, "{created}");
@@ -4631,7 +2976,7 @@ fn the_scope_level_doc_calls_of_the_attacks_work_for_the_workspace_that_owns_the
 }
 
 // ---------------------------------------------------------------------------
-// The activity of a doc (US-111)
+// The activity of a doc
 // ---------------------------------------------------------------------------
 
 const ACTIVITY_ROUTES: [&str; 2] = [
@@ -4676,7 +3021,7 @@ fn the_activity_calls_of_the_attacks_work_for_the_workspace_that_owns_the_record
             ),
         ),
         201,
-        "create a doc without a change set",
+        "create a doc",
     );
     let doc = created["doc"]["id"].as_str().expect("an id").to_string();
     must(
@@ -4764,7 +3109,7 @@ fn the_component_reads_of_a_workspace_show_its_own_component_and_nothing_of_the_
         must(
             call(client, "POST", &format!("{base}/docs"), &key, Some(&body)),
             201,
-            "create a design system without a change set",
+            "create a design system",
         );
         let text = unique("owner-component-text");
         let tags = format!(
