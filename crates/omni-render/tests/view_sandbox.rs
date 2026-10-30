@@ -63,6 +63,7 @@ fn the_wasm_module_exports_the_functions_the_stress_page_calls() {
         "_omni_render_scene_load",
         "_omni_render_scene_draw",
         "_omni_render_scene_stats",
+        "_omni_render_scene_timings",
         "_omni_render_view_wheel",
         "_omni_render_view_pinch",
         "_omni_render_view_pointer_down",

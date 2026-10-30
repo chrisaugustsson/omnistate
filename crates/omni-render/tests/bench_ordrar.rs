@@ -245,7 +245,7 @@ fn every_instant_of_the_load_counts_for_one_phase_up_to_the_first_board() {
              { phase: 'gpu', start: 50, end: 60 },
              { phase: 'parse', start: 90, end: 130 },
            ],
-           [[0, 10], [60, 80]],
+           [[0, 15], [60, 80]],
          );",
     );
     assert_eq!(

@@ -317,6 +317,9 @@ try {
   };
   const fetched = async (name) => (await fetch(name)).text();
   const failure = () => module.UTF8ToString(module._omni_render_error());
+  const setSystem = (text) =>
+    withText(text, (pointer, length) => module._omni_render_scene_set_system(pointer, length)) ? "set" : failure();
+  const timings = () => JSON.parse(module.UTF8ToString(module._omni_render_scene_timings()));
   const load = async (name) =>
     withText(await fetched(name), (pointer, length) => module._omni_render_scene_load(pointer, length)) ? "loaded" : failure();
   const depth = () => {
@@ -328,12 +331,16 @@ try {
   const result = {};
   result.deep = await load("deep.json");
   result.deepDepth = depth();
-  const system = await fetched("chain-system.json");
-  result.system = withText(system, (pointer, length) => module._omni_render_scene_set_system(pointer, length)) ? "set" : failure();
+  result.system = setSystem(await fetched("chain-system.json"));
   result.chain = await load("chain-page.json");
   result.chainErrors = JSON.parse(module.UTF8ToString(module._omni_render_scene_errors()));
   result.next = await load("next.json");
   result.nextDepth = depth();
+  setSystem(JSON.stringify({ $components: [] }));
+  await load("short-chain-page.json");
+  result.loadTimings = timings();
+  result.shortChain = setSystem(await fetched("short-chain-system.json"));
+  result.systemTimings = timings();
   report(result);
 } catch (error) {
   report({ crash: String(error) });
@@ -433,12 +440,15 @@ fn the_webassembly_module_loads_deep_designs_and_refuses_deeper_ones() {
             .unwrap_or_else(|error| panic!("render-sandbox/build/{file} can be copied: {error}"));
     }
     let (system, chain) = instance_chain(24, 40);
+    let (short_system, short_chain) = instance_chain(2, 40);
     for (name, content) in [
         ("index.html", PAGE.to_string()),
         ("deep.json", nested_page(62).to_string()),
         ("chain-system.json", system.to_string()),
         ("chain-page.json", chain.to_string()),
         ("next.json", nested_page(12).to_string()),
+        ("short-chain-system.json", short_system.to_string()),
+        ("short-chain-page.json", short_chain.to_string()),
     ] {
         fs::write(root.join(name), content).expect("the page's files can be written");
     }
@@ -502,4 +512,21 @@ fn the_webassembly_module_loads_deep_designs_and_refuses_deeper_ones() {
         "the module must load the next page after refusing one: {result}"
     );
     assert_eq!(result["nextDepth"], 12, "{result}");
+    assert_eq!(result["shortChain"], "set", "{result}");
+    let (loaded, changed) = (&result["loadTimings"], &result["systemTimings"]);
+    assert!(
+        changed["parseMs"].is_number(),
+        "the module must report how long reading a design system took: {result}"
+    );
+    let layout = changed["layoutMs"].as_f64().unwrap_or_else(|| {
+        panic!("the module must report how long resolving a design system took: {result}")
+    });
+    assert!(
+        layout > 0.0,
+        "resolving the instances of a chain 80 frames deep takes time: {result}"
+    );
+    assert_ne!(
+        changed["layoutMs"], loaded["layoutMs"],
+        "the module must report the layout of the new design system, not of the load before it: {result}"
+    );
 }
