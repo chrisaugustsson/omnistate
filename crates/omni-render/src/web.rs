@@ -1,11 +1,12 @@
 //! Drawing on the page's WebGL 2 canvas, in the WebAssembly build.
 
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use omni_core::design::{AttachmentRef, NodeId};
 use skia_safe::{
-    Canvas, Color, ColorType, PixelGeometry, SurfaceProps, SurfacePropsFlags,
+    Canvas, Color, ColorType, Image, PixelGeometry, SurfaceProps, SurfacePropsFlags,
     gpu::{
         ContextOptions, DirectContext, Protected, SurfaceOrigin, backend_render_targets,
         direct_contexts, gl::FramebufferInfo, interfaces, surfaces,
@@ -56,6 +57,8 @@ thread_local! {
     /// What the page supplied for drawing: images and fonts, which stay until
     /// the page is closed.
     static ASSETS: RefCell<Assets> = RefCell::new(Assets::new());
+    /// The previews of boards that the page supplied, by board.
+    static PREVIEWS: RefCell<HashMap<NodeId, Image>> = RefCell::new(HashMap::new());
     /// The design system version that scenes resolve against, as the page
     /// supplied it (`DesignSystem::from_json`).
     static SYSTEM: RefCell<Option<Value>> = const { RefCell::new(None) };
@@ -101,6 +104,16 @@ pub fn draw_sandbox(width: i32, height: i32, pixel_ratio: f32) -> bool {
 pub fn add_image(attachment: &str, data: &[u8]) -> Result<(), String> {
     let attachment: AttachmentRef = attachment.parse().map_err(|error| format!("{error}"))?;
     ASSETS.with_borrow_mut(|assets| assets.add_image(&attachment, data))
+}
+
+/// Supplies the preview of the board `board` (`view::board_preview`), from PNG
+/// or JPEG bytes, in place of any it had.
+pub fn add_preview(board: &str, data: &[u8]) -> Result<(), String> {
+    let board: NodeId = board.parse().map_err(|error| format!("{error}"))?;
+    let image = paint::decode_image(data)
+        .ok_or_else(|| format!("the bytes for the preview of {board} are not an image"))?;
+    PREVIEWS.with_borrow_mut(|previews| previews.insert(board, image));
+    Ok(())
 }
 
 /// Supplies a font file for text in `family`.
@@ -211,6 +224,28 @@ pub fn scene_load(design_json: &str) -> Result<(), String> {
     let nested = nested_too_deep(&stage.scene);
     STAGE.set(Some(stage));
     nested
+}
+
+/// Draws the boards in `boards_json`, a JSON array of board IDs, of the loaded
+/// scene from their previews (`add_preview`, `Scene::use_preview`) until they
+/// are put in place. A board without a preview stays as it is.
+pub fn scene_use_previews(boards_json: &str) -> Result<(), String> {
+    let boards: Vec<NodeId> =
+        serde_json::from_str(boards_json).map_err(|error| error.to_string())?;
+    STAGE.with_borrow_mut(|stage| {
+        let Some(stage) = stage else {
+            return;
+        };
+        PREVIEWS.with_borrow(|previews| {
+            for (board, image) in boards
+                .iter()
+                .filter_map(|board| Some((board, previews.get(board)?)))
+            {
+                stage.scene.use_preview(board, image.clone());
+            }
+        });
+    });
+    Ok(())
 }
 
 /// Queues the boards in `boards_json`, a JSON array of boards, to take the
@@ -546,15 +581,17 @@ pub fn bounds_of(address: &str) -> Result<Option<String>, String> {
 }
 
 /// The box of the node at `address` on the canvas at the current view, as
-/// JSON `{"x", "y", "width", "height"}` in CSS pixels from the canvas's
-/// top-left corner: where the design viewer pins the node's comments.
+/// JSON `{"x", "y", "width", "height", "name"}` in CSS pixels from the canvas's
+/// top-left corner, with the node's name: where the design viewer pins the
+/// node's comments.
 /// `Ok(None)` if no scene is loaded or the address names no node.
 pub fn node_box(address: &str) -> Result<Option<String>, String> {
     let address: NodeAddress = address.parse().map_err(|error| format!("{error}"))?;
     Ok(with_stage(|scene, viewport| {
-        scene
-            .screen_box_of(&address, viewport)
-            .map(|rect| box_json(rect).to_string())
+        let rect = scene.screen_box_of(&address, viewport)?;
+        let mut json = box_json(rect);
+        json["name"] = scene.name_of(&address)?.into();
+        Some(json.to_string())
     })
     .flatten())
 }

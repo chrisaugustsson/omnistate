@@ -7,6 +7,7 @@ import {
   loadHeadBoard,
   loadHeadHtml,
   loadHeadOutline,
+  loadHeadPreviews,
 } from "@/api/docs";
 import type { DocBody } from "@/api/generated";
 import {
@@ -17,7 +18,7 @@ import {
   type Property,
 } from "@/design/renderer";
 import { createAssetLoader } from "@/design/assets";
-import { BoardCache, findPageHolding, showBoardwise } from "@/design/boards";
+import { BoardCache, BoardPreviews, findPageHolding, showBoardwise } from "@/design/boards";
 import { FileText, Files, Layers as LayersIcon, PenTool, SlidersHorizontal } from "lucide-react";
 import {
   FloatingAlert,
@@ -472,7 +473,7 @@ function CommentPins({
           <button
             key={pin.address}
             type="button"
-            aria-label={`${pin.count} ${pin.count === 1 ? "comment" : "comments"} on ${pin.name}`}
+            aria-label={`${pin.count} ${pin.count === 1 ? "comment" : "comments"} on ${box.name ?? pin.name}`}
             aria-pressed={pin.address === selected}
             // The pin's centre is the top-right corner of its node's box.
             style={{ left: box.x + box.width, top: box.y }}
@@ -614,9 +615,18 @@ function DesignViewer({
   useEffect(() => renderer?.onSelect(setSelected), [renderer, setSelected]);
 
   const assets = useMemo(() => (renderer ? createAssetLoader(renderer, workspaceId) : null), [renderer, workspaceId]);
+  const previews = useMemo(
+    () =>
+      renderer ? new BoardPreviews(renderer, (boards) => loadHeadPreviews(workspaceId, projectId, docId, boards)) : null,
+    [renderer, workspaceId, projectId, docId],
+  );
+  const chunks = useMemo(
+    () => new Map((outline.value?.boards ?? []).map((entry) => [entry.id, entry.chunk])),
+    [outline.value],
+  );
 
   useEffect(() => {
-    if (!renderer || !assets || !page || !system) return;
+    if (!renderer || !assets || !previews || !page || !system) return;
     let cancelled = false;
     let stopBoards: (() => void) | null = null;
     // What went wrong so far: an image or a board that could not be loaded is
@@ -663,12 +673,18 @@ function DesignViewer({
       problems.push(error instanceof Error ? error.message : "The design could not be drawn.");
       report();
     };
-    // The page is shown once its images and fonts are with the renderer.
-    void assets.load(page, system).then((loaded) => {
+    // The page is shown once its images, fonts and previews are with the renderer.
+    void Promise.all([
+      assets.load(page, system),
+      previews.load(page, cache, chunks).then(
+        () => [],
+        (error: unknown) => [`The previews of the boards could not be loaded${error instanceof Error && error.message ? ` (${error.message})` : ""}.`],
+      ),
+    ]).then(([loaded, previewsLoaded]) => {
       if (cancelled) return;
-      problems.push(...loaded);
+      problems.push(...loaded, ...previewsLoaded);
       try {
-        // The page shows its boards as placeholders, and reads those in view.
+        // The page shows its boards as their previews, and reads those in view.
         stopBoards = showBoardwise({
           renderer,
           page,
@@ -694,7 +710,7 @@ function DesignViewer({
       stopWatchingView();
       if (layersTimer !== null) clearTimeout(layersTimer);
     };
-  }, [renderer, assets, page, system, modes, cache, setSelected]);
+  }, [renderer, assets, previews, page, system, modes, cache, chunks, setSelected]);
 
   // A link to a node: its page is shown, then it is selected.
   useEffect(() => {
@@ -813,12 +829,13 @@ function DesignViewer({
   );
   const removed = useMemo(() => (comments.value ?? []).filter((on) => on.orphaned), [comments.value]);
 
-  // One pin on each node of the page shown that has comments.
+  // One pin on each node that has comments: CommentPins shows those the page has
+  // now, so a pin comes with its board, before the layers panel lists the board.
   const pins = useMemo(() => {
     const names = new Map(rows.map(({ layer }) => [layer.address, layer.name]));
     const counts = new Map<string, number>();
     for (const on of comments.value ?? []) {
-      if (names.has(on.node)) counts.set(on.node, (counts.get(on.node) ?? 0) + 1);
+      if (!on.orphaned) counts.set(on.node, (counts.get(on.node) ?? 0) + 1);
     }
     return Array.from(counts, ([address, count]) => ({ address, count, name: names.get(address) ?? address }));
   }, [rows, comments.value]);

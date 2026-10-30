@@ -26,9 +26,10 @@ use crate::resolve::{self, Details, Facts, ids_of};
 use crate::select::{Event, Index, Layer, Modifiers, NodeAddress, Outline, OutlineKind};
 use crate::system::{DesignSystem, RenderError};
 use omni_core::design::{Node, NodeData, NodeId};
+use serde_json::Value;
 use skia_safe::{
     AlphaType, Canvas, ColorType, FilterMode, Image, ImageInfo, MipmapMode, Paint, Picture,
-    PictureRecorder, Rect, SamplingOptions, surfaces,
+    PictureRecorder, Rect, SamplingOptions, png_encoder, surfaces,
 };
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::{Duration, Instant};
@@ -59,6 +60,12 @@ const SNAPSHOT_SCALE_MIN: f32 = 1.0 / 64.0;
 /// The longest side of a snapshot in pixels; a board larger than this at
 /// `SNAPSHOT_SCALE` is snapshotted at a smaller scale.
 const SNAPSHOT_MAX_SIDE: f32 = 2048.0;
+
+/// The scale of a board's preview (`board_preview`).
+const PREVIEW_SCALE: f32 = 1.0 / 16.0;
+/// The longest side of a preview in pixels; a board larger than this at
+/// `PREVIEW_SCALE` is previewed at a smaller scale.
+const PREVIEW_MAX_SIDE: f32 = 256.0;
 
 fn clamp_zoom(zoom: f32) -> f32 {
     if zoom.is_nan() {
@@ -322,6 +329,10 @@ struct Board {
     painted: Painted,
     /// The board's drawing at reduced detail, once it has been made.
     snapshot: Option<Snapshot>,
+    /// Whether `snapshot` is the preview of a board that has not been read
+    /// (`Scene::use_preview`): nothing is drawn from the node, which is only
+    /// the board's placeholder.
+    previewed: bool,
 }
 
 /// A board drawn small, with where it goes on the page.
@@ -559,6 +570,7 @@ fn lay_out(
                 picture_stale: false,
                 painted: Painted::default(),
                 snapshot: None,
+                previewed: false,
             })
         })
         .collect();
@@ -584,6 +596,73 @@ pub fn board_box(board: Node, assets: &Assets, system: Option<&DesignSystem>) ->
         None => Scene::new(board, assets.clone()),
     };
     scene.boxes.get(&id).copied()
+}
+
+/// A small picture of `board`, a board of a page with all its content, as a
+/// PNG: the board at reduced detail (`paint::draw_reduced`), its instances
+/// expanded against `system` when there is one (in its first mode), and with
+/// the images of `assets`. The API makes one for every board that is written,
+/// so that a viewer can show a board's content before it has read the board
+/// (`Scene::use_preview`). `None` when `board` has no box.
+pub fn board_preview(
+    board: Node,
+    assets: &Assets,
+    system: Option<&DesignSystem>,
+) -> Option<Vec<u8>> {
+    let scene = match system {
+        Some(system) => Scene::with_system(board, assets.clone(), system.clone()),
+        None => Scene::new(board, assets.clone()),
+    };
+    let held = scene.boards.first()?;
+    let bounds = held.bounds;
+    let scale = PREVIEW_SCALE.min(PREVIEW_MAX_SIDE / bounds.width.max(bounds.height));
+    let size = (
+        (bounds.width * scale).ceil().max(1.0) as i32,
+        (bounds.height * scale).ceil().max(1.0) as i32,
+    );
+    let mut surface = surfaces::raster_n32_premul(size)?;
+    let canvas = surface.canvas();
+    canvas.scale((size.0 as f32 / bounds.width, size.1 as f32 / bounds.height));
+    canvas.translate((-bounds.x, -bounds.y));
+    let node = &board_nodes(&scene.page)[held.index];
+    paint::draw_reduced(canvas, node, &scene.boxes, &scene.assets);
+    let pixels = surface.peek_pixels()?;
+    let mut png = Vec::new();
+    png_encoder::encode(&pixels, &mut png, &png_encoder::Options::default()).then_some(png)
+}
+
+/// The images that drawing `board` calls for, as `attachment:<id>`: its own and
+/// those of the components it places, with its instances expanded against
+/// `system` when there is one.
+pub fn board_images(board: &Node, system: Option<&DesignSystem>) -> Vec<String> {
+    fn visit(value: &Value, found: &mut HashSet<String>) {
+        match value {
+            Value::Array(values) => values.iter().for_each(|value| visit(value, found)),
+            Value::Object(fields) => {
+                for (key, value) in fields {
+                    match value.as_str() {
+                        Some(text) if key == "image" => {
+                            found.insert(text.to_string());
+                        }
+                        _ => visit(value, found),
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    let json = match system {
+        Some(system) => {
+            let mode = system.modes().first().cloned().unwrap_or_default();
+            serde_json::to_value(&resolve::resolve(board, system, &mode).page)
+        }
+        None => serde_json::to_value(board),
+    };
+    let mut found = HashSet::new();
+    if let Ok(json) = json {
+        visit(&json, &mut found);
+    }
+    found.into_iter().collect()
 }
 
 impl Scene {
@@ -696,6 +775,12 @@ impl Scene {
         );
         let hovered = self.hovered.map(|at| self.index.address(at));
         let selected = self.selected.map(|at| self.index.address(at));
+        let mut previews: HashMap<NodeId, Snapshot> = self
+            .boards
+            .iter_mut()
+            .filter(|board| board.previewed)
+            .filter_map(|board| Some((board.id, board.snapshot.take()?)))
+            .collect();
         self.page = resolved.page;
         self.errors = resolved.errors;
         self.details = resolved.details;
@@ -704,6 +789,12 @@ impl Scene {
         self.boxes = laid.boxes;
         self.texts = laid.texts;
         self.boards = laid.boards;
+        for board in &mut self.boards {
+            if let Some(preview) = previews.remove(&board.id) {
+                board.snapshot = Some(preview);
+                board.previewed = true;
+            }
+        }
         self.index = laid.index;
         self.hovered = hovered.and_then(|address| self.index.lookup(&address));
         self.selected = selected.and_then(|address| self.index.lookup(&address));
@@ -718,6 +809,26 @@ impl Scene {
     /// the old one's pictures until its own are made.
     pub fn set_frame_budget(&mut self, budget: Duration) {
         self.frame_budget = Some(budget);
+    }
+
+    /// Draws the board `board`, whose placeholder is in the page because it has
+    /// not been read, from `image` (a [`board_preview`] of it) until `queue_boards`
+    /// puts the board in place, so that it shows its content in every frame.
+    /// The image is stretched over the board's box. Returns `false`, and
+    /// changes nothing, if the page has no such board.
+    pub fn use_preview(&mut self, board: &NodeId, image: Image) -> bool {
+        let Some(held) = self.boards.iter_mut().find(|held| held.id == *board) else {
+            return false;
+        };
+        let bounds = held.bounds;
+        held.snapshot = Some(Snapshot {
+            scale: image.width() as f32 / bounds.width,
+            image,
+            rect: Rect::from_xywh(bounds.x, bounds.y, bounds.width, bounds.height),
+            stale: true,
+        });
+        held.previewed = true;
+        true
     }
 
     /// Queues `boards` to take the place of the boards of the page that have
@@ -880,6 +991,7 @@ impl Scene {
                 picture_stale: false,
                 painted: Painted::default(),
                 snapshot: None,
+                previewed: false,
             })
         });
         let held = self.boards.iter().position(|board| board.id == id);
@@ -1041,6 +1153,11 @@ impl Scene {
             width: page.width * zoom,
             height: page.height * zoom,
         })
+    }
+
+    /// The name of the node at `address`, as the layers panel lists it.
+    pub fn name_of(&self, address: &NodeAddress) -> Option<&str> {
+        Some(self.index.name(self.index.lookup(address)?))
     }
 
     /// What a click, or the pointer moving with Ctrl or Cmd held for `deep`,
@@ -1268,6 +1385,10 @@ impl Scene {
         canvas.translate((-x, -y));
         for board in boards.iter_mut().filter(|board| board.is_in(&visible)) {
             stats.boards_drawn.push(board.id);
+            if board.previewed {
+                board.draw_reduced(canvas);
+                continue;
+            }
             let node = &nodes[board.index];
             match detail {
                 Detail::Full => {

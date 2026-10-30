@@ -319,6 +319,7 @@ export const HeadHtmlResponseSchema = z.object({
   html: z.string(),
   outline: z.array(z.record(z.string(), z.unknown())).nullable().optional(),
   pages: z.array(z.record(z.string(), z.unknown())).nullable().optional(),
+  previews: z.record(z.string(), z.string()).nullable().optional(),
   tags: z.string().nullable().optional(),
   tokens: z.record(z.string(), z.unknown()).nullable().optional(),
 });

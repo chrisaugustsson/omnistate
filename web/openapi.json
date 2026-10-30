@@ -1015,6 +1015,19 @@
               "null"
             ]
           },
+          "previews": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Small pictures of boards of a design's head, as Base64 PNGs by board ID,\nfor a viewer to draw a board from until it has read it; only with\n`?view=previews`.",
+            "propertyNames": {
+              "type": "string"
+            },
+            "type": [
+              "object",
+              "null"
+            ]
+          },
           "tags": {
             "description": "A design's head as tags, one `<Page>` after the other; only for the\nhead of a design.",
             "type": [
@@ -4622,9 +4635,18 @@
             }
           },
           {
-            "description": "`outline` for the head of a design as its outline (its pages with their boards as placeholders, and the chunk of each board) instead of its whole body; the boards come one by one from `GET .../docs/{doc_id}/boards/{board_id}`",
+            "description": "`outline` for the head of a design as its outline (its pages with their boards as placeholders, and the chunk of each board) instead of its whole body; the boards come one by one from `GET .../docs/{doc_id}/boards/{board_id}`. `previews` for small pictures of the boards that `boards` names instead",
             "in": "query",
             "name": "view",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "With `view=previews`, the IDs of the boards, separated by commas",
+            "in": "query",
+            "name": "boards",
             "required": false,
             "schema": {
               "type": "string"

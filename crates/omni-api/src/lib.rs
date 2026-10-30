@@ -22,6 +22,7 @@ pub mod live;
 pub mod openapi;
 pub mod password;
 mod placeholders;
+mod previews;
 mod projects;
 pub mod routes;
 mod session;

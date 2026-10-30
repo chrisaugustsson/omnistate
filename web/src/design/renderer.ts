@@ -42,6 +42,19 @@ export type DesignRenderer = {
    */
   addImage(attachment: string, bytes: Uint8Array): void;
   /**
+   * Supplies the preview of `board`, a board's ID, from its PNG bytes: a small
+   * picture of the board, which `usePreviews` draws it from. A renderer without
+   * it draws a board that is not read as its placeholder. Throws when the
+   * renderer cannot read the bytes.
+   */
+  addPreview?(board: string, bytes: Uint8Array): void;
+  /**
+   * Draws `boards` (IDs of boards of the page shown that have not been read)
+   * from their previews until `updateBoards` puts them in place. A board with
+   * no preview stays as it was shown.
+   */
+  usePreviews?(boards: string[]): void;
+  /**
    * Supplies a font file (TrueType or OpenType) for text in `family`; it
    * stays until the renderer is destroyed. Throws when the renderer cannot
    * read it.
@@ -109,9 +122,9 @@ export type DesignRenderer = {
   /**
    * The box of the node at `address` on the canvas, in CSS pixels from the
    * canvas's top-left corner, as the current zoom and pan show it; `null`
-   * when the page shown has no node at that address.
+   * when the page shown has no node at that address. `name` is the node's layer name.
    */
-  boxOf(address: string): { x: number; y: number; width: number; height: number } | null;
+  boxOf(address: string): { x: number; y: number; width: number; height: number; name?: string } | null;
   /** Calls `listener` when the reviewer selects a node on the canvas; returns the function that stops it. */
   onSelect(listener: (address: string | null) => void): () => void;
   /**
@@ -139,10 +152,12 @@ type OmniRender = {
   _omni_render_free(pointer: number, length: number): void;
   _omni_render_error(): number;
   _omni_render_add_image(attachment: number, attachmentLength: number, data: number, dataLength: number): boolean;
+  _omni_render_add_preview(board: number, boardLength: number, data: number, dataLength: number): boolean;
   _omni_render_add_font(family: number, familyLength: number, data: number, dataLength: number): boolean;
   _omni_render_scene_load(pointer: number, length: number): boolean;
   _omni_render_scene_load_tags(pointer: number, length: number): boolean;
   _omni_render_scene_set_system(pointer: number, length: number): boolean;
+  _omni_render_scene_use_previews(pointer: number, length: number): boolean;
   _omni_render_scene_update_boards(pointer: number, length: number): number;
   _omni_render_scene_update_step(): number;
   _omni_render_scene_set_mode(pointer: number, length: number): boolean;
@@ -174,10 +189,12 @@ const FUNCTIONS: Record<Extract<keyof OmniRender, `_omni_render_${string}`>, tru
   _omni_render_free: true,
   _omni_render_error: true,
   _omni_render_add_image: true,
+  _omni_render_add_preview: true,
   _omni_render_add_font: true,
   _omni_render_scene_load: true,
   _omni_render_scene_load_tags: true,
   _omni_render_scene_set_system: true,
+  _omni_render_scene_use_previews: true,
   _omni_render_scene_update_boards: true,
   _omni_render_scene_update_step: true,
   _omni_render_scene_set_mode: true,
@@ -473,6 +490,12 @@ export async function createDesignRenderer(canvas: HTMLCanvasElement): Promise<D
       );
       if (!added) throw failure();
     },
+    addPreview(board, bytes) {
+      const added = withText(board, (name, nameLength) =>
+        withBytes(bytes, (data, dataLength) => module._omni_render_add_preview(name, nameLength, data, dataLength)),
+      );
+      if (!added) throw failure();
+    },
     addFont(family, bytes) {
       const added = withText(family, (name, nameLength) =>
         withBytes(bytes, (data, dataLength) => module._omni_render_add_font(name, nameLength, data, dataLength)),
@@ -492,6 +515,12 @@ export async function createDesignRenderer(canvas: HTMLCanvasElement): Promise<D
       loaded = true;
       unfitted = true;
       requestFrame();
+    },
+    usePreviews(boards) {
+      if (!loaded) return;
+      if (!withText(JSON.stringify(boards), (pointer, length) => module._omni_render_scene_use_previews(pointer, length))) {
+        throw failure();
+      }
     },
     updateBoards(boards) {
       if (!loaded) return false;
@@ -552,7 +581,7 @@ export async function createDesignRenderer(canvas: HTMLCanvasElement): Promise<D
     boxOf(address) {
       if (!loaded) return null;
       const text = withText(address, (pointer, length) => module._omni_render_node_box(pointer, length));
-      return text ? readJson<{ x: number; y: number; width: number; height: number }>(text) : null;
+      return text ? readJson<{ x: number; y: number; width: number; height: number; name: string }>(text) : null;
     },
     onSelect(listener) {
       listeners.add(listener);

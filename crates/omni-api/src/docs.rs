@@ -11,6 +11,7 @@ use crate::boards;
 use crate::chunks::{self, Snapshot};
 use crate::design;
 use crate::live;
+use crate::previews;
 use crate::projects::{non_blank, parse_body, require_project};
 use crate::session::{ApiError, ErrorBody};
 use crate::workspace::{AgentRequest, WorkspaceRequest, parse_uuid};
@@ -27,7 +28,7 @@ use omni_core::ops::{ApplyError, Conflict, EditDoc, Operation};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sqlx::{Postgres, Transaction};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::convert::Infallible;
 use utoipa::ToSchema;
 
@@ -117,6 +118,11 @@ pub struct HeadHtmlResponse {
     /// only with `outline`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub boards: Option<Vec<boards::HeadBoard>>,
+    /// Small pictures of boards of a design's head, as Base64 PNGs by board ID,
+    /// for a viewer to draw a board from until it has read it; only with
+    /// `?view=previews`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub previews: Option<BTreeMap<String, String>>,
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -1023,7 +1029,8 @@ pub async fn delete_doc(
         ("workspace_id" = String, Path, description = "The workspace's UUID"),
         ("project_id" = String, Path, description = "The project's UUID"),
         ("doc_id" = String, Path, description = "The doc's UUID"),
-        ("view" = Option<String>, Query, description = "`outline` for the head of a design as its outline (its pages with their boards as placeholders, and the chunk of each board) instead of its whole body; the boards come one by one from `GET .../docs/{doc_id}/boards/{board_id}`"),
+        ("view" = Option<String>, Query, description = "`outline` for the head of a design as its outline (its pages with their boards as placeholders, and the chunk of each board) instead of its whole body; the boards come one by one from `GET .../docs/{doc_id}/boards/{board_id}`. `previews` for small pictures of the boards that `boards` names instead"),
+        ("boards" = Option<String>, Query, description = "With `view=previews`, the IDs of the boards, separated by commas"),
     ),
     responses(
         (status = 200, description = "The head's HTML", body = HeadHtmlResponse),
@@ -1042,7 +1049,36 @@ pub async fn read_doc_html(
     let mut tx = state.workspace_tx(&request.workspace_id).await?;
     let row = find_doc(&mut tx, &project_id, &doc_id).await?;
     tx.commit().await.map_err(ApiError::database)?;
-    let outline = query.get("view").map(String::as_str) == Some("outline");
+    let view = query.get("view").map(String::as_str);
+    if view == Some("previews") && row.kind == "design" {
+        let wanted = query.get("boards").map(String::as_str).unwrap_or_default();
+        let wanted = wanted.split(',').collect();
+        let previews = match &row.head {
+            Some(head) => {
+                previews::of_boards(
+                    &state,
+                    &request.workspace_id,
+                    &row.project_id,
+                    head,
+                    &wanted,
+                )
+                .await?
+            }
+            None => BTreeMap::new(),
+        };
+        return Ok(Json(HeadHtmlResponse {
+            doc_id: row.id,
+            html: String::new(),
+            tags: None,
+            pages: None,
+            tokens: None,
+            components: None,
+            outline: None,
+            boards: None,
+            previews: Some(previews),
+        }));
+    }
+    let outline = view == Some("outline");
     read_head(&state, &request.workspace_id, row, outline)
         .await
         .map(Json)
@@ -1064,6 +1100,7 @@ async fn read_head(
         components: None,
         outline: None,
         boards: None,
+        previews: None,
     };
     if row.kind == "design" && outline {
         let view =

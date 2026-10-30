@@ -206,6 +206,14 @@ The technique is board snapshots, on top of cached pictures:
   then draws one image per board and no nodes, however many nodes the boards
   have.
 
+- **Previews** (a board the viewer has not read yet): the API makes a small PNG
+  of each board it stores (`view::board_preview`: 1/16 of the board, at most 256
+  pixels on its longest side, at reduced detail) and the viewer gets those of a
+  page before it shows the page. `Scene::use_preview` makes one the board's
+  snapshot, and nothing else is drawn for that board until the board is read and
+  put in place, at any zoom, so a board in view shows its content from the first
+  frame and sharpens when it arrives.
+
 A snapshot is drawn from the board's nodes at reduced detail
 (`paint::draw_reduced`), not from its picture, because it is only ever seen
 small: text is not shaped but shown as a bar, its box filled with the text color

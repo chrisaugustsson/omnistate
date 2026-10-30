@@ -48,6 +48,12 @@ use std::collections::HashMap;
 /// of detail.
 const TEXT_BAR_ALPHA: f32 = 0.35;
 
+/// The image in encoded PNG or JPEG bytes, decoded now, so bytes that are cut
+/// short fail here and drawing never has to decode. `None` if they are not one.
+pub fn decode_image(data: &[u8]) -> Option<Image> {
+    Image::from_encoded(Data::new_copy(data)).and_then(|image| image.make_raster_image(None, None))
+}
+
 /// What the host supplies for drawing: the images that `attachment:<id>`
 /// references name, and font files. The bundled Inter is always there, and
 /// stands in for every font family that the host did not supply. A clone has
@@ -70,10 +76,7 @@ impl Assets {
     /// Supplies the image that `attachment` names, from encoded PNG or JPEG
     /// bytes. Fails if the bytes are not an image.
     pub fn add_image(&mut self, attachment: &AttachmentRef, data: &[u8]) -> Result<(), String> {
-        let image = Image::from_encoded(Data::new_copy(data))
-            // Decode now, so bytes that are cut short fail here and drawing
-            // never has to decode.
-            .and_then(|image| image.make_raster_image(None, None))
+        let image = decode_image(data)
             .ok_or_else(|| format!("the bytes for {} are not an image", attachment.as_str()))?;
         self.images.insert(attachment.clone(), image);
         Ok(())

@@ -123,6 +123,25 @@ mod exports {
         succeeded(result)
     }
 
+    /// Supplies the preview of a board, from PNG or JPEG bytes. Returns whether
+    /// it was an image of a board.
+    ///
+    /// # Safety
+    /// Every pointer and length must be a block from `omni_render_alloc`.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn omni_render_add_preview(
+        board: *const u8,
+        board_len: usize,
+        data: *const u8,
+        data_len: usize,
+    ) -> bool {
+        // SAFETY: the caller promises the blocks are there.
+        let result = unsafe { text(board, board_len) }.and_then(|board| {
+            omni_render::web::add_preview(board, unsafe { bytes(data, data_len) })
+        });
+        succeeded(result)
+    }
+
     /// Supplies a font file (TrueType or OpenType) for text in `family`.
     /// Returns whether it was a font.
     ///
@@ -188,6 +207,23 @@ mod exports {
     pub unsafe extern "C" fn omni_render_scene_load_tags(tags: *const u8, tags_len: usize) -> bool {
         // SAFETY: the caller promises the block is there.
         let result = unsafe { text(tags, tags_len) }.and_then(omni_render::web::scene_load_tags);
+        succeeded(result)
+    }
+
+    /// Draws the boards in the JSON array of IDs from their previews until they
+    /// are put in place (`web::scene_use_previews`). Returns whether the array
+    /// could be read.
+    ///
+    /// # Safety
+    /// The pointer and length must be a block from `omni_render_alloc`.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn omni_render_scene_use_previews(
+        boards: *const u8,
+        boards_len: usize,
+    ) -> bool {
+        // SAFETY: the caller promises the block is there.
+        let result =
+            unsafe { text(boards, boards_len) }.and_then(omni_render::web::scene_use_previews);
         succeeded(result)
     }
 
@@ -507,8 +543,8 @@ mod exports {
     /// The box of the node at the address (`<id>` or
     /// `<instanceId>/<componentNodeId>`) on the canvas at the current view, as
     /// a NUL-ended JSON object that stays until the next call: `{"x": 20,
-    /// "y": 20, "width": 120, "height": 40}`, in CSS pixels from the canvas's
-    /// top-left corner. Null if the address names no node or is not an address
+    /// "y": 20, "width": 120, "height": 40, "name": "Buy"}`, in CSS pixels from
+    /// the canvas's top-left corner. Null if the address names no node or is not an address
     /// (`omni_render_error` has the reason in that case).
     ///
     /// # Safety

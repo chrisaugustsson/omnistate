@@ -44,6 +44,24 @@ export async function loadHeadOutline(workspaceId: string, projectId: string, do
   };
 }
 
+/**
+ * Small pictures of `boards` of a design's head, as Base64 PNGs by board ID. A
+ * board that has none is left out.
+ */
+export async function loadHeadPreviews(
+  workspaceId: string,
+  projectId: string,
+  docId: string,
+  boards: string[],
+): Promise<Record<string, string>> {
+  const loaded = await callApi(
+    "GET",
+    `${base(workspaceId, projectId)}/docs/${docId}/html?view=previews&boards=${boards.map(encodeURIComponent).join(",")}`,
+    { response: html.responses["200"] },
+  );
+  return loaded.previews ?? {};
+}
+
 /** One board of a design's head, with everything below it, as JSON. */
 export async function loadHeadBoard(
   workspaceId: string,

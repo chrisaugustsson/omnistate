@@ -19,6 +19,7 @@ use crate::docs::{
 };
 use crate::live;
 use crate::placeholders::{self, Sizing};
+use crate::previews;
 use crate::projects::{parse_body, require_project};
 use crate::session::{ApiError, ErrorBody};
 use crate::workspace::{AgentRequest, WorkspaceRequest, parse_uuid};
@@ -696,6 +697,11 @@ impl SystemHead {
         self.tokens.as_ref().map(TokenTree::to_json)
     }
 
+    /// Every component of the head.
+    pub(crate) fn components_json(&self) -> Vec<Value> {
+        nodes_values(&self.library.0)
+    }
+
     /// The components that `pages` use, as the head defines them.
     pub(crate) fn components_used_by(&self, pages: &[Node]) -> Vec<Value> {
         let used = used_by(pages, &self.library);
@@ -740,6 +746,19 @@ pub(crate) async fn system_head_of_project(
         }
         None => Ok(SystemHead::default()),
     }
+}
+
+/// The version of the project's design system that its designs resolve
+/// against now: its head, `None` for a project without one or with an empty one.
+pub(crate) async fn system_version_of_project(
+    state: &AppState,
+    workspace_id: &str,
+    project_id: &str,
+) -> Result<Option<String>, ApiError> {
+    let mut tx = state.workspace_tx(workspace_id).await?;
+    let found = design_system_row(&mut tx, project_id, false).await?;
+    tx.commit().await.map_err(ApiError::database)?;
+    Ok(found.and_then(|(_, head)| head))
 }
 
 /// The project's design system doc with its row locked, so that its imports
@@ -911,12 +930,21 @@ pub(crate) async fn edit_head(
         .map(|part| (part.hash.clone(), part.text.clone()))
         .collect();
     if !changed_boards.is_empty() {
+        let (tokens, components) = (system.tokens_json(), nodes_values(&system.library.0));
+        previews::store(
+            state,
+            workspace_id,
+            system_key.clone(),
+            tokens.clone(),
+            components.clone(),
+            changed_boards.clone(),
+        );
         placeholders::store_boxes(
             state,
             workspace_id,
             system_key,
-            system.tokens_json(),
-            nodes_values(&system.library.0),
+            tokens,
+            components,
             changed_boards,
         );
     }

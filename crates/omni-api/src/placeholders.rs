@@ -73,7 +73,8 @@ impl Sizing {
         sizing
     }
 
-    async fn without_stored(
+    /// The sizing for an outline, without the boxes stored for its version.
+    pub(crate) async fn without_stored(
         design_system_version_id: Option<&str>,
         tokens: Option<&Value>,
         components: &[Value],
@@ -102,6 +103,21 @@ impl Sizing {
             stored,
         }
     }
+
+    /// The design system version the sizing is for.
+    pub(crate) fn system(&self) -> Option<Arc<DesignSystem>> {
+        self.system.clone()
+    }
+
+    /// The design system version's ID, or empty without one.
+    pub(crate) fn key(&self) -> &str {
+        &self.key
+    }
+}
+
+/// What the renderer draws with on this thread: its bundled font, and no images.
+pub(crate) fn assets() -> Assets {
+    ASSETS.with(Assets::clone)
 }
 
 /// Where the boxes laid out against the design system version `key` are stored.

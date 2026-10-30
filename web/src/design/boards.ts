@@ -1,10 +1,12 @@
 // Showing a big design board by board. A design's head is read as its
 // outline first (pages with their boards as placeholders, no board content);
-// the renderer is shown a page with every board as a placeholder, and the
-// boards that its view shows are read one by one, `READS_AT_ONCE` at a time,
-// and put in place of their placeholders. A board is read once for a version,
-// however often its page is shown, and the renderer keeps its view when the
-// same page is shown again with more boards loaded.
+// the renderer is shown a page with every board as a placeholder drawn from the
+// board's preview, a small picture of it, and the boards that its view shows
+// are read one by one, `READS_AT_ONCE` at a time, and put in place of their
+// placeholders. So a board in view shows its content from the first frame, and
+// sharpens when it is read. A board is read once for a version, however often
+// its page is shown, and the renderer keeps its view when the same page is
+// shown again with more boards loaded.
 
 import type { DesignRenderer } from "@/design/renderer";
 
@@ -12,6 +14,9 @@ type Json = Record<string, unknown>;
 
 /** How many boards are read at the same time. */
 const READS_AT_ONCE = 6;
+
+/** How many previews one request asks for, which keeps its address short. */
+const PREVIEWS_AT_ONCE = 400;
 
 /** How long to wait for more boards to arrive before showing the page again. */
 const SHOW_AFTER_MS = 16;
@@ -117,6 +122,50 @@ export class BoardCache {
   }
 }
 
+/** The bytes in `text`, in Base64. */
+function bytesOf(text: string): Uint8Array {
+  return Uint8Array.from(atob(text), (char) => char.charCodeAt(0));
+}
+
+/**
+ * Gives a renderer the previews of the boards of a design's pages. A board's
+ * preview is read once for its chunk, and a board that has been read needs none.
+ */
+export class BoardPreviews {
+  /** The chunk that the renderer has the preview of, by board. */
+  private readonly held = new Map<string, string | undefined>();
+
+  constructor(
+    private readonly renderer: DesignRenderer,
+    private readonly read: (boards: string[]) => Promise<Record<string, string>>,
+  ) {}
+
+  /** Gives the renderer the previews of the boards of `page` that it lacks. `chunks` has each board's chunk. */
+  async load(page: Json, cache: BoardCache, chunks: ReadonlyMap<string, string>): Promise<void> {
+    const { renderer } = this;
+    if (renderer.addPreview === undefined) return;
+    const boards = Array.isArray(page.children) ? (page.children as Json[]) : [];
+    const lacking = boards
+      .map((board) => String(board.id))
+      .filter((id) => cache.get(id) === undefined && !(this.held.has(id) && this.held.get(id) === chunks.get(id)));
+    const requests: Promise<void>[] = [];
+    for (let start = 0; start < lacking.length; start += PREVIEWS_AT_ONCE) {
+      const batch = lacking.slice(start, start + PREVIEWS_AT_ONCE);
+      requests.push(
+        this.read(batch).then((previews) => {
+          for (const id of batch) {
+            const preview = previews[id];
+            if (preview === undefined) continue;
+            renderer.addPreview?.(id, bytesOf(preview));
+            this.held.set(id, chunks.get(id));
+          }
+        }),
+      );
+    }
+    await Promise.all(requests);
+  }
+}
+
 /** The page with the boards in `cache` in place of their placeholders. */
 export function pageWithBoards(page: Json, cache: BoardCache): Json {
   const boards = Array.isArray(page.children) ? (page.children as Json[]) : [];
@@ -191,6 +240,7 @@ export function showBoardwise(options: BoardwiseOptions): () => void {
     arrived.clear();
     more = false;
     renderer.show(pageToDraw(page, cache), system, opening);
+    renderer.usePreviews?.(Array.from(boardIds).filter((id) => cache.get(id) === undefined));
     onShown(false);
   }
 
