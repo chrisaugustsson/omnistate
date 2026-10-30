@@ -256,10 +256,10 @@ mod exports {
         STATS.with_borrow(|stats| stats.as_ptr())
     }
 
-    /// Where the time of the last scene load and frame went, as a NUL-ended
-    /// JSON object that stays until the next call: `{"parseMs": 12.5,
-    /// "layoutMs": 80.1, "paintMs": 3.2, "submitMs": 1.4}`. `make bench-ordrar`
-    /// reads it.
+    /// Where the time of the last scene load or change of design system and
+    /// the last frame went, as a NUL-ended JSON object that stays until the
+    /// next call: `{"parseMs": 12.5, "layoutMs": 80.1, "paintMs": 3.2,
+    /// "submitMs": 1.4}`. `make bench-ordrar` reads it.
     #[unsafe(no_mangle)]
     pub extern "C" fn omni_render_scene_timings() -> *const c_char {
         TIMINGS.set(CString::new(omni_render::web::scene_timings()).unwrap_or_default());

@@ -55,15 +55,17 @@ thread_local! {
     /// The Skia context on the page's WebGL context. Frames reuse it, so that
     /// compiled shaders and the textures of snapshots stay on the GPU.
     static GPU: RefCell<Option<DirectContext>> = const { RefCell::new(None) };
-    /// Where the time of the last `scene_load` and `scene_draw` went, in
-    /// milliseconds: reading, laying out, painting and submitting to the GPU.
+    /// Where the time of the last `scene_load` or `scene_set_system` and the
+    /// last `scene_draw` went, in milliseconds: reading, laying out, painting
+    /// and submitting to the GPU.
     static TIMINGS: Cell<Timings> = const { Cell::new(Timings { parse: 0.0, layout: 0.0, paint: 0.0, submit: 0.0 }) };
     /// How long the last `on_canvas` took to submit its commands to the GPU.
     static SUBMIT_MS: Cell<f64> = const { Cell::new(0.0) };
 }
 
-/// The phases of the last scene load (`parse`, `layout`) and the last frame
-/// (`paint`, `submit`), in milliseconds (`scene_timings`).
+/// The phases of the last scene load or change of design system (`parse`,
+/// `layout`) and the last frame (`paint`, `submit`), in milliseconds
+/// (`scene_timings`).
 #[derive(Clone, Copy)]
 struct Timings {
     parse: f64,
@@ -206,16 +208,24 @@ fn nested_too_deep(scene: &Scene) -> Result<(), String> {
 /// token references against it, in its first mode. Fails, as `scene_load`
 /// does, if the loaded scene then nests too deeply.
 pub fn scene_set_system(system_json: &str) -> Result<(), String> {
+    let started = Instant::now();
     let json: Value = serde_json::from_str(system_json).map_err(|error| error.to_string())?;
     let system = DesignSystem::from_json(&json)?;
     SYSTEM.set(Some(json));
-    STAGE.with_borrow_mut(|stage| match stage {
+    let parse = millis(started);
+    let result = STAGE.with_borrow_mut(|stage| match stage {
         Some(stage) => {
             stage.scene.set_system(system);
             nested_too_deep(&stage.scene)
         }
         None => Ok(()),
-    })
+    });
+    TIMINGS.set(Timings {
+        parse,
+        layout: millis(started) - parse,
+        ..TIMINGS.get()
+    });
+    result
 }
 
 /// The IDs of the boards of the loaded scene that its view shows, in page order,
@@ -313,10 +323,11 @@ pub fn scene_draw(width: i32, height: i32, pixel_ratio: f32) -> Result<(), Strin
     })
 }
 
-/// Where the time of the last `scene_load` and `scene_draw` went, as JSON in
-/// milliseconds: `{"parseMs": 12.5, "layoutMs": 80.1, "paintMs": 3.2,
-/// "submitMs": 1.4}`. Parsing the page and the design system and laying the
-/// scene out (resolving its instances and tokens included) belong to the load;
+/// Where the time of the last `scene_load` or `scene_set_system` and the last
+/// `scene_draw` went, as JSON in milliseconds: `{"parseMs": 12.5, "layoutMs":
+/// 80.1, "paintMs": 3.2, "submitMs": 1.4}`. Parsing the page and the design
+/// system and laying the scene out (resolving its instances and tokens
+/// included) belong to the load or the change of design system;
 /// painting (Skia recording and rasterising the boards) and submitting the
 /// commands to the GPU belong to the frame. The GPU finishing them is not
 /// counted: the page waits for it itself (`gl.finish()`).

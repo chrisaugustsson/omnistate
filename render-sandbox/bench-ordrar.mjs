@@ -8,8 +8,10 @@
 // - opens the design at /docs/:doc and times, from the navigation, the first
 //   complete frame that draws a board that is read (the cold time to first board);
 // - opens the page with the most boards and plays a scripted 10 s path over it:
-//   from the opening board out to every board in view, along the whole canvas
-//   and back in on the opening board, timing every frame to `gl.finish()`;
+//   from the opening board out to the viewer's minimum zoom, which on this page
+//   shows about 350 of its 769 boards and not all of them, across the whole page
+//   and back in on the opening board, timing every frame from the end of the
+//   one before to `gl.finish()`;
 // - reads the API process's peak memory (VmHWM) from before the navigation to
 //   the end of the path.
 //
@@ -190,9 +192,10 @@ async function measureRun({ password, doc, workspace, projectId, view, index }) 
     });
 
     const frames = played.frames;
+    const longTasks = await page.evaluate(() => window.__bench.longTasks);
     const cold = splitLoad(
       first.ms,
-      first.spans,
+      [...first.spans, ...longTasks],
       requests.map((request) => [request.start, request.end]),
     );
     // The requests that began before the first board, longest first.
@@ -207,6 +210,9 @@ async function measureRun({ password, doc, workspace, projectId, view, index }) 
       slowest,
       frames: frameStats(frames, played.ticks),
       frameProfile: frameProfile(frames),
+      calls: Object.entries(played.calls)
+        .map(([name, call]) => ({ name, ...call }))
+        .sort((a, b) => b.ms - a.ms),
       peakMemoryMiB: VmHWM / 1024,
       renderer,
       version: browser.version(),
@@ -287,6 +293,8 @@ async function main() {
       apiImage: 'release build of the API (docker/api.Dockerfile), production build of the web app (docker/web.Dockerfile)',
       importMs,
       fileInfo: `${path.relative(ROOT, FIXTURE)}, ${boards} boards on ${outline.outline.length} pages; the pan and zoom is on the page ${view.pageName} (${view.boards} boards)`,
+      boards,
+      boardsOnPage: view.boards,
       runs,
       date,
     });
@@ -296,6 +304,7 @@ async function main() {
     console.log('');
     console.log(`cold time to first board: ${m.firstBoardMs.toFixed(1)} ms (limit ${config.limits.firstBoardMs})`);
     console.log(`frame time over the ${config.pathMs / 1000} s pan and zoom: median ${m.frameMedianMs.toFixed(1)} ms, 95th percentile ${m.frameP95Ms.toFixed(1)} ms (limit ${config.limits.frameP95Ms})`);
+    console.log(`boards in view at the viewer's minimum zoom: ${m.mostBoards} of ${view.boards} on the page, ${boards} in the file`);
     console.log(`API peak memory: ${m.peakMemoryMiB.toFixed(0)} MiB (limit ${config.limits.peakMemoryMiB})`);
     console.log('wrote docs/bench-ordrar.md');
   } finally {

@@ -3,10 +3,12 @@
 // without changing it:
 //
 // - bench-ordrar.mjs serves /render/omni_render.js with `window.__benchHook`
-//   called on the renderer module, which is where the viewer's calls into the
-//   WebAssembly (`_omni_render_scene_load`, `_scene_draw`, `_view_wheel`) are
-//   timed. Every frame the viewer draws ends with `gl.finish()` here, so a frame
-//   is complete when the GPU has finished it, as in renderer gate A.
+//   called on the renderer module, which is where every call of the viewer into
+//   the WebAssembly (the `_omni_render_*` exports) is timed. Every frame the
+//   viewer draws ends with `gl.finish()` here, so a frame is complete when the
+//   GPU has finished it, as in renderer gate A. A frame's time is the time since
+//   the previous complete frame, so it holds whatever kept the next frame from
+//   being drawn, timed or not.
 // - JSON.parse and JSON.stringify are timed, for the pages and boards that
 //   travel between the API, the page and the renderer.
 // - `window.__bench.runPath` plays the scripted pan and zoom with synthetic
@@ -19,8 +21,15 @@
   const nativeStringify = JSON.stringify;
   const bench = (window.__bench = {
     // Work of the page that is not yet part of a frame: the sum of what ran
-    // since the last frame ended, which that frame is charged with.
+    // since the last frame ended, which that frame is charged with. Time that
+    // no phase holds is the frame's `other`.
     pending: { json: 0, wheel: 0, parse: 0, layout: 0 },
+    // When the last frame ended.
+    since: 0,
+    // Time in each renderer export while the path plays: { name: { calls, ms } }.
+    calls: {},
+    // The main thread's long tasks, which hold what the page cannot time.
+    longTasks: [],
     // Intervals of the main thread that the phases own, until the first board.
     spans: [],
     firstBoard: null,
@@ -28,12 +37,19 @@
     lastLoadEnd: 0,
     frames: [],
     recording: false,
+    // Called at the next complete frame, which ends the path.
+    onFrame: null,
     ticks: [],
     canvas: null,
   });
   const span = (phase, start, end) => {
     if (bench.firstBoard === null) bench.spans.push({ phase, start, end });
   };
+  new PerformanceObserver((list) => {
+    for (const entry of list.getEntries()) {
+      bench.longTasks.push({ phase: 'other', start: entry.startTime, end: entry.startTime + entry.duration });
+    }
+  }).observe({ type: 'longtask', buffered: true });
 
   const timed = (original, self) =>
     function (...args) {
@@ -62,10 +78,6 @@
 
   window.__benchHook = (module) => {
     const read = (pointer) => (pointer ? nativeParse(module.UTF8ToString(pointer)) : null);
-    // A page may make more than one renderer, each with a module of its own;
-    // the last one is the one that `bench.stats` asks.
-    const stats = () => read(module._omni_render_scene_stats());
-    bench.stats = stats;
     // Emscripten's export wrappers replace themselves on `module` at their first
     // call, so the wrapper stays in place and takes what is assigned over it as
     // the function it calls.
@@ -82,62 +94,91 @@
       });
     };
 
-    intercept('_omni_render_scene_load', (load) => (pointer, length) => {
-      const start = performance.now();
-      const ok = load(pointer, length);
-      const end = performance.now();
-      const timings = read(module._omni_render_scene_timings());
-      const layout = timings.layoutMs;
+    // A page may make more than one renderer, each with a module of its own;
+    // the last one is the one that `bench.stats` asks. What the bench asks
+    // itself is not timed.
+    const stats = module._omni_render_scene_stats;
+    const timings = module._omni_render_scene_timings;
+    bench.stats = () => read(stats());
+    const unmeasured = new Set(['_omni_render_scene_stats', '_omni_render_scene_timings']);
+
+    // Reading the page or the design system, then laying the scene out.
+    const load = (start, end) => {
+      const layout = read(timings()).layoutMs;
       bench.pending.layout += layout;
       bench.pending.parse += end - start - layout;
       span('parse', start, end - layout);
       span('layout', end - layout, end);
-      bench.lastLoadEnd = end;
-      bench.loads = (bench.loads ?? 0) + 1;
-      return ok;
-    });
-
-    intercept('_omni_render_view_wheel', (wheel) => (...args) => {
-      const start = performance.now();
-      const used = wheel(...args);
-      bench.pending.wheel += performance.now() - start;
-      return used;
-    });
-
-    intercept('_omni_render_scene_draw', (draw) => (width, height, ratio) => {
-      const start = performance.now();
-      const ok = draw(width, height, ratio);
-      const drawnAt = performance.now();
+    };
+    const wheel = (start, end) => {
+      bench.pending.wheel += end - start;
+    };
+    const draw = (start, drawnAt) => {
       gl.finish();
       const end = performance.now();
-      const timings = read(module._omni_render_scene_timings());
-      const submit = timings.submitMs;
+      const submit = read(timings()).submitMs;
       const paint = drawnAt - start - submit;
       const gpu = submit + (end - drawnAt);
       span('paint', start, start + paint);
       span('gpu', start + paint, end);
       const { json, wheel: wheelMs, parse, layout } = bench.pending;
+      const ms = end - bench.since;
       const frame = {
         at: end,
-        ms: json + wheelMs + parse + layout + (end - start),
+        ms,
         parse: json + parse,
         layout,
         paint: paint + wheelMs,
         gpu,
+        other: Math.max(0, ms - (json + parse + layout + paint + wheelMs + gpu)),
       };
       bench.pending = { json: 0, wheel: 0, parse: 0, layout: 0 };
-      if (bench.recording) bench.frames.push(frame);
+      bench.since = end;
+      if (bench.recording) {
+        const drawn = bench.stats();
+        frame.boardsDrawn = drawn.boardsDrawn;
+        frame.zoom = drawn.zoom;
+        bench.frames.push(frame);
+      }
       if (bench.firstBoard === null) {
         // Boards that are not read yet are drawn as placeholders, which have no
         // children, so a frame that painted more nodes than boards drew a board.
-        const drawn = stats();
+        const drawn = bench.stats();
         if (drawn && drawn.nodesPainted > drawn.boardsDrawn) {
           bench.firstBoard = end;
           bench.firstBoardInfo = drawn;
         }
       }
-      return ok;
-    });
+      return end;
+    };
+    const phases = {
+      _omni_render_scene_load: load,
+      _omni_render_scene_set_system: load,
+      _omni_render_view_wheel: wheel,
+      _omni_render_scene_draw: draw,
+    };
+
+    for (const name of Object.keys(module)) {
+      if (!name.startsWith('_omni_render_') || unmeasured.has(name)) continue;
+      const measured = phases[name] ?? ((start, end) => span('other', start, end));
+      intercept(name, (call) => (...args) => {
+        const start = performance.now();
+        const result = call(...args);
+        const returned = performance.now();
+        const end = measured(start, returned) ?? returned;
+        if (bench.recording) {
+          const total = (bench.calls[name] ??= { calls: 0, ms: 0 });
+          total.calls += 1;
+          total.ms += end - start;
+        }
+        if (name === '_omni_render_scene_load') {
+          bench.lastLoadEnd = end;
+          bench.loads = (bench.loads ?? 0) + 1;
+        }
+        if (name === '_omni_render_scene_draw') bench.onFrame?.();
+        return result;
+      });
+    }
   };
 
   // The scripted pan and zoom. `cfg` has the canvas bounds of the page's boards
@@ -146,6 +187,7 @@
   // with the same wheel events a person's trackpad makes: Ctrl and the wheel
   // zoom around the middle of the canvas, the wheel alone pans.
   const WHEEL_ZOOM_RATE = 0.002;
+  // MIN_ZOOM and MAX_ZOOM of crates/omni-render/src/view.rs.
   const MIN_ZOOM = 0.01;
   const MAX_ZOOM = 64;
   const clamp = (zoom) => Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, zoom));
@@ -198,29 +240,26 @@
     new Promise((resolve) => {
       const { moveTo, fit, size } = bench.steer(cfg, 'board');
       const { bounds, opening } = cfg;
-      const board = { x: opening.x + opening.width / 2, y: opening.y + opening.height / 2, zoom: fit(opening) };
-      const all = { x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2, zoom: fit(bounds) };
-      // Zoomed in four times from the whole page, the screen shows a quarter of
-      // the page's width and height: the pan goes along its rows.
-      const mid = clamp(all.zoom * 4);
-      const halfWidth = size.width / mid / 2;
-      const halfHeight = size.height / mid / 2;
-      const left = bounds.x + halfWidth;
-      const right = bounds.x + bounds.width - halfWidth;
-      const top = bounds.y + halfHeight;
-      const bottom = bounds.y + bounds.height - halfHeight;
-      const middle = (top + bottom) / 2;
-      // [time as a share of the path, x, y, zoom]: the opening board, all
-      // boards in view, then a pan across the whole page along its top, down
-      // its right side and back along its bottom, and in on the opening board.
+      const board = [opening.x + opening.width / 2, opening.y + opening.height / 2, fit(opening)];
+      // As far out as the page fits, or the viewer's minimum zoom, which on the
+      // Ordrar page is not enough: the page is too tall to have all its boards
+      // in view (the frames record how many are). From there the pan goes from
+      // one corner of the page to the opposite one, so that the view passes over
+      // all of the page; along a side that the view is wider than, it keeps to
+      // the middle.
+      const out = fit(bounds);
+      const across = (start, length, half) =>
+        half * 2 >= length ? [start + length / 2, start + length / 2] : [start + half, start + length - half];
+      const [left, right] = across(bounds.x, bounds.width, size.width / out / 2);
+      const [top, bottom] = across(bounds.y, bounds.height, size.height / out / 2);
+      // [time as a share of the path, x, y, zoom]: the opening board, as far out
+      // as the viewer goes, the pan across the whole page, and in on the opening
+      // board.
       const way = [
-        [0, board.x, board.y, board.zoom],
-        [0.2, all.x, all.y, all.zoom],
-        [0.3, left, top, mid],
-        [0.5, right, top, mid],
-        [0.6, right, bottom, mid],
-        [0.75, left, bottom, mid],
-        [1, board.x, board.y, board.zoom],
+        [0, ...board],
+        [0.2, left, top, out],
+        [0.75, right, bottom, out],
+        [1, ...board],
       ];
       // Ease in and out of every leg; the zoom changes by a fixed ratio per
       // time, as the wheel's zoom does.
@@ -234,8 +273,16 @@
       };
       bench.frames = [];
       bench.ticks = [];
-      bench.recording = true;
+      bench.calls = {};
       const started = performance.now();
+      bench.pending = { json: 0, wheel: 0, parse: 0, layout: 0 };
+      bench.since = started;
+      bench.recording = true;
+      const end = () => {
+        bench.onFrame = null;
+        bench.recording = false;
+        resolve({ frames: bench.frames, ticks: bench.ticks, calls: bench.calls });
+      };
       const tick = () => {
         const now = performance.now();
         bench.ticks.push(now);
@@ -246,11 +293,10 @@
           requestAnimationFrame(tick);
           return;
         }
-        // The last frame is drawn by the viewer's own loop.
-        setTimeout(() => {
-          bench.recording = false;
-          resolve({ frames: bench.frames, ticks: bench.ticks, zoom: bench.stats()?.zoom });
-        }, 250);
+        // The last frame is drawn by the viewer's own loop, if the last step
+        // moved the view at all.
+        bench.onFrame = end;
+        setTimeout(end, 1000);
       };
       requestAnimationFrame(tick);
     });
