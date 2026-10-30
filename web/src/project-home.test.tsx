@@ -119,15 +119,13 @@ function seededHome() {
           created_at: AT,
         },
         docs: 1,
-        open_changesets: 0,
         waiting: 0,
         last_activity: "2026-10-21T13:00:00.000000Z" as string | null,
       },
     ],
     docs: Object.values(docs),
-    changesets: [],
     threads: Object.values(threads),
-    waiting: { decisions: [], changesets: [], comments: [], questions: [] },
+    waiting: { comments: [] },
   };
   return { home, docs, threads };
 }

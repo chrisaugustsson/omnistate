@@ -37,7 +37,6 @@ function feature(id: string, name: string) {
   return {
     feature: { id, project_id: PROJECT_ID, name, description: "", created_at: AT },
     docs: 0,
-    open_changesets: 0,
     waiting: 0,
     last_activity: null,
   };
@@ -106,9 +105,8 @@ function home(
     app: { last_activity: null },
     features: fields.features ?? [feature(CHECKOUT, "Checkout")],
     docs: fields.docs ?? docs,
-    changesets: [],
     threads: fields.threads ?? threads,
-    waiting: { decisions: [], changesets: [], comments: fields.waiting ?? [], questions: [] },
+    waiting: { comments: fields.waiting ?? [] },
   };
 }
 

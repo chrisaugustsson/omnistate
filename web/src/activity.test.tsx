@@ -91,9 +91,8 @@ function fakeApi(shown: Doc, routes: Routes) {
           app: { last_activity: null },
           features: [],
           docs: [shown],
-          changesets: [],
           threads: [],
-          waiting: { decisions: [], changesets: [], comments: [], questions: [] },
+          waiting: { comments: [] },
         });
       case `${API}/docs/${DOC_ID}`:
         return json(200, { doc: shown });

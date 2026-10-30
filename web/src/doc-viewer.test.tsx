@@ -154,9 +154,8 @@ function fakeApi() {
         return json(200, {
           project_id: PROJECT_ID,
           docs: api.deleted ? [] : [doc],
-          changesets: [],
           threads: [],
-          waiting: { decisions: [], changesets: [], comments: [], questions: [] },
+          waiting: { comments: [] },
         });
       case `GET ${API}/docs/${DOC_ID}`:
         return json(200, { doc });

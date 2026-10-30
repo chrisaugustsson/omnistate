@@ -78,7 +78,6 @@ function feature(id: string, name: string) {
   return {
     feature: { id, project_id: PROJECT_ID, name, description: "", created_at: "2026-10-20T08:00:00.000Z" },
     docs: 0,
-    open_changesets: 0,
     waiting: 0,
     last_activity: null,
   };
@@ -90,9 +89,8 @@ function home(threads: HomeThread[]) {
     app: { last_activity: null },
     features: [feature(CHECKOUT_ID, "Checkout"), feature(SEARCH_ID, "Search")],
     docs: [],
-    changesets: [],
     threads,
-    waiting: { decisions: [], changesets: [], comments: [], questions: [] },
+    waiting: { comments: [] },
   };
 }
 

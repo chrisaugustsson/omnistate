@@ -30,7 +30,6 @@ function feature(id: string, name: string, fields: { description?: string; waiti
   return {
     feature: { id, project_id: PROJECT_ID, name, description: fields.description ?? "", created_at: fields.createdAt ?? AT },
     docs: 0,
-    open_changesets: 0,
     waiting: fields.waiting ?? 0,
     last_activity: fields.lastActivity ?? null,
   };
@@ -61,9 +60,8 @@ function home(fields: { features?: ReturnType<typeof feature>[]; docs?: ReturnTy
     app: { last_activity: null },
     features: fields.features ?? [],
     docs: fields.docs ?? [],
-    changesets: [],
     threads: fields.threads ?? [],
-    waiting: { decisions: [], changesets: [], comments: [], questions: [] },
+    waiting: { comments: [] },
   };
 }
 

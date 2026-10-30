@@ -73,7 +73,6 @@ function feature(id: string, name: string) {
   return {
     feature: { id, project_id: PROJECT_ID, name, description: "", created_at: AT },
     docs: 1,
-    open_changesets: 0,
     waiting: 1,
     last_activity: null,
   };
@@ -112,12 +111,8 @@ function seeded() {
     app: { last_activity: null },
     features: [feature(CHECKOUT, "Checkout"), feature(WALLETS, "Wallets")],
     docs: Object.values(docs),
-    changesets: [],
     threads: [],
     waiting: {
-      decisions: [],
-      changesets: [],
-      questions: [],
       comments: [comments.wallets, comments.schema, comments.pay, comments.returns],
     },
   };

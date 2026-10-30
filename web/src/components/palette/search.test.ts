@@ -28,7 +28,6 @@ function feature(name: string, fields: { id?: string; description?: string; last
       created_at: fields.createdAt ?? AT,
     },
     docs: 0,
-    open_changesets: 0,
     waiting: 0,
     last_activity: fields.lastActivity ?? null,
   };
@@ -74,9 +73,8 @@ function home(fields: {
     app: { last_activity: null },
     features: fields.features ?? [],
     docs: fields.docs ?? [],
-    changesets: [],
     threads: fields.threads ?? [],
-    waiting: { decisions: [], changesets: [], comments: [], questions: [] },
+    waiting: { comments: [] },
   } as HomeResponse;
 }
 
