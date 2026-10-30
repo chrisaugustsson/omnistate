@@ -204,7 +204,10 @@ fn big_board(index: usize) -> String {
     tags
 }
 
+// The target holds for release builds, like the stack's own API. `make bench-ops`
+// runs it there.
 #[test]
+#[cfg_attr(debug_assertions, ignore = "times only mean something in release")]
 fn a_300_node_board_inserts_in_under_500_ms_and_single_operations_take_under_50_ms() {
     let f = fixture();
     let home = Scratch::new("agent");

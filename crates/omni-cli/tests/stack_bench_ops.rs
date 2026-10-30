@@ -177,7 +177,10 @@ fn run(home: &Scratch, args: &[&str], stdin: &[u8]) -> Out {
         .run()
 }
 
+// The target holds for release builds, like the stack's own API. `make bench-ops`
+// runs it there.
 #[test]
+#[cfg_attr(debug_assertions, ignore = "times only mean something in release")]
 fn single_set_operations_take_under_50_ms_at_the_95th_percentile() {
     let f = fixture();
     let home = agent_home(f);

@@ -108,7 +108,7 @@ check-layout: render-wasm stress-file
 # like the stack's own API, and on its own, so nothing else skews the times.
 bench-ops:
 	docker compose up --build --wait --detach proxy
-	docker compose run --rm test cargo test --release -p omni-cli --features stack-tests --test stack_bench_ops -- --nocapture
+	docker compose run --rm test cargo test --release -p omni-cli --features stack-tests --test stack_bench_ops --test stack_bench_design -- --nocapture
 
 # Penpot comparison (US-104): converts every .penpot export in PENPOT_FIXTURES,
 # renders and compares each board with Penpot's own PNG, and writes the report
