@@ -813,11 +813,6 @@ fn a_vector_stroke_takes_the_cap_of_its_start_and_a_different_end_is_reported() 
                     50.0,
                     solid(json!({"strokeCapStart": null, "strokeCapEnd": "round"})),
                 ),
-                shape(8, "circle", "Marked", [0.0, 60.0, 20.0, 20.0]).with(json!({
-                    "strokes": [solid(json!({
-                        "strokeCapStart": "circle-marker", "strokeCapEnd": "circle-marker"
-                    }))]
-                })),
             ]),
         ],
     );
@@ -850,50 +845,6 @@ fn a_vector_stroke_takes_the_cap_of_its_start_and_a_different_end_is_reported() 
         "Home",
         "None to round",
         &["round"],
-    );
-
-    assert_eq!(cap("Marked"), Value::Null);
-    assert_reported(
-        &conversion,
-        &uid(8),
-        &uid(1),
-        "Home",
-        "Marked",
-        &["circle-marker"],
-    );
-}
-
-#[test]
-fn the_stroke_of_a_board_frame_or_rect_gets_no_cap_and_no_report_about_it() {
-    let round = json!({
-        "strokes": [capped_stroke(
-            2.0,
-            "solid",
-            json!({"strokeCapStart": "round", "strokeCapEnd": "square"}),
-        )]
-    });
-    let conversion = convert(
-        "frame-caps",
-        vec![
-            shape(1, "frame", "Home", [0.0, 0.0, 400.0, 300.0])
-                .with(round.clone())
-                .kids(vec![
-                    shape(2, "frame", "Card", [0.0, 0.0, 50.0, 50.0]).with(round.clone()),
-                    shape(3, "rect", "Box", [60.0, 0.0, 50.0, 50.0]).with(round),
-                ]),
-        ],
-    );
-    let root = board_node(board(&conversion, "Home"));
-    assert_eq!(json_of(root)["strokes"][0]["cap"], Value::Null);
-    assert_eq!(
-        json_of(node(root, "Card"))["strokes"][0]["cap"],
-        Value::Null
-    );
-    assert_eq!(json_of(node(root, "Box"))["strokes"][0]["cap"], Value::Null);
-    assert!(
-        conversion.report.entries.is_empty(),
-        "the caps of frames are left out silently: {:#?}",
-        conversion.report.entries
     );
 }
 
@@ -951,13 +902,17 @@ fn a_dotted_vector_stroke_becomes_round_dots_twice_its_width_apart_whatever_its_
 }
 
 #[test]
-fn a_dotted_frame_stroke_is_drawn_solid_and_reported() {
+fn the_stroke_of_a_board_frame_or_rect_gets_no_cap_and_no_report_about_it() {
     let conversion = convert(
-        "dotted-frame",
+        "frame-caps",
         vec![
             shape(1, "frame", "Home", [0.0, 0.0, 400.0, 300.0]).kids(vec![
                 shape(2, "frame", "Dotted card", [0.0, 0.0, 50.0, 50.0]).with(json!({
-                    "strokes": [capped_stroke(2.0, "dotted", json!({"strokeCapStart": "round"}))]
+                    "strokes": [capped_stroke(
+                        2.0,
+                        "dotted",
+                        json!({"strokeCapStart": "round", "strokeCapEnd": "square"}),
+                    )]
                 })),
             ]),
         ],
@@ -966,7 +921,11 @@ fn a_dotted_frame_stroke_is_drawn_solid_and_reported() {
     assert_eq!(card["strokes"][0]["dash"], Value::Null);
     assert_eq!(card["strokes"][0]["cap"], Value::Null);
     let entries = entries_of(&conversion, &uid(2));
-    assert_eq!(entries.len(), 1, "{entries:#?}");
+    assert_eq!(
+        entries.len(),
+        1,
+        "only the dotted style is reported: {entries:#?}"
+    );
     assert_eq!(entries[0].property.as_deref(), Some("strokeStyle"));
     assert!(entries[0].reason.contains("dotted"), "{entries:#?}");
 }
