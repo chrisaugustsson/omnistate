@@ -154,6 +154,30 @@ Usage:
                                       --pickable lists those an implementer may take
   omni story read <key|id>            print a story: text, criteria, blockers, holder and the
                                       open findings
+  omni story edit <key> [--priority <n>] [--blocked-by US-1,US-2] [--text <file>] [--link <doc>:<node>[:<label>]]...
+                                      change a story; the text comes from the file
+  omni story cancel <key>             cancel a story
+  omni story claim <key> --run <id> --stage <stage>
+                                      hold a story for a run, at implementing, review or testing
+  omni story release <key> --run <id>
+                                      let go of a story, whoever holds it
+  omni story move <key> --run <id> --to <column>
+                                      move the story you hold to backlog, implementing, review,
+                                      testing or done
+  omni story block <key> --run <id>   flag the story as waiting for the human; unblock clears it
+  omni story tick <key> --run <id> --criterion <n> [--pending] [--unticked]
+                                      tick a criterion (0-based); --pending also marks it for the
+                                      human to check; --unticked takes the tick away
+  omni story finding <key> --run <id> --stage <s> --text <t> [--file <path>]...
+                                      record a review or test finding
+  omni story resolve <key> --run <id> --finding <n>
+                                      mark finding n (0-based) resolved
+  omni story decision <key> --run <id> --question <q> --choice <c> --by <agent|human>
+                                      record a decision
+  omni story files <key> --run <id> <path>...
+                                      set the files the story changed
+                                      Each write reads the story first and sends its version; a
+                                      stale one is a conflict (exit 3).
   omni wait --thread <id> --posts <n> [--concluded] [--timeout <s>]
                                       wait until the thread has n posts that you may read (a
                                       sealed thread counts none of the others' posts until you
@@ -218,6 +242,7 @@ Exit codes:
   0  success
   1  the command failed: usage, login, network or API error (the message says which)
   2  `omni wait` timed out before its condition was met
+  3  `omni story` write refused as a conflict: the story changed, read it again
 ";
 
 fn main() -> ExitCode {

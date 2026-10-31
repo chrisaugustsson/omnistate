@@ -411,3 +411,205 @@ pub fn read(args: &Args, story: Option<&str>) -> Result<()> {
     }
     Ok(())
 }
+
+const WRITE_USAGE: &str = "omni story edit|cancel|claim|release|move|block|unblock|tick|finding|resolve|decision|files <key> ...; see `omni --help`";
+
+/// The option's value, or an error naming the option and the verb.
+fn needs<'a>(value: &'a Option<String>, name: &str, verb: &str) -> Result<&'a str> {
+    match value.as_deref() {
+        Some(value) => Ok(value),
+        None => bail!("omni story {verb} needs {name}; see `omni --help`"),
+    }
+}
+
+fn index(value: &str, name: &str) -> Result<u64> {
+    value
+        .trim()
+        .parse()
+        .map_err(|_| CliError::new(format!("{name} {value:?} is not a number: {WRITE_USAGE}")))
+}
+
+/// The story records of `omni story edit|cancel|claim|release|move|block|
+/// unblock|tick|finding|resolve|decision|files`: the story is read first and
+/// its version goes along as `expected_version`.
+pub fn write(args: &Args, verb: &str, rest: &[&str]) -> Result<()> {
+    let (given, paths) = match rest {
+        [given, paths @ ..] => (*given, paths),
+        [] => bail!("this command needs the story's key or ID: {WRITE_USAGE}"),
+    };
+    if verb != "files" && !paths.is_empty() {
+        bail!("omni story {verb} takes only the story's key or ID; see `omni --help`");
+    }
+    let key = story_key(given).map(|n| format!("US-{n}"));
+    if key.is_none() && !is_uuid(given) {
+        bail!("{given:?} is not a story key or ID: {WRITE_USAGE}");
+    }
+    let run = || needs(&args.run, "--run <id>", verb);
+    // Everything that can be wrong in the options is found before the server
+    // is asked anything.
+    let mut fields: Vec<String> = Vec::new();
+    let (action, method) = match verb {
+        "edit" => {
+            if let Some(priority) = &args.priority {
+                fields.push(format!("\"priority\":{}", count(priority, "--priority")?));
+            }
+            if let Some(text) = &args.text {
+                let text = std::fs::read_to_string(text)
+                    .map_err(|e| CliError::new(format!("cannot read {text}: {e}")))?;
+                fields.push(format!("\"text\":{}", quote(&text)));
+            }
+            if !args.link.is_empty() {
+                let links = args
+                    .link
+                    .iter()
+                    .map(|target| link(target))
+                    .collect::<Result<Vec<_>>>()?;
+                fields.push(format!("\"links\":[{}]", links.join(",")));
+            }
+            if args.blocked_by.is_none() && fields.is_empty() {
+                bail!("omni story edit needs --priority, --blocked-by, --text or --link");
+            }
+            ("", "PATCH")
+        }
+        "cancel" => ("/cancel", "POST"),
+        "claim" => {
+            fields.push(format!("\"run\":{}", quote(run()?)));
+            fields.push(format!(
+                "\"stage\":{}",
+                quote(needs(&args.stage, "--stage <stage>", verb)?)
+            ));
+            ("/claim", "POST")
+        }
+        "release" | "block" | "unblock" => {
+            fields.push(format!("\"run\":{}", quote(run()?)));
+            (
+                match verb {
+                    "release" => "/release",
+                    "block" => "/block",
+                    _ => "/unblock",
+                },
+                "POST",
+            )
+        }
+        "move" => {
+            fields.push(format!("\"run\":{}", quote(run()?)));
+            fields.push(format!(
+                "\"to\":{}",
+                quote(needs(&args.to, "--to <column>", verb)?)
+            ));
+            ("/move", "POST")
+        }
+        "tick" => {
+            fields.push(format!("\"run\":{}", quote(run()?)));
+            let criterion = index(
+                needs(&args.criterion, "--criterion <n>", verb)?,
+                "--criterion",
+            )?;
+            fields.push(format!("\"criterion\":{criterion}"));
+            fields.push(format!("\"ticked\":{}", !args.unticked));
+            if args.pending {
+                fields.push("\"pending\":true".to_string());
+            }
+            ("/tick", "POST")
+        }
+        "finding" => {
+            fields.push(format!("\"run\":{}", quote(run()?)));
+            fields.push(format!(
+                "\"stage\":{}",
+                quote(needs(&args.stage, "--stage <stage>", verb)?)
+            ));
+            fields.push(format!(
+                "\"text\":{}",
+                quote(needs(&args.text, "--text <text>", verb)?)
+            ));
+            let files: Vec<String> = args.file.iter().map(|f| quote(f)).collect();
+            fields.push(format!("\"files\":[{}]", files.join(",")));
+            ("/findings", "POST")
+        }
+        "resolve" => {
+            fields.push(format!("\"run\":{}", quote(run()?)));
+            ("", "POST")
+        }
+        "decision" => {
+            fields.push(format!("\"run\":{}", quote(run()?)));
+            for (value, name) in [
+                (&args.question, "question"),
+                (&args.choice, "choice"),
+                (&args.by, "by"),
+            ] {
+                let flag = format!("--{name} <{name}>");
+                fields.push(format!("\"{name}\":{}", quote(needs(value, &flag, verb)?)));
+            }
+            ("/decisions", "POST")
+        }
+        _ => {
+            fields.push(format!("\"run\":{}", quote(run()?)));
+            let files: Vec<String> = paths.iter().map(|p| quote(p)).collect();
+            fields.push(format!("\"files_changed\":[{}]", files.join(",")));
+            ("/files", "POST")
+        }
+    };
+    let finding = if verb == "resolve" {
+        Some(index(
+            needs(&args.finding, "--finding <n>", verb)?,
+            "--finding",
+        )?)
+    } else {
+        None
+    };
+
+    let agent = agent(args)?;
+    let path = stories_path(args, &agent)?;
+    let all = list_stories(&agent, &path)?;
+    let found = all.iter().find(|s| match &key {
+        Some(key) => s.str_at("key") == Some(key.as_str()),
+        None => s.str_at("id") == Some(given.to_ascii_lowercase().as_str()),
+    });
+    let Some(found) = found else {
+        bail!("not_found: no story {given} in this feature");
+    };
+    let (Some(id), Some(Value::Number(version))) = (found.str_at("id"), found.get("version"))
+    else {
+        return Err(unreadable());
+    };
+    if verb == "edit"
+        && let Some(keys) = &args.blocked_by
+    {
+        let mut ids = Vec::new();
+        for word in keys.split(',').map(str::trim).filter(|w| !w.is_empty()) {
+            let Some(n) = story_key(word) else {
+                bail!("{word:?} is not a story key for --blocked-by; use US-1,US-2");
+            };
+            let wanted = format!("US-{n}");
+            let id = all
+                .iter()
+                .find(|s| s.str_at("key") == Some(wanted.as_str()))
+                .and_then(|s| s.str_at("id"))
+                .ok_or_else(|| {
+                    CliError::new(format!("not_found: no story {wanted} in this feature"))
+                })?;
+            ids.push(quote(id));
+        }
+        fields.push(format!("\"blocked_by\":[{}]", ids.join(",")));
+    }
+    fields.insert(0, format!("\"expected_version\":{version}"));
+    let action = match finding {
+        Some(n) => format!("/findings/{n}/resolve"),
+        None => action.to_string(),
+    };
+    let body = format!("{{{}}}", fields.join(","));
+    let response =
+        agent.request_conflicting(method, &format!("{path}/{id}{action}"), body.as_bytes())?;
+    let answer = Value::parse(&response.text()).map_err(|_| unreadable())?;
+    let story = answer.get("story").unwrap_or(&answer);
+    if args.json {
+        say(&story.to_string());
+    } else {
+        say(&format!(
+            "{}  {}",
+            story.str_at("key").unwrap_or("?"),
+            story.str_at("status").unwrap_or("?")
+        ));
+    }
+    Ok(())
+}

@@ -110,7 +110,15 @@ pub fn run(args: &Args) -> Result<()> {
         ["story", "list"] => stories::list(args),
         ["story", "read"] => stories::read(args, None),
         ["story", "read", story] => stories::read(args, Some(story)),
-        ["story", ..] => bail!("usage: omni story add|list|read; see `omni --help`"),
+        [
+            "story",
+            verb @ ("edit" | "cancel" | "claim" | "release" | "move" | "block" | "unblock" | "tick"
+            | "finding" | "resolve" | "decision" | "files"),
+            rest @ ..,
+        ] => stories::write(args, verb, rest),
+        ["story", ..] => bail!(
+            "usage: omni story add|list|read|edit|cancel|claim|release|move|block|unblock|tick|finding|resolve|decision|files; see `omni --help`"
+        ),
         ["thread", "create"] => threads::create(args, None),
         ["thread", "create", question] => threads::create(args, Some(question)),
         ["thread", "list"] => threads::list(args),
@@ -236,6 +244,30 @@ impl Agent {
         let json_type = [("Content-Type".to_string(), "application/json".to_string())];
         let extra: &[(String, String)] = if body.is_some() { &json_type } else { &[] };
         self.request_with(method, path, extra, body)
+    }
+
+    /// Like `request`, but a 409 is the error `conflict: <the API's error> ;
+    /// read the story again`, which ends the command with exit code 3.
+    pub(crate) fn request_conflicting(
+        &self,
+        method: &str,
+        path: &str,
+        body: &[u8],
+    ) -> Result<Response> {
+        let mut headers = self.headers.clone();
+        headers.push(("Content-Type".to_string(), "application/json".to_string()));
+        let response = http::send(&self.server, method, path, &headers, Some(body))?;
+        if response.status == 409 {
+            let code = Value::parse(&response.text())
+                .ok()
+                .and_then(|body| body.str_at("error").map(str::to_string))
+                .unwrap_or_else(|| "conflict".to_string());
+            return Err(CliError::with_code(
+                3,
+                format!("conflict: {code} ; read the story again"),
+            ));
+        }
+        checked(response)
     }
 
     /// Like `request`, but a 404 whose error code is `code` is the error

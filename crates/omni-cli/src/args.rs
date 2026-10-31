@@ -62,6 +62,22 @@ pub struct Args {
     pub number_from: Option<String>,
     pub status: Option<String>,
     pub pickable: bool,
+    /// The options of the `omni story` writes: `--run`, `--stage`, `--to`,
+    /// `--criterion`, `--finding`, `--question`, `--choice`, `--by`, `--text`,
+    /// `--blocked-by`, `--file` (repeatable), `--pending` and `--unticked`.
+    pub run: Option<String>,
+    pub stage: Option<String>,
+    pub to: Option<String>,
+    pub criterion: Option<String>,
+    pub finding: Option<String>,
+    pub question: Option<String>,
+    pub choice: Option<String>,
+    pub by: Option<String>,
+    pub text: Option<String>,
+    pub blocked_by: Option<String>,
+    pub file: Vec<String>,
+    pub pending: bool,
+    pub unticked: bool,
     pub json: bool,
     pub help: bool,
     pub version: bool,
@@ -114,6 +130,14 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Args> {
                 parsed.pickable = true;
                 continue;
             }
+            "--pending" => {
+                parsed.pending = true;
+                continue;
+            }
+            "--unticked" => {
+                parsed.unticked = true;
+                continue;
+            }
             "--concluded" => {
                 parsed.concluded = true;
                 continue;
@@ -126,6 +150,13 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Args> {
                 bail!(
                     "--remove-commented is gone: a write that removes a commented node always goes through, and the comment stays, orphaned, until the human deletes it"
                 )
+            }
+            "--file" => {
+                let Some(value) = inline.or_else(|| args.next()) else {
+                    bail!("{arg} needs a value; see `omni --help`");
+                };
+                parsed.file.push(value);
+                continue;
             }
             "--attach" | "--link" => {
                 let Some(value) = inline.or_else(|| args.next()) else {
@@ -141,6 +172,16 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Args> {
             "--priority" => &mut parsed.priority,
             "--number-from" => &mut parsed.number_from,
             "--status" => &mut parsed.status,
+            "--run" => &mut parsed.run,
+            "--stage" => &mut parsed.stage,
+            "--to" => &mut parsed.to,
+            "--criterion" => &mut parsed.criterion,
+            "--finding" => &mut parsed.finding,
+            "--question" => &mut parsed.question,
+            "--choice" => &mut parsed.choice,
+            "--by" => &mut parsed.by,
+            "--text" => &mut parsed.text,
+            "--blocked-by" => &mut parsed.blocked_by,
             "--summary" => &mut parsed.summary,
             "--confidence" => &mut parsed.confidence,
             "--replaces" => &mut parsed.replaces,
