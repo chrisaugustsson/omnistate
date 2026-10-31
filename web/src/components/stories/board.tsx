@@ -48,8 +48,10 @@ function Badge({ tone, children }: { tone: "warning" | "neutral" | "accent"; chi
 
 type Steer = {
   stories: StoryBody[];
-  /** Runs a write on a story; a 409 reloads and returns the message to show. */
-  run: (story: StoryBody, write: () => Promise<StoryBody>) => Promise<string | null>;
+  /** Messages shown on cards by story id, kept here so they survive a card changing column. */
+  messages: Map<string, string>;
+  /** Runs a write on a story; a 409 reloads and sets the message to show on its card. */
+  run: (story: StoryBody, write: () => Promise<StoryBody>) => Promise<void>;
   patch: (story: StoryBody, body: { priority?: number; blocked_by?: string[] }) => Promise<StoryBody>;
   cancel: (story: StoryBody) => Promise<StoryBody>;
   check: (story: StoryBody, criterion: number) => Promise<StoryBody>;
@@ -62,12 +64,12 @@ function Card({ story, byId, steer }: { story: StoryBody; byId: Map<string, Stor
   const findings = unresolved(story);
   const check = toCheck(story);
   const isClosed = closed(story);
-  const [message, setMessage] = useState<string | null>(null);
+  const message = steer.messages.get(story.id);
   const [editing, setEditing] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const [checking, setChecking] = useState(false);
   const write = async (action: () => Promise<StoryBody>) => {
-    setMessage(await steer.run(story, action));
+    await steer.run(story, action);
   };
   const others = steer.stories.filter((other) => other.id !== story.id);
   return (
@@ -307,20 +309,31 @@ export function Board({
   const [showCancelled, setShowCancelled] = useState(false);
   const [adding, setAdding] = useState(false);
 
+  const [messages, setMessages] = useState<Map<string, string>>(new Map());
+
   const remember = (story: StoryBody) => setAnswers((current) => new Map(current).set(story.id, story));
+  const say = (id: string, message: string | null) =>
+    setMessages((current) => {
+      const next = new Map(current);
+      if (message) next.set(id, message);
+      else next.delete(id);
+      return next;
+    });
   const steer: Steer = {
     stories: stories ?? [],
-    run: async (_story, write) => {
+    messages,
+    run: async (story, write) => {
       try {
         remember(await write());
-        return null;
+        say(story.id, null);
       } catch (error) {
         if (error instanceof ApiError && error.status === 409) {
           setAnswers(new Map());
           reload();
-          return CONFLICT;
+          say(story.id, CONFLICT);
+          return;
         }
-        return "The change could not be saved. Try again in a moment.";
+        say(story.id, "The change could not be saved. Try again in a moment.");
       }
     },
     patch: (story, body) => patchStory(workspaceId, projectId, featureId, story.id, { expected_version: story.version, ...body }),
