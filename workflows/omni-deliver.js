@@ -6,6 +6,7 @@ export const meta = {
     { title: 'Start', detail: 'clean tree, lock, the Run thread' },
     { title: 'Reconcile', detail: 'release claims of other runs, then claim, reset or keep each story by its status' },
     { title: 'Clarity', detail: 'one check per backlog story whose version is new, in parallel: blocking gaps become threads, minor ones agent decisions' },
+    { title: 'Unblock', detail: 'a blocked story whose linked threads all have a conclusion gets each conclusion as a human decision and is unblocked' },
   ],
 }
 
@@ -233,8 +234,41 @@ Return raw structured data only.`
     clarity.push({ key, blocked: threads.length > 0, threads: threads.map((t) => t.thread), decisions: gaps.filter((g) => g.blocking === false).length })
   }
 
+  // ---- unblock: a thread's conclusion is the human's answer ----------------
+  // Runs after clarity at start and at the top of every loop pass.
+  const reviewed = new Set()
+  const resumed = []
+  const unblockPass = () => {
+    phase('Unblock')
+    const done = []
+    for (const story of listStories()) {
+      if (!story.blocked || story.status === 'done' || story.status === 'cancelled') continue
+      const ids = (story.links || []).map((l) => l.thread_id).filter(Boolean)
+      if (ids.length === 0) continue
+      const threads = ids.map((id) => {
+        const parsed = JSON.parse(omni(['thread', 'read', id, '--json']))
+        return parsed.thread || parsed
+      })
+      if (threads.some((t) => !t.conclusion)) continue
+      const recorded = (story.decisions || []).filter((d) => d.by === 'human')
+      for (const t of threads) {
+        if (recorded.some((d) => d.question === t.question && d.choice === t.conclusion)) continue
+        write('decision', story.key, ['--question', t.question, '--choice', t.conclusion, '--by', 'human'])
+      }
+      write('unblock', story.key)
+      if (story.status === 'implementing' || story.status === 'review') {
+        write('claim', story.key, ['--stage', story.status])
+        if (story.status === 'review') reviewed.delete(story.key)
+        resumed.push({ key: story.key, stage: story.status })
+      }
+      done.push(story.key)
+    }
+    return done
+  }
+  const unblocked = unblockPass()
+
   const pickable = omni(['story', 'list', '--pickable']).split('\n').filter(Boolean).length
-  return { run: runId, feature, integration, thread: threadId, implementers, reviewers, storyLimit: storyLimit === Infinity ? null : storyLimit, reconciled, clarity, pickable }
+  return { run: runId, feature, integration, thread: threadId, implementers, reviewers, storyLimit: storyLimit === Infinity ? null : storyLimit, reconciled, clarity, unblocked, resumed, pickable }
 } finally {
   fs.rmSync(lockPath, { force: true })
 }
