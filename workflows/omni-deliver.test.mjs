@@ -487,7 +487,8 @@ test("moves a ready story to review after the fast command passes in its worktre
   const dirs = scratch(t, [story("US-1")]);
   dirs.checks({ fast: "test -f src/board.rs", stack_up: "true", stack: "true" });
   const wt = join(dirs.root, "app-stories", "US-1");
-  const { agent } = implAgent({
+  let seenAtReview;
+  const { agent, reviews } = implAgent({
     "US-1": async () => {
       mkdirSync(join(wt, "src"));
       writeFileSync(join(wt, "src", "board.rs"), "board\n");
@@ -499,10 +500,17 @@ test("moves a ready story to review after the fast command passes in its worktre
       git(dirs.repo, "commit", "-q", "-m", "other work on main");
       return { status: "ready", summary: "done" };
     },
+  }, {
+    "US-1": () => {
+      seenAtReview = dirs.story("US-1").status;
+      return { verdict: "pass", findings: [] };
+    },
   });
 
   await deliver({ feature: "board" }, agent);
 
+  assert.equal(reviews["US-1"].length, 1);
+  assert.equal(seenAtReview, "review");
   assert.equal(dirs.story("US-1").status, "testing");
   assert.deepEqual(dirs.story("US-1").files_changed, ["NOTES", "src/board.rs"]);
 });
