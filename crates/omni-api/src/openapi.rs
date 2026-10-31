@@ -89,6 +89,7 @@ use utoipa::OpenApi;
         crate::design::import_head_components,
         crate::design::component_usage,
         crate::boards::read_head_board,
+        crate::exports::board_png,
         crate::threads::create_app_thread,
         crate::threads::create_feature_thread,
         crate::threads::list_threads,

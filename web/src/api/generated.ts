@@ -944,6 +944,14 @@ export const operations = {
       "404": ErrorBodySchema,
     },
   },
+  "GET /api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}/boards/{board_id}/png": {
+    responses: {
+      "400": ErrorBodySchema,
+      "401": ErrorBodySchema,
+      "404": ErrorBodySchema,
+      "422": ErrorBodySchema,
+    },
+  },
   "POST /api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}/comments": {
     request: CreateCommentRequestSchema,
     responses: {

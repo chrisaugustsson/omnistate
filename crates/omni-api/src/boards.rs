@@ -612,7 +612,7 @@ pub(crate) async fn head_boards(
 
 /// A board of a saved version and the page that holds it: the manifest and the
 /// board's one chunk are read, and no other.
-async fn read_board(
+pub(crate) async fn read_board(
     state: &AppState,
     workspace_id: &str,
     chunk: &str,
@@ -681,12 +681,12 @@ pub struct BoardBody {
     pub node: Value,
 }
 
-fn unknown_board() -> ApiError {
+pub(crate) fn unknown_board() -> ApiError {
     ApiError::Refused(StatusCode::NOT_FOUND, "unknown_board")
 }
 
 /// A board of a design doc must have a node ID to be one.
-fn board_id(text: &str) -> Result<String, ApiError> {
+pub(crate) fn board_id(text: &str) -> Result<String, ApiError> {
     text.parse::<NodeId>()
         .map(|id| id.to_string())
         .map_err(|_| unknown_board())

@@ -214,6 +214,12 @@ pub(crate) fn agent(args: &Args) -> Result<Agent> {
 }
 
 impl Agent {
+    /// Like `request` with no body, but an error status is the response, for a
+    /// command that goes on without the answer.
+    pub(crate) fn request_unchecked(&self, method: &str, path: &str) -> Result<Response> {
+        http::send(&self.server, method, path, &self.headers, None)
+    }
+
     pub(crate) fn request(
         &self,
         method: &str,

@@ -632,6 +632,47 @@ pub fn board_preview(
     png_encoder::encode(&pixels, &mut png, &png_encoder::Options::default()).then_some(png)
 }
 
+/// The longest side of a board's PNG (`board_png`) in pixels.
+pub const BOARD_PNG_MAX_SIDE: u32 = 16384;
+
+/// The pixels along a board's side of `length` at `scale`: rounded up, at
+/// least one.
+pub fn board_png_side(length: f32, scale: f32) -> u32 {
+    (length * scale - 1e-6).ceil().max(1.0) as u32
+}
+
+/// `board`, a board of a page with all its content, as a PNG of the board's
+/// own box at `scale` (2 for the pictures of an export): drawn as the viewer
+/// draws a frame at that zoom, its instances expanded against `system` when
+/// there is one (in its first mode), on a transparent background, and cut at
+/// the board's box, so that a shadow does not reach beyond it. `None` when
+/// `board` has no box or a side would exceed [`BOARD_PNG_MAX_SIDE`].
+pub fn board_png(
+    board: Node,
+    assets: &Assets,
+    system: Option<&DesignSystem>,
+    scale: f32,
+) -> Option<Vec<u8>> {
+    let mut scene = match system {
+        Some(system) => Scene::with_system(board, assets.clone(), system.clone()),
+        None => Scene::new(board, assets.clone()),
+    };
+    let bounds = scene.boards.first()?.bounds;
+    let size = (
+        board_png_side(bounds.width, scale),
+        board_png_side(bounds.height, scale),
+    );
+    if size.0 > BOARD_PNG_MAX_SIDE || size.1 > BOARD_PNG_MAX_SIDE {
+        return None;
+    }
+    let mut surface = surfaces::raster_n32_premul((size.0 as i32, size.1 as i32))?;
+    let viewport = Viewport::at(bounds.x, bounds.y, scale, size.0 as f32, size.1 as f32);
+    scene.render(surface.canvas(), &viewport);
+    let pixels = surface.peek_pixels()?;
+    let mut png = Vec::new();
+    png_encoder::encode(&pixels, &mut png, &png_encoder::Options::default()).then_some(png)
+}
+
 /// A board's width and, for each address asked for, the node's box from the
 /// board's top-left corner with its name, or `None` when the board has no node
 /// there.

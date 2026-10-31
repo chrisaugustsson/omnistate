@@ -22,8 +22,10 @@ use crate::design;
 use crate::placeholders::{self, Sizing};
 use crate::session::ApiError;
 use base64::Engine;
-use omni_core::design::AttachmentRef;
-use omni_render::view::{board_images, board_preview};
+use omni_core::design::{AttachmentRef, Node};
+use omni_render::view::{
+    BOARD_PNG_MAX_SIDE, board_box, board_images, board_png, board_png_side, board_preview,
+};
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
@@ -229,4 +231,62 @@ pub(crate) async fn of_boards(
             Some((id, encoder.encode(png)))
         })
         .collect())
+}
+
+/// The picture of one board that an export holds.
+pub(crate) enum BoardPng {
+    Made(Vec<u8>),
+    /// A side of the picture would pass the longest one.
+    TooLarge,
+    /// The board has no box to draw.
+    Undrawable,
+}
+
+/// The board `board` of a design in the project `project_id` at `scale`, in
+/// full detail against the project's design system, with its images.
+pub(crate) async fn full_size(
+    state: &AppState,
+    workspace_id: &str,
+    project_id: &str,
+    board: Node,
+    scale: f32,
+) -> Result<BoardPng, ApiError> {
+    let system = design::system_head_of_project(state, workspace_id, project_id).await?;
+    let version = design::system_version_of_project(state, workspace_id, project_id).await?;
+    let (tokens, components) = (system.tokens_json(), system.components_json());
+    let sizing = Sizing::without_stored(version.as_deref(), tokens.as_ref(), &components).await;
+    let (listed, box_system) = (board.clone(), sizing.system());
+    let (references, sides) = tokio::task::spawn_blocking(move || {
+        let references = board_images(&listed, box_system.as_deref());
+        let sides = board_box(listed, &placeholders::assets(), box_system.as_deref()).map(|b| {
+            (
+                board_png_side(b.width, scale),
+                board_png_side(b.height, scale),
+            )
+        });
+        (references, sides)
+    })
+    .await
+    .map_err(|_| ApiError::Unavailable)?;
+    let Some((width, height)) = sides else {
+        return Ok(BoardPng::Undrawable);
+    };
+    if width > BOARD_PNG_MAX_SIDE || height > BOARD_PNG_MAX_SIDE {
+        return Ok(BoardPng::TooLarge);
+    }
+    let images = read_images(state, workspace_id, references, &ImagesRead::default()).await;
+    let system = sizing.system();
+    let png = tokio::task::spawn_blocking(move || {
+        let mut assets = placeholders::assets();
+        for (reference, bytes) in images {
+            if let Ok(attachment) = reference.parse::<AttachmentRef>() {
+                // An image the renderer cannot read draws as a missing one.
+                let _ = assets.add_image(&attachment, &bytes);
+            }
+        }
+        board_png(board, &assets, system.as_deref(), scale)
+    })
+    .await
+    .map_err(|_| ApiError::Unavailable)?;
+    Ok(png.map_or(BoardPng::Undrawable, BoardPng::Made))
 }

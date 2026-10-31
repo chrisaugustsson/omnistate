@@ -1,13 +1,14 @@
 //! `omni export --project <p> [--feature <name>] --out <dir>`: write the plan
 //! of one scope to a folder a builder can work from without the API. The
 //! folder gets `manifest.json`, one `.html` file per HTML doc under its
-//! pillar, one tag-format file per board of each design under `ui/<doc>/`,
-//! and `tokens.json` with `tokens.css` from the app-level design system.
+//! pillar, one tag-format file per board of each design under `ui/<doc>/`
+//! with the board's `.png` beside it, and `tokens.json` with `tokens.css` from the app-level design system.
 
 use crate::args::Args;
 use crate::commands::{Agent, agent, say};
 use crate::components::is_node_id;
 use crate::error::{CliError, Result, bail};
+use crate::http;
 use crate::json::Value;
 use crate::projects::{creation_feature, project_id};
 use std::collections::BTreeMap;
@@ -84,6 +85,8 @@ pub fn run(args: &Args) -> Result<()> {
 
     // Every read comes before the first write, so a failure leaves no half.
     let mut files: Vec<Exported> = Vec::new();
+    let mut pictures: Vec<(String, Vec<u8>)> = Vec::new();
+    let mut refused: Vec<String> = Vec::new();
     for doc in &docs {
         let field = |name: &str| doc.str_at(name).unwrap_or_default().to_string();
         let (id, kind, pillar, title) =
@@ -140,8 +143,16 @@ pub fn run(args: &Args) -> Result<()> {
                         bail!("the server named a board {board:?}; is it an OmniState API?");
                     }
                     let one = get(&agent, &format!("{doc_path}/boards/{board}"), "the board")?;
+                    let file = format!("{pillar}/{stem}/{}-{board}", slug(&name));
+                    let picture = agent
+                        .request_unchecked("GET", &format!("{doc_path}/boards/{board}/png"))?;
+                    if picture.is_success() {
+                        pictures.push((format!("{file}.png"), picture.body));
+                    } else {
+                        refused.push(refusal(&id, &board, &picture));
+                    }
                     files.push(Exported {
-                        path: format!("{pillar}/{stem}/{}-{board}.tags", slug(&name)),
+                        path: format!("{file}.tags"),
                         content: one.str_at("tags").unwrap_or_default().to_string(),
                         doc_id: id.clone(),
                         pillar: pillar.clone(),
@@ -215,16 +226,37 @@ pub fn run(args: &Args) -> Result<()> {
     for file in &files {
         write(&dir.join(&file.path), &file.content)?;
     }
+    for (path, bytes) in &pictures {
+        write(&dir.join(path), bytes)?;
+    }
     write(
         &dir.join("manifest.json"),
-        &format!("{}\n", manifest.pretty()),
+        format!("{}\n", manifest.pretty()),
     )?;
+    for line in &refused {
+        eprintln!("{line}");
+    }
     if args.json {
         say(&manifest.to_string());
     } else {
-        say(&format!("wrote {} files to {out}", files.len() + 1));
+        say(&format!(
+            "wrote {} files to {out}",
+            files.len() + pictures.len() + 1
+        ));
     }
     Ok(())
+}
+
+/// The line about a board whose picture the API refused: its doc, its ID and
+/// the API's message.
+fn refusal(doc: &str, board: &str, response: &http::Response) -> String {
+    let body = Value::parse(&response.text()).ok();
+    let said = body
+        .as_ref()
+        .and_then(|body| body.str_at("message").or_else(|| body.str_at("error")))
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("http_{}", response.status));
+    format!("no picture of board {board} of doc {doc}: {said}")
 }
 
 /// The number of the doc's latest write in `doc_changes`.
@@ -245,7 +277,7 @@ fn latest_seq(agent: &Agent, doc_path: &str) -> Result<String> {
     }
 }
 
-fn write(path: &PathBuf, content: &str) -> Result<()> {
+fn write(path: &PathBuf, content: impl AsRef<[u8]>) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| {
             CliError::new(format!(

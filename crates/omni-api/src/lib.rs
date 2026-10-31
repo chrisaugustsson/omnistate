@@ -16,6 +16,7 @@ mod comments;
 pub mod delete_workspace;
 mod design;
 mod docs;
+mod exports;
 mod features;
 mod home;
 pub mod live;
@@ -318,6 +319,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}/boards/{board_id}",
             get(boards::read_head_board),
+        )
+        .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}/boards/{board_id}/png",
+            get(exports::board_png),
         )
         .route(
             "/api/v1/w/{workspace_id}/projects/{project_id}/components/usage",

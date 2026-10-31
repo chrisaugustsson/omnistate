@@ -4513,6 +4513,111 @@
         "x-omni-access": "both"
       }
     },
+    "/api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}/boards/{board_id}/png": {
+      "get": {
+        "operationId": "board_png",
+        "parameters": [
+          {
+            "description": "The workspace's UUID",
+            "in": "path",
+            "name": "workspace_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The project's UUID",
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The design doc's UUID",
+            "in": "path",
+            "name": "doc_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The board's node ID",
+            "in": "path",
+            "name": "board_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "image/png": {
+                "schema": {
+                  "items": {
+                    "format": "int32",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": "The board as `image/png`, each side its size times 2 rounded up, at least 1 px"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The doc is no design (`not_a_design`)"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No valid API key or session"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No such doc in this project and workspace, or the head has no such board (`unknown_board`)"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A side of the picture would pass 16384 px (`board_too_large`); `message` names the limit"
+          }
+        },
+        "summary": "A board as a PNG at twice its size, on a transparent background, cut at\nthe board's box, drawn as the viewer draws it against the project's design\nsystem in its first mode.",
+        "tags": [
+          "crate::exports"
+        ],
+        "x-omni-access": "both"
+      }
+    },
     "/api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}/comments": {
       "post": {
         "operationId": "create_on_doc",
