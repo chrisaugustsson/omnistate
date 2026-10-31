@@ -1820,6 +1820,138 @@ fn the_host_cannot_supply_a_font_or_an_image_that_is_not_one() {
 }
 
 // ---------------------------------------------------------------------------
+// Text: shadows
+// ---------------------------------------------------------------------------
+
+/// A 200 x 200 scene with a black 120 px Inter "I" at 40, 20, its box 32.23 x
+/// 144, with `props` set. In row 92 its stem spans x = 51..61.
+fn tall_i(props: Value) -> Value {
+    scene(
+        200,
+        200,
+        vec![text_at("txt00001", 40.0, 20.0, "I", 120.0, 1.2, props)],
+    )
+}
+
+#[test]
+fn a_text_shadow_is_the_text_drawn_again_in_its_color_moved_under_the_text() {
+    let shadowed = tall_i(json!({
+        "shadows": [shadow("drop", "#ff0000", 10.0, 0.0, 0.0, 0.0)]
+    }));
+    let two_texts = scene(
+        200,
+        200,
+        vec![
+            text_at(
+                "txt00002",
+                50.0,
+                20.0,
+                "I",
+                120.0,
+                1.2,
+                json!({"color": "#ff0000"}),
+            ),
+            text_at("txt00001", 40.0, 20.0, "I", 120.0, 1.2, json!({})),
+        ],
+    );
+    assert_eq!(
+        render_200(&shadowed).differing(&render_200(&two_texts), 0),
+        0,
+        "the shadow is a red I 10 px to the right, under the black one"
+    );
+}
+
+#[test]
+fn a_blurred_text_shadow_fades_with_a_standard_deviation_of_half_the_blur() {
+    // The shifted stem ends at x = 71.
+    let pixels = render_200(&tall_i(json!({
+        "shadows": [shadow("drop", "#ff0000", 10.0, 0.0, 8.0, 0.0)]
+    })));
+    let [r, g, b] = pixels.rgb(75, 92);
+    assert!(
+        r >= 250 && g <= 235 && b <= 235,
+        "red-tinted 4 px right of the shifted stem, not {:?}",
+        [r, g, b]
+    );
+    assert_rgb(
+        &pixels,
+        85,
+        92,
+        WHITE,
+        3,
+        "the background 14 px right of the shifted stem",
+    );
+}
+
+#[test]
+fn the_first_text_shadow_is_on_top() {
+    let pixels = render_200(&tall_i(json!({
+        "shadows": [
+            shadow("drop", "#ff0000", 10.0, 0.0, 0.0, 0.0),
+            shadow("drop", "#0000ff", 10.0, 0.0, 0.0, 0.0)
+        ]
+    })));
+    assert_rgb(&pixels, 66, 92, RED, 3, "the shifted stem");
+}
+
+#[test]
+fn a_text_shadow_has_no_spread() {
+    let spread = |spread: f64| {
+        render_200(&tall_i(json!({
+            "shadows": [shadow("drop", "#ff0000", 10.0, 0.0, 0.0, spread)]
+        })))
+    };
+    assert_eq!(
+        spread(4.0).differing(&spread(0.0), 0),
+        0,
+        "a spread of 4 draws as a spread of 0"
+    );
+}
+
+#[test]
+fn an_inner_shadow_on_a_text_draws_nothing() {
+    let inner = render_200(&tall_i(json!({
+        "shadows": [shadow("inner", "#ff0000", 10.0, 0.0, 0.0, 0.0)]
+    })));
+    assert_eq!(
+        inner.differing(&render_200(&tall_i(json!({}))), 0),
+        0,
+        "the text as with no shadow"
+    );
+}
+
+#[test]
+fn a_faded_text_keeps_its_shadow_where_it_falls_beyond_the_text_box() {
+    // The box ends at x = 72.23.
+    let moved = render_200(&tall_i(json!({
+        "opacity": 0.5,
+        "shadows": [shadow("drop", "#ff0000", 40.0, 0.0, 0.0, 0.0)]
+    })));
+    assert_rgb(
+        &moved,
+        96,
+        92,
+        [255, 127, 127],
+        4,
+        "half-transparent red in the stem moved 40 px right",
+    );
+    // A Gaussian of standard deviation 20 across the 10 px stem leaves 10.6%
+    // of the red 6 px past the box: 8.5% at opacity 0.8.
+    let blurred = render_200(&tall_i(json!({
+        "opacity": 0.8,
+        "shadows": [shadow("drop", "#ff0000", 0.0, 0.0, 40.0, 0.0)]
+    })));
+    assert_rgb(
+        &blurred,
+        78,
+        92,
+        [255, 233, 233],
+        10,
+        "the blur 6 px right of the box",
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Images
 // ---------------------------------------------------------------------------
 

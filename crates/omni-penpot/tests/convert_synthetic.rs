@@ -1034,6 +1034,74 @@ fn drop_and_inner_shadows_are_converted_and_hidden_ones_are_not() {
 }
 
 #[test]
+fn a_text_keeps_its_visible_drop_shadows_without_spread_and_drops_an_inner_one() {
+    let shadow = |style: &str, hidden: bool, color: &str, spread: f64| {
+        json!({
+            "id": uid(900), "style": style, "hidden": hidden,
+            "color": { "color": color, "opacity": 1 },
+            "offsetX": 4, "offsetY": 6, "blur": 8, "spread": spread
+        })
+    };
+    let conversion = convert(
+        "text-shadows",
+        vec![
+            shape(1, "frame", "Home", [0.0, 0.0, 400.0, 300.0]).kids(vec![
+                text(2, "Heading", [10.0, 10.0, 200.0, 40.0], "Hej").with(json!({
+                    "shadow": [
+                        shadow("drop-shadow", false, "#ff0000", 0.0),
+                        shadow("drop-shadow", true, "#00ff00", 0.0),
+                        shadow("inner-shadow", false, "#0000ff", 0.0),
+                        shadow("drop-shadow", false, "#000000", 3.0),
+                        shadow("drop-shadow", false, "#ffffff", -2.0),
+                    ],
+                    "strokes": [{ "strokeColor": "#000000", "strokeWidth": 1 }]
+                })),
+            ]),
+        ],
+    );
+    let root = board_node(board(&conversion, "Home"));
+    let shadows = json_of(node(root, "Heading"))["shadows"].clone();
+    let shadows = shadows.as_array().expect("shadows");
+    assert_eq!(shadows.len(), 3, "the visible drop shadows: {shadows:#?}");
+    assert_color(&shadows[0]["color"], [0xff, 0, 0], 1.0, "first shadow");
+    assert_color(&shadows[1]["color"], [0, 0, 0], 1.0, "second shadow");
+    assert_color(
+        &shadows[2]["color"],
+        [0xff, 0xff, 0xff],
+        1.0,
+        "third shadow",
+    );
+    for shadow in shadows {
+        assert_eq!(shadow["type"], "drop");
+        assert_near(num(&shadow["offsetX"]), 4.0, 0.001, "offset x");
+        assert_near(num(&shadow["offsetY"]), 6.0, 0.001, "offset y");
+        assert_near(num(&shadow["blur"]), 8.0, 0.001, "blur");
+        assert_near(num(&shadow["spread"]), 0.0, 0.001, "spread");
+    }
+
+    let entries = entries_of(&conversion, &uid(2));
+    let reported = |property: &str, words: &[&str]| {
+        entries
+            .iter()
+            .filter(|entry| {
+                let reason = entry.reason.to_lowercase();
+                entry.property.as_deref() == Some(property)
+                    && words.iter().all(|word| reason.contains(word))
+            })
+            .count()
+    };
+    assert_eq!(entries.len(), 4, "{entries:#?}");
+    assert_eq!(reported("strokes", &["strokes on text"]), 1, "{entries:#?}");
+    assert_eq!(reported("shadow", &["inner"]), 1, "{entries:#?}");
+    assert_eq!(reported("shadow", &["spread", "3"]), 1, "{entries:#?}");
+    assert_eq!(reported("shadow", &["spread", "-2"]), 1, "{entries:#?}");
+    assert!(
+        entries.iter().all(|entry| entry.name == "Heading"),
+        "{entries:#?}"
+    );
+}
+
+#[test]
 fn text_keeps_its_characters_and_style() {
     let style = json!({
         "fontFamily": "Geist Mono", "fontSize": "18", "fontWeight": "500",
