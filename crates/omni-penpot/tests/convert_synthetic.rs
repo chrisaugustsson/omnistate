@@ -656,6 +656,37 @@ fn strokes_keep_their_color_and_width() {
 }
 
 #[test]
+fn a_circle_stroke_keeps_its_alignment_and_lies_inside_without_one() {
+    let stroke = |alignment: Option<&str>| {
+        let mut stroke = json!({
+            "strokeColor": "#000000", "strokeOpacity": 1, "strokeWidth": 2,
+            "strokeStyle": "solid"
+        });
+        if let Some(alignment) = alignment {
+            stroke["strokeAlignment"] = json!(alignment);
+        }
+        json!({ "strokes": [stroke] })
+    };
+    let conversion = convert(
+        "circle-strokes",
+        vec![
+            shape(1, "frame", "Home", [0.0, 0.0, 400.0, 300.0]).kids(vec![
+                shape(2, "circle", "Inner", [0.0, 0.0, 40.0, 40.0]).with(stroke(Some("inner"))),
+                shape(3, "circle", "Default", [50.0, 0.0, 40.0, 40.0]).with(stroke(None)),
+                shape(4, "circle", "Outer", [100.0, 0.0, 40.0, 40.0]).with(stroke(Some("outer"))),
+                shape(5, "circle", "Center", [150.0, 0.0, 40.0, 40.0]).with(stroke(Some("center"))),
+            ]),
+        ],
+    );
+    let root = board_node(board(&conversion, "Home"));
+    let align = |name: &str| json_of(node(root, name))["strokes"][0]["align"].clone();
+    assert_eq!(align("Inner"), "inside");
+    assert_eq!(align("Default"), "inside");
+    assert_eq!(align("Outer"), "outside");
+    assert_eq!(align("Center"), "center");
+}
+
+#[test]
 fn corner_radii_map_to_the_four_corners() {
     let conversion = convert(
         "radii",

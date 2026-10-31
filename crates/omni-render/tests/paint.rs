@@ -12,7 +12,8 @@
 //!   last fill and stroke on top and the first shadow on top.
 //! - A stroke is drawn inside the edge of a frame or an image, like a CSS
 //!   `inset` border, so it takes no space and follows the corner radii. The
-//!   stroke of a vector is centered on its path.
+//!   stroke of a vector sits inside, centered on or outside a closed path as
+//!   its `align` says (US-127), and is centered on a path with an open subpath.
 //! - A frame's stroke may set `align` (US-053): `inside` is the default above,
 //!   `center` straddles the edge, half inside and half outside, and `outside`
 //!   lies around the box like a CSS `outline` (or a `box-shadow` spread),
@@ -2051,13 +2052,13 @@ fn a_vector_fills_its_path_in_pixels_from_the_corner_of_its_box() {
 }
 
 #[test]
-fn a_vector_stroke_is_centered_on_its_path_and_over_the_fill() {
+fn a_vector_stroke_on_an_open_path_is_centered_whatever_its_align() {
     let line = vector_node(
         "vec00001",
         80.0,
         80.0,
         "M0 20 L40 20",
-        json!({"strokes": [{"color": "#0000ff", "width": 6}]}),
+        json!({"strokes": [{"color": "#0000ff", "width": 6, "align": "inside"}]}),
     );
     let pixels = render_200(&scene(200, 200, vec![line]));
     assert_all_rgb(
@@ -2079,32 +2080,144 @@ fn a_vector_stroke_is_centered_on_its_path_and_over_the_fill() {
         WHITE,
         "beyond the line and its square ends",
     );
+}
 
+/// A 100 x 100 board with a red circle of radius 40 at its middle, as a
+/// vector that fills the board, with a 10 px blue stroke that sets `align`
+/// unless it is `None`.
+fn ring(path: &str, align: Option<&str>) -> Value {
+    let mut stroke = json!({"color": "#0000ff", "width": 10});
+    if let Some(align) = align {
+        stroke["align"] = json!(align);
+    }
+    let circle = styled(
+        vector_node("vec00001", 0.0, 0.0, path, json!({})),
+        json!({
+            "width": fixed(100.0),
+            "height": fixed(100.0),
+            "fills": [solid("#ff0000")],
+            "strokes": [stroke]
+        }),
+    );
+    scene(100, 100, vec![circle])
+}
+
+const CIRCLE: &str = "M10 50 A40 40 0 1 0 90 50 A40 40 0 1 0 10 50 Z";
+
+#[test]
+fn a_closed_vector_stroke_sits_inside_centered_on_or_outside_its_path_as_align_says() {
+    let inside = render(&ring(CIRCLE, Some("inside")), 100, 100);
+    assert_all_rgb(&inside, &[(13, 50), (18, 50)], BLUE, "the inside stroke");
+    assert_all_rgb(&inside, &[(7, 50)], WHITE, "outside the path");
+    assert_all_rgb(&inside, &[(23, 50)], RED, "the fill within the stroke");
+
+    let outside = render(&ring(CIRCLE, Some("outside")), 100, 100);
+    assert_all_rgb(&outside, &[(3, 50), (8, 50)], BLUE, "the outside stroke");
+    assert_all_rgb(&outside, &[(13, 50)], RED, "the fill up to the path");
+
+    let center = render(&ring(CIRCLE, Some("center")), 100, 100);
+    assert_all_rgb(&center, &[(7, 50), (13, 50)], BLUE, "the centered stroke");
+    assert_all_rgb(&center, &[(3, 50)], WHITE, "beyond the stroke");
+    assert_all_rgb(&center, &[(17, 50)], RED, "the fill within the stroke");
+}
+
+#[test]
+fn a_closed_vector_stroke_without_align_sits_inside_its_path() {
+    let pixels = render(&ring(CIRCLE, None), 100, 100);
+    assert_all_rgb(&pixels, &[(13, 50), (18, 50)], BLUE, "the inside stroke");
+    assert_all_rgb(&pixels, &[(7, 50)], WHITE, "outside the path");
+}
+
+#[test]
+fn a_faded_vector_keeps_an_outside_stroke_and_a_miter_beyond_its_box() {
     let square = vector_node(
         "vec00001",
         80.0,
         80.0,
         "M0 0 L40 0 L40 40 L0 40 Z",
-        json!({"fills": [solid("#ff0000")], "strokes": [{"color": "#0000ff", "width": 4}]}),
+        json!({
+            "fills": [solid("#ff0000")],
+            "strokes": [{"color": "#0000ff", "width": 10, "align": "outside"}],
+            "opacity": 0.5
+        }),
     );
     let pixels = render_200(&scene(200, 200, vec![square]));
     assert_rgb(
         &pixels,
-        81,
+        75,
         100,
-        BLUE,
-        3,
-        "the stroke over the fill, inside the path",
+        [127, 127, 255],
+        4,
+        "half-transparent blue, 5 px left of the box",
     );
     assert_rgb(
         &pixels,
-        78,
         100,
-        BLUE,
-        3,
-        "and outside it, centered on the path",
+        71,
+        [127, 127, 255],
+        4,
+        "half-transparent blue, 9 px above the box",
     );
-    assert_rgb(&pixels, 83, 100, RED, 3, "the fill beyond the stroke");
+
+    // The miter at the apex reaches 2.24 times half the width above it.
+    let triangle = vector_node(
+        "vec00001",
+        80.0,
+        80.0,
+        "M0 40 L20 0 L40 40 Z",
+        json!({
+            "strokes": [{"color": "#0000ff", "width": 10, "align": "center"}],
+            "opacity": 0.5
+        }),
+    );
+    let pixels = render_200(&scene(200, 200, vec![triangle]));
+    assert_rgb(
+        &pixels,
+        100,
+        73,
+        [127, 127, 255],
+        4,
+        "half-transparent blue in the miter, 7 px above the apex",
+    );
+}
+
+#[test]
+fn a_vector_shadow_is_cast_from_its_fill_with_an_inside_stroke_and_from_its_stroke_outside() {
+    let shadowed = |align: &str| {
+        let square = vector_node(
+            "vec00001",
+            40.0,
+            80.0,
+            "M0 0 L40 0 L40 40 L0 40 Z",
+            json!({
+                "fills": [solid("#ff0000")],
+                "strokes": [{"color": "#0000ff", "width": 10, "align": align}],
+                "shadows": [shadow("drop", "#000000", 80.0, 0.0, 0.0, 0.0)]
+            }),
+        );
+        render_200(&scene(200, 200, vec![square]))
+    };
+    let inside = shadowed("inside");
+    assert_rgb(&inside, 122, 100, BLACK, 3, "the shadow of the fill");
+    assert_rgb(&inside, 118, 100, WHITE, 3, "left of the fill's shadow");
+
+    let outside = shadowed("outside");
+    assert_rgb(
+        &outside,
+        112,
+        100,
+        BLACK,
+        3,
+        "the shadow of the outside stroke",
+    );
+    assert_rgb(
+        &outside,
+        108,
+        100,
+        WHITE,
+        3,
+        "10 px beyond the fill's shadow",
+    );
 }
 
 #[test]
