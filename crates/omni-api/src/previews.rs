@@ -255,10 +255,25 @@ pub(crate) async fn full_size(
     let version = design::system_version_of_project(state, workspace_id, project_id).await?;
     let (tokens, components) = (system.tokens_json(), system.components_json());
     let sizing = Sizing::without_stored(version.as_deref(), tokens.as_ref(), &components).await;
-    let (listed, box_system) = (board.clone(), sizing.system());
+    let read = ImagesRead::default();
+    let mut fonts = Vec::new();
+    for (family, file) in fonts_of(tokens.as_ref()) {
+        for (_, bytes) in read_images(state, workspace_id, vec![file], &read).await {
+            fonts.push((family.clone(), bytes));
+        }
+    }
+    let with_fonts = Arc::new(move || {
+        let mut assets = placeholders::assets();
+        for (family, bytes) in &fonts {
+            // A font file the renderer cannot read leaves the bundled one to stand in.
+            let _ = assets.add_font(family, bytes);
+        }
+        assets
+    });
+    let (listed, box_system, box_assets) = (board.clone(), sizing.system(), with_fonts.clone());
     let (references, sides) = tokio::task::spawn_blocking(move || {
         let references = board_images(&listed, box_system.as_deref());
-        let sides = board_box(listed, &placeholders::assets(), box_system.as_deref()).map(|b| {
+        let sides = board_box(listed, &box_assets(), box_system.as_deref()).map(|b| {
             (
                 board_png_side(b.width, scale),
                 board_png_side(b.height, scale),
@@ -274,10 +289,10 @@ pub(crate) async fn full_size(
     if width > BOARD_PNG_MAX_SIDE || height > BOARD_PNG_MAX_SIDE {
         return Ok(BoardPng::TooLarge);
     }
-    let images = read_images(state, workspace_id, references, &ImagesRead::default()).await;
+    let images = read_images(state, workspace_id, references, &read).await;
     let system = sizing.system();
     let png = tokio::task::spawn_blocking(move || {
-        let mut assets = placeholders::assets();
+        let mut assets = with_fonts();
         for (reference, bytes) in images {
             if let Ok(attachment) = reference.parse::<AttachmentRef>() {
                 // An image the renderer cannot read draws as a missing one.
@@ -289,4 +304,41 @@ pub(crate) async fn full_size(
     .await
     .map_err(|_| ApiError::Unavailable)?;
     Ok(png.map_or(BoardPng::Undrawable, BoardPng::Made))
+}
+
+/// The font files of the typography tokens of `tokens`, each with the family of
+/// the token that lists it, as the viewer gives them to the renderer.
+fn fonts_of(tokens: Option<&Value>) -> Vec<(String, String)> {
+    fn visit(node: &Value, found: &mut Vec<(String, String)>) {
+        let Value::Object(fields) = node else {
+            return;
+        };
+        if let Some(value) = fields.get("$value") {
+            let family = value.get("fontFamily").and_then(Value::as_str);
+            let files = fields
+                .get("$extensions")
+                .and_then(|extensions| extensions.get("omnistate"))
+                .and_then(|omnistate| omnistate.get("fontFiles"))
+                .and_then(Value::as_array);
+            if let (Some(family), Some(files)) = (family, files) {
+                for file in files.iter().filter_map(Value::as_str) {
+                    let pair = (family.to_owned(), file.to_owned());
+                    if file.starts_with("attachment:") && !found.contains(&pair) {
+                        found.push(pair);
+                    }
+                }
+            }
+            return;
+        }
+        for (name, child) in fields {
+            if !name.starts_with('$') {
+                visit(child, found);
+            }
+        }
+    }
+    let mut found = Vec::new();
+    if let Some(tokens) = tokens {
+        visit(tokens, &mut found);
+    }
+    found
 }
