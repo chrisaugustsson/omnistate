@@ -25,6 +25,16 @@
 //!   `(pending)`, `blocked by: <keys>`, `holder: <run> <stage> <at>` and one
 //!   `[<stage>] <text>` line per unresolved finding, leaving out a line whose
 //!   value is empty; `--json` prints the story.
+//!
+//! US-137 adds the writes (`edit`, `cancel`, `claim`, `release`, `move`,
+//! `block`, `unblock`, `tick`, `finding`, `resolve`, `decision`, `files`):
+//! each lists the feature to read the story, sends its `version` as
+//! `expected_version` to `<stories>/<id>/<route>`, and with `--json` prints
+//! the story the API answers. A 409 of any kind is `conflict: <the API's
+//! error> ; read the story again` on stderr and exit code 3, which `omni
+//! --help` documents. `tick` sends `pending` only with `--pending`; `finding`
+//! always sends `files`, `[]` without `--file`. There is no `omni story
+//! check`: the human clears checks on the board.
 
 mod common;
 
@@ -406,4 +416,360 @@ fn read_json_prints_the_story_itself() {
 
     assert_eq!(out.code, 0, "stderr: {}", out.stderr);
     assert_eq!(out.json(), held_story());
+}
+
+/// The version every story has in `write_mock`'s list, so a sent
+/// `expected_version` of 4 can only come from reading the story.
+const READ_VERSION: i64 = 4;
+
+fn written_story(id: &str, key: &str, status: &str) -> Value {
+    let mut story = story_json(id, key, 3, status, "Stories table");
+    story["version"] = json!(READ_VERSION);
+    story
+}
+
+/// An API that lists US-131..US-133 at version 4 and answers every write
+/// with `conflict`'s 409, or else 200 with US-131 at version 5 in review.
+fn write_mock(conflict: Option<&'static str>) -> MockServer {
+    MockServer::start(move |request| {
+        let path = request.path.split('?').next().unwrap_or_default();
+        if !path.starts_with(&stories_path()) {
+            return Reply::json(404, &json!({ "error": "not_found" }));
+        }
+        if request.method == "GET" {
+            return Reply::json(
+                200,
+                &json!({ "stories": [
+                    written_story(STORY_131, "US-131", "implementing"),
+                    written_story(STORY_132, "US-132", "backlog"),
+                    written_story(STORY_133, "US-133", "backlog")
+                ] }),
+            );
+        }
+        match conflict {
+            Some(code) => Reply::json(409, &json!({ "error": code })),
+            None => Reply::json(200, &json!({ "story": updated_story() })),
+        }
+    })
+}
+
+fn updated_story() -> Value {
+    let mut story = written_story(STORY_131, "US-131", "review");
+    story["version"] = json!(READ_VERSION + 1);
+    story
+}
+
+/// Every request but the reads: method, path below the feature's stories,
+/// and the JSON body.
+fn writes(server: &MockServer) -> Vec<(String, String, Value)> {
+    server
+        .requests()
+        .into_iter()
+        .filter(|r| r.method != "GET")
+        .map(|r| {
+            let path = r
+                .path
+                .strip_prefix(&stories_path())
+                .expect("a write under the feature's stories")
+                .to_string();
+            let body = serde_json::from_slice(&r.body).expect("the request body is JSON");
+            (r.method, path, body)
+        })
+        .collect()
+}
+
+fn post(path: String, body: Value) -> (String, String, Value) {
+    ("POST".to_string(), path, body)
+}
+
+#[test]
+fn move_reads_the_story_sends_its_version_and_json_prints_the_answer() {
+    let server = write_mock(None);
+    let home = logged_in(&server);
+
+    let out = run(
+        &home,
+        &[
+            "story", "move", "US-131", "--run", "r1", "--to", "review", "--json",
+        ],
+    );
+
+    assert_eq!(out.code, 0, "stderr: {}", out.stderr);
+    assert_eq!(get_paths(&server), vec![stories_path()]);
+    assert_eq!(
+        writes(&server),
+        vec![post(
+            format!("/{STORY_131}/move"),
+            json!({ "expected_version": 4, "run": "r1", "to": "review" })
+        )]
+    );
+    assert_eq!(out.json(), updated_story());
+}
+
+#[test]
+fn a_409_of_any_kind_names_the_api_error_as_a_conflict_and_exits_3() {
+    let stale = write_mock(Some("conflict"));
+    let not_holder = write_mock(Some("not_holder"));
+
+    let moved = run(
+        &logged_in(&stale),
+        &["story", "move", "US-131", "--run", "r1", "--to", "review"],
+    );
+    let ticked = run(
+        &logged_in(&not_holder),
+        &["story", "tick", "US-131", "--run", "r2", "--criterion", "0"],
+    );
+
+    assert_eq!(moved.code, 3, "stderr: {}", moved.stderr);
+    assert_eq!(moved.stdout, "");
+    assert_eq!(moved.stderr_lines().len(), 1, "stderr: {}", moved.stderr);
+    assert!(
+        moved
+            .stderr
+            .contains("conflict: conflict ; read the story again"),
+        "stderr: {}",
+        moved.stderr
+    );
+    assert_eq!(ticked.code, 3, "stderr: {}", ticked.stderr);
+    assert!(
+        ticked
+            .stderr
+            .contains("conflict: not_holder ; read the story again"),
+        "stderr: {}",
+        ticked.stderr
+    );
+    assert!(
+        documented_exit_codes().contains(&3),
+        "omni --help does not document exit code 3"
+    );
+}
+
+#[test]
+fn tick_sends_pending_only_with_pending_and_ticked_false_with_unticked() {
+    let server = write_mock(None);
+    let home = logged_in(&server);
+    let tick = ["story", "tick", "US-131", "--run", "r1", "--criterion", "0"];
+
+    let pending = run(&home, &[&tick[..], &["--pending"]].concat());
+    let plain = run(&home, &tick);
+    let unticked = run(&home, &[&tick[..], &["--unticked"]].concat());
+
+    assert_eq!(pending.code, 0, "stderr: {}", pending.stderr);
+    assert_eq!(plain.code, 0, "stderr: {}", plain.stderr);
+    assert_eq!(unticked.code, 0, "stderr: {}", unticked.stderr);
+    let path = format!("/{STORY_131}/tick");
+    assert_eq!(
+        writes(&server),
+        vec![
+            post(
+                path.clone(),
+                json!({ "expected_version": 4, "run": "r1", "criterion": 0, "ticked": true, "pending": true })
+            ),
+            post(
+                path.clone(),
+                json!({ "expected_version": 4, "run": "r1", "criterion": 0, "ticked": true })
+            ),
+            post(
+                path,
+                json!({ "expected_version": 4, "run": "r1", "criterion": 0, "ticked": false })
+            ),
+        ]
+    );
+}
+
+#[test]
+fn finding_sends_every_file_given_and_an_empty_list_without_one() {
+    let server = write_mock(None);
+    let home = logged_in(&server);
+    let finding = [
+        "story", "finding", "US-131", "--run", "r1", "--stage", "review", "--text", "x",
+    ];
+
+    let with_files = run(
+        &home,
+        &[&finding[..], &["--file", "a.rs", "--file", "b.rs"]].concat(),
+    );
+    let without = run(&home, &finding);
+
+    assert_eq!(with_files.code, 0, "stderr: {}", with_files.stderr);
+    assert_eq!(without.code, 0, "stderr: {}", without.stderr);
+    let path = format!("/{STORY_131}/findings");
+    assert_eq!(
+        writes(&server),
+        vec![
+            post(
+                path.clone(),
+                json!({ "expected_version": 4, "run": "r1", "stage": "review", "text": "x", "files": ["a.rs", "b.rs"] })
+            ),
+            post(
+                path,
+                json!({ "expected_version": 4, "run": "r1", "stage": "review", "text": "x", "files": [] })
+            ),
+        ]
+    );
+}
+
+#[test]
+fn story_check_is_not_a_command_and_no_usage_offers_it() {
+    let server = write_mock(None);
+    let home = logged_in(&server);
+
+    let check = run(
+        &home,
+        &[
+            "story",
+            "check",
+            "US-131",
+            "--run",
+            "r1",
+            "--criterion",
+            "0",
+        ],
+    );
+    let story = run(&home, &["story"]);
+    let help = omni(&home.path).args(&["--help"]).run();
+
+    assert_ne!(check.code, 0, "stdout: {}", check.stdout);
+    assert_eq!(writes(&server), vec![]);
+    assert!(
+        !story.stderr.contains("check"),
+        "omni story lists check: {}",
+        story.stderr
+    );
+    assert!(
+        !help.stdout.contains("story check"),
+        "omni --help lists omni story check"
+    );
+}
+
+#[test]
+fn edit_resolves_blocker_keys_to_ids_and_sends_only_the_fields_given() {
+    let server = write_mock(None);
+    let home = logged_in(&server);
+
+    let out = run(
+        &home,
+        &[
+            "story",
+            "edit",
+            "US-133",
+            "--priority",
+            "1",
+            "--blocked-by",
+            "US-131,US-132",
+        ],
+    );
+
+    assert_eq!(out.code, 0, "stderr: {}", out.stderr);
+    assert_eq!(
+        writes(&server),
+        vec![(
+            "PATCH".to_string(),
+            format!("/{STORY_133}"),
+            json!({ "expected_version": 4, "priority": 1, "blocked_by": [STORY_131, STORY_132] })
+        )]
+    );
+}
+
+#[test]
+fn the_other_writes_post_to_their_own_routes_with_the_version_read() {
+    let server = write_mock(None);
+    let home = logged_in(&server);
+
+    let outs = [
+        run(&home, &["story", "cancel", "US-132"]),
+        run(
+            &home,
+            &[
+                "story",
+                "claim",
+                "US-131",
+                "--run",
+                "r1",
+                "--stage",
+                "implementing",
+            ],
+        ),
+        run(&home, &["story", "release", "US-131", "--run", "r1"]),
+        run(&home, &["story", "block", "US-131", "--run", "r1"]),
+        run(&home, &["story", "unblock", "US-131", "--run", "r1"]),
+        run(
+            &home,
+            &[
+                "story",
+                "resolve",
+                "US-131",
+                "--run",
+                "r1",
+                "--finding",
+                "1",
+            ],
+        ),
+        run(
+            &home,
+            &[
+                "story",
+                "decision",
+                "US-131",
+                "--run",
+                "r1",
+                "--question",
+                "Which port?",
+                "--choice",
+                "8080",
+                "--by",
+                "human",
+            ],
+        ),
+        run(
+            &home,
+            &[
+                "story", "files", "US-131", "--run", "r1", "src/a.rs", "src/b.rs",
+            ],
+        ),
+    ];
+
+    assert_eq!(
+        outs.iter().map(|o| o.code).collect::<Vec<_>>(),
+        vec![0; 8],
+        "stderr: {:?}",
+        outs.iter().map(|o| &o.stderr).collect::<Vec<_>>()
+    );
+    assert_eq!(
+        writes(&server),
+        vec![
+            post(
+                format!("/{STORY_132}/cancel"),
+                json!({ "expected_version": 4 })
+            ),
+            post(
+                format!("/{STORY_131}/claim"),
+                json!({ "expected_version": 4, "run": "r1", "stage": "implementing" })
+            ),
+            post(
+                format!("/{STORY_131}/release"),
+                json!({ "expected_version": 4, "run": "r1" })
+            ),
+            post(
+                format!("/{STORY_131}/block"),
+                json!({ "expected_version": 4, "run": "r1" })
+            ),
+            post(
+                format!("/{STORY_131}/unblock"),
+                json!({ "expected_version": 4, "run": "r1" })
+            ),
+            post(
+                format!("/{STORY_131}/findings/1/resolve"),
+                json!({ "expected_version": 4, "run": "r1" })
+            ),
+            post(
+                format!("/{STORY_131}/decisions"),
+                json!({ "expected_version": 4, "run": "r1", "question": "Which port?", "choice": "8080", "by": "human" })
+            ),
+            post(
+                format!("/{STORY_131}/files"),
+                json!({ "expected_version": 4, "run": "r1", "files_changed": ["src/a.rs", "src/b.rs"] })
+            ),
+        ]
+    );
 }
