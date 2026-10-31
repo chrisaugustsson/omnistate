@@ -115,6 +115,11 @@ export const BoardBodySchema = z.object({
 });
 export type BoardBody = z.infer<typeof BoardBodySchema>;
 
+export const CancelStoryRequestSchema = z.object({
+  expected_version: z.number().int(),
+});
+export type CancelStoryRequest = z.infer<typeof CancelStoryRequestSchema>;
+
 export const ReplyBodySchema = z.object({
   author: z.record(z.string(), z.unknown()),
   created_at: z.string(),
@@ -550,6 +555,19 @@ export const ManifestSchema = z.object({
 });
 export type Manifest = z.infer<typeof ManifestSchema>;
 
+export const PatchStoryRequestSchema = z.object({
+  blocked_by: z.array(z.string()).nullable().optional(),
+  criteria: z.array(NewCriterionSchema).nullable().optional(),
+  expected_version: z.number().int(),
+  files_planned: z.array(z.string()).nullable().optional(),
+  links: z.array(z.record(z.string(), z.unknown())).nullable().optional(),
+  priority: z.number().int().nullable().optional(),
+  text: z.string().nullable().optional(),
+  title: z.string().nullable().optional(),
+  topic: z.string().nullable().optional(),
+});
+export type PatchStoryRequest = z.infer<typeof PatchStoryRequestSchema>;
+
 export const PostResponseSchema = z.object({
   post: PostBodySchema,
 });
@@ -631,6 +649,12 @@ export const StoryBodySchema = z.object({
 });
 export type StoryBody = z.infer<typeof StoryBodySchema>;
 
+export const StoryConflictBodySchema = z.object({
+  current_version: z.number().int(),
+  error: z.string(),
+});
+export type StoryConflictBody = z.infer<typeof StoryConflictBodySchema>;
+
 export const StoryListResponseSchema = z.object({
   stories: z.array(StoryBodySchema),
 });
@@ -710,6 +734,7 @@ export const schemas = {
   AttachmentBody: AttachmentBodySchema,
   AttachmentResponse: AttachmentResponseSchema,
   BoardBody: BoardBodySchema,
+  CancelStoryRequest: CancelStoryRequestSchema,
   CommentBody: CommentBodySchema,
   CommentListResponse: CommentListResponseSchema,
   CommentResponse: CommentResponseSchema,
@@ -763,6 +788,7 @@ export const schemas = {
   NewCriterion: NewCriterionSchema,
   NodeBox: NodeBoxSchema,
   OpResultBody: OpResultBodySchema,
+  PatchStoryRequest: PatchStoryRequestSchema,
   PostBody: PostBodySchema,
   PostResponse: PostResponseSchema,
   ProjectBody: ProjectBodySchema,
@@ -776,6 +802,7 @@ export const schemas = {
   SinglePostResponse: SinglePostResponseSchema,
   StartThreadRequest: StartThreadRequestSchema,
   StoryBody: StoryBodySchema,
+  StoryConflictBody: StoryConflictBodySchema,
   StoryListResponse: StoryListResponseSchema,
   StoryResponse: StoryResponseSchema,
   ThreadBody: ThreadBodySchema,
@@ -1126,6 +1153,27 @@ export const operations = {
       "200": StoryResponseSchema,
       "401": ErrorBodySchema,
       "404": ErrorBodySchema,
+    },
+  },
+  "PATCH /api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}": {
+    request: PatchStoryRequestSchema,
+    responses: {
+      "200": StoryResponseSchema,
+      "400": ErrorBodySchema,
+      "401": ErrorBodySchema,
+      "404": ErrorBodySchema,
+      "409": StoryConflictBodySchema,
+      "422": ErrorBodySchema,
+    },
+  },
+  "POST /api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/cancel": {
+    request: CancelStoryRequestSchema,
+    responses: {
+      "200": StoryResponseSchema,
+      "400": ErrorBodySchema,
+      "401": ErrorBodySchema,
+      "404": ErrorBodySchema,
+      "409": StoryConflictBodySchema,
     },
   },
   "POST /api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/threads": {

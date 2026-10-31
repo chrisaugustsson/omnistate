@@ -1,7 +1,8 @@
 //! Stories. A story is a work item of a feature: its criteria, the stories
 //! that block it, the files it changes, a priority and a status. The key a
 //! person reads is `US-<number>`, counted per project. Every write adds 1 to
-//! the story's `version`. Creating a story emits `story.created`.
+//! the story's `version`. Creating a story emits `story.created`, editing one
+//! `story.changed` and cancelling one `story.cancelled`.
 
 use crate::AppState;
 use crate::live;
@@ -12,6 +13,7 @@ use axum::Json;
 use axum::body::Bytes;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sqlx::{Postgres, Transaction};
@@ -521,4 +523,308 @@ pub async fn show_story(
     Ok(Json(StoryResponse {
         story: row.into_body(),
     }))
+}
+
+#[derive(Deserialize, ToSchema)]
+pub struct PatchStoryRequest {
+    /// The `version` the caller last read.
+    pub expected_version: i64,
+    /// Backlog only. Not blank.
+    pub title: Option<String>,
+    /// Backlog only.
+    pub text: Option<String>,
+    /// Backlog only.
+    pub topic: Option<String>,
+    /// Backlog only. Replaces the list; every criterion starts unticked.
+    pub criteria: Option<Vec<NewCriterion>>,
+    /// IDs of other stories of the same feature. Any open status.
+    pub blocked_by: Option<Vec<String>>,
+    /// Backlog only.
+    pub files_planned: Option<Vec<String>>,
+    /// 0 to 3. Any open status.
+    pub priority: Option<i64>,
+    /// `{doc_id, node_id, label}` or `{thread_id, label}`. Any open status.
+    #[schema(value_type = Option<Vec<Object>>)]
+    pub links: Option<Vec<Value>>,
+}
+
+#[derive(Deserialize, ToSchema)]
+pub struct CancelStoryRequest {
+    /// The `version` the caller last read.
+    pub expected_version: i64,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct StoryConflictBody {
+    /// `conflict`
+    pub error: String,
+    /// The version the story has now.
+    pub current_version: i32,
+}
+
+/// An error of a story write: the usual ones, or a stale `expected_version`.
+pub enum StoryError {
+    Api(ApiError),
+    Stale(i32),
+}
+
+impl From<ApiError> for StoryError {
+    fn from(error: ApiError) -> Self {
+        Self::Api(error)
+    }
+}
+
+impl IntoResponse for StoryError {
+    fn into_response(self) -> Response {
+        match self {
+            Self::Api(error) => error.into_response(),
+            Self::Stale(current_version) => (
+                StatusCode::CONFLICT,
+                Json(json!({ "error": "conflict", "current_version": current_version })),
+            )
+                .into_response(),
+        }
+    }
+}
+
+/// The story with a lock on its row, 404 when the feature has none.
+async fn lock_story(
+    tx: &mut Transaction<'static, Postgres>,
+    project_id: &str,
+    feature_id: &str,
+    story_id: &str,
+) -> Result<StoryRow, ApiError> {
+    sqlx::query_as::<_, StoryRow>(&format!(
+        "SELECT {STORY_COLUMNS} FROM stories \
+         WHERE id = $1::uuid AND feature_id = $2::uuid AND project_id = $3::uuid FOR UPDATE"
+    ))
+    .bind(story_id)
+    .bind(feature_id)
+    .bind(project_id)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(ApiError::database)?
+    .ok_or(ApiError::NotFound)
+}
+
+fn is_closed(status: &str) -> bool {
+    status == "done" || status == "cancelled"
+}
+
+/// Changes a story's text, priority, blockers or links.
+#[utoipa::path(
+    patch,
+    path = "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}",
+    params(
+        ("workspace_id" = String, Path, description = "The workspace's UUID"),
+        ("project_id" = String, Path, description = "The project's UUID"),
+        ("feature_id" = String, Path, description = "The feature's UUID"),
+        ("story_id" = String, Path, description = "The story's UUID"),
+    ),
+    request_body = PatchStoryRequest,
+    responses(
+        (status = 200, description = "The story with its new `version`", body = StoryResponse),
+        (status = 400, description = "The body is not JSON of the expected shape (`invalid_request`)", body = ErrorBody),
+        (status = 401, description = "No valid API key or session", body = ErrorBody),
+        (status = 404, description = "No such story in this feature, project and workspace", body = ErrorBody),
+        (status = 409, description = "`conflict` with `current_version` when `expected_version` is stale; checked before the rest. Else `not_in_backlog` (a text field of a story outside backlog) or `not_open` (any field of a done or cancelled story); the request is refused whole", body = StoryConflictBody),
+        (status = 422, description = "No field but `expected_version` (`no_changes`), a blank title (`invalid_title`), a priority outside 0 to 3 (`invalid_priority`), links of neither shape (`invalid_links`) or a `blocked_by` that is not a list of other stories of the feature (`invalid_blocked_by`)", body = ErrorBody),
+    )
+)]
+pub async fn patch_story(
+    State(state): State<AppState>,
+    request: WorkspaceRequest,
+    Path((_, project_id, feature_id, story_id)): Path<(String, String, String, String)>,
+    body: Bytes,
+) -> Result<Json<StoryResponse>, StoryError> {
+    let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
+    let feature_id = parse_uuid(&feature_id).ok_or(ApiError::NotFound)?;
+    let story_id = parse_uuid(&story_id).ok_or(ApiError::NotFound)?;
+    let patch = parse_body::<PatchStoryRequest>(&body)?;
+    let mut fields: Vec<&str> = Vec::new();
+    let mut restricted = false;
+    for (name, present, in_backlog) in [
+        ("title", patch.title.is_some(), true),
+        ("text", patch.text.is_some(), true),
+        ("topic", patch.topic.is_some(), true),
+        ("criteria", patch.criteria.is_some(), true),
+        ("blocked_by", patch.blocked_by.is_some(), false),
+        ("files_planned", patch.files_planned.is_some(), true),
+        ("priority", patch.priority.is_some(), false),
+        ("links", patch.links.is_some(), false),
+    ] {
+        if present {
+            fields.push(name);
+            restricted |= in_backlog;
+        }
+    }
+    if fields.is_empty() {
+        return Err(invalid_field("no_changes").into());
+    }
+    let title = patch.title.as_ref().map(|title| title.trim().to_string());
+    if title.as_ref().is_some_and(|title| title.is_empty()) {
+        return Err(invalid_field("invalid_title").into());
+    }
+    if patch
+        .priority
+        .is_some_and(|priority| !(0..=3).contains(&priority))
+    {
+        return Err(invalid_field("invalid_priority").into());
+    }
+    if patch
+        .links
+        .as_ref()
+        .is_some_and(|links| !links.iter().all(link_fits))
+    {
+        return Err(invalid_field("invalid_links").into());
+    }
+    let blocked_by = match &patch.blocked_by {
+        None => None,
+        Some(ids) => {
+            let mut parsed: Vec<String> = Vec::new();
+            for id in ids {
+                let id = parse_uuid(id).ok_or_else(|| invalid_field("invalid_blocked_by"))?;
+                if id == story_id {
+                    return Err(invalid_field("invalid_blocked_by").into());
+                }
+                if !parsed.contains(&id) {
+                    parsed.push(id);
+                }
+            }
+            Some(parsed)
+        }
+    };
+
+    let mut tx = state.workspace_tx(&request.workspace_id).await?;
+    let current = lock_story(&mut tx, &project_id, &feature_id, &story_id).await?;
+    if let Some(ids) = blocked_by.as_ref().filter(|ids| !ids.is_empty()) {
+        let (found,): (i64,) = sqlx::query_as(
+            "SELECT count(*) FROM stories WHERE feature_id = $1::uuid AND id::text = ANY($2)",
+        )
+        .bind(&feature_id)
+        .bind(ids)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(ApiError::database)?;
+        if found != ids.len() as i64 {
+            return Err(invalid_field("invalid_blocked_by").into());
+        }
+    }
+    if i64::from(current.version) != patch.expected_version {
+        return Err(StoryError::Stale(current.version));
+    }
+    if is_closed(&current.status) {
+        return Err(ApiError::conflict("not_open").into());
+    }
+    if restricted && current.status != "backlog" {
+        return Err(ApiError::conflict("not_in_backlog").into());
+    }
+
+    let criteria = patch.criteria.as_ref().map(|criteria| {
+        Value::from(
+            criteria
+                .iter()
+                .map(|c| {
+                    json!({
+                        "text": c.text,
+                        "ticked": false,
+                        "human_check": c.human_check.unwrap_or(false),
+                        "pending": false,
+                    })
+                })
+                .collect::<Vec<Value>>(),
+        )
+        .to_string()
+    });
+    let row = sqlx::query_as::<_, StoryRow>(&format!(
+        "UPDATE stories SET \
+         title = COALESCE($2, title), text = COALESCE($3, text), topic = COALESCE($4, topic), \
+         criteria = COALESCE($5::jsonb, criteria), blocked_by = COALESCE($6::jsonb, blocked_by), \
+         files_planned = COALESCE($7::jsonb, files_planned), priority = COALESCE($8, priority), \
+         links = COALESCE($9::jsonb, links), version = version + 1, updated_at = clock_timestamp() \
+         WHERE id = $1::uuid RETURNING {STORY_COLUMNS}"
+    ))
+    .bind(&story_id)
+    .bind(&title)
+    .bind(&patch.text)
+    .bind(&patch.topic)
+    .bind(&criteria)
+    .bind(blocked_by.map(|ids| json!(ids).to_string()))
+    .bind(patch.files_planned.map(|files| json!(files).to_string()))
+    .bind(patch.priority.map(|priority| priority as i32))
+    .bind(patch.links.map(|links| Value::from(links).to_string()))
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(ApiError::database)?;
+    let story = row.into_body();
+    live::emit(
+        &mut tx,
+        &request.workspace_id,
+        &project_id,
+        "story.changed",
+        &json!({ "story_id": story.id, "key": story.key, "fields": fields }),
+    )
+    .await?;
+    tx.commit().await.map_err(ApiError::database)?;
+    state.live.announce(&request.workspace_id, &project_id);
+    Ok(Json(StoryResponse { story }))
+}
+
+/// Cancels a story: it leaves the board and no longer blocks other stories.
+#[utoipa::path(
+    post,
+    path = "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/cancel",
+    params(
+        ("workspace_id" = String, Path, description = "The workspace's UUID"),
+        ("project_id" = String, Path, description = "The project's UUID"),
+        ("feature_id" = String, Path, description = "The feature's UUID"),
+        ("story_id" = String, Path, description = "The story's UUID"),
+    ),
+    request_body = CancelStoryRequest,
+    responses(
+        (status = 200, description = "The cancelled story, its holder cleared", body = StoryResponse),
+        (status = 400, description = "The body is not JSON of the expected shape (`invalid_request`)", body = ErrorBody),
+        (status = 401, description = "No valid API key or session", body = ErrorBody),
+        (status = 404, description = "No such story in this feature, project and workspace", body = ErrorBody),
+        (status = 409, description = "`conflict` with `current_version` when `expected_version` is stale, or `not_open` when the story is done or cancelled", body = StoryConflictBody),
+    )
+)]
+pub async fn cancel_story(
+    State(state): State<AppState>,
+    request: WorkspaceRequest,
+    Path((_, project_id, feature_id, story_id)): Path<(String, String, String, String)>,
+    body: Bytes,
+) -> Result<Json<StoryResponse>, StoryError> {
+    let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
+    let feature_id = parse_uuid(&feature_id).ok_or(ApiError::NotFound)?;
+    let story_id = parse_uuid(&story_id).ok_or(ApiError::NotFound)?;
+    let cancel = parse_body::<CancelStoryRequest>(&body)?;
+    let mut tx = state.workspace_tx(&request.workspace_id).await?;
+    let current = lock_story(&mut tx, &project_id, &feature_id, &story_id).await?;
+    if i64::from(current.version) != cancel.expected_version {
+        return Err(StoryError::Stale(current.version));
+    }
+    if is_closed(&current.status) {
+        return Err(ApiError::conflict("not_open").into());
+    }
+    let row = sqlx::query_as::<_, StoryRow>(&format!(
+        "UPDATE stories SET status = 'cancelled', holder = NULL, version = version + 1, \
+         updated_at = clock_timestamp() WHERE id = $1::uuid RETURNING {STORY_COLUMNS}"
+    ))
+    .bind(&story_id)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(ApiError::database)?;
+    let story = row.into_body();
+    live::emit(
+        &mut tx,
+        &request.workspace_id,
+        &project_id,
+        "story.cancelled",
+        &json!({ "story_id": story.id, "key": story.key }),
+    )
+    .await?;
+    tx.commit().await.map_err(ApiError::database)?;
+    state.live.announce(&request.workspace_id, &project_id);
+    Ok(Json(StoryResponse { story }))
 }

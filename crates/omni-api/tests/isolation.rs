@@ -283,6 +283,18 @@ const CASES: &[Case] = &[
         Kind::Workspace,
     ),
     case(
+        "PATCH",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}",
+        Some(r#"{"expected_version":1,"priority":1}"#),
+        Kind::Workspace,
+    ),
+    case(
+        "POST",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/cancel",
+        Some(r#"{"expected_version":1}"#),
+        Kind::Workspace,
+    ),
+    case(
         "POST",
         "/api/v1/w/{workspace_id}/projects/{project_id}/threads",
         Some(r#"{"question":"intruder"}"#),

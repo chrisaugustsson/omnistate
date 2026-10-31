@@ -190,6 +190,16 @@ pub fn registry() -> Vec<RouteEntry> {
             Access::Both,
         ),
         (
+            "PATCH",
+            "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}",
+            Access::Both,
+        ),
+        (
+            "POST",
+            "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/cancel",
+            Access::Both,
+        ),
+        (
             "POST",
             "/api/v1/w/{workspace_id}/projects/{project_id}/threads",
             Access::Agent,

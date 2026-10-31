@@ -347,7 +347,11 @@ pub fn router(state: AppState) -> Router {
         )
         .route(
             "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}",
-            get(stories::show_story),
+            get(stories::show_story).patch(stories::patch_story),
+        )
+        .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/cancel",
+            post(stories::cancel_story),
         )
         .route(
             "/api/v1/w/{workspace_id}/projects/{project_id}/threads",

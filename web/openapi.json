@@ -367,6 +367,19 @@
         ],
         "type": "object"
       },
+      "CancelStoryRequest": {
+        "properties": {
+          "expected_version": {
+            "description": "The `version` the caller last read.",
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "expected_version"
+        ],
+        "type": "object"
+      },
       "CommentBody": {
         "description": "A comment pinned to a node of a doc.",
         "properties": {
@@ -1820,6 +1833,88 @@
         ],
         "type": "object"
       },
+      "PatchStoryRequest": {
+        "properties": {
+          "blocked_by": {
+            "description": "IDs of other stories of the same feature. Any open status.",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "criteria": {
+            "description": "Backlog only. Replaces the list; every criterion starts unticked.",
+            "items": {
+              "$ref": "#/components/schemas/NewCriterion"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "expected_version": {
+            "description": "The `version` the caller last read.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "files_planned": {
+            "description": "Backlog only.",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "links": {
+            "description": "`{doc_id, node_id, label}` or `{thread_id, label}`. Any open status.",
+            "items": {
+              "type": "object"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "priority": {
+            "description": "0 to 3. Any open status.",
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "text": {
+            "description": "Backlog only.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "title": {
+            "description": "Backlog only. Not blank.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "topic": {
+            "description": "Backlog only.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "expected_version"
+        ],
+        "type": "object"
+      },
       "PostBody": {
         "properties": {
           "attachments": {
@@ -2185,6 +2280,24 @@
           "version",
           "created_at",
           "updated_at"
+        ],
+        "type": "object"
+      },
+      "StoryConflictBody": {
+        "properties": {
+          "current_version": {
+            "description": "The version the story has now.",
+            "format": "int32",
+            "type": "integer"
+          },
+          "error": {
+            "description": "`conflict`",
+            "type": "string"
+          }
+        },
+        "required": [
+          "error",
+          "current_version"
         ],
         "type": "object"
       },
@@ -6191,6 +6304,234 @@
           }
         },
         "summary": "One story of a feature.",
+        "tags": [
+          "crate::stories"
+        ],
+        "x-omni-access": "both"
+      },
+      "patch": {
+        "operationId": "patch_story",
+        "parameters": [
+          {
+            "description": "The workspace's UUID",
+            "in": "path",
+            "name": "workspace_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The project's UUID",
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The feature's UUID",
+            "in": "path",
+            "name": "feature_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The story's UUID",
+            "in": "path",
+            "name": "story_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PatchStoryRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StoryResponse"
+                }
+              }
+            },
+            "description": "The story with its new `version`"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The body is not JSON of the expected shape (`invalid_request`)"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No valid API key or session"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No such story in this feature, project and workspace"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StoryConflictBody"
+                }
+              }
+            },
+            "description": "`conflict` with `current_version` when `expected_version` is stale; checked before the rest. Else `not_in_backlog` (a text field of a story outside backlog) or `not_open` (any field of a done or cancelled story); the request is refused whole"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No field but `expected_version` (`no_changes`), a blank title (`invalid_title`), a priority outside 0 to 3 (`invalid_priority`), links of neither shape (`invalid_links`) or a `blocked_by` that is not a list of other stories of the feature (`invalid_blocked_by`)"
+          }
+        },
+        "summary": "Changes a story's text, priority, blockers or links.",
+        "tags": [
+          "crate::stories"
+        ],
+        "x-omni-access": "both"
+      }
+    },
+    "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/cancel": {
+      "post": {
+        "operationId": "cancel_story",
+        "parameters": [
+          {
+            "description": "The workspace's UUID",
+            "in": "path",
+            "name": "workspace_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The project's UUID",
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The feature's UUID",
+            "in": "path",
+            "name": "feature_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The story's UUID",
+            "in": "path",
+            "name": "story_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CancelStoryRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StoryResponse"
+                }
+              }
+            },
+            "description": "The cancelled story, its holder cleared"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The body is not JSON of the expected shape (`invalid_request`)"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No valid API key or session"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No such story in this feature, project and workspace"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StoryConflictBody"
+                }
+              }
+            },
+            "description": "`conflict` with `current_version` when `expected_version` is stale, or `not_open` when the story is done or cancelled"
+          }
+        },
+        "summary": "Cancels a story: it leaves the board and no longer blocks other stories.",
         "tags": [
           "crate::stories"
         ],
