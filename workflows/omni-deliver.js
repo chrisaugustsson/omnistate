@@ -8,6 +8,7 @@ export const meta = {
     { title: 'Clarity', detail: 'one check per backlog story whose version is new, in parallel: blocking gaps become threads, minor ones agent decisions' },
     { title: 'Unblock', detail: 'a blocked story whose linked threads all have a conclusion gets each conclusion as a human decision and is unblocked' },
     { title: 'Implement', detail: 'up to `implementers` agents at once, each on a pickable story in its own worktree; the story reaches review only after the fast command passes there' },
+    { title: 'Review', detail: 'up to `reviewers` reviewers at once read each review story\'s branch against its criteria; a fail is fixed in place by an implementer, three fails block the story, a pass moves it to testing' },
   ],
 }
 
@@ -371,8 +372,13 @@ Return raw structured data only.`
     const keys = omni(['story', 'list', '--pickable']).split('\n').map((l) => l.trim().split(/\s+/)[0]).filter(Boolean)
     return keys.find((k) => !skipped.has(k)) || null
   }
-  const implement = async (key) => {
-    const wt = worktreeOf(key)
+  const ensureFast = () => {
+    if (fast === null) fast = String(JSON.parse(omni(['checks', '--json'])).fast || '')
+  }
+  // Runs the implementer until the fast command passes in the worktree, then
+  // rewrites files_changed. Returns null when it did, else the outcome of the
+  // thread that blocked the story.
+  const implementLoop = async (key, wt, story) => {
     const recorded = new Set()
     const record = (r) => {
       for (const d of r.decisions || []) {
@@ -382,7 +388,6 @@ Return raw structured data only.`
         write('decision', key, ['--question', d.question, '--choice', d.choice, '--by', 'agent'])
       }
     }
-    const story = readStory(key)
     let retry = null
     for (let attempt = 1; attempt <= 3; attempt++) {
       const r = (await runAgent(implPrompt(story, wt, retry), { schema: IMPL_SCHEMA, label: `impl:${key}${attempt > 1 ? ` fix${attempt - 1}` : ''}`, phase: 'Implement', model: modelFor('impl'), role: 'impl' })) || { status: 'blocked', summary: 'The implementer returned no result (it may have died).' }
@@ -402,8 +407,7 @@ Return raw structured data only.`
       if (result.ok) {
         const paths = git(['-C', wt, 'diff', '--name-only', `${integration}...HEAD`]).split('\n').filter(Boolean)
         if (paths.length) write('files', key, paths)
-        write('move', key, ['--to', 'review'])
-        return { key, outcome: 'review' }
+        return null
       }
       retry = result.output
     }
@@ -411,8 +415,14 @@ Return raw structured data only.`
     linkAndBlock(key, [id])
     return { key, outcome: 'fast_failed', thread: id }
   }
+  const implement = async (key) => {
+    const bad = await implementLoop(key, worktreeOf(key), readStory(key))
+    if (bad) return bad
+    write('move', key, ['--to', 'review'])
+    return { key, outcome: 'review' }
+  }
   const start = (key) => {
-    if (fast === null) fast = String(JSON.parse(omni(['checks', '--json'])).fast || '')
+    ensureFast()
     dropWorktree(key)
     write('claim', key, ['--stage', 'implementing'])
     fs.mkdirSync(storiesDir, { recursive: true })
@@ -440,8 +450,118 @@ Return raw structured data only.`
     if (o.error) log(`${key}: ${o.error}`)
   }
 
+  // ---- phase 5: review in the worktree -------------------------------------
+  phase('Review')
+  const REVIEW_SCHEMA = {
+    type: 'object',
+    required: ['verdict', 'findings'],
+    properties: {
+      verdict: { type: 'string', enum: ['pass', 'fail', 'needs_decision'] },
+      findings: {
+        type: 'array',
+        description: 'Defects to fix, one per problem. Empty on pass',
+        items: {
+          type: 'object',
+          required: ['text', 'files', 'criterion'],
+          properties: {
+            text: { type: 'string', description: 'What is wrong, what the story requires, and where' },
+            files: { type: 'array', items: { type: 'string' } },
+            criterion: { type: 'string', description: 'The acceptance criterion it breaks, verbatim; empty when it breaks an interface or doc node' },
+          },
+        },
+      },
+      question: { type: 'string', description: 'Only with needs_decision: the product decision the story cannot avoid, as one plain question' },
+      options: { type: 'array', items: { type: 'string' }, description: 'Only with needs_decision: the concrete options' },
+      recommendation: { type: 'string', description: 'Only with needs_decision: the option you suggest' },
+    },
+  }
+  const reviewPrompt = (story, wt) => {
+    const docs = (story.links || []).filter((l) => l.doc_id)
+    return `You review ONE story of the feature "${feature}" before it merges. You read; you run nothing and change nothing.
+
+## The change
+Worktree ${wt}, branch story/${story.key}, from ${integration}. See the diff with \`git -C ${wt} diff ${integration}...HEAD\` and read the changed files there.
+
+## The story
+${story.key}: ${story.title}
+${story.text || ''}
+
+### Acceptance criteria
+${(story.criteria || []).map((c) => `- ${c.text || c}`).join('\n')}
+
+### Files planned
+${(story.files_planned || []).join('\n') || '(none named)'}
+
+### Decisions already taken (settled: judge against them as if the spec said so)
+${(story.decisions || []).map((d) => `- ${d.question} -> ${d.choice} (${d.by})`).join('\n') || '(none)'}
+
+## Linked doc nodes
+${docs.map((l) => `### Doc ${l.doc_id}, node ${l.node_id}${l.label ? ` (${l.label})` : ''}\n${docText(l.doc_id)}`).join('\n\n') || '(none)'}
+
+## Rules
+- Read the diff and the files against every criterion, the interfaces and the linked doc nodes. Do not run tests, builds or the app.
+- verdict fail: one finding per defect, each with the files it is in and the criterion it breaks.
+- verdict needs_decision: only when the spec does not decide the behaviour and the story cannot avoid it; give question, options and recommendation.
+- verdict pass: every criterion is met by the code you read. Findings empty.
+Return raw structured data only.`
+  }
+  const openReviewFindings = (key) => (readStory(key).findings || []).map((f, i) => ({ ...f, i })).filter((f) => f.stage === 'review' && !f.resolved)
+  const resolveReviewFindings = (key) => {
+    for (const f of openReviewFindings(key)) write('resolve', key, ['--finding', String(f.i)])
+  }
+  const review = async (key) => {
+    const wt = worktreeOf(key)
+    ensureFast()
+    write('claim', key, ['--stage', 'review'])
+    for (let round = 1; round <= 3; round++) {
+      let verdict = null
+      for (let attempt = 0; attempt < 2 && !verdict; attempt++) {
+        verdict = await runAgent(reviewPrompt(readStory(key), wt), { schema: REVIEW_SCHEMA, label: `review:${key}${round > 1 ? ` round${round}` : ''}`, phase: 'Review', model: modelFor('review'), role: 'review' })
+      }
+      if (!verdict) {
+        const id = openThread(`${key}: the reviewer returned nothing`, 'The reviewer returned no result twice.\n')
+        linkAndBlock(key, [id])
+        return { key, outcome: 'review_failed', thread: id }
+      }
+      if (verdict.verdict === 'needs_decision') {
+        const options = (verdict.options || []).map((o, i) => `${i + 1}. ${o}`).join('\n')
+        const id = openThread(`${key}: ${verdict.question}`, `${verdict.question}\n\nOptions:\n${options}\n\nRecommendation: ${verdict.recommendation || ''}\n`)
+        linkAndBlock(key, [id])
+        return { key, outcome: 'needs_decision', thread: id }
+      }
+      if (verdict.verdict === 'pass') {
+        resolveReviewFindings(key)
+        write('move', key, ['--to', 'testing'])
+        return { key, outcome: 'testing' }
+      }
+      const findings = verdict.findings || []
+      // The open findings are this round's; the last round's were fixed or are superseded.
+      resolveReviewFindings(key)
+      for (const f of findings) write('finding', key, ['--stage', 'review', '--text', f.text, ...(f.files || []).flatMap((p) => ['--file', p])])
+      if (round === 3) {
+        const list = findings.map((f) => `- ${f.text}${(f.files || []).length ? ` (${f.files.join(', ')})` : ''}`).join('\n')
+        const id = openThread(`${key}: the review still fails after three attempts`, `The review failed three times. Findings of the last round:\n\n${list}\n`)
+        linkAndBlock(key, [id])
+        return { key, outcome: 'review_failed', thread: id }
+      }
+      const bad = await implementLoop(key, wt, readStory(key))
+      if (bad) return bad
+    }
+  }
+  const reviewOutcomes = []
+  const queue = listStories().filter((s) => s.status === 'review' && !s.blocked && !reviewed.has(s.key)).map((s) => s.key)
+  await Promise.all(Array.from({ length: Math.min(reviewers, queue.length) }, async () => {
+    while (queue.length) {
+      const key = queue.shift()
+      const o = await review(key).catch((e) => ({ key, outcome: 'failed', error: String(e && e.message || e) }))
+      reviewed.add(key)
+      reviewOutcomes.push(o)
+      if (o.error) log(`${key}: ${o.error}`)
+    }
+  }))
+
   const pickable = omni(['story', 'list', '--pickable']).split('\n').filter(Boolean).length
-  return { run: runId, feature, integration, thread: threadId, implementers, reviewers, storyLimit: storyLimit === Infinity ? null : storyLimit, reconciled, clarity, unblocked, resumed, implemented: outcomes, pickable }
+  return { run: runId, feature, integration, thread: threadId, implementers, reviewers, storyLimit: storyLimit === Infinity ? null : storyLimit, reconciled, clarity, unblocked, resumed, implemented: outcomes, reviewed: reviewOutcomes, pickable }
 } finally {
   fs.rmSync(lockPath, { force: true })
 }
