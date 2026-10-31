@@ -10,8 +10,11 @@ use design::{
     SIX_WORDS, absolute, assert_box, assert_cases, at, board, cases, fixed, flex, lay_out, node,
     none, rect, text, with,
 };
+use omni_core::design::FontStyle;
 use omni_render::layout;
-use omni_render::text::Fonts;
+use omni_render::paint::Assets;
+use omni_render::text::{Fonts, StandIn};
+use omni_render::view::Scene;
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
 
@@ -429,4 +432,181 @@ fn a_min_width_above_a_max_width_is_the_width_a_text_breaks_its_lines_at() {
     // breaks into at 80 px, not the four it would take at 60 px, in a column
     // that aligns it to its start, in a grid area and where it is positioned.
     assert_cases(cases::texts_whose_min_width_beats_their_max_width());
+}
+
+// ---------------------------------------------------------------------------
+// Fonts that stood in
+// ---------------------------------------------------------------------------
+
+/// The bundled Inter Regular file, whose internal family name is "Inter".
+const INTER_REGULAR: &[u8] = include_bytes!("../fonts/Inter-Regular.ttf");
+
+/// A text `n` in `family` at `weight` and `style`.
+fn text_in(n: u32, family: &str, weight: u32, style: &str) -> Value {
+    with(
+        &with(
+            &with(
+                &text(&format!("txt{n:05}"), "Hello", 16.0, 1.5),
+                "fontFamily",
+                json!(family),
+            ),
+            "fontWeight",
+            json!(weight),
+        ),
+        "fontStyle",
+        json!(style),
+    )
+}
+
+/// What `Scene::fonts_stood_in` lists for a board of `texts`, with `assets`.
+fn stood_in(texts: Vec<Value>, assets: Assets) -> Vec<StandIn> {
+    let page = board("brd00001", fixed(800.0), fixed(600.0), none(), texts);
+    Scene::new(node(&page), assets).fonts_stood_in()
+}
+
+/// Assets with the Inter Regular file registered as "Brand Sans".
+fn brand_sans() -> Assets {
+    let mut assets = Assets::new();
+    assets
+        .add_font("Brand Sans", INTER_REGULAR)
+        .expect("Inter Regular is a font");
+    assets
+}
+
+#[allow(clippy::too_many_arguments)]
+fn stand_in(
+    family: &str,
+    weight: u32,
+    style: FontStyle,
+    drawn_family: &str,
+    drawn_weight: u32,
+    drawn_style: FontStyle,
+    texts: usize,
+) -> StandIn {
+    StandIn {
+        family: family.to_string(),
+        weight,
+        style,
+        drawn_family: drawn_family.to_string(),
+        drawn_weight,
+        drawn_style,
+        texts,
+    }
+}
+
+#[test]
+fn a_text_in_a_registered_alias_or_in_inter_regular_stands_in_for_nothing() {
+    // The file's internal name is "Inter", the alias is "Brand Sans", and no
+    // Inter file is registered.
+    let listed = stood_in(
+        vec![
+            text_in(1, "Brand Sans", 400, "normal"),
+            text_in(2, "Inter", 400, "normal"),
+        ],
+        brand_sans(),
+    );
+    assert_eq!(listed, vec![]);
+}
+
+#[test]
+fn inter_at_another_weight_or_in_italic_is_drawn_in_inter_400_normal() {
+    let listed = stood_in(
+        vec![
+            text_in(1, "Inter", 700, "normal"),
+            text_in(2, "Inter", 400, "italic"),
+        ],
+        Assets::new(),
+    );
+    assert_eq!(listed.len(), 2, "{listed:#?}");
+    for expected in [
+        stand_in(
+            "Inter",
+            700,
+            FontStyle::Normal,
+            "Inter",
+            400,
+            FontStyle::Normal,
+            1,
+        ),
+        stand_in(
+            "Inter",
+            400,
+            FontStyle::Italic,
+            "Inter",
+            400,
+            FontStyle::Normal,
+            1,
+        ),
+    ] {
+        assert!(listed.contains(&expected), "{expected:?} in {listed:#?}");
+    }
+}
+
+#[test]
+fn texts_in_a_family_with_no_file_are_listed_once_per_face_with_their_count_as_drawn_in_inter() {
+    let listed = stood_in(
+        vec![
+            text_in(1, "Roboto", 700, "normal"),
+            text_in(2, "Roboto", 700, "normal"),
+            text_in(3, "Roboto", 700, "italic"),
+        ],
+        brand_sans(),
+    );
+    assert_eq!(listed.len(), 2, "{listed:#?}");
+    for expected in [
+        stand_in(
+            "Roboto",
+            700,
+            FontStyle::Normal,
+            "Inter",
+            400,
+            FontStyle::Normal,
+            2,
+        ),
+        stand_in(
+            "Roboto",
+            700,
+            FontStyle::Italic,
+            "Inter",
+            400,
+            FontStyle::Normal,
+            1,
+        ),
+    ] {
+        assert!(listed.contains(&expected), "{expected:?} in {listed:#?}");
+    }
+}
+
+#[test]
+fn a_family_that_matches_a_registered_alias_only_without_regard_to_case_is_drawn_in_inter() {
+    let listed = stood_in(vec![text_in(1, "brand sans", 400, "normal")], brand_sans());
+    assert_eq!(
+        listed,
+        vec![stand_in(
+            "brand sans",
+            400,
+            FontStyle::Normal,
+            "Inter",
+            400,
+            FontStyle::Normal,
+            1
+        )]
+    );
+}
+
+#[test]
+fn a_registered_family_with_no_face_of_the_weight_asked_for_is_drawn_in_its_own_face() {
+    let listed = stood_in(vec![text_in(1, "Brand Sans", 700, "normal")], brand_sans());
+    assert_eq!(
+        listed,
+        vec![stand_in(
+            "Brand Sans",
+            700,
+            FontStyle::Normal,
+            "Brand Sans",
+            400,
+            FontStyle::Normal,
+            1
+        )]
+    );
 }

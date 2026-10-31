@@ -130,6 +130,9 @@ vi.mock("@/design/renderer", () => {
         showTags(tags: string) {
           fake.tagsShown.push(tags);
         },
+        fontsStoodIn() {
+          return [];
+        },
         layers() {
           return boards().map((board) => ({ ...board, children: [] }));
         },

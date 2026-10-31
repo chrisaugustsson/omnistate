@@ -73,6 +73,13 @@ type Shown = { page: unknown; system: unknown; board?: string | null };
 /** What the fake renderers were asked to do. */
 const fake = vi.hoisted(() => {
   type FakeLayer = { address: string; name: string; type: string; children: FakeLayer[] };
+  type StandIn = {
+    family: string;
+    weight: number;
+    style: string;
+    drawnAs: { family: string; weight: number; style: string };
+    texts: number;
+  };
   type Instance = {
     canvas: HTMLCanvasElement;
     shown: { page: unknown; system: unknown; board?: string | null }[];
@@ -87,6 +94,8 @@ const fake = vi.hoisted(() => {
     layersByPage: new Map<string, FakeLayer[]>(),
     /** Whether the renderer puts boards that arrive in place (`updateBoards`) instead of being shown the page again. */
     incremental: false,
+    /** The fonts that stand in on each board, by the board's ID, as `fontsStoodIn` lists them. */
+    standInsByBoard: new Map<string, StandIn[]>(),
   };
 });
 
@@ -148,6 +157,21 @@ vi.mock("@/design/renderer", () => ({
         : {}),
       layers() {
         return boards().map((board) => ({ ...board, children: [] }));
+      },
+      // The stand-ins of the boards read, once per face asked for with the texts of all of them.
+      fontsStoodIn() {
+        const listed: { family: string; weight: number; style: string; drawnAs: unknown; texts: number }[] = [];
+        for (const board of lastPage()?.children ?? []) {
+          if (!isRead(board.id)) continue;
+          for (const entry of fake.standInsByBoard.get(board.id) ?? []) {
+            const same = listed.find(
+              (seen) => seen.family === entry.family && seen.weight === entry.weight && seen.style === entry.style,
+            );
+            if (same) same.texts += entry.texts;
+            else listed.push({ ...entry });
+          }
+        }
+        return listed;
       },
       layersOf(address: string) {
         return nodeAt(address)?.layer ?? null;
@@ -682,6 +706,7 @@ const scrollIntoView = Element.prototype.scrollIntoView;
 beforeEach(() => {
   fake.instances.length = 0;
   fake.layersByPage.clear();
+  fake.standInsByBoard.clear();
   seedLayers();
   api = fakeApi();
   FakeWebSocket.instances = [];
@@ -855,6 +880,43 @@ describe("a board that arrives while the page is shown", () => {
     await frames.run();
     expect(selectedNames()).toEqual(["3:Total"]);
     expect(chevron("Cart").getAttribute("aria-expanded")).toBe("true");
+  });
+});
+
+describe("fonts that stood in", () => {
+  beforeEach(() => {
+    fake.incremental = true;
+  });
+  afterEach(() => {
+    fake.incremental = false;
+  });
+
+  test("the error line has a sentence per font that stood in, and a board put in place later adds one or updates a count", async () => {
+    const roboto = { family: "Roboto", weight: 700, style: "normal", drawnAs: { family: "Inter", weight: 400, style: "normal" } };
+    const geist = { family: "Geist", weight: 400, style: "italic", drawnAs: { family: "Geist", weight: 400, style: "normal" } };
+    fake.standInsByBoard.set(CART_BOARD, [{ ...roboto, texts: 1 }]);
+    fake.standInsByBoard.set(RECEIPT, [{ ...roboto, texts: 2 }, { ...geist, texts: 1 }]);
+    // Receipt is given an empty list of children, so the fake counts it as read once it arrives.
+    const [cart, receipt] = PAGES[0].children;
+    const pages = [{ ...PAGES[0], children: [cart, { ...receipt, children: [] }] }, PAGES[1]];
+    const frames = stubFrames();
+    api = fakeApi(pages, RECEIPT);
+    renderAt(DOC_PATH);
+    await frames.run();
+    await waitFor(() =>
+      expect(screen.getByRole("alert").textContent).toBe(
+        "1 text in Roboto 700 is drawn in Inter 400: the design system has no font file for it",
+      ),
+    );
+
+    api.release();
+    await frames.run();
+    await waitFor(() =>
+      expect(screen.getByRole("alert").textContent).toBe(
+        "3 texts in Roboto 700 are drawn in Inter 400: the design system has no font file for it " +
+          "1 text in Geist 400 italic is drawn in Geist 400: the design system has no font file for it",
+      ),
+    );
   });
 });
 

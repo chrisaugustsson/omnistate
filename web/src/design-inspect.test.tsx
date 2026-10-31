@@ -138,6 +138,9 @@ vi.mock("@/design/renderer", () => ({
           ?.omnistate?.modes;
         instance.mode = modes?.[0] ?? null;
       },
+      fontsStoodIn() {
+        return [];
+      },
       layers() {
         return boards().map((board) => ({ ...board, children: [] }));
       },

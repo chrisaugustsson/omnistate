@@ -1146,6 +1146,111 @@ fn text_keeps_its_characters_and_style() {
 }
 
 #[test]
+fn a_run_without_its_own_weight_or_style_takes_them_from_its_variant_id() {
+    // Each text: its run's fontWeight, fontStyle and fontVariantId, and the
+    // fontWeight and fontStyle it gets (null: none).
+    let cases = [
+        (
+            "Bold italic",
+            json!(null),
+            json!(null),
+            "700italic",
+            json!(700.0),
+            json!("italic"),
+        ),
+        (
+            "Regular",
+            json!(null),
+            json!(null),
+            "regular",
+            json!(400.0),
+            json!(null),
+        ),
+        (
+            "Bold",
+            json!(null),
+            json!(null),
+            "bold",
+            json!(700.0),
+            json!(null),
+        ),
+        (
+            "Italic",
+            json!(null),
+            json!(null),
+            "italic",
+            json!(400.0),
+            json!("italic"),
+        ),
+        (
+            "Weight only",
+            json!(null),
+            json!(null),
+            "700",
+            json!(700.0),
+            json!(null),
+        ),
+        (
+            "Black",
+            json!(null),
+            json!(null),
+            "black",
+            json!(null),
+            json!(null),
+        ),
+        (
+            "Own weight",
+            json!("300"),
+            json!(null),
+            "700italic",
+            json!(300.0),
+            json!("italic"),
+        ),
+        (
+            "Own style",
+            json!(null),
+            json!("normal"),
+            "700italic",
+            json!(700.0),
+            json!("normal"),
+        ),
+    ];
+    let texts = cases
+        .iter()
+        .enumerate()
+        .map(|(i, (name, weight, style, variant, _, _))| {
+            let n = i as u32 + 2;
+            let style =
+                json!({ "fontWeight": weight, "fontStyle": style, "fontVariantId": variant });
+            shape(n, "text", name, [10.0, 30.0 * n as f64, 200.0, 24.0]).with(json!({
+                "growType": "fixed",
+                "content": text_content(vec![paragraph(vec![run("Hej", style)])])
+            }))
+        })
+        .collect();
+    let conversion = convert(
+        "font-variants",
+        vec![shape(1, "frame", "Home", [0.0, 0.0, 400.0, 400.0]).kids(texts)],
+    );
+    let root = board_node(board(&conversion, "Home"));
+    for (name, _, _, _, weight, style) in &cases {
+        let text = json_of(node(root, name));
+        let got = (
+            text["fontWeight"]
+                .as_f64()
+                .map_or(json!(null), |weight| json!(weight)),
+            text.get("fontStyle").cloned().unwrap_or(json!(null)),
+        );
+        assert_eq!(got, (weight.clone(), style.clone()), "{name}: {text:#}");
+    }
+    assert!(
+        conversion.report.entries.is_empty(),
+        "{:#?}",
+        conversion.report
+    );
+}
+
+#[test]
 fn paragraphs_become_lines_and_runs_of_one_style_join_up() {
     let conversion = convert(
         "text-paragraphs",

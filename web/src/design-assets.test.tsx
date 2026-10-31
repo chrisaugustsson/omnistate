@@ -57,6 +57,8 @@ const fake = vi.hoisted(() => {
     instances: [] as Instance[],
     /** Bytes that the renderer cannot read, as a font file or an image. */
     unreadable: [0xde, 0xad, 0xbe, 0xef],
+    /** What `fontsStoodIn` lists. */
+    standIns: [] as unknown[],
   };
 });
 
@@ -93,6 +95,9 @@ vi.mock("@/design/renderer", () => {
         // US-058's boards in view (src/design-boards.test.tsx): every board of the page shown.
         visibleBoards() {
           return (lastPage?.children ?? []).map((board) => String(board.id));
+        },
+        fontsStoodIn() {
+          return fake.standIns;
         },
         layers() {
           return [];
@@ -506,6 +511,7 @@ let api: ReturnType<typeof fakeApi>;
 
 beforeEach(() => {
   fake.instances.length = 0;
+  fake.standIns = [];
   vi.stubGlobal("WebSocket", FakeWebSocket);
   window.scrollTo = vi.fn() as unknown as typeof window.scrollTo;
 });
@@ -563,6 +569,18 @@ describe("an image or a font that fails to load", () => {
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(alertText(), "the error line still names the image").toContain(MISSING);
     expect(renderer.log.some((entry) => entry.kind === "image" && entry.name === ref(MISSING))).toBe(false);
+  });
+
+  test("a font that stood in is told after an image that could not be loaded", async () => {
+    fake.standIns = [
+      { family: "Roboto", weight: 700, style: "normal", drawnAs: { family: "Inter", weight: 400, style: "normal" }, texts: 1 },
+    ];
+    api = fakeApi({ broken: true });
+    renderAt(DOC_PATH);
+    await findCanvasArea();
+    await waitFor(() => expect(alertText(), "the error line names the image").toContain(MISSING));
+    const said = alertText();
+    expect(said.endsWith(" 1 text in Roboto 700 is drawn in Inter 400: the design system has no font file for it"), said).toBe(true);
   });
 
   test("a font file the API fails to serve is named in the design viewer's error line, and the rest still draws", async () => {

@@ -18,6 +18,9 @@ import { getRouter } from "./router";
 vi.mock("@/design/renderer", () => ({
   createDesignRenderer: async () => ({
     show() {},
+    fontsStoodIn() {
+      return [];
+    },
     layers() {
       return [];
     },

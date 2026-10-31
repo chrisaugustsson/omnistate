@@ -89,6 +89,9 @@ vi.mock("@/design/renderer", () => ({
         const boards = (lastPage()?.children ?? []).map((board) => String(board.id));
         return fake.visible === null ? boards : boards.filter((id) => fake.visible!.includes(id));
       },
+      fontsStoodIn() {
+        return [];
+      },
       layers() {
         return [];
       },
