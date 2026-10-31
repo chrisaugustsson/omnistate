@@ -35,6 +35,7 @@ function story(
     blockedBy?: number[];
     findings?: Finding[];
     criteria?: Criterion[];
+    version?: number;
   } = {},
 ) {
   return {
@@ -57,7 +58,7 @@ function story(
     files_changed: [],
     links: [],
     holder: fields.holder ?? null,
-    version: 1,
+    version: fields.version ?? 1,
     created_at: AT,
     updated_at: AT,
   };
@@ -77,16 +78,35 @@ function criterion(ticked: boolean, pending: boolean): Criterion {
 
 type Story = ReturnType<typeof story>;
 
-/** A fake of the API whose `stories` the test may replace before a live event. */
+type Write = { method: string; path: string; body: unknown };
+
+/**
+ * A fake of the API whose `stories` the test may replace before a live event.
+ * Every write is recorded in `writes` and answered by `answer`.
+ */
 function fakeApi(stories: Story[]) {
-  const api = { stories };
+  const api = {
+    stories,
+    writes: [] as Write[],
+    answer: ((): { status: number; body: unknown } => ({ status: 404, body: { error: "not_found" } })) as (
+      write: Write,
+    ) => { status: number; body: unknown },
+  };
   const json = (status: number, body: unknown) =>
     new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
   vi.stubGlobal(
     "fetch",
-    vi.fn(async (input: RequestInfo | URL) => {
+    vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-      switch (new URL(url, "http://localhost:3000").pathname) {
+      const path = new URL(url, "http://localhost:3000").pathname;
+      const method = init?.method ?? "GET";
+      if (method !== "GET") {
+        const write = { method, path, body: init?.body ? JSON.parse(String(init.body)) : undefined };
+        api.writes.push(write);
+        const answer = api.answer(write);
+        return json(answer.status, answer.body);
+      }
+      switch (path) {
         case "/api/v1/auth/me":
           return json(200, { user: USER });
         case "/api/v1/auth/workspaces":
@@ -374,5 +394,147 @@ describe("the board", () => {
     });
     await waitFor(() => expect(cardKeys(main, "Review")).toEqual(["US-1"]));
     expect(cardKeys(main, "Implementing")).toEqual([]);
+  });
+});
+
+describe("steering from the board", () => {
+  const CONFLICT = "Someone changed this story; it has been reloaded";
+  const storyPath = (number: number) => `${API}/features/${FEATURE_ID}/stories/${storyId(number)}`;
+
+  test("a 409 on a card whose story a run has moved to Implementing shows the message on its card there, with the server's values", async () => {
+    const api = fakeApi([story(1, { priority: 3 })]);
+    api.answer = () => {
+      api.stories = [story(1, { status: "implementing", priority: 2, version: 2 })];
+      return { status: 409, body: { error: "conflict", current_version: 2 } };
+    };
+    renderAt(BOARD_PATH);
+    const main = await board();
+
+    fireEvent.change(within(card(main, "US-1")).getByRole("combobox"), { target: { value: "1" } });
+
+    await waitFor(() => expect(cardKeys(main, "Implementing")).toEqual(["US-1"]));
+    expect(cardKeys(main, "Backlog")).toEqual([]);
+    expect(within(card(main, "US-1")).getByRole("alert").textContent).toBe(CONFLICT);
+    expect((within(card(main, "US-1")).getByRole("combobox") as HTMLSelectElement).value).toBe("2");
+  });
+
+  test("choosing priority 1 sends a PATCH with the card's version and the server's answer moves the card to the front of its column", async () => {
+    const api = fakeApi([story(1), story(2)]);
+    api.answer = () => ({ status: 200, body: { story: story(2, { priority: 1, version: 2 }) } });
+    renderAt(BOARD_PATH);
+    const main = await board();
+    expect(cardKeys(main, "Backlog")).toEqual(["US-1", "US-2"]);
+
+    fireEvent.change(within(card(main, "US-2")).getByRole("combobox"), { target: { value: "1" } });
+
+    await waitFor(() => expect(cardKeys(main, "Backlog")).toEqual(["US-2", "US-1"]));
+    expect(api.writes).toEqual([{ method: "PATCH", path: storyPath(2), body: { expected_version: 1, priority: 1 } }]);
+  });
+
+  test("a done card disables its priority and Edit blockers and offers no Cancel story; a fix story shows P0 without a selector", async () => {
+    fakeApi([story(1, { status: "done", priority: 2 }), story(2, { priority: 0 })]);
+    renderAt(BOARD_PATH);
+    const main = await board();
+
+    const done = card(main, "US-1");
+    expect((within(done).getByRole("combobox") as HTMLSelectElement).disabled).toBe(true);
+    expect((within(done).getByRole("button", { name: "Edit blockers" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(within(done).queryByRole("button", { name: "Cancel story" })).toBeNull();
+    const fix = card(main, "US-2");
+    expect(within(fix).getByText("P0")).toBeTruthy();
+    expect(within(fix).queryByRole("combobox")).toBeNull();
+  });
+
+  test("each blocker tick sends its own PATCH of the blockers plus or minus the ticked one, at the version of the last answer", async () => {
+    const api = fakeApi([story(131, { blockedBy: [133] }), story(132), story(133)]);
+    const answers = [story(131, { blockedBy: [133, 132], version: 2 }), story(131, { blockedBy: [132], version: 3 })];
+    api.answer = () => ({ status: 200, body: { story: answers[api.writes.length - 1] } });
+    renderAt(BOARD_PATH);
+    const main = await board();
+
+    fireEvent.click(within(card(main, "US-131")).getByRole("button", { name: "Edit blockers" }));
+    fireEvent.click(within(card(main, "US-131")).getByRole("checkbox", { name: "US-132" }));
+    await waitFor(() =>
+      expect((within(card(main, "US-131")).getByRole("checkbox", { name: "US-132" }) as HTMLInputElement).checked).toBe(true),
+    );
+    fireEvent.click(within(card(main, "US-131")).getByRole("checkbox", { name: "US-133" }));
+    await waitFor(() => expect(api.writes).toHaveLength(2));
+
+    expect(api.writes[0].method).toBe("PATCH");
+    expect(api.writes[0].path).toBe(storyPath(131));
+    const first = api.writes[0].body as { expected_version: number; blocked_by: string[] };
+    expect(first.expected_version).toBe(1);
+    expect(new Set(first.blocked_by)).toEqual(new Set([storyId(133), storyId(132)]));
+    expect(first.blocked_by).toHaveLength(2);
+    expect(api.writes[1].body).toEqual({ expected_version: 2, blocked_by: [storyId(132)] });
+  });
+
+  test("Cancel story asks Cancel US-131? and sends cancel only once confirmed", async () => {
+    const api = fakeApi([story(131), story(132)]);
+    api.answer = () => ({ status: 200, body: { story: story(131, { status: "cancelled", version: 2 }) } });
+    renderAt(BOARD_PATH);
+    const main = await board();
+
+    fireEvent.click(within(card(main, "US-131")).getByRole("button", { name: "Cancel story" }));
+    expect(within(card(main, "US-131")).getByText("Cancel US-131?")).toBeTruthy();
+    expect(api.writes).toEqual([]);
+
+    fireEvent.click(within(card(main, "US-131")).getByRole("button", { name: "Confirm" }));
+    await waitFor(() => expect(cardKeys(main, "Backlog")).toEqual(["US-132"]));
+    expect(api.writes).toEqual([{ method: "POST", path: `${storyPath(131)}/cancel`, body: { expected_version: 1 } }]);
+  });
+
+  test("Checked on a pending criterion sends check with its 0-based index and the to-check count drops", async () => {
+    const api = fakeApi([story(1, { status: "done", criteria: [criterion(true, false), criterion(true, true)] })]);
+    api.answer = () => ({
+      status: 200,
+      body: { story: story(1, { status: "done", criteria: [criterion(true, false), criterion(true, false)], version: 2 }) },
+    });
+    renderAt(BOARD_PATH);
+    const main = await board();
+
+    fireEvent.click(within(card(main, "US-1")).getByText("1 to check"));
+    fireEvent.click(within(card(main, "US-1")).getByRole("button", { name: "Checked" }));
+
+    await waitFor(() => expect(within(card(main, "US-1")).queryByText(/to check/)).toBeNull());
+    expect(api.writes).toEqual([{ method: "POST", path: `${storyPath(1)}/check`, body: { expected_version: 1, criterion: 1 } }]);
+  });
+
+  test("Add story posts one criterion per non-blank trimmed line, a human check on the marked and the browser lines, and the card appears under Backlog", async () => {
+    const api = fakeApi([story(1)]);
+    api.answer = () => ({ status: 201, body: { story: story(2, { title: "Pay with a saved card" }) } });
+    renderAt(BOARD_PATH);
+    const main = await board();
+
+    fireEvent.click(within(main).getByRole("button", { name: "Add story" }));
+    const form = within(main).getByRole("form", { name: "Add story" });
+    fireEvent.change(within(form).getByLabelText("Title"), { target: { value: "Pay with a saved card" } });
+    fireEvent.change(within(form).getByLabelText("Priority"), { target: { value: "2" } });
+    fireEvent.change(within(form).getByLabelText("Criteria, one per line"), {
+      target: {
+        value:
+          "  The total is shown.  \n\n   \nThe receipt reads well (human check)\nThe page loads. Verify in browser using dev-browser skill\n",
+      },
+    });
+    fireEvent.click(within(form).getByRole("button", { name: "Create story" }));
+
+    await waitFor(() => expect(cardKeys(main, "Backlog")).toEqual(["US-1", "US-2"]));
+    expect(api.writes).toEqual([
+      {
+        method: "POST",
+        path: `${API}/features/${FEATURE_ID}/stories`,
+        body: {
+          title: "Pay with a saved card",
+          text: "",
+          topic: "",
+          priority: 2,
+          criteria: [
+            { text: "The total is shown.", human_check: false },
+            { text: "The receipt reads well (human check)", human_check: true },
+            { text: "The page loads. Verify in browser using dev-browser skill", human_check: true },
+          ],
+        },
+      },
+    ]);
   });
 });
