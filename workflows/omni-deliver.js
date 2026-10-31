@@ -1078,12 +1078,13 @@ Return raw structured data only.`, { schema: TEST_CUT_SCHEMA, label: `test-cut:$
     }
     const mergedKeys = []
     for (const { key } of batch) {
-      if (limitReached()) return
+      // The limit stops new merges; the stories already merged still get the stack check.
+      if (limitReached()) break
       if (!(await mergeStory(key))) return
       mergedKeys.push(key)
       if (!(await checkMerged(key, mergedKeys))) return
     }
-    await checkBatch(mergedKeys)
+    if (mergedKeys.length > 0) await checkBatch(mergedKeys)
   }
   let mergeChain = Promise.resolve()
   let mergePending = 0
