@@ -48,6 +48,18 @@ Give the human the link to what you wrote when you finish a step: `<server>/w/<w
 
 Done when the feature has a Spec doc with written content, a design with at least one board of nodes, and the human has the links.
 
+### Shape a feature for the board
+
+For a feature that will be built story by story from the board. Three tools carry it, installed by the human with `make install-agent-tools`.
+
+1. `omni-grill`: the grill session. It writes the Spec doc as the decisions are made, then settles and freezes the API contract and data model.
+2. `omni-stories`: cuts the settled spec into stories on the feature's board.
+3. `omni-deliver`: the workflow that runs the board, implementing the stories in worktrees, reviewing and testing them.
+
+Start with `omni-grill`; run the next one when the human confirms the step before it.
+
+Done when the human has the Spec doc, and the stories are on the board or the human chose not to cut them.
+
 ### Fold a finished feature into the app level
 
 Only when the human asks. The app level should read as the app with this feature in it.

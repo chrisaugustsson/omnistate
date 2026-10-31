@@ -15,7 +15,7 @@ SANDBOX_BUILD := render-sandbox/build
 # Where the web app's design viewer loads the renderer from (served as /render/).
 WEB_RENDER := web/public/render
 
-.PHONY: lint test web-deps web-api render-wasm chrome-boxes stress-file nodes-boxes bench-render check-layout penpot-compare bench-ops bench-ordrar
+.PHONY: lint test web-deps web-api render-wasm chrome-boxes stress-file nodes-boxes bench-render check-layout penpot-compare bench-ops bench-ordrar install-agent-tools
 
 # The last clippy run covers the WebAssembly-only code of omni-render.
 lint: web-deps
@@ -132,6 +132,25 @@ PENPOT_REPORT ?= docs/penpot-compare
 
 penpot-compare:
 	$(CARGO) run --quiet -p omni-penpot -- report "$(PENPOT_FIXTURES)" --out "$(PENPOT_REPORT)"
+
+# Links the agent skills (agent-skills/*) into ~/.claude/skills/ and the
+# workflows (workflows/*.js) into ~/.claude/workflows/ as absolute symlinks.
+# Running it again changes nothing; a link to somewhere else is replaced, and a
+# real file or directory in the way is reported and left untouched.
+CLAUDE_HOME ?= $(HOME)/.claude
+
+install-agent-tools:
+	@mkdir -p "$(CLAUDE_HOME)/skills" "$(CLAUDE_HOME)/workflows"
+	@for src in $(CURDIR)/agent-skills/*/; do \
+		[ -d "$$src" ] || continue; src=$${src%/}; dst="$(CLAUDE_HOME)/skills/$$(basename "$$src")"; \
+		if [ -e "$$dst" ] && [ ! -L "$$dst" ]; then echo "skipped $$dst: exists and is not a link"; \
+		else ln -sfn "$$src" "$$dst"; fi; \
+	done
+	@for src in $(CURDIR)/workflows/*.js; do \
+		[ -f "$$src" ] || continue; dst="$(CLAUDE_HOME)/workflows/$$(basename "$$src")"; \
+		if [ -e "$$dst" ] && [ ! -L "$$dst" ]; then echo "skipped $$dst: exists and is not a link"; \
+		else ln -sfn "$$src" "$$dst"; fi; \
+	done
 
 $(EMCC):
 	test -d "$(EMSDK)" || git clone --depth 1 --branch $(EMSDK_VERSION) https://github.com/emscripten-core/emsdk.git "$(EMSDK)"
