@@ -51,6 +51,10 @@
 //!   for the human.
 //! - each thread's `post_count`, and `last_post_at`, the time of its newest
 //!   post (`null` without posts).
+//!
+//! US-139 adds each feature's `stories: {"total", "open", "done"}`: `open`
+//! counts the stories neither `done` nor `cancelled`, `done` those `done`, and
+//! `total` every story but the cancelled ones.
 
 mod common;
 
@@ -1181,4 +1185,60 @@ fn each_thread_has_its_post_count_and_the_time_of_its_newest_post() {
     let listed = item_at(&home, "/threads", &busy);
     assert_eq!(listed["post_count"], 2, "{listed}");
     assert_eq!(listed["last_post_at"], newest["created_at"], "{listed}");
+}
+
+// ---------------------------------------------------------------------------
+// Stories
+// ---------------------------------------------------------------------------
+
+/// Creates a story in `feature` as the author and gives it `status` as the
+/// admin role; returns its ID.
+fn story_in(f: &Fixture, client: &Client, project: &str, feature: &str, status: &str) -> String {
+    let story = id_of(
+        &must(
+            call(
+                client,
+                "POST",
+                &format!("{}/features/{feature}/stories", project_base(f, project)),
+                &author(f),
+                Some(&json!({ "title": unique("story"), "text": "", "topic": "", "criteria": [] })),
+            ),
+            201,
+            "create a story",
+        )["story"],
+    );
+    block(async {
+        let mut conn = admin_connection().await;
+        sqlx::query("update stories set status = $2 where id = $1::uuid")
+            .bind(&story)
+            .bind(status)
+            .execute(&mut conn)
+            .await
+            .unwrap_or_else(|e| panic!("set the status: {e}"));
+    });
+    story
+}
+
+#[test]
+fn a_feature_counts_its_open_and_done_stories_and_leaves_the_cancelled_out_of_the_total() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    let feature = new_feature(f, client, &project);
+    let empty = new_feature(f, client, &project);
+    story_in(f, client, &project, &feature, "backlog");
+    story_in(f, client, &project, &feature, "implementing");
+    story_in(f, client, &project, &feature, "done");
+    story_in(f, client, &project, &feature, "cancelled");
+
+    let home = home(f, client, &project);
+    assert_eq!(
+        summary_of(&home, &feature)["stories"],
+        json!({ "total": 3, "open": 2, "done": 1 }),
+        "4 stories, 1 done and 1 cancelled: {home}"
+    );
+    assert_eq!(
+        summary_of(&home, &empty)["stories"],
+        json!({ "total": 0, "open": 0, "done": 0 }),
+        "a feature with no stories: {home}"
+    );
 }

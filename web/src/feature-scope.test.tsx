@@ -124,8 +124,8 @@ function seeded() {
     threads: [],
     waiting: { comments: [] },
     features: [
-      { feature: wishlist, docs: 2, waiting: 0 },
-      { feature: loyalty, docs: 1, waiting: 0 },
+      { feature: wishlist, docs: 2, waiting: 0, stories: { total: 3, open: 2, done: 1 } },
+      { feature: loyalty, docs: 1, waiting: 0, stories: { total: 0, open: 0, done: 0 } },
     ],
   };
   return {
@@ -246,6 +246,14 @@ describe("feature scope", () => {
   afterEach(() => {
     cleanup();
     vi.unstubAllGlobals();
+  });
+
+  test("a feature's header has a chip with its open of total stories that opens its board", async () => {
+    fakeApi(seeded());
+    renderAt(featurePath(WISHLIST));
+    const chips = await screen.findByRole("navigation", { name: /^pillars$/i });
+    const chip = await within(chips).findByRole("link", { name: "Stories 2/3" });
+    expect(chip.getAttribute("href")).toBe(featurePath(WISHLIST, "board"));
   });
 
   describe("where an item lives", () => {

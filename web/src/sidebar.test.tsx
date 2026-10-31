@@ -33,11 +33,12 @@ const AT = "2026-10-21T09:00:00Z";
 const AGENT = { kind: "agent", run: "run-1", role: "writer", model: "test-model", harness: "test-harness" };
 const HUMAN = { kind: "human", user_id: USER.id };
 
-function feature(id: string, name: string) {
+function feature(id: string, name: string, stories = { total: 0, open: 0, done: 0 }) {
   return {
     feature: { id, project_id: PROJECT_ID, name, description: "", created_at: AT },
     docs: 0,
     waiting: 0,
+    stories,
     last_activity: null,
   };
 }
@@ -679,12 +680,15 @@ describe("the sidebar's scope tree", () => {
     ]);
   });
 
-  test("on a feature's thread or doc page it shows that feature, its Threads row filtered to it", async () => {
-    fakeApi({ home: appTree });
+  test("on a feature's thread or doc page it shows that feature, its Threads row filtered to it, then its Board row with the open stories", async () => {
+    fakeApi({ home: { ...appTree, features: [feature(CHECKOUT, "Checkout", { total: 3, open: 2, done: 1 })] } });
     const router = renderAt(`${PROJECT_PATH}/threads/${CHECKOUT_THREAD}`);
     await waitFor(async () => expect((await treeHead()).href).toBe(`${PROJECT_PATH}/features/${CHECKOUT}`));
     expect((await treeHead()).text).toMatch(/^Checkout/);
-    expect((await treeRows()).at(-1)).toEqual({ text: "Threads (1)", href: `${PROJECT_PATH}/threads?scope=${CHECKOUT}` });
+    expect((await treeRows()).slice(-2)).toEqual([
+      { text: "Threads (1)", href: `${PROJECT_PATH}/threads?scope=${CHECKOUT}` },
+      { text: "Board (2)", href: `${PROJECT_PATH}/features/${CHECKOUT}/board` },
+    ]);
 
     await router.navigate({ href: `${PROJECT_PATH}/docs/${CHECKOUT_DOC}` });
     await waitFor(docShown);

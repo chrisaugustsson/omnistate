@@ -26,11 +26,18 @@ const API = `/api/v1/w/${WORKSPACE_ID}/projects/${PROJECT_ID}`;
 const VISITS_KEY = `omni:visits:${PROJECT_ID}`;
 const AT = "2026-10-21T08:00:00Z";
 
-function feature(id: string, name: string, fields: { description?: string; waiting?: number; lastActivity?: string | null; createdAt?: string } = {}) {
+type Stories = { total: number; open: number; done: number };
+
+function feature(
+  id: string,
+  name: string,
+  fields: { description?: string; waiting?: number; lastActivity?: string | null; createdAt?: string; stories?: Stories } = {},
+) {
   return {
     feature: { id, project_id: PROJECT_ID, name, description: fields.description ?? "", created_at: fields.createdAt ?? AT },
     docs: 0,
     waiting: fields.waiting ?? 0,
+    stories: fields.stories ?? { total: 0, open: 0, done: 0 },
     last_activity: fields.lastActivity ?? null,
   };
 }
@@ -157,6 +164,7 @@ describe("the Features page", () => {
       description: "Pay in one step.\nWorks with saved wallets.",
       waiting: 2,
       lastActivity: "2026-10-21T13:00:00Z",
+      stories: { total: 3, open: 2, done: 1 },
     }),
     feature(APPLE_PAY, "apple pay", { lastActivity: "2026-10-21T11:00:00Z" }),
   ];
@@ -179,13 +187,13 @@ describe("the Features page", () => {
     expect(within(main()).getByText("5 features")).toBeTruthy();
   });
 
-  test("a row shows the name, the first line of the description, what waits and the last activity, and opens the feature", async () => {
+  test("a row shows the name, the first line of the description, done of total stories, what waits and the last activity, and opens the feature", async () => {
     fakeApi(home({ features }));
     renderAt(`${PROJECT_PATH}/features`);
     await waitFor(() => expect(rows()).toHaveLength(5));
-    expect(shownText(rows()[0])).toBe("CheckoutPay in one step.22 h ago");
+    expect(shownText(rows()[0])).toBe("CheckoutPay in one step.1/3 stories22 h ago");
     expect(rows()[0].getAttribute("href")).toBe(`${PROJECT_PATH}/features/${CHECKOUT}`);
-    expect(shownText(rows()[1])).toBe("WalletsApple Pay and Google Pay.No activity yet");
+    expect(shownText(rows()[1])).toBe("WalletsApple Pay and Google Pay.0/0 storiesNo activity yet");
   });
 
   test("the filter narrows the list as you type to the names and full descriptions holding the trimmed query, in the same order, and says N of M", async () => {
