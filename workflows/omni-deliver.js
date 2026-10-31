@@ -10,7 +10,9 @@ export const meta = {
     { title: 'Implement', detail: 'up to `implementers` agents at once, each on a pickable story in its own worktree; the story reaches review only after the fast command passes there' },
     { title: 'Merge', detail: 'one worker takes the testing stories in dependency order: stack_up once per batch, then rebase in the worktree and fast-forward the integration branch; a rebase conflict is fixed by an implementer and halts merging until that story is merged' },
     { title: 'Check', detail: 'after each merge a verifier runs the story\'s criteria on the main worktree and the fast command runs; a failure becomes a priority-0 fix story that is implemented, reviewed, merged and checked before anything else merges; the stack command runs once after the batch' },
+    { title: 'Tests', detail: 'after a story passes its check, a test author and a test reviewer lock it down with a few selective regression tests on the main worktree; then it moves to done and the next story merges' },
     { title: 'Review', detail: 'up to `reviewers` reviewers at once read each review story\'s branch against its criteria; a fail is fixed in place by an implementer, three fails block the story, a pass moves it to testing' },
+    { title: 'Report', detail: 'claims on unfinished stories are released, a verifier runs the fast command and the journeys of the stories done, and the report is posted on the Run thread' },
   ],
 }
 
@@ -24,9 +26,9 @@ const storyLimit = A.storyLimit || Infinity
 // ---- model routing per role ------------------------------------------------
 // Same mapping as ralph-spec: Sonnet builds, Opus judges. Override per role with
 // args.models, or force one model everywhere with args.model.
-const MODELS = { clarity: 'opus', impl: 'sonnet', implRetry: 'opus', review: 'opus', verify: 'opus', tests: 'opus', ...(A.models || {}) }
+const MODELS = { clarity: 'opus', impl: 'sonnet', implRetry: 'opus', review: 'opus', verify: 'opus', tests: 'opus', testReview: 'opus', testCut: 'sonnet', wrap: 'sonnet', ...(A.models || {}) }
 const modelFor = (role) => A.model || MODELS[role]
-const AGENT_TYPES = { clarity: 'verifier', impl: 'implementer', review: 'verifier', verify: 'verifier', tests: 'implementer', ...(A.agentTypes || {}) }
+const AGENT_TYPES = { clarity: 'verifier', impl: 'implementer', review: 'verifier', verify: 'verifier', tests: 'implementer', testReview: 'verifier', testCut: 'implementer', wrap: 'verifier', ...(A.agentTypes || {}) }
 const runAgent = (prompt, { role, ...opts } = {}) =>
   agent(prompt, AGENT_TYPES[role] ? { ...opts, agentType: AGENT_TYPES[role] } : opts)
 
@@ -75,7 +77,14 @@ const omniJson = (argv) => {
 }
 const listStories = () => JSON.parse(omni(['story', 'list', '--json'])).stories
 const readStory = (key) => omniJson(['story', 'read', key])
-const write = (verb, key, extra = []) => omni(['story', verb, key, '--run', runId, ...extra])
+const decisionsTaken = []
+const write = (verb, key, extra = []) => {
+  if (verb === 'decision') {
+    const at = (flag) => extra[extra.indexOf(flag) + 1]
+    decisionsTaken.push({ key, question: at('--question'), choice: at('--choice'), by: at('--by') })
+  }
+  return omni(['story', verb, key, '--run', runId, ...extra])
+}
 
 try {
   log(`Run ${runId} on feature ${feature}, integration branch ${integration}`)
@@ -373,7 +382,6 @@ Return raw structured data only.`
 
   const outcomes = []
   const skipped = new Set()
-  let picked = 0
   const pickNext = () => {
     const keys = omni(['story', 'list', '--pickable']).split('\n').map((l) => l.trim().split(/\s+/)[0]).filter(Boolean)
     return keys.find((k) => !skipped.has(k)) || null
@@ -541,6 +549,18 @@ Return raw structured data only.`
 
   // ---- merge: one worker on the main worktree ------------------------------
   const merged = new Set()
+  const ranges = new Map()
+  const doneKeys = []
+  const fixStories = []
+  let notify = () => {}
+  let signal = new Promise((r) => { notify = r })
+  const poke = () => { const n = notify; signal = new Promise((r) => { notify = r }); n() }
+  const limitReached = () => doneKeys.length >= storyLimit
+  const moveDone = (key) => {
+    write('move', key, ['--to', 'done'])
+    doneKeys.push(key)
+    poke()
+  }
   const mergeOutcomes = []
   let halted = null
   const REBASE_FINDING = 'rebase conflict in '
@@ -562,12 +582,14 @@ Return raw structured data only.`
   // branch. Returns null when it merged, else the files that conflict.
   const tryMerge = (key) => {
     const wt = worktreeOf(key)
+    const base = git(['rev-parse', 'HEAD']).trim()
     try { git(['-C', wt, 'rebase', integration]) } catch (e) {
       const files = (tryRun('git', ['-C', wt, 'diff', '--name-only', '--diff-filter=U']) || '').split('\n').filter(Boolean)
       tryRun('git', ['-C', wt, 'rebase', '--abort'])
       return files.length ? files : ['(unknown)']
     }
     git(['merge', '--ff-only', `story/${key}`])
+    ranges.set(key, { base, head: git(['rev-parse', 'HEAD']).trim() })
     merged.add(key)
     const fresh = readStory(key)
     ;(fresh.findings || []).forEach((f, i) => {
@@ -638,8 +660,268 @@ Return raw structured data only.`
     })
     const result = await runFast(root)
     if (!result.ok) failures.push({ criterion: FAST_CRITERION, text: `The fast command failed on the main worktree. Output:\n\`\`\`\n${result.output}\n\`\`\`` })
-    return { story, failures }
+    return { story, failures, verdict }
   }
+  // ---- tests: the lasting regression tests of a checked story -------------------
+  // Same author, reviewer and cut steps as ralph-spec, run on the main worktree
+  // inside the merge worker, so nothing else touches it meanwhile.
+  const TEST_SKILL = '~/.claude/skills/writing-tests/SKILL.md'
+  const TEST_ASSETS = `test and spec files, test helpers, fixtures, snapshots, test-runner,
+coverage and lint configuration, and skip/only/todo markers`
+  const TEST_POLICY = `
+## Regression-test policy (MUST follow)
+- FIRST read ${TEST_SKILL} and the reference files it points to as you reach them.
+  Follow it exactly; the story below and its linked doc nodes are its spec, and the
+  verifier's list of confirmed criteria tells you which behaviours were confirmed.
+- The story already WORKS: a verifier exercised it. You are not proving it works.
+  You are choosing the few tests that would catch it breaking later. Criteria are not
+  test cases: one test per criterion is the pattern this replaces, and a criterion
+  that states a detail with no rule behind it gets no test (skill step 1).
+- NO TARGET COUNT: rank the oracle rows (skill step 1) and admit tests in rank order
+  through the gate (skill step 8). Zero is a correct answer when existing tests
+  already catch everything. A row you rank but do not write, because a test already
+  catches it, goes in notAdmitted with the test that catches it. List added tests in
+  rank order, highest first.
+- Tests added by earlier stories in this run are part of the existing suite.
+  Using earlier stories' features as setup is fine; do not re-test their rules.
+`
+  const TESTS_SCHEMA = {
+    type: 'object',
+    required: ['status', 'commit', 'oracle', 'existingCoverage', 'added', 'reused', 'changedOrRemoved', 'notAdmitted'],
+    properties: {
+      status: { type: 'string', enum: ['done', 'found_defect', 'needs_decision', 'blocked'] },
+      questions: { type: 'array', items: { type: 'string' }, description: 'With status needs_decision: what the story does not settle' },
+      commit: { type: 'string', description: 'The test: commit hash, or empty string when no test change was needed' },
+      oracle: {
+        type: 'array',
+        description: 'The oracle table (skill step 1), written from the story before reading the implementation: one row per key example',
+        items: {
+          type: 'object',
+          required: ['input', 'expected', 'clause'],
+          properties: {
+            input: { type: 'string' },
+            expected: { type: 'string' },
+            clause: { type: 'string', description: 'The story text the expected value comes from' },
+          },
+        },
+      },
+      existingCoverage: {
+        type: 'array',
+        description: 'Inventory made BEFORE writing anything: every existing test that exercises this story\'s behaviour, and what it already pins',
+        items: { type: 'object', required: ['test', 'file', 'covers'], properties: { test: { type: 'string' }, file: { type: 'string' }, covers: { type: 'string' } } },
+      },
+      added: {
+        type: 'array',
+        items: {
+          type: 'object',
+          required: ['test', 'file', 'risk', 'overlapCheck', 'sensitivity'],
+          properties: {
+            test: { type: 'string' },
+            file: { type: 'string' },
+            risk: { type: 'string', description: 'What breakage this catches, and the story line its expected values come from' },
+            overlapCheck: { type: 'string', description: 'The closest existing tests you compared it with, and why none of them already catches this breakage' },
+            sensitivity: { type: 'string', description: 'Each mutant applied (file, line, change), that this test went red on it, and the existing tests run against it that stayed green' },
+          },
+        },
+      },
+      reused: { type: 'array', items: { type: 'object', required: ['test', 'risk'], properties: { test: { type: 'string' }, risk: { type: 'string' } } }, description: 'Existing tests that already protect a risk, so none was added' },
+      changedOrRemoved: { type: 'array', items: { type: 'object', required: ['test', 'action', 'reason'], properties: { test: { type: 'string' }, action: { type: 'string', enum: ['changed', 'removed'] }, reason: { type: 'string' } } } },
+      notAdmitted: {
+        type: 'array',
+        description: 'Ranked oracle rows you did not write a test for, because another test already catches them',
+        items: { type: 'object', required: ['row', 'caughtBy'], properties: { row: { type: 'string' }, caughtBy: { type: 'string', description: 'The existing or newly added test that already catches it' } } },
+      },
+      defect: {
+        type: 'object',
+        properties: { test: { type: 'string' }, observed: { type: 'string' }, expected: { type: 'string' } },
+        description: 'With status found_defect: the behaviour your test exposed as wrong against the story',
+      },
+      blockers: { type: 'string' },
+      learnings: { type: 'array', items: { type: 'string' } },
+    },
+  }
+
+  const TEST_REVIEW_SCHEMA = {
+    type: 'object',
+    required: ['pass', 'duplicates', 'issues', 'suiteGreen', 'productionUntouched'],
+    properties: {
+      pass: { type: 'boolean' },
+      duplicates: {
+        type: 'array',
+        description: 'Every new or changed test that pins something another test already pins. Empty if none',
+        items: {
+          type: 'object',
+          required: ['newTest', 'newTestFile', 'existingTest', 'fix', 'cut'],
+          properties: {
+            newTest: { type: 'string' },
+            newTestFile: { type: 'string', description: 'The spec file the new test is in' },
+            existingTest: { type: 'string', description: 'The test (file and name) that already catches the same breakage' },
+            fix: { type: 'string', description: 'cut the new test, or merge it into the existing one, and how' },
+            cut: { type: 'boolean', description: 'true when the whole fix is deleting the new test outright: the existing test already catches every mutant it catches, so nothing needs merging' },
+          },
+        },
+      },
+      issues: { type: 'array', items: { type: 'string' }, description: 'Problems in the committed tests or the suite, each naming the test and the fix: change the assertion to <x>, merge it into <test>. Do NOT repeat a duplicate here. A mistake in the author\'s account that hides no problem in the tests goes in learnings, not here' },
+      suiteGreen: { type: 'boolean', description: 'Full suite and typecheck pass at HEAD' },
+      productionUntouched: { type: 'boolean', description: 'No non-test file changed since the verified implementation, committed or not' },
+      leftoverFiles: { type: 'array', items: { type: 'string' }, description: 'Tracked files with uncommitted changes (git status --porcelain --untracked-files=no). Empty if clean' },
+      learnings: { type: 'array', items: { type: 'string' } },
+    },
+  }
+
+  const TEST_CUT_SCHEMA = {
+    type: 'object',
+    required: ['commit', 'removed', 'suiteGreen'],
+    properties: {
+      commit: { type: 'string', description: 'The test: commit that removes the tests, or empty string if nothing was committed' },
+      removed: { type: 'array', items: { type: 'string' }, description: 'The tests removed, by the names given' },
+      suiteGreen: { type: 'boolean', description: 'Full suite and typecheck pass after the removal' },
+      blockers: { type: 'string', description: 'Why a listed test could not be removed cleanly' },
+    },
+  }
+
+  const WRAP_SCHEMA = {
+    type: 'object',
+    required: ['healthy', 'journeys', 'report'],
+    properties: {
+      healthy: { type: 'boolean', description: 'Full typecheck + suite pass and every cross-story journey worked' },
+      journeys: { type: 'array', items: { type: 'string' }, description: 'Each cross-story journey you exercised, with the outcome' },
+      report: { type: 'string' },
+    },
+  }
+
+  const bullets = (items) => items.map((i) => `- ${i}`).join('\n')
+  const testReports = []
+  const testsSoFar = () => testReports.flatMap((t) => t.added.map((a) => `[${t.key}] ${a.test} (${a.file})`))
+  const authorPrompt = (story, base, criteria, feedback) => `You write the lasting regression tests for one story of the feature "${feature}", with a fresh context.
+The implementation is merged and committed on ${integration} in the main worktree ${root}, and a verifier has confirmed it matches its criteria.
+You own tests; you never change production code. Work only in ${root}.
+
+## Story ${story.key}: ${story.title}
+${story.text || ''}
+
+### Acceptance criteria
+${(story.criteria || []).map((c) => `- ${c.text || c}`).join('\n')}
+
+### Decisions already taken (settled: test against them as if the spec said so)
+${(story.decisions || []).map((d) => `- ${d.question} -> ${d.choice} (${d.by})`).join('\n') || '(none)'}
+
+## Criteria the verifier confirmed (observed values are withheld so they cannot shape your oracle)
+${bullets(criteria.map((c) => c.criterion))}
+${testsSoFar().length ? `\n## Tests added earlier in this run (part of the existing suite; do not re-test what they pin)\n${bullets(testsSoFar())}\n` : ''}${feedback ? `\n## Review of your previous tests (address ALL of it in a NEW "test:" commit on top)\n${feedback}\n` : ''}${CONVENTIONS}${TEST_POLICY}
+## Rules
+- Record \`git rev-parse HEAD\` first. You may change only ${TEST_ASSETS}.
+- ORACLE FIRST (skill step 1): write the oracle table from the story text above BEFORE you open any production file or run the code. Return it in oracle. Every expected value in your tests comes from a row. If the code disagrees with a row and the story clearly supports the row, that is a defect (status found_defect); if the story does not settle it, return status needs_decision with the question in questions. In both cases leave no uncommitted test changes.
+- INVENTORY (skill step 2), before writing any test. Besides the skill's search, search by the names in the story's files and by what \`git diff ${base}..HEAD\` touches. Record each existing test found in existingCoverage, and for each new test the closest existing ones in overlapCheck.
+- PROVE IT GOES RED (skill step 6) for every new test: record in sensitivity each mutant you applied, that the new test went red, and which existing tests you ran against it that stayed green. Production files must be unchanged when you finish (git status shows no production changes).
+- Run the full suite${fast ? ` (\`${fast}\`)` : ''} before you commit. Commit only test files: "test: <summary>". If you add nothing, commit nothing and return an empty commit.
+Return raw structured data only.`
+  const reviewTestsPrompt = (story, base, result, rounds) => `You review the regression tests a test author just wrote for one story of the feature "${feature}", with a fresh context. You are read-only: you change nothing (apart from temporary mutants you restore).
+
+## Story ${story.key}: ${story.title}
+${story.text || ''}
+
+### Acceptance criteria
+${(story.criteria || []).map((c) => `- ${c.text || c}`).join('\n')}
+
+## What the author says
+Oracle rows: ${result.oracle.length}
+Existing coverage they found: ${bullets(result.existingCoverage.map((t) => `${t.test} (${t.file}) — ${t.covers}`)) || 'none'}
+Added: ${bullets(result.added.map((t) => `${t.test} (${t.file}) — risk: ${t.risk}; overlap check: ${t.overlapCheck}; sensitivity: ${t.sensitivity}`)) || 'none'}
+Reused: ${bullets(result.reused.map((t) => `${t.test} — ${t.risk}`)) || 'none'}
+Changed/removed: ${bullets(result.changedOrRemoved.map((t) => `${t.action} ${t.test} — ${t.reason}`)) || 'none'}
+Not admitted (already caught): ${bullets(result.notAdmitted.map((n) => `${n.row} — caught by ${n.caughtBy}`)) || 'none'}
+${rounds.length ? `
+## Earlier review rounds for this story (the author applied each one in a new commit)
+${rounds.map((r) => `### Round ${r.round} (reviewed ${r.commit || 'see git log'})\n${r.feedback}`).join('\n')}
+
+Rules for a later round:
+- Judge the result, not the history: a test an earlier round asked for still has to pass the policy. But do not reverse an earlier request without saying so: name the round and why its request was wrong in your issue or duplicate.
+- Focus on what the latest commit changed and on earlier findings that are still unresolved. Raise a new finding about a test earlier rounds accepted only when it breaks the policy (duplicate, vacuous assertion, weakened test), not for style.
+` : ''}${testsSoFar().length ? `\n## Tests added earlier in this run\n${bullets(testsSoFar())}\n` : ''}${TEST_POLICY}
+## Check (run things yourself, in ${root})
+1. git diff --name-only ${base}..HEAD and git log ${base}..HEAD: the test commit(s) of this round touch only ${TEST_ASSETS}; the story's own commits touch none. productionUntouched=false if a test commit changed any other file. Then run git status --porcelain --untracked-files=no and list every file it shows in leftoverFiles. A production file there is usually a mutant the author forgot to restore: productionUntouched=false.
+2. Ranking and admission (skill "Reviewing tests", step 3): no explicit decision was left without a test while lower-ranked rows got one; each notAdmitted row really is caught by the test it names; and the lowest-ranked added test would leave a mutant uncaught if removed. Report failures as issues.
+3. Review per the skill's "Reviewing tests" section; you are read-only, so use its read-only form of the goes-red check. DUPLICATES are your main check: search the suite yourself rather than trusting the author's inventory, include the tests added earlier in this run, and record every duplicate in duplicates. Set cut=true only when deleting the new test is the whole fix; a duplicate that needs merging is cut=false.
+4. The fast command${fast ? ` (\`${fast}\`)` : ''} and typecheck pass at HEAD.
+Name the test and the fix for every issue (cut it, merge it into <test>, change the assertion to <x>). pass=false if there is any issue or duplicate. Return raw structured data only.`
+  // Writes and reviews the story's regression tests on the main worktree, up to
+  // three rounds. Returns {ok: true}, or {ok: false, thread} once the story is blocked.
+  const testStory = async (key, criteria) => {
+    phase('Tests')
+    const story = readStory(key)
+    const base = (ranges.get(key) || {}).base || git(['rev-parse', 'HEAD']).trim()
+    const start = git(['rev-parse', 'HEAD']).trim()
+    const entry = { key, added: [], reused: [], removed: [], commits: [] }
+    testReports.push(entry)
+    const kept = new Map()
+    const rounds = []
+    let feedback = ''
+    let result = null
+    let accepted = false
+    for (let attempt = 1; attempt <= 3 && !accepted; attempt++) {
+      result = await runAgent(authorPrompt(story, base, criteria, feedback), { schema: TESTS_SCHEMA, label: `tests:${key}${attempt > 1 ? ` round${attempt}` : ''}`, phase: 'Tests', model: modelFor('tests'), role: 'tests' })
+      if (!result) {
+        feedback = 'The test author returned no result.'
+        continue
+      }
+      if (result.status !== 'done') {
+        const what = result.status === 'found_defect' && result.defect ? `${result.defect.test}\nObserved: ${result.defect.observed}\nExpected: ${result.defect.expected}` : (result.questions || []).join('\n') || result.blockers || result.status
+        const id = openThread(`${key}: the test author stopped (${result.status})`, `${what}\n`)
+        linkAndBlock(key, [id])
+        return { ok: false, thread: id }
+      }
+      for (const t of result.added) kept.set(t.test, t)
+      const review = await runAgent(reviewTestsPrompt(story, base, result, rounds), { schema: TEST_REVIEW_SCHEMA, label: `test-review:${key}${attempt > 1 ? ` round${attempt}` : ''}`, phase: 'Tests', model: modelFor('testReview'), role: 'testReview' })
+      const duplicates = (review && review.duplicates) || []
+      const leftovers = (review && review.leftoverFiles) || []
+      if (review && review.pass && duplicates.length === 0 && review.suiteGreen && review.productionUntouched && leftovers.length === 0) {
+        accepted = true
+        break
+      }
+      // Only duplicates to delete are left: cutting needs no judgement, so no further round.
+      const onlyCuts = review && duplicates.length > 0 && duplicates.every((d) => d.cut) && review.issues.length === 0 && review.suiteGreen && review.productionUntouched && leftovers.length === 0
+      if (onlyCuts) {
+        const cut = await runAgent(`Delete these duplicate tests, which a reviewer found already covered by another test:
+${bullets(duplicates.map((d) => `${d.newTest} in ${d.newTestFile} (covered by ${d.existingTest})`))}
+
+Rules:
+- Work in ${root}. Delete exactly these tests. Also delete a helper, fixture or import only these tests used, and nothing else. Change no production file and no other test.
+- Run the fast command${fast ? ` (\`${fast}\`)` : ''} and typecheck: both green before you commit.
+- Commit only the test files: "test: Remove duplicate regression tests for ${key}".
+- If a test cannot be removed cleanly, or the suite goes red, restore the files (git checkout -- <file>), commit nothing and explain in blockers.
+${CONVENTIONS}
+Return raw structured data only.`, { schema: TEST_CUT_SCHEMA, label: `test-cut:${key}`, phase: 'Tests', model: modelFor('testCut'), effort: 'low', role: 'testCut' })
+        if (cut && cut.commit && cut.suiteGreen) {
+          for (const name of cut.removed) kept.delete(name)
+          accepted = true
+          break
+        }
+      }
+      feedback = review
+        ? bullets([
+          ...duplicates.map((d) => `Duplicate: ${d.newTest} pins what ${d.existingTest} already pins. Fix: ${d.fix}`),
+          ...review.issues,
+          ...(review.suiteGreen ? [] : ['Suite or typecheck is red at HEAD.']),
+          ...(review.productionUntouched ? [] : ['Production files changed in a test commit or left modified in the working tree; restore them to the verified implementation.']),
+          ...leftovers.map((f) => `Uncommitted change left in ${f}: restore it (git checkout -- ${f}) if it is a mutant, or commit it if it is a test asset.`),
+        ])
+        : 'The reviewer returned no result; re-check your tests against the policy.'
+      rounds.push({ round: attempt, commit: result.commit, feedback })
+    }
+    if (!accepted) {
+      const id = openThread(`${key}: the regression tests were not accepted`, `Three rounds of test author and reviewer did not end in accepted tests. The implementation is merged and checked; only the tests are missing. Last review:\n\n${feedback}\n`)
+      linkAndBlock(key, [id])
+      return { ok: false, thread: id }
+    }
+    entry.added = [...kept.values()].map((t) => ({ test: t.test, file: t.file, risk: t.risk }))
+    entry.reused = result.reused.map((t) => t.test)
+    entry.removed = result.changedOrRemoved.filter((t) => t.action === 'removed').map((t) => t.test)
+    entry.changed = result.changedOrRemoved.filter((t) => t.action === 'changed').map((t) => t.test)
+    entry.commits = (tryRun('git', ['-C', root, 'log', '--format=%h %s', `${start}..HEAD`]) || '').split('\n').filter(Boolean)
+    return { ok: true }
+  }
+
   const checkOutcomes = []
   // Ticks every criterion (human checks pending), resolves the testing
   // findings and removes the worktree and branch.
@@ -664,7 +946,9 @@ Return raw structured data only.`
     }
     if (r.failures.length === 0) {
       passCheck(key, r.story)
-      checkOutcomes.push({ key, outcome: 'passed' })
+      const tested = await testStory(key, r.verdict.criteria || [])
+      if (tested.ok) moveDone(key)
+      checkOutcomes.push(tested.ok ? { key, outcome: 'passed' } : { key, outcome: 'tests_rejected', thread: tested.thread })
       return { state: 'passed' }
     }
     for (const f of r.failures) write('finding', key, ['--stage', 'testing', '--text', f.text])
@@ -683,6 +967,7 @@ Return raw structured data only.`
       const key = omni(['story', 'add', file, '--priority', '0', ...[...new Set(links)].flatMap((l) => ['--link', l])]).trim()
       // The merge worker drives the fix story itself, so the implement loop leaves it alone.
       skipped.add(key)
+      fixStories.push({ key, heading })
       return key
     } finally { fs.rmSync(dir, { recursive: true, force: true }) }
   }
@@ -780,7 +1065,7 @@ Return raw structured data only.`
     return true
   }
   const mergePass = async () => {
-    if (halted) return
+    if (halted || limitReached()) return
     const batch = inOrder(listStories().filter((s) => s.status === 'testing' && !s.blocked && s.holder && s.holder.run === runId && !merged.has(s.key) && fs.existsSync(worktreeOf(s.key))))
     if (batch.length === 0) return
     phase('Merge')
@@ -793,6 +1078,7 @@ Return raw structured data only.`
     }
     const mergedKeys = []
     for (const { key } of batch) {
+      if (limitReached()) return
       if (!(await mergeStory(key))) return
       mergedKeys.push(key)
       if (!(await checkMerged(key, mergedKeys))) return
@@ -800,56 +1086,142 @@ Return raw structured data only.`
     await checkBatch(mergedKeys)
   }
   let mergeChain = Promise.resolve()
+  let mergePending = 0
   const kickMerge = () => {
+    mergePending++
     mergeChain = mergeChain.then(mergePass).catch((e) => {
       mergeOutcomes.push({ key: halted, outcome: 'failed', error: String(e && e.message || e) })
       log(`merge: ${e && e.message || e}`)
-    })
+    }).then(() => { mergePending--; poke() })
     return mergeChain
   }
   kickMerge()
 
+  // ---- the loop: implementers, reviewers and the merge worker together -----
+  // Each pass starts what can start; a finished stage wakes the next pass. A
+  // story's done can make others pickable, so the loop also wakes on that.
   const active = new Map()
+  const reviewing = new Map()
+  const reviewOutcomes = []
+  const launch = (key, p) => {
+    active.set(key, p.then((o) => {
+      active.delete(key)
+      outcomes.push(o)
+      if (o.error) log(`${key}: ${o.error}`)
+      poke()
+    }))
+  }
+  const fillReviews = () => {
+    if (limitReached() || reviewing.size >= reviewers) return
+    const queue = listStories().filter((s) => s.status === 'review' && !s.blocked && !reviewed.has(s.key) && !skipped.has(s.key) && !reviewing.has(s.key))
+    if (queue.length) phase('Review')
+    for (const { key } of queue) {
+      if (reviewing.size >= reviewers) break
+      reviewing.set(key, review(key).catch((e) => ({ key, outcome: 'failed', error: String(e && e.message || e) })).then((o) => {
+        reviewing.delete(key)
+        reviewed.add(key)
+        reviewOutcomes.push(o)
+        if (o.error) log(`${key}: ${o.error}`)
+        kickMerge()
+        poke()
+      }))
+    }
+  }
+  let firstPass = true
   for (;;) {
-    while (active.size < implementers && picked < storyLimit) {
+    const woken = signal
+    if (!firstPass) { try { unblockPass() } catch (e) { log(`unblock: ${e && e.message || e}`) } }
+    firstPass = false
+    while (active.size < implementers && !limitReached()) {
       const key = pickNext()
       if (!key) break
-      picked++
-      let p
-      try { p = start(key) } catch (e) {
+      try { launch(key, start(key)) } catch (e) {
         skipped.add(key)
         outcomes.push({ key, outcome: 'failed', error: String(e && e.message || e) })
-        continue
       }
-      active.set(key, p.then((o) => ({ key, o })))
     }
-    if (active.size === 0) break
-    const { key, o } = await Promise.race(active.values())
-    active.delete(key)
-    outcomes.push(o)
-    if (o.error) log(`${key}: ${o.error}`)
+    fillReviews()
+    if (active.size === 0 && reviewing.size === 0 && mergePending === 0) break
+    await woken
   }
 
-  // ---- phase 5: review in the worktree -------------------------------------
-  phase('Review')
-  const reviewOutcomes = []
-  const queue = listStories().filter((s) => s.status === 'review' && !s.blocked && !reviewed.has(s.key) && !skipped.has(s.key)).map((s) => s.key)
-  await Promise.all(Array.from({ length: Math.min(reviewers, queue.length) }, async () => {
-    while (queue.length) {
-      const key = queue.shift()
-      const o = await review(key).catch((e) => ({ key, outcome: 'failed', error: String(e && e.message || e) }))
-      reviewed.add(key)
-      reviewOutcomes.push(o)
-      kickMerge()
-      if (o.error) log(`${key}: ${o.error}`)
-    }
-  }))
+  // ---- report: release what is left, journeys, the post on the Run thread ---
+  phase('Report')
+  for (const s of listStories()) {
+    if (!s.holder || s.holder.run !== runId || s.status === 'done' || s.status === 'cancelled') continue
+    try { write('release', s.key) } catch (e) { log(`${s.key}: release failed: ${e && e.message || e}`) }
+  }
+  const WRAP_PROMPT = `Final check after a delivery run on the feature "${feature}", on the main worktree ${root} (branch ${integration}).
+Stories done in this run: ${doneKeys.map((k) => `${k} ${(listStories().find((s) => s.key === k) || {}).title || ''}`).join('; ')}.
+1. Run the fast command${fast ? ` \`${fast}\`` : ''} in ${root}.
+2. Each story was checked on its own. Find the user journeys in the feature's docs (omni doc list --feature ${feature}, omni doc read) and in these stories (omni story read <key>) that span several of them (one story's output is another's input, a flow through several screens or endpoints) and exercise up to 3 of them for real, with the real components${stackCmd ? `, using the stack command \`${stackCmd}\`` : ''}. Report each with its outcome.
+3. Stop every process and remove every container you started for the journeys, and confirm none is left.
+Do NOT change any code. healthy=false if the fast command fails or a journey fails; a failure is reported, not repaired.
+Return raw structured data only.`
+  let wrap = null
+  if (doneKeys.length > 0) {
+    ensureFast()
+    wrap = await runAgent(WRAP_PROMPT, { schema: WRAP_SCHEMA, label: 'final check', phase: 'Report', model: modelFor('wrap'), role: 'wrap' })
+  }
+  const final = listStories()
+  const byRef = new Map()
+  for (const s of final) { byRef.set(s.key, s); if (s.id) byRef.set(s.id, s) }
+  const unfinished = (s) => s.status !== 'done' && s.status !== 'cancelled'
+  const threadsOf = (s) => (s.links || []).map((l) => l.thread_id).filter(Boolean)
+  const titleOf = (k) => (byRef.get(k) || {}).title || ''
+  const lines = (items) => (items.length ? items.map((i) => `- ${i}`).join('\n') : '- none')
+  const doneLines = doneKeys.map((k) => {
+    const range = ranges.get(k)
+    const feat = range ? (tryRun('git', ['-C', root, 'log', '--format=%h %s', `${range.base}..${range.head}`]) || '').split('\n').filter(Boolean) : []
+    const tests = (testReports.find((t) => t.key === k) || { commits: [] }).commits
+    return `${k} ${titleOf(k)}: ${[...feat.map((c) => `feat ${c}`), ...tests.map((c) => `test ${c}`)].join('; ') || 'no commits'}`
+  })
+  const blockedLines = final.filter((s) => unfinished(s) && s.blocked).map((s) => `${s.key} ${s.title}: thread ${threadsOf(s).join(', ') || '(none linked)'}`)
+  const waitingLines = final.filter((s) => unfinished(s) && !s.blocked && (s.blocked_by || []).some((b) => byRef.has(b) && unfinished(byRef.get(b)))).map((s) => `${s.key} ${s.title}: waiting on ${(s.blocked_by || []).filter((b) => byRef.has(b) && unfinished(byRef.get(b))).map((b) => byRef.get(b).key).join(', ')}`)
+  const remainingLines = final.filter(unfinished).map((s) => `${s.key} ${s.title}: ${s.blocked ? `${s.status}, blocked, thread ${threadsOf(s).join(', ') || '(none linked)'}` : s.status}`)
+  const humanLines = final.flatMap((s) => (s.criteria || []).filter((c) => c.pending).map((c) => `${s.key}: ${c.text || c}`))
+  const testLines = testReports.map((t) => `${t.key}: ${t.added.length} added${t.added.length ? ` (${t.added.map((a) => a.test).join('; ')})` : ''}, ${t.reused.length} reused, ${t.removed.length} removed${t.removed.length ? ` (${t.removed.join('; ')})` : ''}`)
+  const journeyLines = !doneKeys.length ? ['no story was done in this run, so no journeys were run'] : !wrap ? ['the final check returned nothing'] : [`${wrap.healthy ? 'healthy' : 'NOT healthy'}: ${wrap.report || ''}`.trim(), ...(wrap.journeys || [])]
+  const limitLine = storyLimit !== Infinity && limitReached() ? `The run stopped at storyLimit ${storyLimit}: ${doneKeys.length} stor${doneKeys.length === 1 ? 'y' : 'ies'} done in this run. ` : ''
+  const report = `# Run ${runId} on ${feature}
 
-  kickMerge()
-  await mergeChain
+## Done
+${lines(doneLines)}
+
+## Blocked
+${lines(blockedLines)}
+
+## Waiting on dependencies
+${lines(waitingLines)}
+
+## Fix stories created
+${lines(fixStories.map((f) => `${f.key} ${f.heading}`))}
+
+## Pending human checks
+${lines(humanLines)}
+
+## Decisions taken
+${lines(decisionsTaken.map((d) => `${d.key} (${d.by}): ${d.question} -> ${d.choice}`))}
+
+## Tests
+${lines(testLines)}
+
+## Journeys
+${lines(journeyLines)}
+
+## Remaining
+${limitLine}${remainingLines.length ? 'Not done:' : 'Nothing remains.'}
+${remainingLines.length ? lines(remainingLines) : ''}
+`
+  let posted = true
+  try { omni(['post', threadId, '--summary', `Report of ${runId}`], { input: report, stdio: ['pipe', 'pipe', 'pipe'] }) } catch (e) {
+    posted = false
+    log(`The report could not be posted: ${e && e.message || e}`)
+  }
+  log(report)
 
   const pickable = omni(['story', 'list', '--pickable']).split('\n').filter(Boolean).length
-  return { run: runId, feature, integration, thread: threadId, implementers, reviewers, storyLimit: storyLimit === Infinity ? null : storyLimit, reconciled, clarity, unblocked, resumed, implemented: outcomes, reviewed: reviewOutcomes, merged: mergeOutcomes, checked: checkOutcomes, pickable }
+  return { run: runId, feature, integration, thread: threadId, implementers, reviewers, storyLimit: storyLimit === Infinity ? null : storyLimit, reconciled, clarity, unblocked, resumed, implemented: outcomes, reviewed: reviewOutcomes, merged: mergeOutcomes, checked: checkOutcomes, done: doneKeys, pickable, report, posted }
 } finally {
   fs.rmSync(lockPath, { force: true })
 }
