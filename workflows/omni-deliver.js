@@ -7,6 +7,7 @@ export const meta = {
     { title: 'Reconcile', detail: 'release claims of other runs, then claim, reset or keep each story by its status' },
     { title: 'Clarity', detail: 'one check per backlog story whose version is new, in parallel: blocking gaps become threads, minor ones agent decisions' },
     { title: 'Unblock', detail: 'a blocked story whose linked threads all have a conclusion gets each conclusion as a human decision and is unblocked' },
+    { title: 'Implement', detail: 'up to `implementers` agents at once, each on a pickable story in its own worktree; the story reaches review only after the fast command passes there' },
   ],
 }
 
@@ -121,6 +122,20 @@ try {
     }
   }
 
+  // A question for the human is a thread on the feature named after the story,
+  // linked from the story, and the story is blocked until it concludes.
+  const openThread = (title, body) => {
+    const id = omni(['thread', 'create', title]).trim()
+    omni(['post', id, '--summary', title.slice(0, 200)], { input: body, stdio: ['pipe', 'pipe', 'pipe'] })
+    return id
+  }
+  const linkAndBlock = (key, threadIds) => {
+    const fresh = readStory(key)
+    const links = [...(fresh.links || []).map((l) => (l.thread_id ? `thread:${l.thread_id}:${l.label}` : `${l.doc_id}:${l.node_id}:${l.label}`)), ...threadIds.map((id) => `thread:${id}:question`)]
+    omni(['story', 'edit', key, ...links.flatMap((l) => ['--link', l])])
+    write('block', key)
+  }
+
   // ---- phase 3: clarity ----------------------------------------------------
   phase('Clarity')
   const CLARITY_RULE = `
@@ -214,18 +229,13 @@ Return raw structured data only.`
     const key = story.key
     const threads = []
     for (const gap of gaps.filter((g) => g.blocking !== false)) {
-      const id = omni(['thread', 'create', `${key}: ${gap.question}`]).trim()
       const summary = `Options and recommendation for ${key}`.slice(0, 200)
       const body = `${gap.question}\n\nCriterion: ${gap.criterion}\n\nOptions:\n${gap.options.map((o, i) => `${i + 1}. ${o}`).join('\n')}\n\nRecommendation: ${gap.recommendation}\n\nWhy: ${gap.reason}\n`
+      const id = omni(['thread', 'create', `${key}: ${gap.question}`]).trim()
       omni(['post', id, '--summary', summary], { input: body, stdio: ['pipe', 'pipe', 'pipe'] })
       threads.push({ thread: id, question: gap.question })
     }
-    if (threads.length) {
-      const fresh = readStory(key)
-      const links = [...(fresh.links || []).map((l) => (l.thread_id ? `thread:${l.thread_id}:${l.label}` : `${l.doc_id}:${l.node_id}:${l.label}`)), ...threads.map((t) => `thread:${t.thread}:question`)]
-      omni(['story', 'edit', key, ...links.flatMap((l) => ['--link', l])])
-      write('block', key)
-    }
+    if (threads.length) linkAndBlock(key, threads.map((t) => t.thread))
     for (const gap of gaps.filter((g) => g.blocking === false)) {
       write('decision', key, ['--question', gap.question, '--choice', gap.recommendation, '--by', 'agent'])
     }
@@ -267,8 +277,171 @@ Return raw structured data only.`
   }
   const unblocked = unblockPass()
 
+  // ---- phase 4: implement in worktrees ------------------------------------
+  phase('Implement')
+  const IMPL_SCHEMA = {
+    type: 'object',
+    required: ['status', 'summary'],
+    properties: {
+      status: { type: 'string', enum: ['ready', 'blocked', 'needs_decision'] },
+      summary: { type: 'string', description: '3-6 sentences: what was built and how. For blocked: what blocks you' },
+      decisions: {
+        type: 'array',
+        description: 'Non-obvious technical decisions you took',
+        items: { type: 'object', required: ['question', 'choice'], properties: { question: { type: 'string' }, choice: { type: 'string' } } },
+      },
+      commits: { type: 'array', items: { type: 'string' }, description: 'Commit hashes you made, oldest first' },
+      question: { type: 'string', description: 'Only with needs_decision: the product decision the story cannot avoid, as one plain question' },
+      options: { type: 'array', items: { type: 'string' }, description: 'Only with needs_decision: the concrete options' },
+      recommendation: { type: 'string', description: 'Only with needs_decision: the option you suggest' },
+    },
+  }
+  const CONVENTIONS = `
+## Repo conventions (MUST follow)
+- Commit messages: "type: Capitalized subject" (e.g. "feat: Add booking list").
+  NO parenthetical scope. End the message body with the Co-Authored-By line
+  from your own commit-attribution reminder, copied exactly (it names the model
+  you are running on, which differs between roles).
+- Stage files EXPLICITLY with git add <paths>. NEVER git add -A / git add .
+- NEVER stage or commit: anything under tasks/ (PRDs are local planning artifacts),
+  anything under .claude/, scratch or debug files, service-level CLAUDE.md files.
+- Do not add extra whitespace for column alignment in code.
+- Match the surrounding code's style, comment density, and idiom.
+- Do NOT create notes, plan, progress, or memory files anywhere in the repo.
+  Everything you learned or decided goes in your structured return value.
+  Temp/debug files go in your scratchpad directory, never the repo.
+- Work on the CURRENT branch. Do not push, create branches or amend.
+`
+  let fast = null
+  const docCache = {}
+  const docText = (id) => {
+    if (!(id in docCache)) docCache[id] = tryRun('omni', ['doc', 'read', id], { env: { ...process.env, OMNI_RUN: runId, OMNI_ROLE: 'deliver' } }) || '(the doc could not be read)'
+    return docCache[id]
+  }
+  const runFast = (cwd) => new Promise((resolve) => {
+    if (!fast.trim()) return resolve({ ok: true, output: '' })
+    let output = ''
+    const child = cp.spawn(fast, { cwd, shell: true })
+    child.stdout.on('data', (d) => { output += d })
+    child.stderr.on('data', (d) => { output += d })
+    child.on('error', (e) => resolve({ ok: false, output: output + String(e.message) }))
+    child.on('close', (code) => resolve({ ok: code === 0, output }))
+  })
+  const implPrompt = (story, wt, retry) => {
+    const open = (story.findings || []).filter((f) => !f.resolved)
+    const docs = (story.links || []).filter((l) => l.doc_id)
+    return `You implement ONE story of the feature "${feature}" in its own git worktree.
+
+## Your worktree
+${wt} (branch story/${story.key}, from ${integration}). Work only there: cd into it first and run every command there.
+
+## The story
+${story.key}: ${story.title}
+${story.text || ''}
+
+### Acceptance criteria
+${(story.criteria || []).map((c) => `- ${c.text || c}`).join('\n')}
+
+### Files planned
+${(story.files_planned || []).join('\n') || '(none named)'}
+
+### Decisions already taken (settled: build against them as if the spec said so)
+${(story.decisions || []).map((d) => `- ${d.question} -> ${d.choice} (${d.by})`).join('\n') || '(none)'}
+
+### Open findings (fix all of them)
+${open.map((f) => `- [${f.stage}] ${f.text}${(f.files || []).length ? ` (${f.files.join(', ')})` : ''}`).join('\n') || '(none)'}
+
+## Linked doc nodes
+${docs.map((l) => `### Doc ${l.doc_id}, node ${l.node_id}${l.label ? ` (${l.label})` : ''}\n${docText(l.doc_id)}`).join('\n\n') || '(none)'}
+${retry ? `\n## The fast command failed on your last work (fix it, then commit with a fix: commit)\n\`${fast}\` run in the worktree printed:\n\`\`\`\n${retry}\n\`\`\`\n` : ''}${CONVENTIONS}
+## Rules
+- Implement only this story. No unrelated cleanup, no groundwork for later stories.
+- Commit a feat: commit, then fix: commits for later corrections. Commit production and test files that belong to the story.
+- Run the fast command before you finish: \`${fast || '(none configured)'}\`. The workflow runs it again after you return.
+- If the story needs a product decision the spec does not make and the story cannot avoid, STOP: status needs_decision with question, options and recommendation. Never guess a product rule. Ordinary technical choices are yours.
+- If you genuinely cannot continue, status blocked with the reason in summary.
+- Return decisions for every non-obvious technical choice.
+Return raw structured data only.`
+  }
+
+  const outcomes = []
+  const skipped = new Set()
+  let picked = 0
+  const pickNext = () => {
+    const keys = omni(['story', 'list', '--pickable']).split('\n').map((l) => l.trim().split(/\s+/)[0]).filter(Boolean)
+    return keys.find((k) => !skipped.has(k)) || null
+  }
+  const implement = async (key) => {
+    const wt = worktreeOf(key)
+    const recorded = new Set()
+    const record = (r) => {
+      for (const d of r.decisions || []) {
+        const id = `${d.question}\n${d.choice}`
+        if (recorded.has(id)) continue
+        recorded.add(id)
+        write('decision', key, ['--question', d.question, '--choice', d.choice, '--by', 'agent'])
+      }
+    }
+    const story = readStory(key)
+    let retry = null
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      const r = (await runAgent(implPrompt(story, wt, retry), { schema: IMPL_SCHEMA, label: `impl:${key}${attempt > 1 ? ` fix${attempt - 1}` : ''}`, phase: 'Implement', model: modelFor('impl'), role: 'impl' })) || { status: 'blocked', summary: 'The implementer returned no result (it may have died).' }
+      record(r)
+      if (r.status === 'needs_decision') {
+        const options = (r.options || []).map((o, i) => `${i + 1}. ${o}`).join('\n')
+        const id = openThread(`${key}: ${r.question}`, `${r.question}\n\nOptions:\n${options}\n\nRecommendation: ${r.recommendation || ''}\n`)
+        linkAndBlock(key, [id])
+        return { key, outcome: 'needs_decision', thread: id }
+      }
+      if (r.status !== 'ready') {
+        const id = openThread(`${key}: the implementer is blocked`, `${r.summary}\n`)
+        linkAndBlock(key, [id])
+        return { key, outcome: 'blocked', thread: id }
+      }
+      const result = await runFast(wt)
+      if (result.ok) {
+        const paths = git(['-C', wt, 'diff', '--name-only', `${integration}...HEAD`]).split('\n').filter(Boolean)
+        if (paths.length) write('files', key, paths)
+        write('move', key, ['--to', 'review'])
+        return { key, outcome: 'review' }
+      }
+      retry = result.output
+    }
+    const id = openThread(`${key}: the fast command still fails after three attempts`, `Last output of \`${fast}\`:\n\n\`\`\`\n${retry}\n\`\`\`\n`)
+    linkAndBlock(key, [id])
+    return { key, outcome: 'fast_failed', thread: id }
+  }
+  const start = (key) => {
+    if (fast === null) fast = String(JSON.parse(omni(['checks', '--json'])).fast || '')
+    dropWorktree(key)
+    write('claim', key, ['--stage', 'implementing'])
+    fs.mkdirSync(storiesDir, { recursive: true })
+    git(['worktree', 'add', worktreeOf(key), '-b', `story/${key}`, integration])
+    return implement(key).catch((e) => ({ key, outcome: 'failed', error: String(e && e.message || e) }))
+  }
+  const active = new Map()
+  for (;;) {
+    while (active.size < implementers && picked < storyLimit) {
+      const key = pickNext()
+      if (!key) break
+      picked++
+      let p
+      try { p = start(key) } catch (e) {
+        skipped.add(key)
+        outcomes.push({ key, outcome: 'failed', error: String(e && e.message || e) })
+        continue
+      }
+      active.set(key, p.then((o) => ({ key, o })))
+    }
+    if (active.size === 0) break
+    const { key, o } = await Promise.race(active.values())
+    active.delete(key)
+    outcomes.push(o)
+    if (o.error) log(`${key}: ${o.error}`)
+  }
+
   const pickable = omni(['story', 'list', '--pickable']).split('\n').filter(Boolean).length
-  return { run: runId, feature, integration, thread: threadId, implementers, reviewers, storyLimit: storyLimit === Infinity ? null : storyLimit, reconciled, clarity, unblocked, resumed, pickable }
+  return { run: runId, feature, integration, thread: threadId, implementers, reviewers, storyLimit: storyLimit === Infinity ? null : storyLimit, reconciled, clarity, unblocked, resumed, implemented: outcomes, pickable }
 } finally {
   fs.rmSync(lockPath, { force: true })
 }
