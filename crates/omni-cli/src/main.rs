@@ -14,6 +14,7 @@ mod config;
 mod design;
 mod docs;
 mod error;
+mod export;
 mod features;
 mod http;
 mod identity;
@@ -89,6 +90,12 @@ Usage:
                                       DTCG JSON
   omni tokens export --per-mode --out <dir>
                                       write one file per mode, <dir>/<mode>.tokens.json
+  omni export --project <name|id> [--feature <name|id>] --out <dir>
+                                      write the scope's plan to a folder: manifest.json, the
+                                      HTML docs by pillar, each design board in the tag format
+                                      under ui/<doc>/, and the design system's tokens as
+                                      tokens.json and tokens.css (variables per mode). The
+                                      app level without --feature
   omni import penpot <file.penpot> --project <id> [--feature <name>]
                                       import a Penpot export (made with 'Export file + libraries')
                                       straight into the project: the pages and boards as a design doc (in the feature's UI
@@ -171,7 +178,8 @@ Options (before or after the command):
                         comments `omni comment list` shows
   --board <id>          the board of that doc that `omni design read` prints, or that a
                         `omni design edit` batch stays inside
-  --out <path>          where `omni tokens export` writes: a file, or with --per-mode a directory
+  --out <path>          where `omni tokens export` writes: a file, or with --per-mode a directory;
+                        the folder `omni export` writes to
   --per-mode            `omni tokens export`: one file per mode
   --thread <id>         the thread that `omni wait` waits on
   --posts <n>           `omni wait --thread`: wait for this many posts that you may read

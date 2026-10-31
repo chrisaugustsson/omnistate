@@ -14,6 +14,7 @@ use crate::config::{self, Stored};
 use crate::design;
 use crate::docs;
 use crate::error::{CliError, Result, bail};
+use crate::export;
 use crate::features;
 use crate::http::{self, Response, Server};
 use crate::identity::Identity;
@@ -82,6 +83,7 @@ pub fn run(args: &Args) -> Result<()> {
                 "usage: omni doc create|list|read|show|edit|rename|delete|activity; see `omni --help`"
             )
         }
+        ["export"] => export::run(args),
         ["tokens", "import"] => tokens::import(args, None),
         ["tokens", "import", file] => tokens::import(args, Some(file)),
         ["tokens", "export"] => tokens::export(args),
