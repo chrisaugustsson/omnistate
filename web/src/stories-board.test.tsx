@@ -416,6 +416,13 @@ describe("steering from the board", () => {
     expect(cardKeys(main, "Backlog")).toEqual([]);
     expect(within(card(main, "US-1")).getByRole("alert").textContent).toBe(CONFLICT);
     expect((within(card(main, "US-1")).getByRole("combobox") as HTMLSelectElement).value).toBe("2");
+
+    api.answer = () => ({ status: 200, body: { story: story(1, { status: "implementing", priority: 1, version: 3 }) } });
+    fireEvent.change(within(card(main, "US-1")).getByRole("combobox"), { target: { value: "1" } });
+
+    await waitFor(() => expect(api.writes).toHaveLength(2));
+    expect(api.writes[1].body).toEqual({ expected_version: 2, priority: 1 });
+    await waitFor(() => expect(within(card(main, "US-1")).queryByRole("alert")).toBeNull());
   });
 
   test("choosing priority 1 sends a PATCH with the card's version and the server's answer moves the card to the front of its column", async () => {
