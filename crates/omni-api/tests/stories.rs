@@ -34,6 +34,20 @@
 //!   done, not cancelled) dependants, most first, then by number.
 //!   `pickable=false` gives the normal list, any other value is 422; with
 //!   `?status=` the list is empty unless the status is `backlog`.
+//! - US-133: `PATCH /stories/{story_id}` (agent and human) takes
+//!   `expected_version` and any of `title, text, topic, criteria, blocked_by,
+//!   files_planned, priority, links`, answers 200 `{"story": Story}` with
+//!   `version` one higher and emits `story.changed` with `{story_id, key,
+//!   fields}`, every field of the body in that order. Checked in this order: a
+//!   body with no field but `expected_version`, or a `blocked_by` naming a
+//!   story of another feature or the story itself, is 422; a stale
+//!   `expected_version` is 409 `{"error": "conflict", "current_version": n}`;
+//!   a `done` or `cancelled` story is 409 `not_open`; `title, text, topic,
+//!   criteria, files_planned` outside `backlog` are 409 `not_in_backlog`. A
+//!   refused request changes nothing. `POST /stories/{story_id}/cancel` with
+//!   `{expected_version}` answers 200 with the story `cancelled`, its holder
+//!   cleared, emits `story.cancelled` with `{story_id, key}`, and is 409
+//!   `not_open` from `done` or `cancelled`.
 
 mod common;
 
@@ -416,6 +430,75 @@ fn set_files_changed(story: &str, files: Value) {
             .await
             .unwrap_or_else(|e| panic!("set the changed files: {e}"));
     })
+}
+
+/// Sets a story's holder as the admin role: no route of this story claims one.
+fn set_holder(story: &str, holder: Value) {
+    block(async {
+        let mut conn = admin_connection().await;
+        sqlx::query("update stories set holder = $2::jsonb where id = $1::uuid")
+            .bind(story)
+            .bind(holder.to_string())
+            .execute(&mut conn)
+            .await
+            .unwrap_or_else(|e| panic!("set the holder: {e}"));
+    })
+}
+
+fn story_path(f: &Fixture, project: &str, feature: &str, story: &str) -> String {
+    format!("{}/{story}", stories_path(f, project, feature))
+}
+
+/// `PATCH`es a story as the agent.
+fn patch(
+    f: &Fixture,
+    client: &Client,
+    project: &str,
+    feature: &str,
+    story: &str,
+    body: Value,
+) -> Response {
+    call(
+        client,
+        "PATCH",
+        &story_path(f, project, feature, story),
+        &agent(f),
+        Some(&body),
+    )
+}
+
+/// Cancels a story as the agent.
+fn cancel(
+    f: &Fixture,
+    client: &Client,
+    project: &str,
+    feature: &str,
+    story: &str,
+    expected_version: i64,
+) -> Response {
+    call(
+        client,
+        "POST",
+        &format!("{}/cancel", story_path(f, project, feature, story)),
+        &agent(f),
+        Some(&json!({ "expected_version": expected_version })),
+    )
+}
+
+/// The story as `GET /stories/{story_id}` answers it.
+fn get_story(f: &Fixture, client: &Client, project: &str, feature: &str, story: &str) -> Value {
+    must(
+        call(
+            client,
+            "GET",
+            &story_path(f, project, feature, story),
+            &agent(f),
+            None,
+        ),
+        200,
+        "read the story",
+    )["story"]
+        .clone()
 }
 
 /// Creates a story with `extra`'s fields as the agent; returns its id.
@@ -1156,4 +1239,335 @@ fn pickable_false_gives_the_normal_list_and_another_value_is_refused() {
         422,
         "invalid_pickable",
     );
+}
+
+// ---------------------------------------------------------------------------
+// Editing and cancelling a story
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_patch_at_the_current_version_bumps_it_and_the_old_one_conflicts_before_the_status_rules() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    let feature = new_feature(f, client, &project);
+    let story = new_story(f, client, &project, &feature, json!({}));
+    let path = story_path(f, &project, &feature, &story);
+    let edit = json!({ "expected_version": 1, "priority": 1 });
+    let edited = must(
+        call(client, "PATCH", &path, &human(f), Some(&edit)),
+        200,
+        "patch at the current version",
+    )["story"]
+        .clone();
+    assert_eq!(edited["version"], 2, "{edited}");
+    assert_eq!(edited["priority"], 1, "{edited}");
+    assert_eq!(
+        events_of(&project, "story.changed"),
+        vec![json!({ "story_id": story, "key": "US-1", "fields": ["priority"] })]
+    );
+    // Done, and `text` is backlog only: the stale version is still the answer.
+    set_status(&story, "done");
+    let stale = call(
+        client,
+        "PATCH",
+        &path,
+        &human(f),
+        Some(&json!({ "expected_version": 1, "text": "New" })),
+    );
+    assert_eq!(stale.status, 409, "body: {}", stale.text());
+    assert_eq!(
+        stale.json(),
+        json!({ "error": "conflict", "current_version": 2 })
+    );
+    assert_eq!(
+        get_story(f, client, &project, &feature, &story)["version"],
+        2
+    );
+    assert_eq!(events_of(&project, "story.changed").len(), 1);
+}
+
+#[test]
+fn story_changed_names_every_field_of_the_body_in_schema_order_changed_or_not() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    let feature = new_feature(f, client, &project);
+    let story = new_story(f, client, &project, &feature, json!({}));
+    // `links` sorts before `title` by name, but comes after it in the schema;
+    // the priority is the default 3, so it does not change.
+    must(
+        patch(
+            f,
+            client,
+            &project,
+            &feature,
+            &story,
+            json!({ "expected_version": 1, "links": [], "priority": 3, "title": "Renamed" }),
+        ),
+        200,
+        "patch three fields",
+    );
+    assert_eq!(
+        events_of(&project, "story.changed"),
+        vec![json!({ "story_id": story, "key": "US-1", "fields": ["title", "priority", "links"] })]
+    );
+}
+
+#[test]
+fn outside_backlog_only_priority_blockers_and_links_change() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    let feature = new_feature(f, client, &project);
+    let blocker = new_story(f, client, &project, &feature, json!({}));
+    let story = new_story(f, client, &project, &feature, json!({}));
+    set_status(&story, "implementing");
+    let refuse = |body: Value| {
+        assert_error(
+            &patch(f, client, &project, &feature, &story, body),
+            409,
+            "not_in_backlog",
+        )
+    };
+    refuse(json!({ "expected_version": 1, "title": "New" }));
+    refuse(json!({ "expected_version": 1, "text": "New" }));
+    refuse(json!({ "expected_version": 1, "topic": "New" }));
+    refuse(json!({ "expected_version": 1, "criteria": [{ "text": "New" }] }));
+    refuse(json!({ "expected_version": 1, "files_planned": ["src/new.rs"] }));
+    refuse(json!({ "expected_version": 1, "text": "New", "priority": 1 }));
+    let unchanged = get_story(f, client, &project, &feature, &story);
+    assert_eq!(unchanged["version"], 1, "{unchanged}");
+    assert_eq!(unchanged["priority"], 3, "{unchanged}");
+    assert_eq!(unchanged["text"], "", "{unchanged}");
+    let edited = must(
+        patch(
+            f,
+            client,
+            &project,
+            &feature,
+            &story,
+            json!({
+                "expected_version": 1,
+                "priority": 1,
+                "blocked_by": [blocker],
+                "links": [{ "thread_id": UNKNOWN_ID, "label": "question" }],
+            }),
+        ),
+        200,
+        "patch priority, blockers and links in implementing",
+    )["story"]
+        .clone();
+    assert_eq!(edited["version"], 2, "{edited}");
+    assert_eq!(edited["priority"], 1, "{edited}");
+    assert_eq!(edited["blocked_by"], json!([blocker]), "{edited}");
+    assert_eq!(
+        edited["links"],
+        json!([{ "thread_id": UNKNOWN_ID, "label": "question" }]),
+        "{edited}"
+    );
+}
+
+#[test]
+fn a_done_or_cancelled_story_refuses_every_field_as_not_open() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    let feature = new_feature(f, client, &project);
+    let done = new_story(f, client, &project, &feature, json!({}));
+    set_status(&done, "done");
+    let cancelled = new_story(f, client, &project, &feature, json!({}));
+    set_status(&cancelled, "cancelled");
+    assert_error(
+        &patch(
+            f,
+            client,
+            &project,
+            &feature,
+            &done,
+            json!({ "expected_version": 1, "priority": 1 }),
+        ),
+        409,
+        "not_open",
+    );
+    // A text field breaks both rules; a closed story answers `not_open`.
+    assert_error(
+        &patch(
+            f,
+            client,
+            &project,
+            &feature,
+            &done,
+            json!({ "expected_version": 1, "text": "New" }),
+        ),
+        409,
+        "not_open",
+    );
+    assert_error(
+        &patch(
+            f,
+            client,
+            &project,
+            &feature,
+            &cancelled,
+            json!({ "expected_version": 1, "links": [] }),
+        ),
+        409,
+        "not_open",
+    );
+    assert_eq!(
+        get_story(f, client, &project, &feature, &done)["version"],
+        1
+    );
+    assert!(events_of(&project, "story.changed").is_empty());
+}
+
+#[test]
+fn an_invalid_body_is_refused_before_a_stale_version_is_reported() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    let feature = new_feature(f, client, &project);
+    let other_feature = new_feature(f, client, &project);
+    let elsewhere = new_story(f, client, &project, &other_feature, json!({}));
+    let story = new_story(f, client, &project, &feature, json!({}));
+    let only_version = patch(
+        f,
+        client,
+        &project,
+        &feature,
+        &story,
+        json!({ "expected_version": 7 }),
+    );
+    assert_eq!(only_version.status, 422, "body: {}", only_version.text());
+    assert_error(
+        &patch(
+            f,
+            client,
+            &project,
+            &feature,
+            &story,
+            json!({ "expected_version": 7, "blocked_by": [elsewhere] }),
+        ),
+        422,
+        "invalid_blocked_by",
+    );
+}
+
+#[test]
+fn a_patched_blocker_must_be_another_story_of_the_same_feature() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    let feature = new_feature(f, client, &project);
+    let other_feature = new_feature(f, client, &project);
+    let elsewhere = new_story(f, client, &project, &other_feature, json!({}));
+    let story = new_story(f, client, &project, &feature, json!({}));
+    assert_error(
+        &patch(
+            f,
+            client,
+            &project,
+            &feature,
+            &story,
+            json!({ "expected_version": 1, "blocked_by": [elsewhere] }),
+        ),
+        422,
+        "invalid_blocked_by",
+    );
+    assert_error(
+        &patch(
+            f,
+            client,
+            &project,
+            &feature,
+            &story,
+            json!({ "expected_version": 1, "blocked_by": [story] }),
+        ),
+        422,
+        "invalid_blocked_by",
+    );
+    let unchanged = get_story(f, client, &project, &feature, &story);
+    assert_eq!(unchanged["version"], 1, "{unchanged}");
+    assert_eq!(unchanged["blocked_by"], json!([]), "{unchanged}");
+}
+
+#[test]
+fn two_stories_may_block_each_other() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    let feature = new_feature(f, client, &project);
+    let a = new_story(f, client, &project, &feature, json!({}));
+    let b = new_story(f, client, &project, &feature, json!({ "blocked_by": [a] }));
+    let edited = must(
+        patch(
+            f,
+            client,
+            &project,
+            &feature,
+            &a,
+            json!({ "expected_version": 1, "blocked_by": [b] }),
+        ),
+        200,
+        "block A by B while B is blocked by A",
+    )["story"]
+        .clone();
+    assert_eq!(edited["blocked_by"], json!([b]), "{edited}");
+}
+
+#[test]
+fn cancelling_answers_the_cancelled_story_without_its_holder() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    let feature = new_feature(f, client, &project);
+    let story = new_story(f, client, &project, &feature, json!({}));
+    set_status(&story, "implementing");
+    set_holder(
+        &story,
+        json!({ "run": "run-1", "stage": "implementing", "at": "2026-10-31T00:00:00Z" }),
+    );
+    let stale = cancel(f, client, &project, &feature, &story, 7);
+    assert_eq!(stale.status, 409, "body: {}", stale.text());
+    assert_eq!(
+        stale.json(),
+        json!({ "error": "conflict", "current_version": 1 })
+    );
+    let cancelled = must(
+        cancel(f, client, &project, &feature, &story, 1),
+        200,
+        "cancel the story",
+    )["story"]
+        .clone();
+    assert_eq!(cancelled["id"], story, "{cancelled}");
+    assert_eq!(cancelled["status"], "cancelled", "{cancelled}");
+    assert_eq!(cancelled["version"], 2, "{cancelled}");
+    assert_eq!(cancelled["holder"], Value::Null, "{cancelled}");
+    assert_eq!(
+        events_of(&project, "story.cancelled"),
+        vec![json!({ "story_id": story, "key": "US-1" })]
+    );
+}
+
+#[test]
+fn a_done_or_cancelled_story_cannot_be_cancelled() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    let feature = new_feature(f, client, &project);
+    let done = new_story(f, client, &project, &feature, json!({}));
+    set_status(&done, "done");
+    let story = new_story(f, client, &project, &feature, json!({}));
+    must(
+        cancel(f, client, &project, &feature, &story, 1),
+        200,
+        "cancel once",
+    );
+    assert_error(
+        &cancel(f, client, &project, &feature, &story, 2),
+        409,
+        "not_open",
+    );
+    assert_error(
+        &cancel(f, client, &project, &feature, &done, 1),
+        409,
+        "not_open",
+    );
+    assert_eq!(
+        get_story(f, client, &project, &feature, &done)["status"],
+        "done"
+    );
+    assert_eq!(events_of(&project, "story.cancelled").len(), 1);
 }
