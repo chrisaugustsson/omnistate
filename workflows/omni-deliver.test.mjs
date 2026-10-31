@@ -1020,10 +1020,10 @@ test("a fix story failing its own check blocks it and the original with one thre
   assert.deepEqual(subjects(dirs), ["feat: US-2", "feat: US-3", "feat: US-1", "init"]);
 });
 
-test("after a batch of two the stack command runs once, and its failure makes one priority-0 fix story 'Fix batch US-1, US-2' with the output, both stories' files and links, which is merged and checked", async (t) => {
+test("after a batch of two the stack command runs once, and its failure makes one priority-0 fix story 'Fix batch US-2, US-1' in merge order with the output, both stories' files and links, which is merged and checked", async (t) => {
   const dirs = scratch(t, [
     story("US-1", { status: "testing", files_changed: ["src/a.rs"], links: [{ doc_id: "d1", node_id: "n1", label: "" }] }),
-    story("US-2", { status: "testing", files_changed: ["src/b.rs"], links: [{ doc_id: "d2", node_id: "n2", label: "" }] }),
+    story("US-2", { status: "testing", priority: 1, files_changed: ["src/b.rs"], links: [{ doc_id: "d2", node_id: "n2", label: "" }] }),
   ]);
   const stackLog = join(dirs.root, "stack.log");
   dirs.checks({ fast: "true", stack_up: "true", stack: `git log --format=%s -1 >> ${stackLog}; echo the stack broke; exit 1` });
@@ -1033,16 +1033,16 @@ test("after a batch of two the stack command runs once, and its failure makes on
 
   await deliver({ feature: "board" }, agent);
 
-  assert.equal(readFileSync(stackLog, "utf8"), "feat: US-2\n");
+  assert.equal(readFileSync(stackLog, "utf8"), "feat: US-1\n");
   const fix = dirs.story("US-3");
-  assert.equal(fix.title, "Fix batch US-1, US-2");
+  assert.equal(fix.title, "Fix batch US-2, US-1");
   assert.equal(fix.priority, 0);
   assert.ok(fix.text.includes("the stack broke"));
   assert.deepEqual(fix.criteria.map((c) => c.text), ["The stack command passes on the main worktree", LINT]);
-  assert.deepEqual(fix.files_planned, ["src/a.rs", "src/b.rs"]);
-  assert.deepEqual(fix.links, [{ doc_id: "d1", node_id: "n1", label: "" }, { doc_id: "d2", node_id: "n2", label: "" }]);
+  assert.deepEqual(fix.files_planned, ["src/b.rs", "src/a.rs"]);
+  assert.deepEqual(fix.links, [{ doc_id: "d2", node_id: "n2", label: "" }, { doc_id: "d1", node_id: "n1", label: "" }]);
   assert.deepEqual(dirs.state().stories.map((s) => s.key), ["US-1", "US-2", "US-3"]);
-  assert.deepEqual(subjects(dirs), ["feat: US-3", "feat: US-2", "feat: US-1", "init"]);
+  assert.deepEqual(subjects(dirs), ["feat: US-3", "feat: US-1", "feat: US-2", "init"]);
   assert.equal(verifies["US-3"], 1);
 });
 
