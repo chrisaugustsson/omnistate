@@ -60,6 +60,15 @@
 //!   write bumps `version` and emits `story.changed`; a refused one changes
 //!   nothing. Checked in this order: stale version (409 `conflict`), `not_open`
 //!   (done or cancelled), `held` or `not_holder`, `criteria_open`.
+//! - US-135: `POST /stories/{story_id}/tick` `{expected_version, run,
+//!   criterion, ticked, pending?}`, `/findings` `{.., stage, text, files}`,
+//!   `/findings/{index}/resolve`, `/decisions` `{.., question, choice, by}`
+//!   and `/files` `{.., files_changed}` are agent only and, on a held story,
+//!   only from the holder's run (else 409 `not_holder`); a criterion index
+//!   out of range is 422 `invalid_criterion`. `/block` and `/unblock` and
+//!   `/decisions` on an unheld story take any run. `POST /check`
+//!   `{expected_version, criterion}` is human only and clears `pending` in
+//!   any status, `done` included.
 
 mod common;
 
@@ -2043,4 +2052,426 @@ fn a_session_is_refused_on_claim_release_and_move() {
     let unchanged = get_story(f, client, &project, &feature, &story);
     assert_eq!(unchanged["version"], 1, "{unchanged}");
     assert_eq!(unchanged["status"], "backlog", "{unchanged}");
+}
+
+// ---------------------------------------------------------------------------
+// Ticks, findings, decisions, files, blocking and the human's check
+// ---------------------------------------------------------------------------
+
+/// Creates a story with `criteria` and has run `r1` claim it for `stage`;
+/// returns its path. The story is at version 2.
+fn held_story(
+    f: &Fixture,
+    client: &Client,
+    project: &str,
+    feature: &str,
+    criteria: Value,
+) -> String {
+    let story = new_story(f, client, project, feature, json!({ "criteria": criteria }));
+    let path = story_path(f, project, feature, &story);
+    must(
+        act(
+            client,
+            &agent(f),
+            &path,
+            "claim",
+            json!({ "expected_version": 1, "run": "r1", "stage": "review" }),
+        ),
+        200,
+        "r1 claims",
+    );
+    path
+}
+
+#[test]
+fn the_holder_ticks_records_findings_decisions_and_changed_files() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    let feature = new_feature(f, client, &project);
+    let path = held_story(
+        f,
+        client,
+        &project,
+        &feature,
+        json!([{ "text": "a", "human_check": true }, { "text": "b" }]),
+    );
+    let a = agent(f);
+    let ticked = must(
+        act(
+            client,
+            &a,
+            &path,
+            "tick",
+            json!({ "expected_version": 2, "run": "r1", "criterion": 0, "ticked": true, "pending": true }),
+        ),
+        200,
+        "tick criterion 0",
+    )["story"]
+        .clone();
+    assert_eq!(
+        ticked["criteria"],
+        json!([
+            { "text": "a", "ticked": true, "human_check": true, "pending": true },
+            { "text": "b", "ticked": false, "human_check": false, "pending": false },
+        ])
+    );
+    assert_eq!(ticked["version"], 3, "{ticked}");
+    let stale = act(
+        client,
+        &a,
+        &path,
+        "tick",
+        json!({ "expected_version": 2, "run": "r1", "criterion": 1, "ticked": true }),
+    );
+    assert_eq!(stale.status, 409, "body: {}", stale.text());
+    assert_eq!(
+        stale.json(),
+        json!({ "error": "conflict", "current_version": 3 })
+    );
+    assert_error(
+        &act(
+            client,
+            &a,
+            &path,
+            "tick",
+            json!({ "expected_version": 3, "run": "r1", "criterion": 2, "ticked": true }),
+        ),
+        422,
+        "invalid_criterion",
+    );
+    assert_error(
+        &act(
+            client,
+            &a,
+            &path,
+            "tick",
+            json!({ "expected_version": 3, "run": "r1", "criterion": 9, "ticked": true }),
+        ),
+        422,
+        "invalid_criterion",
+    );
+    must(
+        act(
+            client,
+            &a,
+            &path,
+            "findings",
+            json!({ "expected_version": 3, "run": "r1", "stage": "review", "text": "first", "files": ["a.rs"] }),
+        ),
+        200,
+        "record a finding",
+    );
+    let found = must(
+        act(
+            client,
+            &a,
+            &path,
+            "findings",
+            json!({ "expected_version": 4, "run": "r1", "stage": "testing", "text": "second", "files": [] }),
+        ),
+        200,
+        "record a second finding",
+    )["story"]
+        .clone();
+    assert_eq!(
+        found["findings"],
+        json!([
+            { "stage": "review", "text": "first", "files": ["a.rs"], "resolved": false },
+            { "stage": "testing", "text": "second", "files": [], "resolved": false },
+        ])
+    );
+    let resolved = must(
+        act(
+            client,
+            &a,
+            &path,
+            "findings/0/resolve",
+            json!({ "expected_version": 5, "run": "r1" }),
+        ),
+        200,
+        "resolve finding 0",
+    )["story"]
+        .clone();
+    assert_eq!(
+        resolved["findings"],
+        json!([
+            { "stage": "review", "text": "first", "files": ["a.rs"], "resolved": true },
+            { "stage": "testing", "text": "second", "files": [], "resolved": false },
+        ])
+    );
+    must(
+        act(
+            client,
+            &a,
+            &path,
+            "files",
+            json!({ "expected_version": 6, "run": "r1", "files_changed": ["x.rs", "y.rs"] }),
+        ),
+        200,
+        "set the changed files",
+    );
+    let files = must(
+        act(
+            client,
+            &a,
+            &path,
+            "files",
+            json!({ "expected_version": 7, "run": "r1", "files_changed": ["a.rs"] }),
+        ),
+        200,
+        "replace the changed files",
+    )["story"]
+        .clone();
+    assert_eq!(files["files_changed"], json!(["a.rs"]), "{files}");
+    let decided = must(
+        act(
+            client,
+            &a,
+            &path,
+            "decisions",
+            json!({ "expected_version": 8, "run": "r1", "question": "Which?", "choice": "This", "by": "agent" }),
+        ),
+        200,
+        "record a decision",
+    )["story"]
+        .clone();
+    assert_eq!(
+        decided["decisions"],
+        json!([{ "question": "Which?", "choice": "This", "by": "agent" }])
+    );
+    assert_eq!(decided["version"], 9, "{decided}");
+    assert_eq!(
+        events_of(&project, "story.changed").len(),
+        8,
+        "one event for the claim and one per accepted write"
+    );
+}
+
+#[test]
+fn another_run_cannot_tick_find_resolve_decide_or_set_files_on_a_held_story() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    let feature = new_feature(f, client, &project);
+    let path = held_story(f, client, &project, &feature, json!([{ "text": "a" }]));
+    let a = agent(f);
+    must(
+        act(
+            client,
+            &a,
+            &path,
+            "findings",
+            json!({ "expected_version": 2, "run": "r1", "stage": "review", "text": "t", "files": [] }),
+        ),
+        200,
+        "the holder records a finding",
+    );
+    assert_error(
+        &act(
+            client,
+            &a,
+            &path,
+            "tick",
+            json!({ "expected_version": 3, "run": "r2", "criterion": 0, "ticked": true }),
+        ),
+        409,
+        "not_holder",
+    );
+    assert_error(
+        &act(
+            client,
+            &a,
+            &path,
+            "findings",
+            json!({ "expected_version": 3, "run": "r2", "stage": "review", "text": "t", "files": [] }),
+        ),
+        409,
+        "not_holder",
+    );
+    assert_error(
+        &act(
+            client,
+            &a,
+            &path,
+            "findings/0/resolve",
+            json!({ "expected_version": 3, "run": "r2" }),
+        ),
+        409,
+        "not_holder",
+    );
+    assert_error(
+        &act(
+            client,
+            &a,
+            &path,
+            "decisions",
+            json!({ "expected_version": 3, "run": "r2", "question": "q", "choice": "c", "by": "agent" }),
+        ),
+        409,
+        "not_holder",
+    );
+    assert_error(
+        &act(
+            client,
+            &a,
+            &path,
+            "files",
+            json!({ "expected_version": 3, "run": "r2", "files_changed": ["a.rs"] }),
+        ),
+        409,
+        "not_holder",
+    );
+    let unchanged =
+        must(call(client, "GET", &path, &a, None), 200, "read the story")["story"].clone();
+    assert_eq!(unchanged["version"], 3, "{unchanged}");
+    assert_eq!(unchanged["criteria"][0]["ticked"], false, "{unchanged}");
+    assert_eq!(
+        unchanged["findings"],
+        json!([{ "stage": "review", "text": "t", "files": [], "resolved": false }])
+    );
+    assert_eq!(unchanged["decisions"], json!([]), "{unchanged}");
+    assert_eq!(unchanged["files_changed"], json!([]), "{unchanged}");
+}
+
+#[test]
+fn any_run_blocks_decides_and_unblocks_a_story_nothing_holds() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    let feature = new_feature(f, client, &project);
+    let story = new_story(f, client, &project, &feature, json!({}));
+    let path = story_path(f, &project, &feature, &story);
+    let a = agent(f);
+    let blocked = must(
+        act(
+            client,
+            &a,
+            &path,
+            "block",
+            json!({ "expected_version": 1, "run": "r9" }),
+        ),
+        200,
+        "block an unheld story",
+    )["story"]
+        .clone();
+    assert_eq!(blocked["blocked"], true, "{blocked}");
+    assert_eq!(blocked["status"], "backlog", "{blocked}");
+    assert_eq!(blocked["holder"], Value::Null, "{blocked}");
+    assert_error(
+        &act(
+            client,
+            &a,
+            &path,
+            "decisions",
+            json!({ "expected_version": 2, "run": "r9", "question": "q", "choice": "c", "by": "robot" }),
+        ),
+        422,
+        "invalid_by",
+    );
+    let decided = must(
+        act(
+            client,
+            &a,
+            &path,
+            "decisions",
+            json!({ "expected_version": 2, "run": "r9", "question": "Split it?", "choice": "Yes", "by": "human" }),
+        ),
+        200,
+        "decide on an unheld story",
+    )["story"]
+        .clone();
+    assert_eq!(
+        decided["decisions"],
+        json!([{ "question": "Split it?", "choice": "Yes", "by": "human" }])
+    );
+    let unblocked = must(
+        act(
+            client,
+            &a,
+            &path,
+            "unblock",
+            json!({ "expected_version": 3, "run": "r8" }),
+        ),
+        200,
+        "unblock",
+    )["story"]
+        .clone();
+    assert_eq!(unblocked["blocked"], false, "{unblocked}");
+    assert_eq!(unblocked["version"], 4, "{unblocked}");
+}
+
+#[test]
+fn the_human_clears_a_pending_check_on_a_done_story_and_only_the_human() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    let feature = new_feature(f, client, &project);
+    let path = held_story(
+        f,
+        client,
+        &project,
+        &feature,
+        json!([{ "text": "a", "human_check": true }]),
+    );
+    let a = agent(f);
+    let h = human(f);
+    assert_error(
+        &act(
+            client,
+            &h,
+            &path,
+            "tick",
+            json!({ "expected_version": 2, "run": "r1", "criterion": 0, "ticked": true }),
+        ),
+        403,
+        "forbidden",
+    );
+    must(
+        act(
+            client,
+            &a,
+            &path,
+            "tick",
+            json!({ "expected_version": 2, "run": "r1", "criterion": 0, "ticked": true, "pending": true }),
+        ),
+        200,
+        "tick with the human check pending",
+    );
+    must(
+        act(
+            client,
+            &a,
+            &path,
+            "move",
+            json!({ "expected_version": 3, "run": "r1", "to": "done" }),
+        ),
+        200,
+        "move to done",
+    );
+    assert_error(
+        &act(
+            client,
+            &a,
+            &path,
+            "check",
+            json!({ "expected_version": 4, "criterion": 0 }),
+        ),
+        403,
+        "forbidden",
+    );
+    let checked = must(
+        act(
+            client,
+            &h,
+            &path,
+            "check",
+            json!({ "expected_version": 4, "criterion": 0 }),
+        ),
+        200,
+        "the human clears the check on a done story",
+    )["story"]
+        .clone();
+    assert_eq!(
+        checked["criteria"],
+        json!([{ "text": "a", "ticked": true, "human_check": true, "pending": false }])
+    );
+    assert_eq!(checked["status"], "done", "{checked}");
+    assert_eq!(checked["version"], 5, "{checked}");
 }
