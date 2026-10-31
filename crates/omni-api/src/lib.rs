@@ -354,6 +354,18 @@ pub fn router(state: AppState) -> Router {
             post(stories::cancel_story),
         )
         .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/claim",
+            post(stories::claim_story),
+        )
+        .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/release",
+            post(stories::release_story),
+        )
+        .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/move",
+            post(stories::move_story),
+        )
+        .route(
             "/api/v1/w/{workspace_id}/projects/{project_id}/threads",
             get(threads::list_threads).post(threads::create_app_thread),
         )

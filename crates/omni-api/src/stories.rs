@@ -8,7 +8,7 @@ use crate::AppState;
 use crate::live;
 use crate::projects::{parse_body, require_project};
 use crate::session::{ApiError, ErrorBody};
-use crate::workspace::{WorkspaceRequest, parse_uuid};
+use crate::workspace::{AgentRequest, WorkspaceRequest, parse_uuid};
 use axum::Json;
 use axum::body::Bytes;
 use axum::extract::{Path, Query, State};
@@ -566,6 +566,8 @@ pub struct StoryConflictBody {
 pub enum StoryError {
     Api(ApiError),
     Stale(i32),
+    Held(Value),
+    CriteriaOpen(Vec<usize>),
 }
 
 impl From<ApiError> for StoryError {
@@ -581,6 +583,16 @@ impl IntoResponse for StoryError {
             Self::Stale(current_version) => (
                 StatusCode::CONFLICT,
                 Json(json!({ "error": "conflict", "current_version": current_version })),
+            )
+                .into_response(),
+            Self::Held(holder) => (
+                StatusCode::CONFLICT,
+                Json(json!({ "error": "held", "holder": holder })),
+            )
+                .into_response(),
+            Self::CriteriaOpen(open) => (
+                StatusCode::CONFLICT,
+                Json(json!({ "error": "criteria_open", "open": open })),
             )
                 .into_response(),
         }
@@ -827,4 +839,272 @@ pub async fn cancel_story(
     tx.commit().await.map_err(ApiError::database)?;
     state.live.announce(&request.workspace_id, &project_id);
     Ok(Json(StoryResponse { story }))
+}
+
+#[derive(Deserialize, ToSchema)]
+pub struct ClaimStoryRequest {
+    /// The `version` the caller last read.
+    pub expected_version: i64,
+    /// The run that takes the story.
+    pub run: String,
+    /// `implementing`, `review` or `testing`.
+    pub stage: String,
+}
+
+#[derive(Deserialize, ToSchema)]
+pub struct ReleaseStoryRequest {
+    /// The `version` the caller last read.
+    pub expected_version: i64,
+    /// The run that releases; any run may release, so it is only named.
+    #[allow(dead_code)]
+    pub run: String,
+}
+
+#[derive(Deserialize, ToSchema)]
+pub struct MoveStoryRequest {
+    /// The `version` the caller last read.
+    pub expected_version: i64,
+    /// The run that holds the story.
+    pub run: String,
+    /// `backlog`, `implementing`, `review`, `testing` or `done`.
+    pub to: String,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct StoryHeldBody {
+    /// `conflict`, `not_open`, `held`, `not_holder` or `criteria_open`
+    pub error: String,
+    /// The version the story has now, with `conflict`.
+    pub current_version: Option<i32>,
+    /// The holder, with `held`.
+    #[schema(value_type = Option<Object>)]
+    pub holder: Option<Value>,
+    /// The 0-based indexes of the unticked criteria, with `criteria_open`.
+    pub open: Option<Vec<usize>>,
+}
+
+/// The run that holds the story, if any.
+fn holder_run(story: &StoryBody) -> Option<&str> {
+    story.holder.as_ref()?.get("run")?.as_str()
+}
+
+async fn finish_story_write(
+    state: &AppState,
+    mut tx: Transaction<'static, Postgres>,
+    request: &AgentRequest,
+    project_id: &str,
+    row: StoryRow,
+    fields: &[&str],
+) -> Result<Json<StoryResponse>, StoryError> {
+    let story = row.into_body();
+    live::emit(
+        &mut tx,
+        &request.workspace_id,
+        project_id,
+        "story.changed",
+        &json!({ "story_id": story.id, "key": story.key, "fields": fields }),
+    )
+    .await?;
+    tx.commit().await.map_err(ApiError::database)?;
+    state.live.announce(&request.workspace_id, project_id);
+    Ok(Json(StoryResponse { story }))
+}
+
+/// Takes a story for a run, or moves the run's claim to another stage.
+#[utoipa::path(
+    post,
+    path = "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/claim",
+    params(
+        ("workspace_id" = String, Path, description = "The workspace's UUID"),
+        ("project_id" = String, Path, description = "The project's UUID"),
+        ("feature_id" = String, Path, description = "The feature's UUID"),
+        ("story_id" = String, Path, description = "The story's UUID"),
+    ),
+    request_body = ClaimStoryRequest,
+    responses(
+        (status = 200, description = "The story, held by the run, its status the stage", body = StoryResponse),
+        (status = 400, description = "The body is not JSON of the expected shape (`invalid_request`)", body = ErrorBody),
+        (status = 401, description = "No valid API key", body = ErrorBody),
+        (status = 403, description = "A session, not an agent key", body = ErrorBody),
+        (status = 404, description = "No such story in this feature, project and workspace", body = ErrorBody),
+        (status = 409, description = "`conflict` with `current_version` when `expected_version` is stale; else `not_open` (done or cancelled) or `held` with the `holder` when another run holds it", body = StoryHeldBody),
+        (status = 422, description = "A stage other than implementing, review or testing (`invalid_stage`)", body = ErrorBody),
+    )
+)]
+pub async fn claim_story(
+    State(state): State<AppState>,
+    request: AgentRequest,
+    Path((_, project_id, feature_id, story_id)): Path<(String, String, String, String)>,
+    body: Bytes,
+) -> Result<Json<StoryResponse>, StoryError> {
+    let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
+    let feature_id = parse_uuid(&feature_id).ok_or(ApiError::NotFound)?;
+    let story_id = parse_uuid(&story_id).ok_or(ApiError::NotFound)?;
+    let claim = parse_body::<ClaimStoryRequest>(&body)?;
+    if !["implementing", "review", "testing"].contains(&claim.stage.as_str()) {
+        return Err(invalid_field("invalid_stage").into());
+    }
+    let mut tx = state.workspace_tx(&request.workspace_id).await?;
+    let current = lock_story(&mut tx, &project_id, &feature_id, &story_id).await?;
+    if i64::from(current.version) != claim.expected_version {
+        return Err(StoryError::Stale(current.version));
+    }
+    if is_closed(&current.status) {
+        return Err(ApiError::conflict("not_open").into());
+    }
+    let current = current.into_body();
+    if let Some(holder) = &current.holder
+        && holder_run(&current) != Some(claim.run.as_str())
+    {
+        return Err(StoryError::Held(holder.clone()));
+    }
+    let row = sqlx::query_as::<_, StoryRow>(&format!(
+        "UPDATE stories SET status = $2, holder = jsonb_build_object('run', $3::text, \
+         'stage', $2::text, 'at', to_char(clock_timestamp() AT TIME ZONE 'UTC', \
+         'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"')), version = version + 1, \
+         updated_at = clock_timestamp() WHERE id = $1::uuid RETURNING {STORY_COLUMNS}"
+    ))
+    .bind(&story_id)
+    .bind(&claim.stage)
+    .bind(&claim.run)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(ApiError::database)?;
+    finish_story_write(
+        &state,
+        tx,
+        &request,
+        &project_id,
+        row,
+        &["status", "holder"],
+    )
+    .await
+}
+
+/// Clears a story's holder, whoever holds it; the status stays.
+#[utoipa::path(
+    post,
+    path = "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/release",
+    params(
+        ("workspace_id" = String, Path, description = "The workspace's UUID"),
+        ("project_id" = String, Path, description = "The project's UUID"),
+        ("feature_id" = String, Path, description = "The feature's UUID"),
+        ("story_id" = String, Path, description = "The story's UUID"),
+    ),
+    request_body = ReleaseStoryRequest,
+    responses(
+        (status = 200, description = "The story without a holder", body = StoryResponse),
+        (status = 400, description = "The body is not JSON of the expected shape (`invalid_request`)", body = ErrorBody),
+        (status = 401, description = "No valid API key", body = ErrorBody),
+        (status = 403, description = "A session, not an agent key", body = ErrorBody),
+        (status = 404, description = "No such story in this feature, project and workspace", body = ErrorBody),
+        (status = 409, description = "`conflict` with `current_version` when `expected_version` is stale", body = StoryConflictBody),
+    )
+)]
+pub async fn release_story(
+    State(state): State<AppState>,
+    request: AgentRequest,
+    Path((_, project_id, feature_id, story_id)): Path<(String, String, String, String)>,
+    body: Bytes,
+) -> Result<Json<StoryResponse>, StoryError> {
+    let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
+    let feature_id = parse_uuid(&feature_id).ok_or(ApiError::NotFound)?;
+    let story_id = parse_uuid(&story_id).ok_or(ApiError::NotFound)?;
+    let release = parse_body::<ReleaseStoryRequest>(&body)?;
+    let mut tx = state.workspace_tx(&request.workspace_id).await?;
+    let current = lock_story(&mut tx, &project_id, &feature_id, &story_id).await?;
+    if i64::from(current.version) != release.expected_version {
+        return Err(StoryError::Stale(current.version));
+    }
+    let row = sqlx::query_as::<_, StoryRow>(&format!(
+        "UPDATE stories SET holder = NULL, version = version + 1, \
+         updated_at = clock_timestamp() WHERE id = $1::uuid RETURNING {STORY_COLUMNS}"
+    ))
+    .bind(&story_id)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(ApiError::database)?;
+    finish_story_write(&state, tx, &request, &project_id, row, &["holder"]).await
+}
+
+/// Moves a story to a column; only the run that holds it may.
+#[utoipa::path(
+    post,
+    path = "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/move",
+    params(
+        ("workspace_id" = String, Path, description = "The workspace's UUID"),
+        ("project_id" = String, Path, description = "The project's UUID"),
+        ("feature_id" = String, Path, description = "The feature's UUID"),
+        ("story_id" = String, Path, description = "The story's UUID"),
+    ),
+    request_body = MoveStoryRequest,
+    responses(
+        (status = 200, description = "The story in its new column; the holder's stage follows, and `done` or `backlog` clear the holder", body = StoryResponse),
+        (status = 400, description = "The body is not JSON of the expected shape (`invalid_request`)", body = ErrorBody),
+        (status = 401, description = "No valid API key", body = ErrorBody),
+        (status = 403, description = "A session, not an agent key", body = ErrorBody),
+        (status = 404, description = "No such story in this feature, project and workspace", body = ErrorBody),
+        (status = 409, description = "`conflict` with `current_version` when `expected_version` is stale; else `not_open`, `not_holder` (the run does not hold the story) or `criteria_open` with the 0-based indexes in `open` when moving to done", body = StoryHeldBody),
+        (status = 422, description = "A column other than backlog, implementing, review, testing or done (`invalid_status`)", body = ErrorBody),
+    )
+)]
+pub async fn move_story(
+    State(state): State<AppState>,
+    request: AgentRequest,
+    Path((_, project_id, feature_id, story_id)): Path<(String, String, String, String)>,
+    body: Bytes,
+) -> Result<Json<StoryResponse>, StoryError> {
+    let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
+    let feature_id = parse_uuid(&feature_id).ok_or(ApiError::NotFound)?;
+    let story_id = parse_uuid(&story_id).ok_or(ApiError::NotFound)?;
+    let step = parse_body::<MoveStoryRequest>(&body)?;
+    if !["backlog", "implementing", "review", "testing", "done"].contains(&step.to.as_str()) {
+        return Err(invalid_field("invalid_status").into());
+    }
+    let mut tx = state.workspace_tx(&request.workspace_id).await?;
+    let current = lock_story(&mut tx, &project_id, &feature_id, &story_id).await?;
+    if i64::from(current.version) != step.expected_version {
+        return Err(StoryError::Stale(current.version));
+    }
+    if is_closed(&current.status) {
+        return Err(ApiError::conflict("not_open").into());
+    }
+    let current = current.into_body();
+    if holder_run(&current) != Some(step.run.as_str()) {
+        return Err(ApiError::conflict("not_holder").into());
+    }
+    if step.to == "done" {
+        let open: Vec<usize> = current
+            .criteria
+            .iter()
+            .enumerate()
+            .filter(|(_, criterion)| !criterion.ticked)
+            .map(|(index, _)| index)
+            .collect();
+        if !open.is_empty() {
+            return Err(StoryError::CriteriaOpen(open));
+        }
+    }
+    let keeps_holder = ["implementing", "review", "testing"].contains(&step.to.as_str());
+    let row = sqlx::query_as::<_, StoryRow>(&format!(
+        "UPDATE stories SET status = $2, \
+         holder = CASE WHEN $3 THEN jsonb_set(holder, '{{stage}}', to_jsonb($2::text)) END, \
+         version = version + 1, updated_at = clock_timestamp() \
+         WHERE id = $1::uuid RETURNING {STORY_COLUMNS}"
+    ))
+    .bind(&story_id)
+    .bind(&step.to)
+    .bind(keeps_holder)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(ApiError::database)?;
+    finish_story_write(
+        &state,
+        tx,
+        &request,
+        &project_id,
+        row,
+        &["status", "holder"],
+    )
+    .await
 }

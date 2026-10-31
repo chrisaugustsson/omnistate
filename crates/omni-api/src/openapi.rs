@@ -34,8 +34,9 @@ use crate::session::{
     ErrorBody, LoginRequest, UserBody, UserResponse, WorkspaceBody, WorkspaceListResponse,
 };
 use crate::stories::{
-    CancelStoryRequest, CreateStoryRequest, CriterionBody, NewCriterion, PatchStoryRequest,
-    StoryBody, StoryConflictBody, StoryListResponse, StoryResponse,
+    CancelStoryRequest, ClaimStoryRequest, CreateStoryRequest, CriterionBody, MoveStoryRequest,
+    NewCriterion, PatchStoryRequest, ReleaseStoryRequest, StoryBody, StoryConflictBody,
+    StoryHeldBody, StoryListResponse, StoryResponse,
 };
 use crate::threads::{
     ConcludeThreadRequest, CreatePostRequest, DigestEntry, DigestResponse, PostBody, PostResponse,
@@ -99,6 +100,9 @@ use utoipa::OpenApi;
         crate::stories::show_story,
         crate::stories::patch_story,
         crate::stories::cancel_story,
+        crate::stories::claim_story,
+        crate::stories::release_story,
+        crate::stories::move_story,
         crate::threads::create_app_thread,
         crate::threads::create_feature_thread,
         crate::threads::list_threads,
@@ -186,6 +190,10 @@ use utoipa::OpenApi;
         StoryResponse,
         PatchStoryRequest,
         CancelStoryRequest,
+        ClaimStoryRequest,
+        ReleaseStoryRequest,
+        MoveStoryRequest,
+        StoryHeldBody,
         StoryConflictBody,
         StartThreadRequest,
         ConcludeThreadRequest,

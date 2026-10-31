@@ -120,6 +120,13 @@ export const CancelStoryRequestSchema = z.object({
 });
 export type CancelStoryRequest = z.infer<typeof CancelStoryRequestSchema>;
 
+export const ClaimStoryRequestSchema = z.object({
+  expected_version: z.number().int(),
+  run: z.string(),
+  stage: z.string(),
+});
+export type ClaimStoryRequest = z.infer<typeof ClaimStoryRequestSchema>;
+
 export const ReplyBodySchema = z.object({
   author: z.record(z.string(), z.unknown()),
   created_at: z.string(),
@@ -555,6 +562,13 @@ export const ManifestSchema = z.object({
 });
 export type Manifest = z.infer<typeof ManifestSchema>;
 
+export const MoveStoryRequestSchema = z.object({
+  expected_version: z.number().int(),
+  run: z.string(),
+  to: z.string(),
+});
+export type MoveStoryRequest = z.infer<typeof MoveStoryRequestSchema>;
+
 export const PatchStoryRequestSchema = z.object({
   blocked_by: z.array(z.string()).nullable().optional(),
   criteria: z.array(NewCriterionSchema).nullable().optional(),
@@ -589,6 +603,12 @@ export const ProjectResponseSchema = z.object({
   project: ProjectBodySchema,
 });
 export type ProjectResponse = z.infer<typeof ProjectResponseSchema>;
+
+export const ReleaseStoryRequestSchema = z.object({
+  expected_version: z.number().int(),
+  run: z.string(),
+});
+export type ReleaseStoryRequest = z.infer<typeof ReleaseStoryRequestSchema>;
 
 export const RenameDocRequestSchema = z.object({
   title: z.string().nullable().optional(),
@@ -654,6 +674,14 @@ export const StoryConflictBodySchema = z.object({
   error: z.string(),
 });
 export type StoryConflictBody = z.infer<typeof StoryConflictBodySchema>;
+
+export const StoryHeldBodySchema = z.object({
+  current_version: z.number().int().nullable().optional(),
+  error: z.string(),
+  holder: z.record(z.string(), z.unknown()).nullable().optional(),
+  open: z.array(z.number().int()).nullable().optional(),
+});
+export type StoryHeldBody = z.infer<typeof StoryHeldBodySchema>;
 
 export const StoryListResponseSchema = z.object({
   stories: z.array(StoryBodySchema),
@@ -735,6 +763,7 @@ export const schemas = {
   AttachmentResponse: AttachmentResponseSchema,
   BoardBody: BoardBodySchema,
   CancelStoryRequest: CancelStoryRequestSchema,
+  ClaimStoryRequest: ClaimStoryRequestSchema,
   CommentBody: CommentBodySchema,
   CommentListResponse: CommentListResponseSchema,
   CommentResponse: CommentResponseSchema,
@@ -785,6 +814,7 @@ export const schemas = {
   Manifest: ManifestSchema,
   ManifestBoard: ManifestBoardSchema,
   ManifestPage: ManifestPageSchema,
+  MoveStoryRequest: MoveStoryRequestSchema,
   NewCriterion: NewCriterionSchema,
   NodeBox: NodeBoxSchema,
   OpResultBody: OpResultBodySchema,
@@ -794,6 +824,7 @@ export const schemas = {
   ProjectBody: ProjectBodySchema,
   ProjectListResponse: ProjectListResponseSchema,
   ProjectResponse: ProjectResponseSchema,
+  ReleaseStoryRequest: ReleaseStoryRequestSchema,
   RenameDocRequest: RenameDocRequestSchema,
   RenameFeatureRequest: RenameFeatureRequestSchema,
   ReplyBody: ReplyBodySchema,
@@ -803,6 +834,7 @@ export const schemas = {
   StartThreadRequest: StartThreadRequestSchema,
   StoryBody: StoryBodySchema,
   StoryConflictBody: StoryConflictBodySchema,
+  StoryHeldBody: StoryHeldBodySchema,
   StoryListResponse: StoryListResponseSchema,
   StoryResponse: StoryResponseSchema,
   ThreadBody: ThreadBodySchema,
@@ -1172,6 +1204,41 @@ export const operations = {
       "200": StoryResponseSchema,
       "400": ErrorBodySchema,
       "401": ErrorBodySchema,
+      "404": ErrorBodySchema,
+      "409": StoryConflictBodySchema,
+    },
+  },
+  "POST /api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/claim": {
+    request: ClaimStoryRequestSchema,
+    responses: {
+      "200": StoryResponseSchema,
+      "400": ErrorBodySchema,
+      "401": ErrorBodySchema,
+      "403": ErrorBodySchema,
+      "404": ErrorBodySchema,
+      "409": StoryHeldBodySchema,
+      "422": ErrorBodySchema,
+    },
+  },
+  "POST /api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/move": {
+    request: MoveStoryRequestSchema,
+    responses: {
+      "200": StoryResponseSchema,
+      "400": ErrorBodySchema,
+      "401": ErrorBodySchema,
+      "403": ErrorBodySchema,
+      "404": ErrorBodySchema,
+      "409": StoryHeldBodySchema,
+      "422": ErrorBodySchema,
+    },
+  },
+  "POST /api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/release": {
+    request: ReleaseStoryRequestSchema,
+    responses: {
+      "200": StoryResponseSchema,
+      "400": ErrorBodySchema,
+      "401": ErrorBodySchema,
+      "403": ErrorBodySchema,
       "404": ErrorBodySchema,
       "409": StoryConflictBodySchema,
     },

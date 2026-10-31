@@ -296,6 +296,24 @@ const CASES: &[Case] = &[
     ),
     case(
         "POST",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/claim",
+        Some(r#"{"expected_version":1,"run":"intruder","stage":"implementing"}"#),
+        Kind::Workspace,
+    ),
+    case(
+        "POST",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/release",
+        Some(r#"{"expected_version":1,"run":"intruder"}"#),
+        Kind::Workspace,
+    ),
+    case(
+        "POST",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/move",
+        Some(r#"{"expected_version":1,"run":"intruder","to":"review"}"#),
+        Kind::Workspace,
+    ),
+    case(
+        "POST",
         "/api/v1/w/{workspace_id}/projects/{project_id}/threads",
         Some(r#"{"question":"intruder"}"#),
         Kind::Workspace,
