@@ -160,6 +160,8 @@ pub fn run(args: &Args) -> Result<()> {
         ["attach", file] => attach::run(args, file),
         ["attach", ..] => bail!("usage: omni attach <file>"),
         ["whoami"] => whoami(args),
+        ["checks"] => checks(args),
+        ["checks", ..] => bail!("usage: omni checks [--json]"),
         ["api", method, path] => api(args, method, path),
         ["api", ..] => bail!("usage: omni api <METHOD> <path> [--body-file <path|->]"),
         ["config", "show"] => config_show(args),
@@ -469,6 +471,23 @@ fn whoami(args: &Args) -> Result<()> {
             ));
         }
         Err(_) => say(text.trim_end()),
+    }
+    Ok(())
+}
+
+fn checks(args: &Args) -> Result<()> {
+    let [fast, stack_up, stack] = config::checks()?;
+    if args.json {
+        say(&format!(
+            "{{\"fast\":{},\"stack_up\":{},\"stack\":{}}}",
+            crate::toml::quote(&fast),
+            crate::toml::quote(&stack_up),
+            crate::toml::quote(&stack)
+        ));
+    } else {
+        say(&format!(
+            "fast: {fast}\nstack_up: {stack_up}\nstack: {stack}"
+        ));
     }
     Ok(())
 }

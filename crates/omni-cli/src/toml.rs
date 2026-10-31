@@ -1,28 +1,48 @@
 //! The small part of TOML that the CLI's two files use: `key = "value"` lines,
-//! comments and blank lines. Values are strings (basic or literal) or a bare
-//! word such as a number or `true`; tables and arrays are not read.
+//! `[table]` headers, comments and blank lines. Values are strings (basic or
+//! literal) or a bare word such as a number or `true`; arrays and nested or
+//! dotted tables are not read.
 
-/// The `key = value` pairs of `text`, in order. The error says what is wrong
-/// and on which line.
+/// The `key = value` pairs of `text`, in order. A key under a `[table]` header
+/// is returned as `table.key`; keys before any header stay as they are. The
+/// error says what is wrong and on which line.
 pub fn parse(text: &str) -> Result<Vec<(String, String)>, String> {
     let mut pairs: Vec<(String, String)> = Vec::new();
+    let mut table = String::new();
     for (index, raw) in text.lines().enumerate() {
         let line = raw.trim();
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
         let number = index + 1;
+        if let Some(header) = line.strip_prefix('[') {
+            let name = header
+                .split_once(']')
+                .filter(|(_, after)| tail(after, String::new()).is_ok())
+                .map(|(name, _)| name.trim())
+                .filter(|name| plain(name))
+                .ok_or_else(|| format!("line {number}: {line:?} is not a plain table header"))?;
+            if pairs
+                .iter()
+                .any(|(k, _)| k.starts_with(&format!("{name}.")))
+            {
+                return Err(format!("line {number}: table {name} is set twice"));
+            }
+            table = name.to_string();
+            continue;
+        }
         let (key, rest) = line
             .split_once('=')
             .ok_or_else(|| format!("line {number}: expected key = \"value\""))?;
         let key = key.trim();
-        if key.is_empty()
-            || !key
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
-        {
+        if !plain(key) {
             return Err(format!("line {number}: {key:?} is not a plain key"));
         }
+        let key = &if table.is_empty() {
+            key.to_string()
+        } else {
+            format!("{table}.{key}")
+        };
         if pairs.iter().any(|(k, _)| k == key) {
             return Err(format!("line {number}: {key} is set twice"));
         }
@@ -30,6 +50,13 @@ pub fn parse(text: &str) -> Result<Vec<(String, String)>, String> {
         pairs.push((key.to_string(), value));
     }
     Ok(pairs)
+}
+
+fn plain(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
 }
 
 fn value(text: &str) -> Result<String, String> {

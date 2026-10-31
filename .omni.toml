@@ -1,0 +1,4 @@
+[checks]
+fast = "make lint && cargo test --workspace && pnpm -r test"
+stack_up = "docker compose up --build --wait --detach proxy"
+stack = "docker compose run --rm test"

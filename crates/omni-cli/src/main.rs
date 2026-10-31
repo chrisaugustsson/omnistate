@@ -184,6 +184,8 @@ Usage:
                                       have posted) and, with --concluded, a conclusion
   omni attach <file>                  upload a file (at most 20 MB) and print attachment:<id>,
                                       how docs, designs and posts refer to it
+  omni checks [--json]                print the fast, stack_up and stack commands of the [checks]
+                                      table in .omni.toml
   omni whoami                         show the workspace and who the key acts as
   omni api <METHOD> <path>            send one request to the API and print the response
   omni config show                    show the effective settings (never the key)
