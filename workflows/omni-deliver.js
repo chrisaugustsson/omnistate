@@ -9,6 +9,7 @@ export const meta = {
     { title: 'Unblock', detail: 'a blocked story whose linked threads all have a conclusion gets each conclusion as a human decision and is unblocked' },
     { title: 'Implement', detail: 'up to `implementers` agents at once, each on a pickable story in its own worktree; the story reaches review only after the fast command passes there' },
     { title: 'Merge', detail: 'one worker takes the testing stories in dependency order: stack_up once per batch, then rebase in the worktree and fast-forward the integration branch; a rebase conflict is fixed by an implementer and halts merging until that story is merged' },
+    { title: 'Check', detail: 'after each merge a verifier runs the story\'s criteria on the main worktree and the fast command runs; a failure becomes a priority-0 fix story that is implemented, reviewed, merged and checked before anything else merges; the stack command runs once after the batch' },
     { title: 'Review', detail: 'up to `reviewers` reviewers at once read each review story\'s branch against its criteria; a fail is fixed in place by an implementer, three fails block the story, a pass moves it to testing' },
   ],
 }
@@ -33,6 +34,7 @@ const runAgent = (prompt, { role, ...opts } = {}) =>
 const cp = await import('node:child_process')
 const fs = await import('node:fs')
 const path = await import('node:path')
+const os = await import('node:os')
 
 const run = (cmd, argv, opts = {}) => cp.execFileSync(cmd, argv, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], ...opts })
 const tryRun = (cmd, argv, opts) => { try { return run(cmd, argv, opts) } catch { return null } }
@@ -316,6 +318,7 @@ Return raw structured data only.`
 `
   let fast = null
   let stackUp = ''
+  let stackCmd = ''
   const docCache = {}
   const docText = (id) => {
     if (!(id in docCache)) docCache[id] = tryRun('omni', ['doc', 'read', id], { env: { ...process.env, OMNI_RUN: runId, OMNI_ROLE: 'deliver' } }) || '(the doc could not be read)'
@@ -379,6 +382,7 @@ Return raw structured data only.`
     if (fast === null) {
       const checks = JSON.parse(omni(['checks', '--json']))
       stackUp = String(checks.stack_up || '')
+      stackCmd = String(checks.stack || '')
       fast = String(checks.fast || '')
     }
   }
@@ -437,109 +441,7 @@ Return raw structured data only.`
     return implement(key).catch((e) => ({ key, outcome: 'failed', error: String(e && e.message || e) }))
   }
 
-  // ---- merge: one worker on the main worktree ------------------------------
-  const merged = new Set()
-  const mergeOutcomes = []
-  let halted = null
-  const REBASE_FINDING = 'rebase conflict in '
-  const inOrder = (stories) => {
-    const ref = new Map()
-    for (const s of stories) { ref.set(s.key, s); if (s.id) ref.set(s.id, s) }
-    const number = (s) => (Number.isInteger(s.number) ? s.number : Number(String(s.key).replace(/\D/g, '')))
-    const rest = [...stories]
-    const out = []
-    while (rest.length) {
-      const ready = rest.filter((s) => !(s.blocked_by || []).some((b) => ref.has(b) && rest.includes(ref.get(b)) && ref.get(b) !== s))
-      const next = (ready.length ? ready : rest).sort((a, b) => (a.priority ?? 3) - (b.priority ?? 3) || number(a) - number(b))[0]
-      out.push(next)
-      rest.splice(rest.indexOf(next), 1)
-    }
-    return out
-  }
-  // Rebases the story in its worktree, then fast-forwards the integration
-  // branch. Returns null when it merged, else the files that conflict.
-  const tryMerge = (key) => {
-    const wt = worktreeOf(key)
-    try { git(['-C', wt, 'rebase', integration]) } catch (e) {
-      const files = (tryRun('git', ['-C', wt, 'diff', '--name-only', '--diff-filter=U']) || '').split('\n').filter(Boolean)
-      tryRun('git', ['-C', wt, 'rebase', '--abort'])
-      return files.length ? files : ['(unknown)']
-    }
-    git(['merge', '--ff-only', `story/${key}`])
-    merged.add(key)
-    const fresh = readStory(key)
-    ;(fresh.findings || []).forEach((f, i) => {
-      if (f.stage === 'testing' && !f.resolved && String(f.text).startsWith(REBASE_FINDING)) write('resolve', key, ['--finding', String(i)])
-    })
-    return null
-  }
-  const mergePass = async () => {
-    if (halted) return
-    const batch = inOrder(listStories().filter((s) => s.status === 'testing' && !s.blocked && s.holder && s.holder.run === runId && !merged.has(s.key) && fs.existsSync(worktreeOf(s.key))))
-    if (batch.length === 0) return
-    phase('Merge')
-    ensureFast()
-    const up = await runCmd(stackUp, root)
-    if (!up.ok) {
-      openThread('The stack did not start', `\`${stackUp}\` exited non-zero, so nothing from this batch was merged (${batch.map((s) => s.key).join(', ')}). Output:\n\n\`\`\`\n${up.output}\n\`\`\`\n`)
-      mergeOutcomes.push({ key: null, outcome: 'stack_up_failed' })
-      return
-    }
-    for (const { key } of batch) {
-      const conflict = tryMerge(key)
-      if (!conflict) { mergeOutcomes.push({ key, outcome: 'merged' }); continue }
-      halted = key
-      write('finding', key, ['--stage', 'testing', '--text', `${REBASE_FINDING}${conflict.join(', ')}`, ...conflict.flatMap((p) => ['--file', p])])
-      write('move', key, ['--to', 'implementing'])
-      const wt = worktreeOf(key)
-      const task = `Story branch story/${key} no longer rebases onto ${integration} (${conflict.join(', ')}). In ${wt}, run \`git rebase ${integration}\`, resolve the conflicts, finish the rebase, and run the fast command again. Do not push and do not touch the main worktree.`
-      const bad = await implementLoop(key, wt, readStory(key), task)
-      if (bad) { mergeOutcomes.push({ ...bad, stage: 'rebase' }); return }
-      write('move', key, ['--to', 'testing'])
-      const again = tryMerge(key)
-      if (again) {
-        const id = openThread(`${key}: the rebase still conflicts`, `Rebasing story/${key} onto ${integration} still conflicts in ${again.join(', ')} after the fix.\n`)
-        linkAndBlock(key, [id])
-        mergeOutcomes.push({ key, outcome: 'rebase_failed', thread: id })
-        return
-      }
-      halted = null
-      mergeOutcomes.push({ key, outcome: 'merged', rebased: true })
-    }
-  }
-  let mergeChain = Promise.resolve()
-  const kickMerge = () => {
-    mergeChain = mergeChain.then(mergePass).catch((e) => {
-      mergeOutcomes.push({ key: halted, outcome: 'failed', error: String(e && e.message || e) })
-      log(`merge: ${e && e.message || e}`)
-    })
-    return mergeChain
-  }
-  kickMerge()
-
-  const active = new Map()
-  for (;;) {
-    while (active.size < implementers && picked < storyLimit) {
-      const key = pickNext()
-      if (!key) break
-      picked++
-      let p
-      try { p = start(key) } catch (e) {
-        skipped.add(key)
-        outcomes.push({ key, outcome: 'failed', error: String(e && e.message || e) })
-        continue
-      }
-      active.set(key, p.then((o) => ({ key, o })))
-    }
-    if (active.size === 0) break
-    const { key, o } = await Promise.race(active.values())
-    active.delete(key)
-    outcomes.push(o)
-    if (o.error) log(`${key}: ${o.error}`)
-  }
-
-  // ---- phase 5: review in the worktree -------------------------------------
-  phase('Review')
+  // ---- review definitions (used by the merge worker for fix stories) ------
   const REVIEW_SCHEMA = {
     type: 'object',
     required: ['verdict', 'findings'],
@@ -636,8 +538,302 @@ Return raw structured data only.`
       if (bad) return bad
     }
   }
+
+  // ---- merge: one worker on the main worktree ------------------------------
+  const merged = new Set()
+  const mergeOutcomes = []
+  let halted = null
+  const REBASE_FINDING = 'rebase conflict in '
+  const inOrder = (stories) => {
+    const ref = new Map()
+    for (const s of stories) { ref.set(s.key, s); if (s.id) ref.set(s.id, s) }
+    const number = (s) => (Number.isInteger(s.number) ? s.number : Number(String(s.key).replace(/\D/g, '')))
+    const rest = [...stories]
+    const out = []
+    while (rest.length) {
+      const ready = rest.filter((s) => !(s.blocked_by || []).some((b) => ref.has(b) && rest.includes(ref.get(b)) && ref.get(b) !== s))
+      const next = (ready.length ? ready : rest).sort((a, b) => (a.priority ?? 3) - (b.priority ?? 3) || number(a) - number(b))[0]
+      out.push(next)
+      rest.splice(rest.indexOf(next), 1)
+    }
+    return out
+  }
+  // Rebases the story in its worktree, then fast-forwards the integration
+  // branch. Returns null when it merged, else the files that conflict.
+  const tryMerge = (key) => {
+    const wt = worktreeOf(key)
+    try { git(['-C', wt, 'rebase', integration]) } catch (e) {
+      const files = (tryRun('git', ['-C', wt, 'diff', '--name-only', '--diff-filter=U']) || '').split('\n').filter(Boolean)
+      tryRun('git', ['-C', wt, 'rebase', '--abort'])
+      return files.length ? files : ['(unknown)']
+    }
+    git(['merge', '--ff-only', `story/${key}`])
+    merged.add(key)
+    const fresh = readStory(key)
+    ;(fresh.findings || []).forEach((f, i) => {
+      if (f.stage === 'testing' && !f.resolved && String(f.text).startsWith(REBASE_FINDING)) write('resolve', key, ['--finding', String(i)])
+    })
+    return null
+  }
+  // ---- check: exercise a merged story, and the fix story when it fails ------
+  const FAST_CRITERION = 'The fast command passes on the main worktree'
+  const STACK_CRITERION = 'The stack command passes on the main worktree'
+  const LINT_CRITERION = 'Typecheck/lint passes (make lint)'
+  const CHECK_SCHEMA = {
+    type: 'object',
+    required: ['criteria'],
+    properties: {
+      criteria: {
+        type: 'array',
+        description: 'One entry per acceptance criterion in the story, in order',
+        items: {
+          type: 'object',
+          required: ['index', 'criterion', 'ok', 'evidence'],
+          properties: {
+            index: { type: 'integer', description: 'The 0-based position of the criterion in the story' },
+            criterion: { type: 'string', description: 'The criterion text, verbatim' },
+            ok: { type: 'boolean' },
+            evidence: { type: 'string', description: 'The command or steps, the input, and what you actually observed. For a failure: what is wrong and where' },
+          },
+        },
+      },
+    },
+  }
+  const checkPrompt = (story) => {
+    const docs = (story.links || []).filter((l) => l.doc_id)
+    return `You check ONE merged story of the feature "${feature}" by running it. Its branch is already merged into ${integration} on the main worktree ${root}, and the stack is up there (the stack_up command ran for this batch). You change nothing: no edits, no commits.
+
+## The story
+${story.key}: ${story.title}
+${story.text || ''}
+
+### Acceptance criteria (index: text)
+${(story.criteria || []).map((c, i) => `${i}: ${c.text || c}${c.human_check ? ' [human check]' : ''}`).join('\n')}
+
+### Decisions already taken (settled: judge against them as if the spec said so)
+${(story.decisions || []).map((d) => `- ${d.question} -> ${d.choice} (${d.by})`).join('\n') || '(none)'}
+
+## Linked doc nodes
+${docs.map((l) => `### Doc ${l.doc_id}, node ${l.node_id}${l.label ? ` (${l.label})` : ''}\n${docText(l.doc_id)}`).join('\n\n') || '(none)'}
+
+## Rules
+- Exercise EVERY criterion by running the behaviour in ${root}: call the endpoint, run the command, open the page with the dev-browser skill for browser criteria. Reading code is not a check.
+- A criterion about a command (fast, stack, lint) is checked by running that command: fast is \`${fast || '(none configured)'}\`, stack is \`${stackCmd || '(none configured)'}\`, lint is \`make lint\`.
+- A [human check] criterion: exercise what you can; ok is true unless what you ran contradicts it. A human confirms it later.
+- ok false only for a criterion the behaviour does not meet. Say what is wrong and where.
+Return raw structured data only.`
+  }
+  // Returns {failures} (empty when everything passes) or null when the verifier returned nothing.
+  const exercise = async (key) => {
+    const story = readStory(key)
+    let verdict = null
+    for (let attempt = 0; attempt < 2 && !verdict; attempt++) {
+      verdict = await runAgent(checkPrompt(story), { schema: CHECK_SCHEMA, label: `verify:${key}${attempt ? ' retry' : ''}`, phase: 'Check', model: modelFor('verify'), role: 'verify' })
+    }
+    if (!verdict) return null
+    const failures = []
+    ;(story.criteria || []).forEach((c, i) => {
+      const r = (verdict.criteria || []).find((x) => x.index === i)
+      if (!r || !r.ok) failures.push({ criterion: c.text || c, text: `${c.text || c}: ${r ? r.evidence : 'not exercised'}` })
+    })
+    const result = await runFast(root)
+    if (!result.ok) failures.push({ criterion: FAST_CRITERION, text: `The fast command failed on the main worktree. Output:\n\`\`\`\n${result.output}\n\`\`\`` })
+    return { story, failures }
+  }
+  const checkOutcomes = []
+  // Ticks every criterion (human checks pending), resolves the testing
+  // findings and removes the worktree and branch.
+  const passCheck = (key, story) => {
+    ;(story.criteria || []).forEach((c, i) => write('tick', key, ['--criterion', String(i), ...(c.human_check ? ['--pending'] : [])]))
+    ;(readStory(key).findings || []).forEach((f, i) => {
+      if (f.stage === 'testing' && !f.resolved) write('resolve', key, ['--finding', String(i)])
+    })
+    dropWorktree(key)
+  }
+  // Records the check's result on the story. Returns 'passed', 'failed' (with
+  // the failures as testing findings) or 'unchecked' (the verifier returned
+  // nothing, the story is blocked with a thread).
+  const checkStory = async (key) => {
+    phase('Check')
+    const r = await exercise(key)
+    if (!r) {
+      const id = openThread(`${key}: the verifier returned nothing`, 'The verifier returned no result twice.\n')
+      linkAndBlock(key, [id])
+      checkOutcomes.push({ key, outcome: 'unchecked', thread: id })
+      return { state: 'unchecked' }
+    }
+    if (r.failures.length === 0) {
+      passCheck(key, r.story)
+      checkOutcomes.push({ key, outcome: 'passed' })
+      return { state: 'passed' }
+    }
+    for (const f of r.failures) write('finding', key, ['--stage', 'testing', '--text', f.text])
+    checkOutcomes.push({ key, outcome: 'failed', failures: r.failures.length })
+    return { state: 'failed', story: r.story, failures: r.failures }
+  }
+  // A line the story parser would take for a label or a heading is quoted.
+  const flat = (text) => String(text).split('\n').filter((l) => l.trim()).map((l, i) => (i > 0 && /^\s*(#|- \[|\*\*)/.test(l) ? `> ${l}` : l)).join('\n')
+  const docLinks = (story) => (story.links || []).filter((l) => l.doc_id).map((l) => `${l.doc_id}:${l.node_id}:${l.label || ''}`)
+  // Creates a priority-0 fix story from a generated file. Returns its key.
+  const addFix = ({ heading, text, files, criteria, links }) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-deliver-'))
+    try {
+      const file = path.join(dir, 'fix.md')
+      fs.writeFileSync(file, `### ${heading}\n**Description:** ${flat(text)}\n**Topic:** bugfix · fix\n**Blocked by:** none\n**Files:** change: ${files.map((f) => `\`${f}\``).join(', ') || '(none)'}\n\n**Acceptance Criteria:**\n${criteria.map((c) => `- [ ] ${c}`).join('\n')}\n`)
+      const key = omni(['story', 'add', file, '--priority', '0', ...[...new Set(links)].flatMap((l) => ['--link', l])]).trim()
+      // The merge worker drives the fix story itself, so the implement loop leaves it alone.
+      skipped.add(key)
+      return key
+    } finally { fs.rmSync(dir, { recursive: true, force: true }) }
+  }
+  const waitingFinding = (key, fix) => (readStory(key).findings || []).map((f, i) => ({ ...f, i })).find((f) => f.stage === 'testing' && !f.resolved && f.text === `waiting for ${fix}`)
+  // Implements, reviews, merges and checks a fix story. Returns {state: 'passed'}
+  // or {state: 'halt'} when it could not be merged, {state: 'failed', failures}
+  // or {state: 'unchecked'} from its check.
+  const driveFix = async (fix) => {
+    let o
+    try { o = await start(fix) } catch (e) { o = { key: fix, outcome: 'failed', error: String(e && e.message || e) } }
+    if (o.outcome !== 'review') { mergeOutcomes.push({ ...o, stage: 'fix' }); return { state: 'halt' } }
+    const reviewedFix = await review(fix).catch((e) => ({ key: fix, outcome: 'failed', error: String(e && e.message || e) }))
+    reviewed.add(fix)
+    if (reviewedFix.outcome !== 'testing') { mergeOutcomes.push({ ...reviewedFix, stage: 'fix' }); return { state: 'halt' } }
+    if (!(await mergeStory(fix))) return { state: 'halt' }
+    return checkStory(fix)
+  }
+  // Checks a story just merged. Returns false when merging has to stop.
+  const checkMerged = async (key, mergedKeys) => {
+    const first = await checkStory(key)
+    if (first.state !== 'failed') return true
+    const fix = addFix({
+      heading: `Fix ${key}: ${String(first.failures[0].criterion).slice(0, 80)}`,
+      text: first.failures.map((f) => f.text).join('\n'),
+      files: first.story.files_changed || [],
+      criteria: [...new Set([...first.failures.map((f) => f.criterion), LINT_CRITERION])],
+      links: docLinks(first.story),
+    })
+    write('finding', key, ['--stage', 'testing', '--text', `waiting for ${fix}`])
+    const fixed = await driveFix(fix)
+    if (fixed.state === 'halt') { halted = fix; return false }
+    mergedKeys.push(fix)
+    if (fixed.state === 'unchecked') return false
+    if (fixed.state === 'failed') {
+      const list = (title, failures) => `${title}\n${failures.map((f) => `- ${f.text}`).join('\n')}`
+      const id = openThread(`${key}: the fix ${fix} fails its own check`, `${list(`Findings of ${key}:`, first.failures)}\n\n${list(`Findings of ${fix}:`, fixed.failures)}\n`)
+      linkAndBlock(key, [id])
+      linkAndBlock(fix, [id])
+      checkOutcomes.push({ key, outcome: 'fix_failed', fix, thread: id })
+      return true
+    }
+    const again = await checkStory(key)
+    if (again.state === 'failed') {
+      const w = waitingFinding(key, fix)
+      if (w) write('resolve', key, ['--finding', String(w.i)])
+      const id = openThread(`${key}: the check still fails after ${fix}`, `${again.failures.map((f) => `- ${f.text}`).join('\n')}\n`)
+      linkAndBlock(key, [id])
+      checkOutcomes.push({ key, outcome: 'still_failing', fix, thread: id })
+    }
+    return true
+  }
+  // After the last story of a batch: the stack command once.
+  const checkBatch = async (mergedKeys) => {
+    const result = await runCmd(stackCmd, root)
+    if (result.ok) return true
+    const stories = mergedKeys.map((k) => readStory(k))
+    const fix = addFix({
+      heading: `Fix batch ${mergedKeys.join(', ')}`,
+      text: `The stack command \`${stackCmd}\` failed on the main worktree after merging ${mergedKeys.join(', ')}. Output:\n\`\`\`\n${result.output}\n\`\`\``,
+      files: [...new Set(stories.flatMap((s) => s.files_changed || []))],
+      criteria: [STACK_CRITERION, LINT_CRITERION],
+      links: stories.flatMap(docLinks),
+    })
+    const fixed = await driveFix(fix)
+    if (fixed.state === 'halt') { halted = fix; return false }
+    if (fixed.state === 'failed') {
+      const id = openThread(`${fix}: the batch fix fails its own check`, `Output of \`${stackCmd}\`:\n\n\`\`\`\n${result.output}\n\`\`\`\n\nFindings:\n${fixed.failures.map((f) => `- ${f.text}`).join('\n')}\n`)
+      linkAndBlock(fix, [id])
+      checkOutcomes.push({ key: fix, outcome: 'batch_fix_failed', thread: id })
+    }
+    return true
+  }
+  // Rebases the story and fast-forwards it; a conflict is fixed by an implementer.
+  // Returns false when merging has to stop.
+  const mergeStory = async (key) => {
+    const conflict = tryMerge(key)
+    if (!conflict) { mergeOutcomes.push({ key, outcome: 'merged' }); return true }
+    halted = key
+    write('finding', key, ['--stage', 'testing', '--text', `${REBASE_FINDING}${conflict.join(', ')}`, ...conflict.flatMap((p) => ['--file', p])])
+    write('move', key, ['--to', 'implementing'])
+    const wt = worktreeOf(key)
+    const task = `Story branch story/${key} no longer rebases onto ${integration} (${conflict.join(', ')}). In ${wt}, run \`git rebase ${integration}\`, resolve the conflicts, finish the rebase, and run the fast command again. Do not push and do not touch the main worktree.`
+    const bad = await implementLoop(key, wt, readStory(key), task)
+    if (bad) { mergeOutcomes.push({ ...bad, stage: 'rebase' }); return false }
+    write('move', key, ['--to', 'testing'])
+    const again = tryMerge(key)
+    if (again) {
+      const id = openThread(`${key}: the rebase still conflicts`, `Rebasing story/${key} onto ${integration} still conflicts in ${again.join(', ')} after the fix.\n`)
+      linkAndBlock(key, [id])
+      mergeOutcomes.push({ key, outcome: 'rebase_failed', thread: id })
+      return false
+    }
+    halted = null
+    mergeOutcomes.push({ key, outcome: 'merged', rebased: true })
+    return true
+  }
+  const mergePass = async () => {
+    if (halted) return
+    const batch = inOrder(listStories().filter((s) => s.status === 'testing' && !s.blocked && s.holder && s.holder.run === runId && !merged.has(s.key) && fs.existsSync(worktreeOf(s.key))))
+    if (batch.length === 0) return
+    phase('Merge')
+    ensureFast()
+    const up = await runCmd(stackUp, root)
+    if (!up.ok) {
+      openThread('The stack did not start', `\`${stackUp}\` exited non-zero, so nothing from this batch was merged (${batch.map((s) => s.key).join(', ')}). Output:\n\n\`\`\`\n${up.output}\n\`\`\`\n`)
+      mergeOutcomes.push({ key: null, outcome: 'stack_up_failed' })
+      return
+    }
+    const mergedKeys = []
+    for (const { key } of batch) {
+      if (!(await mergeStory(key))) return
+      mergedKeys.push(key)
+      if (!(await checkMerged(key, mergedKeys))) return
+    }
+    await checkBatch(mergedKeys)
+  }
+  let mergeChain = Promise.resolve()
+  const kickMerge = () => {
+    mergeChain = mergeChain.then(mergePass).catch((e) => {
+      mergeOutcomes.push({ key: halted, outcome: 'failed', error: String(e && e.message || e) })
+      log(`merge: ${e && e.message || e}`)
+    })
+    return mergeChain
+  }
+  kickMerge()
+
+  const active = new Map()
+  for (;;) {
+    while (active.size < implementers && picked < storyLimit) {
+      const key = pickNext()
+      if (!key) break
+      picked++
+      let p
+      try { p = start(key) } catch (e) {
+        skipped.add(key)
+        outcomes.push({ key, outcome: 'failed', error: String(e && e.message || e) })
+        continue
+      }
+      active.set(key, p.then((o) => ({ key, o })))
+    }
+    if (active.size === 0) break
+    const { key, o } = await Promise.race(active.values())
+    active.delete(key)
+    outcomes.push(o)
+    if (o.error) log(`${key}: ${o.error}`)
+  }
+
+  // ---- phase 5: review in the worktree -------------------------------------
+  phase('Review')
   const reviewOutcomes = []
-  const queue = listStories().filter((s) => s.status === 'review' && !s.blocked && !reviewed.has(s.key)).map((s) => s.key)
+  const queue = listStories().filter((s) => s.status === 'review' && !s.blocked && !reviewed.has(s.key) && !skipped.has(s.key)).map((s) => s.key)
   await Promise.all(Array.from({ length: Math.min(reviewers, queue.length) }, async () => {
     while (queue.length) {
       const key = queue.shift()
@@ -653,7 +849,7 @@ Return raw structured data only.`
   await mergeChain
 
   const pickable = omni(['story', 'list', '--pickable']).split('\n').filter(Boolean).length
-  return { run: runId, feature, integration, thread: threadId, implementers, reviewers, storyLimit: storyLimit === Infinity ? null : storyLimit, reconciled, clarity, unblocked, resumed, implemented: outcomes, reviewed: reviewOutcomes, merged: mergeOutcomes, pickable }
+  return { run: runId, feature, integration, thread: threadId, implementers, reviewers, storyLimit: storyLimit === Infinity ? null : storyLimit, reconciled, clarity, unblocked, resumed, implemented: outcomes, reviewed: reviewOutcomes, merged: mergeOutcomes, checked: checkOutcomes, pickable }
 } finally {
   fs.rmSync(lockPath, { force: true })
 }
