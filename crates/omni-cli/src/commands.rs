@@ -22,6 +22,7 @@ use crate::import;
 use crate::json::{Value, quote};
 use crate::posts;
 use crate::projects;
+use crate::stories;
 use crate::thread_wait;
 use crate::threads;
 use crate::tokens;
@@ -104,6 +105,12 @@ pub fn run(args: &Args) -> Result<()> {
         ["import", ..] => {
             bail!("usage: omni import penpot <file.penpot> --project <id> [--feature <name>]")
         }
+        ["story", "add"] => stories::add(args, None),
+        ["story", "add", file] => stories::add(args, Some(file)),
+        ["story", "list"] => stories::list(args),
+        ["story", "read"] => stories::read(args, None),
+        ["story", "read", story] => stories::read(args, Some(story)),
+        ["story", ..] => bail!("usage: omni story add|list|read; see `omni --help`"),
         ["thread", "create"] => threads::create(args, None),
         ["thread", "create", question] => threads::create(args, Some(question)),
         ["thread", "list"] => threads::list(args),

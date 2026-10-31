@@ -56,6 +56,12 @@ pub struct Args {
     pub link: Vec<String>,
     pub confidence: Option<String>,
     pub replaces: Option<String>,
+    /// `omni story add --priority <n> --number-from <n>`, `omni story list
+    /// --status <s> --pickable`.
+    pub priority: Option<String>,
+    pub number_from: Option<String>,
+    pub status: Option<String>,
+    pub pickable: bool,
     pub json: bool,
     pub help: bool,
     pub version: bool,
@@ -104,6 +110,10 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Args> {
                 parsed.sealed = true;
                 continue;
             }
+            "--pickable" => {
+                parsed.pickable = true;
+                continue;
+            }
             "--concluded" => {
                 parsed.concluded = true;
                 continue;
@@ -128,6 +138,9 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Args> {
                 }
                 continue;
             }
+            "--priority" => &mut parsed.priority,
+            "--number-from" => &mut parsed.number_from,
+            "--status" => &mut parsed.status,
             "--summary" => &mut parsed.summary,
             "--confidence" => &mut parsed.confidence,
             "--replaces" => &mut parsed.replaces,

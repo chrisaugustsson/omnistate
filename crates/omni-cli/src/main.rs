@@ -22,6 +22,7 @@ mod import;
 mod json;
 mod posts;
 mod projects;
+mod stories;
 mod thread_wait;
 mod threads;
 mod tokens;
@@ -143,6 +144,16 @@ Usage:
   omni comment reply <comment> <text>
                                       reply to a comment; without <text> it is read from
                                       --body-file or standard input
+  omni story add <file> [--priority <0-3>] [--link <doc>:<node>[:<label>]]... [--number-from <n>]
+                                      save a story written in the prd format (### US-<n>: title,
+                                      Description, Topic, Interfaces, Files, Blocked by,
+                                      Acceptance Criteria) in the feature; the server numbers it;
+                                      prints its key
+  omni story list [--status <status>] [--pickable]
+                                      list the feature's stories: key, priority, status and title;
+                                      --pickable lists those an implementer may take
+  omni story read <key|id>            print a story: text, criteria, blockers, holder and the
+                                      open findings
   omni wait --thread <id> --posts <n> [--concluded] [--timeout <s>]
                                       wait until the thread has n posts that you may read (a
                                       sealed thread counts none of the others' posts until you
@@ -185,6 +196,10 @@ Options (before or after the command):
   --posts <n>           `omni wait --thread`: wait for this many posts that you may read
   --concluded           `omni wait --thread`: wait for the thread's conclusion
   --timeout <seconds>   how long `omni wait` waits; without it, as long as it takes
+  --priority <n>        `omni story add`: the story's priority, 0 to 3 (3 by default)
+  --number-from <n>     `omni story add`: the number the project's first story starts after
+  --status <status>     `omni story list`: only the stories in this status
+  --pickable            `omni story list`: only the stories that can be picked
   --json                print the full JSON instead of short text
   -h, --help            show this help
   -V, --version         show the version
