@@ -113,6 +113,7 @@ to CSS.
 | `textAlign` | `"left"`, `"center"`, `"right"` or `"justify"`. |
 | `textDecoration` | `"none"`, `"underline"` or `"line-through"`. |
 | `color` | A color or a token reference. |
+| `shadows` | A list of shadows, as for boards. Each drop shadow is cast from the glyphs, as CSS `text-shadow`: its `spread` is taken as 0, and an inner shadow draws nothing. |
 
 ### Images, vectors and instances
 

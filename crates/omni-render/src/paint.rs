@@ -8,7 +8,9 @@
 //! - A frame paints its drop shadows, then its fills, its inner shadows, its
 //!   strokes and its children. Fills, strokes and inner shadows go in list
 //!   order, so the last of a kind is on top, but the first shadow is on top
-//!   of the other shadows, as in CSS `box-shadow`.
+//!   of the other shadows, as in CSS `box-shadow`. A text casts its drop
+//!   shadows from its glyphs, as CSS `text-shadow`: with no spread, not clipped
+//!   by the text, and inner shadows draw nothing.
 //! - A stroke of a frame or an image lies inside the box edge, like a CSS
 //!   `inset` border: it takes no space and follows the corner radii. A stroke
 //!   of a frame may set `align` to sit `center`ed on the edge, or `outside` it
@@ -39,7 +41,9 @@ use omni_core::design::{
     ShadowKind, Stroke, StrokeAlign, StrokeCap, TokenOr,
 };
 use skia_safe::ContourMeasureIter;
+use skia_safe::canvas::SaveLayerRec;
 use skia_safe::gradient::{Colors, Gradient, Interpolation, interpolation::InPremul, shaders};
+use skia_safe::image_filters;
 use skia_safe::paint::Cap;
 use skia_safe::{
     AlphaType, BlurStyle, Canvas, ClipOp, Color, Color4f, ColorType, Data, FilterMode, Image,
@@ -206,7 +210,7 @@ pub(crate) fn reach(node: &Node, boxes: &HashMap<NodeId, LayoutBox>) -> Option<R
                 below(own, &frame.children)
             })
         }
-        NodeData::Text(_) => Some(rect),
+        NodeData::Text(text) => Some(grown_by_shadows(rect, text.shadows.as_deref(), false)),
         NodeData::Image(image) => Some(with_shadows(rect, image.shadows.as_deref())),
         NodeData::Vector(vector) => {
             // The path is not clipped to the box, and nor is its stroke. The
@@ -254,11 +258,18 @@ fn with_strokes(reach: Rect, rect: Rect, strokes: Option<&[Stroke]>) -> Rect {
 /// `rect` and the area of the drop shadows it casts: shifted by their offsets
 /// and grown by their spread and by three standard deviations of their blur.
 fn with_shadows(rect: Rect, casting: Option<&[TokenOr<Shadow>]>) -> Rect {
+    grown_by_shadows(rect, casting, true)
+}
+
+/// `with_shadows`, for a text, whose shadows have no spread, if `spread` is
+/// false.
+fn grown_by_shadows(rect: Rect, casting: Option<&[TokenOr<Shadow>]>, spread: bool) -> Rect {
     shadows(casting)
         .iter()
         .filter(|shadow| shadow.kind == ShadowKind::Drop)
         .fold(rect, |reach, shadow| {
-            let grow = shadow.spread.max(0.0) + shadow.blur * 1.5;
+            let spread = if spread { shadow.spread.max(0.0) } else { 0.0 };
+            let grow = spread + shadow.blur * 1.5;
             let cast = rect
                 .with_offset((shadow.x, shadow.y))
                 .with_outset((grow, grow));
@@ -336,18 +347,48 @@ impl Painter<'_> {
                 }
                 let shaped = self.texts.and_then(|texts| texts.get(node.id()));
                 let origin = (rect.left, rect.top);
-                match shaped {
+                let draw = |canvas: &Canvas, color: Color| match shaped {
                     Some(shaped) => {
-                        shaped.draw(self.canvas, &self.assets.fonts, color, origin, rect.width())
+                        shaped.draw(canvas, &self.assets.fonts, color, origin, rect.width())
                     }
                     None => ShapedText::new(text, &self.assets.fonts).draw(
-                        self.canvas,
+                        canvas,
                         &self.assets.fonts,
                         color,
                         origin,
                         rect.width(),
                     ),
+                };
+                // The first shadow is on top, and all of them under the text.
+                for shadow in shadows(text.shadows.as_deref())
+                    .iter()
+                    .rev()
+                    .filter(|shadow| shadow.kind == ShadowKind::Drop)
+                {
+                    self.canvas.save();
+                    self.canvas.translate((shadow.x, shadow.y));
+                    if shadow.blur > 0.0 {
+                        // CSS blurs a shadow by a Gaussian with a standard
+                        // deviation of half the blur radius.
+                        let sigma = shadow.blur / 2.0;
+                        let mut blur = Paint::default();
+                        blur.set_image_filter(image_filters::blur(
+                            (sigma, sigma),
+                            TileMode::Decal,
+                            None,
+                            None,
+                        ));
+                        let bounds = rect.with_outset((shadow.blur * 1.5, shadow.blur * 1.5));
+                        self.canvas
+                            .save_layer(&SaveLayerRec::default().bounds(&bounds).paint(&blur));
+                        draw(self.canvas, shadow.color);
+                        self.canvas.restore();
+                    } else {
+                        draw(self.canvas, shadow.color);
+                    }
+                    self.canvas.restore();
                 }
+                draw(self.canvas, color);
             }),
             NodeData::Image(image) => self.group(node, image.opacity.as_ref(), || {
                 self.image(image, rect);

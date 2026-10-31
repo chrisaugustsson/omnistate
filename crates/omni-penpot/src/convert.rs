@@ -1380,16 +1380,8 @@ impl<R: Read + Seek> Converter<'_, R> {
         {
             self.report(who, Some("strokes"), "strokes on text are not supported");
         }
-        if pen
-            .shadow
-            .0
-            .as_deref()
-            .unwrap_or_default()
-            .iter()
-            .any(|shadow| shadow.get("hidden").and_then(Value::as_bool) != Some(true))
-        {
-            self.report(who, Some("shadow"), "shadows on text are not supported");
-        }
+        let shadows = self.text_shadows(who, pen);
+        insert_list(&mut node, "shadows", shadows);
         Value::Object(node)
     }
 
@@ -1667,6 +1659,35 @@ impl<R: Read + Seek> Converter<'_, R> {
             }
         }
         strokes
+    }
+
+    /// The visible drop shadows of a text, with the spread dropped. A text has
+    /// no inner shadows.
+    fn text_shadows(&mut self, who: &Who, pen: &Pen) -> Vec<Value> {
+        let mut kept = Vec::new();
+        for mut shadow in self.shadows(who, pen) {
+            if shadow["type"] == "inner" {
+                self.report(
+                    who,
+                    Some("shadow"),
+                    "inner shadows on text are not supported; the shadow is left out",
+                );
+                continue;
+            }
+            let spread = shadow["spread"].as_f64().unwrap_or(0.0);
+            if spread != 0.0 {
+                self.report(
+                    who,
+                    Some("shadow"),
+                    format!(
+                        "the spread of {spread} of a shadow on text is not supported; it is dropped"
+                    ),
+                );
+                shadow["spread"] = num(0.0);
+            }
+            kept.push(shadow);
+        }
+        kept
     }
 
     fn shadows(&mut self, who: &Who, pen: &Pen) -> Vec<Value> {

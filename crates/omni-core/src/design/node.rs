@@ -230,6 +230,8 @@ pub struct Text {
     pub text_align: Option<TextAlign>,
     pub text_decoration: Option<TextDecoration>,
     pub color: Option<TokenOr<Color>>,
+    /// Only drop shadows are drawn, and their spread is taken as 0.
+    pub shadows: Option<Vec<TokenOr<Shadow>>>,
     pub opacity: Option<TokenOr<f64>>,
 }
 
@@ -365,6 +367,7 @@ impl Serialize for Node {
                 entry(&mut map, "textAlign", text.text_align.as_ref())?;
                 entry(&mut map, "textDecoration", text.text_decoration.as_ref())?;
                 entry(&mut map, "color", text.color.as_ref())?;
+                entry(&mut map, "shadows", text.shadows.as_ref())?;
                 entry(&mut map, "opacity", text.opacity.as_ref())?;
             }
             NodeData::Image(image) => {
@@ -645,6 +648,7 @@ impl RawNode {
             text_align: self.text_align.take(),
             text_decoration: self.text_decoration.take(),
             color: self.color.take(),
+            shadows: self.shadows.take(),
             opacity: self.opacity()?,
         })
     }
