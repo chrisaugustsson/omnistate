@@ -4,7 +4,9 @@
 // `checks` answers only when the state holds checks; `story list --pickable` applies
 // the board's rule: backlog, not blocked, no planned path shared with a story in
 // implementing or review. `story finding` appends to the story's findings and
-// `story resolve --finding <i>` resolves the i-th (0-based).
+// `story resolve --finding <i>` resolves the i-th (0-based). `story add <file>` reads
+// the heading, Description, Files and criteria the way the CLI does and numbers
+// the story after the highest key; `story tick` sets the criterion's ticked/pending.
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 
@@ -67,6 +69,30 @@ if (noun === "--help") {
   } else {
     out(JSON.stringify({ stories: state.stories }));
   }
+} else if (noun === "story" && verb === "add") {
+  const lines = readFileSync(target, "utf8").split("\n");
+  const label = (name) => lines.find((l) => l.startsWith(`**${name}:**`))?.slice(name.length + 5).trim() ?? "";
+  const start = lines.findIndex((l) => l.startsWith("**Description:**"));
+  const end = lines.findIndex((l, i) => i > start && (l.startsWith("**") || !l.trim()));
+  const text = [label("Description"), ...lines.slice(start + 1, end)].join("\n");
+  const n = Math.max(0, ...state.stories.map((s) => Number(s.key.slice(3)))) + 1;
+  state.stories.push({
+    key: `US-${n}`,
+    title: lines.find((l) => l.startsWith("### ")).slice(4).trim(),
+    text,
+    criteria: lines.filter((l) => l.startsWith("- [ ] ")).map((l) => ({ text: l.slice(6), human_check: false })),
+    status: "backlog",
+    blocked: false,
+    holder: null,
+    version: 1,
+    decisions: [],
+    links: all("--link").map(link),
+    blocked_by: [],
+    files_planned: [...label("Files").matchAll(/`([^`]+)`/g)].map((m) => m[1]),
+    priority: Number(flag("--priority") ?? 3),
+  });
+  save();
+  out(`US-${n}\n`);
 } else if (noun === "story" && verb === "read") {
   save();
   out(JSON.stringify(story(target)));
@@ -84,6 +110,11 @@ if (noun === "--help") {
   else if (verb === "edit") s.links = all("--link").map(link);
   else if (verb === "finding") (s.findings ||= []).push({ stage: flag("--stage"), text: flag("--text"), files: all("--file"), resolved: false });
   else if (verb === "resolve") s.findings[Number(flag("--finding"))].resolved = true;
+  else if (verb === "tick") {
+    const i = Number(flag("--criterion"));
+    const c = typeof s.criteria[i] === "string" ? { text: s.criteria[i], human_check: false } : s.criteria[i];
+    s.criteria[i] = { ...c, ticked: true, ...(argv.includes("--pending") ? { pending: true } : {}) };
+  }
   else if (verb === "files") s.files_changed = argv.slice(3).filter((a, i, rest) => a !== "--run" && a !== "--feature" && rest[i - 1] !== "--run" && rest[i - 1] !== "--feature");
   else {
     process.stderr.write(`fake omni: unknown story verb ${verb}\n`);
