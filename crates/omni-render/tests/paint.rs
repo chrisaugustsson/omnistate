@@ -2082,6 +2082,78 @@ fn a_vector_stroke_on_an_open_path_is_centered_whatever_its_align() {
     );
 }
 
+/// A blue 10 px line from (80, 100) to (120, 100) whose stroke has `extra`.
+fn capped_line(extra: Value) -> Value {
+    let mut stroke = json!({"color": "#0000ff", "width": 10});
+    for (key, value) in extra.as_object().expect("stroke properties are an object") {
+        stroke[key] = value.clone();
+    }
+    let line = vector_node(
+        "vec00001",
+        80.0,
+        80.0,
+        "M0 20 L40 20",
+        json!({"strokes": [stroke]}),
+    );
+    scene(200, 200, vec![line])
+}
+
+#[test]
+fn a_vector_stroke_ends_in_a_half_disc_with_a_round_cap_and_a_half_square_with_a_square_cap() {
+    let round = render_200(&capped_line(json!({"cap": "round"})));
+    assert_all_rgb(&round, &[(122, 100)], BLUE, "the round cap past the end");
+    assert_all_rgb(
+        &round,
+        &[(127, 100), (124, 104)],
+        WHITE,
+        "beyond the half disc of radius 5",
+    );
+
+    let square = render_200(&capped_line(json!({"cap": "square"})));
+    assert_all_rgb(&square, &[(124, 104)], BLUE, "the corner of the square cap");
+    assert_all_rgb(&square, &[(126, 100)], WHITE, "beyond the square cap");
+}
+
+#[test]
+fn a_round_capped_vector_stroke_with_dashes_of_no_length_draws_a_dot_every_gap_from_the_start() {
+    let pixels = render_200(&capped_line(
+        json!({"cap": "round", "dash": {"length": 0, "gap": 20}}),
+    ));
+    assert_all_rgb(
+        &pixels,
+        &[(80, 100), (100, 100), (120, 100)],
+        BLUE,
+        "the dots at the start and 20 and 40 px along",
+    );
+    assert_all_rgb(
+        &pixels,
+        &[(90, 100), (110, 100), (80, 107)],
+        WHITE,
+        "between the dots and 7 px off the line at the start",
+    );
+}
+
+#[test]
+fn a_frame_draws_its_stroke_the_same_whatever_its_cap() {
+    let framed = |cap: Option<&str>| {
+        let mut stroke = json!({
+            "color": "#0000ff", "width": 4, "align": "center", "dash": {"length": 6, "gap": 6}
+        });
+        if let Some(cap) = cap {
+            stroke["cap"] = json!(cap);
+        }
+        one_box(80.0, 40.0, json!({"strokes": [stroke]}))
+    };
+    assert_eq!(
+        differing(&framed(Some("round")), &framed(None), 200, 200),
+        0
+    );
+    assert_eq!(
+        differing(&framed(Some("square")), &framed(None), 200, 200),
+        0
+    );
+}
+
 /// A 100 x 100 board with a red circle of radius 40 at its middle, as a
 /// vector that fills the board, with a 10 px blue stroke that sets `align`
 /// unless it is `None`.

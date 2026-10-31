@@ -47,9 +47,9 @@
 mod common;
 
 use omni_core::design::NodeKind;
-use omni_penpot::convert_file;
+use omni_penpot::{Conversion, convert_file};
 use omni_render::paint::Assets;
-use serde_json::json;
+use serde_json::{Value, json};
 
 use common::convert::*;
 
@@ -684,6 +684,291 @@ fn a_circle_stroke_keeps_its_alignment_and_lies_inside_without_one() {
     assert_eq!(align("Default"), "inside");
     assert_eq!(align("Outer"), "outside");
     assert_eq!(align("Center"), "center");
+}
+
+/// A black centered stroke of `width` and `style` with the properties of
+/// `caps` set.
+fn capped_stroke(width: f64, style: &str, caps: Value) -> Value {
+    let mut stroke = json!({
+        "strokeColor": "#000000", "strokeOpacity": 1, "strokeWidth": width,
+        "strokeStyle": style, "strokeAlignment": "center"
+    });
+    for (key, value) in caps.as_object().expect("caps are an object") {
+        stroke[key] = value.clone();
+    }
+    stroke
+}
+
+/// A Penpot path along the top of a 40 x 1 box at (0, `y`) with `stroke`.
+fn open_path(n: u32, name: &str, y: f64, stroke: Value) -> S {
+    shape(n, "path", name, [0.0, y, 40.0, 1.0]).with(json!({
+        "x": null, "y": null, "width": null, "height": null,
+        "content": format!("M0,{y}L40,{y}"),
+        "strokes": [stroke]
+    }))
+}
+
+/// The reasons the report gives for the shape `shape_id`.
+fn reasons<'a>(conversion: &'a Conversion, shape_id: &str) -> Vec<&'a str> {
+    entries_of(conversion, shape_id)
+        .into_iter()
+        .map(|entry| entry.reason.as_str())
+        .collect()
+}
+
+#[test]
+fn a_marker_at_one_end_is_reported_with_the_cap_the_stroke_actually_gets() {
+    let conversion = convert(
+        "marker-ends",
+        vec![
+            shape(1, "frame", "Home", [0.0, 0.0, 400.0, 300.0]).kids(vec![
+                open_path(
+                    2,
+                    "Round to arrow",
+                    0.0,
+                    capped_stroke(
+                        2.0,
+                        "solid",
+                        json!({"strokeCapStart": "round", "strokeCapEnd": "line-arrow"}),
+                    ),
+                ),
+                open_path(
+                    3,
+                    "Arrow to round",
+                    10.0,
+                    capped_stroke(
+                        2.0,
+                        "solid",
+                        json!({"strokeCapStart": "triangle-arrow", "strokeCapEnd": "round"}),
+                    ),
+                ),
+            ]),
+        ],
+    );
+    let root = board_node(board(&conversion, "Home"));
+    let cap = |name: &str| json_of(node(root, name))["strokes"][0]["cap"].clone();
+
+    assert_eq!(cap("Round to arrow"), "round");
+    let round_start = reasons(&conversion, &uid(2));
+    assert!(
+        round_start
+            .iter()
+            .any(|reason| reason.contains("line-arrow")),
+        "the arrow at the end is reported: {round_start:#?}"
+    );
+    assert!(
+        !round_start.iter().any(|reason| reason.contains("no cap")),
+        "the stroke gets the round cap, so no report says it gets none: {round_start:#?}"
+    );
+
+    assert_eq!(cap("Arrow to round"), Value::Null);
+    let arrow_start = reasons(&conversion, &uid(3));
+    assert!(
+        arrow_start
+            .iter()
+            .any(|reason| reason.contains("triangle-arrow")),
+        "the arrow at the start is reported: {arrow_start:#?}"
+    );
+    assert!(
+        arrow_start.iter().all(|reason| reason.contains("no cap")),
+        "every report says the stroke gets no cap: {arrow_start:#?}"
+    );
+}
+
+#[test]
+fn a_vector_stroke_takes_the_cap_of_its_start_and_a_different_end_is_reported() {
+    let solid = |caps: Value| capped_stroke(2.0, "solid", caps);
+    let conversion = convert(
+        "caps",
+        vec![
+            shape(1, "frame", "Home", [0.0, 0.0, 400.0, 300.0]).kids(vec![
+                open_path(
+                    2,
+                    "Round",
+                    0.0,
+                    solid(json!({"strokeCapStart": "round", "strokeCapEnd": "round"})),
+                ),
+                open_path(
+                    3,
+                    "Square",
+                    10.0,
+                    solid(json!({"strokeCapStart": "square", "strokeCapEnd": "square"})),
+                ),
+                open_path(4, "Absent", 20.0, solid(json!({}))),
+                open_path(
+                    5,
+                    "Null",
+                    30.0,
+                    solid(json!({"strokeCapStart": null, "strokeCapEnd": null})),
+                ),
+                open_path(
+                    6,
+                    "Round to square",
+                    40.0,
+                    solid(json!({"strokeCapStart": "round", "strokeCapEnd": "square"})),
+                ),
+                open_path(
+                    7,
+                    "None to round",
+                    50.0,
+                    solid(json!({"strokeCapStart": null, "strokeCapEnd": "round"})),
+                ),
+                shape(8, "circle", "Marked", [0.0, 60.0, 20.0, 20.0]).with(json!({
+                    "strokes": [solid(json!({
+                        "strokeCapStart": "circle-marker", "strokeCapEnd": "circle-marker"
+                    }))]
+                })),
+            ]),
+        ],
+    );
+    let root = board_node(board(&conversion, "Home"));
+    let cap = |name: &str| json_of(node(root, name))["strokes"][0]["cap"].clone();
+
+    assert_eq!(cap("Round"), "round");
+    assert_eq!(cap("Square"), "square");
+    assert_eq!(cap("Absent"), Value::Null);
+    assert_eq!(cap("Null"), Value::Null);
+    assert_eq!(reasons(&conversion, &uid(2)), Vec::<&str>::new());
+    assert_eq!(reasons(&conversion, &uid(3)), Vec::<&str>::new());
+    assert_eq!(reasons(&conversion, &uid(4)), Vec::<&str>::new());
+    assert_eq!(reasons(&conversion, &uid(5)), Vec::<&str>::new());
+
+    assert_eq!(cap("Round to square"), "round");
+    let round_to_square = reasons(&conversion, &uid(6));
+    assert!(
+        round_to_square
+            .iter()
+            .any(|reason| reason.contains("round") && reason.contains("square")),
+        "the report names both ends: {round_to_square:#?}"
+    );
+
+    assert_eq!(cap("None to round"), Value::Null);
+    assert_reported(
+        &conversion,
+        &uid(7),
+        &uid(1),
+        "Home",
+        "None to round",
+        &["round"],
+    );
+
+    assert_eq!(cap("Marked"), Value::Null);
+    assert_reported(
+        &conversion,
+        &uid(8),
+        &uid(1),
+        "Home",
+        "Marked",
+        &["circle-marker"],
+    );
+}
+
+#[test]
+fn the_stroke_of_a_board_frame_or_rect_gets_no_cap_and_no_report_about_it() {
+    let round = json!({
+        "strokes": [capped_stroke(
+            2.0,
+            "solid",
+            json!({"strokeCapStart": "round", "strokeCapEnd": "square"}),
+        )]
+    });
+    let conversion = convert(
+        "frame-caps",
+        vec![
+            shape(1, "frame", "Home", [0.0, 0.0, 400.0, 300.0])
+                .with(round.clone())
+                .kids(vec![
+                    shape(2, "frame", "Card", [0.0, 0.0, 50.0, 50.0]).with(round.clone()),
+                    shape(3, "rect", "Box", [60.0, 0.0, 50.0, 50.0]).with(round),
+                ]),
+        ],
+    );
+    let root = board_node(board(&conversion, "Home"));
+    assert_eq!(json_of(root)["strokes"][0]["cap"], Value::Null);
+    assert_eq!(
+        json_of(node(root, "Card"))["strokes"][0]["cap"],
+        Value::Null
+    );
+    assert_eq!(json_of(node(root, "Box"))["strokes"][0]["cap"], Value::Null);
+    assert!(
+        conversion.report.entries.is_empty(),
+        "the caps of frames are left out silently: {:#?}",
+        conversion.report.entries
+    );
+}
+
+#[test]
+fn a_dotted_vector_stroke_becomes_round_dots_twice_its_width_apart_whatever_its_caps() {
+    let conversion = convert(
+        "dotted-vectors",
+        vec![
+            shape(1, "frame", "Home", [0.0, 0.0, 400.0, 300.0]).kids(vec![
+                open_path(
+                    2,
+                    "Dotted line",
+                    0.0,
+                    capped_stroke(
+                        2.0,
+                        "dotted",
+                        json!({"strokeCapStart": "square", "strokeCapEnd": "round"}),
+                    ),
+                ),
+                shape(3, "circle", "Dotted ring", [0.0, 10.0, 20.0, 20.0]).with(json!({
+                    "strokes": [capped_stroke(3.0, "dotted", json!({}))]
+                })),
+                open_path(
+                    4,
+                    "Dotted arrow",
+                    40.0,
+                    capped_stroke(
+                        2.0,
+                        "dotted",
+                        json!({"strokeCapStart": "round", "strokeCapEnd": "diamond-marker"}),
+                    ),
+                ),
+            ]),
+        ],
+    );
+    let root = board_node(board(&conversion, "Home"));
+    let stroke = |name: &str| json_of(node(root, name))["strokes"][0].clone();
+
+    let line = stroke("Dotted line");
+    assert_eq!(num(&line["dash"]["length"]), 0.0);
+    assert_eq!(num(&line["dash"]["gap"]), 4.0);
+    assert_eq!(line["cap"], "round");
+    let ring = stroke("Dotted ring");
+    assert_eq!(num(&ring["dash"]["length"]), 0.0);
+    assert_eq!(num(&ring["dash"]["gap"]), 6.0);
+    assert_eq!(ring["cap"], "round");
+    assert_eq!(reasons(&conversion, &uid(2)), Vec::<&str>::new());
+    assert_eq!(reasons(&conversion, &uid(3)), Vec::<&str>::new());
+
+    assert_eq!(stroke("Dotted arrow")["cap"], "round");
+    let arrow = entries_of(&conversion, &uid(4));
+    assert_eq!(arrow.len(), 1, "only the marker is reported: {arrow:#?}");
+    assert_eq!(arrow[0].property.as_deref(), Some("strokeCapEnd"));
+    assert!(arrow[0].reason.contains("diamond-marker"), "{arrow:#?}");
+}
+
+#[test]
+fn a_dotted_frame_stroke_is_drawn_solid_and_reported() {
+    let conversion = convert(
+        "dotted-frame",
+        vec![
+            shape(1, "frame", "Home", [0.0, 0.0, 400.0, 300.0]).kids(vec![
+                shape(2, "frame", "Dotted card", [0.0, 0.0, 50.0, 50.0]).with(json!({
+                    "strokes": [capped_stroke(2.0, "dotted", json!({"strokeCapStart": "round"}))]
+                })),
+            ]),
+        ],
+    );
+    let card = json_of(node(board_node(board(&conversion, "Home")), "Dotted card"));
+    assert_eq!(card["strokes"][0]["dash"], Value::Null);
+    assert_eq!(card["strokes"][0]["cap"], Value::Null);
+    let entries = entries_of(&conversion, &uid(2));
+    assert_eq!(entries.len(), 1, "{entries:#?}");
+    assert_eq!(entries[0].property.as_deref(), Some("strokeStyle"));
+    assert!(entries[0].reason.contains("dotted"), "{entries:#?}");
 }
 
 #[test]
