@@ -19,7 +19,8 @@
 //! - A stroke with a `dash` is SVG `stroke-dasharray: <length> <gap>` with butt
 //!   ends along the middle of the stroke. Around a box that line starts at the
 //!   top-left corner (after the corner radius) and runs clockwise, as an SVG
-//!   `<rect>` does, and along a vector it follows the path.
+//!   `<rect>` does, and along a vector it follows the path. The `cap` of a
+//!   vector's stroke shapes its ends and every dash; a frame ignores it.
 //! - A shadow is a CSS `box-shadow`: a blur of `b` is a Gaussian of standard
 //!   deviation `b / 2`, and a drop shadow is not drawn beneath its own shape.
 //! - `opacity` fades a node and everything below it as one group.
@@ -35,9 +36,11 @@ use crate::layout::{self, LayoutBox, ShapedTexts};
 use crate::text::{Fonts, ShapedText, literal};
 use omni_core::design::{
     self, AttachmentRef, Fill, GradientStop, ImageFit, Node, NodeData, NodeId, Radius, Shadow,
-    ShadowKind, Stroke, StrokeAlign, TokenOr,
+    ShadowKind, Stroke, StrokeAlign, StrokeCap, TokenOr,
 };
+use skia_safe::ContourMeasureIter;
 use skia_safe::gradient::{Colors, Gradient, Interpolation, interpolation::InPremul, shaders};
+use skia_safe::paint::Cap;
 use skia_safe::{
     AlphaType, BlurStyle, Canvas, ClipOp, Color, Color4f, ColorType, Data, FilterMode, Image,
     ImageInfo, MaskFilter, MipmapMode, Paint, Path, PathBuilder, PathDirection, PathEffect, PathOp,
@@ -219,7 +222,7 @@ pub(crate) fn reach(node: &Node, boxes: &HashMap<NodeId, LayoutBox>) -> Option<R
                     .filter_map(|stroke| {
                         let width = literal(&stroke.width)?;
                         let (width, _) = stroke_extent(stroke, width, closed)?;
-                        Some(stroke_outline(&path, width).compute_tight_bounds())
+                        Some(stroke_outline(&path, width, cap(stroke)).compute_tight_bounds())
                     })
                     .fold(Rect::join2(rect, path.compute_tight_bounds()), Rect::join2)
             });
@@ -445,7 +448,12 @@ impl Painter<'_> {
 
     fn vector(&self, vector: &design::Vector, rect: Rect) {
         let fills = vector.fills.as_deref().unwrap_or_default();
-        let strokes: Vec<(Color, f32, Option<PathEffect>, Option<StrokeAlign>)> = vector
+        // Path data is in pixels from the corner of the box.
+        let Some(path) = Path::from_svg(vector.path.as_str()) else {
+            return;
+        };
+        let path = path.with_offset((rect.left, rect.top));
+        let strokes: Vec<VectorStroke> = vector
             .strokes
             .iter()
             .flatten()
@@ -453,17 +461,13 @@ impl Painter<'_> {
                 Some((
                     color(&stroke.color)?,
                     literal(&stroke.width)?,
-                    dashes(stroke),
+                    vector_dashes(stroke, &path),
                     stroke.align,
+                    cap(stroke),
                 ))
             })
             .filter(|&(_, width, ..)| width > 0.0)
             .collect();
-        // Path data is in pixels from the corner of the box.
-        let Some(path) = Path::from_svg(vector.path.as_str()) else {
-            return;
-        };
-        let path = path.with_offset((rect.left, rect.top));
         if fills.is_empty() && strokes.is_empty() {
             return;
         }
@@ -473,8 +477,8 @@ impl Painter<'_> {
         let closed = is_closed(&path);
         let shape = (!shadows.is_empty() && !self.reduced).then(|| {
             let mut shape = (!fills.is_empty()).then(|| path.clone());
-            for &(_, width, _, align) in &strokes {
-                let area = stroke_area(&path, width, align, closed);
+            for &(_, width, _, align, cap) in &strokes {
+                let area = stroke_area(&path, width, align, closed, cap);
                 shape = Some(match shape {
                     Some(shape) => shape.op(&area, PathOp::Union).unwrap_or(shape),
                     None => area,
@@ -491,7 +495,7 @@ impl Painter<'_> {
             self.fill(fill, rect, &Shape::Path(path.clone()));
             self.canvas.restore();
         }
-        for (stroke_color, width, dashes, align) in strokes {
+        for (stroke_color, width, dashes, align, cap) in strokes {
             let side = if closed {
                 align.unwrap_or(StrokeAlign::Inside)
             } else {
@@ -509,10 +513,16 @@ impl Painter<'_> {
                 .set_anti_alias(true)
                 .set_style(paint::Style::Stroke)
                 .set_stroke_width(line)
+                .set_stroke_cap(cap)
                 .set_color(stroke_color);
-            if let Some(dashes) = dashes {
-                paint.set_path_effect(dashes);
-            }
+            let dots = match dashes {
+                Some(Dashing::Effect(dashes)) => {
+                    paint.set_path_effect(dashes);
+                    None
+                }
+                Some(Dashing::Dots(dots)) => Some(dots),
+                None => None,
+            };
             self.canvas.save();
             match side {
                 StrokeAlign::Inside => {
@@ -523,7 +533,8 @@ impl Painter<'_> {
                 }
                 StrokeAlign::Center => {}
             }
-            self.canvas.draw_path(&path, &paint);
+            self.canvas
+                .draw_path(dots.as_ref().unwrap_or(&path), &paint);
             self.canvas.restore();
         }
         if let Some(shape) = &shape {
@@ -816,7 +827,7 @@ impl Shape {
             Shape::Rounded(rounded) => rounded.grown(by).map(Shape::Rounded),
             Shape::Path(path) if by == 0.0 => Some(Shape::Path(path.clone())),
             Shape::Path(path) => {
-                let outline = stroke_outline(path, by.abs() * 2.0);
+                let outline = stroke_outline(path, by.abs() * 2.0, Cap::Butt);
                 let op = if by > 0.0 {
                     PathOp::Union
                 } else {
@@ -848,6 +859,54 @@ fn dashes(stroke: &Stroke) -> Option<PathEffect> {
     PathEffect::dash(&[length, gap], 0.0)
 }
 
+/// A vector's stroke: color, width, dashes, align and cap.
+type VectorStroke = (Color, f32, Option<Dashing>, Option<StrokeAlign>, Cap);
+
+/// How a vector's stroke is dashed.
+enum Dashing {
+    Effect(PathEffect),
+    /// Dashes of no length: a point every gap along the path, drawn with a
+    /// round cap as a dot. A dash effect leaves out the point at the very end
+    /// of an open path, so these are placed by hand.
+    Dots(Path),
+}
+
+/// The dashes of the stroke of a vector along `path`.
+fn vector_dashes(stroke: &Stroke, path: &Path) -> Option<Dashing> {
+    let dash = stroke.dash.as_ref()?;
+    let gap = literal(&dash.gap)?;
+    if literal(&dash.length)? > 0.0 || gap <= 0.0 {
+        return dashes(stroke).map(Dashing::Effect);
+    }
+    let mut dots = PathBuilder::new();
+    for contour in ContourMeasureIter::new(path, false, None) {
+        let length = contour.length();
+        // The end of a closed contour is its start.
+        let end = if contour.is_closed() {
+            length - 1e-3
+        } else {
+            length + 1e-3
+        };
+        let mut at = 0.0;
+        while at <= end {
+            if let Some((point, _)) = contour.pos_tan(at.min(length)) {
+                dots.move_to(point).line_to(point);
+            }
+            at += gap;
+        }
+    }
+    Some(Dashing::Dots(dots.detach()))
+}
+
+/// The cap of the stroke of a vector.
+fn cap(stroke: &Stroke) -> Cap {
+    match stroke.cap {
+        Some(StrokeCap::Round) => Cap::Round,
+        Some(StrokeCap::Square) => Cap::Square,
+        _ => Cap::Butt,
+    }
+}
+
 /// Whether every subpath of `path` ends in a close.
 fn is_closed(path: &Path) -> bool {
     let (mut open, mut drawn) = (false, false);
@@ -876,27 +935,34 @@ fn stroke_extent(stroke: &Stroke, width: f32, closed: bool) -> Option<(f32, Stro
 }
 
 /// The area that a stroke of `width` and `align` covers along `path`.
-fn stroke_area(path: &Path, width: f32, align: Option<StrokeAlign>, closed: bool) -> Path {
+fn stroke_area(
+    path: &Path,
+    width: f32,
+    align: Option<StrokeAlign>,
+    closed: bool,
+    cap: Cap,
+) -> Path {
     let side = if closed {
         align.unwrap_or(StrokeAlign::Inside)
     } else {
         StrokeAlign::Center
     };
     let (line, op) = match side {
-        StrokeAlign::Center => return stroke_outline(path, width),
+        StrokeAlign::Center => return stroke_outline(path, width, cap),
         StrokeAlign::Inside => (width * 2.0, PathOp::Intersect),
         StrokeAlign::Outside => (width * 2.0, PathOp::Difference),
     };
-    let outline = stroke_outline(path, line);
+    let outline = stroke_outline(path, line, cap);
     outline.op(path, op).unwrap_or(outline)
 }
 
-/// The area that a stroke of `width` covers along `path`.
-fn stroke_outline(path: &Path, width: f32) -> Path {
+/// The area that a stroke of `width` and `cap` covers along `path`.
+fn stroke_outline(path: &Path, width: f32, cap: Cap) -> Path {
     let mut paint = Paint::default();
     paint
         .set_style(paint::Style::Stroke)
-        .set_stroke_width(width);
+        .set_stroke_width(width)
+        .set_stroke_cap(cap);
     let mut outline = PathBuilder::new();
     path_utils::fill_path_with_paint(path, &paint, &mut outline, None, None);
     outline.detach()

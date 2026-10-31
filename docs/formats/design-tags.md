@@ -91,7 +91,7 @@ to CSS.
 | Attribute | Value |
 | --- | --- |
 | `fill` | One solid color, `fill="#2563eb"` or `fill="$color.surface"`, or a list of fills, painted in order: `fill={[{type: "solid", color: "#2563eb"}, {type: "linear-gradient", angle: 180, stops: [{position: 0, color: "#fff"}, {position: 1, color: "#000"}]}]}`. A fill can also be `{type: "image", image: "attachment:<id>", fit: "cover"}`. Boards, frames and vectors take it. |
-| `strokes` | A list of strokes: `strokes={[{color: "#e2e8f0", width: 1, align: "inside", dash: {length: 4, gap: 2}}]}`. `align` (`inside`, `center` or `outside`) is for the strokes of boards, frames and vectors with closed paths; left out it is `inside`. The stroke of an open path is centered whatever `align` says. |
+| `strokes` | A list of strokes: `strokes={[{color: "#e2e8f0", width: 1, align: "inside", dash: {length: 4, gap: 2}}]}`. `align` (`inside`, `center` or `outside`) is for the strokes of boards, frames and vectors with closed paths; left out it is `inside`. The stroke of an open path is centered whatever `align` says. `cap` (`butt`, `round` or `square`; left out it is `butt`) is for vectors: it shapes the ends of the stroke and every dash, so `dash: {length: 0, gap: 8}` with `cap: "round"` draws dots. A board or frame accepts `cap` and ignores it. |
 | `radius` | The corner radius: one length for every corner, `radius={8}`, or an object with some of `topLeft`, `topRight`, `bottomRight` and `bottomLeft`. |
 | `shadows` | A list of shadows or token references: `shadows={[{type: "drop", color: "#0f172a33", offsetX: 0, offsetY: 4, blur: 8, spread: 0}, "$shadow.raised"]}`. |
 | `opacity` | From 0 to 1, or a token reference. |

@@ -1552,7 +1552,9 @@ impl<R: Read + Seek> Converter<'_, R> {
                 .get("strokeStyle")
                 .and_then(Value::as_str)
                 .unwrap_or("solid");
-            if !matches!(style, "solid" | "dashed") {
+            // A dotted stroke of a vector is a round-capped dash of no length.
+            let dotted = style == "dotted" && look == Look::Vector;
+            if !matches!(style, "solid" | "dashed") && !dotted {
                 self.report(
                     who,
                     Some("strokeStyle"),
@@ -1560,6 +1562,44 @@ impl<R: Read + Seek> Converter<'_, R> {
                         "the stroke style `{style}` is not supported; the stroke is drawn solid"
                     ),
                 );
+            }
+            let cap_of = |key: &str| stroke.get(key).and_then(Value::as_str);
+            let (start, end) = (cap_of("strokeCapStart"), cap_of("strokeCapEnd"));
+            let mut cap = None;
+            if look == Look::Vector {
+                const MARKERS: [&str; 5] = [
+                    "line-arrow",
+                    "triangle-arrow",
+                    "square-marker",
+                    "circle-marker",
+                    "diamond-marker",
+                ];
+                for (key, value) in [("strokeCapStart", start), ("strokeCapEnd", end)] {
+                    if let Some(value) = value.filter(|value| MARKERS.contains(value)) {
+                        self.report(
+                            who,
+                            Some(key),
+                            format!(
+                                "the stroke cap `{value}` is not supported; the stroke gets no cap"
+                            ),
+                        );
+                    }
+                }
+                if start != end && !dotted {
+                    self.report(
+                        who,
+                        Some("strokeCapEnd"),
+                        format!(
+                            "the stroke starts with the cap `{}` and ends with `{}`; both ends take the cap of the start",
+                            start.unwrap_or("none"),
+                            end.unwrap_or("none")
+                        ),
+                    );
+                }
+                cap = match start {
+                    Some(cap @ ("round" | "square")) => Some(cap),
+                    _ => None,
+                };
             }
             let align = stroke
                 .get("strokeAlignment")
@@ -1601,6 +1641,12 @@ impl<R: Read + Seek> Converter<'_, R> {
                     let mut line = json!({ "color": color, "width": num(width) });
                     if let Some(align) = align {
                         line["align"] = json!(align);
+                    }
+                    if dotted {
+                        line["dash"] = json!({ "length": 0, "gap": num(width * 2.0) });
+                        line["cap"] = json!("round");
+                    } else if let Some(cap) = cap {
+                        line["cap"] = json!(cap);
                     }
                     if style == "dashed" {
                         // Penpot draws dashes and gaps six stroke widths long

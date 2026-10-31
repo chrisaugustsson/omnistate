@@ -154,6 +154,6 @@ pub use node::{
 pub use path::PathData;
 pub use style::{
     Dash, Fill, FontStyle, GradientStop, ImageFit, Radius, Shadow, ShadowKind, Stroke, StrokeAlign,
-    TextAlign, TextDecoration,
+    StrokeCap, TextAlign, TextDecoration,
 };
 pub use value::{AttachmentRef, Color, FontFamily, InvalidValue, Length, TokenOr, TokenRef};

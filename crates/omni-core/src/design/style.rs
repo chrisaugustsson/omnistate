@@ -126,6 +126,23 @@ pub struct Stroke {
     #[serde(default, deserialize_with = "some_object")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dash: Option<Dash>,
+    /// How the stroke of a vector ends, and each of its dashes. Left out, it
+    /// is `butt`. A frame or a board draws its stroke the same whatever it is.
+    #[serde(default, deserialize_with = "some")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cap: Option<StrokeCap>,
+}
+
+keywords! {
+    /// How the ends of a stroke are shaped.
+    pub enum StrokeCap {
+        /// Square off at the end of the path.
+        Butt = "butt",
+        /// A half disc past the end, of the stroke's width.
+        Round = "round",
+        /// A half square past the end, of half the stroke's width.
+        Square = "square",
+    }
 }
 
 keywords! {
