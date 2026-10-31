@@ -11,9 +11,11 @@
 //!   of the other shadows, as in CSS `box-shadow`.
 //! - A stroke of a frame or an image lies inside the box edge, like a CSS
 //!   `inset` border: it takes no space and follows the corner radii. A stroke
-//!   of a vector is centered on its path. A stroke of a frame may set `align`
-//!   to sit `center`ed on the edge, or `outside` it like a CSS `outline`, where
-//!   the corner radii grow by the stroke width. It takes no space either way.
+//!   of a frame may set `align` to sit `center`ed on the edge, or `outside` it
+//!   like a CSS `outline`, where the corner radii grow by the stroke width. It
+//!   takes no space either way. A stroke of a vector sits inside, centered on
+//!   or outside its path the same way, but only a closed path has an inside
+//!   and an outside: the stroke of a path with an open subpath is centered.
 //! - A stroke with a `dash` is SVG `stroke-dasharray: <length> <gap>` with butt
 //!   ends along the middle of the stroke. Around a box that line starts at the
 //!   top-left corner (after the corner radius) and runs clockwise, as an SVG
@@ -39,7 +41,7 @@ use skia_safe::gradient::{Colors, Gradient, Interpolation, interpolation::InPrem
 use skia_safe::{
     AlphaType, BlurStyle, Canvas, ClipOp, Color, Color4f, ColorType, Data, FilterMode, Image,
     ImageInfo, MaskFilter, MipmapMode, Paint, Path, PathBuilder, PathDirection, PathEffect, PathOp,
-    RRect, Rect, SamplingOptions, Shader, TileMode, Vector, paint, path_utils, surfaces,
+    PathVerb, RRect, Rect, SamplingOptions, Shader, TileMode, Vector, paint, path_utils, surfaces,
 };
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -204,20 +206,22 @@ pub(crate) fn reach(node: &Node, boxes: &HashMap<NodeId, LayoutBox>) -> Option<R
         NodeData::Text(_) => Some(rect),
         NodeData::Image(image) => Some(with_shadows(rect, image.shadows.as_deref())),
         NodeData::Vector(vector) => {
-            let widest = vector
-                .strokes
-                .iter()
-                .flatten()
-                .filter_map(|stroke| literal(&stroke.width))
-                .fold(0.0, f32::max);
-            // The path is not clipped to the box, and a miter join reaches up
-            // to four times half the stroke width from the path.
+            // The path is not clipped to the box, and nor is its stroke. The
+            // outline of an inside stroke lies within the path, and an
+            // outside stroke is drawn from an outline of twice its width.
             let drawn = Path::from_svg(vector.path.as_str()).map_or(rect, |path| {
                 let path = path.with_offset((rect.left, rect.top));
-                let bounds = path
-                    .compute_tight_bounds()
-                    .with_outset((widest * 2.0, widest * 2.0));
-                Rect::join2(rect, bounds)
+                let closed = is_closed(&path);
+                vector
+                    .strokes
+                    .iter()
+                    .flatten()
+                    .filter_map(|stroke| {
+                        let width = literal(&stroke.width)?;
+                        let (width, _) = stroke_extent(stroke, width, closed)?;
+                        Some(stroke_outline(&path, width).compute_tight_bounds())
+                    })
+                    .fold(Rect::join2(rect, path.compute_tight_bounds()), Rect::join2)
             });
             Some(with_shadows(drawn, vector.shadows.as_deref()))
         }
@@ -441,7 +445,7 @@ impl Painter<'_> {
 
     fn vector(&self, vector: &design::Vector, rect: Rect) {
         let fills = vector.fills.as_deref().unwrap_or_default();
-        let strokes: Vec<(Color, f32, Option<PathEffect>)> = vector
+        let strokes: Vec<(Color, f32, Option<PathEffect>, Option<StrokeAlign>)> = vector
             .strokes
             .iter()
             .flatten()
@@ -450,9 +454,10 @@ impl Painter<'_> {
                     color(&stroke.color)?,
                     literal(&stroke.width)?,
                     dashes(stroke),
+                    stroke.align,
                 ))
             })
-            .filter(|&(_, width, _)| width > 0.0)
+            .filter(|&(_, width, ..)| width > 0.0)
             .collect();
         // Path data is in pixels from the corner of the box.
         let Some(path) = Path::from_svg(vector.path.as_str()) else {
@@ -465,18 +470,17 @@ impl Painter<'_> {
         let shadows = shadows(vector.shadows.as_deref());
         // The shape of a vector's shadow is what the vector paints. Working
         // it out takes path operations, so it is left alone without shadows.
+        let closed = is_closed(&path);
         let shape = (!shadows.is_empty() && !self.reduced).then(|| {
-            let widest = strokes
-                .iter()
-                .map(|&(_, width, _)| width)
-                .fold(0.0, f32::max);
-            Shape::Path(match (fills.is_empty(), strokes.is_empty()) {
-                (_, true) => path.clone(),
-                (true, false) => stroke_outline(&path, widest),
-                (false, false) => path
-                    .op(&stroke_outline(&path, widest), PathOp::Union)
-                    .unwrap_or_else(|| path.clone()),
-            })
+            let mut shape = (!fills.is_empty()).then(|| path.clone());
+            for &(_, width, _, align) in &strokes {
+                let area = stroke_area(&path, width, align, closed);
+                shape = Some(match shape {
+                    Some(shape) => shape.op(&area, PathOp::Union).unwrap_or(shape),
+                    None => area,
+                });
+            }
+            Shape::Path(shape.unwrap_or_else(|| path.clone()))
         });
         if let Some(shape) = &shape {
             self.drop_shadows(shape, &shadows);
@@ -487,17 +491,40 @@ impl Painter<'_> {
             self.fill(fill, rect, &Shape::Path(path.clone()));
             self.canvas.restore();
         }
-        for (stroke_color, width, dashes) in strokes {
+        for (stroke_color, width, dashes, align) in strokes {
+            let side = if closed {
+                align.unwrap_or(StrokeAlign::Inside)
+            } else {
+                StrokeAlign::Center
+            };
+            // An inside or outside stroke is one of twice the width, kept to
+            // one side of the path.
+            let line = if side == StrokeAlign::Center {
+                width
+            } else {
+                width * 2.0
+            };
             let mut paint = Paint::default();
             paint
                 .set_anti_alias(true)
                 .set_style(paint::Style::Stroke)
-                .set_stroke_width(width)
+                .set_stroke_width(line)
                 .set_color(stroke_color);
             if let Some(dashes) = dashes {
                 paint.set_path_effect(dashes);
             }
+            self.canvas.save();
+            match side {
+                StrokeAlign::Inside => {
+                    self.canvas.clip_path(&path, None, true);
+                }
+                StrokeAlign::Outside => {
+                    self.canvas.clip_path(&path, ClipOp::Difference, true);
+                }
+                StrokeAlign::Center => {}
+            }
             self.canvas.draw_path(&path, &paint);
+            self.canvas.restore();
         }
         if let Some(shape) = &shape {
             self.inner_shadows(shape, &shadows);
@@ -819,6 +846,49 @@ fn dashes(stroke: &Stroke) -> Option<PathEffect> {
     let dash = stroke.dash.as_ref()?;
     let (length, gap) = (literal(&dash.length)?, literal(&dash.gap)?);
     PathEffect::dash(&[length, gap], 0.0)
+}
+
+/// Whether every subpath of `path` ends in a close.
+fn is_closed(path: &Path) -> bool {
+    let (mut open, mut drawn) = (false, false);
+    for verb in path.verbs() {
+        match verb {
+            PathVerb::Move => {
+                open |= drawn;
+                drawn = false;
+            }
+            PathVerb::Close => drawn = false,
+            _ => drawn = true,
+        }
+    }
+    !(open || drawn)
+}
+
+/// The width of the line that is stroked along the path of a vector for
+/// `stroke` of `width`, and the side of the path it is kept to. `None` for a
+/// stroke that lies inside a closed path, which adds nothing to its reach.
+fn stroke_extent(stroke: &Stroke, width: f32, closed: bool) -> Option<(f32, StrokeAlign)> {
+    match closed.then(|| stroke.align.unwrap_or(StrokeAlign::Inside)) {
+        Some(StrokeAlign::Inside) => None,
+        Some(StrokeAlign::Outside) => Some((width * 2.0, StrokeAlign::Outside)),
+        _ => Some((width, StrokeAlign::Center)),
+    }
+}
+
+/// The area that a stroke of `width` and `align` covers along `path`.
+fn stroke_area(path: &Path, width: f32, align: Option<StrokeAlign>, closed: bool) -> Path {
+    let side = if closed {
+        align.unwrap_or(StrokeAlign::Inside)
+    } else {
+        StrokeAlign::Center
+    };
+    let (line, op) = match side {
+        StrokeAlign::Center => return stroke_outline(path, width),
+        StrokeAlign::Inside => (width * 2.0, PathOp::Intersect),
+        StrokeAlign::Outside => (width * 2.0, PathOp::Difference),
+    };
+    let outline = stroke_outline(path, line);
+    outline.op(path, op).unwrap_or(outline)
 }
 
 /// The area that a stroke of `width` covers along `path`.

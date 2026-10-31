@@ -664,7 +664,6 @@ impl RawNode {
     }
 
     fn vector(&mut self) -> Result<Vector, String> {
-        check_stroke_align(self.kind, self.strokes.as_deref())?;
         Ok(Vector {
             size: self.size()?,
             path: required(self.kind, "path", self.path.take())?,
@@ -792,12 +791,11 @@ fn required<T>(kind: NodeKind, key: &str, value: Option<T>) -> Result<T, String>
 }
 
 /// Checks that the strokes of `kind` leave out `align`, which only the strokes
-/// of frames and boards set: a stroke of an image lies inside its edge, and
-/// the stroke of a vector is centered on its path.
+/// of frames, boards and vectors set: a stroke of an image lies inside its edge.
 fn check_stroke_align(kind: NodeKind, strokes: Option<&[Stroke]>) -> Result<(), String> {
     match strokes {
         Some(strokes) if strokes.iter().any(|stroke| stroke.align.is_some()) => Err(format!(
-            "strokes of {kind} nodes have no `align`: only the strokes of frames and boards sit inside, centered on or outside their edge"
+            "strokes of {kind} nodes have no `align`: only the strokes of frames, boards and vectors sit inside, centered on or outside their edge"
         )),
         _ => Ok(()),
     }

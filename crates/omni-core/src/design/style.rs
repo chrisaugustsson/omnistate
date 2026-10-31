@@ -116,8 +116,9 @@ pub struct Stroke {
     pub color: TokenOr<Color>,
     #[serde(deserialize_with = "non_negative")]
     pub width: Length,
-    /// Where the stroke sits on the edge of a frame or a board. Left out, it
-    /// lies inside the edge.
+    /// Where the stroke sits on the edge of a frame or a board, or on the path
+    /// of a vector. Left out, it lies inside. The stroke of a path with an open
+    /// subpath is always centered.
     #[serde(default, deserialize_with = "some")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub align: Option<StrokeAlign>,

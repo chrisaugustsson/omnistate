@@ -1565,11 +1565,11 @@ impl<R: Read + Seek> Converter<'_, R> {
                 .get("strokeAlignment")
                 .and_then(Value::as_str)
                 .unwrap_or("inner");
-            // A stroke of a vector is centered on its path whatever Penpot says,
-            // and a stroke of an image lies inside its edge.
+            // A stroke of an image lies inside its edge.
             let align = match (look, align) {
-                (Look::Frame, "outer") => Some("outside"),
-                (Look::Frame, "center") => Some("center"),
+                (Look::Vector, "inner") => Some("inside"),
+                (Look::Frame | Look::Vector, "outer") => Some("outside"),
+                (Look::Frame | Look::Vector, "center") => Some("center"),
                 (Look::Image, "outer" | "center") => {
                     self.report(
                         who,
