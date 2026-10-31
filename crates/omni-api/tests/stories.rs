@@ -794,7 +794,6 @@ fn a_story_is_not_found_under_another_feature_or_project() {
     let feature = new_feature(f, client, &project);
     let other_feature = new_feature(f, client, &project);
     let other_project = new_project(f, client);
-    let other_project_feature = new_feature(f, client, &other_project);
     let story = create_story(f, client, &project, &feature, &body("Here"));
     let id = id_of(&story);
     let shown = must(
@@ -811,7 +810,7 @@ fn a_story_is_not_found_under_another_feature_or_project() {
     assert_eq!(shown["story"], story);
     for path in [
         stories_path(f, &project, &other_feature),
-        stories_path(f, &other_project, &other_project_feature),
+        stories_path(f, &other_project, &feature),
     ] {
         assert_error(
             &call(client, "GET", &format!("{path}/{id}"), &agent(f), None),
