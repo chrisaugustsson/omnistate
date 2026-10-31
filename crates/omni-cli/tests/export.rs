@@ -94,7 +94,12 @@ fn tokens_answer(tree: Value) -> Value {
 /// An API whose project has `app` docs at the app level and `feature` docs in
 /// `FEATURE`, and answers `GET /tokens` with `tokens`.
 fn mock(app: Vec<Value>, feature: Vec<Value>, tokens: Value) -> MockServer {
-    MockServer::start(move |request| {
+    MockServer::start(move |request| answer(request, &app, &feature, &tokens))
+}
+
+/// What the API of `mock` answers `request` with.
+fn answer(request: &Recorded, app: &[Value], feature: &[Value], tokens: &Value) -> Reply {
+    {
         let not_found = || Reply::json(404, &json!({"error": "not_found"}));
         if request.method != "GET" {
             return not_found();
@@ -109,7 +114,7 @@ fn mock(app: Vec<Value>, feature: Vec<Value>, tokens: Value) -> MockServer {
             return Reply::json(200, &json!({"docs": feature}));
         }
         if rest == "/tokens" {
-            return Reply::json(200, &tokens);
+            return Reply::json(200, tokens);
         }
         let Some(rest) = rest.strip_prefix("/docs/") else {
             return not_found();
@@ -132,7 +137,7 @@ fn mock(app: Vec<Value>, feature: Vec<Value>, tokens: Value) -> MockServer {
             }
             _ => not_found(),
         }
-    })
+    }
 }
 
 fn export(server: &MockServer, out: &Path, scope: &[&str]) -> Out {
@@ -429,4 +434,64 @@ fn exporting_into_a_used_folder_overwrites_same_names_and_deletes_nothing_else()
         "<p>old</p>"
     );
     assert_eq!(read_json(&out.path.join("tokens.json")), two_mode_tree());
+}
+
+#[test]
+fn a_board_whose_picture_the_api_refuses_is_named_on_stderr_and_the_other_files_are_written() {
+    const WALL: &str = "b0ard2nd";
+    const REFUSAL: &str =
+        "the board's picture would be more than 16384 px on a side; 16384 px is the limit";
+    let server = MockServer::start(|request| {
+        let design = format!("{}/docs/{FEATURE_DESIGN}", base());
+        match request.path.strip_prefix(&design).unwrap_or_default() {
+            "/html?view=outline" => Reply::json(
+                200,
+                &json!({"outline": [{"id": "p4ge0001", "name": "Main", "children": [
+                    {"id": BOARD, "name": "Cart", "placeholder": true},
+                    {"id": WALL, "name": "Wall", "placeholder": true}
+                ]}]}),
+            ),
+            "/boards/b0ard2nd" => {
+                Reply::json(200, &json!({"tags": "<board id=\"b0ard2nd\"></board>"}))
+            }
+            "/boards/b0ardcar/png" => Reply {
+                status: 200,
+                headers: vec![("Content-Type".to_string(), "image/png".to_string())],
+                body: "picture of Cart".to_string(),
+            },
+            "/boards/b0ard2nd/png" => Reply::json(
+                422,
+                &json!({"error": "board_too_large", "message": REFUSAL}),
+            ),
+            _ => answer(
+                request,
+                &app_docs(),
+                &feature_docs(),
+                &tokens_answer(two_mode_tree()),
+            ),
+        }
+    });
+    let out = Scratch::new("out");
+
+    let run = export(&server, &out.path, &["--feature", FEATURE]);
+
+    assert_eq!(run.code, 0, "stderr: {}", run.stderr);
+    let cart = path_where(&out.path, "board_id", BOARD);
+    let cart_png = out.path.join(cart.replace(".tags", ".png"));
+    assert!(cart.ends_with(".tags"), "{cart}");
+    assert_eq!(
+        std::fs::read_to_string(&cart_png).unwrap(),
+        "picture of Cart"
+    );
+    let wall = path_where(&out.path, "board_id", WALL);
+    assert!(
+        out.path.join(&wall).is_file(),
+        "the refused board's tags are written"
+    );
+    assert!(!out.path.join(wall.replace(".tags", ".png")).exists());
+    let lines = run.stderr_lines();
+    assert_eq!(lines.len(), 1, "stderr: {}", run.stderr);
+    for part in [WALL, FEATURE_DESIGN, REFUSAL] {
+        assert!(lines[0].contains(part), "{part} in {}", lines[0]);
+    }
 }

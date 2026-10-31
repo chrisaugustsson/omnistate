@@ -131,3 +131,7 @@ required-features = ["stack-tests"]
 [[test]]
 name = "activity"
 required-features = ["stack-tests"]
+
+[[test]]
+name = "board_pngs"
+required-features = ["stack-tests"]
