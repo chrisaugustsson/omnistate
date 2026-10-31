@@ -1,5 +1,5 @@
 // A stand-in for the omni CLI, for workflow tests. Its state (stories, threads,
-// posts, and every call with the lock file seen at that moment) lives in the
+// posts, a thread's conclusion when it has one, and every call with the lock file seen at that moment) lives in the
 // JSON file FAKE_OMNI_STATE names. FAKE_OMNI_FAIL=thread makes thread create fail.
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
@@ -43,6 +43,10 @@ if (noun === "--help") {
   state.threads.push({ id, title: target, feature: flag("--feature"), posts: [] });
   save();
   out(`${id}\n`);
+} else if (noun === "thread" && verb === "read") {
+  const thread = state.threads.find((t) => t.id === target);
+  save();
+  out(JSON.stringify({ thread: { id: thread.id, question: thread.title, conclusion: thread.conclusion ?? null, posts: thread.posts } }));
 } else if (noun === "post") {
   const body = readFileSync(0, "utf8");
   state.threads.find((t) => t.id === verb).posts.push({ summary: flag("--summary"), body });
@@ -66,6 +70,7 @@ if (noun === "--help") {
     s.status = flag("--stage");
   } else if (verb === "move") s.status = flag("--to");
   else if (verb === "block") s.blocked = true;
+  else if (verb === "unblock") s.blocked = false;
   else if (verb === "decision") s.decisions.push({ question: flag("--question"), choice: flag("--choice"), by: flag("--by") });
   else if (verb === "edit") s.links = all("--link").map(link);
   else {

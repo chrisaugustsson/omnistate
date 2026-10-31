@@ -16,7 +16,7 @@ const workflow = new AsyncFunction("args", "agent", "phase", "parallel", "log", 
 
 const git = (cwd, ...argv) => execFileSync("git", argv, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
 
-function scratch(t, stories = []) {
+function scratch(t, stories = [], threads = []) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "omni-deliver-")));
   const repo = join(root, "app");
   mkdirSync(repo);
@@ -33,7 +33,7 @@ function scratch(t, stories = []) {
   writeFileSync(join(bin, "omni"), `#!/bin/sh\nexec "${process.execPath}" "${fakeOmni}" "$@"\n`);
   chmodSync(join(bin, "omni"), 0o755);
   const statePath = join(root, "omni-state.json");
-  writeFileSync(statePath, JSON.stringify({ stories, threads: [], calls: [] }));
+  writeFileSync(statePath, JSON.stringify({ stories, threads, calls: [] }));
 
   const saved = { cwd: process.cwd(), PATH: process.env.PATH, state: process.env.FAKE_OMNI_STATE };
   process.chdir(repo);
@@ -315,4 +315,79 @@ test("gives the clarity check the story's recorded decisions", async (t) => {
 
   assert.ok(clarity.prompts[0].includes("Which badge size?"));
   assert.ok(clarity.prompts[0].includes("Small badges"));
+});
+
+// ---- unblock ----------------------------------------------------------------
+
+// A thread on the feature as `omni thread read` shows it; conclusion null when open.
+function thread(id, title, conclusion = null) {
+  return { id, title, feature: "board", posts: [], conclusion };
+}
+
+const questionLink = (id) => ({ thread_id: id, label: "question" });
+
+test("unblocks a blocked backlog story whose one thread has a conclusion, recording it as a human decision with the thread's question", async (t) => {
+  const dirs = scratch(t, [story("US-5", { blocked: true, links: [questionLink("th-1")] })], [thread("th-1", "US-5: Which colour is the badge?", "Use option A")]);
+
+  const result = await start("board");
+
+  assert.equal(dirs.story("US-5").blocked, false);
+  assert.deepEqual(dirs.story("US-5").decisions, [{ question: "US-5: Which colour is the badge?", choice: "Use option A", by: "human" }]);
+  assert.deepEqual(dirs.story("US-5").links, [questionLink("th-1")]);
+  assert.equal(result.pickable, 1);
+});
+
+test("keeps a story blocked, with no decision, while one of its threads has no conclusion", async (t) => {
+  const dirs = scratch(t, [story("US-5", { blocked: true, links: [questionLink("th-1"), questionLink("th-2")] })], [thread("th-1", "US-5: Which colour is the badge?", "Use option A"), thread("th-2", "US-5: Which size is the badge?")]);
+
+  const result = await start("board");
+
+  assert.equal(dirs.story("US-5").blocked, true);
+  assert.deepEqual(dirs.story("US-5").decisions, []);
+  assert.equal(result.pickable, 0);
+});
+
+test("records only the new thread's conclusion when an earlier concluded thread already has its human decision", async (t) => {
+  const earlier = { question: "US-5: Which colour is the badge?", choice: "Use option A", by: "human" };
+  const dirs = scratch(t, [story("US-5", { blocked: true, decisions: [earlier], links: [questionLink("th-1"), questionLink("th-2")] })], [thread("th-1", "US-5: Which colour is the badge?", "Use option A"), thread("th-2", "US-5: Which size is the badge?", "Use option B")]);
+
+  await start("board");
+
+  assert.deepEqual(dirs.story("US-5").decisions, [earlier, { question: "US-5: Which size is the badge?", choice: "Use option B", by: "human" }]);
+  assert.equal(dirs.story("US-5").blocked, false);
+});
+
+test("a story unblocked at start is not clarity-checked again and stays pickable", async (t) => {
+  const dirs = scratch(t, [story("US-5", { blocked: true, links: [questionLink("th-1")] })], [thread("th-1", "US-5: Which colour is the badge?", "Use option A")]);
+  const clarity = clarityAgent({ "US-5": [blockingGap] });
+
+  const result = await start("board", clarity.agent);
+
+  assert.deepEqual(clarity.prompts, []);
+  assert.equal(dirs.story("US-5").blocked, false);
+  assert.equal(result.pickable, 1);
+});
+
+test("claims an unblocked review story at review for this run and keeps its worktree", async (t) => {
+  const dirs = scratch(t, [story("US-6", { status: "review", blocked: true, holder: { run: "run-old", stage: "review" }, links: [questionLink("th-1")] })], [thread("th-1", "US-6: Which colour is the badge?", "Use option A")]);
+  const wt = worktree(dirs, "US-6");
+  writeFileSync(join(wt, "feature.txt"), "work\n");
+  git(wt, "add", "feature.txt");
+  git(wt, "commit", "-q", "-m", "work");
+
+  const result = await start("board");
+
+  assert.deepEqual(dirs.story("US-6").holder, { run: result.run, stage: "review" });
+  assert.equal(dirs.story("US-6").status, "review");
+  assert.equal(dirs.story("US-6").blocked, false);
+  assert.equal(existsSync(wt), true);
+});
+
+test("claims an unblocked implementing story at implementing for this run", async (t) => {
+  const dirs = scratch(t, [story("US-6", { status: "implementing", blocked: true, links: [questionLink("th-1")] })], [thread("th-1", "US-6: Which colour is the badge?", "Use option A")]);
+
+  const result = await start("board");
+
+  assert.deepEqual(dirs.story("US-6").holder, { run: result.run, stage: "implementing" });
+  assert.equal(dirs.story("US-6").status, "implementing");
 });
