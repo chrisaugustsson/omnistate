@@ -1574,14 +1574,21 @@ impl<R: Read + Seek> Converter<'_, R> {
                     "circle-marker",
                     "diamond-marker",
                 ];
+                cap = match start {
+                    _ if dotted => Some("round"),
+                    Some(cap @ ("round" | "square")) => Some(cap),
+                    _ => None,
+                };
+                let outcome = match cap {
+                    Some(cap) => format!("the stroke ends are drawn with the cap `{cap}`"),
+                    None => "the stroke gets no cap".to_string(),
+                };
                 for (key, value) in [("strokeCapStart", start), ("strokeCapEnd", end)] {
                     if let Some(value) = value.filter(|value| MARKERS.contains(value)) {
                         self.report(
                             who,
                             Some(key),
-                            format!(
-                                "the stroke cap `{value}` is not supported; the stroke gets no cap"
-                            ),
+                            format!("the stroke cap `{value}` is not supported; {outcome}"),
                         );
                     }
                 }
@@ -1590,16 +1597,12 @@ impl<R: Read + Seek> Converter<'_, R> {
                         who,
                         Some("strokeCapEnd"),
                         format!(
-                            "the stroke starts with the cap `{}` and ends with `{}`; both ends take the cap of the start",
+                            "the stroke starts with the cap `{}` and ends with `{}`; {outcome}",
                             start.unwrap_or("none"),
                             end.unwrap_or("none")
                         ),
                     );
                 }
-                cap = match start {
-                    Some(cap @ ("round" | "square")) => Some(cap),
-                    _ => None,
-                };
             }
             let align = stroke
                 .get("strokeAlignment")
@@ -1644,8 +1647,8 @@ impl<R: Read + Seek> Converter<'_, R> {
                     }
                     if dotted {
                         line["dash"] = json!({ "length": 0, "gap": num(width * 2.0) });
-                        line["cap"] = json!("round");
-                    } else if let Some(cap) = cap {
+                    }
+                    if let Some(cap) = cap {
                         line["cap"] = json!(cap);
                     }
                     if style == "dashed" {
