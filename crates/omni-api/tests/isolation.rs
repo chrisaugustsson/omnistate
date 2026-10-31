@@ -248,6 +248,12 @@ const CASES: &[Case] = &[
     ),
     case(
         "GET",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}/boards/{board_id}/png",
+        None,
+        Kind::Workspace,
+    ),
+    case(
+        "GET",
         "/api/v1/w/{workspace_id}/projects/{project_id}/threads/{thread_id}",
         None,
         Kind::Workspace,
@@ -1970,16 +1976,48 @@ fn the_board_reads_of_a_workspace_show_its_own_board_and_nothing_of_the_other() 
         check(&fill_board(&own.id));
         check(&format!("{}?at=2", fill_board(&own.id)));
 
+        // The board's image (US-121) is read on the same path with `/png`:
+        // the owner gets a PNG, the other workspace's credentials get 404
+        // with nothing of the board in the answer.
+        let png_path = format!("{}/png", fill_board(&own.id));
+        for auth in [&key, &human] {
+            let what = format!("{} with {}", route_name("GET", &png_path), auth.label());
+            let response = call(client, "GET", &png_path, auth, None);
+            assert_eq!(response.status, 200, "{what}: {}", response.text());
+            assert_eq!(
+                response.header("content-type"),
+                Some("image/png"),
+                "{what}: the answer is a PNG"
+            );
+            assert!(
+                response.body.starts_with(b"\x89PNG\r\n\x1a\n"),
+                "{what}: the body starts with the PNG signature"
+            );
+        }
+        for auth in [Auth::Key(&other.key), Auth::Session(&other.token)] {
+            let what = format!(
+                "{} with {} of the other workspace",
+                route_name("GET", &png_path),
+                auth.label()
+            );
+            let response = call(client, "GET", &png_path, &auth, None);
+            assert_not_found_without_data(&response, own, &what);
+        }
+
         // The owner's key, with the owner's IDs under the other workspace.
-        let path = fill_board(&other.id);
-        let response = call(client, "GET", &path, &key, None);
-        let what = format!("{} with the owner's key", route_name("GET", &path));
-        assert_not_found_without_data(&response, own, &what);
-        assert!(
-            !response.text().contains(&text),
-            "{what}: {}",
-            response.text()
-        );
+        for path in [
+            fill_board(&other.id),
+            format!("{}/png", fill_board(&other.id)),
+        ] {
+            let response = call(client, "GET", &path, &key, None);
+            let what = format!("{} with the owner's key", route_name("GET", &path));
+            assert_not_found_without_data(&response, own, &what);
+            assert!(
+                !response.text().contains(&text),
+                "{what}: {}",
+                response.text()
+            );
+        }
     }
 }
 
