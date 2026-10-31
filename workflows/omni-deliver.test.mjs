@@ -151,9 +151,26 @@ test("removes its lock when the run fails after taking it", async (t) => {
   const dirs = scratch(t);
   process.env.FAKE_OMNI_FAIL = "thread";
 
-  await assert.rejects(start("board"));
+  await assert.rejects(start("board"), /thread create failed/);
 
+  assert.notEqual(dirs.state().calls.find((c) => c.argv[0] === "thread").lock, null);
   assert.equal(existsSync(dirs.lock), false);
+});
+
+test("names the run by local time", async (t) => {
+  const dirs = scratch(t);
+  const tz = process.env.TZ;
+  process.env.TZ = "Asia/Tokyo";
+  t.after(() => {
+    if (tz === undefined) delete process.env.TZ;
+    else process.env.TZ = tz;
+  });
+  t.mock.timers.enable({ apis: ["Date"], now: Date.UTC(2026, 9, 30, 19, 0, 0) });
+
+  await start("board");
+
+  const create = dirs.state().calls.find((c) => c.argv[0] === "thread" && c.argv[1] === "create");
+  assert.equal(create.lock.run, `run-20261031-040000-${process.pid}`);
 });
 
 // ---- reconciliation ---------------------------------------------------------
