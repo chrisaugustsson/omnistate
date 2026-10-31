@@ -29,6 +29,7 @@ mod projects;
 pub mod routes;
 mod session;
 pub mod setup;
+mod stories;
 mod threads;
 mod tokens;
 mod workspace;
@@ -339,6 +340,14 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/v1/w/{workspace_id}/attachments/{attachment_id}",
             get(attachments::download),
+        )
+        .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories",
+            get(stories::list_stories).post(stories::create_story),
+        )
+        .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}",
+            get(stories::show_story),
         )
         .route(
             "/api/v1/w/{workspace_id}/projects/{project_id}/threads",

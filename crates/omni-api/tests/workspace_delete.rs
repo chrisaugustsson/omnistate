@@ -442,16 +442,26 @@ async fn fill_workspace(conn: &mut PgConnection, workspace: &str, membership: &s
     .await
     .expect("insert a post");
 
-    // A feature of the project.
-    sqlx::query(
+    // A feature of the project, and a story in it.
+    let feature_id: String = sqlx::query_scalar(
         "INSERT INTO features (workspace_id, project_id, name) \
-         VALUES ($1::uuid, $2::uuid, 'deletion test')",
+         VALUES ($1::uuid, $2::uuid, 'deletion test') RETURNING id::text",
     )
     .bind(workspace)
     .bind(&project_id)
-    .execute(&mut *conn)
+    .fetch_one(&mut *conn)
     .await
     .expect("insert a feature");
+    sqlx::query(
+        "INSERT INTO stories (workspace_id, project_id, feature_id, number, title, text, topic, criteria) \
+         VALUES ($1::uuid, $2::uuid, $3::uuid, 1, 'deletion test', '', '', '[]'::jsonb)",
+    )
+    .bind(workspace)
+    .bind(&project_id)
+    .bind(&feature_id)
+    .execute(&mut *conn)
+    .await
+    .expect("insert a story");
 }
 
 async fn put_objects(keys: Vec<String>) {

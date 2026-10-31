@@ -213,11 +213,38 @@ export const CreateProjectRequestSchema = z.object({
 });
 export type CreateProjectRequest = z.infer<typeof CreateProjectRequestSchema>;
 
+export const NewCriterionSchema = z.object({
+  human_check: z.boolean().nullable().optional(),
+  text: z.string(),
+});
+export type NewCriterion = z.infer<typeof NewCriterionSchema>;
+
+export const CreateStoryRequestSchema = z.object({
+  blocked_by: z.array(z.string()).nullable().optional(),
+  criteria: z.array(NewCriterionSchema),
+  files_planned: z.array(z.string()).nullable().optional(),
+  links: z.array(z.record(z.string(), z.unknown())).nullable().optional(),
+  number_from: z.number().int().nullable().optional(),
+  priority: z.number().int().nullable().optional(),
+  text: z.string(),
+  title: z.string(),
+  topic: z.string(),
+});
+export type CreateStoryRequest = z.infer<typeof CreateStoryRequestSchema>;
+
 export const CreatedKeyResponseSchema = z.object({
   key: ApiKeyBodySchema,
   secret: z.string(),
 });
 export type CreatedKeyResponse = z.infer<typeof CreatedKeyResponseSchema>;
+
+export const CriterionBodySchema = z.object({
+  human_check: z.boolean(),
+  pending: z.boolean(),
+  text: z.string(),
+  ticked: z.boolean(),
+});
+export type CriterionBody = z.infer<typeof CriterionBodySchema>;
 
 export const DigestEntrySchema = z.object({
   author: z.record(z.string(), z.unknown()),
@@ -473,7 +500,7 @@ export type LiveClientMessage = z.infer<typeof LiveClientMessageSchema>;
 export const LiveErrorCodeSchema = z.enum(["not_found", "invalid_request", "unavailable"]);
 export type LiveErrorCode = z.infer<typeof LiveErrorCodeSchema>;
 
-export const LiveEventNameSchema = z.enum(["comment.created", "comment.replied", "comment.deleted", "comment.status_changed", "doc.changed", "doc.created", "doc.deleted", "doc.renamed", "feature.created", "feature.deleted", "feature.renamed", "post.created", "thread.concluded", "thread.created"]);
+export const LiveEventNameSchema = z.enum(["comment.created", "comment.replied", "comment.deleted", "comment.status_changed", "doc.changed", "doc.created", "doc.deleted", "doc.renamed", "feature.created", "feature.deleted", "feature.renamed", "post.created", "story.cancelled", "story.changed", "story.created", "thread.concluded", "thread.created"]);
 export type LiveEventName = z.infer<typeof LiveEventNameSchema>;
 
 export const LiveServerMessageSchema = z.union([
@@ -578,6 +605,42 @@ export const StartThreadRequestSchema = z.object({
 });
 export type StartThreadRequest = z.infer<typeof StartThreadRequestSchema>;
 
+export const StoryBodySchema = z.object({
+  blocked: z.boolean(),
+  blocked_by: z.array(z.string()),
+  created_at: z.string(),
+  criteria: z.array(CriterionBodySchema),
+  decisions: z.array(z.record(z.string(), z.unknown())),
+  feature_id: z.string(),
+  files_changed: z.array(z.string()),
+  files_planned: z.array(z.string()),
+  findings: z.array(z.record(z.string(), z.unknown())),
+  holder: z.record(z.string(), z.unknown()).nullable().optional(),
+  id: z.string(),
+  key: z.string(),
+  links: z.array(z.record(z.string(), z.unknown())),
+  number: z.number().int(),
+  priority: z.number().int(),
+  project_id: z.string(),
+  status: z.string(),
+  text: z.string(),
+  title: z.string(),
+  topic: z.string(),
+  updated_at: z.string(),
+  version: z.number().int(),
+});
+export type StoryBody = z.infer<typeof StoryBodySchema>;
+
+export const StoryListResponseSchema = z.object({
+  stories: z.array(StoryBodySchema),
+});
+export type StoryListResponse = z.infer<typeof StoryListResponseSchema>;
+
+export const StoryResponseSchema = z.object({
+  story: StoryBodySchema,
+});
+export type StoryResponse = z.infer<typeof StoryResponseSchema>;
+
 export const ThreadListResponseSchema = z.object({
   threads: z.array(ThreadBodySchema),
 });
@@ -659,7 +722,9 @@ export const schemas = {
   CreateFeatureRequest: CreateFeatureRequestSchema,
   CreatePostRequest: CreatePostRequestSchema,
   CreateProjectRequest: CreateProjectRequestSchema,
+  CreateStoryRequest: CreateStoryRequestSchema,
   CreatedKeyResponse: CreatedKeyResponseSchema,
+  CriterionBody: CriterionBodySchema,
   DigestEntry: DigestEntrySchema,
   DigestResponse: DigestResponseSchema,
   DocBody: DocBodySchema,
@@ -695,6 +760,7 @@ export const schemas = {
   Manifest: ManifestSchema,
   ManifestBoard: ManifestBoardSchema,
   ManifestPage: ManifestPageSchema,
+  NewCriterion: NewCriterionSchema,
   NodeBox: NodeBoxSchema,
   OpResultBody: OpResultBodySchema,
   PostBody: PostBodySchema,
@@ -709,6 +775,9 @@ export const schemas = {
   SingleCommentResponse: SingleCommentResponseSchema,
   SinglePostResponse: SinglePostResponseSchema,
   StartThreadRequest: StartThreadRequestSchema,
+  StoryBody: StoryBodySchema,
+  StoryListResponse: StoryListResponseSchema,
+  StoryResponse: StoryResponseSchema,
   ThreadBody: ThreadBodySchema,
   ThreadListResponse: ThreadListResponseSchema,
   ThreadResponse: ThreadResponseSchema,
@@ -1032,6 +1101,31 @@ export const operations = {
       "403": ErrorBodySchema,
       "404": ErrorBodySchema,
       "422": ErrorBodySchema,
+    },
+  },
+  "GET /api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories": {
+    responses: {
+      "200": StoryListResponseSchema,
+      "401": ErrorBodySchema,
+      "404": ErrorBodySchema,
+      "422": ErrorBodySchema,
+    },
+  },
+  "POST /api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories": {
+    request: CreateStoryRequestSchema,
+    responses: {
+      "201": StoryResponseSchema,
+      "400": ErrorBodySchema,
+      "401": ErrorBodySchema,
+      "404": ErrorBodySchema,
+      "422": ErrorBodySchema,
+    },
+  },
+  "GET /api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}": {
+    responses: {
+      "200": StoryResponseSchema,
+      "401": ErrorBodySchema,
+      "404": ErrorBodySchema,
     },
   },
   "POST /api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/threads": {

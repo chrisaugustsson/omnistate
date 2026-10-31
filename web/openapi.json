@@ -686,6 +686,79 @@
         },
         "type": "object"
       },
+      "CreateStoryRequest": {
+        "properties": {
+          "blocked_by": {
+            "description": "IDs of stories of the same feature. Defaults to none.",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "criteria": {
+            "items": {
+              "$ref": "#/components/schemas/NewCriterion"
+            },
+            "type": "array"
+          },
+          "files_planned": {
+            "description": "Defaults to none.",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "links": {
+            "description": "`{doc_id, node_id, label}` or `{thread_id, label}`, stored as given.\nDefaults to none.",
+            "items": {
+              "type": "object"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "number_from": {
+            "description": "Honoured only when the project has no story yet: the first story gets\nthe number `number_from + 1`. Not negative.",
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "priority": {
+            "description": "0 to 3. Defaults to 3.",
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "text": {
+            "type": "string"
+          },
+          "title": {
+            "description": "Not blank.",
+            "type": "string"
+          },
+          "topic": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "title",
+          "text",
+          "topic",
+          "criteria"
+        ],
+        "type": "object"
+      },
       "CreatedKeyResponse": {
         "properties": {
           "key": {
@@ -699,6 +772,31 @@
         "required": [
           "key",
           "secret"
+        ],
+        "type": "object"
+      },
+      "CriterionBody": {
+        "properties": {
+          "human_check": {
+            "description": "Whether a human has to check the criterion.",
+            "type": "boolean"
+          },
+          "pending": {
+            "description": "Whether the human check is still to be done.",
+            "type": "boolean"
+          },
+          "text": {
+            "type": "string"
+          },
+          "ticked": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "text",
+          "ticked",
+          "human_check",
+          "pending"
         ],
         "type": "object"
       },
@@ -1429,6 +1527,9 @@
           "feature.deleted",
           "feature.renamed",
           "post.created",
+          "story.cancelled",
+          "story.changed",
+          "story.created",
           "thread.concluded",
           "thread.created"
         ],
@@ -1617,6 +1718,24 @@
           "id",
           "chunk",
           "boards"
+        ],
+        "type": "object"
+      },
+      "NewCriterion": {
+        "properties": {
+          "human_check": {
+            "description": "Defaults to `false`.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
         ],
         "type": "object"
       },
@@ -1938,6 +2057,161 @@
             ]
           }
         },
+        "type": "object"
+      },
+      "StoryBody": {
+        "properties": {
+          "blocked": {
+            "type": "boolean"
+          },
+          "blocked_by": {
+            "description": "IDs of the stories of the feature that block this one.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "criteria": {
+            "items": {
+              "$ref": "#/components/schemas/CriterionBody"
+            },
+            "type": "array"
+          },
+          "decisions": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "feature_id": {
+            "type": "string"
+          },
+          "files_changed": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "files_planned": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "findings": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "holder": {
+            "description": "`{run, stage, at}` while a run holds the story, otherwise `null`.",
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "key": {
+            "description": "`US-<number>`.",
+            "type": "string"
+          },
+          "links": {
+            "description": "`{doc_id, node_id, label}` or `{thread_id, label}`.",
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "number": {
+            "description": "Counted per project.",
+            "format": "int32",
+            "type": "integer"
+          },
+          "priority": {
+            "description": "0 to 3; 1 is the highest and 0 is reserved for fix stories.",
+            "format": "int32",
+            "type": "integer"
+          },
+          "project_id": {
+            "type": "string"
+          },
+          "status": {
+            "description": "`backlog`, `implementing`, `review`, `testing`, `done` or `cancelled`.",
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "topic": {
+            "type": "string"
+          },
+          "updated_at": {
+            "type": "string"
+          },
+          "version": {
+            "description": "1 on creation, plus 1 on every write.",
+            "format": "int32",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "project_id",
+          "feature_id",
+          "number",
+          "key",
+          "title",
+          "text",
+          "topic",
+          "criteria",
+          "blocked_by",
+          "files_planned",
+          "files_changed",
+          "priority",
+          "status",
+          "blocked",
+          "findings",
+          "decisions",
+          "links",
+          "version",
+          "created_at",
+          "updated_at"
+        ],
+        "type": "object"
+      },
+      "StoryListResponse": {
+        "properties": {
+          "stories": {
+            "description": "The feature's stories, by priority and then number.",
+            "items": {
+              "$ref": "#/components/schemas/StoryBody"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "stories"
+        ],
+        "type": "object"
+      },
+      "StoryResponse": {
+        "properties": {
+          "story": {
+            "$ref": "#/components/schemas/StoryBody"
+          }
+        },
+        "required": [
+          "story"
+        ],
         "type": "object"
       },
       "ThreadBody": {
@@ -5643,6 +5917,275 @@
           "crate::docs"
         ],
         "x-omni-access": "agent"
+      }
+    },
+    "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories": {
+      "get": {
+        "operationId": "list_stories",
+        "parameters": [
+          {
+            "description": "The workspace's UUID",
+            "in": "path",
+            "name": "workspace_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The project's UUID",
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The feature's UUID",
+            "in": "path",
+            "name": "feature_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Only the stories with this status; every status, `cancelled` included, when left out",
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StoryListResponse"
+                }
+              }
+            },
+            "description": "The feature's stories"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No valid API key or session"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No such feature in this project and workspace"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "An unknown status (`invalid_status`)"
+          }
+        },
+        "summary": "The stories of a feature, by priority and then number.",
+        "tags": [
+          "crate::stories"
+        ],
+        "x-omni-access": "both"
+      },
+      "post": {
+        "operationId": "create_story",
+        "parameters": [
+          {
+            "description": "The workspace's UUID",
+            "in": "path",
+            "name": "workspace_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The project's UUID",
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The feature's UUID",
+            "in": "path",
+            "name": "feature_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateStoryRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StoryResponse"
+                }
+              }
+            },
+            "description": "The new story"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The body is not JSON of the expected shape (`invalid_request`)"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No valid API key or session"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No such feature in this project and workspace"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A blank title (`invalid_title`), a priority outside 0 to 3 (`invalid_priority`), a link of neither shape (`invalid_links`), a `blocked_by` id that is not a story of the feature (`invalid_blocked_by`) or a negative `number_from` (`invalid_number_from`)"
+          }
+        },
+        "summary": "Creates a story in a feature.",
+        "tags": [
+          "crate::stories"
+        ],
+        "x-omni-access": "both"
+      }
+    },
+    "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}": {
+      "get": {
+        "operationId": "show_story",
+        "parameters": [
+          {
+            "description": "The workspace's UUID",
+            "in": "path",
+            "name": "workspace_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The project's UUID",
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The feature's UUID",
+            "in": "path",
+            "name": "feature_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The story's UUID",
+            "in": "path",
+            "name": "story_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StoryResponse"
+                }
+              }
+            },
+            "description": "The story"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No valid API key or session"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No such story in this feature, project and workspace"
+          }
+        },
+        "summary": "One story of a feature.",
+        "tags": [
+          "crate::stories"
+        ],
+        "x-omni-access": "both"
       }
     },
     "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/threads": {

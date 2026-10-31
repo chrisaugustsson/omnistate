@@ -33,6 +33,9 @@ use crate::routes::{Access, registry};
 use crate::session::{
     ErrorBody, LoginRequest, UserBody, UserResponse, WorkspaceBody, WorkspaceListResponse,
 };
+use crate::stories::{
+    CreateStoryRequest, CriterionBody, NewCriterion, StoryBody, StoryListResponse, StoryResponse,
+};
 use crate::threads::{
     ConcludeThreadRequest, CreatePostRequest, DigestEntry, DigestResponse, PostBody, PostResponse,
     SinglePostResponse, StartThreadRequest, ThreadBody, ThreadListResponse, ThreadResponse,
@@ -90,6 +93,9 @@ use utoipa::OpenApi;
         crate::design::component_usage,
         crate::boards::read_head_board,
         crate::exports::board_png,
+        crate::stories::create_story,
+        crate::stories::list_stories,
+        crate::stories::show_story,
         crate::threads::create_app_thread,
         crate::threads::create_feature_thread,
         crate::threads::list_threads,
@@ -169,6 +175,12 @@ use utoipa::OpenApi;
         ThreadBody,
         ThreadResponse,
         ThreadListResponse,
+        CreateStoryRequest,
+        CriterionBody,
+        NewCriterion,
+        StoryBody,
+        StoryListResponse,
+        StoryResponse,
         StartThreadRequest,
         ConcludeThreadRequest,
         CreatePostRequest,

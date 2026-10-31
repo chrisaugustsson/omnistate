@@ -266,6 +266,24 @@ const CASES: &[Case] = &[
     ),
     case(
         "POST",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories",
+        Some(r#"{"title":"intruder","text":"","topic":"","criteria":[]}"#),
+        Kind::Workspace,
+    ),
+    case(
+        "GET",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories",
+        None,
+        Kind::Workspace,
+    ),
+    case(
+        "GET",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}",
+        None,
+        Kind::Workspace,
+    ),
+    case(
+        "POST",
         "/api/v1/w/{workspace_id}/projects/{project_id}/threads",
         Some(r#"{"question":"intruder"}"#),
         Kind::Workspace,
@@ -719,6 +737,10 @@ struct Side {
     /// name, which nothing else holds.
     feature_id: String,
     feature_name: String,
+    /// The story that the workspace's agent created in `feature_id`, and its
+    /// title, which nothing else holds.
+    story_id: String,
+    story_title: String,
 }
 
 impl Side {
@@ -750,6 +772,8 @@ impl Side {
             comment_text: String::new(),
             feature_id: same(),
             feature_name: String::new(),
+            story_id: same(),
+            story_title: String::new(),
         }
     }
 
@@ -778,6 +802,8 @@ impl Side {
             &self.comment_text,
             &self.feature_id,
             &self.feature_name,
+            &self.story_id,
+            &self.story_title,
         ]
         .into_iter()
         .map(String::as_str)
@@ -937,6 +963,28 @@ fn fixture() -> &'static Fixture {
                 201,
                 "create a doc in the feature",
             );
+            // A story of the feature, so the stories table has rows of the
+            // workspace.
+            let story_title = unique(&format!("{name}-story"));
+            let body = json!({
+                "title": story_title,
+                "text": "",
+                "topic": "",
+                "criteria": [{ "text": "done" }]
+            })
+            .to_string();
+            let created = must(
+                call(
+                    client,
+                    "POST",
+                    &format!("{base}/features/{feature_id}/stories"),
+                    &agent,
+                    Some(&body),
+                ),
+                201,
+                "create a story in the feature",
+            );
+            let story_id = created["story"]["id"].as_str().expect("an id").to_string();
             // A file of the workspace's own.
             let attachment_name = format!("{name}-notes.txt");
             let attachment_text = unique(&format!("{name}-file-content"));
@@ -1076,6 +1124,8 @@ fn fixture() -> &'static Fixture {
                 comment_text,
                 feature_id,
                 feature_name,
+                story_id,
+                story_title,
             }
         });
         let a = sides.next().expect("workspace A");
@@ -1117,6 +1167,7 @@ fn fill(template: &str, workspace: &Side, record: &Side) -> String {
             // A component read is refused the same way, before the
             // design system is looked up.
             "component_id" => UNKNOWN_NODE,
+            "story_id" => &record.story_id,
             // Every doc's log starts with its creation, seq 1.
             "seq" => "1",
             other => panic!(
