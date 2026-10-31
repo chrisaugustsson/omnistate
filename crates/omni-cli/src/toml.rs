@@ -148,7 +148,6 @@ mod tests {
         for bad in [
             "project = \n",
             "project",
-            "[table]\n",
             "a = \"x\" y\n",
             "a = \"open\n",
             "a = 1\na = 2\n",
@@ -156,6 +155,20 @@ mod tests {
         ] {
             assert!(parse(bad).is_err(), "{bad:?}");
         }
+    }
+
+    #[test]
+    fn a_table_header_names_the_keys_under_it_and_leaves_the_keys_before_it_flat() {
+        let text = "project = \"p\"\nfeature = \"f\"\n[checks]\nfast = \"a\"\nstack = \"c\"\n";
+        let pairs = parse(text).unwrap();
+        let expected = [
+            ("project", "p"),
+            ("feature", "f"),
+            ("checks.fast", "a"),
+            ("checks.stack", "c"),
+        ]
+        .map(|(k, v)| (k.to_string(), v.to_string()));
+        assert_eq!(pairs, expected);
     }
 
     #[test]

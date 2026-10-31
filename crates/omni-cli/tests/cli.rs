@@ -433,3 +433,89 @@ fn the_server_comes_from_the_flag_or_the_environment_before_the_config_file() {
     assert_eq!(by_flag.code, 0, "--server: {}", by_flag.stderr);
     assert_eq!(server.requests().len(), 2);
 }
+
+/// A project directory whose `.omni.toml` holds `text`.
+fn omni_toml_dir(text: &str) -> Scratch {
+    let dir = Scratch::new("checks");
+    std::fs::write(dir.join(".omni.toml"), text).unwrap();
+    dir
+}
+
+#[test]
+fn checks_prints_the_three_commands_of_the_checks_table_as_lines_or_json() {
+    let home = logged_in("http://127.0.0.1:9");
+    let dir = omni_toml_dir(
+        "project = \"p\"\nfeature = \"f\"\n[checks]\nfast = \"a\"\nstack_up = \"b\"\nstack = \"c\"\n",
+    );
+
+    let text = omni(&home.path).cwd(&dir.path).args(&["checks"]).run();
+    assert_eq!(text.code, 0, "{}", text.stderr);
+    assert_eq!(text.stdout, "fast: a\nstack_up: b\nstack: c\n");
+
+    let json = omni(&home.path)
+        .cwd(&dir.path)
+        .args(&["checks", "--json"])
+        .run();
+    assert_eq!(json.code, 0, "{}", json.stderr);
+    assert_eq!(
+        json.json(),
+        json!({ "fast": "a", "stack_up": "b", "stack": "c" })
+    );
+}
+
+#[test]
+fn checks_needs_no_project_or_feature_key() {
+    let home = logged_in("http://127.0.0.1:9");
+    let dir = omni_toml_dir("[checks]\nfast = \"a\"\nstack_up = \"b\"\nstack = \"c\"\n");
+    let out = omni(&home.path).cwd(&dir.path).args(&["checks"]).run();
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    assert_eq!(out.stdout, "fast: a\nstack_up: b\nstack: c\n");
+}
+
+#[test]
+fn checks_without_the_checks_table_exits_1_and_says_what_to_add() {
+    let home = logged_in("http://127.0.0.1:9");
+    let dir = omni_toml_dir("project = \"p\"\nfeature = \"f\"\n");
+    let out = omni(&home.path).cwd(&dir.path).args(&["checks"]).run();
+    assert_eq!(out.code, 1);
+    assert_one_line_error(
+        &out,
+        &[".omni.toml has no [checks] table; add fast, stack_up and stack"],
+    );
+}
+
+#[test]
+fn checks_without_stack_or_with_an_empty_stack_exits_1_and_names_it() {
+    let home = logged_in("http://127.0.0.1:9");
+    let missing = omni_toml_dir("[checks]\nfast = \"a\"\nstack_up = \"b\"\n");
+    let out = omni(&home.path).cwd(&missing.path).args(&["checks"]).run();
+    assert_eq!(out.code, 1);
+    assert_one_line_error(&out, &[".omni.toml [checks] has no stack"]);
+
+    let empty = omni_toml_dir("[checks]\nfast = \"a\"\nstack_up = \"b\"\nstack = \"\"\n");
+    let out = omni(&home.path).cwd(&empty.path).args(&["checks"]).run();
+    assert_eq!(out.code, 1);
+    assert_one_line_error(&out, &[".omni.toml [checks] has no stack"]);
+}
+
+#[test]
+fn checks_with_several_keys_missing_names_the_first_in_the_order_fast_stack_up_stack() {
+    let home = logged_in("http://127.0.0.1:9");
+    let dir = omni_toml_dir("[checks]\nfast = \"a\"\n");
+    let out = omni(&home.path).cwd(&dir.path).args(&["checks"]).run();
+    assert_eq!(out.code, 1);
+    assert_one_line_error(&out, &[".omni.toml [checks] has no stack_up"]);
+}
+
+#[test]
+fn checks_without_an_omni_toml_exits_1_with_the_missing_file_error() {
+    let home = logged_in("http://127.0.0.1:9");
+    let elsewhere = Scratch::new("nochecks");
+    let out = omni(&home.path)
+        .cwd(&elsewhere.path)
+        .args(&["checks"])
+        .run();
+    assert_eq!(out.code, 1);
+    assert_one_line_error(&out, &[".omni.toml"]);
+    assert!(!out.stderr.contains("[checks]"), "{:?}", out.stderr);
+}
