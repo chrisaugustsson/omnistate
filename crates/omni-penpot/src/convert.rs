@@ -1304,7 +1304,20 @@ impl<R: Read + Seek> Converter<'_, R> {
             14.0
         });
         node.insert("fontSize".into(), num(size));
-        if let Some(weight) = get("fontWeight").as_ref().and_then(as_number) {
+        // A run with no weight or style of its own has them in its variant id.
+        let variant = get("fontVariantId")
+            .and_then(|value| value.as_str().map(str::to_string))
+            .unwrap_or_default();
+        let variant_weight = match variant.as_str() {
+            "regular" | "italic" => Some(400.0),
+            "bold" => Some(700.0),
+            _ => {
+                let digits = variant.chars().take_while(char::is_ascii_digit).count();
+                variant[..digits].parse::<f64>().ok()
+            }
+        };
+        let weight = get("fontWeight").or_else(|| variant_weight.map(num));
+        if let Some(weight) = weight.as_ref().and_then(as_number) {
             if (1.0..=1000.0).contains(&weight) {
                 node.insert("fontWeight".into(), num(weight));
             } else {
@@ -1315,9 +1328,9 @@ impl<R: Read + Seek> Converter<'_, R> {
                 );
             }
         }
-        if let Some(style @ ("normal" | "italic")) =
-            get("fontStyle").as_ref().and_then(Value::as_str)
-        {
+        let variant_style = variant.contains("italic").then(|| json!("italic"));
+        let style = get("fontStyle").or(variant_style);
+        if let Some(style @ ("normal" | "italic")) = style.as_ref().and_then(Value::as_str) {
             node.insert("fontStyle".into(), json!(style));
         }
         if let Some(pitch) = line_pitch(pen, common.bounds, grow).filter(|_| size > 0.0) {

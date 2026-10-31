@@ -55,6 +55,9 @@ pub struct Fonts {
     /// looks families up in.
     provider: TypefaceFontProvider,
     collection: FontCollection,
+    /// The families that were supplied, the bundled Inter included: the
+    /// aliases the tokens name, never the names inside the font files.
+    registered: Vec<String>,
 }
 
 impl Fonts {
@@ -71,6 +74,7 @@ impl Fonts {
         Fonts {
             provider,
             collection,
+            registered: vec![INTER.to_string()],
         }
     }
 
@@ -84,6 +88,13 @@ impl Fonts {
             .ok_or_else(|| format!("the bytes for font family {family:?} are not a font"))?;
         self.provider.register_typeface(typeface, family);
         self.collection.clear_caches();
+        if !self
+            .registered
+            .iter()
+            .any(|registered| registered == family)
+        {
+            self.registered.push(family.to_string());
+        }
         Ok(())
     }
 
@@ -97,6 +108,31 @@ impl Fonts {
             .next()
             .unwrap_or_else(inter)
     }
+}
+
+/// A font face: the family, weight and slant that text asks for or is drawn in.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Face {
+    family: String,
+    weight: u32,
+    style: design::FontStyle,
+}
+
+/// Texts that are drawn in a face other than the one they ask for, because
+/// the design system has no font file for it (`Scene::fonts_stood_in`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct StandIn {
+    /// The face that the texts ask for.
+    pub family: String,
+    pub weight: u32,
+    pub style: design::FontStyle,
+    /// The face that they are drawn in: the registered alias that matched, or
+    /// `Inter`, with the weight and style of the face Skia chose.
+    pub drawn_family: String,
+    pub drawn_weight: u32,
+    pub drawn_style: design::FontStyle,
+    /// How many texts there are.
+    pub texts: usize,
 }
 
 /// The bundled Inter typeface. Where Skia is built with FreeType (WebAssembly)
@@ -117,6 +153,9 @@ pub(crate) fn inter() -> Typeface {
 pub struct ShapedText {
     /// The text, kept to draw from.
     content: String,
+    /// The face the text asks for and the face it is drawn in.
+    asked: Face,
+    drawn: Face,
     /// How the text is drawn: its style and paragraph style, from which the
     /// paragraphs of the runs of a line are built, and the lines that
     /// decorate it.
@@ -168,6 +207,34 @@ impl Decoration {
         };
         Decoration { rule }
     }
+}
+
+/// The stand-ins of `texts`: one per distinct face asked for, with how many
+/// texts ask for it, ordered by family, weight and style.
+pub(crate) fn stand_ins<'a>(texts: impl Iterator<Item = &'a ShapedText>) -> Vec<StandIn> {
+    let mut found: Vec<StandIn> = Vec::new();
+    for (asked, drawn) in texts.filter_map(ShapedText::stand_in) {
+        match found.iter_mut().find(|entry| {
+            entry.family == asked.family
+                && entry.weight == asked.weight
+                && entry.style == asked.style
+        }) {
+            Some(entry) => entry.texts += 1,
+            None => found.push(StandIn {
+                family: asked.family.clone(),
+                weight: asked.weight,
+                style: asked.style,
+                drawn_family: drawn.family.clone(),
+                drawn_weight: drawn.weight,
+                drawn_style: drawn.style,
+                texts: 1,
+            }),
+        }
+    }
+    found.sort_by(|a, b| {
+        (&a.family, a.weight, a.style as u8).cmp(&(&b.family, b.weight, b.style as u8))
+    });
+    found
 }
 
 /// A piece of a line, from one place where the line may break to the next.
@@ -268,7 +335,31 @@ impl ShapedText {
         paragraph.layout(f32::INFINITY);
         let lines = pieces(&text.content, &paragraph);
 
-        let mut font = Font::from_typeface(fonts.typeface(family, font_style), font_size);
+        let typeface = fonts.typeface(family, font_style);
+        let slant_of = |slant: Slant| match slant {
+            Slant::Upright => design::FontStyle::Normal,
+            Slant::Italic | Slant::Oblique => design::FontStyle::Italic,
+        };
+        let asked = Face {
+            family: family.to_string(),
+            weight: (*font_style.weight()).max(0) as u32,
+            style: slant_of(font_style.slant()),
+        };
+        let got = typeface.font_style();
+        let drawn = Face {
+            family: if fonts
+                .registered
+                .iter()
+                .any(|registered| registered == family)
+            {
+                family.to_string()
+            } else {
+                INTER.to_string()
+            },
+            weight: (*got.weight()).max(0) as u32,
+            style: slant_of(got.slant()),
+        };
+        let mut font = Font::from_typeface(typeface, font_size);
         font.set_hinting(FontHinting::None)
             .set_linear_metrics(true)
             .set_subpixel(true);
@@ -301,6 +392,8 @@ impl ShapedText {
         };
 
         ShapedText {
+            asked,
+            drawn,
             content: text.content.clone(),
             style,
             paragraph_style,
@@ -325,6 +418,16 @@ impl ShapedText {
             first_baseline: (!text.content.is_empty())
                 .then_some(first_baseline / DEVICE_PIXEL_RATIO),
         }
+    }
+
+    /// The face the text asks for and the face it is drawn in, when they
+    /// differ: the family is not registered, or the weight or slant of the
+    /// face used is not the one asked for.
+    pub(crate) fn stand_in(&self) -> Option<(&Face, &Face)> {
+        let stood_in = self.asked.weight != self.drawn.weight
+            || self.asked.style != self.drawn.style
+            || self.asked.family != self.drawn.family;
+        stood_in.then_some((&self.asked, &self.drawn))
     }
 
     /// The CSS min-content width: the width of the widest piece, without the

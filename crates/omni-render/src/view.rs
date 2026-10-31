@@ -25,6 +25,7 @@ use crate::paint::{self, Assets, Painted};
 use crate::resolve::{self, Details, Facts, ids_of};
 use crate::select::{Event, Index, Layer, Modifiers, NodeAddress, Outline, OutlineKind};
 use crate::system::{DesignSystem, RenderError};
+use crate::text::{StandIn, stand_ins};
 use omni_core::design::{Node, NodeData, NodeId};
 use serde_json::Value;
 use skia_safe::{
@@ -1237,6 +1238,13 @@ impl Scene {
         if !in_view {
             viewport.fit(self.index.rect(self.index.board(selected)));
         }
+    }
+
+    /// The texts of the boards in place that are drawn in a font other than
+    /// their own, once per distinct family, weight and style asked for: the
+    /// family has no font file, or the file has no face of that weight or slant.
+    pub fn fonts_stood_in(&self) -> Vec<StandIn> {
+        stand_ins(self.texts.values().map(|text| &**text))
     }
 
     /// The boards of the page in order, each without its children, as the

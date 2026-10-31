@@ -562,6 +562,33 @@ pub fn scene_layers() -> String {
     Value::Array(layers.iter().map(layer_json).collect()).to_string()
 }
 
+/// The texts of the loaded scene that are drawn in another font than their
+/// own, as a JSON array: `[{"family": "Roboto", "weight": 700, "style":
+/// "normal", "drawnAs": {"family": "Inter", "weight": 400, "style": "normal"},
+/// "texts": 12}]`. Empty if no scene is loaded.
+pub fn scene_fonts() -> String {
+    let stood_in = with_stage(|scene, _| scene.fonts_stood_in()).unwrap_or_default();
+    Value::Array(
+        stood_in
+            .iter()
+            .map(|entry| {
+                json!({
+                    "family": entry.family,
+                    "weight": entry.weight,
+                    "style": entry.style.as_str(),
+                    "drawnAs": {
+                        "family": entry.drawn_family,
+                        "weight": entry.drawn_weight,
+                        "style": entry.drawn_style.as_str(),
+                    },
+                    "texts": entry.texts,
+                })
+            })
+            .collect(),
+    )
+    .to_string()
+}
+
 /// The node at `address` (`<id>` or `<instanceId>/<componentNodeId>`) with
 /// every node below it, as the JSON object `scene_layers` lists boards with.
 /// `Ok(None)` if the address names no node.

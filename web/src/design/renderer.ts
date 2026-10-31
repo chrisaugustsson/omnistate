@@ -7,6 +7,15 @@
 // takes text as bytes in its own memory: the page copies it in with
 // `_omni_render_alloc` and gives the room back with `_omni_render_free`.
 
+/** Texts drawn in `drawnAs` for want of a font file for the face they ask for. */
+export type FontStandIn = {
+  family: string;
+  weight: number;
+  style: string;
+  drawnAs: { family: string; weight: number; style: string };
+  texts: number;
+};
+
 export type Layer = { address: string; name: string; type: string; children: Layer[] };
 
 export type TokenUse = { token: string; value: unknown };
@@ -105,6 +114,8 @@ export type DesignRenderer = {
   visibleBoards(): string[];
   /** The shown page's boards, each without its children. */
   layers(): Layer[];
+  /** The texts of the shown page that are drawn in another font than their own, once per face asked for. */
+  fontsStoodIn(): FontStandIn[];
   /** The node at `address` with every node below it; a board that is not read has no children. `null` when the page has no such node. */
   layersOf(address: string): Layer | null;
   /** The ID of the board that holds the node at `address` (a board's own ID for the board); `null` when the page has no such node. */
@@ -169,6 +180,7 @@ type OmniRender = {
   _omni_render_node_box(pointer: number, length: number): number;
   _omni_render_scene_draw(width: number, height: number, pixelRatio: number): number;
   _omni_render_scene_layers(): number;
+  _omni_render_scene_fonts(): number;
   _omni_render_scene_layers_of(pointer: number, length: number): number;
   _omni_render_scene_board_of(pointer: number, length: number): number;
   _omni_render_visible_boards(): number;
@@ -208,6 +220,7 @@ const FUNCTIONS: Record<Extract<keyof OmniRender, `_omni_render_${string}`>, tru
   _omni_render_node_box: true,
   _omni_render_scene_draw: true,
   _omni_render_scene_layers: true,
+  _omni_render_scene_fonts: true,
   _omni_render_scene_layers_of: true,
   _omni_render_scene_board_of: true,
   _omni_render_visible_boards: true,
@@ -564,6 +577,9 @@ export async function createDesignRenderer(canvas: HTMLCanvasElement): Promise<D
     },
     layers() {
       return loaded ? readJson<Layer[]>(module._omni_render_scene_layers()) : [];
+    },
+    fontsStoodIn() {
+      return loaded ? readJson<FontStandIn[]>(module._omni_render_scene_fonts()) : [];
     },
     layersOf(address) {
       if (!loaded) return null;

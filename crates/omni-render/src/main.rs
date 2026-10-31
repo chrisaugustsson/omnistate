@@ -38,6 +38,8 @@ mod exports {
         static VISIBLE: RefCell<CString> = RefCell::new(CString::default());
         /// The result of the last `omni_render_scene_layers`.
         static LAYERS: RefCell<CString> = RefCell::new(CString::default());
+        /// The result of the last `omni_render_scene_fonts`.
+        static FONTS: RefCell<CString> = RefCell::new(CString::default());
         /// The result of the last `omni_render_scene_layers_of`.
         static LAYERS_OF: RefCell<CString> = RefCell::new(CString::default());
         /// The result of the last `omni_render_scene_board_of`.
@@ -447,6 +449,16 @@ mod exports {
     pub extern "C" fn omni_render_scene_layers() -> *const c_char {
         LAYERS.set(CString::new(omni_render::web::scene_layers()).unwrap_or_default());
         LAYERS.with_borrow(|layers| layers.as_ptr())
+    }
+
+    /// The texts drawn in another font than their own, as a NUL-ended JSON
+    /// array that stays until the next call: `[{"family": "Roboto", "weight":
+    /// 700, "style": "normal", "drawnAs": {"family": "Inter", "weight": 400,
+    /// "style": "normal"}, "texts": 12}]`.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn omni_render_scene_fonts() -> *const c_char {
+        FONTS.set(CString::new(omni_render::web::scene_fonts()).unwrap_or_default());
+        FONTS.with_borrow(|fonts| fonts.as_ptr())
     }
 
     /// The node at the address (`<id>` or `<instanceId>/<componentNodeId>`)

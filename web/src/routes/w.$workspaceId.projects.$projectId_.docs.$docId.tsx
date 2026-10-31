@@ -14,6 +14,7 @@ import type { DocBody, NodeBox } from "@/api/generated";
 import {
   createDesignRenderer,
   type DesignRenderer,
+  type FontStandIn,
   type Inspection,
   type Layer,
   type Property,
@@ -292,6 +293,13 @@ function HtmlDocViewer({
 }
 
 // The design viewer ------------------------------------------------------------------------
+
+/** The sentence for texts that are drawn in another font than their own. */
+function standInSentence(entry: FontStandIn): string {
+  const face = (family: string, weight: number, style: string) => `${family} ${weight}${style === "italic" ? " italic" : ""}`;
+  const many = entry.texts !== 1;
+  return `${entry.texts} text${many ? "s" : ""} in ${face(entry.family, entry.weight, entry.style)} ${many ? "are" : "is"} drawn in ${face(entry.drawnAs.family, entry.drawnAs.weight, entry.drawnAs.style)}: the design system has no font file for it`;
+}
 
 /** A layer and its depth, in the order the tree lists them. */
 type Row = { layer: Layer; level: number };
@@ -664,7 +672,12 @@ function DesignViewer({
     // What went wrong so far: an image or a board that could not be loaded is
     // named in the error line, and the rest still draws.
     const problems: string[] = [];
-    const report = () => setFailure(problems.length > 0 ? problems.join(" ") : null);
+    // A font that stood in is told again on every report, so a board put in place later updates the count.
+    const report = () => {
+      const standIns = renderer.fontsStoodIn().map(standInSentence);
+      const all = [...problems, ...standIns];
+      setFailure(all.length > 0 ? all.join(" ") : null);
+    };
     const refreshLayers = () => {
       // The selection stays while its node is still there, as when an agent changes the design.
       const kept = selectedRef.current;
