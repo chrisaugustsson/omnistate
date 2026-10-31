@@ -8,6 +8,7 @@ export const meta = {
     { title: 'Clarity', detail: 'one check per backlog story whose version is new, in parallel: blocking gaps become threads, minor ones agent decisions' },
     { title: 'Unblock', detail: 'a blocked story whose linked threads all have a conclusion gets each conclusion as a human decision and is unblocked' },
     { title: 'Implement', detail: 'up to `implementers` agents at once, each on a pickable story in its own worktree; the story reaches review only after the fast command passes there' },
+    { title: 'Merge', detail: 'one worker takes the testing stories in dependency order: stack_up once per batch, then rebase in the worktree and fast-forward the integration branch; a rebase conflict is fixed by an implementer and halts merging until that story is merged' },
     { title: 'Review', detail: 'up to `reviewers` reviewers at once read each review story\'s branch against its criteria; a fail is fixed in place by an implementer, three fails block the story, a pass moves it to testing' },
   ],
 }
@@ -314,21 +315,23 @@ Return raw structured data only.`
 - Work on the CURRENT branch. Do not push, create branches or amend.
 `
   let fast = null
+  let stackUp = ''
   const docCache = {}
   const docText = (id) => {
     if (!(id in docCache)) docCache[id] = tryRun('omni', ['doc', 'read', id], { env: { ...process.env, OMNI_RUN: runId, OMNI_ROLE: 'deliver' } }) || '(the doc could not be read)'
     return docCache[id]
   }
-  const runFast = (cwd) => new Promise((resolve) => {
-    if (!fast.trim()) return resolve({ ok: true, output: '' })
+  const runCmd = (cmd, cwd) => new Promise((resolve) => {
+    if (!cmd.trim()) return resolve({ ok: true, output: '' })
     let output = ''
-    const child = cp.spawn(fast, { cwd, shell: true })
+    const child = cp.spawn(cmd, { cwd, shell: true })
     child.stdout.on('data', (d) => { output += d })
     child.stderr.on('data', (d) => { output += d })
     child.on('error', (e) => resolve({ ok: false, output: output + String(e.message) }))
     child.on('close', (code) => resolve({ ok: code === 0, output }))
   })
-  const implPrompt = (story, wt, retry) => {
+  const runFast = (cwd) => runCmd(fast, cwd)
+  const implPrompt = (story, wt, retry, task) => {
     const open = (story.findings || []).filter((f) => !f.resolved)
     const docs = (story.links || []).filter((l) => l.doc_id)
     return `You implement ONE story of the feature "${feature}" in its own git worktree.
@@ -354,7 +357,7 @@ ${open.map((f) => `- [${f.stage}] ${f.text}${(f.files || []).length ? ` (${f.fil
 
 ## Linked doc nodes
 ${docs.map((l) => `### Doc ${l.doc_id}, node ${l.node_id}${l.label ? ` (${l.label})` : ''}\n${docText(l.doc_id)}`).join('\n\n') || '(none)'}
-${retry ? `\n## The fast command failed on your last work (fix it, then commit with a fix: commit)\n\`${fast}\` run in the worktree printed:\n\`\`\`\n${retry}\n\`\`\`\n` : ''}${CONVENTIONS}
+${retry ? `\n## The fast command failed on your last work (fix it, then commit with a fix: commit)\n\`${fast}\` run in the worktree printed:\n\`\`\`\n${retry}\n\`\`\`\n` : ''}${task ? `\n## Your task now\n${task}\n` : ''}${CONVENTIONS}
 ## Rules
 - Implement only this story. No unrelated cleanup, no groundwork for later stories.
 - Commit a feat: commit, then fix: commits for later corrections. Commit production and test files that belong to the story.
@@ -373,12 +376,16 @@ Return raw structured data only.`
     return keys.find((k) => !skipped.has(k)) || null
   }
   const ensureFast = () => {
-    if (fast === null) fast = String(JSON.parse(omni(['checks', '--json'])).fast || '')
+    if (fast === null) {
+      const checks = JSON.parse(omni(['checks', '--json']))
+      stackUp = String(checks.stack_up || '')
+      fast = String(checks.fast || '')
+    }
   }
   // Runs the implementer until the fast command passes in the worktree, then
   // rewrites files_changed. Returns null when it did, else the outcome of the
   // thread that blocked the story.
-  const implementLoop = async (key, wt, story) => {
+  const implementLoop = async (key, wt, story, task) => {
     const recorded = new Set()
     const record = (r) => {
       for (const d of r.decisions || []) {
@@ -390,7 +397,7 @@ Return raw structured data only.`
     }
     let retry = null
     for (let attempt = 1; attempt <= 3; attempt++) {
-      const r = (await runAgent(implPrompt(story, wt, retry), { schema: IMPL_SCHEMA, label: `impl:${key}${attempt > 1 ? ` fix${attempt - 1}` : ''}`, phase: 'Implement', model: modelFor('impl'), role: 'impl' })) || { status: 'blocked', summary: 'The implementer returned no result (it may have died).' }
+      const r = (await runAgent(implPrompt(story, wt, retry, task), { schema: IMPL_SCHEMA, label: `impl:${key}${attempt > 1 ? ` fix${attempt - 1}` : ''}`, phase: 'Implement', model: modelFor('impl'), role: 'impl' })) || { status: 'blocked', summary: 'The implementer returned no result (it may have died).' }
       record(r)
       if (r.status === 'needs_decision') {
         const options = (r.options || []).map((o, i) => `${i + 1}. ${o}`).join('\n')
@@ -429,6 +436,87 @@ Return raw structured data only.`
     git(['worktree', 'add', worktreeOf(key), '-b', `story/${key}`, integration])
     return implement(key).catch((e) => ({ key, outcome: 'failed', error: String(e && e.message || e) }))
   }
+
+  // ---- merge: one worker on the main worktree ------------------------------
+  const merged = new Set()
+  const mergeOutcomes = []
+  let halted = null
+  const REBASE_FINDING = 'rebase conflict in '
+  const inOrder = (stories) => {
+    const ref = new Map()
+    for (const s of stories) { ref.set(s.key, s); if (s.id) ref.set(s.id, s) }
+    const number = (s) => (Number.isInteger(s.number) ? s.number : Number(String(s.key).replace(/\D/g, '')))
+    const rest = [...stories]
+    const out = []
+    while (rest.length) {
+      const ready = rest.filter((s) => !(s.blocked_by || []).some((b) => ref.has(b) && rest.includes(ref.get(b)) && ref.get(b) !== s))
+      const next = (ready.length ? ready : rest).sort((a, b) => (a.priority ?? 3) - (b.priority ?? 3) || number(a) - number(b))[0]
+      out.push(next)
+      rest.splice(rest.indexOf(next), 1)
+    }
+    return out
+  }
+  // Rebases the story in its worktree, then fast-forwards the integration
+  // branch. Returns null when it merged, else the files that conflict.
+  const tryMerge = (key) => {
+    const wt = worktreeOf(key)
+    try { git(['-C', wt, 'rebase', integration]) } catch (e) {
+      const files = (tryRun('git', ['-C', wt, 'diff', '--name-only', '--diff-filter=U']) || '').split('\n').filter(Boolean)
+      tryRun('git', ['-C', wt, 'rebase', '--abort'])
+      return files.length ? files : ['(unknown)']
+    }
+    git(['merge', '--ff-only', `story/${key}`])
+    merged.add(key)
+    const fresh = readStory(key)
+    ;(fresh.findings || []).forEach((f, i) => {
+      if (f.stage === 'testing' && !f.resolved && String(f.text).startsWith(REBASE_FINDING)) write('resolve', key, ['--finding', String(i)])
+    })
+    return null
+  }
+  const mergePass = async () => {
+    if (halted) return
+    const batch = inOrder(listStories().filter((s) => s.status === 'testing' && !s.blocked && s.holder && s.holder.run === runId && !merged.has(s.key) && fs.existsSync(worktreeOf(s.key))))
+    if (batch.length === 0) return
+    phase('Merge')
+    ensureFast()
+    const up = await runCmd(stackUp, root)
+    if (!up.ok) {
+      openThread('The stack did not start', `\`${stackUp}\` exited non-zero, so nothing from this batch was merged (${batch.map((s) => s.key).join(', ')}). Output:\n\n\`\`\`\n${up.output}\n\`\`\`\n`)
+      mergeOutcomes.push({ key: null, outcome: 'stack_up_failed' })
+      return
+    }
+    for (const { key } of batch) {
+      const conflict = tryMerge(key)
+      if (!conflict) { mergeOutcomes.push({ key, outcome: 'merged' }); continue }
+      halted = key
+      write('finding', key, ['--stage', 'testing', '--text', `${REBASE_FINDING}${conflict.join(', ')}`, ...conflict.flatMap((p) => ['--file', p])])
+      write('move', key, ['--to', 'implementing'])
+      const wt = worktreeOf(key)
+      const task = `Story branch story/${key} no longer rebases onto ${integration} (${conflict.join(', ')}). In ${wt}, run \`git rebase ${integration}\`, resolve the conflicts, finish the rebase, and run the fast command again. Do not push and do not touch the main worktree.`
+      const bad = await implementLoop(key, wt, readStory(key), task)
+      if (bad) { mergeOutcomes.push({ ...bad, stage: 'rebase' }); return }
+      write('move', key, ['--to', 'testing'])
+      const again = tryMerge(key)
+      if (again) {
+        const id = openThread(`${key}: the rebase still conflicts`, `Rebasing story/${key} onto ${integration} still conflicts in ${again.join(', ')} after the fix.\n`)
+        linkAndBlock(key, [id])
+        mergeOutcomes.push({ key, outcome: 'rebase_failed', thread: id })
+        return
+      }
+      halted = null
+      mergeOutcomes.push({ key, outcome: 'merged', rebased: true })
+    }
+  }
+  let mergeChain = Promise.resolve()
+  const kickMerge = () => {
+    mergeChain = mergeChain.then(mergePass).catch((e) => {
+      mergeOutcomes.push({ key: halted, outcome: 'failed', error: String(e && e.message || e) })
+      log(`merge: ${e && e.message || e}`)
+    })
+    return mergeChain
+  }
+  kickMerge()
+
   const active = new Map()
   for (;;) {
     while (active.size < implementers && picked < storyLimit) {
@@ -556,12 +644,16 @@ Return raw structured data only.`
       const o = await review(key).catch((e) => ({ key, outcome: 'failed', error: String(e && e.message || e) }))
       reviewed.add(key)
       reviewOutcomes.push(o)
+      kickMerge()
       if (o.error) log(`${key}: ${o.error}`)
     }
   }))
 
+  kickMerge()
+  await mergeChain
+
   const pickable = omni(['story', 'list', '--pickable']).split('\n').filter(Boolean).length
-  return { run: runId, feature, integration, thread: threadId, implementers, reviewers, storyLimit: storyLimit === Infinity ? null : storyLimit, reconciled, clarity, unblocked, resumed, implemented: outcomes, reviewed: reviewOutcomes, pickable }
+  return { run: runId, feature, integration, thread: threadId, implementers, reviewers, storyLimit: storyLimit === Infinity ? null : storyLimit, reconciled, clarity, unblocked, resumed, implemented: outcomes, reviewed: reviewOutcomes, merged: mergeOutcomes, pickable }
 } finally {
   fs.rmSync(lockPath, { force: true })
 }
