@@ -16,9 +16,9 @@
 //   // The box of the node at `address` on the canvas, in CSS pixels from the
 //   // canvas's top-left corner, as the current zoom and pan show it (omni-
 //   // render's `Scene::screen_box_of`, `_omni_render_node_box`,
-//   // crates/omni-render/tests/pins.rs); `null` when the page shown has no
-//   // node at that address.
-//   boxOf(address: string): { x: number; y: number; width: number; height: number } | null;
+//   // crates/omni-render/tests/pins.rs), with the node's name, which names
+//   // its pin; `null` when the page shown has no node at that address.
+//   boxOf(address: string): { x: number; y: number; width: number; height: number; name?: string } | null;
 //   // Calls `listener` whenever the view changes: a zoom, a pan, a resize or
 //   // another page shown. Returns the function that stops it.
 //   onView(listener: () => void): () => void;
@@ -109,6 +109,19 @@ vi.mock("@/design/renderer", () => {
       };
       fake.instances.push(instance);
       const lastPage = () => instance.shown[instance.shown.length - 1]?.page as Node | undefined;
+      type FakeLayer = { address: string; name: string; type: string; children: FakeLayer[] };
+      const boards = (): FakeLayer[] => {
+        const id = lastPage()?.id;
+        return id ? (fake.layersByPage.get(id) ?? []) : [];
+      };
+      const findLayer = (layers: FakeLayer[], address: string): FakeLayer | null => {
+        for (const layer of layers) {
+          if (layer.address === address) return layer;
+          const below = findLayer(layer.children, address);
+          if (below) return below;
+        }
+        return null;
+      };
       return {
         show(page: unknown, system: unknown) {
           instance.shown.push({ page, system });
@@ -118,8 +131,13 @@ vi.mock("@/design/renderer", () => {
           fake.tagsShown.push(tags);
         },
         layers() {
-          const id = lastPage()?.id;
-          return id ? (fake.layersByPage.get(id) ?? []) : [];
+          return boards().map((board) => ({ ...board, children: [] }));
+        },
+        layersOf(address: string) {
+          return findLayer(boards(), address);
+        },
+        boardOf(address: string) {
+          return boards().find((board) => findLayer([board], address))?.address ?? null;
         },
         select(address: string | null) {
           instance.selected.push(address);
@@ -161,7 +179,8 @@ vi.mock("@/design/renderer", () => {
           const box = id ? fake.boxesByPage.get(id)?.get(address) : undefined;
           if (!box) return null;
           const { x, y, zoom } = instance.view;
-          return { x: (box.x - x) * zoom, y: (box.y - y) * zoom, width: box.width * zoom, height: box.height * zoom };
+          const name = findLayer(boards(), address)?.name ?? "";
+          return { x: (box.x - x) * zoom, y: (box.y - y) * zoom, width: box.width * zoom, height: box.height * zoom, name };
         },
         onView(listener: () => void) {
           instance.viewListeners.add(listener);
@@ -765,9 +784,14 @@ async function writeComment(text: string) {
   fireEvent.click(within(comments).getByRole("button", { name: /^(add comment|comment|post)$/i }));
 }
 
+/** The treeitem whose text starts with `name`, in the layers panel. */
 function treeItem(name: string) {
   const region = screen.getByRole("region", { name: /^layers$/i });
-  return within(region).getByRole("treeitem", { name: new RegExp(`^${name}\\b`) });
+  const item = within(region)
+    .queryAllByRole("treeitem")
+    .find((candidate) => new RegExp(`^${name}\\b`).test((candidate.textContent ?? "").trim()));
+  expect(item, `the layers panel lists ${name}`).toBeTruthy();
+  return item!;
 }
 
 function callsTo(api: ReturnType<typeof fakeApi>, method: string, path: string) {
@@ -847,6 +871,7 @@ describe("comment pins", () => {
         BUY_LABEL,
       ),
     );
+    await waitFor(() => expect(treeItem("Label").getAttribute("aria-selected"), "its board is open, its row selected").toBe("true"));
     const comments = await section(COMMENTS);
     await waitFor(() => expect(within(comments).getByText(ON_LABEL)).toBeTruthy());
     expect(within(comments).queryByText(ON_TOTAL), "only the selected node's comments").toBeNull();

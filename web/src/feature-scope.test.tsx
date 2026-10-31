@@ -21,6 +21,12 @@ vi.mock("@/design/renderer", () => ({
     layers() {
       return [];
     },
+    layersOf() {
+      return null;
+    },
+    boardOf() {
+      return null;
+    },
     select() {},
     onSelect() {
       return () => {};

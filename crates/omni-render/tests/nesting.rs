@@ -172,6 +172,15 @@ fn read_node(json: &Value) -> Node {
         .unwrap_or_else(|error| panic!("the fixture must be a design node, but: {error}"))
 }
 
+/// The boards of the scene, each with every node below it.
+fn board_layers(scene: &Scene) -> Vec<Layer> {
+    scene
+        .layers()
+        .iter()
+        .filter_map(|board| scene.layers_of(&board.address))
+        .collect()
+}
+
 /// How many levels the deepest of `layers` is below the page.
 fn layer_depth(layers: &[Layer]) -> usize {
     let mut deepest = 0;
@@ -201,7 +210,7 @@ fn resolving_cuts_a_design_off_at_the_nesting_limit() {
         let system = DesignSystem::from_json(&system)
             .unwrap_or_else(|error| panic!("the design system must be read, but: {error}"));
         let scene = Scene::with_system(read_node(&page), Assets::new(), system);
-        (scene.errors().to_vec(), layer_depth(&scene.layers()))
+        (scene.errors().to_vec(), layer_depth(&board_layers(&scene)))
     });
     assert_eq!(
         depth, MAX_NESTING,
@@ -231,7 +240,7 @@ fn a_design_exactly_at_the_limit_resolves_whole() {
         let system = DesignSystem::from_json(&system)
             .unwrap_or_else(|error| panic!("the design system must be read, but: {error}"));
         let scene = Scene::with_system(read_node(&page), Assets::new(), system);
-        (scene.errors().to_vec(), layer_depth(&scene.layers()))
+        (scene.errors().to_vec(), layer_depth(&board_layers(&scene)))
     });
     assert!(errors.is_empty(), "nothing is missing, but: {errors:?}");
     // The board; for each of the 9 components its instance, drawn as the
@@ -339,7 +348,9 @@ const PAGE_END: &str = r#"  report(result);
 const NESTING_STEPS: &str = r#"  const depth = () => {
     let deepest = 0;
     const walk = (layers, level) => { for (const layer of layers) { deepest = Math.max(deepest, level); walk(layer.children, level + 1); } };
-    walk(JSON.parse(module.UTF8ToString(module._omni_render_scene_layers())), 1);
+    const layersOf = (address) =>
+      JSON.parse(module.UTF8ToString(withText(address, (pointer, length) => module._omni_render_scene_layers_of(pointer, length))));
+    walk(JSON.parse(module.UTF8ToString(module._omni_render_scene_layers())).map((board) => layersOf(board.address)), 1);
     return deepest;
   };
   result.deep = await load("deep.json");

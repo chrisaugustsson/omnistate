@@ -25,10 +25,16 @@
 //     // version's token tree with its components under `$components`, the
 //     // design system format of omni-render's `DesignSystem::from_json`.
 //     show(page: unknown, system: unknown): void;
-//     // The shown page's boards with every node below them, as the renderer
-//     // resolved them (`Scene::layers`, crates/omni-render/tests/layers.rs):
-//     // a node inside an instance is addressed `<instanceId>/<componentNodeId>`.
+//     // The shown page's boards, each without its children (`Scene::layers`,
+//     // crates/omni-render/tests/layers.rs).
 //     layers(): Layer[];
+//     // The node at `address` with every node below it, as the renderer
+//     // resolved it (`Scene::layers_of`): a node inside an instance is
+//     // addressed `<instanceId>/<componentNodeId>`, a board not read yet has no
+//     // children; `null` when the page shown has no such node.
+//     layersOf(address: string): Layer | null;
+//     // The board that holds the node at `address` (`Scene::board_of`).
+//     boardOf(address: string): string | null;
 //     // Selects the node at `address` on the canvas (`null` clears it).
 //     select(address: string | null): void;
 //     // Calls `listener` when the reviewer selects a node on the canvas;
@@ -46,13 +52,15 @@
 //   marked with `aria-current` (or `aria-pressed` / `aria-selected` "true");
 //   the first page is shown at first, and a click on another page shows that
 //   one;
-// - a layers panel: a region named "Layers" holding an element of role
-//   "tree", with one "treeitem" per layer of the page shown, every level
-//   listed, nodes inside instances included. A treeitem's accessible name
-//   starts with the node's name, it has `aria-level` (1 for a board), and the
-//   selected node's treeitem has `aria-selected="true"` (no other has).
-//   Clicking a treeitem selects that node on the canvas, and a node selected
-//   on the canvas is the selected treeitem.
+// - a layers panel (US-126): a region named "Layers" holding an element of
+//   role "tree", with one "treeitem" per board of the page shown, folded. A
+//   board's treeitem holds a button with `aria-expanded` that unfolds it,
+//   listing its layers below it, every level, nodes inside instances
+//   included. A treeitem's text starts with the node's name, it has
+//   `aria-level` (1 for a board), and the selected node's treeitem has
+//   `aria-selected="true"` (no other has). Clicking a treeitem selects that
+//   node on the canvas, and a node selected on the canvas opens its board and
+//   is the selected treeitem, scrolled into view.
 import { RouterProvider, createMemoryHistory } from "@tanstack/react-router";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -77,6 +85,8 @@ const fake = vi.hoisted(() => {
     instances: [] as Instance[],
     /** The layers the renderer gives for each page, by the page's ID. */
     layersByPage: new Map<string, FakeLayer[]>(),
+    /** Whether the renderer puts boards that arrive in place (`updateBoards`) instead of being shown the page again. */
+    incremental: false,
   };
 });
 
@@ -91,14 +101,59 @@ vi.mock("@/design/renderer", () => ({
       destroyed: false,
     };
     fake.instances.push(instance);
+    type FakeLayer = { address: string; name: string; type: string; children: FakeLayer[] };
+    type ShownPage = { id?: string; children?: { id: string; children?: unknown[] }[] };
+    // The page as the renderer has it: the page shown last, with the boards put in place since.
+    let current: ShownPage | undefined;
+    const lastPage = () => current;
+    const boards = (): FakeLayer[] => {
+      const id = lastPage()?.id;
+      return id ? (fake.layersByPage.get(id) ?? []) : [];
+    };
+    const find = (layers: FakeLayer[], address: string): FakeLayer | null => {
+      for (const layer of layers) {
+        if (layer.address === address) return layer;
+        const below = find(layer.children, address);
+        if (below) return below;
+      }
+      return null;
+    };
+    // A board of the page shown that is read, not a placeholder without its children.
+    const isRead = (board: string) =>
+      lastPage()?.children?.some((entry) => entry.id === board && entry.children !== undefined) ?? false;
+    // The node at `address` as the renderer has it: a placeholder board without its children, no node below it.
+    const nodeAt = (address: string): { board: FakeLayer; layer: FakeLayer } | null => {
+      const board = boards().find((candidate) => find([candidate], address));
+      if (!board) return null;
+      if (board.address === address) return { board, layer: isRead(board.address) ? board : { ...board, children: [] } };
+      return isRead(board.address) ? { board, layer: find([board], address)! } : null;
+    };
     return {
       show(page: unknown, system: unknown, board?: string | null) {
         instance.shown.push({ page, system, board });
+        current = page as ShownPage;
       },
+      ...(fake.incremental
+        ? {
+            updateBoards(boards: { id: string }[]) {
+              if (!current) return false;
+              const arrived = new Map(boards.map((board) => [board.id, board]));
+              current = { ...current, children: current.children?.map((board) => arrived.get(board.id) ?? board) };
+              return true;
+            },
+            stepBoards() {
+              return false;
+            },
+          }
+        : {}),
       layers() {
-        const last = instance.shown[instance.shown.length - 1];
-        const id = (last?.page as { id?: string } | undefined)?.id;
-        return id ? (fake.layersByPage.get(id) ?? []) : [];
+        return boards().map((board) => ({ ...board, children: [] }));
+      },
+      layersOf(address: string) {
+        return nodeAt(address)?.layer ?? null;
+      },
+      boardOf(address: string) {
+        return nodeAt(address)?.board.address ?? null;
       },
       select(address: string | null, reveal?: boolean) {
         instance.selected.push(address);
@@ -114,19 +169,17 @@ vi.mock("@/design/renderer", () => ({
       inspect() {
         return null;
       },
-      // US-045's comment pins (src/design-review.test.tsx); this test does
-      // not look at them.
-      boxOf() {
-        return null;
+      // US-045's comment pins (src/design-review.test.tsx): a box for every node the renderer has.
+      boxOf(address: string) {
+        const at = nodeAt(address);
+        return at ? { x: 0, y: 0, width: 10, height: 10, name: at.layer.name } : null;
       },
       onView() {
         return () => {};
       },
       // US-058's boards in view (src/design-boards.test.tsx): every board of the page shown.
       visibleBoards() {
-        const last = instance.shown[instance.shown.length - 1];
-        const boards = (last?.page as { children?: { id: string }[] } | undefined)?.children ?? [];
-        return boards.map((board) => String(board.id));
+        return (lastPage()?.children ?? []).map((board) => String(board.id));
       },
       // US-057's images and fonts (src/design-assets.test.tsx); this design has none.
       addImage() {},
@@ -584,23 +637,35 @@ async function findLayersTree() {
   });
 }
 
-/** The treeitem of the node named `name`, in the layers panel. */
-function treeItem(name: string) {
-  const region = screen.getByRole("region", { name: /^layers$/i });
-  return within(region).getByRole("treeitem", { name: new RegExp(`^${name}\\b`) });
-}
-
 function queryTreeItem(name: string) {
   const region = screen.queryByRole("region", { name: /^layers$/i });
-  return region ? within(region).queryByRole("treeitem", { name: new RegExp(`^${name}\\b`) }) : null;
+  const items = region ? within(region).queryAllByRole("treeitem") : [];
+  return items.find((item) => new RegExp(`^${name}\\b`).test((item.textContent ?? "").trim())) ?? null;
+}
+
+/** The treeitem of the node named `name`, in the layers panel. */
+function treeItem(name: string) {
+  const item = queryTreeItem(name);
+  expect(item, `the layers panel lists ${name}`).toBeTruthy();
+  return item!;
+}
+
+/** The button that folds and unfolds the board named `name`. */
+function chevron(name: string) {
+  return within(treeItem(name)).getByRole("button");
+}
+
+/** The rows of the layers panel, as `<level>:<first word of the name>`. */
+function rowNames(filter: (item: HTMLElement) => boolean = () => true) {
+  const region = screen.getByRole("region", { name: /^layers$/i });
+  return within(region)
+    .queryAllByRole("treeitem")
+    .filter(filter)
+    .map((item) => item.getAttribute("aria-level") + ":" + (item.textContent ?? "").trim().split(/\s+/)[0]);
 }
 
 function selectedNames() {
-  const region = screen.getByRole("region", { name: /^layers$/i });
-  return within(region)
-    .getAllByRole("treeitem")
-    .filter((item) => item.getAttribute("aria-selected") === "true")
-    .map((item) => item.getAttribute("aria-level") + ":" + (item.textContent ?? "").trim().split(/\s+/)[0]);
+  return rowNames((item) => item.getAttribute("aria-selected") === "true");
 }
 
 /** The reviewer selects `address` on the canvas. */
@@ -612,6 +677,7 @@ function selectOnCanvas(address: string | null) {
 }
 
 let api: ReturnType<typeof fakeApi>;
+const scrollIntoView = Element.prototype.scrollIntoView;
 
 beforeEach(() => {
   fake.instances.length = 0;
@@ -624,6 +690,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  Element.prototype.scrollIntoView = scrollIntoView;
   vi.useRealTimers();
   cleanup();
   vi.unstubAllGlobals();
@@ -665,31 +732,129 @@ describe("the page list", () => {
     expect((await findShownWhole(PAGES[0])).page).toEqual(PAGES[0]);
   });
 
-  test("choosing a page lists that page's layers", async () => {
+  test("choosing a page lists that page's boards", async () => {
     renderAt(DOC_PATH);
     await findLayersTree();
-    await waitFor(() => expect(treeItem("Cart")).toBeTruthy());
+    await waitFor(() => expect(rowNames()).toEqual(["1:Cart", "1:Receipt"]));
     await findPagesPanel();
     fireEvent.click(pageButton("Desktop"));
-    await waitFor(() => expect(treeItem("Wide cart")).toBeTruthy());
-    expect(queryTreeItem("Cart"), "the boards of the other page are gone").toBeNull();
-    expect(queryTreeItem("Receipt")).toBeNull();
-    expect(treeItem("Heading").getAttribute("aria-level")).toBe("2");
+    await waitFor(() => expect(rowNames(), "the boards of the other page are gone").toEqual(["1:Wide"]));
   });
 });
 
 // The layers panel -----------------------------------------------------------------------
 
 describe("the layers panel", () => {
-  test("lists every layer of the page shown at its depth, in order, nodes inside instances under their instance", async () => {
+  test("a board's chevron lists its layers below it at their depth, in order, nodes inside instances under their instance, and folds them again", async () => {
     renderAt(DOC_PATH);
-    await findLayersTree();
-    await waitFor(() => expect(treeItem("Wheel")).toBeTruthy());
-    const region = screen.getByRole("region", { name: /^layers$/i });
-    const order = within(region)
-      .getAllByRole("treeitem")
-      .map((item) => item.getAttribute("aria-level") + ":" + (item.textContent ?? "").trim().split(/\s+/)[0]);
-    expect(order).toEqual(["1:Cart", "2:Buy", "3:Label", "3:Icon", "4:Wheel", "2:Summary", "3:Total", "1:Receipt"]);
+    await findShownWhole(PAGES[0]);
+    await waitFor(() => expect(rowNames()).toEqual(["1:Cart", "1:Receipt"]));
+
+    fireEvent.click(chevron("Cart"));
+    expect(rowNames()).toEqual(["1:Cart", "2:Buy", "3:Label", "3:Icon", "4:Wheel", "2:Summary", "3:Total", "1:Receipt"]);
+    expect(chevron("Cart").getAttribute("aria-expanded")).toBe("true");
+
+    fireEvent.click(chevron("Cart"));
+    expect(rowNames()).toEqual(["1:Cart", "1:Receipt"]);
+    expect(chevron("Cart").getAttribute("aria-expanded")).toBe("false");
+  });
+
+  test("a click on a board's row selects the board and leaves it folded", async () => {
+    renderAt(DOC_PATH);
+    const renderer = await findRenderer();
+    await findShownWhole(PAGES[0]);
+    await waitFor(() => expect(rowNames()).toEqual(["1:Cart", "1:Receipt"]));
+
+    fireEvent.click(treeItem("Cart"));
+    await waitFor(() => expect(selectedNames()).toEqual(["1:Cart"]));
+    expect(renderer.selected[renderer.selected.length - 1]).toBe(CART_BOARD);
+    expect(rowNames()).toEqual(["1:Cart", "1:Receipt"]);
+    expect(chevron("Cart").getAttribute("aria-expanded")).toBe("false");
+  });
+
+  test("an open board stays open when the page is shown again, with the layers the board has now", async () => {
+    renderAt(DOC_PATH);
+    const send = await openSocket();
+    await findShownWhole(PAGES[0]);
+    await waitFor(() => expect(rowNames()).toEqual(["1:Cart", "1:Receipt"]));
+    fireEvent.click(chevron("Cart"));
+
+    // An agent deletes Summary, and Total with it.
+    const cart = PAGES[0].children[0];
+    const changed = [{ ...PAGES[0], children: [{ ...cart, children: [cart.children![0]] }, PAGES[0].children[1]] }, PAGES[1]];
+    api.pages = changed;
+    fake.layersByPage.set(MOBILE, [
+      layer(CART_BOARD, "Cart", "board", [
+        layer(BUY, "Buy", "instance", [
+          layer(`${BUY}/${LABEL}`, "Label", "text"),
+          layer(`${BUY}/${ICON}`, "Icon", "instance", [layer(`${BUY}/${WHEEL}`, "Wheel", "frame")]),
+        ]),
+      ]),
+      layer(RECEIPT, "Receipt", "board"),
+    ]);
+    send();
+    await findShownWhole(changed[0]);
+    await waitFor(() => expect(rowNames()).toEqual(["1:Cart", "2:Buy", "3:Label", "3:Icon", "4:Wheel", "1:Receipt"]));
+    expect(chevron("Cart").getAttribute("aria-expanded")).toBe("true");
+  });
+});
+
+// Boards put in place as they arrive ----------------------------------------------------
+
+/** Animation frames the page asked for, run by the test. */
+function stubFrames() {
+  const frames: FrameRequestCallback[] = [];
+  vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => frames.push(callback));
+  vi.stubGlobal("cancelAnimationFrame", () => {});
+  return {
+    /** Runs the frames asked for so far, once one is asked for. */
+    async run() {
+      await waitFor(() => expect(frames.length, "the page puts a board in place in the next frame").toBeGreaterThan(0));
+      act(() => {
+        for (const frame of frames.splice(0)) frame(performance.now());
+      });
+    },
+  };
+}
+
+describe("a board that arrives while the page is shown", () => {
+  beforeEach(() => {
+    fake.incremental = true;
+  });
+  afterEach(() => {
+    fake.incremental = false;
+  });
+
+  test("expanding a board that is not read lists no rows and does not read it; once it is put in place its layers are listed in that frame", async () => {
+    const frames = stubFrames();
+    api = fakeApi(PAGES, CART_BOARD);
+    renderAt(DOC_PATH);
+    await findShown(MOBILE);
+    await waitFor(() => expect(rowNames()).toEqual(["1:Cart", "1:Receipt"]));
+    const reads = () => api.calls.filter((call) => call.path.endsWith(`/boards/${CART_BOARD}`));
+    await waitFor(() => expect(reads()).toHaveLength(1));
+
+    fireEvent.click(chevron("Cart"));
+    expect(chevron("Cart").getAttribute("aria-expanded")).toBe("true");
+    expect(rowNames(), "Cart is not read, so it has no rows yet").toEqual(["1:Cart", "1:Receipt"]);
+    expect(reads(), "expanding it does not read it again").toHaveLength(1);
+
+    api.release();
+    await frames.run();
+    expect(rowNames()).toEqual(["1:Cart", "2:Buy", "3:Label", "3:Icon", "4:Wheel", "2:Summary", "3:Total", "1:Receipt"]);
+  });
+
+  test("a node a link names on a board that is put in place is selected in that frame, its board open", async () => {
+    const frames = stubFrames();
+    api = fakeApi(PAGES, CART_BOARD);
+    renderAt(`${DOC_PATH}?node=${TOTAL}`);
+    await findShown(MOBILE);
+    await waitFor(() => expect(rowNames()).toEqual(["1:Cart", "1:Receipt"]));
+
+    api.release();
+    await frames.run();
+    expect(selectedNames()).toEqual(["3:Total"]);
+    expect(chevron("Cart").getAttribute("aria-expanded")).toBe("true");
   });
 });
 
@@ -699,8 +864,9 @@ describe("selection between the canvas and the layers panel", () => {
   test("selecting a layer in the panel selects it on the canvas", async () => {
     renderAt(DOC_PATH);
     const renderer = await findRenderer();
-    await findLayersTree();
-    await waitFor(() => expect(treeItem("Label")).toBeTruthy());
+    await findShownWhole(PAGES[0]);
+    await waitFor(() => expect(rowNames()).toEqual(["1:Cart", "1:Receipt"]));
+    fireEvent.click(chevron("Cart"));
 
     fireEvent.click(treeItem("Label"));
     await waitFor(() =>
@@ -716,15 +882,21 @@ describe("selection between the canvas and the layers panel", () => {
     await waitFor(() => expect(selectedNames()).toEqual(["2:Summary"]));
   });
 
-  test("selecting a node on the canvas selects its layer in the panel", async () => {
+  test("selecting a node on the canvas opens its board, selects its layer in the panel and scrolls it into view", async () => {
+    const scrolled: (string | undefined)[] = [];
+    Element.prototype.scrollIntoView = vi.fn(function (this: HTMLElement) {
+      scrolled.push(this.dataset.address);
+    });
     renderAt(DOC_PATH);
     await findRenderer();
-    await findLayersTree();
-    await waitFor(() => expect(treeItem("Wheel")).toBeTruthy());
+    await findShownWhole(PAGES[0]);
+    await waitFor(() => expect(rowNames()).toEqual(["1:Cart", "1:Receipt"]));
     await waitFor(() => expect(fake.instances[fake.instances.length - 1].listeners.size).toBeGreaterThan(0));
 
     selectOnCanvas(`${BUY}/${WHEEL}`);
     await waitFor(() => expect(selectedNames(), "the Wheel inside the instance").toEqual(["4:Wheel"]));
+    expect(chevron("Cart").getAttribute("aria-expanded")).toBe("true");
+    expect(scrolled).toEqual([`${BUY}/${WHEEL}`]);
 
     selectOnCanvas(TOTAL);
     await waitFor(() => expect(selectedNames()).toEqual(["3:Total"]));
@@ -808,7 +980,6 @@ describe("the design as agents change it", () => {
     api = fakeApi(PAGES, RECEIPT);
     renderAt(DOC_PATH);
     const renderer = await findRenderer();
-    await waitFor(() => expect(treeItem("Total")).toBeTruthy());
     await waitFor(() => {
       const cart = ((renderer.shown[renderer.shown.length - 1].page as { children: { id: string; children?: unknown[] }[] }).children)[0];
       expect(cart.children, "Cart is loaded and shown").toBeTruthy();

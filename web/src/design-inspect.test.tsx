@@ -117,6 +117,20 @@ vi.mock("@/design/renderer", () => ({
       destroyed: false,
     };
     fake.instances.push(instance);
+    type FakeLayer = { address: string; name: string; type: string; children: FakeLayer[] };
+    const boards = (): FakeLayer[] => {
+      const last = instance.shown[instance.shown.length - 1];
+      const id = (last?.page as { id?: string } | undefined)?.id;
+      return id ? (fake.layersByPage.get(id) ?? []) : [];
+    };
+    const findLayer = (layers: FakeLayer[], address: string): FakeLayer | null => {
+      for (const layer of layers) {
+        if (layer.address === address) return layer;
+        const below = findLayer(layer.children, address);
+        if (below) return below;
+      }
+      return null;
+    };
     return {
       show(page: unknown, system: unknown) {
         instance.shown.push({ page, system });
@@ -125,9 +139,13 @@ vi.mock("@/design/renderer", () => ({
         instance.mode = modes?.[0] ?? null;
       },
       layers() {
-        const last = instance.shown[instance.shown.length - 1];
-        const id = (last?.page as { id?: string } | undefined)?.id;
-        return id ? (fake.layersByPage.get(id) ?? []) : [];
+        return boards().map((board) => ({ ...board, children: [] }));
+      },
+      layersOf(address: string) {
+        return findLayer(boards(), address);
+      },
+      boardOf(address: string) {
+        return boards().find((board) => findLayer([board], address))?.address ?? null;
       },
       select(address: string | null) {
         instance.selected.push(address);
@@ -144,9 +162,10 @@ vi.mock("@/design/renderer", () => ({
         return fake.inspections.get(`${instance.mode} ${address}`) ?? null;
       },
       // US-045's comment pins (src/design-review.test.tsx); this test does
-      // not look at them.
-      boxOf() {
-        return null;
+      // not look at them, but a selection stays only on a node the renderer has a box for.
+      boxOf(address: string) {
+        const layer = findLayer(boards(), address);
+        return layer ? { x: 0, y: 0, width: 0, height: 0, name: layer.name } : null;
       },
       onView() {
         return () => {};
@@ -594,11 +613,16 @@ function lastShownPage(renderer: Awaited<ReturnType<typeof findRenderer>>) {
   return (renderer.shown[renderer.shown.length - 1]?.page as { id?: string } | undefined)?.id;
 }
 
-/** The treeitem of the node named `name`, once the layers panel lists it. */
+/** The treeitem of the node named `name`, once the layers panel lists it, its board unfolded. */
 async function findTreeItem(name: string) {
   return waitFor(() => {
     const region = screen.getByRole("region", { name: /^layers$/i });
-    return within(region).getByRole("treeitem", { name: new RegExp(`^${name}\\b`) });
+    for (const folded of within(region).queryAllByRole("button", { expanded: false })) fireEvent.click(folded);
+    const item = within(region)
+      .queryAllByRole("treeitem")
+      .find((candidate) => new RegExp(`^${name}\\b`).test((candidate.textContent ?? "").trim()));
+    expect(item, `the layers panel lists ${name}`).toBeTruthy();
+    return item!;
   });
 }
 

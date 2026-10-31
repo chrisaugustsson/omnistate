@@ -1,19 +1,24 @@
-//! US-043: what the design viewer needs from the renderer for its layers
-//! panel, which lists the node tree of the page shown and keeps its selection
-//! in step with the canvas.
+//! US-043, US-126: what the design viewer needs from the renderer for its
+//! layers panel, which lists the boards of the page shown, folded, opens a
+//! board's node tree, and keeps its selection in step with the canvas.
 //!
 //! `omni_render::view::Scene` answers both, with the types of
 //! `omni_render::select`:
 //!
 //! - `Scene::layers()` lists the boards of the page in page order, each as a
-//!   `Layer {address, name, kind, children}` with every node below it in
-//!   document order. A scene made with a design system lists the layers of
-//!   each instance's component under the instance, addressed
+//!   `Layer {address, name, kind, children}` with `children` empty.
+//! - `Scene::layers_of(&address)` gives the node at the address as a `Layer`
+//!   with every node below it in document order; `None` for an address that
+//!   names no node of the page. A scene made with a design system lists the
+//!   layers of each instance's component under the instance, addressed
 //!   `<instanceId>/<componentNodeId>` (a node inside an instance inside an
 //!   instance is addressed from the instance of the page, as `Scene::node_at`
 //!   gives it). `kind` is the node's type as the design has it, so an
 //!   instance is listed as an `instance` although it is drawn as a frame of
-//!   its component's layers.
+//!   its component's layers. A board not read yet (a placeholder) has no
+//!   children.
+//! - `Scene::board_of(&address)` names the board that holds the node, a
+//!   board's own ID for the board; `None` for an address not on the page.
 //! - `Scene::select_address(Some(&address))` selects the node at that
 //!   address, as a click in the panel does: it is the selection from then on
 //!   (`Scene::selected`, the `selection` outline of `Scene::overlay`), and an
@@ -27,7 +32,10 @@
 //! - `omni_render_scene_layers() -> *const c_char`: `Scene::layers` of the
 //!   loaded scene as a NUL-ended JSON array that stays until the next call:
 //!   `[{"address": "<address>", "name": "Cart", "type": "board", "children":
-//!   [...]}]`.
+//!   []}]`.
+//! - `omni_render_scene_layers_of(address, len)` and
+//!   `omni_render_scene_board_of(address, len)`: `Scene::layers_of` as one
+//!   such JSON object and `Scene::board_of` as text, null for no node.
 //! - `omni_render_select_node(address, len) -> bool`:
 //!   `Scene::select_address` for an address as text; empty text clears the
 //!   selection.
@@ -269,45 +277,96 @@ fn outline(layers: &[Layer]) -> String {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn the_layers_are_the_boards_of_the_page_with_every_node_below_them() {
+fn the_layers_are_the_boards_of_the_page_in_page_order_without_their_children() {
     let expected = vec![
-        layer(
-            CHECKOUT,
-            "Checkout",
-            "board",
-            vec![
-                layer(
-                    BUY,
-                    "Buy",
-                    "instance",
-                    vec![
-                        layer(&inside(BUY, LABEL), "Label", "text", vec![]),
-                        layer(
-                            &inside(BUY, ICON),
-                            "Icon",
-                            "instance",
-                            vec![layer(&inside(BUY, WHEEL), "Wheel", "frame", vec![])],
-                        ),
-                    ],
-                ),
-                layer(
-                    SUMMARY,
-                    "Summary",
-                    "frame",
-                    vec![layer(TOTAL, "Total", "text", vec![])],
-                ),
-            ],
-        ),
+        layer(CHECKOUT, "Checkout", "board", vec![]),
         layer(RECEIPT, "Receipt", "board", vec![]),
     ];
-    let layers = scene().layers();
+    assert_eq!(scene().layers(), expected);
+}
+
+#[test]
+fn the_layers_of_a_board_are_every_node_below_it() {
+    let expected = layer(
+        CHECKOUT,
+        "Checkout",
+        "board",
+        vec![
+            layer(
+                BUY,
+                "Buy",
+                "instance",
+                vec![
+                    layer(&inside(BUY, LABEL), "Label", "text", vec![]),
+                    layer(
+                        &inside(BUY, ICON),
+                        "Icon",
+                        "instance",
+                        vec![layer(&inside(BUY, WHEEL), "Wheel", "frame", vec![])],
+                    ),
+                ],
+            ),
+            layer(
+                SUMMARY,
+                "Summary",
+                "frame",
+                vec![layer(TOTAL, "Total", "text", vec![])],
+            ),
+        ],
+    );
+    let layers = scene().layers_of(&address(CHECKOUT));
     assert_eq!(
-        outline(&layers),
-        outline(&expected),
-        "the layers list every board and node of the page, nodes inside instances by \
+        outline(layers.as_slice()),
+        outline(&[expected.clone()]),
+        "the layers of a board list every node below it, nodes inside instances by \
          `<instanceId>/<componentNodeId>`"
     );
-    assert_eq!(layers, expected);
+    assert_eq!(layers, Some(expected));
+}
+
+#[test]
+fn the_layers_of_a_node_inside_an_instance_are_its_subtree() {
+    assert_eq!(
+        scene().layers_of(&address(&inside(BUY, ICON))),
+        Some(layer(
+            &inside(BUY, ICON),
+            "Icon",
+            "instance",
+            vec![layer(&inside(BUY, WHEEL), "Wheel", "frame", vec![])],
+        ))
+    );
+}
+
+#[test]
+fn the_layers_of_an_address_not_on_the_page_are_none() {
+    let scene = scene();
+    assert_eq!(scene.layers_of(&address("zzzzzzzz")), None);
+    assert_eq!(scene.layers_of(&address(&inside(BUY, "zzzzzzzz"))), None);
+}
+
+// ---------------------------------------------------------------------------
+// The board that holds a node
+// ---------------------------------------------------------------------------
+
+#[test]
+fn the_board_of_a_node_inside_an_instance_is_the_board_holding_the_instance() {
+    assert_eq!(
+        scene().board_of(&address(&inside(BUY, WHEEL))),
+        Some(*address(CHECKOUT).node())
+    );
+}
+
+#[test]
+fn the_board_of_a_board_is_the_board_itself() {
+    assert_eq!(
+        scene().board_of(&address(RECEIPT)),
+        Some(*address(RECEIPT).node())
+    );
+}
+
+#[test]
+fn the_board_of_an_address_not_on_the_page_is_none() {
+    assert_eq!(scene().board_of(&address("zzzzzzzz")), None);
 }
 
 #[test]
@@ -324,8 +383,12 @@ fn every_layer_is_a_node_the_canvas_knows_by_the_same_address() {
             walk(scene, &layer.children);
         }
     }
-    let layers = scene.layers();
-    assert!(!layers.is_empty(), "the page has two boards");
+    let layers: Vec<Layer> = scene
+        .layers()
+        .iter()
+        .filter_map(|board| scene.layers_of(&board.address))
+        .collect();
+    assert_eq!(layers.len(), 2, "the page has two boards");
     walk(&scene, &layers);
 }
 
@@ -425,7 +488,12 @@ fn the_wasm_module_exports_the_layers_and_selection_by_address() {
     let path = common::repo_root().join("render-sandbox/build/omni_render.js");
     let loader =
         fs::read_to_string(&path).unwrap_or_else(|error| panic!("cannot read {path:?}: {error}"));
-    for export in ["_omni_render_scene_layers", "_omni_render_select_node"] {
+    for export in [
+        "_omni_render_scene_layers",
+        "_omni_render_scene_layers_of",
+        "_omni_render_scene_board_of",
+        "_omni_render_select_node",
+    ] {
         assert!(
             loader.contains(export),
             "render-sandbox/build/omni_render.js must export `{export}` after `make render-wasm`, \
