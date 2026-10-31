@@ -1,7 +1,9 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo, useState, type FormEvent } from "react";
 import { Check } from "lucide-react";
-import { loadStories } from "@/api/stories";
+import { ApiError } from "@/api/client";
+import { cancelStory, checkCriterion, createStory, loadStories, patchStory } from "@/api/stories";
 import type { StoryBody } from "@/api/generated";
+import { Button } from "@/components/ui/button";
 import { PageHeader } from "@/components/page-header";
 import { Empty } from "@/components/project/items";
 import { Alert, AlertDescription } from "@/components/ui/alert";
@@ -44,15 +46,49 @@ function Badge({ tone, children }: { tone: "warning" | "neutral" | "accent"; chi
   );
 }
 
-function Card({ story, byId }: { story: StoryBody; byId: Map<string, StoryBody> }) {
+type Steer = {
+  stories: StoryBody[];
+  /** Runs a write on a story; a 409 reloads and returns the message to show. */
+  run: (story: StoryBody, write: () => Promise<StoryBody>) => Promise<string | null>;
+  patch: (story: StoryBody, body: { priority?: number; blocked_by?: string[] }) => Promise<StoryBody>;
+  cancel: (story: StoryBody) => Promise<StoryBody>;
+  check: (story: StoryBody, criterion: number) => Promise<StoryBody>;
+};
+
+const CONFLICT = "Someone changed this story; it has been reloaded";
+
+function Card({ story, byId, steer }: { story: StoryBody; byId: Map<string, StoryBody>; steer: Steer }) {
   const holder = story.holder as { run?: string; stage?: string } | null | undefined;
   const findings = unresolved(story);
   const check = toCheck(story);
+  const isClosed = closed(story);
+  const [message, setMessage] = useState<string | null>(null);
+  const [editing, setEditing] = useState(false);
+  const [confirming, setConfirming] = useState(false);
+  const [checking, setChecking] = useState(false);
+  const write = async (action: () => Promise<StoryBody>) => {
+    setMessage(await steer.run(story, action));
+  };
+  const others = steer.stories.filter((other) => other.id !== story.id);
   return (
     <li className="space-y-2 rounded-xl border bg-card px-3 py-2.5 text-sm">
       <div className="flex items-center gap-2 text-xs text-muted-foreground">
         <span className="font-medium tabular-nums">{story.key}</span>
-        <span className="ml-auto tabular-nums">{`P${story.priority}`}</span>
+        {story.priority === 0 ? (
+          <span className="ml-auto tabular-nums">P0</span>
+        ) : (
+          <select
+            aria-label={`${story.key} priority`}
+            value={story.priority}
+            disabled={isClosed}
+            onChange={(event) => write(() => steer.patch(story, { priority: Number(event.target.value) }))}
+            className="ml-auto h-7 rounded-md border border-input bg-background px-1 text-xs tabular-nums"
+          >
+            {[1, 2, 3].map((value) => (
+              <option key={value} value={value}>{`P${value}`}</option>
+            ))}
+          </select>
+        )}
       </div>
       <p className="font-medium">{story.title}</p>
       {holder && (
@@ -63,8 +99,31 @@ function Card({ story, byId }: { story: StoryBody; byId: Map<string, StoryBody> 
       <div className="flex flex-wrap items-center gap-1.5">
         {story.blocked && <Badge tone="warning">Blocked</Badge>}
         {findings > 0 && <Badge tone="neutral">{`${findings} findings`}</Badge>}
-        {check > 0 && <Badge tone="accent">{`${check} to check`}</Badge>}
+        {check > 0 && (
+          <button type="button" aria-expanded={checking} onClick={() => setChecking(!checking)}>
+            <Badge tone="accent">{`${check} to check`}</Badge>
+          </button>
+        )}
       </div>
+      {checking && check > 0 && (
+        <ul className="space-y-1 text-xs">
+          {story.criteria.map((criterion, index) =>
+            criterion.ticked && criterion.pending ? (
+              <li key={index} className="flex items-center gap-2">
+                <span className="min-w-0 flex-1">{criterion.text}</span>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={() => write(() => steer.check(story, index))}
+                >
+                  Checked
+                </Button>
+              </li>
+            ) : null,
+          )}
+        </ul>
+      )}
       {story.blocked_by.length > 0 && (
         <ul className="flex flex-wrap gap-x-2 gap-y-1 text-xs text-muted-foreground">
           {story.blocked_by.map((id) => {
@@ -78,7 +137,142 @@ function Card({ story, byId }: { story: StoryBody; byId: Map<string, StoryBody> 
           })}
         </ul>
       )}
+      {message && (
+        <p role="alert" className="text-xs text-destructive">
+          {message}
+        </p>
+      )}
+      <div className="flex flex-wrap gap-1.5">
+        <Button
+          type="button"
+          size="sm"
+          variant="ghost"
+          disabled={isClosed}
+          aria-expanded={editing}
+          onClick={() => setEditing(!editing)}
+        >
+          Edit blockers
+        </Button>
+        {!isClosed && !confirming && (
+          <Button type="button" size="sm" variant="ghost" onClick={() => setConfirming(true)}>
+            Cancel story
+          </Button>
+        )}
+      </div>
+      {editing && !isClosed && (
+        <ul className="space-y-1 text-xs">
+          {others.map((other) => (
+            <li key={other.id}>
+              <label className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={story.blocked_by.includes(other.id)}
+                  onChange={(event) =>
+                    write(() =>
+                      steer.patch(story, {
+                        blocked_by: event.target.checked
+                          ? [...story.blocked_by, other.id]
+                          : story.blocked_by.filter((id) => id !== other.id),
+                      }),
+                    )
+                  }
+                />
+                {other.key}
+              </label>
+            </li>
+          ))}
+        </ul>
+      )}
+      {confirming && !isClosed && (
+        <div className="flex items-center gap-2 text-xs">
+          <span>{`Cancel ${story.key}?`}</span>
+          <Button
+            type="button"
+            size="sm"
+            variant="destructive"
+            onClick={async () => {
+              setConfirming(false);
+              await write(() => steer.cancel(story));
+            }}
+          >
+            Confirm
+          </Button>
+          <Button type="button" size="sm" variant="ghost" onClick={() => setConfirming(false)}>
+            Keep
+          </Button>
+        </div>
+      )}
     </li>
+  );
+}
+
+const BROWSER_LINE = "Verify in browser using dev-browser skill";
+
+/** The criteria of the form's textarea: a line each, trimmed, blank lines skipped. */
+function criteriaOf(lines: string) {
+  return lines
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line !== "")
+    .map((text) => ({ text, human_check: text.includes("(human check)") || text.endsWith(BROWSER_LINE) }));
+}
+
+function AddStory({ onAdd, onClose }: { onAdd: (body: Parameters<typeof createStory>[3]) => Promise<boolean>; onClose: () => void }) {
+  const [title, setTitle] = useState("");
+  const [text, setText] = useState("");
+  const [topic, setTopic] = useState("");
+  const [priority, setPriority] = useState("3");
+  const [criteria, setCriteria] = useState("");
+  const [failed, setFailed] = useState(false);
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    const added = await onAdd({ title, text, topic, priority: Number(priority), criteria: criteriaOf(criteria) });
+    if (added) onClose();
+    else setFailed(true);
+  };
+  const field = "w-full rounded-md border border-input bg-background px-2 py-1.5 text-sm";
+  return (
+    <form onSubmit={submit} aria-label="Add story" className="max-w-xl space-y-3 rounded-xl border bg-card p-4 text-sm">
+      <label className="block space-y-1">
+        Title
+        <input value={title} onChange={(event) => setTitle(event.target.value)} className={field} />
+      </label>
+      <label className="block space-y-1">
+        Text
+        <textarea value={text} onChange={(event) => setText(event.target.value)} rows={3} className={field} />
+      </label>
+      <label className="block space-y-1">
+        Topic
+        <input value={topic} onChange={(event) => setTopic(event.target.value)} className={field} />
+      </label>
+      <label className="block space-y-1">
+        Priority
+        <select value={priority} onChange={(event) => setPriority(event.target.value)} className={field}>
+          {["1", "2", "3"].map((value) => (
+            <option key={value} value={value}>
+              {value}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label className="block space-y-1">
+        Criteria, one per line
+        <textarea value={criteria} onChange={(event) => setCriteria(event.target.value)} rows={4} className={field} />
+      </label>
+      {failed && (
+        <p role="alert" className="text-xs text-destructive">
+          The story could not be added. Check the title and try again.
+        </p>
+      )}
+      <div className="flex gap-2">
+        <Button type="submit" disabled={title.trim() === ""}>
+          Create story
+        </Button>
+        <Button type="button" variant="ghost" onClick={onClose}>
+          Close
+        </Button>
+      </div>
+    </form>
   );
 }
 
@@ -93,13 +287,55 @@ export function Board({
   featureId: string;
 }) {
   const load = useCallback(() => loadStories(workspaceId, projectId, featureId), [workspaceId, projectId, featureId]);
-  const { value: stories, failed, reload } = useReloading(load);
+  const { value: loaded, failed, reload } = useReloading(load);
+  // Answers of our own writes, shown until a load brings a version as new.
+  const [answers, setAnswers] = useState<Map<string, StoryBody>>(new Map());
+  const stories = useMemo(() => {
+    if (!loaded) return loaded;
+    const merged = loaded.map((story) => {
+      const answer = answers.get(story.id);
+      return answer && answer.version > story.version ? answer : story;
+    });
+    const known = new Set(merged.map((story) => story.id));
+    return [...merged, ...[...answers.values()].filter((answer) => !known.has(answer.id) && answer.version === 1)];
+  }, [loaded, answers]);
   useProjectEvents(projectId, (event) => {
     if (event.event.startsWith("story.")) reload();
   });
   const name = useProjectName(workspaceId, projectId);
   const [priority, setPriority] = useState("all");
   const [showCancelled, setShowCancelled] = useState(false);
+  const [adding, setAdding] = useState(false);
+
+  const remember = (story: StoryBody) => setAnswers((current) => new Map(current).set(story.id, story));
+  const steer: Steer = {
+    stories: stories ?? [],
+    run: async (_story, write) => {
+      try {
+        remember(await write());
+        return null;
+      } catch (error) {
+        if (error instanceof ApiError && error.status === 409) {
+          setAnswers(new Map());
+          reload();
+          return CONFLICT;
+        }
+        return "The change could not be saved. Try again in a moment.";
+      }
+    },
+    patch: (story, body) => patchStory(workspaceId, projectId, featureId, story.id, { expected_version: story.version, ...body }),
+    cancel: (story) => cancelStory(workspaceId, projectId, featureId, story.id, story.version),
+    check: (story, criterion) => checkCriterion(workspaceId, projectId, featureId, story.id, story.version, criterion),
+  };
+  const add = async (body: Parameters<typeof createStory>[3]) => {
+    try {
+      remember(await createStory(workspaceId, projectId, featureId, body));
+      reload();
+      return true;
+    } catch {
+      return false;
+    }
+  };
 
   const byId = useMemo(() => new Map((stories ?? []).map((story) => [story.id, story])), [stories]);
   const shown = useMemo(
@@ -137,7 +373,11 @@ export function Board({
               <input type="checkbox" checked={showCancelled} onChange={(event) => setShowCancelled(event.target.checked)} />
               Show cancelled
             </label>
+            <Button type="button" size="sm" variant="outline" className="ml-auto" onClick={() => setAdding(!adding)}>
+              Add story
+            </Button>
           </div>
+          {adding && <AddStory onAdd={add} onClose={() => setAdding(false)} />}
           <div className="flex gap-4 overflow-x-auto pb-2">
             {columns.map((column) => {
               const cards = shown
@@ -154,7 +394,7 @@ export function Board({
                   ) : (
                     <ul className="space-y-2">
                       {cards.map((story) => (
-                        <Card key={story.id} story={story} byId={byId} />
+                        <Card key={story.id} story={story} byId={byId} steer={steer} />
                       ))}
                     </ul>
                   )}
