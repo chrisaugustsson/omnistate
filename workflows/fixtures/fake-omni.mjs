@@ -3,7 +3,8 @@
 // JSON file FAKE_OMNI_STATE names. FAKE_OMNI_FAIL=thread makes thread create fail.
 // `checks` answers only when the state holds checks; `story list --pickable` applies
 // the board's rule: backlog, not blocked, no planned path shared with a story in
-// implementing or review.
+// implementing or review. `story finding` appends to the story's findings and
+// `story resolve --finding <i>` resolves the i-th (0-based).
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 
@@ -81,6 +82,8 @@ if (noun === "--help") {
   else if (verb === "unblock") s.blocked = false;
   else if (verb === "decision") s.decisions.push({ question: flag("--question"), choice: flag("--choice"), by: flag("--by") });
   else if (verb === "edit") s.links = all("--link").map(link);
+  else if (verb === "finding") (s.findings ||= []).push({ stage: flag("--stage"), text: flag("--text"), files: all("--file"), resolved: false });
+  else if (verb === "resolve") s.findings[Number(flag("--finding"))].resolved = true;
   else if (verb === "files") s.files_changed = argv.slice(3).filter((a, i, rest) => a !== "--run" && a !== "--feature" && rest[i - 1] !== "--run" && rest[i - 1] !== "--feature");
   else {
     process.stderr.write(`fake omni: unknown story verb ${verb}\n`);

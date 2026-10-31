@@ -400,16 +400,23 @@ function deliver(args, agent) {
 }
 
 // An agent that passes every clarity check and hands each implementer call, with
-// its prompt, to the script given for the story key in its label.
-function implAgent(byKey) {
+// its prompt, to the script given for the story key in its label. Reviewer calls
+// (label `review:<key>`) go to the script in reviewByKey, else pass.
+function implAgent(byKey, reviewByKey = {}) {
   const prompts = {};
+  const reviews = {};
   const agent = async (prompt, opts) => {
+    if (opts.label.startsWith("review:")) {
+      const key = opts.label.slice(7).split(" ")[0];
+      (reviews[key] ||= []).push(prompt);
+      return reviewByKey[key] ? reviewByKey[key](reviews[key].length) : { verdict: "pass", findings: [] };
+    }
     const key = opts.label.startsWith("impl:") && opts.label.slice(5).split(" ")[0];
     if (!key) return { gaps: [] };
     (prompts[key] ||= []).push(prompt);
     return byKey[key](prompts[key].length);
   };
-  return { agent, prompts };
+  return { agent, prompts, reviews };
 }
 
 const branchOf = (wt) => git(wt, "rev-parse", "--abbrev-ref", "HEAD").trim();
@@ -450,7 +457,7 @@ test("with implementers 2 two stories are implementing in their own worktrees wh
   assert.deepEqual(seen.us1, { status: "implementing", holder: { run: result.run, stage: "implementing" }, branch: "story/US-1" });
   assert.deepEqual(seen.us2, { status: "implementing", holder: { run: result.run, stage: "implementing" }, branch: "story/US-2" });
   assert.deepEqual(seen.us3, { status: "backlog", holder: null });
-  assert.equal(dirs.story("US-3").status, "review");
+  assert.equal(dirs.story("US-3").status, "testing");
 });
 
 test("a story sharing a planned path with an implementing story is not picked beside it; the next free story is", { timeout: 20000 }, async (t) => {
@@ -496,7 +503,7 @@ test("moves a ready story to review after the fast command passes in its worktre
 
   await deliver({ feature: "board" }, agent);
 
-  assert.equal(dirs.story("US-1").status, "review");
+  assert.equal(dirs.story("US-1").status, "testing");
   assert.deepEqual(dirs.story("US-1").files_changed, ["NOTES", "src/board.rs"]);
 });
 
@@ -541,7 +548,7 @@ test("an implementer returning blocked leaves its story blocked in implementing,
   assert.equal(dirs.story("US-1").status, "implementing");
   assert.deepEqual(dirs.story("US-1").holder, { run: result.run, stage: "implementing" });
   assert.equal(existsSync(join(dirs.root, "app-stories", "US-1")), true);
-  assert.equal(dirs.story("US-2").status, "review");
+  assert.equal(dirs.story("US-2").status, "testing");
 });
 
 test("an implementer returning needs_decision blocks its story with a thread 'US-<n>: <question>' holding the options and recommendation, worktree kept", async (t) => {
@@ -572,4 +579,138 @@ test("records the implementer's decisions as agent decisions", async (t) => {
   await deliver({ feature: "board" }, agent);
 
   assert.deepEqual(dirs.story("US-1").decisions, [{ question: "Where does the board query live?", choice: "In stories.rs", by: "agent" }]);
+});
+
+// ---- review in the worktree -------------------------------------------------
+
+// A story another run left in review, with its worktree one commit ahead; the run
+// claims it at review and the Implement phase leaves it alone.
+function inReview(dirs, key) {
+  const wt = worktree(dirs, key);
+  mkdirSync(join(wt, "src"));
+  writeFileSync(join(wt, "src", "board.rs"), "board\n");
+  git(wt, "add", "src/board.rs");
+  git(wt, "commit", "-q", "-m", "feat: Add board");
+  return wt;
+}
+
+// An implementer that commits a new file on each call, as a fix: commit.
+const fixer = (wt, key) => async (n) => {
+  writeFileSync(join(wt, "src", `fix${n}.rs`), "fix\n");
+  git(wt, "add", `src/fix${n}.rs`);
+  git(wt, "commit", "-q", "-m", `fix: Address review of ${key}`);
+  return { status: "ready", summary: "fixed" };
+};
+
+const fail = (...texts) => ({ verdict: "fail", findings: texts.map((text) => ({ text, files: ["src/board.rs"], criterion: "The badge has a colour" })) });
+const openFindings = (s) => (s.findings || []).filter((f) => f.stage === "review" && !f.resolved).map((f) => f.text);
+
+test("a story that fails review three times is blocked in review with a thread listing the third round's findings, and no third implementer runs", async (t) => {
+  const dirs = scratch(t, [story("US-1", { status: "review" })]);
+  dirs.checks({ fast: "true", stack_up: "true", stack: "true" });
+  const wt = inReview(dirs, "US-1");
+  const { agent, prompts, reviews } = implAgent({ "US-1": fixer(wt, "US-1") }, { "US-1": (n) => fail(`Round ${n}: the badge has no colour`) });
+
+  const result = await deliver({ feature: "board" }, agent);
+
+  assert.equal(reviews["US-1"].length, 3);
+  assert.equal(prompts["US-1"].length, 2);
+  const th = threadOf(dirs, "US-1");
+  assert.equal(th.title, "US-1: the review still fails after three attempts");
+  assert.ok(th.posts[0].body.includes("Round 3: the badge has no colour"));
+  assert.ok(!th.posts[0].body.includes("Round 1") && !th.posts[0].body.includes("Round 2"));
+  assert.deepEqual(dirs.story("US-1").links, [{ thread_id: th.id, label: "question" }]);
+  assert.equal(dirs.story("US-1").blocked, true);
+  assert.equal(dirs.story("US-1").status, "review");
+  assert.deepEqual(dirs.story("US-1").holder, { run: result.run, stage: "review" });
+  assert.deepEqual(openFindings(dirs.story("US-1")), ["Round 3: the badge has no colour"]);
+});
+
+test("a review fail with two findings is fixed in the worktree, the fast command runs after the fix commit, files_changed is rewritten, and a passing second review resolves the findings and moves it to testing", async (t) => {
+  const dirs = scratch(t, [story("US-1", { status: "review", files_changed: ["src/board.rs"] })]);
+  const marker = join(dirs.root, "fast-runs");
+  dirs.checks({ fast: `git cat-file -e HEAD:src/fix1.rs && echo committed >> ${marker}`, stack_up: "true", stack: "true" });
+  const wt = inReview(dirs, "US-1");
+  const seen = {};
+  const fix = fixer(wt, "US-1");
+  const { agent, prompts, reviews } = implAgent({
+    "US-1": async (n) => {
+      seen.status = dirs.story("US-1").status;
+      seen.open = openFindings(dirs.story("US-1"));
+      return fix(n);
+    },
+  }, { "US-1": (n) => (n === 1 ? fail("The badge has no colour", "The badge count shows zero") : { verdict: "pass", findings: [] }) });
+
+  await deliver({ feature: "board" }, agent);
+
+  assert.deepEqual(seen, { status: "review", open: ["The badge has no colour", "The badge count shows zero"] });
+  assert.ok(prompts["US-1"][0].includes("The badge has no colour") && prompts["US-1"][0].includes("The badge count shows zero"));
+  assert.ok(prompts["US-1"][0].includes(wt));
+  assert.equal(readFileSync(marker, "utf8"), "committed\n");
+  assert.deepEqual(dirs.story("US-1").files_changed, ["src/board.rs", "src/fix1.rs"]);
+  assert.equal(reviews["US-1"].length, 2);
+  assert.deepEqual(openFindings(dirs.story("US-1")), []);
+  assert.equal(dirs.story("US-1").findings.length, 2);
+  assert.equal(dirs.story("US-1").status, "testing");
+});
+
+test("a fast command failing three times in a review fix round blocks the story in review with the fast thread, and the reviewer does not run again", async (t) => {
+  const dirs = scratch(t, [story("US-1", { status: "review" })]);
+  dirs.checks({ fast: "echo fast broke; exit 1", stack_up: "true", stack: "true" });
+  const wt = inReview(dirs, "US-1");
+  const { agent, prompts, reviews } = implAgent({ "US-1": fixer(wt, "US-1") }, { "US-1": () => fail("The badge has no colour") });
+
+  const result = await deliver({ feature: "board" }, agent);
+
+  assert.equal(prompts["US-1"].length, 3);
+  assert.equal(reviews["US-1"].length, 1);
+  const th = threadOf(dirs, "US-1");
+  assert.equal(th.title, "US-1: the fast command still fails after three attempts");
+  assert.equal(dirs.story("US-1").blocked, true);
+  assert.equal(dirs.story("US-1").status, "review");
+  assert.deepEqual(dirs.story("US-1").holder, { run: result.run, stage: "review" });
+  assert.equal(existsSync(wt), true);
+});
+
+test("a reviewer returning needs_decision blocks the story in review with a thread 'US-<n>: <question>' holding the options and recommendation, and no implementer runs", async (t) => {
+  const dirs = scratch(t, [story("US-1", { status: "review" })]);
+  dirs.checks({ fast: "true", stack_up: "true", stack: "true" });
+  const wt = inReview(dirs, "US-1");
+  const { agent, prompts } = implAgent({ "US-1": fixer(wt, "US-1") }, {
+    "US-1": () => ({ verdict: "needs_decision", findings: [], question: "Which colour is the badge?", options: ["Paint it red", "Paint it blue"], recommendation: "Paint it red" }),
+  });
+
+  await deliver({ feature: "board" }, agent);
+
+  const th = threadOf(dirs, "US-1");
+  assert.equal(th.title, "US-1: Which colour is the badge?");
+  assert.ok(th.posts[0].body.includes("Paint it red") && th.posts[0].body.includes("Paint it blue"));
+  assert.ok(th.posts[0].body.includes("Recommendation: Paint it red"));
+  assert.deepEqual(dirs.story("US-1").links, [{ thread_id: th.id, label: "question" }]);
+  assert.equal(dirs.story("US-1").blocked, true);
+  assert.equal(dirs.story("US-1").status, "review");
+  assert.equal(prompts["US-1"], undefined);
+});
+
+test("with reviewers 2 two stories in review are reviewed at the same time", { timeout: 20000 }, async (t) => {
+  const dirs = scratch(t, [story("US-1", { status: "review" }), story("US-2", { status: "review" })]);
+  dirs.checks({ fast: "true", stack_up: "true", stack: "true" });
+  inReview(dirs, "US-1");
+  inReview(dirs, "US-2");
+  const secondStarted = deferred();
+  const { agent } = implAgent({}, {
+    "US-1": async () => {
+      await secondStarted.promise;
+      return { verdict: "pass", findings: [] };
+    },
+    "US-2": async () => {
+      secondStarted.resolve();
+      return { verdict: "pass", findings: [] };
+    },
+  });
+
+  await deliver({ feature: "board", reviewers: 2 }, agent);
+
+  assert.equal(dirs.story("US-1").status, "testing");
+  assert.equal(dirs.story("US-2").status, "testing");
 });
