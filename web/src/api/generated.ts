@@ -358,10 +358,18 @@ export const FeatureResponseSchema = z.object({
 });
 export type FeatureResponse = z.infer<typeof FeatureResponseSchema>;
 
+export const StoryCountsSchema = z.object({
+  done: z.number().int(),
+  open: z.number().int(),
+  total: z.number().int(),
+});
+export type StoryCounts = z.infer<typeof StoryCountsSchema>;
+
 export const FeatureSummarySchema = z.object({
   docs: z.number().int(),
   feature: FeatureBodySchema,
   last_activity: z.string().nullable().optional(),
+  stories: StoryCountsSchema.optional(),
   waiting: z.number().int(),
 });
 export type FeatureSummary = z.infer<typeof FeatureSummarySchema>;
@@ -892,6 +900,7 @@ export const schemas = {
   StartThreadRequest: StartThreadRequestSchema,
   StoryBody: StoryBodySchema,
   StoryConflictBody: StoryConflictBodySchema,
+  StoryCounts: StoryCountsSchema,
   StoryHeldBody: StoryHeldBodySchema,
   StoryListResponse: StoryListResponseSchema,
   StoryResponse: StoryResponseSchema,

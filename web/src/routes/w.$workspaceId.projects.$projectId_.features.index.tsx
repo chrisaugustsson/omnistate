@@ -32,6 +32,7 @@ const firstLine = (text: string) => text.split(/\r?\n/, 1)[0];
 
 function FeatureRow({ summary, params }: { summary: FeatureSummary; params: { workspaceId: string; projectId: string } }) {
   const { feature, waiting, last_activity } = summary;
+  const stories = summary.stories ?? { total: 0, open: 0, done: 0 };
   return (
     <li>
       <Link
@@ -42,6 +43,9 @@ function FeatureRow({ summary, params }: { summary: FeatureSummary; params: { wo
         <span className="min-w-0 flex-1">
           <span className="block truncate font-medium">{feature.name}</span>
           {feature.description && <span className="mt-0.5 block truncate text-[13px] text-muted-foreground">{firstLine(feature.description)}</span>}
+        </span>
+        <span className="hidden shrink-0 text-xs text-muted-foreground tabular-nums sm:inline">
+          {stories.done}/{stories.total} stories
         </span>
         <span className="flex w-8 shrink-0 justify-end">
           {waiting > 0 && (

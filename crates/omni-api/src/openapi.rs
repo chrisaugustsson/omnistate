@@ -25,7 +25,7 @@ use crate::docs::{
 use crate::features::{
     CreateFeatureRequest, FeatureBody, FeatureListResponse, FeatureResponse, RenameFeatureRequest,
 };
-use crate::home::{FeatureSummary, HomeResponse, WaitingBody};
+use crate::home::{FeatureSummary, HomeResponse, StoryCounts, WaitingBody};
 use crate::live::{LiveClientMessage, LiveErrorCode, LiveEventName, LiveServerMessage};
 use crate::pins::NodeBox;
 use crate::projects::{CreateProjectRequest, ProjectBody, ProjectListResponse, ProjectResponse};
@@ -228,6 +228,7 @@ use utoipa::OpenApi;
         ReplyRequest,
         WaitingBody,
         FeatureSummary,
+        StoryCounts,
         HomeResponse
     ))
 )]

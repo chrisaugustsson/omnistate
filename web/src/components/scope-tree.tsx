@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Link } from "@tanstack/react-router";
-import { Boxes, ChevronRight, Database, FileText, FlaskConical, MessagesSquare, Palette, type LucideIcon } from "lucide-react";
+import { Boxes, ChevronRight, Database, FileText, FlaskConical, MessagesSquare, Palette, SquareKanban, type LucideIcon } from "lucide-react";
 import type { HomeResponse } from "@/api/generated";
 import { PILLARS, featureNames } from "@/components/project/items";
 import { inOrder } from "@/components/project/scope-page";
@@ -124,6 +124,7 @@ export function ScopeTree({
   const own = (item: { feature_id?: string | null }) => (item.feature_id ?? "app") === scope;
   const docs = home.docs.filter(own);
   const threads = home.threads.filter(own).length;
+  const openStories = home.features?.find((summary) => summary.feature.id === scope)?.stories?.open ?? 0;
   const name = scope === "app" ? "App" : (featureNames(home).get(scope) ?? "");
   const headClass = cn(rowClass, "h-[30px] text-[13px] font-semibold text-foreground");
   return (
@@ -172,6 +173,18 @@ export function ScopeTree({
         <MessagesSquare aria-hidden className="size-3.5 shrink-0 text-muted-foreground" />
         Threads ({threads})
       </Link>
+      {scope !== "app" && (
+        <Link
+          to="/w/$workspaceId/projects/$projectId/features/$featureId/board"
+          params={{ ...params, featureId: scope }}
+          activeOptions={{ exact: true, includeSearch: false }}
+          activeProps={{ className: activeClass }}
+          className={cn(rowClass, "h-7 text-xs font-medium")}
+        >
+          <SquareKanban aria-hidden className="size-3.5 shrink-0 text-muted-foreground" />
+          Board ({openStories})
+        </Link>
+      )}
     </div>
   );
 }

@@ -223,6 +223,15 @@ export function ScopePage({ workspaceId, projectId, featureId }: Params & { feat
             }
           />
           <nav aria-label="Pillars" className="mt-6 flex flex-wrap gap-1.5">
+            {featureId && (
+              <Link
+                to="/w/$workspaceId/projects/$projectId/features/$featureId/board"
+                params={{ ...params, featureId }}
+                className="inline-flex h-7 items-center rounded-lg border px-2.5 text-[12.5px] text-foreground/80 transition-colors hover:bg-accent"
+              >
+                Stories {summary?.stories?.open ?? 0}/{summary?.stories?.total ?? 0}
+              </Link>
+            )}
             {PILLARS.map(({ pillar, title: label }) => (
               <a
                 key={pillar}

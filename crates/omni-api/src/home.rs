@@ -39,6 +39,17 @@ pub struct WaitingBody {
     pub comments: Vec<CommentBody>,
 }
 
+/// How many stories a feature has.
+#[derive(Serialize, ToSchema)]
+pub struct StoryCounts {
+    /// The feature's stories that are not cancelled.
+    pub total: i64,
+    /// The stories that are neither `done` nor `cancelled`.
+    pub open: i64,
+    /// The stories that are `done`.
+    pub done: i64,
+}
+
 /// A feature of the project with what it holds.
 #[derive(Serialize, ToSchema)]
 pub struct FeatureSummary {
@@ -47,6 +58,9 @@ pub struct FeatureSummary {
     pub docs: i64,
     /// The items of `waiting` that belong to the feature.
     pub waiting: i64,
+    /// The feature's stories by count. The API always sends it.
+    #[schema(required = false)]
+    pub stories: StoryCounts,
     /// The time of the latest write to one of the feature's docs (a row of
     /// `doc_changes`: create, edit, rename or delete) or its threads (a
     /// thread's creation, a post or a conclusion); comments and replies do not
@@ -150,6 +164,15 @@ pub async fn show(
     let written = last_writes(&mut tx, &project_id).await?;
     let activity = last_activity(&mut tx, &project_id).await?;
     let post_stats = post_stats(&mut tx, &project_id).await?;
+    let story_rows: Vec<(String, i64, i64)> = sqlx::query_as(
+        "SELECT feature_id::text, count(*) FILTER (WHERE status NOT IN ('done', 'cancelled')), \
+         count(*) FILTER (WHERE status = 'done') \
+         FROM stories WHERE project_id = $1::uuid GROUP BY feature_id",
+    )
+    .bind(&project_id)
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(ApiError::database)?;
     tx.commit().await.map_err(ApiError::database)?;
     let comments = finish(&state, &request.workspace_id, &project_id, waiting_comments).await?;
     let features = features
@@ -166,6 +189,21 @@ pub async fn show(
                     .filter(|d| d.feature_id.as_deref() == own)
                     .count() as i64,
                 waiting: waiting as i64,
+                stories: story_rows
+                    .iter()
+                    .find(|(id, _, _)| *id == feature.id)
+                    .map_or(
+                        StoryCounts {
+                            total: 0,
+                            open: 0,
+                            done: 0,
+                        },
+                        |(_, open, done)| StoryCounts {
+                            total: open + done,
+                            open: *open,
+                            done: *done,
+                        },
+                    ),
                 last_activity: activity.get(Some(feature.id.as_str())),
                 feature,
             }

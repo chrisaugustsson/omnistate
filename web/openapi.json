@@ -1137,6 +1137,10 @@
               "null"
             ]
           },
+          "stories": {
+            "$ref": "#/components/schemas/StoryCounts",
+            "description": "The feature's stories by count. The API always sends it."
+          },
           "waiting": {
             "description": "The items of `waiting` that belong to the feature.",
             "format": "int64",
@@ -2508,6 +2512,32 @@
         "required": [
           "error",
           "current_version"
+        ],
+        "type": "object"
+      },
+      "StoryCounts": {
+        "description": "How many stories a feature has.",
+        "properties": {
+          "done": {
+            "description": "The stories that are `done`.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "open": {
+            "description": "The stories that are neither `done` nor `cancelled`.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "total": {
+            "description": "The feature's stories that are not cancelled.",
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "total",
+          "open",
+          "done"
         ],
         "type": "object"
       },
