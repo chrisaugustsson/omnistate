@@ -26,6 +26,14 @@
 //!   an unknown status is 422. `GET /stories/{story_id}` is 404 for a story
 //!   of another feature or project.
 //! - Creating a story emits `story.created` with `{story_id, key, feature_id}`.
+//! - US-132: `GET /stories?pickable=true` lists the `backlog` stories that are
+//!   not `blocked`, whose `blocked_by` stories are all `done` or `cancelled`,
+//!   and whose files share no path with a story of the feature in
+//!   `implementing` or `review` (a story's files are `files_changed` when not
+//!   empty, else `files_planned`). They come by priority, then by open (not
+//!   done, not cancelled) dependants, most first, then by number.
+//!   `pickable=false` gives the normal list, any other value is 422; with
+//!   `?status=` the list is empty unless the status is `backlog`.
 
 mod common;
 
@@ -381,6 +389,65 @@ fn set_status(story: &str, status: &str) {
             .await
             .unwrap_or_else(|e| panic!("set the status: {e}"));
     })
+}
+
+/// Sets a story's `blocked` flag as the admin role: no route of this story
+/// blocks one.
+fn set_blocked(story: &str) {
+    block(async {
+        let mut conn = admin_connection().await;
+        sqlx::query("update stories set blocked = true where id = $1::uuid")
+            .bind(story)
+            .execute(&mut conn)
+            .await
+            .unwrap_or_else(|e| panic!("block the story: {e}"));
+    })
+}
+
+/// Sets a story's `files_changed` as the admin role: no route of this story
+/// writes them.
+fn set_files_changed(story: &str, files: Value) {
+    block(async {
+        let mut conn = admin_connection().await;
+        sqlx::query("update stories set files_changed = $2::jsonb where id = $1::uuid")
+            .bind(story)
+            .bind(files.to_string())
+            .execute(&mut conn)
+            .await
+            .unwrap_or_else(|e| panic!("set the changed files: {e}"));
+    })
+}
+
+/// Creates a story with `extra`'s fields as the agent; returns its id.
+fn new_story(f: &Fixture, client: &Client, project: &str, feature: &str, extra: Value) -> String {
+    id_of(&create_story(
+        f,
+        client,
+        project,
+        feature,
+        &body_with("Story", extra),
+    ))
+}
+
+/// The keys `GET /stories?<query>` lists.
+fn listed_keys(
+    f: &Fixture,
+    client: &Client,
+    project: &str,
+    feature: &str,
+    query: &str,
+) -> Vec<Value> {
+    keys_of(&must(
+        call(
+            client,
+            "GET",
+            &format!("{}?{query}", stories_path(f, project, feature)),
+            &agent(f),
+            None,
+        ),
+        200,
+        "list the stories",
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -818,4 +885,249 @@ fn a_story_is_not_found_under_another_feature_or_project() {
             "not_found",
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// Pickable stories (US-132)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn pickable_lists_backlog_stories_whose_blockers_are_closed_and_whose_files_are_free() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    let feature = new_feature(f, client, &project);
+    let d = new_story(f, client, &project, &feature, json!({}));
+    set_status(&d, "cancelled");
+    let a = new_story(f, client, &project, &feature, json!({}));
+    new_story(f, client, &project, &feature, json!({ "blocked_by": [a] }));
+    new_story(f, client, &project, &feature, json!({ "blocked_by": [d] }));
+    let busy = new_story(
+        f,
+        client,
+        &project,
+        &feature,
+        json!({ "files_planned": ["src/a.rs"] }),
+    );
+    set_status(&busy, "implementing");
+    new_story(
+        f,
+        client,
+        &project,
+        &feature,
+        json!({ "files_planned": ["src/b.rs", "src/a.rs"] }),
+    );
+    assert_eq!(
+        listed_keys(f, client, &project, &feature, "pickable=true"),
+        vec![json!("US-2"), json!("US-4")],
+        "A (US-2) and C (US-4) only; not D (cancelled), B (blocked by backlog A), the implementing story or E (shares src/a.rs)"
+    );
+}
+
+#[test]
+fn a_done_blocker_releases_its_story() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    let feature = new_feature(f, client, &project);
+    let blocker = new_story(f, client, &project, &feature, json!({}));
+    set_status(&blocker, "done");
+    new_story(
+        f,
+        client,
+        &project,
+        &feature,
+        json!({ "blocked_by": [blocker] }),
+    );
+    assert_eq!(
+        listed_keys(f, client, &project, &feature, "pickable=true"),
+        vec![json!("US-2")]
+    );
+}
+
+#[test]
+fn a_story_in_review_holds_its_files_and_one_in_testing_does_not() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    let feature = new_feature(f, client, &project);
+    let reviewed = new_story(
+        f,
+        client,
+        &project,
+        &feature,
+        json!({ "files_planned": ["src/a.rs"] }),
+    );
+    set_status(&reviewed, "review");
+    let tested = new_story(
+        f,
+        client,
+        &project,
+        &feature,
+        json!({ "files_planned": ["src/b.rs"] }),
+    );
+    set_status(&tested, "testing");
+    new_story(
+        f,
+        client,
+        &project,
+        &feature,
+        json!({ "files_planned": ["src/a.rs"] }),
+    );
+    new_story(
+        f,
+        client,
+        &project,
+        &feature,
+        json!({ "files_planned": ["src/b.rs"] }),
+    );
+    assert_eq!(
+        listed_keys(f, client, &project, &feature, "pickable=true"),
+        vec![json!("US-4")]
+    );
+}
+
+#[test]
+fn pickable_stories_come_by_priority_then_open_dependants_then_number() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    let feature = new_feature(f, client, &project);
+    new_story(f, client, &project, &feature, json!({ "priority": 1 }));
+    let q = new_story(f, client, &project, &feature, json!({ "priority": 1 }));
+    new_story(f, client, &project, &feature, json!({ "priority": 0 }));
+    let r = new_story(f, client, &project, &feature, json!({ "priority": 1 }));
+    new_story(f, client, &project, &feature, json!({ "blocked_by": [q] }));
+    let done = new_story(f, client, &project, &feature, json!({ "blocked_by": [r] }));
+    set_status(&done, "done");
+    let cancelled = new_story(f, client, &project, &feature, json!({ "blocked_by": [r] }));
+    set_status(&cancelled, "cancelled");
+    assert_eq!(
+        listed_keys(f, client, &project, &feature, "pickable=true"),
+        vec![json!("US-3"), json!("US-2"), json!("US-1"), json!("US-4")],
+        "priority 0 first; then US-2 with one open dependant; then US-1 and US-4, \
+         whose only dependants are done or cancelled, by number"
+    );
+}
+
+#[test]
+fn a_blocked_story_is_never_pickable() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    let feature = new_feature(f, client, &project);
+    let flagged = new_story(f, client, &project, &feature, json!({}));
+    set_blocked(&flagged);
+    new_story(f, client, &project, &feature, json!({}));
+    assert_eq!(
+        listed_keys(f, client, &project, &feature, "pickable=true"),
+        vec![json!("US-2")]
+    );
+}
+
+#[test]
+fn changed_files_replace_planned_files_on_both_sides_of_the_comparison() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    let feature = new_feature(f, client, &project);
+    let busy = new_story(
+        f,
+        client,
+        &project,
+        &feature,
+        json!({ "files_planned": ["src/planned.rs"] }),
+    );
+    set_files_changed(&busy, json!(["src/changed.rs"]));
+    set_status(&busy, "implementing");
+    new_story(
+        f,
+        client,
+        &project,
+        &feature,
+        json!({ "files_planned": ["src/planned.rs"] }),
+    );
+    new_story(
+        f,
+        client,
+        &project,
+        &feature,
+        json!({ "files_planned": ["src/changed.rs"] }),
+    );
+    let moved = new_story(
+        f,
+        client,
+        &project,
+        &feature,
+        json!({ "files_planned": ["src/changed.rs"] }),
+    );
+    set_files_changed(&moved, json!(["src/other.rs"]));
+    assert_eq!(
+        listed_keys(f, client, &project, &feature, "pickable=true"),
+        vec![json!("US-2"), json!("US-4")],
+        "the busy story holds src/changed.rs only, and US-4 occupies src/other.rs only"
+    );
+}
+
+#[test]
+fn pickable_with_a_status_filter_is_empty_unless_the_status_is_backlog() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    let feature = new_feature(f, client, &project);
+    let busy = new_story(
+        f,
+        client,
+        &project,
+        &feature,
+        json!({ "files_planned": ["src/a.rs"] }),
+    );
+    set_status(&busy, "implementing");
+    new_story(
+        f,
+        client,
+        &project,
+        &feature,
+        json!({ "files_planned": ["src/a.rs"] }),
+    );
+    new_story(f, client, &project, &feature, json!({}));
+    assert_eq!(
+        listed_keys(
+            f,
+            client,
+            &project,
+            &feature,
+            "pickable=true&status=backlog"
+        ),
+        vec![json!("US-3")],
+        "the implementing story still holds src/a.rs when only backlog is listed"
+    );
+    assert_eq!(
+        listed_keys(
+            f,
+            client,
+            &project,
+            &feature,
+            "pickable=true&status=implementing"
+        ),
+        Vec::<Value>::new()
+    );
+}
+
+#[test]
+fn pickable_false_gives_the_normal_list_and_another_value_is_refused() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    let feature = new_feature(f, client, &project);
+    let busy = new_story(f, client, &project, &feature, json!({}));
+    set_status(&busy, "implementing");
+    new_story(f, client, &project, &feature, json!({}));
+    assert_eq!(
+        listed_keys(f, client, &project, &feature, "pickable=false"),
+        vec![json!("US-1"), json!("US-2")]
+    );
+    assert_error(
+        &call(
+            client,
+            "GET",
+            &format!("{}?pickable=yes", stories_path(f, &project, &feature)),
+            &agent(f),
+            None,
+        ),
+        422,
+        "invalid_pickable",
+    );
 }
