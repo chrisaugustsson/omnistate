@@ -6,78 +6,78 @@
 - Machine: Apple M4 Pro, 24 GB memory, Darwin 25.6.0 (arm64), Chrome 156.0.8078.79
 - WebGL renderer: `ANGLE (Apple, ANGLE Metal Renderer: Apple M4 Pro, Unspecified Version)`
 - Builds: release build of the API (docker/api.Dockerfile), production build of the web app (docker/web.Dockerfile)
-- File: fixtures/penpot/tirebud-ordrar.penpot, 797 boards on 5 pages; the pan and zoom is on the page Ordrar (769 boards); imported in 17.8 s
+- File: fixtures/penpot/tirebud-ordrar.penpot, 797 boards on 5 pages; the pan and zoom is on the page Ordrar (769 boards); imported in 16.6 s
 - Chrome: headed, driven by Playwright, 1440x900 viewport, device pixel ratio 2
 - Method: 5 runs, each from a new browser with an empty cache and a restarted API container; the numbers are the median of the 5 runs (memory: the highest peak). A frame is complete when the GPU has finished it (`gl.finish()`), and a frame's time is the time from the previous complete frame.
-- Path: from the opening board out to zoom 0.010, the viewer's minimum on this page, then across the whole page and back in. At that zoom at most 358 of the 769 boards of the page are in view; the page is too tall for all of them to be, and the file's other 28 boards are on other pages.
+- Path: from the opening board out to zoom 0.010, the viewer's minimum on this page, then across the whole page and back in. At that zoom at most 357 of the 769 boards of the page are in view; the page is too tall for all of them to be, and the file's other 28 boards are on other pages.
 
 | Measurement | Result | FR-28 limit | |
 | --- | --- | --- | --- |
-| Cold time to first board | 865.1 ms | under 2000 ms | within the limit |
-| Frame time over the 10 s pan and zoom, median | 10.1 ms | | |
-| Frame time over the 10 s pan and zoom, 95th percentile | 14.2 ms | 16.7 ms or less (60 fps) | within the limit |
-| API peak memory | 71.6 MiB | under 512 MiB | within the limit |
+| Cold time to first board | 745.3 ms | under 2000 ms | within the limit |
+| Frame time over the 10 s pan and zoom, median | 10.4 ms | | |
+| Frame time over the 10 s pan and zoom, 95th percentile | 13.8 ms | 16.7 ms or less (60 fps) | within the limit |
+| API peak memory | 68.8 MiB | under 512 MiB | within the limit |
 
 ### The runs
 
 | Run | First board (ms) | Frames | Frame median (ms) | Frame p95 (ms) | Slowest frame (ms) | Animation frame interval p95 (ms) | Most boards in view | API peak (MiB) |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 1 | 1571.0 | 1196 | 10.1 | 14.4 | 28.3 | 14.4 | 357 | 71.6 |
-| 2 | 1396.8 | 1198 | 10.1 | 14.2 | 22.1 | 14.2 | 358 | 63.7 |
-| 3 | 865.1 | 1198 | 10.1 | 14.2 | 34.0 | 14.2 | 358 | 61.7 |
-| 4 | 818.5 | 1194 | 10.0 | 14.3 | 36.2 | 14.4 | 358 | 62.7 |
-| 5 | 738.6 | 1194 | 10.1 | 14.1 | 44.8 | 14.2 | 358 | 62.3 |
+| 1 | 875.3 | 1001 | 10.4 | 14.0 | 28.2 | 14.0 | 357 | 68.8 |
+| 2 | 745.3 | 1001 | 10.3 | 13.7 | 28.0 | 13.6 | 357 | 63.8 |
+| 3 | 656.6 | 1000 | 10.4 | 13.8 | 32.0 | 13.8 | 356 | 65.5 |
+| 4 | 805.3 | 1000 | 10.6 | 14.1 | 25.2 | 14.1 | 357 | 64.1 |
+| 5 | 696.7 | 1000 | 10.3 | 13.8 | 24.1 | 13.9 | 357 | 63.3 |
 
 ## Profile
 
 ### Cold load, navigation to the first board
 
-Run 3 of 5, the median one: 865.1 ms from the navigation to `/docs/:doc` to the first complete frame that shows the design's first board in full: all of it in view at full detail, read, with its text and images (2 boards in view, 66 nodes painted); a click on it then selects a node, or the run fails. Every instant counts once: for the phase the main thread was in, then for other if it was in another renderer call or a long task, else for the network if a request was open, else for other.
+Run 2 of 5, the median one: 745.3 ms from the navigation to `/docs/:doc` to the first complete frame that shows the design's first board in full: all of it in view at full detail, read, with its text and images (2 boards in view, 66 nodes painted); a click on it then selects a node, or the run fails. Every instant counts once: for the phase the main thread was in, then for other if it was in another renderer call or a long task, else for the network if a request was open, else for other.
 
 | Phase | ms | Share of the load |
 | --- | --- | --- |
-| Network | 571.7 | 66.1% |
-| Parsing | 46.3 | 5.4% |
-| Layout | 7.5 | 0.9% |
-| Painting | 19.3 | 2.2% |
-| Uploading to the GPU | 64.6 | 7.5% |
-| Other (JavaScript, React, other renderer calls, start-up, idle) | 155.7 | 18.0% |
+| Network | 481.3 | 64.6% |
+| Parsing | 50.1 | 6.7% |
+| Layout | 8.6 | 1.2% |
+| Painting | 18.9 | 2.5% |
+| Uploading to the GPU | 62.0 | 8.3% |
+| Other (JavaScript, React, other renderer calls, start-up, idle) | 124.4 | 16.7% |
 
 The requests of that load that took longest:
 
 | Request | Start (ms) | Duration (ms) | Transferred (KB) |
 | --- | --- | --- | --- |
-| `/api/v1/w/:id/projects/:id/docs/:id/html` | 235.7 | 282.2 | 109.1 |
-| `/api/v1/w/:id/attachments/:id` | 530.5 | 112.4 | 63.1 |
-| `/api/v1/w/:id/projects/:id/docs/:id/html` | 531.1 | 111.3 | 2.3 |
-| `/api/v1/w/:id/attachments/:id` | 530.8 | 105.9 | 63.0 |
-| `/api/v1/w/:id/attachments/:id` | 530.3 | 103.9 | 64.7 |
-| `/api/v1/w/:id/attachments/:id` | 530.7 | 103.2 | 60.5 |
+| `/api/v1/w/:id/projects/:id/docs/:id/html` | 216.1 | 213.8 | 109.4 |
+| `/render/omni_render.wasm` | 242.3 | 77.3 | 9570.3 |
+| `document` | 0.0 | 69.6 | 4.3 |
+| `/assets/file-text-BYBdVatO.js` | 72.1 | 60.2 | 0.7 |
+| `/assets/search-dhewPUQh.js` | 72.2 | 60.0 | 2.1 |
+| `/api/v1/w/:id/projects/:id/docs/:id/html` | 443.7 | 59.7 | 2.3 |
 
 ### Pan and zoom frames
 
-Run 3 of 5, the one with the median 95th-percentile frame time: 1198 frames over 10015.3 ms. A frame is charged with everything since the previous frame, and its phases add up to its time: handling the wheel events (painting), the JSON that the page reads and writes (parsing), the renderer reading a page and a design system and laying them out (parsing and layout), the draw (painting) and the GPU finishing it. The rest is other: the page's JavaScript, the renderer calls that are in no phase, and the wait for the next animation frame. The network is not in a frame: boards are fetched between frames and show when they arrive.
+Run 5 of 5, the one with the median 95th-percentile frame time: 1000 frames over 10012.9 ms. A frame is charged with everything since the previous frame, and its phases add up to its time: handling the wheel events (painting), the JSON that the page reads and writes (parsing), the renderer reading a page and a design system and laying them out (parsing and layout), the draw (painting) and the GPU finishing it. The rest is other: the page's JavaScript, the renderer calls that are in no phase, and the wait for the next animation frame. The network is not in a frame: boards are fetched between frames and show when they arrive.
 
 | Phase | Typical frame, mean (ms) | Share | Slowest 5% of frames, mean (ms) | Share |
 | --- | --- | --- | --- | --- |
 | Network | not applicable | not applicable | not applicable | not applicable |
-| Parsing | 0.1 | 1.0% | 0.1 | 0.9% |
+| Parsing | 0.0 | 0.4% | 0.1 | 0.3% |
 | Layout | 0.0 | 0.0% | 0.0 | 0.0% |
-| Painting | 0.5 | 6.5% | 1.9 | 11.5% |
-| Uploading to the GPU | 0.3 | 4.1% | 1.0 | 6.2% |
-| Other (JavaScript, React, other renderer calls, start-up, idle) | 7.4 | 88.4% | 13.1 | 81.4% |
-| Frame | 8.4 | 100.0% | 16.1 | 100.0% |
+| Painting | 0.6 | 6.2% | 2.1 | 13.6% |
+| Uploading to the GPU | 0.4 | 3.6% | 1.0 | 6.4% |
+| Other (JavaScript, React, other renderer calls, start-up, idle) | 9.0 | 89.7% | 12.3 | 79.6% |
+| Frame | 10.0 | 100.0% | 15.4 | 100.0% |
 
 The renderer calls of that run that took longest:
 
 | Call | Calls | Total (ms) | Share of the path |
 | --- | --- | --- | --- |
-| `_omni_render_scene_update_step` | 1443 | 1341.6 | 13.4% |
-| `_omni_render_scene_draw` | 1198 | 1056.8 | 10.6% |
-| `_omni_render_scene_layers` | 702 | 535.2 | 5.3% |
-| `_omni_render_scene_update_boards` | 433 | 129.5 | 1.3% |
-| `_omni_render_visible_boards` | 1942 | 36.7 | 0.4% |
-| `_omni_render_overlay` | 1197 | 5.6 | 0.1% |
+| `_omni_render_scene_update_step` | 1754 | 1474.7 | 14.7% |
+| `_omni_render_scene_draw` | 1000 | 986.8 | 9.9% |
+| `_omni_render_scene_fonts` | 775 | 333.0 | 3.3% |
+| `_omni_render_scene_update_boards` | 533 | 140.0 | 1.4% |
+| `_omni_render_visible_boards` | 1744 | 39.9 | 0.4% |
+| `_omni_render_overlay` | 999 | 4.4 | 0.0% |
 
 ## Reading the profile
 

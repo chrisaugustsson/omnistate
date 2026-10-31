@@ -569,6 +569,15 @@ function DesignViewer({
   const [target, setTarget] = useState<string | null>(node ?? null);
   // The boards the reviewer has unfolded, by board ID, for as long as the doc is open.
   const [openBoards, setOpenBoards] = useState<ReadonlySet<string>>(new Set());
+  // What a board put in place has to be checked against, read by the show handler.
+  const openBoardsRef = useRef(openBoards);
+  useEffect(() => {
+    openBoardsRef.current = openBoards;
+  }, [openBoards]);
+  const targetRef = useRef(target);
+  useEffect(() => {
+    targetRef.current = target;
+  }, [target]);
   const openBoard = useCallback(
     (board: string) => setOpenBoards((open) => (open.has(board) ? open : new Set(open).add(board))),
     [],
@@ -688,9 +697,27 @@ function DesignViewer({
       setSelected(stays ? kept : null);
       report();
     };
+    // A board put in place changes no board row, so the boards are not asked
+    // for again: `layers()` of a page of 769 boards costs the renderer about a
+    // millisecond, once for each of the hundreds of boards that arrive on a
+    // pan. What a board put in place can change is read again only when
+    // something shows it: an open board's layers, a node a link named, the
+    // selected node, or the fonts that stood in.
+    const placed = () => {
+      const kept = selectedRef.current;
+      if (kept !== null && renderer.boxOf(kept) === null) setSelected(null);
+      report();
+      if (openBoardsRef.current.size > 0 || targetRef.current !== null || kept !== null) {
+        setDrawn((count) => count + 1);
+      }
+    };
     const shown = (incremental: boolean) => {
+      if (incremental) {
+        placed();
+        return;
+      }
       // A page is shown in the first mode, so the chosen mode is set again.
-      if (!incremental && modeRef.current && modeRef.current !== modes[0]) renderer.setMode(modeRef.current);
+      if (modeRef.current && modeRef.current !== modes[0]) renderer.setMode(modeRef.current);
       refreshLayers();
     };
     const failed = (error: unknown) => {
