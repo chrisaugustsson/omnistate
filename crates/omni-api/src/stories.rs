@@ -117,6 +117,7 @@ pub struct CreateStoryRequest {
 #[derive(Deserialize)]
 pub struct ListQuery {
     status: Option<String>,
+    pickable: Option<String>,
 }
 
 #[derive(sqlx::FromRow)]
@@ -373,12 +374,13 @@ pub async fn create_story(
         ("project_id" = String, Path, description = "The project's UUID"),
         ("feature_id" = String, Path, description = "The feature's UUID"),
         ("status" = Option<String>, Query, description = "Only the stories with this status; every status, `cancelled` included, when left out"),
+        ("pickable" = Option<String>, Query, description = "`true` lists only the backlog stories a run can pick now: not blocked, every blocker done or cancelled, and no file shared with a story in implementing or review (`files_changed` when not empty, else `files_planned`). Ordered by priority, then by open dependants (most first), then number. `false` or absent gives the normal list"),
     ),
     responses(
         (status = 200, description = "The feature's stories", body = StoryListResponse),
         (status = 401, description = "No valid API key or session", body = ErrorBody),
         (status = 404, description = "No such feature in this project and workspace", body = ErrorBody),
-        (status = 422, description = "An unknown status (`invalid_status`)", body = ErrorBody),
+        (status = 422, description = "An unknown status (`invalid_status`) or a `pickable` other than `true` or `false` (`invalid_pickable`)", body = ErrorBody),
     )
 )]
 pub async fn list_stories(
@@ -397,20 +399,86 @@ pub async fn list_stories(
     {
         return Err(invalid_field("invalid_status"));
     }
+    let pickable = match query.pickable.as_deref() {
+        None | Some("false") => false,
+        Some("true") => true,
+        Some(_) => return Err(invalid_field("invalid_pickable")),
+    };
+    // The pickable rule looks at the whole feature, so the status filter is
+    // applied afterwards then.
+    let status = if pickable { None } else { query.status.clone() };
     let rows = sqlx::query_as::<_, StoryRow>(&format!(
         "SELECT {STORY_COLUMNS} FROM stories \
          WHERE feature_id = $1::uuid AND ($2::text IS NULL OR status = $2) \
          ORDER BY priority, number"
     ))
     .bind(&feature_id)
-    .bind(&query.status)
+    .bind(&status)
     .fetch_all(&mut *tx)
     .await
     .map_err(ApiError::database)?;
     tx.commit().await.map_err(ApiError::database)?;
-    Ok(Json(StoryListResponse {
-        stories: rows.into_iter().map(StoryRow::into_body).collect(),
-    }))
+    let mut stories: Vec<StoryBody> = rows.into_iter().map(StoryRow::into_body).collect();
+    if pickable {
+        stories = pickable_stories(stories, query.status.as_deref());
+    }
+    Ok(Json(StoryListResponse { stories }))
+}
+
+/// The files a story occupies: what it changed, else what it plans to change.
+fn story_files(story: &StoryBody) -> &[String] {
+    if story.files_changed.is_empty() {
+        &story.files_planned
+    } else {
+        &story.files_changed
+    }
+}
+
+/// The backlog stories that can be worked now, in picking order: priority,
+/// then open dependants (most first), then number. `stories` is every story of
+/// the feature, already ordered by priority and number.
+fn pickable_stories(stories: Vec<StoryBody>, status: Option<&str>) -> Vec<StoryBody> {
+    if status.is_some_and(|status| status != "backlog") {
+        return Vec::new();
+    }
+    let closed = |story: &StoryBody| story.status == "done" || story.status == "cancelled";
+    let busy: Vec<&String> = stories
+        .iter()
+        .filter(|story| story.status == "implementing" || story.status == "review")
+        .flat_map(|story| story_files(story).iter())
+        .collect();
+    let dependants = |story: &StoryBody| {
+        stories
+            .iter()
+            .filter(|other| !closed(other) && other.blocked_by.contains(&story.id))
+            .count()
+    };
+    let mut picked: Vec<(usize, usize)> = stories
+        .iter()
+        .enumerate()
+        .filter(|(_, story)| {
+            story.status == "backlog"
+                && !story.blocked
+                && story.blocked_by.iter().all(|id| {
+                    stories
+                        .iter()
+                        .find(|other| &other.id == id)
+                        .is_some_and(closed)
+                })
+                && !story_files(story).iter().any(|path| busy.contains(&path))
+        })
+        .map(|(index, story)| (dependants(story), index))
+        .collect();
+    picked.sort_by_key(|(open, index)| {
+        let story = &stories[*index];
+        (story.priority, std::cmp::Reverse(*open), story.number)
+    });
+    let order: Vec<usize> = picked.into_iter().map(|(_, index)| index).collect();
+    let mut slots: Vec<Option<StoryBody>> = stories.into_iter().map(Some).collect();
+    order
+        .into_iter()
+        .filter_map(|index| slots[index].take())
+        .collect()
 }
 
 /// One story of a feature.
