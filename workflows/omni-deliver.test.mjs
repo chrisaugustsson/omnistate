@@ -722,3 +722,153 @@ test("with reviewers 2 two stories in review are reviewed at the same time", { t
   assert.equal(dirs.story("US-1").status, "testing");
   assert.equal(dirs.story("US-2").status, "testing");
 });
+
+// ---- merge on the main worktree ---------------------------------------------
+
+// A story another run left in testing, its worktree one commit ahead with the
+// file given; the run claims it at testing and the merge worker takes it.
+function inTesting(dirs, key, file, content) {
+  const wt = worktree(dirs, key);
+  mkdirSync(join(wt, "src"), { recursive: true });
+  writeFileSync(join(wt, file), content);
+  git(wt, "add", file);
+  git(wt, "commit", "-q", "-m", `feat: ${key}`);
+  return wt;
+}
+
+const subjects = (dirs) => git(dirs.repo, "log", "--format=%s", "main").trim().split("\n");
+
+// A main-worktree commit to README, so a story that also changed README conflicts.
+function mainEditsReadme(dirs) {
+  writeFileSync(join(dirs.repo, "README"), "app\nfrom main\n");
+  git(dirs.repo, "commit", "-q", "-am", "chore: main edit");
+}
+
+// An implementer that rebases the worktree onto main and resolves README.
+const rebaser = (wt) => {
+  try {
+    git(wt, "rebase", "main");
+  } catch {}
+  writeFileSync(join(wt, "README"), "app\nfrom main\nfrom US-1\n");
+  git(wt, "add", "README");
+  execFileSync("git", ["rebase", "--continue"], { cwd: wt, stdio: "ignore", env: { ...process.env, GIT_EDITOR: "true" } });
+  return { status: "ready", summary: "rebased" };
+};
+
+test("two testing stories where the lower-numbered one is blocked by the other merge blocker first, each by a fast-forward, with stack_up run once before the first", async (t) => {
+  const dirs = scratch(t, [story("US-1", { status: "testing", blocked_by: ["US-2"] }), story("US-2", { status: "testing" })]);
+  const upLog = join(dirs.root, "up.log");
+  dirs.checks({ fast: "true", stack_up: `git log --format=%s -1 >> ${upLog}`, stack: "true" });
+  inTesting(dirs, "US-1", "src/a.rs", "a\n");
+  inTesting(dirs, "US-2", "src/b.rs", "b\n");
+
+  await deliver({ feature: "board" }, implAgent({}).agent);
+
+  assert.equal(readFileSync(upLog, "utf8"), "init\n");
+  assert.deepEqual(subjects(dirs), ["feat: US-1", "feat: US-2", "init"]);
+  assert.equal(git(dirs.repo, "rev-list", "--merges", "main").trim(), "");
+  assert.equal(git(dirs.repo, "rev-parse", "main"), git(dirs.repo, "rev-parse", "story/US-1"));
+});
+
+test("testing stories with no blockers between them merge by priority before number", async (t) => {
+  const dirs = scratch(t, [story("US-1", { status: "testing", priority: 3 }), story("US-2", { status: "testing", priority: 1 })]);
+  dirs.checks({ fast: "true", stack_up: "true", stack: "true" });
+  inTesting(dirs, "US-1", "src/a.rs", "a\n");
+  inTesting(dirs, "US-2", "src/b.rs", "b\n");
+
+  await deliver({ feature: "board" }, implAgent({}).agent);
+
+  assert.deepEqual(subjects(dirs), ["feat: US-1", "feat: US-2", "init"]);
+});
+
+test("a rebase conflict sends the story to implementing with a finding naming the file, an implementer rebases it in its worktree, the workflow runs fast there, and it returns to testing unreviewed and is fast-forwarded before the next story, resolving the finding", async (t) => {
+  const dirs = scratch(t, [story("US-1", { status: "testing", files_changed: ["src/stale.rs"] }), story("US-2", { status: "testing" })]);
+  const fastLog = join(dirs.root, "fast.log");
+  dirs.checks({ fast: `pwd >> ${fastLog}`, stack_up: "true", stack: "true" });
+  const wt = inTesting(dirs, "US-1", "README", "app\nfrom US-1\n");
+  writeFileSync(join(wt, "src", "a.rs"), "a\n");
+  git(wt, "add", "src/a.rs");
+  git(wt, "commit", "-q", "-m", "feat: US-1 code");
+  inTesting(dirs, "US-2", "src/b.rs", "b\n");
+  mainEditsReadme(dirs);
+  const seen = {};
+  const { agent, prompts, reviews } = implAgent({
+    "US-1": async () => {
+      const s = dirs.story("US-1");
+      Object.assign(seen, { status: s.status, findings: s.findings, main: subjects(dirs)[0] });
+      return rebaser(wt);
+    },
+  });
+
+  await deliver({ feature: "board" }, agent);
+
+  assert.deepEqual(seen, { status: "implementing", findings: [{ stage: "testing", text: "rebase conflict in README", files: ["README"], resolved: false }], main: "chore: main edit" });
+  assert.equal(prompts["US-1"].length, 1);
+  assert.ok(prompts["US-1"][0].includes(wt));
+  assert.ok(prompts["US-1"][0].includes("git rebase main"));
+  assert.equal(readFileSync(fastLog, "utf8"), `${wt}\n`);
+  assert.deepEqual(dirs.story("US-1").files_changed, ["README", "src/a.rs"]);
+  assert.equal(reviews["US-1"], undefined);
+  assert.equal(dirs.story("US-1").status, "testing");
+  assert.deepEqual(dirs.story("US-1").findings, [{ stage: "testing", text: "rebase conflict in README", files: ["README"], resolved: true }]);
+  assert.deepEqual(subjects(dirs), ["feat: US-2", "feat: US-1 code", "feat: US-1", "chore: main edit", "init"]);
+  assert.equal(git(dirs.repo, "rev-list", "--merges", "main").trim(), "");
+});
+
+test("a rebase implementer returning blocked blocks the story in implementing with a thread, and no other testing story merges in the run", async (t) => {
+  const dirs = scratch(t, [story("US-1", { status: "testing" }), story("US-2", { status: "testing" })]);
+  dirs.checks({ fast: "true", stack_up: "true", stack: "true" });
+  inTesting(dirs, "US-1", "README", "app\nfrom US-1\n");
+  inTesting(dirs, "US-2", "src/b.rs", "b\n");
+  mainEditsReadme(dirs);
+  const { agent } = implAgent({ "US-1": async () => ({ status: "blocked", summary: "README cannot be merged by hand" }) });
+
+  await deliver({ feature: "board" }, agent);
+
+  const th = threadOf(dirs, "US-1");
+  assert.ok(th.posts[0].body.includes("README cannot be merged by hand"));
+  assert.equal(dirs.story("US-1").blocked, true);
+  assert.equal(dirs.story("US-1").status, "implementing");
+  assert.equal(dirs.story("US-2").status, "testing");
+  assert.deepEqual(subjects(dirs), ["chore: main edit", "init"]);
+});
+
+test("while the rebase implementer works, with implementers 1 a pickable story is still picked and implemented", { timeout: 20000 }, async (t) => {
+  const dirs = scratch(t, [story("US-1", { status: "testing" }), story("US-3")]);
+  dirs.checks({ fast: "true", stack_up: "true", stack: "true" });
+  const wt = inTesting(dirs, "US-1", "README", "app\nfrom US-1\n");
+  mainEditsReadme(dirs);
+  const implStarted = deferred();
+  const seen = {};
+  const { agent } = implAgent({
+    "US-1": async () => {
+      seen.picked = await Promise.race([implStarted.promise.then(() => true), new Promise((r) => setTimeout(() => r(false), 5000))]);
+      return rebaser(wt);
+    },
+    "US-3": async () => {
+      implStarted.resolve();
+      const wt3 = join(dirs.root, "app-stories", "US-3");
+      writeFileSync(join(wt3, "c.rs"), "c\n");
+      git(wt3, "add", "c.rs");
+      git(wt3, "commit", "-q", "-m", "feat: US-3");
+      return { status: "ready", summary: "done" };
+    },
+  });
+
+  await deliver({ feature: "board", implementers: 1 }, agent);
+
+  assert.equal(seen.picked, true);
+  assert.equal(dirs.story("US-3").status, "testing");
+});
+
+test("a stack_up exiting non-zero merges nothing from the batch and posts its output on a thread on the feature", async (t) => {
+  const dirs = scratch(t, [story("US-1", { status: "testing" })]);
+  dirs.checks({ fast: "true", stack_up: "echo the stack broke; exit 1", stack: "true" });
+  inTesting(dirs, "US-1", "src/a.rs", "a\n");
+
+  await deliver({ feature: "board" }, implAgent({}).agent);
+
+  assert.deepEqual(subjects(dirs), ["init"]);
+  const posted = dirs.state().threads.filter((th) => th.feature === "board" && th.posts.some((p) => p.body.includes("the stack broke")));
+  assert.equal(posted.length > 0, true);
+});
