@@ -193,6 +193,17 @@ fn parse_story(source: &str) -> Result<Parsed> {
 
 /// The `--link` value as the JSON object the API takes.
 fn link(target: &str) -> Result<String> {
+    if let Some(thread) = target.strip_prefix("thread:") {
+        let (id, label) = thread.split_once(':').unwrap_or((thread, ""));
+        if !is_uuid(id) {
+            bail!("{target:?} is not a link for --link; use thread:<thread ID>[:<label>]");
+        }
+        return Ok(format!(
+            "{{\"thread_id\":{},\"label\":{}}}",
+            quote(&id.to_ascii_lowercase()),
+            quote(label)
+        ));
+    }
     let mut parts = target.splitn(3, ':');
     let (doc, node, label) = (
         parts.next().unwrap_or_default(),

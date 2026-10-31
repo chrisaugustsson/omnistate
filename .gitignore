@@ -26,3 +26,6 @@ docs/penpot-compare/
 .nitro/
 .tanstack/
 dist/
+
+# Delivery run state (lock, clarity cache)
+.omni/
