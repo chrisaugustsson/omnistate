@@ -1064,6 +1064,32 @@ fn changed_files_replace_planned_files_on_both_sides_of_the_comparison() {
 }
 
 #[test]
+fn paths_are_compared_as_exact_strings() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    let feature = new_feature(f, client, &project);
+    let busy = new_story(
+        f,
+        client,
+        &project,
+        &feature,
+        json!({ "files_planned": ["src/a.rs"] }),
+    );
+    set_status(&busy, "implementing");
+    new_story(
+        f,
+        client,
+        &project,
+        &feature,
+        json!({ "files_planned": ["./src/a.rs"] }),
+    );
+    assert_eq!(
+        listed_keys(f, client, &project, &feature, "pickable=true"),
+        vec![json!("US-2")]
+    );
+}
+
+#[test]
 fn pickable_with_a_status_filter_is_empty_unless_the_status_is_backlog() {
     let (f, client) = ready();
     let project = new_project(f, client);
