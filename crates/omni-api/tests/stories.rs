@@ -48,6 +48,18 @@
 //!   `{expected_version}` answers 200 with the story `cancelled`, its holder
 //!   cleared, emits `story.cancelled` with `{story_id, key}`, and is 409
 //!   `not_open` from `done` or `cancelled`.
+//! - US-134: `POST /stories/{story_id}/claim` `{expected_version, run,
+//!   stage}`, `/release` `{expected_version, run}` and `/move`
+//!   `{expected_version, run, to}` are agent only (a session is 403). A claim
+//!   sets `holder: {run, stage, at}` and the status to the stage; the same run
+//!   may claim again, another is 409 `{"error": "held", "holder": ...}`. Any
+//!   run may release; the status stays. Only the holder's run moves (else 409
+//!   `not_holder`); a move to a stage sets `holder.stage`, to `done` or
+//!   `backlog` clears the holder, and `done` with an unticked criterion is 409
+//!   `{"error": "criteria_open", "open": [0-based indexes]}`. Each accepted
+//!   write bumps `version` and emits `story.changed`; a refused one changes
+//!   nothing. Checked in this order: stale version (409 `conflict`), `not_open`
+//!   (done or cancelled), `held` or `not_holder`, `criteria_open`.
 
 mod common;
 
@@ -1570,4 +1582,465 @@ fn a_done_or_cancelled_story_cannot_be_cancelled() {
         "done"
     );
     assert_eq!(events_of(&project, "story.cancelled").len(), 1);
+}
+
+// ---------------------------------------------------------------------------
+// Claims and column moves
+// ---------------------------------------------------------------------------
+
+/// Sets each criterion's `ticked` as the admin role: no route of this story
+/// ticks one.
+fn set_ticked(story: &str, ticked: Value) {
+    block(async {
+        let mut conn = admin_connection().await;
+        sqlx::query(
+            "update stories set criteria = (select jsonb_agg(jsonb_set(c, '{ticked}', t) \
+             order by i) from jsonb_array_elements(criteria) with ordinality as a(c, i) \
+             join jsonb_array_elements($2::jsonb) with ordinality as b(t, j) on i = j) \
+             where id = $1::uuid",
+        )
+        .bind(story)
+        .bind(ticked.to_string())
+        .execute(&mut conn)
+        .await
+        .unwrap_or_else(|e| panic!("tick the criteria: {e}"));
+    })
+}
+
+/// `POST`s `body` to `/stories/{story_id}/<action>` as `auth`.
+fn act(client: &Client, auth: &Auth, path: &str, action: &str, body: Value) -> Response {
+    call(
+        client,
+        "POST",
+        &format!("{path}/{action}"),
+        auth,
+        Some(&body),
+    )
+}
+
+#[test]
+fn a_claim_holds_the_story_for_its_run_until_any_run_releases_it() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    let feature = new_feature(f, client, &project);
+    let story = new_story(f, client, &project, &feature, json!({}));
+    let path = story_path(f, &project, &feature, &story);
+    let a = agent(f);
+    let first = must(
+        act(
+            client,
+            &a,
+            &path,
+            "claim",
+            json!({ "expected_version": 1, "run": "r1", "stage": "implementing" }),
+        ),
+        200,
+        "r1 claims",
+    )["story"]
+        .clone();
+    assert_eq!(first["status"], "implementing", "{first}");
+    assert_eq!(first["holder"]["run"], "r1", "{first}");
+    assert_eq!(first["holder"]["stage"], "implementing", "{first}");
+    assert_eq!(first["version"], 2, "{first}");
+    let again = must(
+        act(
+            client,
+            &a,
+            &path,
+            "claim",
+            json!({ "expected_version": 2, "run": "r1", "stage": "review" }),
+        ),
+        200,
+        "r1 claims again for review",
+    )["story"]
+        .clone();
+    assert_eq!(again["status"], "review", "{again}");
+    assert_eq!(again["holder"]["run"], "r1", "{again}");
+    assert_eq!(again["holder"]["stage"], "review", "{again}");
+    assert_eq!(again["version"], 3, "{again}");
+    let held = act(
+        client,
+        &a,
+        &path,
+        "claim",
+        json!({ "expected_version": 3, "run": "r2", "stage": "implementing" }),
+    );
+    assert_eq!(held.status, 409, "body: {}", held.text());
+    assert_eq!(held.json()["error"], "held");
+    assert_eq!(held.json()["holder"], again["holder"]);
+    assert_eq!(
+        get_story(f, client, &project, &feature, &story)["version"],
+        3,
+        "a refused claim changes nothing"
+    );
+    let released = must(
+        act(
+            client,
+            &a,
+            &path,
+            "release",
+            json!({ "expected_version": 3, "run": "r2" }),
+        ),
+        200,
+        "r2 releases r1's claim",
+    )["story"]
+        .clone();
+    assert_eq!(released["holder"], Value::Null, "{released}");
+    assert_eq!(
+        released["status"], "review",
+        "a release leaves the status: {released}"
+    );
+    assert_eq!(released["version"], 4, "{released}");
+    let taken = must(
+        act(
+            client,
+            &a,
+            &path,
+            "claim",
+            json!({ "expected_version": 4, "run": "r2", "stage": "implementing" }),
+        ),
+        200,
+        "r2 claims the released story",
+    )["story"]
+        .clone();
+    assert_eq!(taken["holder"]["run"], "r2", "{taken}");
+    assert_eq!(taken["status"], "implementing", "{taken}");
+    let changed: Vec<Value> = events_of(&project, "story.changed")
+        .iter()
+        .map(|event| json!([event["story_id"], event["key"]]))
+        .collect();
+    assert_eq!(
+        changed,
+        vec![json!([story, "US-1"]); 4],
+        "one event per accepted write"
+    );
+}
+
+#[test]
+fn only_the_holding_run_moves_the_story_and_its_stage_follows_the_column() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    let feature = new_feature(f, client, &project);
+    let unheld = new_story(f, client, &project, &feature, json!({}));
+    let story = new_story(f, client, &project, &feature, json!({}));
+    let path = story_path(f, &project, &feature, &story);
+    let a = agent(f);
+    assert_error(
+        &act(
+            client,
+            &a,
+            &story_path(f, &project, &feature, &unheld),
+            "move",
+            json!({ "expected_version": 1, "run": "r1", "to": "implementing" }),
+        ),
+        409,
+        "not_holder",
+    );
+    must(
+        act(
+            client,
+            &a,
+            &path,
+            "claim",
+            json!({ "expected_version": 1, "run": "r2", "stage": "implementing" }),
+        ),
+        200,
+        "r2 claims",
+    );
+    assert_error(
+        &act(
+            client,
+            &a,
+            &path,
+            "move",
+            json!({ "expected_version": 2, "run": "r1", "to": "testing" }),
+        ),
+        409,
+        "not_holder",
+    );
+    let moved = must(
+        act(
+            client,
+            &a,
+            &path,
+            "move",
+            json!({ "expected_version": 2, "run": "r2", "to": "testing" }),
+        ),
+        200,
+        "the holder moves to testing",
+    )["story"]
+        .clone();
+    assert_eq!(moved["status"], "testing", "{moved}");
+    assert_eq!(moved["holder"]["run"], "r2", "{moved}");
+    assert_eq!(moved["holder"]["stage"], "testing", "{moved}");
+    assert_eq!(moved["version"], 3, "{moved}");
+    let back = must(
+        act(
+            client,
+            &a,
+            &path,
+            "move",
+            json!({ "expected_version": 3, "run": "r2", "to": "backlog" }),
+        ),
+        200,
+        "the holder moves back to backlog",
+    )["story"]
+        .clone();
+    assert_eq!(back["status"], "backlog", "{back}");
+    assert_eq!(back["holder"], Value::Null, "{back}");
+    assert_eq!(
+        get_story(f, client, &project, &feature, &unheld)["version"],
+        1,
+        "a refused move changes nothing"
+    );
+}
+
+#[test]
+fn a_move_to_done_needs_every_criterion_ticked_and_clears_the_holder() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    let feature = new_feature(f, client, &project);
+    let story = new_story(
+        f,
+        client,
+        &project,
+        &feature,
+        json!({ "criteria": [{ "text": "a" }, { "text": "b" }] }),
+    );
+    let path = story_path(f, &project, &feature, &story);
+    let a = agent(f);
+    must(
+        act(
+            client,
+            &a,
+            &path,
+            "claim",
+            json!({ "expected_version": 1, "run": "r1", "stage": "testing" }),
+        ),
+        200,
+        "r1 claims for testing",
+    );
+    set_ticked(&story, json!([true, false]));
+    let open = act(
+        client,
+        &a,
+        &path,
+        "move",
+        json!({ "expected_version": 2, "run": "r1", "to": "done" }),
+    );
+    assert_eq!(open.status, 409, "body: {}", open.text());
+    assert_eq!(
+        open.json(),
+        json!({ "error": "criteria_open", "open": [1] })
+    );
+    assert_eq!(
+        get_story(f, client, &project, &feature, &story)["status"],
+        "testing"
+    );
+    set_ticked(&story, json!([true, true]));
+    let done = must(
+        act(
+            client,
+            &a,
+            &path,
+            "move",
+            json!({ "expected_version": 2, "run": "r1", "to": "done" }),
+        ),
+        200,
+        "move to done with every criterion ticked",
+    )["story"]
+        .clone();
+    assert_eq!(done["status"], "done", "{done}");
+    assert_eq!(done["holder"], Value::Null, "{done}");
+    assert_eq!(done["version"], 3, "{done}");
+}
+
+#[test]
+fn a_done_or_cancelled_story_cannot_be_claimed_or_moved() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    let feature = new_feature(f, client, &project);
+    let a = agent(f);
+    let cancelled = new_story(f, client, &project, &feature, json!({}));
+    must(
+        cancel(f, client, &project, &feature, &cancelled, 1),
+        200,
+        "cancel",
+    );
+    let cancelled = story_path(f, &project, &feature, &cancelled);
+    assert_error(
+        &act(
+            client,
+            &a,
+            &cancelled,
+            "claim",
+            json!({ "expected_version": 2, "run": "r1", "stage": "implementing" }),
+        ),
+        409,
+        "not_open",
+    );
+    let done = new_story(f, client, &project, &feature, json!({}));
+    set_status(&done, "done");
+    let done = story_path(f, &project, &feature, &done);
+    assert_error(
+        &act(
+            client,
+            &a,
+            &done,
+            "claim",
+            json!({ "expected_version": 1, "run": "r1", "stage": "implementing" }),
+        ),
+        409,
+        "not_open",
+    );
+    // No holder, so not_open must come before not_holder.
+    assert_error(
+        &act(
+            client,
+            &a,
+            &done,
+            "move",
+            json!({ "expected_version": 1, "run": "r1", "to": "backlog" }),
+        ),
+        409,
+        "not_open",
+    );
+    assert!(events_of(&project, "story.changed").is_empty());
+}
+
+#[test]
+fn the_version_is_checked_before_the_claim_and_the_holder_before_the_criteria() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    let feature = new_feature(f, client, &project);
+    let a = agent(f);
+    let story = new_story(
+        f,
+        client,
+        &project,
+        &feature,
+        json!({ "criteria": [{ "text": "a" }] }),
+    );
+    let path = story_path(f, &project, &feature, &story);
+    must(
+        act(
+            client,
+            &a,
+            &path,
+            "claim",
+            json!({ "expected_version": 1, "run": "r1", "stage": "testing" }),
+        ),
+        200,
+        "r1 claims",
+    );
+    let stale = act(
+        client,
+        &a,
+        &path,
+        "claim",
+        json!({ "expected_version": 1, "run": "r2", "stage": "testing" }),
+    );
+    assert_eq!(stale.status, 409, "body: {}", stale.text());
+    assert_eq!(
+        stale.json(),
+        json!({ "error": "conflict", "current_version": 2 })
+    );
+    let stale = act(
+        client,
+        &a,
+        &path,
+        "move",
+        json!({ "expected_version": 1, "run": "r2", "to": "done" }),
+    );
+    assert_eq!(stale.status, 409, "body: {}", stale.text());
+    assert_eq!(
+        stale.json(),
+        json!({ "error": "conflict", "current_version": 2 })
+    );
+    let stale = act(
+        client,
+        &a,
+        &path,
+        "release",
+        json!({ "expected_version": 1, "run": "r1" }),
+    );
+    assert_eq!(stale.status, 409, "body: {}", stale.text());
+    assert_eq!(
+        stale.json(),
+        json!({ "error": "conflict", "current_version": 2 })
+    );
+    assert_error(
+        &act(
+            client,
+            &a,
+            &path,
+            "move",
+            json!({ "expected_version": 2, "run": "r2", "to": "done" }),
+        ),
+        409,
+        "not_holder",
+    );
+    let closed = new_story(f, client, &project, &feature, json!({}));
+    set_status(&closed, "done");
+    let stale = act(
+        client,
+        &a,
+        &story_path(f, &project, &feature, &closed),
+        "claim",
+        json!({ "expected_version": 7, "run": "r1", "stage": "testing" }),
+    );
+    assert_eq!(stale.status, 409, "body: {}", stale.text());
+    assert_eq!(
+        stale.json(),
+        json!({ "error": "conflict", "current_version": 1 })
+    );
+    let held = get_story(f, client, &project, &feature, &story);
+    assert_eq!(held["version"], 2, "{held}");
+    assert_eq!(held["holder"]["run"], "r1", "{held}");
+}
+
+#[test]
+fn a_session_is_refused_on_claim_release_and_move() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    let feature = new_feature(f, client, &project);
+    let story = new_story(f, client, &project, &feature, json!({}));
+    let path = story_path(f, &project, &feature, &story);
+    let h = human(f);
+    assert_error(
+        &act(
+            client,
+            &h,
+            &path,
+            "claim",
+            json!({ "expected_version": 1, "run": "r1", "stage": "implementing" }),
+        ),
+        403,
+        "forbidden",
+    );
+    assert_error(
+        &act(
+            client,
+            &h,
+            &path,
+            "release",
+            json!({ "expected_version": 1, "run": "r1" }),
+        ),
+        403,
+        "forbidden",
+    );
+    assert_error(
+        &act(
+            client,
+            &h,
+            &path,
+            "move",
+            json!({ "expected_version": 1, "run": "r1", "to": "review" }),
+        ),
+        403,
+        "forbidden",
+    );
+    let unchanged = get_story(f, client, &project, &feature, &story);
+    assert_eq!(unchanged["version"], 1, "{unchanged}");
+    assert_eq!(unchanged["status"], "backlog", "{unchanged}");
 }
