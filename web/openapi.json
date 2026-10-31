@@ -337,6 +337,24 @@
         ],
         "type": "object"
       },
+      "BlockStoryRequest": {
+        "properties": {
+          "expected_version": {
+            "description": "The `version` the caller last read.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "run": {
+            "description": "The run that blocks or unblocks; any run may, so it is only named.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "expected_version",
+          "run"
+        ],
+        "type": "object"
+      },
       "BoardBody": {
         "properties": {
           "board_id": {
@@ -377,6 +395,25 @@
         },
         "required": [
           "expected_version"
+        ],
+        "type": "object"
+      },
+      "CheckCriterionRequest": {
+        "properties": {
+          "criterion": {
+            "description": "The 0-based index of the criterion.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "expected_version": {
+            "description": "The `version` the caller last read.",
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "expected_version",
+          "criterion"
         ],
         "type": "object"
       },
@@ -836,6 +873,37 @@
         ],
         "type": "object"
       },
+      "DecisionRequest": {
+        "properties": {
+          "by": {
+            "description": "`agent` or `human`.",
+            "type": "string"
+          },
+          "choice": {
+            "type": "string"
+          },
+          "expected_version": {
+            "description": "The `version` the caller last read.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "question": {
+            "type": "string"
+          },
+          "run": {
+            "description": "The run that holds the story; any run when nothing holds it.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "expected_version",
+          "run",
+          "question",
+          "choice",
+          "by"
+        ],
+        "type": "object"
+      },
       "DigestEntry": {
         "description": "A post in a digest: what it is, without its text.",
         "properties": {
@@ -1079,6 +1147,66 @@
           "feature",
           "docs",
           "waiting"
+        ],
+        "type": "object"
+      },
+      "FilesRequest": {
+        "properties": {
+          "expected_version": {
+            "description": "The `version` the caller last read.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "files_changed": {
+            "description": "Replaces the files the story changed.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "run": {
+            "description": "The run that holds the story.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "expected_version",
+          "run",
+          "files_changed"
+        ],
+        "type": "object"
+      },
+      "FindingRequest": {
+        "properties": {
+          "expected_version": {
+            "description": "The `version` the caller last read.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "files": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "run": {
+            "description": "The run that holds the story.",
+            "type": "string"
+          },
+          "stage": {
+            "description": "`implementing`, `review` or `testing`.",
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "expected_version",
+          "run",
+          "stage",
+          "text",
+          "files"
         ],
         "type": "object"
       },
@@ -2168,6 +2296,24 @@
         },
         "type": "object"
       },
+      "ResolveFindingRequest": {
+        "properties": {
+          "expected_version": {
+            "description": "The `version` the caller last read.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "run": {
+            "description": "The run that holds the story.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "expected_version",
+          "run"
+        ],
+        "type": "object"
+      },
       "SingleCommentResponse": {
         "properties": {
           "comment": {
@@ -2514,6 +2660,41 @@
         },
         "required": [
           "thread"
+        ],
+        "type": "object"
+      },
+      "TickRequest": {
+        "properties": {
+          "criterion": {
+            "description": "The 0-based index of the criterion.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "expected_version": {
+            "description": "The `version` the caller last read.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "pending": {
+            "description": "Whether the human check is still to be done; left as it is when absent.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "run": {
+            "description": "The run that holds the story.",
+            "type": "string"
+          },
+          "ticked": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "expected_version",
+          "run",
+          "criterion",
+          "ticked"
         ],
         "type": "object"
       },
@@ -6530,6 +6711,126 @@
         "x-omni-access": "both"
       }
     },
+    "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/block": {
+      "post": {
+        "operationId": "block_story",
+        "parameters": [
+          {
+            "description": "The workspace's UUID",
+            "in": "path",
+            "name": "workspace_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The project's UUID",
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The feature's UUID",
+            "in": "path",
+            "name": "feature_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The story's UUID",
+            "in": "path",
+            "name": "story_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BlockStoryRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StoryResponse"
+                }
+              }
+            },
+            "description": "The story, blocked"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The body is not JSON of the expected shape (`invalid_request`)"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No valid API key"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A session, not an agent key"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No such story in this feature, project and workspace"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StoryConflictBody"
+                }
+              }
+            },
+            "description": "`conflict` with `current_version` when `expected_version` is stale; else `not_holder` when the story has a holder and it is not `run`"
+          }
+        },
+        "summary": "Blocks a story on a question to the human.",
+        "tags": [
+          "crate::stories"
+        ],
+        "x-omni-access": "agent"
+      }
+    },
     "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/cancel": {
       "post": {
         "operationId": "cancel_story",
@@ -6638,6 +6939,136 @@
           "crate::stories"
         ],
         "x-omni-access": "both"
+      }
+    },
+    "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/check": {
+      "post": {
+        "operationId": "check_criterion",
+        "parameters": [
+          {
+            "description": "The workspace's UUID",
+            "in": "path",
+            "name": "workspace_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The project's UUID",
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The feature's UUID",
+            "in": "path",
+            "name": "feature_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The story's UUID",
+            "in": "path",
+            "name": "story_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CheckCriterionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StoryResponse"
+                }
+              }
+            },
+            "description": "The story with the criterion's human check cleared"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The body is not JSON of the expected shape (`invalid_request`)"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No valid session"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "An agent key, not a session"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No such story in this feature, project and workspace"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StoryConflictBody"
+                }
+              }
+            },
+            "description": "`conflict` with `current_version` when `expected_version` is stale"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A criterion index outside the story's criteria (`invalid_criterion`)"
+          }
+        },
+        "summary": "Clears the pending human check of a criterion, in any status.",
+        "tags": [
+          "crate::stories"
+        ],
+        "x-omni-access": "human"
       }
     },
     "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/claim": {
@@ -6764,6 +7195,516 @@
           }
         },
         "summary": "Takes a story for a run, or moves the run's claim to another stage.",
+        "tags": [
+          "crate::stories"
+        ],
+        "x-omni-access": "agent"
+      }
+    },
+    "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/decisions": {
+      "post": {
+        "operationId": "add_decision",
+        "parameters": [
+          {
+            "description": "The workspace's UUID",
+            "in": "path",
+            "name": "workspace_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The project's UUID",
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The feature's UUID",
+            "in": "path",
+            "name": "feature_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The story's UUID",
+            "in": "path",
+            "name": "story_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DecisionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StoryResponse"
+                }
+              }
+            },
+            "description": "The story with the decision appended"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The body is not JSON of the expected shape (`invalid_request`)"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No valid API key"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A session, not an agent key"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No such story in this feature, project and workspace"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StoryConflictBody"
+                }
+              }
+            },
+            "description": "`conflict` with `current_version` when `expected_version` is stale; else `not_holder` when the story has a holder and it is not `run`"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "`by` other than agent or human (`invalid_by`)"
+          }
+        },
+        "summary": "Appends a decision to a story.",
+        "tags": [
+          "crate::stories"
+        ],
+        "x-omni-access": "agent"
+      }
+    },
+    "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/files": {
+      "post": {
+        "operationId": "set_files",
+        "parameters": [
+          {
+            "description": "The workspace's UUID",
+            "in": "path",
+            "name": "workspace_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The project's UUID",
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The feature's UUID",
+            "in": "path",
+            "name": "feature_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The story's UUID",
+            "in": "path",
+            "name": "story_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FilesRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StoryResponse"
+                }
+              }
+            },
+            "description": "The story with its changed files replaced"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The body is not JSON of the expected shape (`invalid_request`)"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No valid API key"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A session, not an agent key"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No such story in this feature, project and workspace"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StoryConflictBody"
+                }
+              }
+            },
+            "description": "`conflict` with `current_version` when `expected_version` is stale; else `not_holder` when the story has a holder and it is not `run`"
+          }
+        },
+        "summary": "Replaces the files a story changed.",
+        "tags": [
+          "crate::stories"
+        ],
+        "x-omni-access": "agent"
+      }
+    },
+    "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/findings": {
+      "post": {
+        "operationId": "add_finding",
+        "parameters": [
+          {
+            "description": "The workspace's UUID",
+            "in": "path",
+            "name": "workspace_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The project's UUID",
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The feature's UUID",
+            "in": "path",
+            "name": "feature_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The story's UUID",
+            "in": "path",
+            "name": "story_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FindingRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StoryResponse"
+                }
+              }
+            },
+            "description": "The story with the finding appended, not resolved"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The body is not JSON of the expected shape (`invalid_request`)"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No valid API key"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A session, not an agent key"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No such story in this feature, project and workspace"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StoryConflictBody"
+                }
+              }
+            },
+            "description": "`conflict` with `current_version` when `expected_version` is stale; else `not_holder` when the story has a holder and it is not `run`"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A stage other than implementing, review or testing (`invalid_stage`)"
+          }
+        },
+        "summary": "Appends a finding to a story.",
+        "tags": [
+          "crate::stories"
+        ],
+        "x-omni-access": "agent"
+      }
+    },
+    "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/findings/{index}/resolve": {
+      "post": {
+        "operationId": "resolve_finding",
+        "parameters": [
+          {
+            "description": "The workspace's UUID",
+            "in": "path",
+            "name": "workspace_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The project's UUID",
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The feature's UUID",
+            "in": "path",
+            "name": "feature_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The story's UUID",
+            "in": "path",
+            "name": "story_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The 0-based index of the finding",
+            "in": "path",
+            "name": "index",
+            "required": true,
+            "schema": {
+              "minimum": 0,
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResolveFindingRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StoryResponse"
+                }
+              }
+            },
+            "description": "The story with the finding resolved"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The body is not JSON of the expected shape (`invalid_request`)"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No valid API key"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A session, not an agent key"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No such story in this feature, project and workspace, or no such finding"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StoryConflictBody"
+                }
+              }
+            },
+            "description": "`conflict` with `current_version` when `expected_version` is stale; else `not_holder` when the story has a holder and it is not `run`"
+          }
+        },
+        "summary": "Marks a finding of a story resolved.",
         "tags": [
           "crate::stories"
         ],
@@ -7014,6 +7955,256 @@
           }
         },
         "summary": "Clears a story's holder, whoever holds it; the status stays.",
+        "tags": [
+          "crate::stories"
+        ],
+        "x-omni-access": "agent"
+      }
+    },
+    "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/tick": {
+      "post": {
+        "operationId": "tick_criterion",
+        "parameters": [
+          {
+            "description": "The workspace's UUID",
+            "in": "path",
+            "name": "workspace_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The project's UUID",
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The feature's UUID",
+            "in": "path",
+            "name": "feature_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The story's UUID",
+            "in": "path",
+            "name": "story_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TickRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StoryResponse"
+                }
+              }
+            },
+            "description": "The story with the criterion ticked"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The body is not JSON of the expected shape (`invalid_request`)"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No valid API key"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A session, not an agent key"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No such story in this feature, project and workspace"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StoryConflictBody"
+                }
+              }
+            },
+            "description": "`conflict` with `current_version` when `expected_version` is stale; else `not_holder` when the story has a holder and it is not `run`"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A criterion index outside the story's criteria (`invalid_criterion`)"
+          }
+        },
+        "summary": "Ticks or unticks a criterion, and sets whether its human check is pending.",
+        "tags": [
+          "crate::stories"
+        ],
+        "x-omni-access": "agent"
+      }
+    },
+    "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/unblock": {
+      "post": {
+        "operationId": "unblock_story",
+        "parameters": [
+          {
+            "description": "The workspace's UUID",
+            "in": "path",
+            "name": "workspace_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The project's UUID",
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The feature's UUID",
+            "in": "path",
+            "name": "feature_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The story's UUID",
+            "in": "path",
+            "name": "story_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BlockStoryRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StoryResponse"
+                }
+              }
+            },
+            "description": "The story, not blocked"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The body is not JSON of the expected shape (`invalid_request`)"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No valid API key"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A session, not an agent key"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No such story in this feature, project and workspace"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StoryConflictBody"
+                }
+              }
+            },
+            "description": "`conflict` with `current_version` when `expected_version` is stale; else `not_holder` when the story has a holder and it is not `run`"
+          }
+        },
+        "summary": "Lifts the block of a story.",
         "tags": [
           "crate::stories"
         ],

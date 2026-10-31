@@ -8,7 +8,7 @@ use crate::AppState;
 use crate::live;
 use crate::projects::{parse_body, require_project};
 use crate::session::{ApiError, ErrorBody};
-use crate::workspace::{AgentRequest, WorkspaceRequest, parse_uuid};
+use crate::workspace::{AgentRequest, HumanRequest, WorkspaceRequest, parse_uuid};
 use axum::Json;
 use axum::body::Bytes;
 use axum::extract::{Path, Query, State};
@@ -1107,4 +1107,545 @@ pub async fn move_story(
         &["status", "holder"],
     )
     .await
+}
+
+#[derive(Deserialize, ToSchema)]
+pub struct TickRequest {
+    /// The `version` the caller last read.
+    pub expected_version: i64,
+    /// The run that holds the story.
+    pub run: String,
+    /// The 0-based index of the criterion.
+    pub criterion: i64,
+    pub ticked: bool,
+    /// Whether the human check is still to be done; left as it is when absent.
+    pub pending: Option<bool>,
+}
+
+#[derive(Deserialize, ToSchema)]
+pub struct FindingRequest {
+    /// The `version` the caller last read.
+    pub expected_version: i64,
+    /// The run that holds the story.
+    pub run: String,
+    /// `implementing`, `review` or `testing`.
+    pub stage: String,
+    pub text: String,
+    pub files: Vec<String>,
+}
+
+#[derive(Deserialize, ToSchema)]
+pub struct ResolveFindingRequest {
+    /// The `version` the caller last read.
+    pub expected_version: i64,
+    /// The run that holds the story.
+    pub run: String,
+}
+
+#[derive(Deserialize, ToSchema)]
+pub struct DecisionRequest {
+    /// The `version` the caller last read.
+    pub expected_version: i64,
+    /// The run that holds the story; any run when nothing holds it.
+    pub run: String,
+    pub question: String,
+    pub choice: String,
+    /// `agent` or `human`.
+    pub by: String,
+}
+
+#[derive(Deserialize, ToSchema)]
+pub struct FilesRequest {
+    /// The `version` the caller last read.
+    pub expected_version: i64,
+    /// The run that holds the story.
+    pub run: String,
+    /// Replaces the files the story changed.
+    pub files_changed: Vec<String>,
+}
+
+#[derive(Deserialize, ToSchema)]
+pub struct BlockStoryRequest {
+    /// The `version` the caller last read.
+    pub expected_version: i64,
+    /// The run that blocks or unblocks; any run may, so it is only named.
+    #[allow(dead_code)]
+    pub run: String,
+}
+
+#[derive(Deserialize, ToSchema)]
+pub struct CheckCriterionRequest {
+    /// The `version` the caller last read.
+    pub expected_version: i64,
+    /// The 0-based index of the criterion.
+    pub criterion: i64,
+}
+
+/// Opens a write of a run on a story: the story with a lock, once the version
+/// is current and, when a `run` is given, once the run is the holder's or
+/// nothing holds the story.
+async fn open_run_write(
+    state: &AppState,
+    workspace_id: &str,
+    ids: [&str; 3],
+    expected_version: i64,
+    run: Option<&str>,
+) -> Result<(Transaction<'static, Postgres>, StoryBody), StoryError> {
+    let mut tx = state.workspace_tx(workspace_id).await?;
+    let current = lock_story(&mut tx, ids[0], ids[1], ids[2]).await?;
+    if i64::from(current.version) != expected_version {
+        return Err(StoryError::Stale(current.version));
+    }
+    let current = current.into_body();
+    if let Some(run) = run
+        && current.holder.is_some()
+        && holder_run(&current) != Some(run)
+    {
+        return Err(ApiError::conflict("not_holder").into());
+    }
+    Ok((tx, current))
+}
+
+fn criterion_index(criterion: i64, story: &StoryBody) -> Result<usize, StoryError> {
+    usize::try_from(criterion)
+        .ok()
+        .filter(|index| *index < story.criteria.len())
+        .ok_or_else(|| invalid_field("invalid_criterion").into())
+}
+
+/// Ticks or unticks a criterion, and sets whether its human check is pending.
+#[utoipa::path(
+    post,
+    path = "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/tick",
+    params(
+        ("workspace_id" = String, Path, description = "The workspace's UUID"),
+        ("project_id" = String, Path, description = "The project's UUID"),
+        ("feature_id" = String, Path, description = "The feature's UUID"),
+        ("story_id" = String, Path, description = "The story's UUID"),
+    ),
+    request_body = TickRequest,
+    responses(
+        (status = 200, description = "The story with the criterion ticked", body = StoryResponse),
+        (status = 400, description = "The body is not JSON of the expected shape (`invalid_request`)", body = ErrorBody),
+        (status = 401, description = "No valid API key", body = ErrorBody),
+        (status = 403, description = "A session, not an agent key", body = ErrorBody),
+        (status = 404, description = "No such story in this feature, project and workspace", body = ErrorBody),
+        (status = 409, description = "`conflict` with `current_version` when `expected_version` is stale; else `not_holder` when the story has a holder and it is not `run`", body = StoryConflictBody),
+        (status = 422, description = "A criterion index outside the story's criteria (`invalid_criterion`)", body = ErrorBody),
+    )
+)]
+pub async fn tick_criterion(
+    State(state): State<AppState>,
+    request: AgentRequest,
+    Path((_, project_id, feature_id, story_id)): Path<(String, String, String, String)>,
+    body: Bytes,
+) -> Result<Json<StoryResponse>, StoryError> {
+    let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
+    let feature_id = parse_uuid(&feature_id).ok_or(ApiError::NotFound)?;
+    let story_id = parse_uuid(&story_id).ok_or(ApiError::NotFound)?;
+    let write = parse_body::<TickRequest>(&body)?;
+    let (mut tx, current) = open_run_write(
+        &state,
+        &request.workspace_id,
+        [&project_id, &feature_id, &story_id],
+        write.expected_version,
+        Some(&write.run),
+    )
+    .await?;
+    let index = criterion_index(write.criterion, &current)?;
+    let row = sqlx::query_as::<_, StoryRow>(&format!(
+        "UPDATE stories SET criteria = jsonb_set(CASE WHEN $3::bool IS NULL THEN criteria \
+         ELSE jsonb_set(criteria, ARRAY[$2::text, 'pending'], to_jsonb($3::bool)) END, \
+         ARRAY[$2::text, 'ticked'], to_jsonb($4::bool)), version = version + 1, \
+         updated_at = clock_timestamp() WHERE id = $1::uuid RETURNING {STORY_COLUMNS}"
+    ))
+    .bind(&story_id)
+    .bind(index.to_string())
+    .bind(write.pending)
+    .bind(write.ticked)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(ApiError::database)?;
+    finish_story_write(&state, tx, &request, &project_id, row, &["criteria"]).await
+}
+
+/// Appends a finding to a story.
+#[utoipa::path(
+    post,
+    path = "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/findings",
+    params(
+        ("workspace_id" = String, Path, description = "The workspace's UUID"),
+        ("project_id" = String, Path, description = "The project's UUID"),
+        ("feature_id" = String, Path, description = "The feature's UUID"),
+        ("story_id" = String, Path, description = "The story's UUID"),
+    ),
+    request_body = FindingRequest,
+    responses(
+        (status = 200, description = "The story with the finding appended, not resolved", body = StoryResponse),
+        (status = 400, description = "The body is not JSON of the expected shape (`invalid_request`)", body = ErrorBody),
+        (status = 401, description = "No valid API key", body = ErrorBody),
+        (status = 403, description = "A session, not an agent key", body = ErrorBody),
+        (status = 404, description = "No such story in this feature, project and workspace", body = ErrorBody),
+        (status = 409, description = "`conflict` with `current_version` when `expected_version` is stale; else `not_holder` when the story has a holder and it is not `run`", body = StoryConflictBody),
+        (status = 422, description = "A stage other than implementing, review or testing (`invalid_stage`)", body = ErrorBody),
+    )
+)]
+pub async fn add_finding(
+    State(state): State<AppState>,
+    request: AgentRequest,
+    Path((_, project_id, feature_id, story_id)): Path<(String, String, String, String)>,
+    body: Bytes,
+) -> Result<Json<StoryResponse>, StoryError> {
+    let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
+    let feature_id = parse_uuid(&feature_id).ok_or(ApiError::NotFound)?;
+    let story_id = parse_uuid(&story_id).ok_or(ApiError::NotFound)?;
+    let write = parse_body::<FindingRequest>(&body)?;
+    if !["implementing", "review", "testing"].contains(&write.stage.as_str()) {
+        return Err(invalid_field("invalid_stage").into());
+    }
+    let (mut tx, _) = open_run_write(
+        &state,
+        &request.workspace_id,
+        [&project_id, &feature_id, &story_id],
+        write.expected_version,
+        Some(&write.run),
+    )
+    .await?;
+    let row = sqlx::query_as::<_, StoryRow>(&format!(
+        "UPDATE stories SET findings = findings || jsonb_build_array(jsonb_build_object(\
+         'stage', $2::text, 'text', $3::text, 'files', $4::text::jsonb, 'resolved', false)), \
+         version = version + 1, updated_at = clock_timestamp() \
+         WHERE id = $1::uuid RETURNING {STORY_COLUMNS}"
+    ))
+    .bind(&story_id)
+    .bind(&write.stage)
+    .bind(&write.text)
+    .bind(json!(write.files).to_string())
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(ApiError::database)?;
+    finish_story_write(&state, tx, &request, &project_id, row, &["findings"]).await
+}
+
+/// Marks a finding of a story resolved.
+#[utoipa::path(
+    post,
+    path = "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/findings/{index}/resolve",
+    params(
+        ("workspace_id" = String, Path, description = "The workspace's UUID"),
+        ("project_id" = String, Path, description = "The project's UUID"),
+        ("feature_id" = String, Path, description = "The feature's UUID"),
+        ("story_id" = String, Path, description = "The story's UUID"),
+        ("index" = usize, Path, description = "The 0-based index of the finding"),
+    ),
+    request_body = ResolveFindingRequest,
+    responses(
+        (status = 200, description = "The story with the finding resolved", body = StoryResponse),
+        (status = 400, description = "The body is not JSON of the expected shape (`invalid_request`)", body = ErrorBody),
+        (status = 401, description = "No valid API key", body = ErrorBody),
+        (status = 403, description = "A session, not an agent key", body = ErrorBody),
+        (status = 404, description = "No such story in this feature, project and workspace, or no such finding", body = ErrorBody),
+        (status = 409, description = "`conflict` with `current_version` when `expected_version` is stale; else `not_holder` when the story has a holder and it is not `run`", body = StoryConflictBody),
+    )
+)]
+pub async fn resolve_finding(
+    State(state): State<AppState>,
+    request: AgentRequest,
+    Path((_, project_id, feature_id, story_id, index)): Path<(
+        String,
+        String,
+        String,
+        String,
+        usize,
+    )>,
+    body: Bytes,
+) -> Result<Json<StoryResponse>, StoryError> {
+    let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
+    let feature_id = parse_uuid(&feature_id).ok_or(ApiError::NotFound)?;
+    let story_id = parse_uuid(&story_id).ok_or(ApiError::NotFound)?;
+    let write = parse_body::<ResolveFindingRequest>(&body)?;
+    let (mut tx, current) = open_run_write(
+        &state,
+        &request.workspace_id,
+        [&project_id, &feature_id, &story_id],
+        write.expected_version,
+        Some(&write.run),
+    )
+    .await?;
+    if index >= current.findings.len() {
+        return Err(ApiError::NotFound.into());
+    }
+    let row = sqlx::query_as::<_, StoryRow>(&format!(
+        "UPDATE stories SET findings = jsonb_set(findings, ARRAY[$2::text, 'resolved'], 'true'), \
+         version = version + 1, updated_at = clock_timestamp() \
+         WHERE id = $1::uuid RETURNING {STORY_COLUMNS}"
+    ))
+    .bind(&story_id)
+    .bind(index.to_string())
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(ApiError::database)?;
+    finish_story_write(&state, tx, &request, &project_id, row, &["findings"]).await
+}
+
+/// Appends a decision to a story.
+#[utoipa::path(
+    post,
+    path = "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/decisions",
+    params(
+        ("workspace_id" = String, Path, description = "The workspace's UUID"),
+        ("project_id" = String, Path, description = "The project's UUID"),
+        ("feature_id" = String, Path, description = "The feature's UUID"),
+        ("story_id" = String, Path, description = "The story's UUID"),
+    ),
+    request_body = DecisionRequest,
+    responses(
+        (status = 200, description = "The story with the decision appended", body = StoryResponse),
+        (status = 400, description = "The body is not JSON of the expected shape (`invalid_request`)", body = ErrorBody),
+        (status = 401, description = "No valid API key", body = ErrorBody),
+        (status = 403, description = "A session, not an agent key", body = ErrorBody),
+        (status = 404, description = "No such story in this feature, project and workspace", body = ErrorBody),
+        (status = 409, description = "`conflict` with `current_version` when `expected_version` is stale; else `not_holder` when the story has a holder and it is not `run`", body = StoryConflictBody),
+        (status = 422, description = "`by` other than agent or human (`invalid_by`)", body = ErrorBody),
+    )
+)]
+pub async fn add_decision(
+    State(state): State<AppState>,
+    request: AgentRequest,
+    Path((_, project_id, feature_id, story_id)): Path<(String, String, String, String)>,
+    body: Bytes,
+) -> Result<Json<StoryResponse>, StoryError> {
+    let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
+    let feature_id = parse_uuid(&feature_id).ok_or(ApiError::NotFound)?;
+    let story_id = parse_uuid(&story_id).ok_or(ApiError::NotFound)?;
+    let write = parse_body::<DecisionRequest>(&body)?;
+    if !["agent", "human"].contains(&write.by.as_str()) {
+        return Err(invalid_field("invalid_by").into());
+    }
+    let (mut tx, _) = open_run_write(
+        &state,
+        &request.workspace_id,
+        [&project_id, &feature_id, &story_id],
+        write.expected_version,
+        Some(&write.run),
+    )
+    .await?;
+    let row = sqlx::query_as::<_, StoryRow>(&format!(
+        "UPDATE stories SET decisions = decisions || jsonb_build_array(jsonb_build_object(\
+         'question', $2::text, 'choice', $3::text, 'by', $4::text)), \
+         version = version + 1, updated_at = clock_timestamp() \
+         WHERE id = $1::uuid RETURNING {STORY_COLUMNS}"
+    ))
+    .bind(&story_id)
+    .bind(&write.question)
+    .bind(&write.choice)
+    .bind(&write.by)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(ApiError::database)?;
+    finish_story_write(&state, tx, &request, &project_id, row, &["decisions"]).await
+}
+
+/// Replaces the files a story changed.
+#[utoipa::path(
+    post,
+    path = "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/files",
+    params(
+        ("workspace_id" = String, Path, description = "The workspace's UUID"),
+        ("project_id" = String, Path, description = "The project's UUID"),
+        ("feature_id" = String, Path, description = "The feature's UUID"),
+        ("story_id" = String, Path, description = "The story's UUID"),
+    ),
+    request_body = FilesRequest,
+    responses(
+        (status = 200, description = "The story with its changed files replaced", body = StoryResponse),
+        (status = 400, description = "The body is not JSON of the expected shape (`invalid_request`)", body = ErrorBody),
+        (status = 401, description = "No valid API key", body = ErrorBody),
+        (status = 403, description = "A session, not an agent key", body = ErrorBody),
+        (status = 404, description = "No such story in this feature, project and workspace", body = ErrorBody),
+        (status = 409, description = "`conflict` with `current_version` when `expected_version` is stale; else `not_holder` when the story has a holder and it is not `run`", body = StoryConflictBody),
+    )
+)]
+pub async fn set_files(
+    State(state): State<AppState>,
+    request: AgentRequest,
+    Path((_, project_id, feature_id, story_id)): Path<(String, String, String, String)>,
+    body: Bytes,
+) -> Result<Json<StoryResponse>, StoryError> {
+    let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
+    let feature_id = parse_uuid(&feature_id).ok_or(ApiError::NotFound)?;
+    let story_id = parse_uuid(&story_id).ok_or(ApiError::NotFound)?;
+    let write = parse_body::<FilesRequest>(&body)?;
+    let (mut tx, _) = open_run_write(
+        &state,
+        &request.workspace_id,
+        [&project_id, &feature_id, &story_id],
+        write.expected_version,
+        Some(&write.run),
+    )
+    .await?;
+    let row = sqlx::query_as::<_, StoryRow>(&format!(
+        "UPDATE stories SET files_changed = $2::text::jsonb, version = version + 1, \
+         updated_at = clock_timestamp() WHERE id = $1::uuid RETURNING {STORY_COLUMNS}"
+    ))
+    .bind(&story_id)
+    .bind(json!(write.files_changed).to_string())
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(ApiError::database)?;
+    finish_story_write(&state, tx, &request, &project_id, row, &["files_changed"]).await
+}
+
+/// Blocks a story on a question to the human.
+#[utoipa::path(
+    post,
+    path = "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/block",
+    params(
+        ("workspace_id" = String, Path, description = "The workspace's UUID"),
+        ("project_id" = String, Path, description = "The project's UUID"),
+        ("feature_id" = String, Path, description = "The feature's UUID"),
+        ("story_id" = String, Path, description = "The story's UUID"),
+    ),
+    request_body = BlockStoryRequest,
+    responses(
+        (status = 200, description = "The story, blocked", body = StoryResponse),
+        (status = 400, description = "The body is not JSON of the expected shape (`invalid_request`)", body = ErrorBody),
+        (status = 401, description = "No valid API key", body = ErrorBody),
+        (status = 403, description = "A session, not an agent key", body = ErrorBody),
+        (status = 404, description = "No such story in this feature, project and workspace", body = ErrorBody),
+        (status = 409, description = "`conflict` with `current_version` when `expected_version` is stale; else `not_holder` when the story has a holder and it is not `run`", body = StoryConflictBody),
+    )
+)]
+pub async fn block_story(
+    State(state): State<AppState>,
+    request: AgentRequest,
+    Path((_, project_id, feature_id, story_id)): Path<(String, String, String, String)>,
+    body: Bytes,
+) -> Result<Json<StoryResponse>, StoryError> {
+    let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
+    let feature_id = parse_uuid(&feature_id).ok_or(ApiError::NotFound)?;
+    let story_id = parse_uuid(&story_id).ok_or(ApiError::NotFound)?;
+    let write = parse_body::<BlockStoryRequest>(&body)?;
+    let (mut tx, _) = open_run_write(
+        &state,
+        &request.workspace_id,
+        [&project_id, &feature_id, &story_id],
+        write.expected_version,
+        None,
+    )
+    .await?;
+    let row = sqlx::query_as::<_, StoryRow>(&format!(
+        "UPDATE stories SET blocked = true, version = version + 1, \
+         updated_at = clock_timestamp() WHERE id = $1::uuid RETURNING {STORY_COLUMNS}"
+    ))
+    .bind(&story_id)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(ApiError::database)?;
+    finish_story_write(&state, tx, &request, &project_id, row, &["blocked"]).await
+}
+
+/// Lifts the block of a story.
+#[utoipa::path(
+    post,
+    path = "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/unblock",
+    params(
+        ("workspace_id" = String, Path, description = "The workspace's UUID"),
+        ("project_id" = String, Path, description = "The project's UUID"),
+        ("feature_id" = String, Path, description = "The feature's UUID"),
+        ("story_id" = String, Path, description = "The story's UUID"),
+    ),
+    request_body = BlockStoryRequest,
+    responses(
+        (status = 200, description = "The story, not blocked", body = StoryResponse),
+        (status = 400, description = "The body is not JSON of the expected shape (`invalid_request`)", body = ErrorBody),
+        (status = 401, description = "No valid API key", body = ErrorBody),
+        (status = 403, description = "A session, not an agent key", body = ErrorBody),
+        (status = 404, description = "No such story in this feature, project and workspace", body = ErrorBody),
+        (status = 409, description = "`conflict` with `current_version` when `expected_version` is stale; else `not_holder` when the story has a holder and it is not `run`", body = StoryConflictBody),
+    )
+)]
+pub async fn unblock_story(
+    State(state): State<AppState>,
+    request: AgentRequest,
+    Path((_, project_id, feature_id, story_id)): Path<(String, String, String, String)>,
+    body: Bytes,
+) -> Result<Json<StoryResponse>, StoryError> {
+    let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
+    let feature_id = parse_uuid(&feature_id).ok_or(ApiError::NotFound)?;
+    let story_id = parse_uuid(&story_id).ok_or(ApiError::NotFound)?;
+    let write = parse_body::<BlockStoryRequest>(&body)?;
+    let (mut tx, _) = open_run_write(
+        &state,
+        &request.workspace_id,
+        [&project_id, &feature_id, &story_id],
+        write.expected_version,
+        None,
+    )
+    .await?;
+    let row = sqlx::query_as::<_, StoryRow>(&format!(
+        "UPDATE stories SET blocked = false, version = version + 1, \
+         updated_at = clock_timestamp() WHERE id = $1::uuid RETURNING {STORY_COLUMNS}"
+    ))
+    .bind(&story_id)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(ApiError::database)?;
+    finish_story_write(&state, tx, &request, &project_id, row, &["blocked"]).await
+}
+
+/// Clears the pending human check of a criterion, in any status.
+#[utoipa::path(
+    post,
+    path = "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/check",
+    params(
+        ("workspace_id" = String, Path, description = "The workspace's UUID"),
+        ("project_id" = String, Path, description = "The project's UUID"),
+        ("feature_id" = String, Path, description = "The feature's UUID"),
+        ("story_id" = String, Path, description = "The story's UUID"),
+    ),
+    request_body = CheckCriterionRequest,
+    responses(
+        (status = 200, description = "The story with the criterion's human check cleared", body = StoryResponse),
+        (status = 400, description = "The body is not JSON of the expected shape (`invalid_request`)", body = ErrorBody),
+        (status = 401, description = "No valid session", body = ErrorBody),
+        (status = 403, description = "An agent key, not a session", body = ErrorBody),
+        (status = 404, description = "No such story in this feature, project and workspace", body = ErrorBody),
+        (status = 409, description = "`conflict` with `current_version` when `expected_version` is stale", body = StoryConflictBody),
+        (status = 422, description = "A criterion index outside the story's criteria (`invalid_criterion`)", body = ErrorBody),
+    )
+)]
+pub async fn check_criterion(
+    State(state): State<AppState>,
+    request: HumanRequest,
+    Path((_, project_id, feature_id, story_id)): Path<(String, String, String, String)>,
+    body: Bytes,
+) -> Result<Json<StoryResponse>, StoryError> {
+    let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
+    let feature_id = parse_uuid(&feature_id).ok_or(ApiError::NotFound)?;
+    let story_id = parse_uuid(&story_id).ok_or(ApiError::NotFound)?;
+    let write = parse_body::<CheckCriterionRequest>(&body)?;
+    let (mut tx, current) = open_run_write(
+        &state,
+        &request.workspace_id,
+        [&project_id, &feature_id, &story_id],
+        write.expected_version,
+        None,
+    )
+    .await?;
+    let index = criterion_index(write.criterion, &current)?;
+    let row = sqlx::query_as::<_, StoryRow>(&format!(
+        "UPDATE stories SET criteria = jsonb_set(criteria, ARRAY[$2::text, 'pending'], 'false'), \
+         version = version + 1, updated_at = clock_timestamp() \
+         WHERE id = $1::uuid RETURNING {STORY_COLUMNS}"
+    ))
+    .bind(&story_id)
+    .bind(index.to_string())
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(ApiError::database)?;
+    let request = AgentRequest {
+        workspace_id: request.workspace_id,
+    };
+    finish_story_write(&state, tx, &request, &project_id, row, &["criteria"]).await
 }

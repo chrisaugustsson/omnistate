@@ -106,6 +106,12 @@ export const AttachmentResponseSchema = z.object({
 });
 export type AttachmentResponse = z.infer<typeof AttachmentResponseSchema>;
 
+export const BlockStoryRequestSchema = z.object({
+  expected_version: z.number().int(),
+  run: z.string(),
+});
+export type BlockStoryRequest = z.infer<typeof BlockStoryRequestSchema>;
+
 export const BoardBodySchema = z.object({
   board_id: z.string(),
   doc_id: z.string(),
@@ -119,6 +125,12 @@ export const CancelStoryRequestSchema = z.object({
   expected_version: z.number().int(),
 });
 export type CancelStoryRequest = z.infer<typeof CancelStoryRequestSchema>;
+
+export const CheckCriterionRequestSchema = z.object({
+  criterion: z.number().int(),
+  expected_version: z.number().int(),
+});
+export type CheckCriterionRequest = z.infer<typeof CheckCriterionRequestSchema>;
 
 export const ClaimStoryRequestSchema = z.object({
   expected_version: z.number().int(),
@@ -258,6 +270,15 @@ export const CriterionBodySchema = z.object({
 });
 export type CriterionBody = z.infer<typeof CriterionBodySchema>;
 
+export const DecisionRequestSchema = z.object({
+  by: z.string(),
+  choice: z.string(),
+  expected_version: z.number().int(),
+  question: z.string(),
+  run: z.string(),
+});
+export type DecisionRequest = z.infer<typeof DecisionRequestSchema>;
+
 export const DigestEntrySchema = z.object({
   author: z.record(z.string(), z.unknown()),
   created_at: z.string(),
@@ -344,6 +365,22 @@ export const FeatureSummarySchema = z.object({
   waiting: z.number().int(),
 });
 export type FeatureSummary = z.infer<typeof FeatureSummarySchema>;
+
+export const FilesRequestSchema = z.object({
+  expected_version: z.number().int(),
+  files_changed: z.array(z.string()),
+  run: z.string(),
+});
+export type FilesRequest = z.infer<typeof FilesRequestSchema>;
+
+export const FindingRequestSchema = z.object({
+  expected_version: z.number().int(),
+  files: z.array(z.string()),
+  run: z.string(),
+  stage: z.string(),
+  text: z.string(),
+});
+export type FindingRequest = z.infer<typeof FindingRequestSchema>;
 
 export const HeadBoardSchema = z.object({
   chunk: z.string(),
@@ -625,6 +662,12 @@ export const ReplyRequestSchema = z.object({
 });
 export type ReplyRequest = z.infer<typeof ReplyRequestSchema>;
 
+export const ResolveFindingRequestSchema = z.object({
+  expected_version: z.number().int(),
+  run: z.string(),
+});
+export type ResolveFindingRequest = z.infer<typeof ResolveFindingRequestSchema>;
+
 export const SingleCommentResponseSchema = z.object({
   comment: CommentBodySchema,
   project_id: z.string(),
@@ -703,6 +746,15 @@ export const ThreadResponseSchema = z.object({
 });
 export type ThreadResponse = z.infer<typeof ThreadResponseSchema>;
 
+export const TickRequestSchema = z.object({
+  criterion: z.number().int(),
+  expected_version: z.number().int(),
+  pending: z.boolean().nullable().optional(),
+  run: z.string(),
+  ticked: z.boolean(),
+});
+export type TickRequest = z.infer<typeof TickRequestSchema>;
+
 export const UsageBoardSchema = z.object({
   board_id: z.string(),
   board_name: z.string(),
@@ -761,8 +813,10 @@ export const schemas = {
   AppSummary: AppSummarySchema,
   AttachmentBody: AttachmentBodySchema,
   AttachmentResponse: AttachmentResponseSchema,
+  BlockStoryRequest: BlockStoryRequestSchema,
   BoardBody: BoardBodySchema,
   CancelStoryRequest: CancelStoryRequestSchema,
+  CheckCriterionRequest: CheckCriterionRequestSchema,
   ClaimStoryRequest: ClaimStoryRequestSchema,
   CommentBody: CommentBodySchema,
   CommentListResponse: CommentListResponseSchema,
@@ -779,6 +833,7 @@ export const schemas = {
   CreateStoryRequest: CreateStoryRequestSchema,
   CreatedKeyResponse: CreatedKeyResponseSchema,
   CriterionBody: CriterionBodySchema,
+  DecisionRequest: DecisionRequestSchema,
   DigestEntry: DigestEntrySchema,
   DigestResponse: DigestResponseSchema,
   DocBody: DocBodySchema,
@@ -791,6 +846,8 @@ export const schemas = {
   FeatureListResponse: FeatureListResponseSchema,
   FeatureResponse: FeatureResponseSchema,
   FeatureSummary: FeatureSummarySchema,
+  FilesRequest: FilesRequestSchema,
+  FindingRequest: FindingRequestSchema,
   HeadBoard: HeadBoardSchema,
   HeadHtmlResponse: HeadHtmlResponseSchema,
   HeadTokensResponse: HeadTokensResponseSchema,
@@ -829,6 +886,7 @@ export const schemas = {
   RenameFeatureRequest: RenameFeatureRequestSchema,
   ReplyBody: ReplyBodySchema,
   ReplyRequest: ReplyRequestSchema,
+  ResolveFindingRequest: ResolveFindingRequestSchema,
   SingleCommentResponse: SingleCommentResponseSchema,
   SinglePostResponse: SinglePostResponseSchema,
   StartThreadRequest: StartThreadRequestSchema,
@@ -840,6 +898,7 @@ export const schemas = {
   ThreadBody: ThreadBodySchema,
   ThreadListResponse: ThreadListResponseSchema,
   ThreadResponse: ThreadResponseSchema,
+  TickRequest: TickRequestSchema,
   TitleChange: TitleChangeSchema,
   TokensChange: TokensChangeSchema,
   UsageBoard: UsageBoardSchema,
@@ -1198,6 +1257,17 @@ export const operations = {
       "422": ErrorBodySchema,
     },
   },
+  "POST /api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/block": {
+    request: BlockStoryRequestSchema,
+    responses: {
+      "200": StoryResponseSchema,
+      "400": ErrorBodySchema,
+      "401": ErrorBodySchema,
+      "403": ErrorBodySchema,
+      "404": ErrorBodySchema,
+      "409": StoryConflictBodySchema,
+    },
+  },
   "POST /api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/cancel": {
     request: CancelStoryRequestSchema,
     responses: {
@@ -1206,6 +1276,18 @@ export const operations = {
       "401": ErrorBodySchema,
       "404": ErrorBodySchema,
       "409": StoryConflictBodySchema,
+    },
+  },
+  "POST /api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/check": {
+    request: CheckCriterionRequestSchema,
+    responses: {
+      "200": StoryResponseSchema,
+      "400": ErrorBodySchema,
+      "401": ErrorBodySchema,
+      "403": ErrorBodySchema,
+      "404": ErrorBodySchema,
+      "409": StoryConflictBodySchema,
+      "422": ErrorBodySchema,
     },
   },
   "POST /api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/claim": {
@@ -1218,6 +1300,52 @@ export const operations = {
       "404": ErrorBodySchema,
       "409": StoryHeldBodySchema,
       "422": ErrorBodySchema,
+    },
+  },
+  "POST /api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/decisions": {
+    request: DecisionRequestSchema,
+    responses: {
+      "200": StoryResponseSchema,
+      "400": ErrorBodySchema,
+      "401": ErrorBodySchema,
+      "403": ErrorBodySchema,
+      "404": ErrorBodySchema,
+      "409": StoryConflictBodySchema,
+      "422": ErrorBodySchema,
+    },
+  },
+  "POST /api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/files": {
+    request: FilesRequestSchema,
+    responses: {
+      "200": StoryResponseSchema,
+      "400": ErrorBodySchema,
+      "401": ErrorBodySchema,
+      "403": ErrorBodySchema,
+      "404": ErrorBodySchema,
+      "409": StoryConflictBodySchema,
+    },
+  },
+  "POST /api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/findings": {
+    request: FindingRequestSchema,
+    responses: {
+      "200": StoryResponseSchema,
+      "400": ErrorBodySchema,
+      "401": ErrorBodySchema,
+      "403": ErrorBodySchema,
+      "404": ErrorBodySchema,
+      "409": StoryConflictBodySchema,
+      "422": ErrorBodySchema,
+    },
+  },
+  "POST /api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/findings/{index}/resolve": {
+    request: ResolveFindingRequestSchema,
+    responses: {
+      "200": StoryResponseSchema,
+      "400": ErrorBodySchema,
+      "401": ErrorBodySchema,
+      "403": ErrorBodySchema,
+      "404": ErrorBodySchema,
+      "409": StoryConflictBodySchema,
     },
   },
   "POST /api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/move": {
@@ -1234,6 +1362,29 @@ export const operations = {
   },
   "POST /api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/release": {
     request: ReleaseStoryRequestSchema,
+    responses: {
+      "200": StoryResponseSchema,
+      "400": ErrorBodySchema,
+      "401": ErrorBodySchema,
+      "403": ErrorBodySchema,
+      "404": ErrorBodySchema,
+      "409": StoryConflictBodySchema,
+    },
+  },
+  "POST /api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/tick": {
+    request: TickRequestSchema,
+    responses: {
+      "200": StoryResponseSchema,
+      "400": ErrorBodySchema,
+      "401": ErrorBodySchema,
+      "403": ErrorBodySchema,
+      "404": ErrorBodySchema,
+      "409": StoryConflictBodySchema,
+      "422": ErrorBodySchema,
+    },
+  },
+  "POST /api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/unblock": {
+    request: BlockStoryRequestSchema,
     responses: {
       "200": StoryResponseSchema,
       "400": ErrorBodySchema,

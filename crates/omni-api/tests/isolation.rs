@@ -314,6 +314,58 @@ const CASES: &[Case] = &[
     ),
     case(
         "POST",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/tick",
+        Some(r#"{"expected_version":1,"run":"intruder","criterion":0,"ticked":true}"#),
+        Kind::Workspace,
+    ),
+    case(
+        "POST",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/findings",
+        Some(
+            r#"{"expected_version":1,"run":"intruder","stage":"review","text":"intruder","files":[]}"#,
+        ),
+        Kind::Workspace,
+    ),
+    case(
+        "POST",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/findings/{index}/resolve",
+        Some(r#"{"expected_version":1,"run":"intruder"}"#),
+        Kind::Workspace,
+    ),
+    case(
+        "POST",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/decisions",
+        Some(
+            r#"{"expected_version":1,"run":"intruder","question":"intruder","choice":"intruder","by":"agent"}"#,
+        ),
+        Kind::Workspace,
+    ),
+    case(
+        "POST",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/files",
+        Some(r#"{"expected_version":1,"run":"intruder","files_changed":[]}"#),
+        Kind::Workspace,
+    ),
+    case(
+        "POST",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/block",
+        Some(r#"{"expected_version":1,"run":"intruder"}"#),
+        Kind::Workspace,
+    ),
+    case(
+        "POST",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/unblock",
+        Some(r#"{"expected_version":1,"run":"intruder"}"#),
+        Kind::Workspace,
+    ),
+    case(
+        "POST",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/check",
+        Some(r#"{"expected_version":1,"criterion":0}"#),
+        Kind::Workspace,
+    ),
+    case(
+        "POST",
         "/api/v1/w/{workspace_id}/projects/{project_id}/threads",
         Some(r#"{"question":"intruder"}"#),
         Kind::Workspace,
@@ -1200,6 +1252,9 @@ fn fill(template: &str, workspace: &Side, record: &Side) -> String {
             "story_id" => &record.story_id,
             // Every doc's log starts with its creation, seq 1.
             "seq" => "1",
+            // A finding index is read after the story is found, so any
+            // index stands in for one.
+            "index" => "0",
             other => panic!(
                 "{template} has the placeholder {{{other}}}, for which the suite has no seeded \
                  ID: add it to Side and fill() in tests/isolation.rs"

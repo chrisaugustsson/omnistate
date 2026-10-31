@@ -366,6 +366,38 @@ pub fn router(state: AppState) -> Router {
             post(stories::move_story),
         )
         .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/tick",
+            post(stories::tick_criterion),
+        )
+        .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/findings",
+            post(stories::add_finding),
+        )
+        .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/findings/{index}/resolve",
+            post(stories::resolve_finding),
+        )
+        .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/decisions",
+            post(stories::add_decision),
+        )
+        .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/files",
+            post(stories::set_files),
+        )
+        .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/block",
+            post(stories::block_story),
+        )
+        .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/unblock",
+            post(stories::unblock_story),
+        )
+        .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/check",
+            post(stories::check_criterion),
+        )
+        .route(
             "/api/v1/w/{workspace_id}/projects/{project_id}/threads",
             get(threads::list_threads).post(threads::create_app_thread),
         )
