@@ -98,6 +98,9 @@ function writeLock(dirs, lock) {
   writeFileSync(dirs.lock, JSON.stringify(lock) + "\n");
 }
 
+// The claims this run sent for the story, in order.
+const claimsOf = (dirs, key) => dirs.state().calls.filter((c) => c.argv[1] === "claim" && c.argv[2] === key).map((c) => ({ run: c.argv[c.argv.indexOf("--run") + 1], stage: c.argv[c.argv.indexOf("--stage") + 1] }));
+
 const blockingGap = { criterion: "The badge has a colour", question: "Which colour is the badge?", options: ["Paint it red", "Paint it blue"], recommendation: "Paint it red", reason: "\"warning colour\"", blocking: true };
 const minorGap = (n) => ({ criterion: `Criterion ${n}`, question: `Minor question ${n}?`, options: [`Option ${n}a`, `Option ${n}b`], recommendation: `Option ${n}a`, reason: "convention", blocking: false });
 
@@ -185,7 +188,7 @@ test("claims at its stage an implementing story of another run whose worktree ha
 
   const result = await start("board");
 
-  assert.deepEqual(dirs.story("US-1").holder, { run: result.run, stage: "implementing" });
+  assert.deepEqual(claimsOf(dirs, "US-1"), [{ run: result.run, stage: "implementing" }]);
   assert.equal(dirs.story("US-1").status, "implementing");
   assert.equal(existsSync(wt), true);
 });
@@ -199,7 +202,7 @@ test("claims an unheld review story whose worktree has a commit ahead", async (t
 
   const result = await start("board");
 
-  assert.deepEqual(dirs.story("US-1").holder, { run: result.run, stage: "review" });
+  assert.deepEqual(claimsOf(dirs, "US-1"), [{ run: result.run, stage: "review" }]);
   assert.equal(dirs.story("US-1").status, "review");
 });
 
@@ -231,7 +234,7 @@ test("keeps a testing story of another run in testing, claimed by this run", asy
   const result = await start("board");
 
   assert.equal(dirs.story("US-3").status, "testing");
-  assert.deepEqual(dirs.story("US-3").holder, { run: result.run, stage: "testing" });
+  assert.deepEqual(claimsOf(dirs, "US-3"), [{ run: result.run, stage: "testing" }]);
 });
 
 test("only releases a blocked story of another run, without claiming it or moving it", async (t) => {
@@ -378,7 +381,7 @@ test("claims an unblocked review story at review for this run and keeps its work
 
   const result = await start("board");
 
-  assert.deepEqual(dirs.story("US-6").holder, { run: result.run, stage: "review" });
+  assert.deepEqual(claimsOf(dirs, "US-6"), [{ run: result.run, stage: "review" }]);
   assert.equal(dirs.story("US-6").status, "review");
   assert.equal(dirs.story("US-6").blocked, false);
   assert.equal(existsSync(wt), true);
@@ -389,7 +392,7 @@ test("claims an unblocked implementing story at implementing for this run", asyn
 
   const result = await start("board");
 
-  assert.deepEqual(dirs.story("US-6").holder, { run: result.run, stage: "implementing" });
+  assert.deepEqual(claimsOf(dirs, "US-6"), [{ run: result.run, stage: "implementing" }]);
   assert.equal(dirs.story("US-6").status, "implementing");
 });
 
@@ -403,11 +406,19 @@ function deliver(args, agent) {
 // its prompt, to the script given for the story key in its label. Reviewer calls
 // (label `review:<key>`) go to the script in reviewByKey, else pass. Check calls
 // (label `verify:<key>`) go to the script in verifyByKey, else report no criteria.
-function implAgent(byKey, reviewByKey = {}, verifyByKey = {}) {
+// Test author calls (label `tests:<key>`) go to the script in testsByKey, else add
+// nothing; the test reviewer accepts, and the final check reports healthy.
+function implAgent(byKey, reviewByKey = {}, verifyByKey = {}, testsByKey = {}) {
   const prompts = {};
   const reviews = {};
   const verifies = {};
   const agent = async (prompt, opts) => {
+    if (opts.label.startsWith("tests:")) {
+      const key = opts.label.slice(6).split(" ")[0];
+      return testsByKey[key] ? testsByKey[key]() : noTests;
+    }
+    if (opts.label.startsWith("test-review:")) return { pass: true, duplicates: [], issues: [], suiteGreen: true, productionUntouched: true, leftoverFiles: [] };
+    if (opts.label === "final check") return { healthy: true, journeys: ["Board to badge: worked"], report: "fast passed" };
     if (opts.label.startsWith("verify:")) {
       const key = opts.label.slice(7).split(" ")[0];
       verifies[key] = (verifies[key] || 0) + 1;
@@ -426,6 +437,7 @@ function implAgent(byKey, reviewByKey = {}, verifyByKey = {}) {
   return { agent, prompts, reviews, verifies };
 }
 
+const noTests = { status: "done", commit: "", oracle: [], existingCoverage: [], added: [], reused: [], changedOrRemoved: [], notAdmitted: [] };
 const branchOf = (wt) => git(wt, "rev-parse", "--abbrev-ref", "HEAD").trim();
 const threadOf = (dirs, key) => dirs.state().threads.find((th) => th.id === dirs.story(key).links[0].thread_id);
 const deferred = () => {
@@ -464,7 +476,7 @@ test("with implementers 2 two stories are implementing in their own worktrees wh
   assert.deepEqual(seen.us1, { status: "implementing", holder: { run: result.run, stage: "implementing" }, branch: "story/US-1" });
   assert.deepEqual(seen.us2, { status: "implementing", holder: { run: result.run, stage: "implementing" }, branch: "story/US-2" });
   assert.deepEqual(seen.us3, { status: "backlog", holder: null });
-  assert.equal(dirs.story("US-3").status, "testing");
+  assert.equal(dirs.story("US-3").status, "done");
 });
 
 test("a story sharing a planned path with an implementing story is not picked beside it; the next free story is", { timeout: 20000 }, async (t) => {
@@ -518,7 +530,7 @@ test("moves a ready story to review after the fast command passes in its worktre
 
   assert.equal(reviews["US-1"].length, 1);
   assert.equal(seenAtReview, "review");
-  assert.equal(dirs.story("US-1").status, "testing");
+  assert.equal(dirs.story("US-1").status, "done");
   assert.deepEqual(dirs.story("US-1").files_changed, ["NOTES", "src/board.rs"]);
 });
 
@@ -528,7 +540,7 @@ test("a fast command failing three times sends the first two outputs back to the
   dirs.checks({ fast: `n=$(($(cat ${counter} 2>/dev/null || echo 0)+1)); echo $n > ${counter}; echo "out of run $n"; echo "err of run $n" >&2; exit 1`, stack_up: "true", stack: "true" });
   const { agent, prompts } = implAgent({ "US-1": async () => ({ status: "ready", summary: "done" }) });
 
-  const result = await deliver({ feature: "board" }, agent);
+  await deliver({ feature: "board" }, agent);
 
   assert.equal(prompts["US-1"].length, 3);
   assert.ok(prompts["US-1"][1].includes("out of run 1") && prompts["US-1"][1].includes("err of run 1"));
@@ -541,11 +553,11 @@ test("a fast command failing three times sends the first two outputs back to the
   assert.deepEqual(dirs.story("US-1").links, [{ thread_id: th.id, label: "question" }]);
   assert.equal(dirs.story("US-1").blocked, true);
   assert.equal(dirs.story("US-1").status, "implementing");
-  assert.deepEqual(dirs.story("US-1").holder, { run: result.run, stage: "implementing" });
+  assert.equal(dirs.story("US-1").holder, null);
   assert.equal(existsSync(join(dirs.root, "app-stories", "US-1")), true);
 });
 
-test("an implementer returning blocked leaves its story blocked in implementing, held, with a thread holding the summary, and frees the slot for the next story", async (t) => {
+test("an implementer returning blocked leaves its story blocked in implementing, released at the run's end, with a thread holding the summary, and frees the slot for the next story", async (t) => {
   const dirs = scratch(t, [story("US-1"), story("US-2")]);
   dirs.checks({ fast: "true", stack_up: "true", stack: "true" });
   const { agent } = implAgent({
@@ -553,7 +565,7 @@ test("an implementer returning blocked leaves its story blocked in implementing,
     "US-2": async () => ({ status: "ready", summary: "done" }),
   });
 
-  const result = await deliver({ feature: "board", implementers: 1 }, agent);
+  await deliver({ feature: "board", implementers: 1 }, agent);
 
   const th = threadOf(dirs, "US-1");
   assert.equal(th.title, "US-1: the implementer is blocked");
@@ -561,9 +573,9 @@ test("an implementer returning blocked leaves its story blocked in implementing,
   assert.deepEqual(dirs.story("US-1").links, [{ thread_id: th.id, label: "question" }]);
   assert.equal(dirs.story("US-1").blocked, true);
   assert.equal(dirs.story("US-1").status, "implementing");
-  assert.deepEqual(dirs.story("US-1").holder, { run: result.run, stage: "implementing" });
+  assert.equal(dirs.story("US-1").holder, null);
   assert.equal(existsSync(join(dirs.root, "app-stories", "US-1")), true);
-  assert.equal(dirs.story("US-2").status, "testing");
+  assert.equal(dirs.story("US-2").status, "done");
 });
 
 test("an implementer returning needs_decision blocks its story with a thread 'US-<n>: <question>' holding the options and recommendation, worktree kept", async (t) => {
@@ -626,7 +638,7 @@ test("a story that fails review three times is blocked in review with a thread l
   const wt = inReview(dirs, "US-1");
   const { agent, prompts, reviews } = implAgent({ "US-1": fixer(wt, "US-1") }, { "US-1": (n) => fail(`Round ${n}: the badge has no colour`) });
 
-  const result = await deliver({ feature: "board" }, agent);
+  await deliver({ feature: "board" }, agent);
 
   assert.equal(reviews["US-1"].length, 3);
   assert.equal(prompts["US-1"].length, 2);
@@ -637,7 +649,7 @@ test("a story that fails review three times is blocked in review with a thread l
   assert.deepEqual(dirs.story("US-1").links, [{ thread_id: th.id, label: "question" }]);
   assert.equal(dirs.story("US-1").blocked, true);
   assert.equal(dirs.story("US-1").status, "review");
-  assert.deepEqual(dirs.story("US-1").holder, { run: result.run, stage: "review" });
+  assert.equal(dirs.story("US-1").holder, null);
   assert.deepEqual(openFindings(dirs.story("US-1")), ["Round 3: the badge has no colour"]);
 });
 
@@ -666,7 +678,7 @@ test("a review fail with two findings is fixed in the worktree, the fast command
   assert.equal(reviews["US-1"].length, 2);
   assert.deepEqual(openFindings(dirs.story("US-1")), []);
   assert.equal(dirs.story("US-1").findings.length, 2);
-  assert.equal(dirs.story("US-1").status, "testing");
+  assert.equal(dirs.story("US-1").status, "done");
 });
 
 test("a fast command failing three times in a review fix round blocks the story in review with the fast thread, and the reviewer does not run again", async (t) => {
@@ -675,7 +687,7 @@ test("a fast command failing three times in a review fix round blocks the story 
   const wt = inReview(dirs, "US-1");
   const { agent, prompts, reviews } = implAgent({ "US-1": fixer(wt, "US-1") }, { "US-1": () => fail("The badge has no colour") });
 
-  const result = await deliver({ feature: "board" }, agent);
+  await deliver({ feature: "board" }, agent);
 
   assert.equal(prompts["US-1"].length, 3);
   assert.equal(reviews["US-1"].length, 1);
@@ -683,7 +695,7 @@ test("a fast command failing three times in a review fix round blocks the story 
   assert.equal(th.title, "US-1: the fast command still fails after three attempts");
   assert.equal(dirs.story("US-1").blocked, true);
   assert.equal(dirs.story("US-1").status, "review");
-  assert.deepEqual(dirs.story("US-1").holder, { run: result.run, stage: "review" });
+  assert.equal(dirs.story("US-1").holder, null);
   assert.equal(existsSync(wt), true);
 });
 
@@ -726,8 +738,8 @@ test("with reviewers 2 two stories in review are reviewed at the same time", { t
 
   await deliver({ feature: "board", reviewers: 2 }, agent);
 
-  assert.equal(dirs.story("US-1").status, "testing");
-  assert.equal(dirs.story("US-2").status, "testing");
+  assert.equal(dirs.story("US-1").status, "done");
+  assert.equal(dirs.story("US-2").status, "done");
 });
 
 // ---- merge on the main worktree ---------------------------------------------
@@ -815,7 +827,7 @@ test("a rebase conflict sends the story to implementing with a finding naming th
   assert.equal(readFileSync(fastLog, "utf8"), `${wt}\n${dirs.repo}\n${dirs.repo}\n`);
   assert.deepEqual(dirs.story("US-1").files_changed, ["README", "src/a.rs"]);
   assert.equal(reviews["US-1"], undefined);
-  assert.equal(dirs.story("US-1").status, "testing");
+  assert.equal(dirs.story("US-1").status, "done");
   assert.deepEqual(dirs.story("US-1").findings, [{ stage: "testing", text: "rebase conflict in README", files: ["README"], resolved: true }]);
   assert.deepEqual(subjects(dirs), ["feat: US-2", "feat: US-1 code", "feat: US-1", "chore: main edit", "init"]);
   assert.equal(git(dirs.repo, "rev-list", "--merges", "main").trim(), "");
@@ -864,7 +876,7 @@ test("while the rebase implementer works, with implementers 1 a pickable story i
   await deliver({ feature: "board", implementers: 1 }, agent);
 
   assert.equal(seen.picked, true);
-  assert.equal(dirs.story("US-3").status, "testing");
+  assert.equal(dirs.story("US-3").status, "done");
 });
 
 test("a stack_up exiting non-zero merges nothing from the batch and posts its output on a thread on the feature", async (t) => {
@@ -1094,4 +1106,121 @@ test("a story failing a criterion and the fast command gets one fix story with t
 
   assert.deepEqual(dirs.state().stories.map((s) => s.key), ["US-1", "US-2"]);
   assert.deepEqual(dirs.story("US-2").criteria.map((c) => c.text), ["The badge shows the count", "The fast command passes on the main worktree", LINT]);
+});
+
+// ---- regression tests, run end and the report ---------------------------------
+
+// A test author that commits a test file on the main worktree and reports it added.
+const testWriter = (dirs, file, name, before = () => {}) => () => {
+  before();
+  mkdirSync(join(dirs.repo, "tests"), { recursive: true });
+  writeFileSync(join(dirs.repo, "tests", file), "test\n");
+  git(dirs.repo, "add", `tests/${file}`);
+  git(dirs.repo, "commit", "-q", "-m", `test: Add ${name}`);
+  return { ...noTests, commit: "abc", added: [{ test: name, file: `tests/${file}`, risk: "r", overlapCheck: "o", sensitivity: "s" }] };
+};
+
+// The run's report: the last post on the thread `Run <id>`, cut into its sections.
+const reportOf = (dirs, run) => {
+  const posts = dirs.state().threads.find((th) => th.title === `Run ${run}`).posts;
+  return Object.fromEntries(posts[posts.length - 1].body.split("\n## ").slice(1).map((part) => [part.split("\n")[0], part.slice(part.indexOf("\n") + 1)]));
+};
+
+const until = async (condition) => {
+  while (!condition()) await new Promise((r) => setTimeout(r, 20));
+};
+
+test("when storyLimit is reached partway through a batch, the stack command still runs once on the story merged before the stop, and the next testing story stays unmerged and released", async (t) => {
+  const dirs = scratch(t, [story("US-1", { status: "testing" }), story("US-4", { status: "testing" })]);
+  const stackLog = join(dirs.root, "stack.log");
+  dirs.checks({ fast: "true", stack_up: "true", stack: `git log --format=%s -1 >> ${stackLog}` });
+  inTesting(dirs, "US-1", "src/a.rs", "a\n");
+  inTesting(dirs, "US-4", "src/d.rs", "d\n");
+
+  await deliver({ feature: "board", storyLimit: 1 }, implAgent({}).agent);
+
+  assert.equal(readFileSync(stackLog, "utf8"), "feat: US-1\n");
+  assert.equal(dirs.story("US-1").status, "done");
+  assert.deepEqual(subjects(dirs), ["feat: US-1", "init"]);
+  assert.equal(dirs.story("US-4").status, "testing");
+  assert.equal(dirs.story("US-4").holder, null);
+});
+
+test("a checked story's test: commit lands on main while it is still in testing, and the next story of the batch merges only after it is done; a story whose author adds nothing is done with no test: commit", async (t) => {
+  const dirs = scratch(t, [story("US-1", { status: "testing" }), story("US-2", { status: "testing" })]);
+  dirs.checks({ fast: "true", stack_up: "true", stack: "true" });
+  inTesting(dirs, "US-1", "src/a.rs", "a\n");
+  inTesting(dirs, "US-2", "src/b.rs", "b\n");
+  const seen = {};
+  const author = testWriter(dirs, "badge.rs", "badge test", () => Object.assign(seen, { status: dirs.story("US-1").status, main: subjects(dirs) }));
+  const { agent } = implAgent({}, {}, {}, { "US-1": author });
+
+  await deliver({ feature: "board" }, agent);
+
+  assert.deepEqual(seen, { status: "testing", main: ["feat: US-1", "init"] });
+  assert.deepEqual(subjects(dirs), ["feat: US-2", "test: Add badge test", "feat: US-1", "init"]);
+  assert.equal(dirs.story("US-1").status, "done");
+  assert.equal(dirs.story("US-2").status, "done");
+});
+
+test("storyLimit 1 stops picking once one story is done, lets the story in implementing reach review and stop there released, and the report's Remaining says the run stopped at the limit", { timeout: 20000 }, async (t) => {
+  const dirs = scratch(t, [story("US-1", { status: "testing" }), story("US-2"), story("US-3")]);
+  dirs.checks({ fast: "true", stack_up: "true", stack: "true" });
+  inTesting(dirs, "US-1", "src/a.rs", "a\n");
+  const commit = committer(dirs, "US-2", "src/b.rs");
+  const { agent, prompts, reviews } = implAgent({ "US-2": async () => { await until(() => dirs.story("US-1").status === "done"); return commit(); } });
+
+  const result = await deliver({ feature: "board", implementers: 1, storyLimit: 1 }, agent);
+
+  assert.equal(dirs.story("US-1").status, "done");
+  assert.equal(dirs.story("US-2").status, "review");
+  assert.equal(dirs.story("US-2").holder, null);
+  assert.equal(reviews["US-2"], undefined);
+  assert.equal(dirs.story("US-3").status, "backlog");
+  assert.equal(prompts["US-3"], undefined);
+  const remaining = reportOf(dirs, result.run).Remaining;
+  assert.match(remaining, /storyLimit 1/);
+  assert.match(remaining, /^- US-2\b.*\breview$/m);
+  assert.match(remaining, /^- US-3\b.*\bbacklog$/m);
+});
+
+test("with one story blocked, one waiting on it and the rest done, the run ends without its lock and the Run thread's report names the done stories with commits, the blocked one with its thread, the waiting one, the fix story, the pending human check, the tests added and the journeys", async (t) => {
+  const human = { text: "The board shows the badge. Verify in browser using dev-browser skill", human_check: true };
+  const dirs = scratch(t, [
+    story("US-1", { status: "testing", criteria: [human] }),
+    story("US-2", { blocked: true, links: [questionLink("th-1")] }),
+    story("US-3", { blocked_by: ["US-2"] }),
+  ], [thread("th-1", "US-2: Which colour is the badge?")]);
+  const once = join(dirs.root, "stack-failed");
+  dirs.checks({ fast: "true", stack_up: "true", stack: `test -f ${once} || { touch ${once}; echo the stack broke; exit 1; }` });
+  inTesting(dirs, "US-1", "src/a.rs", "a\n");
+  const { agent, prompts } = implAgent({ "US-4": committer(dirs, "US-4", "src/fix.rs") }, {}, { "US-1": () => verdict(dirs, "US-1"), "US-4": () => verdict(dirs, "US-4") }, { "US-1": testWriter(dirs, "badge.rs", "badge test") });
+
+  const result = await deliver({ feature: "board" }, agent);
+
+  assert.equal(existsSync(dirs.lock), false);
+  assert.equal(prompts["US-3"], undefined);
+  const report = reportOf(dirs, result.run);
+  assert.match(report.Done, /^- US-1\b.*feat: US-1.*test: Add badge test/m);
+  assert.match(report.Done, /^- US-4\b.*feat: US-4/m);
+  assert.match(report.Blocked, /^- US-2\b.*th-1/m);
+  assert.match(report["Waiting on dependencies"], /^- US-3\b.*US-2/m);
+  assert.match(report["Fix stories created"], /^- US-4 Fix batch US-1$/m);
+  assert.ok(report["Pending human checks"].includes(`US-1: ${human.text}`));
+  assert.ok(report.Tests.includes("badge test"));
+  assert.ok(report.Journeys.includes("Board to badge: worked"));
+});
+
+test("with storyLimit 1 reached, a failing batch stack check still drives its priority-0 fix story to done", async (t) => {
+  const dirs = scratch(t, [story("US-1", { status: "testing" })]);
+  const once = join(dirs.root, "stack-failed");
+  dirs.checks({ fast: "true", stack_up: "true", stack: `test -f ${once} || { touch ${once}; echo the stack broke; exit 1; }` });
+  inTesting(dirs, "US-1", "src/a.rs", "a\n");
+  const { agent } = implAgent({ "US-2": committer(dirs, "US-2", "src/fix.rs") }, {}, { "US-2": () => verdict(dirs, "US-2") });
+
+  await deliver({ feature: "board", storyLimit: 1 }, agent);
+
+  assert.equal(dirs.story("US-2").title, "Fix batch US-1");
+  assert.equal(dirs.story("US-2").status, "done");
+  assert.deepEqual(subjects(dirs), ["feat: US-2", "feat: US-1", "init"]);
 });

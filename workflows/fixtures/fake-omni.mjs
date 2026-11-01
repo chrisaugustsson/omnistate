@@ -2,8 +2,8 @@
 // posts, a thread's conclusion when it has one, and every call with the lock file seen at that moment) lives in the
 // JSON file FAKE_OMNI_STATE names. FAKE_OMNI_FAIL=thread makes thread create fail.
 // `checks` answers only when the state holds checks; `story list --pickable` applies
-// the board's rule: backlog, not blocked, no planned path shared with a story in
-// implementing or review. `story finding` appends to the story's findings and
+// the board's rule: backlog, not blocked, every blocker done or cancelled, no planned
+// path shared with a story in implementing or review. `story finding` appends to the story's findings and
 // `story resolve --finding <i>` resolves the i-th (0-based). `story add <file>` reads
 // the heading, Description, Files and criteria the way the CLI does and numbers
 // the story after the highest key; `story tick` sets the criterion's ticked/pending.
@@ -65,7 +65,8 @@ if (noun === "--help") {
   if (argv.includes("--pickable")) {
     const busy = state.stories.filter((s) => s.status === "implementing" || s.status === "review").flatMap((s) => s.files_planned || []);
     const free = (s) => !(s.files_planned || []).some((f) => busy.includes(f));
-    out(state.stories.filter((s) => s.status === "backlog" && !s.blocked && free(s)).map((s) => `${s.key}\n`).join(""));
+    const finished = (key) => ["done", "cancelled"].includes(state.stories.find((x) => x.key === key)?.status);
+    out(state.stories.filter((s) => s.status === "backlog" && !s.blocked && free(s) && (s.blocked_by || []).every(finished)).map((s) => `${s.key}\n`).join(""));
   } else {
     out(JSON.stringify({ stories: state.stories }));
   }
