@@ -1128,15 +1128,26 @@ Return raw structured data only.`, { schema: TEST_CUT_SCHEMA, label: `test-cut:$
       }))
     }
   }
+  // A story claimed at implementing by the reconcile or the unblock pass, with
+  // its worktree still there, continues in that worktree: the implementer runs
+  // again on it instead of starting over.
+  const continued = new Set()
+  const resumable = () => listStories().find((s) => s.status === 'implementing' && !s.blocked && s.holder && s.holder.run === runId && fs.existsSync(worktreeOf(s.key)) && !active.has(s.key) && !skipped.has(s.key) && !continued.has(s.key))
+  const resume = (key) => {
+    continued.add(key)
+    ensureFast()
+    return implement(key).catch((e) => ({ key, outcome: 'failed', error: String(e && e.message || e) }))
+  }
   let firstPass = true
   for (;;) {
     const woken = signal
     if (!firstPass) { try { unblockPass() } catch (e) { log(`unblock: ${e && e.message || e}`) } }
     firstPass = false
     while (active.size < implementers && !limitReached()) {
-      const key = pickNext()
+      const held = resumable()
+      const key = held ? held.key : pickNext()
       if (!key) break
-      try { launch(key, start(key)) } catch (e) {
+      try { launch(key, held ? resume(key) : start(key)) } catch (e) {
         skipped.add(key)
         outcomes.push({ key, outcome: 'failed', error: String(e && e.message || e) })
       }

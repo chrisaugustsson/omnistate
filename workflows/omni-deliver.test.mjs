@@ -193,6 +193,24 @@ test("claims at its stage an implementing story of another run whose worktree ha
   assert.equal(existsSync(wt), true);
 });
 
+test("continues an implementing story it claimed at start in its existing worktree, keeping the commit, and moves it to review", { timeout: 20000 }, async (t) => {
+  const dirs = scratch(t, [story("US-1", { status: "implementing", holder: { run: "run-old", stage: "implementing" } })]);
+  dirs.checks({ fast: "true", stack_up: "true", stack: "true" });
+  const wt = worktree(dirs, "US-1");
+  writeFileSync(join(wt, "feature.txt"), "work\n");
+  git(wt, "add", "feature.txt");
+  git(wt, "commit", "-q", "-m", "earlier work");
+  const { agent, prompts } = implAgent({ "US-1": async () => ({ status: "ready", summary: "done" }) });
+
+  const result = await deliver({ feature: "board" }, agent);
+
+  assert.equal(prompts["US-1"].length, 1, "the implementer ran once more, on the same story");
+  assert.match(prompts["US-1"][0], new RegExp(wt.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")), "in the existing worktree");
+  assert.match(git(join(dirs.root, "app"), "log", "--oneline"), /earlier work/, "the earlier commit reached the integration branch");
+  assert.deepEqual(result.done, ["US-1"]);
+  assert.equal(dirs.story("US-1").status, "done");
+});
+
 test("claims an unheld review story whose worktree has a commit ahead", async (t) => {
   const dirs = scratch(t, [story("US-1", { status: "review" })]);
   const wt = worktree(dirs, "US-1");
