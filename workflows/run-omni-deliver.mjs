@@ -83,9 +83,30 @@ export function makeAgent({ cwd, runDir, addDirs = [], env = process.env, log = 
     }
     const denials = reply.permission_denials?.length || 0;
     log(`${label}: done in ${seconds}s, ${reply.num_turns ?? "?"} turns${denials ? `, ${denials} permission denials` : ""}`);
-    if (opts.schema) return reply.structured_output ?? null;
+    if (opts.schema) {
+      if (reply.structured_output != null) return reply.structured_output;
+      // A session sometimes answers with the JSON as text instead of calling
+      // the structured output tool; that answer is as good.
+      const parsed = parseJsonText(reply.result);
+      if (parsed === null) log(`${label}: the reply holds no structured output and its text is not JSON`);
+      return parsed;
+    }
     return typeof reply.result === "string" ? reply.result : null;
   };
+}
+
+/** The JSON object in `text`, bare or inside a ```json fence; null when there is none. */
+export function parseJsonText(text) {
+  if (typeof text !== "string") return null;
+  let body = text.trim();
+  const fence = body.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/);
+  if (fence) body = fence[1];
+  try {
+    const value = JSON.parse(body);
+    return value && typeof value === "object" ? value : null;
+  } catch {
+    return null;
+  }
 }
 
 function run(bin, argv, { cwd, env, input }) {

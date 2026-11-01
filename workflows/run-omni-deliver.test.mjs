@@ -77,3 +77,19 @@ test("the command line becomes the workflow's args, and the feature is required"
   assert.throws(() => parseArgs([]), /pass the feature/);
   assert.throws(() => parseArgs(["--feature", "x", "--bogus"]), /unknown argument --bogus/);
 });
+
+test("a schema call whose session answered in text takes the JSON from the text, bare or fenced", async (t) => {
+  const bare = scratch(t, { type: "result", is_error: false, result: '{"status":"done","summary":"x"}', num_turns: 7 });
+  const agent = makeAgent({ cwd: bare.root, runDir: bare.runDir, env: bare.env });
+  assert.deepEqual(await agent("Build it.", { schema: { type: "object", properties: {} }, label: "impl:US-1" }), { status: "done", summary: "x" });
+
+  const fenced = scratch(t, { type: "result", is_error: false, result: '```json\n{"gaps": []}\n```', num_turns: 11 });
+  const agent2 = makeAgent({ cwd: fenced.root, runDir: fenced.runDir, env: fenced.env });
+  assert.deepEqual(await agent2("Check it.", { schema: { type: "object", properties: {} }, label: "clarity:US-1" }), { gaps: [] });
+
+  const prose = scratch(t, { type: "result", is_error: false, result: "I could not finish.", num_turns: 2 });
+  const lines = [];
+  const agent3 = makeAgent({ cwd: prose.root, runDir: prose.runDir, env: prose.env, log: (m) => lines.push(m) });
+  assert.equal(await agent3("Check it.", { schema: { type: "object", properties: {} }, label: "clarity:US-2" }), null);
+  assert.equal(lines.at(-1), "clarity:US-2: the reply holds no structured output and its text is not JSON");
+});
