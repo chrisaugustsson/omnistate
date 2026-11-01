@@ -31,15 +31,25 @@ pub fn parse(text: &str) -> Result<Vec<(String, String)>, String> {
             table = name.to_string();
             continue;
         }
-        let (key, rest) = line
-            .split_once('=')
-            .ok_or_else(|| format!("line {number}: expected key = \"value\""))?;
-        let key = key.trim();
-        if !plain(key) {
-            return Err(format!("line {number}: {key:?} is not a plain key"));
-        }
+        let (key, rest) = if let Some(quoted) = line.strip_prefix('"') {
+            let (key, after) = basic_string(quoted).map_err(|e| format!("line {number}: {e}"))?;
+            let rest = after
+                .trim_start()
+                .strip_prefix('=')
+                .ok_or_else(|| format!("line {number}: expected key = \"value\""))?;
+            (key, rest)
+        } else {
+            let (key, rest) = line
+                .split_once('=')
+                .ok_or_else(|| format!("line {number}: expected key = \"value\""))?;
+            let key = key.trim();
+            if !plain(key) {
+                return Err(format!("line {number}: {key:?} is not a plain key"));
+            }
+            (key.to_string(), rest)
+        };
         let key = &if table.is_empty() {
-            key.to_string()
+            key
         } else {
             format!("{table}.{key}")
         };
@@ -64,22 +74,8 @@ fn value(text: &str) -> Result<String, String> {
     match chars.next() {
         None => Err("the value is missing".to_string()),
         Some('"') => {
-            let mut out = String::new();
-            while let Some(c) = chars.next() {
-                match c {
-                    '"' => return tail(chars.as_str(), out),
-                    '\\' => out.push(match chars.next() {
-                        Some('n') => '\n',
-                        Some('t') => '\t',
-                        Some('r') => '\r',
-                        Some('"') => '"',
-                        Some('\\') => '\\',
-                        _ => return Err("unknown escape in the string".to_string()),
-                    }),
-                    c => out.push(c),
-                }
-            }
-            Err("the string is not closed".to_string())
+            let (out, rest) = basic_string(chars.as_str())?;
+            tail(rest, out)
         }
         Some('\'') => {
             let rest = chars.as_str();
@@ -96,6 +92,28 @@ fn value(text: &str) -> Result<String, String> {
             Ok(word.to_string())
         }
     }
+}
+
+/// The basic string that starts after an opening quote, and the text after its
+/// closing quote.
+fn basic_string(text: &str) -> Result<(String, &str), String> {
+    let mut chars = text.chars();
+    let mut out = String::new();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => return Ok((out, chars.as_str())),
+            '\\' => out.push(match chars.next() {
+                Some('n') => '\n',
+                Some('t') => '\t',
+                Some('r') => '\r',
+                Some('"') => '"',
+                Some('\\') => '\\',
+                _ => return Err("unknown escape in the string".to_string()),
+            }),
+            c => out.push(c),
+        }
+    }
+    Err("the string is not closed".to_string())
 }
 
 /// Nothing but a comment may follow a value.
@@ -178,5 +196,25 @@ mod tests {
             get(&parse(&text).unwrap(), "k").as_deref(),
             Some("a \"b\" \\ c\nd")
         );
+    }
+
+    #[test]
+    fn a_quoted_key_is_read_unescaped_and_prefixed_by_its_table() {
+        let pairs = parse("\"/Users/me/app\" = \"01a1\"").unwrap();
+        assert_eq!(pairs, [("/Users/me/app".to_string(), "01a1".to_string())]);
+        let pairs = parse("[ws]\n\"/a b\" = \"x\"").unwrap();
+        assert_eq!(pairs, [("ws./a b".to_string(), "x".to_string())]);
+        let pairs = parse("\"a\\\"b\" = \"x\"").unwrap();
+        assert_eq!(pairs, [("a\"b".to_string(), "x".to_string())]);
+    }
+
+    #[test]
+    fn a_bare_key_with_a_slash_and_a_quoted_table_header_stay_refused() {
+        let err = parse("/a = \"x\"").unwrap_err();
+        assert!(
+            err.contains("line 1") && err.contains("is not a plain key"),
+            "{err}"
+        );
+        assert!(parse("[\"a\"]\n").is_err());
     }
 }
