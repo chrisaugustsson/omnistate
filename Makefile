@@ -47,6 +47,7 @@ test: web-deps
 	$(CARGO) test --workspace
 	cd crates/omni-core && wasm-pack test --node -- --test ops
 	pnpm -r test
+	node --test workflows/*.test.mjs
 	docker compose up --build --wait --detach proxy
 	docker compose run --rm test
 
