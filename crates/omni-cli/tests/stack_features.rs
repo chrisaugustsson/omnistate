@@ -286,16 +286,16 @@ fn a_feature_is_created_listed_and_shown_from_the_command_line() {
         }
     }
 
-    // The default project of .omni.toml works the same way.
-    let project_dir = Scratch::new("project");
-    std::fs::write(
-        project_dir.join(".omni.toml"),
-        format!("project = \"{project}\"\n"),
-    )
-    .unwrap();
+    // --project works the same way.
     let shown = omni(&home.path)
-        .cwd(&project_dir.path)
-        .args(&["feature", "show", "Wish list", "--json"])
+        .args(&[
+            "feature",
+            "show",
+            "Wish list",
+            "--json",
+            "--project",
+            &project,
+        ])
         .args(&["--as", "run-7/planner"])
         .run();
     assert_eq!(shown.code, 0, "{}", shown.stderr);

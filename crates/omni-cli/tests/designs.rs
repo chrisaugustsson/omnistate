@@ -4,7 +4,7 @@
 //!
 //! The contract these tests pin down (the rest is the green step's choice; all
 //! paths are under `/api/v1/w/{workspace}/projects/{project_id}`, the project
-//! found from `--project` or `.omni.toml`):
+//! found from `--project`):
 //!
 //! - `omni design read --doc <id> --board <id>` prints one board of the doc's
 //!   head in the tag format (`GET /docs/{doc}/boards/{board}`). It prints the

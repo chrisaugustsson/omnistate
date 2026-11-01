@@ -5,7 +5,7 @@
 //!
 //! The contract these tests pin down (the rest is the green step's choice; all
 //! paths are under `/api/v1/w/{workspace}/projects/{project_id}`, the project
-//! found from `--project` or `.omni.toml`):
+//! found from `--project`):
 //!
 //! - `omni tokens import <file>`: a missing file argument, a file that cannot
 //!   be read (the error names it) and a file that is not JSON are one-line

@@ -6,7 +6,7 @@
 //!
 //! The contract these tests pin down (the rest is the green step's choice; all
 //! paths are under `/api/v1/w/{workspace}/projects/{project_id}`, the project
-//! found from `--project` or `.omni.toml`):
+//! found from `--project`):
 //!
 //! - A missing doc, a doc that is no UUID and a board that is no node ID are
 //!   one-line errors that send nothing.

@@ -7,7 +7,7 @@
 //!
 //! The contract these tests pin down (the rest is the green step's choice; all
 //! paths are under `/api/v1/w/{workspace}/projects/{project_id}`, the project
-//! found from `--project` or `.omni.toml`):
+//! found from `--project`):
 //!
 //! - `omni thread create <question> [--feature <name or id>] [--sealed]`
 //!   sends `POST /threads` with `{"question", "sealed"}` (`sealed` is `true`

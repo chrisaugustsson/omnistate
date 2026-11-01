@@ -11,9 +11,8 @@
 //!   With `--feature <name or id>` it sends `POST /features/{feature_id}/docs`
 //!   (a name is looked up in the project's features, ignoring case, as for
 //!   `omni doc list`); a name the project does not have is a one-line error
-//!   that names it and creates nothing. Without `--feature` the feature is the
-//!   one of the nearest `.omni.toml`, and `--global` means the app level
-//!   whatever `.omni.toml` says. It prints the new doc's ID and title; `--json`
+//!   that names it and creates nothing. Without `--feature` the doc is at the app
+//!   level, and `--global` means the app level whatever `OMNI_FEATURE` says. It prints the new doc's ID and title; `--json`
 //!   prints the API's answer.
 //! - `omni doc read <doc>` prints the doc's head from `GET /docs/{doc}/html`:
 //!   the HTML of an HTML doc (nothing for a new, empty one, which is no
@@ -279,29 +278,21 @@ fn doc_create_with_an_unknown_feature_is_one_line_and_creates_nothing() {
 }
 
 #[test]
-fn the_feature_comes_from_the_nearest_omni_toml_and_the_flags_win() {
+fn the_feature_flag_picks_the_feature_and_global_means_the_app_level() {
     let server = mock();
     let home = logged_in(&server.url);
-    let project_dir = Scratch::new("project");
-    std::fs::write(
-        project_dir.join(".omni.toml"),
-        format!("project = \"{PROJECT}\"\nfeature = \"Checkout\"\n"),
-    )
-    .unwrap();
-    let nested = project_dir.join("docs").join("checkout");
-    std::fs::create_dir_all(&nested).unwrap();
     let in_nested = |extra: &[&str]| {
         omni(&home.path)
-            .cwd(&nested)
             .args(&[
                 "doc", "create", "--kind", "html", "--pillar", "spec", "--title", "Pay page",
             ])
+            .args(&["--project", PROJECT])
             .args(extra)
             .args(&["--as", "run-7/author"])
             .run()
     };
 
-    let out = in_nested(&[]);
+    let out = in_nested(&["--feature", "Checkout"]);
     assert_eq!(out.code, 0, "{}", out.stderr);
     let out = in_nested(&["--feature", "Search"]);
     assert_eq!(out.code, 0, "{}", out.stderr);
@@ -316,7 +307,7 @@ fn the_feature_comes_from_the_nearest_omni_toml_and_the_flags_win() {
             format!("{}/features/{SEARCH}/docs", base()),
             format!("{}/docs", base()),
         ],
-        "the feature of the nearest .omni.toml, then --feature over it, then --global over it"
+        "--feature Checkout, then --feature Search, then --global"
     );
 }
 

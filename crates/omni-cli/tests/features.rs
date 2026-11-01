@@ -17,8 +17,7 @@
 //!   description, and no status. An ID (a UUID) is shown with `GET
 //!   .../features/{id}`; a name is looked up in the project's features. A
 //!   name that the project does not have is an error that names it.
-//! - All of them take the project from `--project`, else the `project` of the
-//!   nearest `.omni.toml`, as a UUID or a project name (US-016), print the
+//! - All of them take the project from `--project`, as a UUID or a project name (US-016), print the
 //!   API's JSON with `--json`, and report errors as one line on standard
 //!   error (US-015, tests/common/mod.rs). `omni --help` lists them.
 //! - US-110: a feature has no status, so `omni feature done` and `omni feature
@@ -411,14 +410,11 @@ fn feature_show_of_a_name_the_project_does_not_have_is_one_line() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn the_project_comes_from_omni_toml_by_name_and_project_wins() {
+fn the_project_flag_takes_a_name_or_an_id() {
     let server = mock();
     let home = logged_in(&server.url);
-    let project_dir = Scratch::new("project");
-    std::fs::write(project_dir.join(".omni.toml"), "project = \"brand-site\"\n").unwrap();
     let in_project = |args: &[&str]| {
         omni(&home.path)
-            .cwd(&project_dir.path)
             .args(args)
             .args(&["--as", "run-7/planner"])
             .run()
@@ -429,7 +425,7 @@ fn the_project_comes_from_omni_toml_by_name_and_project_wins() {
         &["feature", "list"][..],
         &["feature", "show", FEATURE][..],
     ] {
-        let out = in_project(args);
+        let out = in_project(&[args, &["--project", "brand-site"]].concat());
         assert_eq!(out.code, 0, "{args:?}: {}", out.stderr);
     }
     assert_eq!(
@@ -456,7 +452,7 @@ fn the_project_comes_from_omni_toml_by_name_and_project_wins() {
         server.requests()
     );
 
-    // --project wins over .omni.toml, by name as well as by ID.
+    // --project takes a name as well as an ID.
     for project in ["other", OTHER_PROJECT] {
         let out = in_project(&["feature", "create", "Search", "--project", project]);
         assert_eq!(out.code, 0, "--project {project}: {}", out.stderr);

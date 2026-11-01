@@ -5,7 +5,7 @@
 //!
 //! The contract these tests pin down (the rest is the green step's choice; all
 //! paths are under `/api/v1/w/{workspace}/projects/{project_id}`, the project
-//! found from `--project` or `.omni.toml`):
+//! found from `--project`):
 //!
 //! - `omni doc create` with a missing kind, pillar or title, or a kind outside
 //!   `html`, `design` and `design-system`, is a one-line error that sends
