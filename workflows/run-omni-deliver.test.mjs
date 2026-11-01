@@ -1,0 +1,79 @@
+// The Node runner of omni-deliver: its `agent` against a fake `claude`
+// (fixtures/fake-claude.mjs), and its argument parsing.
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync, mkdirSync, chmodSync, existsSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { makeAgent, parseArgs } from "./run-omni-deliver.mjs";
+
+const fakeClaude = fileURLToPath(new URL("./fixtures/fake-claude.mjs", import.meta.url));
+
+function scratch(t, reply, exit) {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "run-omni-deliver-")));
+  const bin = join(root, "claude");
+  writeFileSync(bin, `#!/bin/sh\nexec "${process.execPath}" "${fakeClaude}" "$@"\n`);
+  chmodSync(bin, 0o755);
+  const logPath = join(root, "calls.jsonl");
+  const runDir = join(root, "run");
+  mkdirSync(runDir);
+  const env = { ...process.env, OMNI_DELIVER_CLAUDE: bin, FAKE_CLAUDE_LOG: logPath };
+  if (reply) env.FAKE_CLAUDE_REPLY = JSON.stringify(reply);
+  if (exit) env.FAKE_CLAUDE_EXIT = String(exit);
+  delete env.OMNI_DELIVER_PERMISSION_MODE;
+  delete env.OMNI_DELIVER_MAX_TURNS;
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const calls = () => readFileSync(logPath, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+  return { root, runDir, env, calls };
+}
+
+test("a schema call gives claude the prompt on stdin, the schema, model and agent flags, and returns the structured output", async (t) => {
+  const s = scratch(t, { type: "result", is_error: false, result: '{"gaps":[]}', structured_output: { gaps: [] }, num_turns: 3, permission_denials: [] });
+  const lines = [];
+  const agent = makeAgent({ cwd: s.root, runDir: s.runDir, addDirs: ["/tmp/app-stories"], env: s.env, log: (m) => lines.push(m) });
+  const schema = { type: "object", properties: { gaps: { type: "array" } }, required: ["gaps"] };
+  const out = await agent("Check ONE story.", { schema, label: "clarity:US-1", model: "opus", agentType: "verifier" });
+  assert.deepEqual(out, { gaps: [] });
+  const [call] = s.calls();
+  assert.equal(call.prompt, "Check ONE story.");
+  assert.equal(call.cwd, s.root);
+  const argv = call.argv;
+  assert.deepEqual(argv.slice(0, 3), ["-p", "--output-format", "json"]);
+  assert.equal(argv[argv.indexOf("--permission-mode") + 1], "auto");
+  assert.deepEqual(JSON.parse(argv[argv.indexOf("--json-schema") + 1]), schema);
+  assert.equal(argv[argv.indexOf("--model") + 1], "opus");
+  assert.equal(argv[argv.indexOf("--agent") + 1], "verifier");
+  assert.equal(argv[argv.indexOf("--add-dir") + 1], "/tmp/app-stories");
+  assert.ok(existsSync(join(s.runDir, "01-clarity_US-1.prompt.md")), "the prompt is kept in the run directory");
+  assert.ok(existsSync(join(s.runDir, "01-clarity_US-1.reply.json")), "the reply is kept in the run directory");
+  assert.match(lines.at(-1), /^clarity:US-1: done in \d+s, 3 turns$/);
+});
+
+test("without a schema the agent returns claude's final text, and no schema, model or agent flag is passed", async (t) => {
+  const s = scratch(t, { type: "result", is_error: false, result: "All good.", num_turns: 1 });
+  const agent = makeAgent({ cwd: s.root, runDir: s.runDir, env: s.env });
+  assert.equal(await agent("Say something.", { label: "plain" }), "All good.");
+  const [call] = s.calls();
+  for (const flag of ["--json-schema", "--model", "--agent", "--max-turns"]) assert.ok(!call.argv.includes(flag), `${flag} is not passed`);
+});
+
+test("a session that exits non-zero, or reports is_error, returns null and the log says why", async (t) => {
+  const failing = scratch(t, null, 2);
+  const lines = [];
+  const agent = makeAgent({ cwd: failing.root, runDir: failing.runDir, env: failing.env, log: (m) => lines.push(m) });
+  assert.equal(await agent("Do it.", { label: "impl:US-2", schema: { type: "object", properties: {} } }), null);
+  assert.match(lines.at(-1), /^impl:US-2: failed after \d+s: fake claude: refusing as told$/);
+
+  const errored = scratch(t, { type: "result", is_error: true, result: "Rate limited", num_turns: 0 });
+  const agent2 = makeAgent({ cwd: errored.root, runDir: errored.runDir, env: errored.env, log: (m) => lines.push(m) });
+  assert.equal(await agent2("Do it.", { label: "review:US-2" }), null);
+  assert.match(lines.at(-1), /^review:US-2: failed after \d+s: Rate limited$/);
+});
+
+test("the command line becomes the workflow's args, and the feature is required", () => {
+  assert.deepEqual(parseArgs(["--feature", "Link a folder", "--implementers", "2", "--story-limit", "4", "--args", '{"models":{"impl":"opus"}}']),
+    { feature: "Link a folder", implementers: 2, storyLimit: 4, models: { impl: "opus" } });
+  assert.throws(() => parseArgs([]), /pass the feature/);
+  assert.throws(() => parseArgs(["--feature", "x", "--bogus"]), /unknown argument --bogus/);
+});
