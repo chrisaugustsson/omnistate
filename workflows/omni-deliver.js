@@ -1,17 +1,17 @@
 export const meta = {
   name: 'omni-deliver',
   description: 'Delivers a feature\'s stories from the OmniState board: locks the main worktree, reconciles claims left by dead runs, and clarity-checks the backlog before any worktree exists',
-  whenToUse: 'Run from the main worktree of a project with a clean tree, with args {feature: "<name>"} (optional: implementers (3), reviewers (3), storyLimit, models). One run per checkout, whatever the feature: the lock file .omni/run.lock holds the run, and a live pid refuses a second one. Needs the omni CLI on PATH with a project in .omni.toml. Stories come from `omni story`; questions for the human become threads on the feature named after the story. Never pushes.',
+  whenToUse: 'Run from the main worktree of a project with a clean tree, with args {feature: "<name>"} (optional: implementers (3), reviewers (3), storyLimit, models). One run per checkout, whatever the feature: the lock file .omni/run.lock holds the run, and a live pid refuses a second one. Needs the omni CLI on PATH and the folder linked to its project (omni link, or OMNI_PROJECT). Stories come from `omni story`; questions for the human become threads on the feature named after the story. Never pushes.',
   phases: [
     { title: 'Start', detail: 'clean tree, lock, the Run thread' },
     { title: 'Reconcile', detail: 'release claims of other runs, then claim, reset or keep each story by its status' },
     { title: 'Clarity', detail: 'one check per backlog story whose version is new, in parallel: blocking gaps become threads, minor ones agent decisions' },
     { title: 'Unblock', detail: 'a blocked story whose linked threads all have a conclusion gets each conclusion as a human decision and is unblocked' },
-    { title: 'Implement', detail: 'up to `implementers` agents at once, each on a pickable story in its own worktree; the story reaches review only after the fast command passes there' },
-    { title: 'Merge', detail: 'one worker takes the testing stories in dependency order: stack_up once per batch, then rebase in the worktree and fast-forward the integration branch; a rebase conflict is fixed by an implementer and halts merging until that story is merged' },
-    { title: 'Check', detail: 'after each merge a verifier runs the story\'s criteria on the main worktree and the fast command runs; a failure becomes a priority-0 fix story that is implemented, reviewed, merged and checked before anything else merges; the stack command runs once after the batch' },
+    { title: 'Implement', detail: 'up to `implementers` agents at once, each on a pickable story in its own worktree, running only the checks its change needs; the full checks run on the main worktree after the merge' },
+    { title: 'Merge', detail: 'one worker takes the testing stories in dependency order: stack_up once per batch, then rebase in the worktree and fast-forward the integration branch; a rebase conflict returns the story to the backlog for a fresh attempt from the new head' },
+    { title: 'Check', detail: 'after each merge a verifier runs the story\'s criteria on the main worktree and the fast command runs; a failure resets the merge and returns the story to the backlog with the findings and a raised priority, for a fresh implementer; the stack command runs once after the batch' },
     { title: 'Tests', detail: 'after a story passes its check, a test author and a test reviewer lock it down with a few selective regression tests on the main worktree; then it moves to done and the next story merges' },
-    { title: 'Review', detail: 'up to `reviewers` reviewers at once read each review story\'s branch against its criteria; a fail is fixed in place by an implementer, three fails block the story, a pass moves it to testing' },
+    { title: 'Review', detail: 'up to `reviewers` reviewers at once read each review story\'s branch against its criteria; a fail returns the story to the backlog with the findings and a raised priority, for a fresh implementer and reviewer; a third failed attempt opens a thread; a pass moves it to testing' },
     { title: 'Report', detail: 'claims on unfinished stories are released, a verifier runs the fast command and the journeys of the stories done, and the report is posted on the Run thread' },
   ],
 }
