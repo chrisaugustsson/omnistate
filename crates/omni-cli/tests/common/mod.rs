@@ -73,6 +73,10 @@ pub fn config_path(home: &Path) -> PathBuf {
     home.join(".config").join("omni").join("config.toml")
 }
 
+pub fn links_path(home: &Path) -> PathBuf {
+    home.join(".config").join("omni").join("links.toml")
+}
+
 /// Writes the config file that `omni login` would, with mode 600.
 pub fn write_config(home: &Path, server: &str, workspace_id: &str, api_key: &str) {
     let path = config_path(home);
