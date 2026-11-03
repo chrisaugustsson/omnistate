@@ -108,7 +108,7 @@ if (noun === "--help") {
   else if (verb === "block") s.blocked = true;
   else if (verb === "unblock") s.blocked = false;
   else if (verb === "decision") s.decisions.push({ question: flag("--question"), choice: flag("--choice"), by: flag("--by") });
-  else if (verb === "edit") s.links = all("--link").map(link);
+  else if (verb === "edit") { if (all("--link").length) s.links = all("--link").map(link); if (flag("--priority") !== undefined) s.priority = Number(flag("--priority")); }
   else if (verb === "finding") (s.findings ||= []).push({ stage: flag("--stage"), text: flag("--text"), files: all("--file"), resolved: false });
   else if (verb === "resolve") s.findings[Number(flag("--finding"))].resolved = true;
   else if (verb === "tick") {
