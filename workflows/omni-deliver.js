@@ -44,11 +44,10 @@ const root = run('git', ['rev-parse', '--show-toplevel']).trim()
 const git = (argv, opts) => run('git', ['-C', root, ...argv], opts)
 const repoName = path.basename(root)
 const storiesDir = path.join(root, '..', `${repoName}-stories`)
-// Every cargo of the run, in a story worktree or on the main worktree, builds
-// into the main worktree's target directory, so a story rebuilds only the
-// crates it touched instead of the whole workspace from scratch. Cargo locks
-// the directory per invocation, so concurrent builds wait for each other.
-process.env.CARGO_TARGET_DIR ||= path.join(root, 'target')
+// Each worktree keeps its own cargo target directory. Sharing one across
+// worktrees looked cheaper, but a test binary bakes CARGO_MANIFEST_DIR in at
+// compile time and cargo reuses it across worktrees, so the main worktree's
+// tests ended up looking for a worktree that was gone.
 const lockPath = path.join(root, '.omni', 'run.lock')
 const clarityPath = path.join(root, '.omni', 'clarity.json')
 
