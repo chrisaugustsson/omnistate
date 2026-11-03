@@ -209,6 +209,15 @@ mod tests {
     }
 
     #[test]
+    fn a_key_written_by_quote_reads_back_even_with_an_equals_sign_and_a_hash() {
+        let text = format!("{} = \"x\"\n", quote("/Users/me/a=b #c"));
+        assert_eq!(
+            parse(&text).unwrap(),
+            [("/Users/me/a=b #c".to_string(), "x".to_string())]
+        );
+    }
+
+    #[test]
     fn a_bare_key_with_a_slash_and_a_quoted_table_header_stay_refused() {
         let err = parse("/a = \"x\"").unwrap_err();
         assert!(
