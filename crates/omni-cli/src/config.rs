@@ -1,7 +1,6 @@
 //! The two files the CLI reads: `~/.config/omni/config.toml`, which `omni login`
 //! writes (mode 600, because it holds the API key), and `.omni.toml`, which a
-//! project directory uses to set the default feature for commands run in it
-//! and to hold its `[checks]`.
+//! project directory uses to hold its `[checks]`.
 
 use crate::error::{CliError, Result, bail};
 use crate::toml;
@@ -102,21 +101,15 @@ pub fn save(stored: &Stored) -> Result<PathBuf> {
     Ok(path)
 }
 
-/// The default feature: `feature` in the nearest `.omni.toml`, found as the
-/// project is.
-pub fn feature() -> Result<Option<String>> {
-    omni_toml("feature", "feature = \"my-feature\"")
-}
-
-/// The value of `key` in the nearest `.omni.toml`; `example` is the line the
-/// error shows for a file that is not valid.
-fn omni_toml(key: &str, example: &str) -> Result<Option<String>> {
-    Ok(omni_pairs(example)?.and_then(|pairs| {
-        pairs
-            .into_iter()
-            .find(|(name, _)| name == key)
-            .map(|(_, value)| value)
-    }))
+/// The `project` and `feature` keys the nearest `.omni.toml` still sets, in
+/// that order. omni no longer reads them.
+pub fn leftover_keys() -> Result<Vec<String>> {
+    let pairs = omni_pairs("[checks]")?.unwrap_or_default();
+    Ok(["project", "feature"]
+        .into_iter()
+        .filter(|key| pairs.iter().any(|(name, _)| name == key))
+        .map(str::to_string)
+        .collect())
 }
 
 /// The check commands in the `[checks]` table of the nearest `.omni.toml`:

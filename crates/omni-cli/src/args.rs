@@ -14,11 +14,11 @@ pub struct Args {
     pub server: Option<String>,
     pub body_file: Option<String>,
     /// `--project <name or id>`: the project a command works in, instead of
-    /// the one the folder is linked to.
+    /// `OMNI_PROJECT` or the one the folder is linked to.
     pub project: Option<String>,
     /// `--feature <name or id>`: the feature a command works in, instead of
-    /// the one in `.omni.toml`; `--global` works at the app level whatever
-    /// `.omni.toml` says.
+    /// `OMNI_FEATURE`; `--global` works at the app level whatever
+    /// `OMNI_FEATURE` says.
     pub feature: Option<String>,
     pub global: bool,
     /// `--title` and `--description` describe a doc or a feature.

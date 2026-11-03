@@ -84,14 +84,20 @@ pub(crate) fn projects_path(agent: &Agent) -> String {
     format!("/api/v1/w/{}/projects", agent.workspace_id)
 }
 
-/// The ID of the project a command works in: `--project`, else the project
-/// the folder is linked to. `--project` is a project ID, used as it is, or a
-/// project name, which the API's list of projects turns into its ID.
+/// The ID of the project a command works in: `--project`, else `OMNI_PROJECT`,
+/// else the project the folder is linked to. The first two are a project ID,
+/// used as it is, or a project name, which the API's list of projects turns
+/// into its ID.
 pub(crate) fn project_id(args: &Args, agent: &Agent) -> Result<String> {
-    let given = match args.project.clone() {
+    let given = match args.project.clone().or_else(|| env_value("OMNI_PROJECT")) {
         Some(project) => project,
-        None => return linked_project(agent),
+        None => {
+            let project = linked_project(agent)?;
+            warn_leftover_keys();
+            return Ok(project);
+        }
     };
+    warn_leftover_keys();
     if is_uuid(&given) {
         return Ok(given.to_ascii_lowercase());
     }
@@ -109,6 +115,37 @@ pub(crate) fn project_id(args: &Args, agent: &Agent) -> Result<String> {
                 "no project named {given:?}; `omni project list` shows the projects"
             ))
         })
+}
+
+/// An environment variable, unset when it is empty or only whitespace.
+fn env_value(name: &str) -> Option<String> {
+    std::env::var(name)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+}
+
+/// Says once on standard error that the nearest `.omni.toml` still sets
+/// `project` or `feature`. A `.omni.toml` that cannot be read is not the
+/// warning's business.
+fn warn_leftover_keys() {
+    static WARNED: std::sync::Once = std::sync::Once::new();
+    WARNED.call_once(|| {
+        if let Ok(keys) = config::leftover_keys()
+            && !keys.is_empty()
+        {
+            eprintln!(
+                ".omni.toml sets {}, which omni no longer reads; link this folder with omni link <project> and pass --feature or OMNI_FEATURE",
+                keys.join(", ")
+            );
+        }
+    });
+}
+
+/// The feature a command works in: `--feature`, else `OMNI_FEATURE`, else
+/// none (the app level).
+pub(crate) fn current_feature(args: &Args) -> Option<String> {
+    warn_leftover_keys();
+    args.feature.clone().or_else(|| env_value("OMNI_FEATURE"))
 }
 
 /// The project the current folder or its nearest linked parent is linked to.
@@ -166,8 +203,8 @@ pub(crate) fn resolve_feature(agent: &Agent, project_id: &str, given: &str) -> R
 }
 
 /// The ID of the feature `omni doc create` works in: `--feature`, else
-/// the feature of `.omni.toml`, else none (project level). `--global` means
-/// none whatever `.omni.toml` says.
+/// `OMNI_FEATURE`, else none (app level). `--global` means none whatever
+/// `OMNI_FEATURE` says.
 pub(crate) fn creation_feature(
     args: &Args,
     agent: &Agent,
@@ -179,11 +216,7 @@ pub(crate) fn creation_feature(
         }
         return Ok(None);
     }
-    let given = match args.feature.clone() {
-        Some(feature) => Some(feature),
-        None => config::feature()?,
-    };
-    given
+    current_feature(args)
         .map(|given| resolve_feature(agent, project_id, &given))
         .transpose()
 }

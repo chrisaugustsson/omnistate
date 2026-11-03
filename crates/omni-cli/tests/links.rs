@@ -28,6 +28,13 @@ fn mock() -> MockServer {
         {
             return Reply::json(200, &json!({ "features": [] }));
         }
+        if request.method == "GET"
+            && request
+                .path
+                .starts_with(&format!("/api/v1/w/{WORKSPACE}/projects/{PROJECT}/docs"))
+        {
+            return Reply::json(200, &json!({ "docs": [] }));
+        }
         Reply::json(404, &json!({ "error": "not_found" }))
     })
 }
@@ -462,4 +469,146 @@ fn config_show_names_the_project_the_folder_is_linked_to() {
     };
     assert_eq!(show_in(&folder.join("sub")), json!(PROJECT));
     assert_eq!(show_in(&elsewhere.path), Value::Null);
+}
+
+const FEATURE: &str = "01900000-0000-7000-8000-0000000000f1";
+
+fn linked_home(server: &MockServer, folder: &Scratch) -> Scratch {
+    let home = logged_in(&server.url);
+    std::fs::write(
+        links_path(&home.path),
+        format!("[{WORKSPACE}]\n\"{}\" = \"{PROJECT}\"\n", canonical(folder)),
+    )
+    .unwrap();
+    home
+}
+
+fn doc_list_in(home: &Scratch, folder: &Scratch, env: &[(&str, &str)], extra: &[&str]) -> Out {
+    let mut run = omni(&home.path)
+        .args(&["doc", "list", "--as", "run-7/author"])
+        .args(extra)
+        .cwd(&folder.path);
+    for (name, value) in env {
+        run = run.env(name, value);
+    }
+    run.run()
+}
+
+#[test]
+fn omni_project_names_the_project_in_an_unlinked_folder_and_the_flag_beats_it() {
+    let server = mock();
+    let home = logged_in(&server.url);
+    let folder = Scratch::new("folder");
+
+    let by_env = omni(&home.path)
+        .args(&["feature", "list", "--as", "run-7/author"])
+        .env("OMNI_PROJECT", "brand-site")
+        .cwd(&folder.path)
+        .run();
+    assert_eq!(by_env.code, 0, "{}", by_env.stderr);
+    let by_flag = omni(&home.path)
+        .args(&[
+            "feature",
+            "list",
+            "--as",
+            "run-7/author",
+            "--project",
+            "other",
+        ])
+        .env("OMNI_PROJECT", "brand-site")
+        .cwd(&folder.path)
+        .run();
+    assert_eq!(by_flag.code, 0, "{}", by_flag.stderr);
+    let list = format!("GET /api/v1/w/{WORKSPACE}/projects");
+    assert_eq!(
+        feature_requests(&server),
+        vec![
+            list.clone(),
+            format!("{list}/{PROJECT}/features"),
+            list.clone(),
+            format!("{list}/{OTHER_PROJECT}/features"),
+        ]
+    );
+
+    let empty = omni(&home.path)
+        .args(&["feature", "list", "--as", "run-7/author"])
+        .env("OMNI_PROJECT", "")
+        .cwd(&folder.path)
+        .run();
+    assert_eq!(empty.code, 1);
+    assert!(empty.stderr.contains("not linked"), "{}", empty.stderr);
+}
+
+#[test]
+fn omni_feature_is_the_feature_flag_and_the_omni_toml_feature_is_not_read() {
+    let server = mock();
+    let folder = Scratch::new("folder");
+    let home = linked_home(&server, &folder);
+    std::fs::write(folder.join(".omni.toml"), "feature = \"y\"\n").unwrap();
+
+    let by_env = doc_list_in(&home, &folder, &[("OMNI_FEATURE", FEATURE)], &[]);
+    assert_eq!(by_env.code, 0, "{}", by_env.stderr);
+    let by_flag = doc_list_in(&home, &folder, &[], &["--feature", FEATURE]);
+    assert_eq!(by_flag.code, 0, "{}", by_flag.stderr);
+    let neither = doc_list_in(&home, &folder, &[], &[]);
+    assert_eq!(neither.code, 0, "{}", neither.stderr);
+
+    let docs = format!("GET /api/v1/w/{WORKSPACE}/projects/{PROJECT}/docs");
+    assert_eq!(
+        feature_requests(&server),
+        vec![
+            format!("{docs}?feature={FEATURE}"),
+            format!("{docs}?feature={FEATURE}"),
+            docs,
+        ]
+    );
+}
+
+#[test]
+fn global_beats_omni_feature() {
+    let server = mock();
+    let folder = Scratch::new("folder");
+    let home = linked_home(&server, &folder);
+
+    let out = doc_list_in(&home, &folder, &[("OMNI_FEATURE", FEATURE)], &["--global"]);
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    assert_eq!(
+        feature_requests(&server),
+        vec![format!(
+            "GET /api/v1/w/{WORKSPACE}/projects/{PROJECT}/docs?feature=global"
+        )]
+    );
+}
+
+#[test]
+fn leftover_keys_in_omni_toml_are_warned_about_once_and_checks_stays_quiet() {
+    let server = mock();
+    let folder = Scratch::new("folder");
+    let home = linked_home(&server, &folder);
+    let warning = |keys: &str| {
+        format!(
+            ".omni.toml sets {keys}, which omni no longer reads; link this folder with omni link <project> and pass --feature or OMNI_FEATURE"
+        )
+    };
+
+    std::fs::write(
+        folder.join(".omni.toml"),
+        "feature = \"y\"\nproject = \"x\"\n[checks]\nfast = \"a\"\nstack_up = \"b\"\nstack = \"c\"\n",
+    )
+    .unwrap();
+    let both = doc_list_in(&home, &folder, &[("OMNI_FEATURE", FEATURE)], &[]);
+    assert_eq!(both.code, 0, "{}", both.stderr);
+    assert_eq!(both.stderr.trim_end(), warning("project, feature"));
+
+    let checks = omni(&home.path).args(&["checks"]).cwd(&folder.path).run();
+    assert_eq!(checks.code, 0, "{}", checks.stderr);
+    assert_eq!(checks.stderr, "");
+
+    std::fs::write(folder.join(".omni.toml"), "feature = \"y\"\n").unwrap();
+    let only = doc_list_in(&home, &folder, &[], &[]);
+    assert_eq!(only.stderr.trim_end(), warning("feature"));
+
+    std::fs::write(folder.join(".omni.toml"), "[checks]\nfast = \"a\"\n").unwrap();
+    let none = doc_list_in(&home, &folder, &[], &[]);
+    assert_eq!(none.stderr, "");
 }

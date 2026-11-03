@@ -196,10 +196,10 @@ Options (before or after the command):
   --model <name>        the model behind the agent (fallback: OMNI_MODEL)
   --harness <name>      the harness that runs the agent (fallback: OMNI_HARNESS)
   --server <url>        the API address (fallback: OMNI_SERVER, then the config file)
-  --project <name|id>   the project to work in (fallback: project in .omni.toml)
+  --project <name|id>   the project to work in (fallback: OMNI_PROJECT, then the folder's link)
   --feature <name|id>   the feature that `omni doc create` creates a doc in and `omni doc
-                        list` shows (fallback: feature in .omni.toml)
-  --global              `omni doc create` creates an app-level doc, whatever .omni.toml says;
+                        list` shows (fallback: OMNI_FEATURE)
+  --global              `omni doc create` creates an app-level doc, whatever OMNI_FEATURE says;
                         `omni doc list` shows those only
   --body-file <path>    send this file as the request body (for `doc edit` and `design
                         edit`: the operations); - reads standard input
@@ -238,8 +238,7 @@ Output:
 
 Files:
   ~/.config/omni/config.toml   written by `omni login` (mode 600): server, workspace_id, api_key, email
-  .omni.toml                   in a project directory: project = \"name\", the default project there,
-                               and optionally feature = \"name\", the default feature there
+  .omni.toml                   in a project directory: the [checks] table
 
 Exit codes:
   0  success

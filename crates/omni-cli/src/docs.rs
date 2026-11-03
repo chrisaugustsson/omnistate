@@ -6,7 +6,9 @@ use crate::args::Args;
 use crate::commands::{Agent, agent, read_body, say};
 use crate::error::{CliError, Result, bail};
 use crate::json::{Value, quote};
-use crate::projects::{creation_feature, is_uuid, project_features, project_id, resolve_feature};
+use crate::projects::{
+    creation_feature, current_feature, is_uuid, project_features, project_id, resolve_feature,
+};
 use std::io::IsTerminal;
 
 const KINDS: &str = "html, design or design-system";
@@ -102,16 +104,16 @@ pub fn list(args: &Args) -> Result<()> {
     let agent = agent(args)?;
     let project = project_id(args, &agent)?;
     let mut query = Vec::new();
-    match (&args.feature, args.global) {
-        (Some(_), true) => bail!("give --feature or --global, not both"),
-        (Some(given), false) => {
-            query.push(format!(
-                "feature={}",
-                resolve_feature(&agent, &project, given)?
-            ));
+    if args.global {
+        if args.feature.is_some() {
+            bail!("give --feature or --global, not both");
         }
-        (None, true) => query.push("feature=global".to_string()),
-        (None, false) => {}
+        query.push("feature=global".to_string());
+    } else if let Some(given) = current_feature(args) {
+        query.push(format!(
+            "feature={}",
+            resolve_feature(&agent, &project, &given)?
+        ));
     }
     if let Some(pillar) = args.pillar.as_deref() {
         query.push(format!("pillar={}", known_pillar(pillar)?));

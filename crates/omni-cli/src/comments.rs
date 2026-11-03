@@ -7,7 +7,7 @@ use crate::args::Args;
 use crate::commands::{agent, read_body, say};
 use crate::error::{CliError, Result, bail};
 use crate::json::{Value, quote};
-use crate::projects::{is_uuid, project_id, resolve_feature};
+use crate::projects::{current_feature, is_uuid, project_id, resolve_feature};
 use std::io::IsTerminal;
 
 const LIST_USAGE: &str = "omni comment list [--doc <id>] [--feature <name|id>]";
@@ -62,10 +62,8 @@ pub fn list(args: &Args) -> Result<()> {
 
     let agent = agent(args)?;
     let project = project_id(args, &agent)?;
-    let feature = args
-        .feature
-        .as_deref()
-        .map(|given| resolve_feature(&agent, &project, given))
+    let feature = current_feature(args)
+        .map(|given| resolve_feature(&agent, &project, &given))
         .transpose()?;
     let mut query = Vec::new();
     if let Some(doc) = doc {
