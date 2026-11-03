@@ -18,6 +18,10 @@ function scratch(t, reply, exit) {
   const logPath = join(root, "calls.jsonl");
   const runDir = join(root, "run");
   mkdirSync(runDir);
+  const agentsDir = join(root, "agents");
+  mkdirSync(agentsDir);
+  writeFileSync(join(agentsDir, "verifier.md"), "---\nname: verifier\ntools: Bash, Read, Grep\n---\n\nYou check work and report.\n");
+  writeFileSync(join(agentsDir, "implementer.md"), "---\nname: implementer\ntools: Bash, Read, Edit, Write\n---\n\nYou carry out one task.\n");
   const env = { ...process.env, OMNI_DELIVER_CLAUDE: bin, FAKE_CLAUDE_LOG: logPath };
   if (reply) env.FAKE_CLAUDE_REPLY = JSON.stringify(reply);
   if (exit) env.FAKE_CLAUDE_EXIT = String(exit);
@@ -25,13 +29,13 @@ function scratch(t, reply, exit) {
   delete env.OMNI_DELIVER_MAX_TURNS;
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const calls = () => readFileSync(logPath, "utf8").trim().split("\n").map((l) => JSON.parse(l));
-  return { root, runDir, env, calls };
+  return { root, runDir, agentsDir, env, calls };
 }
 
 test("a schema call gives claude the prompt on stdin, the schema, model and agent flags, and returns the structured output", async (t) => {
   const s = scratch(t, { type: "result", is_error: false, result: '{"gaps":[]}', structured_output: { gaps: [] }, num_turns: 3, permission_denials: [] });
   const lines = [];
-  const agent = makeAgent({ cwd: s.root, runDir: s.runDir, addDirs: ["/tmp/app-stories"], env: s.env, log: (m) => lines.push(m) });
+  const agent = makeAgent({ cwd: s.root, runDir: s.runDir, addDirs: ["/tmp/app-stories"], env: s.env, agentsDir: s.agentsDir, log: (m) => lines.push(m) });
   const schema = { type: "object", properties: { gaps: { type: "array" } }, required: ["gaps"] };
   const out = await agent("Check ONE story.", { schema, label: "clarity:US-1", model: "opus", agentType: "verifier" });
   assert.deepEqual(out, { gaps: [] });
@@ -43,7 +47,10 @@ test("a schema call gives claude the prompt on stdin, the schema, model and agen
   assert.equal(argv[argv.indexOf("--permission-mode") + 1], "auto");
   assert.deepEqual(JSON.parse(argv[argv.indexOf("--json-schema") + 1]), schema);
   assert.equal(argv[argv.indexOf("--model") + 1], "opus");
-  assert.equal(argv[argv.indexOf("--agent") + 1], "verifier");
+  assert.ok(!argv.includes("--agent"), "a custom agent would hide the structured output tool");
+  const systemFile = argv[argv.indexOf("--append-system-prompt-file") + 1];
+  assert.equal(readFileSync(systemFile, "utf8"), "You check work and report.\n", "the agent's body without its front matter");
+  assert.equal(argv[argv.indexOf("--disallowedTools") + 1], "Edit,Write,MultiEdit,NotebookEdit", "a read-only agent may not edit");
   assert.equal(argv[argv.indexOf("--add-dir") + 1], "/tmp/app-stories");
   assert.ok(existsSync(join(s.runDir, "01-clarity_US-1.prompt.md")), "the prompt is kept in the run directory");
   assert.ok(existsSync(join(s.runDir, "01-clarity_US-1.reply.json")), "the reply is kept in the run directory");
@@ -52,10 +59,19 @@ test("a schema call gives claude the prompt on stdin, the schema, model and agen
 
 test("without a schema the agent returns claude's final text, and no schema, model or agent flag is passed", async (t) => {
   const s = scratch(t, { type: "result", is_error: false, result: "All good.", num_turns: 1 });
-  const agent = makeAgent({ cwd: s.root, runDir: s.runDir, env: s.env });
+  const agent = makeAgent({ cwd: s.root, runDir: s.runDir, env: s.env, agentsDir: s.agentsDir });
   assert.equal(await agent("Say something.", { label: "plain" }), "All good.");
   const [call] = s.calls();
-  for (const flag of ["--json-schema", "--model", "--agent", "--max-turns"]) assert.ok(!call.argv.includes(flag), `${flag} is not passed`);
+  for (const flag of ["--json-schema", "--model", "--append-system-prompt-file", "--disallowedTools", "--max-turns"]) assert.ok(!call.argv.includes(flag), `${flag} is not passed`);
+});
+
+test("an editing agent gets its instructions and no tool restriction", async (t) => {
+  const s = scratch(t, { type: "result", is_error: false, result: "{}", structured_output: {}, num_turns: 1 });
+  const agent = makeAgent({ cwd: s.root, runDir: s.runDir, env: s.env, agentsDir: s.agentsDir });
+  await agent("Build.", { label: "impl:US-1", schema: { type: "object", properties: {} }, agentType: "implementer" });
+  const [call] = s.calls();
+  assert.equal(readFileSync(call.argv[call.argv.indexOf("--append-system-prompt-file") + 1], "utf8"), "You carry out one task.\n");
+  assert.ok(!call.argv.includes("--disallowedTools"));
 });
 
 test("a session that exits non-zero, or reports is_error, returns null and the log says why", async (t) => {

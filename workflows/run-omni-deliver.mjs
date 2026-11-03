@@ -54,10 +54,29 @@ const clock = () => new Date().toISOString().slice(11, 19);
  * final text; a failed or errored session returns null, as the workflow
  * runtime's agent() does, and the reason is logged.
  */
-export function makeAgent({ cwd, runDir, addDirs = [], env = process.env, log = () => {} }) {
+export function makeAgent({ cwd, runDir, addDirs = [], env = process.env, log = () => {}, agentsDir = join(env.HOME || "", ".claude", "agents") }) {
   let count = 0;
   const bin = env.OMNI_DELIVER_CLAUDE || "claude";
   const permissionMode = env.OMNI_DELIVER_PERMISSION_MODE || "auto";
+  const roles = new Map();
+  // A custom agent (`--agent`) hides the structured output tool, so a session
+  // started that way answers in text and ignores --json-schema. The agent's
+  // instructions go in through the system prompt instead, and its tool list
+  // decides whether the session may edit files.
+  const roleOf = (type) => {
+    if (!roles.has(type)) {
+      const text = readFileSync(join(agentsDir, `${type}.md`), "utf8");
+      const parts = text.split(/^---\s*$/m);
+      const front = parts.length >= 3 ? parts[1] : "";
+      const body = (parts.length >= 3 ? parts.slice(2).join("---") : text).trim();
+      const tools = (front.match(/^tools:\s*(.+)$/m)?.[1] || "").split(",").map((t) => t.trim()).filter(Boolean);
+      const file = join(runDir || cwd, `${type}.system.md`);
+      writeFileSync(file, `${body}\n`);
+      const editing = tools.length === 0 || tools.some((t) => ["Edit", "Write", "MultiEdit", "NotebookEdit"].includes(t));
+      roles.set(type, { file, disallowed: editing ? [] : ["Edit", "Write", "MultiEdit", "NotebookEdit"] });
+    }
+    return roles.get(type);
+  };
   return async function agent(prompt, opts = {}) {
     const n = ++count;
     const label = opts.label || `agent-${n}`;
@@ -65,7 +84,11 @@ export function makeAgent({ cwd, runDir, addDirs = [], env = process.env, log = 
     const argv = ["-p", "--output-format", "json", "--permission-mode", permissionMode];
     if (opts.schema) argv.push("--json-schema", JSON.stringify(opts.schema));
     if (opts.model) argv.push("--model", opts.model);
-    if (opts.agentType) argv.push("--agent", opts.agentType);
+    if (opts.agentType) {
+      const role = roleOf(opts.agentType);
+      argv.push("--append-system-prompt-file", role.file);
+      if (role.disallowed.length) argv.push("--disallowedTools", role.disallowed.join(","));
+    }
     if (env.OMNI_DELIVER_MAX_TURNS) argv.push("--max-turns", env.OMNI_DELIVER_MAX_TURNS);
     for (const dir of addDirs) argv.push("--add-dir", dir);
     if (runDir) writeFileSync(join(runDir, `${file}.prompt.md`), prompt);
