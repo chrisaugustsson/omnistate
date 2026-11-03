@@ -211,6 +211,22 @@ test("continues an implementing story it claimed at start in its existing worktr
   assert.equal(dirs.story("US-1").status, "done");
 });
 
+test("resumes a testing story blocked at its tests whose thread is concluded: claims it, runs only the tests step on the main worktree, and moves it to done", { timeout: 20000 }, async (t) => {
+  const dirs = scratch(t, [story("US-1", { status: "testing", blocked: true, links: [questionLink("t1")], criteria: [{ text: "The badge shows the count", ticked: true }] })], [thread("t1", "US-1: the regression tests were not accepted", "The files were the human's; carry on.")]);
+  dirs.checks({ fast: "true", stack_up: "true", stack: "true" });
+  const testsSeen = [];
+  const { agent } = implAgent({}, {}, {}, { "US-1": () => { testsSeen.push(dirs.story("US-1").status); return noTests; } });
+
+  const result = await deliver({ feature: "board" }, agent);
+
+  assert.deepEqual(testsSeen, ["testing"], "the test author ran once, on the testing story");
+  assert.deepEqual(claimsOf(dirs, "US-1"), [{ run: result.run, stage: "testing" }]);
+  assert.deepEqual(dirs.story("US-1").decisions, [{ question: "US-1: the regression tests were not accepted", choice: "The files were the human's; carry on.", by: "human" }]);
+  assert.deepEqual(result.done, ["US-1"]);
+  assert.equal(dirs.story("US-1").status, "done");
+  assert.equal(dirs.story("US-1").blocked, false);
+});
+
 test("claims an unheld review story whose worktree has a commit ahead", async (t) => {
   const dirs = scratch(t, [story("US-1", { status: "review" })]);
   const wt = worktree(dirs, "US-1");
@@ -246,13 +262,18 @@ test("returns an implementing story whose worktree is missing to backlog unheld"
   assert.equal(dirs.story("US-2").holder, null);
 });
 
-test("keeps a testing story of another run in testing, claimed by this run", async (t) => {
+test("claims a testing story of another run at testing and, its worktree being gone (merged and checked before), runs only its tests step and moves it to done", { timeout: 20000 }, async (t) => {
   const dirs = scratch(t, [story("US-3", { status: "testing", holder: { run: "run-old", stage: "testing" } })]);
+  dirs.checks({ fast: "true", stack_up: "true", stack: "true" });
+  const testsSeen = [];
+  const { agent } = implAgent({}, {}, {}, { "US-3": () => { testsSeen.push(dirs.story("US-3").status); return noTests; } });
 
-  const result = await start("board");
+  const result = await deliver({ feature: "board" }, agent);
 
-  assert.equal(dirs.story("US-3").status, "testing");
   assert.deepEqual(claimsOf(dirs, "US-3"), [{ run: result.run, stage: "testing" }]);
+  assert.deepEqual(testsSeen, ["testing"]);
+  assert.deepEqual(result.done, ["US-3"]);
+  assert.equal(dirs.story("US-3").status, "done");
 });
 
 test("only releases a blocked story of another run, without claiming it or moving it", async (t) => {

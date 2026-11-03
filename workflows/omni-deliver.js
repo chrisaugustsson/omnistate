@@ -284,7 +284,7 @@ Return raw structured data only.`
         write('decision', story.key, ['--question', t.question, '--choice', t.conclusion, '--by', 'human'])
       }
       write('unblock', story.key)
-      if (story.status === 'implementing' || story.status === 'review') {
+      if (story.status === 'implementing' || story.status === 'review' || story.status === 'testing') {
         write('claim', story.key, ['--stage', story.status])
         if (story.status === 'review') reviewed.delete(story.key)
         resumed.push({ key: story.key, stage: story.status })
@@ -845,8 +845,10 @@ Rules for a later round:
 Name the test and the fix for every issue (cut it, merge it into <test>, change the assertion to <x>). pass=false if there is any issue or duplicate. Return raw structured data only.`
   // Writes and reviews the story's regression tests on the main worktree, up to
   // three rounds. Returns {ok: true}, or {ok: false, thread} once the story is blocked.
+  const lockedDown = new Set()
   const testStory = async (key, criteria) => {
     phase('Tests')
+    lockedDown.add(key)
     const story = readStory(key)
     const base = (ranges.get(key) || {}).base || git(['rev-parse', 'HEAD']).trim()
     const start = git(['rev-parse', 'HEAD']).trim()
@@ -1136,11 +1138,33 @@ Return raw structured data only.`, { schema: TEST_CUT_SCHEMA, label: `test-cut:$
     ensureFast()
     return implement(key).catch((e) => ({ key, outcome: 'failed', error: String(e && e.message || e) }))
   }
+  // A testing story held by this run with no worktree was merged and checked
+  // by an earlier run and stopped at its tests (a thread the human has since
+  // concluded): only the tests step is left, on the main worktree.
+  const lockingDown = new Map()
+  const fillTests = () => {
+    if (limitReached()) return
+    const queue = listStories().filter((s) => s.status === 'testing' && !s.blocked && s.holder && s.holder.run === runId && !lockedDown.has(s.key) && !lockingDown.has(s.key) && !skipped.has(s.key) && !fs.existsSync(worktreeOf(s.key)))
+    for (const { key, criteria } of queue) {
+      ensureFast()
+      lockingDown.set(key, testStory(key, (criteria || []).map((c) => ({ criterion: c.text || c }))).then((tested) => {
+        if (tested.ok) moveDone(key)
+        checkOutcomes.push(tested.ok ? { key, outcome: 'passed' } : { key, outcome: 'tests_rejected', thread: tested.thread })
+      }).catch((e) => {
+        checkOutcomes.push({ key, outcome: 'failed', error: String(e && e.message || e) })
+        log(`${key}: ${e && e.message || e}`)
+      }).then(() => {
+        lockingDown.delete(key)
+        poke()
+      }))
+    }
+  }
   let firstPass = true
   for (;;) {
     const woken = signal
     if (!firstPass) { try { unblockPass() } catch (e) { log(`unblock: ${e && e.message || e}`) } }
     firstPass = false
+    fillTests()
     while (active.size < implementers && !limitReached()) {
       const held = resumable()
       const key = held ? held.key : pickNext()
@@ -1151,7 +1175,7 @@ Return raw structured data only.`, { schema: TEST_CUT_SCHEMA, label: `test-cut:$
       }
     }
     fillReviews()
-    if (active.size === 0 && reviewing.size === 0 && mergePending === 0) break
+    if (active.size === 0 && reviewing.size === 0 && mergePending === 0 && lockingDown.size === 0) break
     await woken
   }
 
