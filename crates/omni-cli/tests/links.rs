@@ -333,3 +333,133 @@ fn project_flag_wins_over_the_folders_link() {
         ]
     );
 }
+
+#[test]
+fn the_nearest_link_of_the_logged_in_workspace_wins() {
+    let server = mock();
+    let home = logged_in(&server.url);
+    let folder = Scratch::new("folder");
+    std::fs::create_dir_all(folder.join("sub")).unwrap();
+    std::fs::write(
+        links_path(&home.path),
+        format!(
+            "[{WORKSPACE}]\n\"{}\" = \"{OTHER_PROJECT}\"\n\"{}\" = \"{PROJECT}\"\n",
+            canonical(&folder),
+            format_args!("{}/sub", canonical(&folder))
+        ),
+    )
+    .unwrap();
+
+    let out = feature_list_in(&home, &folder.join("sub"), &[]);
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    assert_eq!(
+        feature_requests(&server),
+        vec![format!(
+            "GET /api/v1/w/{WORKSPACE}/projects/{PROJECT}/features"
+        )]
+    );
+}
+
+#[test]
+fn a_path_linked_in_both_workspaces_finds_the_logged_in_project() {
+    let server = mock();
+    let home = logged_in(&server.url);
+    let folder = Scratch::new("folder");
+    std::fs::write(
+        links_path(&home.path),
+        format!(
+            "[{OTHER_WORKSPACE}]\n\"{0}\" = \"{OTHER_PROJECT}\"\n\n[{WORKSPACE}]\n\"{0}\" = \"{PROJECT}\"\n",
+            canonical(&folder)
+        ),
+    )
+    .unwrap();
+
+    let out = feature_list_in(&home, &folder.path, &[]);
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    assert_eq!(
+        feature_requests(&server),
+        vec![format!(
+            "GET /api/v1/w/{WORKSPACE}/projects/{PROJECT}/features"
+        )]
+    );
+}
+
+#[test]
+fn the_nearest_link_of_another_workspace_is_the_one_named() {
+    let server = mock();
+    let home = logged_in(&server.url);
+    let folder = Scratch::new("folder");
+    std::fs::create_dir_all(folder.join("sub")).unwrap();
+    let third_workspace = "01900000-0000-7000-8000-0000000000dd";
+    std::fs::write(
+        links_path(&home.path),
+        format!(
+            "[{third_workspace}]\n\"{}\" = \"{PROJECT}\"\n\n[{OTHER_WORKSPACE}]\n\"{}\" = \"{PROJECT}\"\n",
+            canonical(&folder),
+            format_args!("{}/sub", canonical(&folder))
+        ),
+    )
+    .unwrap();
+
+    let out = feature_list_in(&home, &folder.join("sub"), &[]);
+    assert_eq!(out.code, 1);
+    assert_eq!(
+        out.stderr.trim_end(),
+        format!(
+            "omni: {}/sub is linked to a project of another workspace ({OTHER_WORKSPACE}); run omni link here, or omni login",
+            canonical(&folder)
+        )
+    );
+}
+
+#[test]
+fn a_folder_whose_name_extends_a_linked_folders_name_is_not_linked() {
+    let server = mock();
+    let home = logged_in(&server.url);
+    let folder = Scratch::new("folder");
+    std::fs::create_dir_all(folder.join("app")).unwrap();
+    std::fs::create_dir_all(folder.join("app-old")).unwrap();
+    std::fs::write(
+        links_path(&home.path),
+        format!(
+            "[{WORKSPACE}]\n\"{}/app\" = \"{PROJECT}\"\n",
+            canonical(&folder)
+        ),
+    )
+    .unwrap();
+
+    let out = feature_list_in(&home, &folder.join("app-old"), &[]);
+    assert_eq!(out.code, 1);
+    assert_eq!(
+        out.stderr.trim_end(),
+        "omni: this folder is not linked to a project: run omni link <project name|id> here, or pass --project"
+    );
+    assert!(server.requests().is_empty(), "{:?}", server.requests());
+}
+
+#[test]
+fn config_show_names_the_project_the_folder_is_linked_to() {
+    let home = logged_in("http://127.0.0.1:9");
+    let folder = Scratch::new("folder");
+    let elsewhere = Scratch::new("elsewhere");
+    std::fs::create_dir_all(folder.join("sub")).unwrap();
+    std::fs::write(
+        links_path(&home.path),
+        format!(
+            "[{WORKSPACE}]\n\"{}\" = \"{PROJECT}\"\n",
+            canonical(&folder)
+        ),
+    )
+    .unwrap();
+
+    let show_in = |dir: &std::path::Path| {
+        let out = omni(&home.path)
+            .args(&["config", "show", "--json"])
+            .cwd(dir)
+            .run();
+        assert_eq!(out.code, 0, "{}", out.stderr);
+        out.json()["project"].clone()
+    };
+    assert_eq!(show_in(&folder.join("sub")), json!(PROJECT));
+    assert_eq!(show_in(&elsewhere.path), Value::Null);
+}
