@@ -103,10 +103,10 @@ function seededComments() {
 type Call = { method: string; path: string; search: URLSearchParams; body: Record<string, unknown> | null };
 
 /** A fake of the API: the auth routes, the project, the doc with its head and comments, and the calls it got. */
-function fakeApi() {
+function fakeApi({ kind = "html", head = HEAD_HTML } = {}) {
   const api = {
     comments: seededComments() as Comment[],
-    head: HEAD_HTML,
+    head,
     deleted: false,
     calls: [] as Call[],
   };
@@ -118,7 +118,7 @@ function fakeApi() {
   const doc = {
     id: DOC_ID,
     project_id: PROJECT_ID,
-    kind: "html",
+    kind,
     pillar: "spec",
     title: DOC_TITLE,
     created_at: AT,
@@ -398,6 +398,40 @@ describe("the doc viewer", () => {
     cleanup();
     vi.useRealTimers();
     vi.unstubAllGlobals();
+  });
+
+  test("a design system opens as browsable tokens, never a raw JSON document", async () => {
+    const system = {
+      $extensions: { omnistate: { modes: ["light", "dark"] } },
+      color: {
+        $type: "color",
+        brand: { $value: "#fe6233", $description: "The brand color" },
+        surface: {
+          $value: "#ffffff",
+          $extensions: { omnistate: { modes: { dark: "#171717" } } },
+        },
+        background: { $value: "{color.surface}" },
+      },
+      $components: [],
+    };
+    const api = fakeApi({ kind: "design-system", head: JSON.stringify(system) });
+    renderAt(DOC_PATH);
+    const catalog = await screen.findByRole("region", { name: "Design tokens" });
+    expect(within(catalog).getByText("color.brand")).toBeTruthy();
+    expect(within(catalog).getByText("#fe6233")).toBeTruthy();
+    expect(document.querySelector("iframe"), "the token payload is never sent to the HTML frame").toBeNull();
+
+    fireEvent.change(screen.getByRole("combobox", { name: "Mode" }), { target: { value: "dark" } });
+    expect(within(catalog).getAllByText("#171717")).toHaveLength(2);
+    fireEvent.change(screen.getByRole("searchbox", { name: "Search design system" }), {
+      target: { value: "brand" },
+    });
+    expect(within(catalog).queryByText("color.surface")).toBeNull();
+
+    const socket = await openSocket();
+    api.head = JSON.stringify({ ...system, color: { ...system.color, brand: { $value: "#123456" } } });
+    socket.receive(event(41, "doc.changed", { doc_id: DOC_ID, agent: WRITER }));
+    expect(await within(catalog).findByText("#123456")).toBeTruthy();
   });
 
   test("the doc renders in a frame sandboxed to scripts alone, under the viewer's policy", async () => {

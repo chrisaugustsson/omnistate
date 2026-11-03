@@ -32,6 +32,7 @@ import {
   ViewerToolbar,
 } from "@/components/viewer/chrome";
 import { CommentsPanel } from "@/components/viewer/comments";
+import { DesignSystemViewer } from "@/components/viewer/design-system";
 import { LayerIcon, MonoValue, PropertyTable, TokenChip } from "@/components/viewer/design";
 import { cn } from "@/lib/utils";
 import { useReloading, type Reloading } from "@/lib/reloading";
@@ -137,6 +138,9 @@ function DocPage() {
         </div>
       </main>
     );
+  }
+  if (doc.value.kind === "design-system") {
+    return <DesignSystemViewer key={docId} workspaceId={workspaceId} projectId={projectId} docId={docId} doc={doc} />;
   }
   return (
     <HtmlDocViewer
