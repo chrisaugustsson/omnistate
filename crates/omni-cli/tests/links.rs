@@ -76,6 +76,13 @@ fn link_writes_the_canonical_path_and_project_id_under_the_workspace() {
         "{}",
         out.stdout
     );
+    assert_eq!(
+        links_text(&home),
+        format!(
+            "[{WORKSPACE}]\n\"{path}\" = \"{PROJECT}\"\n\"{}\" = \"{PROJECT}\"\n",
+            canonical(&by_id)
+        )
+    );
 }
 
 #[test]
@@ -122,11 +129,28 @@ fn link_keeps_the_links_of_another_workspace() {
 }
 
 #[test]
+fn link_again_in_a_folder_whose_path_holds_a_dot_replaces_its_line() {
+    let server = mock();
+    let home = logged_in(&server.url);
+    let folder = Scratch::new("brand.site");
+    assert_eq!(link_in(&home, &folder, &["link", "brand-site"]).code, 0);
+    assert_eq!(link_in(&home, &folder, &["link", "other"]).code, 0);
+
+    assert_eq!(
+        links_text(&home),
+        format!(
+            "[{WORKSPACE}]\n\"{}\" = \"{OTHER_PROJECT}\"\n",
+            canonical(&folder)
+        )
+    );
+}
+
+#[test]
 fn link_to_an_unknown_project_fails_and_writes_nothing() {
     let server = mock();
     let home = logged_in(&server.url);
     let folder = Scratch::new("folder");
-    for given in ["nope", UNKNOWN_PROJECT] {
+    for given in ["nope", &UNKNOWN_PROJECT.to_uppercase()] {
         let out = link_in(&home, &folder, &["link", given]);
         assert_eq!(out.code, 1);
         assert_eq!(out.stdout, "");
