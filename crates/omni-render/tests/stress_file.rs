@@ -56,10 +56,8 @@ static GENERATED: Mutex<Option<HashMap<&'static str, &'static Stress>>> = Mutex:
 
 /// Runs `make stress-file` with `variables` (such as `SEED=42`).
 fn make_stress_file(variables: &[String]) -> Output {
-    let mut args = vec!["stress-file".to_string()];
-    args.extend_from_slice(variables);
-    let args: Vec<&str> = args.iter().map(String::as_str).collect();
-    common::make(&args)
+    let variables: Vec<&str> = variables.iter().map(String::as_str).collect();
+    common::make_stress_file(&variables)
 }
 
 /// Runs `make stress-file` with `variables`, asserts that it succeeds, and

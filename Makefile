@@ -42,8 +42,10 @@ web-api: web-deps
 # the stack is (re)built and started first, and left running afterwards. The
 # operation engine's tests (crates/omni-core/tests/ops.rs) run in WebAssembly
 # too, in Node; that needs wasm-pack (cargo install wasm-pack) and the
-# wasm32-unknown-unknown target that rust-toolchain.toml lists.
-test: web-deps
+# wasm32-unknown-unknown target that rust-toolchain.toml lists. The
+# WebAssembly renderer is built first: the omni-render tests load it and never
+# build it themselves.
+test: web-deps render-wasm
 	$(CARGO) test --workspace
 	cd crates/omni-core && wasm-pack test --node -- --test ops
 	pnpm -r test
@@ -73,8 +75,13 @@ chrome-boxes:
 # renderer story is tested on (crates/omni-core/src/bin/stress-file.rs). SEED
 # picks the file, the same seed always giving the same bytes, and OUT where it
 # goes, relative to the repository root.
+# The stress-file command; the omni-render tests pass the binary cargo already
+# built here, so the target runs no cargo inside cargo test (which deadlocks
+# with any other cargo on the machine).
+STRESS_FILE ?= $(CARGO) run --quiet -p omni-core --bin stress-file --
+
 stress-file:
-	$(CARGO) run --quiet -p omni-core --bin stress-file -- $(if $(SEED),--seed $(SEED)) --out $(or $(OUT),$(SANDBOX_BUILD)/stress-file.json)
+	$(STRESS_FILE) $(if $(SEED),--seed $(SEED)) --out $(or $(OUT),$(SANDBOX_BUILD)/stress-file.json)
 
 # Writes the boxes that the native build lays out the nodes test page's design
 # in (render-sandbox/nodes.json), which render-sandbox/nodes.html compares with

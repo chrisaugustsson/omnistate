@@ -39,8 +39,8 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output, Stdio};
-use std::sync::{OnceLock, mpsc};
+use std::process::{Command, Stdio};
+use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
@@ -468,16 +468,9 @@ fn answer(stream: TcpStream, root: &Path, results: &mpsc::Sender<String>) {
     stream.write_all(&body).ok();
 }
 
-/// Runs `make render-wasm` once for every test in this file that needs it.
-fn render_wasm() -> &'static Output {
-    static BUILD: OnceLock<Output> = OnceLock::new();
-    let output = BUILD.get_or_init(|| common::make(&["render-wasm"]));
-    assert!(
-        output.status.success(),
-        "`make render-wasm` failed:\n{}",
-        common::describe(output)
-    );
-    output
+/// The WebAssembly renderer that `make render-wasm` built before this test run.
+fn render_wasm() {
+    common::render_wasm();
 }
 
 /// Runs `steps` in a page in Chrome, with `files` served beside it in a folder

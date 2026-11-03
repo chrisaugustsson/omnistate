@@ -59,3 +59,46 @@ fn tail(bytes: &[u8]) -> String {
     let lines: Vec<&str> = text.lines().collect();
     lines[lines.len().saturating_sub(40)..].join("\n")
 }
+
+/// The WebAssembly renderer that `make render-wasm` built: render-sandbox/build/.
+/// The tests never build it themselves, since a cargo started inside `cargo test`
+/// deadlocks with any other cargo on the machine, such as a story worktree's;
+/// the fast check runs `make render-wasm` before `cargo test`.
+pub fn render_wasm() -> PathBuf {
+    let build = repo_root().join("render-sandbox/build");
+    for file in ["omni_render.js", "omni_render.wasm"] {
+        assert!(
+            build.join(file).is_file(),
+            "render-sandbox/build/{file} is missing: run `make render-wasm` before these tests \
+             (they never build it, since a cargo inside `cargo test` deadlocks with other cargos)"
+        );
+    }
+    build
+}
+
+/// The `stress-file` binary that cargo built next to this test binary;
+/// `cargo test --workspace` builds omni-core's binaries before it runs any test.
+pub fn stress_file_bin() -> PathBuf {
+    let exe = std::env::current_exe().expect("the test binary has a path");
+    let bin = exe
+        .parent()
+        .and_then(Path::parent)
+        .expect("the test binary is in target/<profile>/deps")
+        .join("stress-file");
+    assert!(
+        bin.is_file(),
+        "{} is missing: run `cargo build -p omni-core --bin stress-file` before these tests \
+         (they never run cargo themselves, since a cargo inside `cargo test` deadlocks with other cargos)",
+        bin.display()
+    );
+    bin
+}
+
+/// `make stress-file <variables>` with the already-built binary, so that no cargo runs inside the tests.
+pub fn make_stress_file(variables: &[&str]) -> Output {
+    let bin = stress_file_bin();
+    let stress_file = format!("STRESS_FILE={}", bin.display());
+    let mut args = vec!["stress-file", stress_file.as_str()];
+    args.extend_from_slice(variables);
+    make(&args)
+}

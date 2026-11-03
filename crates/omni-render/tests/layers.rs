@@ -54,8 +54,6 @@ use omni_render::system::DesignSystem;
 use omni_render::view::{Scene, Viewport};
 use serde_json::{Value, json};
 use std::fs;
-use std::process::Output;
-use std::sync::OnceLock;
 
 // ---------------------------------------------------------------------------
 // The design system and the page
@@ -470,16 +468,9 @@ fn an_address_that_names_no_node_changes_nothing() {
 // The WebAssembly exports
 // ---------------------------------------------------------------------------
 
-/// Runs `make render-wasm` once for every test in this file that needs it.
-fn render_wasm() -> &'static Output {
-    static BUILD: OnceLock<Output> = OnceLock::new();
-    let output = BUILD.get_or_init(|| common::make(&["render-wasm"]));
-    assert!(
-        output.status.success(),
-        "`make render-wasm` failed:\n{}",
-        common::describe(output)
-    );
-    output
+/// The WebAssembly renderer that `make render-wasm` built before this test run.
+fn render_wasm() {
+    common::render_wasm();
 }
 
 #[test]

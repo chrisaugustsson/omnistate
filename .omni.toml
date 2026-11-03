@@ -2,6 +2,6 @@ project = "OmniState"
 feature = "Rename a project"
 
 [checks]
-fast = "make lint && cargo test --workspace && pnpm -r test && node --test workflows/*.test.mjs"
+fast = "make lint && make render-wasm && cargo test --workspace && pnpm -r test && node --test workflows/*.test.mjs"
 stack_up = "docker compose up --build --wait --detach proxy"
 stack = "docker compose run --rm test"

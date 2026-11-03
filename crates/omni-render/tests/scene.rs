@@ -735,7 +735,7 @@ fn stress_file() -> &'static str {
         fs::create_dir_all(&directory).expect("the scratch directory can be created");
         let path = directory.join("stress-file.json");
         let out = format!("OUT={}", path.display());
-        let output = common::make(&["stress-file", &out]);
+        let output = common::make_stress_file(&[&out]);
         assert!(
             output.status.success(),
             "`make stress-file` must write the stress file:\n{}",

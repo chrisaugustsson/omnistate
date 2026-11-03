@@ -15,8 +15,6 @@ mod common;
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Output;
-use std::sync::OnceLock;
 
 fn sandbox_dir() -> PathBuf {
     common::repo_root().join("render-sandbox")
@@ -30,16 +28,9 @@ fn read_text(path: &Path) -> String {
 // The page and the module it loads
 // ---------------------------------------------------------------------------
 
-/// Runs `make render-wasm` once for every test in this file that needs it.
-fn render_wasm() -> &'static Output {
-    static BUILD: OnceLock<Output> = OnceLock::new();
-    let output = BUILD.get_or_init(|| common::make(&["render-wasm"]));
-    assert!(
-        output.status.success(),
-        "`make render-wasm` failed:\n{}",
-        common::describe(output)
-    );
-    output
+/// The WebAssembly renderer that `make render-wasm` built before this test run.
+fn render_wasm() {
+    common::render_wasm();
 }
 
 #[test]
