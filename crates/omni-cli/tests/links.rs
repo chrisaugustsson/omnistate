@@ -133,7 +133,7 @@ fn link_to_an_unknown_project_fails_and_writes_nothing() {
         assert_eq!(
             out.stderr_lines(),
             [format!(
-                "no project named {given:?}; `omni project list` shows the projects"
+                "omni: no project named {given:?}; `omni project list` shows the projects"
             )]
         );
     }
