@@ -520,9 +520,10 @@ test("a story sharing a planned path with an implementing story is not picked be
   assert.equal(seen.us2, "backlog");
 });
 
-test("moves a ready story to review after the fast command passes in its worktree, with files_changed from git diff <integration>...HEAD", async (t) => {
+test("moves a ready story to review without running the fast command in its worktree (it runs once on the main worktree at the check), with files_changed from git diff <integration>...HEAD", async (t) => {
   const dirs = scratch(t, [story("US-1")]);
-  dirs.checks({ fast: "test -f src/board.rs", stack_up: "true", stack: "true" });
+  const fastLog = join(dirs.root, "fast.log");
+  dirs.checks({ fast: `pwd >> ${fastLog}`, stack_up: "true", stack: "true" });
   const wt = join(dirs.root, "app-stories", "US-1");
   let seenAtReview;
   const { agent, reviews } = implAgent({
@@ -550,29 +551,7 @@ test("moves a ready story to review after the fast command passes in its worktre
   assert.equal(seenAtReview, "review");
   assert.equal(dirs.story("US-1").status, "done");
   assert.deepEqual(dirs.story("US-1").files_changed, ["NOTES", "src/board.rs"]);
-});
-
-test("a fast command failing three times sends the first two outputs back to the implementer, then blocks the story in implementing with a thread holding the last output", async (t) => {
-  const dirs = scratch(t, [story("US-1")]);
-  const counter = join(dirs.root, "fast-runs");
-  dirs.checks({ fast: `n=$(($(cat ${counter} 2>/dev/null || echo 0)+1)); echo $n > ${counter}; echo "out of run $n"; echo "err of run $n" >&2; exit 1`, stack_up: "true", stack: "true" });
-  const { agent, prompts } = implAgent({ "US-1": async () => ({ status: "ready", summary: "done" }) });
-
-  await deliver({ feature: "board" }, agent);
-
-  assert.equal(prompts["US-1"].length, 3);
-  assert.ok(prompts["US-1"][1].includes("out of run 1") && prompts["US-1"][1].includes("err of run 1"));
-  assert.ok(prompts["US-1"][2].includes("out of run 2") && prompts["US-1"][2].includes("err of run 2"));
-  const th = threadOf(dirs, "US-1");
-  assert.equal(th.title, "US-1: the fast command still fails after three attempts");
-  assert.ok(th.posts[0].body.includes("out of run 3") && th.posts[0].body.includes("err of run 3"));
-  assert.ok(!th.posts[0].body.includes("run 2"));
-  assert.ok(th.posts[0].body.includes("```"));
-  assert.deepEqual(dirs.story("US-1").links, [{ thread_id: th.id, label: "question" }]);
-  assert.equal(dirs.story("US-1").blocked, true);
-  assert.equal(dirs.story("US-1").status, "implementing");
-  assert.equal(dirs.story("US-1").holder, null);
-  assert.equal(existsSync(join(dirs.root, "app-stories", "US-1")), true);
+  assert.equal(readFileSync(fastLog, "utf8"), `${dirs.repo}\n`, "the fast command ran on the main worktree only");
 });
 
 test("an implementer returning blocked leaves its story blocked in implementing, released at the run's end, with a thread holding the summary, and frees the slot for the next story", async (t) => {
@@ -671,7 +650,7 @@ test("a story that fails review three times is blocked in review with a thread l
   assert.deepEqual(openFindings(dirs.story("US-1")), ["Round 3: the badge has no colour"]);
 });
 
-test("a review fail with two findings is fixed in the worktree, the fast command runs after the fix commit, files_changed is rewritten, and a passing second review resolves the findings and moves it to testing", async (t) => {
+test("a review fail with two findings is fixed in the worktree with no fast command there, files_changed is rewritten, and a passing second review resolves the findings and moves it to testing", async (t) => {
   const dirs = scratch(t, [story("US-1", { status: "review", files_changed: ["src/board.rs"] })]);
   const marker = join(dirs.root, "fast-runs");
   dirs.checks({ fast: `git cat-file -e HEAD:src/fix1.rs && pwd >> ${marker}`, stack_up: "true", stack: "true" });
@@ -691,30 +670,12 @@ test("a review fail with two findings is fixed in the worktree, the fast command
   assert.deepEqual(seen, { status: "review", open: ["The badge has no colour", "The badge count shows zero"] });
   assert.ok(prompts["US-1"][0].includes("The badge has no colour") && prompts["US-1"][0].includes("The badge count shows zero"));
   assert.ok(prompts["US-1"][0].includes(wt));
-  assert.equal(readFileSync(marker, "utf8"), `${wt}\n${dirs.repo}\n`);
+  assert.equal(readFileSync(marker, "utf8"), `${dirs.repo}\n`, "the fast command ran on the main worktree only");
   assert.deepEqual(dirs.story("US-1").files_changed, ["src/board.rs", "src/fix1.rs"]);
   assert.equal(reviews["US-1"].length, 2);
   assert.deepEqual(openFindings(dirs.story("US-1")), []);
   assert.equal(dirs.story("US-1").findings.length, 2);
   assert.equal(dirs.story("US-1").status, "done");
-});
-
-test("a fast command failing three times in a review fix round blocks the story in review with the fast thread, and the reviewer does not run again", async (t) => {
-  const dirs = scratch(t, [story("US-1", { status: "review" })]);
-  dirs.checks({ fast: "echo fast broke; exit 1", stack_up: "true", stack: "true" });
-  const wt = inReview(dirs, "US-1");
-  const { agent, prompts, reviews } = implAgent({ "US-1": fixer(wt, "US-1") }, { "US-1": () => fail("The badge has no colour") });
-
-  await deliver({ feature: "board" }, agent);
-
-  assert.equal(prompts["US-1"].length, 3);
-  assert.equal(reviews["US-1"].length, 1);
-  const th = threadOf(dirs, "US-1");
-  assert.equal(th.title, "US-1: the fast command still fails after three attempts");
-  assert.equal(dirs.story("US-1").blocked, true);
-  assert.equal(dirs.story("US-1").status, "review");
-  assert.equal(dirs.story("US-1").holder, null);
-  assert.equal(existsSync(wt), true);
 });
 
 test("a reviewer returning needs_decision blocks the story in review with a thread 'US-<n>: <question>' holding the options and recommendation, and no implementer runs", async (t) => {
@@ -817,7 +778,7 @@ test("testing stories with no blockers between them merge by priority before num
   assert.deepEqual(subjects(dirs), ["feat: US-1", "feat: US-2", "init"]);
 });
 
-test("a rebase conflict sends the story to implementing with a finding naming the file, an implementer rebases it in its worktree, the workflow runs fast there, and it returns to testing unreviewed and is fast-forwarded before the next story, resolving the finding", async (t) => {
+test("a rebase conflict sends the story to implementing with a finding naming the file, an implementer rebases it in its worktree with no fast command there, and it returns to testing unreviewed and is fast-forwarded before the next story, resolving the finding", async (t) => {
   const dirs = scratch(t, [story("US-1", { status: "testing", files_changed: ["src/stale.rs"] }), story("US-2", { status: "testing" })]);
   const fastLog = join(dirs.root, "fast.log");
   dirs.checks({ fast: `pwd >> ${fastLog}`, stack_up: "true", stack: "true" });
@@ -842,7 +803,7 @@ test("a rebase conflict sends the story to implementing with a finding naming th
   assert.equal(prompts["US-1"].length, 1);
   assert.ok(prompts["US-1"][0].includes(wt));
   assert.ok(prompts["US-1"][0].includes("git rebase main"));
-  assert.equal(readFileSync(fastLog, "utf8"), `${wt}\n${dirs.repo}\n${dirs.repo}\n`);
+  assert.equal(readFileSync(fastLog, "utf8"), `${dirs.repo}\n${dirs.repo}\n`);
   assert.deepEqual(dirs.story("US-1").files_changed, ["README", "src/a.rs"]);
   assert.equal(reviews["US-1"], undefined);
   assert.equal(dirs.story("US-1").status, "done");

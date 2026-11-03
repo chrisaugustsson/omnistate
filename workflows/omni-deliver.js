@@ -44,6 +44,11 @@ const root = run('git', ['rev-parse', '--show-toplevel']).trim()
 const git = (argv, opts) => run('git', ['-C', root, ...argv], opts)
 const repoName = path.basename(root)
 const storiesDir = path.join(root, '..', `${repoName}-stories`)
+// Every cargo of the run, in a story worktree or on the main worktree, builds
+// into the main worktree's target directory, so a story rebuilds only the
+// crates it touched instead of the whole workspace from scratch. Cargo locks
+// the directory per invocation, so concurrent builds wait for each other.
+process.env.CARGO_TARGET_DIR ||= path.join(root, 'target')
 const lockPath = path.join(root, '.omni', 'run.lock')
 const clarityPath = path.join(root, '.omni', 'clarity.json')
 
@@ -343,7 +348,7 @@ Return raw structured data only.`
     child.on('close', (code) => resolve({ ok: code === 0, output }))
   })
   const runFast = (cwd) => runCmd(fast, cwd)
-  const implPrompt = (story, wt, retry, task) => {
+  const implPrompt = (story, wt, task) => {
     const open = (story.findings || []).filter((f) => !f.resolved)
     const docs = (story.links || []).filter((l) => l.doc_id)
     return `You implement ONE story of the feature "${feature}" in its own git worktree.
@@ -369,11 +374,11 @@ ${open.map((f) => `- [${f.stage}] ${f.text}${(f.files || []).length ? ` (${f.fil
 
 ## Linked doc nodes
 ${docs.map((l) => `### Doc ${l.doc_id}, node ${l.node_id}${l.label ? ` (${l.label})` : ''}\n${docText(l.doc_id)}`).join('\n\n') || '(none)'}
-${retry ? `\n## The fast command failed on your last work (fix it, then commit with a fix: commit)\n\`${fast}\` run in the worktree printed:\n\`\`\`\n${retry}\n\`\`\`\n` : ''}${task ? `\n## Your task now\n${task}\n` : ''}${CONVENTIONS}
+${task ? `\n## Your task now\n${task}\n` : ''}${CONVENTIONS}
 ## Rules
 - Implement only this story. No unrelated cleanup, no groundwork for later stories.
 - Commit a feat: commit, then fix: commits for later corrections. Commit production and test files that belong to the story.
-- Run the fast command before you finish: \`${fast || '(none configured)'}\`. The workflow runs it again after you return.
+- Before you finish, run the narrowest check that proves your change: one crate's tests, one test file, one package's typecheck. Do not run the full check command here; it runs on the main worktree after the merge.
 - If the story needs a product decision the spec does not make and the story cannot avoid, STOP: status needs_decision with question, options and recommendation. Never guess a product rule. Ordinary technical choices are yours.
 - If you genuinely cannot continue, status blocked with the reason in summary.
 - Return decisions for every non-obvious technical choice.
@@ -407,32 +412,25 @@ Return raw structured data only.`
         write('decision', key, ['--question', d.question, '--choice', d.choice, '--by', 'agent'])
       }
     }
-    let retry = null
-    for (let attempt = 1; attempt <= 3; attempt++) {
-      const r = (await runAgent(implPrompt(story, wt, retry, task), { schema: IMPL_SCHEMA, label: `impl:${key}${attempt > 1 ? ` fix${attempt - 1}` : ''}`, phase: 'Implement', model: modelFor('impl'), role: 'impl' })) || { status: 'blocked', summary: 'The implementer returned no result (it may have died).' }
-      record(r)
-      if (r.status === 'needs_decision') {
-        const options = (r.options || []).map((o, i) => `${i + 1}. ${o}`).join('\n')
-        const id = openThread(`${key}: ${r.question}`, `${r.question}\n\nOptions:\n${options}\n\nRecommendation: ${r.recommendation || ''}\n`)
-        linkAndBlock(key, [id])
-        return { key, outcome: 'needs_decision', thread: id }
-      }
-      if (r.status !== 'ready') {
-        const id = openThread(`${key}: the implementer is blocked`, `${r.summary}\n`)
-        linkAndBlock(key, [id])
-        return { key, outcome: 'blocked', thread: id }
-      }
-      const result = await runFast(wt)
-      if (result.ok) {
-        const paths = git(['-C', wt, 'diff', '--name-only', `${integration}...HEAD`]).split('\n').filter(Boolean)
-        if (paths.length) write('files', key, paths)
-        return null
-      }
-      retry = result.output
+    // No full build here: the implementer runs the narrow check its change
+    // needs, and the fast command runs on the main worktree after the merge
+    // (the Check phase). A broken story is caught there and becomes a fix story.
+    const r = (await runAgent(implPrompt(story, wt, task), { schema: IMPL_SCHEMA, label: `impl:${key}`, phase: 'Implement', model: modelFor('impl'), role: 'impl' })) || { status: 'blocked', summary: 'The implementer returned no result (it may have died).' }
+    record(r)
+    if (r.status === 'needs_decision') {
+      const options = (r.options || []).map((o, i) => `${i + 1}. ${o}`).join('\n')
+      const id = openThread(`${key}: ${r.question}`, `${r.question}\n\nOptions:\n${options}\n\nRecommendation: ${r.recommendation || ''}\n`)
+      linkAndBlock(key, [id])
+      return { key, outcome: 'needs_decision', thread: id }
     }
-    const id = openThread(`${key}: the fast command still fails after three attempts`, `Last output of \`${fast}\`:\n\n\`\`\`\n${retry}\n\`\`\`\n`)
-    linkAndBlock(key, [id])
-    return { key, outcome: 'fast_failed', thread: id }
+    if (r.status !== 'ready') {
+      const id = openThread(`${key}: the implementer is blocked`, `${r.summary}\n`)
+      linkAndBlock(key, [id])
+      return { key, outcome: 'blocked', thread: id }
+    }
+    const paths = git(['-C', wt, 'diff', '--name-only', `${integration}...HEAD`]).split('\n').filter(Boolean)
+    if (paths.length) write('files', key, paths)
+    return null
   }
   const implement = async (key) => {
     const bad = await implementLoop(key, worktreeOf(key), readStory(key))
