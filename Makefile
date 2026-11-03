@@ -130,9 +130,12 @@ bench-ordrar: render-wasm
 # page, PENPOT_REPORT/index.html, with its images (docs/penpot-compare.md).
 PENPOT_FIXTURES ?= fixtures/penpot
 PENPOT_REPORT ?= docs/penpot-compare
+# The omni-penpot command; a test passes its already-built binary here, so the
+# target runs no cargo inside cargo test (two cargos sharing ~/.cargo deadlock).
+OMNI_PENPOT ?= $(CARGO) run --quiet -p omni-penpot --
 
 penpot-compare:
-	$(CARGO) run --quiet -p omni-penpot -- report "$(PENPOT_FIXTURES)" --out "$(PENPOT_REPORT)"
+	$(OMNI_PENPOT) report "$(PENPOT_FIXTURES)" --out "$(PENPOT_REPORT)"
 
 # Links the agent skills (agent-skills/*) into ~/.claude/skills/ and the
 # workflows (workflows/*.js) into ~/.claude/workflows/ as absolute symlinks.

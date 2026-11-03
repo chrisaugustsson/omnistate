@@ -768,10 +768,14 @@ fn make_penpot_compare_reads_fixtures_penpot_and_writes_docs_penpot_compare() {
 fn make_penpot_compare_writes_the_report_of_the_folder() {
     let s = scenario();
     let out = temp_dir("report-out-make");
+    // The target gets the binary cargo built for this test run: a `cargo run`
+    // inside `cargo test` waits on the cargo locks of any other cargo on the
+    // machine, and two worktrees testing at once hang each other.
     let result = make(&[
         "penpot-compare",
         &format!("PENPOT_FIXTURES={}", s.folder.display()),
         &format!("PENPOT_REPORT={}", out.display()),
+        &format!("OMNI_PENPOT={}", env!("CARGO_BIN_EXE_omni-penpot")),
     ]);
     assert!(
         result.status.success(),
