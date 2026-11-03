@@ -11,7 +11,7 @@ use crate::json::{Value, quote as json_quote};
 use crate::projects::{is_uuid, projects_path};
 use crate::toml;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub fn links_path() -> Result<PathBuf> {
     let mut path = config::config_path()?;
@@ -119,6 +119,51 @@ impl Links {
             bail!("cannot write {}: {e}", path.display());
         }
         Ok(())
+    }
+}
+
+/// What the links say about a folder.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Resolution {
+    /// The nearest folder linked in the logged-in workspace.
+    Linked {
+        matched: PathBuf,
+        project_id: String,
+    },
+    /// No such folder, but the nearest linked one belongs to another workspace.
+    OtherWorkspace {
+        matched: PathBuf,
+        workspace_id: String,
+    },
+    None,
+}
+
+/// The link in effect for `dir`: the folder itself, then each parent, the
+/// first with a line in the workspace's table winning. Only when none has one
+/// does a link of another workspace count, the nearest of them.
+pub fn resolve(links: &Links, workspace_id: &str, dir: &Path) -> Resolution {
+    let mut other = None;
+    for folder in dir.ancestors() {
+        let Some(key) = folder.to_str() else {
+            continue;
+        };
+        let mut here = links.entries.iter().filter(|(_, path, _)| path == key);
+        if let Some((_, _, project_id)) = here.clone().find(|(w, _, _)| w == workspace_id) {
+            return Resolution::Linked {
+                matched: folder.to_path_buf(),
+                project_id: project_id.clone(),
+            };
+        }
+        if other.is_none() {
+            other = here.next().map(|(w, _, _)| (folder, w));
+        }
+    }
+    match other {
+        Some((folder, workspace_id)) => Resolution::OtherWorkspace {
+            matched: folder.to_path_buf(),
+            workspace_id: workspace_id.clone(),
+        },
+        None => Resolution::None,
     }
 }
 

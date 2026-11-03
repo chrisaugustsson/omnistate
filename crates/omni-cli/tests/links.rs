@@ -21,6 +21,13 @@ fn mock() -> MockServer {
                 ] }),
             );
         }
+        if request.method == "GET"
+            && (request.path == format!("/api/v1/w/{WORKSPACE}/projects/{PROJECT}/features")
+                || request.path
+                    == format!("/api/v1/w/{WORKSPACE}/projects/{OTHER_PROJECT}/features"))
+        {
+            return Reply::json(200, &json!({ "features": [] }));
+        }
         Reply::json(404, &json!({ "error": "not_found" }))
     })
 }
@@ -190,4 +197,139 @@ fn link_with_json_prints_the_path_workspace_and_project() {
         "project": { "id": PROJECT, "name": "brand-site" }
     });
     assert_eq!(out.json(), expected);
+}
+
+const OTHER_WORKSPACE: &str = "01900000-0000-7000-8000-0000000000cc";
+
+fn feature_list_in(home: &Scratch, folder: &std::path::Path, extra: &[&str]) -> Out {
+    omni(&home.path)
+        .args(&["feature", "list", "--as", "run-7/author"])
+        .args(extra)
+        .cwd(folder)
+        .run()
+}
+
+fn feature_requests(server: &MockServer) -> Vec<String> {
+    server
+        .requests()
+        .iter()
+        .map(|r| format!("{} {}", r.method, r.path))
+        .collect()
+}
+
+#[test]
+fn a_linked_folder_and_the_folders_under_it_find_their_project() {
+    let server = mock();
+    let home = logged_in(&server.url);
+    let folder = Scratch::new("folder");
+    std::fs::create_dir_all(folder.join("a/b")).unwrap();
+    std::fs::write(
+        links_path(&home.path),
+        format!(
+            "[{WORKSPACE}]\n\"{}\" = \"{PROJECT}\"\n",
+            canonical(&folder)
+        ),
+    )
+    .unwrap();
+
+    for dir in [folder.path.clone(), folder.join("a/b")] {
+        let out = feature_list_in(&home, &dir, &[]);
+        assert_eq!(out.code, 0, "{}", out.stderr);
+    }
+    let want = format!("GET /api/v1/w/{WORKSPACE}/projects/{PROJECT}/features");
+    assert_eq!(feature_requests(&server), vec![want.clone(), want]);
+}
+
+#[test]
+fn an_unlinked_folder_is_an_error_whatever_its_omni_toml_says() {
+    let server = mock();
+    let home = logged_in(&server.url);
+    let folder = Scratch::new("folder");
+    std::fs::write(folder.join(".omni.toml"), "project = \"brand-site\"\n").unwrap();
+
+    let out = feature_list_in(&home, &folder.path, &[]);
+    assert_eq!(out.code, 1);
+    assert_eq!(
+        out.stderr.trim_end(),
+        "omni: this folder is not linked to a project: run omni link <project name|id> here, or pass --project"
+    );
+    assert!(server.requests().is_empty(), "{:?}", server.requests());
+}
+
+#[test]
+fn a_link_of_another_workspace_is_reported_as_such() {
+    let server = mock();
+    let home = logged_in(&server.url);
+    let folder = Scratch::new("folder");
+    std::fs::create_dir_all(folder.join("sub")).unwrap();
+    std::fs::write(
+        links_path(&home.path),
+        format!(
+            "[{OTHER_WORKSPACE}]\n\"{}\" = \"{PROJECT}\"\n",
+            canonical(&folder)
+        ),
+    )
+    .unwrap();
+
+    let out = feature_list_in(&home, &folder.join("sub"), &[]);
+    assert_eq!(out.code, 1);
+    assert_eq!(
+        out.stderr.trim_end(),
+        format!(
+            "omni: {} is linked to a project of another workspace ({OTHER_WORKSPACE}); run omni link here, or omni login",
+            canonical(&folder)
+        )
+    );
+    assert!(server.requests().is_empty(), "{:?}", server.requests());
+}
+
+#[test]
+fn a_link_of_the_logged_in_workspace_beats_a_nearer_link_of_another() {
+    let server = mock();
+    let home = logged_in(&server.url);
+    let folder = Scratch::new("folder");
+    std::fs::create_dir_all(folder.join("sub")).unwrap();
+    std::fs::write(
+        links_path(&home.path),
+        format!(
+            "[{OTHER_WORKSPACE}]\n\"{}\" = \"{OTHER_PROJECT}\"\n\n[{WORKSPACE}]\n\"{}\" = \"{PROJECT}\"\n",
+            format_args!("{}/sub", canonical(&folder)),
+            canonical(&folder)
+        ),
+    )
+    .unwrap();
+
+    let out = feature_list_in(&home, &folder.join("sub"), &[]);
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    assert_eq!(
+        feature_requests(&server),
+        vec![format!(
+            "GET /api/v1/w/{WORKSPACE}/projects/{PROJECT}/features"
+        )]
+    );
+}
+
+#[test]
+fn project_flag_wins_over_the_folders_link() {
+    let server = mock();
+    let home = logged_in(&server.url);
+    let folder = Scratch::new("folder");
+    std::fs::write(
+        links_path(&home.path),
+        format!(
+            "[{WORKSPACE}]\n\"{}\" = \"{PROJECT}\"\n",
+            canonical(&folder)
+        ),
+    )
+    .unwrap();
+
+    let out = feature_list_in(&home, &folder.path, &["--project", "other"]);
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    assert_eq!(
+        feature_requests(&server),
+        vec![
+            format!("GET /api/v1/w/{WORKSPACE}/projects"),
+            format!("GET /api/v1/w/{WORKSPACE}/projects/{OTHER_PROJECT}/features")
+        ]
+    );
 }

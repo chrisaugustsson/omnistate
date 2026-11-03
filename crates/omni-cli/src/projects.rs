@@ -6,6 +6,7 @@ use crate::commands::{Agent, agent, say};
 use crate::config;
 use crate::error::{CliError, Result, bail};
 use crate::json::{Value, quote};
+use crate::links::{Links, Resolution, resolve};
 
 /// The text of an API response, for `--json`.
 fn print_json(text: &str) {
@@ -83,17 +84,13 @@ pub(crate) fn projects_path(agent: &Agent) -> String {
     format!("/api/v1/w/{}/projects", agent.workspace_id)
 }
 
-/// The ID of the project a command works in: `--project`, else the project of
-/// `.omni.toml`. Either is a project ID, used as it is, or a project name,
-/// which the API's list of projects turns into its ID.
+/// The ID of the project a command works in: `--project`, else the project
+/// the folder is linked to. `--project` is a project ID, used as it is, or a
+/// project name, which the API's list of projects turns into its ID.
 pub(crate) fn project_id(args: &Args, agent: &Agent) -> Result<String> {
     let given = match args.project.clone() {
         Some(project) => project,
-        None => config::project()?.ok_or_else(|| {
-            CliError::new(
-                "no project: pass --project <name or id>, or put project = \"name\" in .omni.toml",
-            )
-        })?,
+        None => return linked_project(agent),
     };
     if is_uuid(&given) {
         return Ok(given.to_ascii_lowercase());
@@ -112,6 +109,26 @@ pub(crate) fn project_id(args: &Args, agent: &Agent) -> Result<String> {
                 "no project named {given:?}; `omni project list` shows the projects"
             ))
         })
+}
+
+/// The project the current folder or its nearest linked parent is linked to.
+fn linked_project(agent: &Agent) -> Result<String> {
+    let folder = std::env::current_dir()
+        .and_then(std::fs::canonicalize)
+        .map_err(|e| CliError::new(format!("cannot find the current folder: {e}")))?;
+    match resolve(&Links::load()?, &agent.workspace_id, &folder) {
+        Resolution::Linked { project_id, .. } => Ok(project_id),
+        Resolution::OtherWorkspace {
+            matched,
+            workspace_id,
+        } => bail!(
+            "{} is linked to a project of another workspace ({workspace_id}); run omni link here, or omni login",
+            matched.display()
+        ),
+        Resolution::None => bail!(
+            "this folder is not linked to a project: run omni link <project name|id> here, or pass --project"
+        ),
+    }
 }
 
 /// The features of a project, as the API lists them.

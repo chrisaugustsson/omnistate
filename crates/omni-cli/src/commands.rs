@@ -530,7 +530,16 @@ pub(crate) fn read_body(source: &str) -> Result<Vec<u8>> {
 
 fn config_show(args: &Args) -> Result<()> {
     let settings = settings(args)?;
-    let project = config::project()?;
+    let folder = std::env::current_dir().and_then(std::fs::canonicalize).ok();
+    let project = match (&settings.stored.workspace_id, folder) {
+        (Some(workspace_id), Some(folder)) => {
+            match links::resolve(&links::Links::load()?, workspace_id, &folder) {
+                links::Resolution::Linked { project_id, .. } => Some(project_id),
+                _ => None,
+            }
+        }
+        _ => None,
+    };
     let path = config::config_path()?;
     let logged_in = settings.stored.api_key.is_some();
     let text_or_null = |value: &Option<String>| value.clone().map_or(Value::Null, Value::String);

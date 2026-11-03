@@ -1,7 +1,7 @@
 //! The two files the CLI reads: `~/.config/omni/config.toml`, which `omni login`
 //! writes (mode 600, because it holds the API key), and `.omni.toml`, which a
-//! project directory uses to set the default project and feature for commands
-//! run in it.
+//! project directory uses to set the default feature for commands run in it
+//! and to hold its `[checks]`.
 
 use crate::error::{CliError, Result, bail};
 use crate::toml;
@@ -100,12 +100,6 @@ pub fn save(stored: &Stored) -> Result<PathBuf> {
         bail!("cannot write {}: {e}", path.display());
     }
     Ok(path)
-}
-
-/// The default project: `project` in the nearest `.omni.toml`, looking in the
-/// current directory and then in each parent.
-pub fn project() -> Result<Option<String>> {
-    omni_toml("project", "project = \"my-project\"")
 }
 
 /// The default feature: `feature` in the nearest `.omni.toml`, found as the

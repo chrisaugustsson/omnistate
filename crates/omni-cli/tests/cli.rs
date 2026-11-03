@@ -365,53 +365,13 @@ fn a_missing_body_file_is_one_line_that_names_the_file_and_sends_nothing() {
 }
 
 #[test]
-fn omni_toml_sets_the_default_project_for_commands_run_in_that_directory() {
-    let home = logged_in("http://127.0.0.1:9");
-    let project_dir = Scratch::new("project");
-    std::fs::write(project_dir.join(".omni.toml"), "project = \"brand-site\"\n").unwrap();
-    let elsewhere = Scratch::new("elsewhere");
-
-    let here = omni(&home.path)
-        .cwd(&project_dir.path)
-        .args(&["config", "show", "--json"])
-        .run();
-    assert_eq!(here.code, 0, "{}", here.stderr);
-    let settings = here.json();
-    assert_eq!(settings["project"], "brand-site", "{settings}");
-    assert_eq!(settings["workspace_id"], WORKSPACE, "{settings}");
-    assert_eq!(settings["server"], "http://127.0.0.1:9", "{settings}");
-    assert!(
-        !here.stdout.contains(API_KEY) && !here.stderr.contains(API_KEY),
-        "the key is never printed"
-    );
-
-    let text = omni(&home.path)
-        .cwd(&project_dir.path)
-        .args(&["config", "show"])
-        .run();
-    assert_eq!(text.code, 0, "{}", text.stderr);
-    assert!(text.stdout.contains("brand-site"), "{:?}", text.stdout);
-
-    let there = omni(&home.path)
-        .cwd(&elsewhere.path)
-        .args(&["config", "show", "--json"])
-        .run();
-    assert_eq!(there.code, 0, "{}", there.stderr);
-    assert!(
-        there.json()["project"].is_null(),
-        "no .omni.toml, no default project: {}",
-        there.stdout
-    );
-}
-
-#[test]
 fn a_malformed_omni_toml_is_one_line_that_names_the_file() {
     let home = logged_in("http://127.0.0.1:9");
     let project_dir = Scratch::new("badproject");
-    std::fs::write(project_dir.join(".omni.toml"), "project = \n").unwrap();
+    std::fs::write(project_dir.join(".omni.toml"), "[checks]\nfast = \n").unwrap();
     let out = omni(&home.path)
         .cwd(&project_dir.path)
-        .args(&["config", "show"])
+        .args(&["checks"])
         .run();
     assert_one_line_error(&out, &[".omni.toml"]);
 }
