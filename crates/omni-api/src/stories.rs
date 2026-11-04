@@ -569,6 +569,7 @@ pub enum StoryError {
     Api(ApiError),
     Stale(i32),
     Held(Value),
+    NotWaiting { status: String, stage: String },
     CriteriaOpen(Vec<usize>),
 }
 
@@ -590,6 +591,16 @@ impl IntoResponse for StoryError {
             Self::Held(holder) => (
                 StatusCode::CONFLICT,
                 Json(json!({ "error": "held", "holder": holder })),
+            )
+                .into_response(),
+            Self::NotWaiting { status, stage } => (
+                StatusCode::CONFLICT,
+                Json(json!({
+                    "error": "not_waiting",
+                    "status": status,
+                    "stage": stage,
+                    "message": format!("a story in {status} cannot be claimed for {stage}"),
+                })),
             )
                 .into_response(),
             Self::CriteriaOpen(open) => (
@@ -874,13 +885,19 @@ pub struct MoveStoryRequest {
 
 #[derive(Serialize, ToSchema)]
 pub struct StoryHeldBody {
-    /// `conflict`, `not_open`, `held`, `not_holder` or `criteria_open`
+    /// `conflict`, `not_open`, `held`, `not_waiting`, `not_holder` or `criteria_open`
     pub error: String,
     /// The version the story has now, with `conflict`.
     pub current_version: Option<i32>,
     /// The holder, with `held`.
     #[schema(value_type = Option<Object>)]
     pub holder: Option<Value>,
+    /// The story's status, with `not_waiting`.
+    pub status: Option<String>,
+    /// The stage asked for, with `not_waiting`.
+    pub stage: Option<String>,
+    /// What went wrong, with `not_waiting`.
+    pub message: Option<String>,
     /// The 0-based indexes of the unticked criteria, with `criteria_open`.
     pub open: Option<Vec<usize>>,
 }
@@ -929,7 +946,7 @@ async fn finish_story_write(
         (status = 401, description = "No valid API key", body = ErrorBody),
         (status = 403, description = "A session, not an agent key", body = ErrorBody),
         (status = 404, description = "No such story in this feature, project and workspace", body = ErrorBody),
-        (status = 409, description = "`conflict` with `current_version` when `expected_version` is stale; else `not_open` (done or cancelled) or `held` with the `holder` when another run holds it", body = StoryHeldBody),
+        (status = 409, description = "`conflict` with `current_version` when `expected_version` is stale; else `not_open` (done or cancelled) or `held` with the `holder` when another run holds it; else `not_waiting` with the story's `status` and the `stage` when the story is not in the waiting state of that stage (backlog for implementing, implemented for review, reviewed for testing)", body = StoryHeldBody),
         (status = 422, description = "A stage other than implementing, review or testing (`invalid_stage`)", body = ErrorBody),
     )
 )]
@@ -959,6 +976,17 @@ pub async fn claim_story(
         && holder_run(&current) != Some(claim.run.as_str())
     {
         return Err(StoryError::Held(holder.clone()));
+    }
+    let waiting = match claim.stage.as_str() {
+        "implementing" => "backlog",
+        "review" => "implemented",
+        _ => "reviewed",
+    };
+    if current.status != waiting {
+        return Err(StoryError::NotWaiting {
+            status: current.status.clone(),
+            stage: claim.stage.clone(),
+        });
     }
     let row = sqlx::query_as::<_, StoryRow>(&format!(
         "UPDATE stories SET status = $2, holder = jsonb_build_object('run', $3::text, \

@@ -730,7 +730,10 @@ export const StoryHeldBodySchema = z.object({
   current_version: z.number().int().nullable().optional(),
   error: z.string(),
   holder: z.record(z.string(), z.unknown()).nullable().optional(),
+  message: z.string().nullable().optional(),
   open: z.array(z.number().int()).nullable().optional(),
+  stage: z.string().nullable().optional(),
+  status: z.string().nullable().optional(),
 });
 export type StoryHeldBody = z.infer<typeof StoryHeldBodySchema>;
 

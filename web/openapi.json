@@ -2552,13 +2552,20 @@
             ]
           },
           "error": {
-            "description": "`conflict`, `not_open`, `held`, `not_holder` or `criteria_open`",
+            "description": "`conflict`, `not_open`, `held`, `not_waiting`, `not_holder` or `criteria_open`",
             "type": "string"
           },
           "holder": {
             "description": "The holder, with `held`.",
             "type": [
               "object",
+              "null"
+            ]
+          },
+          "message": {
+            "description": "What went wrong, with `not_waiting`.",
+            "type": [
+              "string",
               "null"
             ]
           },
@@ -2570,6 +2577,20 @@
             },
             "type": [
               "array",
+              "null"
+            ]
+          },
+          "stage": {
+            "description": "The stage asked for, with `not_waiting`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "description": "The story's status, with `not_waiting`.",
+            "type": [
+              "string",
               "null"
             ]
           }
@@ -7211,7 +7232,7 @@
                 }
               }
             },
-            "description": "`conflict` with `current_version` when `expected_version` is stale; else `not_open` (done or cancelled) or `held` with the `holder` when another run holds it"
+            "description": "`conflict` with `current_version` when `expected_version` is stale; else `not_open` (done or cancelled) or `held` with the `holder` when another run holds it; else `not_waiting` with the story's `status` and the `stage` when the story is not in the waiting state of that stage (backlog for implementing, implemented for review, reviewed for testing)"
           },
           "422": {
             "content": {
