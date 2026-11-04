@@ -1011,7 +1011,7 @@ pub async fn claim_story(
     .await
 }
 
-/// Clears a story's holder, whoever holds it; the status stays.
+/// Clears a story's holder, whoever holds it; a working story returns to its waiting state.
 #[utoipa::path(
     post,
     path = "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/release",
@@ -1023,7 +1023,7 @@ pub async fn claim_story(
     ),
     request_body = ReleaseStoryRequest,
     responses(
-        (status = 200, description = "The story without a holder", body = StoryResponse),
+        (status = 200, description = "The story without a holder; a story in implementing, review or testing returns to its waiting state (backlog, implemented, reviewed), one already waiting or closed keeps its status", body = StoryResponse),
         (status = 400, description = "The body is not JSON of the expected shape (`invalid_request`)", body = ErrorBody),
         (status = 401, description = "No valid API key", body = ErrorBody),
         (status = 403, description = "A session, not an agent key", body = ErrorBody),
@@ -1046,15 +1046,33 @@ pub async fn release_story(
     if i64::from(current.version) != release.expected_version {
         return Err(StoryError::Stale(current.version));
     }
+    let working = matches!(
+        current.status.as_str(),
+        "implementing" | "review" | "testing"
+    );
+    if current.holder.is_none() && !working {
+        return Ok(Json(StoryResponse {
+            story: current.into_body(),
+        }));
+    }
     let row = sqlx::query_as::<_, StoryRow>(&format!(
-        "UPDATE stories SET holder = NULL, version = version + 1, \
+        "UPDATE stories SET holder = NULL, status = CASE status WHEN 'implementing' THEN 'backlog' WHEN 'review' THEN 'implemented' \
+         WHEN 'testing' THEN 'reviewed' ELSE status END, version = version + 1, \
          updated_at = clock_timestamp() WHERE id = $1::uuid RETURNING {STORY_COLUMNS}"
     ))
     .bind(&story_id)
     .fetch_one(&mut *tx)
     .await
     .map_err(ApiError::database)?;
-    finish_story_write(&state, tx, &request, &project_id, row, &["holder"]).await
+    finish_story_write(
+        &state,
+        tx,
+        &request,
+        &project_id,
+        row,
+        &["status", "holder"],
+    )
+    .await
 }
 
 /// Moves a story to a column; only the run that holds it may.
@@ -1548,7 +1566,7 @@ pub async fn set_files(
     ),
     request_body = BlockStoryRequest,
     responses(
-        (status = 200, description = "The story, blocked", body = StoryResponse),
+        (status = 200, description = "The story, blocked; a story in implementing, review or testing returns to its waiting state (backlog, implemented, reviewed) with no holder, one already waiting keeps its status", body = StoryResponse),
         (status = 400, description = "The body is not JSON of the expected shape (`invalid_request`)", body = ErrorBody),
         (status = 401, description = "No valid API key", body = ErrorBody),
         (status = 403, description = "A session, not an agent key", body = ErrorBody),
@@ -1575,14 +1593,23 @@ pub async fn block_story(
     )
     .await?;
     let row = sqlx::query_as::<_, StoryRow>(&format!(
-        "UPDATE stories SET blocked = true, version = version + 1, \
+        "UPDATE stories SET blocked = true, holder = NULL, status = CASE status WHEN 'implementing' THEN 'backlog' WHEN 'review' THEN 'implemented' \
+         WHEN 'testing' THEN 'reviewed' ELSE status END, version = version + 1, \
          updated_at = clock_timestamp() WHERE id = $1::uuid RETURNING {STORY_COLUMNS}"
     ))
     .bind(&story_id)
     .fetch_one(&mut *tx)
     .await
     .map_err(ApiError::database)?;
-    finish_story_write(&state, tx, &request, &project_id, row, &["blocked"]).await
+    finish_story_write(
+        &state,
+        tx,
+        &request,
+        &project_id,
+        row,
+        &["blocked", "status", "holder"],
+    )
+    .await
 }
 
 /// Lifts the block of a story.

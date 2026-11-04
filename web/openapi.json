@@ -6822,7 +6822,7 @@
                 }
               }
             },
-            "description": "The story, blocked"
+            "description": "The story, blocked; a story in implementing, review or testing returns to its waiting state (backlog, implemented, reviewed) with no holder, one already waiting keeps its status"
           },
           "400": {
             "content": {
@@ -7952,7 +7952,7 @@
                 }
               }
             },
-            "description": "The story without a holder"
+            "description": "The story without a holder; a story in implementing, review or testing returns to its waiting state (backlog, implemented, reviewed), one already waiting or closed keeps its status"
           },
           "400": {
             "content": {
@@ -8005,7 +8005,7 @@
             "description": "`conflict` with `current_version` when `expected_version` is stale"
           }
         },
-        "summary": "Clears a story's holder, whoever holds it; the status stays.",
+        "summary": "Clears a story's holder, whoever holds it; a working story returns to its waiting state.",
         "tags": [
           "crate::stories"
         ],
