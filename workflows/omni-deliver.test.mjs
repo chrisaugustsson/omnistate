@@ -245,17 +245,105 @@ test("names the run by local time", async (t) => {
 
 // ---- reconciliation ---------------------------------------------------------
 
-test("returns an implementing story with no commits ahead to backlog unheld, force-removing its worktree and deleting its branch", async (t) => {
-  const dirs = scratch(t, [story("US-2", { status: "implementing", holder: { run: "run-old", stage: "implementing" } })]);
-  const wt = worktree(dirs, "US-2");
-  writeFileSync(join(wt, "README"), "uncommitted\n");
+// A story a dead run held: blocked with an open thread, so that once released it
+// waits where the release put it and no loop of this run takes it further.
+const deadHeld = (key, status, threadId) => story(key, { status, holder: { run: "run-old", stage: status }, blocked: true, links: [{ thread_id: threadId, label: "question" }] });
+const openThread = (id, key) => ({ id, title: `${key}: Which colour is the badge?`, feature: "board", posts: [], conclusion: null });
+
+// Two commits on the integration branch past the one returned, as a merge leaves them.
+function twoCommitsPast(dirs) {
+  const base = git(dirs.repo, "rev-parse", "HEAD").trim();
+  for (const n of [1, 2]) {
+    writeFileSync(join(dirs.repo, `merged${n}`), "merged\n");
+    git(dirs.repo, "add", `merged${n}`);
+    git(dirs.repo, "commit", "-q", "-m", `merged ${n}`);
+  }
+  return base;
+}
+
+function writeLane(dirs, text) {
+  mkdirSync(join(dirs.repo, ".omni"), { recursive: true });
+  writeFileSync(join(dirs.repo, ".omni", "lane.json"), text);
+}
+
+const laneFile = (dirs) => join(dirs.repo, ".omni", "lane.json");
+const releasedSection = (report) => report.split("## Released from a dead run\n")[1].split("\n\n")[0].split("\n");
+
+test("a dead run's stories in review, testing and implementing wait unheld in implemented, reviewed and backlog, the implementing one's worktree kept", async (t) => {
+  const dirs = scratch(t, [deadHeld("US-1", "review", "th-1"), deadHeld("US-2", "testing", "th-2"), deadHeld("US-3", "implementing", "th-3")], [openThread("th-1", "US-1"), openThread("th-2", "US-2"), openThread("th-3", "US-3")]);
+  const wt = worktree(dirs, "US-3");
+  writeFileSync(join(wt, "work"), "work\n");
+  git(wt, "add", "work");
+  git(wt, "commit", "-q", "-m", "work");
 
   await start("board");
 
-  assert.equal(dirs.story("US-2").status, "backlog");
-  assert.equal(dirs.story("US-2").holder, null);
-  assert.equal(existsSync(wt), false);
-  assert.equal(git(dirs.repo, "branch", "--list", "story/US-2"), "");
+  assert.deepEqual(["US-1", "US-2", "US-3"].map((k) => [dirs.story(k).status, dirs.story(k).holder]), [["implemented", null], ["reviewed", null], ["backlog", null]]);
+  assert.equal(readFileSync(join(wt, "work"), "utf8"), "work\n");
+  assert.deepEqual(["US-1", "US-2", "US-3"].map((k) => claimsOf(dirs, k)), [[], [], []]);
+});
+
+test("a lane file left by a dead run resets the integration branch to its base, releases its story to reviewed and is removed; the report lists that story once beside the others released", async (t) => {
+  const dirs = scratch(t, [deadHeld("US-1", "testing", "th-1"), deadHeld("US-2", "review", "th-2")], [openThread("th-1", "US-1"), openThread("th-2", "US-2")]);
+  const base = twoCommitsPast(dirs);
+  writeLane(dirs, JSON.stringify({ key: "US-1", base }));
+
+  const result = await start("board");
+
+  assert.equal(git(dirs.repo, "rev-parse", "main").trim(), base);
+  assert.equal(git(dirs.repo, "status", "--porcelain"), "");
+  assert.equal(dirs.story("US-1").status, "reviewed");
+  assert.equal(dirs.story("US-1").holder, null);
+  assert.equal(existsSync(laneFile(dirs)), false);
+  assert.deepEqual(releasedSection(result.report).sort(), ["- US-1: reviewed", "- US-2: implemented"]);
+});
+
+test("without a lane file the integration branch is untouched and, nothing being released, the report has no released section", async (t) => {
+  const dirs = scratch(t, [story("US-1", { status: "reviewed", blocked: true, links: [{ thread_id: "th-1", label: "question" }] })], [openThread("th-1", "US-1")]);
+  twoCommitsPast(dirs);
+  const tip = git(dirs.repo, "rev-parse", "HEAD").trim();
+
+  const result = await start("board");
+
+  assert.equal(git(dirs.repo, "rev-parse", "main").trim(), tip);
+  assert.equal(result.report.includes("Released from a dead run"), false);
+});
+
+test("a lane file naming a done story is removed without a reset", async (t) => {
+  const dirs = scratch(t, [story("US-1", { status: "done" })]);
+  const base = twoCommitsPast(dirs);
+  const tip = git(dirs.repo, "rev-parse", "HEAD").trim();
+  writeLane(dirs, JSON.stringify({ key: "US-1", base }));
+
+  await start("board");
+
+  assert.equal(git(dirs.repo, "rev-parse", "main").trim(), tip);
+  assert.equal(existsSync(laneFile(dirs)), false);
+  assert.equal(dirs.story("US-1").status, "done");
+});
+
+test("a lane file naming a cancelled story resets the branch to its base and leaves the story cancelled", async (t) => {
+  const dirs = scratch(t, [story("US-1", { status: "cancelled" })]);
+  const base = twoCommitsPast(dirs);
+  writeLane(dirs, JSON.stringify({ key: "US-1", base }));
+
+  await start("board");
+
+  assert.equal(git(dirs.repo, "rev-parse", "main").trim(), base);
+  assert.equal(existsSync(laneFile(dirs)), false);
+  assert.equal(dirs.story("US-1").status, "cancelled");
+});
+
+test("a lane file that cannot be parsed is removed without a reset", async (t) => {
+  const dirs = scratch(t, [story("US-1", { status: "done" })]);
+  twoCommitsPast(dirs);
+  const tip = git(dirs.repo, "rev-parse", "HEAD").trim();
+  writeLane(dirs, "{not json");
+
+  await start("board");
+
+  assert.equal(git(dirs.repo, "rev-parse", "main").trim(), tip);
+  assert.equal(existsSync(laneFile(dirs)), false);
 });
 
 test("returns an implementing story whose worktree is missing to backlog unheld", async (t) => {
@@ -265,20 +353,6 @@ test("returns an implementing story whose worktree is missing to backlog unheld"
 
   assert.equal(dirs.story("US-2").status, "backlog");
   assert.equal(dirs.story("US-2").holder, null);
-});
-
-test("claims a testing story of another run at testing and, its worktree being gone (merged and checked before), runs only its tests step and moves it to done", { timeout: 20000 }, async (t) => {
-  const dirs = scratch(t, [story("US-3", { status: "testing", holder: { run: "run-old", stage: "testing" } })]);
-  dirs.checks({ fast: "true", stack_up: "true", stack: "true" });
-  const testsSeen = [];
-  const { agent } = implAgent({}, {}, {}, { "US-3": () => { testsSeen.push(dirs.story("US-3").status); return noTests; } });
-
-  const result = await deliver({ feature: "board" }, agent);
-
-  assert.deepEqual(claimsOf(dirs, "US-3"), [{ run: result.run, stage: "testing" }]);
-  assert.deepEqual(testsSeen, ["testing"]);
-  assert.deepEqual(result.done, ["US-3"]);
-  assert.equal(dirs.story("US-3").status, "done");
 });
 
 // ---- clarity ----------------------------------------------------------------
