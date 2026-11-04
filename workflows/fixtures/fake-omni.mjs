@@ -3,7 +3,7 @@
 // JSON file FAKE_OMNI_STATE names. FAKE_OMNI_FAIL=thread makes thread create fail.
 // `checks` answers only when the state holds checks; `story list --pickable` applies
 // the board's rule: backlog, not blocked, every blocker done or cancelled, no planned
-// path shared with a story in implementing or review. `story finding` appends to the story's findings and
+// file (files_changed when set, else files_planned) shared with a story in implementing, implemented, review, reviewed or testing. `claim` needs the stage's waiting state (else exit 1, not_waiting); `move` to implemented, reviewed, backlog or done clears the holder; `release` and `block` put a working story in its waiting state and clear the holder. `story finding` appends to the story's findings and
 // `story resolve --finding <i>` resolves the i-th (0-based). `story add <file>` reads
 // the heading, Description, Files and criteria the way the CLI does and numbers
 // the story after the highest key; `story tick` sets the criterion's ticked/pending.
@@ -36,6 +36,9 @@ const link = (value) => {
   return a === "thread" ? { thread_id: b, label: c ?? "" } : { doc_id: a, node_id: b, label: c ?? "" };
 };
 
+const waitingOf = { implementing: "backlog", review: "implemented", testing: "reviewed" };
+const waitingFor = { implementing: "backlog", review: "implemented", testing: "reviewed" };
+
 const [noun, verb, target] = argv;
 if (noun === "--help") {
   out("omni\n");
@@ -63,8 +66,9 @@ if (noun === "--help") {
 } else if (noun === "story" && verb === "list") {
   save();
   if (argv.includes("--pickable")) {
-    const busy = state.stories.filter((s) => s.status === "implementing" || s.status === "review").flatMap((s) => s.files_planned || []);
-    const free = (s) => !(s.files_planned || []).some((f) => busy.includes(f));
+    const filesOf = (s) => (s.files_changed?.length ? s.files_changed : s.files_planned) || [];
+    const busy = state.stories.filter((s) => ["implementing", "implemented", "review", "reviewed", "testing"].includes(s.status)).flatMap(filesOf);
+    const free = (s) => !filesOf(s).some((f) => busy.includes(f));
     const finished = (key) => ["done", "cancelled"].includes(state.stories.find((x) => x.key === key)?.status);
     out(state.stories.filter((s) => s.status === "backlog" && !s.blocked && free(s) && (s.blocked_by || []).every(finished)).map((s) => `${s.key}\n`).join(""));
   } else {
@@ -100,12 +104,27 @@ if (noun === "--help") {
 } else if (noun === "story") {
   const s = story(target);
   const run = flag("--run");
-  if (verb === "release") s.holder = null;
-  else if (verb === "claim") {
-    s.holder = { run, stage: flag("--stage") };
-    s.status = flag("--stage");
-  } else if (verb === "move") s.status = flag("--to");
-  else if (verb === "block") s.blocked = true;
+  if (verb === "release") {
+    s.status = waitingOf[s.status] ?? s.status;
+    s.holder = null;
+  } else if (verb === "claim") {
+    const stage = flag("--stage");
+    if (s.status !== waitingFor[stage]) {
+      save();
+      process.stderr.write(`not_waiting: story ${s.key} is ${s.status}, stage ${stage} needs ${waitingFor[stage]}\n`);
+      process.exit(1);
+    }
+    s.holder = { run, stage };
+    s.status = stage;
+  } else if (verb === "move") {
+    s.status = flag("--to");
+    if (["implemented", "reviewed", "backlog", "done"].includes(s.status)) s.holder = null;
+    else if (s.holder) s.holder = { ...s.holder, stage: s.status };
+  } else if (verb === "block") {
+    s.blocked = true;
+    s.status = waitingOf[s.status] ?? s.status;
+    s.holder = null;
+  }
   else if (verb === "unblock") s.blocked = false;
   else if (verb === "decision") s.decisions.push({ question: flag("--question"), choice: flag("--choice"), by: flag("--by") });
   else if (verb === "edit") { if (all("--link").length) s.links = all("--link").map(link); if (flag("--priority") !== undefined) s.priority = Number(flag("--priority")); }
