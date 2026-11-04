@@ -634,7 +634,7 @@ test("a finished implementer leaves its story implemented with no holder, its wo
 
   await deliver({ feature: "board" }, agent);
 
-  assert.equal(dirs.story("US-1").status, "implemented");
+  assert.deepEqual(claimsOf(dirs, "US-1").map((c) => c.stage), ["implementing", "review"]);
   assert.equal(dirs.story("US-1").holder, null);
   assert.deepEqual(dirs.story("US-1").files_changed, ["board.rs"]);
   assert.equal(git(wt, "log", "-1", "--format=%s").trim(), "feat: Board");
@@ -680,9 +680,9 @@ test("with storyLimit 1, a story blocked by its implementer is claimed again onc
 
   await workflow({ feature: "board", storyLimit: 1 }, agent, phase, (fns) => Promise.all(fns.map((f) => f())), () => {});
 
-  assert.deepEqual(claimsOf(dirs, "US-1").map((c) => c.stage), ["implementing", "implementing"]);
+  assert.deepEqual(claimsOf(dirs, "US-1").map((c) => c.stage), ["implementing", "implementing", "review"]);
   assert.deepEqual(claimsOf(dirs, "US-2"), []);
-  assert.equal(dirs.story("US-1").status, "implemented");
+  assert.equal(dirs.story("US-1").status, "reviewed");
   assert.equal(dirs.story("US-2").status, "backlog");
 });
 
@@ -699,5 +699,131 @@ test("a pickable story whose clarity check returned nothing is not claimed; the 
 
   assert.deepEqual(claimsOf(dirs, "US-1"), []);
   assert.equal(dirs.story("US-1").status, "backlog");
-  assert.deepEqual(claimsOf(dirs, "US-2").map((c) => c.stage), ["implementing"]);
+  assert.deepEqual(claimsOf(dirs, "US-2").map((c) => c.stage), ["implementing", "review"]);
+});
+
+// ---- the review loop: claim, then review ----------------------------------------
+
+// An implemented story with its worktree holding one commit of its attempt.
+function implemented(dirs, key) {
+  const wt = worktree(dirs, key);
+  writeFileSync(join(wt, `${key}.rs`), "attempt\n");
+  git(wt, "add", `${key}.rs`);
+  git(wt, "commit", "-q", "-m", `feat: ${key} attempt`);
+  return wt;
+}
+const hasBranch = (dirs, key) => git(dirs.repo, "branch", "--list", `story/${key}`).trim() !== "";
+
+test("with reviewers 2, each implemented story is review for this run before its reviewer starts, both review at once, and a pass leaves it reviewed with no holder and its worktree", { timeout: 20000 }, async (t) => {
+  const dirs = scratch(t, [story("US-1", { status: "implemented" }), story("US-2", { status: "implemented" })]);
+  dirs.checks({ fast: "true", stack_up: "true", stack: "true" });
+  const wt1 = implemented(dirs, "US-1");
+  const wt2 = implemented(dirs, "US-2");
+  const secondStarted = deferred();
+  const atStart = {};
+  const board = (dirs) => Object.fromEntries(dirs.state().stories.map((s) => [s.key, { status: s.status, run: s.holder && s.holder.run }]));
+  const { agent } = implAgent({}, {
+    "US-1": async () => {
+      atStart["US-1"] = { run: runOf(dirs), board: board(dirs) };
+      // Waits for the second reviewer; with only one reviewer at a time it never comes.
+      await Promise.race([secondStarted.promise, new Promise((r) => setTimeout(r, 3000))]);
+      return { verdict: "pass", findings: [] };
+    },
+    "US-2": async () => {
+      atStart["US-2"] = { run: runOf(dirs), board: board(dirs) };
+      secondStarted.resolve();
+      return { verdict: "pass", findings: [] };
+    },
+  });
+
+  await deliver({ feature: "board", reviewers: 2 }, agent);
+
+  const run = atStart["US-1"].run;
+  assert.deepEqual(atStart["US-1"].board["US-1"], { status: "review", run });
+  assert.deepEqual(atStart["US-2"].board, { "US-1": { status: "review", run }, "US-2": { status: "review", run } });
+  assert.deepEqual([dirs.story("US-1").status, dirs.story("US-1").holder, dirs.story("US-2").status, dirs.story("US-2").holder], ["reviewed", null, "reviewed", null]);
+  const movesOf = (key) => dirs.state().calls.filter((c) => c.argv[1] === "move" && c.argv[2] === key).map((c) => c.argv[c.argv.indexOf("--to") + 1]);
+  assert.deepEqual([movesOf("US-1"), movesOf("US-2")], [["reviewed"], ["reviewed"]]);
+  assert.equal(git(wt1, "log", "-1", "--format=%s").trim(), "feat: US-1 attempt");
+  assert.equal(git(wt2, "log", "-1", "--format=%s").trim(), "feat: US-2 attempt");
+});
+
+test("the review loop claims implemented stories by priority, then by number", async (t) => {
+  const dirs = scratch(t, [story("US-1", { status: "implemented", priority: 3 }), story("US-10", { status: "implemented", priority: 1 }), story("US-2", { status: "implemented", priority: 1 })]);
+  dirs.checks({ fast: "true", stack_up: "true", stack: "true" });
+  for (const key of ["US-1", "US-10", "US-2"]) implemented(dirs, key);
+
+  await deliver({ feature: "board", reviewers: 1 }, implAgent({}).agent);
+
+  const order = dirs.state().calls.filter((c) => c.argv[1] === "claim").map((c) => c.argv[2]);
+  assert.deepEqual(order, ["US-2", "US-10", "US-1"]);
+});
+
+test("a failing review sends its story to the backlog at priority 0 with [attempt 1] findings, no holder, worktree or branch; a fresh implementer gets the findings before it is reviewed again", { timeout: 20000 }, async (t) => {
+  const dirs = scratch(t, [story("US-1", { status: "implemented", priority: 2 })]);
+  dirs.checks({ fast: "true", stack_up: "true", stack: "true" });
+  const wt = implemented(dirs, "US-1");
+  const seen = {};
+  const phase = (title) => {
+    if (title !== "Unblock" || seen.sentBack || dirs.story("US-1").status !== "backlog") return;
+    const s = dirs.story("US-1");
+    seen.sentBack = { priority: s.priority, holder: s.holder, blocked: s.blocked, findings: s.findings.map((f) => f.text), worktree: existsSync(wt), branch: hasBranch(dirs, "US-1") };
+  };
+  const { agent, prompts } = implAgent(
+    { "US-1": async () => {
+      seen.head = git(wt, "log", "-1", "--format=%s").trim();
+      return { status: "ready", summary: "done" };
+    } },
+    { "US-1": async (n) => (n === 1 ? { verdict: "fail", findings: [{ text: "The badge is blue, the criterion says red", files: ["src/badge.rs"], criterion: "The badge is red" }] } : { verdict: "pass", findings: [] }) },
+  );
+
+  await workflow({ feature: "board" }, agent, phase, (fns) => Promise.all(fns.map((f) => f())), () => {});
+
+  assert.deepEqual(seen.sentBack, { priority: 0, holder: null, blocked: false, findings: ["[attempt 1] The badge is blue, the criterion says red"], worktree: false, branch: false });
+  assert.deepEqual(claimsOf(dirs, "US-1").map((c) => c.stage), ["review", "implementing", "review"]);
+  assert.equal(seen.head, "init");
+  assert.match(prompts["US-1"][0], /\[attempt 1\] The badge is blue, the criterion says red/);
+});
+
+test("a third failed review leaves the story blocked in the backlog at priority 0, linked to 'US-1: still failing after 3 attempts', with no worktree or branch; once the thread concludes a fresh implementer starts", { timeout: 20000 }, async (t) => {
+  const earlier = [{ stage: "review", text: "[attempt 1] The badge is missing", files: [], resolved: false }, { stage: "review", text: "[attempt 2] The badge is green", files: [], resolved: false }];
+  const dirs = scratch(t, [story("US-1", { status: "implemented", priority: 0, findings: earlier })]);
+  dirs.checks({ fast: "true", stack_up: "true", stack: "true" });
+  const statePath = join(dirs.root, "omni-state.json");
+  const wt = implemented(dirs, "US-1");
+  const seen = {};
+  // Records the story as the send-back left it, then the human answers its thread.
+  const phase = (title) => {
+    if (title !== "Unblock" || seen.sentBack) return;
+    const state = dirs.state();
+    const s = state.stories.find((x) => x.key === "US-1");
+    if (!s.blocked) return;
+    const th = state.threads.find((x) => x.id === s.links[0].thread_id);
+    seen.sentBack = { status: s.status, priority: s.priority, holder: s.holder, links: s.links, title: th.title, findings: s.findings.map((f) => f.text), worktree: existsSync(wt), branch: hasBranch(dirs, "US-1") };
+    th.conclusion = "Paint it red";
+    writeFileSync(statePath, JSON.stringify(state));
+  };
+  const { agent, prompts } = implAgent(
+    { "US-1": async () => {
+      seen.head = git(wt, "log", "-1", "--format=%s").trim();
+      return { status: "ready", summary: "done" };
+    } },
+    { "US-1": async (n) => (n === 1 ? { verdict: "fail", findings: [{ text: "The badge is blue", files: [], criterion: "The badge is red" }] } : { verdict: "pass", findings: [] }) },
+  );
+
+  await workflow({ feature: "board" }, agent, phase, (fns) => Promise.all(fns.map((f) => f())), () => {});
+
+  const threadId = seen.sentBack.links[0].thread_id;
+  assert.deepEqual(seen.sentBack, {
+    status: "backlog",
+    priority: 0,
+    holder: null,
+    links: [{ thread_id: threadId, label: "question" }],
+    title: "US-1: still failing after 3 attempts",
+    findings: ["[attempt 1] The badge is missing", "[attempt 2] The badge is green", "[attempt 3] The badge is blue"],
+    worktree: false,
+    branch: false,
+  });
+  assert.equal(prompts["US-1"].length, 1);
+  assert.equal(seen.head, "init");
 });
