@@ -29,9 +29,10 @@
 //! - US-132: `GET /stories?pickable=true` lists the `backlog` stories that are
 //!   not `blocked`, whose `blocked_by` stories are all `done` or `cancelled`,
 //!   and whose files share no path with a story of the feature in
-//!   `implementing` or `review` (a story's files are `files_changed` when not
-//!   empty, else `files_planned`). They come by priority, then by open (not
-//!   done, not cancelled) dependants, most first, then by number.
+//!   `implementing`, `implemented`, `review`, `reviewed` or `testing` (US-163;
+//!   a story's files are `files_changed` when not empty, else
+//!   `files_planned`). They come by priority, then by open (not done, not
+//!   cancelled) dependants, most first, then by number.
 //!   `pickable=false` gives the normal list, any other value is 422; with
 //!   `?status=` the list is empty unless the status is `backlog`.
 //! - US-133: `PATCH /stories/{story_id}` (agent and human) takes
@@ -1049,26 +1050,53 @@ fn a_done_blocker_releases_its_story() {
 }
 
 #[test]
-fn a_story_in_review_holds_its_files_and_one_in_testing_does_not() {
+fn a_story_from_implemented_to_testing_holds_its_files_and_a_done_or_cancelled_one_does_not() {
     let (f, client) = ready();
     let project = new_project(f, client);
     let feature = new_feature(f, client, &project);
-    let reviewed = new_story(
+    let implemented = new_story(
         f,
         client,
         &project,
         &feature,
         json!({ "files_planned": ["src/a.rs"] }),
     );
-    set_status(&reviewed, "review");
-    let tested = new_story(
+    set_status(&implemented, "implemented");
+    let review = new_story(
         f,
         client,
         &project,
         &feature,
         json!({ "files_planned": ["src/b.rs"] }),
     );
-    set_status(&tested, "testing");
+    set_status(&review, "review");
+    let reviewed = new_story(f, client, &project, &feature, json!({}));
+    set_files_changed(&reviewed, json!(["src/c.rs"]));
+    set_status(&reviewed, "reviewed");
+    let testing = new_story(
+        f,
+        client,
+        &project,
+        &feature,
+        json!({ "files_planned": ["src/d.rs"] }),
+    );
+    set_status(&testing, "testing");
+    let done = new_story(
+        f,
+        client,
+        &project,
+        &feature,
+        json!({ "files_planned": ["src/e.rs"] }),
+    );
+    set_status(&done, "done");
+    let cancelled = new_story(
+        f,
+        client,
+        &project,
+        &feature,
+        json!({ "files_planned": ["src/f.rs"] }),
+    );
+    set_status(&cancelled, "cancelled");
     new_story(
         f,
         client,
@@ -1082,10 +1110,60 @@ fn a_story_in_review_holds_its_files_and_one_in_testing_does_not() {
         &project,
         &feature,
         json!({ "files_planned": ["src/b.rs"] }),
+    );
+    new_story(
+        f,
+        client,
+        &project,
+        &feature,
+        json!({ "files_planned": ["src/c.rs"] }),
+    );
+    new_story(
+        f,
+        client,
+        &project,
+        &feature,
+        json!({ "files_planned": ["src/d.rs"] }),
+    );
+    new_story(
+        f,
+        client,
+        &project,
+        &feature,
+        json!({ "files_planned": ["src/e.rs"] }),
+    );
+    new_story(
+        f,
+        client,
+        &project,
+        &feature,
+        json!({ "files_planned": ["src/f.rs"] }),
     );
     assert_eq!(
         listed_keys(f, client, &project, &feature, "pickable=true"),
-        vec![json!("US-4")]
+        vec![json!("US-11"), json!("US-12")],
+        "US-7 to US-10 share a file with the implemented, review, reviewed and testing stories; \
+         US-11 and US-12 share one only with the done and the cancelled story"
+    );
+}
+
+#[test]
+fn a_story_blocked_by_a_reviewed_story_is_not_pickable() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    let feature = new_feature(f, client, &project);
+    let blocker = new_story(f, client, &project, &feature, json!({}));
+    set_status(&blocker, "reviewed");
+    new_story(
+        f,
+        client,
+        &project,
+        &feature,
+        json!({ "blocked_by": [blocker] }),
+    );
+    assert_eq!(
+        listed_keys(f, client, &project, &feature, "pickable=true"),
+        Vec::<Value>::new()
     );
 }
 
