@@ -4,7 +4,7 @@ export const meta = {
   whenToUse: 'Run from the main worktree of a project with a clean tree, with args {feature: "<name>"} (optional: implementers (3), reviewers (3), storyLimit, models). One run per checkout, whatever the feature: the lock file .omni/run.lock holds the run, and a live pid refuses a second one. Needs the omni CLI on PATH and the folder linked to its project (omni link, or OMNI_PROJECT). Stories come from `omni story`; questions for the human become threads on the feature named after the story. Never pushes.',
   phases: [
     { title: 'Start', detail: 'clean tree, lock, the Run thread' },
-    { title: 'Reconcile', detail: 'release claims of other runs, then claim, reset or keep each story by its status' },
+    { title: 'Reconcile', detail: 'undo a merge a dead run left half done (the lane file), then release every story held by another run' },
     { title: 'Clarity', detail: 'one check per backlog story whose version is new, in parallel: blocking gaps become threads, minor ones agent decisions' },
     { title: 'Unblock', detail: 'a blocked story whose linked threads all have a conclusion gets each conclusion as a human decision and is unblocked' },
     { title: 'Implement', detail: 'up to `implementers` agents at once, each on a pickable story in its own worktree, running only the checks its change needs; the full checks run on the main worktree after the merge' },
@@ -50,6 +50,7 @@ const storiesDir = path.join(root, '..', `${repoName}-stories`)
 // tests ended up looking for a worktree that was gone.
 const lockPath = path.join(root, '.omni', 'run.lock')
 const clarityPath = path.join(root, '.omni', 'clarity.json')
+const LANE_FILE = path.join(root, '.omni', 'lane.json')
 
 const pad = (n) => String(n).padStart(2, '0')
 const stamp = () => {
@@ -96,14 +97,8 @@ try {
 
   // ---- phase 2: reconcile --------------------------------------------------
   phase('Reconcile')
-  const reconciled = []
+  const released = []
   const worktreeOf = (key) => path.join(storiesDir, key)
-  const commitsAhead = (key) => {
-    const wt = worktreeOf(key)
-    if (!fs.existsSync(wt)) return 0
-    const out = tryRun('git', ['-C', wt, 'rev-list', '--count', `${integration}..HEAD`])
-    return out === null ? 0 : Number(out.trim()) || 0
-  }
   const dropWorktree = (key) => {
     const wt = worktreeOf(key)
     if (fs.existsSync(wt)) {
@@ -112,31 +107,36 @@ try {
     tryRun('git', ['-C', root, 'worktree', 'prune'])
     tryRun('git', ['-C', root, 'branch', '-D', `story/${key}`])
   }
+  // A lane file means a dead run died inside the test lane: undo what it merged,
+  // unless its story is done, and put the story back to reviewed.
+  const readLane = () => {
+    let raw
+    try { raw = fs.readFileSync(LANE_FILE, 'utf8') } catch { return null }
+    try {
+      const lane = JSON.parse(raw)
+      if (lane && typeof lane.key === 'string' && typeof lane.base === 'string') return { key: lane.key, base: lane.base }
+    } catch {}
+    log('The lane file cannot be read; removing it without a reset')
+    fs.rmSync(LANE_FILE, { force: true })
+    return null
+  }
+  const applyLane = () => {
+    const lane = readLane()
+    if (!lane) return
+    let story = null
+    try { story = readStory(lane.key) } catch {}
+    if (!story || story.status !== 'done') git(['reset', '--hard', lane.base])
+    if (story && story.status !== 'done' && story.status !== 'cancelled' && (story.holder || ['implementing', 'review', 'testing'].includes(story.status))) {
+      write('release', lane.key)
+      released.push({ key: lane.key, status: readStory(lane.key).status })
+    }
+    fs.rmSync(LANE_FILE, { force: true })
+  }
+  applyLane()
   for (const story of listStories()) {
-    const key = story.key
-    if (story.status === 'done' || story.status === 'cancelled') continue
-    if (story.holder && story.holder.run !== runId) write('release', key)
-    if (story.blocked) {
-      if (story.holder) reconciled.push({ key, action: 'released' })
-      continue
-    }
-    if (story.status === 'implementing' || story.status === 'review') {
-      if (commitsAhead(key) > 0) {
-        write('claim', key, ['--stage', story.status])
-        reconciled.push({ key, action: 'claimed', stage: story.status })
-      } else {
-        dropWorktree(key)
-        write('claim', key, ['--stage', story.status])
-        write('move', key, ['--to', 'backlog'])
-        write('release', key)
-        reconciled.push({ key, action: 'backlog' })
-      }
-    } else if (story.status === 'testing') {
-      write('claim', key, ['--stage', 'testing'])
-      reconciled.push({ key, action: 'claimed', stage: 'testing' })
-    } else if (story.holder) {
-      reconciled.push({ key, action: 'released' })
-    }
+    if (!story.holder || story.holder.run === runId) continue
+    write('release', story.key)
+    released.push({ key: story.key, status: readStory(story.key).status })
   }
 
   // A question for the human is a thread on the feature named after the story,
@@ -1180,7 +1180,7 @@ ${lines(returns.map((r) => `${r.key}: attempt ${r.attempt} failed at ${r.stage}$
 
 ## Pending human checks
 ${lines(humanLines)}
-
+${released.length ? `\n## Released from a dead run\n${lines(released.map((r) => `${r.key}: ${r.status}`))}\n` : ''}
 ## Decisions taken
 ${lines(decisionsTaken.map((d) => `${d.key} (${d.by}): ${d.question} -> ${d.choice}`))}
 
@@ -1202,7 +1202,7 @@ ${remainingLines.length ? lines(remainingLines) : ''}
   log(report)
 
   const pickable = omni(['story', 'list', '--pickable']).split('\n').filter(Boolean).length
-  return { run: runId, feature, integration, thread: threadId, implementers, reviewers, storyLimit: storyLimit === Infinity ? null : storyLimit, reconciled, clarity, unblocked, resumed, implemented: outcomes, reviewed: reviewOutcomes, merged: mergeOutcomes, checked: checkOutcomes, done: doneKeys, pickable, report, posted }
+  return { run: runId, feature, integration, thread: threadId, implementers, reviewers, storyLimit: storyLimit === Infinity ? null : storyLimit, released, clarity, unblocked, resumed, implemented: outcomes, reviewed: reviewOutcomes, merged: mergeOutcomes, checked: checkOutcomes, done: doneKeys, pickable, report, posted }
 } finally {
   fs.rmSync(lockPath, { force: true })
 }
