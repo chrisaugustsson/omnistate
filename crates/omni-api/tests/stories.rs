@@ -1805,6 +1805,86 @@ fn only_the_holding_run_moves_the_story_and_its_stage_follows_the_column() {
 }
 
 #[test]
+fn the_holder_moves_an_implementing_story_to_implemented_which_clears_the_holder() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    let feature = new_feature(f, client, &project);
+    new_story(f, client, &project, &feature, json!({}));
+    let story = new_story(f, client, &project, &feature, json!({}));
+    let path = story_path(f, &project, &feature, &story);
+    let a = agent(f);
+    must(
+        act(
+            client,
+            &a,
+            &path,
+            "claim",
+            json!({ "expected_version": 1, "run": "r1", "stage": "implementing" }),
+        ),
+        200,
+        "r1 claims for implementing",
+    );
+    let moved = must(
+        act(
+            client,
+            &a,
+            &path,
+            "move",
+            json!({ "expected_version": 2, "run": "r1", "to": "implemented" }),
+        ),
+        200,
+        "the holder moves to implemented",
+    )["story"]
+        .clone();
+    assert_eq!(moved["status"], "implemented", "{moved}");
+    assert_eq!(moved["holder"], Value::Null, "{moved}");
+    assert_eq!(
+        listed_keys(f, client, &project, &feature, "status=implemented"),
+        vec![json!("US-2")]
+    );
+}
+
+#[test]
+fn the_holder_moves_a_story_in_review_to_reviewed_which_clears_the_holder() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    let feature = new_feature(f, client, &project);
+    new_story(f, client, &project, &feature, json!({}));
+    let story = new_story(f, client, &project, &feature, json!({}));
+    let path = story_path(f, &project, &feature, &story);
+    let a = agent(f);
+    must(
+        act(
+            client,
+            &a,
+            &path,
+            "claim",
+            json!({ "expected_version": 1, "run": "r1", "stage": "review" }),
+        ),
+        200,
+        "r1 claims for review",
+    );
+    let moved = must(
+        act(
+            client,
+            &a,
+            &path,
+            "move",
+            json!({ "expected_version": 2, "run": "r1", "to": "reviewed" }),
+        ),
+        200,
+        "the holder moves to reviewed",
+    )["story"]
+        .clone();
+    assert_eq!(moved["status"], "reviewed", "{moved}");
+    assert_eq!(moved["holder"], Value::Null, "{moved}");
+    assert_eq!(
+        listed_keys(f, client, &project, &feature, "status=reviewed"),
+        vec![json!("US-2")]
+    );
+}
+
+#[test]
 fn a_move_to_done_needs_every_criterion_ticked_and_clears_the_holder() {
     let (f, client) = ready();
     let project = new_project(f, client);
