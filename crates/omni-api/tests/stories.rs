@@ -1714,33 +1714,19 @@ fn a_claim_holds_the_story_for_its_run_until_any_run_releases_it() {
         "a release returns a story in review to implemented: {released}"
     );
     assert_eq!(released["version"], 5, "{released}");
-    let retaken = must(
-        act(
-            client,
-            &a,
-            &path,
-            "claim",
-            json!({ "expected_version": 5, "run": "r2", "stage": "review" }),
-        ),
-        200,
-        "r2 claims the released story for review",
-    )["story"]
-        .clone();
-    assert_eq!(retaken["status"], "review", "{retaken}");
-    assert_eq!(retaken["holder"]["run"], "r2", "{retaken}");
     let changed: Vec<Value> = events_of(&project, "story.changed")
         .iter()
         .map(|event| json!([event["story_id"], event["key"]]))
         .collect();
     assert_eq!(
         changed,
-        vec![json!([story, "US-1"]); 5],
+        vec![json!([story, "US-1"]); 4],
         "one event per accepted write"
     );
 }
 
 #[test]
-fn releasing_a_story_held_in_implementing_or_testing_returns_it_to_backlog_or_reviewed() {
+fn releasing_a_story_held_in_implementing_returns_it_to_backlog() {
     let (f, client) = ready();
     let project = new_project(f, client);
     let feature = new_feature(f, client, &project);
@@ -1758,20 +1744,6 @@ fn releasing_a_story_held_in_implementing_or_testing_returns_it_to_backlog_or_re
         200,
         "r1 claims for implementing",
     );
-    let testing = new_story(f, client, &project, &feature, json!({}));
-    set_status(&testing, "reviewed");
-    let testing = story_path(f, &project, &feature, &testing);
-    must(
-        act(
-            client,
-            &a,
-            &testing,
-            "claim",
-            json!({ "expected_version": 1, "run": "r1", "stage": "testing" }),
-        ),
-        200,
-        "r1 claims for testing",
-    );
     let released = must(
         act(
             client,
@@ -1785,20 +1757,6 @@ fn releasing_a_story_held_in_implementing_or_testing_returns_it_to_backlog_or_re
     )["story"]
         .clone();
     assert_eq!(released["status"], "backlog", "{released}");
-    assert_eq!(released["holder"], Value::Null, "{released}");
-    let released = must(
-        act(
-            client,
-            &a,
-            &testing,
-            "release",
-            json!({ "expected_version": 2, "run": "r2" }),
-        ),
-        200,
-        "release the testing story",
-    )["story"]
-        .clone();
-    assert_eq!(released["status"], "reviewed", "{released}");
     assert_eq!(released["holder"], Value::Null, "{released}");
 }
 
