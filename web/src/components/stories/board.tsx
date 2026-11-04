@@ -16,14 +16,15 @@ import { cn } from "@/lib/utils";
 // a filter on priority. The stories are loaded again on every story event of
 // the project, so a card changes column as agents move it.
 
+// A column lists its statuses in order: the waiting status first, then the working one.
 const COLUMNS = [
-  { status: "backlog", title: "Backlog" },
-  { status: "implementing", title: "Implementing" },
-  { status: "review", title: "Review" },
-  { status: "testing", title: "Testing" },
-  { status: "done", title: "Done" },
+  { statuses: ["backlog"], title: "Backlog" },
+  { statuses: ["implementing"], title: "Implementing" },
+  { statuses: ["implemented", "review"], title: "Review" },
+  { statuses: ["reviewed", "testing"], title: "Testing" },
+  { statuses: ["done"], title: "Done" },
 ];
-const CANCELLED = { status: "cancelled", title: "Cancelled" };
+const CANCELLED = { statuses: ["cancelled"], title: "Cancelled" };
 const PRIORITIES = ["all", "1", "2", "3"];
 
 const closed = (story: StoryBody) => story.status === "done" || story.status === "cancelled";
@@ -76,6 +77,7 @@ function Card({ story, byId, steer }: { story: StoryBody; byId: Map<string, Stor
     <li className="space-y-2 rounded-xl border bg-card px-3 py-2.5 text-sm">
       <div className="flex items-center gap-2 text-xs text-muted-foreground">
         <span className="font-medium tabular-nums">{story.key}</span>
+        {(story.status === "implemented" || story.status === "reviewed") && <Badge tone="neutral">Waiting</Badge>}
         {story.priority === 0 ? (
           <span className="ml-auto tabular-nums">P0</span>
         ) : (
@@ -394,10 +396,15 @@ export function Board({
           <div className="flex gap-4 overflow-x-auto pb-2">
             {columns.map((column) => {
               const cards = shown
-                .filter((story) => story.status === column.status)
-                .sort((a, b) => a.priority - b.priority || a.number - b.number);
+                .filter((story) => column.statuses.includes(story.status))
+                .sort(
+                  (a, b) =>
+                    column.statuses.indexOf(a.status) - column.statuses.indexOf(b.status) ||
+                    a.priority - b.priority ||
+                    a.number - b.number,
+                );
               return (
-                <section key={column.status} aria-label={column.title} className="w-72 shrink-0 space-y-3">
+                <section key={column.statuses[0]} aria-label={column.title} className="w-72 shrink-0 space-y-3">
                   <h2 className="flex items-center gap-2 text-sm font-medium">
                     {column.title}
                     <span className="text-xs text-muted-foreground tabular-nums">{cards.length}</span>
