@@ -53,9 +53,10 @@
 //!   `{expected_version, run, to}` are agent only (a session is 403). A claim
 //!   sets `holder: {run, stage, at}` and the status to the stage; the same run
 //!   may claim again, another is 409 `{"error": "held", "holder": ...}`. Any
-//!   run may release; the status stays. Only the holder's run moves (else 409
-//!   `not_holder`); a move to a stage sets `holder.stage`, to `done` or
-//!   `backlog` clears the holder, and `done` with an unticked criterion is 409
+//!   run may release (US-162: a working story returns to its waiting state).
+//!   Only the holder's run moves (else 409 `not_holder`); a move to a stage
+//!   sets `holder.stage`, to `done` or `backlog` clears the holder, and `done`
+//!   with an unticked criterion is 409
 //!   `{"error": "criteria_open", "open": [0-based indexes]}`. Each accepted
 //!   write bumps `version` and emits `story.changed`; a refused one changes
 //!   nothing. Checked in this order: stale version (409 `conflict`), `not_open`
@@ -1709,18 +1710,145 @@ fn a_claim_holds_the_story_for_its_run_until_any_run_releases_it() {
         .clone();
     assert_eq!(released["holder"], Value::Null, "{released}");
     assert_eq!(
-        released["status"], "review",
-        "a release leaves the status: {released}"
+        released["status"], "implemented",
+        "a release returns a story in review to implemented: {released}"
     );
     assert_eq!(released["version"], 5, "{released}");
+    let retaken = must(
+        act(
+            client,
+            &a,
+            &path,
+            "claim",
+            json!({ "expected_version": 5, "run": "r2", "stage": "review" }),
+        ),
+        200,
+        "r2 claims the released story for review",
+    )["story"]
+        .clone();
+    assert_eq!(retaken["status"], "review", "{retaken}");
+    assert_eq!(retaken["holder"]["run"], "r2", "{retaken}");
     let changed: Vec<Value> = events_of(&project, "story.changed")
         .iter()
         .map(|event| json!([event["story_id"], event["key"]]))
         .collect();
     assert_eq!(
         changed,
-        vec![json!([story, "US-1"]); 4],
+        vec![json!([story, "US-1"]); 5],
         "one event per accepted write"
+    );
+}
+
+#[test]
+fn releasing_a_story_held_in_implementing_or_testing_returns_it_to_backlog_or_reviewed() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    let feature = new_feature(f, client, &project);
+    let a = agent(f);
+    let implementing = new_story(f, client, &project, &feature, json!({}));
+    let implementing = story_path(f, &project, &feature, &implementing);
+    must(
+        act(
+            client,
+            &a,
+            &implementing,
+            "claim",
+            json!({ "expected_version": 1, "run": "r1", "stage": "implementing" }),
+        ),
+        200,
+        "r1 claims for implementing",
+    );
+    let testing = new_story(f, client, &project, &feature, json!({}));
+    set_status(&testing, "reviewed");
+    let testing = story_path(f, &project, &feature, &testing);
+    must(
+        act(
+            client,
+            &a,
+            &testing,
+            "claim",
+            json!({ "expected_version": 1, "run": "r1", "stage": "testing" }),
+        ),
+        200,
+        "r1 claims for testing",
+    );
+    let released = must(
+        act(
+            client,
+            &a,
+            &implementing,
+            "release",
+            json!({ "expected_version": 2, "run": "r2" }),
+        ),
+        200,
+        "release the implementing story",
+    )["story"]
+        .clone();
+    assert_eq!(released["status"], "backlog", "{released}");
+    assert_eq!(released["holder"], Value::Null, "{released}");
+    let released = must(
+        act(
+            client,
+            &a,
+            &testing,
+            "release",
+            json!({ "expected_version": 2, "run": "r2" }),
+        ),
+        200,
+        "release the testing story",
+    )["story"]
+        .clone();
+    assert_eq!(released["status"], "reviewed", "{released}");
+    assert_eq!(released["holder"], Value::Null, "{released}");
+}
+
+#[test]
+fn a_release_moves_a_working_story_nothing_holds_and_leaves_a_waiting_one_unchanged() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    let feature = new_feature(f, client, &project);
+    let a = agent(f);
+    let stranded = new_story(f, client, &project, &feature, json!({}));
+    set_status(&stranded, "testing");
+    let released = must(
+        act(
+            client,
+            &a,
+            &story_path(f, &project, &feature, &stranded),
+            "release",
+            json!({ "expected_version": 1, "run": "r2" }),
+        ),
+        200,
+        "release a story in testing with no holder",
+    )["story"]
+        .clone();
+    assert_eq!(released["status"], "reviewed", "{released}");
+    assert_eq!(released["holder"], Value::Null, "{released}");
+    let waiting = new_story(f, client, &project, &feature, json!({}));
+    set_status(&waiting, "implemented");
+    let unchanged = must(
+        act(
+            client,
+            &a,
+            &story_path(f, &project, &feature, &waiting),
+            "release",
+            json!({ "expected_version": 1, "run": "r2" }),
+        ),
+        200,
+        "release a waiting story with no holder",
+    )["story"]
+        .clone();
+    assert_eq!(unchanged["status"], "implemented", "{unchanged}");
+    assert_eq!(unchanged["holder"], Value::Null, "{unchanged}");
+    assert_eq!(unchanged["version"], 1, "{unchanged}");
+    let changed: Vec<Value> = events_of(&project, "story.changed")
+        .iter()
+        .map(|event| event["story_id"].clone())
+        .collect();
+    assert_eq!(
+        changed,
+        vec![json!(stranded)],
+        "only the working story is written"
     );
 }
 
@@ -2565,6 +2693,146 @@ fn any_run_blocks_decides_and_unblocks_a_story_nothing_holds() {
         .clone();
     assert_eq!(unblocked["blocked"], false, "{unblocked}");
     assert_eq!(unblocked["version"], 4, "{unblocked}");
+}
+
+#[test]
+fn blocking_a_story_held_in_review_returns_it_to_implemented_and_keeps_its_record() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    let feature = new_feature(f, client, &project);
+    let blocker = new_story(f, client, &project, &feature, json!({}));
+    let story = new_story(
+        f,
+        client,
+        &project,
+        &feature,
+        json!({ "blocked_by": [blocker] }),
+    );
+    set_status(&story, "implemented");
+    let path = story_path(f, &project, &feature, &story);
+    let a = agent(f);
+    must(
+        act(
+            client,
+            &a,
+            &path,
+            "claim",
+            json!({ "expected_version": 1, "run": "r1", "stage": "review" }),
+        ),
+        200,
+        "r1 claims for review",
+    );
+    must(
+        act(
+            client,
+            &a,
+            &path,
+            "findings",
+            json!({ "expected_version": 2, "run": "r1", "stage": "review", "text": "t", "files": ["a.rs"] }),
+        ),
+        200,
+        "the holder records a finding",
+    );
+    must(
+        act(
+            client,
+            &a,
+            &path,
+            "decisions",
+            json!({ "expected_version": 3, "run": "r1", "question": "q", "choice": "c", "by": "agent" }),
+        ),
+        200,
+        "the holder records a decision",
+    );
+    let blocked = must(
+        act(
+            client,
+            &a,
+            &path,
+            "block",
+            json!({ "expected_version": 4, "run": "r1" }),
+        ),
+        200,
+        "block the story in review",
+    )["story"]
+        .clone();
+    assert_eq!(blocked["blocked"], true, "{blocked}");
+    assert_eq!(blocked["status"], "implemented", "{blocked}");
+    assert_eq!(blocked["holder"], Value::Null, "{blocked}");
+    assert_eq!(
+        blocked["findings"],
+        json!([{ "stage": "review", "text": "t", "files": ["a.rs"], "resolved": false }])
+    );
+    assert_eq!(
+        blocked["decisions"],
+        json!([{ "question": "q", "choice": "c", "by": "agent" }])
+    );
+    assert_eq!(blocked["blocked_by"], json!([blocker]), "{blocked}");
+}
+
+#[test]
+fn blocking_a_story_held_in_implementing_or_testing_returns_it_to_backlog_or_reviewed() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    let feature = new_feature(f, client, &project);
+    let a = agent(f);
+    let implementing = new_story(f, client, &project, &feature, json!({}));
+    let implementing = story_path(f, &project, &feature, &implementing);
+    must(
+        act(
+            client,
+            &a,
+            &implementing,
+            "claim",
+            json!({ "expected_version": 1, "run": "r1", "stage": "implementing" }),
+        ),
+        200,
+        "r1 claims for implementing",
+    );
+    let testing = new_story(f, client, &project, &feature, json!({}));
+    set_status(&testing, "reviewed");
+    let testing = story_path(f, &project, &feature, &testing);
+    must(
+        act(
+            client,
+            &a,
+            &testing,
+            "claim",
+            json!({ "expected_version": 1, "run": "r1", "stage": "testing" }),
+        ),
+        200,
+        "r1 claims for testing",
+    );
+    let blocked = must(
+        act(
+            client,
+            &a,
+            &implementing,
+            "block",
+            json!({ "expected_version": 2, "run": "r1" }),
+        ),
+        200,
+        "block the implementing story",
+    )["story"]
+        .clone();
+    assert_eq!(blocked["status"], "backlog", "{blocked}");
+    assert_eq!(blocked["holder"], Value::Null, "{blocked}");
+    assert_eq!(blocked["blocked"], true, "{blocked}");
+    let blocked = must(
+        act(
+            client,
+            &a,
+            &testing,
+            "block",
+            json!({ "expected_version": 2, "run": "r1" }),
+        ),
+        200,
+        "block the testing story",
+    )["story"]
+        .clone();
+    assert_eq!(blocked["status"], "reviewed", "{blocked}");
+    assert_eq!(blocked["holder"], Value::Null, "{blocked}");
+    assert_eq!(blocked["blocked"], true, "{blocked}");
 }
 
 #[test]
