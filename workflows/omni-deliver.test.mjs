@@ -685,3 +685,19 @@ test("with storyLimit 1, a story blocked by its implementer is claimed again onc
   assert.equal(dirs.story("US-1").status, "implemented");
   assert.equal(dirs.story("US-2").status, "backlog");
 });
+
+test("a pickable story whose clarity check returned nothing is not claimed; the next pickable story that passed is", { timeout: 20000 }, async (t) => {
+  const dirs = scratch(t, [story("US-1"), story("US-2")]);
+  dirs.checks({ fast: "true", stack_up: "true", stack: "true" });
+  const impl = implAgent({
+    "US-1": async () => ({ status: "ready", summary: "done" }),
+    "US-2": async () => ({ status: "ready", summary: "done" }),
+  });
+  const agent = async (prompt, opts) => (opts.label === "clarity:US-1" ? null : impl.agent(prompt, opts));
+
+  await deliver({ feature: "board" }, agent);
+
+  assert.deepEqual(claimsOf(dirs, "US-1"), []);
+  assert.equal(dirs.story("US-1").status, "backlog");
+  assert.deepEqual(claimsOf(dirs, "US-2").map((c) => c.stage), ["implementing"]);
+});
