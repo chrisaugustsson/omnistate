@@ -7,7 +7,7 @@ export const meta = {
     { title: 'Reconcile', detail: 'undo a merge a dead run left half done (the lane file), then release every story held by another run' },
     { title: 'Clarity', detail: 'one check per backlog story whose version is new, in parallel: blocking gaps become threads, minor ones agent decisions' },
     { title: 'Unblock', detail: 'a blocked story whose linked threads all have a conclusion gets each conclusion as a human decision and is unblocked' },
-    { title: 'Implement', detail: 'up to `implementers` agents at once, each on a pickable story in its own worktree, running only the checks its change needs; the full checks run on the main worktree after the merge' },
+    { title: 'Implement', detail: 'the implement loop polls the board every 5 seconds and when an implementer ends: while fewer than `implementers` run, it claims the first pickable story that passed clarity and starts an implementer in its worktree (an existing one is continued), running only the checks its change needs; a finished story moves to implemented, a blocked one gets a thread and stays in the backlog' },
     { title: 'Merge', detail: 'one worker takes the testing stories in dependency order: stack_up once per batch, then rebase in the worktree and fast-forward the integration branch; a rebase conflict returns the story to the backlog for a fresh attempt from the new head' },
     { title: 'Check', detail: 'after each merge a verifier runs the story\'s criteria on the main worktree and the fast command runs; a failure resets the merge and returns the story to the backlog with the findings and a raised priority, for a fresh implementer; the stack command runs once after the batch' },
     { title: 'Tests', detail: 'after a story passes its check, a test author and a test reviewer lock it down with a few selective regression tests on the main worktree; then it moves to done and the next story merges' },
@@ -23,6 +23,7 @@ const feature = A.feature
 const implementers = A.implementers || 3
 const reviewers = A.reviewers || 3
 const storyLimit = A.storyLimit || Infinity
+const POLL_MS = 5000
 // ---- model routing per role ------------------------------------------------
 // Same mapping as ralph-spec: Sonnet builds, Opus judges. Override per role with
 // args.models, or force one model everywhere with args.model.
@@ -237,9 +238,12 @@ Return raw structured data only.`
     return { story, gaps: null }
   }))
   const clarity = []
+  // A story whose check returned nothing has not passed clarity: the implement loop leaves it.
+  const clarityFailed = new Set()
   for (const result of checked) {
     if (!result || result.gaps === null) {
       log(`Clarity check returned nothing for ${result ? result.story.key : '?'}; it is checked again at the next start`)
+      if (result) clarityFailed.add(result.story.key)
       continue
     }
     const { story, gaps } = result
@@ -385,11 +389,6 @@ Return raw structured data only.`
   }
 
   const outcomes = []
-  const skipped = new Set()
-  const pickNext = () => {
-    const keys = omni(['story', 'list', '--pickable']).split('\n').map((l) => l.trim().split(/\s+/)[0]).filter(Boolean)
-    return keys.find((k) => !skipped.has(k)) || null
-  }
   const ensureFast = () => {
     if (fast === null) {
       const checks = JSON.parse(omni(['checks', '--json']))
@@ -401,7 +400,7 @@ Return raw structured data only.`
   // Runs the implementer until the fast command passes in the worktree, then
   // rewrites files_changed. Returns null when it did, else the outcome of the
   // thread that blocked the story.
-  const implementLoop = async (key, wt, story, task) => {
+  const runImplementer = async (key, wt, story, task) => {
     const recorded = new Set()
     const record = (r) => {
       for (const d of r.decisions || []) {
@@ -431,19 +430,53 @@ Return raw structured data only.`
     if (paths.length) write('files', key, paths)
     return null
   }
-  const implement = async (key) => {
-    const bad = await implementLoop(key, worktreeOf(key), readStory(key))
+  // ---- the implement loop: claim a pickable story, then run its implementer ----
+  const implRunning = new Map()
+  const implFailed = new Set()
+  const claimedKeys = new Set()
+  const CONTINUE_TASK = 'A worktree of an earlier attempt is already in place, with its commits. Continue from it: do not start over, and fix every open finding above.'
+  const implementOne = async (key) => {
+    const wt = worktreeOf(key)
+    const existing = fs.existsSync(wt)
+    if (!existing) {
+      dropWorktree(key)
+      fs.mkdirSync(storiesDir, { recursive: true })
+      git(['worktree', 'add', wt, '-b', `story/${key}`, integration])
+    }
+    const bad = await runImplementer(key, wt, readStory(key), existing ? CONTINUE_TASK : '')
     if (bad) return bad
-    write('move', key, ['--to', 'review'])
-    return { key, outcome: 'review' }
+    write('move', key, ['--to', 'implemented'])
+    return { key, outcome: 'implemented' }
   }
-  const start = (key) => {
-    ensureFast()
-    dropWorktree(key)
-    write('claim', key, ['--stage', 'implementing'])
-    fs.mkdirSync(storiesDir, { recursive: true })
-    git(['worktree', 'add', worktreeOf(key), '-b', `story/${key}`, integration])
-    return implement(key).catch((e) => ({ key, outcome: 'failed', error: String(e && e.message || e) }))
+  // Takes pickable stories while fewer than `implementers` run: the claim comes
+  // first, the implementer after. Called on every poll tick and after each
+  // implementer ends. The limit counts distinct stories claimed in this run; a
+  // story already claimed once may be claimed again after it comes back.
+  const implementLoop = () => {
+    while (implRunning.size < implementers) {
+      const keys = omni(['story', 'list', '--pickable']).split('\n').map((l) => l.trim().split(/\s+/)[0]).filter(Boolean)
+      const key = keys.find((k) => !implRunning.has(k) && !implFailed.has(k) && !clarityFailed.has(k) && (claimedKeys.has(k) || claimedKeys.size < storyLimit))
+      if (!key) break
+      try {
+        ensureFast()
+        write('claim', key, ['--stage', 'implementing'])
+      } catch (e) {
+        implFailed.add(key)
+        outcomes.push({ key, outcome: 'failed', error: String(e && e.message || e) })
+        continue
+      }
+      claimedKeys.add(key)
+      implRunning.set(key, implementOne(key).catch((e) => {
+        implFailed.add(key)
+        try { write('release', key) } catch {}
+        return { key, outcome: 'failed', error: String(e && e.message || e) }
+      }).then((o) => {
+        implRunning.delete(key)
+        outcomes.push(o)
+        if (o.error) log(`${key}: ${o.error}`)
+        poke()
+      }))
+    }
   }
 
   // ---- review definitions (used by the merge worker for fix stories) ------
@@ -1047,20 +1080,11 @@ Return raw structured data only.`, { schema: TEST_CUT_SCHEMA, label: `test-cut:$
   // ---- the loop: implementers, reviewers and the merge worker together -----
   // Each pass starts what can start; a finished stage wakes the next pass. A
   // story's done can make others pickable, so the loop also wakes on that.
-  const active = new Map()
   const reviewing = new Map()
   const reviewOutcomes = []
-  const launch = (key, p) => {
-    active.set(key, p.then((o) => {
-      active.delete(key)
-      outcomes.push(o)
-      if (o.error) log(`${key}: ${o.error}`)
-      poke()
-    }))
-  }
   const fillReviews = () => {
     if (limitReached() || reviewing.size >= reviewers) return
-    const queue = listStories().filter((s) => s.status === 'review' && !s.blocked && !reviewed.has(s.key) && !skipped.has(s.key) && !reviewing.has(s.key))
+    const queue = listStories().filter((s) => s.status === 'review' && !s.blocked && !reviewed.has(s.key) && !reviewing.has(s.key))
     if (queue.length) phase('Review')
     for (const { key } of queue) {
       if (reviewing.size >= reviewers) break
@@ -1075,23 +1099,13 @@ Return raw structured data only.`, { schema: TEST_CUT_SCHEMA, label: `test-cut:$
       }))
     }
   }
-  // A story claimed at implementing by the reconcile or the unblock pass, with
-  // its worktree still there, continues in that worktree: the implementer runs
-  // again on it instead of starting over.
-  const continued = new Set()
-  const resumable = () => listStories().find((s) => s.status === 'implementing' && !s.blocked && s.holder && s.holder.run === runId && fs.existsSync(worktreeOf(s.key)) && !active.has(s.key) && !skipped.has(s.key) && !continued.has(s.key))
-  const resume = (key) => {
-    continued.add(key)
-    ensureFast()
-    return implement(key).catch((e) => ({ key, outcome: 'failed', error: String(e && e.message || e) }))
-  }
   // A testing story held by this run with no worktree was merged and checked
   // by an earlier run and stopped at its tests (a thread the human has since
   // concluded): only the tests step is left, on the main worktree.
   const lockingDown = new Map()
   const fillTests = () => {
     if (limitReached()) return
-    const queue = listStories().filter((s) => s.status === 'testing' && !s.blocked && s.holder && s.holder.run === runId && !lockedDown.has(s.key) && !lockingDown.has(s.key) && !skipped.has(s.key) && !fs.existsSync(worktreeOf(s.key)))
+    const queue = listStories().filter((s) => s.status === 'testing' && !s.blocked && s.holder && s.holder.run === runId && !lockedDown.has(s.key) && !lockingDown.has(s.key) && !fs.existsSync(worktreeOf(s.key)))
     for (const { key, criteria } of queue) {
       ensureFast()
       lockingDown.set(key, testStory(key, (criteria || []).map((c) => ({ criterion: c.text || c }))).then((tested) => {
@@ -1106,24 +1120,14 @@ Return raw structured data only.`, { schema: TEST_CUT_SCHEMA, label: `test-cut:$
       }))
     }
   }
-  let firstPass = true
   for (;;) {
     const woken = signal
-    if (!firstPass) { try { unblockPass() } catch (e) { log(`unblock: ${e && e.message || e}`) } }
-    firstPass = false
+    try { unblockPass() } catch (e) { log(`unblock: ${e && e.message || e}`) }
     fillTests()
-    while (active.size < implementers && !limitReached()) {
-      const held = resumable()
-      const key = held ? held.key : pickNext()
-      if (!key) break
-      try { launch(key, held ? resume(key) : start(key)) } catch (e) {
-        skipped.add(key)
-        outcomes.push({ key, outcome: 'failed', error: String(e && e.message || e) })
-      }
-    }
+    implementLoop()
     fillReviews()
-    if (active.size === 0 && reviewing.size === 0 && mergePending === 0 && lockingDown.size === 0) break
-    await woken
+    if (implRunning.size === 0 && reviewing.size === 0 && mergePending === 0 && lockingDown.size === 0) break
+    await Promise.race([woken, new Promise((r) => setTimeout(r, POLL_MS))])
   }
 
   // ---- report: release what is left, journeys, the post on the Run thread ---
