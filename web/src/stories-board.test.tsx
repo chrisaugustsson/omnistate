@@ -369,6 +369,54 @@ describe("the board", () => {
     expect(cardKeys(main, "Backlog")).toEqual(["US-9", "US-7", "US-2", "US-5"]);
   });
 
+  test("an implemented story waits in Review and a reviewed one in Testing, each with Waiting, and the header counts include them", async () => {
+    fakeApi([
+      story(1, { status: "implemented" }),
+      story(2, { status: "review" }),
+      story(3, { status: "reviewed" }),
+      story(4, { status: "testing" }),
+    ]);
+    renderAt(BOARD_PATH);
+    const main = await board();
+
+    expect(cardKeys(main, "Review")).toEqual(["US-1", "US-2"]);
+    expect(cardKeys(main, "Testing")).toEqual(["US-3", "US-4"]);
+    expect(within(within(column(main, "Review")).getByRole("heading")).getByText("2")).toBeTruthy();
+    expect(within(within(column(main, "Testing")).getByRole("heading")).getByText("2")).toBeTruthy();
+    expect(within(card(main, "US-1")).getByText("Waiting")).toBeTruthy();
+    expect(within(card(main, "US-3")).getByText("Waiting")).toBeTruthy();
+    expect(within(card(main, "US-2")).queryByText("Waiting")).toBeNull();
+    expect(within(card(main, "US-4")).queryByText("Waiting")).toBeNull();
+  });
+
+  test("waiting stories come before working ones in their column, each group by priority, then number", async () => {
+    fakeApi([
+      story(1, { status: "review", priority: 1 }),
+      story(3, { status: "review", priority: 1 }),
+      story(7, { status: "implemented", priority: 3 }),
+      story(8, { status: "implemented", priority: 2 }),
+      story(4, { status: "implemented", priority: 2 }),
+      story(9, { status: "testing", priority: 1 }),
+      story(10, { status: "reviewed", priority: 3 }),
+    ]);
+    renderAt(BOARD_PATH);
+    const main = await board();
+
+    expect(cardKeys(main, "Review")).toEqual(["US-4", "US-8", "US-7", "US-1", "US-3"]);
+    expect(cardKeys(main, "Testing")).toEqual(["US-10", "US-9"]);
+  });
+
+  test("a blocked waiting story shows Waiting and then Blocked", async () => {
+    fakeApi([story(1, { status: "reviewed", blocked: true })]);
+    renderAt(BOARD_PATH);
+    const main = await board();
+
+    const shown = card(main, "US-1");
+    const waiting = within(shown).getByText("Waiting");
+    const blocked = within(shown).getByText("Blocked");
+    expect(waiting.compareDocumentPosition(blocked) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
   test("a story.changed event for a story moved from Implementing to Review moves its card without a reload", async () => {
     const api = fakeApi([story(1, { status: "implementing" })]);
     renderAt(BOARD_PATH);
