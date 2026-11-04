@@ -6407,7 +6407,7 @@
             }
           },
           {
-            "description": "`true` lists only the backlog stories a run can pick now: not blocked, every blocker done or cancelled, and no file shared with a story in implementing or review (`files_changed` when not empty, else `files_planned`). Ordered by priority, then by open dependants (most first), then number. `false` or absent gives the normal list",
+            "description": "`true` lists only the backlog stories a run can pick now: not blocked, every blocker done or cancelled, and no file shared with a story in implementing, implemented, review, reviewed or testing (`files_changed` when not empty, else `files_planned`). Ordered by priority, then by open dependants (most first), then number. `false` or absent gives the normal list",
             "in": "query",
             "name": "pickable",
             "required": false,

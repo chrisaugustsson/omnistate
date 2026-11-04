@@ -378,7 +378,7 @@ pub async fn create_story(
         ("project_id" = String, Path, description = "The project's UUID"),
         ("feature_id" = String, Path, description = "The feature's UUID"),
         ("status" = Option<String>, Query, description = "Only the stories with this status; every status, `cancelled` included, when left out"),
-        ("pickable" = Option<String>, Query, description = "`true` lists only the backlog stories a run can pick now: not blocked, every blocker done or cancelled, and no file shared with a story in implementing or review (`files_changed` when not empty, else `files_planned`). Ordered by priority, then by open dependants (most first), then number. `false` or absent gives the normal list"),
+        ("pickable" = Option<String>, Query, description = "`true` lists only the backlog stories a run can pick now: not blocked, every blocker done or cancelled, and no file shared with a story in implementing, implemented, review, reviewed or testing (`files_changed` when not empty, else `files_planned`). Ordered by priority, then by open dependants (most first), then number. `false` or absent gives the normal list"),
     ),
     responses(
         (status = 200, description = "The feature's stories", body = StoryListResponse),
@@ -448,7 +448,12 @@ fn pickable_stories(stories: Vec<StoryBody>, status: Option<&str>) -> Vec<StoryB
     let closed = |story: &StoryBody| story.status == "done" || story.status == "cancelled";
     let busy: Vec<&String> = stories
         .iter()
-        .filter(|story| story.status == "implementing" || story.status == "review")
+        .filter(|story| {
+            matches!(
+                story.status.as_str(),
+                "implementing" | "implemented" | "review" | "reviewed" | "testing"
+            )
+        })
         .flat_map(|story| story_files(story).iter())
         .collect();
     let dependants = |story: &StoryBody| {
