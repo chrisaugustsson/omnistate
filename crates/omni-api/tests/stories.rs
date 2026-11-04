@@ -1651,13 +1651,24 @@ fn a_claim_holds_the_story_for_its_run_until_any_run_releases_it() {
     assert_eq!(first["holder"]["run"], "r1", "{first}");
     assert_eq!(first["holder"]["stage"], "implementing", "{first}");
     assert_eq!(first["version"], 2, "{first}");
+    must(
+        act(
+            client,
+            &a,
+            &path,
+            "move",
+            json!({ "expected_version": 2, "run": "r1", "to": "implemented" }),
+        ),
+        200,
+        "r1 moves to implemented",
+    );
     let again = must(
         act(
             client,
             &a,
             &path,
             "claim",
-            json!({ "expected_version": 2, "run": "r1", "stage": "review" }),
+            json!({ "expected_version": 3, "run": "r1", "stage": "review" }),
         ),
         200,
         "r1 claims again for review",
@@ -1666,20 +1677,22 @@ fn a_claim_holds_the_story_for_its_run_until_any_run_releases_it() {
     assert_eq!(again["status"], "review", "{again}");
     assert_eq!(again["holder"]["run"], "r1", "{again}");
     assert_eq!(again["holder"]["stage"], "review", "{again}");
-    assert_eq!(again["version"], 3, "{again}");
+    assert_eq!(again["version"], 4, "{again}");
+    // Held comes before not_waiting: a story in review is not waiting for
+    // implementing either.
     let held = act(
         client,
         &a,
         &path,
         "claim",
-        json!({ "expected_version": 3, "run": "r2", "stage": "implementing" }),
+        json!({ "expected_version": 4, "run": "r2", "stage": "implementing" }),
     );
     assert_eq!(held.status, 409, "body: {}", held.text());
     assert_eq!(held.json()["error"], "held");
     assert_eq!(held.json()["holder"], again["holder"]);
     assert_eq!(
         get_story(f, client, &project, &feature, &story)["version"],
-        3,
+        4,
         "a refused claim changes nothing"
     );
     let released = must(
@@ -1688,7 +1701,7 @@ fn a_claim_holds_the_story_for_its_run_until_any_run_releases_it() {
             &a,
             &path,
             "release",
-            json!({ "expected_version": 3, "run": "r2" }),
+            json!({ "expected_version": 4, "run": "r2" }),
         ),
         200,
         "r2 releases r1's claim",
@@ -1699,21 +1712,7 @@ fn a_claim_holds_the_story_for_its_run_until_any_run_releases_it() {
         released["status"], "review",
         "a release leaves the status: {released}"
     );
-    assert_eq!(released["version"], 4, "{released}");
-    let taken = must(
-        act(
-            client,
-            &a,
-            &path,
-            "claim",
-            json!({ "expected_version": 4, "run": "r2", "stage": "implementing" }),
-        ),
-        200,
-        "r2 claims the released story",
-    )["story"]
-        .clone();
-    assert_eq!(taken["holder"]["run"], "r2", "{taken}");
-    assert_eq!(taken["status"], "implementing", "{taken}");
+    assert_eq!(released["version"], 5, "{released}");
     let changed: Vec<Value> = events_of(&project, "story.changed")
         .iter()
         .map(|event| json!([event["story_id"], event["key"]]))
@@ -1851,6 +1850,7 @@ fn the_holder_moves_a_story_in_review_to_reviewed_which_clears_the_holder() {
     let feature = new_feature(f, client, &project);
     new_story(f, client, &project, &feature, json!({}));
     let story = new_story(f, client, &project, &feature, json!({}));
+    set_status(&story, "implemented");
     let path = story_path(f, &project, &feature, &story);
     let a = agent(f);
     must(
@@ -1885,6 +1885,92 @@ fn the_holder_moves_a_story_in_review_to_reviewed_which_clears_the_holder() {
 }
 
 #[test]
+fn a_claim_for_review_on_a_backlog_story_is_not_waiting_and_changes_nothing() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    let feature = new_feature(f, client, &project);
+    let story = new_story(f, client, &project, &feature, json!({}));
+    let path = story_path(f, &project, &feature, &story);
+    let refused = act(
+        client,
+        &agent(f),
+        &path,
+        "claim",
+        json!({ "expected_version": 1, "run": "r1", "stage": "review" }),
+    );
+    assert_eq!(refused.status, 409, "body: {}", refused.text());
+    let refused = refused.json();
+    assert_eq!(refused["error"], "not_waiting", "{refused}");
+    assert_eq!(refused["status"], "backlog", "{refused}");
+    assert_eq!(refused["stage"], "review", "{refused}");
+    let unchanged = get_story(f, client, &project, &feature, &story);
+    assert_eq!(unchanged["status"], "backlog", "{unchanged}");
+    assert_eq!(unchanged["holder"], Value::Null, "{unchanged}");
+    assert_eq!(unchanged["version"], 1, "{unchanged}");
+    assert!(events_of(&project, "story.changed").is_empty());
+}
+
+#[test]
+fn the_holder_of_a_story_in_review_claims_it_for_testing_only_after_moving_it_to_reviewed() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    let feature = new_feature(f, client, &project);
+    let story = new_story(f, client, &project, &feature, json!({}));
+    set_status(&story, "implemented");
+    let path = story_path(f, &project, &feature, &story);
+    let a = agent(f);
+    must(
+        act(
+            client,
+            &a,
+            &path,
+            "claim",
+            json!({ "expected_version": 1, "run": "r1", "stage": "review" }),
+        ),
+        200,
+        "r1 claims for review",
+    );
+    let skipped = act(
+        client,
+        &a,
+        &path,
+        "claim",
+        json!({ "expected_version": 2, "run": "r1", "stage": "testing" }),
+    );
+    assert_eq!(skipped.status, 409, "body: {}", skipped.text());
+    let skipped = skipped.json();
+    assert_eq!(skipped["error"], "not_waiting", "{skipped}");
+    assert_eq!(skipped["status"], "review", "{skipped}");
+    assert_eq!(skipped["stage"], "testing", "{skipped}");
+    must(
+        act(
+            client,
+            &a,
+            &path,
+            "move",
+            json!({ "expected_version": 2, "run": "r1", "to": "reviewed" }),
+        ),
+        200,
+        "r1 moves to reviewed",
+    );
+    let testing = must(
+        act(
+            client,
+            &a,
+            &path,
+            "claim",
+            json!({ "expected_version": 3, "run": "r1", "stage": "testing" }),
+        ),
+        200,
+        "r1 claims for testing",
+    )["story"]
+        .clone();
+    assert_eq!(testing["status"], "testing", "{testing}");
+    assert_eq!(testing["holder"]["run"], "r1", "{testing}");
+    assert_eq!(testing["holder"]["stage"], "testing", "{testing}");
+}
+
+#[test]
 fn a_move_to_done_needs_every_criterion_ticked_and_clears_the_holder() {
     let (f, client) = ready();
     let project = new_project(f, client);
@@ -1896,6 +1982,7 @@ fn a_move_to_done_needs_every_criterion_ticked_and_clears_the_holder() {
         &feature,
         json!({ "criteria": [{ "text": "a" }, { "text": "b" }] }),
     );
+    set_status(&story, "reviewed");
     let path = story_path(f, &project, &feature, &story);
     let a = agent(f);
     must(
@@ -2010,6 +2097,7 @@ fn the_version_is_checked_before_the_claim_and_the_holder_before_the_criteria() 
         &feature,
         json!({ "criteria": [{ "text": "a" }] }),
     );
+    set_status(&story, "reviewed");
     let path = story_path(f, &project, &feature, &story);
     must(
         act(
@@ -2138,8 +2226,8 @@ fn a_session_is_refused_on_claim_release_and_move() {
 // Ticks, findings, decisions, files, blocking and the human's check
 // ---------------------------------------------------------------------------
 
-/// Creates a story with `criteria` and has run `r1` claim it for `stage`;
-/// returns its path. The story is at version 2.
+/// Creates a story with `criteria` waiting in `implemented` and has run `r1`
+/// claim it for review; returns its path. The story is at version 2.
 fn held_story(
     f: &Fixture,
     client: &Client,
@@ -2148,6 +2236,7 @@ fn held_story(
     criteria: Value,
 ) -> String {
     let story = new_story(f, client, project, feature, json!({ "criteria": criteria }));
+    set_status(&story, "implemented");
     let path = story_path(f, project, feature, &story);
     must(
         act(
