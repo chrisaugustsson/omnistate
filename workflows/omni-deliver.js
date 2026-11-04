@@ -267,7 +267,6 @@ Return raw structured data only.`
 
   // ---- unblock: a thread's conclusion is the human's answer ----------------
   // Runs after clarity at start and at the top of every loop pass.
-  const reviewed = new Set()
   const resumed = []
   const unblockPass = () => {
     phase('Unblock')
@@ -289,7 +288,6 @@ Return raw structured data only.`
       write('unblock', story.key)
       if (story.status === 'implementing' || story.status === 'review' || story.status === 'testing') {
         write('claim', story.key, ['--stage', story.status])
-        if (story.status === 'review') reviewed.delete(story.key)
         resumed.push({ key: story.key, stage: story.status })
       }
       done.push(story.key)
@@ -539,8 +537,6 @@ Return raw structured data only.`
   }
   const review = async (key) => {
     const wt = worktreeOf(key)
-    ensureFast()
-    write('claim', key, ['--stage', 'review'])
     let verdict = null
     for (let attempt = 0; attempt < 2 && !verdict; attempt++) {
       verdict = await runAgent(reviewPrompt(readStory(key), wt), { schema: REVIEW_SCHEMA, label: `review:${key}`, phase: 'Review', model: modelFor('review'), role: 'review' })
@@ -558,8 +554,8 @@ Return raw structured data only.`
     }
     if (verdict.verdict === 'pass') {
       resolveReviewFindings(key)
-      write('move', key, ['--to', 'testing'])
-      return { key, outcome: 'testing' }
+      write('move', key, ['--to', 'reviewed'])
+      return { key, outcome: 'reviewed' }
     }
     // A finding sends the story back to the backlog: a fresh implementer and a
     // fresh reviewer take the next attempt (Rework from the backlog, D1, D4).
@@ -575,7 +571,7 @@ Return raw structured data only.`
   // The attempts a story has used: each failed attempt's findings carry its number.
   const attemptOf = (story) => (story.findings || []).reduce((n, f) => Math.max(n, Number((String(f.text).match(/^\[attempt (\d+)\]/) || [])[1] || 0)), 0)
   // Returns a story to the backlog with the findings of this attempt on it and
-  // its priority raised one step (3 to 2, 2 to 1); its worktree and branch go,
+  // its priority 0; its worktree and branch go,
   // and the next pick starts over with fresh agents. After MAX_ATTEMPTS failed
   // attempts the story is blocked in the backlog with a thread listing every
   // attempt's findings. A rebase conflict (`counts` false) returns the story
@@ -586,11 +582,7 @@ Return raw structured data only.`
     const prefix = counts ? `[attempt ${attempt}] ` : ''
     for (const f of findings) write('finding', key, ['--stage', stage, '--text', `${prefix}${f.text}`, ...(f.files || []).flatMap((p) => ['--file', p])])
     dropWorktree(key)
-    reviewed.delete(key)
-    if (counts) {
-      const priority = Math.max(1, Number.isInteger(story.priority) ? story.priority - 1 : 2)
-      if (priority !== story.priority) omni(['story', 'edit', key, '--priority', String(priority)])
-    }
+    if (story.priority !== 0) omni(['story', 'edit', key, '--priority', '0'])
     write('move', key, ['--to', 'backlog'])
     if (counts && attempt >= MAX_ATTEMPTS) {
       const all = (readStory(key).findings || []).filter((f) => /^\[attempt /.test(String(f.text))).map((f) => `- ${f.text}${(f.files || []).length ? ` (${f.files.join(', ')})` : ''}`).join('\n')
@@ -1082,19 +1074,34 @@ Return raw structured data only.`, { schema: TEST_CUT_SCHEMA, label: `test-cut:$
   // story's done can make others pickable, so the loop also wakes on that.
   const reviewing = new Map()
   const reviewOutcomes = []
-  const fillReviews = () => {
-    if (limitReached() || reviewing.size >= reviewers) return
-    const queue = listStories().filter((s) => s.status === 'review' && !s.blocked && !reviewed.has(s.key) && !reviewing.has(s.key))
-    if (queue.length) phase('Review')
-    for (const { key } of queue) {
-      if (reviewing.size >= reviewers) break
-      reviewing.set(key, review(key).catch((e) => ({ key, outcome: 'failed', error: String(e && e.message || e) })).then((o) => {
+  const reviewFailed = new Set()
+  const numberOf = (s) => (Number.isInteger(s.number) ? s.number : Number(String(s.key).replace(/\D/g, '')))
+  // Claims implemented stories (priority, then number) while fewer than
+  // `reviewers` run: the claim first, the reviewer after. Called on every poll
+  // tick and after each reviewer ends.
+  const reviewLoop = () => {
+    while (reviewing.size < reviewers) {
+      const queue = listStories().filter((s) => s.status === 'implemented' && !s.blocked && !reviewing.has(s.key) && !reviewFailed.has(s.key))
+        .sort((a, b) => (a.priority ?? 3) - (b.priority ?? 3) || numberOf(a) - numberOf(b))
+      if (!queue.length) break
+      const { key } = queue[0]
+      try {
+        ensureFast()
+        write('claim', key, ['--stage', 'review'])
+      } catch (e) {
+        reviewFailed.add(key)
+        reviewOutcomes.push({ key, outcome: 'failed', error: String(e && e.message || e) })
+        continue
+      }
+      phase('Review')
+      reviewing.set(key, review(key).catch((e) => {
+        reviewFailed.add(key)
+        try { write('release', key) } catch {}
+        return { key, outcome: 'failed', error: String(e && e.message || e) }
+      }).then((o) => {
         reviewing.delete(key)
-        // A returned story is reviewed again when its fresh attempt comes back.
-        if (o.outcome === 'returned') reviewed.delete(key); else reviewed.add(key)
         reviewOutcomes.push(o)
         if (o.error) log(`${key}: ${o.error}`)
-        kickMerge()
         poke()
       }))
     }
@@ -1125,7 +1132,7 @@ Return raw structured data only.`, { schema: TEST_CUT_SCHEMA, label: `test-cut:$
     try { unblockPass() } catch (e) { log(`unblock: ${e && e.message || e}`) }
     fillTests()
     implementLoop()
-    fillReviews()
+    reviewLoop()
     if (implRunning.size === 0 && reviewing.size === 0 && mergePending === 0 && lockingDown.size === 0) break
     await Promise.race([woken, new Promise((r) => setTimeout(r, POLL_MS))])
   }
