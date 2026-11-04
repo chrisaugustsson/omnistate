@@ -582,3 +582,106 @@ test("records the implementer's decisions as agent decisions", async (t) => {
 
   assert.deepEqual(dirs.story("US-1").decisions, [{ question: "Where does the board query live?", choice: "In stories.rs", by: "agent" }]);
 });
+
+// ---- the implement loop: claim, then implement ----------------------------------
+
+// The run's id, from the lock it holds while it runs.
+const runOf = (dirs) => JSON.parse(readFileSync(dirs.lock, "utf8")).run;
+
+test("with implementers 2 and three pickable stories, each is implementing for this run before its implementer starts, two at once, and the third is claimed only when one finishes", { timeout: 20000 }, async (t) => {
+  const dirs = scratch(t, [story("US-1"), story("US-2"), story("US-3")]);
+  dirs.checks({ fast: "true", stack_up: "true", stack: "true" });
+  const thirdStarted = deferred();
+  const atStart = {};
+  const board = (dirs) => Object.fromEntries(dirs.state().stories.map((s) => [s.key, { status: s.status, run: s.holder && s.holder.run }]));
+  const { agent } = implAgent({
+    "US-1": async () => {
+      atStart["US-1"] = { run: runOf(dirs), board: board(dirs) };
+      await thirdStarted.promise;
+      return { status: "ready", summary: "done" };
+    },
+    "US-2": async () => {
+      atStart["US-2"] = { run: runOf(dirs), board: board(dirs) };
+      return { status: "ready", summary: "done" };
+    },
+    "US-3": async () => {
+      atStart["US-3"] = { run: runOf(dirs), board: board(dirs) };
+      thirdStarted.resolve();
+      return { status: "ready", summary: "done" };
+    },
+  });
+
+  await deliver({ feature: "board", implementers: 2 }, agent);
+
+  const run = atStart["US-1"].run;
+  assert.deepEqual([atStart["US-1"].board["US-1"], atStart["US-1"].board["US-3"]], [{ status: "implementing", run }, { status: "backlog", run: null }]);
+  assert.deepEqual(atStart["US-2"].board, { "US-1": { status: "implementing", run }, "US-2": { status: "implementing", run }, "US-3": { status: "backlog", run: null } });
+  assert.deepEqual(atStart["US-3"].board, { "US-1": { status: "implementing", run }, "US-2": { status: "implemented", run: null }, "US-3": { status: "implementing", run } });
+});
+
+test("a finished implementer leaves its story implemented with no holder, its worktree in place and files_changed from its commits", async (t) => {
+  const dirs = scratch(t, [story("US-1", { files_planned: ["src/other.rs"] })]);
+  dirs.checks({ fast: "true", stack_up: "true", stack: "true" });
+  const wt = join(dirs.root, "app-stories", "US-1");
+  const { agent } = implAgent({
+    "US-1": async () => {
+      writeFileSync(join(wt, "board.rs"), "board\n");
+      git(wt, "add", "board.rs");
+      git(wt, "commit", "-q", "-m", "feat: Board");
+      return { status: "ready", summary: "done" };
+    },
+  });
+
+  await deliver({ feature: "board" }, agent);
+
+  assert.equal(dirs.story("US-1").status, "implemented");
+  assert.equal(dirs.story("US-1").holder, null);
+  assert.deepEqual(dirs.story("US-1").files_changed, ["board.rs"]);
+  assert.equal(git(wt, "log", "-1", "--format=%s").trim(), "feat: Board");
+});
+
+test("a backlog story whose worktree exists at claim time keeps that worktree's commit and gets an implementer told to continue from it", async (t) => {
+  const dirs = scratch(t, [story("US-1")]);
+  dirs.checks({ fast: "true", stack_up: "true", stack: "true" });
+  const wt = worktree(dirs, "US-1");
+  writeFileSync(join(wt, "board.rs"), "earlier attempt\n");
+  git(wt, "add", "board.rs");
+  git(wt, "commit", "-q", "-m", "feat: Earlier attempt");
+  const seen = {};
+  const { agent, prompts } = implAgent({
+    "US-1": async () => {
+      seen.head = git(wt, "log", "-1", "--format=%s").trim();
+      return { status: "ready", summary: "done" };
+    },
+  });
+
+  await deliver({ feature: "board" }, agent);
+
+  assert.equal(seen.head, "feat: Earlier attempt");
+  assert.match(prompts["US-1"][0], /Continue from it/);
+});
+
+test("with storyLimit 1, a story blocked by its implementer is claimed again once its thread concludes, and no other pickable story is claimed", { timeout: 20000 }, async (t) => {
+  const dirs = scratch(t, [story("US-1"), story("US-2")]);
+  dirs.checks({ fast: "true", stack_up: "true", stack: "true" });
+  const statePath = join(dirs.root, "omni-state.json");
+  // The human answers the implementer's question as soon as the run next looks for answers.
+  const phase = (title) => {
+    if (title !== "Unblock") return;
+    const state = dirs.state();
+    const us1 = state.stories.find((s) => s.key === "US-1");
+    for (const th of state.threads.filter((th) => us1.links.some((l) => l.thread_id === th.id))) th.conclusion = "Paint it red";
+    writeFileSync(statePath, JSON.stringify(state));
+  };
+  const { agent } = implAgent({
+    "US-1": async (n) => (n === 1 ? { status: "needs_decision", summary: "stopped", question: "Which colour is the badge?", options: ["Paint it red", "Paint it blue"], recommendation: "Paint it red" } : { status: "ready", summary: "done" }),
+    "US-2": async () => ({ status: "ready", summary: "done" }),
+  });
+
+  await workflow({ feature: "board", storyLimit: 1 }, agent, phase, (fns) => Promise.all(fns.map((f) => f())), () => {});
+
+  assert.deepEqual(claimsOf(dirs, "US-1").map((c) => c.stage), ["implementing", "implementing"]);
+  assert.deepEqual(claimsOf(dirs, "US-2"), []);
+  assert.equal(dirs.story("US-1").status, "implemented");
+  assert.equal(dirs.story("US-2").status, "backlog");
+});
