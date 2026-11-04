@@ -19,10 +19,12 @@ use serde_json::{Value, json};
 use sqlx::{Postgres, Transaction};
 use utoipa::ToSchema;
 
-const STATUSES: [&str; 6] = [
+const STATUSES: [&str; 8] = [
     "backlog",
     "implementing",
+    "implemented",
     "review",
+    "reviewed",
     "testing",
     "done",
     "cancelled",
@@ -57,7 +59,7 @@ pub struct StoryBody {
     pub files_changed: Vec<String>,
     /// 0 to 3; 1 is the highest and 0 is reserved for fix stories.
     pub priority: i32,
-    /// `backlog`, `implementing`, `review`, `testing`, `done` or `cancelled`.
+    /// `backlog`, `implementing`, `implemented`, `review`, `reviewed`, `testing`, `done` or `cancelled`.
     pub status: String,
     pub blocked: bool,
     /// `{run, stage, at}` while a run holds the story, otherwise `null`.
@@ -866,7 +868,7 @@ pub struct MoveStoryRequest {
     pub expected_version: i64,
     /// The run that holds the story.
     pub run: String,
-    /// `backlog`, `implementing`, `review`, `testing` or `done`.
+    /// `backlog`, `implementing`, `implemented`, `review`, `reviewed`, `testing` or `done`.
     pub to: String,
 }
 
@@ -1045,7 +1047,7 @@ pub async fn release_story(
         (status = 403, description = "A session, not an agent key", body = ErrorBody),
         (status = 404, description = "No such story in this feature, project and workspace", body = ErrorBody),
         (status = 409, description = "`conflict` with `current_version` when `expected_version` is stale; else `not_open`, `not_holder` (the run does not hold the story) or `criteria_open` with the 0-based indexes in `open` when moving to done", body = StoryHeldBody),
-        (status = 422, description = "A column other than backlog, implementing, review, testing or done (`invalid_status`)", body = ErrorBody),
+        (status = 422, description = "A column other than backlog, implementing, implemented, review, reviewed, testing or done (`invalid_status`)", body = ErrorBody),
     )
 )]
 pub async fn move_story(
@@ -1058,7 +1060,17 @@ pub async fn move_story(
     let feature_id = parse_uuid(&feature_id).ok_or(ApiError::NotFound)?;
     let story_id = parse_uuid(&story_id).ok_or(ApiError::NotFound)?;
     let step = parse_body::<MoveStoryRequest>(&body)?;
-    if !["backlog", "implementing", "review", "testing", "done"].contains(&step.to.as_str()) {
+    if ![
+        "backlog",
+        "implementing",
+        "implemented",
+        "review",
+        "reviewed",
+        "testing",
+        "done",
+    ]
+    .contains(&step.to.as_str())
+    {
         return Err(invalid_field("invalid_status").into());
     }
     let mut tx = state.workspace_tx(&request.workspace_id).await?;

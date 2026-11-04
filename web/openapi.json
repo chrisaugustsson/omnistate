@@ -1901,7 +1901,7 @@
             "type": "string"
           },
           "to": {
-            "description": "`backlog`, `implementing`, `review`, `testing` or `done`.",
+            "description": "`backlog`, `implementing`, `implemented`, `review`, `reviewed`, `testing` or `done`.",
             "type": "string"
           }
         },
@@ -2451,7 +2451,7 @@
             "type": "string"
           },
           "status": {
-            "description": "`backlog`, `implementing`, `review`, `testing`, `done` or `cancelled`.",
+            "description": "`backlog`, `implementing`, `implemented`, `review`, `reviewed`, `testing`, `done` or `cancelled`.",
             "type": "string"
           },
           "text": {
@@ -7861,7 +7861,7 @@
                 }
               }
             },
-            "description": "A column other than backlog, implementing, review, testing or done (`invalid_status`)"
+            "description": "A column other than backlog, implementing, implemented, review, reviewed, testing or done (`invalid_status`)"
           }
         },
         "summary": "Moves a story to a column; only the run that holds it may.",
