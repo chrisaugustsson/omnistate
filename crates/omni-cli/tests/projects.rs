@@ -31,6 +31,14 @@ fn project_json(id: &str, name: &str) -> Value {
 fn mock() -> MockServer {
     MockServer::start(|request| {
         let body: Value = serde_json::from_slice(&request.body).unwrap_or(Value::Null);
+        if request.method == "PATCH" && request.path == format!("{}/{PROJECT}", projects_path()) {
+            let name = body["name"].as_str().unwrap_or("?");
+            return if name == "taken" {
+                Reply::json(409, &json!({ "error": "name_taken" }))
+            } else {
+                Reply::json(200, &json!({ "project": project_json(PROJECT, name) }))
+            };
+        }
         if request.path != projects_path() {
             return Reply::json(404, &json!({ "error": "not_found" }));
         }
@@ -166,4 +174,105 @@ fn project_list_prints_one_line_per_project() {
     let json = run(&home, &["project", "list", "--json"]);
     assert_eq!(json.code, 0, "{}", json.stderr);
     assert_eq!(json.json()["projects"].as_array().unwrap().len(), 2);
+}
+
+fn patches(server: &MockServer) -> Vec<Recorded> {
+    server
+        .requests()
+        .into_iter()
+        .filter(|r| r.method == "PATCH")
+        .collect()
+}
+
+#[test]
+fn project_rename_resolves_a_name_or_takes_an_id_and_prints_the_id_and_name() {
+    let server = mock();
+    let home = logged_in(&server.url);
+    let path = format!("{}/{PROJECT}", projects_path());
+
+    let out = run(&home, &["project", "rename", "brand-site", "  Brand site "]);
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    assert_eq!(out.stdout, format!("{PROJECT}  Brand site\n"));
+    let sent = patches(&server);
+    assert_eq!(sent.len(), 1, "{:?}", server.requests());
+    assert_eq!(sent[0].path, path);
+    assert_eq!(body_of(&sent[0]), json!({ "name": "Brand site" }));
+
+    let gets_before = requests_to(&server, "GET", &projects_path()).len();
+    let out = run(&home, &["project", "rename", PROJECT, "Brand site"]);
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    assert_eq!(
+        requests_to(&server, "GET", &projects_path()).len(),
+        gets_before,
+        "an ID needs no lookup"
+    );
+    assert_eq!(patches(&server).len(), 2);
+
+    let json = run(
+        &home,
+        &["project", "rename", PROJECT, "Brand site", "--json"],
+    );
+    assert_eq!(json.code, 0, "{}", json.stderr);
+    assert_eq!(
+        json.json(),
+        json!({ "project": project_json(PROJECT, "Brand site") })
+    );
+}
+
+#[test]
+fn project_rename_refuses_bad_input_before_any_patch() {
+    let server = mock();
+    let home = logged_in(&server.url);
+    let cases: [(&[&str], &str); 4] = [
+        (
+            &["project", "rename", "Brand-Site", "x"],
+            "no project named \"Brand-Site\"; `omni project list` shows the projects",
+        ),
+        (
+            &["project", "rename"],
+            "a project rename needs the project and its new name: omni project rename <name|id> <new name>",
+        ),
+        (
+            &["project", "rename", "brand-site"],
+            "a project rename needs the project and its new name: omni project rename <name|id> <new name>",
+        ),
+        (
+            &["project", "rename", "brand-site", "   "],
+            "a project rename needs a new name: omni project rename <name|id> <new name>",
+        ),
+    ];
+    for (args, message) in cases {
+        let out = run(&home, args);
+        assert_eq!(out.code, 1, "{args:?}: {}", out.stderr);
+        assert_eq!(out.stderr, format!("omni: {message}\n"), "{args:?}");
+        assert_eq!(out.stdout, "");
+    }
+    assert!(patches(&server).is_empty(), "{:?}", server.requests());
+}
+
+#[test]
+fn project_rename_to_a_taken_name_is_one_line_on_standard_error() {
+    let server = mock();
+    let home = logged_in(&server.url);
+    let out = run(&home, &["project", "rename", "brand-site", "taken"]);
+    assert_eq!(out.code, 1);
+    assert_eq!(out.stdout, "");
+    assert_eq!(non_empty_lines(&out.stderr).len(), 1, "{:?}", out.stderr);
+    assert!(out.stderr.contains("name_taken"), "{:?}", out.stderr);
+}
+
+#[test]
+fn help_lists_project_rename_under_project_list() {
+    let home = Scratch::new("home");
+    let out = omni(&home.path).args(&["--help"]).run();
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    let lines: Vec<&str> = out.stdout.lines().collect();
+    let list = lines
+        .iter()
+        .position(|l| l.trim_start().starts_with("omni project list"))
+        .expect("help lists project list");
+    assert_eq!(
+        lines[list + 1].trim(),
+        "omni project rename <name|id> <new name>   rename a project; its ID, features, docs and threads stay"
+    );
 }

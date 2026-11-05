@@ -40,6 +40,7 @@ Usage:
   omni key revoke <key-id>            revoke an API key (asks for the password)
   omni project create <name>          create a project
   omni project list                   list the projects
+  omni project rename <name|id> <new name>   rename a project; its ID, features, docs and threads stay
   omni link <project name|id>         link the current folder to a project (stored per user in ~/.config/omni/links.toml)
   omni link                           show the link in effect for the current folder
   omni unlink                         remove the current folder's link

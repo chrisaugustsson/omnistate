@@ -1,4 +1,4 @@
-//! `omni project`: create and list projects. The helpers that every other
+//! `omni project`: create, list and rename projects. The helpers that every other
 //! command uses to find its project and feature live here too.
 
 use crate::args::Args;
@@ -82,6 +82,38 @@ pub fn project_list(args: &Args) -> Result<()> {
     Ok(())
 }
 
+/// `omni project rename <name|id> <new name>`
+pub fn project_rename(args: &Args, project: Option<&str>, name: Option<&str>) -> Result<()> {
+    let usage = "omni project rename <name|id> <new name>";
+    let (Some(given), Some(name)) = (project, name) else {
+        bail!("a project rename needs the project and its new name: {usage}");
+    };
+    let name = name.trim();
+    if name.is_empty() {
+        bail!("a project rename needs a new name: {usage}");
+    }
+    let agent = agent(args)?;
+    let id = resolve_project(&agent, given)?;
+    let response = agent.request(
+        "PATCH",
+        &format!("{}/{id}", projects_path(&agent)),
+        Some(format!("{{\"name\":{}}}", quote(name)).as_bytes()),
+    )?;
+    let text = response.text();
+    if args.json {
+        print_json(&text);
+        return Ok(());
+    }
+    let body = parsed(&text, "the renamed project")?;
+    let project = body.get("project").unwrap_or(&body);
+    say(&format!(
+        "{}  {}",
+        project.str_at("id").unwrap_or(&id),
+        project.str_at("name").unwrap_or(name)
+    ));
+    Ok(())
+}
+
 pub(crate) fn projects_path(agent: &Agent) -> String {
     format!("/api/v1/w/{}/projects", agent.workspace_id)
 }
@@ -100,7 +132,13 @@ pub(crate) fn project_id(args: &Args, agent: &Agent) -> Result<String> {
         }
     };
     warn_leftover_keys();
-    if is_uuid(&given) {
+    resolve_project(agent, &given)
+}
+
+/// The ID of the project a name or ID given by the user stands for: an ID is
+/// used as it is, a name is matched exactly against the API's list of projects.
+fn resolve_project(agent: &Agent, given: &str) -> Result<String> {
+    if is_uuid(given) {
         return Ok(given.to_ascii_lowercase());
     }
     let response = agent.request("GET", &projects_path(agent), None)?;
@@ -109,7 +147,7 @@ pub(crate) fn project_id(args: &Args, agent: &Agent) -> Result<String> {
         .and_then(Value::as_array)
         .unwrap_or_default()
         .iter()
-        .find(|project| project.str_at("name") == Some(given.as_str()))
+        .find(|project| project.str_at("name") == Some(given))
         .and_then(|project| project.str_at("id"))
         .map(str::to_string)
         .ok_or_else(|| {

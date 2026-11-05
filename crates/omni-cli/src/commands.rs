@@ -51,7 +51,14 @@ pub fn run(args: &Args) -> Result<()> {
         }
         ["project", "create", name] => projects::project_create(args, name),
         ["project", "list"] => projects::project_list(args),
-        ["project", ..] => bail!("usage: omni project create <name> | omni project list"),
+        ["project", "rename"] => projects::project_rename(args, None, None),
+        ["project", "rename", project] => projects::project_rename(args, Some(project), None),
+        ["project", "rename", project, name] => {
+            projects::project_rename(args, Some(project), Some(name))
+        }
+        ["project", ..] => bail!(
+            "usage: omni project create <name> | omni project list | omni project rename <name|id> <new name>"
+        ),
         ["link"] => links::show(args),
         ["link", project] => links::link(args, Some(project)),
         ["unlink"] => links::unlink(args),
