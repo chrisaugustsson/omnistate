@@ -5,7 +5,7 @@
 // project has this name", any other failure "The project could not be
 // renamed. Try again.", both under the input. A feature's page has no pencil.
 import { RouterProvider, createMemoryHistory } from "@tanstack/react-router";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { getRouter } from "./router";
 
@@ -158,6 +158,30 @@ describe("rename a project on its App page", () => {
     fireEvent.change(input, { target: { value: "Shop v2" } });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     expect((await screen.findByRole("alert")).textContent).toBe("The project could not be renamed. Try again.");
+  });
+
+  test("a network error shows the generic error", async () => {
+    fakeApi(() => Promise.reject(new TypeError("Failed to fetch")));
+    const input = await startEditing();
+    fireEvent.change(input, { target: { value: "Shop v2" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect((await screen.findByRole("alert")).textContent).toBe("The project could not be renamed. Try again.");
+  });
+
+  test("Cancel while the save is in flight ignores its answer", async () => {
+    let answer: (response: Response) => void = () => {};
+    const patches = fakeApi(() => new Promise<Response>((resolve) => (answer = resolve)));
+    const input = await startEditing();
+    fireEvent.change(input, { target: { value: "Shop v2" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(patches).toHaveLength(1));
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("textbox")).toBeNull();
+    await act(async () => {
+      answer(ok("Shop v2"));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("Storefront");
   });
 
   test("a feature's page has no rename button", async () => {
