@@ -479,3 +479,57 @@ fn checks_without_an_omni_toml_exits_1_with_the_missing_file_error() {
     assert_one_line_error(&out, &[".omni.toml"]);
     assert!(!out.stderr.contains("[checks]"), "{:?}", out.stderr);
 }
+
+/// The entry for `omni story <command>` in `omni --help`: its usage line and the
+/// indented lines under it, joined with single spaces.
+fn story_usage(help: &str, command: &str) -> String {
+    let start = format!("  omni story {command} ");
+    let mut lines = help.lines().skip_while(|line| !line.starts_with(&start));
+    let first = lines
+        .next()
+        .unwrap_or_else(|| panic!("omni --help has no {start:?}"));
+    let rest = lines.take_while(|line| line.starts_with("      ") && !line.trim().is_empty());
+    std::iter::once(first)
+        .chain(rest)
+        .flat_map(str::split_whitespace)
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+#[test]
+fn help_names_the_waiting_columns_of_move_and_says_claim_release_and_block_use_the_waiting_state() {
+    let home = Scratch::new("help");
+    let help = omni(&home.path).args(&["--help"]).run();
+    assert_eq!(help.code, 0, "omni --help: {}", help.stderr);
+
+    let moves = story_usage(&help.stdout, "move");
+    for column in [
+        "backlog",
+        "implementing",
+        "implemented",
+        "review",
+        "reviewed",
+        "testing",
+        "done",
+    ] {
+        assert!(
+            moves.split([' ', ',']).any(|word| word == column),
+            "omni story move does not name {column}: {moves}"
+        );
+    }
+    let claim = story_usage(&help.stdout, "claim");
+    assert!(
+        claim.contains("only from") && claim.contains("waiting state"),
+        "omni story claim does not say it takes a story only from its waiting state: {claim}"
+    );
+    let release = story_usage(&help.stdout, "release");
+    assert!(
+        release.contains("returns to its waiting state"),
+        "omni story release does not say a working story returns to its waiting state: {release}"
+    );
+    let block = story_usage(&help.stdout, "block");
+    assert!(
+        block.contains("return") && block.contains("waiting state"),
+        "omni story block does not say it returns a working story to its waiting state: {block}"
+    );
+}
