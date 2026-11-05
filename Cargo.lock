@@ -1510,6 +1510,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "omni-proto"
+version = "0.1.0"
+dependencies = [
+ "omni-core",
+ "serde_json",
+]
+
+[[package]]
 name = "omni-render"
 version = "0.1.0"
 dependencies = [

@@ -1,0 +1,521 @@
+//! The player's behaviour: what a click, back and the actions do to the
+//! frame, the history and the effects, ported from the behaviour tests of
+//! FigCraft's `proto_run.rs` (MIT OR Apache-2.0; see `NOTICE`).
+
+use omni_core::design::proto::{Direction, Easing, Transition};
+use omni_core::design::{Node, NodeAddress, NodeId, Page};
+use omni_proto::{Effect, Player, PointerEvent, PointerKind, Rect};
+use serde_json::{Value, json};
+use std::collections::HashMap;
+
+const B1: &str = "b0000001";
+const B2: &str = "b0000002";
+const B3: &str = "b0000003";
+const GONE: &str = "b0000009";
+const L1: &str = "a0000001";
+const L2: &str = "a0000002";
+const COMP: &str = "c0000001";
+const COMP_ON: &str = "c0000002";
+const INNER: &str = "d0000001";
+const INST_A: &str = "e0000001";
+const INST_B: &str = "e0000002";
+const RESOLVED_A: &str = "f0000001";
+const RESOLVED_B: &str = "f0000002";
+
+fn size() -> Value {
+    json!({"fixed": 100})
+}
+
+fn id(text: &str) -> NodeId {
+    text.parse().unwrap()
+}
+
+fn node(value: Value) -> Node {
+    serde_json::from_value(value).unwrap()
+}
+
+fn navigate(dest: &str) -> Value {
+    json!({"actions": [{"type": "navigate", "dest": dest}]})
+}
+
+fn actions(actions: Value) -> Value {
+    json!({"actions": actions})
+}
+
+fn layer(id: &str, interactions: Value) -> Value {
+    json!({"id": id, "type": "frame", "name": id, "width": size(), "height": size(),
+        "layout": {"mode": "none"}, "interactions": interactions})
+}
+
+fn board(id: &str, children: Vec<Value>) -> Value {
+    json!({"id": id, "type": "board", "name": id, "width": size(), "height": size(),
+        "layout": {"mode": "none"}, "children": children})
+}
+
+fn rect(x: f64, y: f64, width: f64, height: f64) -> Rect {
+    Rect {
+        x,
+        y,
+        width,
+        height,
+    }
+}
+
+fn event(kind: PointerKind, x: f64, y: f64, at: f64) -> PointerEvent {
+    PointerEvent { kind, x, y, at }
+}
+
+fn click(player: &mut Player, x: f64, y: f64, at: f64) -> Vec<Effect> {
+    let mut effects = player.pointer(event(PointerKind::Down, x, y, at));
+    effects.extend(player.pointer(event(PointerKind::Up, x, y, at + 10.0)));
+    effects
+}
+
+/// A player on `B1` whose boards are `boards`, with a box of 100 × 100 at the
+/// origin for every layer in `boxed`.
+fn player(boards: Vec<Value>, components: Vec<Value>, boxed: &[(&str, Rect)]) -> Player {
+    let page = Page {
+        children: boards.into_iter().map(node).collect(),
+    };
+    let components = components
+        .into_iter()
+        .map(node)
+        .map(|node| (*node.id(), node))
+        .collect();
+    let mut player = Player::new(&page, components, id(B1));
+    let rects: HashMap<_, _> = boxed
+        .iter()
+        .map(|(layer, rect)| (id(layer), *rect))
+        .collect();
+    for board in &page.children {
+        player.set_boxes(*board.id(), rects.clone(), HashMap::new());
+    }
+    player
+}
+
+fn two_boards(interactions: Value) -> Player {
+    player(
+        vec![board(B1, vec![layer(L1, interactions)]), board(B2, vec![])],
+        vec![],
+        &[(L1, rect(0.0, 0.0, 100.0, 100.0))],
+    )
+}
+
+#[test]
+fn a_click_navigates_with_the_interactions_transition() {
+    let mut player = two_boards(json!([{
+        "actions": [{"type": "navigate", "dest": B2}],
+        "transition": {"type": "slideIn", "direction": "left"},
+        "durationMs": 200,
+        "easing": "linear"
+    }]));
+    player.pointer(event(PointerKind::Down, 10.0, 10.0, 0.0));
+    let effects = player.pointer(event(PointerKind::Up, 12.0, 10.0, 50.0));
+
+    assert_eq!(effects, vec![Effect::NeedsFrame]);
+    let frame = player.frame();
+    assert_eq!(frame.board, id(B2));
+    assert_eq!(player.history(), &[id(B1)]);
+    let running = frame.transition.unwrap();
+    assert_eq!(running.from, id(B1));
+    assert_eq!(running.to, id(B2));
+    assert_eq!(
+        running.transition,
+        Transition::SlideIn {
+            direction: Direction::Left
+        }
+    );
+    assert_eq!(running.duration_ms, 200);
+    assert_eq!(running.easing, Easing::Linear);
+    assert!(!running.reversed);
+    assert_eq!(running.started, 50.0);
+}
+
+#[test]
+fn a_drag_and_a_click_on_nothing_change_nothing() {
+    let mut player = two_boards(json!([navigate(B2)]));
+    player.pointer(event(PointerKind::Down, 10.0, 10.0, 0.0));
+    player.pointer(event(PointerKind::Move, 20.0, 10.0, 10.0));
+    let dragged = player.pointer(event(PointerKind::Up, 20.0, 10.0, 20.0));
+    let missed = click(&mut player, 500.0, 500.0, 100.0);
+
+    assert!(dragged.is_empty());
+    assert!(missed.is_empty());
+    assert_eq!(player.frame().board, id(B1));
+    assert!(player.history().is_empty());
+}
+
+#[test]
+fn the_deepest_layer_with_the_trigger_wins() {
+    let inner = layer(L2, json!([navigate(B3)]));
+    let mut outer = layer(L1, json!([navigate(B2)]));
+    outer["children"] = json!([inner]);
+    let mut player = player(
+        vec![board(B1, vec![outer]), board(B2, vec![]), board(B3, vec![])],
+        vec![],
+        &[
+            (L1, rect(0.0, 0.0, 100.0, 100.0)),
+            (L2, rect(0.0, 0.0, 50.0, 50.0)),
+        ],
+    );
+
+    click(&mut player, 10.0, 10.0, 0.0);
+    assert_eq!(player.frame().board, id(B3));
+}
+
+#[test]
+fn back_undoes_a_navigate_with_its_transition_reversed() {
+    let mut player = two_boards(json!([{
+        "actions": [{"type": "navigate", "dest": B2}],
+        "transition": {"type": "push", "direction": "right"},
+        "durationMs": 120
+    }]));
+    player.back();
+    assert_eq!(player.frame().board, id(B1));
+
+    click(&mut player, 10.0, 10.0, 0.0);
+    player.back();
+
+    let frame = player.frame();
+    assert_eq!(frame.board, id(B1));
+    assert!(player.history().is_empty());
+    let running = frame.transition.unwrap();
+    assert_eq!(running.from, id(B2));
+    assert_eq!(running.to, id(B1));
+    assert!(running.reversed);
+    assert_eq!(running.duration_ms, 120);
+    assert_eq!(
+        running.transition,
+        Transition::Push {
+            direction: Direction::Right
+        }
+    );
+}
+
+#[test]
+fn overlays_push_replace_and_pop_without_a_history_step() {
+    let open = json!({"type": "openOverlay", "dest": B2, "position": "manual", "offset": [5, 6]});
+    let mut player = player(
+        vec![
+            board(
+                B1,
+                vec![
+                    layer(L1, json!([actions(json!([open]))])),
+                    layer(
+                        L2,
+                        json!([actions(json!([{"type": "swapOverlay", "dest": B3}]))]),
+                    ),
+                ],
+            ),
+            board(B2, vec![]),
+            board(B3, vec![]),
+        ],
+        vec![],
+        &[
+            (L1, rect(0.0, 0.0, 50.0, 50.0)),
+            (L2, rect(60.0, 0.0, 50.0, 50.0)),
+        ],
+    );
+
+    click(&mut player, 10.0, 10.0, 0.0);
+    let frame = player.frame();
+    assert_eq!(frame.board, id(B1));
+    assert_eq!(frame.overlays.len(), 1);
+    assert_eq!(frame.overlays[0].board, id(B2));
+    assert_eq!(frame.overlays[0].origin, [5.0, 6.0]);
+
+    click(&mut player, 70.0, 10.0, 100.0);
+    let frame = player.frame();
+    assert_eq!(frame.overlays.len(), 1);
+    assert_eq!(frame.overlays[0].board, id(B3));
+    assert!(player.history().is_empty());
+}
+
+#[test]
+fn close_overlay_pops_and_navigate_clears_overlays() {
+    let mut player = player(
+        vec![
+            board(
+                B1,
+                vec![
+                    layer(
+                        L1,
+                        json!([actions(json!([{"type": "openOverlay", "dest": B2}]))]),
+                    ),
+                    layer(L2, json!([navigate(B3)])),
+                ],
+            ),
+            board(
+                B2,
+                vec![layer(
+                    "a0000003",
+                    json!([actions(json!([{"type": "closeOverlay"}]))]),
+                )],
+            ),
+            board(B3, vec![]),
+        ],
+        vec![],
+        &[
+            (L1, rect(0.0, 0.0, 50.0, 50.0)),
+            (L2, rect(60.0, 0.0, 50.0, 50.0)),
+            ("a0000003", rect(0.0, 100.0, 50.0, 50.0)),
+        ],
+    );
+
+    click(&mut player, 10.0, 10.0, 0.0);
+    click(&mut player, 10.0, 110.0, 100.0);
+    assert!(player.frame().overlays.is_empty());
+
+    click(&mut player, 10.0, 10.0, 200.0);
+    assert_eq!(player.frame().overlays.len(), 1);
+    click(&mut player, 70.0, 10.0, 300.0);
+    let frame = player.frame();
+    assert_eq!(frame.board, id(B3));
+    assert!(frame.overlays.is_empty());
+    assert_eq!(player.history(), &[id(B1)]);
+}
+
+#[test]
+fn a_destination_outside_the_page_is_ignored() {
+    let mut player = two_boards(json!([navigate(GONE)]));
+    let before = player.frame();
+
+    let effects = click(&mut player, 10.0, 10.0, 0.0);
+
+    assert!(effects.is_empty());
+    assert_eq!(player.frame(), before);
+    assert!(player.history().is_empty());
+}
+
+#[test]
+fn open_url_returns_an_effect_and_changes_nothing_else() {
+    let mut player = two_boards(json!([actions(json!([
+        {"type": "openUrl", "url": "https://example.com", "newTab": false}
+    ]))]));
+    let before = player.frame();
+
+    let effects = click(&mut player, 10.0, 10.0, 0.0);
+
+    assert_eq!(
+        effects,
+        vec![Effect::OpenUrl {
+            url: "https://example.com".into(),
+            new_tab: false
+        }]
+    );
+    assert_eq!(player.frame(), before);
+}
+
+#[test]
+fn every_action_of_an_interaction_runs_in_order() {
+    let mut player = player(
+        vec![
+            board(
+                B1,
+                vec![layer(
+                    L1,
+                    json!([actions(json!([
+                        {"type": "navigate", "dest": B2},
+                        {"type": "openUrl", "url": "https://example.com"},
+                        {"type": "navigate", "dest": B3}
+                    ]))]),
+                )],
+            ),
+            board(B2, vec![]),
+            board(B3, vec![]),
+        ],
+        vec![],
+        &[(L1, rect(0.0, 0.0, 100.0, 100.0))],
+    );
+
+    let effects = click(&mut player, 10.0, 10.0, 0.0);
+
+    assert_eq!(effects.len(), 2);
+    assert!(matches!(effects[0], Effect::OpenUrl { new_tab: true, .. }));
+    assert_eq!(effects[1], Effect::NeedsFrame);
+    assert_eq!(player.frame().board, id(B3));
+    assert_eq!(player.history(), &[id(B1), id(B2)]);
+}
+
+#[test]
+fn a_transition_ends_when_its_duration_has_passed() {
+    let mut player = two_boards(json!([{
+        "actions": [{"type": "navigate", "dest": B2}],
+        "durationMs": 200
+    }]));
+    assert!(player.tick(0.0).is_empty());
+    player.pointer(event(PointerKind::Down, 10.0, 10.0, 1000.0));
+    player.pointer(event(PointerKind::Up, 10.0, 10.0, 1000.0));
+
+    assert_eq!(player.tick(1100.0), vec![Effect::NeedsFrame]);
+    assert!(player.frame().transition.is_some());
+    assert_eq!(player.tick(1200.0), vec![Effect::NeedsFrame]);
+    assert!(player.frame().transition.is_none());
+    assert!(player.tick(1300.0).is_empty());
+}
+
+fn component_with_layer(component: &str, interactions: Value) -> Value {
+    json!({
+        "id": component,
+        "type": "component",
+        "name": "Toggle",
+        "width": size(),
+        "height": size(),
+        "layout": {"mode": "none"},
+        "children": [layer(INNER, interactions)]
+    })
+}
+
+fn instance(instance: &str, interactions: Value) -> Value {
+    json!({
+        "id": instance,
+        "type": "instance",
+        "name": instance,
+        "component": COMP,
+        "interactions": interactions
+    })
+}
+
+fn instance_player(instances: Vec<Value>, components: Vec<Value>) -> Player {
+    let boxed = [
+        (RESOLVED_A, rect(0.0, 0.0, 50.0, 50.0)),
+        (RESOLVED_B, rect(100.0, 0.0, 50.0, 50.0)),
+        (INST_A, rect(0.0, 0.0, 50.0, 50.0)),
+        (INST_B, rect(100.0, 0.0, 50.0, 50.0)),
+    ];
+    let mut player = player(
+        vec![board(B1, instances), board(B2, vec![])],
+        components,
+        &boxed,
+    );
+    let layers = HashMap::from([
+        (
+            id(RESOLVED_A),
+            NodeAddress::new(Some(id(INST_A)), id(INNER)),
+        ),
+        (
+            id(RESOLVED_B),
+            NodeAddress::new(Some(id(INST_B)), id(INNER)),
+        ),
+    ]);
+    let rects = boxed
+        .iter()
+        .map(|(layer, rect)| (id(layer), *rect))
+        .collect();
+    player.set_boxes(id(B1), rects, layers);
+    player
+}
+
+#[test]
+fn an_instance_plays_its_variants_interactions_unless_it_has_its_own() {
+    let mut variant = component_with_layer(COMP, json!([]));
+    variant["interactions"] = json!([navigate(B2)]);
+    let mut player = instance_player(
+        vec![
+            instance(INST_A, json!([])),
+            instance(
+                INST_B,
+                json!([actions(
+                    json!([{"type": "openUrl", "url": "https://own.example.com"}])
+                )]),
+            ),
+        ],
+        vec![variant],
+    );
+
+    let own = click(&mut player, 110.0, 10.0, 0.0);
+    assert!(matches!(own[0], Effect::OpenUrl { .. }));
+    assert_eq!(player.frame().board, id(B1));
+
+    click(&mut player, 10.0, 10.0, 100.0);
+    assert_eq!(player.frame().board, id(B2));
+}
+
+#[test]
+fn change_to_in_a_component_swaps_the_instance_that_holds_the_layer() {
+    let change = json!([actions(json!([{"type": "changeTo", "dest": COMP_ON}]))]);
+    let mut player = instance_player(
+        vec![instance(INST_A, json!([])), instance(INST_B, json!([]))],
+        vec![
+            component_with_layer(COMP, change),
+            component_with_layer(COMP_ON, json!([])),
+        ],
+    );
+
+    click(&mut player, 110.0, 10.0, 0.0);
+
+    let swaps = player.frame().variant_swaps;
+    assert_eq!(swaps.len(), 1);
+    assert_eq!(swaps[&id(INST_B)], id(COMP_ON));
+    assert!(player.history().is_empty());
+
+    // The instance now shows the variant, which has no interaction.
+    let after = click(&mut player, 110.0, 10.0, 100.0);
+    assert!(after.is_empty());
+}
+
+#[test]
+fn change_to_a_component_the_design_system_lacks_is_ignored() {
+    let change = json!([actions(json!([{"type": "changeTo", "dest": "c0000009"}]))]);
+    let mut player = instance_player(
+        vec![instance(INST_A, json!([]))],
+        vec![component_with_layer(COMP, change)],
+    );
+
+    let effects = click(&mut player, 10.0, 10.0, 0.0);
+
+    assert!(effects.is_empty());
+    assert!(player.frame().variant_swaps.is_empty());
+}
+
+#[test]
+fn hotspots_list_the_layers_with_interactions_and_their_given_boxes() {
+    let mut player = player(
+        vec![
+            board(
+                B1,
+                vec![
+                    layer(L1, json!([navigate(B2)])),
+                    layer(L2, json!([])),
+                    layer("a0000003", json!([navigate(B2)])),
+                ],
+            ),
+            board(B2, vec![layer("a0000004", json!([navigate(B1)]))]),
+        ],
+        vec![],
+        &[],
+    );
+    player.set_boxes(id(B1), HashMap::new(), HashMap::new());
+    let boxes = HashMap::from([
+        (id(L1), rect(1.0, 2.0, 3.0, 4.0)),
+        (id(L2), rect(0.0, 0.0, 9.0, 9.0)),
+        (id("a0000004"), rect(5.0, 5.0, 5.0, 5.0)),
+    ]);
+
+    assert_eq!(
+        player.hotspots(&boxes),
+        vec![(id(L1), rect(1.0, 2.0, 3.0, 4.0))]
+    );
+
+    player.pointer(event(PointerKind::Down, 0.0, 0.0, 0.0));
+    player.restart(id(B2));
+    assert_eq!(
+        player.hotspots(&boxes),
+        vec![(id("a0000004"), rect(5.0, 5.0, 5.0, 5.0))]
+    );
+}
+
+#[test]
+fn restart_clears_history_overlays_and_swaps() {
+    let mut player = two_boards(json!([navigate(B2)]));
+    click(&mut player, 10.0, 10.0, 0.0);
+
+    player.restart(id(B1));
+
+    let frame = player.frame();
+    assert_eq!(frame.board, id(B1));
+    assert!(player.history().is_empty());
+    assert!(frame.overlays.is_empty());
+    assert!(frame.variant_swaps.is_empty());
+    assert!(frame.transition.is_none());
+}
