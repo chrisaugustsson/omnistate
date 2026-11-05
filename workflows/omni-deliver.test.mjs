@@ -1431,3 +1431,21 @@ test("without a recorded base the lane rebases from git's fork point, with the s
   assert.deepEqual(subjects(dirs), ["feat: US-1 attempt", "init"]);
   assert.equal(dirs.story("US-1").status, "done");
 });
+
+test("a branch with no recorded base whose tip was itself on the integration branch before is rebased from the merge base, so its own commit is kept", async (t) => {
+  const dirs = scratch(t, [story("US-1", { status: "reviewed" })]);
+  dirs.checks({ fast: "true", stack_up: "true", stack: "true" });
+  const init = git(dirs.repo, "rev-parse", "HEAD").trim();
+  mainEdits(dirs, "dropped.rs", "a story the lane merged and later reset away\n");
+  reviewed(dirs, "US-1");
+  // An earlier lane merged US-1 onto main, so its tip entered main's reflog, and then reset main.
+  git(dirs.repo, "merge", "-q", "--ff-only", "story/US-1");
+  git(dirs.repo, "reset", "-q", "--hard", init);
+  const { agent } = implAgent({});
+
+  await deliver({ feature: "board" }, agent);
+
+  assert.equal(dirs.story("US-1").status, "done");
+  assert.equal(subjects(dirs)[0], "feat: US-1 attempt");
+  assert.ok(subjects(dirs).includes("chore: main edits dropped.rs"), "the merge base replays the reset-away commit too");
+});

@@ -621,8 +621,15 @@ Return raw structured data only.`
     const recorded = (tryRun('git', ['-C', root, 'config', '--get', `branch.story/${key}.omnibase`]) || '').trim()
     if (recorded && tryRun('git', ['-C', root, 'rev-parse', '--verify', '--quiet', `${recorded}^{commit}`]) !== null) return recorded
     const fork = (tryRun('git', ['-C', root, 'merge-base', '--fork-point', integration, `story/${key}`]) || '').trim()
-    if (fork) return fork
-    return (tryRun('git', ['-C', root, 'merge-base', integration, `story/${key}`]) || '').trim()
+    const tip = (tryRun('git', ['-C', root, 'rev-parse', `story/${key}`]) || '').trim()
+    // A branch the lane merged before and reset away has its own tip in the
+    // integration branch's reflog, so the fork point is the tip and a rebase
+    // from it would replay nothing: fall back to the merge base, which may
+    // replay another story's reset-away commits, and say so.
+    if (fork && fork !== tip) return fork
+    const base = (tryRun('git', ['-C', root, 'merge-base', integration, `story/${key}`]) || '').trim()
+    if (fork && base) log(`${key}: its branch was on ${integration} before, so git's fork point is its own tip; rebasing from the merge base ${base.slice(0, 7)}, which may replay commits of other stories`)
+    return base
   }
   const tryMerge = (key) => {
     const wt = worktreeOf(key)
