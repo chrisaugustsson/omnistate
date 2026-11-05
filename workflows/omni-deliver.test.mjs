@@ -1003,3 +1003,106 @@ test("a rebase conflict leaves the integration branch untouched and sends the st
   assert.equal(dirs.story("US-2").status, "done");
   assert.deepEqual(subjects(dirs), ["feat: US-2 attempt", "chore: main edits README", "init"]);
 });
+
+// ---- the test lane: regression tests, then done ---------------------------------
+
+const rejectTests = { pass: false, duplicates: [], issues: ["The badge test asserts only that a colour is set"], suiteGreen: true, productionUntouched: true, leftoverFiles: [] };
+
+test("a found_defect from the test author resets the integration branch to the lane base, its test commit gone, and sends the story back with an [attempt 1] testing finding naming the test, the observed and the expected value", { timeout: 20000 }, async (t) => {
+  const dirs = scratch(t, [story("US-1", { status: "reviewed", priority: 2 })]);
+  dirs.checks({ fast: "true", stack_up: "true", stack: "true" });
+  reviewed(dirs, "US-1");
+  mainEdits(dirs, "main.rs", "main\n");
+  const seen = {};
+  const author = () => {
+    writeFileSync(join(dirs.repo, "badge.test.mjs"), "test\n");
+    git(dirs.repo, "add", "badge.test.mjs");
+    git(dirs.repo, "commit", "-q", "-m", "test: Badge colour");
+    return { ...noTests, status: "found_defect", defect: { test: "a late order's badge is red", observed: "the badge is blue", expected: "the badge is red" } };
+  };
+  const { agent } = implAgent({ "US-1": stopped }, {}, {}, { "US-1": author });
+
+  await workflow({ feature: "board" }, agent, onSendBack(dirs, "US-1", seen), (fns) => Promise.all(fns.map((f) => f())), () => {});
+
+  const { findings, ...rest } = seen.sentBack;
+  assert.deepEqual(rest, { status: "backlog", priority: 0, holder: null, main: ["chore: main edits main.rs", "init"], clean: "", lane: false });
+  assert.equal(findings.length, 1);
+  assert.equal(findings[0].stage, "testing");
+  assert.match(findings[0].text, /^\[attempt 1\] /);
+  assert.match(findings[0].text, /a late order's badge is red/);
+  assert.match(findings[0].text, /the badge is blue/);
+  assert.match(findings[0].text, /the badge is red/);
+});
+
+test("tests not accepted after three rounds leave the integration branch at the merged story commit with a clean main worktree and its ignored files, no lane file, the story's worktree and branch, and the story reviewed, blocked and linked to its thread", { timeout: 20000 }, async (t) => {
+  const dirs = scratch(t, [story("US-1", { status: "reviewed" })]);
+  dirs.checks({ fast: "true", stack_up: "true", stack: "true" });
+  const wt = reviewed(dirs, "US-1");
+  mainEdits(dirs, ".gitignore", ".omni/\ntarget/\n");
+  mkdirSync(join(dirs.repo, "target"));
+  writeFileSync(join(dirs.repo, "target", "build.out"), "build\n");
+  // Each round commits a test file, and leaves a tracked file edited and a new test file uncommitted.
+  const rounds = [];
+  const leavesWork = () => {
+    rounds.push(rounds.length + 1);
+    writeFileSync(join(dirs.repo, `round${rounds.length}.test.mjs`), "test\n");
+    git(dirs.repo, "add", `round${rounds.length}.test.mjs`);
+    git(dirs.repo, "commit", "-q", "-m", `test: Round ${rounds.length}`);
+    writeFileSync(join(dirs.repo, "README"), "app\nedited\n");
+    writeFileSync(join(dirs.repo, "wip.test.mjs"), "wip\n");
+    return noTests;
+  };
+  const base = implAgent({}, {}, {}, { "US-1": leavesWork }).agent;
+  const agent = async (prompt, opts) => (opts.label.startsWith("test-review:") ? rejectTests : base(prompt, opts));
+
+  await deliver({ feature: "board" }, agent);
+
+  assert.deepEqual(rounds, [1, 2, 3]);
+  assert.deepEqual(subjects(dirs), ["feat: US-1 attempt", "chore: main edits .gitignore", "init"]);
+  assert.equal(git(dirs.repo, "status", "--porcelain"), "");
+  assert.equal(readFileSync(join(dirs.repo, "target", "build.out"), "utf8"), "build\n");
+  assert.equal(existsSync(laneFile(dirs)), false);
+  assert.deepEqual([existsSync(wt), hasBranch(dirs, "US-1")], [true, true]);
+  const s = dirs.story("US-1");
+  assert.deepEqual({ status: s.status, blocked: s.blocked, holder: s.holder }, { status: "reviewed", blocked: true, holder: null });
+  assert.match(threadOf(dirs, "US-1").title, /^US-1: .*regression tests were not accepted$/);
+});
+
+test("a story whose tests were not accepted is taken again by the lane once its thread concludes, with the merged story commit as its base: the rebase and fast-forward change nothing, and the checks and the tests run again", { timeout: 20000 }, async (t) => {
+  const dirs = scratch(t, [story("US-1", { status: "reviewed" })]);
+  const log = join(dirs.root, "steps.log");
+  dirs.checks({ fast: step(log, "fast"), stack_up: "true", stack: "true" });
+  reviewed(dirs, "US-1");
+  mainEdits(dirs, "main.rs", "main\n");
+  const statePath = join(dirs.root, "omni-state.json");
+  // The human answers the thread the rejected tests opened.
+  const phase = (title) => {
+    if (title !== "Unblock") return;
+    const state = dirs.state();
+    const s = state.stories.find((x) => x.key === "US-1");
+    if (!s.blocked) return;
+    state.threads.find((x) => x.id === s.links[0].thread_id).conclusion = "Write the tests again";
+    writeFileSync(statePath, JSON.stringify(state));
+  };
+  const lane = [];
+  const base = implAgent({}).agent;
+  const agent = async (prompt, opts) => {
+    if (opts.label.startsWith("tests:")) lane.push("tests");
+    if (opts.label.startsWith("test-review:")) {
+      lane.push("test-review");
+      if (lane.length <= 6) return rejectTests;
+    }
+    return base(prompt, opts);
+  };
+
+  await workflow({ feature: "board" }, agent, phase, (fns) => Promise.all(fns.map((f) => f())), () => {});
+
+  assert.deepEqual(claimsOf(dirs, "US-1").map((c) => c.stage), ["testing", "testing"]);
+  assert.deepEqual(subjects(dirs), ["feat: US-1 attempt", "chore: main edits main.rs", "init"]);
+  assert.deepEqual(stepsOf(log), [
+    { step: "fast", lane: { key: "US-1", base: sha(dirs, "main~1") }, head: "feat: US-1 attempt" },
+    { step: "fast", lane: { key: "US-1", base: sha(dirs, "main") }, head: "feat: US-1 attempt" },
+  ]);
+  assert.deepEqual(lane, ["tests", "test-review", "tests", "test-review", "tests", "test-review", "tests", "test-review"]);
+  assert.deepEqual([dirs.story("US-1").status, existsSync(laneFile(dirs)), hasBranch(dirs, "US-1")], ["done", false, false]);
+});
