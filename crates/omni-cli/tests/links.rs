@@ -1050,3 +1050,31 @@ fn unlink_without_a_link_in_this_workspace_says_not_linked() {
     assert_eq!(out.stderr.trim_end(), "omni: this folder is not linked");
     assert_eq!(links_text(&home), text);
 }
+
+#[test]
+fn unlink_leaves_the_folders_line_in_another_workspace_and_drops_the_emptied_header() {
+    let server = mock();
+    let home = logged_in(&server.url);
+    let folder = Scratch::new("folder");
+    std::fs::create_dir_all(links_path(&home.path).parent().unwrap()).unwrap();
+    std::fs::write(
+        links_path(&home.path),
+        format!(
+            "[{WORKSPACE}]\n\"{0}\" = \"{PROJECT}\"\n\n[{OTHER_WORKSPACE}]\n\"{0}\" = \"{OTHER_PROJECT}\"\n",
+            canonical(&folder)
+        ),
+    )
+    .unwrap();
+
+    let out = link_in(&home, &folder, &["unlink"]);
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    assert_eq!(out.stdout, format!("unlinked {}\n", canonical(&folder)));
+    assert_eq!(
+        links_text(&home),
+        format!(
+            "[{OTHER_WORKSPACE}]\n\"{}\" = \"{OTHER_PROJECT}\"\n",
+            canonical(&folder)
+        )
+    );
+    assert!(server.requests().is_empty(), "{:?}", server.requests());
+}
