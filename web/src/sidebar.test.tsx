@@ -406,6 +406,19 @@ describe("the project sidebar", () => {
       expect(api.projectsRequests).toBe(before);
     });
 
+    test("another kind of event of the project reloads no projects", async () => {
+      const api = fakeApi();
+      renderAt(`${PROJECT_PATH}/app`);
+      await waitFor(() => expect(shownText(screen.getByRole("button", { name: "Switch project" }))).toBe("AcmeStorefront"));
+      const socket = await openSocket();
+      await settled();
+      const before = api.projectsRequests;
+
+      socket.receive({ type: "event", event: "doc.created", project_id: PROJECT_ID, seq: 11, at: AT, data: { doc_id: APP_DOC } });
+      await settled();
+      expect(api.projectsRequests).toBe(before);
+    });
+
     test("the workspace home subscribes to no project", async () => {
       fakeApi();
       renderAt(WORKSPACE_PATH);
