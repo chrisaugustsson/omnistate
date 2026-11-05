@@ -105,6 +105,7 @@ try {
     }
     tryRun('git', ['-C', root, 'worktree', 'prune'])
     tryRun('git', ['-C', root, 'branch', '-D', `story/${key}`])
+    tryRun('git', ['-C', root, 'config', '--unset', `branch.story/${key}.omnibase`])
   }
   // A lane file means a dead run died inside the test lane: undo what it merged,
   // unless its story is done, and put the story back to reviewed.
@@ -441,7 +442,15 @@ Return raw structured data only.`
     if (!existing) {
       dropWorktree(key)
       fs.mkdirSync(storiesDir, { recursive: true })
-      git(['worktree', 'add', wt, '-b', `story/${key}`, integration])
+      // While the lane holds a merge, the integration branch carries a story
+      // that may yet be sent back and reset away. A worktree cut from it would
+      // carry that story's commits and replay them at its own merge, so a new
+      // worktree starts from the lane's base, the last head that passed. The
+      // base is recorded on the branch, and the lane rebases from it.
+      const from = laneBase || git(['rev-parse', integration]).trim()
+      git(['worktree', 'add', wt, '-b', `story/${key}`, from])
+      git(['config', `branch.story/${key}.omnibase`, from])
+      if (laneBase) log(`${key}: worktree from the lane base ${from.slice(0, 7)}, not ${integration}'s head, while the lane holds a merge`)
     }
     const bad = await runImplementer(key, wt, readStory(key), existing ? CONTINUE_TASK : '')
     if (bad) return bad
@@ -604,10 +613,22 @@ Return raw structured data only.`
   const REBASE_FINDING = 'rebase conflict in '
   // Rebases the story in its worktree, then fast-forwards the integration
   // branch. Returns null when it merged, else the files that conflict.
+  // The commit a story's branch was cut from: recorded at the cut (US worktrees
+  // of this run), else git's fork point from the integration branch's reflog,
+  // else the plain merge base. Rebasing from it replays only the story's own
+  // commits, never a merge the integration branch has since reset away.
+  const forkPointOf = (key) => {
+    const recorded = (tryRun('git', ['-C', root, 'config', '--get', `branch.story/${key}.omnibase`]) || '').trim()
+    if (recorded && tryRun('git', ['-C', root, 'rev-parse', '--verify', '--quiet', `${recorded}^{commit}`]) !== null) return recorded
+    const fork = (tryRun('git', ['-C', root, 'merge-base', '--fork-point', integration, `story/${key}`]) || '').trim()
+    if (fork) return fork
+    return (tryRun('git', ['-C', root, 'merge-base', integration, `story/${key}`]) || '').trim()
+  }
   const tryMerge = (key) => {
     const wt = worktreeOf(key)
     const base = git(['rev-parse', 'HEAD']).trim()
-    try { git(['-C', wt, 'rebase', integration]) } catch (e) {
+    const fork = forkPointOf(key)
+    try { git(['-C', wt, ...(fork ? ['rebase', '--onto', integration, fork] : ['rebase', integration])]) } catch (e) {
       const files = (tryRun('git', ['-C', wt, 'diff', '--name-only', '--diff-filter=U']) || '').split('\n').filter(Boolean)
       tryRun('git', ['-C', wt, 'rebase', '--abort'])
       return files.length ? files : ['(unknown)']
@@ -998,6 +1019,9 @@ Return raw structured data only.`, { schema: TEST_CUT_SCHEMA, label: `test-cut:$
   // sends the story back to the backlog. Called on every poll tick and after
   // the lane ends.
   let laneRunning = null
+  // The integration branch's head when the lane claimed its story: new
+  // worktrees start from it while the lane holds a merge (see implementOne).
+  let laneBase = null
   const laneFailed = new Set()
   const tail = (text, max = 4000) => String(text).slice(-max)
   // The host's view of the main worktree the moment a stack command fails: HEAD,
@@ -1089,6 +1113,7 @@ Return raw structured data only.`, { schema: TEST_CUT_SCHEMA, label: `test-cut:$
   const laneStory = async (key) => {
     phase('Test lane')
     const base = git(['rev-parse', 'HEAD']).trim()
+    laneBase = base
     stackUpRan = false
     laneLog(key, `claimed (${integration} at ${base.slice(0, 7)})`)
     if (branchMissing(key)) {
@@ -1168,6 +1193,7 @@ Return raw structured data only.`, { schema: TEST_CUT_SCHEMA, label: `test-cut:$
       try { write('release', key) } catch {}
     }).then(() => {
       laneRunning = null
+      laneBase = null
       pull()
     })
   }

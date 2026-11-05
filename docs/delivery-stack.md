@@ -56,3 +56,14 @@ API no longer carries it, until the command above removes the volumes. A story
 that reads from a migration-created table and then fails to start because the
 table already exists, or passes only because a sent-back story's table is still
 there, is the sign to run it.
+
+## Where a story's worktree starts
+
+While the lane holds a merge, main carries a story that may yet be sent back
+and reset away. A worktree cut from that head would carry the story's commits
+and replay them at its own merge, so a new worktree starts from the lane's
+base (the last head that passed) while the lane holds a merge, and the commit
+it was cut from is recorded on the branch as `branch.story/<key>.omnibase`.
+The lane rebases a story with `--onto main <that base>`, falling back to git's
+fork point and then the merge base for a branch cut by an older run, so only
+the story's own commits reach main.

@@ -1348,3 +1348,86 @@ test("a backlog, an implemented and a reviewed story are pulled at once by the i
   assert.deepEqual(timeline(dirs, "US-3"), ["claim testing", "move done"]);
   assert.deepEqual(statuses(), { "US-1": "done", "US-2": "done", "US-3": "done" });
 });
+
+test("an implementer that starts while the lane holds a merge cuts its worktree from the lane base, not the merged head, records that base on its branch, and every story still merges", { timeout: 20000 }, async (t) => {
+  const dirs = scratch(t, [story("US-1"), story("US-2"), story("US-3", { status: "reviewed" })]);
+  dirs.checks({ fast: "true", stack_up: "true", stack: "true" });
+  reviewed(dirs, "US-3");
+  const init = git(dirs.repo, "rev-parse", "HEAD").trim();
+  const laneMerged = deferred();
+  const secondCut = deferred();
+  const seen = {};
+  const wt1 = join(dirs.root, "app-stories", "US-1");
+  const wt2 = join(dirs.root, "app-stories", "US-2");
+  const { agent } = implAgent(
+    {
+      "US-1": async () => {
+        // The lane merges US-3 onto main meanwhile; US-2 is cut only after this returns.
+        await laneMerged.promise;
+        writeFileSync(join(wt1, "US-1.rs"), "board\n");
+        git(wt1, "add", "US-1.rs");
+        git(wt1, "commit", "-q", "-m", "feat: US-1 attempt");
+        return { status: "ready", summary: "done" };
+      },
+      "US-2": async () => {
+        seen.mainHead = git(dirs.repo, "log", "-1", "--format=%s", "main").trim();
+        seen.base = git(wt2, "rev-parse", "HEAD").trim();
+        seen.recorded = git(dirs.repo, "config", "--get", "branch.story/US-2.omnibase").trim();
+        secondCut.resolve();
+        writeFileSync(join(wt2, "US-2.rs"), "board\n");
+        git(wt2, "add", "US-2.rs");
+        git(wt2, "commit", "-q", "-m", "feat: US-2 attempt");
+        return { status: "ready", summary: "done" };
+      },
+    },
+    {},
+    {
+      "US-3": async () => {
+        // US-3 is merged on main now; hold the lane here until US-2's worktree is cut.
+        laneMerged.resolve();
+        await Promise.race([secondCut.promise, new Promise((r) => setTimeout(r, 5000))]);
+        return { criteria: [] };
+      },
+    },
+  );
+
+  await deliver({ feature: "board", implementers: 1 }, agent);
+
+  assert.equal(seen.mainHead, "feat: US-3 attempt");
+  assert.equal(seen.base, init);
+  assert.equal(seen.recorded, init);
+  assert.deepEqual(Object.fromEntries(dirs.state().stories.map((s) => [s.key, s.status])), { "US-1": "done", "US-2": "done", "US-3": "done" });
+  assert.deepEqual(subjects(dirs).sort(), ["feat: US-1 attempt", "feat: US-2 attempt", "feat: US-3 attempt", "init"]);
+});
+
+test("the lane rebases a story from the base recorded on its branch, so a merge the integration branch has since reset away is not replayed", async (t) => {
+  const dirs = scratch(t, [story("US-1", { status: "reviewed" })]);
+  dirs.checks({ fast: "true", stack_up: "true", stack: "true" });
+  const init = git(dirs.repo, "rev-parse", "HEAD").trim();
+  mainEdits(dirs, "dropped.rs", "a story the lane merged and later reset away\n");
+  const merged = git(dirs.repo, "rev-parse", "HEAD").trim();
+  reviewed(dirs, "US-1");
+  git(dirs.repo, "config", "branch.story/US-1.omnibase", merged);
+  git(dirs.repo, "reset", "-q", "--hard", init);
+  const { agent } = implAgent({});
+
+  await deliver({ feature: "board" }, agent);
+
+  assert.deepEqual(subjects(dirs), ["feat: US-1 attempt", "init"]);
+  assert.equal(dirs.story("US-1").status, "done");
+});
+
+test("without a recorded base the lane rebases from git's fork point, with the same result", async (t) => {
+  const dirs = scratch(t, [story("US-1", { status: "reviewed" })]);
+  dirs.checks({ fast: "true", stack_up: "true", stack: "true" });
+  const init = git(dirs.repo, "rev-parse", "HEAD").trim();
+  mainEdits(dirs, "dropped.rs", "a story the lane merged and later reset away\n");
+  reviewed(dirs, "US-1");
+  git(dirs.repo, "reset", "-q", "--hard", init);
+  const { agent } = implAgent({});
+
+  await deliver({ feature: "board" }, agent);
+
+  assert.deepEqual(subjects(dirs), ["feat: US-1 attempt", "init"]);
+  assert.equal(dirs.story("US-1").status, "done");
+});
