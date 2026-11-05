@@ -253,10 +253,11 @@ impl Controls {
         }
     }
 
-    /// With space held, grabs the page where the pointer is. Without it, the
-    /// pointer is left to selection (US-007).
-    pub fn pointer_down(&mut self, x: f32, y: f32) -> bool {
-        self.grabbed = self.space.then(|| self.viewport.to_design((x, y)));
+    /// With space held, or with the middle button (`middle`), grabs the page
+    /// where the pointer is. Otherwise the pointer is left to selection
+    /// (US-007).
+    pub fn pointer_down(&mut self, x: f32, y: f32, middle: bool) -> bool {
+        self.grabbed = (self.space || middle).then(|| self.viewport.to_design((x, y)));
         self.grabbed.is_some()
     }
 

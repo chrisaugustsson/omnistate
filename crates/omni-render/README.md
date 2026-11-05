@@ -158,7 +158,7 @@ page point at the screen's top-left corner. `view::Controls` turns the page's
 events into changes of it: Ctrl or Cmd with the wheel zooms around the pointer
 (which is also how browsers report a trackpad pinch), a touch pinch zooms around
 the fingers, the wheel alone pans, and so does dragging while the space key is
-held. Zoom is exponential in the wheel delta, so a notch of 100 zooms by 22% and
+held or with the middle mouse button. Zoom is exponential in the wheel delta, so a notch of 100 zooms by 22% and
 events add up however they are split, and it stays between 1% and 6400%. All of
 it is plain Rust, so the tests drive it natively and the browser page only
 forwards events.
@@ -257,7 +257,7 @@ python3 -m http.server 8000 --directory render-sandbox
 ```
 
 Open http://localhost:8000/stress.html. Zoom with a pinch or Ctrl/Cmd + wheel,
-pan with the wheel, or drag while holding Space. The page forwards its events
+pan with the wheel, or drag while holding Space or with the middle button. The page forwards its events
 to the exports `_omni_render_view_wheel`, `_view_pinch`, `_view_pointer_down`,
 `_view_pointer_move`, `_view_pointer_up` and `_view_space`, loads the file with
 `_omni_render_scene_load`, draws with `_omni_render_scene_draw` and reads

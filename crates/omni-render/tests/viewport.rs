@@ -325,7 +325,7 @@ fn dragging_with_space_held_pans_so_the_page_follows_the_pointer() {
     let mut controls = controls();
     let grabbed = controls.viewport().to_design((100.0, 100.0));
     controls.set_space(true);
-    assert!(controls.pointer_down(100.0, 100.0));
+    assert!(controls.pointer_down(100.0, 100.0, false));
     assert!(controls.pointer_move(130.0, 90.0), "a drag move is used");
     assert_point(
         controls.viewport().to_design((130.0, 90.0)),
@@ -355,7 +355,7 @@ fn dragging_with_space_held_pans_so_the_page_follows_the_pointer() {
 fn dragging_without_space_does_not_pan() {
     let mut controls = controls();
     let before = *controls.viewport();
-    controls.pointer_down(100.0, 100.0);
+    controls.pointer_down(100.0, 100.0, false);
     assert!(
         !controls.pointer_move(180.0, 160.0),
         "a drag without space is left to selection (US-007)"
@@ -365,10 +365,36 @@ fn dragging_without_space_does_not_pan() {
 }
 
 #[test]
+fn dragging_with_the_middle_button_pans_without_space() {
+    let mut controls = controls();
+    let grabbed = controls.viewport().to_design((100.0, 100.0));
+    assert!(controls.pointer_down(100.0, 100.0, true));
+    assert!(
+        controls.pointer_move(130.0, 90.0),
+        "a middle-button drag move is used"
+    );
+    assert_point(
+        controls.viewport().to_design((130.0, 90.0)),
+        grabbed,
+        EPSILON,
+        "the page point that was grabbed is under the pointer",
+    );
+    assert_eq!(controls.viewport().zoom(), 0.5, "dragging does not zoom");
+
+    controls.pointer_up();
+    let after = *controls.viewport();
+    assert!(
+        !controls.pointer_move(300.0, 300.0),
+        "letting the button go ends the pan"
+    );
+    assert_eq!(*controls.viewport(), after, "and pans nothing");
+}
+
+#[test]
 fn letting_go_of_space_ends_the_pan() {
     let mut controls = controls();
     controls.set_space(true);
-    controls.pointer_down(100.0, 100.0);
+    controls.pointer_down(100.0, 100.0, false);
     controls.pointer_move(120.0, 120.0);
     controls.set_space(false);
     let after = *controls.viewport();

@@ -18,7 +18,7 @@
 //!   "detail": "full"}` (`detail` is `"full"` or `"reduced"`).
 //! - `omni_render_view_wheel(delta_x, delta_y, x, y, ctrl, meta) -> bool`,
 //!   `omni_render_view_pinch(scale, x, y) -> bool`,
-//!   `omni_render_view_pointer_down(x, y) -> bool`,
+//!   `omni_render_view_pointer_down(x, y, middle) -> bool`,
 //!   `omni_render_view_pointer_move(x, y) -> bool`,
 //!   `omni_render_view_pointer_up()` and `omni_render_view_space(held)`.
 //!

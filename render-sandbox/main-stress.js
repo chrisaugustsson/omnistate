@@ -209,7 +209,9 @@ function pointerDown(event) {
   ignoreClick = touches.size >= 2;
   if (touches.size === 2) {
     pinch = between();
-  } else if (renderer._omni_render_view_pointer_down(x, y)) {
+  } else if (renderer._omni_render_view_pointer_down(x, y, event.button === 1)) {
+    // The middle button would otherwise start the browser's autoscroll.
+    if (event.button === 1) event.preventDefault();
     ignoreClick = true;
     canvas.classList.add('grabbing');
   }

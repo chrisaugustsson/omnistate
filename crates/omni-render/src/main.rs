@@ -385,11 +385,12 @@ mod exports {
         omni_render::web::with_controls(|controls| controls.pinch(scale, x, y))
     }
 
-    /// The pointer went down at the canvas point `x`, `y`. Returns whether it
-    /// began a pan, which it does while space is held.
+    /// The pointer went down at the canvas point `x`, `y`, with `middle`
+    /// saying whether it was the middle button. Returns whether it began a
+    /// pan, which it does while space is held or with the middle button.
     #[unsafe(no_mangle)]
-    pub extern "C" fn omni_render_view_pointer_down(x: f32, y: f32) -> bool {
-        omni_render::web::with_controls(|controls| controls.pointer_down(x, y))
+    pub extern "C" fn omni_render_view_pointer_down(x: f32, y: f32, middle: bool) -> bool {
+        omni_render::web::with_controls(|controls| controls.pointer_down(x, y, middle))
     }
 
     /// The pointer moved to the canvas point `x`, `y`. Returns whether it

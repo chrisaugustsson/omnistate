@@ -192,7 +192,7 @@ type OmniRender = {
   _omni_render_take_events(): number;
   _omni_render_overlay(): number;
   _omni_render_view_wheel(dx: number, dy: number, x: number, y: number, ctrl: boolean, meta: boolean): boolean;
-  _omni_render_view_pointer_down(x: number, y: number): boolean;
+  _omni_render_view_pointer_down(x: number, y: number, middle: boolean): boolean;
   _omni_render_view_pointer_move(x: number, y: number): boolean;
   _omni_render_view_pointer_up(): void;
   _omni_render_view_space(held: boolean): void;
@@ -414,7 +414,10 @@ export async function createDesignRenderer(canvas: HTMLCanvasElement): Promise<D
     const [x, y] = position(event);
     canvas.setPointerCapture?.(event.pointerId);
     ignoreClick = false;
-    if (module._omni_render_view_pointer_down(x, y)) ignoreClick = true;
+    const middle = event.button === 1;
+    // The middle button would otherwise start the browser's autoscroll.
+    if (middle) event.preventDefault();
+    if (module._omni_render_view_pointer_down(x, y, middle)) ignoreClick = true;
   };
   const onPointerMove = (event: PointerEvent) => {
     if (!loaded) return;
