@@ -152,13 +152,23 @@ export function loadWorkflow(path = scriptPath) {
   return new AsyncFunction("args", "agent", "phase", "parallel", "log", source);
 }
 
+/** The `== <phase>` heading for the log: the loops name their phase on every poll, so a heading prints only when it changes. */
+export function phaseLogger(log) {
+  let heading = null;
+  return (title) => {
+    if (title === heading) return;
+    heading = title;
+    log(`== ${title}`);
+  };
+}
+
 export async function main(argv = process.argv.slice(2)) {
   const args = parseArgs(argv);
   const cwd = process.cwd();
   const runDir = join(cwd, ".omni", "runs", stamp());
   mkdirSync(runDir, { recursive: true });
   const log = (message) => process.stderr.write(`${clock()} ${message}\n`);
-  const phase = (title) => log(`== ${title}`);
+  const phase = phaseLogger(log);
   const parallel = (thunks) => Promise.all(thunks.map((t) => t().catch((e) => { log(`a parallel task failed: ${e.message}`); return null; })));
   const storiesDir = join(cwd, "..", `${cwd.split("/").pop()}-stories`);
   const agent = makeAgent({ cwd, runDir, addDirs: [storiesDir], log });

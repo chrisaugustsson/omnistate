@@ -6,7 +6,7 @@ import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync, mkdirSy
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { makeAgent, parseArgs } from "./run-omni-deliver.mjs";
+import { makeAgent, parseArgs, phaseLogger } from "./run-omni-deliver.mjs";
 
 const fakeClaude = fileURLToPath(new URL("./fixtures/fake-claude.mjs", import.meta.url));
 
@@ -108,4 +108,13 @@ test("a schema call whose session answered in text takes the JSON from the text,
   const agent3 = makeAgent({ cwd: prose.root, runDir: prose.runDir, env: prose.env, log: (m) => lines.push(m) });
   assert.equal(await agent3("Check it.", { schema: { type: "object", properties: {} }, label: "clarity:US-2" }), null);
   assert.equal(lines.at(-1), "clarity:US-2: the reply holds no structured output and its text is not JSON");
+});
+
+test("the phase heading prints when the phase changes, not on every poll that names the same one", () => {
+  const lines = [];
+  const phase = phaseLogger((m) => lines.push(m));
+
+  for (const title of ["Start", "Unblock", "Unblock", "Unblock", "Review", "Unblock", "Unblock", "Test lane", "Test lane"]) phase(title);
+
+  assert.deepEqual(lines, ["== Start", "== Unblock", "== Review", "== Unblock", "== Test lane"]);
 });
