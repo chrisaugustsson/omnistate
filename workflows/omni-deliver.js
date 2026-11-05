@@ -9,7 +9,7 @@ export const meta = {
     { title: 'Unblock', detail: 'a blocked story whose linked threads all have a conclusion gets each conclusion as a human decision and is unblocked' },
     { title: 'Implement', detail: 'the implement loop polls the board every 5 seconds and when an implementer ends: while fewer than `implementers` run, it claims the first pickable story that passed clarity and starts an implementer in its worktree (an existing one is continued), running only the checks its change needs; a finished story moves to implemented, a blocked one gets a thread and stays in the backlog' },
     { title: 'Test lane', detail: 'one story at a time on the main worktree: the lane claims the first reviewed story, writes .omni/lane.json, rebases its branch onto the integration branch and fast-forwards it, then runs the fast command, the stack and a verifier on its criteria, then a test author and a test reviewer lock it down with regression tests, and it moves to done; the first failure resets the branch to the lane base and returns the story to the backlog with the findings at priority 0' },
-    { title: 'Review', detail: 'up to `reviewers` reviewers at once read each review story\'s branch against its criteria; a fail returns the story to the backlog with the findings and a raised priority, for a fresh implementer and reviewer; a third failed attempt opens a thread; a pass moves it to testing' },
+    { title: 'Review', detail: 'up to `reviewers` reviewers at once read each review story\'s branch against its criteria; a fail returns the story to the backlog at priority 0 with the findings, for a fresh implementer and reviewer; a third failed attempt opens a thread and blocks the story; a pass moves it to reviewed' },
     { title: 'Report', detail: 'claims on unfinished stories are released, a verifier runs the fast command and the journeys of the stories done, and the report is posted on the Run thread' },
   ],
 }
@@ -470,7 +470,7 @@ Return raw structured data only.`
         implRunning.delete(key)
         outcomes.push(o)
         if (o.error) log(`${key}: ${o.error}`)
-        poke()
+        pull()
       }))
     }
   }
@@ -589,17 +589,12 @@ Return raw structured data only.`
       return { key, outcome: 'attempts_exhausted', thread: id }
     }
     returns.push({ key, stage, attempt, blocked: false })
-    poke()
     return { key, outcome: 'returned', attempt }
   }
-  let notify = () => {}
-  let signal = new Promise((r) => { notify = r })
-  const poke = () => { const n = notify; signal = new Promise((r) => { notify = r }); n() }
   const limitReached = () => doneKeys.length >= storyLimit
   const moveDone = (key) => {
     write('move', key, ['--to', 'done'])
     doneKeys.push(key)
-    poke()
   }
   const mergeOutcomes = []
   const REBASE_FINDING = 'rebase conflict in '
@@ -988,7 +983,7 @@ Return raw structured data only.`, { schema: TEST_CUT_SCHEMA, label: `test-cut:$
         reviewing.delete(key)
         reviewOutcomes.push(o)
         if (o.error) log(`${key}: ${o.error}`)
-        poke()
+        pull()
       }))
     }
   }
@@ -1074,17 +1069,31 @@ Return raw structured data only.`, { schema: TEST_CUT_SCHEMA, label: `test-cut:$
       try { write('release', key) } catch {}
     }).then(() => {
       laneRunning = null
-      poke()
+      pull()
     })
   }
-  for (;;) {
-    const woken = signal
+  // ---- the supervisor: the loops share `stop`, set when nothing is left to pull
+  // Each loop polls on every tick and right after one of its own agents ends.
+  let stop = false
+  const pull = () => {
+    if (stop) return
+    try { implementLoop(); reviewLoop(); testLoop() } catch (e) { log(`pull: ${e && e.message || e}`) }
+  }
+  // True when a story can still be claimed or this run still holds one.
+  const claimableOrHeld = () => {
+    if (implRunning.size > 0 || reviewing.size > 0 || laneRunning) return true
+    const all = listStories()
+    if (all.some((s) => s.holder && s.holder.run === runId && ['implementing', 'review', 'testing'].includes(s.status))) return true
+    if (all.some((s) => s.status === 'implemented' && !s.blocked && !reviewFailed.has(s.key))) return true
+    if (all.some((s) => s.status === 'reviewed' && !s.blocked && !laneFailed.has(s.key))) return true
+    return omni(['story', 'list', '--pickable']).split('\n').map((l) => l.trim().split(/\s+/)[0]).filter(Boolean)
+      .some((k) => !implFailed.has(k) && !clarityFailed.has(k) && (claimedKeys.has(k) || claimedKeys.size < storyLimit))
+  }
+  while (!stop) {
     try { unblockPass() } catch (e) { log(`unblock: ${e && e.message || e}`) }
-    implementLoop()
-    reviewLoop()
-    testLoop()
-    if (implRunning.size === 0 && reviewing.size === 0 && !laneRunning) break
-    await Promise.race([woken, new Promise((r) => setTimeout(r, POLL_MS))])
+    pull()
+    if (!claimableOrHeld()) { stop = true; break }
+    await Promise.race([...implRunning.values(), ...reviewing.values(), laneRunning, new Promise((r) => setTimeout(r, POLL_MS))].filter(Boolean))
   }
 
   // ---- report: release what is left, journeys, the post on the Run thread ---
