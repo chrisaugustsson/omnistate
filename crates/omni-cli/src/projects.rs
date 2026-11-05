@@ -46,11 +46,13 @@ pub fn project_create(args: &Args, name: &str) -> Result<()> {
     }
     let project = parsed(&text, "the new project")?;
     let project = project.get("project").unwrap_or(&project);
+    let name = project.str_at("name").unwrap_or(name);
     say(&format!(
         "created project {} ({})",
-        project.str_at("name").unwrap_or(name),
+        name,
         project.str_at("id").unwrap_or("?")
     ));
+    say(&format!("link a folder to it with: omni link {name}"));
     Ok(())
 }
 

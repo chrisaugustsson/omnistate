@@ -40,6 +40,9 @@ Usage:
   omni key revoke <key-id>            revoke an API key (asks for the password)
   omni project create <name>          create a project
   omni project list                   list the projects
+  omni link <project name|id>         link the current folder to a project (stored per user in ~/.config/omni/links.toml)
+  omni link                           show the link in effect for the current folder
+  omni unlink                         remove the current folder's link
   omni feature create <name>          create a feature in the project [--description <text>];
                                       prints its ID and name
   omni feature list                   list the project's features: ID and name
@@ -201,8 +204,7 @@ Options (before or after the command):
   --harness <name>      the harness that runs the agent (fallback: OMNI_HARNESS)
   --server <url>        the API address (fallback: OMNI_SERVER, then the config file)
   --project <name|id>   the project to work in (fallback: OMNI_PROJECT, then the folder's link)
-  --feature <name|id>   the feature that `omni doc create` creates a doc in and `omni doc
-                        list` shows (fallback: OMNI_FEATURE)
+  --feature <name|id>   the feature that `omni doc create` creates a doc in and `omni doc list` shows (fallback: OMNI_FEATURE)
   --global              `omni doc create` creates an app-level doc, whatever OMNI_FEATURE says;
                         `omni doc list` shows those only
   --body-file <path>    send this file as the request body (for `doc edit` and `design
@@ -242,6 +244,7 @@ Output:
 
 Files:
   ~/.config/omni/config.toml   written by `omni login` (mode 600): server, workspace_id, api_key, email
+  ~/.config/omni/links.toml    written by `omni link`: the project each folder is linked to
   .omni.toml                   in a project directory: the [checks] table
 
 Exit codes:

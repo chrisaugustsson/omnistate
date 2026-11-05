@@ -532,15 +532,17 @@ fn config_show(args: &Args) -> Result<()> {
     let settings = settings(args)?;
     let folder = std::env::current_dir().and_then(std::fs::canonicalize).ok();
     let project = match (&settings.stored.workspace_id, folder) {
-        (Some(workspace_id), Some(folder)) => {
-            match links::resolve(&links::Links::load()?, workspace_id, &folder) {
+        (Some(workspace_id), Some(folder)) => match links::Links::load() {
+            Ok(table) => match links::resolve(&table, workspace_id, &folder) {
                 links::Resolution::Linked { project_id, .. } => Some(project_id),
                 _ => None,
-            }
-        }
+            },
+            Err(_) => None,
+        },
         _ => None,
     };
     let path = config::config_path()?;
+    let links_file = links::links_path()?;
     let logged_in = settings.stored.api_key.is_some();
     let text_or_null = |value: &Option<String>| value.clone().map_or(Value::Null, Value::String);
     if args.json {
@@ -549,6 +551,10 @@ fn config_show(args: &Args) -> Result<()> {
             ("workspace_id", text_or_null(&settings.stored.workspace_id)),
             ("email", text_or_null(&settings.stored.email)),
             ("project", text_or_null(&project)),
+            (
+                "links_file",
+                Value::String(links_file.display().to_string()),
+            ),
             ("config_file", Value::String(path.display().to_string())),
             ("logged_in", Value::Bool(logged_in)),
         ];
@@ -562,11 +568,12 @@ fn config_show(args: &Args) -> Result<()> {
     } else {
         let show = |value: &Option<String>| value.clone().unwrap_or_else(|| "(none)".to_string());
         say(&format!(
-            "server: {}\nworkspace_id: {}\nemail: {}\nproject: {}\nconfig_file: {}\nlogged_in: {}",
+            "server: {}\nworkspace_id: {}\nemail: {}\nproject: {}\nlinks_file: {}\nconfig_file: {}\nlogged_in: {}",
             show(&settings.server),
             show(&settings.stored.workspace_id),
             show(&settings.stored.email),
             show(&project),
+            links_file.display(),
             path.display(),
             if logged_in { "yes" } else { "no" }
         ));

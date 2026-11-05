@@ -533,3 +533,35 @@ fn help_names_the_waiting_columns_of_move_and_says_claim_release_and_block_use_t
         "omni story block does not say it returns a working story to its waiting state: {block}"
     );
 }
+
+#[test]
+fn help_lists_the_link_commands_and_names_the_env_fallbacks() {
+    let home = Scratch::new("help-links");
+    let help = omni(&home.path).args(&["--help"]).run();
+    assert_eq!(help.code, 0, "omni --help: {}", help.stderr);
+    let squeezed: Vec<String> = help
+        .stdout
+        .lines()
+        .map(|line| line.split_whitespace().collect::<Vec<_>>().join(" "))
+        .collect();
+    for expected in [
+        "omni link <project name|id> link the current folder to a project (stored per user in ~/.config/omni/links.toml)",
+        "omni link show the link in effect for the current folder",
+        "omni unlink remove the current folder's link",
+    ] {
+        assert!(
+            squeezed.iter().any(|l| l == expected),
+            "{expected:?} missing"
+        );
+    }
+    for option in ["--project <name|id>", "--feature <name|id>"] {
+        let line = squeezed.iter().find(|l| l.starts_with(option)).unwrap();
+        let name = if option == "--project <name|id>" {
+            "OMNI_PROJECT"
+        } else {
+            "OMNI_FEATURE"
+        };
+        assert!(line.contains(name), "{line:?}");
+        assert!(!line.contains(".omni.toml"), "{line:?}");
+    }
+}

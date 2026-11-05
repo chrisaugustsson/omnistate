@@ -104,7 +104,13 @@ fn project_create_sends_the_name_as_the_agent_and_prints_the_new_project() {
         "the text has the project's ID and name: {:?}",
         out.stdout
     );
-    assert!(non_empty_lines(&out.stdout).len() <= 5, "{:?}", out.stdout);
+    assert_eq!(
+        non_empty_lines(&out.stdout),
+        vec![
+            format!("created project landing-page ({NEW_PROJECT})"),
+            "link a folder to it with: omni link landing-page".to_string()
+        ]
+    );
 
     let json = run(&home, &["project", "create", "landing-page", "--json"]);
     assert_eq!(json.code, 0, "{}", json.stderr);

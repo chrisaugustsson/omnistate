@@ -469,6 +469,20 @@ fn config_show_names_the_project_the_folder_is_linked_to() {
     };
     assert_eq!(show_in(&folder.join("sub")), json!(PROJECT));
     assert_eq!(show_in(&elsewhere.path), Value::Null);
+
+    let text = |dir: &std::path::Path| {
+        let out = omni(&home.path).args(&["config", "show"]).cwd(dir).run();
+        assert_eq!(out.code, 0, "{}", out.stderr);
+        out.stdout
+    };
+    let links_line = format!("links_file: {}", links_path(&home.path).display());
+    let linked = text(&folder.path);
+    assert!(linked.contains(&format!("project: {PROJECT}")), "{linked}");
+    assert!(linked.contains(&links_line), "{linked}");
+    assert!(text(&elsewhere.path).contains("project: (none)"));
+
+    std::fs::write(links_path(&home.path), "not [valid").unwrap();
+    assert!(text(&folder.path).contains("project: (none)"));
 }
 
 const FEATURE: &str = "01900000-0000-7000-8000-0000000000f1";
