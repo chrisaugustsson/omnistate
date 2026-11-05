@@ -235,6 +235,50 @@ design yet. An unknown trigger, action, transition or easing, and a missing
 required field, are errors that list the names to write instead, such as
 "`tap` is not a trigger: write one of onClick, onHover, ...".
 
+### Flows and prototype settings (`flows` and `prototype` of a `<Page>`)
+
+A `<Page>` takes `flows`, a list of the flows of its prototype, and `prototype`,
+how the page is shown in play mode. Play mode offers the flows as entry points;
+a page without flows plays from the board that is open. A flow has a `name`, a
+`start` (the ID of one of the page's boards) and a `description`, which printing
+leaves out when it is empty. Two flows may not share a name, and a write of
+`flows` is refused when a `start` is not a board of the page. A board deleted
+afterwards leaves its flow as it was: reading prints it unchanged.
+
+```
+<Page id="pg000001" name="Shop" flows={[{name: "Checkout", start: "b1a2c3d4", description: "From the cart to the receipt"}]} prototype={{device: "iPhone 16", color: "Black", rotation: "landscape", background: "#000000", responsive: true}}>
+```
+
+`prototype` is an object with some of these fields; printing leaves out a field
+that holds its default, and a `prototype` of defaults only, and an empty `flows`,
+print nothing:
+
+| Field | Values | Default |
+| --- | --- | --- |
+| `device` | a name of the device table below | `None` |
+| `color` | a colour of the device | the device's first |
+| `rotation` | `portrait`, or `landscape` for a device that rotates | `portrait` |
+| `background` | a color | `#1e1e1e` |
+| `responsive` | `true` or `false` | `false` |
+| `customSize` | `[width, height]` in points, only for the device `Custom`, which needs it | none |
+
+The device table is FigCraft's (`crates/doc/src/proto.rs`, MIT OR Apache-2.0;
+see `NOTICE`), in `crates/omni-core/src/design/devices.rs`: iPhone 17, 17 Pro,
+17 Pro Max, iPhone Air, iPhone 16, 16 Pro, 16 Pro Max, 16 Plus, iPhone 15 Pro,
+15 Pro Max, 15 Plus, iPhone 14 Pro, 14 Pro Max, 14, Android Compact, Android
+Medium, iPad mini, MacBook Air, Desktop, and the two choices that are not
+models: `Custom` (the screen is `customSize`) and `None` (a board at its own
+size). Phones and tablets rotate; MacBook Air, Desktop, `Custom` and `None` do
+not. A device outside the table, a `customSize` on another device, a rotation
+the device does not take and a colour it does not come in are errors that name
+what to write instead.
+
+The doc outline (`GET .../docs/{doc}/html?view=outline`) carries `flows` and
+`prototype` on each page, so the viewer reads them without another request. A
+page written without them has `flows: []` and `prototype` with every field:
+`device`, `color` (`null`), `rotation`, `background`, `responsive` and
+`customSize` (`null`), the defaults filled in.
+
 ### Instances (`props` and `overrides` of an `<Instance>`)
 
 An `<Instance>` takes `component` (the component's node ID), `props` (a value

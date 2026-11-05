@@ -21,8 +21,8 @@
 //!
 //! `docs/formats/design-tags.md` documents every tag and attribute.
 
-use super::json::Object;
-use super::proto::Interaction;
+use super::json::{Object, quoted};
+use super::proto::{Flow, Interaction, PrototypeSettings};
 use super::value::non_negative;
 use super::{
     AttachmentRef, Bind, Color, Fill, FontFamily, Gap, GridPlacement, LayoutMode, Length, Margin,
@@ -81,6 +81,8 @@ const BOARD: &[&str] = &[
     "overflow",
     "interactions",
 ];
+
+const PAGE: &[&str] = &["id", "name", "visible", "flows", "prototype"];
 
 const FRAME: &[&str] = &[
     "id",
@@ -271,7 +273,7 @@ const INSTANCE: &[&str] = &[
 static TAGS: [Tag; 8] = [
     Tag {
         name: "Page",
-        attributes: &["id", "name", "visible"],
+        attributes: PAGE,
     },
     Tag {
         name: "Board",
@@ -479,6 +481,8 @@ enum Shape {
     Overrides,
     Bind,
     Interactions,
+    Flows,
+    Prototype,
 }
 
 struct Spec {
@@ -566,6 +570,8 @@ static SPECS: &[Spec] = &[
     node("overrides", "overrides", Shape::Overrides),
     node("bind", "bind", Shape::Bind),
     node("interactions", "interactions", Shape::Interactions),
+    node("flows", "flows", Shape::Flows),
+    node("prototype", "prototype", Shape::Prototype),
 ];
 
 /// The `props` of a component are its property definitions, and those of an
@@ -660,6 +666,13 @@ fn how(spec: &Spec) -> String {
         ),
         Shape::Interactions => format!(
             "write a list of interactions, such as `{attr}={{[{{trigger: {{type: \"onClick\"}}, actions: [{{type: \"navigate\", dest: \"k3f9x2qa\"}}]}}]}}`"
+        ),
+        Shape::Flows => format!(
+            "write a list of flows, such as `{attr}={{[{{name: \"Checkout\", start: \"b1a2c3d4\"}}]}}`"
+        ),
+        Shape::Prototype => format!(
+            "write an object with some of {}, such as `{attr}={{{{device: \"iPhone 16\", rotation: \"landscape\"}}}}`",
+            quoted(&["device", "color", "rotation", "background", "responsive", "customSize"])
         ),
         Shape::Bind => format!(
             "bind a layer of a component to its properties, such as `{attr}={{{{visible: \"showIcon\"}}}}` with `visible`, `content` or `component`"
@@ -827,6 +840,16 @@ fn convert(spec: &Spec, value: Value) -> Result<Value, Problem> {
         Shape::Values => check::<PropValues>(spec, &value).map(|()| value),
         Shape::Overrides => check::<Overrides>(spec, &value).map(|()| value),
         Shape::Bind => check::<Bind>(spec, &value).map(|()| value),
+        Shape::Flows => Flow::list_from_value(&value)
+            .map_err(|error| from_text(spec, &error))
+            .and_then(|flows| {
+                serde_json::to_value(flows).map_err(|error| from_text(spec, &error.to_string()))
+            }),
+        Shape::Prototype => PrototypeSettings::from_value(&value)
+            .map_err(|error| from_text(spec, &error))
+            .and_then(|settings| {
+                serde_json::to_value(settings).map_err(|error| from_text(spec, &error.to_string()))
+            }),
         Shape::Interactions => Interaction::list_from_value(&value)
             .map_err(|error| from_text(spec, &error))
             .and_then(|interactions| {

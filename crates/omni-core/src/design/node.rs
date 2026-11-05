@@ -5,7 +5,7 @@ use super::id::NodeId;
 use super::json::{Number, Object, entry, first_set, some, some_number, some_object, some_objects};
 use super::layout::{GridPlacement, Layout, LayoutMode, Margin, SelfAlignment, Sizing};
 use super::path::PathData;
-use super::proto::{Interaction, Overflow, ScrollPosition};
+use super::proto::{Flow, Interaction, Overflow, PrototypeSettings, ScrollPosition};
 use super::style::{Fill, FontStyle, ImageFit, Radius, Shadow, Stroke, TextAlign, TextDecoration};
 use super::value::{AttachmentRef, Color, FontFamily, Length, TokenOr, some_non_negative};
 use serde::de::Error as _;
@@ -156,7 +156,9 @@ impl Node {
             return false;
         }
         match (&self.data, &other.data) {
-            (NodeData::Page(_), NodeData::Page(_)) => true,
+            (NodeData::Page(a), NodeData::Page(b)) => {
+                a.flows == b.flows && a.prototype == b.prototype
+            }
             (NodeData::Board(a), NodeData::Board(b)) | (NodeData::Frame(a), NodeData::Frame(b)) => {
                 same_frame(a, b)
             }
@@ -218,6 +220,20 @@ impl NodeData {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Page {
     pub children: Vec<Node>,
+    flows: Vec<Flow>,
+    prototype: PrototypeSettings,
+}
+
+impl Page {
+    /// The flows of the page, each starting at one of its boards.
+    pub fn flows(&self) -> &[Flow] {
+        &self.flows
+    }
+
+    /// How the page is shown in play mode.
+    pub fn prototype(&self) -> &PrototypeSettings {
+        &self.prototype
+    }
 }
 
 /// A frame or a board: a box that lays out its children.
@@ -374,7 +390,15 @@ impl Serialize for Node {
             map.serialize_entry("scrollPosition", &self.scroll_position)?;
         }
         match &self.data {
-            NodeData::Page(page) => map.serialize_entry("children", &page.children)?,
+            NodeData::Page(page) => {
+                if !page.flows.is_empty() {
+                    map.serialize_entry("flows", &page.flows)?;
+                }
+                if !page.prototype.is_default() {
+                    map.serialize_entry("prototype", &page.prototype)?;
+                }
+                map.serialize_entry("children", &page.children)?
+            }
             NodeData::Board(frame) | NodeData::Frame(frame) => {
                 write_size(&mut map, &frame.size)?;
                 map.serialize_entry("layout", &frame.layout)?;
@@ -584,6 +608,10 @@ struct RawNode {
     #[serde(default, deserialize_with = "some")]
     interactions: Option<Value>,
     #[serde(default, deserialize_with = "some")]
+    flows: Option<Value>,
+    #[serde(default, deserialize_with = "some")]
+    prototype: Option<Value>,
+    #[serde(default, deserialize_with = "some")]
     children: Option<Vec<Subtree>>,
 }
 
@@ -661,7 +689,23 @@ impl RawNode {
     fn page(&mut self) -> Result<Page, String> {
         let children = self.children();
         check_children(self.id, self.kind, None, &children)?;
-        Ok(Page { children })
+        let flows = self
+            .flows
+            .take()
+            .map(|flows| Flow::list_from_value(&flows))
+            .transpose()?
+            .unwrap_or_default();
+        let prototype = self
+            .prototype
+            .take()
+            .map(|prototype| PrototypeSettings::from_value(&prototype))
+            .transpose()?
+            .unwrap_or_default();
+        Ok(Page {
+            children,
+            flows,
+            prototype,
+        })
     }
 
     fn frame(&mut self) -> Result<Frame, String> {
@@ -847,6 +891,8 @@ impl RawNode {
             ("overrides", self.overrides.is_some()),
             ("bind", self.bind.is_some()),
             ("interactions", self.interactions.is_some()),
+            ("flows", self.flows.is_some()),
+            ("prototype", self.prototype.is_some()),
             ("children", self.children.is_some()),
         ])
     }

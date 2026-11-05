@@ -125,6 +125,7 @@ macro_rules! keywords {
 
 mod address;
 mod component;
+pub mod devices;
 mod edit;
 mod id;
 mod json;

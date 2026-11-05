@@ -12,7 +12,9 @@
 //! 300, easing `easeOut`, `delayMs` 0, and the defaults of each action's
 //! fields.
 
+use super::devices::{self, CUSTOM, NONE};
 use super::id::NodeId;
+use super::json::quoted;
 use super::value::Color;
 use serde::ser::SerializeMap;
 use serde::{Deserialize, Serialize, Serializer};
@@ -973,4 +975,308 @@ fn blocks_from(value: &Value) -> Result<Vec<ConditionBlock>, String> {
             })
         })
         .collect()
+}
+
+/// A flow of a page: a name and the board it starts at.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Flow {
+    pub name: String,
+    pub start: NodeId,
+    /// Empty when the flow has none, and then not written.
+    pub description: String,
+}
+
+const FLOW_FIELDS: &[&str] = &["name", "start", "description"];
+
+impl Serialize for Flow {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut map = serializer.serialize_map(None)?;
+        map.serialize_entry("name", &self.name)?;
+        map.serialize_entry("start", &self.start)?;
+        if !self.description.is_empty() {
+            map.serialize_entry("description", &self.description)?;
+        }
+        map.end()
+    }
+}
+
+impl Flow {
+    /// Reads the `flows` of a page from their JSON form. Two flows may not
+    /// share a name.
+    pub fn list_from_value(value: &Value) -> Result<Vec<Flow>, String> {
+        let Some(items) = value.as_array() else {
+            return Err(format!(
+                "`flows` is {}: write a list, such as `flows={{[{{name: \"Checkout\", start: \"b1a2c3d4\"}}]}}`",
+                describe(value)
+            ));
+        };
+        let flows = items
+            .iter()
+            .map(Flow::from_value)
+            .collect::<Result<Vec<_>, _>>()?;
+        for (at, flow) in flows.iter().enumerate() {
+            if flows[..at].iter().any(|other| other.name == flow.name) {
+                return Err(format!("two flows are named `{}`", flow.name));
+            }
+        }
+        Ok(flows)
+    }
+
+    /// Reads one flow from its JSON form.
+    pub fn from_value(value: &Value) -> Result<Flow, String> {
+        let map = object(value, "a flow")?;
+        fields(map, FLOW_FIELDS, "a flow")?;
+        let name = text(
+            map,
+            "name",
+            "a flow",
+            "write its name, such as `name: \"Checkout\"`",
+        )?;
+        let start = text(
+            map,
+            "start",
+            "a flow",
+            "write the ID of the board it starts at, such as `start: \"b1a2c3d4\"`",
+        )?;
+        let start = start.parse::<NodeId>().map_err(|error| error.to_string())?;
+        let description = match map.get("description") {
+            None => String::new(),
+            Some(Value::String(description)) => description.clone(),
+            Some(other) => {
+                return Err(format!(
+                    "`description` is {}, but it is text: write `description: \"From the cart to the receipt\"`",
+                    describe(other)
+                ));
+            }
+        };
+        Ok(Flow {
+            name,
+            start,
+            description,
+        })
+    }
+}
+
+/// How the device is held.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Rotation {
+    #[default]
+    Portrait,
+    /// Turned a quarter turn, so the screen is wider than it is tall.
+    Landscape,
+}
+
+const ROTATIONS: &[&str] = &["portrait", "landscape"];
+
+const PROTOTYPE_FIELDS: &[&str] = &[
+    "device",
+    "color",
+    "rotation",
+    "background",
+    "responsive",
+    "customSize",
+];
+
+const DEFAULT_BACKGROUND: &str = "#1e1e1e";
+
+/// How a page is shown in play mode. A field that holds its default is left
+/// out of the JSON and of the tag format.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PrototypeSettings {
+    /// A name of [`devices::DEVICES`].
+    pub device: String,
+    /// A colour of the device; `None` for the device's first.
+    pub color: Option<String>,
+    pub rotation: Rotation,
+    pub background: Color,
+    /// Whether the board is resized to the screen and its layout responds.
+    pub responsive: bool,
+    /// The screen of the device `Custom`, in points, width then height.
+    pub custom_size: Option<[f64; 2]>,
+}
+
+impl Default for PrototypeSettings {
+    fn default() -> Self {
+        PrototypeSettings {
+            device: NONE.to_string(),
+            color: None,
+            rotation: Rotation::Portrait,
+            background: DEFAULT_BACKGROUND
+                .parse()
+                .expect("the default background is a color"),
+            responsive: false,
+            custom_size: None,
+        }
+    }
+}
+
+impl PrototypeSettings {
+    fn holds_background_default(&self) -> bool {
+        self.background
+            .as_str()
+            .eq_ignore_ascii_case(DEFAULT_BACKGROUND)
+    }
+
+    /// Whether every field holds its default, so that nothing is written.
+    pub fn is_default(&self) -> bool {
+        self.device == NONE
+            && self.color.is_none()
+            && self.rotation == Rotation::Portrait
+            && self.holds_background_default()
+            && !self.responsive
+            && self.custom_size.is_none()
+    }
+
+    /// The settings with every field, as the doc outline carries them: a
+    /// field left out holds its default, and `color` and `customSize` are
+    /// `null` when unset.
+    pub fn outline(&self) -> Value {
+        json!({
+            "device": self.device,
+            "color": self.color,
+            "rotation": self.rotation,
+            "background": self.background,
+            "responsive": self.responsive,
+            "customSize": self.custom_size.map(sides),
+        })
+    }
+
+    /// Reads the `prototype` of a page from its JSON form.
+    pub fn from_value(value: &Value) -> Result<PrototypeSettings, String> {
+        let map = object(value, "the prototype settings")?;
+        fields(map, PROTOTYPE_FIELDS, "the prototype settings")?;
+        let mut settings = PrototypeSettings::default();
+        if let Some(device) = map.get("device") {
+            let Some(name) = device.as_str() else {
+                return Err(format!(
+                    "`device` is {}, but it names a device: write one of {}",
+                    describe(device),
+                    device_names()
+                ));
+            };
+            if devices::device(name).is_none() {
+                return Err(format!(
+                    "`{name}` is not a device: write one of {}",
+                    device_names()
+                ));
+            }
+            settings.device = name.to_string();
+        }
+        let device = devices::device(&settings.device).expect("the device is in the table");
+        if let Some(size) = map.get("customSize") {
+            if device.name != CUSTOM {
+                return Err(format!("`customSize` is for the device {CUSTOM}"));
+            }
+            settings.custom_size = Some(custom_size(size)?);
+        } else if device.name == CUSTOM {
+            return Err(format!(
+                "the device {CUSTOM} needs a `customSize`: write `customSize: [390, 844]`"
+            ));
+        }
+        if let Some(rotation) = map.get("rotation") {
+            settings.rotation = keyword(rotation, ROTATIONS, "a rotation", "rotation")?;
+            if settings.rotation == Rotation::Landscape && !device.rotates {
+                return Err(format!("`{}` does not rotate", device.name));
+            }
+        }
+        if let Some(color) = map.get("color") {
+            let Some(name) = color.as_str() else {
+                return Err(format!(
+                    "`color` is {}, but it names a color of the device: write `color: \"Black\"`",
+                    describe(color)
+                ));
+            };
+            if !device.colors.iter().any(|color| color.name == name) {
+                return Err(if device.colors.is_empty() {
+                    format!(
+                        "`{name}` is not a color of `{}`: it comes in none",
+                        device.name
+                    )
+                } else {
+                    let colors: Vec<&str> = device.colors.iter().map(|color| color.name).collect();
+                    format!(
+                        "`{name}` is not a color of `{}`: write one of {}",
+                        device.name,
+                        quoted(&colors)
+                    )
+                });
+            }
+            settings.color = Some(name.to_string());
+        }
+        if let Some(background) = map.get("background") {
+            settings.background = background
+                .as_str()
+                .ok_or_else(|| {
+                    format!(
+                        "`background` is {}, but it is a color: write `background: \"#000000\"`",
+                        describe(background)
+                    )
+                })?
+                .parse::<Color>()
+                .map_err(|error| error.to_string())?;
+        }
+        settings.responsive = flag(map, "responsive", false)?;
+        Ok(settings)
+    }
+}
+
+impl Serialize for PrototypeSettings {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut map = serializer.serialize_map(None)?;
+        if self.device != NONE {
+            map.serialize_entry("device", &self.device)?;
+        }
+        if let Some(color) = &self.color {
+            map.serialize_entry("color", color)?;
+        }
+        if self.rotation != Rotation::Portrait {
+            map.serialize_entry("rotation", &self.rotation)?;
+        }
+        if !self.holds_background_default() {
+            map.serialize_entry("background", &self.background)?;
+        }
+        if self.responsive {
+            map.serialize_entry("responsive", &true)?;
+        }
+        if let Some(size) = &self.custom_size {
+            map.serialize_entry("customSize", &sides(*size))?;
+        }
+        map.end()
+    }
+}
+
+/// The sides of a custom size as JSON, a whole number without a fraction.
+fn sides(size: [f64; 2]) -> [Value; 2] {
+    size.map(|side| {
+        if side.fract() == 0.0 && side.abs() < 9_007_199_254_740_992.0 {
+            Value::from(side as i64)
+        } else {
+            Value::from(side)
+        }
+    })
+}
+
+fn device_names() -> String {
+    let all: Vec<&str> = devices::DEVICES.iter().map(|device| device.name).collect();
+    quoted(&all)
+}
+
+fn custom_size(value: &Value) -> Result<[f64; 2], String> {
+    let side = |side: &Value| {
+        side.as_f64()
+            .filter(|side| side.is_finite() && *side >= 1.0)
+    };
+    match value.as_array().map(Vec::as_slice) {
+        Some([width, height]) => match (side(width), side(height)) {
+            (Some(width), Some(height)) => Ok([width, height]),
+            _ => Err(
+                "`customSize` has a side below 1: write the width and height in points, such as `customSize: [390, 844]`"
+                    .to_string(),
+            ),
+        },
+        _ => Err(
+            "`customSize` is not a pair of numbers: write `customSize: [390, 844]`".to_string(),
+        ),
+    }
 }

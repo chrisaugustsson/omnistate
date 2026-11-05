@@ -481,6 +481,7 @@ impl DesignDoc {
             ));
         }
         check(std::slice::from_ref(&node)).map_err(|message| invalid(index, message))?;
+        check_flows(&node).map_err(|message| invalid(index, message))?;
 
         let at = self.position(parent, after);
         index_subtree(&node, parent, &mut self.places);
@@ -550,6 +551,7 @@ impl DesignDoc {
             ));
         }
         check(std::slice::from_ref(&node)).map_err(|message| invalid(index, message))?;
+        check_flows(&node).map_err(|message| invalid(index, message))?;
 
         let before: HashMap<NodeId, u64> =
             old_order.iter().map(|id| (*id, self.rev(*id))).collect();
@@ -619,6 +621,9 @@ impl DesignDoc {
                 .any(|name| properties.contains_key(*name));
         if instance {
             check(std::slice::from_ref(&*node)).map_err(|message| invalid(index, message))?;
+        }
+        if properties.contains_key("flows") {
+            check_flows(node).map_err(|message| invalid(index, message))?;
         }
         if properties.contains_key("interactions") {
             self.check_tree(index, id, variants)?;
@@ -715,6 +720,26 @@ impl DesignDoc {
 }
 
 /// The IDs of a node and its descendants, in document order.
+/// Checks that every flow of a page starts at one of the page's boards. A
+/// board deleted later leaves its flow as it was; only a write of `flows`
+/// is checked.
+fn check_flows(node: &Node) -> Result<(), String> {
+    let NodeData::Page(page) = node.data() else {
+        return Ok(());
+    };
+    match page
+        .flows()
+        .iter()
+        .find(|flow| !page.children.iter().any(|board| board.id() == &flow.start))
+    {
+        Some(flow) => Err(format!(
+            "`{}` is not a board of this page: a flow starts at one of its boards",
+            flow.start
+        )),
+        None => Ok(()),
+    }
+}
+
 fn collect(node: &Node, ids: &mut Vec<NodeId>) {
     ids.push(*node.id());
     for child in node.children() {

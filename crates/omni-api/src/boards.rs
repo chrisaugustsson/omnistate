@@ -28,6 +28,7 @@ use crate::workspace::{WorkspaceRequest, parse_uuid};
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
+use omni_core::design::proto::PrototypeSettings;
 use omni_core::design::tags;
 use omni_core::design::{Node, NodeId};
 use omni_core::hash::blake3_hex;
@@ -141,6 +142,23 @@ pub(crate) fn index_subtree(root: &Node) -> Vec<IndexedNode> {
     let mut out = Vec::new();
     walk(root, None, &mut out);
     out
+}
+
+/// Gives a page's JSON the `flows` and the `prototype` the viewer reads: a
+/// page written without them has no flows and the default settings, and the
+/// settings carry every field, as `PrototypeSettings::outline` has them.
+fn fill_prototype(page: &mut Value) {
+    let Some(object) = page.as_object_mut() else {
+        return;
+    };
+    object
+        .entry("flows")
+        .or_insert_with(|| Value::Array(Vec::new()));
+    let settings = object
+        .get("prototype")
+        .and_then(|prototype| PrototypeSettings::from_value(prototype).ok())
+        .unwrap_or_default();
+    object.insert("prototype".to_string(), settings.outline());
 }
 
 /// The chunk of a page: the page without its boards, with the node index of
@@ -495,6 +513,7 @@ pub(crate) async fn read_outline(
                 .collect();
             let sizes = placeholders::boxes_of(sizing, texts).await;
             let mut json = own_json(page);
+            fill_prototype(&mut json);
             let placeholders = boards
                 .iter()
                 .zip(sizes)
@@ -551,6 +570,7 @@ pub(crate) async fn read_outline(
     let mut pages = Vec::with_capacity(manifest.pages.len());
     for entry in &manifest.pages {
         let mut page = find(&entry.chunk)?;
+        fill_prototype(&mut page);
         let boards = entry
             .boards
             .iter()
