@@ -4,9 +4,9 @@
 # defaults for this local stack; override them in .env.
 #
 # The address is http://omnistate.localhost: the proxy joins the shared `edge`
-# network, where the machine's Traefik (~/projects/edge) routes that hostname
-# to it, so nothing here needs a port number that another project might also
-# publish. The hostname follows the Compose project name, so a second stack
+# network, where the machine's Traefik (docker/edge/, started once with
+# `make edge`) routes that hostname to it, so nothing here needs a port number
+# that another project might also publish. The hostname follows the Compose project name, so a second stack
 # (`docker compose -p omnistate-x up`) is http://omnistate-x.localhost. Without
 # the edge, the proxy is still published on a port of its own (OMNI_PORT,
 # default 8420) at http://localhost:8420.
@@ -119,8 +119,8 @@ volumes:
   test-cargo-registry:
 
 networks:
-  # The machine-wide network the edge routes through (~/projects/edge creates
-  # it); when the edge is not running, Compose creates it here instead and the
+  # The machine-wide network the edge routes through (`make edge` creates it);
+  # when the edge is not running, Compose creates it here instead and the
   # labels above stay inert.
   edge:
     name: edge
