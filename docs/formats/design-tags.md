@@ -96,6 +96,8 @@ to CSS.
 | `shadows` | A list of shadows or token references: `shadows={[{type: "drop", color: "#0f172a33", offsetX: 0, offsetY: 4, blur: 8, spread: 0}, "$shadow.raised"]}`. |
 | `opacity` | From 0 to 1, or a token reference. |
 | `clip` | Clips the children to the box. |
+| `overflow` | How a board or frame scrolls its content: `"none"`, `"horizontal"`, `"vertical"` or `"both"`; left out it is `none`. Boards and frames take it. |
+| `scrollPosition` | Whether a layer inside a board scrolls with it, `"scrolls"`, stays `"fixed"` or is `"sticky"`; left out it is `scrolls`. Pages, boards and components refuse it, and so do the layers of a component. |
 
 ### Text (`<Text>`)
 

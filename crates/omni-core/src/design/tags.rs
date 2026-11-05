@@ -78,6 +78,7 @@ const BOARD: &[&str] = &[
     "shadows",
     "opacity",
     "clip",
+    "overflow",
     "interactions",
 ];
 
@@ -115,7 +116,9 @@ const FRAME: &[&str] = &[
     "opacity",
     "clip",
     "bind",
+    "overflow",
     "interactions",
+    "scrollPosition",
 ];
 
 const COMPONENT: &[&str] = &[
@@ -178,6 +181,7 @@ const TEXT: &[&str] = &[
     "opacity",
     "bind",
     "interactions",
+    "scrollPosition",
 ];
 
 const IMAGE: &[&str] = &[
@@ -206,6 +210,7 @@ const IMAGE: &[&str] = &[
     "opacity",
     "bind",
     "interactions",
+    "scrollPosition",
 ];
 
 const VECTOR: &[&str] = &[
@@ -233,6 +238,7 @@ const VECTOR: &[&str] = &[
     "opacity",
     "bind",
     "interactions",
+    "scrollPosition",
 ];
 
 const INSTANCE: &[&str] = &[
@@ -258,6 +264,7 @@ const INSTANCE: &[&str] = &[
     "overrides",
     "bind",
     "interactions",
+    "scrollPosition",
 ];
 
 /// The tags, in the order of [`KINDS`].
@@ -399,6 +406,17 @@ const TEXT_DECORATION: Keywords = &[
     ("line-through", "line-through"),
 ];
 const FIT: Keywords = &[("cover", "cover"), ("contain", "contain")];
+const OVERFLOW: Keywords = &[
+    ("none", "none"),
+    ("horizontal", "horizontal"),
+    ("vertical", "vertical"),
+    ("both", "both"),
+];
+const SCROLL_POSITION: Keywords = &[
+    ("scrolls", "scrolls"),
+    ("fixed", "fixed"),
+    ("sticky", "sticky"),
+];
 
 /// Where an attribute goes in a node's JSON.
 #[derive(Clone, Copy)]
@@ -520,6 +538,12 @@ static SPECS: &[Spec] = &[
     node("shadows", "shadows", Shape::Shadows),
     node("opacity", "opacity", Shape::Within(0.0, 1.0)),
     node("clip", "clip", Shape::Flag),
+    node("overflow", "overflow", Shape::Keyword(OVERFLOW)),
+    node(
+        "scrollPosition",
+        "scrollPosition",
+        Shape::Keyword(SCROLL_POSITION),
+    ),
     node("content", "content", Shape::Text),
     node("fontFamily", "fontFamily", Shape::Family),
     node("fontSize", "fontSize", Shape::Length),
@@ -1234,6 +1258,12 @@ impl<'a> Parser<'a> {
             }
 
             let attr = self.word();
+            if attr == "scrollPosition"
+                && let Some(problem) =
+                    scroll_misplaced(kind, parent.is_some_and(|parent| parent.defs.is_some()))
+            {
+                return Err(self.problem(at, problem));
+            }
             if !tag.attributes.contains(&attr) {
                 return Err(self.error(
                     at,
@@ -1833,6 +1863,20 @@ fn number_value(number: f64) -> Value {
     }
 }
 
+/// The problem with `scrollPosition` on a tag of `kind`, if there is one: it
+/// is for the layers inside a board, not for pages, boards or components, and
+/// not for the layers of a component.
+fn scroll_misplaced(kind: NodeKind, in_component: bool) -> Option<Problem> {
+    let layer = !matches!(kind, NodeKind::Page | NodeKind::Board | NodeKind::Component);
+    if layer && !in_component {
+        return None;
+    }
+    Some(problem(
+        "`scrollPosition` is for layers inside a board",
+        "remove `scrollPosition`, or write it on a layer inside a `<Board>`",
+    ))
+}
+
 /// The problem with a tag of `kind` inside `parent`, if there is one.
 fn misplaced(kind: NodeKind, parent: Option<&Parent>) -> Option<Problem> {
     let parent = parent?;
@@ -1967,6 +2011,14 @@ pub fn set_properties(
     for name in properties.keys() {
         if name == "id" {
             return Err("`id` cannot be set: a node keeps its ID".to_string());
+        }
+        if name == "scrollPosition"
+            && let Some(problem) = scroll_misplaced(
+                kind,
+                host.is_some_and(|host| host.kind == NodeKind::Component),
+            )
+        {
+            return Err(format!("{}: {}", problem.message, problem.fix));
         }
         if !tag.attributes.contains(&name.as_str()) {
             return Err(format!(

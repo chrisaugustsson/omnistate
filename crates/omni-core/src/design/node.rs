@@ -5,7 +5,7 @@ use super::id::NodeId;
 use super::json::{Number, Object, entry, first_set, some, some_number, some_object, some_objects};
 use super::layout::{GridPlacement, Layout, LayoutMode, Margin, SelfAlignment, Sizing};
 use super::path::PathData;
-use super::proto::Interaction;
+use super::proto::{Interaction, Overflow, ScrollPosition};
 use super::style::{Fill, FontStyle, ImageFit, Radius, Shadow, Stroke, TextAlign, TextDecoration};
 use super::value::{AttachmentRef, Color, FontFamily, Length, TokenOr, some_non_negative};
 use serde::de::Error as _;
@@ -49,6 +49,8 @@ pub struct Node {
     bind: Option<Bind>,
     /// What the layer does when the person using a prototype touches it.
     interactions: Vec<Interaction>,
+    /// Whether the layer scrolls with its board.
+    scroll_position: ScrollPosition,
     data: NodeData,
 }
 
@@ -103,6 +105,11 @@ impl Node {
         &self.interactions
     }
 
+    /// Whether a layer inside a board scrolls with it, stays fixed or sticks.
+    pub fn scroll_position(&self) -> ScrollPosition {
+        self.scroll_position
+    }
+
     /// Gives the node `interactions`, in place of its own.
     pub fn set_interactions(&mut self, interactions: Vec<Interaction>) {
         self.interactions = interactions;
@@ -144,6 +151,7 @@ impl Node {
             || self.placement != other.placement
             || self.bind != other.bind
             || self.interactions != other.interactions
+            || self.scroll_position != other.scroll_position
         {
             return false;
         }
@@ -174,6 +182,7 @@ fn same_frame(a: &Frame, b: &Frame) -> bool {
         && a.shadows == b.shadows
         && a.opacity == b.opacity
         && a.clip == b.clip
+        && a.overflow == b.overflow
 }
 
 /// A node's type, with the properties of that type.
@@ -224,6 +233,8 @@ pub struct Frame {
     pub opacity: Option<TokenOr<f64>>,
     /// Whether children are clipped to the box.
     pub clip: Option<bool>,
+    /// How the box scrolls its content. A component's frame always has none.
+    pub overflow: Overflow,
     pub children: Vec<Node>,
 }
 
@@ -359,6 +370,9 @@ impl Serialize for Node {
         if !self.interactions.is_empty() {
             map.serialize_entry("interactions", &self.interactions)?;
         }
+        if self.scroll_position != ScrollPosition::Scrolls {
+            map.serialize_entry("scrollPosition", &self.scroll_position)?;
+        }
         match &self.data {
             NodeData::Page(page) => map.serialize_entry("children", &page.children)?,
             NodeData::Board(frame) | NodeData::Frame(frame) => {
@@ -370,6 +384,9 @@ impl Serialize for Node {
                 entry(&mut map, "shadows", frame.shadows.as_ref())?;
                 entry(&mut map, "opacity", frame.opacity.as_ref())?;
                 entry(&mut map, "clip", frame.clip.as_ref())?;
+                if frame.overflow != Overflow::None {
+                    map.serialize_entry("overflow", &frame.overflow)?;
+                }
                 map.serialize_entry("children", &frame.children)?;
             }
             NodeData::Text(text) => {
@@ -527,6 +544,10 @@ struct RawNode {
     #[serde(default, deserialize_with = "some")]
     clip: Option<bool>,
     #[serde(default, deserialize_with = "some")]
+    overflow: Option<Overflow>,
+    #[serde(default, deserialize_with = "some")]
+    scroll_position: Option<ScrollPosition>,
+    #[serde(default, deserialize_with = "some")]
     content: Option<String>,
     #[serde(default, deserialize_with = "some")]
     font_family: Option<TokenOr<FontFamily>>,
@@ -595,6 +616,10 @@ impl RawNode {
                 .transpose()?
                 .unwrap_or_default(),
         };
+        let scroll_position = match self.kind {
+            NodeKind::Page | NodeKind::Board | NodeKind::Component => ScrollPosition::default(),
+            _ => self.scroll_position.take().unwrap_or_default(),
+        };
         let data = match self.kind {
             NodeKind::Page => NodeData::Page(self.page()?),
             NodeKind::Board => NodeData::Board(self.frame()?),
@@ -615,6 +640,7 @@ impl RawNode {
             placement,
             bind,
             interactions,
+            scroll_position,
             data,
         })
     }
@@ -652,6 +678,10 @@ impl RawNode {
             shadows: self.shadows.take(),
             opacity: self.opacity()?,
             clip: self.clip.take(),
+            overflow: match self.kind {
+                NodeKind::Component => Overflow::None,
+                _ => self.overflow.take().unwrap_or_default(),
+            },
             children,
         })
     }
@@ -797,6 +827,8 @@ impl RawNode {
             ("shadows", self.shadows.is_some()),
             ("opacity", self.opacity.is_some()),
             ("clip", self.clip.is_some()),
+            ("overflow", self.overflow.is_some()),
+            ("scrollPosition", self.scroll_position.is_some()),
             ("content", self.content.is_some()),
             ("fontFamily", self.font_family.is_some()),
             ("fontSize", self.font_size.is_some()),

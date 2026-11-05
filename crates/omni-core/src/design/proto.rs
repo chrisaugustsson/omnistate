@@ -98,6 +98,30 @@ const INTERACTION_FIELDS: &[&str] = &[
 
 const DEFAULT_DURATION_MS: u32 = 300;
 
+keywords! {
+    /// How a board or frame scrolls its content.
+    #[derive(Default)]
+    pub enum Overflow {
+        #[default]
+        None = "none",
+        Horizontal = "horizontal",
+        Vertical = "vertical",
+        Both = "both",
+    }
+}
+
+keywords! {
+    /// Whether a layer scrolls with its board, stays where it is, or sticks
+    /// to the edge it scrolls to.
+    #[derive(Default)]
+    pub enum ScrollPosition {
+        #[default]
+        Scrolls = "scrolls",
+        Fixed = "fixed",
+        Sticky = "sticky",
+    }
+}
+
 /// What starts an interaction.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "camelCase")]

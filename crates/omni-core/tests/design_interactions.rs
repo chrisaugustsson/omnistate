@@ -5,8 +5,9 @@
 use omni_core::design::proto::{
     Action, Easing, OverlayAnchor, OverlayPosition, Transition, Trigger,
 };
+use omni_core::design::proto::{Overflow, ScrollPosition};
 use omni_core::design::tags::{self, TagError};
-use omni_core::design::{Node, NodeKind};
+use omni_core::design::{Node, NodeData, NodeKind};
 use serde_json::{Value, json};
 
 const CARD: &str = r#"<Frame id="aaaaaaaa" name="Card" width={100} height={40} interactions="#;
@@ -352,5 +353,92 @@ fn a_missing_required_field_is_named_with_its_type() {
     for (interactions, message) in cases {
         let error = error_of(&frame_with(interactions));
         assert!(error.message().contains(message), "{interactions}: {error}");
+    }
+}
+
+const SCROLL_BOARD: &str = r#"<Board id="bbbbbbbb" name="Home" width={390} height={844} dir="col""#;
+
+#[test]
+fn overflow_on_a_board_and_a_frame_round_trips_and_defaults_to_none() {
+    let (board, printed) = round_trip(&format!(
+        r#"{SCROLL_BOARD} overflow="both"><Frame id="aaaaaaaa" name="List" width={{100}} height={{400}} dir="col" overflow="vertical"/><Frame id="cccccccc" name="Plain" width={{100}} height={{40}} dir="col"/></Board>"#
+    ));
+    assert!(printed.contains(r#"overflow="both""#) && printed.contains(r#"overflow="vertical""#));
+    assert_eq!(printed.matches("overflow").count(), 2, "{printed}");
+    let kinds: Vec<Overflow> = board.children().iter().map(frame_overflow).collect();
+    assert_eq!(kinds, [Overflow::Vertical, Overflow::None]);
+    assert_eq!(frame_overflow(&board), Overflow::Both);
+}
+
+fn frame_overflow(node: &Node) -> Overflow {
+    match node.data() {
+        NodeData::Board(frame) | NodeData::Frame(frame) => frame.overflow,
+        other => panic!("a frame, not {other:?}"),
+    }
+}
+
+#[test]
+fn an_unknown_overflow_names_the_keywords_there_are() {
+    let error = error_of(&format!(r#"{SCROLL_BOARD} overflow="sideways"/>"#));
+    assert!(error.message().contains("`sideways`"), "{error}");
+    for word in ["none", "horizontal", "vertical", "both"] {
+        assert!(error.fix().contains(word), "{error}");
+    }
+}
+
+#[test]
+fn a_component_takes_no_overflow() {
+    let error = error_of(
+        r#"<Component id="dddddddd" name="Card" width={10} height={10} dir="col" overflow="both"/>"#,
+    );
+    assert!(error.message().contains("overflow"), "{error}");
+}
+
+#[test]
+fn scroll_position_on_layers_in_a_board_round_trips_and_defaults_to_scrolls() {
+    let (board, printed) = round_trip(&format!(
+        r#"{SCROLL_BOARD}><Frame id="aaaaaaaa" name="Bar" width={{100}} height={{40}} dir="col" scrollPosition="fixed"/><Text id="cccccccc" name="Title" content="Hi" fontFamily="Inter" fontSize={{16}} scrollPosition="sticky"/><Text id="eeeeeeee" name="Body" content="Hi" fontFamily="Inter" fontSize={{16}}/></Board>"#
+    ));
+    let positions: Vec<ScrollPosition> = board
+        .children()
+        .iter()
+        .map(|node| node.scroll_position())
+        .collect();
+    assert_eq!(
+        positions,
+        [
+            ScrollPosition::Fixed,
+            ScrollPosition::Sticky,
+            ScrollPosition::Scrolls
+        ]
+    );
+    assert_eq!(printed.matches("scrollPosition").count(), 2, "{printed}");
+}
+
+#[test]
+fn scroll_position_is_refused_outside_the_layers_of_a_board() {
+    let sources = [
+        format!(r#"{SCROLL_BOARD} scrollPosition="fixed"/>"#),
+        r#"<Page id="aaaaaaaa" name="Flows" scrollPosition="fixed"/>"#.to_string(),
+        r#"<Component id="dddddddd" name="Card" width={10} height={10} dir="col"><Text id="cccccccc" name="T" content="Hi" fontFamily="Inter" fontSize={16} scrollPosition="fixed"/></Component>"#.to_string(),
+    ];
+    for source in sources {
+        let error = error_of(&source);
+        assert_eq!(
+            error.message(),
+            "`scrollPosition` is for layers inside a board",
+            "{source}"
+        );
+    }
+}
+
+#[test]
+fn an_unknown_scroll_position_names_the_keywords_there_are() {
+    let error = error_of(&format!(
+        r#"{SCROLL_BOARD}><Frame name="Bar" width={{100}} height={{40}} dir="col" scrollPosition="x"/></Board>"#
+    ));
+    assert!(error.message().contains("`x`"), "{error}");
+    for word in ["scrolls", "fixed", "sticky"] {
+        assert!(error.fix().contains(word), "{error}");
     }
 }
