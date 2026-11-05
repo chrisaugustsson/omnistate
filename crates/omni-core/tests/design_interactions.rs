@@ -2,7 +2,9 @@
 //! when the person using a prototype touches it, written in the tag format
 //! like `fill`, with FigCraft's names.
 
-use omni_core::design::proto::{Action, Easing, Transition, Trigger};
+use omni_core::design::proto::{
+    Action, Easing, OverlayAnchor, OverlayPosition, Transition, Trigger,
+};
 use omni_core::design::tags::{self, TagError};
 use omni_core::design::{Node, NodeKind};
 use serde_json::{Value, json};
@@ -258,5 +260,97 @@ fn errors_name_the_problem_and_the_fix() {
         let error = error_of(&frame_with(interactions));
         assert!(error.message().contains(message), "{interactions}: {error}");
         assert!(error.fix().contains(fix), "{interactions}: {error}");
+    }
+}
+
+#[test]
+fn actions_left_without_their_optional_fields_take_figcraft_defaults_and_print_none_of_them() {
+    let (node, printed) = round_trip(&frame_with(
+        r#"[{actions: [{type: "navigate", dest: "b1"}, {type: "scrollTo", dest: "b1"}, {type: "openOverlay", dest: "b1"}, {type: "openUrl", url: "https://example.com"}]}]"#,
+    ));
+    let [navigate, scroll, overlay, url] = &node.interactions()[0].actions[..] else {
+        panic!("four actions")
+    };
+    assert_eq!(
+        *navigate,
+        Action::Navigate {
+            dest: "b1".to_string(),
+            preserve_scroll: false
+        }
+    );
+    assert_eq!(
+        *scroll,
+        Action::ScrollTo {
+            dest: "b1".to_string(),
+            offset: [0.0, 0.0]
+        }
+    );
+    let Action::OpenOverlay {
+        position,
+        close_on_outside,
+        anchor,
+        ..
+    } = overlay
+    else {
+        panic!("an openOverlay action: {overlay:?}")
+    };
+    assert_eq!(*position, OverlayPosition::Center);
+    assert!(*close_on_outside);
+    assert_eq!(*anchor, OverlayAnchor::Screen);
+    assert_eq!(
+        *url,
+        Action::OpenUrl {
+            url: "https://example.com".to_string(),
+            new_tab: true
+        }
+    );
+    for field in [
+        "preserveScroll",
+        "offset",
+        "position",
+        "closeOnOutside",
+        "anchor",
+        "newTab",
+    ] {
+        assert!(!printed.contains(field), "{field} printed: {printed}");
+    }
+}
+
+#[test]
+fn a_plain_easing_written_as_an_object_is_printed_as_its_name() {
+    let (node, printed) = round_trip(&frame_with(
+        r#"[{actions: [{type: "back"}], easing: {type: "linear"}}]"#,
+    ));
+    assert_eq!(node.interactions()[0].easing, Easing::Linear);
+    assert!(printed.contains(r#"easing: "linear""#), "{printed}");
+}
+
+#[test]
+fn a_missing_required_field_is_named_with_its_type() {
+    let cases = [
+        (
+            r#"[{trigger: {type: "afterDelay"}, actions: []}]"#,
+            "`ms` is required for afterDelay",
+        ),
+        (
+            r#"[{trigger: {type: "keyPress"}, actions: []}]"#,
+            "`key` is required for keyPress",
+        ),
+        (
+            r#"[{actions: [{type: "openUrl"}]}]"#,
+            "`url` is required for openUrl",
+        ),
+        (
+            r#"[{actions: [], easing: {type: "customBezier", x1: 0.2, y1: 0, x2: 0}}]"#,
+            "`y2` is required for customBezier",
+        ),
+        (
+            r#"[{actions: [{type: "setVariable", variable: "count"}]}]"#,
+            "`value` is required for setVariable",
+        ),
+    ];
+    for (interactions, message) in cases {
+        let error = error_of(&frame_with(interactions));
+        assert!(error.message().contains(message), "{interactions}: {error}");
     }
 }
