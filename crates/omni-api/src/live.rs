@@ -134,6 +134,8 @@ pub enum LiveEventName {
     FeatureRenamed,
     #[serde(rename = "post.created")]
     PostCreated,
+    #[serde(rename = "project.renamed")]
+    ProjectRenamed,
     #[serde(rename = "story.cancelled")]
     StoryCancelled,
     #[serde(rename = "story.changed")]

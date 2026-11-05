@@ -1695,6 +1695,7 @@
           "feature.deleted",
           "feature.renamed",
           "post.created",
+          "project.renamed",
           "story.cancelled",
           "story.changed",
           "story.created",

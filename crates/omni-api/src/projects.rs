@@ -7,6 +7,7 @@
 
 use crate::AppState;
 use crate::docs::Tx;
+use crate::live;
 use crate::session::{ApiError, ErrorBody};
 use crate::workspace::{AgentRequest, WorkspaceRequest, parse_uuid};
 use axum::Json;
@@ -15,6 +16,7 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use sqlx::{Postgres, Transaction};
 use utoipa::ToSchema;
 
@@ -172,7 +174,7 @@ pub async fn rename_project(
     let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
     let new = parse_body::<RenameProjectRequest>(&body);
     let mut tx = state.workspace_tx(&request.workspace_id).await?;
-    lock_project(&mut tx, &project_id).await?;
+    let old_name = lock_project(&mut tx, &project_id).await?;
     let name = non_blank(new?.name).ok_or_else(|| ApiError::bad_request("invalid_request"))?;
     let renamed = sqlx::query_as(concat!(
         "UPDATE projects SET name = $2 WHERE id = $1::uuid RETURNING id::text, name, ",
@@ -183,26 +185,40 @@ pub async fn rename_project(
     .bind(&name)
     .fetch_one(&mut *tx)
     .await;
-    let project = match renamed {
+    let project: ProjectBody = match renamed {
         Ok(project) => project,
         Err(sqlx::Error::Database(e)) if e.is_unique_violation() => {
             return Err(ApiError::conflict("name_taken"));
         }
         Err(e) => return Err(ApiError::database(e)),
     };
+    let changed = project.name != old_name;
+    if changed {
+        live::emit(
+            &mut tx,
+            &request.workspace_id,
+            &project_id,
+            "project.renamed",
+            &json!({ "project_id": project.id, "name": project.name }),
+        )
+        .await?;
+    }
     tx.commit().await.map_err(ApiError::database)?;
+    if changed {
+        state.live.announce(&request.workspace_id, &project_id);
+    }
     Ok(Json(ProjectResponse { project }))
 }
 
-/// Locks a project of the workspace, 404 when there is none.
-async fn lock_project(tx: &mut Tx, project_id: &str) -> Result<(), ApiError> {
+/// Locks a project of the workspace and returns its name, 404 when there is none.
+async fn lock_project(tx: &mut Tx, project_id: &str) -> Result<String, ApiError> {
     let found: Option<(String,)> =
-        sqlx::query_as("SELECT id::text FROM projects WHERE id = $1::uuid FOR UPDATE")
+        sqlx::query_as("SELECT name FROM projects WHERE id = $1::uuid FOR UPDATE")
             .bind(project_id)
             .fetch_optional(&mut **tx)
             .await
             .map_err(ApiError::database)?;
-    found.map(|_| ()).ok_or(ApiError::NotFound)
+    found.map(|(name,)| name).ok_or(ApiError::NotFound)
 }
 
 /// Fails with 404 unless the project exists in the transaction's workspace

@@ -433,3 +433,66 @@ fn an_unknown_project_gets_404_before_the_blank_name_is_checked() {
         "not_found",
     );
 }
+
+/// The `(seq, data)` of the `project.renamed` events of a project, oldest first,
+/// with the project's `last_event_seq`.
+fn rename_events(project: &str) -> (Vec<(i64, Value)>, i64) {
+    block(async {
+        let mut conn = admin_connection().await;
+        let rows = sqlx::query_as::<_, (i64, String)>(
+            "select seq, data::jsonb::text from live_events \
+             where project_id = $1::uuid and event = 'project.renamed' order by seq",
+        )
+        .bind(project)
+        .fetch_all(&mut conn)
+        .await
+        .unwrap_or_else(|e| panic!("read the live events: {e}"));
+        let last: i64 =
+            sqlx::query_scalar("select last_event_seq from projects where id = $1::uuid")
+                .bind(project)
+                .fetch_one(&mut conn)
+                .await
+                .unwrap_or_else(|e| panic!("read last_event_seq: {e}"));
+        let events = rows
+            .into_iter()
+            .map(|(seq, data)| {
+                (
+                    seq,
+                    serde_json::from_str(&data).expect("event data is JSON"),
+                )
+            })
+            .collect();
+        (events, last)
+    })
+}
+
+#[test]
+fn a_project_rename_records_project_renamed_only_when_the_name_changes() {
+    let (f, client) = ready();
+    let name = unique("Shop");
+    let id = new_project(f, client, &name)["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let new_name = unique("Shop v2");
+
+    // Refused renames and a rename to the current name record nothing.
+    rename(f, client, &agent(f), &id, &json!({ "name": " " }));
+    must(
+        rename(f, client, &agent(f), &id, &json!({ "name": name })),
+        200,
+        "same name",
+    );
+    assert!(rename_events(&id).0.is_empty());
+
+    must(
+        rename(f, client, &human(f), &id, &json!({ "name": new_name })),
+        200,
+        "rename",
+    );
+    let (events, last) = rename_events(&id);
+    assert_eq!(
+        events,
+        vec![(last, json!({ "project_id": id, "name": new_name }))]
+    );
+}

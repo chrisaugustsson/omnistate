@@ -557,7 +557,7 @@ export type LiveClientMessage = z.infer<typeof LiveClientMessageSchema>;
 export const LiveErrorCodeSchema = z.enum(["not_found", "invalid_request", "unavailable"]);
 export type LiveErrorCode = z.infer<typeof LiveErrorCodeSchema>;
 
-export const LiveEventNameSchema = z.enum(["comment.created", "comment.replied", "comment.deleted", "comment.status_changed", "doc.changed", "doc.created", "doc.deleted", "doc.renamed", "feature.created", "feature.deleted", "feature.renamed", "post.created", "story.cancelled", "story.changed", "story.created", "thread.concluded", "thread.created"]);
+export const LiveEventNameSchema = z.enum(["comment.created", "comment.replied", "comment.deleted", "comment.status_changed", "doc.changed", "doc.created", "doc.deleted", "doc.renamed", "feature.created", "feature.deleted", "feature.renamed", "post.created", "project.renamed", "story.cancelled", "story.changed", "story.created", "thread.concluded", "thread.created"]);
 export type LiveEventName = z.infer<typeof LiveEventNameSchema>;
 
 export const LiveServerMessageSchema = z.union([
