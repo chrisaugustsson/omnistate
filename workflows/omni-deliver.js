@@ -930,7 +930,7 @@ Return raw structured data only.`, { schema: TEST_CUT_SCHEMA, label: `test-cut:$
       rounds.push({ round: attempt, commit: result.commit, feedback })
     }
     if (!accepted) {
-      const id = openThread(`${key}: the regression tests were not accepted`, `Three rounds of test author and reviewer did not end in accepted tests. The implementation is merged and checked; only the tests are missing. Last review:\n\n${feedback}\n`)
+      const id = openThread(`${key}: regression tests were not accepted`, `Three rounds of test author and reviewer did not end in accepted tests. The implementation is merged and checked; only the tests are missing. Last review:\n\n${feedback}\n`)
       linkAndBlock(key, [id])
       return { ok: false, thread: id }
     }
