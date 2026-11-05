@@ -274,3 +274,70 @@ pub fn link(args: &Args, project: Option<&str>) -> Result<()> {
     }
     Ok(())
 }
+
+/// `omni link` alone: the folder that matched and its project, found without
+/// `--project` and `OMNI_PROJECT`. A project the workspace's list does not
+/// hold, or a list that cannot be fetched, shows as not found.
+pub fn show(args: &Args) -> Result<()> {
+    let agent = agent(args)?;
+    let folder = std::env::current_dir()
+        .and_then(std::fs::canonicalize)
+        .map_err(|e| CliError::new(format!("cannot find the current folder: {e}")))?;
+    let (matched, project_id, via_main_worktree) = match resolve(
+        &Links::load()?,
+        &agent.workspace_id,
+        &folder,
+    ) {
+        Resolution::Linked {
+            matched,
+            project_id,
+            via_main_worktree,
+        } => (matched, project_id, via_main_worktree),
+        Resolution::OtherWorkspace {
+            matched,
+            workspace_id,
+        } => bail!(
+            "{} is linked to a project of another workspace ({workspace_id}); run omni link here, or omni login",
+            matched.display()
+        ),
+        Resolution::None => bail!(
+            "this folder is not linked to a project: run omni link <project name|id> here, or pass --project"
+        ),
+    };
+
+    if args.json {
+        say(&format!(
+            "{{\"path\": {}, \"matched\": {}, \"workspace_id\": {}, \"project_id\": {}}}",
+            json_quote(&folder.to_string_lossy()),
+            json_quote(&matched.to_string_lossy()),
+            json_quote(&agent.workspace_id),
+            json_quote(&project_id)
+        ));
+        return Ok(());
+    }
+
+    let name = agent
+        .request("GET", &projects_path(&agent), None)
+        .ok()
+        .and_then(|response| Value::parse(&response.text()).ok())
+        .and_then(|body| {
+            body.get("projects")
+                .and_then(Value::as_array)
+                .unwrap_or_default()
+                .iter()
+                .find(|p| {
+                    p.str_at("id")
+                        .is_some_and(|id| id.eq_ignore_ascii_case(&project_id))
+                })
+                .and_then(|p| p.str_at("name").map(str::to_string))
+        })
+        .unwrap_or_else(|| "(project not found in this workspace)".to_string());
+    let matched = matched.display();
+    let origin = if via_main_worktree {
+        format!("{matched} (main worktree of {})", folder.display())
+    } else {
+        matched.to_string()
+    };
+    say(&format!("{origin} is linked to {name} ({project_id})"));
+    Ok(())
+}

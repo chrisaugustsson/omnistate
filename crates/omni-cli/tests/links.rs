@@ -179,16 +179,97 @@ fn link_to_an_unknown_project_fails_and_writes_nothing() {
 }
 
 #[test]
-fn link_without_a_project_is_a_usage_error() {
+fn link_alone_names_the_folder_that_matched_and_its_project() {
     let server = mock();
     let home = logged_in(&server.url);
     let folder = Scratch::new("folder");
-    let out = link_in(&home, &folder, &["link"]);
-    assert_eq!(out.code, 1);
+    let sub = folder.join("a/b");
+    std::fs::create_dir_all(&sub).unwrap();
+    link_file(&home, &folder.path, PROJECT);
+    let root = canonical_path(&folder.path);
+    let here = canonical_path(&sub);
+
+    let out = omni(&home.path)
+        .args(&["link", "--as", "run-7/author"])
+        .cwd(&sub)
+        .run();
+    assert_eq!(out.code, 0, "{}", out.stderr);
     assert_eq!(
-        out.stderr_lines(),
-        ["omni: a link needs the project: omni link <project name|id>"]
+        out.stdout,
+        format!("{root} is linked to brand-site ({PROJECT})\n")
     );
+
+    let json = omni(&home.path)
+        .args(&["link", "--json", "--as", "run-7/author"])
+        .cwd(&sub)
+        .run();
+    assert_eq!(json.code, 0, "{}", json.stderr);
+    let value: Value = serde_json::from_str(&json.stdout).unwrap();
+    assert_eq!(
+        value,
+        json!({ "path": here, "matched": root, "workspace_id": WORKSPACE, "project_id": PROJECT })
+    );
+}
+
+#[test]
+fn link_alone_says_when_the_project_is_not_in_the_workspace() {
+    let server = mock();
+    let home = logged_in(&server.url);
+    let folder = Scratch::new("folder");
+    link_file(&home, &folder.path, UNKNOWN_PROJECT);
+
+    let out = link_in(&home, &folder, &["link"]);
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    assert_eq!(
+        out.stdout,
+        format!(
+            "{} is linked to (project not found in this workspace) ({UNKNOWN_PROJECT})\n",
+            canonical(&folder)
+        )
+    );
+}
+
+#[test]
+fn link_alone_in_a_worktree_names_the_main_worktree() {
+    let server = mock();
+    let home = logged_in(&server.url);
+    let (repo, worktrees) = repo_with_worktree();
+    link_file(&home, &repo.path, PROJECT);
+    let worktree = worktrees.join("w");
+
+    let out = omni(&home.path)
+        .args(&["link", "--as", "run-7/author"])
+        .cwd(&worktree)
+        .run();
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    assert_eq!(
+        out.stdout,
+        format!(
+            "{} (main worktree of {}) is linked to brand-site ({PROJECT})\n",
+            canonical_path(&repo.path),
+            canonical_path(&worktree)
+        )
+    );
+}
+
+#[test]
+fn link_alone_in_an_unlinked_folder_fails_whatever_project_is_given() {
+    let server = mock();
+    let home = logged_in(&server.url);
+    let folder = Scratch::new("folder");
+    let expected = "omni: this folder is not linked to a project: run omni link <project name|id> here, or pass --project";
+
+    let plain = link_in(&home, &folder, &["link"]);
+    assert_eq!(plain.code, 1);
+    assert_eq!(plain.stderr_lines(), [expected]);
+
+    let given = omni(&home.path)
+        .args(&["link", "--project", "other", "--as", "run-7/author"])
+        .env("OMNI_PROJECT", "brand-site")
+        .cwd(&folder.path)
+        .run();
+    assert_eq!(given.code, 1);
+    assert_eq!(given.stderr_lines(), [expected]);
 }
 
 #[test]
