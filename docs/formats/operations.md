@@ -269,6 +269,15 @@ a second element beside it, an inline element such as `<span>` and an empty
 string are errors. After every batch the doc prints HTML (`to_html_with_revisions`)
 that `EditDoc::from_html` reads back as the same doc.
 
+A design doc checks the destinations of interactions when they are written (an
+insert, a replace, or a set that writes `interactions`), at any depth of a
+`conditional`: a `navigate`, `openOverlay` or `swapOverlay` `dest` is a board of
+the doc, a `scrollTo` `dest` a layer below the top-level board that holds the
+trigger, and a `changeTo` sits on an instance with a `dest` in the variant set
+of the component it places. A `dest` that is in no node of the doc is refused as
+"not in the doc". Deleting a board leaves the interactions that point at it as
+they were, and a set that does not write `interactions` is accepted over them.
+
 ## Order
 
 Children are kept in order by a sort key, a fractional index: a string compared as

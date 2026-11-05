@@ -150,6 +150,29 @@ impl Library {
         self.0.iter().find(|component| component.id() == id)
     }
 
+    /// The name of a component and the IDs of its variant set: the components
+    /// with its name and the same variant properties, itself included.
+    fn variants_of(&self, id: &NodeId) -> Option<(String, Vec<NodeId>)> {
+        let component = self.get(id)?;
+        let variant_defs = |node: &Node| -> Vec<(String, Vec<String>)> {
+            defs_of(node)
+                .iter()
+                .filter_map(|(name, def)| match def {
+                    PropDef::Variant { values, .. } => Some((name.clone(), values.clone())),
+                    _ => None,
+                })
+                .collect()
+        };
+        let wanted = variant_defs(component);
+        let set = self
+            .0
+            .iter()
+            .filter(|other| other.name() == component.name() && variant_defs(other) == wanted)
+            .map(|other| *other.id())
+            .collect();
+        Some((component.name().to_string(), set))
+    }
+
     /// The components with the IDs in `ids`, in order.
     fn only(&self, ids: &BTreeSet<NodeId>) -> Vec<Node> {
         self.0
@@ -888,7 +911,8 @@ pub(crate) async fn edit_head(
         }
     };
     let check = |nodes: &[Node]| check_instances(nodes, &system.library);
-    let applied = match doc.apply(&ops, scope, &mut new_ids, &check) {
+    let variants = |component: NodeId| system.library.variants_of(&component);
+    let applied = match doc.apply(&ops, scope, &mut new_ids, &check, &variants) {
         Ok(applied) => applied,
         Err(ApplyError::Conflict(conflict)) => return Err(DocError::Conflict(conflict)),
         Err(ApplyError::Invalid { index, message }) => {

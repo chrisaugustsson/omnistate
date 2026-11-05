@@ -81,6 +81,10 @@ name = "design_edits"
 required-features = ["stack-tests"]
 
 [[test]]
+name = "design_interactions"
+required-features = ["stack-tests"]
+
+[[test]]
 name = "posts"
 required-features = ["stack-tests"]
 

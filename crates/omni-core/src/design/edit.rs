@@ -11,11 +11,16 @@
 //! revision by 1 and no other, and an insert leaves the parent's revision
 //! alone.
 
+use super::proto::{Action, Interaction};
 use super::tags::{self, Host, TagNode};
-use super::{Node, NodeId, NodeKind};
+use super::{Node, NodeData, NodeId, NodeKind};
 use crate::ops::{Applied, ApplyError, Conflict, OpResult, Operation};
 use serde_json::{Map, Value};
 use std::collections::{HashMap, HashSet};
+
+/// The name and the variant set of a component of the design system, by its
+/// ID; `None` when there is no such component.
+pub type Variants<'a> = dyn Fn(NodeId) -> Option<(String, Vec<NodeId>)> + 'a;
 
 /// Where a node sits in the design.
 #[derive(Clone, Copy, Debug)]
@@ -87,6 +92,95 @@ impl DesignDoc {
         self.places
             .get(&id)
             .is_some_and(|place| place.kind == NodeKind::Board)
+    }
+
+    /// Checks the interactions of `node` against the doc (D17): a navigate,
+    /// open overlay or swap overlay `dest` is a board of the doc, a scroll to
+    /// `dest` a layer below the top-level board that holds `node`, and a
+    /// change to is on an instance, with a `dest` in the variant set of the
+    /// component it places. Conditional blocks are checked at any depth.
+    pub fn check_interactions(
+        &self,
+        node: NodeId,
+        interactions: &[Interaction],
+        variants: &Variants<'_>,
+    ) -> Result<(), String> {
+        let mut pending: Vec<&Action> = interactions
+            .iter()
+            .flat_map(|interaction| interaction.actions.iter())
+            .collect();
+        pending.reverse();
+        while let Some(action) = pending.pop() {
+            if let Action::Conditional { blocks } = action {
+                pending.extend(
+                    blocks
+                        .iter()
+                        .rev()
+                        .flat_map(|block| block.actions.iter().rev()),
+                );
+                continue;
+            }
+            let Some(text) = action.dest_text() else {
+                continue;
+            };
+            if let Action::ChangeTo { .. } = action {
+                self.check_change_to(node, text, variants)?;
+                continue;
+            }
+            let dest = text
+                .parse::<NodeId>()
+                .ok()
+                .filter(|dest| self.places.contains_key(dest))
+                .ok_or_else(|| format!("`{text}` is not in the doc"))?;
+            if let Action::ScrollTo { .. } = action {
+                let board = self.path(node).and_then(|path| path.get(1).copied());
+                let inside = self
+                    .path(dest)
+                    .is_some_and(|path| path.len() > 2 && Some(path[1]) == board);
+                if !inside {
+                    return Err(format!(
+                        "`{text}` is not a layer of this board: scrollTo takes a layer of the board the trigger is on"
+                    ));
+                }
+            } else if !self.is_board(dest) {
+                return Err(format!(
+                    "`{text}` is not a board: navigate, openOverlay and swapOverlay take a board of this design"
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn check_change_to(&self, node: NodeId, text: &str, variants: &Variants) -> Result<(), String> {
+        let component = match self.node(node).map(Node::data) {
+            Some(NodeData::Instance(instance)) => instance.component,
+            _ => return Err("changeTo is for instances and the layers of a component".to_string()),
+        };
+        let Some((name, set)) = variants(component) else {
+            return Err(format!(
+                "`{component}` is not a component of the design system, but the instance places it"
+            ));
+        };
+        if text.parse::<NodeId>().is_ok_and(|dest| set.contains(&dest)) {
+            Ok(())
+        } else {
+            Err(format!("`{text}` is not a variant of `{name}`"))
+        }
+    }
+
+    /// Checks the interactions of `id` and of the nodes below it.
+    fn check_tree(&self, index: usize, id: NodeId, variants: &Variants) -> Result<(), ApplyError> {
+        for node in self.subtree(id) {
+            let Some(found) = self.node(node) else {
+                continue;
+            };
+            if found.interactions().is_empty() {
+                continue;
+            }
+            self.check_interactions(node, found.interactions(), variants)
+                .map_err(|message| invalid(index, message))?;
+        }
+        Ok(())
     }
 
     fn rev(&self, id: NodeId) -> u64 {
@@ -264,13 +358,15 @@ impl DesignDoc {
     /// Applies a batch all or nothing. `new_ids` supplies the ID of each new
     /// node; `scope` keeps the batch inside one board; `check` examines the
     /// new subtree of an insert or a replace, and an instance that a set
-    /// changes (what it places is the caller's to know).
+    /// changes (what it places is the caller's to know); `variants` names the
+    /// variant set of a component, for the `changeTo` of an interaction.
     pub fn apply(
         &mut self,
         ops: &[Operation],
         scope: Option<NodeId>,
         new_ids: &mut dyn FnMut() -> NodeId,
         check: &dyn Fn(&[Node]) -> Result<(), String>,
+        variants: &Variants<'_>,
     ) -> Result<Applied, ApplyError> {
         // The batch runs on a copy, which replaces the design only when every
         // operation applied.
@@ -280,7 +376,7 @@ impl DesignDoc {
             if let Some(board) = scope {
                 next.check_scope(index, op, board)?;
             }
-            results.push(next.apply_one(index, op, new_ids, check)?);
+            results.push(next.apply_one(index, op, new_ids, check, variants)?);
         }
         *self = next;
         Ok(Applied { ops: results })
@@ -292,21 +388,30 @@ impl DesignDoc {
         op: &Operation,
         new_ids: &mut dyn FnMut() -> NodeId,
         check: &dyn Fn(&[Node]) -> Result<(), String>,
+        variants: &Variants<'_>,
     ) -> Result<OpResult, ApplyError> {
         match op {
             Operation::Insert {
                 parent,
                 position,
                 content,
-            } => self.insert(index, *parent, position.after, content, new_ids, check),
+            } => self.insert(
+                index,
+                *parent,
+                position.after,
+                content,
+                new_ids,
+                check,
+                variants,
+            ),
             Operation::Replace { node, rev, content } => {
-                self.replace(index, *node, *rev, content, new_ids, check)
+                self.replace(index, *node, *rev, content, new_ids, check, variants)
             }
             Operation::Set {
                 node,
                 rev,
                 properties,
-            } => self.set(index, *node, *rev, properties, check),
+            } => self.set(index, *node, *rev, properties, check, variants),
             Operation::Move {
                 node,
                 rev,
@@ -340,6 +445,7 @@ impl DesignDoc {
         Ok(tag)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn insert(
         &mut self,
         index: usize,
@@ -348,6 +454,7 @@ impl DesignDoc {
         content: &str,
         new_ids: &mut dyn FnMut() -> NodeId,
         check: &dyn Fn(&[Node]) -> Result<(), String>,
+        variants: &Variants<'_>,
     ) -> Result<OpResult, ApplyError> {
         self.check_place(index, parent, after)?;
         let tag = self.read_tag(index, parent, content)?;
@@ -381,6 +488,7 @@ impl DesignDoc {
             self.revisions.insert(*id, 1);
         }
         self.siblings_mut(parent).insert(at, node);
+        self.check_tree(index, created[0], variants)?;
         Ok(OpResult {
             node: created[0],
             revision: 1,
@@ -389,6 +497,7 @@ impl DesignDoc {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn replace(
         &mut self,
         index: usize,
@@ -397,6 +506,7 @@ impl DesignDoc {
         content: &str,
         new_ids: &mut dyn FnMut() -> NodeId,
         check: &dyn Fn(&[Node]) -> Result<(), String>,
+        variants: &Variants<'_>,
     ) -> Result<OpResult, ApplyError> {
         let place = self.expect_rev(index, id, rev)?;
         let parsed = self.read_tag(index, place.parent, content)?;
@@ -477,6 +587,7 @@ impl DesignDoc {
             .into_iter()
             .filter(|old| !self.places.contains_key(old))
             .collect();
+        self.check_tree(index, id, variants)?;
         Ok(OpResult {
             node: id,
             revision,
@@ -492,6 +603,7 @@ impl DesignDoc {
         rev: u64,
         properties: &Map<String, Value>,
         check: &dyn Fn(&[Node]) -> Result<(), String>,
+        variants: &Variants<'_>,
     ) -> Result<OpResult, ApplyError> {
         let place = self.expect_rev(index, id, rev)?;
         if properties.is_empty() {
@@ -507,6 +619,9 @@ impl DesignDoc {
                 .any(|name| properties.contains_key(*name));
         if instance {
             check(std::slice::from_ref(&*node)).map_err(|message| invalid(index, message))?;
+        }
+        if properties.contains_key("interactions") {
+            self.check_tree(index, id, variants)?;
         }
         let revision = rev + 1;
         self.revisions.insert(id, revision);
@@ -679,7 +794,7 @@ mod tests {
     }
 
     fn run(doc: &mut DesignDoc, ops: &[Operation]) -> Result<Applied, ApplyError> {
-        doc.apply(ops, None, &mut fresh(), &|_| Ok(()))
+        doc.apply(ops, None, &mut fresh(), &|_| Ok(()), &|_| None)
     }
 
     fn op(json: Value) -> Operation {
@@ -687,6 +802,29 @@ mod tests {
     }
 
     // IDs: 1 page, 2 Cart, 3 Summary, 4 Total, 5 Shipping, 6 Actions, 7 Payment.
+
+    #[test]
+    fn a_destination_is_checked_against_the_doc_on_a_set_of_interactions() {
+        let set_to = |kind: &str, dest: &str| {
+            op(serde_json::json!({
+                "op": "set", "node": "00000004", "rev": 1, "properties": {
+                    "interactions": [{ "actions": [{ "type": kind, "dest": dest }] }]
+                }
+            }))
+        };
+        let message = |kind: &str, dest: &str| match run(&mut design(), &[set_to(kind, dest)]) {
+            Ok(_) => String::new(),
+            Err(ApplyError::Invalid { message, .. }) => message,
+            Err(other) => panic!("{other:?}"),
+        };
+        assert_eq!(message("navigate", "00000007"), "");
+        assert_eq!(message("scrollTo", "00000005"), "");
+        assert!(message("navigate", "00000003").contains("is not a board"));
+        assert!(message("navigate", "xyz!").contains("`xyz!` is not in the doc"));
+        assert!(message("scrollTo", "00000002").contains("is not a layer of this board"));
+        assert!(message("scrollTo", "00000007").contains("is not a layer of this board"));
+        assert!(message("changeTo", "00000005").contains("changeTo is for instances"));
+    }
 
     #[test]
     fn an_insert_creates_nodes_at_revision_1_and_leaves_the_parent_alone() {
@@ -860,6 +998,7 @@ mod tests {
             Some(id("00000002")),
             &mut fresh(),
             &|_| Ok(()),
+            &|_| None,
         );
         match outside {
             Err(ApplyError::Invalid { message, .. }) => assert!(message.contains("00000007")),

@@ -12,6 +12,7 @@
 //! 300, easing `easeOut`, `delayMs` 0, and the defaults of each action's
 //! fields.
 
+use super::id::NodeId;
 use super::value::Color;
 use serde::ser::SerializeMap;
 use serde::{Deserialize, Serialize, Serializer};
@@ -343,6 +344,26 @@ pub enum Action {
     Conditional {
         blocks: Vec<ConditionBlock>,
     },
+}
+
+impl Action {
+    /// The node an action points at, `None` for an action with no `dest` or
+    /// one that is not a node ID.
+    pub fn dest(&self) -> Option<NodeId> {
+        self.dest_text()?.parse().ok()
+    }
+
+    /// The `dest` as written.
+    pub fn dest_text(&self) -> Option<&str> {
+        match self {
+            Action::Navigate { dest, .. }
+            | Action::ScrollTo { dest, .. }
+            | Action::OpenOverlay { dest, .. }
+            | Action::SwapOverlay { dest }
+            | Action::ChangeTo { dest } => Some(dest),
+            _ => None,
+        }
+    }
 }
 
 fn is_false(flag: &bool) -> bool {
