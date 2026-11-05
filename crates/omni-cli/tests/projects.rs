@@ -247,7 +247,16 @@ fn project_rename_refuses_bad_input_before_any_patch() {
         assert_eq!(out.stderr, format!("omni: {message}\n"), "{args:?}");
         assert_eq!(out.stdout, "");
     }
-    assert!(patches(&server).is_empty(), "{:?}", server.requests());
+    let sent: Vec<(String, String)> = server
+        .requests()
+        .into_iter()
+        .map(|r| (r.method, r.path))
+        .collect();
+    assert_eq!(
+        sent,
+        [("GET".to_string(), projects_path())],
+        "only the name lookup for Brand-Site reaches the API"
+    );
 }
 
 #[test]
