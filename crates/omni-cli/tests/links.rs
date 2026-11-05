@@ -199,11 +199,13 @@ fn link_alone_names_the_folder_that_matched_and_its_project() {
         format!("{root} is linked to brand-site ({PROJECT})\n")
     );
 
+    let before = server.requests().len();
     let json = omni(&home.path)
         .args(&["link", "--json", "--as", "run-7/author"])
         .cwd(&sub)
         .run();
     assert_eq!(json.code, 0, "{}", json.stderr);
+    assert_eq!(server.requests().len(), before, "--json calls no API");
     let value: Value = serde_json::from_str(&json.stdout).unwrap();
     assert_eq!(
         value,
@@ -224,6 +226,24 @@ fn link_alone_says_when_the_project_is_not_in_the_workspace() {
         out.stdout,
         format!(
             "{} is linked to (project not found in this workspace) ({UNKNOWN_PROJECT})\n",
+            canonical(&folder)
+        )
+    );
+}
+
+#[test]
+fn link_alone_shows_the_link_when_the_project_list_fails() {
+    let server = MockServer::start(|_| Reply::json(500, &json!({ "error": "internal" })));
+    let home = logged_in(&server.url);
+    let folder = Scratch::new("folder");
+    link_file(&home, &folder.path, PROJECT);
+
+    let out = link_in(&home, &folder, &["link"]);
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    assert_eq!(
+        out.stdout,
+        format!(
+            "{} is linked to (project not found in this workspace) ({PROJECT})\n",
             canonical(&folder)
         )
     );
