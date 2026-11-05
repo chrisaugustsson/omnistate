@@ -723,7 +723,11 @@ fn a_read_can_give_the_tree_of_one_mode() {
     head_import(f, client, &project, &light_and_dark());
 
     let dark = head_tokens(f, client, &project, "?mode=dark");
-    assert_eq!(dark["mode"], json!({"color": "dark"}), "{dark}");
+    assert_eq!(
+        dark["mode"],
+        json!({"color": "dark", "radius": "dark", "shadow": "dark", "spacing": "dark", "typography": "dark"}),
+        "{dark}"
+    );
     assert_eq!(
         dark["collections"][0],
         json!({"name": "color", "modes": ["light", "dark"]}),
@@ -772,7 +776,14 @@ fn a_read_can_choose_a_mode_per_collection() {
     let both = head_tokens(f, client, &project, "?mode=color:dark,density:compact");
     assert_eq!(
         both["mode"],
-        json!({"color": "dark", "density": "compact"}),
+        json!({
+            "color": "dark",
+            "density": "compact",
+            "radius": "light",
+            "shadow": "light",
+            "spacing": "light",
+            "typography": "light"
+        }),
         "{both}"
     );
     assert_eq!(
