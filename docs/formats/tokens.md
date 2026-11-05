@@ -65,6 +65,20 @@ A project has at most one design system doc, and `omni tokens import` replaces i
         "spread": "-2px"
       }
     }
+  },
+  "state": {
+    "isOpen": {
+      "$type": "boolean",
+      "$value": false,
+      "$extensions": {"omnistate": {"codeSyntax": {"css": "--is-open", "swift": "isOpen"}}}
+    },
+    "count": {"$type": "number", "$value": 2},
+    "total": {"$type": "number", "$value": "{state.count}"},
+    "cta": {
+      "$type": "string",
+      "$value": "Pay now",
+      "$extensions": {"omnistate": {"scopes": ["content"]}}
+    }
   }
 }
 ```
@@ -73,7 +87,8 @@ A project has at most one design system doc, and `omni tokens import` replaces i
 
 Tokens sit in five groups at the top of the tree, grouped by type. A group may
 be left out, and groups may nest (`color.brand.500` is the token `500` in the
-group `brand` of `color`). Any other top-level group is refused.
+group `brand` of `color`). A top-level group with any other name holds the
+state of a prototype: numbers, strings and booleans (see below).
 
 | Group | Holds | `$type` |
 | --- | --- | --- |
@@ -98,6 +113,36 @@ refused, and so is a `$value` that does not fit the type:
 - A `shadow` value is an object of `color`, `offsetX`, `offsetY`, `blur` (0 or
   more) and, optionally, `spread`. `color` is a color and the rest are
   dimensions.
+
+- A `number` is a JSON number: `2`, `0.5`.
+- A `string` is a JSON string: `"Pay now"`.
+- A `boolean` is `true` or `false`.
+
+A top-level group other than the five above may state no `$type`, or one of
+`number`, `string` and `boolean`. In a group without a `$type` each token states
+its own `$type`, and it is one of those three: a token without a `$type`, or a
+`color`, `dimension`, `typography` or `shadow` token, is refused. A token
+refers to another of the same type as `{state.count}`; a string that refers to
+a number token is refused like any reference to the wrong type.
+
+## Scopes and code syntax
+
+A token of any type may state, in `$extensions.omnistate`, the fields it may
+bind to and its name per platform:
+
+- `scopes` is an array of `fill`, `stroke`, `textColor`, `content`, `visible`,
+  `opacity`, `width`, `height`, `gap`, `pad`, `radius`, `fontSize`,
+  `lineHeight`, `letterSpacing` and `strokeWidth`. A name that is not one of
+  them is refused. A token without `scopes` may bind to any field of its type.
+- `codeSyntax` is an object that maps a platform name to a string, such as
+  `{"css": "--is-open", "swift": "isOpen"}`. `omni export` writes the token to
+  `tokens.css` under its `css` name, written as it stands, in place of the name
+  derived from its path, and references to the token use that name.
+
+`tokens.css` writes a number as it is, a boolean as `true` or `false` and a
+string in quotes (`--state-cta: "Pay now";`). A variable derived from a path
+joins the segments with `-`, each in kebab case: `state.isOpen` is
+`--state-is-open`.
 
 `$description` and `$deprecated` may sit on the root, groups and tokens, and
 other vendors' `$extensions` are kept. Reading a tree and writing it back

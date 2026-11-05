@@ -337,6 +337,48 @@ fn tokens_css_root_names_variables_by_path_keeps_references_and_splits_typograph
 }
 
 #[test]
+fn tokens_css_writes_state_tokens_and_honours_code_syntax_and_kebab_case() {
+    let tree = json!({
+        "$extensions": {"omnistate": {"modes": ["light"]}},
+        "color": {
+            "$type": "color",
+            "textMuted": {"$value": "#64748b"},
+            "caption": {"$value": "{color.textMuted}"}
+        },
+        "state": {
+            "isOpen": {"$type": "boolean", "$value": false},
+            "count": {"$type": "number", "$value": 2},
+            "cta": {"$type": "string", "$value": "Pay \"now\""},
+            "open": {
+                "$type": "boolean",
+                "$value": "{state.isOpen}",
+                "$extensions": {"omnistate": {"codeSyntax": {"css": "--is-open-copy"}}}
+            },
+            "again": {"$type": "boolean", "$value": "{state.open}"}
+        }
+    });
+    let server = mock(app_docs(), feature_docs(), tokens_answer(tree.clone()));
+    let out = Scratch::new("out");
+
+    let run = export(&server, &out.path, &[]);
+
+    assert_eq!(run.code, 0, "stderr: {}", run.stderr);
+    assert_eq!(
+        tokens_css_blocks(&out.path)[0].1,
+        declarations(&[
+            ("--color-text-muted", "#64748b"),
+            ("--color-caption", "var(--color-text-muted)"),
+            ("--state-is-open", "false"),
+            ("--state-count", "2"),
+            ("--state-cta", "\"Pay \\\"now\\\"\""),
+            ("--is-open-copy", "var(--state-is-open)"),
+            ("--state-again", "var(--is-open-copy)"),
+        ])
+    );
+    assert_eq!(read_json(&out.path.join("tokens.json")), tree);
+}
+
+#[test]
 fn tokens_css_gives_each_other_mode_a_block_with_only_what_it_changes() {
     let server = mock(app_docs(), feature_docs(), tokens_answer(two_mode_tree()));
     let out = Scratch::new("out");

@@ -579,6 +579,37 @@ fn an_import_replaces_the_token_tree_of_the_design_systems_head() {
 }
 
 #[test]
+fn state_tokens_round_trip_and_a_wrong_value_is_refused() {
+    let (f, client) = ready();
+    let (project, _) = live_design_system(f, client);
+    let mut tree = light_and_dark();
+    tree["state"] = json!({
+        "isOpen": {
+            "$type": "boolean",
+            "$value": false,
+            "$extensions": {"omnistate": {"codeSyntax": {"css": "--is-open"}}}
+        },
+        "count": {"$type": "number", "$value": 2},
+        "cta": {
+            "$type": "string",
+            "$value": "Pay now",
+            "$extensions": {"omnistate": {"scopes": ["content"]}}
+        }
+    });
+
+    let answer = head_import(f, client, &project, &tree);
+    assert_eq!(answer["tokens"], tree, "{answer}");
+    assert_eq!(head_tokens(f, client, &project, "")["tokens"], tree);
+
+    tree["state"]["count"]["$value"] = json!("2");
+    let response = head_import_response(f, client, &agent(f), &project, &tree);
+    assert_invalid_tokens(
+        &response,
+        &["`state.count`: a number token takes a JSON number"],
+    );
+}
+
+#[test]
 fn a_refused_import_changes_nothing() {
     let (f, client) = ready();
     let (project, doc) = live_design_system(f, client);

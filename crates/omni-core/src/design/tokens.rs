@@ -4,7 +4,7 @@
 
 use super::value::{AttachmentRef, Color, FontFamily, TokenRef};
 use serde_json::{Map, Value};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::str::FromStr;
 
@@ -15,6 +15,81 @@ pub struct TokenTree {
     json: Value,
     modes: Vec<String>,
     font_files: Vec<AttachmentRef>,
+    tokens: BTreeMap<String, Token>,
+}
+
+/// What a token states about itself beyond its value: the fields it may bind
+/// to and its name per platform.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Token {
+    scopes: Option<Vec<Scope>>,
+    code_syntax: BTreeMap<String, String>,
+}
+
+impl Token {
+    /// The fields the token may bind to, as written; `None` when it states none.
+    pub fn scopes(&self) -> Option<&[Scope]> {
+        self.scopes.as_deref()
+    }
+
+    /// The token's name per platform, such as `css` to `--is-open`.
+    pub fn code_syntax(&self) -> &BTreeMap<String, String> {
+        &self.code_syntax
+    }
+}
+
+/// A field that a token may bind to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Scope {
+    Fill,
+    Stroke,
+    TextColor,
+    Content,
+    Visible,
+    Opacity,
+    Width,
+    Height,
+    Gap,
+    Pad,
+    Radius,
+    FontSize,
+    LineHeight,
+    LetterSpacing,
+    StrokeWidth,
+}
+
+const SCOPES: [(&str, Scope); 15] = [
+    ("fill", Scope::Fill),
+    ("stroke", Scope::Stroke),
+    ("textColor", Scope::TextColor),
+    ("content", Scope::Content),
+    ("visible", Scope::Visible),
+    ("opacity", Scope::Opacity),
+    ("width", Scope::Width),
+    ("height", Scope::Height),
+    ("gap", Scope::Gap),
+    ("pad", Scope::Pad),
+    ("radius", Scope::Radius),
+    ("fontSize", Scope::FontSize),
+    ("lineHeight", Scope::LineHeight),
+    ("letterSpacing", Scope::LetterSpacing),
+    ("strokeWidth", Scope::StrokeWidth),
+];
+
+impl Scope {
+    pub fn name(self) -> &'static str {
+        SCOPES
+            .iter()
+            .find(|(_, scope)| *scope == self)
+            .map_or("", |(name, _)| name)
+    }
+
+    fn from_name(name: &str) -> Option<Self> {
+        SCOPES
+            .iter()
+            .find(|(known, _)| *known == name)
+            .map(|(_, scope)| *scope)
+    }
 }
 
 /// Why a token tree was refused; the message names the token.
@@ -41,7 +116,20 @@ enum TokenType {
     Dimension,
     Typography,
     Shadow,
+    Number,
+    String,
+    Boolean,
 }
+
+const TYPES: [TokenType; 7] = [
+    TokenType::Color,
+    TokenType::Dimension,
+    TokenType::Typography,
+    TokenType::Shadow,
+    TokenType::Number,
+    TokenType::String,
+    TokenType::Boolean,
+];
 
 impl TokenType {
     fn name(self) -> &'static str {
@@ -50,13 +138,19 @@ impl TokenType {
             Self::Dimension => "dimension",
             Self::Typography => "typography",
             Self::Shadow => "shadow",
+            Self::Number => "number",
+            Self::String => "string",
+            Self::Boolean => "boolean",
         }
     }
 
     fn from_name(name: &str) -> Option<Self> {
-        [Self::Color, Self::Dimension, Self::Typography, Self::Shadow]
-            .into_iter()
-            .find(|ty| ty.name() == name)
+        TYPES.into_iter().find(|ty| ty.name() == name)
+    }
+
+    /// Whether a group without a `$type` may hold tokens of this type.
+    fn is_state(self) -> bool {
+        matches!(self, Self::Number | Self::String | Self::Boolean)
     }
 }
 
@@ -77,12 +171,12 @@ struct Reference {
 }
 
 /// A token of the tree, with what the checks need of it.
-struct Token<'a> {
+struct Entry<'a> {
     ty: TokenType,
     object: &'a Map<String, Value>,
 }
 
-type Tokens<'a> = HashMap<String, Token<'a>>;
+type Tokens<'a> = HashMap<String, Entry<'a>>;
 
 impl TokenTree {
     /// Reads and checks a DTCG token tree.
@@ -102,28 +196,34 @@ impl TokenTree {
                     ));
                 }
                 name => {
-                    let Some((_, ty)) = GROUPS.iter().find(|(group, _)| *group == name) else {
-                        return refuse(format!(
-                            "`{name}` is not a token group: tokens are grouped by type in {}",
-                            group_names()
-                        ));
-                    };
                     let Some(group) = child.as_object() else {
                         return refuse(format!("{name} is a group, so it is a JSON object"));
                     };
-                    collect(name, group, *ty, *ty, &mut tokens)?;
+                    match GROUPS.iter().find(|(group, _)| *group == name) {
+                        Some((_, ty)) => collect(name, group, Some(*ty), Some(*ty), &mut tokens)?,
+                        None => {
+                            if !is_name(name) {
+                                return refuse(format!(
+                                    "`{name}` is not a group name: a design writes `${name}.x`, so names have letters, digits, - and _"
+                                ));
+                            }
+                            collect(name, group, None, None, &mut tokens)?;
+                        }
+                    }
                 }
             }
         }
 
         let mut font_files = Vec::new();
+        let mut metadata = BTreeMap::new();
         let mut references: Vec<(&str, ModeReferences)> = Vec::new();
         let mut paths: Vec<&String> = tokens.keys().collect();
         paths.sort();
         for path in paths {
             let token = &tokens[path];
-            let checked = check_token(path, token, &modes, &mut font_files)?;
+            let (checked, meta) = check_token(path, token, &modes, &mut font_files)?;
             references.push((path.as_str(), checked));
+            metadata.insert(path.clone(), meta);
         }
 
         for (path, values) in &references {
@@ -139,7 +239,14 @@ impl TokenTree {
             json: json.clone(),
             modes,
             font_files,
+            tokens: metadata,
         })
+    }
+
+    /// What the token at the dotted `path`, such as `state.count`, states
+    /// about itself.
+    pub fn token(&self, path: &str) -> Option<&Token> {
+        self.tokens.get(path)
     }
 
     /// The tree as DTCG JSON, as it was read.
@@ -272,13 +379,16 @@ fn read_modes(root: &Map<String, Value>) -> Result<Vec<String>, TokenError> {
 fn collect<'a>(
     path: &str,
     group: &'a Map<String, Value>,
-    holds: TokenType,
-    inherited: TokenType,
+    holds: Option<TokenType>,
+    inherited: Option<TokenType>,
     tokens: &mut Tokens<'a>,
 ) -> Result<(), TokenError> {
+    let mut holds = holds;
     let mut inherited = inherited;
     if let Some(ty) = group.get("$type") {
-        inherited = stated_type(path, ty, holds, "the group")?;
+        let stated = stated_type(path, ty, holds, "the group")?;
+        inherited = Some(stated);
+        holds = Some(stated);
     }
     for (name, child) in group {
         if name.starts_with('$') {
@@ -301,11 +411,16 @@ fn collect<'a>(
             ));
         };
         if object.contains_key("$value") {
-            let ty = match object.get("$type") {
-                Some(ty) => stated_type(&child_path, ty, holds, "the token")?,
-                None => inherited,
+            let ty = match (object.get("$type"), inherited) {
+                (Some(ty), _) => stated_type(&child_path, ty, holds, "the token")?,
+                (None, Some(ty)) => ty,
+                (None, None) => {
+                    return refuse(format!(
+                        "`{child_path}`: a token in a group without a `$type` states its own"
+                    ));
+                }
             };
-            tokens.insert(child_path, Token { ty, object });
+            tokens.insert(child_path, Entry { ty, object });
         } else {
             collect(&child_path, object, holds, inherited, tokens)?;
         }
@@ -318,18 +433,26 @@ fn collect<'a>(
 fn stated_type(
     path: &str,
     ty: &Value,
-    holds: TokenType,
+    holds: Option<TokenType>,
     what: &str,
 ) -> Result<TokenType, TokenError> {
     let Some(stated) = ty.as_str().and_then(TokenType::from_name) else {
         return refuse(format!(
-            "{path} has the type {ty}, which is none of color, dimension, typography and shadow"
+            "{path} has the type {ty}, which is none of color, dimension, typography, shadow, number, string and boolean"
         ));
     };
-    if stated != holds {
-        return refuse(format!(
-            "{path} is {what} of type {stated}, but its group holds {holds} tokens"
-        ));
+    match holds {
+        Some(holds) if stated != holds => {
+            return refuse(format!(
+                "{path} is {what} of type {stated}, but its group holds {holds} tokens"
+            ));
+        }
+        None if !stated.is_state() => {
+            return refuse(format!(
+                "`{path}`: a token in a group without a `$type` is a number, string or boolean"
+            ));
+        }
+        _ => {}
     }
     Ok(stated)
 }
@@ -342,10 +465,10 @@ type ModeReferences<'a> = Vec<(Option<&'a str>, Vec<Reference>)>;
 /// the references that those values hold.
 fn check_token<'a>(
     path: &str,
-    token: &'a Token<'a>,
+    token: &'a Entry<'a>,
     modes: &'a [String],
     font_files: &mut Vec<AttachmentRef>,
-) -> Result<ModeReferences<'a>, TokenError> {
+) -> Result<(ModeReferences<'a>, Token), TokenError> {
     for name in token.object.keys() {
         if name != "$value" && !is_property(name) {
             return refuse(format!(
@@ -353,6 +476,7 @@ fn check_token<'a>(
             ));
         }
     }
+    let mut meta = Token::default();
     let mut found = Vec::new();
     let mut references = Vec::new();
     check_value(path, token.ty, &token.object["$value"], &mut references)?;
@@ -372,21 +496,61 @@ fn check_token<'a>(
                 match name.as_str() {
                     "modes" => check_modes(path, token, value, modes, &mut found)?,
                     "fontFiles" => check_font_files(path, token.ty, value, font_files)?,
+                    "scopes" => meta.scopes = Some(read_scopes(path, value)?),
+                    "codeSyntax" => meta.code_syntax = read_code_syntax(path, value)?,
                     other => {
                         return refuse(format!(
-                            "{path} has `{other}` in $extensions.omnistate; a token has `modes` and `fontFiles` there"
+                            "{path} has `{other}` in $extensions.omnistate; a token has `modes`, `fontFiles`, `scopes` and `codeSyntax` there"
                         ));
                     }
                 }
             }
         }
     }
-    Ok(found)
+    Ok((found, meta))
+}
+
+fn read_scopes(path: &str, value: &Value) -> Result<Vec<Scope>, TokenError> {
+    let Some(listed) = value.as_array() else {
+        return refuse(format!("`{path}`: scopes is an array of scope names"));
+    };
+    listed
+        .iter()
+        .map(|scope| {
+            scope
+                .as_str()
+                .and_then(Scope::from_name)
+                .ok_or_else(|| TokenError {
+                    message: format!(
+                        "`{path}`: `{}` is not a scope: write some of {}",
+                        scope
+                            .as_str()
+                            .map_or_else(|| scope.to_string(), str::to_string),
+                        SCOPES.map(|(name, _)| name).join(", ")
+                    ),
+                })
+        })
+        .collect()
+}
+
+fn read_code_syntax(path: &str, value: &Value) -> Result<BTreeMap<String, String>, TokenError> {
+    let names = value.as_object().and_then(|platforms| {
+        platforms
+            .iter()
+            .map(|(platform, name)| Some((platform.clone(), name.as_str()?.to_string())))
+            .collect()
+    });
+    match names {
+        Some(names) => Ok(names),
+        None => refuse(format!(
+            "`{path}`: codeSyntax maps a platform name to a string"
+        )),
+    }
 }
 
 fn check_modes<'a>(
     path: &str,
-    token: &Token<'_>,
+    token: &Entry<'_>,
     value: &Value,
     modes: &'a [String],
     found: &mut ModeReferences<'a>,
@@ -472,7 +636,54 @@ fn check_value(
         TokenType::Dimension => check_dimension(path, value, references).map(|_| ()),
         TokenType::Typography => check_typography(path, value, references),
         TokenType::Shadow => check_shadow(path, value, references),
+        TokenType::Number => check_state(
+            path,
+            ty,
+            value,
+            references,
+            |v| v.is_number(),
+            "takes a JSON number",
+        ),
+        TokenType::String => check_state(
+            path,
+            ty,
+            value,
+            references,
+            |v| v.is_string(),
+            "takes a JSON string",
+        ),
+        TokenType::Boolean => check_state(
+            path,
+            ty,
+            value,
+            references,
+            |v| v.is_boolean(),
+            "takes true or false",
+        ),
     }
+}
+
+/// A number, string or boolean: a literal that `fits`, or a reference to a
+/// token of the same type.
+fn check_state(
+    path: &str,
+    ty: TokenType,
+    value: &Value,
+    references: &mut Vec<Reference>,
+    fits: fn(&Value) -> bool,
+    takes: &str,
+) -> Result<(), TokenError> {
+    if let Some(target) = value.as_str().and_then(reference_in) {
+        references.push(Reference {
+            target: target.to_string(),
+            needs: ty,
+        });
+        return Ok(());
+    }
+    if fits(value) {
+        return Ok(());
+    }
+    refuse(format!("`{path}`: a {ty} token {takes}"))
 }
 
 fn check_color(

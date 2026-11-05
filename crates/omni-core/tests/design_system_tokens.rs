@@ -657,6 +657,127 @@ fn the_tree_can_be_written_as_one_file_per_mode() {
 }
 
 // ---------------------------------------------------------------------------
+// Number, string and boolean tokens, scopes and codeSyntax
+// ---------------------------------------------------------------------------
+
+fn with_state() -> Value {
+    let mut tree = sample();
+    tree["state"] = json!({
+        "isOpen": {"$type": "boolean", "$value": false},
+        "count": {"$type": "number", "$value": 2},
+        "cta": {"$type": "string", "$value": "Pay now"},
+        "total": {"$type": "number", "$value": "{state.count}"}
+    });
+    tree
+}
+
+#[test]
+fn a_group_without_a_type_holds_number_string_and_boolean_tokens() {
+    let tree = accept(&with_state());
+    assert_eq!(resolve(&tree, "$state.total", "light"), json!(2));
+    assert_eq!(resolve(&tree, "$state.cta", "dark"), json!("Pay now"));
+    assert_eq!(resolve(&tree, "$state.isOpen", "light"), json!(false));
+}
+
+#[test]
+fn state_tokens_refuse_values_of_another_type() {
+    for (token, value, message) in [
+        (
+            "count",
+            json!("2"),
+            "`state.count`: a number token takes a JSON number",
+        ),
+        (
+            "isOpen",
+            json!("false"),
+            "`state.isOpen`: a boolean token takes true or false",
+        ),
+        (
+            "cta",
+            json!(3),
+            "`state.cta`: a string token takes a JSON string",
+        ),
+    ] {
+        let tree = with(&with_state(), &format!("/state/{token}/$value"), value);
+        refuse(&tree, token, &[message]);
+    }
+    refuse(
+        &with(&with_state(), "/state/x", json!({"$value": 1})),
+        "a token without a type",
+        &["`state.x`: a token in a group without a `$type` states its own"],
+    );
+    refuse(
+        &with(
+            &with_state(),
+            "/state/bg",
+            json!({"$type": "color", "$value": "#ffffff"}),
+        ),
+        "a color in an untyped group",
+        &["`state.bg`: a token in a group without a `$type` is a number, string or boolean"],
+    );
+    refuse(
+        &with(
+            &with_state(),
+            "/state/label",
+            json!({"$type": "string", "$value": "{state.count}"}),
+        ),
+        "a string alias to a number",
+        &["state.count", "number"],
+    );
+}
+
+#[test]
+fn a_token_keeps_its_scopes_and_code_syntax() {
+    let mut json = with_state();
+    json["state"]["cta"]["$extensions"] = json!({"omnistate": {"scopes": ["content"]}});
+    json["state"]["isOpen"]["$extensions"] =
+        json!({"omnistate": {"codeSyntax": {"css": "--is-open", "swift": "isOpen"}}});
+    let tree = accept(&json);
+    assert_eq!(tree.to_json(), json);
+    let cta = tree.token("state.cta").expect("a token");
+    assert_eq!(cta.scopes().map(|s| s.len()), Some(1));
+    assert_eq!(cta.scopes().unwrap()[0].name(), "content");
+    assert!(cta.code_syntax().is_empty());
+    assert_eq!(tree.token("state.count").unwrap().scopes(), None);
+    let open = tree.token("state.isOpen").unwrap();
+    assert_eq!(open.code_syntax()["css"], "--is-open");
+    assert_eq!(open.code_syntax()["swift"], "isOpen");
+}
+
+#[test]
+fn unknown_scopes_and_malformed_code_syntax_are_refused() {
+    let with_omnistate = |token: &str, omnistate: Value| {
+        with(
+            &with_state(),
+            &format!("/state/{token}/$extensions"),
+            json!({"omnistate": omnistate}),
+        )
+    };
+    refuse(
+        &with_omnistate("cta", json!({"scopes": ["banana"]})),
+        "banana is no scope",
+        &[
+            "`state.cta`: `banana` is not a scope: write some of fill, stroke, textColor, content, visible, opacity, width, height, gap, pad, radius, fontSize, lineHeight, letterSpacing, strokeWidth",
+        ],
+    );
+    refuse(
+        &with_omnistate("cta", json!({"scopes": "content"})),
+        "scopes is no array",
+        &["`state.cta`: scopes is an array of scope names"],
+    );
+    refuse(
+        &with_omnistate("isOpen", json!({"codeSyntax": {"css": 1}})),
+        "a codeSyntax name is no string",
+        &["`state.isOpen`: codeSyntax maps a platform name to a string"],
+    );
+    refuse(
+        &with_omnistate("isOpen", json!({"codeSyntax": ["css"]})),
+        "codeSyntax is no object",
+        &["codeSyntax maps a platform name to a string"],
+    );
+}
+
+// ---------------------------------------------------------------------------
 // docs/formats/tokens.md
 // ---------------------------------------------------------------------------
 

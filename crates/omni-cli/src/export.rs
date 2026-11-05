@@ -323,20 +323,51 @@ fn mode_value<'a>(token: &'a Value, mode: &str) -> &'a Value {
         .expect("a token has a $value")
 }
 
-fn variable(path: &[&str]) -> String {
-    format!("--{}", path.join("-"))
+/// A path segment in kebab case: `isOpen` is `is-open`.
+fn kebab(segment: &str) -> String {
+    let mut out = String::new();
+    let mut previous: Option<char> = None;
+    for c in segment.chars() {
+        if c.is_uppercase() && previous.is_some_and(|p| p.is_lowercase() || p.is_ascii_digit()) {
+            out.push('-');
+        }
+        out.extend(c.to_lowercase());
+        previous = Some(c);
+    }
+    out
+}
+
+/// The variable of the token at the dotted `path`: its `codeSyntax.css` when
+/// it has one, else `--` and the path in kebab case.
+fn variable(tokens: &BTreeMap<String, &Value>, path: &str) -> String {
+    let named = tokens
+        .get(path)
+        .and_then(|token| {
+            token
+                .get("$extensions")?
+                .get("omnistate")?
+                .get("codeSyntax")?
+                .get("css")
+        })
+        .and_then(Value::as_str);
+    match named {
+        Some(name) => name.to_string(),
+        None => format!(
+            "--{}",
+            path.split('.').map(kebab).collect::<Vec<_>>().join("-")
+        ),
+    }
 }
 
 /// `{color.paper}` as `var(--color-paper)`; `None` for anything else.
-fn reference(value: &Value) -> Option<String> {
-    let text = value.as_str()?;
-    let inner = text.strip_prefix('{')?.strip_suffix('}')?;
-    Some(format!("var(--{})", inner.replace('.', "-")))
+fn reference(tokens: &BTreeMap<String, &Value>, value: &Value) -> Option<String> {
+    let inner = value_ref_path(value)?;
+    Some(format!("var({})", variable(tokens, &inner)))
 }
 
 /// A color, length, number or reference as CSS. A length is in `px`.
-fn scalar(value: &Value, length: bool) -> String {
-    if let Some(var) = reference(value) {
+fn scalar(tokens: &BTreeMap<String, &Value>, value: &Value, length: bool) -> String {
+    if let Some(var) = reference(tokens, value) {
         return var;
     }
     match value {
@@ -346,8 +377,8 @@ fn scalar(value: &Value, length: bool) -> String {
     }
 }
 
-fn family(value: &Value) -> String {
-    match reference(value) {
+fn family(tokens: &BTreeMap<String, &Value>, value: &Value) -> String {
+    match reference(tokens, value) {
         Some(var) => var,
         None => {
             let text = value.as_str().unwrap_or_default();
@@ -371,7 +402,8 @@ fn variables_of(
     path: &[&str],
     token: &Value,
 ) -> Variables {
-    let name = variable(path);
+    let dotted = path.join(".");
+    let name = variable(tokens, &dotted);
     let value = mode_value(token, mode);
     match path[0] {
         "typography" => {
@@ -390,26 +422,26 @@ fn variables_of(
                 .filter_map(|(key, suffix, length)| {
                     let field = fields.get(key)?;
                     let css = match &whole {
-                        Some(path) => format!("var(--{}-{suffix})", path.replace('.', "-")),
-                        None if *key == "fontFamily" => family(field),
-                        None => scalar(field, *length),
+                        Some(path) => format!("var({}-{suffix})", variable(tokens, path)),
+                        None if *key == "fontFamily" => family(tokens, field),
+                        None => scalar(tokens, field, *length),
                     };
                     Some((format!("{name}-{suffix}"), css))
                 })
                 .collect()
         }
         "shadow" => {
-            if let Some(var) = reference(value) {
+            if let Some(var) = reference(tokens, value) {
                 return vec![(name, var)];
             }
             let length = |key: &str| {
                 value
                     .get(key)
-                    .map_or("0px".to_string(), |v| scalar(v, true))
+                    .map_or("0px".to_string(), |v| scalar(tokens, v, true))
             };
             let color = value
                 .get("color")
-                .map_or(String::new(), |v| scalar(v, false));
+                .map_or(String::new(), |v| scalar(tokens, v, false));
             vec![(
                 name,
                 format!(
@@ -421,10 +453,20 @@ fn variables_of(
                 ),
             )]
         }
-        group => {
-            let css = scalar(value, group == "spacing" || group == "radius");
+        "color" | "spacing" | "radius" => {
+            let css = scalar(tokens, value, path[0] != "color");
             vec![(name, css)]
         }
+        // A number, string or boolean; a string that is no reference is quoted.
+        _ => vec![(name, family_or(tokens, value))],
+    }
+}
+
+fn family_or(tokens: &BTreeMap<String, &Value>, value: &Value) -> String {
+    if matches!(value, Value::String(_)) {
+        family(tokens, value)
+    } else {
+        value.to_string()
     }
 }
 
@@ -438,7 +480,15 @@ fn value_ref_path(value: &Value) -> Option<String> {
 /// `[data-mode="<mode>"]` with only the variables it changes.
 pub(crate) fn tokens_css(tree: &Value, modes: &[&str]) -> Result<String> {
     let mut found = Vec::new();
-    for group in ["color", "spacing", "radius", "typography", "shadow"] {
+    let fixed = ["color", "spacing", "radius", "typography", "shadow"];
+    let others = match tree {
+        Value::Object(fields) => fields.as_slice(),
+        _ => &[],
+    }
+    .iter()
+    .map(|(name, _)| name.as_str())
+    .filter(|name| !name.starts_with('$') && !fixed.contains(name));
+    for group in fixed.into_iter().chain(others) {
         if let Some(node) = tree.get(group) {
             let mut path = vec![group];
             collect(node, &mut path, &mut found);
