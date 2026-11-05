@@ -122,6 +122,26 @@ fn project_create_sends_the_name_as_the_agent_and_prints_the_new_project() {
 }
 
 #[test]
+fn project_create_suggests_linking_the_name_the_api_returned() {
+    let server = MockServer::start(|_| {
+        Reply::json(
+            201,
+            &json!({ "project": project_json(NEW_PROJECT, "Shop") }),
+        )
+    });
+    let home = logged_in(&server.url);
+    let out = run(&home, &["project", "create", "shop"]);
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    assert_eq!(
+        non_empty_lines(&out.stdout),
+        vec![
+            format!("created project Shop ({NEW_PROJECT})"),
+            "link a folder to it with: omni link Shop".to_string()
+        ]
+    );
+}
+
+#[test]
 fn project_list_prints_one_line_per_project() {
     let server = mock();
     let home = logged_in(&server.url);

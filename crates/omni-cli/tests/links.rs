@@ -485,6 +485,50 @@ fn config_show_names_the_project_the_folder_is_linked_to() {
     assert!(text(&folder.path).contains("project: (none)"));
 }
 
+#[test]
+fn config_show_in_a_folder_linked_only_in_another_workspace_reports_no_project() {
+    let home = logged_in("http://127.0.0.1:9");
+    let folder = Scratch::new("folder");
+    std::fs::write(
+        links_path(&home.path),
+        format!(
+            "[{OTHER_WORKSPACE}]\n\"{}\" = \"{PROJECT}\"\n",
+            canonical(&folder)
+        ),
+    )
+    .unwrap();
+
+    let out = omni(&home.path)
+        .args(&["config", "show", "--json"])
+        .cwd(&folder.path)
+        .run();
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    assert_eq!(out.json().get("project"), Some(&Value::Null));
+}
+
+#[test]
+fn config_show_logged_out_in_a_linked_folder_reports_no_project() {
+    let home = Scratch::new("home");
+    let folder = Scratch::new("folder");
+    std::fs::create_dir_all(links_path(&home.path).parent().unwrap()).unwrap();
+    std::fs::write(
+        links_path(&home.path),
+        format!(
+            "[{WORKSPACE}]\n\"{}\" = \"{PROJECT}\"\n",
+            canonical(&folder)
+        ),
+    )
+    .unwrap();
+
+    let out = omni(&home.path)
+        .args(&["config", "show", "--json"])
+        .cwd(&folder.path)
+        .run();
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    assert_eq!(out.json().get("project"), Some(&Value::Null));
+    assert_eq!(out.json()["logged_in"], json!(false));
+}
+
 const FEATURE: &str = "01900000-0000-7000-8000-0000000000f1";
 
 fn linked_home(server: &MockServer, folder: &Scratch) -> Scratch {
