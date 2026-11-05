@@ -381,6 +381,7 @@ ${task ? `\n## Your task now\n${task}\n` : ''}${CONVENTIONS}
 - Implement only this story. No unrelated cleanup, no groundwork for later stories.
 - Commit a feat: commit, then fix: commits for later corrections. Commit production and test files that belong to the story.
 - Before you finish, run the narrowest check that proves your change: one crate's tests, one test file, one package's typecheck. Do not run the full check command here; it runs on the main worktree after the merge.
+- The stack tests run ONLY as a read-only check through the configured stack command's compose project, \`${stackCmd || '(none configured)'}\`, from the main worktree's folder ${root}: never \`docker compose up\` or \`docker compose run\` from your worktree. The compose project is shared, and a run from your worktree recreates the stack the test lane depends on. When you cannot run them that way, say so in decisions instead of running them.
 - If the story needs a product decision the spec does not make and the story cannot avoid, STOP: status needs_decision with question, options and recommendation. Never guess a product rule. Ordinary technical choices are yours.
 - If you genuinely cannot continue, status blocked with the reason in summary.
 - Return decisions for every non-obvious technical choice.

@@ -600,6 +600,21 @@ test("records the implementer's decisions as agent decisions", async (t) => {
   assert.deepEqual(dirs.story("US-1").decisions, [{ question: "Where does the board query live?", choice: "In stories.rs", by: "agent" }]);
 });
 
+test("the implementer is told to run the stack tests only through the stack command's compose project from the main worktree's folder, never compose up or run from its worktree, and to say so in decisions when it cannot", async (t) => {
+  const dirs = scratch(t, [story("US-1")]);
+  dirs.checks({ fast: "true", stack_up: "true", stack: "compose-tool run --rm test" });
+  const { agent, prompts } = implAgent({ "US-1": async () => ({ status: "ready", summary: "done" }) });
+
+  await deliver({ feature: "board" }, agent);
+
+  const rule = prompts["US-1"][0].split("\n").find((l) => l.startsWith("- The stack tests"));
+  assert.ok(rule, "the rules name the stack tests");
+  assert.match(rule, /through the configured stack command's compose project, `compose-tool run --rm test`, from the main worktree's folder /);
+  assert.ok(rule.includes(`from the main worktree's folder ${dirs.repo}:`), "the rule names the main worktree's folder");
+  assert.match(rule, /never `docker compose up` or `docker compose run` from your worktree/);
+  assert.match(rule, /say so in decisions/);
+});
+
 // ---- the implement loop: claim, then implement ----------------------------------
 
 // The run's id, from the lock it holds while it runs.
