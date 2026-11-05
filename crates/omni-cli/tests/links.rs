@@ -984,3 +984,69 @@ fn an_unlinked_worktree_of_a_repository_linked_in_another_workspace_names_the_re
     );
     assert!(server.requests().is_empty(), "{:?}", server.requests());
 }
+
+#[test]
+fn unlink_removes_only_the_folders_own_line() {
+    let server = mock();
+    let home = logged_in(&server.url);
+    let folder = Scratch::new("folder");
+    let other = Scratch::new("other");
+    assert_eq!(link_in(&home, &folder, &["link", "brand-site"]).code, 0);
+    assert_eq!(link_in(&home, &other, &["link", "other"]).code, 0);
+
+    let out = link_in(&home, &folder, &["unlink"]);
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    assert_eq!(out.stdout, format!("unlinked {}\n", canonical(&folder)));
+    assert_eq!(
+        links_text(&home),
+        format!(
+            "[{WORKSPACE}]\n\"{}\" = \"{OTHER_PROJECT}\"\n",
+            canonical(&other)
+        )
+    );
+}
+
+#[test]
+fn unlink_in_a_sub_folder_refuses_and_names_the_linked_folder() {
+    let server = mock();
+    let home = logged_in(&server.url);
+    let folder = Scratch::new("folder");
+    let sub = folder.join("a");
+    std::fs::create_dir_all(&sub).unwrap();
+    link_file(&home, &folder.path, PROJECT);
+    let before = links_text(&home);
+
+    let out = omni(&home.path)
+        .args(&["unlink", "--as", "run-7/author"])
+        .cwd(&sub)
+        .run();
+    assert_eq!(out.code, 1);
+    assert_eq!(
+        out.stderr.trim_end(),
+        format!(
+            "omni: this folder has no link of its own; the link in effect is {}: run omni unlink there",
+            canonical(&folder)
+        )
+    );
+    assert_eq!(links_text(&home), before);
+}
+
+#[test]
+fn unlink_without_a_link_in_this_workspace_says_not_linked() {
+    let server = mock();
+    let home = logged_in(&server.url);
+    let folder = Scratch::new("folder");
+    let out = link_in(&home, &folder, &["unlink"]);
+    assert_eq!(out.code, 1);
+    assert_eq!(out.stderr.trim_end(), "omni: this folder is not linked");
+
+    let text = format!(
+        "[{OTHER_WORKSPACE}]\n\"{}\" = \"{PROJECT}\"\n",
+        canonical(&folder)
+    );
+    std::fs::write(links_path(&home.path), &text).unwrap();
+    let out = link_in(&home, &folder, &["unlink"]);
+    assert_eq!(out.code, 1);
+    assert_eq!(out.stderr.trim_end(), "omni: this folder is not linked");
+    assert_eq!(links_text(&home), text);
+}

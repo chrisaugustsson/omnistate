@@ -54,6 +54,7 @@ pub fn run(args: &Args) -> Result<()> {
         ["project", ..] => bail!("usage: omni project create <name> | omni project list"),
         ["link"] => links::show(args),
         ["link", project] => links::link(args, Some(project)),
+        ["unlink"] => links::unlink(args),
         ["feature", "create"] => features::create(args, None),
         ["feature", "create", name] => features::create(args, Some(name)),
         ["feature", "list"] => features::list(args),

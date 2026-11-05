@@ -74,6 +74,15 @@ impl Links {
         }
     }
 
+    /// Removes the line of `path` in a workspace's table; false when it has
+    /// none. Other lines, and the table's header while it has lines, stay.
+    pub fn remove(&mut self, workspace_id: &str, path: &str) -> bool {
+        let before = self.entries.len();
+        self.entries
+            .retain(|(w, p, _)| !(w == workspace_id && p == path));
+        self.entries.len() != before
+    }
+
     /// Writes the whole file to a new file next to it and moves that into
     /// place, so a reader never sees half of it.
     pub fn save(&self) -> Result<()> {
@@ -340,4 +349,26 @@ pub fn show(args: &Args) -> Result<()> {
     };
     say(&format!("{origin} is linked to {name} ({project_id})"));
     Ok(())
+}
+
+/// `omni unlink`: removes the current folder's own line, never the link of an
+/// ancestor or of the main worktree.
+pub fn unlink(args: &Args) -> Result<()> {
+    let agent = agent(args)?;
+    let folder = std::env::current_dir()
+        .and_then(std::fs::canonicalize)
+        .map_err(|e| CliError::new(format!("cannot find the current folder: {e}")))?;
+    let mut links = Links::load()?;
+    if links.remove(&agent.workspace_id, &folder.to_string_lossy()) {
+        links.save()?;
+        say(&format!("unlinked {}", folder.display()));
+        return Ok(());
+    }
+    match resolve(&links, &agent.workspace_id, &folder) {
+        Resolution::Linked { matched, .. } => bail!(
+            "this folder has no link of its own; the link in effect is {}: run omni unlink there",
+            matched.display()
+        ),
+        Resolution::OtherWorkspace { .. } | Resolution::None => bail!("this folder is not linked"),
+    }
 }
