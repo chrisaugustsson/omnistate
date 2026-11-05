@@ -612,3 +612,101 @@ fn leftover_keys_in_omni_toml_are_warned_about_once_and_checks_stays_quiet() {
     let none = doc_list_in(&home, &folder, &[], &[]);
     assert_eq!(none.stderr, "");
 }
+
+fn git(dir: &std::path::Path, args: &[&str]) {
+    let out = std::process::Command::new("git")
+        .args(["-c", "user.name=test", "-c", "user.email=test@example.com"])
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .expect("run git");
+    assert!(out.status.success(), "git {args:?}: {out:?}");
+}
+
+/// A repository with one commit and a worktree of it outside the repository.
+fn repo_with_worktree() -> (Scratch, Scratch) {
+    let repo = Scratch::new("repo");
+    git(&repo.path, &["init", "-q"]);
+    git(
+        &repo.path,
+        &["commit", "-q", "--allow-empty", "-m", "first"],
+    );
+    let worktrees = Scratch::new("worktrees");
+    git(
+        &repo.path,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "wt",
+            worktrees.join("w").to_str().unwrap(),
+        ],
+    );
+    (repo, worktrees)
+}
+
+fn link_file(home: &Scratch, folder: &std::path::Path, project: &str) {
+    let path = links_path(&home.path);
+    let mut text = std::fs::read_to_string(&path).unwrap_or_else(|_| format!("[{WORKSPACE}]\n"));
+    text.push_str(&format!(
+        "\"{}\" = \"{project}\"\n",
+        std::fs::canonicalize(folder).unwrap().display()
+    ));
+    std::fs::write(path, text).unwrap();
+}
+
+#[test]
+fn a_git_worktree_of_a_linked_repository_finds_the_repositorys_project() {
+    let server = mock();
+    let home = logged_in(&server.url);
+    let (repo, worktrees) = repo_with_worktree();
+    let worktree = worktrees.join("w");
+    std::fs::create_dir_all(worktree.join("sub")).unwrap();
+    link_file(&home, &repo.path, PROJECT);
+
+    for dir in [worktree.clone(), worktree.join("sub")] {
+        let out = feature_list_in(&home, &dir, &[]);
+        assert_eq!(out.code, 0, "{}", out.stderr);
+    }
+    let want = format!("GET /api/v1/w/{WORKSPACE}/projects/{PROJECT}/features");
+    assert_eq!(feature_requests(&server), vec![want.clone(), want]);
+}
+
+#[test]
+fn a_link_of_the_worktree_itself_beats_the_repositorys() {
+    let server = mock();
+    let home = logged_in(&server.url);
+    let (repo, worktrees) = repo_with_worktree();
+    let worktree = worktrees.join("w");
+    link_file(&home, &repo.path, PROJECT);
+    link_file(&home, &worktree, OTHER_PROJECT);
+
+    let out = feature_list_in(&home, &worktree, &[]);
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    assert_eq!(
+        feature_requests(&server),
+        vec![format!(
+            "GET /api/v1/w/{WORKSPACE}/projects/{OTHER_PROJECT}/features"
+        )]
+    );
+}
+
+#[test]
+fn without_git_an_unlinked_folder_gets_the_not_linked_error_alone() {
+    let server = mock();
+    let home = logged_in(&server.url);
+    let folder = Scratch::new("folder");
+
+    let out = omni(&home.path)
+        .args(&["feature", "list", "--as", "run-7/author"])
+        .env("PATH", "")
+        .cwd(&folder.path)
+        .run();
+    assert_eq!(out.code, 1);
+    assert_eq!(
+        out.stderr.trim_end(),
+        "omni: this folder is not linked to a project: run omni link <project name|id> here, or pass --project"
+    );
+    assert!(server.requests().is_empty(), "{:?}", server.requests());
+}
