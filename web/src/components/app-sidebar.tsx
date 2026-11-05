@@ -20,6 +20,7 @@ import { Button } from "@/components/ui/button";
 import type { HomeResponse, ProjectBody } from "@/api/generated";
 import { waitingCount } from "@/components/project/items";
 import { ScopeTree, useFold } from "@/components/scope-tree";
+import { useProjectEvents } from "@/live/context";
 import { useReloading } from "@/lib/reloading";
 import { useHome } from "@/lib/use-home";
 import { useVisits, type Visit } from "@/lib/visits";
@@ -364,6 +365,14 @@ function Switcher({
   );
 }
 
+/** Loads the projects again when the project `projectId` is renamed. */
+function ReloadOnRename({ projectId, reload }: { projectId: string; reload: () => void }) {
+  useProjectEvents(projectId, (event) => {
+    if (event.event === "project.renamed") reload();
+  });
+  return null;
+}
+
 /** The left column of every workspace page: the header, the project's places and the account. */
 export function AppSidebar({
   workspace,
@@ -411,6 +420,7 @@ export function AppSidebar({
 
   return (
     <>
+      {projectId && <ReloadOnRename projectId={projectId} reload={reload} />}
       {open && (
         <div aria-hidden className="fixed inset-0 z-30 bg-foreground/20 backdrop-blur-[1px] md:hidden" onClick={onClose} />
       )}
