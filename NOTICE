@@ -12,6 +12,10 @@ FigCraft
 Copyright (c) 2026 ArtCraft Team and the FigCraft contributors.
 Licensed under the MIT License or the Apache License, Version 2.0, at your option.
 
+crates/omni-core/src/design/proto/expr.rs ports the expression tree and its
+operators from FigCraft, crates/doc/src/proto_expr.rs (same copyright and
+license as above).
+
 crates/omni-proto/src/player.rs and crates/omni-proto/tests/behaviour.rs port
 the rules and the behaviour tests of FigCraft's prototype player,
 crates/engine/src/proto_run.rs (same copyright and license as above).

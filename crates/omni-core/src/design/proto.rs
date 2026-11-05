@@ -4,13 +4,18 @@
 //!
 //! The model and its JSON names are FigCraft's (`crates/doc/src/proto.rs`,
 //! MIT OR Apache-2.0; see `NOTICE`). Interactions are plain data here: the
-//! destinations of actions and the variables and expressions they name are
-//! checked where they are written, not by this module.
+//! destinations of actions are checked where they are written, not by this
+//! module; the variables and expressions they name are checked by
+//! [`Action::check_variables`].
 //!
 //! An interaction leaves out every field that holds its default, in JSON and
 //! in the tag format: trigger `onClick`, transition `instant`, `durationMs`
 //! 300, easing `easeOut`, `delayMs` 0, and the defaults of each action's
 //! fields.
+
+mod expr;
+
+pub use expr::{Expr, ExprError};
 
 use super::devices::{self, CUSTOM, NONE};
 use super::id::NodeId;
@@ -910,7 +915,7 @@ fn action_from(value: &Value) -> Result<Action, String> {
             let expr = map.get("expr").cloned();
             if value.is_none() && expr.is_none() {
                 return Err(
-                    "`value` is required for setVariable: write `value: 1`, or an expression as `expr: {...}`"
+                    "setVariable needs `value` or `expr`: write `value: 1`, or an expression as `expr: {...}`"
                         .to_string(),
                 );
             }

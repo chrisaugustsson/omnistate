@@ -229,11 +229,38 @@ default is left out when it holds it:
 | `setVariableMode` | `collection`, `mode` |
 | `conditional` | `blocks`, a list of `{condition, actions}`; a block without `condition` always runs |
 
-A `dest` is the ID of a node, and a variable, a collection, a mode, an `expr`
-and a `condition` are written as they are; none of them is checked against the
-design yet. An unknown trigger, action, transition or easing, and a missing
-required field, are errors that list the names to write instead, such as
-"`tap` is not a trigger: write one of onClick, onHover, ...".
+A `dest` is the ID of a node and is not checked against the design yet. The
+variables, collections, modes and expressions of the three variable actions
+are checked when a layer is written, against the design system's tokens (a
+design system without tokens has no variables), with the same messages for the
+actions in the blocks of a `conditional`, at any depth:
+
+- `setVariable` takes the path of a token (`state.count`) of type number,
+  string, boolean or color, and either a `value` of that type (a color token
+  takes a color written as text) or an `expr` that yields that type, not both.
+- `setVariableMode` takes a `collection` (a top-level group) that has modes,
+  and one of its `mode`s.
+- `conditional` takes at least one block; only the last block may leave out its
+  `condition`, which makes it the else branch. A `condition` yields a boolean.
+
+An expression is a JSON tree, nested at most 16 levels (the root is level 1):
+
+| Expression | Yields |
+| --- | --- |
+| `{value: 1}`, `{value: "a"}`, `{value: true}` | a number, a string, a boolean |
+| `{variable: "state.count"}` | the type of the token |
+| `{op, args}` | see below |
+| `{mode: "color"}` | a string: the collection's current mode |
+| `{inMode: {variable: "color.surface", mode: "dark"}}` | the type of the token, in that mode |
+
+The operators take one argument (`not`, `negate`) or two (the rest):
+`add`, `subtract`, `multiply` and `divide` take numbers and yield a number;
+`less`, `lessOrEqual`, `greater` and `greaterOrEqual` take numbers and yield a
+boolean; `and` and `or` take booleans; `not` takes a boolean; `negate` takes a
+number; `equals` and `notEqual` compare two values of one type. An unknown
+trigger, action, transition or easing, and a missing required field, are
+errors that list the names to write instead, such as "`tap` is not a trigger:
+write one of onClick, onHover, ...".
 
 ### Flows and prototype settings (`flows` and `prototype` of a `<Page>`)
 

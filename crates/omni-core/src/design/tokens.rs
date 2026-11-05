@@ -97,13 +97,19 @@ impl ModeChoice {
 
 /// What a token states about itself beyond its value: the fields it may bind
 /// to and its name per platform.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Token {
+    ty: TokenType,
     scopes: Option<Vec<Scope>>,
     code_syntax: BTreeMap<String, String>,
 }
 
 impl Token {
+    /// The type of the token's value.
+    pub fn ty(&self) -> TokenType {
+        self.ty
+    }
+
     /// The fields the token may bind to, as written; `None` when it states none.
     pub fn scopes(&self) -> Option<&[Scope]> {
         self.scopes.as_deref()
@@ -187,8 +193,9 @@ const GROUPS: [(&str, TokenType); 5] = [
 /// The deepest chain of references that `resolve` follows.
 const MAX_DEPTH: usize = 64;
 
+/// The type of a token's value.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum TokenType {
+pub enum TokenType {
     Color,
     Dimension,
     Typography,
@@ -209,7 +216,8 @@ const TYPES: [TokenType; 7] = [
 ];
 
 impl TokenType {
-    fn name(self) -> &'static str {
+    /// The type as a token file names it, such as `boolean`.
+    pub fn name(self) -> &'static str {
         match self {
             Self::Color => "color",
             Self::Dimension => "dimension",
@@ -643,7 +651,11 @@ fn check_token<'a>(
             ));
         }
     }
-    let mut meta = Token::default();
+    let mut meta = Token {
+        ty: token.ty,
+        scopes: None,
+        code_syntax: BTreeMap::new(),
+    };
     let mut found = Vec::new();
     let mut references = Vec::new();
     check_value(path, token.ty, &token.object["$value"], &mut references)?;
