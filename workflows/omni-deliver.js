@@ -643,7 +643,7 @@ Return raw structured data only.`
   }
   const checkPrompt = (story) => {
     const docs = (story.links || []).filter((l) => l.doc_id)
-    return `You check ONE merged story of the feature "${feature}" by running it. Its branch is already merged into ${integration} on the main worktree ${root}, and the stack is up there (the stack_up command ran for this batch). You change nothing: no edits, no commits.
+    return `You check ONE merged story of the feature "${feature}" by running it. Its branch is already merged into ${integration} on the main worktree ${root}, and the stack is up: the one \`${stackUp || '(no stack_up configured)'}\` starts, which ran for this batch. Exercise the story against that stack, not another copy on the machine. You change nothing: no edits, no commits.
 
 ## The story
 ${story.key}: ${story.title}
@@ -1020,8 +1020,14 @@ Return raw structured data only.`, { schema: TEST_CUT_SCHEMA, label: `test-cut:$
     }
     return `${token}: missing on the host (looked at ${candidates.join(', ')})`
   }
+  // The compose project the stack command runs against, as its -p,
+  // --project-name or COMPOSE_PROJECT_NAME names it; none for the default.
+  const composeProject = () => {
+    const m = /(?:^|\s)(?:-p|--project-name)[\s=]+(\S+)|(?:^|\s)COMPOSE_PROJECT_NAME=(\S+)/.exec(stackCmd || '')
+    return m ? ['-p', m[1] || m[2]] : []
+  }
   const composeState = () => {
-    const ps = tryRun('docker', ['compose', 'ps', '--format', '{{.Name}} {{.Status}}'], { cwd: root, timeout: 15000 })
+    const ps = tryRun('docker', ['compose', ...composeProject(), 'ps', '--format', '{{.Name}} {{.Status}}'], { cwd: root, timeout: 15000 })
     if (ps === null) return 'not available'
     const rows = ps.split('\n').map((l) => l.trim()).filter(Boolean)
     if (!rows.length) return 'no container'
@@ -1050,11 +1056,12 @@ Return raw structured data only.`, { schema: TEST_CUT_SCHEMA, label: `test-cut:$
     git(['reset', '--hard', base])
     fs.rmSync(LANE_FILE, { force: true })
   }
-  const failLane = (key, base, findings, reason) => {
+  const failLane = async (key, base, findings, reason) => {
     undoLane(base)
     const o = sendBack(key, 'testing', findings)
     checkOutcomes.push({ key, outcome: o.outcome, failures: findings.length, thread: o.thread })
     laneLog(key, `sent back: ${reason}`)
+    await rebuildStack(key, base)
   }
   const laneLog = (key, message) => log(`lane:${key}: ${message}`)
   // True while the lane runs stack_up or the stack command, which restart the
@@ -1064,6 +1071,17 @@ Return raw structured data only.`, { schema: TEST_CUT_SCHEMA, label: `test-cut:$
     stackBusy = true
     try { return await runCmd(cmd, root) } finally { stackBusy = false }
   }
+  // True once this lane story ran stack_up: the stack then holds the story's
+  // build, and a lane that fails after that rebuilds it from the reset tree,
+  // so the stack is left on the integration branch's head, not on a story
+  // that was sent back.
+  let stackUpRan = false
+  const rebuildStack = async (key, base) => {
+    if (!stackUpRan) return
+    laneLog(key, `rebuilding the stack from ${integration} at ${base.slice(0, 7)}`)
+    const up = await runStack(stackUp)
+    laneLog(key, up.ok ? `stack rebuilt from ${integration} at ${base.slice(0, 7)}` : `the stack did not rebuild: \`${stackUp}\` exited non-zero\n${tail(up.output, 1000)}`)
+  }
   // The story's branch and worktree, which an older run may have dropped after
   // merging the story: nothing is left to merge, so the story goes back for a
   // fresh attempt without an attempt counted.
@@ -1071,6 +1089,7 @@ Return raw structured data only.`, { schema: TEST_CUT_SCHEMA, label: `test-cut:$
   const laneStory = async (key) => {
     phase('Test lane')
     const base = git(['rev-parse', 'HEAD']).trim()
+    stackUpRan = false
     laneLog(key, `claimed (${integration} at ${base.slice(0, 7)})`)
     if (branchMissing(key)) {
       sendBack(key, 'testing', [{ text: `branch story/${key} is missing: nothing to merge onto ${integration}; start again from ${integration}`, files: [] }], false)
@@ -1093,6 +1112,7 @@ Return raw structured data only.`, { schema: TEST_CUT_SCHEMA, label: `test-cut:$
     const fastResult = await runFast(root)
     if (!fastResult.ok) return failLane(key, base, [{ text: `The fast command (\`${fast}\`) failed on the main worktree. Output:\n\`\`\`\n${tail(fastResult.output)}\n\`\`\``, files: [] }], 'the fast command failed')
     laneLog(key, 'fast passed')
+    stackUpRan = true
     const up = await runStack(stackUp)
     if (!up.ok) return failLane(key, base, [stackFinding(`The stack did not start: \`${stackUp}\` exited non-zero.`, up)], 'the stack did not start')
     const stackResult = await runStack(stackCmd)
@@ -1105,6 +1125,7 @@ Return raw structured data only.`, { schema: TEST_CUT_SCHEMA, label: `test-cut:$
       linkAndBlock(key, [id])
       checkOutcomes.push({ key, outcome: 'unchecked', thread: id })
       laneLog(key, 'blocked: the verifier returned nothing')
+      await rebuildStack(key, base)
       return
     }
     if (r.failures.length > 0) return failLane(key, base, r.failures.map((f) => ({ text: f.text, files: [] })), `${r.failures.length} criteri${r.failures.length === 1 ? 'on' : 'a'} failed`)

@@ -1,4 +1,7 @@
 [checks]
 fast = "make lint && make render-wasm && cargo test --workspace && pnpm -r test && node --test workflows/*.test.mjs"
-stack_up = "docker compose up --build --wait --detach proxy"
-stack = "docker compose run --rm test"
+# The stack checks run on the test stack, compose project omnistate-test at
+# http://omnistate-test.localhost (docs/delivery-stack.md), never on the project
+# omnistate that holds the board.
+stack_up = "OMNI_PORT=8421 docker compose -p omnistate-test up --build --wait --detach proxy"
+stack = "OMNI_PORT=8421 docker compose -p omnistate-test run --rm test"

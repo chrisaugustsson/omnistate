@@ -15,13 +15,31 @@ SANDBOX_BUILD := render-sandbox/build
 # Where the web app's design viewer loads the renderer from (served as /render/).
 WEB_RENDER := web/public/render
 
-.PHONY: edge lint test web-deps web-api render-wasm chrome-boxes stress-file nodes-boxes bench-render check-layout penpot-compare bench-ops bench-ordrar install-agent-tools
+.PHONY: edge test-stack-up test-stack test-stack-down lint test web-deps web-api render-wasm chrome-boxes stress-file nodes-boxes bench-render check-layout penpot-compare bench-ops bench-ordrar install-agent-tools
 
 # The machine's edge: the Traefik on port 80 that makes the stack
 # http://omnistate.localhost (docker/edge/README.md). Run once per machine; it
 # stays up across restarts, and this is a no-op while it is current.
 edge:
 	docker compose -f docker/edge/docker-compose.yml up --detach
+
+# The test stack: a second copy of the compose stack, project omnistate-test
+# with volumes of its own, at http://omnistate-test.localhost through the edge
+# (fallback http://localhost:8421). The delivery run's test lane builds and
+# tests on it (.omni.toml [checks], docs/delivery-stack.md), so the project
+# omnistate that holds the board is never rebuilt, restarted or written to by a
+# run. `make test-stack-down` removes it with its volumes, which is also how a
+# migration a failed story applied leaves its database.
+TEST_STACK := OMNI_PORT=8421 docker compose -p omnistate-test
+
+test-stack-up:
+	$(TEST_STACK) up --build --wait --detach proxy
+
+test-stack: test-stack-up
+	$(TEST_STACK) run --rm test
+
+test-stack-down:
+	$(TEST_STACK) down --volumes
 
 # The last clippy run covers the WebAssembly-only code of omni-render.
 lint: web-deps

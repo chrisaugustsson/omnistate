@@ -3,7 +3,9 @@
 One Traefik container that owns port 80 on this machine and routes to local
 Docker Compose projects by hostname, so each project is reached at
 `http://<name>.localhost` with no port number. OmniState is
-`http://omnistate.localhost`.
+`http://omnistate.localhost`, and its test stack, the second copy of the
+stack that a delivery run builds and tests on (`docs/delivery-stack.md`), is
+`http://omnistate-test.localhost`.
 
 ## Run
 
