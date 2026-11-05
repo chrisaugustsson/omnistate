@@ -6,11 +6,12 @@
 //! JSON body and checking that the project exists.
 
 use crate::AppState;
+use crate::docs::Tx;
 use crate::session::{ApiError, ErrorBody};
-use crate::workspace::{AgentRequest, WorkspaceRequest};
+use crate::workspace::{AgentRequest, WorkspaceRequest, parse_uuid};
 use axum::Json;
 use axum::body::Bytes;
-use axum::extract::State;
+use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -48,6 +49,11 @@ pub struct ProjectListResponse {
 
 #[derive(Deserialize, ToSchema)]
 pub struct CreateProjectRequest {
+    pub name: Option<String>,
+}
+
+#[derive(Deserialize, ToSchema)]
+pub struct RenameProjectRequest {
     pub name: Option<String>,
 }
 
@@ -138,6 +144,65 @@ pub async fn list_projects(
     .map_err(ApiError::database)?;
     tx.commit().await.map_err(ApiError::database)?;
     Ok(Json(ProjectListResponse { projects }))
+}
+
+/// Renames a project. Its ID, features, docs and threads stay.
+#[utoipa::path(
+    patch,
+    path = "/api/v1/w/{workspace_id}/projects/{project_id}",
+    params(
+        ("workspace_id" = String, Path, description = "The workspace's UUID"),
+        ("project_id" = String, Path, description = "The project's UUID"),
+    ),
+    request_body = RenameProjectRequest,
+    responses(
+        (status = 200, description = "The renamed project", body = ProjectResponse),
+        (status = 400, description = "The name is missing or blank", body = ErrorBody),
+        (status = 401, description = "No valid API key or session", body = ErrorBody),
+        (status = 404, description = "No such project in this workspace", body = ErrorBody),
+        (status = 409, description = "The workspace has another project of this name (`name_taken`)", body = ErrorBody),
+    )
+)]
+pub async fn rename_project(
+    State(state): State<AppState>,
+    request: WorkspaceRequest,
+    Path((_, project_id)): Path<(String, String)>,
+    body: Bytes,
+) -> Result<Json<ProjectResponse>, ApiError> {
+    let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
+    let new = parse_body::<RenameProjectRequest>(&body);
+    let mut tx = state.workspace_tx(&request.workspace_id).await?;
+    lock_project(&mut tx, &project_id).await?;
+    let name = non_blank(new?.name).ok_or_else(|| ApiError::bad_request("invalid_request"))?;
+    let renamed = sqlx::query_as(concat!(
+        "UPDATE projects SET name = $2 WHERE id = $1::uuid RETURNING id::text, name, ",
+        timestamp!("created_at"),
+        " AS created_at"
+    ))
+    .bind(&project_id)
+    .bind(&name)
+    .fetch_one(&mut *tx)
+    .await;
+    let project = match renamed {
+        Ok(project) => project,
+        Err(sqlx::Error::Database(e)) if e.is_unique_violation() => {
+            return Err(ApiError::conflict("name_taken"));
+        }
+        Err(e) => return Err(ApiError::database(e)),
+    };
+    tx.commit().await.map_err(ApiError::database)?;
+    Ok(Json(ProjectResponse { project }))
+}
+
+/// Locks a project of the workspace, 404 when there is none.
+async fn lock_project(tx: &mut Tx, project_id: &str) -> Result<(), ApiError> {
+    let found: Option<(String,)> =
+        sqlx::query_as("SELECT id::text FROM projects WHERE id = $1::uuid FOR UPDATE")
+            .bind(project_id)
+            .fetch_optional(&mut **tx)
+            .await
+            .map_err(ApiError::database)?;
+    found.map(|_| ()).ok_or(ApiError::NotFound)
 }
 
 /// Fails with 404 unless the project exists in the transaction's workspace

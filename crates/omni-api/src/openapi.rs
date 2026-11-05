@@ -28,7 +28,9 @@ use crate::features::{
 use crate::home::{FeatureSummary, HomeResponse, StoryCounts, WaitingBody};
 use crate::live::{LiveClientMessage, LiveErrorCode, LiveEventName, LiveServerMessage};
 use crate::pins::NodeBox;
-use crate::projects::{CreateProjectRequest, ProjectBody, ProjectListResponse, ProjectResponse};
+use crate::projects::{
+    CreateProjectRequest, ProjectBody, ProjectListResponse, ProjectResponse, RenameProjectRequest,
+};
 use crate::routes::{Access, registry};
 use crate::session::{
     ErrorBody, LoginRequest, UserBody, UserResponse, WorkspaceBody, WorkspaceListResponse,
@@ -77,6 +79,7 @@ use utoipa::OpenApi;
         crate::features::delete_feature,
         crate::projects::list_projects,
         crate::projects::create_project,
+        crate::projects::rename_project,
         crate::attachments::upload,
         crate::attachments::download,
         crate::docs::create_app_doc,
@@ -147,6 +150,7 @@ use utoipa::OpenApi;
         ProjectResponse,
         ProjectListResponse,
         CreateProjectRequest,
+        RenameProjectRequest,
         FeatureBody,
         FeatureResponse,
         RenameFeatureRequest,

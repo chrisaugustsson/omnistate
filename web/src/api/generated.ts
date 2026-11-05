@@ -665,6 +665,11 @@ export const RenameFeatureRequestSchema = z.object({
 });
 export type RenameFeatureRequest = z.infer<typeof RenameFeatureRequestSchema>;
 
+export const RenameProjectRequestSchema = z.object({
+  name: z.string().nullable().optional(),
+});
+export type RenameProjectRequest = z.infer<typeof RenameProjectRequestSchema>;
+
 export const ReplyRequestSchema = z.object({
   text: z.string().nullable().optional(),
 });
@@ -895,6 +900,7 @@ export const schemas = {
   ReleaseStoryRequest: ReleaseStoryRequestSchema,
   RenameDocRequest: RenameDocRequestSchema,
   RenameFeatureRequest: RenameFeatureRequestSchema,
+  RenameProjectRequest: RenameProjectRequestSchema,
   ReplyBody: ReplyBodySchema,
   ReplyRequest: ReplyRequestSchema,
   ResolveFindingRequest: ResolveFindingRequestSchema,
@@ -1016,6 +1022,16 @@ export const operations = {
       "400": ErrorBodySchema,
       "401": ErrorBodySchema,
       "403": ErrorBodySchema,
+      "404": ErrorBodySchema,
+      "409": ErrorBodySchema,
+    },
+  },
+  "PATCH /api/v1/w/{workspace_id}/projects/{project_id}": {
+    request: RenameProjectRequestSchema,
+    responses: {
+      "200": ProjectResponseSchema,
+      "400": ErrorBodySchema,
+      "401": ErrorBodySchema,
       "404": ErrorBodySchema,
       "409": ErrorBodySchema,
     },

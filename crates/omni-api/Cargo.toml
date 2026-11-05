@@ -139,3 +139,7 @@ required-features = ["stack-tests"]
 [[test]]
 name = "board_pngs"
 required-features = ["stack-tests"]
+
+[[test]]
+name = "project_rename"
+required-features = ["stack-tests"]

@@ -50,6 +50,11 @@ pub fn registry() -> Vec<RouteEntry> {
         ("GET", "/api/v1/w/{workspace_id}/projects", Access::Both),
         ("POST", "/api/v1/w/{workspace_id}/projects", Access::Agent),
         (
+            "PATCH",
+            "/api/v1/w/{workspace_id}/projects/{project_id}",
+            Access::Both,
+        ),
+        (
             "GET",
             "/api/v1/w/{workspace_id}/projects/{project_id}/features",
             Access::Both,

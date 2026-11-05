@@ -39,7 +39,7 @@ use axum::http::header::{CONTENT_SECURITY_POLICY, X_CONTENT_TYPE_OPTIONS};
 use axum::http::{HeaderValue, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::Response;
-use axum::routing::{get, post, put};
+use axum::routing::{get, patch, post, put};
 use axum::{Json, Router};
 use s3::creds::Credentials;
 use s3::{Bucket, BucketConfiguration, Region};
@@ -264,6 +264,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/v1/w/{workspace_id}/projects",
             get(projects::list_projects).post(projects::create_project),
+        )
+        .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}",
+            patch(projects::rename_project),
         )
         .route(
             "/api/v1/w/{workspace_id}/projects/{project_id}/features",

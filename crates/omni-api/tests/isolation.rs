@@ -177,6 +177,12 @@ const CASES: &[Case] = &[
         Kind::Workspace,
     ),
     case(
+        "PATCH",
+        "/api/v1/w/{workspace_id}/projects/{project_id}",
+        Some(r#"{"name":"intruder project"}"#),
+        Kind::Workspace,
+    ),
+    case(
         "POST",
         "/api/v1/w/{workspace_id}/attachments",
         Some("the bytes of a file"),
