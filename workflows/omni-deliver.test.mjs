@@ -101,6 +101,9 @@ function writeLock(dirs, lock) {
 // The claims this run sent for the story, in order.
 const claimsOf = (dirs, key) => dirs.state().calls.filter((c) => c.argv[1] === "claim" && c.argv[2] === key).map((c) => ({ run: c.argv[c.argv.indexOf("--run") + 1], stage: c.argv[c.argv.indexOf("--stage") + 1] }));
 
+// The claims and moves the run sent for the story, in order: "claim <stage>" or "move <status>".
+const timeline = (dirs, key) => dirs.state().calls.filter((c) => (c.argv[1] === "claim" || c.argv[1] === "move") && c.argv[2] === key).map((c) => (c.argv[1] === "claim" ? `claim ${c.argv[c.argv.indexOf("--stage") + 1]}` : `move ${c.argv[c.argv.indexOf("--to") + 1]}`));
+
 const blockingGap = { criterion: "The badge has a colour", question: "Which colour is the badge?", options: ["Paint it red", "Paint it blue"], recommendation: "Paint it red", reason: "\"warning colour\"", blocking: true };
 const minorGap = (n) => ({ criterion: `Criterion ${n}`, question: `Minor question ${n}?`, options: [`Option ${n}a`, `Option ${n}b`], recommendation: `Option ${n}a`, reason: "convention", blocking: false });
 
@@ -767,24 +770,22 @@ test("a failing review sends its story to the backlog at priority 0 with [attemp
   dirs.checks({ fast: "true", stack_up: "true", stack: "true" });
   const wt = implemented(dirs, "US-1");
   const seen = {};
-  const phase = (title) => {
-    if (title !== "Unblock" || seen.sentBack || dirs.story("US-1").status !== "backlog") return;
-    const s = dirs.story("US-1");
-    seen.sentBack = { priority: s.priority, holder: s.holder, blocked: s.blocked, findings: s.findings.map((f) => f.text), worktree: existsSync(wt), branch: hasBranch(dirs, "US-1") };
-  };
+  // The story is claimed again right after the send-back, so the fresh implementer sees what it left.
   const { agent, prompts } = implAgent(
     { "US-1": async () => {
-      seen.head = git(wt, "log", "-1", "--format=%s").trim();
+      const s = dirs.story("US-1");
+      seen.atImplementer = { priority: s.priority, blocked: s.blocked, findings: s.findings.map((f) => f.text), head: git(wt, "log", "-1", "--format=%s").trim() };
       return { status: "ready", summary: "done" };
     } },
     { "US-1": async (n) => (n === 1 ? { verdict: "fail", findings: [{ text: "The badge is blue, the criterion says red", files: ["src/badge.rs"], criterion: "The badge is red" }] } : { verdict: "pass", findings: [] }) },
   );
 
-  await workflow({ feature: "board" }, agent, phase, (fns) => Promise.all(fns.map((f) => f())), () => {});
+  await deliver({ feature: "board" }, agent);
 
-  assert.deepEqual(seen.sentBack, { priority: 0, holder: null, blocked: false, findings: ["[attempt 1] The badge is blue, the criterion says red"], worktree: false, branch: false });
-  assert.deepEqual(claimsOf(dirs, "US-1").map((c) => c.stage), ["review", "implementing", "review", "testing"]);
-  assert.equal(seen.head, "init");
+  // A fresh worktree from the integration branch: the attempt's worktree and branch went.
+  assert.deepEqual(seen.atImplementer, { priority: 0, blocked: false, findings: ["[attempt 1] The badge is blue, the criterion says red"], head: "init" });
+  assert.deepEqual(timeline(dirs, "US-1"), ["claim review", "move backlog", "claim implementing", "move implemented", "claim review", "move reviewed", "claim testing", "move done"]);
+  assert.doesNotMatch(prompts["US-1"][0], /Continue from it/);
   assert.match(prompts["US-1"][0], /\[attempt 1\] The badge is blue, the criterion says red/);
 });
 
@@ -990,15 +991,22 @@ test("a rebase conflict leaves the integration branch untouched and sends the st
   reviewed(dirs, "US-2");
   mainEdits(dirs, "README", "app\nfrom main\n");
   const seen = {};
+  // The lane takes US-2 right after US-1's conflict: the board as US-1 left it, seen as the lane starts again.
+  const phase = (title) => {
+    if (title !== "Test lane" || !claimsOf(dirs, "US-2").length || seen.atNext) return;
+    seen.atNext = { main: subjects(dirs), clean: git(dirs.repo, "status", "--porcelain"), lane: existsSync(laneFile(dirs)) };
+  };
   const { agent } = implAgent({ "US-1": stopped });
 
-  await workflow({ feature: "board" }, agent, onSendBack(dirs, "US-1", seen), (fns) => Promise.all(fns.map((f) => f())), () => {});
+  await workflow({ feature: "board" }, agent, phase, (fns) => Promise.all(fns.map((f) => f())), () => {});
 
-  const { findings, ...rest } = seen.sentBack;
-  assert.deepEqual(rest, { status: "backlog", priority: 0, holder: null, main: ["chore: main edits README", "init"], clean: "", lane: false });
-  assert.equal(findings.length, 1);
-  assert.equal(findings[0].stage, "testing");
-  assert.match(findings[0].text, /^rebase conflict in README/);
+  assert.deepEqual(seen.atNext, { main: ["chore: main edits README", "init"], clean: "", lane: false });
+  assert.deepEqual(timeline(dirs, "US-1").slice(0, 2), ["claim testing", "move backlog"]);
+  const s = dirs.story("US-1");
+  assert.equal(s.priority, 0);
+  assert.equal(s.findings.length, 1);
+  assert.equal(s.findings[0].stage, "testing");
+  assert.match(s.findings[0].text, /^rebase conflict in README/);
   assert.deepEqual(claimsOf(dirs, "US-2").map((c) => c.stage), ["testing"]);
   assert.equal(dirs.story("US-2").status, "done");
   assert.deepEqual(subjects(dirs), ["feat: US-2 attempt", "chore: main edits README", "init"]);
@@ -1105,4 +1113,60 @@ test("a story whose tests were not accepted is taken again by the lane once its 
   ]);
   assert.deepEqual(lane, ["tests", "test-review", "tests", "test-review", "tests", "test-review", "tests", "test-review"]);
   assert.deepEqual([dirs.story("US-1").status, existsSync(laneFile(dirs)), hasBranch(dirs, "US-1")], ["done", false, false]);
+});
+
+// ---- the end of the run: nothing waits and nothing is held ----------------------
+
+test("a run whose only unblocked backlog story waits on an open story that is itself blocked ends with no loop agent started and nothing claimed", { timeout: 20000 }, async (t) => {
+  const dirs = scratch(t, [story("US-1", { blocked: true, links: [questionLink("th-1")] }), story("US-2", { blocked_by: ["US-1"] })], [thread("th-1", "US-1: Which colour is the badge?")]);
+  const labels = [];
+  const agent = async (prompt, opts) => {
+    labels.push(opts.label);
+    return { gaps: [] };
+  };
+
+  await deliver({ feature: "board" }, agent);
+
+  assert.deepEqual(labels, ["clarity:US-2"]);
+  assert.deepEqual(dirs.state().calls.filter((c) => c.argv[1] === "claim"), []);
+  assert.deepEqual([dirs.story("US-1").status, dirs.story("US-2").status], ["backlog", "backlog"]);
+});
+
+test("a backlog, an implemented and a reviewed story are pulled at once by the implement loop, the review loop and the lane, and each runs to done", { timeout: 20000 }, async (t) => {
+  const dirs = scratch(t, [story("US-1"), story("US-2", { status: "implemented" }), story("US-3", { status: "reviewed" })]);
+  dirs.checks({ fast: "true", stack_up: "true", stack: "true" });
+  implemented(dirs, "US-2");
+  reviewed(dirs, "US-3");
+  const laneChecked = deferred();
+  const seen = {};
+  const statuses = () => Object.fromEntries(dirs.state().stories.map((s) => [s.key, s.status]));
+  // The implementer and the reviewer wait for the lane's verifier; if the loops ran one after another it never comes.
+  const meanwhile = () => Promise.race([laneChecked.promise, new Promise((r) => setTimeout(r, 3000))]);
+  const wt = join(dirs.root, "app-stories", "US-1");
+  const { agent } = implAgent(
+    { "US-1": async () => {
+      await meanwhile();
+      writeFileSync(join(wt, "US-1.rs"), "board\n");
+      git(wt, "add", "US-1.rs");
+      git(wt, "commit", "-q", "-m", "feat: US-1 attempt");
+      return { status: "ready", summary: "done" };
+    } },
+    { "US-2": async () => {
+      await meanwhile();
+      return { verdict: "pass", findings: [] };
+    } },
+    { "US-3": () => {
+      seen.atLaneCheck = statuses();
+      laneChecked.resolve();
+      return { criteria: [] };
+    } },
+  );
+
+  await deliver({ feature: "board" }, agent);
+
+  assert.deepEqual(seen.atLaneCheck, { "US-1": "implementing", "US-2": "review", "US-3": "testing" });
+  assert.deepEqual(timeline(dirs, "US-1"), ["claim implementing", "move implemented", "claim review", "move reviewed", "claim testing", "move done"]);
+  assert.deepEqual(timeline(dirs, "US-2"), ["claim review", "move reviewed", "claim testing", "move done"]);
+  assert.deepEqual(timeline(dirs, "US-3"), ["claim testing", "move done"]);
+  assert.deepEqual(statuses(), { "US-1": "done", "US-2": "done", "US-3": "done" });
 });
