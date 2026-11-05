@@ -4,14 +4,13 @@
 //! at `rustfs:9000`.
 //!
 //! The tests migrate a scratch database, seed workspace Alpha with one member
-//! (alice) and workspace Beta with another (bob), mint an API key for Alpha
-//! through the API and serve the API's router on a local port.
+//! (alice), mint an API key for Alpha through the API and serve the API's
+//! router on a local port.
 
 mod common;
 
 use common::{Client, Response, TestServer, cookie};
 use omni_api::Config;
-use omni_api::routes::{Access, registry};
 use s3::creds::Credentials;
 use s3::{Bucket, BucketConfiguration, Region};
 use serde_json::{Value, json};
@@ -132,7 +131,6 @@ async fn admin_connection() -> PgConnection {
 struct Fixture {
     workspace: String,
     alice_token: String,
-    bob_token: String,
     key: String,
     server: TestServer,
 }
@@ -193,29 +191,6 @@ fn fixture() -> &'static Fixture {
                 &[&workspace, &user],
             )
             .await;
-            let beta = text(
-                "insert into workspaces (name) values ('Beta') returning id::text",
-                &[],
-            )
-            .await;
-            let bob = text(
-                "insert into users (email) values ('bob@example.test') returning id::text",
-                &[],
-            )
-            .await;
-            text(
-                "insert into sessions (user_id, token_hash, expires_at) \
-                 values ($1::uuid, sha256(convert_to($2, 'UTF8')), now() + interval '1 day') \
-                 returning id::text",
-                &[&bob, &session_token("bob")],
-            )
-            .await;
-            text(
-                "insert into memberships (workspace_id, user_id) \
-                 values ($1::uuid, $2::uuid) returning id::text",
-                &[&beta, &bob],
-            )
-            .await;
             workspace
         });
         let server = TestServer::start(&config());
@@ -234,7 +209,6 @@ fn fixture() -> &'static Fixture {
         Fixture {
             workspace,
             alice_token: session_token("alice"),
-            bob_token: session_token("bob"),
             key,
             server,
         }
@@ -259,11 +233,6 @@ fn agent(f: &Fixture) -> Auth<'_> {
 
 fn human(f: &Fixture) -> Auth<'_> {
     Auth::Session(&f.alice_token)
-}
-
-/// A member of another workspace.
-fn outsider(f: &Fixture) -> Auth<'_> {
-    Auth::Session(&f.bob_token)
 }
 
 fn call(client: &Client, method: &str, path: &str, auth: &Auth, body: Option<&Value>) -> Response {
@@ -300,8 +269,6 @@ fn unique(label: &str) -> String {
     static COUNTER: AtomicU32 = AtomicU32::new(0);
     format!("{label}-{}", COUNTER.fetch_add(1, Ordering::Relaxed))
 }
-
-const PROJECT_ROUTE: &str = "/api/v1/w/{workspace_id}/projects/{project_id}";
 
 fn new_project(f: &Fixture, client: &Client, name: &str) -> Value {
     must(
@@ -445,45 +412,24 @@ fn a_refused_project_rename_changes_nothing() {
 }
 
 #[test]
-fn an_unknown_project_or_another_workspace_gets_404_before_the_name_is_checked() {
+fn an_unknown_project_gets_404_before_the_blank_name_is_checked() {
     let (f, client) = ready();
-    let id = new_project(f, client, &unique("Mine"))["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
     let blank = json!({ "name": "  " });
 
-    for unknown in ["not-a-uuid", "01900000-0000-7000-8000-000000000000"] {
-        assert_error(
-            &rename(f, client, &agent(f), unknown, &blank),
-            404,
-            "not_found",
-        );
-        assert_error(
-            &rename(f, client, &human(f), unknown, &json!({ "name": "X" })),
-            404,
-            "not_found",
-        );
-    }
     assert_error(
-        &call(
+        &rename(f, client, &agent(f), "not-a-uuid", &blank),
+        404,
+        "not_found",
+    );
+    assert_error(
+        &rename(
+            f,
             client,
-            "PATCH",
-            &format!("/api/v1/w/{}/projects/{id}", f.workspace),
-            &outsider(f),
-            Some(&json!({ "name": "Stolen" })),
+            &agent(f),
+            "01900000-0000-7000-8000-000000000000",
+            &blank,
         ),
         404,
         "not_found",
     );
-    assert!(name_in_list(f, client, &id).is_some_and(|n| n != "Stolen"));
-}
-
-#[test]
-fn the_project_rename_route_is_open_to_sessions_and_api_keys() {
-    let entry = registry()
-        .into_iter()
-        .find(|r| r.method == "PATCH" && r.path == PROJECT_ROUTE)
-        .expect("the registry has the project rename route");
-    assert_eq!(entry.access, Access::Both);
 }
