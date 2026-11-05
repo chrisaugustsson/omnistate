@@ -885,7 +885,8 @@ Name the test and the fix for every issue (cut it, merge it into <test>, change 
         continue
       }
       if (result.status !== 'done') {
-        const what = result.status === 'found_defect' && result.defect ? `${result.defect.test}\nObserved: ${result.defect.observed}\nExpected: ${result.defect.expected}` : (result.questions || []).join('\n') || result.blockers || result.status
+        if (result.status === 'found_defect' && result.defect) return { ok: false, defect: `${result.defect.test}\nObserved: ${result.defect.observed}\nExpected: ${result.defect.expected}` }
+        const what = (result.questions || []).join('\n') || result.blockers || result.status
         const id = openThread(`${key}: the test author stopped (${result.status})`, `${what}\n`)
         linkAndBlock(key, [id])
         return { ok: false, thread: id }
@@ -1037,9 +1038,17 @@ Return raw structured data only.`, { schema: TEST_CUT_SCHEMA, label: `test-cut:$
       return
     }
     if (r.failures.length > 0) return failLane(key, base, r.failures.map((f) => ({ text: f.text, files: [] })))
-    passCheck(key, r.story)
+    const merged = git(['rev-parse', 'HEAD']).trim()
     const tested = await testStory(key, r.verdict.criteria || [])
-    if (tested.ok) moveDone(key)
+    if (tested.defect) return failLane(key, base, [{ text: tested.defect, files: [] }])
+    if (tested.ok) {
+      passCheck(key, r.story)
+      moveDone(key)
+    } else {
+      // Drop the rejected tests, committed or not; ignored files stay.
+      git(['reset', '--hard', merged])
+      git(['clean', '-fd'])
+    }
     fs.rmSync(LANE_FILE, { force: true })
     checkOutcomes.push(tested.ok ? { key, outcome: 'passed' } : { key, outcome: 'tests_rejected', thread: tested.thread })
   }
