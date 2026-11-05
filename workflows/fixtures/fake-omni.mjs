@@ -1,6 +1,8 @@
 // A stand-in for the omni CLI, for workflow tests. Its state (stories, threads,
 // posts, a thread's conclusion when it has one, and every call with the lock file seen at that moment) lives in the
 // JSON file FAKE_OMNI_STATE names. FAKE_OMNI_FAIL=thread makes thread create fail.
+// While the file FAKE_OMNI_DOWN names exists, `story list` fails with that file's
+// text on stderr (the server is down), and the call is recorded with refused: true.
 // `checks` answers only when the state holds checks; `story list --pickable` applies
 // the board's rule: backlog, not blocked, every blocker done or cancelled, no planned
 // file (files_changed when set, else files_planned) shared with a story in implementing, implemented, review, reviewed or testing. `claim` needs the stage's waiting state (else exit 1, not_waiting); `move` to implemented, reviewed, backlog or done clears the holder; `release` and `block` put a working story in its waiting state and clear the holder. `story finding` appends to the story's findings and
@@ -14,7 +16,8 @@ const statePath = process.env.FAKE_OMNI_STATE;
 const state = JSON.parse(readFileSync(statePath, "utf8"));
 const argv = process.argv.slice(2);
 const lock = existsSync(".omni/run.lock") ? JSON.parse(readFileSync(".omni/run.lock", "utf8")) : null;
-state.calls.push({ argv, lock });
+const down = process.env.FAKE_OMNI_DOWN && existsSync(process.env.FAKE_OMNI_DOWN) && argv[0] === "story" && argv[1] === "list";
+state.calls.push(down ? { argv, lock, refused: true } : { argv, lock });
 
 const flag = (name) => {
   const i = argv.indexOf(name);
@@ -65,6 +68,10 @@ if (noun === "--help") {
   save();
 } else if (noun === "story" && verb === "list") {
   save();
+  if (down) {
+    process.stderr.write(readFileSync(process.env.FAKE_OMNI_DOWN, "utf8") || "Connection refused\n");
+    process.exit(1);
+  }
   if (argv.includes("--pickable")) {
     const filesOf = (s) => (s.files_changed?.length ? s.files_changed : s.files_planned) || [];
     const busy = state.stories.filter((s) => ["implementing", "implemented", "review", "reviewed", "testing"].includes(s.status)).flatMap(filesOf);

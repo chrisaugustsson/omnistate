@@ -45,6 +45,7 @@ function scratch(t, stories = [], threads = []) {
     if (saved.state === undefined) delete process.env.FAKE_OMNI_STATE;
     else process.env.FAKE_OMNI_STATE = saved.state;
     delete process.env.FAKE_OMNI_FAIL;
+    delete process.env.FAKE_OMNI_DOWN;
     rmSync(root, { recursive: true, force: true });
   });
   return {
@@ -938,6 +939,43 @@ test("the lane logs one line per step with the story key: claimed, merged, fast,
   assert.deepEqual(lines.filter((l) => l.startsWith("lane:US-2:")), [`lane:US-2: claimed (main at ${sha(dirs, "main").slice(0, 7)})`, "lane:US-2: merged onto main", "lane:US-2: fast passed", "lane:US-2: sent back: the stack command failed"]);
   assert.equal(dirs.story("US-1").status, "done");
   assert.deepEqual([dirs.story("US-2").status, dirs.story("US-2").priority], ["backlog", 0]);
+});
+
+// A stack command that takes the fake omni down with the message given until two
+// polls have been refused (the pause must be logged once, not per poll), then
+// brings it back.
+function stackTakingOmniDown(dirs, message) {
+  const down = join(dirs.root, "down");
+  process.env.FAKE_OMNI_DOWN = down;
+  return `printf '%s\\n' "${message}" > ${down}; i=0; until [ "$(grep -c '"refused": true' ${join(dirs.root, "omni-state.json")})" -ge 2 ] || [ $i -ge 60 ]; do sleep 0.25; i=$((i+1)); done; rm -f ${down}`;
+}
+const refusedPolls = (dirs) => dirs.state().calls.filter((c) => c.refused).length;
+
+test("polls refused while the lane's stack command restarts the server log one 'lane: stack restarting, polls paused' line and no Command failed line, and the lane goes on to done", { timeout: 30000 }, async (t) => {
+  const dirs = scratch(t, [story("US-1", { status: "reviewed" })]);
+  dirs.checks({ fast: "true", stack_up: "true", stack: stackTakingOmniDown(dirs, "error: cannot reach the server: Connection refused") });
+  reviewed(dirs, "US-1");
+  const lines = [];
+
+  await workflow({ feature: "board" }, implAgent({}).agent, () => {}, (fns) => Promise.all(fns.map((f) => f())), (m) => lines.push(m));
+
+  assert.ok(refusedPolls(dirs) >= 2, `two or more polls were refused while the stack ran, not ${refusedPolls(dirs)}`);
+  assert.deepEqual(lines.filter((l) => l === "lane: stack restarting, polls paused"), ["lane: stack restarting, polls paused"]);
+  assert.deepEqual(lines.filter((l) => /Command failed/.test(l)), []);
+  assert.equal(dirs.story("US-1").status, "done");
+});
+
+test("a poll failing for another reason while the lane's stack command runs still logs Command failed with the message, and no paused line", { timeout: 30000 }, async (t) => {
+  const dirs = scratch(t, [story("US-1", { status: "reviewed" })]);
+  dirs.checks({ fast: "true", stack_up: "true", stack: stackTakingOmniDown(dirs, "error: the board is on fire") });
+  reviewed(dirs, "US-1");
+  const lines = [];
+
+  await workflow({ feature: "board" }, implAgent({}).agent, () => {}, (fns) => Promise.all(fns.map((f) => f())), (m) => lines.push(m));
+
+  assert.ok(refusedPolls(dirs) >= 2, `two or more polls were refused while the stack ran, not ${refusedPolls(dirs)}`);
+  assert.ok(lines.some((l) => /^(unblock|pull): Command failed: omni story list .*the board is on fire/s.test(l)), `a failed poll is logged: ${JSON.stringify(lines)}`);
+  assert.deepEqual(lines.filter((l) => l === "lane: stack restarting, polls paused"), []);
 });
 
 test("the lane claims reviewed stories by priority, then by number", { timeout: 20000 }, async (t) => {

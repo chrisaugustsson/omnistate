@@ -1057,6 +1057,13 @@ Return raw structured data only.`, { schema: TEST_CUT_SCHEMA, label: `test-cut:$
     laneLog(key, `sent back: ${reason}`)
   }
   const laneLog = (key, message) => log(`lane:${key}: ${message}`)
+  // True while the lane runs stack_up or the stack command, which restart the
+  // server behind omni: the loops read it when a poll fails.
+  let stackBusy = false
+  const runStack = async (cmd) => {
+    stackBusy = true
+    try { return await runCmd(cmd, root) } finally { stackBusy = false }
+  }
   // The story's branch and worktree, which an older run may have dropped after
   // merging the story: nothing is left to merge, so the story goes back for a
   // fresh attempt without an attempt counted.
@@ -1086,9 +1093,9 @@ Return raw structured data only.`, { schema: TEST_CUT_SCHEMA, label: `test-cut:$
     const fastResult = await runFast(root)
     if (!fastResult.ok) return failLane(key, base, [{ text: `The fast command (\`${fast}\`) failed on the main worktree. Output:\n\`\`\`\n${tail(fastResult.output)}\n\`\`\``, files: [] }], 'the fast command failed')
     laneLog(key, 'fast passed')
-    const up = await runCmd(stackUp, root)
+    const up = await runStack(stackUp)
     if (!up.ok) return failLane(key, base, [stackFinding(`The stack did not start: \`${stackUp}\` exited non-zero.`, up)], 'the stack did not start')
-    const stackResult = await runCmd(stackCmd, root)
+    const stackResult = await runStack(stackCmd)
     if (!stackResult.ok) return failLane(key, base, [stackFinding(`The stack command (\`${stackCmd}\`) failed on the main worktree.`, stackResult)], 'the stack command failed')
     laneLog(key, 'stack passed')
     const r = await exercise(key)
@@ -1146,9 +1153,23 @@ Return raw structured data only.`, { schema: TEST_CUT_SCHEMA, label: `test-cut:$
   // ---- the supervisor: the loops share `stop`, set when nothing is left to pull
   // Each loop polls on every tick and right after one of its own agents ends.
   let stop = false
+  // A poll that cannot reach the server while the lane's stack restarts it is
+  // logged once, as a pause, and not again until a poll succeeds; any other
+  // failure is logged as it comes.
+  let pollsPaused = false
+  const CONNECTION_ERROR = /Connection refused|http_50[23]|cannot reach the server/i
+  const pollError = (where, e) => {
+    const message = String(e && e.message || e)
+    if (stackBusy && CONNECTION_ERROR.test(message)) {
+      if (!pollsPaused) log('lane: stack restarting, polls paused')
+      pollsPaused = true
+      return
+    }
+    log(`${where}: ${message}`)
+  }
   const pull = () => {
     if (stop) return
-    try { implementLoop(); reviewLoop(); testLoop() } catch (e) { log(`pull: ${e && e.message || e}`) }
+    try { implementLoop(); reviewLoop(); testLoop(); pollsPaused = false } catch (e) { pollError('pull', e) }
   }
   // True when a story can still be claimed or this run still holds one.
   const claimableOrHeld = () => {
@@ -1161,7 +1182,7 @@ Return raw structured data only.`, { schema: TEST_CUT_SCHEMA, label: `test-cut:$
       .some((k) => !implFailed.has(k) && !clarityFailed.has(k) && (claimedKeys.has(k) || claimedKeys.size < storyLimit))
   }
   while (!stop) {
-    try { unblockPass() } catch (e) { log(`unblock: ${e && e.message || e}`) }
+    try { unblockPass(); pollsPaused = false } catch (e) { pollError('unblock', e) }
     pull()
     if (!claimableOrHeld()) { stop = true; break }
     await Promise.race([...implRunning.values(), ...reviewing.values(), laneRunning, new Promise((r) => setTimeout(r, POLL_MS))].filter(Boolean))
