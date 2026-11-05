@@ -916,8 +916,20 @@ fn the_outline_of_a_design_lists_its_pages_and_boards_without_their_content() {
         "the pages in order: {outline:#}"
     );
     for (page, whole_page) in pages.iter().zip(&whole_pages) {
+        let mut own = own_json(page);
+        let object = own.as_object_mut().expect("a page is an object");
         assert_eq!(
-            own_json(page),
+            object.remove("flows"),
+            Some(json!([])),
+            "a page written without flows has none"
+        );
+        assert_eq!(
+            object.remove("prototype"),
+            Some(default_prototype()),
+            "a page written without settings has the default ones"
+        );
+        assert_eq!(
+            own,
             own_json(whole_page),
             "a page of the outline is the page's own JSON, its name included"
         );
@@ -952,6 +964,79 @@ fn the_outline_of_a_design_lists_its_pages_and_boards_without_their_content() {
         assert!(
             !text.contains(content),
             "the outline holds no content of a board ({content:?}): {text}"
+        );
+    }
+}
+
+/// The prototype settings of a page that leaves them out, as the outline has them.
+fn default_prototype() -> Value {
+    json!({
+        "device": "None",
+        "color": null,
+        "rotation": "portrait",
+        "background": "#1e1e1e",
+        "responsive": false,
+        "customSize": null
+    })
+}
+
+#[test]
+fn the_outline_lists_the_flows_and_prototype_settings_of_each_page_as_written() {
+    let (f, client) = ready();
+    let d = new_design(f, client);
+    let page = id(&d.ids, "Checkout");
+    let flows = json!([{
+        "name": "Checkout",
+        "start": id(&d.ids, "Cart"),
+        "description": "From the cart to the receipt"
+    }]);
+    edit(
+        f,
+        client,
+        &d.project,
+        &d.doc,
+        &json!([{
+            "op": "set",
+            "node": page,
+            "rev": 1,
+            "properties": {
+                "flows": flows,
+                "prototype": {
+                    "device": "iPhone 16",
+                    "color": "Black",
+                    "rotation": "landscape",
+                    "background": "#000000",
+                    "responsive": true
+                }
+            }
+        }]),
+    );
+
+    let outline = must(
+        read_outline(f, client, &d.project, &d.doc),
+        200,
+        "read the head's outline",
+    );
+    let pages = outline["outline"].as_array().expect("the outline's pages");
+    assert_eq!(pages[0]["flows"], flows, "{outline:#}");
+    assert_eq!(
+        pages[0]["prototype"],
+        json!({
+            "device": "iPhone 16",
+            "color": "Black",
+            "rotation": "landscape",
+            "background": "#000000",
+            "responsive": true,
+            "customSize": null
+        }),
+        "{outline:#}"
+    );
+    assert_eq!(pages[1]["flows"], json!([]), "the other page: {outline:#}");
+    assert_eq!(pages[1]["prototype"], default_prototype(), "{outline:#}");
+    for board in children_of(&pages[0]) {
+        assert!(
+            children_of(&board).is_empty(),
+            "boards stay placeholders: {board}"
         );
     }
 }

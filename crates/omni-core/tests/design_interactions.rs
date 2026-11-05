@@ -2,13 +2,16 @@
 //! when the person using a prototype touches it, written in the tag format
 //! like `fill`, with FigCraft's names.
 
+use omni_core::design::devices::{DEVICES, device};
 use omni_core::design::proto::{
     Action, Easing, OverlayAnchor, OverlayPosition, Transition, Trigger,
 };
 use omni_core::design::proto::{Overflow, ScrollPosition};
 use omni_core::design::tags::{self, TagError};
-use omni_core::design::{Node, NodeData, NodeKind};
+use omni_core::design::{DesignDoc, Node, NodeData, NodeKind};
+use omni_core::ops::Operation;
 use serde_json::{Value, json};
+use std::collections::HashMap;
 
 const CARD: &str = r#"<Frame id="aaaaaaaa" name="Card" width={100} height={40} interactions="#;
 
@@ -479,4 +482,156 @@ fn set_refuses_a_scroll_position_on_a_layer_of_a_component_and_takes_it_in_a_boa
     tags::set_properties(&mut in_board, Some(&tags::Host::of(&board)), properties)
         .expect("a layer of a board takes scrollPosition");
     assert_eq!(in_board.scroll_position(), ScrollPosition::Fixed);
+}
+
+const PAGE: &str = r##"<Page id="aaaaaaaa" name="Shop" flows={[{name: "Checkout", start: "bbbbbbbb", description: "From the cart to the receipt"}]} prototype={{device: "iPhone 16", color: "Black", rotation: "landscape", background: "#000000", responsive: true}}>
+  <Board id="bbbbbbbb" name="Cart" x={0} y={0} width={360} height={640} dir="col"/>
+</Page>"##;
+
+fn page_with(attributes: &str) -> String {
+    format!(r#"<Page id="aaaaaaaa" name="Shop" {attributes}/>"#)
+}
+
+fn message_of(source: &str) -> String {
+    let error = error_of(source);
+    format!("{}: {}", error.message(), error.fix())
+}
+
+#[test]
+fn a_page_reads_back_its_flows_and_prototype_settings() {
+    let (node, printed) = round_trip(PAGE);
+    let NodeData::Page(page) = node.data() else {
+        panic!("a page")
+    };
+    let [flow] = page.flows() else {
+        panic!("one flow")
+    };
+    assert_eq!(flow.name, "Checkout");
+    assert_eq!(flow.start.to_string(), "bbbbbbbb");
+    assert_eq!(flow.description, "From the cart to the receipt");
+    let settings = page.prototype();
+    assert_eq!(settings.device, "iPhone 16");
+    assert_eq!(settings.color.as_deref(), Some("Black"));
+    assert_eq!(settings.background.as_str(), "#000000");
+    assert!(settings.responsive);
+    assert!(printed.contains("landscape"), "{printed}");
+}
+
+#[test]
+fn a_flow_without_a_description_and_default_settings_print_nothing() {
+    let (_, printed) = round_trip(&page_with(
+        r#"flows={[{name: "Checkout", start: "bbbbbbbb"}]}"#,
+    ));
+    assert!(!printed.contains("description"), "{printed}");
+    assert!(!printed.contains("prototype"), "{printed}");
+    let (_, printed) = round_trip(&page_with(
+        r##"flows={[]} prototype={{device: "None", rotation: "portrait", background: "#1E1E1E", responsive: false}}"##,
+    ));
+    assert_eq!(printed, r#"<Page id="aaaaaaaa" name="Shop"/>"#);
+}
+
+#[test]
+fn two_flows_with_one_name_are_refused() {
+    let message = message_of(&page_with(
+        r#"flows={[{name: "Checkout", start: "bbbbbbbb"}, {name: "Checkout", start: "cccccccc"}]}"#,
+    ));
+    assert!(
+        message.contains("two flows are named `Checkout`"),
+        "{message}"
+    );
+}
+
+#[test]
+fn a_device_outside_the_table_is_refused_and_the_message_lists_the_table() {
+    let message = message_of(&page_with(r#"prototype={{device: "Nokia 3310"}}"#));
+    assert!(
+        message.contains("`Nokia 3310` is not a device: write one of "),
+        "{message}"
+    );
+    for device in DEVICES {
+        assert!(message.contains(&format!("`{}`", device.name)), "{message}");
+    }
+    for name in [
+        "iPhone 16",
+        "iPhone 16 Pro",
+        "iPad mini",
+        "MacBook Air",
+        "Desktop",
+        "Custom",
+        "None",
+    ] {
+        assert!(device(name).is_some(), "{name}");
+    }
+}
+
+#[test]
+fn a_custom_size_belongs_to_the_device_custom() {
+    let (node, printed) = round_trip(&page_with(
+        r#"prototype={{device: "Custom", customSize: [390, 844]}}"#,
+    ));
+    let NodeData::Page(page) = node.data() else {
+        panic!("a page")
+    };
+    assert_eq!(page.prototype().custom_size, Some([390.0, 844.0]));
+    assert!(printed.contains("customSize: [390, 844]"), "{printed}");
+    let message = message_of(&page_with(
+        r#"prototype={{device: "iPhone 16", customSize: [390, 844]}}"#,
+    ));
+    assert!(
+        message.contains("`customSize` is for the device Custom"),
+        "{message}"
+    );
+    let message = message_of(&page_with(r#"prototype={{device: "Custom"}}"#));
+    assert!(
+        message.contains("the device Custom needs a `customSize`"),
+        "{message}"
+    );
+}
+
+#[test]
+fn rotation_and_color_must_fit_the_device() {
+    let message = message_of(&page_with(
+        r#"prototype={{device: "Desktop", rotation: "landscape"}}"#,
+    ));
+    assert!(message.contains("`Desktop` does not rotate"), "{message}");
+    let message = message_of(&page_with(
+        r#"prototype={{device: "iPhone 16 Pro", color: "Pink"}}"#,
+    ));
+    assert!(
+        message.contains("`Pink` is not a color of `iPhone 16 Pro`: write one of `Black`, `White`"),
+        "{message}"
+    );
+}
+
+#[test]
+fn a_write_of_flows_checks_that_each_starts_at_a_board_of_the_page() {
+    let page = existing(
+        r#"<Page id="aaaaaaaa" name="Shop">
+  <Board id="bbbbbbbb" name="Cart" x={0} y={0} width={360} height={640} dir="col"/>
+</Page>"#,
+    );
+    let mut doc = DesignDoc::new(vec![page], HashMap::new());
+    let write = |doc: &mut DesignDoc, start: &str| {
+        let op: Operation = serde_json::from_value(json!({
+            "op": "set", "node": "aaaaaaaa", "rev": 1,
+            "properties": {"flows": [{"name": "Checkout", "start": start}]}
+        }))
+        .unwrap();
+        doc.apply(
+            &[op],
+            None,
+            &mut || unreachable!("no node is created"),
+            &|_| Ok(()),
+            &|_| None,
+        )
+    };
+    let error = write(&mut doc, "cccccccc")
+        .expect_err("no such board")
+        .to_string();
+    assert!(
+        error
+            .contains("`cccccccc` is not a board of this page: a flow starts at one of its boards"),
+        "{error}"
+    );
+    write(&mut doc, "bbbbbbbb").expect("a board of the page");
 }

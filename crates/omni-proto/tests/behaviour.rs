@@ -3,7 +3,7 @@
 //! FigCraft's `proto_run.rs` (MIT OR Apache-2.0; see `NOTICE`).
 
 use omni_core::design::proto::{Direction, Easing, Transition};
-use omni_core::design::{Node, NodeAddress, NodeId, Page};
+use omni_core::design::{Node, NodeAddress, NodeData, NodeId};
 use omni_proto::{Effect, Player, PointerEvent, PointerKind, Rect};
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -74,15 +74,19 @@ fn click(player: &mut Player, x: f64, y: f64, at: f64) -> Vec<Effect> {
 /// A player on `B1` whose boards are `boards`, with a box of 100 × 100 at the
 /// origin for every layer in `boxed`.
 fn player(boards: Vec<Value>, components: Vec<Value>, boxed: &[(&str, Rect)]) -> Player {
-    let page = Page {
-        children: boards.into_iter().map(node).collect(),
+    let page = node(json!({
+        "id": "a0000000", "type": "page", "name": "Page",
+        "children": boards,
+    }));
+    let NodeData::Page(page) = page.data() else {
+        unreachable!("a page was built")
     };
     let components = components
         .into_iter()
         .map(node)
         .map(|node| (*node.id(), node))
         .collect();
-    let mut player = Player::new(&page, components, id(B1));
+    let mut player = Player::new(page, components, id(B1));
     let rects: HashMap<_, _> = boxed
         .iter()
         .map(|(layer, rect)| (id(layer), *rect))
