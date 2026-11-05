@@ -23,12 +23,12 @@ impl Server {
         let text = text.trim();
         if text.starts_with("https://") {
             bail!(
-                "{text}: https is not supported yet; use an http address such as http://localhost:8080 (--server or OMNI_SERVER)"
+                "{text}: https is not supported yet; use an http address such as http://omnistate.localhost (--server or OMNI_SERVER)"
             );
         }
         let Some(rest) = text.strip_prefix("http://") else {
             bail!(
-                "{text:?} is not a server address; use one like http://localhost:8080 (--server or OMNI_SERVER)"
+                "{text:?} is not a server address; use one like http://omnistate.localhost (--server or OMNI_SERVER)"
             );
         };
         let (authority, base) = match rest.find('/') {
@@ -53,7 +53,7 @@ impl Server {
                 .map_err(|_| CliError::new(format!("{text:?} has an invalid port")))?,
         };
         if host.is_empty() {
-            bail!("{text:?} has no host; use an address like http://localhost:8080");
+            bail!("{text:?} has no host; use an address like http://omnistate.localhost");
         }
         Ok(Server {
             host: host.to_string(),

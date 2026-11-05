@@ -31,8 +31,8 @@ use std::io::{BufRead, IsTerminal, Read, Write};
 use std::process::{Command, Stdio};
 
 /// The server that `omni login` uses when nothing else names one: the Compose
-/// proxy on its default port.
-const DEFAULT_SERVER: &str = "http://localhost:8080";
+/// proxy at its hostname on the machine's edge (see docker-compose.yml).
+const DEFAULT_SERVER: &str = "http://omnistate.localhost";
 const SESSION_COOKIE: &str = "omni_session";
 
 pub fn run(args: &Args) -> Result<()> {

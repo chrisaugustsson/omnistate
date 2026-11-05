@@ -6,7 +6,7 @@
 //!
 //! - `omni` reads `$HOME/.config/omni/config.toml`, a TOML file of
 //!   `key = "value"` lines: `server` (the base URL, such as
-//!   `http://localhost:8080`; `--server` and `OMNI_SERVER` override it),
+//!   `http://omnistate.localhost`; `--server` and `OMNI_SERVER` override it),
 //!   `workspace_id`, `api_key` (the whole secret) and `email`. `omni login`
 //!   writes it with file mode 600.
 //! - An API key goes in `Authorization: Bearer <secret>`. The agent identity

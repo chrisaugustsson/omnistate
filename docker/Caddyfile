@@ -1,5 +1,8 @@
 # The reverse proxy: the one address that the browser, the omni CLI and the
-# agents use. The API owns /api and /ws; everything else is the web app.
+# agents use, http://omnistate.localhost (the machine's edge Traefik routes
+# that hostname here; see docker-compose.yml). The API owns /api and /ws;
+# everything else is the web app. The site block answers any hostname: the
+# edge, the fallback port and the in-network health checks all reach it.
 {
 	auto_https off
 	admin off

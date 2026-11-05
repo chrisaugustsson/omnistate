@@ -1,8 +1,15 @@
 # The whole system on one address: `docker compose up` starts Postgres, RustFS,
-# the API, the web app and the reverse proxy. Only the proxy publishes a port
-# (OMNI_PORT, default 8080); the other services are reachable inside the
-# Compose network only. The credentials below are development defaults for
-# this local stack; override them in .env.
+# the API, the web app and the reverse proxy. The other services are reachable
+# inside the Compose network only. The credentials below are development
+# defaults for this local stack; override them in .env.
+#
+# The address is http://omnistate.localhost: the proxy joins the shared `edge`
+# network, where the machine's Traefik (~/projects/edge) routes that hostname
+# to it, so nothing here needs a port number that another project might also
+# publish. The hostname follows the Compose project name, so a second stack
+# (`docker compose -p omnistate-x up`) is http://omnistate-x.localhost. Without
+# the edge, the proxy is still published on a port of its own (OMNI_PORT,
+# default 8420) at http://localhost:8420.
 name: omnistate
 
 services:
@@ -61,8 +68,16 @@ services:
 
   proxy:
     image: caddy:2-alpine
+    # The fallback address for a machine without the edge; the edge reaches
+    # the proxy over the `edge` network, not through this port.
     ports:
-      - "${OMNI_PORT:-8080}:80"
+      - "${OMNI_PORT:-8420}:80"
+    networks: [default, edge]
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.${COMPOSE_PROJECT_NAME:-omnistate}.rule=Host(`${COMPOSE_PROJECT_NAME:-omnistate}.localhost`)
+      - traefik.http.services.${COMPOSE_PROJECT_NAME:-omnistate}.loadbalancer.server.port=80
+      - traefik.docker.network=edge
     volumes:
       - ./docker/Caddyfile:/etc/caddy/Caddyfile:ro
     depends_on:
@@ -102,3 +117,10 @@ volumes:
   rustfs-data:
   test-target:
   test-cargo-registry:
+
+networks:
+  # The machine-wide network the edge routes through (~/projects/edge creates
+  # it); when the edge is not running, Compose creates it here instead and the
+  # labels above stay inert.
+  edge:
+    name: edge
