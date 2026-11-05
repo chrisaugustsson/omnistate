@@ -777,6 +777,51 @@ fn unknown_scopes_and_malformed_code_syntax_are_refused() {
     );
 }
 
+#[test]
+fn a_new_top_level_group_that_states_number_holds_only_numbers() {
+    let json = with(
+        &sample(),
+        "/limits",
+        json!({"$type": "number", "max": {"$value": 3}}),
+    );
+    assert_eq!(resolve(&accept(&json), "$limits.max", "light"), json!(3));
+    refuse(
+        &with(
+            &json,
+            "/limits/label",
+            json!({"$type": "string", "$value": "three"}),
+        ),
+        "a string in a group of numbers",
+        &["limits.label"],
+    );
+    refuse(
+        &with(&sample(), "/limits", json!({"$type": "color"})),
+        "a new top-level group states number, string or boolean",
+        &["`limits`", "number, string or boolean"],
+    );
+}
+
+#[test]
+fn scopes_are_kept_as_written_on_a_token_of_any_type() {
+    let mut json = with_state();
+    json["color"]["ink"]["$extensions"] = json!({"omnistate": {"scopes": ["content", "content"]}});
+    json["state"]["isOpen"]["$extensions"] = json!({"omnistate": {"scopes": ["fill"]}});
+    json["state"]["count"]["$extensions"] = json!({"omnistate": {"scopes": []}});
+    let tree = accept(&json);
+    let names = |path: &str| -> Vec<&str> {
+        let token = tree.token(path).expect("a token");
+        token
+            .scopes()
+            .expect("scopes")
+            .iter()
+            .map(|s| s.name())
+            .collect()
+    };
+    assert_eq!(names("color.ink"), ["content", "content"]);
+    assert_eq!(names("state.isOpen"), ["fill"]);
+    assert_eq!(names("state.count"), Vec::<&str>::new());
+}
+
 // ---------------------------------------------------------------------------
 // docs/formats/tokens.md
 // ---------------------------------------------------------------------------

@@ -349,6 +349,7 @@ fn tokens_css_writes_state_tokens_and_honours_code_syntax_and_kebab_case() {
             "isOpen": {"$type": "boolean", "$value": false},
             "count": {"$type": "number", "$value": 2},
             "cta": {"$type": "string", "$value": "Pay \"now\""},
+            "folder": {"$type": "string", "$value": "C:\\pay"},
             "open": {
                 "$type": "boolean",
                 "$value": "{state.isOpen}",
@@ -371,11 +372,81 @@ fn tokens_css_writes_state_tokens_and_honours_code_syntax_and_kebab_case() {
             ("--state-is-open", "false"),
             ("--state-count", "2"),
             ("--state-cta", "\"Pay \\\"now\\\"\""),
+            ("--state-folder", "\"C:\\\\pay\""),
             ("--is-open-copy", "var(--state-is-open)"),
             ("--state-again", "var(--is-open-copy)"),
         ])
     );
     assert_eq!(read_json(&out.path.join("tokens.json")), tree);
+}
+
+#[test]
+fn a_typography_token_with_code_syntax_names_its_sub_variables_and_aliases_by_it() {
+    let tree = json!({
+        "$extensions": {"omnistate": {"modes": ["light"]}},
+        "typography": {
+            "$type": "typography",
+            "body": {
+                "$value": {"fontFamily": "Inter", "fontSize": "16px", "lineHeight": 1.5},
+                "$extensions": {"omnistate": {"codeSyntax": {"css": "--text-body"}}}
+            },
+            "lead": {"$value": "{typography.body}"}
+        }
+    });
+    let server = mock(app_docs(), feature_docs(), tokens_answer(tree));
+    let out = Scratch::new("out");
+
+    let run = export(&server, &out.path, &[]);
+
+    assert_eq!(run.code, 0, "stderr: {}", run.stderr);
+    assert_eq!(
+        tokens_css_blocks(&out.path)[0].1,
+        declarations(&[
+            ("--text-body-font-family", "\"Inter\""),
+            ("--text-body-font-size", "16px"),
+            ("--text-body-line-height", "1.5"),
+            (
+                "--typography-lead-font-family",
+                "var(--text-body-font-family)"
+            ),
+            ("--typography-lead-font-size", "var(--text-body-font-size)"),
+            (
+                "--typography-lead-line-height",
+                "var(--text-body-line-height)"
+            ),
+        ])
+    );
+}
+
+#[test]
+fn a_code_syntax_name_that_another_token_already_has_fails_the_export_naming_both() {
+    let tree = json!({
+        "$extensions": {"omnistate": {"modes": ["light"]}},
+        "color": {"$type": "color", "ink": {"$value": "#0f172a"}},
+        "state": {
+            "count": {
+                "$type": "number",
+                "$value": 2,
+                "$extensions": {"omnistate": {"codeSyntax": {"css": "--color-ink"}}}
+            }
+        }
+    });
+    let server = mock(app_docs(), feature_docs(), tokens_answer(tree));
+    let out = Scratch::new("out");
+
+    let run = export(&server, &out.path, &[]);
+
+    assert_ne!(run.code, 0, "stdout: {}", run.stdout);
+    let lines = run.stderr_lines();
+    assert_eq!(
+        lines.len(),
+        1,
+        "one line on standard error: {:?}",
+        run.stderr
+    );
+    assert!(lines[0].contains("color.ink"), "{}", lines[0]);
+    assert!(lines[0].contains("state.count"), "{}", lines[0]);
+    assert!(!out.path.join("manifest.json").exists());
 }
 
 #[test]
