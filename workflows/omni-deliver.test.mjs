@@ -1065,7 +1065,7 @@ test("tests not accepted after three rounds leave the integration branch at the 
   assert.deepEqual([existsSync(wt), hasBranch(dirs, "US-1")], [true, true]);
   const s = dirs.story("US-1");
   assert.deepEqual({ status: s.status, blocked: s.blocked, holder: s.holder }, { status: "reviewed", blocked: true, holder: null });
-  assert.match(threadOf(dirs, "US-1").title, /^US-1: .*regression tests were not accepted$/);
+  assert.equal(threadOf(dirs, "US-1").title, "US-1: regression tests were not accepted");
 });
 
 test("a story whose tests were not accepted is taken again by the lane once its thread concludes, with the merged story commit as its base: the rebase and fast-forward change nothing, and the checks and the tests run again", { timeout: 20000 }, async (t) => {
