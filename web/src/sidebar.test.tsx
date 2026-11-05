@@ -118,7 +118,7 @@ const ACME = { id: WORKSPACE_ID, name: "Acme" };
 
 /** A fake of the API: the auth routes, the account's workspaces, the workspace's two projects, the home, and the docs and threads of `home`. */
 function fakeApi(fields: { home?: Home; workspaces?: Workspace[] } = {}) {
-  const api = { home: fields.home ?? home() };
+  const api = { home: fields.home ?? home(), projectName: "Storefront", projectsRequests: 0 };
   const json = (status: number, body: unknown) =>
     new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
   const fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -132,9 +132,10 @@ function fakeApi(fields: { home?: Home; workspaces?: Workspace[] } = {}) {
       case "/api/v1/auth/workspaces":
         return json(200, { workspaces: fields.workspaces ?? [ACME] });
       case `/api/v1/w/${WORKSPACE_ID}/projects`:
+        api.projectsRequests += 1;
         return json(200, {
           projects: [
-            { id: PROJECT_ID, name: "Storefront", created_at: AT },
+            { id: PROJECT_ID, name: api.projectName, created_at: AT },
             { id: OTHER_PROJECT_ID, name: "Backoffice", created_at: AT },
           ],
         });
@@ -347,6 +348,70 @@ describe("the project sidebar", () => {
         data: { comment_id: SAY_WEEK, doc_id: APP_DOC },
       });
       await waitFor(() => expect(links(nav)[0]?.text).toBe("Inbox1"));
+    });
+  });
+
+  describe("a rename", () => {
+    async function openSocket() {
+      await waitFor(() => expect(FakeWebSocket.instances.length).toBeGreaterThan(0));
+      const socket = FakeWebSocket.instances[FakeWebSocket.instances.length - 1];
+      socket.open();
+      await waitFor(() =>
+        expect(socket.sent).toContainEqual(expect.objectContaining({ type: "subscribe", project_id: PROJECT_ID })),
+      );
+      socket.receive({ type: "subscribed", project_id: PROJECT_ID, last_seq: 10 });
+      return socket;
+    }
+
+    function renamed(projectId: string, seq: number) {
+      return {
+        type: "event",
+        event: "project.renamed",
+        project_id: projectId,
+        seq,
+        at: AT,
+        data: { project_id: projectId, name: "Shop v2" },
+      };
+    }
+
+    test("an open App page shows the new name in its title, the switcher and its list, one reload per consumer", async () => {
+      const api = fakeApi();
+      renderAt(`${PROJECT_PATH}/app`);
+      const button = await screen.findByRole("button", { name: "Switch project" });
+      await waitFor(() => expect(shownText(button)).toBe("AcmeStorefront"));
+      const socket = await openSocket();
+      await settled();
+      const before = api.projectsRequests;
+
+      api.projectName = "Shop v2";
+      socket.receive(renamed(PROJECT_ID, 11));
+      await waitFor(() => expect(shownText(button)).toBe("AcmeShop v2"));
+      await waitFor(() =>
+        expect(within(screen.getByRole("main")).getByRole("heading", { level: 1, name: "Shop v2" })).toBeTruthy(),
+      );
+      expect(api.projectsRequests).toBe(before + 2);
+      expect(menuItems(await openMenu()).map((item) => item.text)).toContain("Shop v2");
+    });
+
+    test("another project's event reloads no projects", async () => {
+      const api = fakeApi();
+      renderAt(`${PROJECT_PATH}/app`);
+      await waitFor(() => expect(shownText(screen.getByRole("button", { name: "Switch project" }))).toBe("AcmeStorefront"));
+      const socket = await openSocket();
+      await settled();
+      const before = api.projectsRequests;
+
+      socket.receive(renamed(OTHER_PROJECT_ID, 11));
+      await settled();
+      expect(api.projectsRequests).toBe(before);
+    });
+
+    test("the workspace home subscribes to no project", async () => {
+      fakeApi();
+      renderAt(WORKSPACE_PATH);
+      await within(await screen.findByRole("main")).findByText("Storefront");
+      await settled();
+      expect(FakeWebSocket.instances.flatMap((socket) => socket.sent)).toEqual([]);
     });
   });
 
