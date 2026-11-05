@@ -7,7 +7,7 @@ Interview the user the way `~/.claude/skills/grilling/SKILL.md` does, and keep t
 
 ## Start
 
-1. Read `.omni.toml` for `project` and `feature`. Without a `feature`, ask the human which feature to grill, or create it with `omni feature create "<name>" --description "<what changes for whom>"`.
+1. Read the feature from `OMNI_FEATURE`. Without it, ask the human which feature to grill, or create it with `omni feature create "<name>" --description "<what changes for whom>"`.
 2. Follow the Start steps of the `omni` skill (`omni whoami --as <run>/<role>`, `--as` on every command).
 3. Find the feature's Spec doc: `omni doc list --feature "<name>"`. When there is none, create it: `omni doc create --feature "<name>" --kind html --pillar spec --title "Spec"`.
 

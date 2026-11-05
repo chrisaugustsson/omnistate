@@ -7,7 +7,7 @@ Turn the feature's settled Spec, Architecture, DB and UI docs into stories on it
 
 ## Start
 
-1. Read `.omni.toml` for `project` and `feature`. Without a `feature`, ask the human which feature to cut.
+1. Read the feature from `OMNI_FEATURE`. Without it, ask the human which feature to cut.
 2. Follow the Start steps of the `omni` skill (`omni whoami --as <run>/<role>`, `--as` on every command). Keep the `<run>` id; `omni story decision` needs it as `--run`.
 3. Read the feature's docs: `omni doc list --feature "<name>"`, then `omni doc read <doc>` for the Spec, Architecture, DB and UI docs that exist. Note each doc's ID and the node IDs of the contract operations, tables and screens (`omni design read --doc <doc> --board <board>` for one board of a large design).
 4. Read the repository for what each story changes: the closest existing code, tests and routes for every operation, table and screen.

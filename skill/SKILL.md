@@ -21,7 +21,7 @@ OmniState holds everything about what an app and its features are meant to be, w
 
 1. `omni whoami --as <run>/<role>`. When it says `not logged in`, ask the human to run `omni login` in their terminal, then continue.
 2. Pass `--as <run>/<role>` on every command, with a short run name and role you keep for the whole session (`--as shaping-1/shaper`); shell variables do not survive between Bash calls. The server records it as the author of your writes, comments and posts.
-3. The project is the one in `.omni.toml`; otherwise add `--project <name|id>`. `omni project list` shows them, `omni project create <name>` makes one.
+3. The project is, in this order: `--project <name|id>`, `OMNI_PROJECT`, or the folder's link made with `omni link <project>` (`omni link` alone shows the link in effect; `omni unlink` removes it). The feature is `--feature <name|id>` or `OMNI_FEATURE`. `omni project list` shows them, `omni project create <name>` makes one.
 4. `omni --help` lists every command and flag.
 
 ## The main loop
@@ -79,7 +79,7 @@ Done when every decision, rule, screen and schema change in the feature's docs i
 
 ### Document an existing app from its codebase
 
-You write the app-level docs (`--global`, the default when `.omni.toml` has no `feature`) from the code.
+You write the app-level docs (`--global`, the default without `--feature` or `OMNI_FEATURE`) from the code.
 
 1. Ask the human once: is there a `.penpot` file of the app's design (Penpot: Export file + libraries)? Wait for the answer.
 2. Read the codebase: entry points, routes and screens, modules and services, data models and migrations, integrations, config.

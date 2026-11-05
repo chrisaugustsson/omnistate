@@ -7,11 +7,11 @@ Result: **PASS**, after one fix in the renderer (see Outcome)
 ## Setup
 
 - Date: 2026-10-30
-- Session: a separate `claude -p` process (Claude Code 2.1.312, model `claude-opus-5-5`, permission mode `auto`), started by the build agent from a work directory holding only `.omni.toml` and the skill. Prompt 2 resumed the same session.
+- Session: a separate `claude -p` process (Claude Code 2.1.312, model `claude-opus-5-5`, permission mode `auto`), started by the build agent from a work directory holding only the skill, linked to the project with `omni link`. Prompt 2 resumed the same session.
 - Provisioned before the session started:
   - A stack of its own: `OMNI_PORT=8082 docker compose -p omnistate-skillcheck up --build --wait --detach proxy`, with a new account from `omni-api setup`.
   - `omni` on `PATH`, logged in to that stack.
-  - The empty project Webshop, set in the work directory's `.omni.toml` as `project = "Webshop"`.
+  - The empty project Webshop, linked to the work directory with `omni link Webshop`.
   - The skill, copied unchanged from `skill/` to the work directory's `.claude/skills/omni/`, not to `~/.claude/skills/omni/`. A fresh session loads both the same way, and the init event listed `omni` among its skills.
 - Not provisioned: an agent identity. The session had to learn `--as <run>/<role>` from the skill.
 - Allowed tools, on top of what auto mode allows: `Skill`, `Read`, `Write`, `Edit`, `Bash(omni:*)`, `Bash(jq:*)`.
