@@ -420,6 +420,7 @@ fn scroll_position_is_refused_outside_the_layers_of_a_board() {
     let sources = [
         format!(r#"{SCROLL_BOARD} scrollPosition="fixed"/>"#),
         r#"<Page id="aaaaaaaa" name="Flows" scrollPosition="fixed"/>"#.to_string(),
+        r#"<Component id="dddddddd" name="Card" width={10} height={10} dir="col" scrollPosition="fixed"/>"#.to_string(),
         r#"<Component id="dddddddd" name="Card" width={10} height={10} dir="col"><Text id="cccccccc" name="T" content="Hi" fontFamily="Inter" fontSize={16} scrollPosition="fixed"/></Component>"#.to_string(),
     ];
     for source in sources {
@@ -441,4 +442,41 @@ fn an_unknown_scroll_position_names_the_keywords_there_are() {
     for word in ["scrolls", "fixed", "sticky"] {
         assert!(error.fix().contains(word), "{error}");
     }
+}
+
+#[test]
+fn a_layer_written_alone_takes_a_scroll_position() {
+    let (node, _) = round_trip(
+        r#"<Frame id="aaaaaaaa" name="Bar" width={100} height={40} dir="col" scrollPosition="fixed"/>"#,
+    );
+    assert_eq!(node.scroll_position(), ScrollPosition::Fixed);
+}
+
+#[test]
+fn set_refuses_a_scroll_position_on_a_layer_of_a_component_and_takes_it_in_a_board() {
+    let text = r#"<Text id="cccccccc" name="T" content="Hi" fontFamily="Inter" fontSize={16}/>"#;
+    let component = existing(&format!(
+        r#"<Component id="dddddddd" name="Card" width={{10}} height={{10}} dir="col">{text}</Component>"#
+    ));
+    let board = existing(&format!("{SCROLL_BOARD}>{text}</Board>"));
+    let properties = json!({"scrollPosition": "fixed"});
+    let properties = properties.as_object().unwrap();
+
+    let mut in_component = component.children()[0].clone();
+    let error = tags::set_properties(
+        &mut in_component,
+        Some(&tags::Host::of(&component)),
+        properties,
+    )
+    .expect_err("a layer of a component takes no scrollPosition");
+    assert!(
+        error.contains("`scrollPosition` is for layers inside a board"),
+        "{error}"
+    );
+    assert_eq!(in_component.scroll_position(), ScrollPosition::Scrolls);
+
+    let mut in_board = board.children()[0].clone();
+    tags::set_properties(&mut in_board, Some(&tags::Host::of(&board)), properties)
+        .expect("a layer of a board takes scrollPosition");
+    assert_eq!(in_board.scroll_position(), ScrollPosition::Fixed);
 }
