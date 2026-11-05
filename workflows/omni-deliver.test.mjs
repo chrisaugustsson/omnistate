@@ -358,6 +358,20 @@ test("returns an implementing story whose worktree is missing to backlog unheld"
   assert.equal(dirs.story("US-2").holder, null);
 });
 
+test("working stories nobody holds are released to their waiting state like a dead run's, the implementing one's worktree kept, and the report lists them", async (t) => {
+  const dirs = scratch(t, [story("US-1", { status: "review" }), story("US-2", { status: "testing" }), story("US-3", { status: "implementing" }), story("US-4", { status: "implemented" })]);
+  const wt = worktree(dirs, "US-3");
+  writeFileSync(join(wt, "work"), "work\n");
+  git(wt, "add", "work");
+  git(wt, "commit", "-q", "-m", "work");
+
+  const result = await start("board");
+
+  assert.deepEqual(["US-1", "US-2", "US-3", "US-4"].map((k) => [dirs.story(k).status, dirs.story(k).holder]), [["implemented", null], ["reviewed", null], ["backlog", null], ["implemented", null]]);
+  assert.equal(readFileSync(join(wt, "work"), "utf8"), "work\n");
+  assert.deepEqual(releasedSection(result.report).sort(), ["- US-1: implemented", "- US-2: reviewed", "- US-3: backlog"]);
+});
+
 // ---- clarity ----------------------------------------------------------------
 
 test("a blocking gap becomes a thread 'US-<n>: <question>' with the options and recommendation, linked from the story, and blocks it", async (t) => {
@@ -894,6 +908,23 @@ test("two reviewed stories pass the lane one at a time: each rebased and fast-fo
   assert.equal(existsSync(laneFile(dirs)), false);
 });
 
+test("the lane logs one line per step with the story key: claimed, merged, fast, stack, criteria, done; a failing check logs the send-back and its reason", { timeout: 20000 }, async (t) => {
+  const dirs = scratch(t, [story("US-1", { status: "reviewed" }), story("US-2", { status: "reviewed" })]);
+  dirs.checks({ fast: "true", stack_up: "true", stack: `test "$(git log -1 --format=%s)" != "feat: US-2 attempt"` });
+  reviewed(dirs, "US-1");
+  reviewed(dirs, "US-2");
+  const base = sha(dirs, "main").slice(0, 7);
+  const lines = [];
+  const { agent } = implAgent({ "US-2": stopped });
+
+  await workflow({ feature: "board" }, agent, () => {}, (fns) => Promise.all(fns.map((f) => f())), (m) => lines.push(m));
+
+  assert.deepEqual(lines.filter((l) => l.startsWith("lane:US-1:")), [`lane:US-1: claimed (main at ${base})`, "lane:US-1: merged onto main", "lane:US-1: fast passed", "lane:US-1: stack passed", "lane:US-1: criteria passed", "lane:US-1: done"]);
+  assert.deepEqual(lines.filter((l) => l.startsWith("lane:US-2:")), [`lane:US-2: claimed (main at ${sha(dirs, "main").slice(0, 7)})`, "lane:US-2: merged onto main", "lane:US-2: fast passed", "lane:US-2: sent back: the stack command failed"]);
+  assert.equal(dirs.story("US-1").status, "done");
+  assert.deepEqual([dirs.story("US-2").status, dirs.story("US-2").priority], ["backlog", 0]);
+});
+
 test("the lane claims reviewed stories by priority, then by number", { timeout: 20000 }, async (t) => {
   const dirs = scratch(t, [story("US-1", { status: "reviewed", priority: 3 }), story("US-10", { status: "reviewed", priority: 1 }), story("US-2", { status: "reviewed", priority: 1 })]);
   dirs.checks({ fast: "true", stack_up: "true", stack: "true" });
@@ -1010,6 +1041,31 @@ test("a rebase conflict leaves the integration branch untouched and sends the st
   assert.deepEqual(claimsOf(dirs, "US-2").map((c) => c.stage), ["testing"]);
   assert.equal(dirs.story("US-2").status, "done");
   assert.deepEqual(subjects(dirs), ["feat: US-2 attempt", "chore: main edits README", "init"]);
+});
+
+test("a reviewed story whose branch is gone is sent back with a missing-branch finding at stage testing and no attempt counted, the integration branch untouched and no lane file; the next reviewed story is taken and done", { timeout: 20000 }, async (t) => {
+  const dirs = scratch(t, [story("US-1", { status: "reviewed", priority: 2 }), story("US-2", { status: "reviewed" })]);
+  dirs.checks({ fast: "true", stack_up: "true", stack: "true" });
+  reviewed(dirs, "US-2");
+  const seen = {};
+  const phase = (title) => {
+    if (title !== "Test lane" || !claimsOf(dirs, "US-2").length || seen.atNext) return;
+    seen.atNext = { main: subjects(dirs), clean: git(dirs.repo, "status", "--porcelain"), lane: existsSync(laneFile(dirs)) };
+  };
+  const lines = [];
+  const base = sha(dirs, "main").slice(0, 7);
+  const { agent } = implAgent({ "US-1": stopped });
+
+  await workflow({ feature: "board" }, agent, phase, (fns) => Promise.all(fns.map((f) => f())), (m) => lines.push(m));
+
+  assert.deepEqual(seen.atNext, { main: ["init"], clean: "", lane: false });
+  assert.deepEqual(timeline(dirs, "US-1").slice(0, 2), ["claim testing", "move backlog"]);
+  const s = dirs.story("US-1");
+  assert.equal(s.priority, 0);
+  assert.deepEqual(s.findings.map((f) => [f.stage, f.text]), [["testing", "branch story/US-1 is missing: nothing to merge onto main; start again from main"]]);
+  assert.deepEqual(lines.filter((l) => l.startsWith("lane:US-1:")), [`lane:US-1: claimed (main at ${base})`, "lane:US-1: sent back: branch story/US-1 is missing"]);
+  assert.equal(dirs.story("US-2").status, "done");
+  assert.deepEqual(subjects(dirs), ["feat: US-2 attempt", "init"]);
 });
 
 // ---- the test lane: regression tests, then done ---------------------------------

@@ -4,7 +4,7 @@ export const meta = {
   whenToUse: 'Run from the main worktree of a project with a clean tree, with args {feature: "<name>"} (optional: implementers (3), reviewers (3), storyLimit, models). One run per checkout, whatever the feature: the lock file .omni/run.lock holds the run, and a live pid refuses a second one. Needs the omni CLI on PATH and the folder linked to its project (omni link, or OMNI_PROJECT). Stories come from `omni story`; questions for the human become threads on the feature named after the story. A run has three loops, implement, review and test, that pull stories from the board by status, and the test step is a single lane: one story at a time on the main worktree. Never pushes.',
   phases: [
     { title: 'Start', detail: 'clean tree, lock, the Run thread' },
-    { title: 'Reconcile', detail: 'undo a merge a dead run left half done (the lane file), then release every story held by another run' },
+    { title: 'Reconcile', detail: 'undo a merge a dead run left half done (the lane file), then release every story held by another run, and every working story nobody holds' },
     { title: 'Clarity', detail: 'one check per backlog story whose version is new, in parallel: blocking gaps become threads, minor ones agent decisions' },
     { title: 'Unblock', detail: 'a blocked story whose linked threads all have a conclusion gets each conclusion as a human decision and is unblocked' },
     { title: 'Implement', detail: 'the implement loop polls the board every 5 seconds and when an implementer ends: while fewer than `implementers` run, it claims the first pickable story that passed clarity and starts an implementer in its worktree (an existing one is continued), running only the checks its change needs; a finished story moves to implemented, a blocked one gets a thread and stays in the backlog' },
@@ -132,8 +132,11 @@ try {
     fs.rmSync(LANE_FILE, { force: true })
   }
   applyLane()
+  // A working story nobody holds (a claim whose run died before it could be
+  // released) is released as well: no run can move or claim it otherwise.
+  const WORKING = ['implementing', 'review', 'testing']
   for (const story of listStories()) {
-    if (!story.holder || story.holder.run === runId) continue
+    if (story.holder ? story.holder.run === runId : !WORKING.includes(story.status)) continue
     write('release', story.key)
     released.push({ key: story.key, status: readStory(story.key).status })
   }
@@ -1000,14 +1003,27 @@ Return raw structured data only.`, { schema: TEST_CUT_SCHEMA, label: `test-cut:$
     git(['reset', '--hard', base])
     fs.rmSync(LANE_FILE, { force: true })
   }
-  const failLane = (key, base, findings) => {
+  const failLane = (key, base, findings, reason) => {
     undoLane(base)
     const o = sendBack(key, 'testing', findings)
     checkOutcomes.push({ key, outcome: o.outcome, failures: findings.length, thread: o.thread })
+    laneLog(key, `sent back: ${reason}`)
   }
+  const laneLog = (key, message) => log(`lane:${key}: ${message}`)
+  // The story's branch and worktree, which an older run may have dropped after
+  // merging the story: nothing is left to merge, so the story goes back for a
+  // fresh attempt without an attempt counted.
+  const branchMissing = (key) => tryRun('git', ['-C', root, 'rev-parse', '--verify', '--quiet', `refs/heads/story/${key}`]) === null || !fs.existsSync(worktreeOf(key))
   const laneStory = async (key) => {
     phase('Test lane')
     const base = git(['rev-parse', 'HEAD']).trim()
+    laneLog(key, `claimed (${integration} at ${base.slice(0, 7)})`)
+    if (branchMissing(key)) {
+      sendBack(key, 'testing', [{ text: `branch story/${key} is missing: nothing to merge onto ${integration}; start again from ${integration}`, files: [] }], false)
+      mergeOutcomes.push({ key, outcome: 'branch_missing' })
+      laneLog(key, `sent back: branch story/${key} is missing`)
+      return
+    }
     fs.mkdirSync(path.dirname(LANE_FILE), { recursive: true })
     fs.writeFileSync(LANE_FILE, JSON.stringify({ key, base }) + '\n')
     const conflict = tryMerge(key)
@@ -1015,34 +1031,42 @@ Return raw structured data only.`, { schema: TEST_CUT_SCHEMA, label: `test-cut:$
       fs.rmSync(LANE_FILE, { force: true })
       sendBack(key, 'testing', [{ text: `${REBASE_FINDING}${conflict.join(', ')}: the branch no longer rebases onto ${integration}; start again from its head`, files: conflict }], false)
       mergeOutcomes.push({ key, outcome: 'rebase_conflict', files: conflict })
+      laneLog(key, `sent back: rebase conflict in ${conflict.join(', ')}`)
       return
     }
     mergeOutcomes.push({ key, outcome: 'merged' })
+    laneLog(key, `merged onto ${integration}`)
     const fastResult = await runFast(root)
-    if (!fastResult.ok) return failLane(key, base, [{ text: `The fast command (\`${fast}\`) failed on the main worktree. Output:\n\`\`\`\n${tail(fastResult.output)}\n\`\`\``, files: [] }])
+    if (!fastResult.ok) return failLane(key, base, [{ text: `The fast command (\`${fast}\`) failed on the main worktree. Output:\n\`\`\`\n${tail(fastResult.output)}\n\`\`\``, files: [] }], 'the fast command failed')
+    laneLog(key, 'fast passed')
     const up = await runCmd(stackUp, root)
-    if (!up.ok) return failLane(key, base, [{ text: `The stack did not start: \`${stackUp}\` exited non-zero. Output:\n\`\`\`\n${tail(up.output)}\n\`\`\``, files: [] }])
+    if (!up.ok) return failLane(key, base, [{ text: `The stack did not start: \`${stackUp}\` exited non-zero. Output:\n\`\`\`\n${tail(up.output)}\n\`\`\``, files: [] }], 'the stack did not start')
     const stackResult = await runCmd(stackCmd, root)
-    if (!stackResult.ok) return failLane(key, base, [{ text: `The stack command (\`${stackCmd}\`) failed on the main worktree. Output:\n\`\`\`\n${tail(stackResult.output)}\n\`\`\``, files: [] }])
+    if (!stackResult.ok) return failLane(key, base, [{ text: `The stack command (\`${stackCmd}\`) failed on the main worktree. Output:\n\`\`\`\n${tail(stackResult.output)}\n\`\`\``, files: [] }], 'the stack command failed')
+    laneLog(key, 'stack passed')
     const r = await exercise(key)
     if (!r) {
       undoLane(base)
       const id = openThread(`${key}: the verifier returned nothing`, 'The verifier returned no result twice.\n')
       linkAndBlock(key, [id])
       checkOutcomes.push({ key, outcome: 'unchecked', thread: id })
+      laneLog(key, 'blocked: the verifier returned nothing')
       return
     }
-    if (r.failures.length > 0) return failLane(key, base, r.failures.map((f) => ({ text: f.text, files: [] })))
+    if (r.failures.length > 0) return failLane(key, base, r.failures.map((f) => ({ text: f.text, files: [] })), `${r.failures.length} criteri${r.failures.length === 1 ? 'on' : 'a'} failed`)
+    laneLog(key, 'criteria passed')
     const merged = git(['rev-parse', 'HEAD']).trim()
     const tested = await testStory(key, r.verdict.criteria || [])
-    if (tested.defect) return failLane(key, base, [{ text: tested.defect, files: [] }])
+    if (tested.defect) return failLane(key, base, [{ text: tested.defect, files: [] }], 'the test author found a defect')
     if (tested.ok) {
       passCheck(key, r.story)
       moveDone(key)
+      laneLog(key, 'done')
     } else {
       // Drop the rejected tests, committed or not; ignored files stay.
       git(['reset', '--hard', merged])
       git(['clean', '-fd'])
+      laneLog(key, 'blocked: the regression tests were not accepted')
     }
     fs.rmSync(LANE_FILE, { force: true })
     checkOutcomes.push(tested.ok ? { key, outcome: 'passed' } : { key, outcome: 'tests_rejected', thread: tested.thread })
