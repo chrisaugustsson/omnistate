@@ -4,6 +4,7 @@ import { Check, Lock } from "lucide-react";
 import type { HomeDoc, HomeResponse, HomeThread } from "@/api/generated";
 import { Empty, List, PILLARS } from "@/components/project/items";
 import { PageHeader } from "@/components/page-header";
+import { RenameTitle } from "@/components/project/rename-title";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { timeAgo } from "@/lib/format";
 import { useHome, useProjectName } from "@/lib/use-home";
@@ -186,6 +187,15 @@ export function ScopePage({ workspaceId, projectId, featureId }: Params & { feat
   const lastActivity = featureId ? summary?.last_activity : home?.app?.last_activity;
   const { docs, threads } = home && ready ? inScope(home, featureId) : { docs: [], threads: [] };
 
+  const headerDescription = (
+    <>
+      {description && <p className="whitespace-pre-line">{description}</p>}
+      <p className="mt-2 text-xs text-muted-foreground" title={lastActivity ? new Date(lastActivity).toLocaleString() : undefined}>
+        {lastActivity ? `Last change ${timeAgo(lastActivity)}` : "No activity yet"}
+      </p>
+    </>
+  );
+
   return (
     <main className="mx-auto max-w-6xl px-5 py-8 md:px-10 md:py-12">
       {failed && (
@@ -211,17 +221,11 @@ export function ScopePage({ workspaceId, projectId, featureId }: Params & { feat
       {!home && !failed && <Skeleton />}
       {home && ready && (
         <>
-          <PageHeader
-            title={title}
-            description={
-              <>
-                {description && <p className="whitespace-pre-line">{description}</p>}
-                <p className="mt-2 text-xs text-muted-foreground" title={lastActivity ? new Date(lastActivity).toLocaleString() : undefined}>
-                  {lastActivity ? `Last change ${timeAgo(lastActivity)}` : "No activity yet"}
-                </p>
-              </>
-            }
-          />
+          {featureId ? (
+            <PageHeader title={title} description={headerDescription} />
+          ) : (
+            <RenameTitle workspaceId={workspaceId} projectId={projectId} name={title} description={headerDescription} />
+          )}
           <nav aria-label="Pillars" className="mt-6 flex flex-wrap gap-1.5">
             {featureId && (
               <Link

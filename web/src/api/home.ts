@@ -18,3 +18,14 @@ export function loadHome(workspaceId: string, projectId: string): Promise<HomeRe
     response: home.responses["200"],
   });
 }
+
+const renamed = operations["PATCH /api/v1/w/{workspace_id}/projects/{project_id}"];
+
+/** Renames a project; the name is trimmed by the server. */
+export async function renameProject(workspaceId: string, projectId: string, name: string): Promise<ProjectBody> {
+  const answer = await callApi("PATCH", `/api/v1/w/${workspaceId}/projects/${projectId}`, {
+    body: { name },
+    response: renamed.responses["200"],
+  });
+  return answer.project;
+}
