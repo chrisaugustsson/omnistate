@@ -5,6 +5,7 @@ use super::id::NodeId;
 use super::json::{Number, Object, entry, first_set, some, some_number, some_object, some_objects};
 use super::layout::{GridPlacement, Layout, LayoutMode, Margin, SelfAlignment, Sizing};
 use super::path::PathData;
+use super::proto::Interaction;
 use super::style::{Fill, FontStyle, ImageFit, Radius, Shadow, Stroke, TextAlign, TextDecoration};
 use super::value::{AttachmentRef, Color, FontFamily, Length, TokenOr, some_non_negative};
 use serde::de::Error as _;
@@ -46,6 +47,8 @@ pub struct Node {
     placement: Placement,
     /// The property of its component that the layer takes.
     bind: Option<Bind>,
+    /// What the layer does when the person using a prototype touches it.
+    interactions: Vec<Interaction>,
     data: NodeData,
 }
 
@@ -95,6 +98,16 @@ impl Node {
         self.bind.as_ref()
     }
 
+    /// The interactions of a layer, in order. A page has none.
+    pub fn interactions(&self) -> &[Interaction] {
+        &self.interactions
+    }
+
+    /// Gives the node `interactions`, in place of its own.
+    pub fn set_interactions(&mut self, interactions: Vec<Interaction>) {
+        self.interactions = interactions;
+    }
+
     /// The children of a page, board, frame or component, to change. Other
     /// nodes have none.
     pub fn children_mut(&mut self) -> Option<&mut Vec<Node>> {
@@ -130,6 +143,7 @@ impl Node {
             || self.visible != other.visible
             || self.placement != other.placement
             || self.bind != other.bind
+            || self.interactions != other.interactions
         {
             return false;
         }
@@ -342,6 +356,9 @@ impl Serialize for Node {
         entry(&mut map, "justifySelf", placement.justify_self.as_ref())?;
         entry(&mut map, "alignSelf", placement.align_self.as_ref())?;
         entry(&mut map, "bind", self.bind.as_ref())?;
+        if !self.interactions.is_empty() {
+            map.serialize_entry("interactions", &self.interactions)?;
+        }
         match &self.data {
             NodeData::Page(page) => map.serialize_entry("children", &page.children)?,
             NodeData::Board(frame) | NodeData::Frame(frame) => {
@@ -544,6 +561,8 @@ struct RawNode {
     #[serde(default, deserialize_with = "some")]
     bind: Option<Value>,
     #[serde(default, deserialize_with = "some")]
+    interactions: Option<Value>,
+    #[serde(default, deserialize_with = "some")]
     children: Option<Vec<Subtree>>,
 }
 
@@ -567,6 +586,15 @@ impl RawNode {
                 .transpose()?,
             _ => None,
         };
+        let interactions = match self.kind {
+            NodeKind::Page => Vec::new(),
+            _ => self
+                .interactions
+                .take()
+                .map(|interactions| Interaction::list_from_value(&interactions))
+                .transpose()?
+                .unwrap_or_default(),
+        };
         let data = match self.kind {
             NodeKind::Page => NodeData::Page(self.page()?),
             NodeKind::Board => NodeData::Board(self.frame()?),
@@ -586,6 +614,7 @@ impl RawNode {
             visible,
             placement,
             bind,
+            interactions,
             data,
         })
     }
@@ -785,6 +814,7 @@ impl RawNode {
             ("props", self.props.is_some()),
             ("overrides", self.overrides.is_some()),
             ("bind", self.bind.is_some()),
+            ("interactions", self.interactions.is_some()),
             ("children", self.children.is_some()),
         ])
     }

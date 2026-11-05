@@ -187,6 +187,52 @@ its layers as a flex layout.
 </Component>
 ```
 
+### Interactions (`interactions`)
+
+`interactions` is a list of what a layer does when the person using a
+prototype touches it. Every tag except `<Page>` takes it: `<Board>`, `<Frame>`,
+`<Text>`, `<Image>`, `<Vector>`, `<Instance>` and `<Component>`, and the layers
+inside a component. A `<Page>` rejects it. The names are FigCraft's
+(`crates/doc/src/proto.rs`, MIT OR Apache-2.0; see `NOTICE`).
+
+```
+<Frame id="btn00001" name="Buy" width={120} height={40} interactions={[{trigger: {type: "onClick"}, actions: [{type: "navigate", dest: "k3f9x2qa", preserveScroll: true}], transition: {type: "slideIn", direction: "left"}, durationMs: 300, easing: "easeOut"}]}/>
+```
+
+An interaction has `actions` (required) and these fields, which printing
+leaves out when they hold the default:
+
+| Field | Values | Default |
+| --- | --- | --- |
+| `trigger` | an object with a `type`: `onClick`, `onHover`, `onPress`, `onDrag`, `mouseEnter`, `mouseLeave`, `mouseDown`, `mouseUp`, `afterDelay` (`ms`) or `keyPress` (`key`, such as `"Shift+K"`); a bare name such as `"onClick"` is shorthand for a trigger without fields | `onClick` |
+| `transition` | an object with a `type`: `instant`, `dissolve`, `smartAnimate`, or `moveIn`, `moveOut`, `push`, `slideIn`, `slideOut` with a `direction` of `left`, `right`, `top` or `bottom` | `instant` |
+| `durationMs` | a whole number of milliseconds | `300` |
+| `easing` | `linear`, `easeIn`, `easeOut`, `easeInOut`, `easeInBack`, `easeOutBack`, `easeInOutBack`, `gentle`, `quick`, `bouncy`, `slow`, or an object `{type: "customBezier", x1, y1, x2, y2}` or `{type: "customSpring", mass, stiffness, damping}` | `easeOut` |
+| `delayMs` | a whole number of milliseconds | `0` |
+
+An action has a `type`, and each type takes these fields; a field with a
+default is left out when it holds it:
+
+| Action | Fields |
+| --- | --- |
+| `navigate` | `dest`, `preserveScroll` (`false`) |
+| `back` | none |
+| `scrollTo` | `dest`, `offset` (`[0, 0]`) |
+| `openOverlay` | `dest`, `position` (`center`, `topLeft`, `topCenter`, `topRight`, `bottomLeft`, `bottomCenter`, `bottomRight`, `manual`; default `center`), `closeOnOutside` (`true`), `background` (a color), `offset` (a pair, `[12, 40]`), `anchor` (`screen`, `triggerInside`, `triggerOutside`; default `screen`) |
+| `swapOverlay` | `dest` |
+| `closeOverlay` | none |
+| `openUrl` | `url`, `newTab` (`true`) |
+| `changeTo` | `dest` |
+| `setVariable` | `variable`, and `value` or `expr` |
+| `setVariableMode` | `collection`, `mode` |
+| `conditional` | `blocks`, a list of `{condition, actions}`; a block without `condition` always runs |
+
+A `dest` is the ID of a node, and a variable, a collection, a mode, an `expr`
+and a `condition` are written as they are; none of them is checked against the
+design yet. An unknown trigger, action, transition or easing, and a missing
+required field, are errors that list the names to write instead, such as
+"`tap` is not a trigger: write one of onClick, onHover, ...".
+
 ### Instances (`props` and `overrides` of an `<Instance>`)
 
 An `<Instance>` takes `component` (the component's node ID), `props` (a value

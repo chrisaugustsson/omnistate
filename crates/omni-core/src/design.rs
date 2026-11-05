@@ -131,6 +131,7 @@ mod json;
 mod layout;
 mod node;
 mod path;
+pub mod proto;
 mod style;
 pub mod tags;
 pub mod tokens;

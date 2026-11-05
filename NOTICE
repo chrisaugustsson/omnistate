@@ -1,0 +1,11 @@
+OmniState
+
+Third-party material
+
+crates/omni-core/src/design/proto.rs ports the prototype interaction types
+(Trigger, Action, Transition, Easing, Interaction and their JSON names) from
+FigCraft, crates/doc/src/proto.rs.
+
+FigCraft
+Copyright (c) 2026 ArtCraft Team and the FigCraft contributors.
+Licensed under the MIT License or the Apache License, Version 2.0, at your option.

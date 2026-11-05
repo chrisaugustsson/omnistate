@@ -22,6 +22,7 @@
 //! `docs/formats/design-tags.md` documents every tag and attribute.
 
 use super::json::Object;
+use super::proto::Interaction;
 use super::value::non_negative;
 use super::{
     AttachmentRef, Bind, Color, Fill, FontFamily, Gap, GridPlacement, LayoutMode, Length, Margin,
@@ -77,6 +78,7 @@ const BOARD: &[&str] = &[
     "shadows",
     "opacity",
     "clip",
+    "interactions",
 ];
 
 const FRAME: &[&str] = &[
@@ -113,6 +115,7 @@ const FRAME: &[&str] = &[
     "opacity",
     "clip",
     "bind",
+    "interactions",
 ];
 
 const COMPONENT: &[&str] = &[
@@ -141,6 +144,7 @@ const COMPONENT: &[&str] = &[
     "opacity",
     "clip",
     "props",
+    "interactions",
 ];
 
 const TEXT: &[&str] = &[
@@ -173,6 +177,7 @@ const TEXT: &[&str] = &[
     "color",
     "opacity",
     "bind",
+    "interactions",
 ];
 
 const IMAGE: &[&str] = &[
@@ -200,6 +205,7 @@ const IMAGE: &[&str] = &[
     "shadows",
     "opacity",
     "bind",
+    "interactions",
 ];
 
 const VECTOR: &[&str] = &[
@@ -226,6 +232,7 @@ const VECTOR: &[&str] = &[
     "shadows",
     "opacity",
     "bind",
+    "interactions",
 ];
 
 const INSTANCE: &[&str] = &[
@@ -250,6 +257,7 @@ const INSTANCE: &[&str] = &[
     "props",
     "overrides",
     "bind",
+    "interactions",
 ];
 
 /// The tags, in the order of [`KINDS`].
@@ -452,6 +460,7 @@ enum Shape {
     Values,
     Overrides,
     Bind,
+    Interactions,
 }
 
 struct Spec {
@@ -532,6 +541,7 @@ static SPECS: &[Spec] = &[
     node("props", "props", Shape::Values),
     node("overrides", "overrides", Shape::Overrides),
     node("bind", "bind", Shape::Bind),
+    node("interactions", "interactions", Shape::Interactions),
 ];
 
 /// The `props` of a component are its property definitions, and those of an
@@ -623,6 +633,9 @@ fn how(spec: &Spec) -> String {
         ),
         Shape::Overrides => format!(
             "write an object by the ID of a component node, such as `{attr}={{{{k3f9x2qa: {{content: \"Pay now\"}}}}}}` with `content`, `fills`, `visible` or `component`"
+        ),
+        Shape::Interactions => format!(
+            "write a list of interactions, such as `{attr}={{[{{trigger: {{type: \"onClick\"}}, actions: [{{type: \"navigate\", dest: \"k3f9x2qa\"}}]}}]}}`"
         ),
         Shape::Bind => format!(
             "bind a layer of a component to its properties, such as `{attr}={{{{visible: \"showIcon\"}}}}` with `visible`, `content` or `component`"
@@ -790,6 +803,12 @@ fn convert(spec: &Spec, value: Value) -> Result<Value, Problem> {
         Shape::Values => check::<PropValues>(spec, &value).map(|()| value),
         Shape::Overrides => check::<Overrides>(spec, &value).map(|()| value),
         Shape::Bind => check::<Bind>(spec, &value).map(|()| value),
+        Shape::Interactions => Interaction::list_from_value(&value)
+            .map_err(|error| from_text(spec, &error))
+            .and_then(|interactions| {
+                serde_json::to_value(interactions)
+                    .map_err(|error| from_text(spec, &error.to_string()))
+            }),
     }
 }
 
