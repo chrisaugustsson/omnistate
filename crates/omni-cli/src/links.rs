@@ -125,10 +125,13 @@ impl Links {
 /// What the links say about a folder.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Resolution {
-    /// The nearest folder linked in the logged-in workspace.
+    /// The nearest folder linked in the logged-in workspace, found through the
+    /// folder's own parents or, when `via_main_worktree`, through the main
+    /// worktree of the repository the folder is a worktree of.
     Linked {
         matched: PathBuf,
         project_id: String,
+        via_main_worktree: bool,
     },
     /// No such folder, but the nearest linked one belongs to another workspace.
     OtherWorkspace {
@@ -138,10 +141,34 @@ pub enum Resolution {
     None,
 }
 
-/// The link in effect for `dir`: the folder itself, then each parent, the
-/// first with a line in the workspace's table winning. Only when none has one
-/// does a link of another workspace count, the nearest of them.
-pub fn resolve(links: &Links, workspace_id: &str, dir: &Path) -> Resolution {
+/// The main worktree of the repository `dir` is in: the parent of git's common
+/// directory. None when git is missing or fails, or `dir` is in no repository.
+pub fn main_worktree(dir: &Path) -> Option<PathBuf> {
+    let output = std::process::Command::new("git")
+        .args(["rev-parse", "--path-format=absolute", "--git-common-dir"])
+        .current_dir(dir)
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let common = PathBuf::from(
+        String::from_utf8(output.stdout)
+            .ok()?
+            .trim_end_matches('\n'),
+    );
+    let main = common.parent()?;
+    Some(std::fs::canonicalize(main).unwrap_or_else(|_| main.to_path_buf()))
+}
+
+/// A folder and the project id or workspace id its link names.
+type Match = (PathBuf, String);
+
+/// The nearest folder at or above `dir` with a line in the workspace's table,
+/// else the nearest one with a line in another workspace's table.
+fn nearest(links: &Links, workspace_id: &str, dir: &Path) -> (Option<Match>, Option<Match>) {
     let mut other = None;
     for folder in dir.ancestors() {
         let Some(key) = folder.to_str() else {
@@ -149,19 +176,44 @@ pub fn resolve(links: &Links, workspace_id: &str, dir: &Path) -> Resolution {
         };
         let mut here = links.entries.iter().filter(|(_, path, _)| path == key);
         if let Some((_, _, project_id)) = here.clone().find(|(w, _, _)| w == workspace_id) {
-            return Resolution::Linked {
-                matched: folder.to_path_buf(),
-                project_id: project_id.clone(),
-            };
+            return (Some((folder.to_path_buf(), project_id.clone())), other);
         }
         if other.is_none() {
-            other = here.next().map(|(w, _, _)| (folder, w));
+            other = here
+                .next()
+                .map(|(w, _, _)| (folder.to_path_buf(), w.clone()));
         }
     }
-    match other {
-        Some((folder, workspace_id)) => Resolution::OtherWorkspace {
-            matched: folder.to_path_buf(),
-            workspace_id: workspace_id.clone(),
+    (None, other)
+}
+
+/// The link in effect for `dir`: the folder itself, then each parent, the
+/// first with a line in the workspace's table winning. When none has one and
+/// `dir` is in a git worktree, the same lookup for the main worktree. Only when
+/// neither finds one does a link of another workspace count, the folder's own
+/// nearest first.
+pub fn resolve(links: &Links, workspace_id: &str, dir: &Path) -> Resolution {
+    let (linked, other) = nearest(links, workspace_id, dir);
+    if let Some((matched, project_id)) = linked {
+        return Resolution::Linked {
+            matched,
+            project_id,
+            via_main_worktree: false,
+        };
+    }
+    let main = main_worktree(dir).map(|main| nearest(links, workspace_id, &main));
+    let (main_linked, main_other) = main.unwrap_or_default();
+    if let Some((matched, project_id)) = main_linked {
+        return Resolution::Linked {
+            matched,
+            project_id,
+            via_main_worktree: true,
+        };
+    }
+    match other.or(main_other) {
+        Some((matched, workspace_id)) => Resolution::OtherWorkspace {
+            matched,
+            workspace_id,
         },
         None => Resolution::None,
     }
