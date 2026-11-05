@@ -23,10 +23,10 @@ use axum::body::Bytes;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use omni_core::design::tokens::TokenTree;
+use omni_core::design::tokens::{ModeChoice, TokenTree};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use utoipa::ToSchema;
 
 #[derive(Deserialize, ToSchema)]
@@ -41,15 +41,25 @@ pub struct HeadTokensResponse {
     pub project_id: String,
     /// The project's design system doc; `null` when the project has none.
     pub doc_id: Option<String>,
-    /// The design system's modes, in order; empty without a head.
+    /// The design system's root modes, in order; empty without a head.
     pub modes: Vec<String>,
+    /// The collections (the top-level groups) and the modes of each; empty
+    /// without a head. A group without a list of its own has the root modes.
+    pub collections: Vec<CollectionBody>,
     /// The token tree of the head; `null` without a head. With `?mode=`, the
-    /// tree of that one mode.
+    /// tree of that choice of modes.
     #[schema(value_type = Option<Object>)]
     pub tokens: Option<Value>,
-    /// The mode that `tokens` is the tree of; only with `?mode=`.
+    /// The mode of every collection that has modes that `tokens` is the tree
+    /// of; only with `?mode=`.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub mode: Option<String>,
+    pub mode: Option<BTreeMap<String, String>>,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct CollectionBody {
+    pub name: String,
+    pub modes: Vec<String>,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -65,6 +75,8 @@ pub struct InvalidTokensBody {
 pub enum TokensError {
     Api(ApiError),
     Invalid(String),
+    /// A `?mode=` choice that the design system does not allow.
+    InvalidChoice(String),
 }
 
 impl From<ApiError> for TokensError {
@@ -80,6 +92,11 @@ impl IntoResponse for TokensError {
             Self::Invalid(message) => (
                 StatusCode::BAD_REQUEST,
                 Json(json!({ "error": "invalid_tokens", "message": message })),
+            )
+                .into_response(),
+            Self::InvalidChoice(message) => (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": "invalid_request", "message": message })),
             )
                 .into_response(),
         }
@@ -101,22 +118,47 @@ async fn find_design_system(
     .map_err(ApiError::database)
 }
 
-/// The modes and the tree to answer with: the whole tree, or the tree of one
-/// mode. A mode that the design system does not list is 400 `unknown_mode`.
-fn answer_for(
-    tokens: Option<&TokenTree>,
-    mode: Option<&str>,
-) -> Result<(Vec<String>, Option<Value>), ApiError> {
+/// What a tokens read answers with: the root modes, the collections, the tree
+/// and, with a choice of modes, the choice.
+type Answer = (
+    Vec<String>,
+    Vec<CollectionBody>,
+    Option<Value>,
+    Option<BTreeMap<String, String>>,
+);
+
+/// The tree to answer with: the whole tree, or the tree of a choice of modes
+/// (`dark`, or `color:dark,density:compact`). A bare mode that no collection
+/// lists is 400 `unknown_mode`; a choice in the pair form that the design
+/// system does not allow is 400 `invalid_request` with the reason.
+fn answer_for(tokens: Option<&TokenTree>, mode: Option<&str>) -> Result<Answer, TokensError> {
     let unknown = || ApiError::bad_request("unknown_mode");
-    match (tokens, mode) {
-        (None, None) => Ok((Vec::new(), None)),
-        (None, Some(_)) => Err(unknown()),
-        (Some(tokens), None) => Ok((tokens.modes().to_vec(), Some(tokens.to_json()))),
-        (Some(tokens), Some(mode)) => {
-            let tree = tokens.for_mode(mode).ok_or_else(unknown)?;
-            Ok((tokens.modes().to_vec(), Some(tree)))
+    let (tokens, mode) = match (tokens, mode) {
+        (None, None) => return Ok((Vec::new(), Vec::new(), None, None)),
+        (None, Some(_)) => return Err(unknown().into()),
+        (Some(tokens), mode) => (tokens, mode),
+    };
+    let modes = tokens.modes().to_vec();
+    let collections = tokens
+        .collections()
+        .into_iter()
+        .map(|c| CollectionBody {
+            name: c.name,
+            modes: c.modes,
+        })
+        .collect();
+    let Some(mode) = mode else {
+        return Ok((modes, collections, Some(tokens.to_json()), None));
+    };
+    let choice = ModeChoice::parse(mode, tokens).map_err(|e| {
+        if mode.contains(':') || mode.contains(',') {
+            TokensError::InvalidChoice(e.to_string())
+        } else {
+            unknown().into()
         }
-    }
+    })?;
+    let tree = tokens.for_mode(&choice).ok_or_else(unknown)?;
+    Ok((modes, collections, Some(tree), Some(choice.0)))
 }
 
 /// Checks that every font file of the tree is a font attached to the workspace
@@ -240,11 +282,11 @@ pub async fn import_head_tokens(
     params(
         ("workspace_id" = String, Path, description = "The workspace's UUID"),
         ("project_id" = String, Path, description = "The project's UUID"),
-        ("mode" = Option<String>, Query, description = "Read the tree of this mode: each `$value` is the mode's value and no token has mode values"),
+        ("mode" = Option<String>, Query, description = "Read the tree of these modes: a mode such as `dark` (in every collection that has it) or `color:dark,density:compact`; collections left out take their first mode. Each `$value` is the value in the mode of its collection and no token has mode values"),
     ),
     responses(
         (status = 200, description = "The head's tokens", body = HeadTokensResponse),
-        (status = 400, description = "The design system does not list the mode (`unknown_mode`)", body = ErrorBody),
+        (status = 400, description = "No collection lists the bare mode (`unknown_mode`), or a `collection:mode` choice is refused (`invalid_request`, with a message)", body = InvalidTokensBody),
         (status = 401, description = "No valid API key or session", body = ErrorBody),
         (status = 404, description = "No such project in this workspace", body = ErrorBody),
     )
@@ -254,7 +296,7 @@ pub async fn read_head_tokens(
     request: WorkspaceRequest,
     Path((_, project_id)): Path<(String, String)>,
     Query(query): Query<HashMap<String, String>>,
-) -> Result<Json<HeadTokensResponse>, ApiError> {
+) -> Result<Json<HeadTokensResponse>, TokensError> {
     let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
     let mut tx = state.workspace_tx(&request.workspace_id).await?;
     require_project(&mut tx, &project_id).await?;
@@ -273,12 +315,13 @@ pub async fn read_head_tokens(
         None => None,
     };
     let mode = query.get("mode").map(String::as_str);
-    let (modes, tree) = answer_for(tokens.as_ref(), mode)?;
+    let (modes, collections, tree, chosen) = answer_for(tokens.as_ref(), mode)?;
     Ok(Json(HeadTokensResponse {
         project_id,
         doc_id,
         modes,
+        collections,
         tokens: tree,
-        mode: mode.map(str::to_string),
+        mode: chosen,
     }))
 }

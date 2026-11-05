@@ -37,7 +37,7 @@
 use std::path::PathBuf;
 
 use omni_core::design::Node;
-use omni_core::design::tokens::TokenTree;
+use omni_core::design::tokens::{ModeChoice, TokenTree};
 use omni_penpot::import::{Import, ImportEntry, import_file};
 use serde_json::{Value, json};
 
@@ -778,7 +778,7 @@ fn walk_tokens(node: &Value, path: &str, found: &mut Vec<(String, Value)>) {
 /// The value of the token at `path` in `mode`, references followed.
 pub fn resolve(tree: &TokenTree, path: &str, mode: &str) -> Option<Value> {
     let reference = format!("${path}").parse().ok()?;
-    tree.resolve(&reference, mode)
+    tree.resolve(&reference, &ModeChoice::parse(mode, tree).ok()?)
 }
 
 /// A color as `[r, g, b, a]`, from `#rrggbb` or `#rrggbbaa` in either case.

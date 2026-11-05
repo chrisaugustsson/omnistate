@@ -185,10 +185,52 @@ above. That object has a value for every listed mode and for no other mode, and
 each value fits the token's type and may be a reference. The token's `$value`
 is the value that tools which know no modes read.
 
-`omni tokens export --per-mode --out <dir>` writes one file per mode,
-`<dir>/<mode>.tokens.json`. In that file each token's `$value` is its value in
-the mode, references stay references, no token has per-mode values, and the root
-lists that one mode. It is a valid tree of its own.
+### Collections
+
+Each top-level group is a collection. A group lists its own modes in
+`$extensions.omnistate.modes` on the group, an array of distinct names that may
+be empty; a group without that list has the root list, so a tree written with a
+root list alone needs no change. A group with an empty list has no modes: its
+tokens have a `$value` only, and a token there with mode values is refused. A
+token's mode values give exactly the modes of its collection:
+
+```json
+{
+  "$extensions": {"omnistate": {"modes": ["light", "dark"]}},
+  "color": {"$type": "color", "surface": {"$value": "#ffffff"}},
+  "density": {
+    "$extensions": {"omnistate": {"modes": ["comfortable", "compact"]}},
+    "space": {
+      "md": {
+        "$type": "dimension",
+        "$value": "16px",
+        "$extensions": {"omnistate": {"modes": {"comfortable": "16px", "compact": "12px"}}}
+      }
+    }
+  },
+  "state": {"$extensions": {"omnistate": {"modes": []}}}
+}
+```
+
+A group of a name other than the five type groups has no `$type`, and each of
+its tokens states its own type. A token is read in the mode its own collection
+has in the choice, also when it refers to a token of another collection; a
+reference loop is refused in each mode of each collection.
+
+A choice of modes is written `color:dark,density:compact`, or as one mode name
+such as `dark`, which selects that mode in every collection that lists it. A
+collection the choice leaves out takes its first mode. `GET .../tokens?mode=`
+takes either form and answers with `collections` (name and modes of each) next
+to `modes` (the root list), and `mode` as the choice over every collection that
+has modes. In the tree of a choice each group with a list of its own lists
+the one mode chosen for it (none for a group without modes), and the root lists
+the mode chosen for the collections that use the root list.
+
+`omni tokens export --per-mode --out <dir>` writes `<dir>/tokens.json`, the
+whole tree, and one file per collection that has modes and per mode,
+`<dir>/tokens.<collection>.<mode>.json`. That file holds the collection's
+group under its top-level key, each token's `$value` its value in the mode,
+references left as written and no mode values.
 
 ## Font files and line heights
 

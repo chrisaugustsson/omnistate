@@ -1,6 +1,7 @@
 //! `omni tokens import` and `omni tokens export`: replace the design tokens of
 //! the design system's head with a DTCG file, and write the tokens of the head
-//! as DTCG JSON, whole or one file per mode (docs/formats/tokens.md). The
+//! as DTCG JSON, whole or one file per collection and mode
+//! (docs/formats/tokens.md). The
 //! project is found as for `omni project`.
 
 use crate::args::Args;
@@ -62,18 +63,41 @@ fn project_path(agent: &Agent, project: &str) -> String {
     format!("/api/v1/w/{}/projects/{project}", agent.workspace_id)
 }
 
-/// A mode becomes part of a file name, and the server named it.
-fn file_name_of(mode: &str) -> Result<String> {
-    let safe = !mode.is_empty()
-        && mode
-            .chars()
-            .all(|c| c.is_alphanumeric() || c == '-' || c == '_');
-    if !safe {
-        bail!(
-            "the server named a mode {mode:?}, which is not a mode name; is it an OmniState API?"
-        );
+/// The collections of the answer with the modes of each; a collection with
+/// no modes has no file.
+fn collections_of(answer: &Value) -> Vec<(&str, Vec<&str>)> {
+    answer
+        .get("collections")
+        .and_then(Value::as_array)
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|collection| {
+            let modes = collection
+                .get("modes")?
+                .as_array()?
+                .iter()
+                .filter_map(Value::as_str)
+                .collect();
+            Some((collection.str_at("name")?, modes))
+        })
+        .collect()
+}
+
+/// A collection and a mode become part of a file name, and the server named
+/// them.
+fn file_name_of(collection: &str, mode: &str) -> Result<String> {
+    for (what, name) in [("collection", collection), ("mode", mode)] {
+        let safe = !name.is_empty()
+            && name
+                .chars()
+                .all(|c| c.is_alphanumeric() || c == '-' || c == '_');
+        if !safe {
+            bail!(
+                "the server named a {what} {name:?}, which is not a {what} name; is it an OmniState API?"
+            );
+        }
     }
-    Ok(format!("{mode}.tokens.json"))
+    Ok(format!("tokens.{collection}.{mode}.json"))
 }
 
 fn write(path: &Path, tokens: &Value) -> Result<()> {
@@ -85,7 +109,9 @@ fn write(path: &Path, tokens: &Value) -> Result<()> {
 pub fn export(args: &Args) -> Result<()> {
     const USAGE: &str = "omni tokens export [--out <file>] [--per-mode --out <dir>]";
     if args.per_mode && args.out.is_none() {
-        bail!("--per-mode writes one file per mode, so it needs --out <directory>: {USAGE}");
+        bail!(
+            "--per-mode writes one file per collection and mode, so it needs --out <directory>: {USAGE}"
+        );
     }
 
     let agent = agent(args)?;
@@ -129,17 +155,24 @@ pub fn export(args: &Args) -> Result<()> {
 
     let dir = Path::new(args.out.as_deref().unwrap_or_default());
     // Every read comes before the first write, so a failure leaves no half.
-    let mut files = Vec::new();
-    for mode in modes_of(&answer) {
-        let name = file_name_of(mode)?;
-        query.push(format!("mode={mode}"));
-        let response = read(&query)?;
-        query.pop();
-        let one = parsed(&response.text(), "the tokens of a mode")?;
-        let Some(tree) = one.get("tokens").cloned() else {
-            bail!("the server's answer has no tokens for the mode {mode}; is it an OmniState API?");
-        };
-        files.push((name, tree));
+    let mut files = vec![("tokens.json".to_string(), tokens.clone())];
+    for (collection, modes) in collections_of(&answer) {
+        for mode in modes {
+            let name = file_name_of(collection, mode)?;
+            query.push(format!("mode={collection}:{mode}"));
+            let response = read(&query)?;
+            query.pop();
+            let one = parsed(&response.text(), "the tokens of a mode")?;
+            let Some(group) = one.get("tokens").and_then(|tree| tree.get(collection)) else {
+                bail!(
+                    "the server's answer has no tokens for {collection} in the mode {mode}; is it an OmniState API?"
+                );
+            };
+            files.push((
+                name,
+                Value::Object(vec![(collection.to_string(), group.clone())]),
+            ));
+        }
     }
     std::fs::create_dir_all(dir)
         .map_err(|e| CliError::new(format!("cannot make the directory {}: {e}", dir.display())))?;

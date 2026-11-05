@@ -14,8 +14,85 @@ use std::str::FromStr;
 pub struct TokenTree {
     json: Value,
     modes: Vec<String>,
+    collections: Vec<Collection>,
     font_files: Vec<AttachmentRef>,
     tokens: BTreeMap<String, Token>,
+}
+
+/// A top-level group and the modes its tokens have values in: its own list,
+/// or the root list when the group states none.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Collection {
+    pub name: String,
+    pub modes: Vec<String>,
+}
+
+/// One mode per collection, such as `color` to `dark`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ModeChoice(pub BTreeMap<String, String>);
+
+impl ModeChoice {
+    /// The mode chosen for `collection`.
+    pub fn get(&self, collection: &str) -> Option<&str> {
+        self.0.get(collection).map(String::as_str)
+    }
+
+    /// Reads a choice against `tree`: a bare mode such as `dark` selects that
+    /// mode in every collection that lists it, and `color:dark,density:compact`
+    /// selects a mode per collection. A collection the text leaves out takes
+    /// its first mode, so the choice names every collection that has modes.
+    pub fn parse(text: &str, tree: &TokenTree) -> Result<ModeChoice, TokenError> {
+        let mut chosen: BTreeMap<String, String> = BTreeMap::new();
+        if text.contains(':') || text.contains(',') {
+            for pair in text.split(',') {
+                let Some((name, mode)) = pair
+                    .split_once(':')
+                    .filter(|(n, m)| !n.is_empty() && !m.is_empty())
+                else {
+                    return refuse(format!(
+                        "`{pair}` is not a collection and a mode: write `color:dark,density:compact`"
+                    ));
+                };
+                let Some(collection) = tree.collections.iter().find(|c| c.name == name) else {
+                    let names: Vec<&str> =
+                        tree.collections.iter().map(|c| c.name.as_str()).collect();
+                    return refuse(format!(
+                        "`{name}` is not a collection ({})",
+                        names.join(", ")
+                    ));
+                };
+                if collection.modes.is_empty() {
+                    return refuse(format!("`{name}` has no modes"));
+                }
+                if !collection.modes.iter().any(|listed| listed == mode) {
+                    return refuse(format!(
+                        "`{mode}` is not a mode of `{name}` ({})",
+                        collection.modes.join(", ")
+                    ));
+                }
+                if chosen.insert(name.to_string(), mode.to_string()).is_some() {
+                    return refuse(format!("`{name}` is chosen twice"));
+                }
+            }
+        } else {
+            for collection in &tree.collections {
+                if collection.modes.iter().any(|listed| listed == text) {
+                    chosen.insert(collection.name.clone(), text.to_string());
+                }
+            }
+            if chosen.is_empty() {
+                return refuse(format!("`{text}` is not a mode of any collection"));
+            }
+        }
+        for collection in &tree.collections {
+            if let Some(first) = collection.modes.first() {
+                chosen
+                    .entry(collection.name.clone())
+                    .or_insert_with(|| first.clone());
+            }
+        }
+        Ok(ModeChoice(chosen))
+    }
 }
 
 /// What a token states about itself beyond its value: the fields it may bind
@@ -185,6 +262,7 @@ impl TokenTree {
             return refuse("a token file is a JSON object of token groups".to_string());
         };
         let modes = read_modes(root)?;
+        let mut collections: Vec<Collection> = Vec::new();
         let mut tokens = Tokens::new();
         for (name, child) in root {
             match name.as_str() {
@@ -199,6 +277,10 @@ impl TokenTree {
                     let Some(group) = child.as_object() else {
                         return refuse(format!("{name} is a group, so it is a JSON object"));
                     };
+                    collections.push(Collection {
+                        name: name.to_string(),
+                        modes: read_group_modes(name, group)?.unwrap_or_else(|| modes.clone()),
+                    });
                     match GROUPS.iter().find(|(group, _)| *group == name) {
                         Some((_, ty)) => collect(name, group, Some(*ty), Some(*ty), &mut tokens)?,
                         None => {
@@ -221,7 +303,12 @@ impl TokenTree {
         paths.sort();
         for path in paths {
             let token = &tokens[path];
-            let (checked, meta) = check_token(path, token, &modes, &mut font_files)?;
+            let top = path.split('.').next().unwrap_or_default();
+            let collection = collections
+                .iter()
+                .find(|collection| collection.name == top)
+                .expect("every token is in a collection");
+            let (checked, meta) = check_token(path, token, collection, &mut font_files)?;
             references.push((path.as_str(), checked));
             metadata.insert(path.clone(), meta);
         }
@@ -233,11 +320,12 @@ impl TokenTree {
                 }
             }
         }
-        check_loops(&references, &modes)?;
+        check_loops(&references, &collections)?;
 
         Ok(TokenTree {
             json: json.clone(),
             modes,
+            collections,
             font_files,
             tokens: metadata,
         })
@@ -259,32 +347,81 @@ impl TokenTree {
         &self.modes
     }
 
-    /// The value of the token that a design refers to, such as
-    /// `$color.surface`, in `mode`, with every reference followed.
-    pub fn resolve(&self, token: &TokenRef, mode: &str) -> Option<Value> {
-        if !self.modes.iter().any(|listed| listed == mode) {
-            return None;
-        }
-        resolve_path(&self.json, token.path(), mode, 0)
+    /// The collections of the tree, one per top-level group, in the order of
+    /// the file. A collection with no list of its own has the root list.
+    pub fn collections(&self) -> Vec<Collection> {
+        self.collections.clone()
     }
 
-    /// The tree for one mode: each token's `$value` is its value in `mode`.
-    pub fn for_mode(&self, mode: &str) -> Option<Value> {
-        if !self.modes.iter().any(|listed| listed == mode) {
+    /// Whether `choice` names only collections of the tree and modes they list.
+    fn allows(&self, choice: &ModeChoice) -> bool {
+        choice.0.iter().all(|(name, mode)| {
+            self.collections
+                .iter()
+                .any(|c| c.name == *name && c.modes.iter().any(|listed| listed == mode))
+        })
+    }
+
+    /// The mode that `choice` gives the collection `name`: the chosen one, or
+    /// the collection's first; `None` for a collection without modes.
+    fn mode_in<'a>(&'a self, choice: &'a ModeChoice, name: &str) -> Option<&'a str> {
+        let collection = self.collections.iter().find(|c| c.name == name)?;
+        choice
+            .get(name)
+            .or_else(|| collection.modes.first().map(String::as_str))
+    }
+
+    /// The value of the token that a design refers to, such as
+    /// `$color.surface`, in the modes of `choice`, with every reference
+    /// followed; each token is read in the mode its own collection has in the
+    /// choice.
+    pub fn resolve(&self, token: &TokenRef, choice: &ModeChoice) -> Option<Value> {
+        if !self.allows(choice) {
+            return None;
+        }
+        self.resolve_path(token.path(), choice, 0)
+    }
+
+    /// The tree for a choice of modes: each token's `$value` is its value in
+    /// the mode its collection has in `choice`.
+    pub fn for_mode(&self, choice: &ModeChoice) -> Option<Value> {
+        if !self.allows(choice) {
             return None;
         }
         let mut json = self.json.clone();
         let root = json.as_object_mut()?;
+        let mut root_list_mode: Option<String> = None;
         for (name, child) in root.iter_mut() {
-            if !name.starts_with('$') {
+            if name.starts_with('$') {
+                continue;
+            }
+            let mode = self.mode_in(choice, name);
+            if let Some(mode) = mode {
                 flatten(child, mode);
             }
+            let own = child
+                .get_mut("$extensions")
+                .and_then(|extensions| extensions.get_mut("omnistate"))
+                .and_then(Value::as_object_mut)
+                .and_then(|omnistate| omnistate.get_mut("modes"));
+            match own {
+                Some(listed) => {
+                    *listed = Value::Array(mode.into_iter().map(Value::from).collect());
+                }
+                None => {
+                    if root_list_mode.is_none() {
+                        root_list_mode = mode.map(str::to_string);
+                    }
+                }
+            }
         }
-        let omnistate = root
-            .get_mut("$extensions")?
-            .get_mut("omnistate")?
-            .as_object_mut()?;
-        omnistate.insert("modes".to_string(), Value::Array(vec![mode.into()]));
+        if let Some(mode) = root_list_mode {
+            let omnistate = root
+                .get_mut("$extensions")?
+                .get_mut("omnistate")?
+                .as_object_mut()?;
+            omnistate.insert("modes".to_string(), Value::Array(vec![mode.into()]));
+        }
         Some(json)
     }
 
@@ -349,11 +486,46 @@ fn read_modes(root: &Map<String, Value>) -> Result<Vec<String>, TokenError> {
     else {
         return missing();
     };
+    let modes = mode_names(listed, "$extensions.omnistate.modes")?;
+    if modes.is_empty() {
+        return missing();
+    }
+    Ok(modes)
+}
+
+/// The modes a top-level group lists in its own `$extensions.omnistate.modes`;
+/// `None` when it lists none, and then it has the root list. An empty list is
+/// a collection without modes.
+fn read_group_modes(
+    name: &str,
+    group: &Map<String, Value>,
+) -> Result<Option<Vec<String>>, TokenError> {
+    let Some(extensions) = group.get("$extensions") else {
+        return Ok(None);
+    };
+    let Some(extensions) = extensions.as_object() else {
+        return refuse(format!("{name} has $extensions, which is a JSON object"));
+    };
+    let Some(omnistate) = extensions.get("omnistate") else {
+        return Ok(None);
+    };
+    let Some(omnistate) = omnistate.as_object() else {
+        return refuse(format!(
+            "{name} has $extensions.omnistate, which is a JSON object"
+        ));
+    };
+    omnistate
+        .get("modes")
+        .map(|listed| mode_names(listed, &format!("$extensions.omnistate.modes of {name}")))
+        .transpose()
+}
+
+/// The names in a list of modes, written at `place`.
+fn mode_names(listed: &Value, place: &str) -> Result<Vec<String>, TokenError> {
     let Some(listed) = listed.as_array() else {
-        return refuse(
-            "the modes in $extensions.omnistate.modes are an array of names, such as [\"light\", \"dark\"]"
-                .to_string(),
-        );
+        return refuse(format!(
+            "the modes in {place} are an array of names, such as [\"light\", \"dark\"]"
+        ));
     };
     let mut modes: Vec<String> = Vec::new();
     for mode in listed {
@@ -363,14 +535,9 @@ fn read_modes(root: &Map<String, Value>) -> Result<Vec<String>, TokenError> {
             ));
         };
         if modes.iter().any(|known| known == mode) {
-            return refuse(format!(
-                "the mode {mode} is listed twice in $extensions.omnistate.modes"
-            ));
+            return refuse(format!("the mode {mode} is listed twice in {place}"));
         }
         modes.push(mode.to_string());
-    }
-    if modes.is_empty() {
-        return missing();
     }
     Ok(modes)
 }
@@ -447,9 +614,9 @@ fn stated_type(
                 "{path} is {what} of type {stated}, but its group holds {holds} tokens"
             ));
         }
-        None if !stated.is_state() => {
+        None if what == "the group" && !stated.is_state() => {
             return refuse(format!(
-                "`{path}`: a token in a group without a `$type` is a number, string or boolean"
+                "`{path}`: a group without a `$type` holds tokens of its own types, and states only number, string or boolean for them all"
             ));
         }
         _ => {}
@@ -466,7 +633,7 @@ type ModeReferences<'a> = Vec<(Option<&'a str>, Vec<Reference>)>;
 fn check_token<'a>(
     path: &str,
     token: &'a Entry<'a>,
-    modes: &'a [String],
+    collection: &'a Collection,
     font_files: &mut Vec<AttachmentRef>,
 ) -> Result<(ModeReferences<'a>, Token), TokenError> {
     for name in token.object.keys() {
@@ -494,7 +661,7 @@ fn check_token<'a>(
             };
             for (name, value) in omnistate {
                 match name.as_str() {
-                    "modes" => check_modes(path, token, value, modes, &mut found)?,
+                    "modes" => check_modes(path, token, value, collection, &mut found)?,
                     "fontFiles" => check_font_files(path, token.ty, value, font_files)?,
                     "scopes" => meta.scopes = Some(read_scopes(path, value)?),
                     "codeSyntax" => meta.code_syntax = read_code_syntax(path, value)?,
@@ -552,7 +719,7 @@ fn check_modes<'a>(
     path: &str,
     token: &Entry<'_>,
     value: &Value,
-    modes: &'a [String],
+    collection: &'a Collection,
     found: &mut ModeReferences<'a>,
 ) -> Result<(), TokenError> {
     let Some(per_mode) = value.as_object() else {
@@ -560,10 +727,16 @@ fn check_modes<'a>(
             "{path} has $extensions.omnistate.modes, which is an object with a value for each mode"
         ));
     };
+    let Collection { name: group, modes } = collection;
+    if modes.is_empty() {
+        return refuse(format!(
+            "`{path}`: `{group}` has no modes, so its tokens have no mode values"
+        ));
+    }
     for name in per_mode.keys() {
         if !modes.iter().any(|mode| mode == name) {
             return refuse(format!(
-                "{path} has a value for the {name} mode, which the design system does not list (its modes are {})",
+                "`{path}`: `{name}` is not a mode of `{group}` ({})",
                 modes.join(", ")
             ));
         }
@@ -885,15 +1058,36 @@ fn check_reference(path: &str, reference: &Reference, tokens: &Tokens) -> Result
 }
 
 /// Refuses a loop of references in any mode: a token that, through the tokens
-/// it refers to, refers back to itself.
-fn check_loops(references: &[(&str, ModeReferences)], modes: &[String]) -> Result<(), TokenError> {
-    // Each mode, then the $values alone, which tools without modes read.
-    let passes = modes.iter().map(|mode| Some(mode.as_str())).chain([None]);
-    for mode in passes {
-        // What each token refers to in this mode: its mode value when it has
+/// it refers to, refers back to itself. Each token is read in the mode of its
+/// own collection; the passes are every collection in each of its modes (the
+/// others in their first), then the `$value`s alone.
+fn check_loops(
+    references: &[(&str, ModeReferences)],
+    collections: &[Collection],
+) -> Result<(), TokenError> {
+    let first: BTreeMap<&str, &str> = collections
+        .iter()
+        .filter_map(|c| Some((c.name.as_str(), c.modes.first()?.as_str())))
+        .collect();
+    let mut passes: Vec<Option<BTreeMap<&str, &str>>> = vec![Some(first.clone())];
+    for collection in collections {
+        for mode in collection.modes.iter().skip(1) {
+            let mut pass = first.clone();
+            pass.insert(collection.name.as_str(), mode.as_str());
+            passes.push(Some(pass));
+        }
+    }
+    passes.push(None);
+    for pass in passes {
+        let mode_of = |path: &str| {
+            let top = path.split('.').next().unwrap_or_default();
+            pass.as_ref().and_then(|pass| pass.get(top).copied())
+        };
+        // What each token refers to in this pass: its mode value when it has
         // one, else its $value.
         let mut edges: HashMap<&str, Vec<&str>> = HashMap::new();
         for (path, values) in references {
+            let mode = mode_of(path);
             let chosen = values
                 .iter()
                 .find(|(of, _)| mode.is_some() && *of == mode)
@@ -909,7 +1103,7 @@ fn check_loops(references: &[(&str, ModeReferences)], modes: &[String]) -> Resul
         for start in starts {
             let mut chain = Vec::new();
             if let Some(cycle) = find_loop(start, &edges, &mut done, &mut chain) {
-                return refuse(loop_message(&cycle, mode));
+                return refuse(loop_message(&cycle, mode_of(cycle[0])));
             }
         }
     }
@@ -972,40 +1166,42 @@ fn token_at<'a>(json: &'a Value, path: &str) -> Option<&'a Map<String, Value>> {
     token.contains_key("$value").then_some(token)
 }
 
-fn resolve_path(json: &Value, path: &str, mode: &str, depth: usize) -> Option<Value> {
-    if depth > MAX_DEPTH
-        || path
-            .split('.')
-            .next()
-            .is_some_and(|top| top.starts_with('$'))
-    {
-        return None;
-    }
-    let token = token_at(json, path)?;
-    let value = token
-        .get("$extensions")
-        .and_then(|extensions| extensions.get("omnistate"))
-        .and_then(|omnistate| omnistate.get("modes"))
-        .and_then(|modes| modes.get(mode))
-        .or_else(|| token.get("$value"))?;
-    follow(json, value, mode, depth)
-}
-
-/// `value` with each `{token}` in it replaced by that token's value in `mode`.
-fn follow(json: &Value, value: &Value, mode: &str, depth: usize) -> Option<Value> {
-    match value {
-        Value::String(text) => match reference_in(text) {
-            Some(path) => resolve_path(json, path, mode, depth + 1),
-            None => Some(value.clone()),
-        },
-        Value::Object(fields) => {
-            let mut resolved = Map::new();
-            for (name, field) in fields {
-                resolved.insert(name.clone(), follow(json, field, mode, depth)?);
-            }
-            Some(Value::Object(resolved))
+impl TokenTree {
+    fn resolve_path(&self, path: &str, choice: &ModeChoice, depth: usize) -> Option<Value> {
+        let top = path.split('.').next()?;
+        if depth > MAX_DEPTH || top.starts_with('$') {
+            return None;
         }
-        other => Some(other.clone()),
+        let token = token_at(&self.json, path)?;
+        let mode = self.mode_in(choice, top);
+        let value = mode
+            .and_then(|mode| {
+                token
+                    .get("$extensions")
+                    .and_then(|extensions| extensions.get("omnistate"))
+                    .and_then(|omnistate| omnistate.get("modes"))
+                    .and_then(|modes| modes.get(mode))
+            })
+            .or_else(|| token.get("$value"))?;
+        self.follow(value, choice, depth)
+    }
+
+    /// `value` with each `{token}` in it replaced by that token's value.
+    fn follow(&self, value: &Value, choice: &ModeChoice, depth: usize) -> Option<Value> {
+        match value {
+            Value::String(text) => match reference_in(text) {
+                Some(path) => self.resolve_path(path, choice, depth + 1),
+                None => Some(value.clone()),
+            },
+            Value::Object(fields) => {
+                let mut resolved = Map::new();
+                for (name, field) in fields {
+                    resolved.insert(name.clone(), self.follow(field, choice, depth)?);
+                }
+                Some(Value::Object(resolved))
+            }
+            other => Some(other.clone()),
+        }
     }
 }
 

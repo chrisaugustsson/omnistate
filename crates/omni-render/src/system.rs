@@ -2,7 +2,7 @@
 //! against (US-032): the components of a design system version and its token
 //! tree, which has a value for each of its modes.
 
-use omni_core::design::tokens::TokenTree;
+use omni_core::design::tokens::{ModeChoice, TokenTree};
 use omni_core::design::{Node, NodeAddress, NodeData, NodeId, PropDef, PropDefs, TokenRef};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -120,7 +120,8 @@ impl DesignSystem {
 
     /// The value of `token` in `mode`, with its references followed.
     pub(crate) fn token(&self, token: &TokenRef, mode: &str) -> Option<Value> {
-        self.tokens.as_ref()?.resolve(token, mode)
+        let tokens = self.tokens.as_ref()?;
+        tokens.resolve(token, &ModeChoice::parse(mode, tokens).ok()?)
     }
 
     pub(crate) fn component(&self, id: &NodeId) -> Option<&ComponentDef> {

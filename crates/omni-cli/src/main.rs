@@ -225,7 +225,7 @@ Options (before or after the command):
                         `omni design edit` batch stays inside
   --out <path>          where `omni tokens export` writes: a file, or with --per-mode a directory;
                         the folder `omni export` writes to
-  --per-mode            `omni tokens export`: one file per mode
+  --per-mode            `omni tokens export`: tokens.json and one file per collection and mode
   --thread <id>         the thread that `omni wait` waits on
   --posts <n>           `omni wait --thread`: wait for this many posts that you may read
   --concluded           `omni wait --thread`: wait for the thread's conclusion

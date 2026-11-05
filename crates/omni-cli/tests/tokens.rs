@@ -15,10 +15,12 @@
 //!   nothing else. `--out <file>` writes the JSON to that file instead. A
 //!   design system without tokens (`"tokens": null`) is a one-line error that
 //!   says so.
-//! - `omni tokens export --per-mode --out <dir>` writes one file per mode of
-//!   the answer's `modes`, `<dir>/<mode>.tokens.json`, each the `tokens` of
-//!   the same read with `?mode=<mode>` added. `--per-mode` without `--out` is
-//!   a one-line error that sends nothing.
+//! - `omni tokens export --per-mode --out <dir>` writes `<dir>/tokens.json`
+//!   (the answer's `tokens`) and, for each collection of the answer's
+//!   `collections` and each of its modes, `<dir>/tokens.<collection>.<mode>.json`:
+//!   that collection's group of the `tokens` of the same read with
+//!   `?mode=<collection>:<mode>` added. A collection without modes has no
+//!   file. `--per-mode` without `--out` is a one-line error that sends nothing.
 //! - Every command is an agent request with the agent identity headers, and
 //!   errors are one line on standard error, as in US-015
 //!   (tests/common/mod.rs).
@@ -45,6 +47,18 @@ fn tree() -> Value {
                 "$value": "#ffffff",
                 "$extensions": {"omnistate": {"modes": {"light": "#ffffff", "dark": "#0f172a"}}}
             }
+        },
+        "density": {
+            "$extensions": {"omnistate": {"modes": ["comfortable", "compact"]}},
+            "space": {
+                "$type": "dimension",
+                "$value": "16px",
+                "$extensions": {"omnistate": {"modes": {"comfortable": "16px", "compact": "12px"}}}
+            }
+        },
+        "state": {
+            "$extensions": {"omnistate": {"modes": []}},
+            "count": {"$type": "number", "$value": 1}
         }
     })
 }
@@ -57,7 +71,12 @@ fn mode_tree(mode: &str, surface: &str) -> Value {
             "$type": "color",
             "ink": {"$value": "#0f172a"},
             "surface": {"$value": surface}
-        }
+        },
+        "density": {
+            "$extensions": {"omnistate": {"modes": ["compact"]}},
+            "space": {"$type": "dimension", "$value": "12px"}
+        },
+        "state": {"count": {"$type": "number", "$value": 1}}
     })
 }
 
@@ -78,18 +97,25 @@ fn split_query(path: &str) -> (&str, Vec<(&str, &str)>) {
 /// query.
 fn read_answer(query: &[(&str, &str)]) -> Reply {
     let mode = query.iter().find(|(k, _)| *k == "mode").map(|(_, v)| *v);
-    let mut answer = json!({ "project_id": PROJECT, "doc_id": DOC, "modes": ["light", "dark"] });
+    let mut answer = json!({
+        "project_id": PROJECT,
+        "doc_id": DOC,
+        "modes": ["light", "dark"],
+        "collections": [
+            {"name": "color", "modes": ["light", "dark"]},
+            {"name": "density", "modes": ["comfortable", "compact"]},
+            {"name": "state", "modes": []}
+        ]
+    });
     match mode {
         None => answer["tokens"] = tree(),
-        Some("light") => {
-            answer["mode"] = json!("light");
-            answer["tokens"] = mode_tree("light", "#ffffff");
+        Some(pair @ ("color:light" | "color:dark" | "density:comfortable" | "density:compact")) => {
+            let (collection, mode) = pair.split_once(':').expect("a pair");
+            let surface = if mode == "dark" { "#0f172a" } else { "#ffffff" };
+            answer["mode"] = json!({ collection: mode });
+            answer["tokens"] = mode_tree(mode, surface);
         }
-        Some("dark") => {
-            answer["mode"] = json!("dark");
-            answer["tokens"] = mode_tree("dark", "#0f172a");
-        }
-        Some(_) => return Reply::json(400, &json!({ "error": "unknown_mode" })),
+        Some(_) => return Reply::json(400, &json!({ "error": "invalid_request" })),
     }
     Reply::json(200, &answer)
 }
@@ -259,7 +285,7 @@ fn tokens_export_writes_a_file() {
 }
 
 #[test]
-fn tokens_export_writes_one_file_per_mode() {
+fn tokens_export_writes_one_file_per_collection_and_mode() {
     let server = mock();
     let home = logged_in(&server.url);
     let dir = home.join("modes");
@@ -274,30 +300,44 @@ fn tokens_export_writes_one_file_per_mode() {
         ],
     );
     assert_eq!(out.code, 0, "{}", out.stderr);
+    assert_eq!(read_json(&dir.join("tokens.json")), tree());
+    let group = |mode: &str, surface: &str, name: &str| {
+        let tree = mode_tree(mode, surface);
+        json!({ name: tree[name].clone() })
+    };
     assert_eq!(
-        read_json(&dir.join("light.tokens.json")),
-        mode_tree("light", "#ffffff")
+        read_json(&dir.join("tokens.color.light.json")),
+        group("light", "#ffffff", "color")
     );
     assert_eq!(
-        read_json(&dir.join("dark.tokens.json")),
-        mode_tree("dark", "#0f172a")
+        read_json(&dir.join("tokens.color.dark.json")),
+        group("dark", "#0f172a", "color")
     );
+    assert_eq!(
+        read_json(&dir.join("tokens.density.compact.json")),
+        group("compact", "#ffffff", "density")
+    );
+    assert!(dir.join("tokens.density.comfortable.json").exists());
     let files = std::fs::read_dir(&dir)
         .expect("the directory was made")
         .count();
-    assert_eq!(files, 2, "one file per mode and nothing else");
     assert_eq!(
-        requests_to(&server, "GET", &format!("{}/tokens?mode=light", base())).len(),
-        1,
-        "{:?}",
-        server.requests()
+        files, 5,
+        "tokens.json, two colour files, two density files and none for state"
     );
-    assert_eq!(
-        requests_to(&server, "GET", &format!("{}/tokens?mode=dark", base())).len(),
-        1,
-        "{:?}",
-        server.requests()
-    );
+    for pair in [
+        "color:light",
+        "color:dark",
+        "density:comfortable",
+        "density:compact",
+    ] {
+        assert_eq!(
+            requests_to(&server, "GET", &format!("{}/tokens?mode={pair}", base())).len(),
+            1,
+            "{:?}",
+            server.requests()
+        );
+    }
 }
 
 #[test]

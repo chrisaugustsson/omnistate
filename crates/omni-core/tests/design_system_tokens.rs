@@ -40,7 +40,7 @@
 //!   refused.
 //! - Every typography value has a definite `lineHeight` (a number, a
 //!   multiple of the font size), in every mode (Q44).
-//! - `for_mode(mode)` writes the tree of one mode, for one file per mode: each
+//! - `for_mode(&ModeChoice)` writes the tree of one choice of modes, for one file per mode: each
 //!   token's `$value` is its value in that mode (references stay references),
 //!   no token has `$extensions.omnistate.modes`, and the root lists that one
 //!   mode. It is a valid tree. An unknown mode gives `None`.
@@ -51,7 +51,7 @@ mod common;
 
 use common::{with, without};
 use omni_core::design::tags;
-use omni_core::design::tokens::TokenTree;
+use omni_core::design::tokens::{Collection, ModeChoice, TokenTree};
 use omni_core::design::{AttachmentRef, Node, TokenRef};
 use serde_json::{Value, json};
 use std::path::Path;
@@ -152,8 +152,12 @@ fn token(reference: &str) -> TokenRef {
         .unwrap_or_else(|_| panic!("`{reference}` is a token reference"))
 }
 
+fn choice(tree: &TokenTree, text: &str) -> ModeChoice {
+    ModeChoice::parse(text, tree).unwrap_or_else(|e| panic!("`{text}` is a choice: {e}"))
+}
+
 fn resolve(tree: &TokenTree, reference: &str, mode: &str) -> Value {
-    tree.resolve(&token(reference), mode)
+    tree.resolve(&token(reference), &choice(tree, mode))
         .unwrap_or_else(|| panic!("`{reference}` resolves in the {mode} mode"))
 }
 
@@ -326,12 +330,12 @@ fn designs_write_the_same_token_with_a_dollar() {
     assert_eq!(resolve(&tree, fill, "light"), json!("#ffffff"));
     assert_eq!(resolve(&tree, fill, "dark"), json!("#0f172a"));
     assert_eq!(
-        tree.resolve(&token("$color.missing"), "light"),
+        tree.resolve(&token("$color.missing"), &choice(&tree, "light")),
         None,
         "a token the tree does not have resolves to nothing"
     );
     assert_eq!(
-        tree.resolve(&token("$color"), "light"),
+        tree.resolve(&token("$color"), &choice(&tree, "light")),
         None,
         "a group is not a token"
     );
@@ -383,10 +387,15 @@ fn a_token_has_one_value_per_mode() {
             "a token without mode values has its $value in every mode"
         );
     }
+    assert!(
+        ModeChoice::parse("sepia", &tree).is_err(),
+        "a mode the design system does not list is no choice"
+    );
+    let stray = ModeChoice([("color".to_string(), "sepia".to_string())].into());
     assert_eq!(
-        tree.resolve(&token("$color.surface"), "sepia"),
+        tree.resolve(&token("$color.surface"), &stray),
         None,
-        "a mode the design system does not list resolves to nothing"
+        "a mode the collection does not list resolves to nothing"
     );
 }
 
@@ -615,7 +624,9 @@ fn typography_tokens_always_have_a_line_height() {
 #[test]
 fn the_tree_can_be_written_as_one_file_per_mode() {
     let tree = accept(&sample());
-    let dark = tree.for_mode("dark").expect("dark is a mode");
+    let dark = tree
+        .for_mode(&choice(&tree, "dark"))
+        .expect("dark is a mode");
     assert_eq!(dark["color"]["surface"]["$value"], json!("#0f172a"));
     assert_eq!(
         dark["color"]["text"]["$value"],
@@ -650,10 +661,13 @@ fn the_tree_can_be_written_as_one_file_per_mode() {
     assert_eq!(resolve(&back, "$color.surface", "dark"), json!("#0f172a"));
     assert_eq!(resolve(&back, "$color.text", "dark"), json!("#ffffff"));
 
-    let light = tree.for_mode("light").expect("light is a mode");
+    let light = tree
+        .for_mode(&choice(&tree, "light"))
+        .expect("light is a mode");
     assert_eq!(light["color"]["surface"]["$value"], json!("#ffffff"));
     assert_eq!(light["color"]["text"]["$value"], json!("{color.ink}"));
-    assert_eq!(tree.for_mode("sepia"), None, "sepia is no mode");
+    let stray = ModeChoice([("color".to_string(), "sepia".to_string())].into());
+    assert_eq!(tree.for_mode(&stray), None, "sepia is no mode");
 }
 
 // ---------------------------------------------------------------------------
@@ -706,14 +720,15 @@ fn state_tokens_refuse_values_of_another_type() {
         "a token without a type",
         &["`state.x`: a token in a group without a `$type` states its own"],
     );
-    refuse(
-        &with(
-            &with_state(),
-            "/state/bg",
-            json!({"$type": "color", "$value": "#ffffff"}),
-        ),
-        "a color in an untyped group",
-        &["`state.bg`: a token in a group without a `$type` is a number, string or boolean"],
+    let typed = with(
+        &with_state(),
+        "/state/bg",
+        json!({"$type": "color", "$value": "#ffffff"}),
+    );
+    assert_eq!(
+        resolve(&accept(&typed), "$state.bg", "light"),
+        json!("#ffffff"),
+        "a token in an untyped group states its own type, color included"
     );
     refuse(
         &with(
@@ -873,4 +888,123 @@ fn the_format_doc_has_an_example_that_the_rules_accept() {
         example.contains("\"{"),
         "a token of the example refers to another in braces"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Collections
+// ---------------------------------------------------------------------------
+
+fn with_collections() -> Value {
+    let json = with(
+        &with_state(),
+        "/density",
+        json!({
+            "$extensions": {"omnistate": {"modes": ["comfortable", "compact"]}},
+            "space": {"md": {
+                "$type": "dimension",
+                "$value": "16px",
+                "$extensions": {"omnistate": {"modes": {"comfortable": "16px", "compact": "12px"}}}
+            }}
+        }),
+    );
+    with(
+        &json,
+        "/state/$extensions",
+        json!({"omnistate": {"modes": []}}),
+    )
+}
+
+fn collection(name: &str, modes: &[&str]) -> Collection {
+    Collection {
+        name: name.to_string(),
+        modes: modes.iter().map(|mode| mode.to_string()).collect(),
+    }
+}
+
+#[test]
+fn a_top_level_group_is_a_collection_with_its_own_modes() {
+    let tree = accept(&with_collections());
+    let all = tree.collections();
+    assert!(
+        all.contains(&collection("color", &["light", "dark"])),
+        "{all:?}"
+    );
+    assert!(all.contains(&collection("density", &["comfortable", "compact"])));
+    assert!(all.contains(&collection("state", &[])));
+    assert!(
+        all.contains(&collection("spacing", &["light", "dark"])),
+        "a group without a list takes the root list"
+    );
+    assert_eq!(tree.modes(), ["light".to_string(), "dark".to_string()]);
+
+    for collection in accept(&sample()).collections() {
+        assert_eq!(collection.modes, ["light", "dark"], "{}", collection.name);
+    }
+
+    let message = refuse(
+        &with(
+            &with_collections(),
+            "/density/space/md/$extensions/omnistate/modes/dark",
+            json!("20px"),
+        ),
+        "dark is not a mode of density",
+        &[],
+    );
+    assert!(
+        message.contains(
+            "`density.space.md`: `dark` is not a mode of `density` (comfortable, compact)"
+        ),
+        "{message}"
+    );
+    refuse(
+        &with(
+            &with_collections(),
+            "/state/x",
+            json!({"$type": "number", "$value": 1, "$extensions": {"omnistate": {"modes": {"light": 1}}}}),
+        ),
+        "a collection without modes has no mode values",
+        &["`state.x`: `state` has no modes, so its tokens have no mode values"],
+    );
+}
+
+#[test]
+fn a_choice_gives_each_collection_its_own_mode() {
+    let tree = accept(&with_collections());
+    let compact = ModeChoice([("density".to_string(), "compact".to_string())].into());
+    assert_eq!(
+        tree.resolve(&token("$density.space.md"), &compact),
+        Some(json!("12px"))
+    );
+    assert_eq!(
+        tree.resolve(&token("$color.surface"), &compact),
+        Some(json!("#ffffff")),
+        "a collection left out of the choice is in its first mode"
+    );
+
+    let dark = choice(&tree, "dark");
+    assert_eq!(dark.get("color"), Some("dark"));
+    assert_eq!(dark.get("density"), Some("comfortable"));
+    let pairs = choice(&tree, "color:dark,density:compact");
+    assert_eq!(
+        tree.resolve(&token("$color.surface"), &pairs),
+        Some(json!("#0f172a"))
+    );
+    let message = ModeChoice::parse("color:dusk", &tree)
+        .unwrap_err()
+        .to_string();
+    assert_eq!(message, "`dusk` is not a mode of `color` (light, dark)");
+    assert!(ModeChoice::parse("nope:dark", &tree).is_err());
+
+    let flat = tree.for_mode(&pairs).expect("a valid choice");
+    assert_eq!(flat["density"]["space"]["md"]["$value"], json!("12px"));
+    assert_eq!(flat["color"]["surface"]["$value"], json!("#0f172a"));
+    assert_eq!(
+        flat["density"]["$extensions"]["omnistate"]["modes"],
+        json!(["compact"])
+    );
+    assert_eq!(
+        flat["state"]["$extensions"]["omnistate"]["modes"],
+        json!([])
+    );
+    assert_eq!(flat["$extensions"]["omnistate"]["modes"], json!(["dark"]));
 }

@@ -45,7 +45,7 @@ pub struct Args {
     pub before: Option<String>,
     /// `omni tokens export --out <file or directory>`: where to write.
     pub out: Option<String>,
-    /// `omni tokens export --per-mode`: one file per mode.
+    /// `omni tokens export --per-mode`: one file per collection and mode.
     pub per_mode: bool,
     /// `omni thread create <question> --sealed`.
     pub sealed: bool,

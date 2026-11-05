@@ -33,6 +33,8 @@
 //!   mode (each `$value` is the mode's value, no token has
 //!   `$extensions.omnistate.modes`) and the answer adds `"mode"`. A mode that
 //!   the design system does not list is 400 `{"error": "unknown_mode"}`.
+//!   `?mode=color:dark,density:compact` chooses a mode per collection; a pair
+//!   that is refused is 400 `invalid_request` with a `message`.
 
 mod common;
 
@@ -721,7 +723,12 @@ fn a_read_can_give_the_tree_of_one_mode() {
     head_import(f, client, &project, &light_and_dark());
 
     let dark = head_tokens(f, client, &project, "?mode=dark");
-    assert_eq!(dark["mode"], "dark", "{dark}");
+    assert_eq!(dark["mode"], json!({"color": "dark"}), "{dark}");
+    assert_eq!(
+        dark["collections"][0],
+        json!({"name": "color", "modes": ["light", "dark"]}),
+        "{dark}"
+    );
     assert_eq!(
         dark["tokens"]["color"]["surface"]["$value"], "#0f172a",
         "{dark}"
@@ -745,4 +752,57 @@ fn a_read_can_give_the_tree_of_one_mode() {
         None,
     );
     assert_error(&response, 400, "unknown_mode");
+}
+
+#[test]
+fn a_read_can_choose_a_mode_per_collection() {
+    let (f, client) = ready();
+    let (project, _doc) = live_design_system(f, client);
+    let mut tree = light_and_dark();
+    tree["density"] = json!({
+        "$extensions": {"omnistate": {"modes": ["comfortable", "compact"]}},
+        "space": {"md": {
+            "$type": "dimension",
+            "$value": "16px",
+            "$extensions": {"omnistate": {"modes": {"comfortable": "16px", "compact": "12px"}}}
+        }}
+    });
+    head_import(f, client, &project, &tree);
+
+    let both = head_tokens(f, client, &project, "?mode=color:dark,density:compact");
+    assert_eq!(
+        both["mode"],
+        json!({"color": "dark", "density": "compact"}),
+        "{both}"
+    );
+    assert_eq!(
+        both["tokens"]["color"]["surface"]["$value"], "#0f172a",
+        "{both}"
+    );
+    assert_eq!(
+        both["tokens"]["density"]["space"]["md"]["$value"], "12px",
+        "{both}"
+    );
+
+    let dark = head_tokens(f, client, &project, "?mode=dark");
+    assert_eq!(
+        dark["mode"],
+        json!({"color": "dark", "density": "comfortable"}),
+        "{dark}"
+    );
+
+    let response = call(
+        client,
+        "GET",
+        &format!("{}/tokens?mode=color:dusk", project_base(f, &project)),
+        &agent(f),
+        None,
+    );
+    assert_eq!(response.status, 400, "{}", response.text());
+    let body = response.json();
+    assert_eq!(body["error"], "invalid_request", "{body}");
+    assert_eq!(
+        body["message"], "`dusk` is not a mode of `color` (light, dark)",
+        "{body}"
+    );
 }

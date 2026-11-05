@@ -440,6 +440,24 @@
         ],
         "type": "object"
       },
+      "CollectionBody": {
+        "properties": {
+          "modes": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "modes"
+        ],
+        "type": "object"
+      },
       "CommentBody": {
         "description": "A comment pinned to a node of a doc.",
         "properties": {
@@ -1330,6 +1348,13 @@
       },
       "HeadTokensResponse": {
         "properties": {
+          "collections": {
+            "description": "The collections (the top-level groups) and the modes of each; empty\nwithout a head. A group without a list of its own has the root modes.",
+            "items": {
+              "$ref": "#/components/schemas/CollectionBody"
+            },
+            "type": "array"
+          },
           "doc_id": {
             "description": "The project's design system doc; `null` when the project has none.",
             "type": [
@@ -1338,14 +1363,20 @@
             ]
           },
           "mode": {
-            "description": "The mode that `tokens` is the tree of; only with `?mode=`.",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "The mode of every collection that has modes that `tokens` is the tree\nof; only with `?mode=`.",
+            "propertyNames": {
+              "type": "string"
+            },
             "type": [
-              "string",
+              "object",
               "null"
             ]
           },
           "modes": {
-            "description": "The design system's modes, in order; empty without a head.",
+            "description": "The design system's root modes, in order; empty without a head.",
             "items": {
               "type": "string"
             },
@@ -1355,7 +1386,7 @@
             "type": "string"
           },
           "tokens": {
-            "description": "The token tree of the head; `null` without a head. With `?mode=`, the\ntree of that one mode.",
+            "description": "The token tree of the head; `null` without a head. With `?mode=`, the\ntree of that choice of modes.",
             "type": [
               "object",
               "null"
@@ -1364,7 +1395,8 @@
         },
         "required": [
           "project_id",
-          "modes"
+          "modes",
+          "collections"
         ],
         "type": "object"
       },
@@ -9423,7 +9455,7 @@
             }
           },
           {
-            "description": "Read the tree of this mode: each `$value` is the mode's value and no token has mode values",
+            "description": "Read the tree of these modes: a mode such as `dark` (in every collection that has it) or `color:dark,density:compact`; collections left out take their first mode. Each `$value` is the value in the mode of its collection and no token has mode values",
             "in": "query",
             "name": "mode",
             "required": false,
@@ -9447,11 +9479,11 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
+                  "$ref": "#/components/schemas/InvalidTokensBody"
                 }
               }
             },
-            "description": "The design system does not list the mode (`unknown_mode`)"
+            "description": "No collection lists the bare mode (`unknown_mode`), or a `collection:mode` choice is refused (`invalid_request`, with a message)"
           },
           "401": {
             "content": {

@@ -29,7 +29,7 @@ use std::path::Path;
 use std::sync::OnceLock;
 
 use omni_core::design::TokenRef;
-use omni_core::design::tokens::TokenTree;
+use omni_core::design::tokens::{ModeChoice, TokenTree};
 use omni_penpot::compare::{compare_file, compare_import};
 use omni_penpot::import::Import;
 use omni_render::system::DesignSystem;
@@ -150,7 +150,10 @@ fn assert_resolves(import: &Import, what: &str) {
             .unwrap_or_else(|e| panic!("{what}: {reference} is no token reference: {e}"));
         for mode in MODES {
             assert!(
-                tree.resolve(&token, mode).is_some(),
+                ModeChoice::parse(mode, &tree)
+                    .ok()
+                    .and_then(|choice| tree.resolve(&token, &choice))
+                    .is_some(),
                 "{what}: {reference} is no token in {mode}"
             );
         }

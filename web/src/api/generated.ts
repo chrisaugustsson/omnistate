@@ -139,6 +139,12 @@ export const ClaimStoryRequestSchema = z.object({
 });
 export type ClaimStoryRequest = z.infer<typeof ClaimStoryRequestSchema>;
 
+export const CollectionBodySchema = z.object({
+  modes: z.array(z.string()),
+  name: z.string(),
+});
+export type CollectionBody = z.infer<typeof CollectionBodySchema>;
+
 export const ReplyBodySchema = z.object({
   author: z.record(z.string(), z.unknown()),
   created_at: z.string(),
@@ -422,8 +428,9 @@ export const HeadHtmlResponseSchema = z.object({
 export type HeadHtmlResponse = z.infer<typeof HeadHtmlResponseSchema>;
 
 export const HeadTokensResponseSchema = z.object({
+  collections: z.array(CollectionBodySchema),
   doc_id: z.string().nullable().optional(),
-  mode: z.string().nullable().optional(),
+  mode: z.record(z.string(), z.string()).nullable().optional(),
   modes: z.array(z.string()),
   project_id: z.string(),
   tokens: z.record(z.string(), z.unknown()).nullable().optional(),
@@ -834,6 +841,7 @@ export const schemas = {
   CancelStoryRequest: CancelStoryRequestSchema,
   CheckCriterionRequest: CheckCriterionRequestSchema,
   ClaimStoryRequest: ClaimStoryRequestSchema,
+  CollectionBody: CollectionBodySchema,
   CommentBody: CommentBodySchema,
   CommentListResponse: CommentListResponseSchema,
   CommentResponse: CommentResponseSchema,
@@ -1504,7 +1512,7 @@ export const operations = {
   "GET /api/v1/w/{workspace_id}/projects/{project_id}/tokens": {
     responses: {
       "200": HeadTokensResponseSchema,
-      "400": ErrorBodySchema,
+      "400": InvalidTokensBodySchema,
       "401": ErrorBodySchema,
       "404": ErrorBodySchema,
     },
