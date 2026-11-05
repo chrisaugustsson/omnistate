@@ -112,7 +112,7 @@ fn every_registered_route_is_served_by_the_router() {
 }
 
 /// Every live event the API emits, by name (`<entity>.<action>`).
-const LIVE_EVENTS: [&str; 13] = [
+const LIVE_EVENTS: [&str; 14] = [
     "comment.created",
     "comment.deleted",
     "comment.replied",
@@ -124,6 +124,7 @@ const LIVE_EVENTS: [&str; 13] = [
     "feature.deleted",
     "feature.renamed",
     "post.created",
+    "project.renamed",
     "thread.concluded",
     "thread.created",
 ];
