@@ -998,7 +998,53 @@ Return raw structured data only.`, { schema: TEST_CUT_SCHEMA, label: `test-cut:$
   // the lane ends.
   let laneRunning = null
   const laneFailed = new Set()
-  const tail = (text) => String(text).slice(-4000)
+  const tail = (text, max = 4000) => String(text).slice(-max)
+  // The host's view of the main worktree the moment a stack command fails: HEAD,
+  // the tree, each path the output reports missing (a container path is looked
+  // up under the main worktree too, past its mount point) and the compose
+  // containers with the folder each was created from. Captured before the lane
+  // resets the branch, so the finding shows what the container should have seen.
+  const MISSING_LINE = /No such file or directory|couldn't read|failed to read/i
+  const pathsIn = (line) => [...new Set((line.match(/[^\s'"`()[\]]+/g) || [])
+    .map((t) => t.replace(/^[`'"(]+|[`'",;:.)]+$/g, ''))
+    .filter((t) => (t.includes('/') && t.length > 1 && !/^[a-z]+:\/\//.test(t)) || /^[\w@+-]+\.\w+$/.test(t)))]
+  const onHost = (token) => {
+    const parts = token.split('/').filter(Boolean)
+    const candidates = path.isAbsolute(token) ? [token, ...(parts.length > 1 ? [path.join(root, ...parts.slice(1))] : [])] : [path.join(root, token)]
+    for (const c of candidates) {
+      try {
+        const st = fs.statSync(c)
+        return `${token}: present on the host at ${c} (${st.isDirectory() ? 'a directory' : `${st.size} bytes`})`
+      } catch {}
+    }
+    return `${token}: missing on the host (looked at ${candidates.join(', ')})`
+  }
+  const composeState = () => {
+    const ps = tryRun('docker', ['compose', 'ps', '--format', '{{.Name}} {{.Status}}'], { cwd: root, timeout: 15000 })
+    if (ps === null) return 'not available'
+    const rows = ps.split('\n').map((l) => l.trim()).filter(Boolean)
+    if (!rows.length) return 'no container'
+    return rows.map((row) => {
+      const dir = tryRun('docker', ['inspect', '--format', '{{index .Config.Labels "com.docker.compose.project.working_dir"}}', row.split(/\s+/)[0]], { cwd: root, timeout: 15000 })
+      return `${row}, created from ${dir === null ? '(unknown)' : dir.trim() || '(no working_dir label)'}`
+    }).join('\n')
+  }
+  const hostEvidence = (output) => {
+    const status = (tryRun('git', ['-C', root, 'status', '--short']) || '').trim()
+    const missing = [...new Set(String(output).split('\n').filter((l) => MISSING_LINE.test(l)).flatMap(pathsIn))]
+    return [
+      `- HEAD: ${(tryRun('git', ['-C', root, 'rev-parse', 'HEAD']) || '(unknown)').trim()}`,
+      `- git status --short: ${status ? `\n${status}` : 'clean'}`,
+      `- paths the output reports missing: ${missing.length ? `\n${missing.map((p) => `  ${onHost(p)}`).join('\n')}` : 'none'}`,
+      `- docker compose ps: ${composeState()}`,
+    ].join('\n')
+  }
+  // The finding of a failed stack command: its output, cut first so the host
+  // evidence after it fits under the cap whole.
+  const stackFinding = (what, result) => {
+    const evidence = `Host at that moment:\n${hostEvidence(result.output)}`.slice(0, 2000)
+    return { text: `${what} Output:\n\`\`\`\n${tail(result.output, 4000 - evidence.length)}\n\`\`\`\n${evidence}`, files: [] }
+  }
   const undoLane = (base) => {
     git(['reset', '--hard', base])
     fs.rmSync(LANE_FILE, { force: true })
@@ -1040,9 +1086,9 @@ Return raw structured data only.`, { schema: TEST_CUT_SCHEMA, label: `test-cut:$
     if (!fastResult.ok) return failLane(key, base, [{ text: `The fast command (\`${fast}\`) failed on the main worktree. Output:\n\`\`\`\n${tail(fastResult.output)}\n\`\`\``, files: [] }], 'the fast command failed')
     laneLog(key, 'fast passed')
     const up = await runCmd(stackUp, root)
-    if (!up.ok) return failLane(key, base, [{ text: `The stack did not start: \`${stackUp}\` exited non-zero. Output:\n\`\`\`\n${tail(up.output)}\n\`\`\``, files: [] }], 'the stack did not start')
+    if (!up.ok) return failLane(key, base, [stackFinding(`The stack did not start: \`${stackUp}\` exited non-zero.`, up)], 'the stack did not start')
     const stackResult = await runCmd(stackCmd, root)
-    if (!stackResult.ok) return failLane(key, base, [{ text: `The stack command (\`${stackCmd}\`) failed on the main worktree. Output:\n\`\`\`\n${tail(stackResult.output)}\n\`\`\``, files: [] }], 'the stack command failed')
+    if (!stackResult.ok) return failLane(key, base, [stackFinding(`The stack command (\`${stackCmd}\`) failed on the main worktree.`, stackResult)], 'the stack command failed')
     laneLog(key, 'stack passed')
     const r = await exercise(key)
     if (!r) {

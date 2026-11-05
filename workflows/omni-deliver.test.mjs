@@ -975,6 +975,28 @@ test("a stack command failing in the lane resets the branch to the lane base, ru
   assert.match(seen.sentBack.findings[0].text, /the stack broke/);
 });
 
+test("a stack command reporting a file missing gets a finding with the host's view before the reset: HEAD at the merged commit, the dirty tree, the file present on the host with its size, and the compose containers", { timeout: 20000 }, async (t) => {
+  const dirs = scratch(t, [story("US-1", { status: "reviewed", criteria: [{ text: "The badge has a colour" }] })]);
+  const head = join(dirs.root, "head");
+  // The test container's view of the main worktree: a path under its mount that the host holds as README (4 bytes).
+  dirs.checks({ fast: "true", stack_up: "true", stack: `git rev-parse HEAD > ${head}; touch scratch.tmp; echo "error: couldn't read /workspace/README: No such file or directory (os error 2)"; exit 1` });
+  reviewed(dirs, "US-1");
+  const seen = {};
+  const { agent } = implAgent({ "US-1": stopped });
+
+  await workflow({ feature: "board" }, agent, onSendBack(dirs, "US-1", seen), (fns) => Promise.all(fns.map((f) => f())), () => {});
+
+  const text = seen.sentBack.findings[0].text;
+  const [output, evidence] = text.split("Host at that moment:\n");
+  assert.match(output, /^\[attempt 1\] The stack command .*failed on the main worktree\. Output:\n```\n.*No such file or directory.*\n```\n$/s);
+  const merged = readFileSync(head, "utf8").trim();
+  assert.notEqual(merged, sha(dirs, "main"), "the branch was reset after the evidence was taken");
+  assert.match(evidence, new RegExp(`^- HEAD: ${merged}\n`));
+  assert.match(evidence, /- git status --short: \n\?\? scratch\.tmp\n/);
+  assert.match(evidence, new RegExp(`- paths the output reports missing: \n  /workspace/README: present on the host at ${dirs.repo}/README \\(4 bytes\\)\n`));
+  assert.match(evidence, /- docker compose ps: \S/);
+});
+
 test("a stack_up failing in the lane runs neither the stack command nor the verifier, and sends the story back with the branch at the lane base", { timeout: 20000 }, async (t) => {
   const dirs = scratch(t, [story("US-1", { status: "reviewed", criteria: [{ text: "The badge has a colour" }] })]);
   const log = join(dirs.root, "steps.log");
