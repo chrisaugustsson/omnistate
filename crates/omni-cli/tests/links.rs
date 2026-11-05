@@ -581,6 +581,35 @@ fn global_beats_omni_feature() {
 }
 
 #[test]
+fn a_whitespace_only_omni_feature_counts_as_unset() {
+    let server = mock();
+    let folder = Scratch::new("folder");
+    let home = linked_home(&server, &folder);
+
+    let out = doc_list_in(&home, &folder, &[("OMNI_FEATURE", "  ")], &[]);
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    assert_eq!(
+        feature_requests(&server),
+        vec![format!("GET /api/v1/w/{WORKSPACE}/projects/{PROJECT}/docs")]
+    );
+}
+
+#[test]
+fn an_explicit_feature_with_global_is_refused() {
+    let server = mock();
+    let folder = Scratch::new("folder");
+    let home = linked_home(&server, &folder);
+
+    let out = doc_list_in(&home, &folder, &[], &["--feature", FEATURE, "--global"]);
+    assert_eq!(out.code, 1);
+    assert_eq!(
+        out.stderr.trim_end(),
+        "omni: give --feature or --global, not both"
+    );
+    assert!(server.requests().is_empty(), "{:?}", server.requests());
+}
+
+#[test]
 fn leftover_keys_in_omni_toml_are_warned_about_once_and_checks_stays_quiet() {
     let server = mock();
     let folder = Scratch::new("folder");
