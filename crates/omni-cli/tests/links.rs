@@ -710,3 +710,89 @@ fn without_git_an_unlinked_folder_gets_the_not_linked_error_alone() {
     );
     assert!(server.requests().is_empty(), "{:?}", server.requests());
 }
+
+fn canonical_path(folder: &std::path::Path) -> String {
+    std::fs::canonicalize(folder).unwrap().display().to_string()
+}
+
+#[test]
+fn the_repositorys_link_in_the_logged_in_workspace_beats_the_worktrees_link_of_another() {
+    let server = mock();
+    let home = logged_in(&server.url);
+    let (repo, worktrees) = repo_with_worktree();
+    let worktree = worktrees.join("w");
+    std::fs::write(
+        links_path(&home.path),
+        format!(
+            "[{OTHER_WORKSPACE}]\n\"{}\" = \"{OTHER_PROJECT}\"\n\n[{WORKSPACE}]\n\"{}\" = \"{PROJECT}\"\n",
+            canonical_path(&worktree),
+            canonical_path(&repo.path)
+        ),
+    )
+    .unwrap();
+
+    let out = feature_list_in(&home, &worktree, &[]);
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    assert_eq!(
+        feature_requests(&server),
+        vec![format!(
+            "GET /api/v1/w/{WORKSPACE}/projects/{PROJECT}/features"
+        )]
+    );
+}
+
+#[test]
+fn with_only_links_of_other_workspaces_the_worktrees_own_is_named_over_the_repositorys() {
+    let server = mock();
+    let home = logged_in(&server.url);
+    let (repo, worktrees) = repo_with_worktree();
+    let worktree = worktrees.join("w");
+    let third_workspace = "01900000-0000-7000-8000-0000000000dd";
+    std::fs::write(
+        links_path(&home.path),
+        format!(
+            "[{third_workspace}]\n\"{}\" = \"{PROJECT}\"\n\n[{OTHER_WORKSPACE}]\n\"{}\" = \"{PROJECT}\"\n",
+            canonical_path(&repo.path),
+            canonical_path(&worktree)
+        ),
+    )
+    .unwrap();
+
+    let out = feature_list_in(&home, &worktree, &[]);
+    assert_eq!(out.code, 1);
+    assert_eq!(
+        out.stderr.trim_end(),
+        format!(
+            "omni: {} is linked to a project of another workspace ({OTHER_WORKSPACE}); run omni link here, or omni login",
+            canonical_path(&worktree)
+        )
+    );
+    assert!(server.requests().is_empty(), "{:?}", server.requests());
+}
+
+#[test]
+fn an_unlinked_worktree_of_a_repository_linked_in_another_workspace_names_the_repository() {
+    let server = mock();
+    let home = logged_in(&server.url);
+    let (repo, worktrees) = repo_with_worktree();
+    let worktree = worktrees.join("w");
+    std::fs::write(
+        links_path(&home.path),
+        format!(
+            "[{OTHER_WORKSPACE}]\n\"{}\" = \"{PROJECT}\"\n",
+            canonical_path(&repo.path)
+        ),
+    )
+    .unwrap();
+
+    let out = feature_list_in(&home, &worktree, &[]);
+    assert_eq!(out.code, 1);
+    assert_eq!(
+        out.stderr.trim_end(),
+        format!(
+            "omni: {} is linked to a project of another workspace ({OTHER_WORKSPACE}); run omni link here, or omni login",
+            canonical_path(&repo.path)
+        )
+    );
+    assert!(server.requests().is_empty(), "{:?}", server.requests());
+}
