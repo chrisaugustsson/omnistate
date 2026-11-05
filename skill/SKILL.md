@@ -56,6 +56,11 @@ For a feature that will be built story by story from the board. Three tools carr
 2. `omni-stories`: cuts the settled spec into stories on the feature's board.
 3. `omni-deliver`: the workflow that runs the board, implementing the stories in worktrees, reviewing and testing them.
 
+A story's status is one of eight: `backlog`, `implementing`, `implemented`, `review`, `reviewed`, `testing`, `done`, `cancelled`.
+- `implemented` is a waiting status: the implementer has finished and the story waits for a reviewer.
+- `reviewed` is a waiting status: the review passed and the story waits for the test lane.
+`omni story claim` takes a story only from the waiting state of the stage asked for (backlog for implementing, implemented for review, reviewed for testing); `release` and `block` return a working story to its waiting state.
+
 Start with `omni-grill`; run the next one when the human confirms the step before it.
 
 Done when the human has the Spec doc, and the stories are on the board or the human chose not to cut them.

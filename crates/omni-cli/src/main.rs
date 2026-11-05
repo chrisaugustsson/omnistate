@@ -159,13 +159,17 @@ Usage:
                                       change a story; the text comes from the file
   omni story cancel <key>             cancel a story
   omni story claim <key> --run <id> --stage <stage>
-                                      hold a story for a run, at implementing, review or testing
+                                      hold a story for a run, at implementing, review or testing;
+                                      a claim is taken only from the stage's waiting state
+                                      (backlog, implemented, reviewed), else 409 not_waiting
   omni story release <key> --run <id>
-                                      let go of a story, whoever holds it
+                                      let go of a story, whoever holds it; a working story returns
+                                      to its waiting state
   omni story move <key> --run <id> --to <column>
-                                      move the story you hold to backlog, implementing, review,
-                                      testing or done
-  omni story block <key> --run <id>   flag the story as waiting for the human; unblock clears it
+                                      move the story you hold to backlog, implementing, implemented,
+                                      review, reviewed, testing or done
+  omni story block <key> --run <id>   flag the story as waiting for the human and return a working
+                                      story to its waiting state; unblock clears the flag
   omni story tick <key> --run <id> --criterion <n> [--pending] [--unticked]
                                       tick a criterion (0-based); --pending also marks it for the
                                       human to check; --unticked takes the tick away

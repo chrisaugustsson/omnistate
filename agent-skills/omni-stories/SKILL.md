@@ -97,7 +97,7 @@ Save the stories in dependency order, so every blocker exists before the story t
 omni story add <file> --link <doc>:<node> [--link <doc>:<node>:<label>]...
 ```
 
-`omni story add` prints the story's key. Only for the project's very first story, and only when the human has given a number to continue from, pass `--number-from <n>`. Pass `--priority <n>` only when the spec says a story matters more or less than the rest (1 highest, 3 the default; 0 is reserved for fix stories). Fix a rejected add and retry; never save a story twice.
+`omni story add` prints the story's key. Only for the project's very first story, and only when the human has given a number to continue from, pass `--number-from <n>`. Pass `--priority <n>` only when the spec says a story matters more or less than the rest (1 highest, 3 the default; 0 is the priority of a story returned from review or testing, never set when cutting stories). Fix a rejected add and retry; never save a story twice.
 
 When all are saved, run `omni story list` and `omni story list --pickable`. The pickable list must hold exactly the stories with `Blocked by: none`; when it does not, name the story and the missing blocker in your hand-off: an agent key cannot edit a saved story, the human changes its blockers on the board.
 

@@ -1,7 +1,7 @@
 export const meta = {
   name: 'omni-deliver',
-  description: 'Delivers a feature\'s stories from the OmniState board: locks the main worktree, reconciles claims left by dead runs, and clarity-checks the backlog before any worktree exists',
-  whenToUse: 'Run from the main worktree of a project with a clean tree, with args {feature: "<name>"} (optional: implementers (3), reviewers (3), storyLimit, models). One run per checkout, whatever the feature: the lock file .omni/run.lock holds the run, and a live pid refuses a second one. Needs the omni CLI on PATH and the folder linked to its project (omni link, or OMNI_PROJECT). Stories come from `omni story`; questions for the human become threads on the feature named after the story. Never pushes.',
+  description: 'Delivers a feature\'s stories from the OmniState board with three loops (implement, review, test) and a single test lane: locks the main worktree, reconciles claims left by dead runs, and clarity-checks the backlog before any worktree exists',
+  whenToUse: 'Run from the main worktree of a project with a clean tree, with args {feature: "<name>"} (optional: implementers (3), reviewers (3), storyLimit, models). One run per checkout, whatever the feature: the lock file .omni/run.lock holds the run, and a live pid refuses a second one. Needs the omni CLI on PATH and the folder linked to its project (omni link, or OMNI_PROJECT). Stories come from `omni story`; questions for the human become threads on the feature named after the story. A run has three loops, implement, review and test, that pull stories from the board by status, and the test step is a single lane: one story at a time on the main worktree. Never pushes.',
   phases: [
     { title: 'Start', detail: 'clean tree, lock, the Run thread' },
     { title: 'Reconcile', detail: 'undo a merge a dead run left half done (the lane file), then release every story held by another run' },
