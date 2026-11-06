@@ -513,6 +513,8 @@ impl Player {
             .filter(|layer| !self.hovered.iter().any(|hover| hover.id == layer.entry.id))
             .collect();
         entered.sort_by(|a, b| b.entry.depth.cmp(&a.entry.depth));
+        // The layers were found on this showing, whatever their actions show.
+        let visit = self.board_visit;
         for layer in entered {
             let with = |wanted: Trigger| -> Vec<Interaction> {
                 layer
@@ -543,7 +545,7 @@ impl Player {
                 holder,
                 leave,
                 reverts,
-                board_visit: self.board_visit,
+                board_visit: visit,
             });
         }
         changed
@@ -1228,7 +1230,19 @@ impl Player {
                 let history_len = self.history.boards().len();
                 let visit = self.board_visit;
                 self.history.push(from, play);
+                // What a hover or press puts back returns to the board it
+                // left, and the layers the pointer never left stay hovered.
+                let kept = if self.recording.is_some() {
+                    self.hovered
+                        .iter()
+                        .filter(|hover| hover.reverts.is_empty() && hover.board_visit == visit)
+                        .cloned()
+                        .collect()
+                } else {
+                    Vec::new()
+                };
                 self.show(to, at);
+                self.hovered.extend(kept);
                 self.frame.transition = Some(self.running(from, to, false, play, at));
                 self.note(Revert::Board {
                     to,
