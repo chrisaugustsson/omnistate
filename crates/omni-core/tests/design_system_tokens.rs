@@ -1083,7 +1083,7 @@ fn a_reference_must_name_a_token_of_a_type_the_field_takes_within_its_scopes() {
         (
             "$color.ink",
             Scope::Content,
-            "`$color.ink` is a color token; `content` takes a string token",
+            "`$color.ink` is a color token; `content` takes a string, number or boolean token",
         ),
         (
             "$color.ink",

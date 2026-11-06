@@ -281,7 +281,7 @@ they were, and a set that does not write `interactions` is accepted over them.
 A design doc also checks the token references of every node an insert, a
 replace or a set writes, with the nodes below it, against the project's design system: the token must exist ("`$state.nope`
 is not a token of the design system"), be of a type the field takes ("`$color.ink`
-is a color token; `content` takes a string token"), and have the field in its
+is a color token; `content` takes a string, number or boolean token"), and have the field in its
 `scopes` when it lists any ("`$state.count` is not scoped to `opacity` (scopes:
 content)"). A project whose design system has no head refuses any reference with
 "the project has no design system: import tokens first". The first reference that

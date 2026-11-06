@@ -235,7 +235,7 @@ impl Scope {
     fn takes(self) -> &'static [TokenType] {
         match self {
             Self::Fill | Self::Stroke | Self::TextColor | Self::ShadowColor => &[TokenType::Color],
-            Self::Content => &[TokenType::String],
+            Self::Content => &[TokenType::String, TokenType::Number, TokenType::Boolean],
             Self::Visible => &[TokenType::Boolean],
             Self::Opacity => &[TokenType::Number],
             Self::FontFamily => &[TokenType::Typography, TokenType::String],
@@ -283,12 +283,18 @@ impl fmt::Display for BindingError {
             ),
             Self::WrongType { token, ty, field } => {
                 let takes: Vec<&str> = field.takes().iter().map(|ty| ty.name()).collect();
+                let takes = match takes.split_last() {
+                    Some((last, rest)) if !rest.is_empty() => {
+                        format!("{} or {last}", rest.join(", "))
+                    }
+                    _ => takes.join(""),
+                };
                 write!(
                     f,
                     "`{}` is a {ty} token; `{}` takes a {} token",
                     token.as_str(),
                     field.name(),
-                    takes.join(" or ")
+                    takes
                 )
             }
             Self::NotScoped {

@@ -106,7 +106,7 @@ to CSS.
 
 | Attribute | Value |
 | --- | --- |
-| `content` | The text, exactly as written, never markup, or a reference to a string token, `content="$state.cta"`. A text that is `$` and a token's path is a reference. |
+| `content` | The text, exactly as written, never markup, or a reference to a string, number or boolean token, `content="$state.cta"`, shown as text (`0`, `true`). A text that is `$` and a token's path is a reference. |
 | `fontFamily` | The family's name, `"Inter"`, or a token reference. |
 | `fontSize` | A length of 0 or more, or a reference to a dimension or number token (pixels). |
 | `fontWeight` | From 1 to 1000, or a token reference. |
