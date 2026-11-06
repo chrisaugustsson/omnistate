@@ -719,7 +719,6 @@ impl DesignDoc {
     }
 }
 
-/// The IDs of a node and its descendants, in document order.
 /// Checks that every flow of a page starts at one of the page's boards. A
 /// board deleted later leaves its flow as it was; only a write of `flows`
 /// is checked.
@@ -740,6 +739,7 @@ fn check_flows(node: &Node) -> Result<(), String> {
     }
 }
 
+/// The IDs of a node and its descendants, in document order.
 fn collect(node: &Node, ids: &mut Vec<NodeId>) {
     ids.push(*node.id());
     for child in node.children() {
