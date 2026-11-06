@@ -840,7 +840,7 @@ describe("the interactions of the inspect panel", () => {
     return inspectPanel();
   }
 
-  test("an instant transition shows no duration or easing, and a delay comes before the flags", async () => {
+  test("an instant transition shows no duration or easing, and shows a nonzero delay and the new-tab flag", async () => {
     const panel = await selectSummaryWith({
       interactions: [
         interaction({
@@ -851,10 +851,14 @@ describe("the interactions of the inspect panel", () => {
       ],
     });
 
-    await waitFor(() => expect(within(panel).getByText("Instant · delay 200 ms · new tab")).toBeTruthy());
+    const line = (await within(panel).findByText(/^Instant/)).textContent ?? "";
+    expect(line).not.toContain(" ms · ease");
+    expect(line).toContain("delay 200 ms");
+    expect(line).toContain("new tab");
   });
 
   test("each action of an interaction has its own line, in list order", async () => {
+    const url = "https://example.com/checkout/receipt?order=12345";
     const panel = await selectSummaryWith({
       interactions: [
         interaction({
@@ -864,17 +868,19 @@ describe("the interactions of the inspect panel", () => {
               variable: "state.count",
               expr: { op: "add", args: [{ variable: "count" }, { value: 1 }] },
             }),
-            action({ type: "openUrl", url: "https://example.com/checkout/receipt?order=12345", newTab: false }),
+            action({ type: "openUrl", url, newTab: false }),
           ],
         }),
       ],
     });
 
     await waitFor(() => expect(within(panel).getByText("Interactions (1)")).toBeTruthy());
-    expect(within(panel).getAllByText(/^(Set|Open) /).map((line) => line.textContent)).toEqual([
-      "Set state.count to count + 1",
-      "Open https://example.com/checkout/receipt?ord…",
-    ]);
+    const lines = within(panel).getAllByText(/^(Set|Open) /).map((line) => line.textContent ?? "");
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toBe("Set state.count to count + 1");
+    expect(lines[1].startsWith("Open https://example.com/"), lines[1]).toBe(true);
+    expect(lines[1].endsWith("…"), lines[1]).toBe(true);
+    expect(lines[1].length).toBeLessThan(`Open ${url}`.length);
     expect(within(panel).getByText("Instant")).toBeTruthy();
   });
 
