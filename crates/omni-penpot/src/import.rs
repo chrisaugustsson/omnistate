@@ -95,6 +95,22 @@ pub(crate) fn build(path: &Path) -> Result<Built, ReadError> {
         {
             children.push(value);
         }
+        // The flows that start at this board, once per name on the page.
+        if let Ok(design) = serde_json::to_value(&board.design)
+            && let Some(flows) = design["flows"].as_array()
+        {
+            let kept = pages[index]["flows"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default();
+            let mut kept = kept;
+            for flow in flows {
+                if !kept.iter().any(|other| other["name"] == flow["name"]) {
+                    kept.push(flow.clone());
+                }
+            }
+            pages[index]["flows"] = Value::Array(kept);
+        }
         boards.push(board);
     }
     let pages = pages
