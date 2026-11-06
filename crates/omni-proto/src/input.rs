@@ -42,6 +42,8 @@ pub(crate) struct Hover {
     /// What leaving runs.
     pub(crate) leave: Vec<Interaction>,
     pub(crate) reverts: Vec<Revert>,
+    /// The showing of the board it was entered on.
+    pub(crate) board_visit: u64,
 }
 
 /// A layer that reacts to a drag.

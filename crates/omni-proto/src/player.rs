@@ -477,17 +477,37 @@ impl Player {
     /// leave, then the layers it entered run their mouse enter and hover,
     /// each innermost first.
     fn hover_to(&mut self, x: f64, y: f64, at: f64, effects: &mut Vec<Effect>) -> bool {
-        let under = if x.is_nan() { Vec::new() } else { self.under(x, y) };
         let (kept, mut left): (Vec<Hover>, Vec<Hover>) = std::mem::take(&mut self.hovered)
             .into_iter()
             .partition(|hover| hover.rect.contains(x, y));
         self.hovered = kept;
         left.sort_by(|a, b| b.depth.cmp(&a.depth));
         let mut changed = false;
+        let mut gone = Vec::new();
         for hover in left {
+            let before = self.board_visit;
             changed |= self.revert(hover.reverts, at);
             changed |= self.fire(&hover.leave, hover.holder, hover.rect, true, at, effects);
+            if self.board_visit != before {
+                gone.push(before);
+            }
         }
+        // Layers entered on a board a revert left are not under the pointer.
+        while let Some(visit) = gone.pop() {
+            let (stale, kept): (Vec<Hover>, Vec<Hover>) = std::mem::take(&mut self.hovered)
+                .into_iter()
+                .partition(|hover| hover.board_visit == visit);
+            self.hovered = kept;
+            for hover in stale {
+                let before = self.board_visit;
+                changed |= self.revert(hover.reverts, at);
+                changed |= self.fire(&hover.leave, hover.holder, hover.rect, true, at, effects);
+                if self.board_visit != before {
+                    gone.push(before);
+                }
+            }
+        }
+        let under = if x.is_nan() { Vec::new() } else { self.under(x, y) };
         let mut entered: Vec<&Under> = under
             .iter()
             .filter(|layer| !self.hovered.iter().any(|hover| hover.id == layer.entry.id))
@@ -523,6 +543,7 @@ impl Player {
                 holder,
                 leave,
                 reverts,
+                board_visit: self.board_visit,
             });
         }
         changed
