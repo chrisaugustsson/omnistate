@@ -619,10 +619,22 @@ Return raw structured data only.`
   // else the plain merge base. Rebasing from it replays only the story's own
   // commits, never a merge the integration branch has since reset away.
   const forkPointOf = (key) => {
-    const recorded = (tryRun('git', ['-C', root, 'config', '--get', `branch.story/${key}.omnibase`]) || '').trim()
-    if (recorded && tryRun('git', ['-C', root, 'rev-parse', '--verify', '--quiet', `${recorded}^{commit}`]) !== null) return recorded
-    const fork = (tryRun('git', ['-C', root, 'merge-base', '--fork-point', integration, `story/${key}`]) || '').trim()
+    const isAncestor = (a, b) => tryRun('git', ['-C', root, 'merge-base', '--is-ancestor', a, b]) !== null
     const tip = (tryRun('git', ['-C', root, 'rev-parse', `story/${key}`]) || '').trim()
+    const recorded = (tryRun('git', ['-C', root, 'config', '--get', `branch.story/${key}.omnibase`]) || '').trim()
+    // The recorded base holds only while the branch still sits on it. An
+    // implementer that rebased the branch onto the integration branch after a
+    // conflict left the base behind: while the base is still on the integration
+    // branch, the merge base is the newer of the two and replays only the
+    // story's commits (it is the base itself when nothing moved). A base the
+    // integration branch reset away is kept, since the merge base would lie
+    // below it. A base that is not on the branch at all means the branch was
+    // rebuilt elsewhere, and the fallbacks below decide.
+    if (recorded && tryRun('git', ['-C', root, 'rev-parse', '--verify', '--quiet', `${recorded}^{commit}`]) !== null && isAncestor(recorded, tip)) {
+      if (!isAncestor(recorded, integration)) return recorded
+      return (tryRun('git', ['-C', root, 'merge-base', integration, tip]) || '').trim() || recorded
+    }
+    const fork = (tryRun('git', ['-C', root, 'merge-base', '--fork-point', integration, `story/${key}`]) || '').trim()
     // A branch the lane merged before and reset away has its own tip in the
     // integration branch's reflog, so the fork point is the tip and a rebase
     // from it would replay nothing: fall back to the merge base, which may

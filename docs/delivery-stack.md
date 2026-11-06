@@ -74,7 +74,10 @@ base (the last head that passed) while the lane holds a merge, and the commit
 it was cut from is recorded on the branch as `branch.story/<key>.omnibase`.
 The lane rebases a story with `--onto main <that base>`, falling back to git's
 fork point and then the merge base for a branch cut by an older run, so only
-the story's own commits reach main. Once the lane has rebased a story, the
+the story's own commits reach main. The recorded base counts only while the
+branch still sits on it: when an implementer has rebased the branch onto main
+itself (after a rebase conflict), the lane rebases from the merge base
+instead, and a base that is on neither main nor the branch is ignored. Once the lane has rebased a story, the
 recorded base moves to the head it was rebased onto, so a story the lane sends
 back and merges again replays only its own commits.
 

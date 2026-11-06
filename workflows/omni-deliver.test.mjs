@@ -1448,3 +1448,52 @@ test("a story the lane sent back keeps its branch where the lane left it and is 
   assert.equal(dirs.story("US-1").status, "done");
   assert.deepEqual([existsSync(wt), hasBranch(dirs, "US-1")], [false, false]);
 });
+
+// Two commits on main change the same line, so replaying the first onto the
+// second conflicts: a lane that rebases from too old a base cannot merge.
+function mainChangesTheSameLineTwice(dirs) {
+  mainEdits(dirs, "shared.rs", "two\n");
+  mainEdits(dirs, "shared.rs", "three\n");
+}
+
+test("a branch an implementer rebased onto the integration branch after a conflict is merged from where it now sits, not from the base recorded when it was cut", async (t) => {
+  const dirs = scratch(t, [story("US-1", { status: "reviewed" })]);
+  dirs.checks({ fast: "true", stack_up: "true", stack: "true" });
+  writeFileSync(join(dirs.repo, "shared.rs"), "one\n");
+  git(dirs.repo, "add", "shared.rs");
+  git(dirs.repo, "commit", "-q", "-m", "chore: shared");
+  const wt = reviewed(dirs, "US-1");
+  git(dirs.repo, "config", "branch.story/US-1.omnibase", sha(dirs, "main"));
+  mainChangesTheSameLineTwice(dirs);
+  // The implementer rebased the branch onto main itself, as the rebase-conflict finding asks.
+  git(wt, "rebase", "-q", "main");
+  const { agent } = implAgent({});
+
+  await deliver({ feature: "board" }, agent);
+
+  assert.deepEqual(subjects(dirs), ["feat: US-1 attempt", "chore: main edits shared.rs", "chore: main edits shared.rs", "chore: shared", "init"]);
+  assert.equal(dirs.story("US-1").status, "done");
+});
+
+test("a branch rebuilt on the integration branch, whose recorded base is on neither of them, is merged from git's fork point", async (t) => {
+  const dirs = scratch(t, [story("US-1", { status: "reviewed" })]);
+  dirs.checks({ fast: "true", stack_up: "true", stack: "true" });
+  writeFileSync(join(dirs.repo, "shared.rs"), "one\n");
+  git(dirs.repo, "add", "shared.rs");
+  git(dirs.repo, "commit", "-q", "-m", "chore: shared");
+  // The base recorded for the branch is a commit of an abandoned line.
+  git(dirs.repo, "checkout", "-q", "-b", "abandoned");
+  mainEdits(dirs, "old.rs", "an earlier attempt\n");
+  const abandoned = sha(dirs, "HEAD");
+  git(dirs.repo, "checkout", "-q", "main");
+  git(dirs.repo, "branch", "-q", "-D", "abandoned");
+  mainChangesTheSameLineTwice(dirs);
+  reviewed(dirs, "US-1");
+  git(dirs.repo, "config", "branch.story/US-1.omnibase", abandoned);
+  const { agent } = implAgent({});
+
+  await deliver({ feature: "board" }, agent);
+
+  assert.deepEqual(subjects(dirs), ["feat: US-1 attempt", "chore: main edits shared.rs", "chore: main edits shared.rs", "chore: shared", "init"]);
+  assert.equal(dirs.story("US-1").status, "done");
+});
