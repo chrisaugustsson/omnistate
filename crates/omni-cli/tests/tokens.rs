@@ -602,3 +602,62 @@ fn tokens_remove_refuses_a_missing_token_a_group_and_a_token_that_is_aliased() {
         server.requests()
     );
 }
+
+#[test]
+fn tokens_remove_refuses_a_token_aliased_from_another_tokens_mode_value() {
+    let mut tree = tree();
+    tree["color"]["ink"]["$extensions"] =
+        json!({"omnistate": {"modes": {"light": "#0f172a", "dark": "{color.surface}"}}});
+    let server = mock_tree(Some(tree), 200);
+    let home = logged_in(&server.url);
+    let out = run(&home, &["tokens", "remove", "color.surface"]);
+    assert_eq!(out.code, 2, "{}", out.stderr);
+    assert_one_line_error(
+        &out,
+        &["`color.ink` refers to `color.surface`: change it first"],
+    );
+    assert!(
+        requests_to(&server, "PUT", &format!("{}/tokens", base())).is_empty(),
+        "{:?}",
+        server.requests()
+    );
+}
+
+#[test]
+fn tokens_remove_of_a_nested_last_token_removes_every_group_it_empties() {
+    let mut tree_with_cart = tree();
+    tree_with_cart["cart"] = json!({"line": {"items": {"$type": "number", "$value": 0}}});
+    let server = mock_tree(Some(tree_with_cart), 200);
+    let home = logged_in(&server.url);
+    let out = run(&home, &["tokens", "remove", "cart.line.items"]);
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    assert_eq!(put_tree(&server), tree());
+}
+
+#[test]
+fn tokens_set_of_a_new_token_in_a_mode_writes_the_value_as_its_value_and_every_mode() {
+    let server = mock_tree(Some(tree()), 200);
+    let home = logged_in(&server.url);
+    let out = run(
+        &home,
+        &[
+            "tokens",
+            "set",
+            "color.accent",
+            "#ff0000",
+            "--type",
+            "color",
+            "--mode",
+            "dark",
+        ],
+    );
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    assert_eq!(
+        put_tree(&server)["color"]["accent"],
+        json!({
+            "$type": "color",
+            "$value": "#ff0000",
+            "$extensions": {"omnistate": {"modes": {"light": "#ff0000", "dark": "#ff0000"}}}
+        })
+    );
+}
