@@ -192,7 +192,7 @@ fn back_undoes_a_navigate_with_its_transition_reversed() {
     assert_eq!(
         running.transition,
         Transition::Push {
-            direction: Direction::Right
+            direction: Direction::Left
         }
     );
     assert_eq!(running.started, 500.0);

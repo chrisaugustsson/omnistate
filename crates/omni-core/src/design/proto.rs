@@ -13,6 +13,7 @@
 //! 300, easing `easeOut`, `delayMs` 0, and the defaults of each action's
 //! fields.
 
+mod easing;
 mod expr;
 
 pub use expr::{Expr, ExprError};

@@ -7,9 +7,10 @@
 //! says what the page has to do next.
 
 use crate::view::{Scene, Viewport};
-use omni_core::design::proto::Transition;
+use omni_core::design::proto::{Direction, Transition};
 use omni_core::design::{NodeData, NodeId, NodeKind};
-use omni_proto::{Effect, HINT_MS, Player, PointerEvent, PointerKind, Rect};
+use omni_proto::transition::progress;
+use omni_proto::{Effect, HINT_MS, Player, PointerEvent, PointerKind, Rect, Running};
 use serde_json::{Value, json};
 use skia_safe::{Canvas, Color};
 
@@ -71,6 +72,16 @@ fn color(hex: &str) -> Option<Color> {
         channel(1)?,
         channel(2)?,
     ))
+}
+
+/// The way a transition moves a board: a unit step on the stage.
+fn step(direction: Direction) -> (f32, f32) {
+    match direction {
+        Direction::Left => (-1.0, 0.0),
+        Direction::Right => (1.0, 0.0),
+        Direction::Top => (0.0, -1.0),
+        Direction::Bottom => (0.0, 1.0),
+    }
 }
 
 impl Session {
@@ -215,9 +226,11 @@ impl Session {
             self.player.restart_hint(now);
         }
         let hinting = self.player.hint_until().is_some();
+        let moving = self.player.frame().transition.is_some();
         self.player.tick(now);
         let hint_ended = hinting && self.player.hint_until().is_none();
-        self.changed |= hint_ended;
+        let settled = moving && self.player.frame().transition.is_none();
+        self.changed |= hint_ended || settled;
         let animating = self.player.hint_until().is_some()
             || self
                 .player
@@ -254,6 +267,118 @@ impl Session {
         })
     }
 
+    /// Draws `board` at its own size in the middle of the stage, scaled down
+    /// to fit, moved by `offset` CSS pixels and clipped to its own box.
+    fn draw_board(
+        &self,
+        scene: &mut Scene,
+        canvas: &Canvas,
+        (width, height): (f32, f32),
+        board: &NodeId,
+        offset: (f32, f32),
+    ) {
+        let Some(bounds) = scene.board_bounds(board) else {
+            return;
+        };
+        let scale = (width / bounds.width.max(1.0))
+            .min(height / bounds.height.max(1.0))
+            .min(1.0);
+        let at = (
+            (width - bounds.width * scale) / 2.0 + offset.0,
+            (height - bounds.height * scale) / 2.0 + offset.1,
+        );
+        let viewport = Viewport::at(
+            bounds.x - at.0 / scale,
+            bounds.y - at.1 / scale,
+            scale,
+            width,
+            height,
+        );
+        canvas.save();
+        canvas.clip_rect(
+            skia_safe::Rect::from_xywh(at.0, at.1, bounds.width * scale, bounds.height * scale),
+            None,
+            None,
+        );
+        scene.render_board(canvas, &viewport, board);
+        canvas.restore();
+    }
+
+    /// Draws a change of board `now` moments in: the board it changes from, as
+    /// it is (or as the transition it cut short had come), and the board it
+    /// changes to moved or faded over it. The directions name the way a board
+    /// moves; a board that does not move stays where it rests.
+    fn draw_running(
+        &self,
+        scene: &mut Scene,
+        canvas: &Canvas,
+        size: (f32, f32),
+        running: &Running,
+        now: f64,
+    ) {
+        let eased = progress(running, now).t as f32;
+        // How far a board has come in or gone out along a direction.
+        let inbound = |direction| {
+            let (x, y) = step(direction);
+            (-x * size.0 * (1.0 - eased), -y * size.1 * (1.0 - eased))
+        };
+        let outbound = |direction| {
+            let (x, y) = step(direction);
+            (x * size.0 * eased, y * size.1 * eased)
+        };
+        let incoming = |this: &Session, scene: &mut Scene, canvas: &Canvas, offset| {
+            this.draw_board(scene, canvas, size, &running.to, offset);
+        };
+        match running.transition {
+            Transition::Dissolve => {
+                self.draw_outgoing(scene, canvas, size, running, (0.0, 0.0));
+                let alpha = eased.clamp(0.0, 1.0);
+                if alpha > 0.0 {
+                    canvas.save_layer_alpha_f(None, alpha);
+                    incoming(self, scene, canvas, (0.0, 0.0));
+                    canvas.restore();
+                }
+            }
+            Transition::MoveIn { direction } | Transition::SlideIn { direction } => {
+                self.draw_outgoing(scene, canvas, size, running, (0.0, 0.0));
+                incoming(self, scene, canvas, inbound(direction));
+            }
+            Transition::MoveOut { direction } | Transition::SlideOut { direction } => {
+                // The board that leaves is on top of the one beneath it.
+                incoming(self, scene, canvas, (0.0, 0.0));
+                self.draw_outgoing(scene, canvas, size, running, outbound(direction));
+            }
+            Transition::Push { direction } => {
+                self.draw_outgoing(scene, canvas, size, running, outbound(direction));
+                incoming(self, scene, canvas, inbound(direction));
+            }
+            Transition::Instant | Transition::SmartAnimate => {
+                incoming(self, scene, canvas, (0.0, 0.0));
+            }
+        }
+    }
+
+    /// Draws what a change of board changes from, moved by `offset`: the board
+    /// it leaves, or the frame of the transition it cut short as that stood.
+    fn draw_outgoing(
+        &self,
+        scene: &mut Scene,
+        canvas: &Canvas,
+        size: (f32, f32),
+        running: &Running,
+        offset: (f32, f32),
+    ) {
+        match &running.interrupted {
+            Some(before) if before.running.transition != Transition::Instant => {
+                canvas.save();
+                canvas.translate(offset);
+                self.draw_running(scene, canvas, size, &before.running, before.at);
+                canvas.restore();
+            }
+            _ => self.draw_board(scene, canvas, size, &running.from, offset),
+        }
+    }
+
     /// Draws the board the player shows, and the overlays that are open, on
     /// `canvas` (`width` x `height` CSS pixels, `pixel_ratio` device pixels
     /// each): at its own size in the middle of the stage, scaled down to fit
@@ -286,15 +411,20 @@ impl Session {
             x: left,
             y: top,
         };
-        let mut shown = vec![(frame.board, [0.0, 0.0], None)];
-        shown.extend(frame.overlays.iter().map(|overlay| {
+        match &frame.transition {
+            Some(running) if running.transition != Transition::Instant => {
+                self.draw_running(scene, canvas, (width, height), running, self.now);
+            }
+            _ => self.draw_board(scene, canvas, (width, height), &frame.board, (0.0, 0.0)),
+        }
+        let overlays = frame.overlays.iter().map(|overlay| {
             (
                 overlay.board,
                 overlay.origin,
                 overlay.background.as_deref().and_then(color),
             )
-        }));
-        for (board, origin, sheet) in shown {
+        });
+        for (board, origin, sheet) in overlays {
             if let Some(sheet) = sheet {
                 canvas.draw_rect(
                     skia_safe::Rect::from_xywh(

@@ -7,6 +7,7 @@
 
 use crate::history::{History, Play};
 use crate::overlay;
+use crate::transition::{progress, reversed};
 use omni_core::design::proto::{Action, Interaction, OverlayAnchor, OverlayPosition, Trigger};
 use omni_core::design::{Node, NodeAddress, NodeData, NodeId, NodeKind, Page};
 use std::collections::{BTreeMap, HashMap};
@@ -103,6 +104,16 @@ pub struct Running {
     pub started: f64,
     pub duration_ms: u32,
     pub easing: omni_core::design::proto::Easing,
+    /// The transition this one cut short: its frame, as it was when this one
+    /// started, is what this one changes from.
+    pub interrupted: Option<Box<Interrupted>>,
+}
+
+/// A transition that a new one cut short, and when.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Interrupted {
+    pub running: Running,
+    pub at: f64,
 }
 
 /// What to draw.
@@ -254,7 +265,7 @@ impl Player {
         let Some(running) = &self.frame.transition else {
             return Vec::new();
         };
-        if now >= running.started + f64::from(running.duration_ms) {
+        if progress(running, now).done {
             self.frame.transition = None;
         }
         vec![Effect::NeedsFrame]
@@ -283,7 +294,7 @@ impl Player {
         self.history.push(from, play);
         self.frame.board = board;
         self.frame.overlays.clear();
-        self.frame.transition = Some(running(from, board, false, play, self.last_at));
+        self.frame.transition = Some(self.running(from, board, false, play, self.last_at));
         true
     }
 
@@ -507,7 +518,7 @@ impl Player {
                 self.history.push(from, play);
                 self.frame.board = to;
                 self.frame.overlays.clear();
-                self.frame.transition = Some(running(from, to, false, play, at));
+                self.frame.transition = Some(self.running(from, to, false, play, at));
                 true
             }
             Action::Back => self.go_back(at),
@@ -586,8 +597,39 @@ impl Player {
         let from = self.frame.board;
         self.frame.board = to;
         self.frame.overlays.clear();
-        self.frame.transition = Some(running(from, to, true, play, at));
+        self.frame.transition = Some(self.running(from, to, true, play, at));
         true
+    }
+
+    /// The transition from `from` to `to` that starts at `started`. Back plays
+    /// the transition of the navigate it undoes, reversed. A transition still
+    /// playing is frozen as it is and becomes what this one changes from.
+    fn running(&self, from: NodeId, to: NodeId, back: bool, play: Play, started: f64) -> Running {
+        let interrupted = self
+            .frame
+            .transition
+            .clone()
+            .filter(|before| !progress(before, started).done)
+            .map(|running| {
+                Box::new(Interrupted {
+                    running,
+                    at: started,
+                })
+            });
+        Running {
+            from,
+            to,
+            transition: if back {
+                reversed(play.transition)
+            } else {
+                play.transition
+            },
+            reversed: back,
+            started,
+            duration_ms: play.duration_ms,
+            easing: play.easing,
+            interrupted,
+        }
     }
 
     fn board_id(&self, dest: &str) -> Option<NodeId> {
@@ -695,17 +737,5 @@ impl Player {
         for child in node.children() {
             self.walk(child, depth + 1, outer, holder, inverse, out);
         }
-    }
-}
-
-fn running(from: NodeId, to: NodeId, reversed: bool, play: Play, started: f64) -> Running {
-    Running {
-        from,
-        to,
-        transition: play.transition,
-        reversed,
-        started,
-        duration_ms: play.duration_ms,
-        easing: play.easing,
     }
 }

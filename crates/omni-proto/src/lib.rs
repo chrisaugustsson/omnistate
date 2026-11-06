@@ -6,11 +6,14 @@
 //! The behaviour is ported from FigCraft's `crates/engine/src/proto_run.rs`
 //! (MIT OR Apache-2.0; see `NOTICE`).
 
+pub mod easing;
 mod history;
 pub mod overlay;
 mod player;
+pub mod transition;
 
 pub use history::Play;
 pub use player::{
-    Effect, Frame, HINT_MS, OverlayState, Player, PointerEvent, PointerKind, Rect, Running,
+    Effect, Frame, HINT_MS, Interrupted, OverlayState, Player, PointerEvent, PointerKind, Rect,
+    Running,
 };
