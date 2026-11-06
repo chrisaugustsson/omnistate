@@ -63,7 +63,9 @@ impl DesignDoc {
                         let scope = match key.as_str() {
                             "gap" => Scope::Gap,
                             "padding" => Scope::Pad,
-                            _ => Scope::Length,
+                            "columns" => Scope::Length("columns"),
+                            "rows" => Scope::Length("rows"),
+                            _ => Scope::Length("layout"),
                         };
                         refs_in(value, |_| scope, &mut found);
                     }
@@ -73,7 +75,7 @@ impl DesignDoc {
                     |key| match key {
                         "color" => Scope::Stroke,
                         "width" => Scope::StrokeWidth,
-                        _ => Scope::Length,
+                        key => Scope::Length(attribute(key)),
                     },
                     &mut found,
                 ),
@@ -85,7 +87,7 @@ impl DesignDoc {
                                 shadow,
                                 |key| match key {
                                     "color" => Scope::ShadowColor,
-                                    _ => Scope::Length,
+                                    key => Scope::Length(attribute(key)),
                                 },
                                 &mut found,
                             ),
@@ -107,7 +109,7 @@ impl DesignDoc {
                         "radius" => Scope::Radius,
                         "width" | "minWidth" | "maxWidth" => Scope::Width,
                         "height" | "minHeight" | "maxHeight" => Scope::Height,
-                        "margin" => Scope::Length,
+                        "margin" => Scope::Length("margin"),
                         _ => continue,
                     };
                     refs_in(value, |_| scope, &mut found);
@@ -847,6 +849,19 @@ fn detach(mut node: Node, nodes: &mut HashMap<NodeId, Node>) {
 /// Appends the token references in `value` to `found`, each with the scope
 /// that `scope` gives for the key of the object it is under (the first
 /// object key above it, or the empty key at the top).
+/// The name of a length attribute that has no scope of its own.
+fn attribute(key: &str) -> &'static str {
+    match key {
+        "length" => "length",
+        "gap" => "gap",
+        "offsetX" => "offsetX",
+        "offsetY" => "offsetY",
+        "blur" => "blur",
+        "spread" => "spread",
+        _ => "length",
+    }
+}
+
 fn refs_in(
     value: &Value,
     scope: impl Fn(&str) -> Scope + Copy,

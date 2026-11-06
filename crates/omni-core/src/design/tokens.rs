@@ -148,7 +148,8 @@ pub enum Scope {
     /// The color of a shadow.
     ShadowColor,
     /// Any other length: a margin, a grid track, a dash, a shadow's offset or blur.
-    Length,
+    /// Carries the name of the attribute the design writes it in.
+    Length(&'static str),
 }
 
 const SCOPES: [(&str, Scope); 15] = [
@@ -175,8 +176,8 @@ impl Scope {
             Self::FontFamily => "fontFamily",
             Self::FontWeight => "fontWeight",
             Self::Shadow => "shadows",
-            Self::ShadowColor => "shadow color",
-            Self::Length => "length",
+            Self::ShadowColor => "color",
+            Self::Length(attribute) => attribute,
             _ => SCOPES
                 .iter()
                 .find(|(_, scope)| *scope == self)
