@@ -26,7 +26,9 @@ branch:
 - `stack`: `OMNI_PORT=8421 docker compose -p omnistate-test run --rm test`
 
 The same two steps are `make test-stack-up` and `make test-stack` for running
-them by hand. The verifier that exercises the story is told which stack
+them by hand. The lane starts `stack_up` together with the fast command, since
+one builds in the compose volume and the other in the host target, and runs
+`stack` once `stack_up` is done. The verifier that exercises the story is told which stack
 `stack_up` started and checks the story against that one.
 
 When a lane fails after `stack_up` ran (the stack did not start, the stack
@@ -35,8 +37,14 @@ verifier returned nothing), the run resets the integration branch to the lane's
 base and runs `stack_up` again from that tree, logging
 `lane:<key>: rebuilding the stack from <branch> at <sha>`, so the test stack is
 left on the integration branch's head rather than on the story it sent back.
-A lane that fails at the fast command never started the stack and does not
-rebuild it.
+That includes a lane that fails at the fast command, since the stack was
+building at the same time.
+
+After the verifier, the test author writes the story's regression tests on
+the main worktree and returns the command that runs them; the lane runs that
+command on its test commit. A red run drops the test commits, the story stays
+done on its verified implementation, and the report's Tests section says
+`tests dropped`.
 
 ## Bringing the test stack down
 

@@ -520,7 +520,6 @@ function implAgent(byKey, reviewByKey = {}, verifyByKey = {}, testsByKey = {}) {
       const key = opts.label.slice(6).split(" ")[0];
       return testsByKey[key] ? testsByKey[key]() : noTests;
     }
-    if (opts.label.startsWith("test-review:")) return { pass: true, duplicates: [], issues: [], suiteGreen: true, productionUntouched: true, leftoverFiles: [] };
     if (opts.label === "final check") return { healthy: true, journeys: ["Board to badge: worked"], report: "fast passed" };
     if (opts.label.startsWith("verify:")) {
       const key = opts.label.slice(7).split(" ")[0];
@@ -540,7 +539,7 @@ function implAgent(byKey, reviewByKey = {}, verifyByKey = {}, testsByKey = {}) {
   return { agent, prompts, reviews, verifies };
 }
 
-const noTests = { status: "done", commit: "", oracle: [], existingCoverage: [], added: [], reused: [], changedOrRemoved: [], notAdmitted: [] };
+const noTests = { status: "done", commit: "", check: "", oracle: [], existingCoverage: [], added: [], reused: [], changedOrRemoved: [], notAdmitted: [] };
 const threadOf = (dirs, key) => dirs.state().threads.find((th) => th.id === dirs.story(key).links[0].thread_id);
 const deferred = () => {
   let resolve;
@@ -889,7 +888,7 @@ function onSendBack(dirs, key, seen) {
 }
 const stopped = async () => ({ status: "blocked", summary: "stopped" });
 
-test("two reviewed stories pass the lane one at a time: each rebased and fast-forwarded, then fast, stack_up, stack and the verifier in order, with the lane file naming it and the commit before its merge; the second is claimed only once the first is done", { timeout: 20000 }, async (t) => {
+test("two reviewed stories pass the lane one at a time: each rebased and fast-forwarded, then fast and the stack at the same time (stack after stack_up) and the verifier after both, with the lane file naming it and the commit before its merge; the second is claimed only once the first is done", { timeout: 20000 }, async (t) => {
   const dirs = scratch(t, [story("US-1", { status: "reviewed" }), story("US-2", { status: "reviewed" })]);
   const log = join(dirs.root, "steps.log");
   dirs.checks({ fast: step(log, "fast"), stack_up: step(log, "stack_up"), stack: step(log, "stack") });
@@ -909,16 +908,15 @@ test("two reviewed stories pass the lane one at a time: each rebased and fast-fo
   assert.equal(git(dirs.repo, "rev-list", "--merges", "main").trim(), "");
   const lane1 = { key: "US-1", base: sha(dirs, "main~2") };
   const lane2 = { key: "US-2", base: sha(dirs, "main~1") };
-  assert.deepEqual(stepsOf(log), [
-    { step: "fast", lane: lane1, head: "feat: US-1 attempt" },
-    { step: "stack_up", lane: lane1, head: "feat: US-1 attempt" },
-    { step: "stack", lane: lane1, head: "feat: US-1 attempt" },
-    { step: "verify", lane: lane1, head: "feat: US-1 attempt" },
-    { step: "fast", lane: lane2, head: "feat: US-2 attempt" },
-    { step: "stack_up", lane: lane2, head: "feat: US-2 attempt" },
-    { step: "stack", lane: lane2, head: "feat: US-2 attempt" },
-    { step: "verify", lane: lane2, head: "feat: US-2 attempt" },
-  ]);
+  const steps = stepsOf(log);
+  assert.deepEqual(steps.map((s) => s.lane.key), ["US-1", "US-1", "US-1", "US-1", "US-2", "US-2", "US-2", "US-2"]);
+  for (const [key, lane] of [["US-1", lane1], ["US-2", lane2]]) {
+    const mine = steps.filter((s) => s.lane.key === key);
+    assert.deepEqual(mine.map((s) => s.step).sort(), ["fast", "stack", "stack_up", "verify"]);
+    assert.deepEqual(mine.map((s) => [s.lane, s.head]), mine.map(() => [lane, `feat: ${key} attempt`]));
+    const at = (name) => mine.findIndex((s) => s.step === name);
+    assert.ok(at("stack_up") < at("stack") && at("stack") < at("verify") && at("fast") < at("verify"), `${key}: ${mine.map((s) => s.step).join(", ")}`);
+  }
   assert.deepEqual(seen["US-1"], { "US-1": "testing", "US-2": "reviewed", claimsOfUS2: 0 });
   assert.deepEqual(seen["US-2"], { "US-1": "done", "US-2": "testing", claimsOfUS2: 1 });
   assert.deepEqual([dirs.story("US-1").status, dirs.story("US-2").status], ["done", "done"]);
@@ -991,7 +989,7 @@ test("the lane claims reviewed stories by priority, then by number", { timeout: 
   assert.deepEqual(order, ["US-2", "US-10", "US-1"]);
 });
 
-test("a fast command failing in the lane resets the integration branch to the lane base, removes the lane file, runs nothing after it, and sends the story to the backlog at priority 0 with an [attempt 1] testing finding naming the command and its output", { timeout: 20000 }, async (t) => {
+test("a fast command failing in the lane resets the integration branch to the lane base, removes the lane file, runs no verifier, and sends the story to the backlog at priority 0 with an [attempt 1] testing finding naming the command and its output; the stack, which ran alongside, is rebuilt", { timeout: 20000 }, async (t) => {
   const dirs = scratch(t, [story("US-1", { status: "reviewed", priority: 2, criteria: [{ text: "The badge has a colour" }] })]);
   const log = join(dirs.root, "steps.log");
   dirs.checks({ fast: step(log, "fast", 1, "fast broke on main"), stack_up: step(log, "stack_up"), stack: step(log, "stack") });
@@ -1002,7 +1000,7 @@ test("a fast command failing in the lane resets the integration branch to the la
 
   await workflow({ feature: "board" }, agent, onSendBack(dirs, "US-1", seen), (fns) => Promise.all(fns.map((f) => f())), () => {});
 
-  assert.deepEqual(stepsOf(log).map((s) => s.step), ["fast"]);
+  assert.deepEqual(stepsOf(log).map((s) => s.step).sort(), ["fast", "stack", "stack_up", "stack_up"]);
   assert.equal(verifies["US-1"], undefined);
   const { findings, ...rest } = seen.sentBack;
   assert.deepEqual(rest, { status: "backlog", priority: 0, holder: null, main: ["chore: main edits main.rs", "init"], clean: "", lane: false });
@@ -1022,7 +1020,7 @@ test("a stack command failing in the lane resets the branch to the lane base, ru
 
   await workflow({ feature: "board" }, agent, onSendBack(dirs, "US-1", seen), (fns) => Promise.all(fns.map((f) => f())), () => {});
 
-  assert.deepEqual(stepsOf(log).map((s) => s.step), ["fast", "stack_up", "stack", "stack_up"]);
+  assert.deepEqual(stepsOf(log).map((s) => s.step).sort(), ["fast", "stack", "stack_up", "stack_up"]);
   assert.deepEqual(stepsOf(log)[3], { step: "stack_up", lane: null, head: "init" });
   assert.equal(verifies["US-1"], undefined);
   assert.deepEqual([seen.sentBack.main, seen.sentBack.lane, seen.sentBack.priority], [["init"], false, 0]);
@@ -1060,7 +1058,7 @@ test("a stack command failing after stack_up ran leaves the stack rebuilt: stack
   assert.equal(dirs.story("US-2").status, "backlog");
 });
 
-test("a fast command failing in the lane runs stack_up neither before nor after the send-back", { timeout: 20000 }, async (t) => {
+test("a fast command failing in the lane has run stack_up alongside it, so the stack is rebuilt from the lane base after the send-back", { timeout: 20000 }, async (t) => {
   const dirs = scratch(t, [story("US-1", { status: "reviewed" })]);
   const log = join(dirs.root, "steps.log");
   dirs.checks({ fast: "false", stack_up: stackUpStep(log), stack: "true" });
@@ -1070,8 +1068,8 @@ test("a fast command failing in the lane runs stack_up neither before nor after 
 
   await workflow({ feature: "board" }, agent, () => {}, (fns) => Promise.all(fns.map((f) => f())), (m) => lines.push(m));
 
-  assert.equal(existsSync(log), false);
-  assert.deepEqual(lines.filter((l) => /rebuil/.test(l)), []);
+  assert.equal(existsSync(log), true);
+  assert.deepEqual(lines.filter((l) => /rebuil/.test(l)).map((l) => l.replace(/ at \w+$/, "")), ["lane:US-1: rebuilding the stack from main", "lane:US-1: stack rebuilt from main"]);
 });
 
 test("a stack command reporting a file missing gets a finding with the host's view before the reset: HEAD at the merged commit, the dirty tree, the file present on the host with its size, and the compose containers", { timeout: 20000 }, async (t) => {
@@ -1106,7 +1104,7 @@ test("a stack_up failing in the lane runs neither the stack command nor the veri
 
   await workflow({ feature: "board" }, agent, onSendBack(dirs, "US-1", seen), (fns) => Promise.all(fns.map((f) => f())), () => {});
 
-  assert.deepEqual(stepsOf(log).map((s) => s.step), ["fast", "stack_up", "stack_up"]);
+  assert.deepEqual(stepsOf(log).map((s) => s.step).sort(), ["fast", "stack_up", "stack_up"]);
   assert.deepEqual(stepsOf(log)[2], { step: "stack_up", lane: null, head: "init" });
   assert.equal(verifies["US-1"], undefined);
   assert.deepEqual([seen.sentBack.main, seen.sentBack.lane, seen.sentBack.findings.length], [["init"], false, 1]);
@@ -1192,7 +1190,6 @@ test("a reviewed story whose branch is gone is sent back with a missing-branch f
 
 // ---- the test lane: regression tests, then done ---------------------------------
 
-const rejectTests = { pass: false, duplicates: [], issues: ["The badge test asserts only that a colour is set"], suiteGreen: true, productionUntouched: true, leftoverFiles: [] };
 
 test("a found_defect from the test author resets the integration branch to the lane base, its test commit gone, and sends the story back with an [attempt 1] testing finding naming the test, the observed and the expected value", { timeout: 20000 }, async (t) => {
   const dirs = scratch(t, [story("US-1", { status: "reviewed", priority: 2 })]);
@@ -1220,77 +1217,55 @@ test("a found_defect from the test author resets the integration branch to the l
   assert.match(findings[0].text, /the badge is red/);
 });
 
-test("tests not accepted after three rounds leave the integration branch at the merged story commit with a clean main worktree and its ignored files, no lane file, the story's worktree and branch, and the story reviewed, blocked and linked to its thread", { timeout: 20000 }, async (t) => {
+test("the lane restores what the test author left uncommitted, keeps ignored files, runs the author's check command on its test commit, and the story is done with its tests on main", { timeout: 20000 }, async (t) => {
   const dirs = scratch(t, [story("US-1", { status: "reviewed" })]);
   dirs.checks({ fast: "true", stack_up: "true", stack: "true" });
   const wt = reviewed(dirs, "US-1");
   mainEdits(dirs, ".gitignore", ".omni/\ntarget/\n");
   mkdirSync(join(dirs.repo, "target"));
   writeFileSync(join(dirs.repo, "target", "build.out"), "build\n");
-  // Each round commits a test file, and leaves a tracked file edited and a new test file uncommitted.
-  const rounds = [];
-  const leavesWork = () => {
-    rounds.push(rounds.length + 1);
-    writeFileSync(join(dirs.repo, `round${rounds.length}.test.mjs`), "test\n");
-    git(dirs.repo, "add", `round${rounds.length}.test.mjs`);
-    git(dirs.repo, "commit", "-q", "-m", `test: Round ${rounds.length}`);
+  const checks = join(dirs.root, "checks.log");
+  // Commits a test file, and leaves a tracked file edited and a new test file uncommitted.
+  const author = () => {
+    writeFileSync(join(dirs.repo, "badge.test.mjs"), "test\n");
+    git(dirs.repo, "add", "badge.test.mjs");
+    git(dirs.repo, "commit", "-q", "-m", "test: Badge colour");
     writeFileSync(join(dirs.repo, "README"), "app\nedited\n");
     writeFileSync(join(dirs.repo, "wip.test.mjs"), "wip\n");
-    return noTests;
+    return { ...noTests, commit: "head", check: `git log -1 --format=%s >> ${checks}; git status --porcelain >> ${checks}; test -e badge.test.mjs`, added: [{ test: "a late order's badge is red", file: "badge.test.mjs", risk: "the badge", overlapCheck: "none", sensitivity: "red on blue" }] };
   };
-  const base = implAgent({}, {}, {}, { "US-1": leavesWork }).agent;
-  const agent = async (prompt, opts) => (opts.label.startsWith("test-review:") ? rejectTests : base(prompt, opts));
 
-  await deliver({ feature: "board" }, agent);
+  const result = await deliver({ feature: "board" }, implAgent({}, {}, {}, { "US-1": author }).agent);
 
-  assert.deepEqual(rounds, [1, 2, 3]);
-  assert.deepEqual(subjects(dirs), ["feat: US-1 attempt", "chore: main edits .gitignore", "init"]);
+  assert.deepEqual(subjects(dirs), ["test: Badge colour", "feat: US-1 attempt", "chore: main edits .gitignore", "init"]);
+  assert.equal(readFileSync(checks, "utf8"), "test: Badge colour\n", "the check ran at the test commit, on a clean tree");
   assert.equal(git(dirs.repo, "status", "--porcelain"), "");
+  assert.doesNotMatch(readFileSync(join(dirs.repo, "README"), "utf8"), /edited/);
   assert.equal(readFileSync(join(dirs.repo, "target", "build.out"), "utf8"), "build\n");
   assert.equal(existsSync(laneFile(dirs)), false);
-  assert.deepEqual([existsSync(wt), hasBranch(dirs, "US-1")], [true, true]);
-  const s = dirs.story("US-1");
-  assert.deepEqual({ status: s.status, blocked: s.blocked, holder: s.holder }, { status: "reviewed", blocked: true, holder: null });
-  assert.equal(threadOf(dirs, "US-1").title, "US-1: regression tests were not accepted");
+  assert.deepEqual([dirs.story("US-1").status, existsSync(wt), hasBranch(dirs, "US-1")], ["done", false, false]);
+  assert.match(result.report, /US-1: 1 added \(a late order's badge is red\), 0 reused, 0 removed$/m);
 });
 
-test("a story whose tests were not accepted is taken again by the lane once its thread concludes, with the merged story commit as its base: the rebase and fast-forward change nothing, and the checks and the tests run again", { timeout: 20000 }, async (t) => {
+test("a check command that fails drops the author's test commits, leaves the story done on its verified implementation, and the report names the dropped tests", { timeout: 20000 }, async (t) => {
   const dirs = scratch(t, [story("US-1", { status: "reviewed" })]);
-  const log = join(dirs.root, "steps.log");
-  dirs.checks({ fast: step(log, "fast"), stack_up: "true", stack: "true" });
+  dirs.checks({ fast: "true", stack_up: "true", stack: "true" });
   reviewed(dirs, "US-1");
-  mainEdits(dirs, "main.rs", "main\n");
-  const statePath = join(dirs.root, "omni-state.json");
-  // The human answers the thread the rejected tests opened.
-  const phase = (title) => {
-    if (title !== "Unblock") return;
-    const state = dirs.state();
-    const s = state.stories.find((x) => x.key === "US-1");
-    if (!s.blocked) return;
-    state.threads.find((x) => x.id === s.links[0].thread_id).conclusion = "Write the tests again";
-    writeFileSync(statePath, JSON.stringify(state));
-  };
-  const lane = [];
-  const base = implAgent({}).agent;
-  const agent = async (prompt, opts) => {
-    if (opts.label.startsWith("tests:")) lane.push("tests");
-    if (opts.label.startsWith("test-review:")) {
-      lane.push("test-review");
-      if (lane.length <= 6) return rejectTests;
-    }
-    return base(prompt, opts);
+  const lines = [];
+  const author = () => {
+    writeFileSync(join(dirs.repo, "badge.test.mjs"), "test\n");
+    git(dirs.repo, "add", "badge.test.mjs");
+    git(dirs.repo, "commit", "-q", "-m", "test: Badge colour");
+    return { ...noTests, commit: "head", check: "echo 'badge: expected red, got blue'; exit 1", added: [{ test: "a late order's badge is red", file: "badge.test.mjs", risk: "the badge", overlapCheck: "none", sensitivity: "red on blue" }] };
   };
 
-  await workflow({ feature: "board" }, agent, phase, (fns) => Promise.all(fns.map((f) => f())), () => {});
+  const result = await workflow({ feature: "board" }, implAgent({}, {}, {}, { "US-1": author }).agent, () => {}, (fns) => Promise.all(fns.map((f) => f())), (m) => lines.push(m));
 
-  assert.deepEqual(claimsOf(dirs, "US-1").map((c) => c.stage), ["testing", "testing"]);
-  assert.deepEqual(subjects(dirs), ["feat: US-1 attempt", "chore: main edits main.rs", "init"]);
-  assert.deepEqual(stepsOf(log), [
-    { step: "fast", lane: { key: "US-1", base: sha(dirs, "main~1") }, head: "feat: US-1 attempt" },
-    { step: "fast", lane: { key: "US-1", base: sha(dirs, "main") }, head: "feat: US-1 attempt" },
-  ]);
-  assert.deepEqual(lane, ["tests", "test-review", "tests", "test-review", "tests", "test-review", "tests", "test-review"]);
-  assert.deepEqual([dirs.story("US-1").status, existsSync(laneFile(dirs)), hasBranch(dirs, "US-1")], ["done", false, false]);
+  assert.deepEqual(subjects(dirs), ["feat: US-1 attempt", "init"]);
+  assert.equal(git(dirs.repo, "status", "--porcelain"), "");
+  assert.equal(dirs.story("US-1").status, "done");
+  assert.ok(lines.includes("lane:US-1: tests dropped: `echo 'badge: expected red, got blue'; exit 1` failed"), lines.filter((l) => l.startsWith("lane:")).join("\n"));
+  assert.match(result.report, /US-1: 0 added, 0 reused, 0 removed; tests dropped: `echo 'badge: expected red, got blue'; exit 1` failed:$/m);
 });
 
 // ---- the end of the run: nothing waits and nothing is held ----------------------

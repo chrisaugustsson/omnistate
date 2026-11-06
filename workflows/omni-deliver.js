@@ -7,8 +7,8 @@ export const meta = {
     { title: 'Reconcile', detail: 'undo a merge a dead run left half done (the lane file), then release every story held by another run, and every working story nobody holds' },
     { title: 'Clarity', detail: 'one check per backlog story whose version is new, in parallel: blocking gaps become threads, minor ones agent decisions' },
     { title: 'Unblock', detail: 'a blocked story whose linked threads all have a conclusion gets each conclusion as a human decision and is unblocked' },
-    { title: 'Implement', detail: 'the implement loop polls the board every 5 seconds and when an implementer ends: while fewer than `implementers` run, it claims the first pickable story that passed clarity and starts an implementer in its worktree (an existing one is continued), running only the checks its change needs; a finished story moves to implemented, a blocked one gets a thread and stays in the backlog' },
-    { title: 'Test lane', detail: 'one story at a time on the main worktree: the lane claims the first reviewed story, writes .omni/lane.json, rebases its branch onto the integration branch and fast-forwards it, then runs the fast command, the stack and a verifier on its criteria, then a test author and a test reviewer lock it down with regression tests, and it moves to done; the first failure resets the branch to the lane base and returns the story to the backlog with the findings at priority 0, its branch kept' },
+    { title: 'Implement', detail: 'the implement loop polls the board every 5 seconds and when an implementer ends: while fewer than `implementers` run, it claims the first pickable story that passed clarity and starts an implementer in its worktree (an existing one is continued), writing no tests and running only the existing checks its change needs; a finished story moves to implemented, a blocked one gets a thread and stays in the backlog' },
+    { title: 'Test lane', detail: 'one story at a time on the main worktree: the lane claims the first reviewed story, writes .omni/lane.json, rebases its branch onto the integration branch and fast-forwards it, runs the fast command and the stack at the same time, then a verifier on its criteria, then a test author writes its regression tests by the writing-tests skill and the lane runs them (a red run drops the test commits and the report says so), and it moves to done; a failure before the tests resets the branch to the lane base and returns the story to the backlog with the findings at priority 0, its branch kept' },
     { title: 'Review', detail: 'up to `reviewers` reviewers at once read each review story\'s branch against its criteria; a fail returns the story to the backlog at priority 0 with the findings, for a fresh implementer that continues from the story\'s branch, and a fresh reviewer; a third failed attempt opens a thread and blocks the story; a pass moves it to reviewed' },
     { title: 'Report', detail: 'claims on unfinished stories are released, a verifier runs the fast command and the journeys of the stories done, and the report is posted on the Run thread' },
   ],
@@ -25,9 +25,9 @@ const POLL_MS = 5000
 // ---- model routing per role ------------------------------------------------
 // Same mapping as ralph-spec: Sonnet builds, Opus judges. Override per role with
 // args.models, or force one model everywhere with args.model.
-const MODELS = { clarity: 'opus', impl: 'sonnet', implRetry: 'opus', review: 'opus', verify: 'opus', tests: 'opus', testReview: 'opus', testCut: 'sonnet', wrap: 'sonnet', ...(A.models || {}) }
+const MODELS = { clarity: 'opus', impl: 'sonnet', implRetry: 'opus', review: 'opus', verify: 'opus', tests: 'opus', wrap: 'sonnet', ...(A.models || {}) }
 const modelFor = (role) => A.model || MODELS[role]
-const AGENT_TYPES = { clarity: 'verifier', impl: 'implementer', review: 'verifier', verify: 'verifier', tests: 'implementer', testReview: 'verifier', testCut: 'implementer', wrap: 'verifier', ...(A.agentTypes || {}) }
+const AGENT_TYPES = { clarity: 'verifier', impl: 'implementer', review: 'verifier', verify: 'verifier', tests: 'implementer', wrap: 'verifier', ...(A.agentTypes || {}) }
 const runAgent = (prompt, { role, ...opts } = {}) =>
   agent(prompt, AGENT_TYPES[role] ? { ...opts, agentType: AGENT_TYPES[role] } : opts)
 
@@ -380,8 +380,9 @@ ${docs.map((l) => `### Doc ${l.doc_id}, node ${l.node_id}${l.label ? ` (${l.labe
 ${task ? `\n## Your task now\n${task}\n` : ''}${CONVENTIONS}
 ## Rules
 - Implement only this story. No unrelated cleanup, no groundwork for later stories.
-- Commit a feat: commit, then fix: commits for later corrections. Commit production and test files that belong to the story.
-- Before you finish, run the narrowest check that proves your change: one crate's tests, one test file, one package's typecheck. Do not run the full check command here; it runs on the main worktree after the merge.
+- Commit a feat: commit, then fix: commits for later corrections. Commit the story's production files.
+- Write NO tests: no new test, test file, test helper, fixture or snapshot. The lane's test author writes the story's tests from the story text, by the writing-tests skill, after a verifier has confirmed the story works. The one exception: an existing test that asserts the behaviour this story changes may be updated to the story's decision; name it in decisions.
+- Before you finish, run the narrowest existing check that proves your change: one crate's existing tests, one package's typecheck. Do not run the full check command here; it runs on the main worktree after the merge.
 - The stack tests run ONLY as a read-only check through the configured stack command's compose project, \`${stackCmd || '(none configured)'}\`, from the main worktree's folder ${root}: never \`docker compose up\` or \`docker compose run\` from your worktree. The compose project is shared, and a run from your worktree recreates the stack the test lane depends on. When you cannot run them that way, say so in decisions instead of running them.
 - If the story needs a product decision the spec does not make and the story cannot avoid, STOP: status needs_decision with question, options and recommendation. Never guess a product rule. Ordinary technical choices are yours.
 - If you genuinely cannot continue, status blocked with the reason in summary.
@@ -537,6 +538,7 @@ ${docs.map((l) => `### Doc ${l.doc_id}, node ${l.node_id}${l.label ? ` (${l.labe
 
 ## Rules
 - Read the diff and the files against every criterion, the interfaces and the linked doc nodes. Do not run tests, builds or the app.
+- A new test, test file, test helper, fixture or snapshot in the diff is a finding: the implementer writes no tests, the lane's test author does. An existing test updated to a decision the story names is fine.
 - verdict fail: one finding per defect, each with the files it is in and the criterion it breaks.
 - verdict needs_decision: only when the spec does not decide the behaviour and the story cannot avoid it; give question, options and recommendation.
 - verdict pass: every criterion is met by the code you read. Findings empty.
@@ -730,16 +732,19 @@ coverage and lint configuration, and skip/only/todo markers`
   already catch everything. A row you rank but do not write, because a test already
   catches it, goes in notAdmitted with the test that catches it. List added tests in
   rank order, highest first.
+- The implementer wrote no tests for this story: every test of its behaviour is yours
+  to rank and admit, and the inventory tells you what earlier tests already catch.
 - Tests added by earlier stories in this run are part of the existing suite.
   Using earlier stories' features as setup is fine; do not re-test their rules.
 `
   const TESTS_SCHEMA = {
     type: 'object',
-    required: ['status', 'commit', 'oracle', 'existingCoverage', 'added', 'reused', 'changedOrRemoved', 'notAdmitted'],
+    required: ['status', 'commit', 'check', 'oracle', 'existingCoverage', 'added', 'reused', 'changedOrRemoved', 'notAdmitted'],
     properties: {
       status: { type: 'string', enum: ['done', 'found_defect', 'needs_decision', 'blocked'] },
       questions: { type: 'array', items: { type: 'string' }, description: 'With status needs_decision: what the story does not settle' },
       commit: { type: 'string', description: 'The test: commit hash, or empty string when no test change was needed' },
+      check: { type: 'string', description: 'The one command, run from the repo root, that runs exactly the tests you added (e.g. cargo test -p omni-core --test design_tokens, or pnpm --filter web exec vitest run src/x.test.tsx); empty when you added nothing' },
       oracle: {
         type: 'array',
         description: 'The oracle table (skill step 1), written from the story before reading the implementation: one row per key example',
@@ -789,45 +794,6 @@ coverage and lint configuration, and skip/only/todo markers`
     },
   }
 
-  const TEST_REVIEW_SCHEMA = {
-    type: 'object',
-    required: ['pass', 'duplicates', 'issues', 'suiteGreen', 'productionUntouched'],
-    properties: {
-      pass: { type: 'boolean' },
-      duplicates: {
-        type: 'array',
-        description: 'Every new or changed test that pins something another test already pins. Empty if none',
-        items: {
-          type: 'object',
-          required: ['newTest', 'newTestFile', 'existingTest', 'fix', 'cut'],
-          properties: {
-            newTest: { type: 'string' },
-            newTestFile: { type: 'string', description: 'The spec file the new test is in' },
-            existingTest: { type: 'string', description: 'The test (file and name) that already catches the same breakage' },
-            fix: { type: 'string', description: 'cut the new test, or merge it into the existing one, and how' },
-            cut: { type: 'boolean', description: 'true when the whole fix is deleting the new test outright: the existing test already catches every mutant it catches, so nothing needs merging' },
-          },
-        },
-      },
-      issues: { type: 'array', items: { type: 'string' }, description: 'Problems in the committed tests or the suite, each naming the test and the fix: change the assertion to <x>, merge it into <test>. Do NOT repeat a duplicate here. A mistake in the author\'s account that hides no problem in the tests goes in learnings, not here' },
-      suiteGreen: { type: 'boolean', description: 'Full suite and typecheck pass at HEAD' },
-      productionUntouched: { type: 'boolean', description: 'No non-test file changed since the verified implementation, committed or not' },
-      leftoverFiles: { type: 'array', items: { type: 'string' }, description: 'Tracked files with uncommitted changes (git status --porcelain --untracked-files=no). Empty if clean' },
-      learnings: { type: 'array', items: { type: 'string' } },
-    },
-  }
-
-  const TEST_CUT_SCHEMA = {
-    type: 'object',
-    required: ['commit', 'removed', 'suiteGreen'],
-    properties: {
-      commit: { type: 'string', description: 'The test: commit that removes the tests, or empty string if nothing was committed' },
-      removed: { type: 'array', items: { type: 'string' }, description: 'The tests removed, by the names given' },
-      suiteGreen: { type: 'boolean', description: 'Full suite and typecheck pass after the removal' },
-      blockers: { type: 'string', description: 'Why a listed test could not be removed cleanly' },
-    },
-  }
-
   const WRAP_SCHEMA = {
     type: 'object',
     required: ['healthy', 'journeys', 'report'],
@@ -841,7 +807,7 @@ coverage and lint configuration, and skip/only/todo markers`
   const bullets = (items) => items.map((i) => `- ${i}`).join('\n')
   const testReports = []
   const testsSoFar = () => testReports.flatMap((t) => t.added.map((a) => `[${t.key}] ${a.test} (${a.file})`))
-  const authorPrompt = (story, base, criteria, feedback) => `You write the lasting regression tests for one story of the feature "${feature}", with a fresh context.
+  const authorPrompt = (story, base, criteria) => `You write the lasting regression tests for one story of the feature "${feature}", with a fresh context.
 The implementation is merged and committed on ${integration} in the main worktree ${root}, and a verifier has confirmed it matches its criteria.
 You own tests; you never change production code. Work only in ${root}.
 
@@ -856,118 +822,68 @@ ${(story.decisions || []).map((d) => `- ${d.question} -> ${d.choice} (${d.by})`)
 
 ## Criteria the verifier confirmed (observed values are withheld so they cannot shape your oracle)
 ${bullets(criteria.map((c) => c.criterion))}
-${testsSoFar().length ? `\n## Tests added earlier in this run (part of the existing suite; do not re-test what they pin)\n${bullets(testsSoFar())}\n` : ''}${feedback ? `\n## Review of your previous tests (address ALL of it in a NEW "test:" commit on top)\n${feedback}\n` : ''}${CONVENTIONS}${TEST_POLICY}
+${testsSoFar().length ? `\n## Tests added earlier in this run (part of the existing suite; do not re-test what they pin)\n${bullets(testsSoFar())}\n` : ''}${CONVENTIONS}${TEST_POLICY}
 ## Rules
 - Record \`git rev-parse HEAD\` first. You may change only ${TEST_ASSETS}.
 - ORACLE FIRST (skill step 1): write the oracle table from the story text above BEFORE you open any production file or run the code. Return it in oracle. Every expected value in your tests comes from a row. If the code disagrees with a row and the story clearly supports the row, that is a defect (status found_defect); if the story does not settle it, return status needs_decision with the question in questions. In both cases leave no uncommitted test changes.
 - INVENTORY (skill step 2), before writing any test. Besides the skill's search, search by the names in the story's files and by what \`git diff ${base}..HEAD\` touches. Record each existing test found in existingCoverage, and for each new test the closest existing ones in overlapCheck.
 - PROVE IT GOES RED (skill step 6) for every new test: record in sensitivity each mutant you applied, that the new test went red, and which existing tests you ran against it that stayed green. Production files must be unchanged when you finish (git status shows no production changes).
-- Run the full suite${fast ? ` (\`${fast}\`)` : ''} before you commit. Commit only test files: "test: <summary>". If you add nothing, commit nothing and return an empty commit.
+- Before you commit, run the test files you touched and the typecheck of their crate or package, not the full suite: the lane ran it on this commit before you started, and runs your new tests once more after you with the command you return in check. Leave the working tree clean: no mutant left in a production file, no uncommitted test file. Commit only test files: "test: <summary>". If you add nothing, commit nothing and return an empty commit and an empty check.
 Return raw structured data only.`
-  const reviewTestsPrompt = (story, base, result, rounds) => `You review the regression tests a test author just wrote for one story of the feature "${feature}", with a fresh context. You are read-only: you change nothing (apart from temporary mutants you restore).
-
-## Story ${story.key}: ${story.title}
-${story.text || ''}
-
-### Acceptance criteria
-${(story.criteria || []).map((c) => `- ${c.text || c}`).join('\n')}
-
-## What the author says
-Oracle rows: ${result.oracle.length}
-Existing coverage they found: ${bullets(result.existingCoverage.map((t) => `${t.test} (${t.file}) — ${t.covers}`)) || 'none'}
-Added: ${bullets(result.added.map((t) => `${t.test} (${t.file}) — risk: ${t.risk}; overlap check: ${t.overlapCheck}; sensitivity: ${t.sensitivity}`)) || 'none'}
-Reused: ${bullets(result.reused.map((t) => `${t.test} — ${t.risk}`)) || 'none'}
-Changed/removed: ${bullets(result.changedOrRemoved.map((t) => `${t.action} ${t.test} — ${t.reason}`)) || 'none'}
-Not admitted (already caught): ${bullets(result.notAdmitted.map((n) => `${n.row} — caught by ${n.caughtBy}`)) || 'none'}
-${rounds.length ? `
-## Earlier review rounds for this story (the author applied each one in a new commit)
-${rounds.map((r) => `### Round ${r.round} (reviewed ${r.commit || 'see git log'})\n${r.feedback}`).join('\n')}
-
-Rules for a later round:
-- Judge the result, not the history: a test an earlier round asked for still has to pass the policy. But do not reverse an earlier request without saying so: name the round and why its request was wrong in your issue or duplicate.
-- Focus on what the latest commit changed and on earlier findings that are still unresolved. Raise a new finding about a test earlier rounds accepted only when it breaks the policy (duplicate, vacuous assertion, weakened test), not for style.
-` : ''}${testsSoFar().length ? `\n## Tests added earlier in this run\n${bullets(testsSoFar())}\n` : ''}${TEST_POLICY}
-## Check (run things yourself, in ${root})
-1. git diff --name-only ${base}..HEAD and git log ${base}..HEAD: the test commit(s) of this round touch only ${TEST_ASSETS}; the story's own commits touch none. productionUntouched=false if a test commit changed any other file. Then run git status --porcelain --untracked-files=no and list every file it shows in leftoverFiles. A production file there is usually a mutant the author forgot to restore: productionUntouched=false.
-2. Ranking and admission (skill "Reviewing tests", step 3): no explicit decision was left without a test while lower-ranked rows got one; each notAdmitted row really is caught by the test it names; and the lowest-ranked added test would leave a mutant uncaught if removed. Report failures as issues.
-3. Review per the skill's "Reviewing tests" section; you are read-only, so use its read-only form of the goes-red check. DUPLICATES are your main check: search the suite yourself rather than trusting the author's inventory, include the tests added earlier in this run, and record every duplicate in duplicates. Set cut=true only when deleting the new test is the whole fix; a duplicate that needs merging is cut=false.
-4. The fast command${fast ? ` (\`${fast}\`)` : ''} and typecheck pass at HEAD.
-Name the test and the fix for every issue (cut it, merge it into <test>, change the assertion to <x>). pass=false if there is any issue or duplicate. Return raw structured data only.`
-  // Writes and reviews the story's regression tests on the main worktree, up to
-  // three rounds. Returns {ok: true}, or {ok: false, thread} once the story is blocked.
+  // Writes the story's regression tests on the main worktree, then runs them.
+  // Returns {ok: true}, {ok: false, defect} when the author found the story
+  // wrong, or {ok: false, thread} when the author stopped or returned nothing.
   const testStory = async (key, criteria) => {
     phase('Test lane')
     const story = readStory(key)
     const base = (ranges.get(key) || {}).base || git(['rev-parse', 'HEAD']).trim()
     const start = git(['rev-parse', 'HEAD']).trim()
-    const entry = { key, added: [], reused: [], removed: [], commits: [] }
+    const entry = { key, added: [], reused: [], removed: [], changed: [], commits: [] }
     testReports.push(entry)
-    const kept = new Map()
-    const rounds = []
-    let feedback = ''
     let result = null
-    let accepted = false
-    for (let attempt = 1; attempt <= 3 && !accepted; attempt++) {
-      result = await runAgent(authorPrompt(story, base, criteria, feedback), { schema: TESTS_SCHEMA, label: `tests:${key}${attempt > 1 ? ` round${attempt}` : ''}`, phase: 'Test lane', model: modelFor('tests'), role: 'tests' })
-      if (!result) {
-        feedback = 'The test author returned no result.'
-        continue
-      }
-      if (result.status !== 'done') {
-        if (result.status === 'found_defect' && result.defect) return { ok: false, defect: `${result.defect.test}\nObserved: ${result.defect.observed}\nExpected: ${result.defect.expected}` }
-        const what = (result.questions || []).join('\n') || result.blockers || result.status
-        const id = openThread(`${key}: the test author stopped (${result.status})`, `${what}\n`)
-        linkAndBlock(key, [id])
-        return { ok: false, thread: id }
-      }
-      for (const t of result.added) kept.set(t.test, t)
-      const review = await runAgent(reviewTestsPrompt(story, base, result, rounds), { schema: TEST_REVIEW_SCHEMA, label: `test-review:${key}${attempt > 1 ? ` round${attempt}` : ''}`, phase: 'Test lane', model: modelFor('testReview'), role: 'testReview' })
-      const duplicates = (review && review.duplicates) || []
-      const leftovers = (review && review.leftoverFiles) || []
-      if (review && review.pass && duplicates.length === 0 && review.suiteGreen && review.productionUntouched && leftovers.length === 0) {
-        accepted = true
-        break
-      }
-      // Only duplicates to delete are left: cutting needs no judgement, so no further round.
-      const onlyCuts = review && duplicates.length > 0 && duplicates.every((d) => d.cut) && review.issues.length === 0 && review.suiteGreen && review.productionUntouched && leftovers.length === 0
-      if (onlyCuts) {
-        const cut = await runAgent(`Delete these duplicate tests, which a reviewer found already covered by another test:
-${bullets(duplicates.map((d) => `${d.newTest} in ${d.newTestFile} (covered by ${d.existingTest})`))}
-
-Rules:
-- Work in ${root}. Delete exactly these tests. Also delete a helper, fixture or import only these tests used, and nothing else. Change no production file and no other test.
-- Run the fast command${fast ? ` (\`${fast}\`)` : ''} and typecheck: both green before you commit.
-- Commit only the test files: "test: Remove duplicate regression tests for ${key}".
-- If a test cannot be removed cleanly, or the suite goes red, restore the files (git checkout -- <file>), commit nothing and explain in blockers.
-${CONVENTIONS}
-Return raw structured data only.`, { schema: TEST_CUT_SCHEMA, label: `test-cut:${key}`, phase: 'Test lane', model: modelFor('testCut'), effort: 'low', role: 'testCut' })
-        if (cut && cut.commit && cut.suiteGreen) {
-          for (const name of cut.removed) kept.delete(name)
-          accepted = true
-          break
-        }
-      }
-      feedback = review
-        ? bullets([
-          ...duplicates.map((d) => `Duplicate: ${d.newTest} pins what ${d.existingTest} already pins. Fix: ${d.fix}`),
-          ...review.issues,
-          ...(review.suiteGreen ? [] : ['Suite or typecheck is red at HEAD.']),
-          ...(review.productionUntouched ? [] : ['Production files changed in a test commit or left modified in the working tree; restore them to the verified implementation.']),
-          ...leftovers.map((f) => `Uncommitted change left in ${f}: restore it (git checkout -- ${f}) if it is a mutant, or commit it if it is a test asset.`),
-        ])
-        : 'The reviewer returned no result; re-check your tests against the policy.'
-      rounds.push({ round: attempt, commit: result.commit, feedback })
+    for (let attempt = 0; attempt < 2 && !result; attempt++) {
+      result = await runAgent(authorPrompt(story, base, criteria), { schema: TESTS_SCHEMA, label: `tests:${key}`, phase: 'Test lane', model: modelFor('tests'), role: 'tests' })
     }
-    if (!accepted) {
-      const id = openThread(`${key}: regression tests were not accepted`, `Three rounds of test author and reviewer did not end in accepted tests. The implementation is merged and checked; only the tests are missing. Last review:\n\n${feedback}\n`)
+    // Whatever the author left uncommitted goes: a mutant in a production file,
+    // or a test file it did not commit. Ignored files stay.
+    const leftovers = (tryRun('git', ['-C', root, 'status', '--porcelain']) || '').split('\n').filter(Boolean)
+    if (leftovers.length) {
+      git(['checkout', '--', '.'])
+      git(['clean', '-fd'])
+      laneLog(key, `restored ${leftovers.length} file${leftovers.length === 1 ? '' : 's'} the test author left uncommitted`)
+    }
+    if (!result) {
+      const id = openThread(`${key}: the test author returned nothing`, 'The test author returned no result twice. The implementation is merged and checked; only the tests are missing.\n')
       linkAndBlock(key, [id])
       return { ok: false, thread: id }
     }
-    entry.added = [...kept.values()].map((t) => ({ test: t.test, file: t.file, risk: t.risk }))
+    if (result.status !== 'done') {
+      if (result.status === 'found_defect' && result.defect) return { ok: false, defect: `${result.defect.test}\nObserved: ${result.defect.observed}\nExpected: ${result.defect.expected}` }
+      const what = (result.questions || []).join('\n') || result.blockers || result.status
+      const id = openThread(`${key}: the test author stopped (${result.status})`, `${what}\n`)
+      linkAndBlock(key, [id])
+      return { ok: false, thread: id }
+    }
+    entry.added = result.added.map((t) => ({ test: t.test, file: t.file, risk: t.risk }))
     entry.reused = result.reused.map((t) => t.test)
     entry.removed = result.changedOrRemoved.filter((t) => t.action === 'removed').map((t) => t.test)
     entry.changed = result.changedOrRemoved.filter((t) => t.action === 'changed').map((t) => t.test)
     entry.commits = (tryRun('git', ['-C', root, 'log', '--format=%h %s', `${start}..HEAD`]) || '').split('\n').filter(Boolean)
+    // The author's own tests, run once more by the lane. A red run drops the
+    // test commits: the story is verified without them, and the report says so.
+    const check = String(result.check || '').trim()
+    if (entry.commits.length && check) {
+      const run = await runCmd(check, root)
+      if (run.ok) laneLog(key, 'tests passed')
+      else {
+        git(['reset', '--hard', start])
+        git(['clean', '-fd'])
+        entry.dropped = `\`${check}\` failed:\n${tail(run.output, 1500)}`
+        entry.added = []
+        entry.commits = []
+        laneLog(key, `tests dropped: \`${check}\` failed`)
+      }
+    }
     return { ok: true }
   }
 
@@ -1143,14 +1059,18 @@ Return raw structured data only.`, { schema: TEST_CUT_SCHEMA, label: `test-cut:$
     }
     mergeOutcomes.push({ key, outcome: 'merged' })
     laneLog(key, `merged onto ${integration}`)
-    const fastResult = await runFast(root)
-    if (!fastResult.ok) return failLane(key, base, [{ text: `The fast command (\`${fast}\`) failed on the main worktree. Output:\n\`\`\`\n${tail(fastResult.output)}\n\`\`\``, files: [] }], 'the fast command failed')
-    laneLog(key, 'fast passed')
+    // The fast command builds in the host target and the stack in the compose
+    // volume, so they run at the same time; the stack command follows stack_up.
     stackUpRan = true
-    const up = await runStack(stackUp)
-    if (!up.ok) return failLane(key, base, [stackFinding(`The stack did not start: \`${stackUp}\` exited non-zero.`, up)], 'the stack did not start')
-    const stackResult = await runStack(stackCmd)
-    if (!stackResult.ok) return failLane(key, base, [stackFinding(`The stack command (\`${stackCmd}\`) failed on the main worktree.`, stackResult)], 'the stack command failed')
+    const [fastResult, stack] = await Promise.all([
+      runFast(root),
+      runStack(stackUp).then(async (up) => (up.ok ? { up, result: await runStack(stackCmd) } : { up })),
+    ])
+    const stackFindings = !stack.up.ok ? [stackFinding(`The stack did not start: \`${stackUp}\` exited non-zero.`, stack.up)]
+      : !stack.result.ok ? [stackFinding(`The stack command (\`${stackCmd}\`) failed on the main worktree.`, stack.result)] : []
+    if (!fastResult.ok) return failLane(key, base, [{ text: `The fast command (\`${fast}\`) failed on the main worktree. Output:\n\`\`\`\n${tail(fastResult.output)}\n\`\`\``, files: [] }, ...stackFindings], 'the fast command failed')
+    laneLog(key, 'fast passed')
+    if (stackFindings.length) return failLane(key, base, stackFindings, stack.up.ok ? 'the stack command failed' : 'the stack did not start')
     laneLog(key, 'stack passed')
     const r = await exercise(key)
     if (!r) {
@@ -1172,13 +1092,13 @@ Return raw structured data only.`, { schema: TEST_CUT_SCHEMA, label: `test-cut:$
       moveDone(key)
       laneLog(key, 'done')
     } else {
-      // Drop the rejected tests, committed or not; ignored files stay.
+      // The author stopped: drop whatever it committed; ignored files stay.
       git(['reset', '--hard', merged])
       git(['clean', '-fd'])
-      laneLog(key, 'blocked: the regression tests were not accepted')
+      laneLog(key, 'blocked: the test author stopped')
     }
     fs.rmSync(LANE_FILE, { force: true })
-    checkOutcomes.push(tested.ok ? { key, outcome: 'passed' } : { key, outcome: 'tests_rejected', thread: tested.thread })
+    checkOutcomes.push(tested.ok ? { key, outcome: 'passed' } : { key, outcome: 'tests_blocked', thread: tested.thread })
   }
   const testLoop = () => {
     if (laneRunning) return
@@ -1279,7 +1199,7 @@ Return raw structured data only.`
   const waitingLines = final.filter((s) => unfinished(s) && !s.blocked && (s.blocked_by || []).some((b) => byRef.has(b) && unfinished(byRef.get(b)))).map((s) => `${s.key} ${s.title}: waiting on ${(s.blocked_by || []).filter((b) => byRef.has(b) && unfinished(byRef.get(b))).map((b) => byRef.get(b).key).join(', ')}`)
   const remainingLines = final.filter(unfinished).map((s) => `${s.key} ${s.title}: ${s.blocked ? `${s.status}, blocked, thread ${threadsOf(s).join(', ') || '(none linked)'}` : s.status}`)
   const humanLines = final.flatMap((s) => (s.criteria || []).filter((c) => c.pending).map((c) => `${s.key}: ${c.text || c}`))
-  const testLines = testReports.map((t) => `${t.key}: ${t.added.length} added${t.added.length ? ` (${t.added.map((a) => a.test).join('; ')})` : ''}, ${t.reused.length} reused, ${t.removed.length} removed${t.removed.length ? ` (${t.removed.join('; ')})` : ''}`)
+  const testLines = testReports.map((t) => `${t.key}: ${t.added.length} added${t.added.length ? ` (${t.added.map((a) => a.test).join('; ')})` : ''}, ${t.reused.length} reused, ${t.removed.length} removed${t.removed.length ? ` (${t.removed.join('; ')})` : ''}${t.dropped ? `; tests dropped: ${t.dropped.split('\n')[0]}` : ''}`)
   const journeyLines = !doneKeys.length ? ['no story was done in this run, so no journeys were run'] : !wrap ? ['the final check returned nothing'] : [`${wrap.healthy ? 'healthy' : 'NOT healthy'}: ${wrap.report || ''}`.trim(), ...(wrap.journeys || [])]
   const limitLine = storyLimit !== Infinity && limitReached() ? `The run stopped at storyLimit ${storyLimit}: ${doneKeys.length} stor${doneKeys.length === 1 ? 'y' : 'ies'} done in this run. ` : ''
   const report = `# Run ${runId} on ${feature}
