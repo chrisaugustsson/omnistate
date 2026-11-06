@@ -732,6 +732,37 @@ mod exports {
         }
     }
 
+    /// A key event as JSON `{key, ctrl, alt, shift, cmd, down}`. Returns whether
+    /// a key trigger fired.
+    ///
+    /// # Safety
+    /// The pointer and length must be a block from `omni_render_alloc`.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn omni_render_play_key(json: *const u8, json_len: usize) -> bool {
+        // SAFETY: the caller promises the block is there.
+        let fired = unsafe { text(json, json_len) }.and_then(omni_render::web::play_key);
+        match fired {
+            Ok(fired) => fired,
+            Err(reason) => {
+                fail(&reason);
+                false
+            }
+        }
+    }
+
+    /// The controller button at this index of the standard layout going down
+    /// or up. Returns whether a key trigger fired.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn omni_render_play_gamepad(button: u32, down: bool) -> bool {
+        match omni_render::web::play_gamepad(button, down) {
+            Ok(fired) => fired,
+            Err(reason) => {
+                fail(&reason);
+                false
+            }
+        }
+    }
+
     /// Moves the session on to `now` (milliseconds) and draws it if it changed
     /// or is animating. Returns 0 when it did not draw, 1 when it drew and 2
     /// when it drew and another frame is needed (`web::play_tick`).

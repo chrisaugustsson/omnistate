@@ -96,6 +96,9 @@ export type PlayState = {
 /** The kind of a pointer event on the stage: the names, or the numbers `play_pointer` takes. */
 export type PlayPointerKind = "down" | "move" | "up" | "leave" | 0 | 1 | 2 | 3;
 
+/** A key going down or up; `key` is the name a key trigger writes: `K`, `Enter`, `ArrowLeft`, `Space`. */
+export type PlayKey = { key: string; ctrl: boolean; alt: boolean; shift: boolean; cmd: boolean; down: boolean };
+
 /** Plays the shown page's prototype on the canvas. */
 export type DesignPlayer = {
   /**
@@ -110,6 +113,10 @@ export type DesignPlayer = {
   stop(): void;
   /** A pointer event at the stage point `x`, `y` in CSS pixels; returns whether what is shown changed. */
   pointer(kind: PlayPointerKind, x: number, y: number): boolean;
+  /** A key event; returns whether a key trigger fired, which leaves the key to the prototype. */
+  key(event: PlayKey): boolean;
+  /** A controller button, by its index in the standard layout, going down or up; returns whether a key trigger fired. */
+  gamepad(button: number, down: boolean): boolean;
   /** Goes back to the board the last navigate left; returns whether there was one. */
   back(): boolean;
   /** Goes to `board` as a navigate does, so that `back` returns to the board it leaves; returns whether it moved. */
@@ -284,6 +291,8 @@ type OmniRender = {
   _omni_render_play_start(board: number, boardLength: number): boolean;
   _omni_render_play_stop(): void;
   _omni_render_play_pointer(kind: number, x: number, y: number): boolean;
+  _omni_render_play_key(json: number, jsonLength: number): boolean;
+  _omni_render_play_gamepad(button: number, down: boolean): boolean;
   _omni_render_play_tick(now: number): number;
   _omni_render_play_back(): boolean;
   _omni_render_play_go(board: number, boardLength: number): boolean;
@@ -333,6 +342,8 @@ const FUNCTIONS: Record<Extract<keyof OmniRender, `_omni_render_${string}`>, tru
   _omni_render_play_start: true,
   _omni_render_play_stop: true,
   _omni_render_play_pointer: true,
+  _omni_render_play_key: true,
+  _omni_render_play_gamepad: true,
   _omni_render_play_tick: true,
   _omni_render_play_back: true,
   _omni_render_play_go: true,
@@ -824,6 +835,16 @@ export async function createDesignRenderer(canvas: HTMLCanvasElement): Promise<D
         const changed = module._omni_render_play_pointer(code, x, y);
         if (changed) playChanged();
         return changed;
+      },
+      key(event) {
+        const fired = withText(JSON.stringify(event), (pointer, length) => module._omni_render_play_key(pointer, length));
+        if (fired) playChanged();
+        return fired;
+      },
+      gamepad(button, down) {
+        const fired = module._omni_render_play_gamepad(button, down);
+        if (fired) playChanged();
+        return fired;
       },
       back() {
         const moved = module._omni_render_play_back();

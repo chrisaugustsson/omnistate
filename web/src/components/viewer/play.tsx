@@ -10,7 +10,9 @@ import type { DesignRenderer, PlayState } from "@/design/renderer";
 // and keeps the address bar on the board the player is on. Transitions are
 // instant, so a click on a hotspot shows its board at once. A link asks first
 // (LinkNotice), a click on nothing says so in a toast while the renderer
-// outlines the hotspots, and Cmd/Ctrl+\ hides the bars.
+// outlines the hotspots, and Cmd/Ctrl+\ hides the bars. Keys and controller
+// buttons go to the renderer, whose key triggers fire on them; Escape leaves
+// play mode only when no trigger took it.
 
 export type PlayBoard = { id: string; name: string };
 export type PlayFlow = { name: string; start: string };
@@ -18,6 +20,23 @@ export type PlayFlow = { name: string; start: string };
 const bar = "flex h-11 shrink-0 items-center gap-3 bg-neutral-800 px-3 text-[13px] text-neutral-100";
 const control =
   "h-7 rounded-md px-2.5 text-[12px] text-neutral-100 outline-none transition-colors hover:bg-neutral-700 focus-visible:ring-[3px] focus-visible:ring-white/30 disabled:pointer-events-none disabled:text-neutral-500";
+
+// The keys that only change what the next key means.
+const modifierKeys = new Set(["Shift", "Control", "Alt", "Meta", "AltGraph", "CapsLock", "Fn"]);
+
+/** The name a key trigger writes the key with. Letters and digits come from the physical key, so Alt+K and Shift+1 stay K and 1. */
+function keyName(event: KeyboardEvent) {
+  const letter = /^Key([A-Z])$/.exec(event.code);
+  if (letter) return letter[1];
+  const digit = /^Digit([0-9])$/.exec(event.code);
+  if (digit) return digit[1];
+  return event.key;
+}
+
+/** Whether keys typed at `target` belong to the bar's controls or the link notice rather than the prototype. */
+function typesElsewhere(target: EventTarget | null) {
+  return target instanceof Element && target.closest("select, input, textarea, [role=alertdialog]") !== null;
+}
 
 const noticeKey = "omni.play.linkNotice";
 const toastMs = 4000;
@@ -242,21 +261,80 @@ export function PlayMode({
         if (hide) say(`Press ${mac() ? "⌘" : "Ctrl+"}\\ to show the bars again`);
         return;
       }
-      if (event.key !== "Escape") return;
-      event.preventDefault();
-      // The design view's own Escape handling would clear its selection.
-      event.stopPropagation();
-      // Escape answers the notice as Cancel before it leaves play mode.
-      if (latest.current.notice) {
+      const escape = event.key === "Escape";
+      // Escape answers the notice as Cancel before anything else.
+      if (escape && latest.current.notice) {
+        event.preventDefault();
+        event.stopPropagation();
         setNotice(null);
         return;
       }
+      if (sendKey(event, true)) {
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+      }
+      if (!escape) return;
+      event.preventDefault();
+      // The design view's own Escape handling would clear its selection.
+      event.stopPropagation();
       const { onExit: exit, state: now, play: named } = latest.current;
       exit(now?.board ?? named);
     };
+    const onKeyUp = (event: KeyboardEvent) => {
+      sendKey(event, false);
+    };
+    // Whether a key trigger fired on the key. A held key does not fire again.
+    function sendKey(event: KeyboardEvent, down: boolean) {
+      if (event.repeat || modifierKeys.has(event.key) || typesElsewhere(event.target)) return false;
+      if (!latest.current.state) return false;
+      return renderer.play.key({
+        key: keyName(event),
+        ctrl: event.ctrlKey,
+        alt: event.altKey,
+        shift: event.shiftKey,
+        cmd: event.metaKey,
+        down,
+      });
+    }
     window.addEventListener("keydown", onKeyDown, true);
-    return () => window.removeEventListener("keydown", onKeyDown, true);
-  }, []);
+    window.addEventListener("keyup", onKeyUp, true);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown, true);
+      window.removeEventListener("keyup", onKeyUp, true);
+    };
+  }, [renderer]);
+
+  // The stage has the keyboard focus once the session runs, so that the keys reach it.
+  const playing = state !== null;
+  useEffect(() => {
+    if (playing) stage.current?.focus({ preventScroll: true });
+  }, [playing]);
+
+  // Controller buttons, read once per frame while the session runs: a button that went down or up since the last frame is told to the renderer.
+  useEffect(() => {
+    if (!playing) return;
+    const held = new Map<number, boolean[]>();
+    let frame = 0;
+    const poll = () => {
+      const pads = navigator.getGamepads?.() ?? [];
+      const seen = new Set<number>();
+      for (const pad of pads) {
+        if (!pad?.connected) continue;
+        seen.add(pad.index);
+        const before = held.get(pad.index) ?? [];
+        const now = pad.buttons.map((button) => button.pressed);
+        now.forEach((pressed, button) => {
+          if (pressed !== Boolean(before[button])) renderer.play.gamepad(button, pressed);
+        });
+        held.set(pad.index, now);
+      }
+      for (const index of [...held.keys()]) if (!seen.has(index)) held.delete(index);
+      frame = requestAnimationFrame(poll);
+    };
+    frame = requestAnimationFrame(poll);
+    return () => cancelAnimationFrame(frame);
+  }, [renderer, playing]);
 
   const chosen = flows.find((candidate) => candidate.name === flow);
   const at = state ? boards.findIndex((candidate) => candidate.id === state.board) : -1;
@@ -314,7 +392,7 @@ export function PlayMode({
           </label>
         )}
       </div>
-      <div ref={stage} className="relative min-h-0 flex-1 overflow-hidden bg-[#1e1e1e]">
+      <div ref={stage} tabIndex={-1} className="relative min-h-0 flex-1 overflow-hidden bg-[#1e1e1e] outline-none">
         {error ? (
           <p role="alert" className="absolute inset-0 flex items-center justify-center p-6 text-center text-[13px] text-neutral-300">
             {error}

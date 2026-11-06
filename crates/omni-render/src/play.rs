@@ -9,8 +9,9 @@
 use crate::view::{Scene, Viewport};
 use omni_core::design::proto::{Direction, Transition};
 use omni_core::design::{NodeData, NodeId, NodeKind};
+use omni_proto::keys::gamepad_button;
 use omni_proto::transition::progress;
-use omni_proto::{Effect, HINT_MS, Player, PointerEvent, PointerKind, Rect, Running};
+use omni_proto::{Effect, HINT_MS, KeyEvent, Player, PointerEvent, PointerKind, Rect, Running};
 use serde_json::{Value, json};
 use skia_safe::{Canvas, Color};
 
@@ -166,11 +167,20 @@ impl Session {
             y: f64::from((y - top) / scale),
             at: self.now,
         };
+        let effects = self.player.pointer(event);
+        self.take(effects).0
+    }
+
+    /// Applies what the player asked for after an event. Returns whether what
+    /// it shows changed and whether a key trigger fired.
+    fn take(&mut self, effects: Vec<Effect>) -> (bool, bool) {
         let mut changed = false;
+        let mut handled = false;
         let before = self.player.frame().transition;
-        for effect in self.player.pointer(event) {
+        for effect in effects {
             match effect {
                 Effect::NeedsFrame => changed = true,
+                Effect::KeyHandled => handled = true,
                 Effect::Missed => {
                     self.missed = true;
                     self.toast = true;
@@ -183,7 +193,34 @@ impl Session {
         }
         self.changed |= changed;
         self.fresh |= self.player.frame().transition != before;
-        changed
+        (changed, handled)
+    }
+
+    /// A key event, as JSON `{key, ctrl, alt, shift, cmd, down}`. Returns
+    /// whether a key trigger fired.
+    pub fn key(&mut self, json: &str) -> Result<bool, String> {
+        let event: Value = serde_json::from_str(json).map_err(|error| error.to_string())?;
+        let flag = |name: &str| event[name].as_bool().unwrap_or(false);
+        let key = event["key"].as_str().ok_or("a key event needs a key")?;
+        let effects = self.player.key(KeyEvent {
+            key: key.to_string(),
+            ctrl: flag("ctrl"),
+            alt: flag("alt"),
+            shift: flag("shift"),
+            cmd: flag("cmd"),
+            down: flag("down"),
+        });
+        Ok(self.take(effects).1)
+    }
+
+    /// The controller button at `index` of the standard layout going down or
+    /// up. Returns whether a key trigger fired.
+    pub fn gamepad(&mut self, index: u32, down: bool) -> bool {
+        let Some(button) = gamepad_button(index as usize) else {
+            return false;
+        };
+        let effects = self.player.gamepad(button, down);
+        self.take(effects).1
     }
 
     /// Goes back to the board the last navigate left. Returns whether there

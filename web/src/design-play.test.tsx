@@ -104,6 +104,12 @@ function fakePlayer(boards: () => string[]): FakePlayer {
     pointer() {
       return false;
     },
+    key() {
+      return false;
+    },
+    gamepad() {
+      return false;
+    },
     back() {
       calls.push("back");
       const shown = now();

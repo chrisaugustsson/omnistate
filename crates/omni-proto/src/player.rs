@@ -6,6 +6,7 @@
 //! action of an interaction runs in list order.
 
 use crate::history::{History, Play};
+use crate::keys::{self, Mods};
 use crate::overlay;
 use crate::transition::{progress, reversed};
 use omni_core::design::proto::{Action, Interaction, OverlayAnchor, OverlayPosition, Trigger};
@@ -73,6 +74,21 @@ pub enum Effect {
     Missed,
     /// The frame changed or is changing: draw it.
     NeedsFrame,
+    /// A key or controller button fired a trigger, so it is not the caller's
+    /// to use for anything else.
+    KeyHandled,
+}
+
+/// A key going down or up. `key` is the name the trigger writes it with
+/// (`K`, `Enter`, `ArrowLeft`, `Space`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct KeyEvent {
+    pub key: String,
+    pub ctrl: bool,
+    pub alt: bool,
+    pub shift: bool,
+    pub cmd: bool,
+    pub down: bool,
 }
 
 /// An overlay that is open.
@@ -453,8 +469,21 @@ impl Player {
         let Some((interactions, holder, trigger)) = self.hit(&Trigger::OnClick, x, y) else {
             return self.miss(at, effects);
         };
+        self.run(&interactions, holder, trigger, at, effects)
+    }
+
+    /// Runs the actions of `interactions` in list order, each interaction with
+    /// its own transition.
+    fn run(
+        &mut self,
+        interactions: &[Interaction],
+        holder: Option<NodeId>,
+        trigger: Rect,
+        at: f64,
+        effects: &mut Vec<Effect>,
+    ) -> bool {
         let mut changed = false;
-        for interaction in &interactions {
+        for interaction in interactions {
             let play = Play {
                 transition: interaction.transition,
                 duration_ms: interaction.duration_ms,
@@ -465,6 +494,81 @@ impl Player {
             }
         }
         changed
+    }
+
+    /// A key going down. A key trigger fires on the topmost layer that has
+    /// one for the key and the modifiers held, looking through the open
+    /// overlays from the top and then the board shown; nothing else fires.
+    /// Releasing a key does nothing.
+    pub fn key(&mut self, event: KeyEvent) -> Vec<Effect> {
+        let mods = Mods {
+            ctrl: event.ctrl,
+            alt: event.alt,
+            shift: event.shift,
+            cmd: event.cmd,
+        };
+        self.press_key(mods, keys::key_alias(&event.key), event.down)
+    }
+
+    /// A controller button going down: `button` is one of
+    /// `keys::GAMEPAD_BUTTONS`, which a trigger writes as `Gamepad A`.
+    pub fn gamepad(&mut self, button: &str, down: bool) -> Vec<Effect> {
+        self.press_key(
+            Mods::default(),
+            keys::key_alias(&format!("Gamepad {button}")),
+            down,
+        )
+    }
+
+    fn press_key(&mut self, mods: Mods, key: String, down: bool) -> Vec<Effect> {
+        let mut effects = Vec::new();
+        if !down {
+            return effects;
+        }
+        let at = self.last_at;
+        let mut sources: Vec<_> = self
+            .frame
+            .overlays
+            .iter()
+            .rev()
+            .map(|overlay| (overlay.board, overlay.origin))
+            .collect();
+        sources.push((self.frame.board, [0.0, 0.0]));
+        for (board, origin) in sources {
+            let found = self.entries(&board).into_iter().rev().find_map(|entry| {
+                let matching: Vec<Interaction> = entry
+                    .interactions
+                    .into_iter()
+                    .filter(|interaction| {
+                        matches!(&interaction.trigger, Trigger::KeyPress { key: text }
+                            if keys::split(text) == (mods, key.clone()))
+                    })
+                    .collect();
+                (!matching.is_empty()).then_some((matching, entry.holder, entry.id))
+            });
+            let Some((interactions, holder, id)) = found else {
+                continue;
+            };
+            let rect = self
+                .boxes
+                .get(&board)
+                .and_then(|boxes| boxes.rects.get(&id))
+                .map_or(
+                    Rect {
+                        x: 0.0,
+                        y: 0.0,
+                        width: 0.0,
+                        height: 0.0,
+                    },
+                    |rect| rect.offset(origin),
+                );
+            effects.push(Effect::KeyHandled);
+            if self.run(&interactions, holder, rect, at, &mut effects) {
+                effects.push(Effect::NeedsFrame);
+            }
+            break;
+        }
+        effects
     }
 
     /// A click that did nothing: outlines the hotspots.

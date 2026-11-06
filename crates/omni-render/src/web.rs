@@ -868,6 +868,17 @@ pub fn play_pointer(kind: u32, x: f32, y: f32) -> Result<bool, String> {
     with_play(|play| play.pointer(kind, x, y))
 }
 
+/// A key event as JSON (`Session::key`). Returns whether a key trigger fired.
+pub fn play_key(json: &str) -> Result<bool, String> {
+    with_play(|play| play.key(json))?
+}
+
+/// A controller button of the standard layout going down or up
+/// (`Session::gamepad`). Returns whether a key trigger fired.
+pub fn play_gamepad(button: u32, down: bool) -> Result<bool, String> {
+    with_play(|play| play.gamepad(button, down))
+}
+
 /// Goes back (`Session::back`). Returns whether there was a board to go back to.
 pub fn play_back() -> Result<bool, String> {
     with_play(Session::back)
