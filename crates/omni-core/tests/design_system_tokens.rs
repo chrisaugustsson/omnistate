@@ -993,7 +993,13 @@ fn a_choice_gives_each_collection_its_own_mode() {
         .unwrap_err()
         .to_string();
     assert_eq!(message, "`dusk` is not a mode of `color` (light, dark)");
-    assert!(ModeChoice::parse("nope:dark", &tree).is_err());
+    let message = ModeChoice::parse("nope:dark", &tree)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        message.starts_with("`nope` is not a collection (") && message.contains("density"),
+        "{message}"
+    );
 
     let flat = tree.for_mode(&pairs).expect("a valid choice");
     assert_eq!(flat["density"]["space"]["md"]["$value"], json!("12px"));
@@ -1007,4 +1013,44 @@ fn a_choice_gives_each_collection_its_own_mode() {
         json!([])
     );
     assert_eq!(flat["$extensions"]["omnistate"]["modes"], json!(["dark"]));
+}
+
+#[test]
+fn an_alias_into_another_collection_is_read_in_that_collections_mode() {
+    let tree = accept(&with(
+        &with_collections(),
+        "/density/ink",
+        json!({"$type": "color", "$value": "{color.surface}"}),
+    ));
+    assert_eq!(
+        tree.resolve(
+            &token("$density.ink"),
+            &choice(&tree, "color:dark,density:compact")
+        ),
+        Some(json!("#0f172a")),
+        "color.surface is read in the dark mode that the choice gives color"
+    );
+}
+
+#[test]
+fn a_loop_in_a_later_mode_of_a_collection_with_its_own_modes_is_refused() {
+    // Comfortable has literal values; only compact goes round.
+    let looped = with(
+        &with(
+            &with_collections(),
+            "/density/space/md/$extensions/omnistate/modes/compact",
+            json!("{density.space.lg}"),
+        ),
+        "/density/space/lg",
+        json!({
+            "$type": "dimension",
+            "$value": "24px",
+            "$extensions": {"omnistate": {"modes": {"comfortable": "24px", "compact": "{density.space.md}"}}}
+        }),
+    );
+    refuse(
+        &looped,
+        "a loop in the compact mode of density is a loop",
+        &["density.space.", "compact"],
+    );
 }
