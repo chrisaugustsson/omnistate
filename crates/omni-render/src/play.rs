@@ -8,12 +8,14 @@
 
 use crate::view::{Scene, Viewport};
 use omni_core::design::proto::{Direction, Transition};
+use omni_core::design::tokens::{ModeChoice, TokenValue};
 use omni_core::design::{NodeData, NodeId, NodeKind};
 use omni_proto::keys::gamepad_button;
 use omni_proto::transition::progress;
 use omni_proto::{Effect, HINT_MS, KeyEvent, Player, PointerEvent, PointerKind, Rect, Running};
 use serde_json::{Value, json};
 use skia_safe::{Canvas, Color};
+use std::collections::{BTreeMap, HashMap};
 
 /// FigCraft's default background, for a page whose settings do not say.
 const DEFAULT_BACKGROUND: Color = Color::from_argb(255, 0x1e, 0x1e, 0x1e);
@@ -59,6 +61,32 @@ pub struct Session {
     now: f64,
     /// The size of the last frame: width, height and pixel ratio.
     size: Option<(i32, i32, f32)>,
+    /// What each board that the scene has resolved for play was resolved
+    /// with, where that is not the design system's own.
+    resolved: HashMap<NodeId, PlayResolve>,
+}
+
+/// The token values and the modes of its own that a board was resolved with.
+type PlayResolve = (BTreeMap<String, TokenValue>, Option<ModeChoice>);
+
+/// Gives the player the boxes of the layers of `board` as the scene has them.
+fn give_boxes(player: &mut Player, scene: &Scene, board: &NodeId) {
+    let Some((rects, layers)) = scene.board_boxes(board) else {
+        return;
+    };
+    let rects = rects
+        .into_iter()
+        .map(|(id, rect)| {
+            let rect = Rect {
+                x: f64::from(rect.x),
+                y: f64::from(rect.y),
+                width: f64::from(rect.width),
+                height: f64::from(rect.height),
+            };
+            (id, rect)
+        })
+        .collect();
+    player.set_boxes(*board, rects, layers);
 }
 
 fn not_a_board(board: &str) -> String {
@@ -109,23 +137,11 @@ impl Session {
             .collect();
         let background = color(page.prototype().background.as_str()).unwrap_or(DEFAULT_BACKGROUND);
         let mut player = Player::new(page, scene.components(), start);
+        if let Some(tokens) = scene.tokens() {
+            player.set_tokens(tokens.clone());
+        }
         for id in &boards {
-            let Some((rects, layers)) = scene.board_boxes(id) else {
-                continue;
-            };
-            let rects = rects
-                .into_iter()
-                .map(|(id, rect)| {
-                    let rect = Rect {
-                        x: f64::from(rect.x),
-                        y: f64::from(rect.y),
-                        width: f64::from(rect.width),
-                        height: f64::from(rect.height),
-                    };
-                    (id, rect)
-                })
-                .collect();
-            player.set_boxes(*id, rects, layers);
+            give_boxes(&mut player, scene, id);
         }
         Ok(Session {
             player,
@@ -143,7 +159,61 @@ impl Session {
             fresh: false,
             now: 0.0,
             size: None,
+            resolved: HashMap::new(),
         })
+    }
+
+    /// Ends the session: the boards that play resolved with its own values
+    /// and modes are resolved as the design has them again.
+    pub fn end(self, scene: &mut Scene) {
+        for board in self.resolved.into_keys() {
+            scene.designed_board(&board);
+        }
+    }
+
+    /// The boards the frame draws from: the one shown, the open overlays and
+    /// those of the transition that is playing.
+    fn drawn_boards(&self) -> Vec<NodeId> {
+        let frame = self.player.frame();
+        let mut boards = vec![frame.board];
+        boards.extend(frame.overlays.iter().map(|overlay| overlay.board));
+        let mut running = frame.transition.as_ref();
+        while let Some(playing) = running {
+            boards.extend([playing.from, playing.to]);
+            running = playing.interrupted.as_ref().map(|cut| &cut.running);
+        }
+        boards
+    }
+
+    /// Resolves the boards that the frame draws again where the session's
+    /// variables changed them (or no longer do), and gives the player their
+    /// new boxes.
+    fn refresh(&mut self, scene: &mut Scene) {
+        for board in self.drawn_boards() {
+            let variables = self.player.variables();
+            let now: PlayResolve = (
+                variables.values.clone(),
+                variables.modes.get(&board).cloned(),
+            );
+            let before = self.resolved.get(&board).cloned().unwrap_or_default();
+            if now == before {
+                continue;
+            }
+            let done = if now == PlayResolve::default() {
+                scene.designed_board(&board)
+            } else {
+                scene.play_board(&board, now.1.as_ref(), &now.0)
+            };
+            if !done {
+                continue;
+            }
+            give_boxes(&mut self.player, scene, &board);
+            if now == PlayResolve::default() {
+                self.resolved.remove(&board);
+            } else {
+                self.resolved.insert(board, now);
+            }
+        }
     }
 
     /// A pointer event at the stage point `x`, `y` in CSS pixels: `kind` is 0
@@ -443,6 +513,7 @@ impl Session {
             (height * pixel_ratio).round() as i32,
             pixel_ratio,
         ));
+        self.refresh(scene);
         self.changed = false;
         canvas.clear(self.background);
         let frame = self.player.frame();

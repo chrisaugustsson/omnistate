@@ -12,6 +12,7 @@ pub mod keys;
 pub mod overlay;
 mod player;
 pub mod transition;
+pub mod variables;
 
 pub use history::Play;
 pub use player::{

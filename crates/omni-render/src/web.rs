@@ -840,6 +840,7 @@ fn webgl_context() -> Option<DirectContext> {
 /// place of any session (`Session::start`). Fails if no scene is loaded or the
 /// page has no such board.
 pub fn play_start(board: &str) -> Result<(), String> {
+    play_stop();
     let session = STAGE.with_borrow(|stage| {
         let stage = stage.as_ref().ok_or("no scene is loaded")?;
         Session::start(&stage.scene, board)
@@ -848,9 +849,16 @@ pub fn play_start(board: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Ends the session, if there is one.
+/// Ends the session, if there is one, and shows the loaded page as designed
+/// again (`Session::end`).
 pub fn play_stop() {
-    PLAY.set(None);
+    if let Some(session) = PLAY.take() {
+        STAGE.with_borrow_mut(|stage| {
+            if let Some(stage) = stage {
+                session.end(&mut stage.scene);
+            }
+        });
+    }
 }
 
 /// Runs `handle` on the session. `Err` if none has started.

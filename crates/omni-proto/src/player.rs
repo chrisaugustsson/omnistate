@@ -9,8 +9,11 @@ use crate::history::{History, Play};
 use crate::keys::{self, Mods};
 use crate::overlay;
 use crate::transition::{progress, reversed};
+use crate::variables::{self, PlayVariables, TokenValue};
 use omni_core::design::proto::{Action, Interaction, OverlayAnchor, OverlayPosition, Trigger};
-use omni_core::design::{Node, NodeAddress, NodeData, NodeId, NodeKind, Page};
+use omni_core::design::tokens::{ModeChoice, TokenTree};
+use omni_core::design::{Node, NodeAddress, NodeData, NodeId, NodeKind, Page, TokenOr};
+use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
 
 /// How far, in pixels, the pointer may travel between Down and Up for the two
@@ -141,6 +144,8 @@ pub struct Frame {
     pub transition: Option<Running>,
     /// The component each swapped instance shows now, by instance.
     pub variant_swaps: BTreeMap<NodeId, NodeId>,
+    /// What the session has set: token values and the modes of boards.
+    pub variables: PlayVariables,
 }
 
 /// The boxes of one board's layers, as the caller laid them out.
@@ -170,6 +175,8 @@ struct Entry {
 pub struct Player {
     boards: HashMap<NodeId, Node>,
     components: HashMap<NodeId, Node>,
+    /// The design system's tokens, which expressions read and actions set.
+    tokens: Option<TokenTree>,
     boxes: HashMap<NodeId, Boxes>,
     /// The component each instance shows, where the caller chose a variant.
     shown: HashMap<NodeId, NodeId>,
@@ -195,6 +202,7 @@ impl Player {
         Player {
             boards,
             components,
+            tokens: None,
             boxes: HashMap::new(),
             shown: HashMap::new(),
             frame: Frame {
@@ -202,6 +210,7 @@ impl Player {
                 overlays: Vec::new(),
                 transition: None,
                 variant_swaps: BTreeMap::new(),
+                variables: PlayVariables::default(),
             },
             history: History::default(),
             press: None,
@@ -225,6 +234,17 @@ impl Player {
     /// properties pick one other than the instance's own component.
     pub fn set_variant(&mut self, instance: NodeId, component: NodeId) {
         self.shown.insert(instance, component);
+    }
+
+    /// Gives the design system's tokens: without them no variable is set and
+    /// no expression is read.
+    pub fn set_tokens(&mut self, tokens: TokenTree) {
+        self.tokens = Some(tokens);
+    }
+
+    /// What the session has set so far.
+    pub fn variables(&self) -> &PlayVariables {
+        &self.frame.variables
     }
 
     pub fn frame(&self) -> Frame {
@@ -322,6 +342,7 @@ impl Player {
             overlays: Vec::new(),
             transition: None,
             variant_swaps: BTreeMap::new(),
+            variables: PlayVariables::default(),
         };
         self.press = None;
         self.hint_until = None;
@@ -701,8 +722,121 @@ impl Player {
                 self.frame.variant_swaps.insert(instance, component);
                 true
             }
-            // Scrolling, variables and conditions come in later stories.
+            Action::SetVariable {
+                variable,
+                value,
+                expr,
+            } => self.set_variable(variable, value.as_ref(), expr.as_ref()),
+            Action::SetVariableMode { collection, mode } => {
+                self.set_variable_mode(collection, mode)
+            }
+            Action::Conditional { blocks } => {
+                for block in blocks {
+                    let holds = match &block.condition {
+                        None => true,
+                        Some(condition) => {
+                            matches!(self.evaluate(condition), Some(TokenValue::Boolean(true)))
+                        }
+                    };
+                    if holds {
+                        let mut changed = false;
+                        for action in &block.actions {
+                            changed |= self.apply(action, play, holder, trigger, at, effects);
+                        }
+                        return changed;
+                    }
+                }
+                false
+            }
+            // Scrolling comes in a later story.
             _ => false,
+        }
+    }
+
+    /// The board that variables are read and set for: the one under the
+    /// overlays.
+    fn current_board(&self) -> Option<&Node> {
+        self.boards.get(&self.frame.board)
+    }
+
+    /// The value of the expression `json` on the current board; `None` when
+    /// it cannot be evaluated.
+    fn evaluate(&self, json: &Value) -> Option<TokenValue> {
+        let (tree, board) = (self.tokens.as_ref()?, self.current_board()?);
+        variables::evaluate(json, &self.frame.variables, tree, board).ok()
+    }
+
+    /// Sets the token `variable` to `value` or to what `expr` evaluates to,
+    /// for the session. Nothing happens if the token is not there, the value
+    /// does not fit its type, or the expression cannot be evaluated.
+    fn set_variable(
+        &mut self,
+        variable: &str,
+        value: Option<&Value>,
+        expr: Option<&Value>,
+    ) -> bool {
+        let new = match (value, expr) {
+            (Some(value), None) => TokenValue::from_json(value),
+            (None, Some(expr)) => self.evaluate(expr),
+            _ => None,
+        };
+        let fits = new.as_ref().is_some_and(|new| {
+            self.tokens
+                .as_ref()
+                .and_then(|tree| tree.token(variable))
+                .is_some_and(|token| new.fits(token.ty()))
+        });
+        let Some(new) = new.filter(|_| fits) else {
+            return false;
+        };
+        self.frame
+            .variables
+            .values
+            .insert(variable.to_string(), new);
+        true
+    }
+
+    /// Sets the mode of `collection` on the current board for the session,
+    /// from the modes the board has. Nothing happens if the design system has
+    /// no such collection or mode.
+    fn set_variable_mode(&mut self, collection: &str, mode: &str) -> bool {
+        let known = self.tokens.as_ref().is_some_and(|tree| {
+            tree.collections()
+                .iter()
+                .any(|c| c.name == collection && c.modes.iter().any(|listed| listed == mode))
+        });
+        let Some(board) = self.current_board().filter(|_| known) else {
+            return false;
+        };
+        let id = *board.id();
+        let start = board.modes().cloned().unwrap_or_default();
+        self.frame
+            .variables
+            .modes
+            .entry(id)
+            .or_insert(ModeChoice(start))
+            .0
+            .insert(collection.to_string(), mode.to_string());
+        true
+    }
+
+    /// Whether the layer `node` of `board` is drawn: its `visible`, with a
+    /// token read as the session has it.
+    fn shown(&self, node: &Node, board: &NodeId) -> bool {
+        match node.visible_setting() {
+            TokenOr::Literal(visible) => *visible,
+            TokenOr::Token(token) => {
+                let json = serde_json::json!({"variable": token.path()});
+                let hidden =
+                    self.boards
+                        .get(board)
+                        .zip(self.tokens.as_ref())
+                        .and_then(|(board, tree)| {
+                            variables::evaluate(&json, &self.frame.variables, tree, board).ok()
+                        })
+                        == Some(TokenValue::Boolean(false));
+                !hidden
+            }
         }
     }
 
@@ -772,22 +906,24 @@ impl Player {
             })
             .unwrap_or_default();
         let mut entries = Vec::new();
-        self.walk(root, 0, None, None, &inverse, &mut entries);
+        self.walk(root, board, 0, None, None, &inverse, &mut entries);
         entries
     }
 
     /// `outer` is the instance of the page that the node is inside, which
     /// addresses it; `holder` is the nearest instance around it.
+    #[allow(clippy::too_many_arguments)]
     fn walk(
         &self,
         node: &Node,
+        board: &NodeId,
         depth: usize,
         outer: Option<NodeId>,
         holder: Option<NodeId>,
         inverse: &HashMap<(NodeId, NodeId), NodeId>,
         out: &mut Vec<Entry>,
     ) {
-        if !node.visible() || depth > MAX_DEPTH {
+        if !self.shown(node, board) || depth > MAX_DEPTH {
             return;
         }
         let id = match outer {
@@ -832,6 +968,7 @@ impl Player {
                 for child in &component.frame.children {
                     self.walk(
                         child,
+                        board,
                         depth + 1,
                         Some(outer),
                         Some(*node.id()),
@@ -851,7 +988,7 @@ impl Player {
             });
         }
         for child in node.children() {
-            self.walk(child, depth + 1, outer, holder, inverse, out);
+            self.walk(child, board, depth + 1, outer, holder, inverse, out);
         }
     }
 }

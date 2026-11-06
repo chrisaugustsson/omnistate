@@ -27,14 +27,14 @@ use crate::select::{Event, Index, Layer, Modifiers, NodeAddress, Outline, Outlin
 use crate::system::{DesignSystem, RenderError};
 use crate::text::{StandIn, stand_ins};
 use omni_core::design::proto::Interaction;
-use omni_core::design::tokens::ModeChoice;
+use omni_core::design::tokens::{ModeChoice, TokenTree, TokenValue};
 use omni_core::design::{Node, NodeData, NodeId};
 use serde_json::Value;
 use skia_safe::{
     AlphaType, Canvas, ColorType, FilterMode, Image, ImageInfo, MipmapMode, Paint, Picture,
     PictureRecorder, Rect, SamplingOptions, png_encoder, surfaces,
 };
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::time::{Duration, Instant};
 
 /// How long a stage of resolving a board goes on before it leaves the rest to
@@ -1304,6 +1304,87 @@ impl Scene {
             .as_ref()
             .map(|resolving| resolving.system.component_nodes())
             .unwrap_or_default()
+    }
+
+    /// The token tree of the design system the scene resolves against.
+    pub fn tokens(&self) -> Option<&TokenTree> {
+        self.system.as_ref()?.system.tokens()
+    }
+
+    /// Resolves the board `board` again for a play session: the tokens of
+    /// `values` hold those values, and `modes`, if given, are the board's
+    /// `modes`. The page as given is left as it is (`designed_board` puts the
+    /// board back). Returns whether the scene has such a board and a design
+    /// system.
+    pub fn play_board(
+        &mut self,
+        board: &NodeId,
+        modes: Option<&ModeChoice>,
+        values: &BTreeMap<String, TokenValue>,
+    ) -> bool {
+        while self.work() {}
+        let (Some(resolving), Some(source)) = (&self.system, &self.source) else {
+            return false;
+        };
+        let Some(position) = board_nodes(source)
+            .iter()
+            .position(|held| held.id() == board)
+        else {
+            return false;
+        };
+        let mut node = board_nodes(source)[position].clone();
+        if let Some(modes) = modes {
+            let mut json = serde_json::to_value(&node).unwrap_or(Value::Null);
+            json["modes"] = serde_json::to_value(&modes.0).unwrap_or(Value::Null);
+            node = serde_json::from_value(json).unwrap_or(node);
+        }
+        let system = resolving.system.overlaid(values);
+        let choice = resolving.choice.clone();
+        self.resolve_now(position, node, &system, &choice)
+    }
+
+    /// Resolves the board `board` as the page gives it, in the scene's modes
+    /// and design system, after `play_board`.
+    pub fn designed_board(&mut self, board: &NodeId) -> bool {
+        while self.work() {}
+        let (Some(resolving), Some(source)) = (&self.system, &self.source) else {
+            return false;
+        };
+        let Some(position) = board_nodes(source)
+            .iter()
+            .position(|held| held.id() == board)
+        else {
+            return false;
+        };
+        let node = board_nodes(source)[position].clone();
+        let (system, choice) = (resolving.system.clone(), resolving.choice.clone());
+        self.resolve_now(position, node, &system, &choice)
+    }
+
+    /// Resolves `board` against `system` in `choice`, all at once, and puts
+    /// it in place of the board at `position` among the page's children.
+    fn resolve_now(
+        &mut self,
+        position: usize,
+        board: Node,
+        system: &DesignSystem,
+        choice: &ModeChoice,
+    ) -> bool {
+        for gone in &ids_of(&board_nodes(&self.page)[position]) {
+            self.taken.remove(gone);
+        }
+        let mut resolving = resolve::begin_board(board, &mut self.taken, &mut self.next_id);
+        let Some(resolved) = resolving.step(
+            system,
+            choice,
+            Duration::MAX,
+            &mut self.taken,
+            &mut self.next_id,
+        ) else {
+            return false;
+        };
+        self.place_board(position, resolved);
+        true
     }
 
     /// The box of the board `board` on the page.

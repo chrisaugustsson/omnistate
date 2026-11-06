@@ -2,10 +2,10 @@
 //! against (US-032): the components of a design system version and its token
 //! tree, which has a value for each of its modes.
 
-use omni_core::design::tokens::{Collection, ModeChoice, TokenTree};
+use omni_core::design::tokens::{Collection, ModeChoice, TokenTree, TokenValue};
 use omni_core::design::{Node, NodeAddress, NodeData, NodeId, PropDef, PropDefs, TokenRef};
 use serde_json::Value;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 /// A design system version: its token tree, `None` for a design system
 /// without tokens, and its components.
@@ -120,6 +120,20 @@ impl DesignSystem {
             .iter()
             .filter_map(|def| Some((def.id, serde_json::from_value(def.json.clone()).ok()?)))
             .collect()
+    }
+
+    /// The design system's token tree, `None` for a design system without tokens.
+    pub fn tokens(&self) -> Option<&TokenTree> {
+        self.tokens.as_ref()
+    }
+
+    /// The design system with the tokens of `values` holding those values
+    /// (`TokenTree::overlaid`).
+    pub fn overlaid(&self, values: &BTreeMap<String, TokenValue>) -> DesignSystem {
+        DesignSystem {
+            tokens: self.tokens.as_ref().map(|tokens| tokens.overlaid(values)),
+            ..self.clone()
+        }
     }
 
     /// The design system's modes, in the order its token tree lists them.

@@ -95,6 +95,52 @@ impl ModeChoice {
     }
 }
 
+/// A value that a token takes while a prototype plays: a number, a string
+/// (also a colour, written as text) or a boolean.
+#[derive(Clone, Debug, PartialEq)]
+pub enum TokenValue {
+    Number(f64),
+    String(String),
+    Boolean(bool),
+}
+
+impl TokenValue {
+    /// The value of a JSON number, string or boolean; `None` for anything else.
+    pub fn from_json(value: &Value) -> Option<TokenValue> {
+        match value {
+            Value::Number(number) => number.as_f64().map(TokenValue::Number),
+            Value::String(text) => Some(TokenValue::String(text.clone())),
+            Value::Bool(flag) => Some(TokenValue::Boolean(*flag)),
+            _ => None,
+        }
+    }
+
+    /// The value as JSON. A whole number is written without a decimal part.
+    pub fn to_json(&self) -> Value {
+        match self {
+            TokenValue::Number(number) => {
+                if number.fract() == 0.0 && number.abs() < 9e15 {
+                    Value::from(*number as i64)
+                } else {
+                    serde_json::Number::from_f64(*number).map_or(Value::Null, Value::Number)
+                }
+            }
+            TokenValue::String(text) => Value::String(text.clone()),
+            TokenValue::Boolean(flag) => Value::Bool(*flag),
+        }
+    }
+
+    /// Whether a token of type `ty` can take the value.
+    pub fn fits(&self, ty: TokenType) -> bool {
+        matches!(
+            (self, ty),
+            (TokenValue::Number(_), TokenType::Number)
+                | (TokenValue::String(_), TokenType::String | TokenType::Color)
+                | (TokenValue::Boolean(_), TokenType::Boolean)
+        )
+    }
+}
+
 /// What a token states about itself beyond its value: the fields it may bind
 /// to and its name per platform.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -462,6 +508,37 @@ impl TokenTree {
             }
             _ => Ok(()),
         }
+    }
+
+    /// The tree with each token of `values` (by dotted path) holding its
+    /// value in every mode. A path the tree lacks, and a value that does not
+    /// fit its token's type, are left out.
+    pub fn overlaid(&self, values: &BTreeMap<String, TokenValue>) -> TokenTree {
+        let mut json = self.json.clone();
+        let mut changed = false;
+        for (path, value) in values {
+            let fits = self
+                .tokens
+                .get(path)
+                .is_some_and(|token| value.fits(token.ty));
+            let Some(object) = fits.then(|| token_at_mut(&mut json, path)).flatten() else {
+                continue;
+            };
+            object.insert("$value".to_string(), value.to_json());
+            if let Some(omnistate) = object
+                .get_mut("$extensions")
+                .and_then(|extensions| extensions.get_mut("omnistate"))
+                .and_then(Value::as_object_mut)
+            {
+                omnistate.remove("modes");
+            }
+            drop_empty_extensions(object);
+            changed = true;
+        }
+        if !changed {
+            return self.clone();
+        }
+        TokenTree::from_json(&json).unwrap_or_else(|_| self.clone())
     }
 
     /// The tree as DTCG JSON, as it was read.
@@ -1294,6 +1371,15 @@ fn token_at<'a>(json: &'a Value, path: &str) -> Option<&'a Map<String, Value>> {
         at = at.as_object()?.get(name)?;
     }
     let token = at.as_object()?;
+    token.contains_key("$value").then_some(token)
+}
+
+fn token_at_mut<'a>(json: &'a mut Value, path: &str) -> Option<&'a mut Map<String, Value>> {
+    let mut at = json;
+    for name in path.split('.') {
+        at = at.as_object_mut()?.get_mut(name)?;
+    }
+    let token = at.as_object_mut()?;
     token.contains_key("$value").then_some(token)
 }
 

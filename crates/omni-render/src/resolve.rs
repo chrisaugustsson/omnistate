@@ -1064,6 +1064,10 @@ fn mark_error(node: &mut Value) {
 fn design_value(token: Value, key: &str, font_size: Option<f64>) -> Value {
     match token {
         Value::String(text) if key == "content" => Value::String(text),
+        Value::Number(number) if key == "content" => {
+            Value::String(number_text(number.as_f64().unwrap_or_default()))
+        }
+        Value::Bool(flag) if key == "content" => Value::String(flag.to_string()),
         Value::String(text) => match (pixels(&text), font_size) {
             (Some(number), Some(size)) if key == "lineHeight" && size > 0.0 => {
                 json!(number / size)
@@ -1086,6 +1090,15 @@ fn design_value(token: Value, key: &str, font_size: Option<f64>) -> Value {
             fields.remove("fontFamily").unwrap_or(Value::Null)
         }
         other => other,
+    }
+}
+
+/// A number as a Text shows it, in its shortest form: `1`, `0.5`.
+fn number_text(number: f64) -> String {
+    if number == 0.0 {
+        "0".to_string()
+    } else {
+        number.to_string()
     }
 }
 
