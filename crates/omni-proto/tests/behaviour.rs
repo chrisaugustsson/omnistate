@@ -219,16 +219,20 @@ fn overlays_push_replace_and_pop_without_a_history_step() {
         ],
     );
 
-    click(&mut player, 10.0, 10.0, 0.0);
+    let opened = click(&mut player, 10.0, 10.0, 0.0);
+    assert_eq!(opened, vec![Effect::NeedsFrame]);
     let frame = player.frame();
     assert_eq!(frame.board, id(B1));
     assert_eq!(frame.overlays.len(), 1);
     assert_eq!(frame.overlays[0].board, id(B2));
     assert_eq!(frame.overlays[0].origin, [5.0, 6.0]);
+    assert!(frame.transition.is_none());
 
-    click(&mut player, 70.0, 10.0, 100.0);
+    let swapped = click(&mut player, 70.0, 10.0, 100.0);
+    assert_eq!(swapped, vec![Effect::NeedsFrame]);
     let frame = player.frame();
     assert_eq!(frame.overlays.len(), 1);
+    assert!(frame.transition.is_none());
     assert_eq!(frame.overlays[0].board, id(B3));
     assert!(player.history().is_empty());
 }
@@ -265,7 +269,8 @@ fn close_overlay_pops_and_navigate_clears_overlays() {
     );
 
     click(&mut player, 10.0, 10.0, 0.0);
-    click(&mut player, 10.0, 110.0, 100.0);
+    let closed = click(&mut player, 10.0, 110.0, 100.0);
+    assert_eq!(closed, vec![Effect::NeedsFrame]);
     assert!(player.frame().overlays.is_empty());
 
     click(&mut player, 10.0, 10.0, 200.0);
@@ -444,16 +449,38 @@ fn change_to_in_a_component_swaps_the_instance_that_holds_the_layer() {
         ],
     );
 
-    click(&mut player, 110.0, 10.0, 0.0);
+    let effects = click(&mut player, 110.0, 10.0, 0.0);
 
-    let swaps = player.frame().variant_swaps;
-    assert_eq!(swaps.len(), 1);
-    assert_eq!(swaps[&id(INST_B)], id(COMP_ON));
+    assert_eq!(effects, vec![Effect::NeedsFrame]);
+    let frame = player.frame();
+    assert_eq!(frame.variant_swaps.len(), 1);
+    assert_eq!(frame.variant_swaps[&id(INST_B)], id(COMP_ON));
+    assert!(frame.transition.is_none());
     assert!(player.history().is_empty());
 
     // The instance now shows the variant, which has no interaction.
     let after = click(&mut player, 110.0, 10.0, 100.0);
     assert!(after.is_empty());
+}
+
+#[test]
+fn change_to_fired_by_the_instance_itself_swaps_that_instance() {
+    let change = json!([actions(json!([{"type": "changeTo", "dest": COMP_ON}]))]);
+    let mut variant = component_with_layer(COMP, json!([]));
+    variant["interactions"] = change.clone();
+    let mut player = instance_player(
+        vec![instance(INST_A, change), instance(INST_B, json!([]))],
+        vec![variant, component_with_layer(COMP_ON, json!([]))],
+    );
+
+    // INST_A fires its own interaction, INST_B its variant's root one.
+    click(&mut player, 10.0, 10.0, 0.0);
+    click(&mut player, 110.0, 10.0, 100.0);
+
+    let swaps = player.frame().variant_swaps;
+    assert_eq!(swaps.len(), 2);
+    assert_eq!(swaps[&id(INST_A)], id(COMP_ON));
+    assert_eq!(swaps[&id(INST_B)], id(COMP_ON));
 }
 
 #[test]
@@ -748,6 +775,10 @@ fn overlay_actions_with_nothing_to_act_on_change_nothing() {
                         "a0000003",
                         json!([actions(json!([{"type": "swapOverlay", "dest": GONE}]))]),
                     ),
+                    layer(
+                        "a0000004",
+                        json!([actions(json!([{"type": "openOverlay", "dest": B2}]))]),
+                    ),
                 ],
             ),
             board(B2, vec![]),
@@ -761,6 +792,7 @@ fn overlay_actions_with_nothing_to_act_on_change_nothing() {
             (id(L1), rect(0.0, 0.0, 50.0, 50.0)),
             (id(L2), rect(100.0, 0.0, 50.0, 50.0)),
             (id("a0000003"), rect(200.0, 0.0, 50.0, 50.0)),
+            (id("a0000004"), rect(300.0, 0.0, 50.0, 50.0)),
         ]),
         HashMap::new(),
     );
@@ -772,6 +804,13 @@ fn overlay_actions_with_nothing_to_act_on_change_nothing() {
     assert!(swap_none.is_empty());
     assert!(open_gone.is_empty());
     assert_eq!(player.frame(), before);
+
+    click(&mut player, 310.0, 10.0, 200.0);
+    let swap_gone = click(&mut player, 210.0, 10.0, 300.0);
+    assert!(swap_gone.is_empty());
+    let frame = player.frame();
+    assert_eq!(frame.overlays.len(), 1);
+    assert_eq!(frame.overlays[0].board, id(B2));
 }
 
 #[test]
