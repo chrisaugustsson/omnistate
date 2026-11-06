@@ -481,8 +481,13 @@ export async function createDesignRenderer(canvas: HTMLCanvasElement): Promise<D
     for (const listener of Array.from(viewListeners)) listener();
   }
 
+  // Frames are asked for, not looped: nothing is scheduled while the view is idle.
+  let scheduled = false;
   function requestFrame() {
     dirty = true;
+    if (scheduled || destroyed) return;
+    scheduled = true;
+    frame = requestAnimationFrame(loop);
   }
 
   /** Draws the stage, which asks for another frame while a transition plays (`play_tick` says 2). */
@@ -508,13 +513,13 @@ export async function createDesignRenderer(canvas: HTMLCanvasElement): Promise<D
   }
 
   function loop(now: number) {
+    scheduled = false;
     if (destroyed) return;
     if (dirty && loaded) {
       dirty = false;
       if (playing) playFrame(now);
       else drawFrame();
     }
-    frame = requestAnimationFrame(loop);
   }
 
   const position = (event: { clientX: number; clientY: number }): [number, number] => {
@@ -656,7 +661,7 @@ export async function createDesignRenderer(canvas: HTMLCanvasElement): Promise<D
     requestFrame();
   });
   resizing.observe(canvas);
-  frame = requestAnimationFrame(loop);
+  requestFrame();
 
   return {
     addImage(attachment, bytes) {

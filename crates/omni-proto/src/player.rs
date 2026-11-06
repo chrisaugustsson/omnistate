@@ -316,6 +316,18 @@ impl Player {
         self.hint_until
     }
 
+    /// Starts the transition that is playing over again at `at`, with the one
+    /// it cut short frozen at `at` too, for a page whose clock was stale when
+    /// the transition began.
+    pub fn restart_transition(&mut self, at: f64) {
+        if let Some(running) = &mut self.frame.transition {
+            running.started = at;
+            if let Some(cut) = &mut running.interrupted {
+                cut.at = at;
+            }
+        }
+    }
+
     /// Outlines the hotspots from `at` for `HINT_MS`, if they are outlined.
     pub fn restart_hint(&mut self, at: f64) {
         if self.hint_until.is_some() {

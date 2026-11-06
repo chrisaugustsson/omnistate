@@ -52,6 +52,8 @@ pub struct Session {
     missed: bool,
     /// Whether a click missed that the page has not read yet.
     toast: bool,
+    /// Whether an event began a transition that the next tick has to time.
+    fresh: bool,
     /// The time of the last tick, which events between ticks happen at.
     now: f64,
     /// The size of the last frame: width, height and pixel ratio.
@@ -137,6 +139,7 @@ impl Session {
             url: None,
             missed: false,
             toast: false,
+            fresh: false,
             now: 0.0,
             size: None,
         })
@@ -164,6 +167,7 @@ impl Session {
             at: self.now,
         };
         let mut changed = false;
+        let before = self.player.frame().transition;
         for effect in self.player.pointer(event) {
             match effect {
                 Effect::NeedsFrame => changed = true,
@@ -178,6 +182,7 @@ impl Session {
             }
         }
         self.changed |= changed;
+        self.fresh |= self.player.frame().transition != before;
         changed
     }
 
@@ -188,6 +193,7 @@ impl Session {
         self.player.back();
         let moved = self.player.frame() != before;
         self.changed |= moved;
+        self.fresh |= moved;
         moved
     }
 
@@ -197,6 +203,7 @@ impl Session {
         let id = self.board(board)?;
         let moved = self.player.go(id);
         self.changed |= moved;
+        self.fresh |= moved;
         Ok(moved)
     }
 
@@ -224,6 +231,10 @@ impl Session {
         // time is only as fresh as the last tick.
         if std::mem::take(&mut self.missed) {
             self.player.restart_hint(now);
+        }
+        // The same goes for a transition the click began.
+        if std::mem::take(&mut self.fresh) {
+            self.player.restart_transition(now);
         }
         let hinting = self.player.hint_until().is_some();
         let moving = self.player.frame().transition.is_some();
