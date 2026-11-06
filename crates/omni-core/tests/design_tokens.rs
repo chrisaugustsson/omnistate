@@ -5,6 +5,8 @@
 mod common;
 
 use common::{assert_rejected, assert_round_trips, parse, with};
+use omni_core::design::tokens::Scope;
+use omni_core::design::{DesignDoc, Node};
 use serde_json::{Value, json};
 
 /// A frame with a token reference in every style and layout value.
@@ -246,4 +248,90 @@ fn strings_that_are_neither_a_literal_nor_a_token_are_rejected() {
             &format!("{pointer} = `{bad}` is neither a literal nor a token reference"),
         );
     }
+}
+
+/// The references of `node` with the field each is checked as, sorted, so
+/// the order the node lists them in does not matter.
+fn refs_of(node: &Node) -> Vec<(String, String)> {
+    let mut refs: Vec<(String, String)> = DesignDoc::token_refs(node)
+        .into_iter()
+        .map(|(field, token)| (token.as_str().to_string(), format!("{field:?}")))
+        .collect();
+    refs.sort();
+    refs
+}
+
+fn expected_refs(refs: &[(&str, Scope)]) -> Vec<(String, String)> {
+    let mut refs: Vec<(String, String)> = refs
+        .iter()
+        .map(|(token, field)| (token.to_string(), format!("{field:?}")))
+        .collect();
+    refs.sort();
+    refs
+}
+
+#[test]
+fn each_reference_of_a_node_is_checked_as_the_field_it_is_written_in() {
+    let frame = with(
+        &with(
+            &tokenized_frame(),
+            "/strokes/0/dash",
+            json!({"length": "$dash.long", "gap": "$dash.gap"}),
+        ),
+        "/shadows/1/blur",
+        json!("$shadow.blur"),
+    );
+    assert_eq!(
+        refs_of(&parse(&frame)),
+        expected_refs(&[
+            ("$size.card", Scope::Width),
+            ("$size.card-tall", Scope::Height),
+            ("$size.min", Scope::Width),
+            ("$size.max", Scope::Width),
+            ("$size.min-tall", Scope::Height),
+            ("$size.max-tall", Scope::Height),
+            ("$space.md", Scope::Gap),
+            ("$space.lg", Scope::Gap),
+            ("$space.xs", Scope::Pad),
+            ("$space.sm", Scope::Pad),
+            ("$space.md", Scope::Pad),
+            ("$space.lg", Scope::Pad),
+            ("$color.surface", Scope::Fill),
+            ("$color.brand-500", Scope::Fill),
+            ("$color.brand-700", Scope::Fill),
+            ("$color.border", Scope::Stroke),
+            ("$border.thin", Scope::StrokeWidth),
+            ("$dash.long", Scope::Length("length")),
+            ("$dash.gap", Scope::Length("gap")),
+            ("$radius.lg", Scope::Radius),
+            ("$radius.md", Scope::Radius),
+            ("$radius.sm", Scope::Radius),
+            ("$radius.xs", Scope::Radius),
+            ("$shadow.card", Scope::Shadow),
+            ("$color.shadow", Scope::ShadowColor),
+            ("$shadow.blur", Scope::Length("blur")),
+            ("$opacity.muted", Scope::Opacity),
+            ("$state.isOpen", Scope::Visible),
+        ]),
+        "the frame's own references, not its child's"
+    );
+    let text = with(
+        &tokenized_text(),
+        "/margin",
+        json!({"top": "$space.sm", "right": 0, "bottom": 0, "left": 0}),
+    );
+    assert_eq!(
+        refs_of(&parse(&text)),
+        expected_refs(&[
+            ("$state.cta", Scope::Content),
+            ("$font.family.sans", Scope::FontFamily),
+            ("$font.size.lg", Scope::FontSize),
+            ("$font.weight.semibold", Scope::FontWeight),
+            ("$font.line-height.tight", Scope::LineHeight),
+            ("$font.tracking.wide", Scope::LetterSpacing),
+            ("$color.text.strong", Scope::TextColor),
+            ("$opacity.subtle", Scope::Opacity),
+            ("$space.sm", Scope::Length("margin")),
+        ])
+    );
 }

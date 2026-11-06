@@ -1359,3 +1359,137 @@ fn node_at_gives_the_address_of_a_node_inside_an_instance() {
         assert_eq!(scene.node_at(point), Some(expected), "{case}");
     }
 }
+
+// ---------------------------------------------------------------------------
+// Tokens on content, visibility and the text measures (US-26)
+// ---------------------------------------------------------------------------
+//
+// The tokens of `tokens()` and the state group: `state.cta` (string "Pay
+// now"), `state.price` (string "16px"), `state.isOpen` (boolean false) and
+// `state.ratio` (number 1.5), with `spacing.size` (18px) and `spacing.line`
+// (27px). No components.
+
+fn state_system() -> DesignSystem {
+    let mut json = tokens();
+    json["state"] = json!({
+        "cta": {"$type": "string", "$value": "Pay now"},
+        "price": {"$type": "string", "$value": "16px"},
+        "isOpen": {"$type": "boolean", "$value": false},
+        "ratio": {"$type": "number", "$value": 1.5}
+    });
+    json["spacing"]["size"] = json!({"$value": "18px"});
+    json["spacing"]["line"] = json!({"$value": "27px"});
+    json["$components"] = json!([]);
+    DesignSystem::from_json(&json)
+        .unwrap_or_else(|error| panic!("the design system fixture must be read, but: {error}"))
+}
+
+/// A one-line text at (20, `y`) that hugs `content`.
+fn label(id: &str, y: f64, content: &str, font_size: Value, line_height: Value) -> Value {
+    json!({
+        "id": id,
+        "type": "text",
+        "name": "Label",
+        "x": 20,
+        "y": y,
+        "width": "hug",
+        "height": "hug",
+        "content": content,
+        "fontFamily": "Inter",
+        "fontSize": font_size,
+        "lineHeight": line_height
+    })
+}
+
+#[test]
+fn a_text_bound_to_a_string_token_is_laid_out_with_the_tokens_text_as_it_is() {
+    let page = board_page(
+        "p0000026",
+        "a0000026",
+        "#ffffff",
+        vec![
+            label("f0000261", 20.0, "$state.cta", json!(16), json!(1.25)),
+            label("f0000262", 60.0, "Pay now", json!(16), json!(1.25)),
+            label("f0000263", 100.0, "$state.price", json!(16), json!(1.25)),
+            label("f0000264", 140.0, "16px", json!(16), json!(1.25)),
+        ],
+    );
+    let scene = Scene::with_system(node(&page), Assets::new(), state_system());
+    let pay_now = bounds(&scene, &addr("f0000262"));
+    assert_eq!(
+        bounds(&scene, &addr("f0000261")),
+        page_box(20.0, 20.0, pay_now.width, pay_now.height),
+        "$state.cta is the text Pay now"
+    );
+    let price = bounds(&scene, &addr("f0000264"));
+    assert_eq!(
+        bounds(&scene, &addr("f0000263")),
+        page_box(20.0, 100.0, price.width, price.height),
+        "$state.price is the text 16px, not a number"
+    );
+    assert!(scene.errors().is_empty(), "nothing is missing");
+}
+
+#[test]
+fn a_layer_whose_visible_token_is_false_is_neither_drawn_nor_hit() {
+    let hidden = json!({
+        "id": "f0000265",
+        "type": "frame",
+        "name": "Hidden",
+        "x": 20,
+        "y": 20,
+        "width": fixed(100.0),
+        "height": fixed(40.0),
+        "layout": {"mode": "none"},
+        "fills": solid("#ff0000"),
+        "visible": "$state.isOpen"
+    });
+    let page = board_page("p0000027", "a0000027", "#ffffff", vec![hidden]);
+    let mut scene = Scene::with_system(node(&page), Assets::new(), state_system());
+    let pixels = render(&mut scene);
+    assert_rgb(
+        &pixels,
+        (70, 40),
+        WHITE,
+        "the board, where the hidden frame is",
+    );
+    assert_eq!(scene.node_at((70.0, 40.0)), Some(addr("a0000027")));
+    assert!(scene.errors().is_empty(), "nothing is missing");
+}
+
+#[test]
+fn a_dimension_token_on_line_height_is_pixels_and_a_number_token_a_multiple_of_the_font_size() {
+    let page = board_page(
+        "p0000028",
+        "a0000028",
+        "#ffffff",
+        vec![
+            label(
+                "f0000266",
+                20.0,
+                "Pay now",
+                json!("$spacing.size"),
+                json!("$spacing.line"),
+            ),
+            label(
+                "f0000267",
+                80.0,
+                "Pay now",
+                json!(18),
+                json!("$state.ratio"),
+            ),
+        ],
+    );
+    let scene = Scene::with_system(node(&page), Assets::new(), state_system());
+    assert_eq!(
+        bounds(&scene, &addr("f0000266")).height,
+        27.0,
+        "a 27px line on an 18px font"
+    );
+    assert_eq!(
+        bounds(&scene, &addr("f0000267")).height,
+        27.0,
+        "1.5 times an 18px font"
+    );
+    assert!(scene.errors().is_empty(), "nothing is missing");
+}

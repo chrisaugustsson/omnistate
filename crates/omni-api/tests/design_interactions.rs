@@ -20,6 +20,11 @@
 //!   name are checked against the project's tokens (the rules themselves are
 //!   pinned in omni-core's tests/design_interactions.rs). A project without
 //!   tokens has no variables.
+//! - US-26: every token reference of a node that a `set` or `insert` writes
+//!   is checked against the project's tokens (the rules themselves are pinned
+//!   in omni-core's tests/design_system_tokens.rs), including references the
+//!   operation leaves as they were. A project without a design system has no
+//!   tokens to refer to.
 
 mod common;
 
@@ -960,5 +965,94 @@ fn a_boards_modes_must_name_collections_of_the_design_system_and_their_modes() {
         board_tags(f, client, &design, &cart).contains(r#"modes={{color: "dark"}}"#),
         "{}",
         board_tags(f, client, &design, &cart)
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Token references (US-26)
+// ---------------------------------------------------------------------------
+
+/// A token tree with one light mode, the color group `colors` and the
+/// string token `state.cta`.
+fn cta_tokens(colors: Value) -> Value {
+    json!({
+        "$extensions": { "omnistate": { "modes": ["light"] } },
+        "color": colors,
+        "state": { "cta": { "$type": "string", "$value": "Pay now" } }
+    })
+}
+
+#[test]
+fn every_token_reference_of_a_written_node_is_checked_against_the_design_system() {
+    let (f, client) = ready();
+    let design = new_design(f, client);
+    let (cart, summary, total) = (design.id("Cart"), design.id("Summary"), design.id("Total"));
+    let before = board_tags(f, client, &design, &cart);
+    let write = |ops: Value| edit(f, client, &holder(f), &design, ops);
+
+    // Without a design system every reference is unknown.
+    let response = write(json!([set(&summary, 1, json!({ "fill": "$color.ink" }))]));
+    assert_eq!(
+        refusal(&response),
+        "the project has no design system: import tokens first"
+    );
+    assert_eq!(response.json()["index"], 0);
+
+    import_tokens(
+        f,
+        client,
+        &design,
+        cta_tokens(json!({
+            "$type": "color",
+            "ink": { "$value": "#0f172a" },
+            "gone": { "$value": "#ff0000" }
+        })),
+    );
+    let response = write(json!([
+        set(&total, 1, json!({ "content": "$state.cta" })),
+        set(&summary, 1, json!({ "fill": "$color.nope" })),
+    ]));
+    assert_eq!(
+        refusal(&response),
+        "`$color.nope` is not a token of the design system"
+    );
+    assert_eq!(response.json()["index"], 1);
+    assert_eq!(board_tags(f, client, &design, &cart), before);
+
+    applied(
+        f,
+        client,
+        &design,
+        json!([
+            set(&total, 1, json!({ "content": "$state.cta" })),
+            set(&summary, 1, json!({ "fill": "$color.gone" })),
+        ]),
+    );
+    let tags = board_tags(f, client, &design, &cart);
+    assert!(tags.contains(r#"content="$state.cta""#), "{tags}");
+
+    // The design system drops a token the design still refers to.
+    must(
+        call(
+            client,
+            "PUT",
+            &format!("{}/tokens", design.base(f)),
+            &holder(f),
+            Some(&json!({
+                "tokens": cta_tokens(json!({ "$type": "color", "ink": { "$value": "#0f172a" } }))
+            })),
+        ),
+        200,
+        "import the tokens without color.gone",
+    );
+    assert_eq!(
+        refusal(&write(json!([set(&summary, 2, json!({ "name": "Sum" }))]))),
+        "`$color.gone` is not a token of the design system"
+    );
+    applied(
+        f,
+        client,
+        &design,
+        json!([set(&summary, 2, json!({ "fill": "$color.ink" }))]),
     );
 }

@@ -51,7 +51,7 @@ mod common;
 
 use common::{with, without};
 use omni_core::design::tags;
-use omni_core::design::tokens::{Collection, ModeChoice, TokenTree};
+use omni_core::design::tokens::{Collection, ModeChoice, Scope, TokenTree};
 use omni_core::design::{AttachmentRef, Node, TokenRef};
 use serde_json::{Value, json};
 use std::path::Path;
@@ -1052,5 +1052,150 @@ fn a_loop_in_a_later_mode_of_a_collection_with_its_own_modes_is_refused() {
         &looped,
         "a loop in the compact mode of density is a loop",
         &["density.space.", "compact"],
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Binding a reference to a field (US-26)
+// ---------------------------------------------------------------------------
+
+/// The tokens of `with_state()`, with `state.count` scoped to `content`.
+fn scoped_count() -> TokenTree {
+    let mut json = with_state();
+    json["state"]["count"]["$extensions"] = json!({"omnistate": {"scopes": ["content"]}});
+    accept(&json)
+}
+
+fn binding(tree: &TokenTree, reference: &str, field: Scope) -> Result<(), String> {
+    tree.check_binding(&token(reference), field)
+        .map_err(|error| error.to_string())
+}
+
+#[test]
+fn a_reference_must_name_a_token_of_a_type_the_field_takes_within_its_scopes() {
+    let tree = scoped_count();
+    for (reference, field, message) in [
+        (
+            "$state.nope",
+            Scope::Content,
+            "`$state.nope` is not a token of the design system",
+        ),
+        (
+            "$color.ink",
+            Scope::Content,
+            "`$color.ink` is a color token; `content` takes a string token",
+        ),
+        (
+            "$color.ink",
+            Scope::FontSize,
+            "`$color.ink` is a color token; `fontSize` takes a dimension or number token",
+        ),
+        (
+            "$color.ink",
+            Scope::StrokeWidth,
+            "`$color.ink` is a color token; `strokeWidth` takes a dimension or number token",
+        ),
+        (
+            "$color.ink",
+            Scope::Length("margin"),
+            "`$color.ink` is a color token; `margin` takes a dimension or number token",
+        ),
+        (
+            "$state.count",
+            Scope::Opacity,
+            "`$state.count` is not scoped to `opacity` (scopes: content)",
+        ),
+        (
+            "$state.count",
+            Scope::Visible,
+            "`$state.count` is a number token; `visible` takes a boolean token",
+        ),
+    ] {
+        assert_eq!(
+            binding(&tree, reference, field),
+            Err(message.to_string()),
+            "{reference} in {field:?}"
+        );
+    }
+}
+
+#[test]
+fn a_token_without_scopes_binds_to_every_field_that_takes_its_type() {
+    let tree = accept(&with_state());
+    for (reference, fields) in [
+        ("$state.cta", vec![Scope::Content, Scope::FontFamily]),
+        ("$state.isOpen", vec![Scope::Visible]),
+        (
+            "$state.count",
+            vec![
+                Scope::Opacity,
+                Scope::FontSize,
+                Scope::LineHeight,
+                Scope::LetterSpacing,
+                Scope::StrokeWidth,
+                Scope::FontWeight,
+                Scope::Gap,
+                Scope::Pad,
+                Scope::Width,
+                Scope::Height,
+                Scope::Radius,
+                Scope::Length("margin"),
+            ],
+        ),
+        (
+            "$spacing.md",
+            vec![
+                Scope::FontSize,
+                Scope::LineHeight,
+                Scope::LetterSpacing,
+                Scope::StrokeWidth,
+                Scope::Gap,
+                Scope::Pad,
+                Scope::Width,
+                Scope::Height,
+                Scope::Radius,
+                Scope::Length("margin"),
+            ],
+        ),
+        (
+            "$color.ink",
+            vec![
+                Scope::Fill,
+                Scope::Stroke,
+                Scope::TextColor,
+                Scope::ShadowColor,
+            ],
+        ),
+        (
+            "$typography.body",
+            vec![Scope::FontFamily, Scope::FontWeight],
+        ),
+        ("$shadow.card", vec![Scope::Shadow]),
+    ] {
+        for field in fields {
+            assert_eq!(
+                binding(&tree, reference, field),
+                Ok(()),
+                "{reference} binds to {field:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_scoped_token_binds_to_the_fields_it_lists_and_to_those_scopes_cannot_name() {
+    let mut json = with_state();
+    json["state"]["count"]["$extensions"] = json!({"omnistate": {"scopes": ["opacity"]}});
+    let tree = accept(&json);
+    for field in [Scope::Opacity, Scope::FontWeight, Scope::Length("margin")] {
+        assert_eq!(
+            binding(&tree, "$state.count", field),
+            Ok(()),
+            "$state.count binds to {field:?}"
+        );
+    }
+    assert_eq!(
+        binding(&tree, "$state.count", Scope::FontSize),
+        Err("`$state.count` is not scoped to `fontSize` (scopes: opacity)".to_string())
     );
 }
