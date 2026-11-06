@@ -350,7 +350,7 @@ fn a_missing_required_field_is_named_with_its_type() {
         ),
         (
             r#"[{actions: [{type: "setVariable", variable: "count"}]}]"#,
-            "`value` is required for setVariable",
+            "setVariable needs `value` or `expr`",
         ),
     ];
     for (interactions, message) in cases {

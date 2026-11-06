@@ -619,7 +619,7 @@ impl DesignDoc {
             && ["component", "props", "overrides"]
                 .iter()
                 .any(|name| properties.contains_key(*name));
-        if instance {
+        if instance || properties.contains_key("interactions") {
             check(std::slice::from_ref(&*node)).map_err(|message| invalid(index, message))?;
         }
         if properties.contains_key("flows") {
