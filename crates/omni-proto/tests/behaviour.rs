@@ -144,7 +144,7 @@ fn a_drag_and_a_click_on_nothing_change_nothing() {
     let missed = click(&mut player, 500.0, 500.0, 100.0);
 
     assert!(dragged.is_empty());
-    assert!(missed.is_empty());
+    assert_eq!(missed, vec![Effect::Missed, Effect::NeedsFrame]);
     assert_eq!(player.frame().board, id(B1));
     assert!(player.history().is_empty());
 }
@@ -466,7 +466,7 @@ fn change_to_in_a_component_swaps_the_instance_that_holds_the_layer() {
 
     // The instance now shows the variant, which has no interaction.
     let after = click(&mut player, 110.0, 10.0, 100.0);
-    assert!(after.is_empty());
+    assert_eq!(after, vec![Effect::Missed, Effect::NeedsFrame]);
 }
 
 #[test]

@@ -176,12 +176,12 @@ fn a_click_on_a_board_scaled_down_to_fit_lands_on_the_hotspot_drawn_under_it() {
 
     assert_eq!(
         session.state(),
-        json!({"board": B2, "history": [B1], "overlays": [], "url": null})
+        json!({"board": B2, "history": [B1], "overlays": [], "missed": false, "url": null})
     );
 }
 
 #[test]
-fn a_click_beside_the_hotspot_of_a_centred_board_changes_nothing() {
+fn a_click_beside_the_hotspot_of_a_centred_board_navigates_nowhere() {
     // A 200 x 100 board on a 400 x 400 stage spans x 100..300: its hotspot at
     // 0, 0 is drawn at 100..200, 150..250, and x 90 is beside the board.
     let mut scene = scene_of(&page(vec![
@@ -198,11 +198,12 @@ fn a_click_beside_the_hotspot_of_a_centred_board_changes_nothing() {
     let mut session = Session::start(&scene, B1).expect("the page has the board");
     draw(&mut session, &mut scene, 400, 400);
 
-    assert!(!click(&mut session, 90.0, 200.0));
+    // A miss outlines the hotspots, so it changes what is drawn.
+    assert!(click(&mut session, 90.0, 200.0));
 
     assert_eq!(
         session.state(),
-        json!({"board": B1, "history": [], "overlays": [], "url": null})
+        json!({"board": B1, "history": [], "overlays": [], "missed": true, "url": null})
     );
 }
 
@@ -299,13 +300,13 @@ fn going_to_a_board_pushes_the_board_it_leaves_so_back_returns_there() {
     assert_eq!(session.go(B3), Ok(true));
     assert_eq!(
         session.state(),
-        json!({"board": B3, "history": [B2], "overlays": [], "url": null})
+        json!({"board": B3, "history": [B2], "overlays": [], "missed": false, "url": null})
     );
 
     assert!(session.back());
     assert_eq!(
         session.state(),
-        json!({"board": B2, "history": [], "overlays": [], "url": null})
+        json!({"board": B2, "history": [], "overlays": [], "missed": false, "url": null})
     );
 }
 

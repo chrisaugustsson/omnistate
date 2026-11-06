@@ -18,6 +18,9 @@ const CLICK_SLOP: f64 = 4.0;
 /// How deep the walk goes, so a component that holds itself ends.
 const MAX_DEPTH: usize = 256;
 
+/// How long the hotspot outlines of a miss fade for, in milliseconds.
+pub const HINT_MS: f64 = 1000.0;
+
 /// A box in the same space as the pointer's coordinates.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Rect {
@@ -65,6 +68,8 @@ pub enum Effect {
         url: String,
         new_tab: bool,
     },
+    /// A click landed on nothing that reacts: the hotspots are outlined.
+    Missed,
     /// The frame changed or is changing: draw it.
     NeedsFrame,
 }
@@ -146,6 +151,8 @@ pub struct Player {
     press: Option<Press>,
     /// The time of the last event the player saw.
     last_at: f64,
+    /// Until when the hotspots are outlined after a click that missed.
+    hint_until: Option<f64>,
 }
 
 impl Player {
@@ -172,6 +179,7 @@ impl Player {
             history: History::default(),
             press: None,
             last_at: 0.0,
+            hint_until: None,
         }
     }
 
@@ -240,6 +248,9 @@ impl Player {
     /// transition was running.
     pub fn tick(&mut self, now: f64) -> Vec<Effect> {
         self.last_at = now;
+        if self.hint_until.is_some_and(|until| now >= until) {
+            self.hint_until = None;
+        }
         let Some(running) = &self.frame.transition else {
             return Vec::new();
         };
@@ -286,6 +297,62 @@ impl Player {
             variant_swaps: BTreeMap::new(),
         };
         self.press = None;
+        self.hint_until = None;
+    }
+
+    /// Until when the hotspots are outlined, in milliseconds, if they are.
+    pub fn hint_until(&self) -> Option<f64> {
+        self.hint_until
+    }
+
+    /// Outlines the hotspots from `at` for `HINT_MS`, if they are outlined.
+    pub fn restart_hint(&mut self, at: f64) {
+        if self.hint_until.is_some() {
+            self.hint_until = Some(at + HINT_MS);
+        }
+    }
+
+    /// The boxes of the layers a pointer can trigger on the board shown and on
+    /// its open overlays, on the screen: the layers with an interaction that
+    /// a click, hover or press runs and whose target is there.
+    pub fn hotspot_rects(&self) -> Vec<Rect> {
+        let mut shown = vec![(self.frame.board, [0.0, 0.0])];
+        shown.extend(self.frame.overlays.iter().map(|o| (o.board, o.origin)));
+        let mut rects = Vec::new();
+        for (board, origin) in shown {
+            let Some(boxes) = self.boxes.get(&board) else {
+                continue;
+            };
+            for entry in self.entries(&board) {
+                let reacts = entry.interactions.iter().any(|interaction| {
+                    !matches!(
+                        interaction.trigger,
+                        Trigger::AfterDelay { .. } | Trigger::KeyPress { .. }
+                    ) && interaction
+                        .actions
+                        .iter()
+                        .any(|action| self.resolves(action))
+                });
+                if let (true, Some(rect)) = (reacts, boxes.rects.get(&entry.id)) {
+                    rects.push(rect.offset(origin));
+                }
+            }
+        }
+        rects
+    }
+
+    /// Whether the player would act on `action`: one that points at a node
+    /// needs it to be there.
+    fn resolves(&self, action: &Action) -> bool {
+        match action {
+            Action::Navigate { dest, .. }
+            | Action::OpenOverlay { dest, .. }
+            | Action::SwapOverlay { dest } => self.board_id(dest).is_some(),
+            Action::ChangeTo { dest } => dest
+                .parse::<NodeId>()
+                .is_ok_and(|id| self.components.contains_key(&id)),
+            _ => true,
+        }
     }
 
     /// The layers of the current board and of the open overlays that have an
@@ -361,7 +428,7 @@ impl Player {
             }
         }
         let Some((interactions, holder, trigger)) = self.hit(&Trigger::OnClick, x, y) else {
-            return false;
+            return self.miss(at, effects);
         };
         let mut changed = false;
         for interaction in &interactions {
@@ -375,6 +442,13 @@ impl Player {
             }
         }
         changed
+    }
+
+    /// A click that did nothing: outlines the hotspots.
+    fn miss(&mut self, at: f64, effects: &mut Vec<Effect>) -> bool {
+        self.hint_until = Some(at + HINT_MS);
+        effects.push(Effect::Missed);
+        true
     }
 
     /// The interactions for `trigger` of the deepest layer under the point

@@ -25,7 +25,8 @@
 //   A `flow` the page lacks shows the select with no flow chosen.
 // - The address follows a hotspot click, and an address that moves on its own
 //   starts the session over there.
-// - A link opens with `window.open` in a new tab, or `location.assign`.
+// - A link asks first; Open link opens it with `window.open` in a new tab, or
+//   `location.assign`.
 // - A play link to a board the page lacks shows the renderer's reason on the
 //   stage, and Exit still leaves.
 // - Leaving play names the board the player is on, and only keeps the selected
@@ -83,7 +84,7 @@ function fakePlayer(boards: () => string[]): FakePlayer {
     calls,
     start(id) {
       calls.push(`start ${id}`);
-      state = { board: board(id), history: [], overlays: [], url: null };
+      state = { board: board(id), history: [], overlays: [], missed: false, url: null };
     },
     stop() {
       calls.push("stop");
@@ -109,12 +110,12 @@ function fakePlayer(boards: () => string[]): FakePlayer {
     },
     restart(id) {
       calls.push(`restart ${id}`);
-      state = { board: board(id), history: [], overlays: [], url: null };
+      state = { board: board(id), history: [], overlays: [], missed: false, url: null };
       notify();
     },
     state() {
       const shown = now();
-      state = { ...shown, url: null };
+      state = { ...shown, missed: false, url: null };
       return shown;
     },
     onChange(listener) {
@@ -377,6 +378,7 @@ describe("a link the prototype opens", () => {
     await screen.findByText("Cart · 1 of 3");
 
     player.openUrl("https://example.com/terms", true);
+    fireEvent.click(await screen.findByRole("button", { name: "Open link" }));
 
     expect(open).toHaveBeenCalledTimes(1);
     expect(open.mock.calls[0].slice(0, 2)).toEqual(["https://example.com/terms", "_blank"]);
@@ -391,6 +393,7 @@ describe("a link the prototype opens", () => {
     await screen.findByText("Cart · 1 of 3");
 
     player.openUrl("https://example.com/terms", false);
+    fireEvent.click(await screen.findByRole("button", { name: "Open link" }));
 
     expect(assign).toHaveBeenCalledExactlyOnceWith("https://example.com/terms");
     expect(open).not.toHaveBeenCalled();

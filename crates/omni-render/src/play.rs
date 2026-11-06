@@ -9,12 +9,15 @@
 use crate::view::{Scene, Viewport};
 use omni_core::design::proto::Transition;
 use omni_core::design::{NodeData, NodeId, NodeKind};
-use omni_proto::{Effect, Player, PointerEvent, PointerKind, Rect};
+use omni_proto::{Effect, HINT_MS, Player, PointerEvent, PointerKind, Rect};
 use serde_json::{Value, json};
 use skia_safe::{Canvas, Color};
 
 /// FigCraft's default background, for a page whose settings do not say.
 const DEFAULT_BACKGROUND: Color = Color::from_argb(255, 0x1e, 0x1e, 0x1e);
+
+/// The width of the outline around a hotspot, in CSS pixels.
+const HINT_WIDTH: f32 = 2.0;
 
 /// What the page does next, after `Session::tick`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -44,6 +47,10 @@ pub struct Session {
     changed: bool,
     /// A link the player asked to open, until the page has read it.
     url: Option<(String, bool)>,
+    /// Whether a click missed that the next tick has to time the outlines of.
+    missed: bool,
+    /// Whether a click missed that the page has not read yet.
+    toast: bool,
     /// The time of the last tick, which events between ticks happen at.
     now: f64,
     /// The size of the last frame: width, height and pixel ratio.
@@ -117,6 +124,8 @@ impl Session {
             },
             changed: true,
             url: None,
+            missed: false,
+            toast: false,
             now: 0.0,
             size: None,
         })
@@ -147,6 +156,10 @@ impl Session {
         for effect in self.player.pointer(event) {
             match effect {
                 Effect::NeedsFrame => changed = true,
+                Effect::Missed => {
+                    self.missed = true;
+                    self.toast = true;
+                }
                 Effect::OpenUrl { url, new_tab } => {
                     self.url = Some((url, new_tab));
                     changed = true;
@@ -196,12 +209,21 @@ impl Session {
     /// Moves time on to `now`, in milliseconds.
     pub fn tick(&mut self, now: f64) -> Tick {
         self.now = now;
+        // The outlines count from the first frame after the click, whose own
+        // time is only as fresh as the last tick.
+        if std::mem::take(&mut self.missed) {
+            self.player.restart_hint(now);
+        }
+        let hinting = self.player.hint_until().is_some();
         self.player.tick(now);
-        let animating = self
-            .player
-            .frame()
-            .transition
-            .is_some_and(|running| running.transition != Transition::Instant);
+        let hint_ended = hinting && self.player.hint_until().is_none();
+        self.changed |= hint_ended;
+        let animating = self.player.hint_until().is_some()
+            || self
+                .player
+                .frame()
+                .transition
+                .is_some_and(|running| running.transition != Transition::Instant);
         if animating {
             Tick::Animating
         } else if self.changed {
@@ -219,13 +241,15 @@ impl Session {
     /// Where the player is: `{"board": "<id>", "history": ["<id>"],
     /// "overlays": ["<id>"], "url": null}`, the history oldest first and the
     /// overlays with the top one last. `url` is `{"url": "...", "newTab":
-    /// true}` once after a link was asked for, and `null` otherwise.
+    /// true}` once after a link was asked for, and `null` otherwise; `missed`
+    /// is true once after a click that landed on nothing.
     pub fn state(&mut self) -> Value {
         let frame = self.player.frame();
         json!({
             "board": frame.board.to_string(),
             "history": self.player.history().iter().map(NodeId::to_string).collect::<Vec<_>>(),
             "overlays": frame.overlays.iter().map(|overlay| overlay.board.to_string()).collect::<Vec<_>>(),
+            "missed": std::mem::take(&mut self.toast),
             "url": self.url.take().map(|(url, new_tab)| json!({"url": url, "newTab": new_tab})),
         })
     }
@@ -297,6 +321,34 @@ impl Session {
                 height,
             );
             scene.render_board(canvas, &viewport, &board);
+        }
+        if let Some(until) = self.player.hint_until().filter(|until| *until > self.now) {
+            let alpha = ((until - self.now) / HINT_MS).clamp(0.0, 1.0) as f32;
+            let mut paint = skia_safe::Paint::new(
+                skia_safe::Color4f::new(
+                    0x3b as f32 / 255.0,
+                    0x82 as f32 / 255.0,
+                    0xf6 as f32 / 255.0,
+                    alpha,
+                ),
+                None,
+            );
+            paint.set_style(skia_safe::PaintStyle::Stroke);
+            paint.set_stroke_width(HINT_WIDTH);
+            paint.set_anti_alias(true);
+            for rect in self.player.hotspot_rects() {
+                // Outside the box: the stroke's middle lies half its width out.
+                canvas.draw_rect(
+                    skia_safe::Rect::from_xywh(
+                        left + rect.x as f32 * scale,
+                        top + rect.y as f32 * scale,
+                        rect.width as f32 * scale,
+                        rect.height as f32 * scale,
+                    )
+                    .with_outset((HINT_WIDTH / 2.0, HINT_WIDTH / 2.0)),
+                    &paint,
+                );
+            }
         }
     }
 }

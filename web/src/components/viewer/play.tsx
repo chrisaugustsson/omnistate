@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { FloatingAlerts } from "@/components/viewer/chrome";
 import type { DesignRenderer, PlayState } from "@/design/renderer";
 
 // Play mode: a prototype played full window over the design viewer. The
@@ -7,7 +8,9 @@ import type { DesignRenderer, PlayState } from "@/design/renderer";
 // for as long as the session lasts, and takes the pointer; this component is the
 // two bars (Exit and the flow on top, Restart, Previous, Next and Back below)
 // and keeps the address bar on the board the player is on. Transitions are
-// instant, so a click on a hotspot shows its board at once.
+// instant, so a click on a hotspot shows its board at once. A link asks first
+// (LinkNotice), a click on nothing says so in a toast while the renderer
+// outlines the hotspots, and Cmd/Ctrl+\ hides the bars.
 
 export type PlayBoard = { id: string; name: string };
 export type PlayFlow = { name: string; start: string };
@@ -15,6 +18,88 @@ export type PlayFlow = { name: string; start: string };
 const bar = "flex h-11 shrink-0 items-center gap-3 bg-neutral-800 px-3 text-[13px] text-neutral-100";
 const control =
   "h-7 rounded-md px-2.5 text-[12px] text-neutral-100 outline-none transition-colors hover:bg-neutral-700 focus-visible:ring-[3px] focus-visible:ring-white/30 disabled:pointer-events-none disabled:text-neutral-500";
+
+const noticeKey = "omni.play.linkNotice";
+const toastMs = 4000;
+const mac = () => /Mac|iPhone|iPad/.test(navigator.platform);
+
+function skipsNotice() {
+  try {
+    return localStorage.getItem(noticeKey) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function openLink({ url, newTab }: Link) {
+  if (newTab) window.open(url, "_blank", "noopener");
+  else window.location.assign(url);
+}
+
+type Link = { url: string; newTab: boolean };
+
+/** What the notice says a link does. */
+function leaves({ url }: Link) {
+  if (!url.toLowerCase().startsWith("mailto:")) return <>This opens {url} outside the prototype.</>;
+  const address = url.slice("mailto:".length).split("?")[0];
+  let shown = address;
+  try {
+    shown = decodeURIComponent(address);
+  } catch {
+    // An address that is not valid percent-encoding is shown as written.
+  }
+  return <>This opens your mail app to write to {shown}.</>;
+}
+
+/** Asks before a link takes the reader out of the prototype. */
+function LinkNotice({ link, onClose }: { link: Link; onClose: () => void }) {
+  const [skip, setSkip] = useState(false);
+  return (
+    <div className="absolute inset-0 z-30 flex items-center justify-center bg-black/50 p-6">
+      <div
+        role="alertdialog"
+        aria-modal="true"
+        aria-labelledby="play-link-title"
+        aria-describedby="play-link-body"
+        className="flex w-full max-w-sm flex-col gap-3 rounded-xl bg-neutral-800 p-5 text-neutral-100 shadow-panel"
+      >
+        <h2 id="play-link-title" className="text-[15px] font-semibold">
+          Open link?
+        </h2>
+        <p id="play-link-body" className="text-[13px] leading-snug break-words text-neutral-300">
+          {leaves(link)}
+        </p>
+        <label className="flex items-center gap-2 text-[12px] text-neutral-300">
+          <input type="checkbox" checked={skip} onChange={(event) => setSkip(event.target.checked)} />
+          Don't show this again
+        </label>
+        <div className="flex justify-end gap-2">
+          <button type="button" className={control} onClick={onClose}>
+            Cancel
+          </button>
+          <button
+            type="button"
+            autoFocus
+            className={`${control} bg-neutral-100 font-medium text-neutral-900 hover:bg-white`}
+            onClick={() => {
+              if (skip) {
+                try {
+                  localStorage.setItem(noticeKey, "1");
+                } catch {
+                  // Without storage the notice shows again, which is safe.
+                }
+              }
+              onClose();
+              openLink(link);
+            }}
+          >
+            Open link
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function reason(error: unknown) {
   return error instanceof Error && error.message ? error.message : "The prototype could not be played.";
@@ -60,10 +145,24 @@ export function PlayMode({
   // The address as the last render saw it, to tell it moving from the player moving.
   const seen = useRef(play);
   const pushed = useRef<string[]>([]);
-  const latest = useRef({ ready, onExit, state, play });
+  const [notice, setNotice] = useState<Link | null>(null);
+  const [hidden, setHidden] = useState(false);
+  const [toast, setToast] = useState<{ text: string; id: number } | null>(null);
+  const latest = useRef({ ready, onExit, state, play, notice, hidden });
   useEffect(() => {
-    latest.current = { ready, onExit, state, play };
+    latest.current = { ready, onExit, state, play, notice, hidden };
   });
+  const toasts = useRef(0);
+  function say(text: string) {
+    toasts.current += 1;
+    setToast({ text, id: toasts.current });
+  }
+  // A toast goes by itself; a newer one restarts the time.
+  useEffect(() => {
+    if (!toast) return;
+    const timer = window.setTimeout(() => setToast(null), toastMs);
+    return () => window.clearTimeout(timer);
+  }, [toast]);
 
   useEffect(() => {
     let cancelled = false;
@@ -119,20 +218,39 @@ export function PlayMode({
     }
   }, [renderer, state, play, flow, onPlay]);
 
-  // A link the prototype asked to open.
+  // A link the prototype asked to open; one that comes while the notice shows is dropped.
   useEffect(() => {
     const link = state?.url;
     if (!link) return;
-    if (link.newTab) window.open(link.url, "_blank", "noopener");
-    else window.location.assign(link.url);
+    if (skipsNotice()) openLink(link);
+    else setNotice((showing) => showing ?? link);
+  }, [state]);
+
+  // A click on nothing: the renderer outlines the hotspots, this says so.
+  useEffect(() => {
+    if (state?.missed) say("Nothing happens here. The hotspots are outlined.");
   }, [state]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "\\" && (mac() ? event.metaKey : event.ctrlKey) && !event.altKey) {
+        event.preventDefault();
+        // The prototype's own key triggers do not see it.
+        event.stopPropagation();
+        const hide = !latest.current.hidden;
+        setHidden(hide);
+        if (hide) say(`Press ${mac() ? "⌘" : "Ctrl+"}\\ to show the bars again`);
+        return;
+      }
       if (event.key !== "Escape") return;
       event.preventDefault();
       // The design view's own Escape handling would clear its selection.
       event.stopPropagation();
+      // Escape answers the notice as Cancel before it leaves play mode.
+      if (latest.current.notice) {
+        setNotice(null);
+        return;
+      }
       const { onExit: exit, state: now, play: named } = latest.current;
       exit(now?.board ?? named);
     };
@@ -166,7 +284,7 @@ export function PlayMode({
       aria-label="Play mode"
       className="fixed inset-0 z-50 flex flex-col bg-neutral-900 text-neutral-100"
     >
-      <div className={bar}>
+      <div className={`${bar} ${hidden ? "invisible" : ""}`} aria-hidden={hidden}>
         <button
           type="button"
           className={control}
@@ -206,8 +324,20 @@ export function PlayMode({
             <p className="absolute inset-0 flex items-center justify-center text-[13px] text-neutral-400">Loading…</p>
           )
         )}
+        {toast && (
+          <FloatingAlerts>
+            <p
+              key={toast.id}
+              role="status"
+              className="pointer-events-auto rounded-lg bg-neutral-700 px-3.5 py-2 text-[12px] text-neutral-100 shadow-panel"
+            >
+              {toast.text}
+            </p>
+          </FloatingAlerts>
+        )}
+        {notice && <LinkNotice link={notice} onClose={() => setNotice(null)} />}
       </div>
-      <div className={`${bar} justify-center gap-4`}>
+      <div className={`${bar} justify-center gap-4 ${hidden ? "invisible" : ""}`} aria-hidden={hidden}>
         <button
           type="button"
           className={control}

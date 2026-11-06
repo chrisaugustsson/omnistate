@@ -11,4 +11,6 @@ pub mod overlay;
 mod player;
 
 pub use history::Play;
-pub use player::{Effect, Frame, OverlayState, Player, PointerEvent, PointerKind, Rect, Running};
+pub use player::{
+    Effect, Frame, HINT_MS, OverlayState, Player, PointerEvent, PointerKind, Rect, Running,
+};

@@ -87,6 +87,8 @@ export type PlayState = {
   history: string[];
   /** The boards of the open overlays, the top one last. */
   overlays: string[];
+  /** Whether a click landed on nothing that reacts, given once. */
+  missed: boolean;
   /** A link the prototype asked to open, given once. */
   url: { url: string; newTab: boolean } | null;
 };
