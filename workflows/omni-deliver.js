@@ -8,7 +8,7 @@ export const meta = {
     { title: 'Clarity', detail: 'one check per backlog story whose version is new, in parallel: blocking gaps become threads, minor ones agent decisions' },
     { title: 'Unblock', detail: 'a blocked story whose linked threads all have a conclusion gets each conclusion as a human decision and is unblocked' },
     { title: 'Implement', detail: 'the implement loop polls the board every 5 seconds and when an implementer ends: while fewer than `implementers` run, it claims the first pickable story that passed clarity and starts an implementer in its worktree (an existing one is continued), writing no tests and running only the existing checks its change needs; a finished story moves to implemented, a blocked one gets a thread and stays in the backlog' },
-    { title: 'Test lane', detail: 'one story at a time on the main worktree: the lane claims the first reviewed story, writes .omni/lane.json, rebases its branch onto the integration branch and fast-forwards it, runs the fast command and the stack at the same time, then a verifier on its criteria, then a test author writes its regression tests by the writing-tests skill and the lane runs them (a red run drops the test commits and the report says so), and it moves to done; a failure before the tests resets the branch to the lane base and returns the story to the backlog with the findings at priority 0, its branch kept' },
+    { title: 'Test lane', detail: 'one story at a time on the main worktree: the lane claims the first reviewed story, writes .omni/lane.json, rebases its branch onto the integration branch and fast-forwards it, runs the fast command, then the stack, then a verifier on its criteria, then a test author writes its regression tests by the writing-tests skill and the lane runs them (a red run drops the test commits and the report says so), and it moves to done; a failure before the tests resets the branch to the lane base and returns the story to the backlog with the findings at priority 0, its branch kept' },
     { title: 'Review', detail: 'up to `reviewers` reviewers at once read each review story\'s branch against its criteria; a fail returns the story to the backlog at priority 0 with the findings, for a fresh implementer that continues from the story\'s branch, and a fresh reviewer; a third failed attempt opens a thread and blocks the story; a pass moves it to reviewed' },
     { title: 'Report', detail: 'claims on unfinished stories are released, a verifier runs the fast command and the journeys of the stories done, and the report is posted on the Run thread' },
   ],
@@ -1071,18 +1071,17 @@ Return raw structured data only.`
     }
     mergeOutcomes.push({ key, outcome: 'merged' })
     laneLog(key, `merged onto ${integration}`)
-    // The fast command builds in the host target and the stack in the compose
-    // volume, so they run at the same time; the stack command follows stack_up.
-    stackUpRan = true
-    const [fastResult, stack] = await Promise.all([
-      runFast(root),
-      runStack(stackUp).then(async (up) => (up.ok ? { up, result: await runStack(stackCmd) } : { up })),
-    ])
-    const stackFindings = !stack.up.ok ? [stackFinding(`The stack did not start: \`${stackUp}\` exited non-zero.`, stack.up)]
-      : !stack.result.ok ? [stackFinding(`The stack command (\`${stackCmd}\`) failed on the main worktree.`, stack.result)] : []
-    if (!fastResult.ok) return failLane(key, base, [{ text: `The fast command (\`${fast}\`) failed on the main worktree. Output:\n\`\`\`\n${tail(fastResult.output)}\n\`\`\``, files: [] }, ...stackFindings], 'the fast command failed')
+    // The fast command runs first and alone: the stack's web image copies the
+    // renderer build the fast command produces, so a stack built at the same
+    // time served a stale renderer and the verifier checked the wrong build.
+    const fastResult = await runFast(root)
+    if (!fastResult.ok) return failLane(key, base, [{ text: `The fast command (\`${fast}\`) failed on the main worktree. Output:\n\`\`\`\n${tail(fastResult.output)}\n\`\`\``, files: [] }], 'the fast command failed')
     laneLog(key, 'fast passed')
-    if (stackFindings.length) return failLane(key, base, stackFindings, stack.up.ok ? 'the stack command failed' : 'the stack did not start')
+    stackUpRan = true
+    const up = await runStack(stackUp)
+    if (!up.ok) return failLane(key, base, [stackFinding(`The stack did not start: \`${stackUp}\` exited non-zero.`, up)], 'the stack did not start')
+    const stackResult = await runStack(stackCmd)
+    if (!stackResult.ok) return failLane(key, base, [stackFinding(`The stack command (\`${stackCmd}\`) failed on the main worktree.`, stackResult)], 'the stack command failed')
     laneLog(key, 'stack passed')
     const r = await exercise(key)
     if (!r) {

@@ -888,7 +888,7 @@ function onSendBack(dirs, key, seen) {
 }
 const stopped = async () => ({ status: "blocked", summary: "stopped" });
 
-test("two reviewed stories pass the lane one at a time: each rebased and fast-forwarded, then fast and the stack at the same time (stack after stack_up) and the verifier after both, with the lane file naming it and the commit before its merge; the second is claimed only once the first is done", { timeout: 20000 }, async (t) => {
+test("two reviewed stories pass the lane one at a time: each rebased and fast-forwarded, then fast, stack_up, stack and the verifier in order, with the lane file naming it and the commit before its merge; the second is claimed only once the first is done", { timeout: 20000 }, async (t) => {
   const dirs = scratch(t, [story("US-1", { status: "reviewed" }), story("US-2", { status: "reviewed" })]);
   const log = join(dirs.root, "steps.log");
   dirs.checks({ fast: step(log, "fast"), stack_up: step(log, "stack_up"), stack: step(log, "stack") });
@@ -908,15 +908,16 @@ test("two reviewed stories pass the lane one at a time: each rebased and fast-fo
   assert.equal(git(dirs.repo, "rev-list", "--merges", "main").trim(), "");
   const lane1 = { key: "US-1", base: sha(dirs, "main~2") };
   const lane2 = { key: "US-2", base: sha(dirs, "main~1") };
-  const steps = stepsOf(log);
-  assert.deepEqual(steps.map((s) => s.lane.key), ["US-1", "US-1", "US-1", "US-1", "US-2", "US-2", "US-2", "US-2"]);
-  for (const [key, lane] of [["US-1", lane1], ["US-2", lane2]]) {
-    const mine = steps.filter((s) => s.lane.key === key);
-    assert.deepEqual(mine.map((s) => s.step).sort(), ["fast", "stack", "stack_up", "verify"]);
-    assert.deepEqual(mine.map((s) => [s.lane, s.head]), mine.map(() => [lane, `feat: ${key} attempt`]));
-    const at = (name) => mine.findIndex((s) => s.step === name);
-    assert.ok(at("stack_up") < at("stack") && at("stack") < at("verify") && at("fast") < at("verify"), `${key}: ${mine.map((s) => s.step).join(", ")}`);
-  }
+  assert.deepEqual(stepsOf(log), [
+    { step: "fast", lane: lane1, head: "feat: US-1 attempt" },
+    { step: "stack_up", lane: lane1, head: "feat: US-1 attempt" },
+    { step: "stack", lane: lane1, head: "feat: US-1 attempt" },
+    { step: "verify", lane: lane1, head: "feat: US-1 attempt" },
+    { step: "fast", lane: lane2, head: "feat: US-2 attempt" },
+    { step: "stack_up", lane: lane2, head: "feat: US-2 attempt" },
+    { step: "stack", lane: lane2, head: "feat: US-2 attempt" },
+    { step: "verify", lane: lane2, head: "feat: US-2 attempt" },
+  ]);
   assert.deepEqual(seen["US-1"], { "US-1": "testing", "US-2": "reviewed", claimsOfUS2: 0 });
   assert.deepEqual(seen["US-2"], { "US-1": "done", "US-2": "testing", claimsOfUS2: 1 });
   assert.deepEqual([dirs.story("US-1").status, dirs.story("US-2").status], ["done", "done"]);
@@ -989,7 +990,7 @@ test("the lane claims reviewed stories by priority, then by number", { timeout: 
   assert.deepEqual(order, ["US-2", "US-10", "US-1"]);
 });
 
-test("a fast command failing in the lane resets the integration branch to the lane base, removes the lane file, runs no verifier, and sends the story to the backlog at priority 0 with an [attempt 1] testing finding naming the command and its output; the stack, which ran alongside, is rebuilt", { timeout: 20000 }, async (t) => {
+test("a fast command failing in the lane resets the integration branch to the lane base, removes the lane file, runs nothing after it, and sends the story to the backlog at priority 0 with an [attempt 1] testing finding naming the command and its output", { timeout: 20000 }, async (t) => {
   const dirs = scratch(t, [story("US-1", { status: "reviewed", priority: 2, criteria: [{ text: "The badge has a colour" }] })]);
   const log = join(dirs.root, "steps.log");
   dirs.checks({ fast: step(log, "fast", 1, "fast broke on main"), stack_up: step(log, "stack_up"), stack: step(log, "stack") });
@@ -1000,7 +1001,7 @@ test("a fast command failing in the lane resets the integration branch to the la
 
   await workflow({ feature: "board" }, agent, onSendBack(dirs, "US-1", seen), (fns) => Promise.all(fns.map((f) => f())), () => {});
 
-  assert.deepEqual(stepsOf(log).map((s) => s.step).sort(), ["fast", "stack", "stack_up", "stack_up"]);
+  assert.deepEqual(stepsOf(log).map((s) => s.step), ["fast"]);
   assert.equal(verifies["US-1"], undefined);
   const { findings, ...rest } = seen.sentBack;
   assert.deepEqual(rest, { status: "backlog", priority: 0, holder: null, main: ["chore: main edits main.rs", "init"], clean: "", lane: false });
@@ -1020,7 +1021,7 @@ test("a stack command failing in the lane resets the branch to the lane base, ru
 
   await workflow({ feature: "board" }, agent, onSendBack(dirs, "US-1", seen), (fns) => Promise.all(fns.map((f) => f())), () => {});
 
-  assert.deepEqual(stepsOf(log).map((s) => s.step).sort(), ["fast", "stack", "stack_up", "stack_up"]);
+  assert.deepEqual(stepsOf(log).map((s) => s.step), ["fast", "stack_up", "stack", "stack_up"]);
   assert.deepEqual(stepsOf(log)[3], { step: "stack_up", lane: null, head: "init" });
   assert.equal(verifies["US-1"], undefined);
   assert.deepEqual([seen.sentBack.main, seen.sentBack.lane, seen.sentBack.priority], [["init"], false, 0]);
@@ -1058,7 +1059,7 @@ test("a stack command failing after stack_up ran leaves the stack rebuilt: stack
   assert.equal(dirs.story("US-2").status, "backlog");
 });
 
-test("a fast command failing in the lane has run stack_up alongside it, so the stack is rebuilt from the lane base after the send-back", { timeout: 20000 }, async (t) => {
+test("a fast command failing in the lane runs stack_up neither before nor after the send-back: the stack never held the story's build, so the renderer the web image copies from the fast command is never stale", { timeout: 20000 }, async (t) => {
   const dirs = scratch(t, [story("US-1", { status: "reviewed" })]);
   const log = join(dirs.root, "steps.log");
   dirs.checks({ fast: "false", stack_up: stackUpStep(log), stack: "true" });
@@ -1068,8 +1069,8 @@ test("a fast command failing in the lane has run stack_up alongside it, so the s
 
   await workflow({ feature: "board" }, agent, () => {}, (fns) => Promise.all(fns.map((f) => f())), (m) => lines.push(m));
 
-  assert.equal(existsSync(log), true);
-  assert.deepEqual(lines.filter((l) => /rebuil/.test(l)).map((l) => l.replace(/ at \w+$/, "")), ["lane:US-1: rebuilding the stack from main", "lane:US-1: stack rebuilt from main"]);
+  assert.equal(existsSync(log), false);
+  assert.deepEqual(lines.filter((l) => /rebuil/.test(l)), []);
 });
 
 test("a stack command reporting a file missing gets a finding with the host's view before the reset: HEAD at the merged commit, the dirty tree, the file present on the host with its size, and the compose containers", { timeout: 20000 }, async (t) => {
@@ -1104,7 +1105,7 @@ test("a stack_up failing in the lane runs neither the stack command nor the veri
 
   await workflow({ feature: "board" }, agent, onSendBack(dirs, "US-1", seen), (fns) => Promise.all(fns.map((f) => f())), () => {});
 
-  assert.deepEqual(stepsOf(log).map((s) => s.step).sort(), ["fast", "stack_up", "stack_up"]);
+  assert.deepEqual(stepsOf(log).map((s) => s.step), ["fast", "stack_up", "stack_up"]);
   assert.deepEqual(stepsOf(log)[2], { step: "stack_up", lane: null, head: "init" });
   assert.equal(verifies["US-1"], undefined);
   assert.deepEqual([seen.sentBack.main, seen.sentBack.lane, seen.sentBack.findings.length], [["init"], false, 1]);
