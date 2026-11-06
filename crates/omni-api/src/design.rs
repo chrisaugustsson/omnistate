@@ -1001,7 +1001,6 @@ pub(crate) async fn edit_head(
         check_interactions(nodes, system.tokens.as_ref())?;
         check_modes(nodes, system.tokens.as_ref())
     };
-    };
     let variants = |component: NodeId| system.library.variants_of(&component);
     let applied = match doc.apply(&ops, scope, &mut new_ids, &check, &variants) {
         Ok(applied) => applied,
