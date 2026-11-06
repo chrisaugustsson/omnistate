@@ -9,7 +9,8 @@ use std::collections::{HashMap, HashSet};
 use std::io::{Read, Seek};
 use std::path::Path;
 
-use omni_core::design::{Node, PathData};
+use omni_core::design::proto::Interaction;
+use omni_core::design::{Node, NodeId, PathData};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer};
 use serde_json::{Map, Value, json};
@@ -18,9 +19,11 @@ use zip::ZipArchive;
 use crate::{PageHead, ROOT_ID, RawBox, ReadError, Reader, Rect, open_archive};
 
 mod linked;
+mod prototype;
 
 use linked::Linked;
 pub(crate) use linked::run as import_run;
+use prototype::{Kind, MAX_FLOWS, PendingInteraction, PenpotId, Source};
 
 /// What converting one `.penpot` file gives.
 #[derive(Debug, Clone, PartialEq)]
@@ -289,6 +292,12 @@ struct Converter<'a, R: Read + Seek> {
     /// The node each shape of the component being converted became, by the
     /// Penpot id of the shape, with the type of the node.
     refs: Option<HashMap<String, (String, String)>>,
+    /// The node and the type of the node of every shape converted in the
+    /// file, by the Penpot id of the shape; the first conversion of a shape
+    /// wins.
+    ids: HashMap<PenpotId, (NodeId, Kind)>,
+    /// The interactions read from shapes, to resolve once every page is in.
+    pending: Vec<PendingInteraction>,
 }
 
 /// Reads the `.penpot` export at `path` and converts its boards.
@@ -316,11 +325,14 @@ pub fn convert_file(path: &Path) -> Result<Conversion, ReadError> {
         page_name: String::new(),
         entry_pages: Vec::new(),
         refs: None,
+        ids: HashMap::new(),
+        pending: Vec::new(),
     };
     let mut boards = Vec::new();
     for head in &heads {
         converter.page(head, &mut boards)?;
     }
+    converter.resolve_interactions(&mut boards);
     Ok(Conversion {
         boards,
         attachments: converter.attachments,
@@ -328,6 +340,19 @@ pub fn convert_file(path: &Path) -> Result<Conversion, ReadError> {
             entries: converter.entries,
         },
     })
+}
+
+/// Gives the nodes of `node` and below the interactions `written` holds for
+/// them.
+fn set_interactions(node: &mut Node, written: &mut HashMap<NodeId, Vec<Interaction>>) {
+    if let Some(interactions) = written.remove(node.id()) {
+        node.set_interactions(interactions);
+    }
+    if let Some(children) = node.children_mut() {
+        for child in children {
+            set_interactions(child, written);
+        }
+    }
 }
 
 /// The image files of the archive, `objects/<id>.<extension>` but not the
@@ -422,6 +447,7 @@ impl<R: Read + Seek> Converter<'_, R> {
             justify_items: None,
         };
         let first = boards.len();
+        let flows = Self::flow_list(head);
         let mut loose = Vec::new();
         for id in self.reader.top_level_ids(&head.dir)? {
             let pen = match self.load(&head.dir, &id, &mut seen)? {
@@ -446,7 +472,13 @@ impl<R: Read + Seek> Converter<'_, R> {
             else {
                 continue;
             };
-            let design = self.page_design(head, node, &name)?;
+            let start = node
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            let board_flows = Self::board_flows(&flows, &shape_id, &start);
+            let design = self.page_design(head, node, &name, board_flows)?;
             boards.push(ConvertedBoard {
                 page: head.name.clone(),
                 id: shape_id,
@@ -465,13 +497,22 @@ impl<R: Read + Seek> Converter<'_, R> {
     }
 
     /// The design of a page that holds the board `node` alone.
-    fn page_design(&mut self, head: &PageHead, node: Value, name: &str) -> Result<Node, ReadError> {
-        let design = json!({
+    fn page_design(
+        &mut self,
+        head: &PageHead,
+        node: Value,
+        name: &str,
+        flows: Vec<Value>,
+    ) -> Result<Node, ReadError> {
+        let mut design = json!({
             "id": self.new_id(),
             "type": "page",
             "name": head.name,
             "children": [node],
         });
+        if !flows.is_empty() {
+            design["flows"] = Value::Array(flows);
+        }
         serde_json::from_value::<Node>(design).map_err(|error| {
             ReadError(format!(
                 "the design of the board {name:?} does not pass validation: {error}"
@@ -547,40 +588,126 @@ impl<R: Read + Seek> Converter<'_, R> {
             id: board.id,
             name: board.name,
             bounds: Some(area),
-            design: self.page_design(head, node, UNPLACED)?,
+            design: self.page_design(head, node, UNPLACED, Vec::new())?,
             shapes,
             left_out,
         }))
     }
 
-    /// Lists the prototype flows of a page, each for its starting board.
-    fn flows(&mut self, head: &PageHead, boards: &[ConvertedBoard]) {
+    /// The prototype flows of a page that are kept, as the name and the id of
+    /// the board each starts at, in Penpot's order and cut at the cap.
+    fn flow_list(head: &PageHead) -> Vec<(String, String)> {
         let flows: Vec<&Value> = match &head.flows {
             Value::Object(found) => found.values().collect(),
             Value::Array(found) => found.iter().collect(),
             _ => Vec::new(),
         };
-        for flow in flows {
-            let Some(start) = flow.get("startingFrame").and_then(Value::as_str) else {
-                continue;
-            };
-            let name = flow.get("name").and_then(Value::as_str).unwrap_or_default();
-            let board = boards
-                .iter()
-                .find(|board| board.id == start)
-                .map(|board| board.name.clone())
-                .unwrap_or_default();
-            self.entry_pages.push(self.page_name.clone());
+        flows
+            .into_iter()
+            .take(MAX_FLOWS)
+            .filter_map(|flow| {
+                let start = flow.get("startingFrame").and_then(Value::as_str)?;
+                let name = flow
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .filter(|name| !name.trim().is_empty())
+                    .unwrap_or("Flow");
+                Some((name.to_string(), start.to_string()))
+            })
+            .collect()
+    }
+
+    /// The flows of the page `flows` that start at the board `start`, as the
+    /// design writes them. A name the board already has is left out.
+    fn board_flows(flows: &[(String, String)], start: &str, node: &str) -> Vec<Value> {
+        let mut written: Vec<&str> = Vec::new();
+        for (name, at) in flows {
+            if at == start && !written.contains(&name.as_str()) {
+                written.push(name);
+            }
+        }
+        written
+            .into_iter()
+            .map(|name| json!({ "name": name, "start": node }))
+            .collect()
+    }
+
+    /// Reports the prototype flows of a page that were left out: the ones past
+    /// the cap, the ones that start at a board that was not imported and the
+    /// ones whose name the board already has.
+    fn flows(&mut self, head: &PageHead, boards: &[ConvertedBoard]) {
+        let flows = Self::flow_list(head);
+        let total = match &head.flows {
+            Value::Object(found) => found.len(),
+            Value::Array(found) => found.len(),
+            _ => 0,
+        };
+        if total > MAX_FLOWS {
+            let page = self.page_name.clone();
+            self.entry_pages.push(page.clone());
             self.entries.push(ReportEntry {
-                board: board.clone(),
-                board_id: start.to_string(),
-                shape_id: start.to_string(),
-                name: board,
+                board: String::new(),
+                board_id: String::new(),
+                shape_id: head.id.clone(),
+                name: page,
                 property: Some("flows".to_string()),
                 reason: format!(
-                    "the prototype flow \"{name}\" starts at this board; flows are not converted"
+                    "the page has {total} prototype flows; the first {MAX_FLOWS} are kept and the other {} are left out",
+                    total - MAX_FLOWS
                 ),
             });
+        }
+        for (at, (name, start)) in flows.iter().enumerate() {
+            let board = boards.iter().find(|board| board.id == *start);
+            let reason = match board {
+                None => format!(
+                    "the prototype flow \"{name}\" starts at a board that was not imported; the flow is left out"
+                ),
+                Some(_) if flows[..at].contains(&(name.clone(), start.clone())) => format!(
+                    "the prototype flow \"{name}\" has the name of another flow that starts at this board; the flow is left out"
+                ),
+                Some(_) => continue,
+            };
+            self.entry_pages.push(self.page_name.clone());
+            self.entries.push(ReportEntry {
+                board: board.map(|board| board.name.clone()).unwrap_or_default(),
+                board_id: start.clone(),
+                shape_id: start.clone(),
+                name: board.map(|board| board.name.clone()).unwrap_or_default(),
+                property: Some("flows".to_string()),
+                reason,
+            });
+        }
+    }
+
+    /// Writes the interactions read from shapes on their nodes, now that every
+    /// page is converted and the destinations have nodes to point at.
+    fn resolve_interactions(&mut self, boards: &mut [ConvertedBoard]) {
+        let mut shapes: Vec<(String, Vec<PendingInteraction>)> = Vec::new();
+        for pending in std::mem::take(&mut self.pending) {
+            match shapes
+                .iter_mut()
+                .find(|(shape, _)| *shape == pending.source.shape_id)
+            {
+                Some((_, group)) => group.push(pending),
+                None => shapes.push((pending.source.shape_id.clone(), vec![pending])),
+            }
+        }
+        let mut written = HashMap::new();
+        for (shape, group) in shapes {
+            let Some((node, _)) = self.ids.get(&shape) else {
+                continue;
+            };
+            let page = group[0].source.page.clone();
+            let (interactions, entries) = prototype::resolve_destinations(group, &self.ids);
+            written.insert(*node, interactions);
+            for entry in entries {
+                self.entry_pages.push(page.clone());
+                self.entries.push(entry);
+            }
+        }
+        for board in boards {
+            set_interactions(&mut board.design, &mut written);
         }
     }
 
@@ -701,7 +828,7 @@ impl<R: Read + Seek> Converter<'_, R> {
     }
 
     /// Reports what no node can show: rotation, flips, blur, masks, component
-    /// links, prototype interactions and constraints.
+    /// links and constraints, and reads the prototype interactions.
     fn checks(&mut self, who: &Who, pen: &Pen, kind: &str) {
         if let Some(rotation) = pen.rotation.0.filter(|rotation| rotation.abs() > 0.01) {
             self.report(
@@ -750,18 +877,22 @@ impl<R: Read + Seek> Converter<'_, R> {
                 "masks are not supported; the masked group is drawn without its mask",
             );
         }
-        if let Some(count) = pen
-            .interactions
-            .0
-            .as_ref()
-            .map(Vec::len)
-            .filter(|count| *count > 0)
-        {
-            self.report(
-                who,
-                Some("interactions"),
-                format!("the shape has {count} prototype interaction(s), links to other boards; prototype links are not converted"),
-            );
+        if let Some(items) = pen.interactions.0.as_deref() {
+            let mut warnings = Vec::new();
+            let source = Source {
+                page: self.page_name.clone(),
+                board: who.board.name.clone(),
+                board_id: who.board.id.clone(),
+                shape_id: who.id.to_string(),
+                name: who.name.to_string(),
+            };
+            for mut pending in prototype::shape_interactions(items, &mut warnings) {
+                pending.source = source.clone();
+                self.pending.push(pending);
+            }
+            for warning in warnings {
+                self.report(who, Some("interactions"), warning);
+            }
         }
         let horizontal = pen.constraints_h.0.as_deref().unwrap_or("left");
         let vertical = pen.constraints_v.0.as_deref().unwrap_or("top");
@@ -791,6 +922,11 @@ impl<R: Read + Seek> Converter<'_, R> {
                 node_id: node_id.clone(),
                 bounds: common.bounds,
             });
+        }
+        if let Ok(id) = node_id.parse::<NodeId>() {
+            self.ids
+                .entry(common.id.clone())
+                .or_insert((id, kind.to_string()));
         }
         if let Some(refs) = self.refs.as_mut() {
             refs.insert(common.id.clone(), (node_id.clone(), kind.to_string()));

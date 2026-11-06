@@ -891,7 +891,7 @@ fn the_unplaced_board_is_on_the_page_of_its_shapes_and_only_there() {
 }
 
 #[test]
-fn interactions_flows_and_constraints_are_listed_and_not_converted() {
+fn interactions_and_flows_are_written_and_constraints_are_listed() {
     let interaction = json!({ "interactions": [{
         "eventType": "click", "actionType": "navigate", "destination": uid(10),
         "positionRelativeTo": null, "preserveScroll": false,
@@ -929,13 +929,26 @@ fn interactions_flows_and_constraints_are_listed_and_not_converted() {
     let path = write_temp("convert-fix-prototype.penpot", &stored_zip(&entries));
     let conversion = convert_file(&path).expect("the export converts");
 
-    assert_reported(
-        &conversion,
-        &uid(2),
-        &uid(1),
-        "Home",
-        "Button",
-        &["interaction", "prototype link"],
+    assert!(
+        entries_of(&conversion, &uid(2)).is_empty(),
+        "the link resolves, so nothing is reported: {:#?}",
+        conversion.report.entries
+    );
+    let details = board_node(board(&conversion, "Details")).id().to_string();
+    let home = board(&conversion, "Home");
+    let button = nodes(board_node(home))
+        .into_iter()
+        .find(|node| node.name() == "Button")
+        .expect("the button is converted");
+    let written = serde_json::to_value(button).expect("a node is JSON");
+    assert_eq!(
+        written["interactions"],
+        json!([{
+            "actions": [{ "type": "navigate", "dest": details }],
+            "transition": { "type": "dissolve" },
+            "durationMs": 160,
+            "easing": "easeInOut"
+        }])
     );
     for (n, name) in [(4, "Stretchy"), (5, "Scaled"), (6, "Footer")] {
         assert_reported(&conversion, &uid(n), &uid(1), "Home", name, &["constraint"]);
@@ -947,16 +960,16 @@ fn interactions_flows_and_constraints_are_listed_and_not_converted() {
             conversion.report.entries
         );
     }
-    let flows: Vec<_> = conversion
-        .report
-        .entries
-        .iter()
-        .filter(|entry| {
-            entry.reason.contains("Checkout flow") && entry.reason.to_lowercase().contains("flow")
-        })
-        .collect();
-    assert_eq!(flows.len(), 1, "{:#?}", conversion.report.entries);
-    assert_eq!(flows[0].shape_id, uid(1), "a flow names its starting board");
+    let page = serde_json::to_value(home).expect("a page is JSON");
+    assert_eq!(
+        page["flows"],
+        json!([{ "name": "Checkout flow", "start": board_node(home).id().to_string() }])
+    );
+    assert!(
+        entries_saying(&conversion, &["flow"]).is_empty(),
+        "{:#?}",
+        conversion.report.entries
+    );
     for entry in &conversion.report.entries {
         assert!(
             entry.property.is_some(),
@@ -1007,9 +1020,9 @@ fn raw_pages(path: &std::path::Path) -> Vec<Value> {
     pages
 }
 
-/// Checks that every flow of the export at `path` is listed for its starting
-/// board, by name.
-fn assert_flows_listed(conversion: &Conversion, path: &std::path::Path, count: usize) {
+/// Checks that every flow of the export at `path` is written on the page of its
+/// starting board, by name.
+fn assert_flows_written(conversion: &Conversion, path: &std::path::Path, count: usize) {
     let mut flows = 0;
     for page in raw_pages(path) {
         let Some(found) = page["flows"].as_object() else {
@@ -1019,13 +1032,20 @@ fn assert_flows_listed(conversion: &Conversion, path: &std::path::Path, count: u
             flows += 1;
             let name = flow["name"].as_str().expect("a flow has a name");
             let start = flow["startingFrame"].as_str().expect("a starting board");
+            let board = conversion
+                .boards
+                .iter()
+                .find(|board| board.id == start)
+                .expect("the starting board is converted");
+            let written = serde_json::to_value(&board.design).expect("a page is JSON");
             assert!(
-                conversion.report.entries.iter().any(|entry| {
-                    entry.shape_id == start
-                        && entry.reason.contains(name)
-                        && entry.reason.to_lowercase().contains("flow")
-                }),
-                "the flow {name:?} is not listed for its starting board {start}"
+                written["flows"]
+                    .as_array()
+                    .is_some_and(|written| written.iter().any(|flow| {
+                        flow["name"] == name
+                            && flow["start"] == board_node(&board.design).id().to_string()
+                    })),
+                "the flow {name:?} is not written on the page of its starting board {start}"
             );
         }
     }
@@ -1033,16 +1053,23 @@ fn assert_flows_listed(conversion: &Conversion, path: &std::path::Path, count: u
 }
 
 #[test]
-fn idag_lists_its_7_interactions_2_flows_and_55_constraints() {
+fn idag_writes_its_7_interactions_and_2_flows_and_lists_55_constraints() {
     let (Some(conversion), Some(path)) = (idag(), fixture("tirebud-idag.penpot")) else {
         return;
     };
     // Counted from the export's JSON: shapes with a non-empty `interactions`,
     // and shapes whose `constraintsH` is not left or `constraintsV` not top.
-    assert_eq!(
-        shapes_saying(conversion, &["interaction", "prototype link"]).len(),
-        7
+    let written = conversion
+        .boards
+        .iter()
+        .flat_map(|board| nodes(&board.design))
+        .filter(|node| !node.interactions().is_empty())
+        .count();
+    assert_eq!(written, 7);
+    assert!(
+        shapes_saying(conversion, &["interaction", "prototype link", "flow"]).is_empty(),
+        "nothing about prototypes is left to report"
     );
     assert_eq!(shapes_saying(conversion, &["constraint"]).len(), 55);
-    assert_flows_listed(conversion, &path, 2);
+    assert_flows_written(conversion, &path, 2);
 }

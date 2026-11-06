@@ -281,6 +281,8 @@ pub(crate) fn run(path: &Path) -> Result<ReadLinks, ReadError> {
         page_name: String::new(),
         entry_pages: Vec::new(),
         refs: None,
+        ids: HashMap::new(),
+        pending: Vec::new(),
     };
     let mut boards = Vec::new();
     let mut ranges = Vec::new();
@@ -289,6 +291,7 @@ pub(crate) fn run(path: &Path) -> Result<ReadLinks, ReadError> {
         converter.page(head, &mut boards)?;
         ranges.push((first, boards.len()));
     }
+    converter.resolve_interactions(&mut boards);
     let mut components = Vec::new();
     for id in &order {
         if let Some(comp) = converter.component(id)? {

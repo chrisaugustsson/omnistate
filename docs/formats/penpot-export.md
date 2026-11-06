@@ -52,7 +52,7 @@ The pages of a file are the entries named `files/<file>/pages/<page>.json`, wher
 the id sits directly after `pages/` and the name ends in `.json`. The file holds
 at least `id`, `name` and `index`, and sometimes `flows`, an object of
 prototype flows, each `{id, name, startingFrame}` with the id of the board the
-flow starts at. The converter reads the flows only to list them in the report. The archive does not list the pages in their design order, and the ids do
+flow starts at. The converter writes them as the `flows` of the page of their starting board. The archive does not list the pages in their design order, and the ids do
 not follow it either: the large export holds its five pages in an order that
 matches neither, so the crate sorts them by `index`, ascending, with the id as a
 tie breaker.
@@ -260,14 +260,35 @@ masked groups (`maskedGroup`), blur, radial gradients, strokes that are neither
 solid nor dashed, rotation, flips, mixed text styles, and text strokes and
 shadows.
 
-Prototypes and constraints are left out of v1 on purpose, but the shape around
-them is converted, so each is listed with a property:
+Prototype interactions and flows are written on the design; constraints are
+left out of v1 on purpose, and the shape around them is converted, so they are
+listed with a property. The mapping is FigCraft's
+(`crates/format/src/penpot/prototype.rs`, see `NOTICE`).
 
 - `interactions` is a list on a shape (many shapes in the exports have an
-  empty one). A shape with a non-empty list is listed once as having prototype
-  links.
-- `flows` of a page are listed once each, for the board they start at, with the
-  name of the flow.
+  empty one). `eventType` `click`, `mouse-press`, `mouse-over`, `mouse-enter`,
+  `mouse-leave` and `after-delay` (with `delay`, 600 ms if absent) become the
+  triggers `onClick`, `onPress`, `onHover`, `mouseEnter`, `mouseLeave` and
+  `afterDelay`. `actionType` `navigate` (with `preserveScroll`), `open-overlay`,
+  `close-overlay`, `prev-screen` and `open-url` become `navigate`,
+  `openOverlay`, `closeOverlay`, `back` and `openUrl`. An overlay keeps
+  `overlayPosType`, a manual `overlayPosition` as `offset`, `closeClickOutside`
+  (off unless set) and `backgroundOverlay` as the background `#00000033`; its
+  `relativeTo` is not mapped and the anchor is the screen. `toggle-overlay`
+  becomes `openOverlay` and is listed as imported as open overlay. `animation`
+  `dissolve`, `slide` (in or out, by `way`, with `direction`) and `push` become
+  `dissolve`, `slideIn`/`slideOut` and `push`, with `duration` and `easing`
+  (`ease` is `easeInOut`); no animation is an instant change. An unknown event
+  or action type is dropped and listed with the type.
+- A `destination` is resolved once every page is converted: it must be a
+  top-level board of the file, and its node ID goes in the action. A
+  destination that was not imported, or is a nested frame, drops the
+  interaction and is listed as a prototype link that was not imported.
+- A shape keeps its first 64 interactions and a page its first 8 flows; the
+  rest are listed once with how many were cut.
+- `flows` of a page become `flows` on the design of the page of the starting
+  board, with `name` and `start`. A flow whose starting board was not imported
+  is dropped and listed with its name.
 - `constraintsH` and `constraintsV` are `left` and `top` unless the designer
   changed them (`leftright`, `right`, `center`, `topbottom`, `bottom`, `scale`).
   A shape with any other value is listed once as having constraints.
