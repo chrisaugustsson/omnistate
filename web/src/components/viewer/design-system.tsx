@@ -4,13 +4,11 @@ import { loadHeadHtml } from "@/api/docs";
 import type { DocBody } from "@/api/generated";
 import { createAssetLoader } from "@/design/assets";
 import { createDesignRenderer, type DesignRenderer } from "@/design/renderer";
-import { componentLabel, object, readSystem, systemComponents, systemModes, systemTokens, tokenSourceValue, tokenValues, type JsonObject, type SystemToken } from "@/design/system";
+import { collectionsOf, componentLabel, object, readSystem, systemComponents, systemTokens, tokenSourceValue, tokenValues, type JsonObject, type SystemToken } from "@/design/system";
 import { useReloading, type Reloading } from "@/lib/reloading";
 import { cn } from "@/lib/utils";
 import { useProjectEvents } from "@/live/context";
 import { FloatingAlert, ToolbarSelect, ViewerToolbar } from "./chrome";
-
-const TITLES: Record<string, string> = { color: "Colors", spacing: "Spacing", radius: "Radii", typography: "Typography", shadow: "Shadows", components: "Components" };
 
 /** A design system is a catalog, not an HTML document containing its JSON payload. */
 export function DesignSystemViewer({ workspaceId, projectId, docId, doc }: {
@@ -23,16 +21,15 @@ export function DesignSystemViewer({ workspaceId, projectId, docId, doc }: {
   const system = head.value;
   const tokens = useMemo(() => systemTokens(system ?? {}), [system]);
   const components = useMemo(() => systemComponents(system ?? {}), [system]);
-  const modes = useMemo(() => systemModes(system ?? {}), [system]);
-  const [chosenMode, setMode] = useState<string | null>(null);
-  const mode = chosenMode !== null && modes.includes(chosenMode) ? chosenMode : (modes[0] ?? null);
-  const values = useMemo(() => tokenValues(tokens, mode), [tokens, mode]);
-  const groups = useMemo(() => [...new Set(tokens.map((token) => token.group))], [tokens]);
-  const [chosenGroup, setGroup] = useState("color");
-  const group = chosenGroup === "components" || groups.includes(chosenGroup) ? chosenGroup : (groups[0] ?? "components");
+  const collections = useMemo(() => collectionsOf(system ?? {}), [system]);
+  const [picked, pick] = useState<Record<string, string>>({});
+  const choice = useMemo(() => Object.fromEntries(collections.flatMap(({ name, modes }) => modes.length ? [[name, modes.includes(picked[name]) ? picked[name] : modes[0]]] : [])), [collections, picked]);
+  const values = useMemo(() => tokenValues(tokens, choice), [tokens, choice]);
+  const mode = Object.values(choice)[0] ?? null;
+  const [tab, setTab] = useState<"tokens" | "components">("tokens");
   const [search, setSearch] = useState("");
   const query = search.trim().toLowerCase();
-  const shown = tokens.filter((token) => token.group === group && `${token.path} ${token.description}`.toLowerCase().includes(query));
+  const shown = tokens.filter((token) => `${token.path} ${token.description}`.toLowerCase().includes(query));
   const shownComponents = components.filter((component) => componentLabel(component).toLowerCase().includes(query));
 
   useProjectEvents(projectId, (event) => {
@@ -45,16 +42,16 @@ export function DesignSystemViewer({ workspaceId, projectId, docId, doc }: {
   return (
     <main className="flex min-h-full min-w-0 flex-col">
       <ViewerToolbar workspaceId={workspaceId} projectId={projectId} docId={docId} doc={doc.value} icon={<Boxes aria-hidden />}>
-        {modes.length > 0 && <ToolbarSelect id="system-mode" label="Mode" value={mode ?? ""} onChange={(event) => setMode(event.target.value)}>
-          {modes.map((name) => <option key={name} value={name}>{name}</option>)}
-        </ToolbarSelect>}
+        {collections.filter(({ modes }) => modes.length > 0).map(({ name, modes }) => <ToolbarSelect key={name} id={`system-mode-${name}`} label={name} value={choice[name]} onChange={(event) => pick((current) => ({ ...current, [name]: event.target.value }))}>
+          {modes.map((mode) => <option key={mode} value={mode}>{mode}</option>)}
+        </ToolbarSelect>)}
       </ViewerToolbar>
       <div className="mx-auto w-full max-w-[1440px] p-4 sm:p-8">
         <div className="mb-7 flex flex-wrap items-end justify-between gap-4">
           <div>
             <p className="mb-2 text-[11px] font-medium tracking-widest text-muted-foreground uppercase">Foundations & components</p>
             <h2 className="text-2xl font-semibold tracking-tight">Design system</h2>
-            <p className="mt-2 text-sm text-muted-foreground">{tokens.length} tokens · {components.length} components{modes.length ? ` · ${modes.length} modes` : ""}</p>
+            <p className="mt-2 text-sm text-muted-foreground">{tokens.length} tokens in {collections.length} collections · {components.length} components</p>
           </div>
           <div className="relative w-full sm:w-72">
             <Search aria-hidden className="absolute top-2.5 left-3 size-4 text-muted-foreground" />
@@ -65,17 +62,23 @@ export function DesignSystemViewer({ workspaceId, projectId, docId, doc }: {
         {!system && !head.failed && <p role="status" className="text-sm text-muted-foreground">Loading design system…</p>}
         {system && <>
           <nav aria-label="Design system sections" className="mb-6 flex flex-wrap gap-2 border-b pb-4">
-            {[...groups, "components"].map((name) => <button key={name} type="button" aria-pressed={group === name} onClick={() => setGroup(name)} className={cn("rounded-md px-3 py-2 text-sm transition-colors focus-visible:ring-2 focus-visible:ring-ring", group === name ? "bg-primary text-primary-foreground" : "bg-muted/60 text-muted-foreground hover:bg-accent hover:text-foreground")}>
-              {TITLES[name] ?? name}<span className="ml-2 text-xs opacity-70">{name === "components" ? components.length : tokens.filter((token) => token.group === name).length}</span>
+            {([["tokens", "Tokens", tokens.length], ["components", "Components", components.length]] as const).map(([name, title, count]) => <button key={name} type="button" aria-pressed={tab === name} onClick={() => setTab(name)} className={cn("rounded-md px-3 py-2 text-sm transition-colors focus-visible:ring-2 focus-visible:ring-ring", tab === name ? "bg-primary text-primary-foreground" : "bg-muted/60 text-muted-foreground hover:bg-accent hover:text-foreground")}>
+              {title}<span className="ml-2 text-xs opacity-70">{count}</span>
             </button>)}
           </nav>
-          {group === "components" ? <ComponentCatalog workspaceId={workspaceId} system={system} components={shownComponents} mode={mode} values={values} /> :
-            <section aria-label="Design tokens">
-              <h3 className="mb-4 text-base font-semibold">{TITLES[group] ?? group}<span className="ml-2 font-normal text-muted-foreground">{shown.length}</span></h3>
+          {tab === "components" ? <ComponentCatalog workspaceId={workspaceId} system={system} components={shownComponents} mode={mode} values={values} /> :
+            <section aria-label="Design tokens" className="flex flex-col gap-8">
               {shown.length === 0 ? <p className="py-10 text-sm text-muted-foreground">No tokens match your search.</p> :
-                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
-                  {shown.map((token) => <TokenCard key={token.path} token={token} value={values.get(token.path)} mode={mode} />)}
-                </div>}
+                collections.map(({ name, modes }) => {
+                  const inCollection = shown.filter((token) => token.group === name);
+                  if (inCollection.length === 0) return null;
+                  return <section key={name} aria-label={`Collection ${name}`}>
+                    <h3 className="mb-4 flex flex-wrap items-baseline gap-x-3 text-base font-semibold">{name}<span className="text-xs font-normal text-muted-foreground">{modes.length ? `modes: ${modes.join(", ")}` : "no modes"}</span></h3>
+                    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
+                      {inCollection.map((token) => <TokenCard key={token.path} token={token} value={values.get(token.path)} mode={choice[name] ?? null} />)}
+                    </div>
+                  </section>;
+                })}
             </section>}
         </>}
       </div>
@@ -96,7 +99,9 @@ function TokenCard({ token, value, mode }: { token: SystemToken; value: unknown;
       <h4 className="break-all font-mono text-xs font-medium">{token.path}</h4>
       {object(value) && token.type === "typography" ? <dl className="mt-3 grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
         {Object.entries(value).map(([key, field]) => <div key={key}><dt className="text-muted-foreground">{key}</dt><dd className="break-words">{String(field)}</dd></div>)}
-      </dl> : <p className="mt-2 break-words font-mono text-xs text-muted-foreground">{formatValue(value)}</p>}
+      </dl> : <p className="mt-2 break-words font-mono text-xs text-muted-foreground">{token.type === "string" && typeof value === "string" ? JSON.stringify(value) : formatValue(value)}</p>}
+      {token.scopes && token.scopes.length > 0 && <p className="mt-2 break-words text-xs text-muted-foreground">scopes: {token.scopes.join(", ")}</p>}
+      {token.codeSyntax && Object.entries(token.codeSyntax).map(([platform, name]) => <p key={platform} className="mt-1 break-all text-xs text-muted-foreground">{platform}: {name}</p>)}
       {reference && <p className="mt-2 break-all text-xs text-muted-foreground">↳ {reference.slice(1, -1)}</p>}
       {token.description && <p className="mt-3 text-xs leading-relaxed text-muted-foreground">{token.description}</p>}
     </div>

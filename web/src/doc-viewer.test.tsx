@@ -421,7 +421,7 @@ describe("the doc viewer", () => {
     expect(within(catalog).getByText("#fe6233")).toBeTruthy();
     expect(document.querySelector("iframe"), "the token payload is never sent to the HTML frame").toBeNull();
 
-    fireEvent.change(screen.getByRole("combobox", { name: "Mode" }), { target: { value: "dark" } });
+    fireEvent.change(screen.getByRole("combobox", { name: "color" }), { target: { value: "dark" } });
     expect(within(catalog).getAllByText("#171717")).toHaveLength(2);
     fireEvent.change(screen.getByRole("searchbox", { name: "Search design system" }), {
       target: { value: "brand" },
@@ -432,6 +432,36 @@ describe("the doc viewer", () => {
     api.head = JSON.stringify({ ...system, color: { ...system.color, brand: { $value: "#123456" } } });
     socket.receive(event(41, "doc.changed", { doc_id: DOC_ID, agent: WRITER }));
     expect(await within(catalog).findByText("#123456")).toBeTruthy();
+  });
+
+  test("the design-system page groups tokens by collection with a select per collection that has modes", async () => {
+    const system = {
+      color: { $extensions: { omnistate: { modes: ["light", "dark"] } }, $type: "color", ink: { $value: "#111111", $extensions: { omnistate: { modes: { dark: "#eeeeee" } } } } },
+      density: { $extensions: { omnistate: { modes: ["comfortable", "compact"] } }, $type: "dimension", gap: { $value: "16px", $extensions: { omnistate: { modes: { compact: "12px" } } } } },
+      state: {
+        count: { $type: "number", $value: 2 },
+        cta: { $type: "string", $value: "Pay now", $extensions: { omnistate: { scopes: ["content", "visible"], codeSyntax: { web: "ctaLabel" } } } },
+        open: { $type: "boolean", $value: false },
+      },
+      $components: [],
+    };
+    fakeApi({ kind: "design-system", head: JSON.stringify(system) });
+    renderAt(DOC_PATH);
+    const catalog = await screen.findByRole("region", { name: "Design tokens" });
+    expect(screen.getByText("5 tokens in 3 collections · 0 components")).toBeTruthy();
+    expect(within(catalog).getByText("modes: light, dark")).toBeTruthy();
+    expect(within(catalog).getByText("modes: comfortable, compact")).toBeTruthy();
+    expect(within(catalog).getByText("no modes")).toBeTruthy();
+    expect(screen.queryByRole("combobox", { name: "state" })).toBeNull();
+    expect(within(catalog).getByText("2")).toBeTruthy();
+    expect(within(catalog).getByText('"Pay now"')).toBeTruthy();
+    expect(within(catalog).getByText("false")).toBeTruthy();
+    expect(within(catalog).getByText("scopes: content, visible")).toBeTruthy();
+    expect(within(catalog).getByText("web: ctaLabel")).toBeTruthy();
+
+    fireEvent.change(screen.getByRole("combobox", { name: "density" }), { target: { value: "compact" } });
+    expect(within(catalog).getByText("12px")).toBeTruthy();
+    expect(within(catalog).getByText("#111111")).toBeTruthy();
   });
 
   test("the doc renders in a frame sandboxed to scripts alone, under the viewer's policy", async () => {
