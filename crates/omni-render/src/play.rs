@@ -352,8 +352,20 @@ impl Session {
         self.player.restart_timers(now);
         let hinting = self.player.hint_until().is_some();
         let moving = self.player.frame().transition.is_some();
+        let before = self.player.frame();
         let effects = self.player.tick(now);
-        let acted = self.absorb(effects);
+        let linked = effects
+            .iter()
+            .any(|effect| matches!(effect, Effect::OpenUrl { .. }));
+        self.absorb(effects);
+        // A wait that ran out acted: the board, an overlay, a variant or a
+        // new transition is not what it was.
+        let after = self.player.frame();
+        let acted = linked
+            || before.board != after.board
+            || before.overlays != after.overlays
+            || before.variant_swaps != after.variant_swaps
+            || (after.transition.is_some() && after.transition != before.transition);
         let hint_ended = hinting && self.player.hint_until().is_none();
         let settled = moving && self.player.frame().transition.is_none();
         self.changed |= hint_ended || settled || acted;
