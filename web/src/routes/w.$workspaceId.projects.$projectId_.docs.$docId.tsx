@@ -20,6 +20,7 @@ import {
   type Property,
 } from "@/design/renderer";
 import { createAssetLoader } from "@/design/assets";
+import { collectionsOf, ownCollectionsOf } from "@/design/system";
 import { BoardCache, BoardPreviews, findPageHolding, pageWithBoards, showBoardwise } from "@/design/boards";
 import { ChevronRight, FileText, Files, Layers as LayersIcon, PenTool, Play, SlidersHorizontal } from "lucide-react";
 import {
@@ -623,7 +624,8 @@ function DesignViewer({
   // The board play mode was left on, which the address bar names once instead of the selection's board.
   const leftOn = useRef<string | null>(null);
   const [openComment, setOpenComment] = useState<string | null>(null);
-  const [chosenMode, setChosenMode] = useState<string | null>(null);
+  // The modes the reader chose: the shared Mode select under '', each own-list collection under its name.
+  const [chosenModes, setChosenModes] = useState<Record<string, string>>({});
   // Counts the times the renderer drew a page or another mode, so that the inspect panel asks again.
   const [drawn, setDrawn] = useState(0);
   const canvas = useRef<HTMLCanvasElement>(null);
@@ -649,11 +651,25 @@ function DesignViewer({
     if (outline.value) cache.update(new Map(outline.value.boards.map((entry) => [entry.id, entry.chunk])));
   }, [cache, outline.value]);
 
-  const modes = useMemo(() => modesOf(source?.tokens), [source]);
-  const mode = chosenMode !== null && modes.includes(chosenMode) ? chosenMode : (modes[0] ?? null);
-  const modeRef = useRef(mode);
+  const rootModes = useMemo(() => modesOf(source?.tokens), [source]);
+  const collections = useMemo(() => collectionsOf(source?.tokens), [source]);
+  const ownCollections = useMemo(() => ownCollectionsOf(source?.tokens), [source]);
+  const inherits = (name: string) => !ownCollections.some((own) => own.name === name);
+  // A choice that is no longer listed falls back to the first mode.
+  const modeOf = (key: string, listed: string[]) =>
+    chosenModes[key] && listed.includes(chosenModes[key]) ? chosenModes[key] : listed[0];
+  // The collections that inherit the root list share one select.
+  const mode = collections.some((collection) => inherits(collection.name)) ? modeOf("", rootModes) : null;
+  const choice: Record<string, string> = Object.fromEntries(
+    collections.map((collection) => [
+      collection.name,
+      inherits(collection.name) ? modeOf("", rootModes) : modeOf(collection.name, collection.modes),
+    ]),
+  );
+  const offFirst = collections.some((collection) => choice[collection.name] !== collection.modes[0]);
+  const choiceRef = useRef({ choice, offFirst });
   useEffect(() => {
-    modeRef.current = mode;
+    choiceRef.current = { choice, offFirst };
   });
 
   const pages = useMemo(() => source?.pages ?? [], [source]);
@@ -752,8 +768,8 @@ function DesignViewer({
         placed();
         return;
       }
-      // A page is shown in the first mode, so the chosen mode is set again.
-      if (modeRef.current && modeRef.current !== modes[0]) renderer.setMode(modeRef.current);
+      // A page is shown in the first mode of each collection, so the chosen modes are set again.
+      if (choiceRef.current.offFirst) renderer.setMode(choiceRef.current.choice);
       refreshLayers();
     };
     const failed = (error: unknown) => {
@@ -795,7 +811,7 @@ function DesignViewer({
       cancelled = true;
       stopBoards?.();
     };
-  }, [renderer, assets, previews, page, system, modes, cache, chunks, setSelected]);
+  }, [renderer, assets, previews, page, system, collections, cache, chunks, setSelected]);
 
   // A link to a node: its page is shown, then it is selected.
   useEffect(() => {
@@ -1001,15 +1017,16 @@ function DesignViewer({
     }
   }
 
-  function chooseMode(next: string) {
+  function chooseMode(key: string, next: string) {
+    const names = key === "" ? collections.filter((c) => inherits(c.name)).map((c) => c.name) : [key];
     try {
-      renderer?.setMode(next);
+      renderer?.setMode({ ...choice, ...Object.fromEntries(names.map((name) => [name, next])) });
       setFailure(null);
     } catch (error) {
       setFailure(error instanceof Error ? error.message : "The design could not be drawn in that mode.");
       return;
     }
-    setChosenMode(next);
+    setChosenModes((chosen) => ({ ...chosen, [key]: next }));
     setDrawn((count) => count + 1);
   }
 
@@ -1095,15 +1112,32 @@ function DesignViewer({
             label="Mode"
             className="w-full sm:w-40"
             value={mode}
-            onChange={(event) => chooseMode(event.target.value)}
+            onChange={(event) => chooseMode("", event.target.value)}
           >
-            {modes.map((listed) => (
+            {rootModes.map((listed) => (
               <option key={listed} value={listed}>
                 {listed}
               </option>
             ))}
           </ToolbarSelect>
         )}
+        {doc.value &&
+          ownCollections.map((collection) => (
+            <ToolbarSelect
+              key={collection.name}
+              id={`mode-switch-${collection.name}`}
+              label={collection.name}
+              className="w-full sm:w-40"
+              value={choice[collection.name]}
+              onChange={(event) => chooseMode(collection.name, event.target.value)}
+            >
+              {collection.modes.map((listed) => (
+                <option key={listed} value={listed}>
+                  {listed}
+                </option>
+              ))}
+            </ToolbarSelect>
+          ))}
       </ViewerToolbar>
       <div className="flex min-h-0 flex-1 flex-col md:grid md:grid-cols-2 lg:grid-cols-[13.5rem_minmax(0,1fr)_17rem] xl:grid-cols-[15.5rem_minmax(0,1fr)_19rem]">
         <div

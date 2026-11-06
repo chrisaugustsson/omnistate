@@ -38,6 +38,30 @@ export function collectionsOf(system: JsonObject): Collection[] {
   });
 }
 
+export type Collection = { name: string; modes: string[] };
+
+function listedModes(node: unknown): string[] | null {
+  const extensions = object(node) ? node.$extensions : null;
+  const omni = object(extensions) ? extensions.omnistate : null;
+  const modes = object(omni) ? omni.modes : null;
+  return Array.isArray(modes) ? modes.filter((mode): mode is string => typeof mode === "string") : null;
+}
+
+/** The top-level groups that have modes: their own list, or the root list when they state none. */
+export function collectionsOf(tokens: JsonObject | null | undefined): Collection[] {
+  if (!tokens) return [];
+  const root = listedModes(tokens) ?? [];
+  return Object.entries(tokens)
+    .filter(([name, group]) => !name.startsWith("$") && object(group))
+    .map(([name, group]) => ({ name, modes: listedModes(group) ?? root }))
+    .filter((collection) => collection.modes.length > 0);
+}
+
+/** The collections that declare their own list of modes, which the root list does not reach. */
+export function ownCollectionsOf(tokens: JsonObject | null | undefined): Collection[] {
+  return collectionsOf(tokens).filter((collection) => listedModes((tokens as JsonObject)[collection.name]) !== null);
+}
+
 export function systemTokens(system: JsonObject): SystemToken[] {
   const found: SystemToken[] = [];
   const visit = (node: JsonObject, path: string[], inheritedType: string) => {

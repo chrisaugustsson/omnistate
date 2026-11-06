@@ -85,6 +85,7 @@ const fake = vi.hoisted(() => {
     shown: { page: unknown; system: unknown; board?: string | null }[];
     selected: (string | null)[];
     revealed: (string | null)[];
+    modeCalls: (Record<string, string> | string)[];
     listeners: Set<(address: string | null) => void>;
     destroyed: boolean;
   };
@@ -96,6 +97,8 @@ const fake = vi.hoisted(() => {
     incremental: false,
     /** The fonts that stand in on each board, by the board's ID, as `fontsStoodIn` lists them. */
     standInsByBoard: new Map<string, StandIn[]>(),
+    /** The token tree the head's design system has, instead of `TOKENS`. */
+    tokens: null as Record<string, unknown> | null,
   };
 });
 
@@ -106,6 +109,7 @@ vi.mock("@/design/renderer", () => ({
       shown: [] as Shown[],
       selected: [] as (string | null)[],
       revealed: [] as (string | null)[],
+      modeCalls: [] as (Record<string, string> | string)[],
       listeners: new Set<(address: string | null) => void>(),
       destroyed: false,
     };
@@ -187,9 +191,11 @@ vi.mock("@/design/renderer", () => ({
         instance.listeners.add(listener);
         return () => instance.listeners.delete(listener);
       },
-      // US-044's mode switch and inspect panel (src/design-inspect.test.tsx);
-      // this test does not look at them.
-      setMode() {},
+      // US-044's inspect panel (src/design-inspect.test.tsx); this test only
+      // records the modes it is given.
+      setMode(choice: Record<string, string> | string) {
+        instance.modeCalls.push(choice);
+      },
       inspect() {
         return null;
       },
@@ -458,7 +464,7 @@ function fakeApi(pages: unknown[] = PAGES, held: string | null = null) {
     tags: "<Page name=\"Mobile\"/>",
     pages: PAGES as unknown[],
     components: COMPONENTS,
-    tokens: TOKENS,
+    tokens: fake.tokens ?? TOKENS,
   };
 
   const fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -707,6 +713,7 @@ beforeEach(() => {
   fake.instances.length = 0;
   fake.layersByPage.clear();
   fake.standInsByBoard.clear();
+  fake.tokens = null;
   seedLayers();
   api = fakeApi();
   FakeWebSocket.instances = [];
@@ -737,6 +744,53 @@ describe("the design on the renderer's canvas", () => {
     expect(system.$components, "the components under $components").toEqual(COMPONENTS);
     expect(system.color, "the version's token tree").toEqual(TOKENS.color);
     expect(system.$extensions, "the token tree's modes").toEqual(TOKENS.$extensions);
+  });
+});
+
+// The mode selects ------------------------------------------------------------------------
+
+describe("the mode selects", () => {
+  const select = (name: string) => screen.getByLabelText(name) as HTMLSelectElement;
+
+  test("a collection with its own modes has a select of its own beside the shared Mode select, and choosing there sets that collection only", async () => {
+    fake.tokens = {
+      $extensions: { omnistate: { modes: ["light", "dark"] } },
+      color: { $type: "color", surface: { $value: "#ffffff" } },
+      density: {
+        $extensions: { omnistate: { modes: ["comfortable", "compact"] } },
+        space: { md: { $type: "dimension", $value: "16px" } },
+      },
+    };
+    api = fakeApi();
+    renderAt(DOC_PATH);
+    const renderer = await findRenderer();
+    await screen.findByLabelText("density");
+    expect(Array.from(select("Mode").options).map((option) => option.value)).toEqual(["light", "dark"]);
+    expect(Array.from(select("density").options).map((option) => option.value)).toEqual(["comfortable", "compact"]);
+
+    fireEvent.change(select("density"), { target: { value: "compact" } });
+    expect(renderer.modeCalls.at(-1)).toEqual({ color: "light", density: "compact" });
+    fireEvent.change(select("Mode"), { target: { value: "dark" } });
+    expect(renderer.modeCalls.at(-1)).toEqual({ color: "dark", density: "compact" });
+  });
+
+  test("when every collection has its own modes the root list has no select", async () => {
+    fake.tokens = {
+      $extensions: { omnistate: { modes: ["light", "dark"] } },
+      color: {
+        $extensions: { omnistate: { modes: ["light", "dark"] } },
+        surface: { $type: "color", $value: "#ffffff" },
+      },
+      density: {
+        $extensions: { omnistate: { modes: ["comfortable", "compact"] } },
+        space: { md: { $type: "dimension", $value: "16px" } },
+      },
+    };
+    api = fakeApi();
+    renderAt(DOC_PATH);
+    await screen.findByLabelText("density");
+    expect(screen.getByLabelText("color")).toBeTruthy();
+    expect(screen.queryByLabelText("Mode")).toBeNull();
   });
 });
 

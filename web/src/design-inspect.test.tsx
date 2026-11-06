@@ -90,7 +90,7 @@ const fake = vi.hoisted(() => {
     shown: { page: unknown; system: unknown }[];
     selected: (string | null)[];
     /** The modes `setMode` was called with, in order. */
-    modeCalls: string[];
+    modeCalls: (Record<string, string> | string)[];
     /** The mode the shown page is drawn in. */
     mode: string | null;
     listeners: Set<(address: string | null) => void>;
@@ -111,7 +111,7 @@ vi.mock("@/design/renderer", () => ({
       canvas,
       shown: [] as { page: unknown; system: unknown }[],
       selected: [] as (string | null)[],
-      modeCalls: [] as string[],
+      modeCalls: [] as (Record<string, string> | string)[],
       mode: null as string | null,
       listeners: new Set<(address: string | null) => void>(),
       destroyed: false,
@@ -157,9 +157,9 @@ vi.mock("@/design/renderer", () => ({
         instance.listeners.add(listener);
         return () => instance.listeners.delete(listener);
       },
-      setMode(mode: string) {
-        instance.modeCalls.push(mode);
-        instance.mode = mode;
+      setMode(choice: Record<string, string> | string) {
+        instance.modeCalls.push(choice);
+        instance.mode = typeof choice === "string" ? choice : (Object.values(choice)[0] ?? null);
       },
       inspect(address: string) {
         return fake.inspections.get(`${instance.mode} ${address}`) ?? null;
@@ -933,7 +933,7 @@ describe("the mode switch", () => {
 
     fireEvent.change(select, { target: { value: "dark" } });
     await waitFor(() => expect(renderer.mode, "the renderer draws the design in dark mode").toBe("dark"));
-    expect(renderer.modeCalls[renderer.modeCalls.length - 1]).toBe("dark");
+    expect(renderer.modeCalls[renderer.modeCalls.length - 1]).toEqual({ color: "dark", spacing: "dark" });
     expect(fake.instances[fake.instances.length - 1], "the same renderer redraws it").toBe(renderer);
     expect(modeSwitch().value).toBe("dark");
 

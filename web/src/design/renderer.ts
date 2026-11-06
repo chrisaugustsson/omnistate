@@ -203,11 +203,14 @@ export type DesignRenderer = {
    */
   select(address: string | null, reveal?: boolean): void;
   /**
-   * Resolves the shown page's tokens in `mode` from now on and draws it again.
-   * `show` resolves a page in the first mode of its design system, so call
-   * this again after showing another page in another mode.
+   * Resolves the shown page's tokens in a mode from now on and draws it again:
+   * a mode name, which sets the collections that inherit the root list, or a
+   * mode per collection, such as `{color: "dark", density: "compact"}`, which
+   * leaves the collections it does not name as they are. `show` resolves a
+   * page in the first mode of each collection, so call this again after
+   * showing another page in other modes.
    */
-  setMode(mode: string): void;
+  setMode(choice: Record<string, string> | string): void;
   /** The node at `address` in the current mode, or `null` when no node has that address. */
   inspect(address: string): Inspection | null;
   /**
@@ -751,9 +754,10 @@ export async function createDesignRenderer(canvas: HTMLCanvasElement): Promise<D
       }
       drawOverlay();
     },
-    setMode(mode) {
+    setMode(choice) {
       if (!loaded) return;
-      if (!withText(mode, (pointer, length) => module._omni_render_scene_set_mode(pointer, length))) throw failure();
+      const text = typeof choice === "string" ? choice : JSON.stringify(choice);
+      if (!withText(text, (pointer, length) => module._omni_render_scene_set_mode(pointer, length))) throw failure();
       requestFrame();
     },
     inspect(address) {
