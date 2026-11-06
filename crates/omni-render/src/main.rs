@@ -46,6 +46,8 @@ mod exports {
         static BOARD_OF: RefCell<CString> = RefCell::new(CString::default());
         /// The result of the last `omni_render_scene_errors`.
         static ERRORS: RefCell<CString> = RefCell::new(CString::default());
+        /// The result of the last `omni_render_play_state`.
+        static PLAY_STATE: RefCell<CString> = RefCell::new(CString::default());
     }
 
     /// Takes the text or bytes at `ptr` and `len` from the page.
@@ -695,6 +697,122 @@ mod exports {
     pub extern "C" fn omni_render_overlay() -> *const c_char {
         OUTLINES.set(CString::new(omni_render::web::overlay()).unwrap_or_default());
         OUTLINES.with_borrow(|outlines| outlines.as_ptr())
+    }
+
+    /// Starts playing the loaded page on the board with this ID, in place of
+    /// any session. Returns whether it started; `omni_render_error` has the
+    /// reason if not, such as "`<id>` is not a board of the shown page".
+    ///
+    /// # Safety
+    /// The pointer and length must be a block from `omni_render_alloc`.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn omni_render_play_start(board: *const u8, board_len: usize) -> bool {
+        // SAFETY: the caller promises the block is there.
+        let result = unsafe { text(board, board_len) }.and_then(omni_render::web::play_start);
+        succeeded(result)
+    }
+
+    /// Ends the session.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn omni_render_play_stop() {
+        omni_render::web::play_stop();
+    }
+
+    /// A pointer event at the stage point `x`, `y` in CSS pixels: `kind` is 0
+    /// for down, 1 for move, 2 for up and 3 for leave. Returns whether what
+    /// the player shows changed.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn omni_render_play_pointer(kind: u32, x: f32, y: f32) -> bool {
+        match omni_render::web::play_pointer(kind, x, y) {
+            Ok(changed) => changed,
+            Err(reason) => {
+                fail(&reason);
+                false
+            }
+        }
+    }
+
+    /// Moves the session on to `now` (milliseconds) and draws it if it changed
+    /// or is animating. Returns 0 when it did not draw, 1 when it drew and 2
+    /// when it drew and another frame is needed (`web::play_tick`).
+    #[unsafe(no_mangle)]
+    pub extern "C" fn omni_render_play_tick(now: f64) -> u8 {
+        match omni_render::web::play_tick(now) {
+            Ok(drew) => drew,
+            Err(reason) => {
+                fail(&reason);
+                0
+            }
+        }
+    }
+
+    /// Goes back to the board the last navigate left. Returns whether there
+    /// was one.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn omni_render_play_back() -> bool {
+        match omni_render::web::play_back() {
+            Ok(moved) => moved,
+            Err(reason) => {
+                fail(&reason);
+                false
+            }
+        }
+    }
+
+    /// Goes to the board with this ID as a navigate does, so that back returns
+    /// to the board it leaves. Returns whether it moved.
+    ///
+    /// # Safety
+    /// The pointer and length must be a block from `omni_render_alloc`.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn omni_render_play_go(board: *const u8, board_len: usize) -> bool {
+        // SAFETY: the caller promises the block is there.
+        let moved = unsafe { text(board, board_len) }.and_then(omni_render::web::play_go);
+        match moved {
+            Ok(moved) => moved,
+            Err(reason) => {
+                fail(&reason);
+                false
+            }
+        }
+    }
+
+    /// Starts over on the board with this ID, with no history. Returns whether
+    /// it did.
+    ///
+    /// # Safety
+    /// The pointer and length must be a block from `omni_render_alloc`.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn omni_render_play_restart(board: *const u8, board_len: usize) -> bool {
+        // SAFETY: the caller promises the block is there.
+        let result = unsafe { text(board, board_len) }.and_then(omni_render::web::play_restart);
+        succeeded(result)
+    }
+
+    /// Where the player is, as a NUL-ended JSON object that stays until the
+    /// next call: `{"board": "<id>", "history": ["<id>"], "overlays":
+    /// ["<id>"], "url": null | {"url": "...", "newTab": true}}`. `url` is set
+    /// once after a link was asked for. Null if no session is playing.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn omni_render_play_state() -> *const c_char {
+        match omni_render::web::play_state() {
+            Ok(state) => {
+                PLAY_STATE.set(CString::new(state).unwrap_or_default());
+                PLAY_STATE.with_borrow(|state| state.as_ptr())
+            }
+            Err(reason) => {
+                fail(&reason);
+                std::ptr::null()
+            }
+        }
+    }
+
+    /// Draws the session on the default framebuffer of the page's current
+    /// WebGL 2 context: `width` x `height` device pixels, with `pixel_ratio`
+    /// device pixels per CSS pixel. Returns whether it drew.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn omni_render_play_draw(width: i32, height: i32, pixel_ratio: f32) -> bool {
+        succeeded(omni_render::web::play_draw(width, height, pixel_ratio))
     }
 
     /// Lays the design out and returns the box of every node as a NUL-ended

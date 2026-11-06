@@ -6,6 +6,7 @@ publish.workspace = true
 
 [dependencies]
 omni-core = { path = "../omni-core" }
+omni-proto = { path = "../omni-proto" }
 # Keep the default features: the prebuilt Skia binaries (see README.md) exist
 # only for feature sets that include them. `textlayout` adds Skia's paragraph
 # layout, which shapes and measures text.

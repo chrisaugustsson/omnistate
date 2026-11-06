@@ -17,6 +17,7 @@ use crate::inspect::{Inspection, Property};
 use crate::layout::{self, LayoutBox};
 use crate::nesting::{self, MAX_NESTING};
 use crate::paint::{self, Assets};
+use crate::play::{Session, Tick};
 use crate::sandbox::{self, SandboxScene};
 use crate::select::{Event, Layer, Modifiers, NodeAddress, Outline, OutlineKind};
 use crate::snapshot;
@@ -62,6 +63,9 @@ thread_local! {
     /// The design system version that scenes resolve against, as the page
     /// supplied it (`DesignSystem::from_json`).
     static SYSTEM: RefCell<Option<Value>> = const { RefCell::new(None) };
+    /// The prototype being played on the scene's page, once `play_start` has
+    /// started one.
+    static PLAY: RefCell<Option<Session>> = const { RefCell::new(None) };
     /// The scene of the stress page, once it has loaded one.
     static STAGE: RefCell<Option<Stage>> = const { RefCell::new(None) };
     /// The Skia context on the page's WebGL context. Frames reuse it, so that
@@ -830,4 +834,92 @@ fn webgl_context() -> Option<DirectContext> {
         context.reset(None);
         Some(context)
     })
+}
+
+/// Starts playing the loaded page on `board`, the ID of one of its boards, in
+/// place of any session (`Session::start`). Fails if no scene is loaded or the
+/// page has no such board.
+pub fn play_start(board: &str) -> Result<(), String> {
+    let session = STAGE.with_borrow(|stage| {
+        let stage = stage.as_ref().ok_or("no scene is loaded")?;
+        Session::start(&stage.scene, board)
+    })?;
+    PLAY.set(Some(session));
+    Ok(())
+}
+
+/// Ends the session, if there is one.
+pub fn play_stop() {
+    PLAY.set(None);
+}
+
+/// Runs `handle` on the session. `Err` if none has started.
+fn with_play<T>(handle: impl FnOnce(&mut Session) -> T) -> Result<T, String> {
+    PLAY.with_borrow_mut(|play| {
+        play.as_mut()
+            .map(handle)
+            .ok_or_else(|| "no prototype is playing".to_string())
+    })
+}
+
+/// A pointer event on the stage (`Session::pointer`). Returns whether what the
+/// player shows changed.
+pub fn play_pointer(kind: u32, x: f32, y: f32) -> Result<bool, String> {
+    with_play(|play| play.pointer(kind, x, y))
+}
+
+/// Goes back (`Session::back`). Returns whether there was a board to go back to.
+pub fn play_back() -> Result<bool, String> {
+    with_play(Session::back)
+}
+
+/// Goes to `board`, leaving the board shown in the history (`Session::go`).
+pub fn play_go(board: &str) -> Result<bool, String> {
+    with_play(|play| play.go(board))?
+}
+
+/// Starts over on `board`, with no history (`Session::restart`).
+pub fn play_restart(board: &str) -> Result<(), String> {
+    with_play(|play| play.restart(board))?
+}
+
+/// Where the player is, as JSON (`Session::state`).
+pub fn play_state() -> Result<String, String> {
+    with_play(|play| play.state().to_string())
+}
+
+/// Moves the session on to `now` (milliseconds) and draws it, at the size of
+/// the last `play_draw`, if it changed or is animating. Returns 0 when
+/// nothing changed, 1 when a frame was drawn and 2 when one was drawn and
+/// another is needed, as a transition is playing.
+pub fn play_tick(now: f64) -> Result<u8, String> {
+    let (tick, size) = with_play(|play| (play.tick(now), play.size()))?;
+    match (tick, size) {
+        (Tick::Idle, _) | (_, None) => Ok(0),
+        (tick, Some((width, height, pixel_ratio))) => {
+            play_draw(width, height, pixel_ratio)?;
+            Ok(if tick == Tick::Animating { 2 } else { 1 })
+        }
+    }
+}
+
+/// Draws the session on the default framebuffer of the current WebGL 2
+/// context, which is `width` x `height` device pixels with `pixel_ratio` device
+/// pixels per CSS pixel (`Session::draw`).
+pub fn play_draw(width: i32, height: i32, pixel_ratio: f32) -> Result<(), String> {
+    let css = (width as f32 / pixel_ratio, height as f32 / pixel_ratio);
+    let drawn = STAGE.with_borrow_mut(|stage| {
+        PLAY.with_borrow_mut(|play| {
+            let stage = stage.as_mut().ok_or("no scene is loaded")?;
+            let play = play.as_mut().ok_or("no prototype is playing")?;
+            Ok::<_, String>(on_canvas(width, height, pixel_ratio, true, |canvas| {
+                play.draw(&mut stage.scene, canvas, css, pixel_ratio);
+            }))
+        })
+    })?;
+    if drawn {
+        Ok(())
+    } else {
+        Err("Skia could not draw on the WebGL context".to_string())
+    }
 }

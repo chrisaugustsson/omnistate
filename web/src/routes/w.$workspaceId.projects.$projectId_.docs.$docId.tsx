@@ -20,8 +20,8 @@ import {
   type Property,
 } from "@/design/renderer";
 import { createAssetLoader } from "@/design/assets";
-import { BoardCache, BoardPreviews, findPageHolding, showBoardwise } from "@/design/boards";
-import { ChevronRight, FileText, Files, Layers as LayersIcon, PenTool, SlidersHorizontal } from "lucide-react";
+import { BoardCache, BoardPreviews, findPageHolding, pageWithBoards, showBoardwise } from "@/design/boards";
+import { ChevronRight, FileText, Files, Layers as LayersIcon, PenTool, Play, SlidersHorizontal } from "lucide-react";
 import {
   FloatingAlert,
   FloatingAlerts,
@@ -31,10 +31,12 @@ import {
   ToolbarSelect,
   ViewerToolbar,
 } from "@/components/viewer/chrome";
+import { Button } from "@/components/ui/button";
 import { CommentsPanel } from "@/components/viewer/comments";
 import { DesignSystemViewer } from "@/components/viewer/design-system";
 import { InteractionsSection, LayerIcon, MonoValue, PropertyTable, ScrollingRow, TokenChip } from "@/components/viewer/design";
 import { cn } from "@/lib/utils";
+import { PlayMode, type PlayBoard, type PlayFlow } from "@/components/viewer/play";
 import { useReloading, type Reloading } from "@/lib/reloading";
 import { useVisit } from "@/lib/visits";
 import { useProjectEvents } from "@/live/context";
@@ -65,6 +67,11 @@ import { blockIds } from "@/viewer/html";
 // `board` alone opens the design on that board, and stays in the address until
 // a node is selected or another page is shown.
 //
+// The `play` search parameter (a board's ID) puts the design in play mode on
+// that board, and `flow` names the flow it plays: a play link starts a fresh
+// session at that board. The address follows the board the player is on, with a
+// history replace, and leaving play mode returns to `board` alone.
+//
 // The `comment` search parameter opens a comment, as the Inbox links to it:
 // the comment's node is selected (a design shows its board, an HTML doc scrolls
 // to its block) and the comment is marked in the comments panel. A comment
@@ -72,15 +79,19 @@ import { blockIds } from "@/viewer/html";
 // comment that is not there (deleted, or of another doc) is left out.
 export const Route = createFileRoute("/w/$workspaceId/projects/$projectId_/docs/$docId")({
   component: DocPage,
-  validateSearch: (search: Record<string, unknown>): { board?: string; node?: string; comment?: string } => ({
+  validateSearch: (
+    search: Record<string, unknown>,
+  ): { board?: string; node?: string; comment?: string; play?: string; flow?: string } => ({
     board: typeof search.board === "string" && search.board ? search.board : undefined,
     node: typeof search.node === "string" && search.node ? search.node : undefined,
     comment: typeof search.comment === "string" && search.comment ? search.comment : undefined,
+    play: typeof search.play === "string" && search.play ? search.play : undefined,
+    flow: typeof search.flow === "string" && search.flow ? search.flow : undefined,
   }),
 });
 
 /** Where the address bar says the reviewer is in the doc. */
-type Place = { board?: string; node?: string };
+type Place = { board?: string; node?: string; play?: string; flow?: string };
 
 function DocPage() {
   const { workspaceId, projectId, docId } = Route.useParams();
@@ -96,7 +107,15 @@ function DocPage() {
   // Puts the place in the address bar, replacing the entry, so that it is always a link to where the reviewer is.
   const place = useCallback((next: Place) => {
     const { search: now, navigate: go } = current.current;
-    if (next.board === now.board && next.node === now.node && now.comment === undefined) return;
+    if (
+      next.board === now.board &&
+      next.node === now.node &&
+      next.play === now.play &&
+      next.flow === now.flow &&
+      now.comment === undefined
+    ) {
+      return;
+    }
     void go({ search: next, replace: true });
   }, []);
   // The comment a link named, until the viewer has opened it: the address bar
@@ -121,6 +140,8 @@ function DocPage() {
         doc={doc}
         board={search.board}
         node={search.node}
+        play={search.play}
+        flow={search.flow}
         comment={comment}
         onOpened={opened}
         onPlace={place}
@@ -541,6 +562,8 @@ function DesignViewer({
   doc,
   board: boardParam,
   node,
+  play,
+  flow,
   comment,
   onOpened,
   onPlace,
@@ -551,6 +574,9 @@ function DesignViewer({
   doc: Reloading<DocBody>;
   board: string | undefined;
   node: string | undefined;
+  /** The board the address plays, when it is in play mode. */
+  play: string | undefined;
+  flow: string | undefined;
   comment: string | undefined;
   onOpened: () => void;
   onPlace: (place: Place) => void;
@@ -591,9 +617,9 @@ function DesignViewer({
     [],
   );
   const layersList = useRef<HTMLDivElement>(null);
-  const [boardTarget, setBoardTarget] = useState<string | null>(boardParam ?? null);
+  const [boardTarget, setBoardTarget] = useState<string | null>(boardParam ?? play ?? null);
   // The board a link named, until a node is selected or another page is shown.
-  const boardHint = useRef<string | null>(boardParam ?? null);
+  const boardHint = useRef<string | null>(boardParam ?? play ?? null);
   const [openComment, setOpenComment] = useState<string | null>(null);
   const [chosenMode, setChosenMode] = useState<string | null>(null);
   // Counts the times the renderer drew a page or another mode, so that the inspect panel asks again.
@@ -840,8 +866,68 @@ function DesignViewer({
     const holder = selected ? renderer?.boardOf(selected) : null;
     if (holder || !boards.some((entry) => entry.id === boardHint.current)) boardHint.current = null;
     const board = holder ?? boardHint.current ?? (boards[0] ? String(boards[0].id) : undefined);
-    onPlace({ board, node: selected ?? undefined });
-  }, [target, boardTarget, page, renderer, selected, drawn, onPlace]);
+    onPlace({ board, node: selected ?? undefined, play, flow });
+  }, [target, boardTarget, page, renderer, selected, drawn, onPlace, play, flow]);
+
+  // The boards of the shown page, in the page's order, and its flows.
+  const playBoards: PlayBoard[] = useMemo(
+    () =>
+      (Array.isArray(page?.children) ? (page.children as JsonNode[]) : [])
+        .filter((entry) => entry.type === "board")
+        .map((entry) => ({ id: String(entry.id), name: String(entry.name ?? entry.id) })),
+    [page],
+  );
+  const playFlows: PlayFlow[] = useMemo(
+    () =>
+      (Array.isArray(page?.flows) ? (page.flows as JsonNode[]) : []).flatMap((entry) =>
+        typeof entry.name === "string" && typeof entry.start === "string"
+          ? [{ name: entry.name, start: entry.start }]
+          : [],
+      ),
+    [page],
+  );
+  // Reads every board of the page and shows the page with them, which a prototype plays: the boards the viewer has not read are placeholders. The view, the selection and the mode stay.
+  const readBoards = useCallback(async () => {
+    if (!renderer || !assets || !system) return;
+    await Promise.all(
+      playBoards.map(({ id }) =>
+        cache
+          .fetch(id, async (board) => {
+            await assets.load(board, system);
+          })
+          .catch(() => undefined),
+      ),
+    );
+    if (!page) return;
+    renderer.show(pageWithBoards(page, cache), system);
+    if (modeRef.current && modeRef.current !== modes[0]) renderer.setMode(modeRef.current);
+    setDrawn((count) => count + 1);
+  }, [renderer, assets, system, playBoards, cache, page, modes]);
+  const readBoardsRef = useRef(readBoards);
+  useEffect(() => {
+    readBoardsRef.current = readBoards;
+  });
+  const readForPlay = useCallback(() => readBoardsRef.current(), []);
+  const playOn = useCallback(
+    (board: string, named: string | undefined) => onPlace({ board: boardParam, node, play: board, flow: named }),
+    [onPlace, boardParam, node],
+  );
+  const leavePlay = useCallback(
+    (board: string) => {
+      boardHint.current = board;
+      onPlace({ board, node: selectedRef.current ?? undefined });
+    },
+    [onPlace],
+  );
+  // Plays the page from its first flow, or from the board that is open when it has none.
+  function startPlay() {
+    const first = playFlows[0];
+    const open =
+      (selected ? renderer?.boardOf(selected) : null) ?? boardParam ?? boardHint.current ?? playBoards[0]?.id;
+    const start = first?.start ?? open;
+    if (!start) return;
+    onPlace({ board: boardParam, node: node, play: start, flow: first?.name });
+  }
 
   // Where the commented nodes sit on their boards, so that a board drawn from its
   // preview has its pins. They are read again when the comments or the head change.
@@ -980,6 +1066,18 @@ function DesignViewer({
         icon={<PenTool />}
         docId={docId}
       >
+        {doc.value && (
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            disabled={!renderer || playBoards.length === 0}
+            onClick={startPlay}
+          >
+            <Play aria-hidden className="size-3.5" />
+            Play
+          </Button>
+        )}
         {doc.value && mode !== null && (
           <ToolbarSelect
             id="mode-switch"
@@ -1143,6 +1241,19 @@ function DesignViewer({
           <InspectPanel inspection={inspection} />
         </aside>
       </div>
+      {play !== undefined && renderer && page && boardTarget === null && (
+        <PlayMode
+          renderer={renderer}
+          title={doc.value?.title ?? ""}
+          boards={playBoards}
+          flows={playFlows}
+          play={play}
+          flow={flow}
+          ready={readForPlay}
+          onPlay={playOn}
+          onExit={leavePlay}
+        />
+      )}
     </main>
   );
 }

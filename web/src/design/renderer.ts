@@ -80,6 +80,45 @@ export type Inspection = {
   };
 };
 
+/** Where a prototype that is playing is (omni-render's `play_state`). */
+export type PlayState = {
+  board: string;
+  /** The boards left by navigates, oldest first. */
+  history: string[];
+  /** The boards of the open overlays, the top one last. */
+  overlays: string[];
+  /** A link the prototype asked to open, given once. */
+  url: { url: string; newTab: boolean } | null;
+};
+
+/** The kind of a pointer event on the stage: the names, or the numbers `play_pointer` takes. */
+export type PlayPointerKind = "down" | "move" | "up" | "leave" | 0 | 1 | 2 | 3;
+
+/** Plays the shown page's prototype on the canvas. */
+export type DesignPlayer = {
+  /**
+   * Starts playing on `board`, a board of the page shown, in place of any
+   * session: the canvas shows the board at its own size in the middle of the
+   * stage, on the page's prototype background, scaled down to fit. The
+   * canvas moves into `stage` for as long as the session lasts. Throws the
+   * renderer's reason when the page has no such board.
+   */
+  start(board: string, stage?: HTMLElement): void;
+  /** Ends the session and gives the canvas back to the design view. */
+  stop(): void;
+  /** A pointer event at the stage point `x`, `y` in CSS pixels; returns whether what is shown changed. */
+  pointer(kind: PlayPointerKind, x: number, y: number): boolean;
+  /** Goes back to the board the last navigate left; returns whether there was one. */
+  back(): boolean;
+  /** Goes to `board` as a navigate does, so that `back` returns to the board it leaves; returns whether it moved. */
+  go(board: string): boolean;
+  /** Starts over on `board`, with no history. */
+  restart(board: string): void;
+  state(): PlayState;
+  /** Calls `listener` whenever what is shown changes; returns the function that stops it. */
+  onChange(listener: () => void): () => void;
+};
+
 export type DesignRenderer = {
   /**
    * Supplies the image that `attachment` (`attachment:<id>`) names, from its
@@ -184,6 +223,7 @@ export type DesignRenderer = {
    * another page shown. Returns the function that stops it.
    */
   onView(listener: () => void): () => void;
+  play: DesignPlayer;
   destroy(): void;
 };
 
@@ -236,6 +276,15 @@ type OmniRender = {
   _omni_render_view_open_readable(): void;
   _omni_render_view_open_on(pointer: number, length: number): boolean;
   _omni_render_view_reveal_selected(): void;
+  _omni_render_play_start(board: number, boardLength: number): boolean;
+  _omni_render_play_stop(): void;
+  _omni_render_play_pointer(kind: number, x: number, y: number): boolean;
+  _omni_render_play_tick(now: number): number;
+  _omni_render_play_back(): boolean;
+  _omni_render_play_go(board: number, boardLength: number): boolean;
+  _omni_render_play_restart(board: number, boardLength: number): boolean;
+  _omni_render_play_state(): number;
+  _omni_render_play_draw(width: number, height: number, pixelRatio: number): boolean;
 };
 
 /** Every function of the module that the viewer calls, so that a module without one is caught when it loads. */
@@ -276,6 +325,15 @@ const FUNCTIONS: Record<Extract<keyof OmniRender, `_omni_render_${string}`>, tru
   _omni_render_view_open_readable: true,
   _omni_render_view_open_on: true,
   _omni_render_view_reveal_selected: true,
+  _omni_render_play_start: true,
+  _omni_render_play_stop: true,
+  _omni_render_play_pointer: true,
+  _omni_render_play_tick: true,
+  _omni_render_play_back: true,
+  _omni_render_play_go: true,
+  _omni_render_play_restart: true,
+  _omni_render_play_state: true,
+  _omni_render_play_draw: true,
 };
 
 /**
@@ -359,6 +417,12 @@ export async function createDesignRenderer(canvas: HTMLCanvasElement): Promise<D
   // The system the module resolves pages against, so that showing a page again
   // with the same system does not lay out the page that is loaded for nothing.
   let systemSent: unknown;
+  // The stage the canvas was moved into while a prototype plays, and where it
+  // sat before: the canvas goes back there when the session ends.
+  let playing: { parent: Node; next: Node | null; style: string } | null = null;
+  // Whether the stage has to be drawn at its size (the first frame, a resize).
+  let playResized = false;
+  const playListeners = new Set<() => void>();
 
   const readJson = <T>(pointerToText: number): T => JSON.parse(module.UTF8ToString(pointerToText)) as T;
 
@@ -393,6 +457,7 @@ export async function createDesignRenderer(canvas: HTMLCanvasElement): Promise<D
   }
 
   function drawFrame() {
+    if (playing) return;
     unfitted = false;
     const ratio = window.devicePixelRatio || 1;
     const width = Math.max(1, Math.round(cssWidth * ratio));
@@ -415,11 +480,34 @@ export async function createDesignRenderer(canvas: HTMLCanvasElement): Promise<D
     dirty = true;
   }
 
-  function loop() {
+  /** Draws the stage, which asks for another frame while a transition plays (`play_tick` says 2). */
+  function playFrame(now: number) {
+    const ratio = window.devicePixelRatio || 1;
+    const width = Math.max(1, Math.round(cssWidth * ratio));
+    const height = Math.max(1, Math.round(cssHeight * ratio));
+    if (canvas.width !== width || canvas.height !== height) {
+      canvas.width = width;
+      canvas.height = height;
+      playResized = true;
+    }
+    if (playResized) {
+      playResized = false;
+      if (!module._omni_render_play_draw(width, height, ratio)) throw failure();
+    }
+    if (module._omni_render_play_tick(now) === 2) requestFrame();
+  }
+
+  function playChanged() {
+    requestFrame();
+    for (const listener of Array.from(playListeners)) listener();
+  }
+
+  function loop(now: number) {
     if (destroyed) return;
     if (dirty && loaded) {
       dirty = false;
-      drawFrame();
+      if (playing) playFrame(now);
+      else drawFrame();
     }
     frame = requestAnimationFrame(loop);
   }
@@ -437,7 +525,7 @@ export async function createDesignRenderer(canvas: HTMLCanvasElement): Promise<D
   let ignoreClick = false;
 
   const onWheel = (event: WheelEvent) => {
-    if (!loaded) return;
+    if (!loaded || playing) return;
     const [x, y] = position(event);
     const unit = [1, 16, cssHeight][event.deltaMode] ?? 1;
     // Ctrl + wheel is also how browsers report a trackpad pinch.
@@ -446,8 +534,16 @@ export async function createDesignRenderer(canvas: HTMLCanvasElement): Promise<D
       requestFrame();
     }
   };
+  const playPointer = (kind: number, event: PointerEvent) => {
+    const [x, y] = position(event);
+    if (module._omni_render_play_pointer(kind, x, y)) playChanged();
+  };
   const onPointerDown = (event: PointerEvent) => {
     if (!loaded) return;
+    if (playing) {
+      playPointer(0, event);
+      return;
+    }
     const [x, y] = position(event);
     canvas.setPointerCapture?.(event.pointerId);
     ignoreClick = false;
@@ -458,6 +554,10 @@ export async function createDesignRenderer(canvas: HTMLCanvasElement): Promise<D
   };
   const onPointerMove = (event: PointerEvent) => {
     if (!loaded) return;
+    if (playing) {
+      playPointer(1, event);
+      return;
+    }
     const [x, y] = position(event);
     if (module._omni_render_view_pointer_move(x, y)) {
       requestFrame();
@@ -468,18 +568,27 @@ export async function createDesignRenderer(canvas: HTMLCanvasElement): Promise<D
     hover();
     takeEvents();
   };
-  const onPointerUp = () => {
+  const onPointerUp = (event: PointerEvent) => {
+    if (playing) {
+      if (event.type === "pointerup") playPointer(2, event);
+      else playPointer(3, event);
+      return;
+    }
     if (loaded) module._omni_render_view_pointer_up();
   };
-  const onPointerLeave = () => {
+  const onPointerLeave = (event: PointerEvent) => {
     if (!loaded) return;
+    if (playing) {
+      playPointer(3, event);
+      return;
+    }
     pointer = null;
     // A point that is nowhere, so that hover clears.
     module._omni_render_select_pointer_move(NaN, NaN, false, false);
     takeEvents();
   };
   const onClick = (event: MouseEvent) => {
-    if (!loaded) return;
+    if (!loaded || playing) return;
     if (ignoreClick) {
       ignoreClick = false;
       return;
@@ -492,7 +601,7 @@ export async function createDesignRenderer(canvas: HTMLCanvasElement): Promise<D
     takeEvents();
   };
   const onDoubleClick = (event: MouseEvent) => {
-    if (!loaded) return;
+    if (!loaded || playing) return;
     const [x, y] = position(event);
     module._omni_render_select_double_click(x, y);
     pointer = [x, y];
@@ -500,7 +609,7 @@ export async function createDesignRenderer(canvas: HTMLCanvasElement): Promise<D
     takeEvents();
   };
   const onKeyDown = (event: KeyboardEvent) => {
-    if (!loaded) return;
+    if (!loaded || playing) return;
     keys = { ctrl: event.ctrlKey, meta: event.metaKey };
     const typing = event.target instanceof HTMLElement && /^(INPUT|TEXTAREA|SELECT)$/.test(event.target.tagName);
     if (event.key === "Escape" && !typing) {
@@ -515,12 +624,12 @@ export async function createDesignRenderer(canvas: HTMLCanvasElement): Promise<D
     }
   };
   const onKeyUp = (event: KeyboardEvent) => {
-    if (!loaded) return;
+    if (!loaded || playing) return;
     keys = { ctrl: event.ctrlKey, meta: event.metaKey };
     if (event.code === "Space") module._omni_render_view_space(false);
   };
   const onBlur = () => {
-    if (loaded) module._omni_render_view_space(false);
+    if (loaded && !playing) module._omni_render_view_space(false);
   };
 
   // The wheel listener is not passive, so that preventDefault can keep the
@@ -604,7 +713,7 @@ export async function createDesignRenderer(canvas: HTMLCanvasElement): Promise<D
       drawFrame();
     },
     visibleBoards() {
-      if (!loaded) return [];
+      if (!loaded || playing) return [];
       // A page shown a moment ago has no view yet: draw it, so that the view is fitted to it.
       // A page that has been drawn is not drawn here: a frame drawn between the
       // animation frames would leave the next one with nothing to draw, and
@@ -669,6 +778,68 @@ export async function createDesignRenderer(canvas: HTMLCanvasElement): Promise<D
         viewListeners.delete(listener);
       };
     },
+    play: {
+      start(board, stage) {
+        if (!loaded) throw new Error("no scene is loaded");
+        if (!withText(board, (pointer, length) => module._omni_render_play_start(pointer, length))) throw failure();
+        if (!playing) {
+          playing = { parent: canvas.parentNode as Node, next: canvas.nextSibling, style: canvas.style.cssText };
+          overlay.replaceChildren();
+          if (stage) {
+            canvas.style.cssText = "position:absolute;inset:0;width:100%;height:100%;touch-action:none";
+            stage.append(canvas);
+          }
+          pointer = null;
+        }
+        cssWidth = canvas.clientWidth;
+        cssHeight = canvas.clientHeight;
+        playResized = true;
+        playChanged();
+      },
+      stop() {
+        module._omni_render_play_stop();
+        if (!playing) return;
+        const { parent, next, style } = playing;
+        playing = null;
+        canvas.style.cssText = style;
+        // The canvas goes back where it sat, before the element that followed it.
+        parent.insertBefore(canvas, next && next.parentNode === parent ? next : null);
+        cssWidth = canvas.clientWidth;
+        cssHeight = canvas.clientHeight;
+        requestFrame();
+      },
+      pointer(kind, x, y) {
+        const code = typeof kind === "number" ? kind : ["down", "move", "up", "leave"].indexOf(kind);
+        const changed = module._omni_render_play_pointer(code, x, y);
+        if (changed) playChanged();
+        return changed;
+      },
+      back() {
+        const moved = module._omni_render_play_back();
+        if (moved) playChanged();
+        return moved;
+      },
+      go(board) {
+        const moved = withText(board, (pointer, length) => module._omni_render_play_go(pointer, length));
+        if (moved) playChanged();
+        return moved;
+      },
+      restart(board) {
+        if (!withText(board, (pointer, length) => module._omni_render_play_restart(pointer, length))) throw failure();
+        playChanged();
+      },
+      state() {
+        const text = module._omni_render_play_state();
+        if (!text) throw failure();
+        return readJson<PlayState>(text);
+      },
+      onChange(listener) {
+        playListeners.add(listener);
+        return () => {
+          playListeners.delete(listener);
+        };
+      },
+    },
     destroy() {
       destroyed = true;
       cancelAnimationFrame(frame);
@@ -687,6 +858,7 @@ export async function createDesignRenderer(canvas: HTMLCanvasElement): Promise<D
       overlay.remove();
       listeners.clear();
       viewListeners.clear();
+      playListeners.clear();
     },
   };
 }

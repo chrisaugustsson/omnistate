@@ -105,6 +105,14 @@ impl DesignSystem {
         })
     }
 
+    /// The component nodes of the design system, by ID.
+    pub fn component_nodes(&self) -> HashMap<NodeId, Node> {
+        self.components
+            .iter()
+            .filter_map(|def| Some((def.id, serde_json::from_value(def.json.clone()).ok()?)))
+            .collect()
+    }
+
     /// The design system's modes, in the order its token tree lists them.
     pub fn modes(&self) -> &[String] {
         self.tokens.as_ref().map_or(&[], TokenTree::modes)

@@ -244,6 +244,27 @@ impl Player {
         self.go_back(self.last_at);
     }
 
+    /// Goes to `board` as a navigate with the defaults does, pushing the board
+    /// it leaves. Nothing, and `false`, if `board` is not a board of the page
+    /// or is the board shown.
+    pub fn go(&mut self, board: NodeId) -> bool {
+        if board == self.frame.board || !self.boards.contains_key(&board) {
+            return false;
+        }
+        let defaults = Interaction::default();
+        let play = Play {
+            transition: defaults.transition,
+            duration_ms: defaults.duration_ms,
+            easing: defaults.easing,
+        };
+        let from = self.frame.board;
+        self.history.push(from, play);
+        self.frame.board = board;
+        self.frame.overlays.clear();
+        self.frame.transition = Some(running(from, board, false, play, self.last_at));
+        true
+    }
+
     /// Starts over on `board`: no history, overlays or swaps.
     pub fn restart(&mut self, board: NodeId) {
         self.history.clear();

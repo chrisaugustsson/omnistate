@@ -107,6 +107,10 @@ impl Extent {
     }
 }
 
+/// The boxes of a board's nodes and the addresses of those inside instances
+/// (`Index::board_boxes`).
+pub(crate) type BoardBoxes = (HashMap<NodeId, LayoutBox>, HashMap<NodeId, NodeAddress>);
+
 /// A node of the index.
 struct Entry {
     /// Where the node is: its ID, or the instance and the component node that
@@ -268,6 +272,34 @@ impl Index {
 
     pub(crate) fn lookup(&self, address: &NodeAddress) -> Option<usize> {
         self.by_address.get(address).copied()
+    }
+
+    /// The boxes of the board with `board` as its ID and of every node below
+    /// it, by the node's ID in the indexed page and from the board's top-left
+    /// corner, and the address of each node inside an instance. `None` when
+    /// the index has no such board.
+    pub(crate) fn board_boxes(&self, board: &NodeId) -> Option<BoardBoxes> {
+        let root = self.lookup(&NodeAddress::new(None, *board))?;
+        let origin = self.entries[root].rect;
+        let mut rects = HashMap::new();
+        let mut layers = HashMap::new();
+        let mut pending = vec![root];
+        while let Some(at) = pending.pop() {
+            let entry = &self.entries[at];
+            rects.insert(
+                entry.node,
+                LayoutBox {
+                    x: entry.rect.x - origin.x,
+                    y: entry.rect.y - origin.y,
+                    ..entry.rect
+                },
+            );
+            if entry.address.instance().is_some() {
+                layers.insert(entry.node, entry.address.clone());
+            }
+            pending.extend(&entry.children);
+        }
+        Some((rects, layers))
     }
 
     /// The ID of the node: for a node inside an instance, the ID of the node

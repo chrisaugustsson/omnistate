@@ -1523,6 +1523,7 @@ name = "omni-render"
 version = "0.1.0"
 dependencies = [
  "omni-core",
+ "omni-proto",
  "serde_json",
  "skia-safe",
  "taffy",

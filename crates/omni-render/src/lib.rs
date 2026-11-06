@@ -5,6 +5,7 @@ pub mod inspect;
 pub mod layout;
 pub mod nesting;
 pub mod paint;
+pub mod play;
 mod resolve;
 pub mod sandbox;
 pub mod select;

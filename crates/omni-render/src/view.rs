@@ -1282,6 +1282,39 @@ impl Scene {
             .collect()
     }
 
+    /// The page as it was given, which a prototype plays: its boards in page
+    /// order, its flows and its prototype settings.
+    pub fn source_page(&self) -> &Node {
+        self.source.as_ref().unwrap_or(&self.page)
+    }
+
+    /// The components of the design system the scene resolves against, by ID.
+    pub fn components(&self) -> HashMap<NodeId, Node> {
+        self.system
+            .as_ref()
+            .map(|resolving| resolving.system.component_nodes())
+            .unwrap_or_default()
+    }
+
+    /// The box of the board `board` on the page.
+    pub fn board_bounds(&self, board: &NodeId) -> Option<LayoutBox> {
+        self.boards
+            .iter()
+            .find(|held| held.id == *board)
+            .map(|held| held.bounds)
+    }
+
+    /// The IDs of the boards of the page, in page order.
+    pub fn board_ids(&self) -> Vec<NodeId> {
+        self.boards.iter().map(|board| board.id).collect()
+    }
+
+    /// The boxes of the layers of `board` from its top-left corner, with
+    /// the address of each layer inside an instance (`Index::board_boxes`).
+    pub fn board_boxes(&self, board: &NodeId) -> Option<crate::select::BoardBoxes> {
+        self.index.board_boxes(board)
+    }
+
     /// The topmost visible node at the page point `point`: the deepest node
     /// whose box holds it, with later siblings above earlier ones. Hidden
     /// nodes and what lies outside a clipping ancestor cannot be hit.
@@ -1555,6 +1588,26 @@ impl Scene {
     /// The detail follows the device scale, the zoom times that ratio: below
     /// 50% a board is a snapshot, and otherwise it is drawn in full.
     pub fn render(&mut self, canvas: &Canvas, viewport: &Viewport) -> FrameStats {
+        self.render_boards(canvas, viewport, None)
+    }
+
+    /// Draws only the board `board` of what `viewport` shows, as `render`
+    /// does, so that its neighbours on the page stay out of the picture.
+    pub fn render_board(
+        &mut self,
+        canvas: &Canvas,
+        viewport: &Viewport,
+        board: &NodeId,
+    ) -> FrameStats {
+        self.render_boards(canvas, viewport, Some(board))
+    }
+
+    fn render_boards(
+        &mut self,
+        canvas: &Canvas,
+        viewport: &Viewport,
+        only: Option<&NodeId>,
+    ) -> FrameStats {
         let need = viewport.zoom() * pixel_ratio(canvas);
         let detail = if need < REDUCED_BELOW {
             Detail::Reduced
@@ -1586,7 +1639,10 @@ impl Scene {
         canvas.save();
         canvas.scale((viewport.zoom(), viewport.zoom()));
         canvas.translate((-x, -y));
-        for board in boards.iter_mut().filter(|board| board.is_in(&visible)) {
+        for board in boards
+            .iter_mut()
+            .filter(|board| only.is_none_or(|only| *only == board.id) && board.is_in(&visible))
+        {
             stats.boards_drawn.push(board.id);
             if board.previewed {
                 board.draw_reduced(canvas);
