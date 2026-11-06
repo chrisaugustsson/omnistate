@@ -8,8 +8,8 @@ export const meta = {
     { title: 'Clarity', detail: 'one check per backlog story whose version is new, in parallel: blocking gaps become threads, minor ones agent decisions' },
     { title: 'Unblock', detail: 'a blocked story whose linked threads all have a conclusion gets each conclusion as a human decision and is unblocked' },
     { title: 'Implement', detail: 'the implement loop polls the board every 5 seconds and when an implementer ends: while fewer than `implementers` run, it claims the first pickable story that passed clarity and starts an implementer in its worktree (an existing one is continued), running only the checks its change needs; a finished story moves to implemented, a blocked one gets a thread and stays in the backlog' },
-    { title: 'Test lane', detail: 'one story at a time on the main worktree: the lane claims the first reviewed story, writes .omni/lane.json, rebases its branch onto the integration branch and fast-forwards it, then runs the fast command, the stack and a verifier on its criteria, then a test author and a test reviewer lock it down with regression tests, and it moves to done; the first failure resets the branch to the lane base and returns the story to the backlog with the findings at priority 0' },
-    { title: 'Review', detail: 'up to `reviewers` reviewers at once read each review story\'s branch against its criteria; a fail returns the story to the backlog at priority 0 with the findings, for a fresh implementer and reviewer; a third failed attempt opens a thread and blocks the story; a pass moves it to reviewed' },
+    { title: 'Test lane', detail: 'one story at a time on the main worktree: the lane claims the first reviewed story, writes .omni/lane.json, rebases its branch onto the integration branch and fast-forwards it, then runs the fast command, the stack and a verifier on its criteria, then a test author and a test reviewer lock it down with regression tests, and it moves to done; the first failure resets the branch to the lane base and returns the story to the backlog with the findings at priority 0, its branch kept' },
+    { title: 'Review', detail: 'up to `reviewers` reviewers at once read each review story\'s branch against its criteria; a fail returns the story to the backlog at priority 0 with the findings, for a fresh implementer that continues from the story\'s branch, and a fresh reviewer; a third failed attempt opens a thread and blocks the story; a pass moves it to reviewed' },
     { title: 'Report', detail: 'claims on unfinished stories are released, a verifier runs the fast command and the journeys of the stories done, and the report is posted on the Run thread' },
   ],
 }
@@ -581,8 +581,8 @@ Return raw structured data only.`
   // The attempts a story has used: each failed attempt's findings carry its number.
   const attemptOf = (story) => (story.findings || []).reduce((n, f) => Math.max(n, Number((String(f.text).match(/^\[attempt (\d+)\]/) || [])[1] || 0)), 0)
   // Returns a story to the backlog with the findings of this attempt on it and
-  // its priority 0; its worktree and branch go,
-  // and the next pick starts over with fresh agents. After MAX_ATTEMPTS failed
+  // its priority 0. Its worktree and branch stay, so the next pick continues
+  // from them with fresh agents. After MAX_ATTEMPTS failed
   // attempts the story is blocked in the backlog with a thread listing every
   // attempt's findings. A rebase conflict (`counts` false) returns the story
   // without using an attempt.
@@ -591,7 +591,6 @@ Return raw structured data only.`
     const attempt = attemptOf(story) + (counts ? 1 : 0)
     const prefix = counts ? `[attempt ${attempt}] ` : ''
     for (const f of findings) write('finding', key, ['--stage', stage, '--text', `${prefix}${f.text}`, ...(f.files || []).flatMap((p) => ['--file', p])])
-    dropWorktree(key)
     if (story.priority !== 0) omni(['story', 'edit', key, '--priority', '0'])
     write('move', key, ['--to', 'backlog'])
     if (counts && attempt >= MAX_ATTEMPTS) {
@@ -641,6 +640,9 @@ Return raw structured data only.`
       return files.length ? files : ['(unknown)']
     }
     git(['merge', '--ff-only', `story/${key}`])
+    // The branch now sits on this head: a later rebase (after a send-back)
+    // starts from here and replays only the story's own commits.
+    git(['config', `branch.story/${key}.omnibase`, base])
     ranges.set(key, { base, head: git(['rev-parse', 'HEAD']).trim() })
     const fresh = readStory(key)
     ;(fresh.findings || []).forEach((f, i) => {
@@ -1134,7 +1136,7 @@ Return raw structured data only.`, { schema: TEST_CUT_SCHEMA, label: `test-cut:$
     const conflict = tryMerge(key)
     if (conflict) {
       fs.rmSync(LANE_FILE, { force: true })
-      sendBack(key, 'testing', [{ text: `${REBASE_FINDING}${conflict.join(', ')}: the branch no longer rebases onto ${integration}; start again from its head`, files: conflict }], false)
+      sendBack(key, 'testing', [{ text: `${REBASE_FINDING}${conflict.join(', ')}: the branch no longer rebases onto ${integration}; rebase it onto ${integration} in its worktree and resolve the conflicts`, files: conflict }], false)
       mergeOutcomes.push({ key, outcome: 'rebase_conflict', files: conflict })
       laneLog(key, `sent back: rebase conflict in ${conflict.join(', ')}`)
       return

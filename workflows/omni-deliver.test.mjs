@@ -795,7 +795,7 @@ test("the review loop claims implemented stories by priority, then by number", a
   assert.deepEqual(order, ["US-2", "US-10", "US-1"]);
 });
 
-test("a failing review sends its story to the backlog at priority 0 with [attempt 1] findings, no holder, worktree or branch; a fresh implementer gets the findings before it is reviewed again", { timeout: 20000 }, async (t) => {
+test("a failing review sends its story to the backlog at priority 0 with [attempt 1] findings and no holder, its worktree and branch kept; a fresh implementer continues from them with the findings before it is reviewed again", { timeout: 20000 }, async (t) => {
   const dirs = scratch(t, [story("US-1", { status: "implemented", priority: 2 })]);
   dirs.checks({ fast: "true", stack_up: "true", stack: "true" });
   const wt = implemented(dirs, "US-1");
@@ -812,14 +812,14 @@ test("a failing review sends its story to the backlog at priority 0 with [attemp
 
   await deliver({ feature: "board" }, agent);
 
-  // A fresh worktree from the integration branch: the attempt's worktree and branch went.
-  assert.deepEqual(seen.atImplementer, { priority: 0, blocked: false, findings: ["[attempt 1] The badge is blue, the criterion says red"], head: "init" });
+  // The attempt's worktree and branch stay, with its commit.
+  assert.deepEqual(seen.atImplementer, { priority: 0, blocked: false, findings: ["[attempt 1] The badge is blue, the criterion says red"], head: "feat: US-1 attempt" });
   assert.deepEqual(timeline(dirs, "US-1"), ["claim review", "move backlog", "claim implementing", "move implemented", "claim review", "move reviewed", "claim testing", "move done"]);
-  assert.doesNotMatch(prompts["US-1"][0], /Continue from it/);
+  assert.match(prompts["US-1"][0], /Continue from it/);
   assert.match(prompts["US-1"][0], /\[attempt 1\] The badge is blue, the criterion says red/);
 });
 
-test("a third failed review leaves the story blocked in the backlog at priority 0, linked to 'US-1: still failing after 3 attempts', with no worktree or branch; once the thread concludes a fresh implementer starts", { timeout: 20000 }, async (t) => {
+test("a third failed review leaves the story blocked in the backlog at priority 0, linked to 'US-1: still failing after 3 attempts', its worktree and branch kept; once the thread concludes a fresh implementer continues from them", { timeout: 20000 }, async (t) => {
   const earlier = [{ stage: "review", text: "[attempt 1] The badge is missing", files: [], resolved: false }, { stage: "review", text: "[attempt 2] The badge is green", files: [], resolved: false }];
   const dirs = scratch(t, [story("US-1", { status: "implemented", priority: 0, findings: earlier })]);
   dirs.checks({ fast: "true", stack_up: "true", stack: "true" });
@@ -855,11 +855,11 @@ test("a third failed review leaves the story blocked in the backlog at priority 
     links: [{ thread_id: threadId, label: "question" }],
     title: "US-1: still failing after 3 attempts",
     findings: ["[attempt 1] The badge is missing", "[attempt 2] The badge is green", "[attempt 3] The badge is blue"],
-    worktree: false,
-    branch: false,
+    worktree: true,
+    branch: true,
   });
   assert.equal(prompts["US-1"].length, 1);
-  assert.equal(seen.head, "init");
+  assert.equal(seen.head, "feat: US-1 attempt");
 });
 
 // ---- the test lane: merge and check one story at a time -------------------------
@@ -1448,4 +1448,28 @@ test("a branch with no recorded base whose tip was itself on the integration bra
   assert.equal(dirs.story("US-1").status, "done");
   assert.equal(subjects(dirs)[0], "feat: US-1 attempt");
   assert.ok(subjects(dirs).includes("chore: main edits dropped.rs"), "the merge base replays the reset-away commit too");
+});
+
+test("a story the lane sent back keeps its branch where the lane left it and is merged again from there, so only its own commit reaches the integration branch", { timeout: 20000 }, async (t) => {
+  const dirs = scratch(t, [story("US-1", { status: "reviewed" })]);
+  const failed = join(dirs.root, "fast-failed-once");
+  dirs.checks({ fast: `test -e ${failed} || { touch ${failed}; exit 1; }`, stack_up: "true", stack: "true" });
+  const wt = reviewed(dirs, "US-1");
+  mainEdits(dirs, "m1.rs", "one\n");
+  const seen = {};
+  // The implementer that continues sees the branch as the lane left it; main moves on before it is merged again.
+  const { agent } = implAgent({ "US-1": async () => {
+    seen.branch = git(wt, "log", "--format=%s").trim().split("\n");
+    seen.base = git(dirs.repo, "config", "--get", "branch.story/US-1.omnibase").trim();
+    mainEdits(dirs, "m2.rs", "two\n");
+    return { status: "ready", summary: "continued" };
+  } });
+
+  await deliver({ feature: "board" }, agent);
+
+  assert.deepEqual(seen.branch, ["feat: US-1 attempt", "chore: main edits m1.rs", "init"]);
+  assert.equal(seen.base, git(dirs.repo, "rev-parse", "main~2").trim(), "the recorded base is the head the lane rebased onto");
+  assert.deepEqual(subjects(dirs), ["feat: US-1 attempt", "chore: main edits m2.rs", "chore: main edits m1.rs", "init"]);
+  assert.equal(dirs.story("US-1").status, "done");
+  assert.deepEqual([existsSync(wt), hasBranch(dirs, "US-1")], [false, false]);
 });

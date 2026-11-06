@@ -66,4 +66,10 @@ base (the last head that passed) while the lane holds a merge, and the commit
 it was cut from is recorded on the branch as `branch.story/<key>.omnibase`.
 The lane rebases a story with `--onto main <that base>`, falling back to git's
 fork point and then the merge base for a branch cut by an older run, so only
-the story's own commits reach main.
+the story's own commits reach main. Once the lane has rebased a story, the
+recorded base moves to the head it was rebased onto, so a story the lane sends
+back and merges again replays only its own commits.
+
+A story that review or the lane sends back keeps its worktree and branch: the
+next implementer continues from them and fixes the findings. Only a story that
+passes the lane loses its worktree and branch.
