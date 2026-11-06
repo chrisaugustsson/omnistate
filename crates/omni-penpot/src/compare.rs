@@ -161,17 +161,16 @@ pub fn compare_import(path: &Path) -> Result<Comparison, ReadError> {
             path.display()
         ))
     })?;
-    let mode = built
-        .import
-        .mode
-        .clone()
-        .or_else(|| system.modes().first().cloned())
-        .unwrap_or_default();
+    let first = system.first_modes();
+    let choice = match &built.import.mode {
+        Some(mode) => system.choose(&first, mode).unwrap_or(first),
+        None => first,
+    };
     let boards: Vec<ConvertedBoard> = built
         .boards
         .iter()
         .map(|board| ConvertedBoard {
-            design: system.resolve(&board.design, &mode).0,
+            design: system.resolve(&board.design, &choice).0,
             ..board.clone()
         })
         .collect();

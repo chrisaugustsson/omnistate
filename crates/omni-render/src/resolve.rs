@@ -33,6 +33,7 @@ mod details;
 use crate::inspect::{InstanceInspection, OverrideInspection, PropValue};
 use crate::nesting::MAX_NESTING;
 use crate::system::{ComponentDef, DesignSystem, Missing, RenderError};
+use omni_core::design::tokens::ModeChoice;
 use omni_core::design::{Node, NodeAddress, NodeId, PropDef, TokenRef};
 use serde_json::{Map, Value, json};
 use std::collections::{HashMap, HashSet};
@@ -134,12 +135,12 @@ struct Inside {
 }
 
 /// Expands the instances of `page` and resolves its token references against
-/// `system` in `mode`.
-pub(crate) fn resolve(page: &Node, system: &DesignSystem, mode: &str) -> Resolved {
+/// `system` in `choice`.
+pub(crate) fn resolve(page: &Node, system: &DesignSystem, choice: &ModeChoice) -> Resolved {
     let source = serde_json::to_value(page).unwrap_or(Value::Null);
     let mut resolver = Resolver {
         system,
-        mode,
+        choice,
         used: ids_of(page),
         next: 0,
         addresses: HashMap::new(),
@@ -222,12 +223,12 @@ pub(crate) fn begin_board(
 
 impl BoardResolving {
     /// Resolves nodes until `budget` has passed or the board is done, against
-    /// `system` in `mode`. Gives the board, and puts the IDs back in `taken`
+    /// `system` in `choice`. Gives the board, and puts the IDs back in `taken`
     /// and `next`, when it is done.
     pub(crate) fn step(
         &mut self,
         system: &DesignSystem,
-        mode: &str,
+        choice: &ModeChoice,
         budget: Duration,
         taken: &mut HashSet<NodeId>,
         next: &mut u64,
@@ -235,7 +236,7 @@ impl BoardResolving {
         let started = Instant::now();
         let mut resolver = Resolver {
             system,
-            mode,
+            choice,
             used: std::mem::take(&mut self.used),
             next: self.next,
             addresses: std::mem::take(&mut self.addresses),
@@ -326,7 +327,7 @@ fn keep_readable(source: &Value, mut resolved: Value) -> Option<Node> {
 
 struct Resolver<'a> {
     system: &'a DesignSystem,
-    mode: &'a str,
+    choice: &'a ModeChoice,
     /// The IDs of the page, which no ID made up for a node inside an instance
     /// may repeat.
     used: HashSet<NodeId>,
@@ -661,7 +662,7 @@ impl Resolver<'_> {
                 let Ok(reference) = text.parse::<TokenRef>() else {
                     return;
                 };
-                match self.system.token(&reference, self.mode) {
+                match self.system.token(&reference, self.choice) {
                     Some(token) => {
                         let token = design_value(token, key);
                         let text = std::mem::replace(value, token.clone());

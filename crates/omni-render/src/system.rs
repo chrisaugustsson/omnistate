@@ -2,16 +2,19 @@
 //! against (US-032): the components of a design system version and its token
 //! tree, which has a value for each of its modes.
 
-use omni_core::design::tokens::{ModeChoice, TokenTree};
+use omni_core::design::tokens::{Collection, ModeChoice, TokenTree};
 use omni_core::design::{Node, NodeAddress, NodeData, NodeId, PropDef, PropDefs, TokenRef};
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// A design system version: its token tree, `None` for a design system
 /// without tokens, and its components.
 #[derive(Clone)]
 pub struct DesignSystem {
     tokens: Option<TokenTree>,
+    /// The top-level groups that list their own modes, which a bare mode name
+    /// leaves alone.
+    own_modes: HashSet<String>,
     components: Vec<ComponentDef>,
     by_id: HashMap<NodeId, usize>,
 }
@@ -60,6 +63,11 @@ impl DesignSystem {
         };
         let mut tree = root.clone();
         let listed = tree.remove("$components");
+        let own_modes = tree
+            .iter()
+            .filter(|(_, group)| group.pointer("/$extensions/omnistate/modes").is_some())
+            .map(|(name, _)| name.clone())
+            .collect();
         let tokens = if tree.is_empty() {
             None
         } else {
@@ -100,6 +108,7 @@ impl DesignSystem {
         }
         Ok(Self {
             tokens,
+            own_modes,
             components,
             by_id,
         })
@@ -118,18 +127,81 @@ impl DesignSystem {
         self.tokens.as_ref().map_or(&[], TokenTree::modes)
     }
 
+    /// The design system's collections, its top-level groups, in the order
+    /// its token tree lists them, each with its modes.
+    pub fn collections(&self) -> Vec<Collection> {
+        self.tokens
+            .as_ref()
+            .map_or_else(Vec::new, TokenTree::collections)
+    }
+
+    /// The choice that has each collection in its first mode.
+    pub fn first_modes(&self) -> ModeChoice {
+        ModeChoice(
+            self.collections()
+                .into_iter()
+                .filter_map(|collection| Some((collection.name, collection.modes.first()?.clone())))
+                .collect(),
+        )
+    }
+
+    /// `current` changed by `text`: either a bare mode name, which sets the
+    /// collections that inherit the root list of modes and leaves the others
+    /// alone, or a JSON object such as `{"color": "dark", "density":
+    /// "compact"}`, which sets the collections it names. Fails as a whole, and
+    /// gives nothing, when the text names a collection or a mode that is not
+    /// there.
+    pub fn choose(&self, current: &ModeChoice, text: &str) -> Result<ModeChoice, String> {
+        let mut chosen = current.clone();
+        if text.trim_start().starts_with('{') {
+            let named: HashMap<String, String> = serde_json::from_str(text).map_err(|error| {
+                format!("a mode choice is a JSON object of collection to mode: {error}")
+            })?;
+            let collections = self.collections();
+            for (name, mode) in &named {
+                let Some(collection) = collections.iter().find(|c| c.name == *name) else {
+                    let names: Vec<&str> = collections.iter().map(|c| c.name.as_str()).collect();
+                    return Err(format!(
+                        "`{name}` is not a collection of the design system ({})",
+                        names.join(", ")
+                    ));
+                };
+                if !collection.modes.contains(mode) {
+                    return Err(format!(
+                        "`{mode}` is not a mode of `{name}` ({})",
+                        collection.modes.join(", ")
+                    ));
+                }
+                chosen.0.insert(name.clone(), mode.clone());
+            }
+            return Ok(chosen);
+        }
+        if !self.modes().iter().any(|listed| listed == text) {
+            let modes: Vec<String> = self.modes().iter().map(|m| format!("`{m}`")).collect();
+            return Err(format!(
+                "`{text}` is not a mode of the design system: it has {}",
+                modes.join(", ")
+            ));
+        }
+        for collection in self.collections() {
+            if !self.own_modes.contains(&collection.name) {
+                chosen.0.insert(collection.name, text.to_string());
+            }
+        }
+        Ok(chosen)
+    }
+
     /// `page` with its instances expanded and its token references resolved in
-    /// `mode`: an ordinary page that layout and painting handle like any
+    /// `choice`: an ordinary page that layout and painting handle like any
     /// other, and the nodes that were drawn as error placeholders.
-    pub fn resolve(&self, page: &Node, mode: &str) -> (Node, Vec<RenderError>) {
-        let resolved = crate::resolve::resolve(page, self, mode);
+    pub fn resolve(&self, page: &Node, choice: &ModeChoice) -> (Node, Vec<RenderError>) {
+        let resolved = crate::resolve::resolve(page, self, choice);
         (resolved.page, resolved.errors)
     }
 
-    /// The value of `token` in `mode`, with its references followed.
-    pub(crate) fn token(&self, token: &TokenRef, mode: &str) -> Option<Value> {
-        let tokens = self.tokens.as_ref()?;
-        tokens.resolve(token, &ModeChoice::parse(mode, tokens).ok()?)
+    /// The value of `token` in `choice`, with its references followed.
+    pub(crate) fn token(&self, token: &TokenRef, choice: &ModeChoice) -> Option<Value> {
+        self.tokens.as_ref()?.resolve(token, choice)
     }
 
     pub(crate) fn component(&self, id: &NodeId) -> Option<&ComponentDef> {

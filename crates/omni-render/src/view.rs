@@ -27,6 +27,7 @@ use crate::select::{Event, Index, Layer, Modifiers, NodeAddress, Outline, Outlin
 use crate::system::{DesignSystem, RenderError};
 use crate::text::{StandIn, stand_ins};
 use omni_core::design::proto::Interaction;
+use omni_core::design::tokens::ModeChoice;
 use omni_core::design::{Node, NodeData, NodeId};
 use serde_json::Value;
 use skia_safe::{
@@ -518,10 +519,10 @@ enum Job {
 }
 
 /// The design system that a scene resolves its page against, and the mode it
-/// resolves tokens in.
+/// resolves tokens in, a mode for each collection.
 struct Resolving {
     system: DesignSystem,
-    mode: String,
+    choice: ModeChoice,
 }
 
 /// What laying out a page gives a scene.
@@ -533,6 +534,23 @@ struct Laid {
 }
 
 /// The boards of `page`: its children, or the node itself if it is not a page.
+/// What the inspection shows as the scene's mode: the mode when every
+/// collection has the same one, else each collection with its mode, such as
+/// `color:dark,density:compact`.
+fn mode_text(choice: &ModeChoice) -> String {
+    let mut modes = choice.0.values();
+    match modes.next() {
+        Some(first) if modes.any(|mode| mode != first) => choice
+            .0
+            .iter()
+            .map(|(name, mode)| format!("{name}:{mode}"))
+            .collect::<Vec<_>>()
+            .join(","),
+        Some(first) => first.clone(),
+        None => String::new(),
+    }
+}
+
 fn board_nodes(page: &Node) -> &[Node] {
     match page.data() {
         NodeData::Page(page) => &page.children,
@@ -809,8 +827,8 @@ pub fn board_images(board: &Node, system: Option<&DesignSystem>) -> Vec<String> 
     }
     let json = match system {
         Some(system) => {
-            let mode = system.modes().first().cloned().unwrap_or_default();
-            serde_json::to_value(&resolve::resolve(board, system, &mode).page)
+            let choice = system.first_modes();
+            serde_json::to_value(&resolve::resolve(board, system, &choice).page)
         }
         None => serde_json::to_value(board),
     };
@@ -849,8 +867,8 @@ impl Scene {
     /// A scene whose instances and token references resolve against
     /// `system`, in its first mode.
     pub fn with_system(page: Node, assets: Assets, system: DesignSystem) -> Self {
-        let mode = system.modes().first().cloned().unwrap_or_default();
-        let resolved = resolve::resolve(&page, &system, &mode);
+        let choice = system.first_modes();
+        let resolved = resolve::resolve(&page, &system, &choice);
         let laid = lay_out(
             &resolved.page,
             &assets,
@@ -860,7 +878,7 @@ impl Scene {
         Self {
             page: resolved.page,
             source: Some(page),
-            system: Some(Resolving { system, mode }),
+            system: Some(Resolving { system, choice }),
             errors: resolved.errors,
             details: resolved.details,
             taken: resolved.taken,
@@ -887,34 +905,25 @@ impl Scene {
             Some(page) => page,
             None => self.page.clone(),
         };
-        let mode = system.modes().first().cloned().unwrap_or_default();
-        let resolved = resolve::resolve(&page, &system, &mode);
+        let choice = system.first_modes();
+        let resolved = resolve::resolve(&page, &system, &choice);
         self.source = Some(page);
-        self.system = Some(Resolving { system, mode });
+        self.system = Some(Resolving { system, choice });
         self.adopt(resolved);
     }
 
-    /// Resolves token references in `mode` from now on. Fails, and keeps the
-    /// current mode, if the design system has no such mode.
-    pub fn set_mode(&mut self, mode: &str) -> Result<(), String> {
+    /// Resolves token references in the modes that `text` chooses from now
+    /// on: a bare mode name, or a JSON object of collection to mode (see
+    /// `DesignSystem::choose`). Fails, and keeps the current modes, if the
+    /// design system has no such mode or collection.
+    pub fn set_mode(&mut self, text: &str) -> Result<(), String> {
         while self.work() {}
         let (Some(resolving), Some(source)) = (&mut self.system, &self.source) else {
             return Err("the scene has no design system, so it has no modes".to_string());
         };
-        if !resolving.system.modes().iter().any(|listed| listed == mode) {
-            let modes: Vec<String> = resolving
-                .system
-                .modes()
-                .iter()
-                .map(|listed| format!("`{listed}`"))
-                .collect();
-            return Err(format!(
-                "`{mode}` is not a mode of the design system: it has {}",
-                modes.join(", ")
-            ));
-        }
-        let resolved = resolve::resolve(source, &resolving.system, mode);
-        resolving.mode = mode.to_string();
+        let choice = resolving.system.choose(&resolving.choice, text)?;
+        let resolved = resolve::resolve(source, &resolving.system, &choice);
+        resolving.choice = choice;
         self.adopt(resolved);
         Ok(())
     }
@@ -1041,7 +1050,7 @@ impl Scene {
                 let finished = match &self.system {
                     Some(resolving_with) => resolving.step(
                         &resolving_with.system,
-                        &resolving_with.mode,
+                        &resolving_with.choice,
                         RESOLVE_STAGE,
                         &mut self.taken,
                         &mut self.next_id,
@@ -1477,7 +1486,10 @@ impl Scene {
                     address: address.clone(),
                     name: self.index.name(at).to_string(),
                     kind: self.index.kind(at).to_string(),
-                    mode: self.system.as_ref().map(|resolving| resolving.mode.clone()),
+                    mode: self
+                        .system
+                        .as_ref()
+                        .map(|resolving| mode_text(&resolving.choice)),
                     bounds: self.index.rect(at),
                 },
             ),

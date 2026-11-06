@@ -562,6 +562,76 @@ fn after_a_mode_switch_the_properties_have_that_modes_values() {
     assert_eq!(inspect(&scene, SUMMARY), light, "back in light mode");
 }
 
+/// The design system with a `density` collection that lists its own modes,
+/// and a page whose padding is `$density.space.md`.
+fn density_scene() -> Scene {
+    let mut tokens = tokens();
+    tokens["density"] = json!({
+        "$extensions": {"omnistate": {"modes": ["comfortable", "compact"]}},
+        "space": {"md": {
+            "$type": "dimension",
+            "$value": "16px",
+            "$extensions": {"omnistate": {"modes": {"comfortable": "16px", "compact": "12px"}}}
+        }}
+    });
+    let system = DesignSystem::from_json(&with(&tokens, "$components", components()))
+        .unwrap_or_else(|error| panic!("the density fixture must be read, but: {error}"));
+    let page = page_json()
+        .to_string()
+        .replace("$spacing.pad", "$density.space.md");
+    let page = serde_json::from_str(&page).expect("the page is still JSON");
+    Scene::with_system(node(&page), Assets::new(), system)
+}
+
+#[test]
+fn a_choice_of_one_collection_leaves_the_others_in_their_modes() {
+    let mut scene = density_scene();
+    scene
+        .set_mode(r#"{"density": "compact"}"#)
+        .unwrap_or_else(|error| panic!("compact is a mode of density, but: {error}"));
+
+    let summary = inspect(&scene, SUMMARY);
+    assert_eq!(
+        summary.mode.as_deref(),
+        Some("color:light,density:compact,spacing:light")
+    );
+    let layout = property(&summary.layout, "layout", "layout");
+    assert_eq!(number(&layout.value["padding"]["top"], "the padding"), 12.0);
+    assert_eq!(
+        uses(layout),
+        expected(vec![token("$density.space.md", json!(12))])
+    );
+    let fills = property(&summary.style, "style", "fills");
+    assert_eq!(
+        uses(fills),
+        expected(vec![token("$color.surface", json!("#ffffff"))])
+    );
+
+    let error = scene
+        .set_mode(r#"{"color": "dusk"}"#)
+        .expect_err("dusk is not a mode of color");
+    assert_eq!(error, "`dusk` is not a mode of `color` (light, dark)");
+    let error = scene
+        .set_mode(r#"{"color": "dark", "weight": "bold"}"#)
+        .expect_err("weight is not a collection");
+    assert_eq!(
+        error,
+        "`weight` is not a collection of the design system (color, density, spacing)"
+    );
+    assert_eq!(
+        inspect(&scene, SUMMARY).mode.as_deref(),
+        Some("color:light,density:compact,spacing:light"),
+        "a refused choice keeps every current mode"
+    );
+
+    scene.set_mode("dark").expect("dark is a root mode");
+    assert_eq!(
+        inspect(&scene, SUMMARY).mode.as_deref(),
+        Some("color:dark,density:compact,spacing:dark"),
+        "a bare mode leaves a collection with its own modes alone"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Interactions and scrolling (US-41)
 // ---------------------------------------------------------------------------
