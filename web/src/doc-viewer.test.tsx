@@ -44,6 +44,24 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { getRouter } from "./router";
 import { viewerPolicyProblems } from "./testing/viewer-policy";
 
+// The design-system page previews a component on a canvas with the WASM
+// renderer; this fake records the modes the preview is set to.
+const preview = vi.hoisted(() => ({ modes: [] as string[] }));
+vi.mock("@/design/renderer", () => ({
+  createDesignRenderer: async () => ({
+    show() {},
+    fontsStoodIn() {
+      return [];
+    },
+    setMode(mode: string) {
+      preview.modes.push(mode);
+    },
+    addImage() {},
+    addFont() {},
+    destroy() {},
+  }),
+}));
+
 const WORKSPACE_ID = "0192d7a0-0000-7000-8000-00000000000a";
 const PROJECT_ID = "0192d7a0-2222-7000-8000-000000000001";
 const DOC_ID = "0192d7a0-5555-7000-8000-000000000001";
@@ -462,6 +480,77 @@ describe("the doc viewer", () => {
     fireEvent.change(screen.getByRole("combobox", { name: "density" }), { target: { value: "compact" } });
     expect(within(catalog).getByText("12px")).toBeTruthy();
     expect(within(catalog).getByText("#111111")).toBeTruthy();
+  });
+
+  test("each collection's select keeps its own choice, also after visiting the components", async () => {
+    const system = {
+      color: { $extensions: { omnistate: { modes: ["light", "dark"] } }, $type: "color", ink: { $value: "#111111", $extensions: { omnistate: { modes: { dark: "#eeeeee" } } } } },
+      density: { $extensions: { omnistate: { modes: ["comfortable", "compact"] } }, $type: "dimension", gap: { $value: "16px", $extensions: { omnistate: { modes: { compact: "12px" } } } } },
+      $components: [],
+    };
+    fakeApi({ kind: "design-system", head: JSON.stringify(system) });
+    renderAt(DOC_PATH);
+    await screen.findByRole("region", { name: "Design tokens" });
+    fireEvent.change(screen.getByRole("combobox", { name: "color" }), { target: { value: "dark" } });
+    fireEvent.change(screen.getByRole("combobox", { name: "density" }), { target: { value: "compact" } });
+    fireEvent.click(screen.getByRole("button", { name: /^Components/ }));
+    fireEvent.click(screen.getByRole("button", { name: /^Tokens/ }));
+
+    const catalog = screen.getByRole("region", { name: "Design tokens" });
+    expect(within(catalog).getByText("#eeeeee")).toBeTruthy();
+    expect(within(catalog).getByText("12px")).toBeTruthy();
+    expect((screen.getByRole("combobox", { name: "color" }) as HTMLSelectElement).value).toBe("dark");
+  });
+
+  test("a search hides the collections none of whose tokens match", async () => {
+    const system = {
+      color: { $extensions: { omnistate: { modes: ["light", "dark"] } }, $type: "color", ink: { $value: "#111111" } },
+      density: { $extensions: { omnistate: { modes: ["comfortable", "compact"] } }, $type: "dimension", gap: { $value: "16px" } },
+      $components: [],
+    };
+    fakeApi({ kind: "design-system", head: JSON.stringify(system) });
+    renderAt(DOC_PATH);
+    const catalog = await screen.findByRole("region", { name: "Design tokens" });
+    fireEvent.change(screen.getByRole("searchbox", { name: "Search design system" }), { target: { value: "gap" } });
+
+    expect(within(catalog).getByText("modes: comfortable, compact")).toBeTruthy();
+    expect(within(catalog).queryByText("modes: light, dark")).toBeNull();
+    expect(within(catalog).queryByText("No tokens match your search.")).toBeNull();
+  });
+
+  test("a string token's inner quotes are escaped and every code syntax platform has its own line in order", async () => {
+    const system = {
+      state: {
+        cta: { $type: "string", $value: 'say "hi"', $extensions: { omnistate: { codeSyntax: { web: "ctaLabel", ios: "CtaLabel" } } } },
+      },
+      $components: [],
+    };
+    fakeApi({ kind: "design-system", head: JSON.stringify(system) });
+    renderAt(DOC_PATH);
+    const catalog = await screen.findByRole("region", { name: "Design tokens" });
+
+    expect(within(catalog).getByText('"say \\"hi\\""')).toBeTruthy();
+    const web = within(catalog).getByText("web: ctaLabel");
+    const ios = within(catalog).getByText("ios: CtaLabel");
+    expect(web.compareDocumentPosition(ios) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  test("the component preview is set to the mode chosen in the first collection that has modes", async () => {
+    preview.modes = [];
+    const system = {
+      state: { open: { $type: "boolean", $value: false } },
+      color: { $extensions: { omnistate: { modes: ["light", "dark"] } }, $type: "color", ink: { $value: "#111111" } },
+      density: { $extensions: { omnistate: { modes: ["comfortable", "compact"] } }, $type: "dimension", gap: { $value: "16px" } },
+      $components: [{ id: "cmpbtn01", type: "component", name: "Button", children: [] }],
+    };
+    fakeApi({ kind: "design-system", head: JSON.stringify(system) });
+    renderAt(DOC_PATH);
+    await screen.findByRole("region", { name: "Design tokens" });
+    fireEvent.change(screen.getByRole("combobox", { name: "density" }), { target: { value: "compact" } });
+    fireEvent.change(screen.getByRole("combobox", { name: "color" }), { target: { value: "dark" } });
+    fireEvent.click(screen.getByRole("button", { name: /^Components/ }));
+
+    await waitFor(() => expect(preview.modes.at(-1)).toBe("dark"));
   });
 
   test("the doc renders in a frame sandboxed to scripts alone, under the viewer's policy", async () => {

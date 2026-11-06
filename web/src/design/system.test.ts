@@ -47,6 +47,28 @@ describe("design-system token values", () => {
     expect(tokens.find((token) => token.path === "state.count")).toMatchObject({ scopes: ["content", "opacity"], codeSyntax: { web: "count", ios: "Count" } });
   });
 
+  test("an alias into a later collection is read in that collection's chosen mode, not the referring one's", () => {
+    const tokens = systemTokens({
+      $extensions: { omnistate: { modes: ["light", "dark"] } },
+      button: { $type: "dimension", pad: { $value: "{density.gap}" } },
+      density: {
+        $extensions: { omnistate: { modes: ["comfortable", "compact"] } },
+        $type: "dimension",
+        gap: { $value: "16px", $extensions: { omnistate: { modes: { compact: "12px" } } } },
+      },
+    });
+    expect(tokenValues(tokens, { button: "light", density: "compact" }).get("button.pad")).toBe("12px");
+  });
+
+  test("collections keep the tree's order", () => {
+    const system = {
+      state: { open: { $type: "boolean", $value: false } },
+      color: { $type: "color", ink: { $value: "#000000" } },
+      density: { $type: "dimension", gap: { $value: "16px" } },
+    };
+    expect(collectionsOf(system).map((collection) => collection.name)).toEqual(["state", "color", "density"]);
+  });
+
   test("an unresolved or cyclic reference does not stop valid tokens from being shown", () => {
     const tokens = systemTokens({ color: { $type: "color", good: { $value: "#123456" }, missing: { $value: "{color.absent}" }, a: { $value: "{color.b}" }, b: { $value: "{color.a}" } } });
     const values = tokenValues(tokens, {});
