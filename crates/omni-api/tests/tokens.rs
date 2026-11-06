@@ -798,7 +798,14 @@ fn a_read_can_choose_a_mode_per_collection() {
     let dark = head_tokens(f, client, &project, "?mode=dark");
     assert_eq!(
         dark["mode"],
-        json!({"color": "dark", "density": "comfortable"}),
+        json!({
+            "color": "dark",
+            "density": "comfortable",
+            "radius": "dark",
+            "shadow": "dark",
+            "spacing": "dark",
+            "typography": "dark"
+        }),
         "{dark}"
     );
 
