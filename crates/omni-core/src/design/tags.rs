@@ -32,7 +32,7 @@ use super::{
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Map, Number, Value, json};
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::fmt;
 use std::str::FromStr;
 
@@ -79,6 +79,7 @@ const BOARD: &[&str] = &[
     "opacity",
     "clip",
     "overflow",
+    "modes",
     "interactions",
 ];
 
@@ -483,6 +484,7 @@ enum Shape {
     Interactions,
     Flows,
     Prototype,
+    Modes,
 }
 
 struct Spec {
@@ -543,6 +545,7 @@ static SPECS: &[Spec] = &[
     node("opacity", "opacity", Shape::Within(0.0, 1.0)),
     node("clip", "clip", Shape::Flag),
     node("overflow", "overflow", Shape::Keyword(OVERFLOW)),
+    node("modes", "modes", Shape::Modes),
     node(
         "scrollPosition",
         "scrollPosition",
@@ -673,6 +676,9 @@ fn how(spec: &Spec) -> String {
         Shape::Prototype => format!(
             "write an object with some of {}, such as `{attr}={{{{device: \"iPhone 16\", rotation: \"landscape\"}}}}`",
             quoted(&["device", "color", "rotation", "background", "responsive", "customSize"])
+        ),
+        Shape::Modes => format!(
+            "write an object of collection to mode, such as `{attr}={{{{color: \"dark\"}}}}`"
         ),
         Shape::Bind => format!(
             "bind a layer of a component to its properties, such as `{attr}={{{{visible: \"showIcon\"}}}}` with `visible`, `content` or `component`"
@@ -840,6 +846,7 @@ fn convert(spec: &Spec, value: Value) -> Result<Value, Problem> {
         Shape::Values => check::<PropValues>(spec, &value).map(|()| value),
         Shape::Overrides => check::<Overrides>(spec, &value).map(|()| value),
         Shape::Bind => check::<Bind>(spec, &value).map(|()| value),
+        Shape::Modes => check::<BTreeMap<String, String>>(spec, &value).map(|()| value),
         Shape::Flows => Flow::list_from_value(&value)
             .map_err(|error| from_text(spec, &error))
             .and_then(|flows| {

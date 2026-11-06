@@ -97,6 +97,7 @@ to CSS.
 | `opacity` | From 0 to 1, or a token reference. |
 | `clip` | Clips the children to the box. |
 | `overflow` | How a board or frame scrolls its content: `"none"`, `"horizontal"`, `"vertical"` or `"both"`; left out it is `none`. Boards and frames take it. |
+| `modes` | The mode of each collection that a board is resolved in, such as `modes={{color: "dark"}}`, whatever mode the page is shown in. Only boards take it. A write refuses a collection the design system does not have and a mode the collection does not list. |
 | `scrollPosition` | Whether a layer inside a board scrolls with it, `"scrolls"`, stays `"fixed"` or is `"sticky"`; left out it is `scrolls`. Pages, boards and components refuse it, and so do the layers of a component. |
 
 ### Text (`<Text>`)

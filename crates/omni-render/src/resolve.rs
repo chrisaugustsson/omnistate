@@ -140,7 +140,7 @@ pub(crate) fn resolve(page: &Node, system: &DesignSystem, choice: &ModeChoice) -
     let source = serde_json::to_value(page).unwrap_or(Value::Null);
     let mut resolver = Resolver {
         system,
-        choice,
+        choice: choice.clone(),
         used: ids_of(page),
         next: 0,
         addresses: HashMap::new(),
@@ -193,6 +193,8 @@ struct Partial {
     done: Vec<Value>,
     /// How many levels below the page the container is.
     level: usize,
+    /// The modes the container's children are resolved in.
+    choice: ModeChoice,
 }
 
 /// Starts resolving `board`, a board of a page that `resolve` resolved before,
@@ -236,7 +238,7 @@ impl BoardResolving {
         let started = Instant::now();
         let mut resolver = Resolver {
             system,
-            choice,
+            choice: choice.clone(),
             used: std::mem::take(&mut self.used),
             next: self.next,
             addresses: std::mem::take(&mut self.addresses),
@@ -256,10 +258,13 @@ impl BoardResolving {
                 break;
             };
             match top.rest.next() {
-                Some(child) => match resolver.open(child, top.level + 1) {
-                    Opened::Whole(value) => top.done.push(value),
-                    Opened::Partial(partial) => self.open.push(partial),
-                },
+                Some(child) => {
+                    resolver.choice = top.choice.clone();
+                    match resolver.open(child, top.level + 1) {
+                        Opened::Whole(value) => top.done.push(value),
+                        Opened::Partial(partial) => self.open.push(partial),
+                    }
+                }
                 None => {
                     let Some(mut partial) = self.open.pop() else {
                         break;
@@ -327,7 +332,9 @@ fn keep_readable(source: &Value, mut resolved: Value) -> Option<Node> {
 
 struct Resolver<'a> {
     system: &'a DesignSystem,
-    choice: &'a ModeChoice,
+    /// The modes the node being resolved is in: the page's choice, overlaid
+    /// with the `modes` of each board that holds the node, the innermost last.
+    choice: ModeChoice,
     /// The IDs of the page, which no ID made up for a node inside an instance
     /// may repeat.
     used: HashSet<NodeId>,
@@ -365,7 +372,39 @@ impl Resolver<'_> {
     /// and `level` is how many levels below the page the node is (the page is
     /// level 0). Nodes below level `MAX_NESTING` are left out, and the node
     /// that held them is drawn as an error placeholder (`too_deep`).
-    fn node(&mut self, mut value: Value, inside: Option<&Inside>, level: usize) -> Value {
+    fn node(&mut self, value: Value, inside: Option<&Inside>, level: usize) -> Value {
+        let outer = self.choice.clone();
+        self.choice = self.overlaid(&value);
+        let resolved = self.node_in(value, inside, level);
+        self.choice = outer;
+        resolved
+    }
+
+    /// The modes that `value` is resolved in: those of the node that holds
+    /// it, with the explicit `modes` of a board on top. A mode that the design
+    /// system no longer has is left out, so that the board is still drawn.
+    fn overlaid(&self, value: &Value) -> ModeChoice {
+        let mut choice = self.choice.clone();
+        let named = value
+            .get("modes")
+            .and_then(Value::as_object)
+            .filter(|_| kind_of(value) == "board");
+        if let Some(named) = named {
+            let collections = self.system.collections();
+            for (name, mode) in named {
+                let Some(mode) = mode.as_str() else { continue };
+                if collections
+                    .iter()
+                    .any(|c| c.name == *name && c.modes.iter().any(|listed| listed == mode))
+                {
+                    choice.0.insert(name.clone(), mode.to_string());
+                }
+            }
+        }
+        choice
+    }
+
+    fn node_in(&mut self, mut value: Value, inside: Option<&Inside>, level: usize) -> Value {
         let Some(id) = value
             .get("id")
             .and_then(Value::as_str)
@@ -428,6 +467,7 @@ impl Resolver<'_> {
             return Opened::Whole(self.node(value, None, level));
         }
         let address = NodeAddress::new(None, id);
+        self.choice = self.overlaid(&value);
         let children = value
             .as_object_mut()
             .and_then(|node| node.remove("children"));
@@ -445,6 +485,7 @@ impl Resolver<'_> {
                 rest: children.into_iter(),
                 done: Vec::new(),
                 level,
+                choice: self.choice.clone(),
             })
         } else {
             self.too_deep(&mut value, address);
@@ -662,7 +703,7 @@ impl Resolver<'_> {
                 let Ok(reference) = text.parse::<TokenRef>() else {
                     return;
                 };
-                match self.system.token(&reference, self.choice) {
+                match self.system.token(&reference, &self.choice) {
                     Some(token) => {
                         let token = design_value(token, key);
                         let text = std::mem::replace(value, token.clone());

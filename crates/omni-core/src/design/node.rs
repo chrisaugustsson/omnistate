@@ -12,7 +12,7 @@ use serde::de::Error as _;
 use serde::ser::SerializeMap;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::ops::RangeInclusive;
 
 keywords! {
@@ -105,6 +105,15 @@ impl Node {
         &self.interactions
     }
 
+    /// The mode of each collection that a board is resolved in; `None` for a
+    /// node that is not a board, or a board that names none.
+    pub fn modes(&self) -> Option<&BTreeMap<String, String>> {
+        match &self.data {
+            NodeData::Board(frame) => frame.modes.as_ref(),
+            _ => None,
+        }
+    }
+
     /// Whether a layer inside a board scrolls with it, stays fixed or sticks.
     pub fn scroll_position(&self) -> ScrollPosition {
         self.scroll_position
@@ -185,6 +194,7 @@ fn same_frame(a: &Frame, b: &Frame) -> bool {
         && a.opacity == b.opacity
         && a.clip == b.clip
         && a.overflow == b.overflow
+        && a.modes == b.modes
 }
 
 /// A node's type, with the properties of that type.
@@ -251,6 +261,9 @@ pub struct Frame {
     pub clip: Option<bool>,
     /// How the box scrolls its content. A component's frame always has none.
     pub overflow: Overflow,
+    /// The mode of each collection that a board's subtree is resolved in,
+    /// whatever the page is shown in. Only a board has it.
+    pub modes: Option<BTreeMap<String, String>>,
     pub children: Vec<Node>,
 }
 
@@ -411,6 +424,7 @@ impl Serialize for Node {
                 if frame.overflow != Overflow::None {
                     map.serialize_entry("overflow", &frame.overflow)?;
                 }
+                entry(&mut map, "modes", frame.modes.as_ref())?;
                 map.serialize_entry("children", &frame.children)?;
             }
             NodeData::Text(text) => {
@@ -570,6 +584,8 @@ struct RawNode {
     #[serde(default, deserialize_with = "some")]
     overflow: Option<Overflow>,
     #[serde(default, deserialize_with = "some")]
+    modes: Option<BTreeMap<String, String>>,
+    #[serde(default, deserialize_with = "some")]
     scroll_position: Option<ScrollPosition>,
     #[serde(default, deserialize_with = "some")]
     content: Option<String>,
@@ -726,6 +742,10 @@ impl RawNode {
                 NodeKind::Component => Overflow::None,
                 _ => self.overflow.take().unwrap_or_default(),
             },
+            modes: match self.kind {
+                NodeKind::Board => self.modes.take(),
+                _ => None,
+            },
             children,
         })
     }
@@ -872,6 +892,7 @@ impl RawNode {
             ("opacity", self.opacity.is_some()),
             ("clip", self.clip.is_some()),
             ("overflow", self.overflow.is_some()),
+            ("modes", self.modes.is_some()),
             ("scrollPosition", self.scroll_position.is_some()),
             ("content", self.content.is_some()),
             ("fontFamily", self.font_family.is_some()),

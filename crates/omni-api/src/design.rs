@@ -351,6 +351,42 @@ pub(crate) fn check_interactions(nodes: &[Node], tokens: Option<&TokenTree>) -> 
     Ok(())
 }
 
+/// Checks that the `modes` of every board below `nodes` name collections of
+/// the design system and modes that they list. A design system without tokens
+/// has no collections.
+pub(crate) fn check_modes(nodes: &[Node], tokens: Option<&TokenTree>) -> Result<(), String> {
+    let collections: Vec<_> = tokens
+        .map(TokenTree::collections)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|collection| !collection.modes.is_empty())
+        .collect();
+    let mut pending: Vec<&Node> = nodes.iter().rev().collect();
+    while let Some(node) = pending.pop() {
+        for (name, mode) in node.modes().into_iter().flatten() {
+            let Some(collection) = collections.iter().find(|c| c.name == *name) else {
+                let names: Vec<&str> = collections.iter().map(|c| c.name.as_str()).collect();
+                return Err(if names.is_empty() {
+                    format!("`{name}` is not a collection of the design system")
+                } else {
+                    format!(
+                        "`{name}` is not a collection of the design system ({})",
+                        names.join(", ")
+                    )
+                });
+            };
+            if !collection.modes.contains(mode) {
+                return Err(format!(
+                    "`{mode}` is not a mode of `{name}` ({})",
+                    collection.modes.join(", ")
+                ));
+            }
+        }
+        pending.extend(node.children().iter().rev());
+    }
+    Ok(())
+}
+
 /// Checks the components of an import against each other: a slot default and
 /// a nested instance name a component of the import, a nested instance fits
 /// its component, and no component places itself, even through others.
@@ -939,7 +975,8 @@ pub(crate) async fn edit_head(
     };
     let check = |nodes: &[Node]| {
         check_instances(nodes, &system.library)?;
-        check_interactions(nodes, system.tokens.as_ref())
+        check_interactions(nodes, system.tokens.as_ref())?;
+        check_modes(nodes, system.tokens.as_ref())
     };
     let variants = |component: NodeId| system.library.variants_of(&component);
     let applied = match doc.apply(&ops, scope, &mut new_ids, &check, &variants) {

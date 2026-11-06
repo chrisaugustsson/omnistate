@@ -915,7 +915,8 @@ impl Scene {
     /// Resolves token references in the modes that `text` chooses from now
     /// on: a bare mode name, or a JSON object of collection to mode (see
     /// `DesignSystem::choose`). Fails, and keeps the current modes, if the
-    /// design system has no such mode or collection.
+    /// design system has no such mode or collection. A board that names a
+    /// mode for a collection (`modes`) keeps it; the choice changes the rest.
     pub fn set_mode(&mut self, text: &str) -> Result<(), String> {
         while self.work() {}
         let (Some(resolving), Some(source)) = (&mut self.system, &self.source) else {
