@@ -687,6 +687,36 @@ fn a_layer_lists_its_interactions_with_their_targets_and_a_frame_its_scrolling()
     assert_eq!(checkout.scroll_position, None, "a board takes no position");
 }
 
+#[test]
+fn an_instance_lists_only_its_own_interactions_not_its_components() {
+    let mut components = components();
+    components[1] = with(
+        &components[1],
+        "interactions",
+        json!([{"actions": [{"type": "navigate", "dest": CHECKOUT}]}]),
+    );
+    let system = DesignSystem::from_json(&with(&tokens(), "$components", components))
+        .unwrap_or_else(|error| panic!("the design system fixture must be read, but: {error}"));
+    let scene = Scene::with_system(node(&page_json()), Assets::new(), system);
+
+    let buy = inspect(&scene, BUY);
+    assert_eq!(buy.interactions, Vec::<Value>::new());
+}
+
+#[test]
+fn only_boards_and_frames_have_scrolling_and_a_frame_scrolls_by_default() {
+    let scene = scene();
+
+    let summary = inspect(&scene, SUMMARY);
+    assert_eq!(summary.overflow.as_deref(), Some("none"));
+    assert_eq!(summary.scroll_position.as_deref(), Some("scrolls"));
+
+    let total = inspect(&scene, TOTAL);
+    assert_eq!((total.overflow, total.scroll_position), (None, None));
+    let buy = inspect(&scene, BUY);
+    assert_eq!((buy.overflow, buy.scroll_position), (None, None));
+}
+
 // ---------------------------------------------------------------------------
 // The WebAssembly export
 // ---------------------------------------------------------------------------

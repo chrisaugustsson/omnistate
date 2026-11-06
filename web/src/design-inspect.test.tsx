@@ -830,6 +830,60 @@ describe("the interactions of the inspect panel", () => {
     expect(dangling[0].textContent).toContain("After 2 s");
   });
 
+  /** Selects Summary, which the renderer inspects with `fields` added. */
+  async function selectSummaryWith(fields: Record<string, unknown>) {
+    seedInspections();
+    const own = fake.inspections.get(`light ${SUMMARY}`) as Record<string, unknown>;
+    fake.inspections.set(`light ${SUMMARY}`, { ...own, ...fields });
+    renderAt(DOC_PATH);
+    fireEvent.click(await findTreeItem("Summary"));
+    return inspectPanel();
+  }
+
+  test("an instant transition shows no duration or easing, and a delay comes before the flags", async () => {
+    const panel = await selectSummaryWith({
+      interactions: [
+        interaction({
+          actions: [action({ type: "openUrl", url: "https://example.com" })],
+          transition: { type: "instant" },
+          delayMs: 200,
+        }),
+      ],
+    });
+
+    await waitFor(() => expect(within(panel).getByText("Instant · delay 200 ms · new tab")).toBeTruthy());
+  });
+
+  test("each action of an interaction has its own line, in list order", async () => {
+    const panel = await selectSummaryWith({
+      interactions: [
+        interaction({
+          actions: [
+            action({
+              type: "setVariable",
+              variable: "state.count",
+              expr: { op: "add", args: [{ variable: "count" }, { value: 1 }] },
+            }),
+            action({ type: "openUrl", url: "https://example.com/checkout/receipt?order=12345", newTab: false }),
+          ],
+        }),
+      ],
+    });
+
+    await waitFor(() => expect(within(panel).getByText("Interactions (1)")).toBeTruthy());
+    expect(within(panel).getAllByText(/^(Set|Open) /).map((line) => line.textContent)).toEqual([
+      "Set state.count to count + 1",
+      "Open https://example.com/checkout/receipt?ord…",
+    ]);
+    expect(within(panel).getByText("Instant")).toBeTruthy();
+  });
+
+  test("a board's scrolling row shows its overflow and no position", async () => {
+    const panel = await selectSummaryWith({ overflow: "vertical", scrollPosition: null });
+
+    await waitFor(() => expect(within(panel).getByText("overflow vertical")).toBeTruthy());
+  });
+
   test("shows no interactions section for a layer without interactions", async () => {
     renderAt(DOC_PATH);
     fireEvent.click(await findTreeItem("Summary"));
