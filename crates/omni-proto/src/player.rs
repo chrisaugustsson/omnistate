@@ -521,7 +521,15 @@ impl Player {
         for hover in left {
             let before = self.board_visit;
             changed |= self.revert(hover.reverts, at);
-            changed |= self.fire(&hover.leave, hover.holder, hover.rect, true, at, effects);
+            changed |= self.fire_on(
+                hover.board_visit,
+                &hover.leave,
+                hover.holder,
+                hover.rect,
+                true,
+                at,
+                effects,
+            );
             if self.board_visit != before {
                 gone.push(before);
             }
@@ -587,7 +595,15 @@ impl Player {
             for hover in stale {
                 let before = self.board_visit;
                 changed |= self.revert(hover.reverts, at);
-                changed |= self.fire(&hover.leave, hover.holder, hover.rect, true, at, effects);
+                changed |= self.fire_on(
+                    hover.board_visit,
+                    &hover.leave,
+                    hover.holder,
+                    hover.rect,
+                    true,
+                    at,
+                    effects,
+                );
                 if self.board_visit != before {
                     gone.push(before);
                 }
@@ -766,6 +782,21 @@ impl Player {
         effects: &mut Vec<Effect>,
     ) -> bool {
         let visit = self.source_visit();
+        self.fire_on(visit, interactions, holder, rect, delayable, at, effects)
+    }
+
+    /// `fire` for waits that belong to the showing `visit`.
+    #[allow(clippy::too_many_arguments)]
+    fn fire_on(
+        &mut self,
+        visit: u64,
+        interactions: &[Interaction],
+        holder: Option<NodeId>,
+        rect: Rect,
+        delayable: bool,
+        at: f64,
+        effects: &mut Vec<Effect>,
+    ) -> bool {
         let mut changed = false;
         for interaction in interactions {
             if delayable && interaction.delay_ms > 0 {
