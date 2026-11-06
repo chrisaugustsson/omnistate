@@ -26,6 +26,7 @@ use crate::resolve::{self, Details, Facts, ids_of};
 use crate::select::{Event, Index, Layer, Modifiers, NodeAddress, Outline, OutlineKind};
 use crate::system::{DesignSystem, RenderError};
 use crate::text::{StandIn, stand_ins};
+use omni_core::design::proto::Interaction;
 use omni_core::design::{Node, NodeData, NodeId};
 use serde_json::Value;
 use skia_safe::{
@@ -537,6 +538,84 @@ fn board_nodes(page: &Node) -> &[Node] {
         NodeData::Page(page) => &page.children,
         _ => std::slice::from_ref(page),
     }
+}
+
+/// The `overflow` and `scrollPosition` the inspect panel shows for `node`:
+/// both for a frame, only the overflow for a board, with the defaults where
+/// the node leaves them out, and neither for any other node.
+fn scrolling(node: &Node) -> (Option<String>, Option<String>) {
+    match node.data() {
+        NodeData::Board(frame) => (Some(frame.overflow.as_str().to_string()), None),
+        NodeData::Frame(frame) => (
+            Some(frame.overflow.as_str().to_string()),
+            Some(node.scroll_position().as_str().to_string()),
+        ),
+        _ => (None, None),
+    }
+}
+
+/// An interaction as the inspect panel shows it: its JSON form with the
+/// defaults filled in and each action's target named by `target` (name and
+/// kind of the node a `dest` is). `dangling` is set when an action points at
+/// a node that `target` does not find.
+fn interaction_json(
+    interaction: &Interaction,
+    target: &dyn Fn(&str) -> Option<(String, String)>,
+) -> Value {
+    let mut json = serde_json::to_value(interaction).unwrap_or(Value::Null);
+    let mut dangling = false;
+    if let Some(map) = json.as_object_mut() {
+        let trigger = map
+            .entry("trigger")
+            .or_insert_with(|| serde_json::json!({"type": "onClick"}));
+        if let Some(bare) = trigger.as_str() {
+            *trigger = serde_json::json!({"type": bare});
+        }
+        let transition = map
+            .entry("transition")
+            .or_insert_with(|| serde_json::json!({"type": "instant"}));
+        if let Some(bare) = transition.as_str() {
+            *transition = serde_json::json!({"type": bare});
+        }
+        map.entry("durationMs").or_insert(Value::from(300));
+        map.entry("easing").or_insert(Value::from("easeOut"));
+        map.entry("delayMs").or_insert(Value::from(0));
+        if let Some(Value::Array(actions)) = map.get_mut("actions") {
+            for action in actions {
+                dangling |= name_targets(action, target);
+            }
+        }
+        map.insert("dangling".to_string(), Value::Bool(dangling));
+    }
+    json
+}
+
+/// Adds `destName` and `destKind` to `action` and to the actions of its
+/// conditional branches, and says whether a target is missing.
+fn name_targets(action: &mut Value, target: &dyn Fn(&str) -> Option<(String, String)>) -> bool {
+    let mut dangling = false;
+    let Some(map) = action.as_object_mut() else {
+        return false;
+    };
+    if let Some(dest) = map.get("dest").and_then(Value::as_str) {
+        match target(dest) {
+            Some((name, kind)) => {
+                map.insert("destName".to_string(), Value::from(name));
+                map.insert("destKind".to_string(), Value::from(kind));
+            }
+            None => dangling = true,
+        }
+    }
+    if let Some(Value::Array(blocks)) = map.get_mut("blocks") {
+        for block in blocks {
+            if let Some(Value::Array(actions)) = block.get_mut("actions") {
+                for inner in actions {
+                    dangling |= name_targets(inner, target);
+                }
+            }
+        }
+    }
+    dangling
 }
 
 /// The node `id` in `root` or below it.
@@ -1334,16 +1413,42 @@ impl Scene {
         let node = board_nodes(&self.page)
             .iter()
             .find_map(|board| find_node(board, &id))?;
-        Some(self.details.inspect(
-            node,
-            Facts {
-                address: address.clone(),
-                name: self.index.name(at).to_string(),
-                kind: self.index.kind(at).to_string(),
-                mode: self.system.as_ref().map(|resolving| resolving.mode.clone()),
-                bounds: self.index.rect(at),
-            },
-        ))
+        let page = self.source.as_ref().unwrap_or(&self.page);
+        let own = board_nodes(page)
+            .iter()
+            .find_map(|board| find_node(board, &id))
+            .unwrap_or(node);
+        let target = |dest: &str| -> Option<(String, String)> {
+            let found = dest.parse::<NodeId>().ok()?;
+            if let Some(node) = board_nodes(page)
+                .iter()
+                .find_map(|board| find_node(board, &found))
+            {
+                return Some((node.name().to_string(), node.kind().as_str().to_string()));
+            }
+            let component = self.system.as_ref()?.system.component(&found)?;
+            Some((component.name.clone(), "component".to_string()))
+        };
+        let (overflow, scroll_position) = scrolling(own);
+        Some(
+            self.details.inspect(
+                node,
+                Facts {
+                    interactions: own
+                        .interactions()
+                        .iter()
+                        .map(|interaction| interaction_json(interaction, &target))
+                        .collect(),
+                    overflow,
+                    scroll_position,
+                    address: address.clone(),
+                    name: self.index.name(at).to_string(),
+                    kind: self.index.kind(at).to_string(),
+                    mode: self.system.as_ref().map(|resolving| resolving.mode.clone()),
+                    bounds: self.index.rect(at),
+                },
+            ),
+        )
     }
 
     /// The pointer moved to the screen point `screen` of `viewport`.

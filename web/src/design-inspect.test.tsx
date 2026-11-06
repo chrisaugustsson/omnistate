@@ -742,6 +742,103 @@ describe("the inspect panel", () => {
   });
 });
 
+describe("the interactions of the inspect panel", () => {
+  const action = (fields: Record<string, unknown>) => fields;
+  const interaction = (fields: Record<string, unknown>) => ({
+    trigger: { type: "onClick" },
+    transition: { type: "instant" },
+    durationMs: 300,
+    easing: "easeOut",
+    delayMs: 0,
+    dangling: false,
+    ...fields,
+  });
+
+  test("lists a layer's interactions and scrolling, with a gone target in the warning style", async () => {
+    seedInspections();
+    const own = fake.inspections.get(`light ${SUMMARY}`) as Record<string, unknown>;
+    fake.inspections.set(`light ${SUMMARY}`, {
+      ...own,
+      overflow: "none",
+      scrollPosition: "scrolls",
+      interactions: [
+        interaction({
+          actions: [action({ type: "navigate", dest: "b0000002", destName: "Confirmation", destKind: "board", preserveScroll: true })],
+          transition: { type: "slideIn", direction: "right" },
+        }),
+        interaction({
+          trigger: { type: "onHover" },
+          actions: [action({ type: "changeTo", dest: "c0000001", destName: "Button / Hover", destKind: "component" })],
+          transition: { type: "smartAnimate" },
+          durationMs: 150,
+          easing: "easeInOut",
+        }),
+        interaction({
+          trigger: { type: "keyPress", key: "K" },
+          actions: [
+            action({
+              type: "conditional",
+              blocks: [
+                {
+                  condition: { op: "greater", args: [{ variable: "state.count" }, { value: 0 }] },
+                  actions: [
+                    action({
+                      type: "setVariable",
+                      variable: "state.count",
+                      expr: { op: "subtract", args: [{ variable: "state.count" }, { value: 1 }] },
+                    }),
+                  ],
+                },
+                { actions: [action({ type: "openOverlay", dest: "b0000003", destName: "Empty cart", destKind: "board" })] },
+              ],
+            }),
+          ],
+        }),
+        interaction({
+          trigger: { type: "afterDelay", ms: 2000 },
+          actions: [action({ type: "navigate", dest: "h2q9d7ma" })],
+          dangling: true,
+        }),
+      ],
+    });
+    renderAt(DOC_PATH);
+    fireEvent.click(await findTreeItem("Summary"));
+
+    const panel = inspectPanel();
+    await waitFor(() => expect(within(panel).getByText("Interactions (4)")).toBeTruthy());
+    for (const text of [
+      "On click",
+      "Navigate to Confirmation",
+      "Slide in from right · 300 ms · ease out · keep scroll",
+      "While hovering",
+      "Change to Button / Hover",
+      "Smart animate · 150 ms · ease in out",
+      "Key K",
+      "Conditional · 2 branches",
+      "if state.count > 0: set state.count to state.count - 1",
+      "else: open overlay Empty cart (center)",
+      "After 2 s",
+      "Navigate to a deleted board",
+      "Target h2q9d7ma is gone. The player ignores this interaction.",
+      "Read-only. Agents write interactions with omni design edit.",
+      "overflow none · position scrolls",
+    ]) {
+      expect(within(panel).getByText(text), text).toBeTruthy();
+    }
+    const dangling = panel.querySelectorAll("[data-dangling]");
+    expect(dangling.length, "only the interaction with a gone target is drawn as a warning").toBe(1);
+    expect(dangling[0].textContent).toContain("After 2 s");
+  });
+
+  test("shows no interactions section for a layer without interactions", async () => {
+    renderAt(DOC_PATH);
+    fireEvent.click(await findTreeItem("Summary"));
+    await expectRow("Size", "width", ["hug"]);
+    expect(within(inspectPanel()).queryByText(/^Interactions/)).toBeNull();
+    expect(within(inspectPanel()).queryByText(/Read-only/)).toBeNull();
+  });
+});
+
 describe("an instance in the inspect panel", () => {
   test("shows its component, its property values and its overrides", async () => {
     renderAt(DOC_PATH);

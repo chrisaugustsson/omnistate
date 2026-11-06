@@ -36,6 +36,9 @@ pub(crate) struct Facts {
     pub(crate) kind: String,
     pub(crate) mode: Option<String>,
     pub(crate) bounds: LayoutBox,
+    pub(crate) interactions: Vec<Value>,
+    pub(crate) overflow: Option<String>,
+    pub(crate) scroll_position: Option<String>,
 }
 
 impl Details {
@@ -68,6 +71,9 @@ impl Details {
             kind: facts.kind,
             mode: facts.mode,
             bounds: facts.bounds,
+            interactions: facts.interactions,
+            overflow: facts.overflow,
+            scroll_position: facts.scroll_position,
         }
     }
 

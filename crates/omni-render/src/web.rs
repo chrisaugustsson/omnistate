@@ -696,6 +696,9 @@ fn inspection_json(inspection: &Inspection) -> Value {
         "style": group(&inspection.style),
         "text": group(&inspection.text),
         "instance": instance,
+        "interactions": inspection.interactions,
+        "overflow": inspection.overflow,
+        "scrollPosition": inspection.scroll_position,
     })
 }
 

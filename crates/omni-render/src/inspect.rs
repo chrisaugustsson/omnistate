@@ -75,6 +75,15 @@ pub struct Inspection {
     pub text: Vec<Property>,
     /// For an instance: its component, property values and overrides.
     pub instance: Option<InstanceInspection>,
+    /// The node's own interactions, as `Scene::inspect` reads them: the
+    /// trigger, actions, transition, duration, easing and delay with their
+    /// defaults filled in, each action with the name and kind of the node it
+    /// points at, and `dangling` set when a target is not in the doc.
+    pub interactions: Vec<Value>,
+    /// For a board or frame: how it scrolls its content, `none` when left out.
+    pub overflow: Option<String>,
+    /// For a frame: `scrolls`, `fixed` or `sticky`, `scrolls` when left out.
+    pub scroll_position: Option<String>,
 }
 
 /// One property of a node, as the scene draws it.

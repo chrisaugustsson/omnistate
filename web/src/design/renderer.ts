@@ -21,6 +21,37 @@ export type Layer = { address: string; name: string; type: string; children: Lay
 export type TokenUse = { token: string; value: unknown };
 export type Property = { name: string; value: unknown; tokens: TokenUse[] };
 
+/** An action of an interaction; `destName` and `destKind` are left out when the target is not in the doc. */
+export type InteractionAction = {
+  type: string;
+  dest?: string;
+  destName?: string;
+  destKind?: string;
+  url?: string;
+  newTab?: boolean;
+  preserveScroll?: boolean;
+  position?: string;
+  offset?: [number, number];
+  variable?: string;
+  value?: unknown;
+  expr?: unknown;
+  collection?: string;
+  mode?: string;
+  blocks?: { condition?: unknown; actions: InteractionAction[] }[];
+};
+
+/** An interaction of a layer, with its defaults filled in (omni-render's `inspect.rs`). */
+export type Interaction = {
+  trigger: { type: string; ms?: number; key?: string };
+  actions: InteractionAction[];
+  transition: { type: string; direction?: string };
+  durationMs: number;
+  easing: string | { type: string; [key: string]: unknown };
+  delayMs: number;
+  /** Whether an action points at a node that is not in the doc. */
+  dangling: boolean;
+};
+
 /** A node as the inspect panel shows it (omni-render's `_omni_render_inspect`). */
 export type Inspection = {
   address: string;
@@ -34,6 +65,12 @@ export type Inspection = {
   size: Property[];
   style: Property[];
   text: Property[];
+  /** The layer's own interactions. */
+  interactions?: Interaction[];
+  /** For a board or frame: how it scrolls its content. */
+  overflow?: string | null;
+  /** For a frame: `scrolls`, `fixed` or `sticky`. */
+  scrollPosition?: string | null;
   /** For an instance: its component, property values and overrides. */
   instance: null | {
     component: string;

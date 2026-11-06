@@ -563,6 +563,131 @@ fn after_a_mode_switch_the_properties_have_that_modes_values() {
 }
 
 // ---------------------------------------------------------------------------
+// Interactions and scrolling (US-41)
+// ---------------------------------------------------------------------------
+//
+// `Inspection::interactions` lists the node's own interactions, each with the
+// trigger, transition, duration, easing and delay filled in, each action with
+// `destName` and `destKind` of the node it points at (a board or layer of the
+// page, or a component of the design system), and `dangling` set when an
+// action, a branch's included, points at a node that is not in the doc.
+// `overflow` is set for a board or frame and `scrollPosition` for a frame.
+
+#[test]
+fn a_layer_lists_its_interactions_with_their_targets_and_a_frame_its_scrolling() {
+    let hotspot = "h0000001";
+    let confirmation = "b0000002";
+    let gone = "d0000001";
+    let interactions = json!([
+        {
+            "actions": [{"type": "navigate", "dest": confirmation, "preserveScroll": true}],
+            "transition": {"type": "slideIn", "direction": "right"}
+        },
+        {
+            "trigger": "onHover",
+            "actions": [{"type": "changeTo", "dest": BUTTON}],
+            "transition": {"type": "smartAnimate"},
+            "durationMs": 150,
+            "easing": "easeInOut"
+        },
+        {
+            "trigger": {"type": "afterDelay", "ms": 2000},
+            "actions": [{"type": "conditional", "blocks": [
+                {"actions": [{"type": "openOverlay", "dest": gone}]}
+            ]}]
+        }
+    ]);
+    let pay_frame = json!({
+        "id": hotspot,
+        "type": "frame",
+        "name": "Pay",
+        "x": 0,
+        "y": 0,
+        "width": fixed(100.0),
+        "height": fixed(40.0),
+        "layout": {"mode": "none"},
+        "scrollPosition": "fixed",
+        "interactions": interactions
+    });
+    let checkout_board = json!({
+        "id": CHECKOUT,
+        "type": "board",
+        "name": "Checkout",
+        "x": 0,
+        "y": 0,
+        "width": fixed(400.0),
+        "height": fixed(300.0),
+        "layout": {"mode": "none"},
+        "overflow": "vertical",
+        "children": [pay_frame]
+    });
+    let confirmation_board = json!({
+        "id": confirmation,
+        "type": "board",
+        "name": "Confirmation",
+        "x": 500,
+        "y": 0,
+        "width": fixed(400.0),
+        "height": fixed(300.0),
+        "layout": {"mode": "none"}
+    });
+    let page = json!({
+        "id": "p0000001",
+        "type": "page",
+        "name": "Mobile",
+        "children": [checkout_board, confirmation_board]
+    });
+    let scene = Scene::with_system(node(&page), Assets::new(), system());
+
+    let pay = inspect(&scene, hotspot);
+    assert_eq!(pay.interactions.len(), 3);
+    assert_eq!(
+        pay.interactions[0],
+        json!({
+            "trigger": {"type": "onClick"},
+            "actions": [{
+                "type": "navigate",
+                "dest": confirmation,
+                "preserveScroll": true,
+                "destName": "Confirmation",
+                "destKind": "board"
+            }],
+            "transition": {"type": "slideIn", "direction": "right"},
+            "durationMs": 300,
+            "easing": "easeOut",
+            "delayMs": 0,
+            "dangling": false
+        })
+    );
+    assert_eq!(pay.interactions[1]["trigger"], json!({"type": "onHover"}));
+    assert_eq!(pay.interactions[1]["durationMs"], json!(150));
+    assert_eq!(pay.interactions[1]["easing"], json!("easeInOut"));
+    assert_eq!(
+        pay.interactions[1]["actions"][0]["destName"],
+        json!("Button"),
+        "a component of the design system is named too"
+    );
+    assert_eq!(
+        pay.interactions[1]["actions"][0]["destKind"],
+        json!("component")
+    );
+    assert_eq!(pay.interactions[1]["dangling"], json!(false));
+    assert_eq!(pay.interactions[2]["dangling"], json!(true));
+    assert_eq!(
+        pay.interactions[2]["actions"][0]["blocks"][0]["actions"][0].get("destName"),
+        None,
+        "a target that is gone has no name"
+    );
+    assert_eq!(pay.overflow.as_deref(), Some("none"));
+    assert_eq!(pay.scroll_position.as_deref(), Some("fixed"));
+
+    let checkout = inspect(&scene, CHECKOUT);
+    assert!(checkout.interactions.is_empty());
+    assert_eq!(checkout.overflow.as_deref(), Some("vertical"));
+    assert_eq!(checkout.scroll_position, None, "a board takes no position");
+}
+
+// ---------------------------------------------------------------------------
 // The WebAssembly export
 // ---------------------------------------------------------------------------
 

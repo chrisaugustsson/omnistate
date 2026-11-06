@@ -33,7 +33,7 @@ import {
 } from "@/components/viewer/chrome";
 import { CommentsPanel } from "@/components/viewer/comments";
 import { DesignSystemViewer } from "@/components/viewer/design-system";
-import { LayerIcon, MonoValue, PropertyTable, TokenChip } from "@/components/viewer/design";
+import { InteractionsSection, LayerIcon, MonoValue, PropertyTable, ScrollingRow, TokenChip } from "@/components/viewer/design";
 import { cn } from "@/lib/utils";
 import { useReloading, type Reloading } from "@/lib/reloading";
 import { useVisit } from "@/lib/visits";
@@ -379,6 +379,10 @@ function InspectPanel({ inspection }: { inspection: Inspection | null }) {
           )}
           {group("Style", inspection.style)}
           {group("Text", inspection.text)}
+          {inspection.overflow && <ScrollingRow overflow={inspection.overflow} position={inspection.scrollPosition} />}
+          {inspection.interactions && inspection.interactions.length > 0 && (
+            <InteractionsSection interactions={inspection.interactions} />
+          )}
           {instance && (
             <PropertyTable
               label="Component"
