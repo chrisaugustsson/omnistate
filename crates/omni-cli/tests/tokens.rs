@@ -354,3 +354,251 @@ fn tokens_export_of_a_design_system_without_tokens_is_a_one_line_error() {
     let home = logged_in(&server.url);
     assert_one_line_error(&run(&home, &["tokens", "export"]), &["no tokens"]);
 }
+
+// ---------------------------------------------------------------------------
+// omni tokens set and remove
+// ---------------------------------------------------------------------------
+
+/// An API whose head holds `tree` (none: no tokens) and that answers a PUT
+/// with `put_status`.
+fn mock_tree(tree: Option<Value>, put_status: u16) -> MockServer {
+    MockServer::start(move |request| {
+        let Some(path) = request.path.strip_prefix(&base()) else {
+            return Reply::json(404, &json!({ "error": "not_found" }));
+        };
+        match (request.method.as_str(), path) {
+            ("GET", "/tokens") => Reply::json(
+                200,
+                &json!({ "project_id": PROJECT, "doc_id": DOC, "modes": ["light", "dark"], "tokens": tree }),
+            ),
+            ("PUT", "/tokens") if put_status == 200 => Reply::json(
+                200,
+                &json!({ "project_id": PROJECT, "doc_id": DOC, "modes": ["light", "dark"] }),
+            ),
+            ("PUT", "/tokens") => Reply::json(
+                put_status,
+                &json!({ "error": "invalid_tokens", "message": "state.count is refused by the server" }),
+            ),
+            _ => Reply::json(404, &json!({ "error": "not_found" })),
+        }
+    })
+}
+
+fn tree_with_alias() -> Value {
+    let mut tree = tree();
+    tree["state"]["total"] = json!({"$type": "number", "$value": "{state.count}"});
+    tree
+}
+
+/// The tree of the one PUT the server got.
+fn put_tree(server: &MockServer) -> Value {
+    let puts = requests_to(server, "PUT", &format!("{}/tokens", base()));
+    assert_eq!(puts.len(), 1, "{:?}", server.requests());
+    assert_agent_request(&puts[0]);
+    let body: Value = serde_json::from_slice(&puts[0].body).expect("a JSON body");
+    body["tokens"].clone()
+}
+
+#[test]
+fn tokens_set_changes_one_value_and_puts_the_whole_tree() {
+    let server = mock_tree(Some(tree()), 200);
+    let home = logged_in(&server.url);
+    let out = run(&home, &["tokens", "set", "state.count", "3"]);
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    assert_eq!(out.stdout.trim(), "state.count = 3");
+    let mut expected = tree();
+    expected["state"]["count"]["$value"] = json!(3);
+    assert_eq!(put_tree(&server), expected);
+}
+
+#[test]
+fn tokens_set_takes_json_when_it_parses_and_text_otherwise() {
+    for (given, ty, written, shown) in [
+        ("true", "boolean", json!(true), "true"),
+        ("\"Pay now\"", "string", json!("Pay now"), "\"Pay now\""),
+        ("Pay now", "string", json!("Pay now"), "\"Pay now\""),
+    ] {
+        let server = mock_tree(Some(tree()), 200);
+        let home = logged_in(&server.url);
+        let out = run(
+            &home,
+            &["tokens", "set", "state.label", given, "--type", ty],
+        );
+        assert_eq!(out.code, 0, "{given}: {}", out.stderr);
+        assert_eq!(out.stdout.trim(), format!("state.label = {shown}"));
+        assert_eq!(
+            put_tree(&server)["state"]["label"],
+            json!({"$type": ty, "$value": written})
+        );
+    }
+}
+
+#[test]
+fn tokens_set_with_a_mode_writes_that_mode_and_fills_the_others() {
+    let server = mock_tree(Some(tree()), 200);
+    let home = logged_in(&server.url);
+    let out = run(
+        &home,
+        &["tokens", "set", "color.ink", "#111111", "--mode", "dark"],
+    );
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    assert_eq!(out.stdout.trim(), "color.ink (dark) = \"#111111\"");
+    let ink = put_tree(&server)["color"]["ink"].clone();
+    assert_eq!(ink["$value"], json!("#0f172a"));
+    assert_eq!(
+        ink["$extensions"]["omnistate"]["modes"],
+        json!({"light": "#0f172a", "dark": "#111111"})
+    );
+
+    let server = mock_tree(Some(tree()), 200);
+    let home = logged_in(&server.url);
+    let out = run(
+        &home,
+        &[
+            "tokens",
+            "set",
+            "color.surface",
+            "#222222",
+            "--mode",
+            "dark",
+        ],
+    );
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    assert_eq!(
+        put_tree(&server)["color"]["surface"]["$extensions"]["omnistate"]["modes"],
+        json!({"light": "#ffffff", "dark": "#222222"})
+    );
+}
+
+#[test]
+fn tokens_set_refuses_before_sending_anything() {
+    let server = mock_tree(Some(tree()), 200);
+    let home = logged_in(&server.url);
+    for (args, needle) in [
+        (
+            vec!["tokens", "set", "state.count", "3", "--mode", "dark"],
+            "`dark` is not a mode of `state`",
+        ),
+        (
+            vec!["tokens", "set", "state.nope", "3"],
+            "`state.nope` is not a token; pass --type to create it",
+        ),
+        (
+            vec!["tokens", "set", "state.nope", "abc", "--type", "number"],
+            "state.nope",
+        ),
+        (
+            vec!["tokens", "set", "state.count", "3", "--type", "string"],
+            "`state.count` is a number token",
+        ),
+        (
+            vec!["tokens", "set", "state", "3", "--type", "number"],
+            "collection",
+        ),
+        (
+            vec!["tokens", "set", "state.count.x", "3", "--type", "number"],
+            "is a token",
+        ),
+        (
+            vec!["tokens", "set", "state.a..b", "3", "--type", "number"],
+            "not a token path",
+        ),
+        (
+            vec!["tokens", "set", "state.x", "3", "--type", "pixels"],
+            "not a type",
+        ),
+    ] {
+        let out = run(&home, &args);
+        assert_eq!(out.code, 2, "{args:?}: {}", out.stderr);
+        assert_one_line_error(&out, &[needle]);
+    }
+    assert!(
+        requests_to(&server, "PUT", &format!("{}/tokens", base())).is_empty(),
+        "{:?}",
+        server.requests()
+    );
+}
+
+#[test]
+fn tokens_set_with_a_type_creates_the_groups_and_the_token() {
+    let server = mock_tree(Some(tree()), 200);
+    let home = logged_in(&server.url);
+    let out = run(
+        &home,
+        &["tokens", "set", "state.cart.items", "0", "--type", "number"],
+    );
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    assert_eq!(out.stdout.trim(), "state.cart.items = 0");
+    assert_eq!(
+        put_tree(&server)["state"]["cart"],
+        json!({"items": {"$type": "number", "$value": 0}})
+    );
+}
+
+#[test]
+fn tokens_set_with_a_type_starts_a_design_system_without_tokens() {
+    let server = mock_tree(None, 200);
+    let home = logged_in(&server.url);
+    let out = run(
+        &home,
+        &["tokens", "set", "state.count", "3", "--type", "number"],
+    );
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    assert_eq!(
+        put_tree(&server),
+        json!({
+            "$extensions": {"omnistate": {"modes": ["light", "dark"]}},
+            "state": {"count": {"$type": "number", "$value": 3}}
+        })
+    );
+}
+
+#[test]
+fn tokens_set_prints_the_servers_detail_when_the_put_is_refused() {
+    let server = mock_tree(Some(tree()), 422);
+    let home = logged_in(&server.url);
+    let out = run(&home, &["tokens", "set", "state.count", "3"]);
+    assert_one_line_error(&out, &["state.count is refused by the server"]);
+    assert_eq!(out.code, 1);
+}
+
+#[test]
+fn tokens_remove_deletes_a_token_and_the_groups_it_empties() {
+    let server = mock_tree(Some(tree()), 200);
+    let home = logged_in(&server.url);
+    let out = run(&home, &["tokens", "remove", "state.count"]);
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    assert_eq!(out.stdout.trim(), "removed state.count");
+    let mut expected = tree();
+    expected.as_object_mut().unwrap().remove("state");
+    assert_eq!(put_tree(&server), expected);
+
+    let server = mock_tree(Some(tree()), 200);
+    let home = logged_in(&server.url);
+    let out = run(&home, &["tokens", "remove", "color.ink"]);
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    assert!(put_tree(&server)["color"].get("ink").is_none());
+}
+
+#[test]
+fn tokens_remove_refuses_a_missing_token_a_group_and_a_token_that_is_aliased() {
+    let server = mock_tree(Some(tree_with_alias()), 200);
+    let home = logged_in(&server.url);
+    for (path, needle) in [
+        (
+            "state.count",
+            "`state.total` refers to `state.count`: change it first",
+        ),
+        ("state.nope", "`state.nope` is not a token"),
+        ("state", "`state` is not a token"),
+    ] {
+        let out = run(&home, &["tokens", "remove", path]);
+        assert_eq!(out.code, 2, "{path}: {}", out.stderr);
+        assert_one_line_error(&out, &[needle]);
+    }
+    assert!(
+        requests_to(&server, "PUT", &format!("{}/tokens", base())).is_empty(),
+        "{:?}",
+        server.requests()
+    );
+}

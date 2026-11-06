@@ -96,6 +96,13 @@ Usage:
                                       DTCG JSON
   omni tokens export --per-mode --out <dir>
                                       write one file per mode, <dir>/<mode>.tokens.json
+  omni tokens set <path> <value> [--mode <m>] [--type <t>]
+                                      change one token: the value is JSON when it parses (3,
+                                      true, \"Pay now\", {...}) and text otherwise; a negative
+                                      number goes after --. --mode writes that mode's value;
+                                      --type creates a token that does not exist, with its groups
+  omni tokens remove <path>           remove one token (and the groups it leaves empty); refused
+                                      while another token refers to it
   omni export --project <name|id> [--feature <name|id>] --out <dir>
                                       write the scope's plan to a folder: manifest.json, the
                                       HTML docs by pillar, each design board in the tag format
@@ -226,6 +233,9 @@ Options (before or after the command):
   --out <path>          where `omni tokens export` writes: a file, or with --per-mode a directory;
                         the folder `omni export` writes to
   --per-mode            `omni tokens export`: tokens.json and one file per collection and mode
+  --mode <mode>         `omni tokens set`: write the value of this mode of the token's collection
+  --type <type>         `omni tokens set`: create the token with this type: color, dimension,
+                        number, string or boolean
   --thread <id>         the thread that `omni wait` waits on
   --posts <n>           `omni wait --thread`: wait for this many posts that you may read
   --concluded           `omni wait --thread`: wait for the thread's conclusion
@@ -251,7 +261,8 @@ Files:
 Exit codes:
   0  success
   1  the command failed: usage, login, network or API error (the message says which)
-  2  `omni wait` timed out before its condition was met
+  2  `omni wait` timed out before its condition was met; `omni tokens set` or `remove` refused
+     the change before sending it
   3  `omni story` write refused as a conflict: the story changed, read it again
 ";
 

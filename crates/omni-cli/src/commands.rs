@@ -99,8 +99,10 @@ pub fn run(args: &Args) -> Result<()> {
         ["tokens", "import"] => tokens::import(args, None),
         ["tokens", "import", file] => tokens::import(args, Some(file)),
         ["tokens", "export"] => tokens::export(args),
+        ["tokens", "set", path, value] => tokens::set(args, path, value),
+        ["tokens", "remove", path] => tokens::remove(args, path),
         ["tokens", ..] => bail!(
-            "usage: omni tokens import <file> | omni tokens export [--out <file>] [--per-mode]"
+            "usage: omni tokens import <file> | omni tokens export [--out <file>] [--per-mode] | omni tokens set <path> <value> [--mode <m>] [--type <t>] | omni tokens remove <path>"
         ),
         ["design", "read"] => design::read(args),
         ["design", "edit"] => design::edit(args, None),

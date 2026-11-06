@@ -13,6 +13,10 @@ path = "src/main.rs"
 # (US-051). Without its comparison, which links the renderer, it pulls in only
 # the reader, the converter and OmniState's design model.
 omni-penpot = { path = "../omni-penpot", default-features = false }
+# `omni tokens set` and `remove` change one token of the tree and check the
+# result with the tree's own reader before sending it.
+omni-core = { path = "../omni-core" }
+serde_json = "1"
 
 [dev-dependencies]
 # The stack tests (tests/stack.rs) serve the API's router against a scratch
@@ -21,7 +25,6 @@ omni-api = { path = "../omni-api" }
 axum = "0.8"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "time"] }
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres"] }
-serde_json = "1"
 
 [features]
 # tests/stack.rs, tests/stack_attachments.rs, tests/stack_docs.rs,

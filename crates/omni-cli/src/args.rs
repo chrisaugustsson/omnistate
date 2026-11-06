@@ -47,6 +47,10 @@ pub struct Args {
     pub out: Option<String>,
     /// `omni tokens export --per-mode`: one file per collection and mode.
     pub per_mode: bool,
+    /// `omni tokens set <path> <value> [--mode <m>] [--type <t>]`: the mode to
+    /// write and the type of a token that does not exist yet.
+    pub mode: Option<String>,
+    pub token_type: Option<String>,
     /// `omni thread create <question> --sealed`.
     pub sealed: bool,
     /// `omni post <thread> --summary <text> [<body>] [--attach <file>]...
@@ -186,6 +190,15 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Args> {
             "--confidence" => &mut parsed.confidence,
             "--replaces" => &mut parsed.replaces,
             "--out" => &mut parsed.out,
+            // Only `omni tokens` takes them, so `omni post --type` stays an
+            // unknown option.
+            "--mode" | "--type" if parsed.words.first().is_none_or(|word| word == "tokens") => {
+                if name == "--mode" {
+                    &mut parsed.mode
+                } else {
+                    &mut parsed.token_type
+                }
+            }
             "--as" => &mut parsed.agent,
             "--model" => &mut parsed.model,
             "--harness" => &mut parsed.harness,

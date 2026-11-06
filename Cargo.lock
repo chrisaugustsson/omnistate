@@ -1477,6 +1477,7 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "omni-api",
+ "omni-core",
  "omni-penpot",
  "serde_json",
  "sqlx",
