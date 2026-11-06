@@ -594,6 +594,9 @@ pub struct PageTags {
     pub page: String,
     /// One tag tree for each board of the page, in order.
     pub boards: Vec<String>,
+    /// The page's flows, which can only be set once the boards exist: each
+    /// is a name and the index in `boards` of the board it starts at.
+    pub flows: Vec<(String, usize)>,
 }
 
 /// Components or pages as tags, ready to be sent.
@@ -711,8 +714,24 @@ impl Import {
     pub fn design_parts(&self, ids: &Ids) -> Result<Vec<PageTags>, ReadError> {
         let mut parts = Vec::with_capacity(self.pages.len());
         for page in &self.pages {
-            let value = serde_json::to_value(page)
+            let mut value = serde_json::to_value(page)
                 .map_err(|error| ReadError(format!("a page cannot be written: {error}")))?;
+            // A flow starts at a board, so it waits for the boards.
+            let board_ids: Vec<Value> = value["children"]
+                .as_array()
+                .map(|boards| boards.iter().map(|board| board["id"].clone()).collect())
+                .unwrap_or_default();
+            let flows: Vec<(String, usize)> =
+                match value.as_object_mut().and_then(|page| page.remove("flows")) {
+                    Some(Value::Array(flows)) => flows
+                        .iter()
+                        .filter_map(|flow| {
+                            let at = board_ids.iter().position(|id| *id == flow["start"])?;
+                            Some((flow["name"].as_str()?.to_string(), at))
+                        })
+                        .collect(),
+                    _ => Vec::new(),
+                };
             let mut unknown = HashSet::new();
             let mut complete = true;
             let Some(mut node) = render(&value, ids, &mut unknown, &mut complete) else {
@@ -732,6 +751,7 @@ impl Import {
             parts.push(PageTags {
                 page: print(&[node], &unknown)?,
                 boards: tags,
+                flows,
             });
         }
         Ok(parts)

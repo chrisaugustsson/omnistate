@@ -296,6 +296,7 @@ fn send_page(agent: &Agent, ops: &str, part: &PageTags, after: Option<&str>) -> 
     // sending (docs/formats/operations.md, insert), so a batch lists its
     // boards backwards, all after the last board of the batch before.
     let mut last: Option<String> = None;
+    let mut board_ids: Vec<String> = Vec::with_capacity(part.boards.len());
     let mut rest = part.boards.as_slice();
     while !rest.is_empty() {
         let mut size = 0;
@@ -315,7 +316,32 @@ fn send_page(agent: &Agent, ops: &str, part: &PageTags, after: Option<&str>) -> 
             .collect();
         let created = send_ops(agent, ops, &format!("[{}]", inserts.join(",")))?;
         last = Some(node_of(&created, 0)?);
+        for at in (0..batch.len()).rev() {
+            board_ids.push(node_of(&created, at)?);
+        }
         rest = later;
+    }
+
+    // The flows name boards by the IDs the server gave them.
+    let flows: Vec<String> = part
+        .flows
+        .iter()
+        .filter_map(|(name, at)| {
+            let id = board_ids.get(*at)?;
+            Some(format!(
+                "{{\"name\":{},\"start\":{}}}",
+                quote(name),
+                quote(id)
+            ))
+        })
+        .collect();
+    if !flows.is_empty() {
+        let set = format!(
+            "[{{\"op\":\"set\",\"node\":{},\"rev\":1,\"properties\":{{\"flows\":[{}]}}}}]",
+            quote(&page),
+            flows.join(",")
+        );
+        send_ops(agent, ops, &set)?;
     }
     Ok(page)
 }
