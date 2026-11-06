@@ -704,6 +704,7 @@ ${docs.map((l) => `### Doc ${l.doc_id}, node ${l.node_id}${l.label ? ` (${l.labe
 
 ## Rules
 - Exercise EVERY criterion by running the behaviour in ${root}: call the endpoint, run the command, open the page with the dev-browser skill for browser criteria. Reading code is not a check.
+- The stack has no users. For a credential run \`make test-stack-seed NAME=<story key, lower case>\` in ${root}: it prints a workspace id, a session token (the cookie \`omni_session=<token>\` for human routes and the app) and an API key secret (\`Authorization: Bearer <secret>\` for agent routes and the omni CLI with OMNI_SERVER set to the stack). Never write into the stack's database yourself.
 - A criterion about a command (fast, stack, lint) is checked by running that command: fast is \`${fast || '(none configured)'}\`, stack is \`${stackCmd || '(none configured)'}\`, lint is \`make lint\`.
 - A [human check] criterion: exercise what you can; ok is true unless what you ran contradicts it. A human confirms it later.
 - ok false only for a criterion the behaviour does not meet. Say what is wrong and where.

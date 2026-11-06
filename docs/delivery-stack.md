@@ -47,6 +47,24 @@ command on its test commit. A red run drops the test commits, the story stays
 done on its verified implementation, and the report's Tests section says
 `tests dropped`.
 
+## A credential on the test stack
+
+The test stack starts with no users, and the permission classifier refuses an
+agent that writes into its database by hand. A verifier that has to call the
+API or open the app there gets a credential with
+
+```bash
+make test-stack-seed NAME=us26
+```
+
+from the main worktree, which inserts a workspace, a user `<NAME>@example.com`
+with a live session and a membership, mints an API key through the API, and
+prints three lines: `workspace=<id>`, `session=<token>` and `api_key=<secret>`.
+A human route takes the cookie `omni_session=<token>`; an agent route, and the
+omni CLI with `OMNI_SERVER=http://localhost:8421`, take
+`Authorization: Bearer <secret>`. The rows live in the test database until
+`make test-stack-down` removes its volumes.
+
 ## Bringing the test stack down
 
 ```bash
