@@ -147,7 +147,10 @@ impl Session {
         for effect in self.player.pointer(event) {
             match effect {
                 Effect::NeedsFrame => changed = true,
-                Effect::OpenUrl { url, new_tab } => self.url = Some((url, new_tab)),
+                Effect::OpenUrl { url, new_tab } => {
+                    self.url = Some((url, new_tab));
+                    changed = true;
+                }
             }
         }
         self.changed |= changed;

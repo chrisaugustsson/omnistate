@@ -620,6 +620,8 @@ function DesignViewer({
   const [boardTarget, setBoardTarget] = useState<string | null>(boardParam ?? play ?? null);
   // The board a link named, until a node is selected or another page is shown.
   const boardHint = useRef<string | null>(boardParam ?? play ?? null);
+  // The board play mode was left on, which the address bar names once instead of the selection's board.
+  const leftOn = useRef<string | null>(null);
   const [openComment, setOpenComment] = useState<string | null>(null);
   const [chosenMode, setChosenMode] = useState<string | null>(null);
   // Counts the times the renderer drew a page or another mode, so that the inspect panel asks again.
@@ -864,6 +866,13 @@ function DesignViewer({
     if (target !== null || boardTarget !== null || !page || drawn === 0) return;
     const boards = Array.isArray(page.children) ? (page.children as JsonNode[]) : [];
     const holder = selected ? renderer?.boardOf(selected) : null;
+    const left = play ? null : leftOn.current;
+    if (!play) leftOn.current = null;
+    if (left) {
+      boardHint.current = left;
+      onPlace({ board: left, node: holder === left ? (selected ?? undefined) : undefined });
+      return;
+    }
     if (holder || !boards.some((entry) => entry.id === boardHint.current)) boardHint.current = null;
     const board = holder ?? boardHint.current ?? (boards[0] ? String(boards[0].id) : undefined);
     onPlace({ board, node: selected ?? undefined, play, flow });
@@ -915,6 +924,7 @@ function DesignViewer({
   const leavePlay = useCallback(
     (board: string) => {
       boardHint.current = board;
+      leftOn.current = board;
       onPlace({ board, node: selectedRef.current ?? undefined });
     },
     [onPlace],
