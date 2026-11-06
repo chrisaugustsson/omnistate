@@ -1169,7 +1169,9 @@ impl PrototypeSettings {
             settings.device = name.to_string();
         }
         let device = devices::device(&settings.device).expect("the device is in the table");
-        if let Some(size) = map.get("customSize") {
+        // The outline writes `color` and `customSize` as `null` when unset, so a
+        // null reads as the field left out.
+        if let Some(size) = map.get("customSize").filter(|size| !size.is_null()) {
             if device.name != CUSTOM {
                 return Err(format!("`customSize` is for the device {CUSTOM}"));
             }
@@ -1185,7 +1187,7 @@ impl PrototypeSettings {
                 return Err(format!("`{}` does not rotate", device.name));
             }
         }
-        if let Some(color) = map.get("color") {
+        if let Some(color) = map.get("color").filter(|color| !color.is_null()) {
             let Some(name) = color.as_str() else {
                 return Err(format!(
                     "`color` is {}, but it names a color of the device: write `color: \"Black\"`",

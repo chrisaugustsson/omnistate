@@ -6,7 +6,7 @@ use omni_core::design::devices::{DEVICES, device};
 use omni_core::design::proto::{
     Action, Easing, Interaction, OverlayAnchor, OverlayPosition, Transition, Trigger,
 };
-use omni_core::design::proto::{Overflow, ScrollPosition};
+use omni_core::design::proto::{Overflow, PrototypeSettings, ScrollPosition};
 use omni_core::design::tags::{self, TagError};
 use omni_core::design::tokens::TokenTree;
 use omni_core::design::{DesignDoc, Node, NodeData, NodeKind};
@@ -563,6 +563,34 @@ fn a_device_outside_the_table_is_refused_and_the_message_lists_the_table() {
     ] {
         assert!(device(name).is_some(), "{name}");
     }
+}
+
+#[test]
+fn the_outline_of_the_prototype_settings_reads_back_with_its_nulls() {
+    // The doc outline carries every field, with `color` and `customSize` as
+    // `null` when unset; the renderer reads that outline back.
+    let default = PrototypeSettings::default();
+    let outline = default.outline();
+    assert!(
+        outline["customSize"].is_null() && outline["color"].is_null(),
+        "{outline}"
+    );
+    assert_eq!(PrototypeSettings::from_value(&outline), Ok(default));
+    let phone = PrototypeSettings::from_value(&json!({
+        "device": "iPhone 16", "color": null, "customSize": null,
+        "rotation": "portrait", "background": "#1e1e1e", "responsive": false
+    }))
+    .unwrap();
+    assert_eq!(
+        (
+            phone.device.as_str(),
+            phone.color.as_deref(),
+            phone.custom_size
+        ),
+        ("iPhone 16", None, None)
+    );
+    let read = PrototypeSettings::from_value(&phone.outline()).unwrap();
+    assert_eq!(read, phone);
 }
 
 #[test]
