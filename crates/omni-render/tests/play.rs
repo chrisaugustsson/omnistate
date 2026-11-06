@@ -17,6 +17,8 @@
 //!   that Back returns there.
 //! - A board ID that is not a board of the page is refused with "`<id>` is not
 //!   a board of the shown page".
+//! - US-35: an open overlay is drawn over the board at its place, with its
+//!   `background` colour over the whole screen under it.
 
 mod design;
 
@@ -323,5 +325,46 @@ fn a_session_on_an_id_that_is_not_a_board_of_the_page_is_refused() {
     assert_eq!(
         refused.as_deref(),
         Some("`a0000001` is not a board of the shown page")
+    );
+}
+
+#[test]
+fn an_overlay_is_drawn_over_its_background_sheet_which_covers_the_board_under_it() {
+    let open = json!([{"actions": [
+        {"type": "openOverlay", "dest": B2, "background": "#000000"}
+    ]}]);
+    let mut scene = scene_of(&page(vec![
+        filled_board(
+            B1,
+            0.0,
+            400.0,
+            400.0,
+            "#ff0000",
+            vec![hotspot(0.0, 0.0, open)],
+        ),
+        filled_board(B2, 1000.0, 100.0, 100.0, "#00ff00", vec![]),
+    ]));
+    let mut session = Session::start(&scene, B1).expect("the page has the board");
+    draw(&mut session, &mut scene, 400, 400);
+    assert!(click(&mut session, 50.0, 50.0));
+
+    // The 100 x 100 overlay is centred on the 400 x 400 board: 150..250.
+    let stage = draw(&mut session, &mut scene, 400, 400);
+
+    assert_eq!(stage.pixel(200, 200), [0, 255, 0], "the overlay");
+    assert_eq!(
+        stage.pixel(155, 155),
+        [0, 255, 0],
+        "the overlay's top-left corner"
+    );
+    assert_eq!(
+        stage.pixel(140, 200),
+        [0, 0, 0],
+        "the board left of the overlay"
+    );
+    assert_eq!(
+        stage.pixel(395, 395),
+        [0, 0, 0],
+        "the board's bottom-right corner"
     );
 }

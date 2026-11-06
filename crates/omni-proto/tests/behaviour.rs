@@ -853,3 +853,222 @@ fn an_instance_plays_the_variant_the_caller_set() {
 
     assert_eq!(player.frame().board, id(B2));
 }
+
+/// A player on a 400 × 800 `B1` whose `L1` (0, 0, 50 × 50) opens `open`, and
+/// whose `L2` (300, 700, 50 × 50) navigates to `B3`. `B2` is 200 × 100 and
+/// `B3` 100 × 300.
+fn overlay_player(open: Value) -> Player {
+    player(
+        vec![
+            board(
+                B1,
+                vec![
+                    layer(L1, json!([actions(json!([open]))])),
+                    layer(L2, json!([navigate(B3)])),
+                ],
+            ),
+            board(B2, vec![]),
+            board(B3, vec![]),
+        ],
+        vec![],
+        &[
+            (B1, rect(0.0, 0.0, 400.0, 800.0)),
+            (B2, rect(0.0, 0.0, 200.0, 100.0)),
+            (B3, rect(0.0, 0.0, 100.0, 300.0)),
+            (L1, rect(0.0, 0.0, 50.0, 50.0)),
+            (L2, rect(300.0, 700.0, 50.0, 50.0)),
+        ],
+    )
+}
+
+#[test]
+fn a_click_outside_an_overlay_that_closes_on_outside_only_closes_it() {
+    let mut player =
+        overlay_player(json!({"type": "openOverlay", "dest": B2, "closeOnOutside": true}));
+    click(&mut player, 10.0, 10.0, 0.0);
+
+    // The centred overlay spans 100..300, 350..450; L2 under the click
+    // navigates.
+    let effects = click(&mut player, 310.0, 710.0, 100.0);
+
+    assert_eq!(effects, vec![Effect::NeedsFrame]);
+    let frame = player.frame();
+    assert!(frame.overlays.is_empty());
+    assert_eq!(frame.board, id(B1));
+    assert!(frame.transition.is_none());
+    assert!(player.history().is_empty());
+}
+
+#[test]
+fn a_click_outside_an_overlay_that_does_not_close_on_outside_is_ignored() {
+    let mut player =
+        overlay_player(json!({"type": "openOverlay", "dest": B2, "closeOnOutside": false}));
+    click(&mut player, 10.0, 10.0, 0.0);
+
+    let effects = click(&mut player, 310.0, 710.0, 100.0);
+
+    assert!(effects.is_empty());
+    let frame = player.frame();
+    assert_eq!(frame.board, id(B1));
+    assert_eq!(frame.overlays.len(), 1);
+    assert_eq!(frame.overlays[0].board, id(B2));
+    assert!(player.history().is_empty());
+}
+
+#[test]
+fn a_click_outside_the_top_overlay_closes_only_the_top_one() {
+    let open_top = json!({"type": "openOverlay", "dest": B3, "position": "topLeft"});
+    let mut player = player(
+        vec![
+            board(
+                B1,
+                vec![layer(
+                    L1,
+                    json!([actions(json!([{"type": "openOverlay", "dest": B2}]))]),
+                )],
+            ),
+            board(B2, vec![layer(L2, json!([actions(json!([open_top]))]))]),
+            board(B3, vec![]),
+        ],
+        vec![],
+        &[
+            (B1, rect(0.0, 0.0, 400.0, 800.0)),
+            (B2, rect(0.0, 0.0, 200.0, 100.0)),
+            (B3, rect(0.0, 0.0, 50.0, 50.0)),
+            (L1, rect(0.0, 0.0, 50.0, 50.0)),
+            (L2, rect(0.0, 0.0, 20.0, 20.0)),
+        ],
+    );
+    click(&mut player, 10.0, 10.0, 0.0);
+    // B2 is centred at 100, 350, so its L2 is at 100..120, 350..370.
+    click(&mut player, 110.0, 360.0, 100.0);
+    assert_eq!(player.frame().overlays.len(), 2);
+
+    // Inside B2, outside B3 at 0..50, 0..50.
+    click(&mut player, 250.0, 400.0, 200.0);
+
+    let frame = player.frame();
+    assert_eq!(frame.overlays.len(), 1);
+    assert_eq!(frame.overlays[0].board, id(B2));
+    assert_eq!(frame.overlays[0].origin, [100.0, 350.0]);
+}
+
+#[test]
+fn an_overlay_opened_from_an_overlay_is_placed_on_the_trigger_as_drawn_on_screen() {
+    let open_first =
+        json!({"type": "openOverlay", "dest": B2, "position": "manual", "offset": [200, 0]});
+    let open_under = json!({"type": "openOverlay", "dest": B3,
+        "position": "bottomLeft", "anchor": "triggerOutside"});
+    let mut player = player(
+        vec![
+            board(B1, vec![layer(L1, json!([actions(json!([open_first]))]))]),
+            board(B2, vec![layer(L2, json!([actions(json!([open_under]))]))]),
+            board(B3, vec![]),
+        ],
+        vec![],
+        &[
+            (B1, rect(0.0, 0.0, 400.0, 800.0)),
+            (B2, rect(0.0, 0.0, 200.0, 100.0)),
+            (B3, rect(0.0, 0.0, 100.0, 300.0)),
+            (L1, rect(0.0, 0.0, 50.0, 50.0)),
+            (L2, rect(10.0, 50.0, 30.0, 20.0)),
+        ],
+    );
+    click(&mut player, 10.0, 10.0, 0.0);
+    assert_eq!(player.frame().overlays[0].origin, [200.0, 0.0]);
+
+    // L2 is drawn at 210..240, 50..70: B3 goes right under it.
+    click(&mut player, 220.0, 60.0, 100.0);
+
+    let frame = player.frame();
+    assert_eq!(frame.overlays.len(), 2);
+    assert_eq!(frame.overlays[1].board, id(B3));
+    assert_eq!(frame.overlays[1].origin, [210.0, 70.0]);
+}
+
+#[test]
+fn a_swapped_in_board_keeps_the_overlays_options_and_is_placed_for_its_size() {
+    let open = json!({"type": "openOverlay", "dest": B2,
+        "closeOnOutside": false, "background": "#00000080"});
+    let mut player = player(
+        vec![
+            board(B1, vec![layer(L1, json!([actions(json!([open]))]))]),
+            board(
+                B2,
+                vec![layer(
+                    L2,
+                    json!([actions(json!([{"type": "swapOverlay", "dest": B3}]))]),
+                )],
+            ),
+            board(B3, vec![]),
+        ],
+        vec![],
+        &[
+            (B1, rect(0.0, 0.0, 400.0, 800.0)),
+            (B2, rect(0.0, 0.0, 200.0, 100.0)),
+            (B3, rect(0.0, 0.0, 100.0, 300.0)),
+            (L1, rect(0.0, 0.0, 50.0, 50.0)),
+            (L2, rect(0.0, 0.0, 20.0, 20.0)),
+        ],
+    );
+    click(&mut player, 10.0, 10.0, 500.0);
+    let opened = &player.frame().overlays[0];
+    assert_eq!(opened.origin, [100.0, 350.0]);
+    assert_eq!(opened.opened_at, 510.0);
+
+    click(&mut player, 110.0, 360.0, 1000.0);
+
+    let frame = player.frame();
+    assert_eq!(frame.overlays.len(), 1);
+    let swapped = &frame.overlays[0];
+    assert_eq!(swapped.board, id(B3));
+    assert_eq!(swapped.origin, [150.0, 250.0]);
+    assert_eq!(swapped.background.as_deref(), Some("#00000080"));
+    assert!(!swapped.close_on_outside);
+    assert_eq!(swapped.opened_at, 1010.0);
+    assert!(player.history().is_empty());
+}
+
+#[test]
+fn back_with_overlays_open_goes_to_the_previous_board_and_closes_them() {
+    let open = json!([actions(json!([{"type": "openOverlay", "dest": B3}]))]);
+    let mut player = player(
+        vec![
+            board(B1, vec![layer(L1, json!([navigate(B2)]))]),
+            board(B2, vec![layer(L2, open)]),
+            board(B3, vec![]),
+        ],
+        vec![],
+        &[
+            (B1, rect(0.0, 0.0, 400.0, 800.0)),
+            (B2, rect(0.0, 0.0, 400.0, 800.0)),
+            (B3, rect(0.0, 0.0, 100.0, 300.0)),
+            (L1, rect(0.0, 0.0, 50.0, 50.0)),
+            (L2, rect(0.0, 0.0, 50.0, 50.0)),
+        ],
+    );
+    click(&mut player, 10.0, 10.0, 0.0);
+    click(&mut player, 10.0, 10.0, 100.0);
+    assert_eq!(player.frame().overlays.len(), 1);
+    assert_eq!(player.history(), &[id(B1)]);
+
+    player.back();
+
+    let frame = player.frame();
+    assert_eq!(frame.board, id(B1));
+    assert!(frame.overlays.is_empty());
+    assert!(player.history().is_empty());
+}
+
+#[test]
+fn back_on_the_first_board_leaves_its_overlays_open() {
+    let mut player = overlay_player(json!({"type": "openOverlay", "dest": B2}));
+    click(&mut player, 10.0, 10.0, 0.0);
+
+    player.back();
+
+    let frame = player.frame();
+    assert_eq!(frame.board, id(B1));
+    assert_eq!(frame.overlays.len(), 1);
+    assert_eq!(frame.overlays[0].board, id(B2));
+}
