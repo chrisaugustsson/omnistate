@@ -292,9 +292,9 @@ struct Converter<'a, R: Read + Seek> {
     /// The node each shape of the component being converted became, by the
     /// Penpot id of the shape, with the type of the node.
     refs: Option<HashMap<String, (String, String)>>,
-    /// The node and the type of the node of every shape converted in the
-    /// file, by the Penpot id of the shape; the first conversion of a shape
-    /// wins.
+    /// The node and the type of the node of every shape converted on a page,
+    /// by the Penpot id of the shape; the shapes of a component are not in it,
+    /// so a main instance keeps its page node.
     ids: HashMap<PenpotId, (NodeId, Kind)>,
     /// The interactions read from shapes, to resolve once every page is in.
     pending: Vec<PendingInteraction>,
@@ -877,7 +877,7 @@ impl<R: Read + Seek> Converter<'_, R> {
                 "masks are not supported; the masked group is drawn without its mask",
             );
         }
-        if let Some(items) = pen.interactions.0.as_deref() {
+        if let (None, Some(items)) = (&self.refs, pen.interactions.0.as_deref()) {
             let mut warnings = Vec::new();
             let source = Source {
                 page: self.page_name.clone(),
@@ -923,7 +923,7 @@ impl<R: Read + Seek> Converter<'_, R> {
                 bounds: common.bounds,
             });
         }
-        if let Ok(id) = node_id.parse::<NodeId>() {
+        if let (None, Ok(id)) = (&self.refs, node_id.parse::<NodeId>()) {
             self.ids
                 .entry(common.id.clone())
                 .or_insert((id, kind.to_string()));
