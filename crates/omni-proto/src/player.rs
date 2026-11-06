@@ -379,7 +379,7 @@ impl Player {
     fn down(&mut self, event: PointerEvent, effects: &mut Vec<Effect>) -> bool {
         let (x, y, at) = (event.x, event.y, event.at);
         // A button that never came up ends here.
-        let mut changed = self.release(at);
+        let mut changed = self.release(at, effects);
         changed |= self.hover_to(x, y, at, effects);
         let under = self.under(x, y);
         self.press = Some(Press {
@@ -431,12 +431,14 @@ impl Player {
         if let Some(found) = deepest(&under, |trigger| *trigger == Trigger::MouseUp) {
             changed |= self.fire(&found.interactions, found.holder, found.rect, true, at, effects);
         }
-        changed |= self.finish(press.follow, press.reverts, at);
+        changed |= self.finish(press.follow, press.reverts, at, effects);
         // A click is a press and a release on the same layer, of the same
         // showing, that went nowhere between.
         if near && self.source_visit() == press.visit {
             changed |= self.click(x, y, at, press.layer, effects);
         }
+        // What the pointer is over on the board the press left behind.
+        changed |= self.hover_to(x, y, at, effects);
         changed
     }
 
@@ -444,21 +446,27 @@ impl Player {
     /// is down comes up.
     fn leave(&mut self, at: f64, effects: &mut Vec<Effect>) -> bool {
         let mut changed = self.hover_to(f64::NAN, f64::NAN, at, effects);
-        changed |= self.release(at);
+        changed |= self.release(at, effects);
         changed
     }
 
     /// Ends a button that is down without a click.
-    fn release(&mut self, at: f64) -> bool {
+    fn release(&mut self, at: f64, effects: &mut Vec<Effect>) -> bool {
         match self.press.take() {
-            Some(press) => self.finish(press.follow, press.reverts, at),
+            Some(press) => self.finish(press.follow, press.reverts, at, effects),
             None => false,
         }
     }
 
     /// What the end of a press does: a transition the pointer carried plays
     /// on from where it was left, and what the press did is put back.
-    fn finish(&mut self, follow: Option<Follow>, reverts: Vec<Revert>, at: f64) -> bool {
+    fn finish(
+        &mut self,
+        follow: Option<Follow>,
+        reverts: Vec<Revert>,
+        at: f64,
+        effects: &mut Vec<Effect>,
+    ) -> bool {
         let mut changed = false;
         if let (Some(follow), Some(running)) = (follow, self.frame.transition.as_mut()) {
             if running.follows_pointer {
@@ -469,7 +477,12 @@ impl Player {
                 changed = true;
             }
         }
-        changed | self.revert(reverts, at)
+        let before = self.board_visit;
+        changed |= self.revert(reverts, at);
+        if self.board_visit != before {
+            changed |= self.drop_stale(vec![before], at, effects);
+        }
+        changed
     }
 
     /// Updates what the pointer is over for a pointer at `x`, `y`, which is
@@ -492,21 +505,7 @@ impl Player {
                 gone.push(before);
             }
         }
-        // Layers entered on a board a revert left are not under the pointer.
-        while let Some(visit) = gone.pop() {
-            let (stale, kept): (Vec<Hover>, Vec<Hover>) = std::mem::take(&mut self.hovered)
-                .into_iter()
-                .partition(|hover| hover.board_visit == visit);
-            self.hovered = kept;
-            for hover in stale {
-                let before = self.board_visit;
-                changed |= self.revert(hover.reverts, at);
-                changed |= self.fire(&hover.leave, hover.holder, hover.rect, true, at, effects);
-                if self.board_visit != before {
-                    gone.push(before);
-                }
-            }
-        }
+        changed |= self.drop_stale(gone, at, effects);
         let under = if x.is_nan() { Vec::new() } else { self.under(x, y) };
         let mut entered: Vec<&Under> = under
             .iter()
@@ -547,6 +546,27 @@ impl Player {
                 reverts,
                 board_visit: visit,
             });
+        }
+        changed
+    }
+
+    /// Reverts and drops the hovers entered on boards a revert left, as if
+    /// the pointer had left them.
+    fn drop_stale(&mut self, mut gone: Vec<u64>, at: f64, effects: &mut Vec<Effect>) -> bool {
+        let mut changed = false;
+        while let Some(visit) = gone.pop() {
+            let (stale, kept): (Vec<Hover>, Vec<Hover>) = std::mem::take(&mut self.hovered)
+                .into_iter()
+                .partition(|hover| hover.board_visit == visit);
+            self.hovered = kept;
+            for hover in stale {
+                let before = self.board_visit;
+                changed |= self.revert(hover.reverts, at);
+                changed |= self.fire(&hover.leave, hover.holder, hover.rect, true, at, effects);
+                if self.board_visit != before {
+                    gone.push(before);
+                }
+            }
         }
         changed
     }
