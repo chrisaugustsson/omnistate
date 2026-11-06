@@ -8,8 +8,8 @@
 //! transition lets the pointer carry it.
 
 use crate::history::{History, Play};
-use crate::keys::{self, Mods};
 use crate::input::{DragTarget, Follow, Hover, Press, Revert};
+use crate::keys::{self, Mods};
 use crate::overlay;
 use crate::timers::{Target, Timer};
 use crate::transition::{duration_ms, progress, reversed};
@@ -398,11 +398,25 @@ impl Player {
             reverts: Vec::new(),
         });
         if let Some(found) = deepest(&under, |trigger| *trigger == Trigger::MouseDown) {
-            changed |= self.fire(&found.interactions, found.holder, found.rect, true, at, effects);
+            changed |= self.fire(
+                &found.interactions,
+                found.holder,
+                found.rect,
+                true,
+                at,
+                effects,
+            );
         }
         if let Some(found) = deepest(&under, |trigger| *trigger == Trigger::OnPress) {
             let (pressed, reverts) = self.recording(|player| {
-                player.fire(&found.interactions, found.holder, found.rect, false, at, effects)
+                player.fire(
+                    &found.interactions,
+                    found.holder,
+                    found.rect,
+                    false,
+                    at,
+                    effects,
+                )
             });
             changed |= pressed;
             if let Some(press) = &mut self.press {
@@ -429,7 +443,14 @@ impl Player {
         // Mouse up acts for the layer under the pointer at release.
         let under = self.under(x, y);
         if let Some(found) = deepest(&under, |trigger| *trigger == Trigger::MouseUp) {
-            changed |= self.fire(&found.interactions, found.holder, found.rect, true, at, effects);
+            changed |= self.fire(
+                &found.interactions,
+                found.holder,
+                found.rect,
+                true,
+                at,
+                effects,
+            );
         }
         changed |= self.finish(press.follow, press.reverts, at, effects);
         // A click is a press and a release on the same layer, of the same
@@ -506,7 +527,11 @@ impl Player {
             }
         }
         changed |= self.drop_stale(gone, at, effects);
-        let under = if x.is_nan() { Vec::new() } else { self.under(x, y) };
+        let under = if x.is_nan() {
+            Vec::new()
+        } else {
+            self.under(x, y)
+        };
         let mut entered: Vec<&Under> = under
             .iter()
             .filter(|layer| !self.hovered.iter().any(|hover| hover.id == layer.entry.id))

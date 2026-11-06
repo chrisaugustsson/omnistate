@@ -8,8 +8,8 @@
 
 pub mod easing;
 mod history;
-pub mod keys;
 mod input;
+pub mod keys;
 pub mod overlay;
 mod player;
 pub mod timers;
