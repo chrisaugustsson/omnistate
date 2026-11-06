@@ -25,12 +25,18 @@
 //!   frame after the click; frames are asked for until the fade ends.
 //! - US-40: controller buttons 0, 4 and 12 of the standard layout fire the
 //!   `Gamepad A`, `Gamepad LB` and `Gamepad Up` key triggers as they go down.
+//! - US-38: the board is resolved again with what `setVariable` and
+//!   `setVariableMode` set: a Text bound to a number token shows it in its
+//!   shortest form and the frame hugging it follows, a fill follows its colour
+//!   token, and a board set to dark is drawn dark while other boards are not.
+//!   Restart, and Exit followed by Play, draw the design system's values.
 
 mod design;
 
-use design::{at, board, fixed, node, none, rect, with};
+use design::{at, board, fixed, flex, frame, node, none, rect, text, with};
 use omni_render::paint::Assets;
 use omni_render::play::{Session, Tick};
+use omni_render::system::DesignSystem;
 use omni_render::view::Scene;
 use serde_json::{Value, json};
 use skia_safe::{AlphaType, ColorType, ImageInfo, surfaces};
@@ -784,4 +790,178 @@ fn controller_buttons_0_4_and_12_fire_gamepad_a_lb_and_up_as_they_go_down() {
         session.state(),
         json!({"board": B1, "history": [B1, B2, B3], "overlays": [], "missed": false, "url": null})
     );
+}
+
+const COUNTER: &str = "a0000010";
+const COUNT: &str = "a0000011";
+const MODE: &str = "a0000012";
+const SURFACE_WHITE: [u8; 3] = [0xff, 0xff, 0xff];
+const SURFACE_DARK: [u8; 3] = [0x0f, 0x17, 0x2a];
+
+/// `color.surface` is white in light and #0f172a in dark; `state.count` is 9.
+fn play_system() -> DesignSystem {
+    DesignSystem::from_json(&json!({
+        "$extensions": {"omnistate": {"modes": ["light", "dark"]}},
+        "color": {"surface": {
+            "$type": "color",
+            "$value": "#ffffff",
+            "$extensions": {"omnistate": {"modes": {"light": "#ffffff", "dark": "#0f172a"}}}
+        }},
+        "state": {
+            "$extensions": {"omnistate": {"modes": []}},
+            "count": {"$type": "number", "$value": 9}
+        },
+        "$components": []
+    }))
+    .unwrap_or_else(|error| panic!("the design system fixture must be read, but: {error}"))
+}
+
+/// A 400 x 300 board filled with `$color.surface`, with `children`.
+fn surface_board(id: &str, x: f64, children: Vec<Value>) -> Value {
+    solid(
+        &at(
+            &board(id, fixed(400.0), fixed(300.0), none(), children),
+            x,
+            0.0,
+        ),
+        "$color.surface",
+    )
+}
+
+/// A frame at 0, 150 that hugs one Text showing `content`.
+fn counter(content: &str) -> Value {
+    at(
+        &frame(
+            COUNTER,
+            json!("hug"),
+            json!("hug"),
+            flex(json!({})),
+            vec![text(COUNT, content, 16.0, 20.0)],
+        ),
+        0.0,
+        150.0,
+    )
+}
+
+fn play_scene(boards: Vec<Value>) -> Scene {
+    Scene::with_system(node(&page(boards)), Assets::new(), play_system())
+}
+
+fn width_of(scene: &Scene, board: &str, layer: &str) -> f32 {
+    let (rects, _) = scene
+        .board_boxes(&board.parse().unwrap())
+        .expect("the scene has the board");
+    rects[&layer.parse().unwrap()].width
+}
+
+fn set_surface_red() -> Value {
+    json!([{"actions": [{"type": "setVariable", "variable": "color.surface", "value": "#ff0000"}]}])
+}
+
+#[test]
+fn a_counter_text_shows_count_plus_one_as_a_whole_number_and_its_hugging_frame_follows() {
+    let add = json!([{"actions": [{"type": "setVariable", "variable": "state.count",
+        "expr": {"op": "add", "args": [{"variable": "state.count"}, {"value": 1}]}}]}]);
+    let mut scene = play_scene(vec![surface_board(
+        B1,
+        0.0,
+        vec![hotspot(0.0, 0.0, add), counter("$state.count")],
+    )]);
+    let mut designed_ten = play_scene(vec![surface_board(B1, 0.0, vec![counter("10")])]);
+    while designed_ten.work() {}
+    let mut session = Session::start(&scene, B1).expect("the page has the board");
+    draw(&mut session, &mut scene, 400, 300);
+    assert!(click(&mut session, 50.0, 50.0));
+
+    draw(&mut session, &mut scene, 400, 300);
+
+    assert_eq!(
+        width_of(&scene, B1, COUNTER),
+        width_of(&designed_ten, B1, COUNTER),
+        "9 + 1 is shown as 10, as wide as a Text written 10"
+    );
+}
+
+#[test]
+fn a_fill_follows_the_colour_token_an_action_sets() {
+    let mut scene = play_scene(vec![surface_board(
+        B1,
+        0.0,
+        vec![hotspot(0.0, 0.0, set_surface_red())],
+    )]);
+    let mut session = Session::start(&scene, B1).expect("the page has the board");
+    draw(&mut session, &mut scene, 400, 300);
+    assert!(click(&mut session, 50.0, 50.0));
+
+    let stage = draw(&mut session, &mut scene, 400, 300);
+
+    assert_eq!(stage.pixel(300, 250), [255, 0, 0]);
+}
+
+#[test]
+fn set_variable_mode_draws_the_board_in_the_mode_and_leaves_the_other_boards_in_theirs() {
+    let dark =
+        json!([{"actions": [{"type": "setVariableMode", "collection": "color", "mode": "dark"}]}]);
+    let mut scene = play_scene(vec![
+        surface_board(
+            B1,
+            0.0,
+            vec![
+                hotspot(0.0, 0.0, dark),
+                with(
+                    &at(&rect(MODE, 100.0, 100.0), 200.0, 0.0),
+                    "interactions",
+                    navigate(B2),
+                ),
+            ],
+        ),
+        surface_board(B2, 1000.0, vec![]),
+    ]);
+    let mut session = Session::start(&scene, B1).expect("the page has the board");
+    draw(&mut session, &mut scene, 400, 300);
+    assert!(click(&mut session, 50.0, 50.0));
+
+    let stage = draw(&mut session, &mut scene, 400, 300);
+    assert_eq!(stage.pixel(300, 250), SURFACE_DARK, "the board set to dark");
+
+    assert!(click(&mut session, 250.0, 50.0));
+    let stage = draw(&mut session, &mut scene, 400, 300);
+    assert_eq!(stage.pixel(300, 250), SURFACE_WHITE, "the board it went to");
+}
+
+#[test]
+fn restart_draws_the_design_systems_values_again() {
+    let mut scene = play_scene(vec![surface_board(
+        B1,
+        0.0,
+        vec![hotspot(0.0, 0.0, set_surface_red())],
+    )]);
+    let mut session = Session::start(&scene, B1).expect("the page has the board");
+    draw(&mut session, &mut scene, 400, 300);
+    assert!(click(&mut session, 50.0, 50.0));
+    draw(&mut session, &mut scene, 400, 300);
+
+    session.restart(B1).expect("the page has the board");
+    let stage = draw(&mut session, &mut scene, 400, 300);
+
+    assert_eq!(stage.pixel(300, 250), SURFACE_WHITE);
+}
+
+#[test]
+fn play_after_exit_draws_the_design_systems_values() {
+    let mut scene = play_scene(vec![surface_board(
+        B1,
+        0.0,
+        vec![hotspot(0.0, 0.0, set_surface_red())],
+    )]);
+    let mut session = Session::start(&scene, B1).expect("the page has the board");
+    draw(&mut session, &mut scene, 400, 300);
+    assert!(click(&mut session, 50.0, 50.0));
+    draw(&mut session, &mut scene, 400, 300);
+
+    session.end(&mut scene);
+    let mut again = Session::start(&scene, B1).expect("the page has the board");
+    let stage = draw(&mut again, &mut scene, 400, 300);
+
+    assert_eq!(stage.pixel(300, 250), SURFACE_WHITE);
 }
