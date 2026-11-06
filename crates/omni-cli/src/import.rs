@@ -18,6 +18,7 @@
 //!
 //! Whatever cannot be imported is in the report, which `--json` prints whole.
 
+use std::collections::HashMap;
 use std::path::Path;
 
 use omni_penpot::ReadError;
@@ -262,9 +263,39 @@ fn send_design(
         })?;
     let ops = format!("{base}/docs/{doc}/ops");
     let mut after = None;
+    let mut boards: HashMap<String, String> = HashMap::new();
+    let mut nodes: Vec<(Vec<Vec<String>>, &PageTags)> = Vec::new();
     for part in &parts {
-        let page = send_page(agent, &ops, part, after.as_deref())?;
+        let (page, made) = send_page(agent, &ops, part, after.as_deref())?;
         after = Some(page);
+        for (old, (new, _)) in part.board_ids.iter().zip(&made) {
+            boards.insert(old.clone(), new.clone());
+        }
+        nodes.push((made.into_iter().map(|(_, created)| created).collect(), part));
+    }
+
+    // Interactions name boards, so they wait until every board has its ID.
+    // A board's nodes are `created` in document order.
+    let mut sets = Vec::new();
+    for (created, part) in &nodes {
+        for pending in &part.interactions {
+            let Some(id) = created
+                .get(pending.board)
+                .and_then(|nodes| nodes.get(pending.at))
+            else {
+                continue;
+            };
+            let Some(json) = pending.json(&boards) else {
+                continue;
+            };
+            sets.push(format!(
+                "{{\"op\":\"set\",\"node\":{},\"rev\":1,\"properties\":{{\"interactions\":{json}}}}}",
+                quote(id)
+            ));
+        }
+    }
+    for chunk in sets.chunks(200) {
+        send_ops(agent, &ops, &format!("[{}]", chunk.join(",")))?;
     }
     let delete = format!(
         "[{{\"op\":\"delete\",\"node\":{},\"rev\":1}}]",
@@ -274,9 +305,18 @@ fn send_design(
     Ok(doc)
 }
 
+/// A board the server made: its ID and the IDs of all its nodes in document
+/// order.
+type Made = (String, Vec<String>);
+
 /// Inserts the page after `after` (the first page when it is none) and its
 /// boards into it, in batches of about [`BATCH_BYTES`]. Returns the page's ID.
-fn send_page(agent: &Agent, ops: &str, part: &PageTags, after: Option<&str>) -> Result<String> {
+fn send_page(
+    agent: &Agent,
+    ops: &str,
+    part: &PageTags,
+    after: Option<&str>,
+) -> Result<(String, Vec<Made>)> {
     let insert = |parent: Option<&str>, after: Option<&str>, tags: &str| {
         format!(
             "{{\"op\":\"insert\",\"parent\":{},\"position\":{{\"after\":{}}},\"content\":{}}}",
@@ -296,7 +336,7 @@ fn send_page(agent: &Agent, ops: &str, part: &PageTags, after: Option<&str>) -> 
     // sending (docs/formats/operations.md, insert), so a batch lists its
     // boards backwards, all after the last board of the batch before.
     let mut last: Option<String> = None;
-    let mut board_ids: Vec<String> = Vec::with_capacity(part.boards.len());
+    let mut made: Vec<Made> = Vec::with_capacity(part.boards.len());
     let mut rest = part.boards.as_slice();
     while !rest.is_empty() {
         let mut size = 0;
@@ -317,7 +357,7 @@ fn send_page(agent: &Agent, ops: &str, part: &PageTags, after: Option<&str>) -> 
         let created = send_ops(agent, ops, &format!("[{}]", inserts.join(",")))?;
         last = Some(node_of(&created, 0)?);
         for at in (0..batch.len()).rev() {
-            board_ids.push(node_of(&created, at)?);
+            made.push((node_of(&created, at)?, created_of(&created, at)));
         }
         rest = later;
     }
@@ -327,7 +367,7 @@ fn send_page(agent: &Agent, ops: &str, part: &PageTags, after: Option<&str>) -> 
         .flows
         .iter()
         .filter_map(|(name, at)| {
-            let id = board_ids.get(*at)?;
+            let (id, _) = made.get(*at)?;
             Some(format!(
                 "{{\"name\":{},\"start\":{}}}",
                 quote(name),
@@ -343,7 +383,7 @@ fn send_page(agent: &Agent, ops: &str, part: &PageTags, after: Option<&str>) -> 
         );
         send_ops(agent, ops, &set)?;
     }
-    Ok(page)
+    Ok((page, made))
 }
 
 /// Sends a batch of operations to the doc's head; returns the answer.
@@ -365,6 +405,23 @@ fn node_of(answer: &Value, index: usize) -> Result<String> {
                 "the server's answer about the operations has no node; is it an OmniState API?",
             )
         })
+}
+
+/// The IDs the `index`th operation of an answer created, in document order.
+fn created_of(answer: &Value, index: usize) -> Vec<String> {
+    answer
+        .get("results")
+        .and_then(Value::as_array)
+        .and_then(|results| results.get(index))
+        .and_then(|result| result.get("created"))
+        .and_then(Value::as_array)
+        .map(|ids| {
+            ids.iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// One line about an entry of the report.

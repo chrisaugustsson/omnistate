@@ -597,6 +597,81 @@ pub struct PageTags {
     /// The page's flows, which can only be set once the boards exist: each
     /// is a name and the index in `boards` of the board it starts at.
     pub flows: Vec<(String, usize)>,
+    /// The import's IDs of the boards, in order.
+    pub board_ids: Vec<String>,
+    /// The interactions of the nodes of the boards, which name boards and so
+    /// can only be set once every board of the import exists.
+    pub interactions: Vec<PendingInteractions>,
+}
+
+/// The interactions of one node of a board, left out of its tags.
+pub struct PendingInteractions {
+    /// The index in `boards` of the board that holds the node.
+    pub board: usize,
+    /// The place of the node in the board's tags, counting every node in
+    /// document order (the board itself is 0), as the server's `created`
+    /// lists them.
+    pub at: usize,
+    value: Value,
+}
+
+impl PendingInteractions {
+    /// The interactions as JSON, with each `dest` replaced by the server's ID
+    /// of the board in `boards` (the import's ID to the server's). An
+    /// interaction whose destination is not there is left out. `None` when
+    /// none is left.
+    pub fn json(&self, boards: &HashMap<String, String>) -> Option<String> {
+        let kept: Vec<Value> = self
+            .value
+            .as_array()?
+            .iter()
+            .filter_map(|interaction| {
+                let mut interaction = interaction.clone();
+                rename_dests(&mut interaction, boards).then_some(interaction)
+            })
+            .collect();
+        (!kept.is_empty()).then(|| Value::Array(kept).to_string())
+    }
+}
+
+/// Replaces every `dest` of `value` by its entry in `boards`; false when one
+/// has none.
+fn rename_dests(value: &mut Value, boards: &HashMap<String, String>) -> bool {
+    match value {
+        Value::Object(map) => {
+            let mut all = true;
+            for (key, inner) in map.iter_mut() {
+                if key == "dest" {
+                    match inner.as_str().and_then(|old| boards.get(old)) {
+                        Some(new) => *inner = json!(new),
+                        None => all = false,
+                    }
+                } else {
+                    all &= rename_dests(inner, boards);
+                }
+            }
+            all
+        }
+        Value::Array(items) => items
+            .iter_mut()
+            .fold(true, |all, item| rename_dests(item, boards) && all),
+        _ => true,
+    }
+}
+
+/// Takes the `interactions` out of `node` and its descendants, noting each
+/// with the node's place in document order.
+fn take_interactions(node: &mut Value, count: &mut usize, found: &mut Vec<(usize, Value)>) {
+    let at = *count;
+    *count += 1;
+    if let Some(interactions) = node.as_object_mut().and_then(|n| n.remove("interactions")) {
+        found.push((at, interactions));
+    }
+    if let Some(children) = node.get_mut("children").and_then(Value::as_array_mut) {
+        for child in children {
+            take_interactions(child, count, found);
+        }
+    }
 }
 
 /// Components or pages as tags, ready to be sent.
@@ -745,13 +820,26 @@ impl Import {
                 _ => Vec::new(),
             };
             let mut tags = Vec::with_capacity(boards.len());
-            for board in boards {
+            let mut interactions = Vec::new();
+            for (index, mut board) in boards.into_iter().enumerate() {
+                let mut found = Vec::new();
+                take_interactions(&mut board, &mut 0, &mut found);
+                interactions.extend(found.into_iter().map(|(at, value)| PendingInteractions {
+                    board: index,
+                    at,
+                    value,
+                }));
                 tags.push(print(&[board], &unknown)?);
             }
             parts.push(PageTags {
                 page: print(&[node], &unknown)?,
                 boards: tags,
                 flows,
+                board_ids: board_ids
+                    .iter()
+                    .filter_map(|id| id.as_str().map(str::to_string))
+                    .collect(),
+                interactions,
             });
         }
         Ok(parts)
