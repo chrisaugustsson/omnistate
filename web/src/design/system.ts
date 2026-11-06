@@ -42,7 +42,7 @@ export function collectionsOf(system: JsonObject): Collection[] {
 export function ownCollectionsOf(system: JsonObject): Collection[] {
   return collectionsOf(system).filter((collection) => {
     const group = system[collection.name];
-    return object(group) && modeList(group) !== null;
+    return object(group) && (modeList(group) ?? []).length > 0;
   });
 }
 
