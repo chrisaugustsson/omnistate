@@ -700,7 +700,7 @@ impl Resolver<'_> {
         match node.get("fontSize")? {
             Value::Number(size) => size.as_f64(),
             Value::String(text) => {
-                let token = self.system.token(&text.parse().ok()?, self.mode)?;
+                let token = self.system.token(&text.parse().ok()?, &self.choice)?;
                 design_value(token, "fontSize", None).as_f64()
             }
             _ => None,
