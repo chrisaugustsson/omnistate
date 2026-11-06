@@ -4,7 +4,7 @@
 
 use omni_core::design::proto::{Direction, Easing, Transition};
 use omni_core::design::{Node, NodeAddress, NodeData, NodeId};
-use omni_proto::{Effect, Player, PointerEvent, PointerKind, Rect};
+use omni_proto::{Effect, KeyEvent, Player, PointerEvent, PointerKind, Rect};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 
@@ -1096,4 +1096,170 @@ fn back_on_the_first_board_leaves_its_overlays_open() {
     assert_eq!(frame.board, id(B1));
     assert_eq!(frame.overlays.len(), 1);
     assert_eq!(frame.overlays[0].board, id(B2));
+}
+
+/// An interaction that `key` triggers, navigating to `dest`.
+fn on_key(key: &str, dest: &str) -> Value {
+    json!({"trigger": {"type": "keyPress", "key": key},
+        "actions": [{"type": "navigate", "dest": dest}]})
+}
+
+/// `key` going down with no modifier held.
+fn key_down(key: &str) -> KeyEvent {
+    KeyEvent {
+        key: key.to_string(),
+        ctrl: false,
+        alt: false,
+        shift: false,
+        cmd: false,
+        down: true,
+    }
+}
+
+fn three_boards(children: Vec<Value>) -> Player {
+    player(
+        vec![board(B1, children), board(B2, vec![]), board(B3, vec![])],
+        vec![],
+        &[],
+    )
+}
+
+#[test]
+fn shift_k_fires_the_shift_k_trigger_and_not_the_plain_k_one() {
+    let mut player = three_boards(vec![
+        layer(L1, json!([on_key("Shift+K", B3)])),
+        layer(L2, json!([on_key("K", B2)])),
+    ]);
+
+    let effects = player.key(KeyEvent {
+        shift: true,
+        ..key_down("K")
+    });
+
+    assert_eq!(effects, vec![Effect::KeyHandled, Effect::NeedsFrame]);
+    assert_eq!(player.frame().board, id(B3));
+    assert_eq!(player.history(), &[id(B1)]);
+}
+
+#[test]
+fn plain_k_fires_the_k_trigger_with_its_transition_and_not_the_shift_k_one() {
+    let mut player = three_boards(vec![
+        layer(
+            L1,
+            json!([{
+                "trigger": {"type": "keyPress", "key": "K"},
+                "actions": [{"type": "navigate", "dest": B2}],
+                "transition": {"type": "slideIn", "direction": "left"},
+                "durationMs": 200,
+                "easing": "linear"
+            }]),
+        ),
+        layer(L2, json!([on_key("Shift+K", B3)])),
+    ]);
+
+    let effects = player.key(key_down("K"));
+
+    assert_eq!(effects, vec![Effect::KeyHandled, Effect::NeedsFrame]);
+    let frame = player.frame();
+    assert_eq!(frame.board, id(B2));
+    let running = frame.transition.unwrap();
+    assert_eq!(
+        running.transition,
+        Transition::SlideIn {
+            direction: Direction::Left
+        }
+    );
+    assert_eq!(running.duration_ms, 200);
+    assert_eq!(running.easing, Easing::Linear);
+}
+
+#[test]
+fn a_trigger_names_its_modifiers_in_any_order_and_its_key_in_any_case() {
+    let mut player = three_boards(vec![layer(L1, json!([on_key("shift+CTRL+k", B2)]))]);
+
+    let effects = player.key(KeyEvent {
+        ctrl: true,
+        shift: true,
+        ..key_down("K")
+    });
+
+    assert_eq!(effects, vec![Effect::KeyHandled, Effect::NeedsFrame]);
+    assert_eq!(player.frame().board, id(B2));
+}
+
+#[test]
+fn a_trigger_may_name_a_key_by_its_other_names() {
+    const B4: &str = "b0000004";
+    let mut player = player(
+        vec![
+            board(B1, vec![layer(L1, json!([on_key("Esc", B2)]))]),
+            board(B2, vec![layer(L2, json!([on_key("Return", B3)]))]),
+            board(B3, vec![layer("a0000003", json!([on_key("Left", B4)]))]),
+            board(B4, vec![layer("a0000004", json!([on_key("Space", B1)]))]),
+        ],
+        vec![],
+        &[],
+    );
+
+    player.key(key_down("Escape"));
+    assert_eq!(player.frame().board, id(B2));
+    player.key(key_down("Enter"));
+    assert_eq!(player.frame().board, id(B3));
+    player.key(key_down("ArrowLeft"));
+    assert_eq!(player.frame().board, id(B4));
+    player.key(key_down(" "));
+    assert_eq!(player.frame().board, id(B1));
+}
+
+#[test]
+fn of_two_layers_naming_the_key_only_the_one_on_top_fires() {
+    let mut player = three_boards(vec![
+        layer(L1, json!([on_key("K", B2)])),
+        layer(L2, json!([on_key("K", B3)])),
+    ]);
+
+    player.key(key_down("K"));
+
+    assert_eq!(player.frame().board, id(B3));
+    assert_eq!(player.history(), &[id(B1)]);
+}
+
+#[test]
+fn a_key_fires_the_open_overlays_trigger_and_not_the_boards_under_it() {
+    let open = json!({"type": "openOverlay", "dest": B2});
+    let mut player = player(
+        vec![
+            board(
+                B1,
+                vec![
+                    layer(L1, json!([actions(json!([open]))])),
+                    layer(L2, json!([on_key("K", B3)])),
+                ],
+            ),
+            board(
+                B2,
+                vec![layer(
+                    "a0000003",
+                    json!([{"trigger": {"type": "keyPress", "key": "K"},
+                        "actions": [{"type": "closeOverlay"}]}]),
+                )],
+            ),
+            board(B3, vec![]),
+        ],
+        vec![],
+        &[
+            (B2, rect(0.0, 0.0, 100.0, 100.0)),
+            (L1, rect(0.0, 0.0, 50.0, 50.0)),
+        ],
+    );
+    click(&mut player, 10.0, 10.0, 0.0);
+    assert_eq!(player.frame().overlays.len(), 1);
+
+    let effects = player.key(key_down("K"));
+
+    assert_eq!(effects, vec![Effect::KeyHandled, Effect::NeedsFrame]);
+    let frame = player.frame();
+    assert_eq!(frame.board, id(B1));
+    assert!(frame.overlays.is_empty());
+    assert!(player.history().is_empty());
 }

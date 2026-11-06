@@ -36,6 +36,10 @@
 // - US-39: Cmd+\ on macOS and Ctrl+\ elsewhere hide both bars (kept in place)
 //   and say how to show them again; the same key shows them, and the prototype's
 //   key triggers do not see it.
+// - US-40: keys go to the player while play runs, letters and digits named by
+//   their physical key, a held key once, and none typed in the bar's controls;
+//   Escape that a key trigger takes stays in play. A controller button is read
+//   once a frame and sent once as it goes down and once as it goes up.
 // - A play link to a board the page lacks shows the renderer's reason on the
 //   stage, and Exit still leaves.
 // - Leaving play names the board the player is on, and only keeps the selected
@@ -46,7 +50,7 @@ import { RouterProvider, createMemoryHistory } from "@tanstack/react-router";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { PlayMode, type PlayBoard, type PlayFlow } from "@/components/viewer/play";
-import type { DesignRenderer, PlayState } from "@/design/renderer";
+import type { DesignRenderer, PlayKey, PlayState } from "@/design/renderer";
 import { getRouter } from "./router";
 import { answerDesignRead } from "./testing/design-boards";
 
@@ -59,6 +63,12 @@ type FakePlayer = DesignRenderer["play"] & {
   openUrl(url: string, newTab: boolean): void;
   /** A click on nothing that reacts. */
   miss(): void;
+  /** The key events sent to the player, in order. */
+  keys: PlayKey[];
+  /** The controller buttons sent to the player, in order: `<index> down` or `<index> up`. */
+  buttons: string[];
+  /** The keys a trigger of the board fires on. */
+  triggers: Set<string>;
 };
 
 /** What the fake renderers of the doc page were asked to do. */
@@ -79,6 +89,9 @@ const fake = vi.hoisted(() => ({
 function fakePlayer(boards: () => string[]): FakePlayer {
   let state: PlayState | null = null;
   const calls: string[] = [];
+  const keys: PlayKey[] = [];
+  const buttons: string[] = [];
+  const triggers = new Set<string>();
   const listeners = new Set<() => void>();
   const notify = () => {
     for (const listener of Array.from(listeners)) listener();
@@ -93,6 +106,9 @@ function fakePlayer(boards: () => string[]): FakePlayer {
   };
   return {
     calls,
+    keys,
+    buttons,
+    triggers,
     start(id) {
       calls.push(`start ${id}`);
       state = { board: board(id), history: [], overlays: [], missed: false, url: null };
@@ -104,10 +120,12 @@ function fakePlayer(boards: () => string[]): FakePlayer {
     pointer() {
       return false;
     },
-    key() {
-      return false;
+    key(event) {
+      keys.push(event);
+      return event.down && triggers.has(event.key);
     },
-    gamepad() {
+    gamepad(button, down) {
+      buttons.push(`${button} ${down ? "down" : "up"}`);
       return false;
     },
     back() {
@@ -593,6 +611,82 @@ describe("leaving play mode", () => {
     fireEvent.keyDown(document.body, { key: "Escape" });
 
     expect(onExit).toHaveBeenCalledExactlyOnceWith(DONE);
+  });
+});
+
+describe("keys and controller buttons", () => {
+  const plainK = { key: "K", ctrl: false, alt: false, shift: false, cmd: false };
+
+  test("Escape that a trigger takes fires it and stays in play", async () => {
+    const { player, onExit } = playMode({ play: CART });
+    await screen.findByText("Cart · 1 of 3");
+    player.triggers.add("Escape");
+
+    fireEvent.keyDown(document.body, { key: "Escape", code: "Escape" });
+
+    expect(player.keys).toEqual([{ key: "Escape", ctrl: false, alt: false, shift: false, cmd: false, down: true }]);
+    expect(onExit).not.toHaveBeenCalled();
+  });
+
+  test("a letter is named by its physical key, so Alt+K on macOS is K with Alt", async () => {
+    const { player } = playMode({ play: CART });
+    await screen.findByText("Cart · 1 of 3");
+
+    fireEvent.keyDown(document.body, { key: "˚", code: "KeyK", altKey: true });
+
+    expect(player.keys).toEqual([{ ...plainK, alt: true, down: true }]);
+  });
+
+  test("a held key goes down once: its repeats are not sent", async () => {
+    const { player } = playMode({ play: CART });
+    await screen.findByText("Cart · 1 of 3");
+
+    fireEvent.keyDown(document.body, { key: "k", code: "KeyK" });
+    fireEvent.keyDown(document.body, { key: "k", code: "KeyK", repeat: true });
+    fireEvent.keyUp(document.body, { key: "k", code: "KeyK" });
+
+    expect(player.keys).toEqual([
+      { ...plainK, down: true },
+      { ...plainK, down: false },
+    ]);
+  });
+
+  test("keys typed in the flow select are not sent", async () => {
+    const { player } = playMode({ play: CART, flow: "Checkout", flows: [{ name: "Checkout", start: CART }] });
+    await screen.findByText("Cart · 1 of 3");
+
+    fireEvent.keyDown(screen.getByRole("combobox"), { key: "k", code: "KeyK" });
+
+    expect(player.keys).toEqual([]);
+  });
+
+  test("a controller button is sent once as it goes down and once as it goes up, read once a frame", async () => {
+    const frames: FrameRequestCallback[] = [];
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => frames.push(callback));
+    vi.stubGlobal("cancelAnimationFrame", () => {});
+    let pressed = false;
+    const pad = () => ({ index: 0, connected: true, buttons: [{ pressed }] });
+    Object.defineProperty(navigator, "getGamepads", { configurable: true, value: () => [pad()] });
+    const frame = () => frames.splice(0).forEach((callback) => callback(0));
+    const { player } = playMode({ play: CART });
+    await screen.findByText("Cart · 1 of 3");
+
+    try {
+      frame();
+      pressed = true;
+      frame();
+      frame();
+      frame();
+      pressed = false;
+      frame();
+      frame();
+      pressed = true;
+      frame();
+    } finally {
+      delete (navigator as { getGamepads?: unknown }).getGamepads;
+    }
+
+    expect(player.buttons).toEqual(["0 down", "0 up", "0 down"]);
   });
 });
 

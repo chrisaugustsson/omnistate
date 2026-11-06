@@ -23,6 +23,8 @@
 //!   overlays, the layers a pointer triggers and whose target is there, in
 //!   #3b82f6 2 px outside their boxes, fading out over 1 s from the first
 //!   frame after the click; frames are asked for until the fade ends.
+//! - US-40: controller buttons 0, 4 and 12 of the standard layout fire the
+//!   `Gamepad A`, `Gamepad LB` and `Gamepad Up` key triggers as they go down.
 
 mod design;
 
@@ -708,5 +710,78 @@ fn a_navigate_during_a_slide_starts_from_the_frame_on_screen_and_keeps_the_board
     assert_eq!(
         session.state(),
         json!({"board": B3, "history": [B1, B2], "overlays": [], "missed": false, "url": null})
+    );
+}
+
+fn on_gamepad(button: &str, dest: &str) -> Value {
+    json!([{
+        "trigger": {"type": "keyPress", "key": format!("Gamepad {button}")},
+        "actions": [{"type": "navigate", "dest": dest}]
+    }])
+}
+
+#[test]
+fn controller_buttons_0_4_and_12_fire_gamepad_a_lb_and_up_as_they_go_down() {
+    let mut scene = scene_of(&page(vec![
+        filled_board(
+            B1,
+            0.0,
+            400.0,
+            200.0,
+            "#ffffff",
+            vec![spot(
+                "a0000011",
+                0.0,
+                0.0,
+                100.0,
+                100.0,
+                on_gamepad("A", B2),
+            )],
+        ),
+        filled_board(
+            B2,
+            1000.0,
+            400.0,
+            200.0,
+            "#ffffff",
+            vec![spot(
+                "a0000012",
+                0.0,
+                0.0,
+                100.0,
+                100.0,
+                on_gamepad("LB", B3),
+            )],
+        ),
+        filled_board(
+            B3,
+            2000.0,
+            400.0,
+            200.0,
+            "#ffffff",
+            vec![spot(
+                "a0000013",
+                0.0,
+                0.0,
+                100.0,
+                100.0,
+                on_gamepad("Up", B1),
+            )],
+        ),
+    ]));
+    let mut session = Session::start(&scene, B1).expect("the page has the board");
+    draw(&mut session, &mut scene, 400, 200);
+
+    assert!(
+        !session.gamepad(0, false),
+        "a button going up fires nothing"
+    );
+    assert!(session.gamepad(0, true));
+    assert!(session.gamepad(4, true));
+    assert!(session.gamepad(12, true));
+
+    assert_eq!(
+        session.state(),
+        json!({"board": B1, "history": [B1, B2, B3], "overlays": [], "missed": false, "url": null})
     );
 }
