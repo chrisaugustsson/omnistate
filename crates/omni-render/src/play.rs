@@ -250,9 +250,18 @@ impl Session {
     /// Applies what the player asked for after an event. Returns whether what
     /// it shows changed and whether a key trigger fired.
     fn take(&mut self, effects: Vec<Effect>) -> (bool, bool) {
+        let before = self.player.frame().transition;
+        let (changed, handled) = self.absorb(effects);
+        self.changed |= changed;
+        self.fresh |= self.player.frame().transition != before;
+        (changed, handled)
+    }
+
+    /// Takes what the player asked for: whether the frame changed and whether
+    /// a key trigger fired.
+    fn absorb(&mut self, effects: Vec<Effect>) -> (bool, bool) {
         let mut changed = false;
         let mut handled = false;
-        let before = self.player.frame().transition;
         for effect in effects {
             match effect {
                 Effect::NeedsFrame => changed = true,
@@ -267,8 +276,6 @@ impl Session {
                 }
             }
         }
-        self.changed |= changed;
-        self.fresh |= self.player.frame().transition != before;
         (changed, handled)
     }
 
