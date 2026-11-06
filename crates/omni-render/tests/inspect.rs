@@ -562,6 +562,166 @@ fn after_a_mode_switch_the_properties_have_that_modes_values() {
     assert_eq!(inspect(&scene, SUMMARY), light, "back in light mode");
 }
 
+// A mode per collection (US-24): `color` inherits the root list (light,
+// dark), `density` lists its own (comfortable, compact):
+//
+//   color.surface     #ffffff / #000000
+//   density.space.md  16px (comfortable) / 12px (compact)
+//
+// The page's board Checkout holds Summary, filled $color.surface with a
+// padding of $density.space.md. Its own scene, so the shared fixture keeps a
+// single mode.
+
+fn density_scene() -> Scene {
+    let tokens = json!({
+        "$extensions": {"omnistate": {"modes": ["light", "dark"]}},
+        "color": {
+            "$type": "color",
+            "surface": {
+                "$value": "#ffffff",
+                "$extensions": {"omnistate": {"modes": {"light": "#ffffff", "dark": "#000000"}}}
+            }
+        },
+        "density": {
+            "$extensions": {"omnistate": {"modes": ["comfortable", "compact"]}},
+            "space": {
+                "md": {
+                    "$type": "dimension",
+                    "$value": "16px",
+                    "$extensions": {"omnistate": {"modes": {"comfortable": "16px", "compact": "12px"}}}
+                }
+            }
+        }
+    });
+    let system = DesignSystem::from_json(&tokens)
+        .unwrap_or_else(|error| panic!("the density design system must be read, but: {error}"));
+    let summary = json!({
+        "id": SUMMARY,
+        "type": "frame",
+        "name": "Summary",
+        "x": 20,
+        "y": 20,
+        "width": fixed(100.0),
+        "height": fixed(40.0),
+        "fills": solid("$color.surface"),
+        "layout": {"mode": "flex", "padding": {"top": "$density.space.md"}}
+    });
+    let page = json!({
+        "id": "p0000001",
+        "type": "page",
+        "name": "Mobile",
+        "children": [{
+            "id": CHECKOUT,
+            "type": "board",
+            "name": "Checkout",
+            "x": 0,
+            "y": 0,
+            "width": fixed(400.0),
+            "height": fixed(300.0),
+            "layout": {"mode": "none"},
+            "children": [summary]
+        }]
+    });
+    Scene::with_system(node(&page), Assets::new(), system)
+}
+
+/// The token uses of a property, as `uses` reads them.
+type Uses = Vec<(String, Value)>;
+
+/// The padding token and the fill token of Summary, as the inspection shows them.
+fn density_and_surface(scene: &Scene) -> (Uses, Uses) {
+    let summary = inspect(scene, SUMMARY);
+    (
+        uses(property(&summary.layout, "layout", "layout")),
+        uses(property(&summary.style, "style", "fills")),
+    )
+}
+
+#[test]
+fn a_choice_of_one_collection_resolves_it_and_leaves_the_others_in_their_modes() {
+    let mut scene = density_scene();
+    scene
+        .set_mode(r#"{"density": "compact"}"#)
+        .unwrap_or_else(|error| panic!("compact is a mode of density, but: {error}"));
+    assert_eq!(
+        density_and_surface(&scene),
+        (
+            expected(vec![token("$density.space.md", json!(12))]),
+            expected(vec![token("$color.surface", json!("#ffffff"))]),
+        ),
+        "density is compact, color stays light"
+    );
+    assert_eq!(
+        inspect(&scene, SUMMARY).mode.as_deref(),
+        Some("color:light,density:compact"),
+        "collections in different modes are each named with their mode"
+    );
+
+    scene
+        .set_mode(r#"{"color": "dark"}"#)
+        .unwrap_or_else(|error| panic!("dark is a mode of color, but: {error}"));
+    assert_eq!(
+        density_and_surface(&scene),
+        (
+            expected(vec![token("$density.space.md", json!(12))]),
+            expected(vec![token("$color.surface", json!("#000000"))]),
+        ),
+        "density stays compact when the choice names only color"
+    );
+}
+
+#[test]
+fn a_bare_mode_name_sets_only_the_collections_that_inherit_the_root_list() {
+    let mut scene = density_scene();
+    scene
+        .set_mode("dark")
+        .unwrap_or_else(|error| panic!("dark is in the root list, but: {error}"));
+    assert_eq!(
+        inspect(&scene, SUMMARY).mode.as_deref(),
+        Some("color:dark,density:comfortable"),
+        "dark sets color and leaves density, which lists its own modes"
+    );
+    assert_eq!(
+        density_and_surface(&scene),
+        (
+            expected(vec![token("$density.space.md", json!(16))]),
+            expected(vec![token("$color.surface", json!("#000000"))]),
+        )
+    );
+
+    assert_eq!(
+        scene.set_mode("compact"),
+        Err("`compact` is not a mode of the design system: it has `light`, `dark`".to_string()),
+        "a bare name is looked up in the root list only"
+    );
+    assert_eq!(
+        inspect(&scene, SUMMARY).mode.as_deref(),
+        Some("color:dark,density:comfortable"),
+        "the refused name keeps every mode"
+    );
+}
+
+#[test]
+fn a_choice_naming_a_mode_or_collection_the_system_lacks_is_refused_as_a_whole() {
+    let mut scene = density_scene();
+    assert_eq!(
+        scene.set_mode(r#"{"color": "dusk"}"#),
+        Err("`dusk` is not a mode of `color` (light, dark)".to_string())
+    );
+    assert_eq!(
+        scene.set_mode(r#"{"color": "dark", "shade": "deep"}"#),
+        Err("`shade` is not a collection of the design system (color, density)".to_string())
+    );
+    assert_eq!(
+        density_and_surface(&scene),
+        (
+            expected(vec![token("$density.space.md", json!(16))]),
+            expected(vec![token("$color.surface", json!("#ffffff"))]),
+        ),
+        "the valid color entry of the refused choice is not applied"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Interactions and scrolling (US-41)
 // ---------------------------------------------------------------------------

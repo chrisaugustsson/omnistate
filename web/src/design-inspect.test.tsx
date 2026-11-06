@@ -487,8 +487,8 @@ function seedInspections() {
   }
 }
 
-/** A fake of the API: the auth routes, the project, the design doc and its mainline version. */
-function fakeApi() {
+/** A fake of the API: the auth routes, the project, the design doc and its mainline version, whose design system has `tokens`. */
+function fakeApi(tokens: unknown = TOKENS) {
   const json = (status: number, body: unknown) =>
     new Response(JSON.stringify(body), {
       status,
@@ -528,7 +528,7 @@ function fakeApi() {
     tags: '<Page name="Mobile"/>',
     pages: PAGES,
     components: COMPONENTS,
-    tokens: TOKENS,
+    tokens,
   };
 
   const fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -964,5 +964,76 @@ describe("the mode switch", () => {
 
     fireEvent.click(await findTreeItem("Heading"));
     await expectRow("Text", "color", ["$color.ink", "#ffffff"]);
+  });
+});
+
+// A mode per collection (US-24): a top-level group that lists its own modes
+// gets a select of its own, labelled with its name, with the ID
+// `mode-switch-<name>`. The groups that inherit the root list share the Mode
+// select, which comes first. Either select calls `setMode` with every
+// collection's mode.
+
+const withDensity = (color: object) => ({
+  ...TOKENS,
+  color: { ...TOKENS.color, ...color },
+  spacing: undefined,
+  density: {
+    $extensions: { omnistate: { modes: ["comfortable", "compact"] } },
+    space: { md: { $type: "dimension", $value: "16px", $extensions: { omnistate: { modes: { comfortable: "16px", compact: "12px" } } } } },
+  },
+});
+
+/** The toolbar's mode selects, in order, each with its label, options and value. */
+function modeSelects() {
+  return Array.from(document.querySelectorAll<HTMLSelectElement>("select[id^='mode-switch']")).map((select) => ({
+    id: select.id,
+    label: select.labels?.[0]?.textContent,
+    options: Array.from(select.options).map((option) => option.value),
+    value: select.value,
+  }));
+}
+
+describe("a mode select per collection", () => {
+  test("collections that each list their own modes get a select each and no Mode select, and choosing one sets only its collection", async () => {
+    fakeApi(withDensity({ $extensions: { omnistate: { modes: ["light", "dark"] } } }));
+    renderAt(DOC_PATH);
+    const renderer = await findRenderer();
+    await waitFor(() => expect(modeSelects().length).toBeGreaterThan(0));
+    expect(modeSelects()).toEqual([
+      { id: "mode-switch-color", label: "color", options: ["light", "dark"], value: "light" },
+      { id: "mode-switch-density", label: "density", options: ["comfortable", "compact"], value: "comfortable" },
+    ]);
+
+    // A page shown again sets the choice again, so the call the select makes is the one after those before it.
+    const before = renderer.modeCalls.length;
+    fireEvent.change(screen.getByRole("combobox", { name: /^density$/ }), { target: { value: "compact" } });
+    expect(renderer.modeCalls[before]).toEqual({ color: "light", density: "compact" });
+    await waitFor(() => expect(screen.getByRole("combobox", { name: /^density$/ })).toHaveProperty("value", "compact"));
+    expect(screen.getByRole("combobox", { name: /^color$/ })).toHaveProperty("value", "light");
+  });
+
+  test("collections that inherit the root list share the Mode select, which comes first and sets them with the others' modes kept", async () => {
+    fakeApi(withDensity({}));
+    renderAt(DOC_PATH);
+    const renderer = await findRenderer();
+    await waitFor(() => expect(modeSelects().length).toBeGreaterThan(0));
+    expect(modeSelects()).toEqual([
+      { id: "mode-switch", label: "Mode", options: ["light", "dark"], value: "light" },
+      { id: "mode-switch-density", label: "density", options: ["comfortable", "compact"], value: "comfortable" },
+    ]);
+
+    fireEvent.change(screen.getByRole("combobox", { name: /^density$/ }), { target: { value: "compact" } });
+    await waitFor(() => expect(screen.getByRole("combobox", { name: /^density$/ })).toHaveProperty("value", "compact"));
+    const before = renderer.modeCalls.length;
+    fireEvent.change(modeSwitch(), { target: { value: "dark" } });
+    expect(renderer.modeCalls[before]).toEqual({ color: "dark", density: "compact" });
+  });
+
+  test("a group whose own modes list is empty gets no select", async () => {
+    fakeApi({ ...TOKENS, $extensions: undefined, spacing: { ...TOKENS.spacing, $extensions: { omnistate: { modes: [] } } } });
+    renderAt(DOC_PATH);
+    await findRenderer();
+    await findTreeItem("Summary");
+    expect(modeSelects()).toEqual([]);
   });
 });
