@@ -27,6 +27,15 @@
 //   starts the session over there.
 // - A link asks first; Open link opens it with `window.open` in a new tab, or
 //   `location.assign`.
+// - US-39: the notice reads "This opens <url> outside the prototype.", or "This
+//   opens your mail app to write to <address>." for `mailto:`. Cancel and Escape
+//   close it and open nothing; Don't show this again is kept under
+//   `omni.play.linkNotice` only on Open link, and then the next link opens at
+//   once. A link that comes while the notice shows is dropped. A click on
+//   nothing says "Nothing happens here. The hotspots are outlined."
+// - US-39: Cmd+\ on macOS and Ctrl+\ elsewhere hide both bars (kept in place)
+//   and say how to show them again; the same key shows them, and the prototype's
+//   key triggers do not see it.
 // - A play link to a board the page lacks shows the renderer's reason on the
 //   stage, and Exit still leaves.
 // - Leaving play names the board the player is on, and only keeps the selected
@@ -48,6 +57,8 @@ type FakePlayer = DesignRenderer["play"] & {
   click(board: string): void;
   /** A click on a hotspot that opens `url`. */
   openUrl(url: string, newTab: boolean): void;
+  /** A click on nothing that reacts. */
+  miss(): void;
 };
 
 /** What the fake renderers of the doc page were asked to do. */
@@ -131,6 +142,10 @@ function fakePlayer(boards: () => string[]): FakePlayer {
     },
     openUrl(url, newTab) {
       state = { ...now(), url: { url, newTab } };
+      act(notify);
+    },
+    miss() {
+      state = { ...now(), missed: true };
       act(notify);
     },
   };
@@ -397,6 +412,160 @@ describe("a link the prototype opens", () => {
 
     expect(assign).toHaveBeenCalledExactlyOnceWith("https://example.com/terms");
     expect(open).not.toHaveBeenCalled();
+  });
+});
+
+describe("the notice before a link opens", () => {
+  const notice = () => screen.findByRole("alertdialog", { name: "Open link?" });
+
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  test("names the link, and Cancel opens nothing", async () => {
+    const open = vi.fn();
+    vi.stubGlobal("open", open);
+    const { player } = playMode({ play: CART });
+    await screen.findByText("Cart · 1 of 3");
+
+    player.openUrl("https://example.com/terms", true);
+
+    expect((await notice()).textContent).toContain("This opens https://example.com/terms outside the prototype.");
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    expect(open).not.toHaveBeenCalled();
+  });
+
+  test("a mailto link says it opens the mail app", async () => {
+    const { player } = playMode({ play: CART });
+    await screen.findByText("Cart · 1 of 3");
+
+    player.openUrl("mailto:sales@example.com", true);
+
+    expect((await notice()).textContent).toContain("This opens your mail app to write to sales@example.com.");
+  });
+
+  test("Don't show this again with Open link is kept, and the next link opens at once", async () => {
+    const open = vi.fn();
+    vi.stubGlobal("open", open);
+    const { player } = playMode({ play: CART });
+    await screen.findByText("Cart · 1 of 3");
+    player.openUrl("https://example.com/terms", true);
+    await notice();
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "Don't show this again" }));
+    fireEvent.click(screen.getByRole("button", { name: "Open link" }));
+    player.openUrl("https://example.com/privacy", true);
+
+    expect(localStorage.getItem("omni.play.linkNotice")).not.toBeNull();
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    expect(open.mock.calls.map((call) => call[0])).toEqual(["https://example.com/terms", "https://example.com/privacy"]);
+  });
+
+  test("Don't show this again with Cancel is not kept, and the next link asks again", async () => {
+    const open = vi.fn();
+    vi.stubGlobal("open", open);
+    const { player } = playMode({ play: CART });
+    await screen.findByText("Cart · 1 of 3");
+    player.openUrl("https://example.com/terms", true);
+    await notice();
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "Don't show this again" }));
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    player.openUrl("https://example.com/privacy", true);
+
+    expect(localStorage.getItem("omni.play.linkNotice")).toBeNull();
+    expect((await notice()).textContent).toContain("https://example.com/privacy");
+    expect(open).not.toHaveBeenCalled();
+  });
+
+  test("a link that comes while the notice shows is dropped", async () => {
+    const open = vi.fn();
+    vi.stubGlobal("open", open);
+    const { player } = playMode({ play: CART });
+    await screen.findByText("Cart · 1 of 3");
+    player.openUrl("https://example.com/terms", true);
+    await notice();
+
+    player.openUrl("https://example.com/privacy", true);
+    fireEvent.click(screen.getByRole("button", { name: "Open link" }));
+
+    expect(open.mock.calls.map((call) => call[0])).toEqual(["https://example.com/terms"]);
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+  });
+
+  test("Escape closes the notice as Cancel and stays in play", async () => {
+    const open = vi.fn();
+    vi.stubGlobal("open", open);
+    const { player, onExit } = playMode({ play: CART });
+    await screen.findByText("Cart · 1 of 3");
+    player.openUrl("https://example.com/terms", true);
+    await notice();
+
+    fireEvent.keyDown(document.body, { key: "Escape" });
+
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    expect(open).not.toHaveBeenCalled();
+    expect(onExit).not.toHaveBeenCalled();
+  });
+});
+
+describe("a click on nothing", () => {
+  test("says the hotspots are outlined", async () => {
+    const { player } = playMode({ play: CART });
+    await screen.findByText("Cart · 1 of 3");
+
+    player.miss();
+
+    expect((await screen.findByRole("status")).textContent).toBe("Nothing happens here. The hotspots are outlined.");
+  });
+});
+
+describe("hiding the bars", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  test("Ctrl+\\ hides both bars in place and says how to show them, and again shows them", async () => {
+    vi.spyOn(Navigator.prototype, "platform", "get").mockReturnValue("Win32");
+    playMode({ play: CART });
+    await screen.findByText("Cart · 1 of 3");
+
+    fireEvent.keyDown(document.body, { key: "\\", ctrlKey: true });
+
+    expect(screen.queryByRole("button", { name: /Exit/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Restart/ })).toBeNull();
+    expect(screen.getByRole("button", { name: /Exit/, hidden: true })).toBeTruthy();
+    expect(screen.getByRole("status").textContent).toBe("Press Ctrl+\\ to show the bars again");
+
+    fireEvent.keyDown(document.body, { key: "\\", ctrlKey: true });
+
+    expect(button("Exit")).toBeTruthy();
+    expect(button("Restart")).toBeTruthy();
+  });
+
+  test("on macOS Cmd+\\ hides the bars and the toast names ⌘", async () => {
+    vi.spyOn(Navigator.prototype, "platform", "get").mockReturnValue("MacIntel");
+    playMode({ play: CART });
+    await screen.findByText("Cart · 1 of 3");
+
+    fireEvent.keyDown(document.body, { key: "\\", metaKey: true });
+
+    expect(screen.queryByRole("button", { name: /Exit/ })).toBeNull();
+    expect(screen.getByRole("status").textContent).toBe("Press ⌘\\ to show the bars again");
+  });
+
+  test("the prototype's key triggers do not see the key", async () => {
+    vi.spyOn(Navigator.prototype, "platform", "get").mockReturnValue("Win32");
+    const keys = vi.fn();
+    window.addEventListener("keydown", keys);
+    playMode({ play: CART });
+    await screen.findByText("Cart · 1 of 3");
+
+    fireEvent.keyDown(document.body, { key: "\\", ctrlKey: true });
+    window.removeEventListener("keydown", keys);
+
+    expect(keys).not.toHaveBeenCalled();
   });
 });
 

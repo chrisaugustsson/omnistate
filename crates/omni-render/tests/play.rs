@@ -19,6 +19,10 @@
 //!   a board of the shown page".
 //! - US-35: an open overlay is drawn over the board at its place, with its
 //!   `background` colour over the whole screen under it.
+//! - US-39: a click on nothing outlines every hotspot of the board and its open
+//!   overlays, the layers a pointer triggers and whose target is there, in
+//!   #3b82f6 2 px outside their boxes, fading out over 1 s from the first
+//!   frame after the click; frames are asked for until the fade ends.
 
 mod design;
 
@@ -367,5 +371,169 @@ fn an_overlay_is_drawn_over_its_background_sheet_which_covers_the_board_under_it
         stage.pixel(395, 395),
         [0, 0, 0],
         "the board's bottom-right corner"
+    );
+}
+
+const HINT: [u8; 3] = [0x3b, 0x82, 0xf6];
+const WHITE: [u8; 3] = [0xff, 0xff, 0xff];
+
+/// A `width` x `height` layer `id` at `x`, `y` on its board with `interactions`.
+fn spot(id: &str, x: f64, y: f64, width: f64, height: f64, interactions: Value) -> Value {
+    with(
+        &at(&rect(id, width, height), x, y),
+        "interactions",
+        interactions,
+    )
+}
+
+/// A 400 x 200 white board on a 400 x 200 stage, so the board's points are the
+/// stage's, with a hotspot at 150..250, 50..150.
+fn board_with_a_hotspot(interactions: Value) -> (Scene, Session) {
+    let mut scene = scene_of(&page(vec![
+        filled_board(
+            B1,
+            0.0,
+            400.0,
+            200.0,
+            "#ffffff",
+            vec![hotspot(150.0, 50.0, interactions)],
+        ),
+        filled_board(B2, 1000.0, 400.0, 200.0, "#ffffff", vec![]),
+    ]));
+    let mut session = Session::start(&scene, B1).expect("the page has the board");
+    draw(&mut session, &mut scene, 400, 200);
+    session.tick(1000.0);
+    (scene, session)
+}
+
+#[test]
+fn a_click_on_nothing_outlines_the_hotspot_2_px_outside_its_box_and_not_after_the_fade() {
+    let (mut scene, mut session) = board_with_a_hotspot(navigate(B2));
+
+    click(&mut session, 20.0, 20.0);
+    session.tick(1016.0);
+    let first = draw(&mut session, &mut scene, 400, 200);
+
+    assert_eq!(first.pixel(148, 100), HINT, "2 px left of the box");
+    assert_eq!(first.pixel(149, 100), HINT, "1 px left of the box");
+    assert_eq!(first.pixel(147, 100), WHITE, "3 px left of the box");
+    assert_eq!(first.pixel(251, 100), HINT, "2 px right of the box");
+    assert_eq!(first.pixel(252, 100), WHITE, "3 px right of the box");
+
+    session.tick(2216.0);
+    let later = draw(&mut session, &mut scene, 400, 200);
+
+    assert_eq!(later.pixel(149, 100), WHITE, "1.2 s after the first frame");
+}
+
+#[test]
+fn a_click_on_nothing_asks_for_frames_until_the_outlines_have_faded() {
+    let (mut scene, mut session) = board_with_a_hotspot(navigate(B2));
+
+    click(&mut session, 20.0, 20.0);
+
+    assert_eq!(session.tick(1016.0), Tick::Animating);
+    draw(&mut session, &mut scene, 400, 200);
+    assert_eq!(session.tick(1916.0), Tick::Animating);
+    draw(&mut session, &mut scene, 400, 200);
+    assert_ne!(session.tick(2116.0), Tick::Animating);
+    draw(&mut session, &mut scene, 400, 200);
+    assert_eq!(session.tick(2132.0), Tick::Idle);
+}
+
+#[test]
+fn a_click_on_nothing_in_an_overlay_outlines_its_hotspots_where_the_overlay_is() {
+    let open = json!([{"actions": [{"type": "openOverlay", "dest": B2}]}]);
+    let mut scene = scene_of(&page(vec![
+        filled_board(
+            B1,
+            0.0,
+            400.0,
+            400.0,
+            "#ff0000",
+            vec![hotspot(0.0, 0.0, open)],
+        ),
+        // Centred on the 400 x 400 board at 100..300: its hotspot at 50, 50
+        // is drawn at 150..250.
+        filled_board(
+            B2,
+            1000.0,
+            200.0,
+            200.0,
+            "#ffffff",
+            vec![spot("a0000002", 50.0, 50.0, 100.0, 100.0, navigate(B1))],
+        ),
+    ]));
+    let mut session = Session::start(&scene, B1).expect("the page has the board");
+    draw(&mut session, &mut scene, 400, 400);
+    session.tick(1000.0);
+    click(&mut session, 50.0, 50.0);
+    session.tick(1016.0);
+    draw(&mut session, &mut scene, 400, 400);
+
+    click(&mut session, 120.0, 120.0);
+    session.tick(1032.0);
+    let stage = draw(&mut session, &mut scene, 400, 400);
+
+    assert_eq!(stage.pixel(149, 200), HINT, "left of the overlay's hotspot");
+    assert_eq!(
+        stage.pixel(251, 200),
+        HINT,
+        "right of the overlay's hotspot"
+    );
+}
+
+#[test]
+fn only_layers_a_pointer_triggers_and_whose_target_is_there_are_outlined() {
+    // 50 x 50 layers at y 75..125 and x 25, 125, 225 and 325.
+    let hover = json!([{"trigger": "onHover", "actions": [{"type": "navigate", "dest": B2}]}]);
+    let key = json!([{
+        "trigger": {"type": "keyPress", "key": "K"},
+        "actions": [{"type": "navigate", "dest": B2}]
+    }]);
+    let delay = json!([{
+        "trigger": {"type": "afterDelay", "ms": 60000},
+        "actions": [{"type": "navigate", "dest": B2}]
+    }]);
+    let dangling = navigate("b0000009");
+    let mut scene = scene_of(&page(vec![
+        filled_board(
+            B1,
+            0.0,
+            400.0,
+            200.0,
+            "#ffffff",
+            vec![
+                spot("a0000011", 25.0, 75.0, 50.0, 50.0, hover),
+                spot("a0000012", 125.0, 75.0, 50.0, 50.0, key),
+                spot("a0000013", 225.0, 75.0, 50.0, 50.0, delay),
+                spot("a0000014", 325.0, 75.0, 50.0, 50.0, dangling),
+            ],
+        ),
+        filled_board(B2, 1000.0, 400.0, 200.0, "#ffffff", vec![]),
+    ]));
+    let mut session = Session::start(&scene, B1).expect("the page has the board");
+    draw(&mut session, &mut scene, 400, 200);
+    session.tick(1000.0);
+
+    click(&mut session, 10.0, 10.0);
+    session.tick(1016.0);
+    let stage = draw(&mut session, &mut scene, 400, 200);
+
+    assert_eq!(stage.pixel(24, 100), HINT, "the layer a hover triggers");
+    assert_eq!(
+        stage.pixel(124, 100),
+        WHITE,
+        "the layer only a key triggers"
+    );
+    assert_eq!(
+        stage.pixel(224, 100),
+        WHITE,
+        "the layer only a delay triggers"
+    );
+    assert_eq!(
+        stage.pixel(324, 100),
+        WHITE,
+        "the layer whose target is not there"
     );
 }
