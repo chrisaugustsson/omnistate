@@ -50,6 +50,11 @@ services:
       OMNI_S3_ACCESS_KEY: ${OMNI_S3_ACCESS_KEY:-omni-dev}
       OMNI_S3_SECRET_KEY: ${OMNI_S3_SECRET_KEY:-omni-dev-secret}
       OMNI_S3_BUCKET: omni
+      # glibc gives each thread that allocates its own arena and keeps what
+      # the arena once held. Drawing the previews of a design write on the
+      # blocking threads left the API at 660 MB after four imports of a
+      # 4 MB Penpot file; with two arenas it stays near 240 MB.
+      MALLOC_ARENA_MAX: "2"
     depends_on:
       postgres:
         condition: service_healthy

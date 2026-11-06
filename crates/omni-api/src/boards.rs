@@ -238,11 +238,28 @@ where
     F: Fn(T) -> Fut + Clone + Send + 'static,
     Fut: std::future::Future<Output = Result<R, ApiError>> + Send + 'static,
 {
+    each_concurrently_up_to(CONCURRENCY, items, job).await
+}
+
+/// Runs `job` for every item, at most `limit` at a time, and fails with the
+/// first error. For jobs that hold more memory than a chunk read, such as
+/// drawing a board, the caller picks a smaller limit than `CONCURRENCY`.
+pub(crate) async fn each_concurrently_up_to<T, R, F, Fut>(
+    limit: usize,
+    items: Vec<T>,
+    job: F,
+) -> Result<Vec<R>, ApiError>
+where
+    T: Send + 'static,
+    R: Send + 'static,
+    F: Fn(T) -> Fut + Clone + Send + 'static,
+    Fut: std::future::Future<Output = Result<R, ApiError>> + Send + 'static,
+{
     let mut results = Vec::with_capacity(items.len());
     let mut items = items.into_iter();
     loop {
         let mut batch = tokio::task::JoinSet::new();
-        for (index, item) in items.by_ref().take(CONCURRENCY).enumerate() {
+        for (index, item) in items.by_ref().take(limit.max(1)).enumerate() {
             let job = job.clone();
             batch.spawn(async move { (index, job(item).await) });
         }
@@ -863,5 +880,30 @@ mod tests {
         // The same design splits the same way.
         let (again, _) = split(&design);
         assert_eq!(manifest_text(&again), manifest_text(&manifest));
+    }
+
+    /// A write draws a design's previews a few at a time (previews.rs), so
+    /// the memory of the boards being drawn stays bounded.
+    #[tokio::test]
+    async fn each_concurrently_up_to_runs_at_most_the_limit_at_once() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let running = Arc::new(AtomicUsize::new(0));
+        let most = Arc::new(AtomicUsize::new(0));
+        let (seen, peak) = (running.clone(), most.clone());
+        let results = each_concurrently_up_to(3, (0..10).collect(), move |n: usize| {
+            let (seen, peak) = (seen.clone(), peak.clone());
+            async move {
+                let now = seen.fetch_add(1, Ordering::SeqCst) + 1;
+                peak.fetch_max(now, Ordering::SeqCst);
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                seen.fetch_sub(1, Ordering::SeqCst);
+                Ok(n * 2)
+            }
+        })
+        .await
+        .ok()
+        .expect("every job succeeds");
+        assert_eq!(results, (0..10).map(|n| n * 2).collect::<Vec<_>>());
+        assert_eq!(most.load(Ordering::SeqCst), 3);
     }
 }

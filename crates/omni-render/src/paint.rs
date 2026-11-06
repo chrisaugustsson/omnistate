@@ -63,6 +63,10 @@ pub fn decode_image(data: &[u8]) -> Option<Image> {
     Image::from_encoded(Data::new_copy(data)).and_then(|image| image.make_raster_image(None, None))
 }
 
+/// An image decoded for drawing, as [`decode_image`] gives it; a host that
+/// draws many boards decodes each image once and gives every board the same.
+pub type DecodedImage = Image;
+
 /// What the host supplies for drawing: the images that `attachment:<id>`
 /// references name, and font files. The bundled Inter is always there, and
 /// stands in for every font family that the host did not supply. A clone has
@@ -89,6 +93,13 @@ impl Assets {
             .ok_or_else(|| format!("the bytes for {} are not an image", attachment.as_str()))?;
         self.images.insert(attachment.clone(), image);
         Ok(())
+    }
+
+    /// Supplies the image that `attachment` names, decoded already (by
+    /// [`decode_image`]), so that one decoding serves every board that shows
+    /// the image.
+    pub fn add_decoded(&mut self, attachment: &AttachmentRef, image: DecodedImage) {
+        self.images.insert(attachment.clone(), image);
     }
 
     /// Supplies a font file (TrueType or OpenType) for text in `family`. Fails

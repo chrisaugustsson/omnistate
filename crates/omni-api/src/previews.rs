@@ -16,19 +16,26 @@
 // made when it is read.
 
 use crate::AppState;
-use crate::boards::{self, each_concurrently};
+use crate::boards::{self, each_concurrently, each_concurrently_up_to};
 use crate::chunks::read_chunk;
 use crate::design;
 use crate::placeholders::{self, Sizing};
 use crate::session::ApiError;
 use base64::Engine;
 use omni_core::design::{AttachmentRef, Node};
+use omni_render::paint::{Assets, DecodedImage, decode_image};
 use omni_render::view::{
     BOARD_PNG_MAX_SIDE, board_box, board_images, board_png, board_png_side, board_preview,
 };
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
+
+/// How many boards are drawn at once when a write makes previews. Each board
+/// holds its surface and the glyphs it shaped on its own thread, and the
+/// memory a draw takes stays with the process, so a design of many boards
+/// (a Penpot import) is drawn a few boards at a time.
+const DRAWN_AT_ONCE: usize = 4;
 
 /// Where the preview of the board stored in `chunk` is kept, for the design
 /// system version `version`.
@@ -40,6 +47,37 @@ fn stored_key(workspace_id: &str, version: &str, chunk: &str) -> String {
 /// The files of the images read so far, so that the boards of one write that
 /// share an image read it once.
 type ImagesRead = Arc<Mutex<HashMap<String, Arc<Vec<u8>>>>>;
+
+/// The images decoded so far, by reference, so that the boards of one write
+/// decode each image once; `None` for bytes that are not an image.
+type ImagesDecoded = Arc<Mutex<HashMap<String, Option<DecodedImage>>>>;
+
+/// Gives `assets` the images among `read`, decoding each reference once
+/// across `decoded`. Bytes the renderer cannot read leave their image missing.
+fn supply_images(assets: &mut Assets, read: Vec<(String, Arc<Vec<u8>>)>, decoded: &ImagesDecoded) {
+    for (reference, bytes) in read {
+        let Ok(attachment) = reference.parse::<AttachmentRef>() else {
+            continue;
+        };
+        let known = decoded
+            .lock()
+            .ok()
+            .and_then(|decoded| decoded.get(&reference).cloned());
+        let image = match known {
+            Some(image) => image,
+            None => {
+                let image = decode_image(&bytes);
+                if let Ok(mut decoded) = decoded.lock() {
+                    decoded.insert(reference, image.clone());
+                }
+                image
+            }
+        };
+        if let Some(image) = image {
+            assets.add_decoded(&attachment, image);
+        }
+    }
+}
 
 /// The bytes of the images in `references` that can be read, by reference. An
 /// image that cannot be read is left out, and the preview draws without it.
@@ -86,6 +124,7 @@ async fn make(
     sizing: &Sizing,
     (chunk, text): (String, String),
     read: &ImagesRead,
+    decoded: &ImagesDecoded,
 ) -> Option<Vec<u8>> {
     let system = sizing.system();
     let listed = tokio::task::spawn_blocking(move || {
@@ -99,14 +138,10 @@ async fn make(
     let (board, references) = listed?;
     let images = read_images(state, workspace_id, references, read).await;
     let system = sizing.system();
+    let decoded = decoded.clone();
     let png = tokio::task::spawn_blocking(move || {
         let mut assets = placeholders::assets();
-        for (reference, bytes) in images {
-            if let Ok(attachment) = reference.parse::<AttachmentRef>() {
-                // An image the renderer cannot read draws as a missing one.
-                let _ = assets.add_image(&attachment, &bytes);
-            }
-        }
+        supply_images(&mut assets, images, &decoded);
         board_preview(board, &assets, system.as_deref())
     })
     .await
@@ -130,12 +165,13 @@ async fn make_all(
     let (state, workspace_id) = (state.clone(), workspace_id.to_string());
     let sizing = sizing.clone();
     let read = ImagesRead::default();
-    let made = each_concurrently(boards, move |board| {
+    let decoded = ImagesDecoded::default();
+    let made = each_concurrently_up_to(DRAWN_AT_ONCE, boards, move |board| {
         let (state, workspace_id, sizing) = (state.clone(), workspace_id.clone(), sizing.clone());
-        let read = read.clone();
+        let (read, decoded) = (read.clone(), decoded.clone());
         async move {
             let chunk = board.0.clone();
-            let png = make(&state, &workspace_id, &sizing, board, &read).await;
+            let png = make(&state, &workspace_id, &sizing, board, &read, &decoded).await;
             Ok(png.map(|png| (chunk, png)))
         }
     })
