@@ -533,7 +533,6 @@ struct Laid {
     index: Index,
 }
 
-/// The boards of `page`: its children, or the node itself if it is not a page.
 /// What the inspection shows as the scene's mode: the mode when every
 /// collection has the same one, else each collection with its mode, such as
 /// `color:dark,density:compact`.
@@ -551,6 +550,7 @@ fn mode_text(choice: &ModeChoice) -> String {
     }
 }
 
+/// The boards of `page`: its children, or the node itself if it is not a page.
 fn board_nodes(page: &Node) -> &[Node] {
     match page.data() {
         NodeData::Page(page) => &page.children,
