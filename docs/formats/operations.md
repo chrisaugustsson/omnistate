@@ -278,6 +278,17 @@ of the component it places. A `dest` that is in no node of the doc is refused as
 "not in the doc". Deleting a board leaves the interactions that point at it as
 they were, and a set that does not write `interactions` is accepted over them.
 
+A design doc also checks the token references of every node an insert, a
+replace or a set writes, with the nodes below it, against the project's design system: the token must exist ("`$state.nope`
+is not a token of the design system"), be of a type the field takes ("`$color.ink`
+is a color token; `content` takes a string token"), and have the field in its
+`scopes` when it lists any ("`$state.count` is not scoped to `opacity` (scopes:
+content)"). A project whose design system has no head refuses any reference with
+"the project has no design system: import tokens first". The first reference that
+fails is reported, as `invalid_operation` with the index of the operation. A node
+that already holds a reference to a missing token is refused when a write
+touches it, whatever the write changes.
+
 ## Order
 
 Children are kept in order by a sort key, a fractional index: a string compared as

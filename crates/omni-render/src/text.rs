@@ -328,12 +328,12 @@ impl ShapedText {
             .set_apply_rounding_hack(false)
             .turn_hinting_off();
         let mut builder = ParagraphBuilder::new(&paragraph_style, &fonts.collection);
-        builder.add_text(&text.content);
+        builder.add_text(text.content_text());
         let mut paragraph = builder.build();
         // Lines break only at line breaks, so each piece is measured where
         // the shaping of its whole line puts it, kerning included.
         paragraph.layout(f32::INFINITY);
-        let lines = pieces(&text.content, &paragraph);
+        let lines = pieces(text.content_text(), &paragraph);
 
         let typeface = fonts.typeface(family, font_style);
         let slant_of = |slant: Slant| match slant {
@@ -394,7 +394,7 @@ impl ShapedText {
         ShapedText {
             asked,
             drawn,
-            content: text.content.clone(),
+            content: text.content_text().to_string(),
             style,
             paragraph_style,
             decoration,
@@ -415,7 +415,7 @@ impl ShapedText {
             lines,
             tab_stops,
             line_height,
-            first_baseline: (!text.content.is_empty())
+            first_baseline: (!text.content_text().is_empty())
                 .then_some(first_baseline / DEVICE_PIXEL_RATIO),
         }
     }

@@ -47,7 +47,7 @@ and `<Component>` take every attribute of the layout and style tables. A
 | --- | --- |
 | `id` | The node's ID, 8 lowercase base32 characters, such as `"k3f9x2qa"`. It refers to an existing node. A tag written without `id` is a new node: the server assigns its ID (US-031), never the agent. Each ID is written once. |
 | `name` | The node's name, as text. Required. |
-| `visible` | `{false}` hides the node. Left out, the node is visible. |
+| `visible` | `{false}` hides the node, or a token reference to a boolean token, `visible="$state.isOpen"`. Left out, the node is visible. |
 
 ### Placement
 
@@ -94,7 +94,7 @@ to CSS.
 | `strokes` | A list of strokes: `strokes={[{color: "#e2e8f0", width: 1, align: "inside", dash: {length: 4, gap: 2}}]}`. `align` (`inside`, `center` or `outside`) is for the strokes of boards, frames and vectors with closed paths; left out it is `inside`. The stroke of an open path is centered whatever `align` says. `cap` (`butt`, `round` or `square`; left out it is `butt`) is for vectors: it shapes the ends of the stroke and every dash, so `dash: {length: 0, gap: 8}` with `cap: "round"` draws dots. A board or frame accepts `cap` and ignores it. |
 | `radius` | The corner radius: one length for every corner, `radius={8}`, or an object with some of `topLeft`, `topRight`, `bottomRight` and `bottomLeft`. |
 | `shadows` | A list of shadows or token references: `shadows={[{type: "drop", color: "#0f172a33", offsetX: 0, offsetY: 4, blur: 8, spread: 0}, "$shadow.raised"]}`. |
-| `opacity` | From 0 to 1, or a token reference. |
+| `opacity` | From 0 to 1, or a reference to a number token. |
 | `clip` | Clips the children to the box. |
 | `overflow` | How a board or frame scrolls its content: `"none"`, `"horizontal"`, `"vertical"` or `"both"`; left out it is `none`. Boards and frames take it. |
 | `modes` | The mode of each collection that a board is resolved in, such as `modes={{color: "dark"}}`, whatever mode the page is shown in. Only boards take it. A write refuses a collection the design system does not have and a mode the collection does not list. |
@@ -106,13 +106,13 @@ to CSS.
 
 | Attribute | Value |
 | --- | --- |
-| `content` | The text, exactly as written, never markup. |
+| `content` | The text, exactly as written, never markup, or a reference to a string token, `content="$state.cta"`. A text that is `$` and a token's path is a reference. |
 | `fontFamily` | The family's name, `"Inter"`, or a token reference. |
-| `fontSize` | A length of 0 or more, or a token reference. |
+| `fontSize` | A length of 0 or more, or a reference to a dimension or number token (pixels). |
 | `fontWeight` | From 1 to 1000, or a token reference. |
 | `fontStyle` | `"normal"` or `"italic"`. |
-| `lineHeight` | A multiple of the font size, or a token reference. |
-| `letterSpacing` | A length, which may be negative, or a token reference. |
+| `lineHeight` | A multiple of the font size, or a token reference: a number token is a multiple, as the literal is, and a dimension token such as `24px` is absolute pixels. |
+| `letterSpacing` | A length, which may be negative, or a reference to a dimension or number token (pixels). |
 | `textAlign` | `"left"`, `"center"`, `"right"` or `"justify"`. |
 | `textDecoration` | `"none"`, `"underline"` or `"line-through"`. |
 | `color` | A color or a token reference. |
@@ -362,8 +362,14 @@ instance inside an instance by the instance on the page.
   is `dir={"col"}`.
 - **Colors** are `#rrggbb` or `#rrggbbaa`.
 - **Token references** are `$` and the token's path, such as `$color.surface`.
-  Every color, every length except `x` and `y`, every opacity and font value
-  and a whole shadow may be a token reference.
+  Every color, every length except `x` and `y`, every opacity and font value,
+  a `<Text>`'s `content`, `visible`, a stroke's `width` and a whole shadow may
+  be a token reference. A write checks each reference: the design system has
+  the token, its type is one the field takes (a color for colors, a string for
+  `content`, a boolean for `visible`, a number for `opacity`, a dimension or
+  number for lengths and the text measures), and its `scopes`, when it has them,
+  list the field. A project without a design system refuses
+  any reference.
 - Literals keep the ranges of the JSON form: sizes, gaps, padding, radii and
   font sizes are 0 or more, opacity goes from 0 to 1, and margins, `x`, `y` and
   letter spacing may be negative.

@@ -21,6 +21,23 @@ pub enum TokenOr<T> {
 /// A length in CSS pixels, or a token reference.
 pub type Length = TokenOr<f64>;
 
+/// Reads the text of a Text: a token reference when it is `$` and a token's
+/// path, and otherwise the text exactly as written, so `$5 off` stays text.
+fn text_or_token<'de, D: Deserializer<'de>>(deserializer: D) -> Result<TokenOr<String>, D::Error> {
+    let text = String::deserialize(deserializer)?;
+    Ok(match text.parse() {
+        Ok(token) => TokenOr::Token(token),
+        Err(_) => TokenOr::Literal(text),
+    })
+}
+
+/// Like [`text_or_token`], for a property that may be left out.
+pub(crate) fn some_text_or_token<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<TokenOr<String>>, D::Error> {
+    text_or_token(deserializer).map(Some)
+}
+
 /// Reads a value that CSS never lets go below 0: a size, a min or max size, a
 /// gap, padding, a fixed grid track, a stroke width, a dash length or gap, a corner radius, a shadow
 /// blur, a font size or a line height. A token's value is checked where the
@@ -65,6 +82,10 @@ mod sealed {
             Err(E::invalid_type(Unexpected::Str(text), expected))
         }
 
+        fn from_bool<E: de::Error>(value: bool, expected: &dyn Expected) -> Result<Self, E> {
+            Err(E::invalid_type(Unexpected::Bool(value), expected))
+        }
+
         fn from_object<'de, A: MapAccess<'de>>(
             _map: A,
             expected: &dyn Expected,
@@ -89,6 +110,30 @@ impl Literal for f64 {
         _expected: &dyn Expected,
     ) -> Result<Self, E> {
         Ok(value)
+    }
+}
+
+impl Literal for bool {
+    const EXPECTING: &str = "true, false or a token reference such as `$state.isOpen`";
+
+    fn write<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_bool(*self)
+    }
+
+    fn from_bool<E: de::Error>(value: bool, _expected: &dyn Expected) -> Result<Self, E> {
+        Ok(value)
+    }
+}
+
+impl Literal for String {
+    const EXPECTING: &str = "text or a token reference such as `$state.cta`";
+
+    fn write<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self)
+    }
+
+    fn from_text<E: de::Error>(text: &str, _expected: &dyn Expected) -> Result<Self, E> {
+        Ok(text.to_string())
     }
 }
 
@@ -167,6 +212,10 @@ impl<'de, T: Literal> Visitor<'de> for TokenOrVisitor<T> {
 
     fn visit_f64<E: de::Error>(self, value: f64) -> Result<Self::Value, E> {
         T::from_number(Unexpected::Float(value), value, &self).map(TokenOr::Literal)
+    }
+
+    fn visit_bool<E: de::Error>(self, value: bool) -> Result<Self::Value, E> {
+        T::from_bool(value, &self).map(TokenOr::Literal)
     }
 
     fn visit_str<E: de::Error>(self, text: &str) -> Result<Self::Value, E> {

@@ -760,6 +760,43 @@ fn a_token_keeps_its_scopes_and_code_syntax() {
 }
 
 #[test]
+fn a_reference_is_checked_against_the_token_its_type_and_its_scopes() {
+    use omni_core::design::tokens::Scope;
+    let mut json = with_state();
+    json["state"]["count"]["$extensions"] = json!({"omnistate": {"scopes": ["content"]}});
+    let tree = accept(&json);
+    let check = |token: &str, field: Scope| {
+        tree.check_binding(&token.parse().expect("a reference"), field)
+            .map_err(|error| error.to_string())
+    };
+    assert_eq!(
+        check("$state.nope", Scope::Content),
+        Err("`$state.nope` is not a token of the design system".to_string())
+    );
+    assert_eq!(
+        check("$color.text", Scope::Content),
+        Err("`$color.text` is a color token; `content` takes a string token".to_string())
+    );
+    assert_eq!(
+        check("$state.count", Scope::Opacity),
+        Err("`$state.count` is not scoped to `opacity` (scopes: content)".to_string())
+    );
+    assert_eq!(
+        check("$state.cta", Scope::Content),
+        Ok(()),
+        "a token without scopes binds to any field of its type"
+    );
+    assert_eq!(check("$state.isOpen", Scope::Visible), Ok(()));
+    assert_eq!(
+        check("$color.text", Scope::StrokeWidth),
+        Err(
+            "`$color.text` is a color token; `strokeWidth` takes a dimension or number token"
+                .to_string()
+        )
+    );
+}
+
+#[test]
 fn unknown_scopes_and_malformed_code_syntax_are_refused() {
     let with_omnistate = |token: &str, omnistate: Value| {
         with(

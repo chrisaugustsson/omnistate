@@ -49,6 +49,7 @@ fn tokenized_frame() -> Value {
             {"type": "drop", "color": "$color.shadow", "offsetX": 0.5, "offsetY": 4, "blur": 12, "spread": -2}
         ],
         "opacity": "$opacity.muted",
+        "visible": "$state.isOpen",
         "children": [tokenized_text()]
     })
 }
@@ -61,7 +62,7 @@ fn tokenized_text() -> Value {
         "name": "Label",
         "width": "hug",
         "height": "hug",
-        "content": "Fri frakt",
+        "content": "$state.cta",
         "fontFamily": "$font.family.sans",
         "fontSize": "$font.size.lg",
         "fontWeight": "$font.weight.semibold",
@@ -112,6 +113,8 @@ fn token_slots() -> Vec<(&'static str, &'static str, Value)> {
         ),
         ("/shadows/1/color", "$color.shadow", json!("#0f172a33")),
         ("/opacity", "$opacity.muted", json!(0.7)),
+        ("/visible", "$state.isOpen", json!(false)),
+        ("/children/0/content", "$state.cta", json!("Fri frakt")),
         (
             "/children/0/fontFamily",
             "$font.family.sans",

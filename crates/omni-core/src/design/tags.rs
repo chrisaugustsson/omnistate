@@ -456,6 +456,8 @@ enum Shape {
     Text,
     Path,
     Flag,
+    /// A flag or a token reference.
+    Toggle,
     Number,
     /// A length of 0 or more, or a token reference.
     Length,
@@ -514,7 +516,7 @@ const fn layout(attr: &'static str, key: &'static str, shape: Shape) -> Spec {
 
 static SPECS: &[Spec] = &[
     node("name", "name", Shape::Text),
-    node("visible", "visible", Shape::Flag),
+    node("visible", "visible", Shape::Toggle),
     node("absolute", "absolute", Shape::Flag),
     node("x", "x", Shape::Number),
     node("y", "y", Shape::Number),
@@ -611,6 +613,9 @@ fn how(spec: &Spec) -> String {
         Shape::Text => format!("write `{attr}=\"text\"`"),
         Shape::Path => format!("write SVG path data, such as `{attr}=\"M0 0 L24 24\"`"),
         Shape::Flag => format!("write `{attr}`, `{attr}={{true}}` or `{attr}={{false}}`"),
+        Shape::Toggle => format!(
+            "write `{attr}`, `{attr}={{true}}` or `{attr}={{false}}`, or a token reference such as `{attr}=\"$state.isOpen\"`"
+        ),
         Shape::Number => format!("write a number, such as `{attr}={{10}}`"),
         Shape::Length => format!(
             "write a number of pixels, 0 or more, such as `{attr}={{16}}`, or a token reference such as `{attr}=\"$space.md\"`"
@@ -748,6 +753,11 @@ fn convert(spec: &Spec, value: Value) -> Result<Value, Problem> {
         }
         Shape::Flag => match value {
             Value::Bool(_) => Ok(value),
+            other => Err(expected(spec, &other)),
+        },
+        Shape::Toggle => match value {
+            Value::Bool(_) => Ok(value),
+            Value::String(_) => check::<TokenOr<bool>>(spec, &value).map(|()| value),
             other => Err(expected(spec, &other)),
         },
         Shape::Number => match value {
@@ -2111,7 +2121,7 @@ fn attribute(spec: &Spec, map: &Map<String, Value>, kind: NodeKind) -> Option<St
         return layout_attribute(layout?).map(|mode| written("layout", &Value::from(mode)));
     }
     let shown = match spec.shape {
-        Shape::Flag if spec.attr == "visible" => {
+        Shape::Toggle => {
             if value == &Value::Bool(true) {
                 return None;
             }

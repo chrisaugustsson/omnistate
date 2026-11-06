@@ -7,7 +7,9 @@ use super::layout::{GridPlacement, Layout, LayoutMode, Margin, SelfAlignment, Si
 use super::path::PathData;
 use super::proto::{Flow, Interaction, Overflow, PrototypeSettings, ScrollPosition};
 use super::style::{Fill, FontStyle, ImageFit, Radius, Shadow, Stroke, TextAlign, TextDecoration};
-use super::value::{AttachmentRef, Color, FontFamily, Length, TokenOr, some_non_negative};
+use super::value::{
+    AttachmentRef, Color, FontFamily, Length, TokenOr, some_non_negative, some_text_or_token,
+};
 use serde::de::Error as _;
 use serde::ser::SerializeMap;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -43,7 +45,7 @@ keywords! {
 pub struct Node {
     id: NodeId,
     name: String,
-    visible: bool,
+    visible: TokenOr<bool>,
     placement: Placement,
     /// The property of its component that the layer takes.
     bind: Option<Bind>,
@@ -67,8 +69,18 @@ impl Node {
         self.data.kind()
     }
 
+    /// Whether the layer is drawn. A layer whose `visible` refers to a token
+    /// that is not resolved is drawn.
     pub fn visible(&self) -> bool {
-        self.visible
+        match &self.visible {
+            TokenOr::Literal(visible) => *visible,
+            TokenOr::Token(_) => true,
+        }
+    }
+
+    /// The `visible` setting as written: a flag or a token reference.
+    pub fn visible_setting(&self) -> &TokenOr<bool> {
+        &self.visible
     }
 
     /// The children of a page, board, frame or component, in order. Other
@@ -271,8 +283,9 @@ pub struct Frame {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Text {
     pub size: Size,
-    /// The text, kept exactly as written. It is never markup.
-    pub content: String,
+    /// The text, kept exactly as written, or a reference to a string token. It
+    /// is never markup.
+    pub content: TokenOr<String>,
     pub font_family: TokenOr<FontFamily>,
     pub font_size: Length,
     /// From 1 to 1000, as CSS `font-weight`.
@@ -287,6 +300,16 @@ pub struct Text {
     /// Only drop shadows are drawn, and their spread is taken as 0.
     pub shadows: Option<Vec<TokenOr<Shadow>>>,
     pub opacity: Option<TokenOr<f64>>,
+}
+
+impl Text {
+    /// The text to draw: the content, or the reference when it is not resolved.
+    pub fn content_text(&self) -> &str {
+        match &self.content {
+            TokenOr::Literal(text) => text,
+            TokenOr::Token(token) => token.as_str(),
+        }
+    }
 }
 
 /// An image from an attachment.
@@ -538,7 +561,7 @@ struct RawNode {
     kind: NodeKind,
     name: String,
     #[serde(default, deserialize_with = "some")]
-    visible: Option<bool>,
+    visible: Option<TokenOr<bool>>,
     #[serde(default, deserialize_with = "some")]
     absolute: Option<bool>,
     #[serde(default, deserialize_with = "some_number")]
@@ -587,8 +610,8 @@ struct RawNode {
     modes: Option<BTreeMap<String, String>>,
     #[serde(default, deserialize_with = "some")]
     scroll_position: Option<ScrollPosition>,
-    #[serde(default, deserialize_with = "some")]
-    content: Option<String>,
+    #[serde(default, deserialize_with = "some_text_or_token")]
+    content: Option<TokenOr<String>>,
     #[serde(default, deserialize_with = "some")]
     font_family: Option<TokenOr<FontFamily>>,
     #[serde(default, deserialize_with = "some_non_negative")]
@@ -634,7 +657,7 @@ struct RawNode {
 impl RawNode {
     /// Takes the properties of the node's type, and rejects any other.
     fn into_node(mut self) -> Result<Node, String> {
-        let visible = self.visible.take().unwrap_or(true);
+        let visible = self.visible.take().unwrap_or(TokenOr::Literal(true));
         let placement = match self.kind {
             NodeKind::Page | NodeKind::Component => Placement::default(),
             _ => self.placement(),

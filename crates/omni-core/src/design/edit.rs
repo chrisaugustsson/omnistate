@@ -13,7 +13,8 @@
 
 use super::proto::{Action, Interaction};
 use super::tags::{self, Host, TagNode};
-use super::{Node, NodeData, NodeId, NodeKind};
+use super::tokens::Scope;
+use super::{Node, NodeData, NodeId, NodeKind, TokenRef};
 use crate::ops::{Applied, ApplyError, Conflict, OpResult, Operation};
 use serde_json::{Map, Value};
 use std::collections::{HashMap, HashSet};
@@ -46,6 +47,76 @@ fn invalid(index: usize, message: impl Into<String>) -> ApplyError {
 }
 
 impl DesignDoc {
+    /// Every token reference in the properties of `node` (not its children),
+    /// with the field it is written in, in the order of the node's JSON. The
+    /// `bind` and the props and overrides of an instance refer to components,
+    /// not to tokens.
+    pub fn token_refs(node: &Node) -> Vec<(Scope, TokenRef)> {
+        let Ok(Value::Object(properties)) = serde_json::to_value(node) else {
+            return Vec::new();
+        };
+        let mut found = Vec::new();
+        for (key, value) in &properties {
+            match (key.as_str(), value) {
+                ("layout", Value::Object(layout)) => {
+                    for (key, value) in layout {
+                        let scope = match key.as_str() {
+                            "gap" => Scope::Gap,
+                            "padding" => Scope::Pad,
+                            _ => Scope::Length,
+                        };
+                        refs_in(value, |_| scope, &mut found);
+                    }
+                }
+                ("strokes", _) => refs_in(
+                    value,
+                    |key| match key {
+                        "color" => Scope::Stroke,
+                        "width" => Scope::StrokeWidth,
+                        _ => Scope::Length,
+                    },
+                    &mut found,
+                ),
+                ("shadows", Value::Array(shadows)) => {
+                    for shadow in shadows {
+                        match shadow {
+                            Value::String(_) => refs_in(shadow, |_| Scope::Shadow, &mut found),
+                            _ => refs_in(
+                                shadow,
+                                |key| match key {
+                                    "color" => Scope::ShadowColor,
+                                    _ => Scope::Length,
+                                },
+                                &mut found,
+                            ),
+                        }
+                    }
+                }
+                (key, value) => {
+                    let scope = match key {
+                        "visible" => Scope::Visible,
+                        "content" => Scope::Content,
+                        "opacity" => Scope::Opacity,
+                        "fontSize" => Scope::FontSize,
+                        "lineHeight" => Scope::LineHeight,
+                        "letterSpacing" => Scope::LetterSpacing,
+                        "fontFamily" => Scope::FontFamily,
+                        "fontWeight" => Scope::FontWeight,
+                        "color" => Scope::TextColor,
+                        "fills" => Scope::Fill,
+                        "radius" => Scope::Radius,
+                        "width" | "minWidth" | "maxWidth" => Scope::Width,
+                        "height" | "minHeight" | "maxHeight" => Scope::Height,
+                        "margin" => Scope::Length,
+                        _ => continue,
+                    };
+                    refs_in(value, |_| scope, &mut found);
+                }
+            }
+        }
+        found
+    }
+
     /// A design with these pages. A node that `revisions` does not list is at
     /// revision 1.
     pub fn new(pages: Vec<Node>, revisions: HashMap<NodeId, u64>) -> DesignDoc {
@@ -777,6 +848,42 @@ fn detach(mut node: Node, nodes: &mut HashMap<NodeId, Node>) {
     for child in children {
         detach(child, nodes);
     }
+}
+
+/// Appends the token references in `value` to `found`, each with the scope
+/// that `scope` gives for the key of the object it is under (the first
+/// object key above it, or the empty key at the top).
+fn refs_in(
+    value: &Value,
+    scope: impl Fn(&str) -> Scope + Copy,
+    found: &mut Vec<(Scope, TokenRef)>,
+) {
+    fn walk(
+        value: &Value,
+        key: &str,
+        scope: &impl Fn(&str) -> Scope,
+        found: &mut Vec<(Scope, TokenRef)>,
+    ) {
+        match value {
+            Value::String(text) if text.starts_with('$') => {
+                if let Ok(token) = text.parse() {
+                    found.push((scope(key), token));
+                }
+            }
+            Value::Array(items) => {
+                for item in items {
+                    walk(item, key, scope, found);
+                }
+            }
+            Value::Object(properties) => {
+                for (key, value) in properties {
+                    walk(value, key, scope, found);
+                }
+            }
+            _ => {}
+        }
+    }
+    walk(value, "", &scope, found);
 }
 
 #[cfg(test)]

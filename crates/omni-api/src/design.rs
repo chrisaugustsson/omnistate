@@ -29,7 +29,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use omni_core::design::tags::{self, TagNode};
-use omni_core::design::tokens::TokenTree;
+use omni_core::design::tokens::{BindingError, TokenTree};
 use omni_core::design::{
     DesignDoc, Instance, Node, NodeData, NodeId, NodeKind, PropDef, PropDefs, PropValue,
 };
@@ -381,6 +381,27 @@ pub(crate) fn check_modes(nodes: &[Node], tokens: Option<&TokenTree>) -> Result<
                     collection.modes.join(", ")
                 ));
             }
+        }
+        pending.extend(node.children().iter().rev());
+    }
+    Ok(())
+}
+
+/// Checks the token references of `nodes` and their subtrees: the design
+/// system has each token, its type fits the field and its scopes leave the
+/// field in. A project whose design system has no head has no tokens at all.
+fn check_tokens(nodes: &[Node], tokens: Option<&TokenTree>, has_head: bool) -> Result<(), String> {
+    let mut pending: Vec<&Node> = nodes.iter().rev().collect();
+    while let Some(node) = pending.pop() {
+        for (field, token) in DesignDoc::token_refs(node) {
+            if !has_head {
+                return Err("the project has no design system: import tokens first".to_string());
+            }
+            let checked = match tokens {
+                Some(tokens) => tokens.check_binding(&token, field),
+                None => Err(BindingError::Unknown(token)),
+            };
+            checked.map_err(|error| error.to_string())?;
         }
         pending.extend(node.children().iter().rev());
     }
@@ -973,10 +994,13 @@ pub(crate) async fn edit_head(
             return id;
         }
     };
+    let has_head = system_key.is_some();
     let check = |nodes: &[Node]| {
         check_instances(nodes, &system.library)?;
+        check_tokens(nodes, system.tokens.as_ref(), has_head)?;
         check_interactions(nodes, system.tokens.as_ref())?;
         check_modes(nodes, system.tokens.as_ref())
+    };
     };
     let variants = |component: NodeId| system.library.variants_of(&component);
     let applied = match doc.apply(&ops, scope, &mut new_ids, &check, &variants) {

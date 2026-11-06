@@ -60,7 +60,6 @@ const NOT_TOKENS: &[&str] = &[
     "id",
     "type",
     "name",
-    "content",
     "path",
     "image",
     "component",
@@ -637,6 +636,7 @@ impl Resolver<'_> {
         }
         let mut missing = Vec::new();
         let mut resolved = Vec::new();
+        let font_size = self.font_size(node);
         if let Some(properties) = node.as_object_mut() {
             let mut pointer = String::new();
             for (key, setting) in properties.iter_mut() {
@@ -644,7 +644,14 @@ impl Resolver<'_> {
                     pointer.clear();
                     pointer.push('/');
                     push_escaped(&mut pointer, key);
-                    self.resolve_in(setting, key, &mut pointer, &mut missing, &mut resolved);
+                    self.resolve_in(
+                        setting,
+                        key,
+                        font_size,
+                        &mut pointer,
+                        &mut missing,
+                        &mut resolved,
+                    );
                 }
             }
         }
@@ -687,6 +694,19 @@ impl Resolver<'_> {
         }
     }
 
+    /// The font size of `node` in pixels, when it states one as a number or a
+    /// token.
+    fn font_size(&self, node: &Value) -> Option<f64> {
+        match node.get("fontSize")? {
+            Value::Number(size) => size.as_f64(),
+            Value::String(text) => {
+                let token = self.system.token(&text.parse().ok()?, self.mode)?;
+                design_value(token, "fontSize", None).as_f64()
+            }
+            _ => None,
+        }
+    }
+
     /// Resolves the token references in `value`, the setting `key` of a node
     /// at `pointer` (a JSON pointer into the node), and notes each one it
     /// replaced in `resolved`.
@@ -694,6 +714,7 @@ impl Resolver<'_> {
         &self,
         value: &mut Value,
         key: &str,
+        font_size: Option<f64>,
         pointer: &mut String,
         missing: &mut Vec<TokenRef>,
         resolved: &mut Vec<Replaced>,
@@ -705,7 +726,7 @@ impl Resolver<'_> {
                 };
                 match self.system.token(&reference, &self.choice) {
                     Some(token) => {
-                        let token = design_value(token, key);
+                        let token = design_value(token, key, font_size);
                         let text = std::mem::replace(value, token.clone());
                         resolved.push(Replaced {
                             pointer: pointer.to_string(),
@@ -724,7 +745,7 @@ impl Resolver<'_> {
                     pointer.truncate(outer);
                     pointer.push('/');
                     pointer.push_str(&at.to_string());
-                    self.resolve_in(item, key, pointer, missing, resolved);
+                    self.resolve_in(item, key, font_size, pointer, missing, resolved);
                 }
                 pointer.truncate(outer);
             }
@@ -735,7 +756,7 @@ impl Resolver<'_> {
                         pointer.truncate(outer);
                         pointer.push('/');
                         push_escaped(pointer, key);
-                        self.resolve_in(setting, key, pointer, missing, resolved);
+                        self.resolve_in(setting, key, font_size, pointer, missing, resolved);
                     }
                 }
                 pointer.truncate(outer);
@@ -1037,12 +1058,18 @@ fn mark_error(node: &mut Value) {
 
 /// The value of a token as a design writes it: a dimension in pixels is a
 /// number, a shadow token is a drop shadow, and a typography token used for a
-/// font family is its family.
-fn design_value(token: Value, key: &str) -> Value {
+/// font family is its family. The text of a Text is a string token's value as
+/// it is. A line height is a multiple of the font size, so a dimension token
+/// there is its pixels over `font_size`; a number token is the multiple.
+fn design_value(token: Value, key: &str, font_size: Option<f64>) -> Value {
     match token {
-        Value::String(text) => match pixels(&text) {
-            Some(number) => json!(number),
-            None => Value::String(text),
+        Value::String(text) if key == "content" => Value::String(text),
+        Value::String(text) => match (pixels(&text), font_size) {
+            (Some(number), Some(size)) if key == "lineHeight" && size > 0.0 => {
+                json!(number / size)
+            }
+            (Some(number), _) => json!(number),
+            (None, _) => Value::String(text),
         },
         Value::Object(mut fields) if fields.contains_key("offsetX") => {
             fields.insert("type".to_string(), json!("drop"));

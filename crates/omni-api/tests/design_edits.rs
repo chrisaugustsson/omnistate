@@ -569,6 +569,53 @@ fn assert_invalid_naming(response: &Response, index: u64, id: &str) {
     assert!(message.contains(id), "the message names {id}: {message:?}");
 }
 
+/// Asserts that a refused operation answers `message`.
+fn assert_invalid_saying(response: &Response, index: u64, message: &str) {
+    assert_eq!(response.status, 400, "body: {}", response.text());
+    let answer = response.json();
+    assert_eq!(answer["error"], "invalid_operation", "{answer}");
+    assert_eq!(answer["index"], index, "{answer}");
+    assert_eq!(str_of(&answer, "message"), message, "{answer}");
+}
+
+/// Gives the design's project a design system whose head holds a color
+/// token, a string token and a number token scoped to `content`.
+fn import_tokens(f: &Fixture, client: &Client, design: &Design) {
+    must(
+        call(
+            client,
+            "POST",
+            &format!("{}/docs", design.base(f)),
+            &holder(f),
+            Some(&json!({ "kind": "design-system", "pillar": "ui", "title": unique("system") })),
+        ),
+        201,
+        "create a design system doc",
+    );
+    must(
+        call(
+            client,
+            "PUT",
+            &format!("{}/tokens", design.base(f)),
+            &holder(f),
+            Some(&json!({ "tokens": {
+                "$extensions": {"omnistate": {"modes": ["light"]}},
+                "color": {"$type": "color", "ink": {"$value": "#000000"}},
+                "state": {
+                    "cta": {"$type": "string", "$value": "Pay now"},
+                    "count": {
+                        "$type": "number",
+                        "$value": 2,
+                        "$extensions": {"omnistate": {"scopes": ["content"]}}
+                    }
+                }
+            }})),
+        ),
+        200,
+        "import the tokens",
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Operations
 // ---------------------------------------------------------------------------
@@ -804,4 +851,69 @@ fn two_agents_editing_different_boards_of_one_design_at_once_both_succeed() {
         assert!(cart.contains(&format!(r#"name="A{round}""#)), "{cart}");
         assert!(pay.contains(&format!(r#"name="B{round}""#)), "{pay}");
     }
+}
+
+#[test]
+fn a_token_reference_in_a_project_without_a_design_system_is_refused() {
+    let (f, client) = ready();
+    let design = new_design(f, client);
+    for properties in [
+        json!({ "content": "$state.cta" }),
+        json!({ "color": "$color.ink" }),
+    ] {
+        let refused = edit(
+            f,
+            client,
+            &holder(f),
+            &design,
+            json!([set(&design.id("Total"), 1, properties)]),
+        );
+        assert_invalid_saying(
+            &refused,
+            0,
+            "the project has no design system: import tokens first",
+        );
+    }
+}
+
+#[test]
+fn a_token_reference_is_checked_for_existence_type_and_scopes_on_write() {
+    let (f, client) = ready();
+    let design = new_design(f, client);
+    import_tokens(f, client, &design);
+    let total = design.id("Total");
+    for (properties, message) in [
+        (
+            json!({ "content": "$state.nope" }),
+            "`$state.nope` is not a token of the design system",
+        ),
+        (
+            json!({ "color": "$color.nope" }),
+            "`$color.nope` is not a token of the design system",
+        ),
+        (
+            json!({ "content": "$color.ink" }),
+            "`$color.ink` is a color token; `content` takes a string token",
+        ),
+        (
+            json!({ "opacity": "$state.count" }),
+            "`$state.count` is not scoped to `opacity` (scopes: content)",
+        ),
+    ] {
+        let refused = edit(
+            f,
+            client,
+            &holder(f),
+            &design,
+            json!([set(&total, 1, properties)]),
+        );
+        assert_invalid_saying(&refused, 0, message);
+    }
+    let results = applied(
+        f,
+        client,
+        &design,
+        json!([set(&total, 1, json!({ "content": "$state.cta" }))]),
+    );
+    assert_eq!(results[0]["revision"], 2, "{results:?}");
 }

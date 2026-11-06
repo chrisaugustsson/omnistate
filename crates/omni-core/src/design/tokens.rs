@@ -139,6 +139,16 @@ pub enum Scope {
     LineHeight,
     LetterSpacing,
     StrokeWidth,
+    /// The fields below cannot be named in `scopes`: a token binds to them
+    /// whenever its type fits.
+    FontFamily,
+    FontWeight,
+    /// A whole shadow.
+    Shadow,
+    /// The color of a shadow.
+    ShadowColor,
+    /// Any other length: a margin, a grid track, a dash, a shadow's offset or blur.
+    Length,
 }
 
 const SCOPES: [(&str, Scope); 15] = [
@@ -161,10 +171,31 @@ const SCOPES: [(&str, Scope); 15] = [
 
 impl Scope {
     pub fn name(self) -> &'static str {
-        SCOPES
-            .iter()
-            .find(|(_, scope)| *scope == self)
-            .map_or("", |(name, _)| name)
+        match self {
+            Self::FontFamily => "fontFamily",
+            Self::FontWeight => "fontWeight",
+            Self::Shadow => "shadows",
+            Self::ShadowColor => "shadow color",
+            Self::Length => "length",
+            _ => SCOPES
+                .iter()
+                .find(|(_, scope)| *scope == self)
+                .map_or("", |(name, _)| name),
+        }
+    }
+
+    /// The types of token that can bind to the field.
+    fn takes(self) -> &'static [TokenType] {
+        match self {
+            Self::Fill | Self::Stroke | Self::TextColor | Self::ShadowColor => &[TokenType::Color],
+            Self::Content => &[TokenType::String],
+            Self::Visible => &[TokenType::Boolean],
+            Self::Opacity => &[TokenType::Number],
+            Self::FontFamily => &[TokenType::Typography, TokenType::String],
+            Self::FontWeight => &[TokenType::Number, TokenType::Typography],
+            Self::Shadow => &[TokenType::Shadow],
+            _ => &[TokenType::Dimension, TokenType::Number],
+        }
     }
 
     fn from_name(name: &str) -> Option<Self> {
@@ -174,6 +205,64 @@ impl Scope {
             .map(|(_, scope)| *scope)
     }
 }
+
+/// Why a reference in a design cannot bind to a field; the message names the
+/// reference and the field.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BindingError {
+    /// The design system has no such token.
+    Unknown(TokenRef),
+    /// The token's type is not one the field takes.
+    WrongType {
+        token: TokenRef,
+        ty: &'static str,
+        field: Scope,
+    },
+    /// The token's `scopes` leave the field out.
+    NotScoped {
+        token: TokenRef,
+        field: Scope,
+        scopes: Vec<Scope>,
+    },
+}
+
+impl fmt::Display for BindingError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Unknown(token) => write!(
+                f,
+                "`{}` is not a token of the design system",
+                token.as_str()
+            ),
+            Self::WrongType { token, ty, field } => {
+                let takes: Vec<&str> = field.takes().iter().map(|ty| ty.name()).collect();
+                write!(
+                    f,
+                    "`{}` is a {ty} token; `{}` takes a {} token",
+                    token.as_str(),
+                    field.name(),
+                    takes.join(" or ")
+                )
+            }
+            Self::NotScoped {
+                token,
+                field,
+                scopes,
+            } => {
+                let listed: Vec<&str> = scopes.iter().map(|scope| scope.name()).collect();
+                write!(
+                    f,
+                    "`{}` is not scoped to `{}` (scopes: {})",
+                    token.as_str(),
+                    field.name(),
+                    listed.join(", ")
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for BindingError {}
 
 /// Why a token tree was refused; the message names the token.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -343,6 +432,35 @@ impl TokenTree {
     /// about itself.
     pub fn token(&self, path: &str) -> Option<&Token> {
         self.tokens.get(path)
+    }
+
+    /// Whether `token` may be written in `field`: the design system has it,
+    /// its type is one the field takes, and its `scopes` leave the field in.
+    /// A field that `scopes` cannot name takes any token of a fitting type.
+    pub fn check_binding(&self, token: &TokenRef, field: Scope) -> Result<(), BindingError> {
+        let Some(found) = self.tokens.get(token.path()) else {
+            return Err(BindingError::Unknown(token.clone()));
+        };
+        if !field.takes().contains(&found.ty) {
+            return Err(BindingError::WrongType {
+                token: token.clone(),
+                ty: found.ty.name(),
+                field,
+            });
+        }
+        match &found.scopes {
+            Some(scopes)
+                if SCOPES.iter().any(|(_, listed)| *listed == field)
+                    && !scopes.contains(&field) =>
+            {
+                Err(BindingError::NotScoped {
+                    token: token.clone(),
+                    field,
+                    scopes: scopes.clone(),
+                })
+            }
+            _ => Ok(()),
+        }
     }
 
     /// The tree as DTCG JSON, as it was read.
