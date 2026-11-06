@@ -51,7 +51,7 @@ pub struct Session {
 }
 
 fn not_a_board(board: &str) -> String {
-    format!("{board} is not a board of the shown page")
+    format!("`{board}` is not a board of the shown page")
 }
 
 fn color(hex: &str) -> Option<Color> {
