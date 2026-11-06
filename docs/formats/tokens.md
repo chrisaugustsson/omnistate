@@ -172,11 +172,12 @@ mode values that end every mode's chain.
 `TokenTree::resolve` follows the references of a token in one mode, composite
 fields included, and gives its value.
 
-## Modes
+## Collections and modes
 
 The root lists the design system's modes in `$extensions.omnistate.modes`, an
 array of at least one distinct name made of letters (of any script), digits, `-` and
 `_`: `["light", "dark"]`, `["Mörkt", "Ljust"]`, or one mode per brand. The order is kept.
+The root list is the default for every group that declares no modes of its own.
 
 A token that has one value in every mode states it as `$value`. A token that
 has a value per mode also states its value in each mode in the object
@@ -184,8 +185,6 @@ has a value per mode also states its value in each mode in the object
 above. That object has a value for every listed mode and for no other mode, and
 each value fits the token's type and may be a reference. The token's `$value`
 is the value that tools which know no modes read.
-
-### Collections
 
 Each top-level group is a collection. A group lists its own modes in
 `$extensions.omnistate.modes` on the group, an array of distinct names that may

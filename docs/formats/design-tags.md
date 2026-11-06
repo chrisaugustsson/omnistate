@@ -230,11 +230,15 @@ default is left out when it holds it:
 | `setVariableMode` | `collection`, `mode` |
 | `conditional` | `blocks`, a list of `{condition, actions}`; a block without `condition` always runs |
 
-A `dest` is the ID of a node and is not checked against the design yet. The
-variables, collections, modes and expressions of the three variable actions
-are checked when a layer is written, against the design system's tokens (a
-design system without tokens has no variables), with the same messages for the
-actions in the blocks of a `conditional`, at any depth:
+A write checks each `dest`: it must be a node of the design. `navigate`,
+`openOverlay` and `swapOverlay` take a board; `scrollTo` takes a layer of the
+board the trigger is on; `changeTo` takes a component of the instance's variant
+set. Deleting a board that interactions point at is allowed; they dangle and
+reading prints them unchanged. The variables, collections, modes and
+expressions of the three variable actions are checked when a layer is written,
+against the design system's tokens (a design system without tokens has no
+variables), with the same messages for the actions in the blocks of a
+`conditional`, at any depth:
 
 - `setVariable` takes the path of a token (`state.count`) of type number,
   string, boolean or color, and either a `value` of that type (a color token

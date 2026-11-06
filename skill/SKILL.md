@@ -48,6 +48,15 @@ Give the human the link to what you wrote when you finish a step: `<server>/w/<w
 
 Done when the feature has a Spec doc with written content, a design with at least one board of nodes, and the human has the links.
 
+### Prototype a flow
+
+1. Write the boards of the flow in a design doc (see [designs.md](designs.md)) and read their IDs back with `omni design read`.
+2. On each layer that moves the person on, set `interactions` with a `dest` that is a board ID (`## Prototyping` in [designs.md](designs.md)). State that changes along the way is a token in a collection, changed by `setVariable` and bound with `$path` (`## Variables`).
+3. Set `flows` on the page, one flow per entry point, each `start` a board ID.
+4. Run `omni design flows --doc <doc>` and fix what it reports: a dangling target, a board nothing reaches.
+
+Done when `omni design flows` reports no dangling targets and no unreached boards except the flow starts.
+
 ### Shape a feature for the board
 
 For a feature that will be built story by story from the board. Three tools carry it, installed by the human with `make install-agent-tools`.
