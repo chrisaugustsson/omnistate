@@ -30,7 +30,8 @@ pub enum Tick {
     Idle,
     /// What the player shows changed: draw it once.
     Changed,
-    /// A transition is playing: draw, and tick again on the next frame.
+    /// A transition is playing or a wait is pending: draw, and tick again on the
+    /// next frame.
     Animating,
     /// Nothing to draw, but a wait is running that a tick has to see run out:
     /// tick again on the next frame.
@@ -375,11 +376,12 @@ impl Session {
                 .frame()
                 .transition
                 .is_some_and(|running| running.transition != Transition::Instant);
-        if animating {
+        let waiting = !self.player.timers().is_empty();
+        if animating || (self.changed && waiting) {
             Tick::Animating
         } else if self.changed {
             Tick::Changed
-        } else if !self.player.timers().is_empty() {
+        } else if waiting {
             Tick::Waiting
         } else {
             Tick::Idle
