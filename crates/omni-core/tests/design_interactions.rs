@@ -635,3 +635,82 @@ fn a_write_of_flows_checks_that_each_starts_at_a_board_of_the_page() {
     );
     write(&mut doc, "bbbbbbbb").expect("a board of the page");
 }
+
+const SHOP: &str = r#"<Page id="aaaaaaaa" name="Shop" flows={[{name: "Checkout", start: "bbbbbbbb"}]}>
+  <Board id="bbbbbbbb" name="Cart" x={0} y={0} width={360} height={640} dir="col"/>
+</Page>"#;
+
+/// Applies one operation to `doc`; a node it creates is `dddddddd`.
+fn apply(doc: &mut DesignDoc, op: Value) -> Result<(), String> {
+    let op: Operation = serde_json::from_value(op).unwrap();
+    doc.apply(
+        &[op],
+        None,
+        &mut || serde_json::from_value(json!("dddddddd")).unwrap(),
+        &|_| Ok(()),
+        &|_| None,
+    )
+    .map(|_| ())
+    .map_err(|error| error.to_string())
+}
+
+#[test]
+fn a_page_inserted_or_replaced_with_a_flow_that_starts_at_no_board_of_it_is_refused() {
+    let mut doc = DesignDoc::new(vec![existing(SHOP)], HashMap::new());
+    let error = apply(
+        &mut doc,
+        json!({
+            "op": "insert", "parent": null, "position": {"after": "aaaaaaaa"},
+            "content": r#"<Page name="Cart" flows={[{name: "Checkout", start: "bbbbbbbb"}]}/>"#
+        }),
+    )
+    .expect_err("the new page has no boards");
+    assert!(
+        error
+            .contains("`bbbbbbbb` is not a board of this page: a flow starts at one of its boards"),
+        "{error}"
+    );
+    let error = apply(
+        &mut doc,
+        json!({
+            "op": "replace", "node": "aaaaaaaa", "rev": 1,
+            "content": r#"<Page name="Shop" flows={[{name: "Checkout", start: "cccccccc"}]}>
+  <Board id="bbbbbbbb" name="Cart" x={0} y={0} width={360} height={640} dir="col"/>
+</Page>"#
+        }),
+    )
+    .expect_err("cccccccc is not a board of the page");
+    assert!(
+        error
+            .contains("`cccccccc` is not a board of this page: a flow starts at one of its boards"),
+        "{error}"
+    );
+}
+
+#[test]
+fn deleting_the_board_a_flow_starts_at_leaves_the_flow_and_later_writes_of_the_page_pass() {
+    let mut doc = DesignDoc::new(vec![existing(SHOP)], HashMap::new());
+    apply(
+        &mut doc,
+        json!({"op": "delete", "node": "bbbbbbbb", "rev": 1}),
+    )
+    .expect("the start board may go");
+    apply(
+        &mut doc,
+        json!({"op": "set", "node": "aaaaaaaa", "rev": 1, "properties": {"name": "Store"}}),
+    )
+    .expect("a write without flows is not checked");
+    assert_eq!(
+        tags::print(&doc.pages()[0]),
+        r#"<Page id="aaaaaaaa" name="Store" flows={[{name: "Checkout", start: "bbbbbbbb"}]}/>"#
+    );
+}
+
+#[test]
+fn a_device_name_matches_only_with_its_own_case() {
+    let message = message_of(&page_with(r#"prototype={{device: "iphone 16"}}"#));
+    assert!(
+        message.contains("`iphone 16` is not a device: write one of "),
+        "{message}"
+    );
+}
