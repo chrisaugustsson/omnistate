@@ -4,10 +4,11 @@
 
 use omni_core::design::devices::{DEVICES, device};
 use omni_core::design::proto::{
-    Action, Easing, OverlayAnchor, OverlayPosition, Transition, Trigger,
+    Action, Easing, Interaction, OverlayAnchor, OverlayPosition, Transition, Trigger,
 };
 use omni_core::design::proto::{Overflow, ScrollPosition};
 use omni_core::design::tags::{self, TagError};
+use omni_core::design::tokens::TokenTree;
 use omni_core::design::{DesignDoc, Node, NodeData, NodeKind};
 use omni_core::ops::Operation;
 use serde_json::{Value, json};
@@ -713,4 +714,285 @@ fn a_device_name_matches_only_with_its_own_case() {
         message.contains("`iphone 16` is not a device: write one of "),
         "{message}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// US-29: setVariable, setVariableMode and conditional are checked against the
+// design system's tokens (D30, D35).
+// ---------------------------------------------------------------------------
+
+/// A design system with `color` in a light and a dark mode, a dimension
+/// token, number, string and boolean tokens in `state`, and a collection
+/// `flags` with no modes.
+fn variables() -> TokenTree {
+    TokenTree::from_json(&json!({
+        "$extensions": {"omnistate": {"modes": ["light", "dark"]}},
+        "color": {
+            "$type": "color",
+            "ink": {"$value": "#0f172a"},
+            "surface": {
+                "$value": "#ffffff",
+                "$extensions": {"omnistate": {"modes": {"light": "#ffffff", "dark": "#0f172a"}}}
+            }
+        },
+        "spacing": {"$type": "dimension", "md": {"$value": "16px"}},
+        "state": {
+            "isOpen": {"$type": "boolean", "$value": false},
+            "count": {"$type": "number", "$value": 2},
+            "cta": {"$type": "string", "$value": "Pay now"}
+        },
+        "flags": {
+            "$extensions": {"omnistate": {"modes": []}},
+            "beta": {"$type": "boolean", "$value": false}
+        }
+    }))
+    .expect("the design system is valid")
+}
+
+/// Checks one action, written in its JSON form, against `variables()`.
+fn check_action(action: Value) -> Result<(), String> {
+    let interaction = Interaction::from_value(&json!({"actions": [action]}))
+        .unwrap_or_else(|error| panic!("the action must parse, but: {error}"));
+    interaction.actions[0]
+        .check_variables(&variables())
+        .map_err(|error| error.to_string())
+}
+
+fn assert_accepted(action: Value) {
+    if let Err(message) = check_action(action.clone()) {
+        panic!("{action} must be accepted, but: {message}");
+    }
+}
+
+fn assert_refused(action: Value, message: &str) {
+    match check_action(action.clone()) {
+        Ok(()) => panic!("{action} must be refused with {message:?}, but it was accepted"),
+        Err(error) => assert!(error.contains(message), "{action}: {error}"),
+    }
+}
+
+fn set_count(expr: Value) -> Value {
+    json!({"type": "setVariable", "variable": "state.count", "expr": expr})
+}
+
+fn set_is_open(expr: Value) -> Value {
+    json!({"type": "setVariable", "variable": "state.isOpen", "expr": expr})
+}
+
+#[test]
+fn a_set_variable_takes_a_value_or_expression_of_its_token_type() {
+    for action in [
+        set_count(json!({"op": "add", "args": [{"variable": "state.count"}, {"value": 1}]})),
+        json!({"type": "setVariable", "variable": "state.isOpen", "value": true}),
+        json!({"type": "setVariable", "variable": "color.surface", "value": "#2563eb"}),
+        json!({"type": "setVariable", "variable": "state.cta", "expr": {"mode": "color"}}),
+        json!({"type": "setVariable", "variable": "color.ink", "expr": {"inMode": {"variable": "color.surface", "mode": "dark"}}}),
+    ] {
+        assert_accepted(action);
+    }
+}
+
+#[test]
+fn a_set_variable_whose_value_or_expression_is_of_another_type_is_refused() {
+    for (action, message) in [
+        (
+            json!({"type": "setVariable", "variable": "state.isOpen", "value": "yes"}),
+            "`state.isOpen` is a boolean token; the value is a string",
+        ),
+        (
+            set_is_open(json!({"op": "add", "args": [{"value": 1}, {"value": 2}]})),
+            "`state.isOpen` is a boolean token; the expression yields a number",
+        ),
+        (
+            set_count(json!({"mode": "color"})),
+            "`state.count` is a number token; the expression yields a string",
+        ),
+        (
+            set_count(json!({"inMode": {"variable": "color.surface", "mode": "dark"}})),
+            "`state.count` is a number token; the expression yields a color",
+        ),
+    ] {
+        assert_refused(action, message);
+    }
+}
+
+#[test]
+fn a_set_variable_names_a_token_it_can_set_and_one_of_value_or_expr() {
+    for (action, message) in [
+        (
+            json!({"type": "setVariable", "variable": "state.nope", "value": 1}),
+            "`state.nope` is not a token",
+        ),
+        (
+            json!({"type": "setVariable", "variable": "state.count", "value": 1, "expr": {"value": 2}}),
+            "setVariable takes `value` or `expr`, not both",
+        ),
+        (
+            json!({"type": "setVariable", "variable": "spacing.md", "value": "8px"}),
+            "`spacing.md` is a dimension token; set variable takes number, string, boolean or color tokens",
+        ),
+    ] {
+        assert_refused(action, message);
+    }
+}
+
+#[test]
+fn a_set_variable_mode_names_a_collection_and_one_of_its_modes() {
+    assert_accepted(json!({"type": "setVariableMode", "collection": "color", "mode": "dark"}));
+    for (action, message) in [
+        (
+            json!({"type": "setVariableMode", "collection": "nope", "mode": "dark"}),
+            "`nope` is not a collection of the design system",
+        ),
+        (
+            json!({"type": "setVariableMode", "collection": "color", "mode": "dusk"}),
+            "`dusk` is not a mode of `color` (light, dark)",
+        ),
+        (
+            json!({"type": "setVariableMode", "collection": "flags", "mode": "on"}),
+            "`flags` has no modes",
+        ),
+    ] {
+        assert_refused(action, message);
+    }
+}
+
+#[test]
+fn an_operator_takes_its_number_of_arguments_of_its_types() {
+    for (expr, message) in [
+        (
+            json!({"op": "add", "args": [{"value": "1"}, {"value": 1}]}),
+            "`add` takes numbers",
+        ),
+        (
+            json!({"op": "not", "args": [{"value": 1}]}),
+            "`not` takes a boolean",
+        ),
+        (
+            json!({"op": "equals", "args": [{"value": "1"}, {"value": 1}]}),
+            "`equals` compares values of one type",
+        ),
+        (
+            json!({"op": "not", "args": [{"value": true}, {"value": false}]}),
+            "`not` takes one argument",
+        ),
+        (
+            json!({"op": "or", "args": [{"value": true}]}),
+            "`or` takes two arguments",
+        ),
+        (
+            json!({"op": "and", "args": [{"value": true}, {"value": null}]}),
+            "a `value` in an expression is a number, string or boolean",
+        ),
+    ] {
+        assert_refused(set_is_open(expr), message);
+    }
+}
+
+#[test]
+fn a_name_in_an_expression_is_checked_like_a_name_in_an_action() {
+    for (expr, message) in [
+        (
+            json!({"variable": "state.nope"}),
+            "`state.nope` is not a token",
+        ),
+        (
+            json!({"op": "equals", "args": [{"mode": "nope"}, {"value": "dark"}]}),
+            "`nope` is not a collection of the design system",
+        ),
+        (
+            json!({"op": "equals", "args": [{"inMode": {"variable": "color.surface", "mode": "dusk"}}, {"variable": "color.ink"}]}),
+            "`dusk` is not a mode of `color` (light, dark)",
+        ),
+    ] {
+        assert_refused(set_is_open(expr), message);
+    }
+}
+
+#[test]
+fn a_malformed_expression_names_the_operator_or_field_that_is_wrong() {
+    for (expr, message) in [
+        (
+            json!({"op": "pow", "args": [{"value": 2}, {"value": 3}]}),
+            "`pow` is not an operator: write one of ",
+        ),
+        (
+            json!({"value": 1, "variable": "state.count"}),
+            "`variable` is not a field of an expression: write one of ",
+        ),
+    ] {
+        assert_refused(set_count(expr), message);
+    }
+}
+
+/// `{value: 1}` inside `levels - 1` `negate`s: `levels` expression objects.
+fn negated(levels: usize) -> Value {
+    (1..levels).fold(
+        json!({"value": 1}),
+        |inner, _| json!({"op": "negate", "args": [inner]}),
+    )
+}
+
+#[test]
+fn an_expression_nests_sixteen_levels_and_not_seventeen() {
+    assert_accepted(set_count(negated(16)));
+    assert_refused(
+        set_count(negated(17)),
+        "an expression nests at most 16 levels",
+    );
+}
+
+fn block(condition: Option<Value>) -> Value {
+    match condition {
+        Some(condition) => json!({"condition": condition, "actions": [{"type": "back"}]}),
+        None => json!({"actions": [{"type": "back"}]}),
+    }
+}
+
+fn opened() -> Value {
+    json!({"variable": "state.isOpen"})
+}
+
+#[test]
+fn a_conditional_takes_boolean_conditions_and_an_else_block_last() {
+    assert_accepted(json!({"type": "conditional", "blocks": [
+        block(Some(json!({"op": "less", "args": [{"variable": "state.count"}, {"value": 3}]}))),
+        block(None),
+    ]}));
+    for (blocks, message) in [
+        (
+            json!([block(Some(json!({"variable": "state.count"})))]),
+            "a condition yields a boolean",
+        ),
+        (
+            json!([block(None), block(Some(opened()))]),
+            "only the last block of a conditional may have no condition",
+        ),
+        (json!([]), "a conditional needs at least one block"),
+    ] {
+        assert_refused(json!({"type": "conditional", "blocks": blocks}), message);
+    }
+}
+
+#[test]
+fn the_actions_of_a_conditional_block_are_checked_at_any_depth() {
+    let inner = json!({"type": "conditional", "blocks": [{
+        "condition": opened(),
+        "actions": [{"type": "setVariableMode", "collection": "color", "mode": "dusk"}]
+    }]});
+    for (actions, message) in [
+        (
+            json!([{"type": "setVariable", "variable": "state.nope", "value": 1}]),
+            "`state.nope` is not a token",
+        ),
+        (
+            json!([inner]),
+            "`dusk` is not a mode of `color` (light, dark)",
+        ),
+    ] {
+        assert_refused(
+            json!({"type": "conditional", "blocks": [{"condition": opened(), "actions": actions}]}),
+            message,
+        );
+    }
 }

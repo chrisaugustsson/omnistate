@@ -16,6 +16,10 @@
 //! - Deleting a board that interactions point at applies; they stay as they
 //!   were, a set that does not write `interactions` applies, and one that
 //!   writes the dangling `dest` again is refused.
+//! - US-29: the variables and modes that the actions of a `set` or `insert`
+//!   name are checked against the project's tokens (the rules themselves are
+//!   pinned in omni-core's tests/design_interactions.rs). A project without
+//!   tokens has no variables.
 
 mod common;
 
@@ -791,4 +795,98 @@ fn deleting_a_board_leaves_the_interactions_that_point_at_it() {
         json!([set(&total, 3, interactions(go("navigate", &payment)))]),
     );
     assert_eq!(refusal(&again), format!("`{payment}` is not in the doc"));
+}
+
+// ---------------------------------------------------------------------------
+// Variable actions
+// ---------------------------------------------------------------------------
+
+/// Gives the design's project a design system and imports `tokens` into it.
+fn import_tokens(f: &Fixture, client: &Client, design: &Design, tokens: Value) {
+    must(
+        call(
+            client,
+            "POST",
+            &format!("{}/docs", design.base(f)),
+            &holder(f),
+            Some(&json!({ "kind": "design-system", "pillar": "ui", "title": unique("system") })),
+        ),
+        201,
+        "create the design system doc",
+    );
+    must(
+        call(
+            client,
+            "PUT",
+            &format!("{}/tokens", design.base(f)),
+            &holder(f),
+            Some(&json!({ "tokens": tokens })),
+        ),
+        200,
+        "import the tokens",
+    );
+}
+
+#[test]
+fn a_variable_action_is_checked_against_the_tokens_of_the_project() {
+    let (f, client) = ready();
+    let design = new_design(f, client);
+    let total = design.id("Total");
+    let set_count = interactions(json!({
+        "type": "setVariable",
+        "variable": "state.count",
+        "expr": { "op": "add", "args": [{ "variable": "state.count" }, { "value": 1 }] }
+    }));
+    let before = board_tags(f, client, &design, &design.id("Cart"));
+
+    // Without tokens there is no variable to set.
+    let response = edit(
+        f,
+        client,
+        &holder(f),
+        &design,
+        json!([set(&total, 1, set_count.clone())]),
+    );
+    assert!(
+        refusal(&response).contains("`state.count` is not a token"),
+        "{}",
+        response.json()
+    );
+    assert_eq!(board_tags(f, client, &design, &design.id("Cart")), before);
+
+    import_tokens(
+        f,
+        client,
+        &design,
+        json!({
+            "$extensions": { "omnistate": { "modes": ["light", "dark"] } },
+            "color": {
+                "$type": "color",
+                "surface": {
+                    "$value": "#ffffff",
+                    "$extensions": { "omnistate": { "modes": { "light": "#ffffff", "dark": "#0f172a" } } }
+                }
+            },
+            "state": { "count": { "$type": "number", "$value": 0 } }
+        }),
+    );
+    applied(f, client, &design, json!([set(&total, 1, set_count)]));
+
+    // An insert is checked like a set.
+    let response = edit(
+        f,
+        client,
+        &holder(f),
+        &design,
+        json!([insert(
+            &design.id("Actions"),
+            None,
+            r#"<Text name="Theme" content="Mörkt" fontFamily="Inter" fontSize={14} interactions={[{actions: [{type: "setVariableMode", collection: "color", mode: "dusk"}]}]}/>"#
+        )]),
+    );
+    assert!(
+        refusal(&response).contains("`dusk` is not a mode of `color` (light, dark)"),
+        "{}",
+        response.json()
+    );
 }
