@@ -6,7 +6,8 @@
 //! action of an interaction runs in list order.
 
 use crate::history::{History, Play};
-use omni_core::design::proto::{Action, Interaction, OverlayPosition, Trigger};
+use crate::overlay;
+use omni_core::design::proto::{Action, Interaction, OverlayAnchor, OverlayPosition, Trigger};
 use omni_core::design::{Node, NodeAddress, NodeData, NodeId, NodeKind, Page};
 use std::collections::{BTreeMap, HashMap};
 
@@ -74,6 +75,16 @@ pub struct OverlayState {
     pub board: NodeId,
     /// Where the overlay sits, as an offset from the board's origin.
     pub origin: [f64; 2],
+    /// A colour drawn over the screen under the overlay.
+    pub background: Option<String>,
+    pub close_on_outside: bool,
+    /// When the overlay opened, in milliseconds: its delays count from here.
+    pub opened_at: f64,
+    pub position: OverlayPosition,
+    pub anchor: OverlayAnchor,
+    pub offset: Option<[f64; 2]>,
+    /// The box of the layer that opened it, kept to place a swapped-in board.
+    pub trigger_box: Rect,
 }
 
 /// A change of board that is playing.
@@ -293,19 +304,63 @@ impl Player {
 
     /// The boards a touch lands on, the top overlay first, with their origin.
     fn sources(&self) -> Vec<(NodeId, [f64; 2])> {
-        let mut sources: Vec<_> = self
-            .frame
-            .overlays
-            .iter()
-            .rev()
-            .map(|overlay| (overlay.board, overlay.origin))
-            .collect();
-        sources.push((self.frame.board, [0.0, 0.0]));
-        sources
+        match self.frame.overlays.last() {
+            Some(top) => vec![(top.board, top.origin)],
+            None => vec![(self.frame.board, [0.0, 0.0])],
+        }
+    }
+
+    /// The box of a board's root in its own space.
+    fn root_rect(&self, board: &NodeId) -> Option<Rect> {
+        self.boxes.get(board)?.rects.get(board).copied()
+    }
+
+    /// Where an overlay of `board` goes, opened from `trigger`.
+    fn place(
+        &self,
+        board: &NodeId,
+        position: OverlayPosition,
+        anchor: OverlayAnchor,
+        offset: Option<[f64; 2]>,
+        trigger: Rect,
+    ) -> [f64; 2] {
+        let screen = self.root_rect(&self.frame.board).unwrap_or(Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 0.0,
+            height: 0.0,
+        });
+        let size = self
+            .root_rect(board)
+            .map_or([0.0, 0.0], |rect| [rect.width, rect.height]);
+        overlay::position(
+            position,
+            anchor,
+            offset,
+            trigger,
+            size,
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                ..screen
+            },
+        )
     }
 
     fn click(&mut self, x: f64, y: f64, at: f64, effects: &mut Vec<Effect>) -> bool {
-        let Some((interactions, holder)) = self.hit(&Trigger::OnClick, x, y) else {
+        if let Some(top) = self.frame.overlays.last() {
+            let inside = self
+                .root_rect(&top.board)
+                .is_some_and(|rect| rect.offset(top.origin).contains(x, y));
+            if !inside {
+                if top.close_on_outside {
+                    self.frame.overlays.pop();
+                    return true;
+                }
+                return false;
+            }
+        }
+        let Some((interactions, holder, trigger)) = self.hit(&Trigger::OnClick, x, y) else {
             return false;
         };
         let mut changed = false;
@@ -316,7 +371,7 @@ impl Player {
                 easing: interaction.easing,
             };
             for action in &interaction.actions {
-                changed |= self.apply(action, play, holder, at, effects);
+                changed |= self.apply(action, play, holder, trigger, at, effects);
             }
         }
         changed
@@ -325,12 +380,17 @@ impl Player {
     /// The interactions for `trigger` of the deepest layer under the point
     /// that has any, and the instance that holds the layer. A later layer
     /// wins over an earlier one of the same depth, as it is drawn on top.
-    fn hit(&self, trigger: &Trigger, x: f64, y: f64) -> Option<(Vec<Interaction>, Option<NodeId>)> {
+    fn hit(
+        &self,
+        trigger: &Trigger,
+        x: f64,
+        y: f64,
+    ) -> Option<(Vec<Interaction>, Option<NodeId>, Rect)> {
         for (board, origin) in self.sources() {
             let Some(boxes) = self.boxes.get(&board) else {
                 continue;
             };
-            let mut best: Option<(usize, Vec<Interaction>, Option<NodeId>)> = None;
+            let mut best: Option<(usize, Vec<Interaction>, Option<NodeId>, Rect)> = None;
             for entry in self.entries(&board) {
                 let Some(rect) = boxes.rects.get(&entry.id) else {
                     continue;
@@ -346,10 +406,10 @@ impl Player {
                 if matching.is_empty() || best.as_ref().is_some_and(|b| b.0 > entry.depth) {
                     continue;
                 }
-                best = Some((entry.depth, matching, entry.holder));
+                best = Some((entry.depth, matching, entry.holder, rect.offset(origin)));
             }
-            if let Some((_, interactions, holder)) = best {
-                return Some((interactions, holder));
+            if let Some((_, interactions, holder, rect)) = best {
+                return Some((interactions, holder, rect));
             }
         }
         None
@@ -360,6 +420,7 @@ impl Player {
         action: &Action,
         play: Play,
         holder: Option<NodeId>,
+        trigger: Rect,
         at: f64,
         effects: &mut Vec<Effect>,
     ) -> bool {
@@ -380,29 +441,45 @@ impl Player {
                 dest,
                 position,
                 offset,
-                ..
+                anchor,
+                close_on_outside,
+                background,
             } => {
                 let Some(board) = self.board_id(dest) else {
                     return false;
                 };
-                let origin = match position {
-                    OverlayPosition::Manual => offset.unwrap_or([0.0, 0.0]),
-                    _ => [0.0, 0.0],
-                };
-                self.frame.overlays.push(OverlayState { board, origin });
+                let origin = self.place(&board, *position, *anchor, *offset, trigger);
+                self.frame.overlays.push(OverlayState {
+                    board,
+                    origin,
+                    background: background.clone(),
+                    close_on_outside: *close_on_outside,
+                    opened_at: at,
+                    position: *position,
+                    anchor: *anchor,
+                    offset: *offset,
+                    trigger_box: trigger,
+                });
                 true
             }
             Action::SwapOverlay { dest } => {
                 let Some(board) = self.board_id(dest) else {
                     return false;
                 };
-                let Some(top) = self.frame.overlays.last_mut() else {
+                let Some(top) = self.frame.overlays.last() else {
                     return false;
                 };
-                *top = OverlayState {
-                    board,
-                    origin: [0.0, 0.0],
-                };
+                let origin = self.place(
+                    &board,
+                    top.position,
+                    top.anchor,
+                    top.offset,
+                    top.trigger_box,
+                );
+                let top = self.frame.overlays.last_mut().expect("checked above");
+                top.board = board;
+                top.origin = origin;
+                top.opened_at = at;
                 true
             }
             Action::CloseOverlay => self.frame.overlays.pop().is_some(),

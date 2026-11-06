@@ -203,23 +203,22 @@ fn overlays_push_replace_and_pop_without_a_history_step() {
     let open = json!({"type": "openOverlay", "dest": B2, "position": "manual", "offset": [5, 6]});
     let mut player = player(
         vec![
+            board(B1, vec![layer(L1, json!([actions(json!([open]))]))]),
             board(
-                B1,
-                vec![
-                    layer(L1, json!([actions(json!([open]))])),
-                    layer(
-                        L2,
-                        json!([actions(json!([{"type": "swapOverlay", "dest": B3}]))]),
-                    ),
-                ],
+                B2,
+                vec![layer(
+                    L2,
+                    json!([actions(json!([{"type": "swapOverlay", "dest": B3}]))]),
+                )],
             ),
-            board(B2, vec![]),
             board(B3, vec![]),
         ],
         vec![],
         &[
             (L1, rect(0.0, 0.0, 50.0, 50.0)),
             (L2, rect(60.0, 0.0, 50.0, 50.0)),
+            (B2, rect(0.0, 0.0, 100.0, 100.0)),
+            (B3, rect(0.0, 0.0, 100.0, 100.0)),
         ],
     );
 
@@ -247,39 +246,42 @@ fn close_overlay_pops_and_navigate_clears_overlays() {
         vec![
             board(
                 B1,
-                vec![
-                    layer(
-                        L1,
-                        json!([actions(json!([{"type": "openOverlay", "dest": B2}]))]),
-                    ),
-                    layer(L2, json!([navigate(B3)])),
-                ],
+                vec![layer(
+                    L1,
+                    json!([actions(json!([{"type": "openOverlay", "dest": B2}]))]),
+                )],
             ),
             board(
                 B2,
-                vec![layer(
-                    "a0000003",
-                    json!([actions(json!([{"type": "closeOverlay"}]))]),
-                )],
+                vec![
+                    layer(
+                        "a0000003",
+                        json!([actions(json!([{"type": "closeOverlay"}]))]),
+                    ),
+                    layer("a0000004", json!([navigate(B3)])),
+                ],
             ),
             board(B3, vec![]),
         ],
         vec![],
         &[
+            (B1, rect(0.0, 0.0, 300.0, 300.0)),
+            (B2, rect(0.0, 0.0, 100.0, 200.0)),
             (L1, rect(0.0, 0.0, 50.0, 50.0)),
-            (L2, rect(60.0, 0.0, 50.0, 50.0)),
             ("a0000003", rect(0.0, 100.0, 50.0, 50.0)),
+            ("a0000004", rect(0.0, 0.0, 50.0, 50.0)),
         ],
     );
 
+    // The overlay is centred, so its top-left corner is at 100, 50.
     click(&mut player, 10.0, 10.0, 0.0);
-    let closed = click(&mut player, 10.0, 110.0, 100.0);
+    let closed = click(&mut player, 110.0, 160.0, 100.0);
     assert_eq!(closed, vec![Effect::NeedsFrame]);
     assert!(player.frame().overlays.is_empty());
 
     click(&mut player, 10.0, 10.0, 200.0);
     assert_eq!(player.frame().overlays.len(), 1);
-    click(&mut player, 70.0, 10.0, 300.0);
+    click(&mut player, 110.0, 60.0, 300.0);
     let frame = player.frame();
     assert_eq!(frame.board, id(B3));
     assert!(frame.overlays.is_empty());
@@ -678,7 +680,7 @@ fn a_hidden_layer_is_not_hit() {
 }
 
 #[test]
-fn the_top_overlay_is_hit_first_at_its_origin_and_a_miss_falls_through() {
+fn the_top_overlay_is_hit_at_its_origin_and_a_miss_inside_it_stays_in_it() {
     let open = json!({"type": "openOverlay", "dest": B2, "position": "manual", "offset": [200, 0]});
     let mut player = player(
         vec![
@@ -706,12 +708,16 @@ fn the_top_overlay_is_hit_first_at_its_origin_and_a_miss_falls_through() {
         HashMap::from([
             (id(L1), rect(0.0, 0.0, 50.0, 50.0)),
             (id(L2), rect(200.0, 0.0, 50.0, 50.0)),
+            (id(B1), rect(0.0, 0.0, 300.0, 300.0)),
         ]),
         HashMap::new(),
     );
     player.set_boxes(
         id(B2),
-        HashMap::from([(id("a0000003"), rect(0.0, 0.0, 20.0, 20.0))]),
+        HashMap::from([
+            (id("a0000003"), rect(0.0, 0.0, 20.0, 20.0)),
+            (id(B2), rect(0.0, 0.0, 100.0, 100.0)),
+        ]),
         HashMap::new(),
     );
 
@@ -722,13 +728,15 @@ fn the_top_overlay_is_hit_first_at_its_origin_and_a_miss_falls_through() {
     assert_eq!(player.frame().board, id(B1));
 
     click(&mut player, 10.0, 10.0, 200.0);
-    // Nothing of the overlay is at this point of L2, so the board's L2 is hit.
+    // Nothing of the overlay is at this point of L2, and the board under it
+    // does not take the click.
     click(&mut player, 240.0, 40.0, 300.0);
-    assert_eq!(player.frame().board, id(B3));
+    assert_eq!(player.frame().board, id(B1));
+    assert_eq!(player.frame().overlays.len(), 1);
 }
 
 #[test]
-fn hotspots_include_the_open_overlays_layers() {
+fn hotspots_are_the_top_overlays_layers() {
     let mut player = player(
         vec![
             board(
@@ -757,7 +765,10 @@ fn hotspots_include_the_open_overlays_layers() {
 
     let spots: HashMap<_, _> = player.hotspots(&boxes).into_iter().collect();
 
-    assert_eq!(spots, boxes);
+    assert_eq!(
+        spots,
+        HashMap::from([(id(L2), rect(60.0, 0.0, 20.0, 20.0))])
+    );
 }
 
 #[test]
@@ -776,16 +787,18 @@ fn overlay_actions_with_nothing_to_act_on_change_nothing() {
                         json!([actions(json!([{"type": "openOverlay", "dest": GONE}]))]),
                     ),
                     layer(
-                        "a0000003",
-                        json!([actions(json!([{"type": "swapOverlay", "dest": GONE}]))]),
-                    ),
-                    layer(
                         "a0000004",
                         json!([actions(json!([{"type": "openOverlay", "dest": B2}]))]),
                     ),
                 ],
             ),
-            board(B2, vec![]),
+            board(
+                B2,
+                vec![layer(
+                    "a0000003",
+                    json!([actions(json!([{"type": "swapOverlay", "dest": GONE}]))]),
+                )],
+            ),
         ],
         vec![],
         &[],
@@ -795,8 +808,16 @@ fn overlay_actions_with_nothing_to_act_on_change_nothing() {
         HashMap::from([
             (id(L1), rect(0.0, 0.0, 50.0, 50.0)),
             (id(L2), rect(100.0, 0.0, 50.0, 50.0)),
-            (id("a0000003"), rect(200.0, 0.0, 50.0, 50.0)),
             (id("a0000004"), rect(300.0, 0.0, 50.0, 50.0)),
+            (id(B1), rect(0.0, 0.0, 400.0, 100.0)),
+        ]),
+        HashMap::new(),
+    );
+    player.set_boxes(
+        id(B2),
+        HashMap::from([
+            (id("a0000003"), rect(0.0, 0.0, 50.0, 50.0)),
+            (id(B2), rect(0.0, 0.0, 100.0, 100.0)),
         ]),
         HashMap::new(),
     );
@@ -810,7 +831,8 @@ fn overlay_actions_with_nothing_to_act_on_change_nothing() {
     assert_eq!(player.frame(), before);
 
     click(&mut player, 310.0, 10.0, 200.0);
-    let swap_gone = click(&mut player, 210.0, 10.0, 300.0);
+    // The overlay is centred, so its top-left corner is at 150, 0.
+    let swap_gone = click(&mut player, 160.0, 10.0, 300.0);
     assert!(swap_gone.is_empty());
     let frame = player.frame();
     assert_eq!(frame.overlays.len(), 1);

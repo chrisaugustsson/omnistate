@@ -7,6 +7,7 @@
 //! (MIT OR Apache-2.0; see `NOTICE`).
 
 mod history;
+pub mod overlay;
 mod player;
 
 pub use history::Play;

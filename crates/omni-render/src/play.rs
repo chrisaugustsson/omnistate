@@ -262,14 +262,26 @@ impl Session {
             x: left,
             y: top,
         };
-        let mut shown = vec![(frame.board, [0.0, 0.0])];
-        shown.extend(
-            frame
-                .overlays
-                .iter()
-                .map(|overlay| (overlay.board, overlay.origin)),
-        );
-        for (board, origin) in shown {
+        let mut shown = vec![(frame.board, [0.0, 0.0], None)];
+        shown.extend(frame.overlays.iter().map(|overlay| {
+            (
+                overlay.board,
+                overlay.origin,
+                overlay.background.as_deref().and_then(color),
+            )
+        }));
+        for (board, origin, sheet) in shown {
+            if let Some(sheet) = sheet {
+                canvas.draw_rect(
+                    skia_safe::Rect::from_xywh(
+                        left,
+                        top,
+                        bounds.width * scale,
+                        bounds.height * scale,
+                    ),
+                    &skia_safe::Paint::new(skia_safe::Color4f::from(sheet), None),
+                );
+            }
             let Some(bounds) = scene.board_bounds(&board) else {
                 continue;
             };
