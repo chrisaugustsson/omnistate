@@ -572,7 +572,7 @@ fn after_a_mode_switch_the_properties_have_that_modes_values() {
 // padding of $density.space.md. Its own scene, so the shared fixture keeps a
 // single mode.
 
-fn density_scene() -> Scene {
+fn density_system() -> DesignSystem {
     let tokens = json!({
         "$extensions": {"omnistate": {"modes": ["light", "dark"]}},
         "color": {
@@ -593,8 +593,11 @@ fn density_scene() -> Scene {
             }
         }
     });
-    let system = DesignSystem::from_json(&tokens)
-        .unwrap_or_else(|error| panic!("the density design system must be read, but: {error}"));
+    DesignSystem::from_json(&tokens)
+        .unwrap_or_else(|error| panic!("the density design system must be read, but: {error}"))
+}
+
+fn density_scene() -> Scene {
     let summary = json!({
         "id": SUMMARY,
         "type": "frame",
@@ -622,7 +625,7 @@ fn density_scene() -> Scene {
             "children": [summary]
         }]
     });
-    Scene::with_system(node(&page), Assets::new(), system)
+    Scene::with_system(node(&page), Assets::new(), density_system())
 }
 
 /// The token uses of a property, as `uses` reads them.
@@ -720,6 +723,147 @@ fn a_choice_naming_a_mode_or_collection_the_system_lacks_is_refused_as_a_whole()
         ),
         "the valid color entry of the refused choice is not applied"
     );
+}
+
+// A board's own modes (US-27), with the density design system: the board
+// Night names `modes` and the board Day beside it names none. Each holds a
+// card filled $color.surface with a padding of $density.space.md.
+
+const NIGHT: &str = "a0000002";
+const DAY: &str = "a0000003";
+const NIGHT_CARD: &str = "f0000003";
+const DAY_CARD: &str = "f0000004";
+
+fn card(id: &str) -> Value {
+    json!({
+        "id": id,
+        "type": "frame",
+        "name": "Card",
+        "x": 20,
+        "y": 20,
+        "width": fixed(100.0),
+        "height": fixed(40.0),
+        "fills": solid("$color.surface"),
+        "layout": {"mode": "flex", "padding": {"top": "$density.space.md"}}
+    })
+}
+
+fn modes_board(id: &str, x: f64, modes: Option<Value>, children: Vec<Value>) -> Value {
+    let board = json!({
+        "id": id,
+        "type": "board",
+        "name": "Board",
+        "x": x,
+        "y": 0,
+        "width": fixed(400.0),
+        "height": fixed(300.0),
+        "layout": {"mode": "none"},
+        "children": children
+    });
+    match modes {
+        Some(modes) => with(&board, "modes", modes),
+        None => board,
+    }
+}
+
+fn modes_scene(night: Value) -> Scene {
+    let page = json!({
+        "id": "p0000001",
+        "type": "page",
+        "name": "Mobile",
+        "children": [night, modes_board(DAY, 500.0, None, vec![card(DAY_CARD)])]
+    });
+    Scene::with_system(node(&page), Assets::new(), density_system())
+}
+
+/// The padding token and the fill token of the card `id`.
+fn card_tokens(scene: &Scene, id: &str) -> (Uses, Uses) {
+    let card = inspect(scene, id);
+    (
+        uses(property(&card.layout, "layout", "layout")),
+        uses(property(&card.style, "style", "fills")),
+    )
+}
+
+fn card_in(space: u32, surface: &str) -> (Uses, Uses) {
+    (
+        expected(vec![token("$density.space.md", json!(space))]),
+        expected(vec![token("$color.surface", json!(surface))]),
+    )
+}
+
+fn choose(scene: &mut Scene, choice: &str) {
+    scene
+        .set_mode(choice)
+        .unwrap_or_else(|error| panic!("{choice} is a choice of the system, but: {error}"));
+}
+
+#[test]
+fn a_board_resolves_the_collections_its_modes_name_whatever_the_viewer_chooses() {
+    let night = modes_board(
+        NIGHT,
+        0.0,
+        Some(json!({"color": "dark"})),
+        vec![card(NIGHT_CARD)],
+    );
+    let mut scene = modes_scene(night);
+    assert_eq!(
+        card_tokens(&scene, NIGHT_CARD),
+        card_in(16, "#000000"),
+        "Night is dark on a light page"
+    );
+    assert_eq!(
+        card_tokens(&scene, DAY_CARD),
+        card_in(16, "#ffffff"),
+        "Day follows the page"
+    );
+
+    choose(&mut scene, r#"{"color": "dark"}"#);
+    choose(&mut scene, r#"{"color": "light"}"#);
+    assert_eq!(
+        card_tokens(&scene, NIGHT_CARD),
+        card_in(16, "#000000"),
+        "the color select leaves Night dark"
+    );
+    assert_eq!(
+        card_tokens(&scene, DAY_CARD),
+        card_in(16, "#ffffff"),
+        "Day follows the select back"
+    );
+
+    choose(&mut scene, r#"{"density": "compact"}"#);
+    assert_eq!(
+        card_tokens(&scene, NIGHT_CARD),
+        card_in(12, "#000000"),
+        "the density select reaches Night"
+    );
+    assert_eq!(card_tokens(&scene, DAY_CARD), card_in(12, "#ffffff"));
+}
+
+#[test]
+fn a_board_read_after_the_page_is_shown_is_resolved_in_its_own_modes() {
+    let mut scene = modes_scene(modes_board(NIGHT, 0.0, None, Vec::new()));
+    let night = modes_board(
+        NIGHT,
+        0.0,
+        Some(json!({"color": "dark"})),
+        vec![card(NIGHT_CARD)],
+    );
+    assert!(scene.replace_boards(vec![node(&night)], Assets::new()));
+    assert_eq!(card_tokens(&scene, NIGHT_CARD), card_in(16, "#000000"));
+}
+
+#[test]
+fn a_mode_the_system_no_longer_has_is_left_out_and_the_board_takes_the_pages() {
+    let night = modes_board(
+        NIGHT,
+        0.0,
+        Some(json!({"color": "dusk", "density": "compact"})),
+        vec![card(NIGHT_CARD)],
+    );
+    let scene = modes_scene(night);
+    assert_eq!(card_tokens(&scene, NIGHT_CARD), card_in(12, "#ffffff"));
+    assert_eq!(scene.errors(), &[]);
 }
 
 // ---------------------------------------------------------------------------

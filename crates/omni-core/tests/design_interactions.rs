@@ -1024,3 +1024,29 @@ fn the_actions_of_a_conditional_block_are_checked_at_any_depth() {
         );
     }
 }
+
+// US-27: a board names the mode of each collection it is resolved in.
+
+#[test]
+fn only_a_board_takes_modes_in_tags_and_in_json() {
+    let error = error_of(
+        r#"<Frame id="aaaaaaaa" name="Card" width={100} height={40} dir="col" modes={{color: "dark"}}/>"#,
+    );
+    assert!(
+        error
+            .message()
+            .starts_with("`modes` is not an attribute of `<Frame>`"),
+        "{error}"
+    );
+
+    let frame = json!({
+        "id": "aaaaaaaa", "type": "frame", "name": "Card",
+        "width": {"fixed": 100}, "height": {"fixed": 40}, "layout": {"mode": "none"},
+        "modes": {"color": "dark"}
+    });
+    let error = serde_json::from_value::<Node>(frame).expect_err("a frame has no modes");
+    assert!(
+        error.to_string().contains("frame nodes have no `modes`"),
+        "{error}"
+    );
+}

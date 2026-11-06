@@ -890,3 +890,75 @@ fn a_variable_action_is_checked_against_the_tokens_of_the_project() {
         response.json()
     );
 }
+
+// ---------------------------------------------------------------------------
+// A board's modes (US-27)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_boards_modes_must_name_collections_of_the_design_system_and_their_modes() {
+    let (f, client) = ready();
+    let design = new_design(f, client);
+    let cart = design.id("Cart");
+    let before = board_tags(f, client, &design, &cart);
+    let write = |modes: Value| {
+        edit(
+            f,
+            client,
+            &holder(f),
+            &design,
+            json!([set(&cart, 1, json!({ "modes": modes }))]),
+        )
+    };
+
+    // Without a design system there is no collection, and none to list.
+    assert_eq!(
+        refusal(&write(json!({ "color": "dark" }))),
+        "`color` is not a collection of the design system"
+    );
+
+    import_tokens(
+        f,
+        client,
+        &design,
+        json!({
+            "$extensions": { "omnistate": { "modes": ["light", "dark"] } },
+            "color": {
+                "$type": "color",
+                "surface": {
+                    "$value": "#ffffff",
+                    "$extensions": { "omnistate": { "modes": { "light": "#ffffff", "dark": "#0f172a" } } }
+                }
+            },
+            "density": {
+                "$extensions": { "omnistate": { "modes": ["comfortable", "compact"] } },
+                "space": {
+                    "$type": "dimension",
+                    "$value": "16px",
+                    "$extensions": { "omnistate": { "modes": { "comfortable": "16px", "compact": "12px" } } }
+                }
+            }
+        }),
+    );
+    assert_eq!(
+        refusal(&write(json!({ "color": "dusk" }))),
+        "`dusk` is not a mode of `color` (light, dark)"
+    );
+    assert_eq!(
+        refusal(&write(json!({ "nope": "x" }))),
+        "`nope` is not a collection of the design system (color, density)"
+    );
+    assert_eq!(board_tags(f, client, &design, &cart), before);
+
+    applied(
+        f,
+        client,
+        &design,
+        json!([set(&cart, 1, json!({ "modes": { "color": "dark" } }))]),
+    );
+    assert!(
+        board_tags(f, client, &design, &cart).contains(r#"modes={{color: "dark"}}"#),
+        "{}",
+        board_tags(f, client, &design, &cart)
+    );
+}
