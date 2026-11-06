@@ -686,13 +686,7 @@ impl DesignDoc {
         let node = self.node_mut(id).expect("the node is in the doc");
         tags::set_properties(node, host.as_ref(), properties)
             .map_err(|message| invalid(index, message))?;
-        let instance = node.kind() == NodeKind::Instance
-            && ["component", "props", "overrides"]
-                .iter()
-                .any(|name| properties.contains_key(*name));
-        if instance || properties.contains_key("interactions") || properties.contains_key("modes") {
-            check(std::slice::from_ref(&*node)).map_err(|message| invalid(index, message))?;
-        }
+        check(std::slice::from_ref(&*node)).map_err(|message| invalid(index, message))?;
         if properties.contains_key("flows") {
             check_flows(node).map_err(|message| invalid(index, message))?;
         }
