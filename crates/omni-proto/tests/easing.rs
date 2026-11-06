@@ -52,6 +52,7 @@ fn running(easing: Easing, duration_ms: u32) -> Running {
         started: 1000.0,
         duration_ms,
         easing,
+        follows_pointer: false,
         interrupted: None,
     }
 }

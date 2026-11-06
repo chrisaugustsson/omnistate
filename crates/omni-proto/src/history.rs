@@ -33,6 +33,11 @@ impl History {
         &self.boards
     }
 
+    pub(crate) fn truncate(&mut self, len: usize) {
+        self.boards.truncate(len);
+        self.plays.truncate(len);
+    }
+
     pub(crate) fn clear(&mut self) {
         self.boards.clear();
         self.plays.clear();

@@ -3,21 +3,27 @@
 //! The rules follow FigCraft's `proto_run.rs` (MIT OR Apache-2.0; see
 //! `NOTICE`): a click is a Down and an Up within a few pixels, the deepest
 //! layer under the point with an interaction for the trigger wins, and every
-//! action of an interaction runs in list order.
+//! action of an interaction runs in list order. A hover or a press puts
+//! back what it did when it ends; a drag that starts a directional
+//! transition lets the pointer carry it.
 
 use crate::history::{History, Play};
 use crate::keys::{self, Mods};
+use crate::input::{DragTarget, Follow, Hover, Press, Revert};
 use crate::overlay;
-use crate::transition::{progress, reversed};
+use crate::timers::{Target, Timer};
+use crate::transition::{duration_ms, progress, reversed};
 use crate::variables::{self, PlayVariables, TokenValue};
-use omni_core::design::proto::{Action, Interaction, OverlayAnchor, OverlayPosition, Trigger};
+use omni_core::design::proto::{
+    Action, Direction, Interaction, OverlayAnchor, OverlayPosition, Trigger,
+};
 use omni_core::design::tokens::{ModeChoice, TokenTree};
 use omni_core::design::{Node, NodeAddress, NodeData, NodeId, NodeKind, Page, TokenOr};
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
 
-/// How far, in pixels, the pointer may travel between Down and Up for the two
-/// to be a click.
+/// How far, in screen pixels, the pointer may travel between Down and Up for
+/// the two to be a click, and how far it goes before a drag starts.
 const CLICK_SLOP: f64 = 4.0;
 
 /// How deep the walk goes, so a component that holds itself ends.
@@ -105,6 +111,8 @@ pub struct OverlayState {
     pub close_on_outside: bool,
     /// When the overlay opened, in milliseconds: its delays count from here.
     pub opened_at: f64,
+    /// Which showing of an overlay this is, for the waits that end with it.
+    pub visit: u64,
     pub position: OverlayPosition,
     pub anchor: OverlayAnchor,
     pub offset: Option<[f64; 2]>,
@@ -123,6 +131,9 @@ pub struct Running {
     pub started: f64,
     pub duration_ms: u32,
     pub easing: omni_core::design::proto::Easing,
+    /// Whether the pointer, which a drag started it with, sets how far it has
+    /// come until the button comes up.
+    pub follows_pointer: bool,
     /// The transition this one cut short: its frame, as it was when this one
     /// started, is what this one changes from.
     pub interrupted: Option<Box<Interrupted>>,
@@ -157,10 +168,47 @@ struct Boxes {
     layers: HashMap<NodeId, NodeAddress>,
 }
 
-struct Press {
-    x: f64,
-    y: f64,
-    moved: bool,
+/// The layer under a point that has the interactions of a trigger.
+struct Found {
+    id: NodeId,
+    depth: usize,
+    interactions: Vec<Interaction>,
+    holder: Option<NodeId>,
+    rect: Rect,
+}
+
+/// A layer that has interactions and is under the pointer, with its box on
+/// the screen.
+struct Under {
+    entry: Entry,
+    rect: Rect,
+}
+
+/// The deepest of `under` with an interaction whose trigger `matches`. A
+/// later layer wins over an earlier one of the same depth, as it is drawn on
+/// top.
+fn deepest(under: &[Under], matches: impl Fn(&Trigger) -> bool) -> Option<Found> {
+    let mut best: Option<Found> = None;
+    for layer in under {
+        let interactions: Vec<Interaction> = layer
+            .entry
+            .interactions
+            .iter()
+            .filter(|interaction| matches(&interaction.trigger))
+            .cloned()
+            .collect();
+        if interactions.is_empty() || best.as_ref().is_some_and(|b| b.depth > layer.entry.depth) {
+            continue;
+        }
+        best = Some(Found {
+            id: layer.entry.id,
+            depth: layer.entry.depth,
+            interactions,
+            holder: layer.entry.holder,
+            rect: layer.rect,
+        });
+    }
+    best
 }
 
 /// A layer that reacts to touch.
@@ -183,6 +231,22 @@ pub struct Player {
     frame: Frame,
     history: History,
     press: Option<Press>,
+    /// The layers the pointer is over.
+    hovered: Vec<Hover>,
+    timers: Vec<Timer>,
+    /// How many boards and overlays have been shown, to tell the showings
+    /// apart.
+    visits: u64,
+    /// Which showing the board shown is.
+    board_visit: u64,
+    /// The CSS pixels of the screen per unit of the pointer's coordinates.
+    scale: f64,
+    /// What a transition let go by a drag has already come, until the page
+    /// times it from its own clock.
+    resume_ms: Option<f64>,
+    /// What the actions run now would put back, where a hover or press
+    /// collects it.
+    recording: Option<Vec<Revert>>,
     /// The time of the last event the player saw.
     last_at: f64,
     /// Until when the hotspots are outlined after a click that missed.
@@ -199,7 +263,7 @@ impl Player {
             .filter(|node| node.kind() == NodeKind::Board)
             .map(|node| (*node.id(), node.clone()))
             .collect();
-        Player {
+        let mut player = Player {
             boards,
             components,
             tokens: None,
@@ -214,8 +278,44 @@ impl Player {
             },
             history: History::default(),
             press: None,
+            hovered: Vec::new(),
+            timers: Vec::new(),
+            visits: 1,
+            board_visit: 1,
+            scale: 1.0,
+            resume_ms: None,
+            recording: None,
             last_at: 0.0,
             hint_until: None,
+        };
+        player.schedule(start, 1, [0.0, 0.0], 0.0);
+        player
+    }
+
+    /// Tells the player how many CSS pixels of the screen one unit of the
+    /// pointer's coordinates is, which the click and drag distances are
+    /// measured in.
+    pub fn set_scale(&mut self, scale: f64) {
+        if scale > 0.0 {
+            self.scale = scale;
+        }
+    }
+
+    /// The waits that are running: an `afterDelay` of the board or overlay
+    /// shown, and the `delayMs` of a gesture. Each runs out at `Timer::due`
+    /// and acts in `tick`.
+    pub fn timers(&self) -> Vec<&Timer> {
+        self.timers
+            .iter()
+            .filter(|timer| self.current(timer.visit))
+            .collect()
+    }
+
+    /// Counts the waits that began at an event again from `at`, for a page
+    /// whose clock was stale when they began.
+    pub fn restart_timers(&mut self, at: f64) {
+        for timer in self.timers.iter_mut().filter(|timer| timer.fresh) {
+            timer.restart(at);
         }
     }
 
@@ -259,52 +359,524 @@ impl Player {
     pub fn pointer(&mut self, event: PointerEvent) -> Vec<Effect> {
         self.last_at = event.at;
         let mut effects = Vec::new();
-        let mut changed = false;
-        match event.kind {
-            PointerKind::Down => {
-                self.press = Some(Press {
-                    x: event.x,
-                    y: event.y,
-                    moved: false,
-                });
-            }
-            PointerKind::Move => {
-                if let Some(press) = &mut self.press {
-                    if (event.x - press.x).hypot(event.y - press.y) > CLICK_SLOP {
-                        press.moved = true;
-                    }
-                }
-            }
-            PointerKind::Leave => self.press = None,
-            PointerKind::Up => {
-                if let Some(press) = self.press.take() {
-                    let near = (event.x - press.x).hypot(event.y - press.y) <= CLICK_SLOP;
-                    if near && !press.moved {
-                        changed = self.click(event.x, event.y, event.at, &mut effects);
-                    }
-                }
-            }
-        }
+        let changed = match event.kind {
+            PointerKind::Down => self.down(event, &mut effects),
+            PointerKind::Move => self.moved(event, &mut effects),
+            PointerKind::Up => self.up(event, &mut effects),
+            PointerKind::Leave => self.leave(event.at, &mut effects),
+        };
+        self.prune();
         if changed {
             effects.push(Effect::NeedsFrame);
         }
         effects
     }
 
-    /// Moves time on: a finished transition ends. Returns `NeedsFrame` while a
-    /// transition was running.
+    fn slop(&self) -> f64 {
+        CLICK_SLOP / self.scale
+    }
+
+    fn down(&mut self, event: PointerEvent, effects: &mut Vec<Effect>) -> bool {
+        let (x, y, at) = (event.x, event.y, event.at);
+        // A button that never came up ends here.
+        let mut changed = self.release(at);
+        changed |= self.hover_to(x, y, at, effects);
+        let under = self.under(x, y);
+        self.press = Some(Press {
+            x,
+            y,
+            moved: false,
+            layer: deepest(&under, |trigger| *trigger == Trigger::OnClick).map(|found| found.id),
+            visit: self.source_visit(),
+            drag: deepest(&under, |trigger| *trigger == Trigger::OnDrag).map(|found| DragTarget {
+                interactions: found.interactions,
+                holder: found.holder,
+                rect: found.rect,
+            }),
+            dragged: false,
+            follow: None,
+            reverts: Vec::new(),
+        });
+        if let Some(found) = deepest(&under, |trigger| *trigger == Trigger::MouseDown) {
+            changed |= self.fire(&found.interactions, found.holder, found.rect, true, at, effects);
+        }
+        if let Some(found) = deepest(&under, |trigger| *trigger == Trigger::OnPress) {
+            let (pressed, reverts) = self.recording(|player| {
+                player.fire(&found.interactions, found.holder, found.rect, false, at, effects)
+            });
+            changed |= pressed;
+            if let Some(press) = &mut self.press {
+                press.reverts = reverts;
+            }
+        }
+        changed
+    }
+
+    fn moved(&mut self, event: PointerEvent, effects: &mut Vec<Effect>) -> bool {
+        let (x, y, at) = (event.x, event.y, event.at);
+        let mut changed = self.hover_to(x, y, at, effects);
+        changed |= self.drag_to(x, y, at, effects);
+        changed
+    }
+
+    fn up(&mut self, event: PointerEvent, effects: &mut Vec<Effect>) -> bool {
+        let (x, y, at) = (event.x, event.y, event.at);
+        let Some(press) = self.press.take() else {
+            return false;
+        };
+        let near = (x - press.x).hypot(y - press.y) <= self.slop() && !press.moved;
+        let mut changed = false;
+        // Mouse up acts for the layer under the pointer at release.
+        let under = self.under(x, y);
+        if let Some(found) = deepest(&under, |trigger| *trigger == Trigger::MouseUp) {
+            changed |= self.fire(&found.interactions, found.holder, found.rect, true, at, effects);
+        }
+        changed |= self.finish(press.follow, press.reverts, at);
+        // A click is a press and a release on the same layer, of the same
+        // showing, that went nowhere between.
+        if near && self.source_visit() == press.visit {
+            changed |= self.click(x, y, at, press.layer, effects);
+        }
+        changed
+    }
+
+    /// The pointer left the play area: nothing is hovered, and a button that
+    /// is down comes up.
+    fn leave(&mut self, at: f64, effects: &mut Vec<Effect>) -> bool {
+        let mut changed = self.hover_to(f64::NAN, f64::NAN, at, effects);
+        changed |= self.release(at);
+        changed
+    }
+
+    /// Ends a button that is down without a click.
+    fn release(&mut self, at: f64) -> bool {
+        match self.press.take() {
+            Some(press) => self.finish(press.follow, press.reverts, at),
+            None => false,
+        }
+    }
+
+    /// What the end of a press does: a transition the pointer carried plays
+    /// on from where it was left, and what the press did is put back.
+    fn finish(&mut self, follow: Option<Follow>, reverts: Vec<Revert>, at: f64) -> bool {
+        let mut changed = false;
+        if let (Some(follow), Some(running)) = (follow, self.frame.transition.as_mut()) {
+            if running.follows_pointer {
+                running.follows_pointer = false;
+                let done = follow.fraction * duration_ms(running);
+                running.started = at - done;
+                self.resume_ms = Some(done);
+                changed = true;
+            }
+        }
+        changed | self.revert(reverts, at)
+    }
+
+    /// Updates what the pointer is over for a pointer at `x`, `y`, which is
+    /// nowhere when it is NaN. The layers it left revert and run their mouse
+    /// leave, then the layers it entered run their mouse enter and hover,
+    /// each innermost first.
+    fn hover_to(&mut self, x: f64, y: f64, at: f64, effects: &mut Vec<Effect>) -> bool {
+        let under = if x.is_nan() { Vec::new() } else { self.under(x, y) };
+        let (kept, mut left): (Vec<Hover>, Vec<Hover>) = std::mem::take(&mut self.hovered)
+            .into_iter()
+            .partition(|hover| hover.rect.contains(x, y));
+        self.hovered = kept;
+        left.sort_by(|a, b| b.depth.cmp(&a.depth));
+        let mut changed = false;
+        for hover in left {
+            changed |= self.revert(hover.reverts, at);
+            changed |= self.fire(&hover.leave, hover.holder, hover.rect, true, at, effects);
+        }
+        let mut entered: Vec<&Under> = under
+            .iter()
+            .filter(|layer| !self.hovered.iter().any(|hover| hover.id == layer.entry.id))
+            .collect();
+        entered.sort_by(|a, b| b.entry.depth.cmp(&a.entry.depth));
+        for layer in entered {
+            let with = |wanted: Trigger| -> Vec<Interaction> {
+                layer
+                    .entry
+                    .interactions
+                    .iter()
+                    .filter(|interaction| interaction.trigger == wanted)
+                    .cloned()
+                    .collect()
+            };
+            let (enter, hover, leave) = (
+                with(Trigger::MouseEnter),
+                with(Trigger::OnHover),
+                with(Trigger::MouseLeave),
+            );
+            if enter.is_empty() && hover.is_empty() && leave.is_empty() {
+                continue;
+            }
+            let (holder, rect) = (layer.entry.holder, layer.rect);
+            changed |= self.fire(&enter, holder, rect, true, at, effects);
+            let (hovered, reverts) =
+                self.recording(|player| player.fire(&hover, holder, rect, false, at, effects));
+            changed |= hovered;
+            self.hovered.push(Hover {
+                id: layer.entry.id,
+                depth: layer.entry.depth,
+                rect,
+                holder,
+                leave,
+                reverts,
+            });
+        }
+        changed
+    }
+
+    /// Starts the drag of the layer the button went down on once the pointer
+    /// has gone far enough in a direction its transition takes, and lets a
+    /// transition it started follow the pointer.
+    fn drag_to(&mut self, x: f64, y: f64, at: f64, effects: &mut Vec<Effect>) -> bool {
+        let slop = self.slop();
+        let Some(press) = self.press.as_mut() else {
+            return false;
+        };
+        let (dx, dy) = (x - press.x, y - press.y);
+        if dx.hypot(dy) > slop {
+            press.moved = true;
+        }
+        if press.follow.is_some() {
+            return self.follow_to(dx, dy, at);
+        }
+        if press.dragged || !press.moved {
+            return false;
+        }
+        let Some(target) = press.drag.clone() else {
+            return false;
+        };
+        let Some(interaction) = target
+            .interactions
+            .iter()
+            .find(|interaction| interaction.transition.accepts_drag(dx, dy))
+            .cloned()
+        else {
+            return false;
+        };
+        press.dragged = true;
+        let before = self.frame.transition.clone();
+        let mut changed = self.run(&interaction, target.holder, target.rect, at, effects);
+        let direction = interaction.transition.direction();
+        if let (Some(direction), true) = (direction, self.frame.transition != before) {
+            if let Some(running) = &mut self.frame.transition {
+                running.follows_pointer = true;
+                if let Some(press) = &mut self.press {
+                    press.follow = Some(Follow {
+                        direction,
+                        fraction: 0.0,
+                    });
+                }
+                changed |= self.follow_to(dx, dy, at);
+            }
+        }
+        changed
+    }
+
+    /// Sets how far the transition the pointer carries has come, from how far
+    /// along its direction the pointer has gone, as a part of the board's size
+    /// on that axis.
+    fn follow_to(&mut self, dx: f64, dy: f64, at: f64) -> bool {
+        let Some(follow) = self.press.as_ref().and_then(|press| press.follow) else {
+            return false;
+        };
+        let Some(running) = self.frame.transition.as_ref().filter(|r| r.follows_pointer) else {
+            if let Some(press) = &mut self.press {
+                press.follow = None;
+            }
+            return false;
+        };
+        let size = self
+            .root_rect(&running.to)
+            .map_or([1.0, 1.0], |rect| [rect.width, rect.height]);
+        let (along, extent) = match follow.direction {
+            Direction::Left => (-dx, size[0]),
+            Direction::Right => (dx, size[0]),
+            Direction::Top => (-dy, size[1]),
+            Direction::Bottom => (dy, size[1]),
+        };
+        let fraction = (along / extent.max(1.0)).clamp(0.0, 1.0);
+        if let Some(press) = &mut self.press {
+            press.follow = Some(Follow { fraction, ..follow });
+        }
+        self.pin(at);
+        true
+    }
+
+    /// Times the transition the pointer carries so that it stands where the
+    /// pointer has put it at `now`.
+    fn pin(&mut self, now: f64) {
+        let fraction = self
+            .press
+            .as_ref()
+            .and_then(|press| press.follow)
+            .map(|follow| follow.fraction);
+        if let Some(running) = &mut self.frame.transition {
+            if running.follows_pointer {
+                match fraction {
+                    Some(fraction) => running.started = now - fraction * duration_ms(running),
+                    None => running.follows_pointer = false,
+                }
+            }
+        }
+    }
+
+    /// Runs `body`, and gives what its actions would put back.
+    fn recording<R>(&mut self, body: impl FnOnce(&mut Self) -> R) -> (R, Vec<Revert>) {
+        let outer = self.recording.replace(Vec::new());
+        let result = body(self);
+        let reverts = std::mem::replace(&mut self.recording, outer).unwrap_or_default();
+        (result, reverts)
+    }
+
+    fn note(&mut self, revert: Revert) {
+        if let Some(reverts) = &mut self.recording {
+            reverts.push(revert);
+        }
+    }
+
+    /// Puts back what a hover or press did, the last thing first. A navigate
+    /// is only undone while its board is shown, and is not a history step.
+    fn revert(&mut self, reverts: Vec<Revert>, at: f64) -> bool {
+        let mut changed = false;
+        for revert in reverts.into_iter().rev() {
+            match revert {
+                Revert::Board {
+                    to,
+                    from,
+                    visit,
+                    history_len,
+                    play,
+                } => {
+                    if self.frame.board != to {
+                        continue;
+                    }
+                    self.history.truncate(history_len);
+                    let running = self.running(to, from, true, play, at);
+                    self.frame.board = from;
+                    self.board_visit = visit;
+                    self.frame.overlays.clear();
+                    self.frame.transition = Some(running);
+                    changed = true;
+                }
+                Revert::Variant { instance, previous } => {
+                    match previous {
+                        Some(component) => self.frame.variant_swaps.insert(instance, component),
+                        None => self.frame.variant_swaps.remove(&instance),
+                    };
+                    changed = true;
+                }
+                Revert::Overlay { visit } => {
+                    if let Some(open) = self.frame.overlays.iter().position(|o| o.visit == visit) {
+                        self.frame.overlays.remove(open);
+                        changed = true;
+                    }
+                }
+                Revert::Swap { visit, before } => {
+                    if let Some(top) = self.frame.overlays.iter_mut().find(|o| o.visit == visit) {
+                        *top = before;
+                        changed = true;
+                    }
+                }
+            }
+        }
+        changed
+    }
+
+    /// Runs `interactions` for a gesture. A mouse trigger (`delayable`) with a
+    /// `delayMs` waits that long first, once.
+    fn fire(
+        &mut self,
+        interactions: &[Interaction],
+        holder: Option<NodeId>,
+        rect: Rect,
+        delayable: bool,
+        at: f64,
+        effects: &mut Vec<Effect>,
+    ) -> bool {
+        let visit = self.source_visit();
+        let mut changed = false;
+        for interaction in interactions {
+            if delayable && interaction.delay_ms > 0 {
+                self.timers.push(Timer::new(
+                    visit,
+                    interaction.clone(),
+                    holder,
+                    Target::Rect(rect),
+                    at,
+                    interaction.delay_ms,
+                ));
+            } else {
+                changed |= self.run(interaction, holder, rect, at, effects);
+            }
+        }
+        changed
+    }
+
+    /// Runs the actions of an interaction in list order, with its transition.
+    fn run(
+        &mut self,
+        interaction: &Interaction,
+        holder: Option<NodeId>,
+        trigger: Rect,
+        at: f64,
+        effects: &mut Vec<Effect>,
+    ) -> bool {
+        let play = Play {
+            transition: interaction.transition,
+            duration_ms: interaction.duration_ms,
+            easing: interaction.easing,
+        };
+        let mut changed = false;
+        for action in &interaction.actions {
+            changed |= self.apply(action, play, holder, trigger, at, effects);
+        }
+        changed
+    }
+
+    /// Which showing the board or overlay a touch lands on is.
+    fn source_visit(&self) -> u64 {
+        self.frame
+            .overlays
+            .last()
+            .map_or(self.board_visit, |top| top.visit)
+    }
+
+    /// Whether `visit` is a showing that is on the screen.
+    fn current(&self, visit: u64) -> bool {
+        visit == self.board_visit || self.frame.overlays.iter().any(|o| o.visit == visit)
+    }
+
+    fn next_visit(&mut self) -> u64 {
+        self.visits += 1;
+        self.visits
+    }
+
+    /// Drops the waits of showings that are gone, except those a hover or a
+    /// press would bring back.
+    fn prune(&mut self) {
+        let mut held: Vec<u64> = Vec::new();
+        let reverts = self
+            .hovered
+            .iter()
+            .flat_map(|hover| hover.reverts.iter())
+            .chain(self.press.iter().flat_map(|press| press.reverts.iter()));
+        for revert in reverts {
+            match revert {
+                Revert::Board { visit, .. } => held.push(*visit),
+                Revert::Swap { before, .. } => held.push(before.visit),
+                _ => {}
+            }
+        }
+        let keep: Vec<bool> = self
+            .timers
+            .iter()
+            .map(|timer| self.current(timer.visit) || held.contains(&timer.visit))
+            .collect();
+        let mut keep = keep.into_iter();
+        self.timers.retain(|_| keep.next().unwrap_or(false));
+    }
+
+    /// Starts the `afterDelay` waits of the layers of `board`, shown at `at`
+    /// as showing `visit` at `origin` on the screen.
+    fn schedule(&mut self, board: NodeId, visit: u64, origin: [f64; 2], at: f64) {
+        for entry in self.entries(&board) {
+            for interaction in &entry.interactions {
+                if let Trigger::AfterDelay { ms } = interaction.trigger {
+                    self.timers.push(Timer::new(
+                        visit,
+                        interaction.clone(),
+                        entry.holder,
+                        Target::Layer {
+                            board,
+                            id: entry.id,
+                            origin,
+                        },
+                        at,
+                        ms,
+                    ));
+                }
+            }
+        }
+    }
+
+    /// Shows `board` as a new showing from `at`, as a navigate, back or a
+    /// start over does.
+    fn show(&mut self, board: NodeId, at: f64) {
+        self.frame.board = board;
+        self.frame.overlays.clear();
+        self.board_visit = self.next_visit();
+        // Layers entered on the board left are not on this one.
+        self.hovered.retain(|hover| !hover.reverts.is_empty());
+        self.schedule(board, self.board_visit, [0.0, 0.0], at);
+    }
+
+    /// Runs the waits that have run out, the earliest first. A wait whose
+    /// board or overlay went away while an earlier one ran is dropped.
+    fn run_due(&mut self, now: f64, effects: &mut Vec<Effect>) -> bool {
+        self.prune();
+        let mut due: Vec<Timer> = Vec::new();
+        let mut rest = Vec::new();
+        for timer in std::mem::take(&mut self.timers) {
+            if timer.due() <= now && self.current(timer.visit) {
+                due.push(timer);
+            } else {
+                rest.push(timer);
+            }
+        }
+        self.timers = rest;
+        due.sort_by(|a, b| a.due().total_cmp(&b.due()));
+        let mut changed = false;
+        for timer in due {
+            if !self.current(timer.visit) {
+                continue;
+            }
+            let rect = match &timer.target {
+                Target::Rect(rect) => *rect,
+                Target::Layer { board, id, origin } => self
+                    .boxes
+                    .get(board)
+                    .and_then(|boxes| boxes.rects.get(id))
+                    .map_or(
+                        Rect {
+                            x: 0.0,
+                            y: 0.0,
+                            width: 0.0,
+                            height: 0.0,
+                        },
+                        |rect| rect.offset(*origin),
+                    ),
+            };
+            changed |= self.run(&timer.interaction, timer.holder, rect, now, effects);
+        }
+        self.prune();
+        changed
+    }
+
+    /// Moves time on: waits that ran out act, and a finished transition
+    /// ends. Returns `NeedsFrame` while a transition was running or an
+    /// action ran.
     pub fn tick(&mut self, now: f64) -> Vec<Effect> {
         self.last_at = now;
         if self.hint_until.is_some_and(|until| now >= until) {
             self.hint_until = None;
         }
-        let Some(running) = &self.frame.transition else {
-            return Vec::new();
-        };
-        if progress(running, now).done {
-            self.frame.transition = None;
+        self.pin(now);
+        let moving = self.frame.transition.is_some();
+        let mut effects = Vec::new();
+        let changed = self.run_due(now, &mut effects);
+        if let Some(running) = &self.frame.transition {
+            if !running.follows_pointer && progress(running, now).done {
+                self.frame.transition = None;
+            }
         }
-        vec![Effect::NeedsFrame]
+        if moving || changed {
+            effects.push(Effect::NeedsFrame);
+        }
+        effects
     }
 
     /// Goes back to the board the last navigate left; nothing on the first
@@ -328,8 +900,7 @@ impl Player {
         };
         let from = self.frame.board;
         self.history.push(from, play);
-        self.frame.board = board;
-        self.frame.overlays.clear();
+        self.show(board, self.last_at);
         self.frame.transition = Some(self.running(from, board, false, play, self.last_at));
         true
     }
@@ -345,6 +916,10 @@ impl Player {
             variables: PlayVariables::default(),
         };
         self.press = None;
+        self.hovered.clear();
+        self.timers.clear();
+        self.resume_ms = None;
+        self.show(board, self.last_at);
         self.hint_until = None;
     }
 
@@ -357,8 +932,9 @@ impl Player {
     /// it cut short frozen at `at` too, for a page whose clock was stale when
     /// the transition began.
     pub fn restart_transition(&mut self, at: f64) {
+        let done = self.resume_ms.take().unwrap_or(0.0);
         if let Some(running) = &mut self.frame.transition {
-            running.started = at;
+            running.started = at - done;
             if let Some(cut) = &mut running.interrupted {
                 cut.at = at;
             }
@@ -474,7 +1050,15 @@ impl Player {
         )
     }
 
-    fn click(&mut self, x: f64, y: f64, at: f64, effects: &mut Vec<Effect>) -> bool {
+    /// A click at `x`, `y` on the layer the button went down on, `layer`.
+    fn click(
+        &mut self,
+        x: f64,
+        y: f64,
+        at: f64,
+        layer: Option<NodeId>,
+        effects: &mut Vec<Effect>,
+    ) -> bool {
         if let Some(top) = self.frame.overlays.last() {
             let inside = self
                 .root_rect(&top.board)
@@ -487,32 +1071,16 @@ impl Player {
                 return false;
             }
         }
-        let Some((interactions, holder, trigger)) = self.hit(&Trigger::OnClick, x, y) else {
-            return self.miss(at, effects);
+        let under = self.under(x, y);
+        let Some(found) = deepest(&under, |trigger| *trigger == Trigger::OnClick) else {
+            return layer.is_none() && self.miss(at, effects);
         };
-        self.run(&interactions, holder, trigger, at, effects)
-    }
-
-    /// Runs the actions of `interactions` in list order, each interaction with
-    /// its own transition.
-    fn run(
-        &mut self,
-        interactions: &[Interaction],
-        holder: Option<NodeId>,
-        trigger: Rect,
-        at: f64,
-        effects: &mut Vec<Effect>,
-    ) -> bool {
+        if layer != Some(found.id) {
+            return false;
+        }
         let mut changed = false;
-        for interaction in interactions {
-            let play = Play {
-                transition: interaction.transition,
-                duration_ms: interaction.duration_ms,
-                easing: interaction.easing,
-            };
-            for action in &interaction.actions {
-                changed |= self.apply(action, play, holder, trigger, at, effects);
-            }
+        for interaction in &found.interactions {
+            changed |= self.run(interaction, found.holder, found.rect, at, effects);
         }
         changed
     }
@@ -584,7 +1152,11 @@ impl Player {
                     |rect| rect.offset(origin),
                 );
             effects.push(Effect::KeyHandled);
-            if self.run(&interactions, holder, rect, at, &mut effects) {
+            let mut changed = false;
+            for interaction in &interactions {
+                changed |= self.run(interaction, holder, rect, at, &mut effects);
+            }
+            if changed {
                 effects.push(Effect::NeedsFrame);
             }
             break;
@@ -599,42 +1171,22 @@ impl Player {
         true
     }
 
-    /// The interactions for `trigger` of the deepest layer under the point
-    /// that has any, and the instance that holds the layer. A later layer
-    /// wins over an earlier one of the same depth, as it is drawn on top.
-    fn hit(
-        &self,
-        trigger: &Trigger,
-        x: f64,
-        y: f64,
-    ) -> Option<(Vec<Interaction>, Option<NodeId>, Rect)> {
-        for (board, origin) in self.sources() {
-            let Some(boxes) = self.boxes.get(&board) else {
-                continue;
-            };
-            let mut best: Option<(usize, Vec<Interaction>, Option<NodeId>, Rect)> = None;
-            for entry in self.entries(&board) {
-                let Some(rect) = boxes.rects.get(&entry.id) else {
-                    continue;
-                };
-                if !rect.offset(origin).contains(x, y) {
-                    continue;
-                }
-                let matching: Vec<Interaction> = entry
-                    .interactions
-                    .into_iter()
-                    .filter(|interaction| interaction.trigger == *trigger)
-                    .collect();
-                if matching.is_empty() || best.as_ref().is_some_and(|b| b.0 > entry.depth) {
-                    continue;
-                }
-                best = Some((entry.depth, matching, entry.holder, rect.offset(origin)));
-            }
-            if let Some((_, interactions, holder, rect)) = best {
-                return Some((interactions, holder, rect));
-            }
-        }
-        None
+    /// The layers with interactions that are under the point, in drawing
+    /// order, on the board or overlay a touch lands on.
+    fn under(&self, x: f64, y: f64) -> Vec<Under> {
+        let Some((board, origin)) = self.sources().into_iter().next() else {
+            return Vec::new();
+        };
+        let Some(boxes) = self.boxes.get(&board) else {
+            return Vec::new();
+        };
+        self.entries(&board)
+            .into_iter()
+            .filter_map(|entry| {
+                let rect = boxes.rects.get(&entry.id)?.offset(origin);
+                rect.contains(x, y).then_some(Under { entry, rect })
+            })
+            .collect()
     }
 
     fn apply(
@@ -652,10 +1204,18 @@ impl Player {
                     return false;
                 };
                 let from = self.frame.board;
+                let history_len = self.history.boards().len();
+                let visit = self.board_visit;
                 self.history.push(from, play);
-                self.frame.board = to;
-                self.frame.overlays.clear();
+                self.show(to, at);
                 self.frame.transition = Some(self.running(from, to, false, play, at));
+                self.note(Revert::Board {
+                    to,
+                    from,
+                    visit,
+                    history_len,
+                    play,
+                });
                 true
             }
             Action::Back => self.go_back(at),
@@ -671,17 +1231,21 @@ impl Player {
                     return false;
                 };
                 let origin = self.place(&board, *position, *anchor, *offset, trigger);
+                let visit = self.next_visit();
                 self.frame.overlays.push(OverlayState {
                     board,
                     origin,
                     background: background.clone(),
                     close_on_outside: *close_on_outside,
                     opened_at: at,
+                    visit,
                     position: *position,
                     anchor: *anchor,
                     offset: *offset,
                     trigger_box: trigger,
                 });
+                self.note(Revert::Overlay { visit });
+                self.schedule(board, visit, origin, at);
                 true
             }
             Action::SwapOverlay { dest } => {
@@ -698,10 +1262,15 @@ impl Player {
                     top.offset,
                     top.trigger_box,
                 );
+                let visit = self.next_visit();
                 let top = self.frame.overlays.last_mut().expect("checked above");
+                let before = top.clone();
                 top.board = board;
                 top.origin = origin;
                 top.opened_at = at;
+                top.visit = visit;
+                self.note(Revert::Swap { visit, before });
+                self.schedule(board, visit, origin, at);
                 true
             }
             Action::CloseOverlay => self.frame.overlays.pop().is_some(),
@@ -719,7 +1288,8 @@ impl Player {
                 if !self.components.contains_key(&component) {
                     return false;
                 }
-                self.frame.variant_swaps.insert(instance, component);
+                let previous = self.frame.variant_swaps.insert(instance, component);
+                self.note(Revert::Variant { instance, previous });
                 true
             }
             Action::SetVariable {
@@ -845,8 +1415,7 @@ impl Player {
             return false;
         };
         let from = self.frame.board;
-        self.frame.board = to;
-        self.frame.overlays.clear();
+        self.show(to, at);
         self.frame.transition = Some(self.running(from, to, true, play, at));
         true
     }
@@ -878,6 +1447,7 @@ impl Player {
             started,
             duration_ms: play.duration_ms,
             easing: play.easing,
+            follows_pointer: false,
             interrupted,
         }
     }

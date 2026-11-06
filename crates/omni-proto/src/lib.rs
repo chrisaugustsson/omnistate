@@ -9,8 +9,10 @@
 pub mod easing;
 mod history;
 pub mod keys;
+mod input;
 pub mod overlay;
 mod player;
+pub mod timers;
 pub mod transition;
 pub mod variables;
 
@@ -19,3 +21,4 @@ pub use player::{
     Effect, Frame, HINT_MS, Interrupted, KeyEvent, OverlayState, Player, PointerEvent, PointerKind,
     Rect, Running,
 };
+pub use timers::Timer;

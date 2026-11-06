@@ -501,7 +501,7 @@ export async function createDesignRenderer(canvas: HTMLCanvasElement): Promise<D
     frame = requestAnimationFrame(loop);
   }
 
-  /** Draws the stage, which asks for another frame while a transition plays (`play_tick` says 2). */
+  /** Draws the stage, which asks for another frame while a transition plays (`play_tick` says 2) or while a wait runs (3). */
   function playFrame(now: number) {
     const ratio = window.devicePixelRatio || 1;
     const width = Math.max(1, Math.round(cssWidth * ratio));
@@ -515,7 +515,9 @@ export async function createDesignRenderer(canvas: HTMLCanvasElement): Promise<D
       playResized = false;
       if (!module._omni_render_play_draw(width, height, ratio)) throw failure();
     }
-    if (module._omni_render_play_tick(now) === 2) requestFrame();
+    // 2: a transition plays; 3: nothing to draw yet, but a wait has to be seen to run out.
+    const ticked = module._omni_render_play_tick(now);
+    if (ticked === 2 || ticked === 3) requestFrame();
   }
 
   function playChanged() {

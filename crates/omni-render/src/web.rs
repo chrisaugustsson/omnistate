@@ -910,10 +910,12 @@ pub fn play_state() -> Result<String, String> {
 /// Moves the session on to `now` (milliseconds) and draws it, at the size of
 /// the last `play_draw`, if it changed or is animating. Returns 0 when
 /// nothing changed, 1 when a frame was drawn and 2 when one was drawn and
-/// another is needed, as a transition is playing.
+/// another is needed, as a transition is playing, and 3 when nothing was drawn
+/// but a wait is running that a later tick has to see run out.
 pub fn play_tick(now: f64) -> Result<u8, String> {
     let (tick, size) = with_play(|play| (play.tick(now), play.size()))?;
     match (tick, size) {
+        (Tick::Waiting, _) => Ok(3),
         (Tick::Idle, _) | (_, None) => Ok(0),
         (tick, Some((width, height, pixel_ratio))) => {
             play_draw(width, height, pixel_ratio)?;

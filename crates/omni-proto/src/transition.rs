@@ -12,17 +12,25 @@ pub struct Progress {
     pub done: bool,
 }
 
+/// How long `running` takes, in milliseconds: a spring's own length replaces
+/// the transition's duration.
+pub fn duration_ms(running: &Running) -> f64 {
+    f64::from(
+        running
+            .easing
+            .spring_duration_ms()
+            .unwrap_or(running.duration_ms),
+    )
+}
+
 /// The progress of `running` at `now`, in milliseconds. A spring's own length
 /// replaces the transition's duration.
 pub fn progress(running: &Running, now: f64) -> Progress {
-    let duration = running
-        .easing
-        .spring_duration_ms()
-        .unwrap_or(running.duration_ms);
-    let linear = if duration == 0 {
+    let duration = duration_ms(running);
+    let linear = if duration == 0.0 {
         1.0
     } else {
-        ((now - running.started) / f64::from(duration)).clamp(0.0, 1.0)
+        ((now - running.started) / duration).clamp(0.0, 1.0)
     };
     Progress {
         t: running.easing.eval(linear),

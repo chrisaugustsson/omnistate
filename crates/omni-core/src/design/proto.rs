@@ -190,6 +190,35 @@ pub enum Transition {
     },
 }
 
+impl Transition {
+    /// The side the transition moves toward, for the directional ones.
+    pub fn direction(&self) -> Option<Direction> {
+        match self {
+            Transition::MoveIn { direction }
+            | Transition::MoveOut { direction }
+            | Transition::Push { direction }
+            | Transition::SlideIn { direction }
+            | Transition::SlideOut { direction } => Some(*direction),
+            _ => None,
+        }
+    }
+
+    /// Whether a drag of `dx`, `dy` can start the transition: a directional
+    /// one takes a drag toward its direction, along the axis the drag mostly
+    /// follows (an exactly diagonal drag counts for both axes), any other one
+    /// takes a drag in any direction. Ported from FigCraft's
+    /// `Transition::accepts_drag`.
+    pub fn accepts_drag(&self, dx: f64, dy: f64) -> bool {
+        match self.direction() {
+            None => true,
+            Some(Direction::Left) => dx < 0.0 && -dx >= dy.abs(),
+            Some(Direction::Right) => dx > 0.0 && dx >= dy.abs(),
+            Some(Direction::Top) => dy < 0.0 && -dy >= dx.abs(),
+            Some(Direction::Bottom) => dy > 0.0 && dy >= dx.abs(),
+        }
+    }
+}
+
 /// How a transition moves between its start and end.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum Easing {

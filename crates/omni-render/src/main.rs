@@ -765,7 +765,8 @@ mod exports {
 
     /// Moves the session on to `now` (milliseconds) and draws it if it changed
     /// or is animating. Returns 0 when it did not draw, 1 when it drew and 2
-    /// when it drew and another frame is needed (`web::play_tick`).
+    /// when it drew and another frame is needed, 3 when it did not draw and a
+    /// wait is running (`web::play_tick`).
     #[unsafe(no_mangle)]
     pub extern "C" fn omni_render_play_tick(now: f64) -> u8 {
         match omni_render::web::play_tick(now) {

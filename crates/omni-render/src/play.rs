@@ -32,6 +32,9 @@ pub enum Tick {
     Changed,
     /// A transition is playing: draw, and tick again on the next frame.
     Animating,
+    /// Nothing to draw, but a wait is running that a tick has to see run out:
+    /// tick again on the next frame.
+    Waiting,
 }
 
 /// Where the board sits on the stage, as the last frame drew it.
@@ -238,7 +241,9 @@ impl Session {
             at: self.now,
         };
         let effects = self.player.pointer(event);
-        self.take(effects).0
+        let changed = self.take(effects).0;
+        // A wait that began needs a frame to be ticked on.
+        changed || !self.player.timers().is_empty()
     }
 
     /// Applies what the player asked for after an event. Returns whether what
@@ -343,12 +348,15 @@ impl Session {
         if std::mem::take(&mut self.fresh) {
             self.player.restart_transition(now);
         }
+        // Waits that began at an event count from the first frame after it.
+        self.player.restart_timers(now);
         let hinting = self.player.hint_until().is_some();
         let moving = self.player.frame().transition.is_some();
-        self.player.tick(now);
+        let effects = self.player.tick(now);
+        let acted = self.absorb(effects);
         let hint_ended = hinting && self.player.hint_until().is_none();
         let settled = moving && self.player.frame().transition.is_none();
-        self.changed |= hint_ended || settled;
+        self.changed |= hint_ended || settled || acted;
         let animating = self.player.hint_until().is_some()
             || self
                 .player
@@ -359,6 +367,8 @@ impl Session {
             Tick::Animating
         } else if self.changed {
             Tick::Changed
+        } else if !self.player.timers().is_empty() {
+            Tick::Waiting
         } else {
             Tick::Idle
         }
@@ -525,6 +535,7 @@ impl Session {
             .min(1.0);
         let left = (width - bounds.width * scale) / 2.0;
         let top = (height - bounds.height * scale) / 2.0;
+        self.player.set_scale(f64::from(scale));
         self.placement = Placement {
             scale,
             x: left,
