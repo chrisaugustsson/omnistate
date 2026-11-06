@@ -40,7 +40,7 @@ use std::sync::Arc;
 use utoipa::ToSchema;
 
 /// How many chunks are written or read at the same time.
-const CONCURRENCY: usize = 16;
+pub(crate) const CONCURRENCY: usize = 16;
 
 // The manifest ---------------------------------------------------------------------------
 

@@ -16,7 +16,7 @@
 // made when it is read.
 
 use crate::AppState;
-use crate::boards::{self, each_concurrently, each_concurrently_up_to};
+use crate::boards::{self, CONCURRENCY, each_concurrently, each_concurrently_up_to};
 use crate::chunks::read_chunk;
 use crate::design;
 use crate::placeholders::{self, Sizing};
@@ -31,10 +31,12 @@ use serde_json::Value;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
-/// How many boards are drawn at once when a write makes previews. Each board
-/// holds its surface and the glyphs it shaped on its own thread, and the
-/// memory a draw takes stays with the process, so a design of many boards
-/// (a Penpot import) is drawn a few boards at a time.
+/// How many boards are drawn at once when a write makes its previews in the
+/// background. Each board holds its surface and the glyphs it shaped on its
+/// own thread, and the memory a draw takes stays with the process, so a
+/// design of many boards (a Penpot import) is drawn a few boards at a time. A
+/// read that finds previews missing draws them `CONCURRENCY` at a time, as it
+/// answers a waiting client.
 const DRAWN_AT_ONCE: usize = 4;
 
 /// Where the preview of the board stored in `chunk` is kept, for the design
@@ -161,12 +163,13 @@ async fn make_all(
     workspace_id: &str,
     sizing: &Sizing,
     boards: Vec<(String, String)>,
+    at_once: usize,
 ) -> HashMap<String, Vec<u8>> {
     let (state, workspace_id) = (state.clone(), workspace_id.to_string());
     let sizing = sizing.clone();
     let read = ImagesRead::default();
     let decoded = ImagesDecoded::default();
-    let made = each_concurrently_up_to(DRAWN_AT_ONCE, boards, move |board| {
+    let made = each_concurrently_up_to(at_once, boards, move |board| {
         let (state, workspace_id, sizing) = (state.clone(), workspace_id.clone(), sizing.clone());
         let (read, decoded) = (read.clone(), decoded.clone());
         async move {
@@ -198,7 +201,7 @@ pub(crate) fn store(
             &components,
         )
         .await;
-        make_all(&state, &workspace_id, &sizing, boards).await;
+        make_all(&state, &workspace_id, &sizing, boards, DRAWN_AT_ONCE).await;
     });
 }
 
@@ -256,7 +259,7 @@ pub(crate) async fn of_boards(
         let (tokens, components) = (system.tokens_json(), system.components_json());
         let sizing = Sizing::without_stored(version.as_deref(), tokens.as_ref(), &components).await;
         let texts = texts.into_iter().flatten().collect();
-        made = make_all(state, workspace_id, &sizing, texts).await;
+        made = make_all(state, workspace_id, &sizing, texts, CONCURRENCY).await;
     }
 
     let encoder = base64::engine::general_purpose::STANDARD;
