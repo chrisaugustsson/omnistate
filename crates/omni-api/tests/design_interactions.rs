@@ -634,6 +634,45 @@ fn a_scroll_to_takes_a_layer_of_its_own_board_and_a_change_to_needs_an_instance(
             interactions(go("scrollTo", &design.id("Shipping")))
         )]),
     );
+    // A layer right below the board is one of its layers too.
+    applied(
+        f,
+        client,
+        &design,
+        json!([set(
+            &total,
+            2,
+            interactions(go("scrollTo", &design.id("Actions")))
+        )]),
+    );
+}
+
+#[test]
+fn a_replace_checks_the_layers_below_the_replaced_node() {
+    let (f, client) = ready();
+    let design = new_design(f, client);
+    let actions = design.id("Actions");
+    let before = board_tags(f, client, &design, &design.id("Cart"));
+    let content = format!(
+        r#"<Frame name="Summary" dir="col" gap={{4}}>
+  <Text name="Total" content="Summa 10 kr" fontFamily="Inter" fontSize={{16}} interactions={{[{{trigger: {{type: "onClick"}}, actions: [{{type: "navigate", dest: "{actions}"}}]}}]}}/>
+</Frame>"#
+    );
+
+    let response = edit(
+        f,
+        client,
+        &holder(f),
+        &design,
+        json!([{ "op": "replace", "node": design.id("Summary"), "rev": 1, "content": content }]),
+    );
+    assert_eq!(
+        refusal(&response),
+        format!(
+            "`{actions}` is not a board: navigate, openOverlay and swapOverlay take a board of this design"
+        )
+    );
+    assert_eq!(board_tags(f, client, &design, &design.id("Cart")), before);
 }
 
 /// Imports the components of `tags` into a design system doc of the
