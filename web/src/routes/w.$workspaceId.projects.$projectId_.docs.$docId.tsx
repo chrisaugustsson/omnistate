@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import { createFileRoute } from "@tanstack/react-router";
 import {
@@ -913,7 +913,8 @@ function DesignViewer({
     setDrawn((count) => count + 1);
   }, [renderer, assets, system, playBoards, cache, page, modes]);
   const readBoardsRef = useRef(readBoards);
-  useEffect(() => {
+  // A layout effect, so PlayMode's first effect reads this render's closure rather than the one from before assets and system arrived.
+  useLayoutEffect(() => {
     readBoardsRef.current = readBoards;
   });
   const readForPlay = useCallback(() => readBoardsRef.current(), []);
@@ -1251,7 +1252,7 @@ function DesignViewer({
           <InspectPanel inspection={inspection} />
         </aside>
       </div>
-      {play !== undefined && renderer && page && boardTarget === null && (
+      {play !== undefined && renderer && assets && system && page && boardTarget === null && (
         <PlayMode
           renderer={renderer}
           title={doc.value?.title ?? ""}
