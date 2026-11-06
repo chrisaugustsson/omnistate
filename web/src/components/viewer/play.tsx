@@ -131,11 +131,13 @@ export function PlayMode({
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
       event.preventDefault();
+      // The design view's own Escape handling would clear its selection.
+      event.stopPropagation();
       const { onExit: exit, state: now, play: named } = latest.current;
       exit(now?.board ?? named);
     };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
   }, []);
 
   const chosen = flows.find((candidate) => candidate.name === flow);
