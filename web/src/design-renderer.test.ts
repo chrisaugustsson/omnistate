@@ -6,7 +6,14 @@
 // board by board, and no board was ever read). `createDesignRenderer` checks
 // the module for every function it calls and fails with the names it lacks
 // (`missingFunctions`), so the viewer says so instead of failing quietly.
+//
+// US-31: Escape in play mode leaves play and leaves the design view's selection
+// as it was, even before the session has started, while the renderer's own
+// Escape (which clears the selection) still listens.
+import { createElement } from "react";
+import { cleanup, fireEvent, render } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { PlayMode } from "./components/viewer/play";
 import { createDesignRenderer, missingFunctions } from "./design/renderer";
 
 /** What the viewer asked of the renderer's module, in order, with the text it passed. */
@@ -64,6 +71,7 @@ describe("the viewer's renderer", () => {
   });
 
   afterEach(() => {
+    cleanup();
     vi.unstubAllGlobals();
   });
 
@@ -92,5 +100,30 @@ describe("the viewer's renderer", () => {
     shown.show({}, {});
     shown.select("n0000001", true);
     expect(calls).toContain("_omni_render_view_reveal_selected");
+  });
+
+  test("Escape in play mode before the session starts leaves play without clearing the selection", async () => {
+    const shown = await renderer();
+    shown.show({}, {});
+    const onExit = vi.fn();
+    render(
+      createElement(PlayMode, {
+        renderer: shown,
+        title: "Checkout screens",
+        boards: [{ id: "b0000001", name: "Cart" }],
+        flows: [],
+        play: "b0000001",
+        flow: undefined,
+        // The boards are still being read.
+        ready: () => new Promise<void>(() => {}),
+        onPlay: () => {},
+        onExit,
+      }),
+    );
+
+    fireEvent.keyDown(document.body, { key: "Escape" });
+
+    expect(onExit).toHaveBeenCalledExactlyOnceWith("b0000001");
+    expect(calls).not.toContain("_omni_render_select_escape");
   });
 });
