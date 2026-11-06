@@ -925,9 +925,9 @@ function DesignViewer({
     );
     if (!page) return;
     renderer.show(pageWithBoards(page, cache), system);
-    if (modeRef.current && modeRef.current !== modes[0]) renderer.setMode(modeRef.current);
+    if (choiceRef.current.offFirst) renderer.setMode(choiceRef.current.choice);
     setDrawn((count) => count + 1);
-  }, [renderer, assets, system, playBoards, cache, page, modes]);
+  }, [renderer, assets, system, playBoards, cache, page]);
   const readBoardsRef = useRef(readBoards);
   // A layout effect, so PlayMode's first effect reads this render's closure rather than the one from before assets and system arrived.
   useLayoutEffect(() => {
