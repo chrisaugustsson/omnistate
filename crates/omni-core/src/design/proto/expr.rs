@@ -113,6 +113,16 @@ fn parse_at(value: &Value, level: usize) -> Result<Expr, ExprError> {
             describe(value)
         ));
     };
+    const FIELDS: [&str; 6] = ["value", "variable", "op", "args", "mode", "inMode"];
+    let not_a_field = |extra: &str| {
+        refuse(format!(
+            "`{extra}` is not a field of an expression: write one of {}",
+            FIELDS.join(", ")
+        ))
+    };
+    if let Some(extra) = map.keys().find(|key| !FIELDS.contains(&key.as_str())) {
+        return not_a_field(extra);
+    }
     let (kind, allowed): (&str, &[&str]) = if map.contains_key("op") {
         ("op", &["op", "args"])
     } else if map.contains_key("value") {
@@ -129,14 +139,7 @@ fn parse_at(value: &Value, level: usize) -> Result<Expr, ExprError> {
         );
     };
     if let Some(extra) = map.keys().find(|key| !allowed.contains(&key.as_str())) {
-        return refuse(format!(
-            "`{extra}` is not a field of an expression with `{kind}`: it takes {}",
-            allowed
-                .iter()
-                .map(|field| format!("`{field}`"))
-                .collect::<Vec<_>>()
-                .join(" and ")
-        ));
+        return not_a_field(extra);
     }
     Ok(match kind {
         "value" => Expr::Value(map["value"].clone()),
