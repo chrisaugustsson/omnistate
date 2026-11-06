@@ -199,6 +199,31 @@ fn back_undoes_a_navigate_with_its_transition_reversed() {
 }
 
 #[test]
+fn back_after_a_slide_in_plays_the_slide_out_the_other_way_with_its_duration_and_easing() {
+    let mut player = two_boards(json!([{
+        "actions": [{"type": "navigate", "dest": B2}],
+        "transition": {"type": "slideIn", "direction": "left"},
+        "durationMs": 300,
+        "easing": "easeIn"
+    }]));
+    click(&mut player, 10.0, 10.0, 0.0);
+    player.tick(500.0);
+
+    player.back();
+
+    let running = player.frame().transition.unwrap();
+    assert_eq!(
+        running.transition,
+        Transition::SlideOut {
+            direction: Direction::Right
+        }
+    );
+    assert!(running.reversed);
+    assert_eq!(running.duration_ms, 300);
+    assert_eq!(running.easing, Easing::EaseIn);
+}
+
+#[test]
 fn overlays_push_replace_and_pop_without_a_history_step() {
     let open = json!({"type": "openOverlay", "dest": B2, "position": "manual", "offset": [5, 6]});
     let mut player = player(

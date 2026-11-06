@@ -537,3 +537,176 @@ fn only_layers_a_pointer_triggers_and_whose_target_is_there_are_outlined() {
         "the layer whose target is not there"
     );
 }
+
+// US-32: a change of board drawn as its transition plays. Directions name the
+// way a board moves, so a slide in from the right is `direction: "left"`. A
+// board moves by the stage's width times (1 − eased) in, or times eased out,
+// and one that does not move stays where it rests. easeOut(0.5) is 0.685, so
+// 150 ms into 300 ms on a 200 px stage a board coming in is 63 px from its
+// place and one going out has gone 137 px.
+
+const RED: [u8; 3] = [0xff, 0x00, 0x00];
+const BLUE: [u8; 3] = [0x00, 0x00, 0xff];
+const YELLOW: [u8; 3] = [0xff, 0xff, 0x00];
+const SECOND: &str = "a0000002";
+
+/// A red board B1 and a blue board B2, `width` x 100 on a 200 x 100 yellow
+/// stage, after a click on B1 began a 300 ms easeOut change to B2 with
+/// `transition` at 1000 ms. B2 changes to a green B3 with a 300 ms dissolve.
+fn changing(transition: Value, width: f64) -> (Scene, Session) {
+    let to_b2 = json!([{
+        "actions": [{"type": "navigate", "dest": B2}],
+        "transition": transition,
+        "durationMs": 300,
+        "easing": "easeOut"
+    }]);
+    let to_b3 = json!([{
+        "actions": [{"type": "navigate", "dest": B3}],
+        "transition": {"type": "dissolve"},
+        "durationMs": 300,
+        "easing": "easeOut"
+    }]);
+    let page = with(
+        &page(vec![
+            filled_board(
+                B1,
+                0.0,
+                width,
+                100.0,
+                "#ff0000",
+                vec![spot(HOTSPOT, 0.0, 0.0, width, 100.0, to_b2)],
+            ),
+            filled_board(
+                B2,
+                1000.0,
+                width,
+                100.0,
+                "#0000ff",
+                vec![spot(SECOND, 0.0, 0.0, width, 100.0, to_b3)],
+            ),
+            filled_board(B3, 2000.0, width, 100.0, "#00ff00", vec![]),
+        ]),
+        "prototype",
+        json!({"background": "#ffff00"}),
+    );
+    let mut scene = scene_of(&page);
+    let mut session = Session::start(&scene, B1).expect("the page has the board");
+    draw(&mut session, &mut scene, 200, 100);
+    session.tick(1000.0);
+    click(&mut session, 100.0, 50.0);
+    session.tick(1000.0);
+    (scene, session)
+}
+
+#[test]
+fn a_slide_in_from_the_right_covers_the_old_board_from_its_right_edge_to_the_whole_stage() {
+    let (mut scene, mut session) = changing(json!({"type": "slideIn", "direction": "left"}), 200.0);
+
+    let start = draw(&mut session, &mut scene, 200, 100);
+    assert_eq!(start.pixel(1, 50), RED, "0 ms: the old board's left edge");
+    assert_eq!(
+        start.pixel(198, 50),
+        RED,
+        "0 ms: the old board's right edge"
+    );
+
+    session.tick(1150.0);
+    let middle = draw(&mut session, &mut scene, 200, 100);
+    assert_eq!(middle.pixel(1, 50), RED, "150 ms: the old board stays");
+    assert_eq!(
+        middle.pixel(60, 50),
+        RED,
+        "150 ms: left of the new board's edge at 63"
+    );
+    assert_eq!(
+        middle.pixel(66, 50),
+        BLUE,
+        "150 ms: right of the new board's edge at 63"
+    );
+
+    session.tick(1300.0);
+    let end = draw(&mut session, &mut scene, 200, 100);
+    assert_eq!(end.pixel(1, 50), BLUE, "300 ms: the new board's left edge");
+    assert_eq!(
+        end.pixel(198, 50),
+        BLUE,
+        "300 ms: the new board's right edge"
+    );
+}
+
+#[test]
+fn a_dissolve_half_way_blends_the_boards_by_the_eased_progress() {
+    let (mut scene, mut session) = changing(json!({"type": "dissolve"}), 200.0);
+
+    session.tick(1150.0);
+    let stage = draw(&mut session, &mut scene, 200, 100);
+
+    // 31.5% red and 68.5% blue.
+    let [red, green, blue] = stage.pixel(100, 50);
+    assert!((78..=83).contains(&red), "red {red}");
+    assert_eq!(green, 0);
+    assert!((172..=177).contains(&blue), "blue {blue}");
+}
+
+#[test]
+fn a_push_moves_the_old_board_out_as_the_new_one_comes_in() {
+    // At rest the 100 px boards sit at 50..150: the old one is at -87..13 and
+    // the new one at 113..213.
+    let (mut scene, mut session) = changing(json!({"type": "push", "direction": "left"}), 100.0);
+
+    session.tick(1150.0);
+    let stage = draw(&mut session, &mut scene, 200, 100);
+
+    assert_eq!(stage.pixel(5, 50), RED, "the old board, moved out");
+    assert_eq!(stage.pixel(100, 50), YELLOW, "between the two");
+    assert_eq!(stage.pixel(120, 50), BLUE, "the new board, coming in");
+}
+
+#[test]
+fn a_move_in_moves_only_the_new_board_over_the_old_one() {
+    // The old 100 px board stays at 50..150 and the new one is at 113..213.
+    let (mut scene, mut session) = changing(json!({"type": "moveIn", "direction": "left"}), 100.0);
+
+    session.tick(1150.0);
+    let stage = draw(&mut session, &mut scene, 200, 100);
+
+    assert_eq!(stage.pixel(5, 50), YELLOW, "left of the old board");
+    assert_eq!(stage.pixel(100, 50), RED, "the old board, where it rests");
+    assert_eq!(
+        stage.pixel(120, 50),
+        BLUE,
+        "the new board, over the old one"
+    );
+}
+
+#[test]
+fn a_move_out_moves_only_the_old_board_over_the_new_one() {
+    // The new 160 px board stays at 20..180 and the old one is at -117..43.
+    let (mut scene, mut session) = changing(json!({"type": "moveOut", "direction": "left"}), 160.0);
+
+    session.tick(1150.0);
+    let stage = draw(&mut session, &mut scene, 200, 100);
+
+    assert_eq!(stage.pixel(10, 50), RED, "the old board, moved out");
+    assert_eq!(stage.pixel(30, 50), RED, "the old board, over the new one");
+    assert_eq!(stage.pixel(50, 50), BLUE, "the new board, where it rests");
+    assert_eq!(stage.pixel(190, 50), YELLOW, "right of the new board");
+}
+
+#[test]
+fn a_navigate_during_a_slide_starts_from_the_frame_on_screen_and_keeps_the_board_it_was_heading_to()
+{
+    let (mut scene, mut session) = changing(json!({"type": "slideIn", "direction": "left"}), 200.0);
+    session.tick(1150.0);
+
+    click(&mut session, 150.0, 50.0);
+    session.tick(1150.0);
+    let stage = draw(&mut session, &mut scene, 200, 100);
+
+    assert_eq!(stage.pixel(60, 50), RED, "the slide, frozen at 150 ms");
+    assert_eq!(stage.pixel(66, 50), BLUE, "the slide, frozen at 150 ms");
+    assert_eq!(
+        session.state(),
+        json!({"board": B3, "history": [B1, B2], "overlays": [], "missed": false, "url": null})
+    );
+}

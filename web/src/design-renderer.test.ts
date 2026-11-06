@@ -10,6 +10,9 @@
 // US-31: Escape in play mode leaves play and leaves the design view's selection
 // as it was, even before the session has started, while the renderer's own
 // Escape (which clears the selection) still listens.
+//
+// US-32: the viewer asks for animation frames only while a transition plays,
+// as long as `play_tick` says 2, and asks for none once it settles.
 import { createElement } from "react";
 import { cleanup, fireEvent, render } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -18,6 +21,8 @@ import { createDesignRenderer, missingFunctions } from "./design/renderer";
 
 /** What the viewer asked of the renderer's module, in order, with the text it passed. */
 const calls = vi.hoisted(() => [] as string[]);
+/** What `_omni_render_play_tick` says: 2 while a transition plays. */
+const tick = vi.hoisted(() => ({ says: 0 }));
 
 vi.mock("/render/omni_render.js", () => {
   const heap = new Uint8Array(4096);
@@ -33,6 +38,7 @@ vi.mock("/render/omni_render.js", () => {
       UTF8ToString: () => "[]",
       _omni_render_alloc: () => 0,
       _omni_render_free: () => {},
+      _omni_render_play_tick: () => tick.says,
       _omni_render_view_open_on: (pointer: number, length: number) => {
         calls.push(`open on "${text(pointer, length)}"`);
         return true;
@@ -125,5 +131,24 @@ describe("the viewer's renderer", () => {
 
     expect(onExit).toHaveBeenCalledExactlyOnceWith("b0000001");
     expect(calls).not.toContain("_omni_render_select_escape");
+  });
+
+  test("in play, asks for frames while a transition plays and for none once it settles", async () => {
+    const frames: FrameRequestCallback[] = [];
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => frames.push(callback));
+    const shown = await renderer();
+    shown.show({}, {});
+    shown.play.start("b0000001");
+    const run = () => {
+      for (const frame of frames.splice(0)) frame(1000);
+    };
+
+    tick.says = 2;
+    run();
+    expect(frames, "a transition plays").toHaveLength(1);
+
+    tick.says = 0;
+    run();
+    expect(frames, "the transition settled").toHaveLength(0);
   });
 });
