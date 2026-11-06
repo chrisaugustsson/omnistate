@@ -144,9 +144,18 @@ try {
 
   // A question for the human is a thread on the feature named after the story,
   // linked from the story, and the story is blocked until it concludes.
+  // The body goes through a file: fed through stdin, the synchronous spawn
+  // once left `omni post` waiting on its stdin for over an hour, and the run
+  // with it.
   const openThread = (title, body) => {
     const id = omni(['thread', 'create', title]).trim()
-    omni(['post', id, '--summary', title.slice(0, 200)], { input: body, stdio: ['pipe', 'pipe', 'pipe'] })
+    const file = path.join(os.tmpdir(), `omni-post-${id}.md`)
+    fs.writeFileSync(file, body)
+    try {
+      omni(['post', id, '--summary', title.slice(0, 200), '--body-file', file])
+    } finally {
+      try { fs.unlinkSync(file) } catch {}
+    }
     return id
   }
   const linkAndBlock = (key, threadIds) => {

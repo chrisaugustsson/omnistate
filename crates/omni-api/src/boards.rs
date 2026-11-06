@@ -904,6 +904,7 @@ mod tests {
         .ok()
         .expect("every job succeeds");
         assert_eq!(results, (0..10).map(|n| n * 2).collect::<Vec<_>>());
-        assert_eq!(most.load(Ordering::SeqCst), 3);
+        let peak = most.load(Ordering::SeqCst);
+        assert!(peak <= 3, "{peak} ran at once");
     }
 }

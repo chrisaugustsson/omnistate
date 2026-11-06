@@ -63,7 +63,7 @@ if (noun === "--help") {
   save();
   out(JSON.stringify(state.checks));
 } else if (noun === "post") {
-  const body = readFileSync(0, "utf8");
+  const body = flag("--body-file") ? readFileSync(flag("--body-file"), "utf8") : readFileSync(0, "utf8");
   state.threads.find((t) => t.id === verb).posts.push({ summary: flag("--summary"), body });
   save();
 } else if (noun === "story" && verb === "list") {
