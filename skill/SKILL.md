@@ -41,7 +41,7 @@ Give the human the link to what you wrote when you finish a step: `<server>/w/<w
 
 1. `omni feature create "<name>" --description "<one or two sentences: what changes for whom>"`.
 2. Spec: `omni doc create --feature "<name>" --kind html --pillar spec --title "Spec"`, then fill it (see [html-docs.md](html-docs.md)). Cover why, what the user can do, rules and edge cases, and an open-questions list.
-3. UI: `omni doc create --feature "<name>" --kind design --pillar ui --title "<screens>"`, then write one board per screen or state (see [designs.md](designs.md)). Read the app level first (`omni doc list --global`, and `omni tokens export` when it has a design system) and build on what exists.
+3. UI: `omni doc create --feature "<name>" --kind design --pillar ui --title "<screens>"`, then write one board per screen or state (see [designs.md](designs.md)). Read the app level first (`omni doc list --global`, and `omni tokens export` when it has a design system) and build on what exists. With interactions and flows in the design, `omni design flows --doc <doc>` lists the prototype graph: flows, interactions, unreachable boards and dangling targets.
 4. `architecture`, `db` and `research` docs when the feature touches them: the same `doc create --feature ... --pillar <pillar>` with `--kind html`.
 5. A question the human must decide goes in `omni thread create "<question>" --feature "<name>"`; say which in your hand-off.
 6. Hand off with the links, then run the main loop when comments arrive.

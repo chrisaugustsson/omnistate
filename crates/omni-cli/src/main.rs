@@ -77,6 +77,12 @@ Usage:
                                       back through the older entries
   omni design read --doc <id> --board <id>
                                       print one board of a design doc's head in the tag format
+  omni design flows --doc <id> [--page <id>]
+                                      list a page's flows, every board's interactions with
+                                      their targets, the boards no flow starts at and no
+                                      interaction reaches, and the targets that are not in
+                                      the doc (dangling); one block per page, or the page
+                                      --page names
   omni design edit <doc> [--board <id>]
                                       apply a batch of operations (a JSON array, from
                                       --body-file or standard input) to the design's head:
@@ -228,6 +234,7 @@ Options (before or after the command):
   --doc <id>            the design doc that `omni design read` reads or `omni design edit` edits
                         (`omni design edit` also takes it as an argument), or the doc whose
                         comments `omni comment list` shows
+  --page <id>           the page of that doc that `omni design flows` lists, instead of every page
   --board <id>          the board of that doc that `omni design read` prints, or that a
                         `omni design edit` batch stays inside
   --out <path>          where `omni tokens export` writes: a file, or with --per-mode a directory;

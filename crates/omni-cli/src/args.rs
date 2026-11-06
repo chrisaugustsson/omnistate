@@ -39,6 +39,8 @@ pub struct Args {
     /// board in it to read.
     pub doc: Option<String>,
     pub board: Option<String>,
+    /// `omni design flows --doc <id> --page <id>`: the one page to list.
+    pub page: Option<String>,
     /// `omni doc activity <doc> --limit <n> --before <seq>`: how many entries
     /// to list and where the page ends.
     pub limit: Option<String>,
@@ -210,6 +212,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Args> {
             "--description" => &mut parsed.description,
             "--doc" => &mut parsed.doc,
             "--board" => &mut parsed.board,
+            "--page" => &mut parsed.page,
             "--limit" => &mut parsed.limit,
             "--before" => &mut parsed.before,
             "--kind" => &mut parsed.kind,

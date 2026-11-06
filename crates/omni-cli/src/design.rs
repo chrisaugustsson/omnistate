@@ -1,14 +1,18 @@
 //! `omni design read` prints one board of a design doc in the tag format
 //! (US-030), and `omni design edit` applies a batch of operations to the head
-//! of a design (US-104). The project is found as for `omni project`.
+//! of a design (US-104), and `omni design flows` lists the prototype graph of a
+//! page (US-22). The project is found as for `omni project`.
+
+mod graph;
 
 use crate::args::Args;
-use crate::commands::{agent, say};
+use crate::commands::{agent, checked, say};
 use crate::components::is_node_id;
 use crate::docs::{print_edit, read_batch};
 use crate::error::{CliError, Result, bail};
 use crate::json::{Value, quote};
 use crate::projects::{is_uuid, project_id};
+use graph::Graph;
 
 /// `omni design read --doc <id> --board <id>`
 pub fn read(args: &Args) -> Result<()> {
@@ -117,4 +121,90 @@ pub fn edit(args: &Args, positional: Option<&str>) -> Result<()> {
     let path = format!("{base}/docs/{doc}/ops");
     let response = agent.request_explaining("POST", &path, Some(body.as_bytes()), &explanations)?;
     print_edit(args, &response.text())
+}
+
+/// `omni design flows --doc <id> [--page <id>]`: the flows of each page, every
+/// board's interactions, the boards nothing reaches and the dangling targets.
+pub fn flows(args: &Args) -> Result<()> {
+    const USAGE: &str = "omni design flows --doc <id> [--page <id>]";
+    let doc = match args.doc.as_deref() {
+        None => bail!("this command needs --doc <id>, the design doc: {USAGE}"),
+        Some(doc) if is_uuid(doc) => doc.to_ascii_lowercase(),
+        Some(doc) => {
+            bail!("--doc {doc:?} is not a doc ID (a UUID); `omni doc list` shows them")
+        }
+    };
+    let page = args.page.as_deref();
+
+    let agent = agent(args)?;
+    let project = project_id(args, &agent)?;
+    let doc_path = format!(
+        "/api/v1/w/{}/projects/{project}/docs/{doc}",
+        agent.workspace_id
+    );
+    let not_a_design = || CliError::with_code(2, format!("{doc} is not a design"));
+    let response = agent.request_unchecked("GET", &format!("{doc_path}/html?view=outline"))?;
+    if response.status == 400 {
+        return Err(not_a_design());
+    }
+    let response = checked(response)?;
+    let head = Value::parse(&response.text()).map_err(|_| {
+        CliError::new(
+            "the server's answer about the design is not readable; is it an OmniState API?",
+        )
+    })?;
+    let Some(pages) = head.get("outline").and_then(Value::as_array) else {
+        return Err(not_a_design());
+    };
+    let shown: Vec<&Value> = match page {
+        None => pages.iter().collect(),
+        Some(page) => match pages.iter().find(|p| p.str_at("id") == Some(page)) {
+            Some(found) => vec![found],
+            None => {
+                return Err(CliError::with_code(
+                    2,
+                    format!("{page} is not a page of the design"),
+                ));
+            }
+        },
+    };
+
+    let mut blocks = Vec::new();
+    for page in shown {
+        let mut boards = Vec::new();
+        for board in page
+            .get("children")
+            .and_then(Value::as_array)
+            .unwrap_or_default()
+        {
+            let id = board.str_at("id").unwrap_or_default();
+            if !is_node_id(id) {
+                bail!("the server named a board {id:?}; is it an OmniState API?");
+            }
+            let answer = agent.request_explaining(
+                "GET",
+                &format!("{doc_path}/boards/{id}"),
+                None,
+                &[(
+                    400,
+                    "not_a_design",
+                    format!("doc {doc} is not a design doc"),
+                )],
+            )?;
+            let answer = Value::parse(&answer.text()).map_err(|_| {
+                CliError::new(
+                    "the server's answer about the board is not readable; is it an OmniState API?",
+                )
+            })?;
+            let Some(node) = answer.get("node") else {
+                bail!(
+                    "the server's answer has no node for the board {id}; is it an OmniState API?"
+                );
+            };
+            boards.push(node.clone());
+        }
+        blocks.push(Graph::from(page, &boards).in_doc(pages).render());
+    }
+    say(blocks.join("\n").trim_end());
+    Ok(())
 }

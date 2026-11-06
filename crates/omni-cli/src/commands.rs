@@ -107,8 +107,9 @@ pub fn run(args: &Args) -> Result<()> {
         ["design", "read"] => design::read(args),
         ["design", "edit"] => design::edit(args, None),
         ["design", "edit", doc] => design::edit(args, Some(doc)),
+        ["design", "flows"] => design::flows(args),
         ["design", ..] => bail!(
-            "usage: omni design read --doc <id> --board <id> | omni design edit <doc> [--board <id>] [--body-file <path|->]"
+            "usage: omni design read --doc <id> --board <id> | omni design flows --doc <id> [--page <id>] | omni design edit <doc> [--board <id>] [--body-file <path|->]"
         ),
         ["component", "usage"] => components::usage(args, None),
         ["component", "usage", component] => components::usage(args, Some(component)),
