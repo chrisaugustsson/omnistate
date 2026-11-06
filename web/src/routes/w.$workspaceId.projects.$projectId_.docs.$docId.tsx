@@ -652,8 +652,8 @@ function DesignViewer({
   }, [cache, outline.value]);
 
   const rootModes = useMemo(() => modesOf(source?.tokens), [source]);
-  const collections = useMemo(() => collectionsOf(source?.tokens), [source]);
-  const ownCollections = useMemo(() => ownCollectionsOf(source?.tokens), [source]);
+  const collections = useMemo(() => collectionsOf(source?.tokens ?? {}).filter((collection) => collection.modes.length > 0), [source]);
+  const ownCollections = useMemo(() => ownCollectionsOf(source?.tokens ?? {}), [source]);
   const inherits = (name: string) => !ownCollections.some((own) => own.name === name);
   // A choice that is no longer listed falls back to the first mode.
   const modeOf = (key: string, listed: string[]) =>
