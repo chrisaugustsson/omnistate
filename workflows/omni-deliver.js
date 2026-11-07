@@ -1,17 +1,20 @@
 export const meta = {
   name: 'omni-deliver',
-  description: 'Delivers a feature\'s stories from the OmniState board: clarity checks with a council in front of every question for the human, then implement and review in story worktrees, at most `implementers` stories implementing and `reviewers` in review at once. Every git and omni command runs in the host helper, reached through courier agents',
-  whenToUse: 'Run with the Workflow tool from the main worktree of a project whose folder is linked to its OmniState project (omni link, or OMNI_PROJECT), with args {feature: "<name>"} (optional: implementers (3), reviewers (3), storyLimit, force, checks, models, agentTypes, helper). The host helper is ~/.claude/omni/deliver-step.mjs, as make install-agent-tools links it; args.helper names another path. One run per checkout: the helper\'s .omni/run.lock refuses a second live run, and force takes over a lock whose run the human knows is dead. args.checks ({fast, stack_up, stack, seed, lint}) sets checks on top of omni checks. args.models overrides the model of a role (clarity, council, impl, implRetry, review, verify, tests, final, courier), and args.agentTypes sets the agent type of a role, which has none by default. Stories land on deliver/<feature slug>, never on the checkout\'s branch. A run takes a new story only while its agent calls leave room under 900 for the stories in flight, at 60 each, and stops a story at 960, released with no attempt used; the next run carries on. A story whose delivery stops on an error is released and blocked on a thread with the error; when the same error stops a second story, the run takes no new story and opens one thread for the run, and later failures are only released. Built so far: start, unblock, clarity, implement and review; a reviewed story waits in reviewed for the lane, which is not built yet. Never pushes.',
+  description: 'Delivers a feature\'s stories from the OmniState board: clarity checks with a council in front of every question for the human, implement and review in story worktrees, at most `implementers` stories implementing and `reviewers` in review at once, then a lane that tests one story at a time in a worktree of its own and lands it on deliver/<feature slug>, and a report on the Run thread. Every git and omni command runs in the host helper, reached through courier agents',
+  whenToUse: 'Run it with the Workflow tool, as the workflow omni-deliver with args {feature: "<name>"} (optional: implementers (3), reviewers (3), storyLimit, force, checks, models, agentTypes, helper), from a session in the main worktree of a project whose folder is linked to its OmniState project (omni link, or OMNI_PROJECT). That session needs the stories folder beside the checkout, <checkout>-stories, among its working directories, and the host helper at ~/.claude/omni/deliver-step.mjs, as make install-agent-tools links it; args.helper names another path. One run per checkout: the helper\'s .omni/run.lock refuses a second live run, and force takes over a lock whose run the human knows is dead. args.checks ({fast, stack_up, stack, seed, lint}) sets checks on top of omni checks. args.models overrides the model of a role (clarity, council, impl, implRetry, review, verify, tests, final, courier), and args.agentTypes sets the agent type of a role, which has none by default. Stories land on deliver/<feature slug>, never on the checkout\'s branch: the report says to bring them in with git merge --ff-only deliver/<feature slug>. A run takes a new story only while its agent calls leave room under 900 for the stories in flight, at 60 each, and stops a story at 960, released with no attempt used; the next run carries on. An agent that returns nothing is asked again after 30 s and after 2 minutes, with no attempt used; agents that return nothing for 3 stories in a row stop new claims, with one thread for the run. A story whose delivery stops on an error is released and blocked on a thread with the error; when the same error stops a second story, the run takes no new story and opens one thread for the run, and later failures are only released. A failed check that fails again on deliver/<slug> without the story stops the lane for the rest of the run, with one thread for the run, and the story goes back to reviewed with no attempt used. The run ends with the journeys check of the stories it landed and finish, which posts the report and gives the lock up, after an error too; it does not wait for answers, which the next run\'s unblock pass takes. Never pushes.',
   phases: [
     { title: 'Start', detail: 'the helper takes the lock, reconciles claims and the lane worktree, sets deliver/<slug> and reads the checks' },
     { title: 'Unblock', detail: 'a story whose threads all have a conclusion gets each one as a human decision and is unblocked, and its attempts count from there' },
     { title: 'Clarity', detail: 'one check per backlog story whose text, criteria, linked nodes or decisions changed: a criterion that names a test becomes a test obligation, a minor gap takes its recommendation, the 3 blocking gaps of most impact go to the council and the rest take their recommendation, deferred by the cap; what the council cannot settle becomes a thread that blocks the story' },
-    { title: 'Deliver', detail: 'at most `implementers` stories implementing at once, each slot free again once its story is implemented: claim, worktree, implementer (on implRetry from attempt 2, with every finding by attempt), files; then at most `reviewers` in review, with a verdict per criterion and every defect, from which the script decides, never judging a test obligation; a failed review sends the story back for the next attempt, held in review until an implementer slot is free, ahead of new claims, and 3 failed attempts open a thread; a question goes to the council first' },
+    { title: 'Deliver', detail: 'at most `implementers` stories implementing at once, each slot free again once its story is implemented: claim, worktree, implementer (on implRetry from attempt 2, with every finding by attempt), files; then at most `reviewers` in review, with a verdict per criterion and every defect, from which the script decides, never judging a test obligation; a failed review, or a failure in the lane, sends the story back for the next attempt, held where it failed until an implementer slot is free, ahead of new claims, and 3 failed attempts open a thread; a question goes to the council first' },
+    { title: 'Lane', detail: 'one story at a time in the lane worktree <stories dir>/_lane: lane-prepare rebases story/<key> onto deliver/<slug> and checks it out, detached (a conflict or a missing worktree sends the story back with no attempt used, uncommitted changes or another branch use one, and trouble that is not the story\'s stops the lane); fast, stack_up and stack run there as jobs, and a failed one runs again on the base, where failing too stops the lane and passing uses an attempt; a verifier runs every criterion but the test obligations, a test author writes the regression tests and its questions go to the council, lane-clean throws away what it left uncommitted, its check runs as a job, and lane-land moves deliver/<slug> by a compare-and-swap; after a failure the lane goes back to the tip, and the stack, when it holds the story\'s build, is rebuilt there' },
+    { title: 'Report', detail: 'the journeys check of the stories landed, then finish posts the report on the Run thread, with the outcomes, the council\'s counts, the blocked stories with their threads, the notes and the timings, and gives the lock up' },
   ],
 }
 
 // omni-deliver as a native workflow (tasks/omni-deliver-native-design.md).
-// The script holds the flow: which story goes where, attempts, the council.
+// The script holds the flow: which story goes where, attempts and retries,
+// the council, the lane's lock and the report.
 // It has no files, no processes and no clock, so every git, omni and check
 // command runs in the host helper, workflows/deliver-step.mjs, which a
 // courier agent runs for each step. No agent writes to the board itself.
@@ -57,6 +60,13 @@ const COURIER_RETRIES = 3
 // A review that leaves a criterion without a verdict is asked again this
 // many times.
 const REVIEW_RETRIES = 2
+// The seconds one courier waits for a job, within its Bash call.
+const JOB_WAIT = 480
+// An agent that returns nothing is asked again after each of these waits, in
+// seconds, with no attempt used. Agents that return nothing for this many
+// stories in a row stop the run taking stories.
+const AGAIN_AFTER = [30, 120]
+const EMPTY_STORIES = 3
 
 let agentCalls = 0
 // Set once the run stops taking new work for the cap.
@@ -156,6 +166,7 @@ const unpack = (r, expected) => {
 let runId = null
 let root = null
 let branch = null
+let laneDir = null
 let current = 'Start'
 const enter = (title) => {
   current = title
@@ -359,7 +370,9 @@ const IMPL_SCHEMA = {
     recommendation: { type: 'string', description: 'Only with needs_decision: the option you suggest' },
   },
 }
-const CONVENTIONS = `
+// The last line says where to commit: the implementer on its story branch,
+// the test author on the lane's detached HEAD.
+const conventions = (where) => `
 ## Repo conventions (MUST follow)
 - Commit messages: "type: Capitalized subject" (e.g. "feat: Add booking list").
   NO parenthetical scope. End the message body with the Co-Authored-By line
@@ -373,8 +386,9 @@ const CONVENTIONS = `
 - Do NOT create notes, plan, progress, or memory files anywhere in the repo.
   Everything you learned or decided goes in your structured return value.
   Temp/debug files go in your scratchpad directory, never the repo.
-- Work on the CURRENT branch. Do not push, create branches or amend.
+- ${where}
 `
+const CONVENTIONS = conventions('Work on the CURRENT branch. Do not push, create branches or amend.')
 // The earlier findings of the story, by attempt: those since the human's
 // latest answer to fix, those that used no attempt, and those before the
 // answer for what failed before it.
@@ -496,6 +510,206 @@ ${numberedCriteria(ctx)}
 
 ## Your task now
 Review the change against every criterion above.
+Return raw structured data only.`
+
+// ---- the lane's agents ---------------------------------------------------------
+// They work in the lane worktree, on the detached HEAD lane-prepare checked
+// out: a branch checked out there would move with each commit, past the
+// lane's compare-and-swap.
+const LANE_HEAD = 'Stay on the detached HEAD: never check out or create a branch.'
+const VERIFY_SCHEMA = {
+  type: 'object',
+  required: ['criteria'],
+  properties: {
+    criteria: {
+      type: 'array',
+      description: 'One entry per acceptance criterion in the story, by its number counting from 0',
+      items: {
+        type: 'object',
+        required: ['index', 'criterion', 'ok', 'evidence'],
+        properties: {
+          index: { type: 'integer', description: 'The number of the criterion in the list, counting from 0' },
+          criterion: { type: 'string', description: 'The criterion text, verbatim' },
+          ok: { type: 'boolean' },
+          evidence: { type: 'string', description: 'The command or steps, the input, and what you actually observed. For a failure: what is wrong and where' },
+        },
+      },
+    },
+  },
+}
+// The project's commands a criterion about one is checked by; those unset
+// are left out.
+const commandsOf = () => ['fast', 'stack', 'lint'].filter((name) => checks[name]).map((name) => `${name} is \`${checks[name]}\``)
+const verifyPrompt = (ctx) => `You check ONE story of the feature "${feature}" by running it. ${READ_ONLY}
+
+## Where
+The lane worktree ${laneDir} holds story/${ctx.story.key} rebased onto ${branch}, on a detached HEAD, and the story's checks passed there${checks.stack_up ? `; the stack is up, as \`${checks.stack_up}\` started it from there. Exercise the story against that stack, not another copy on the machine` : ''}. Work only there: cd into it first, and run every command there. ${LANE_HEAD}
+
+## The story
+${storyText(ctx)}
+
+### Decisions already taken (settled: judge against them as if the spec said so)
+${decisionLines(ctx)}
+
+${docsSection(ctx, 'verify')}
+
+${BOARD}
+
+## Rules
+- Exercise EVERY criterion by running the behaviour in ${laneDir}: call the endpoint, run the command, open the page with the dev-browser skill for browser criteria. Reading code is not a check.
+- A criterion marked [test obligation] is the lane's test author's: skip it, with ok true and the evidence "a test obligation".
+${checks.seed ? `- For a credential, run the seed command \`${checks.seed}\` in ${laneDir}: it prints what to sign in with. Never write into the stack's database yourself.\n` : ''}${commandsOf().length ? `- A criterion about a command is checked by running that command: ${commandsOf().join(', ')}.\n` : ''}- A [human check] criterion: exercise what you can; ok is true unless what you ran contradicts it. A human confirms it later.
+- ok false only for a criterion the behaviour does not meet. Say what is wrong and where.
+
+## Acceptance criteria (number: text)
+${numberedCriteria(ctx)}
+
+## Your task now
+Exercise every criterion above, and return one entry for each, by its number.
+Return raw structured data only.`
+
+const TEST_SKILL = '~/.claude/skills/writing-tests/SKILL.md'
+const TEST_ASSETS = `test and spec files, test helpers, fixtures, snapshots, test-runner,
+coverage and lint configuration, and skip/only/todo markers`
+const TEST_POLICY = `
+## Regression-test policy (MUST follow)
+- FIRST read ${TEST_SKILL} and the reference files it points to as you reach them.
+  Follow it exactly; the story below and its linked doc nodes are its spec, and the
+  verifier's list of confirmed criteria tells you which behaviours were confirmed.
+- The story already WORKS: a verifier exercised it. You are not proving it works.
+  You are choosing the few tests that would catch it breaking later. Criteria are not
+  test cases: one test per criterion is the pattern this replaces, and a criterion
+  that states a detail with no rule behind it gets no test (skill step 1).
+- NO TARGET COUNT: rank the oracle rows (skill step 1) and admit tests in rank order
+  through the gate (skill step 8). Zero is a correct answer when existing tests
+  already catch everything. A row you rank but do not write, because a test already
+  catches it, goes in notAdmitted with the test that catches it. List added tests in
+  rank order, highest first.
+- The implementer wrote no tests for this story: every test of its behaviour is yours
+  to rank and admit, and the inventory tells you what earlier tests already catch.
+- Tests added by earlier stories in this run are part of the existing suite.
+  Using earlier stories' features as setup is fine; do not re-test their rules.
+`
+const TESTS_SCHEMA = {
+  type: 'object',
+  required: ['status', 'commit', 'check', 'oracle', 'existingCoverage', 'added', 'reused', 'changedOrRemoved', 'notAdmitted'],
+  properties: {
+    status: { type: 'string', enum: ['done', 'found_defect', 'needs_decision', 'blocked'] },
+    question: { type: 'string', description: 'Only with needs_decision: what the story does not settle, as one plain question' },
+    options: { type: 'array', items: { type: 'string' }, description: 'Only with needs_decision: the concrete options' },
+    recommendation: { type: 'string', description: 'Only with needs_decision: the option you suggest' },
+    commit: { type: 'string', description: 'The test: commit hash, or empty string when no test change was needed' },
+    check: { type: 'string', description: 'The one command, run from the lane worktree, that runs exactly the tests you added (e.g. cargo test -p omni-core --test design_tokens, or pnpm --filter web exec vitest run src/x.test.tsx); empty when you added nothing' },
+    oracle: {
+      type: 'array',
+      description: 'The oracle table (skill step 1), written from the story before reading the implementation: one row per key example',
+      items: {
+        type: 'object',
+        required: ['input', 'expected', 'clause'],
+        properties: {
+          input: { type: 'string' },
+          expected: { type: 'string' },
+          clause: { type: 'string', description: 'The story text the expected value comes from' },
+        },
+      },
+    },
+    existingCoverage: {
+      type: 'array',
+      description: 'Inventory made BEFORE writing anything: every existing test that exercises this story\'s behaviour, and what it already pins',
+      items: { type: 'object', required: ['test', 'file', 'covers'], properties: { test: { type: 'string' }, file: { type: 'string' }, covers: { type: 'string' } } },
+    },
+    added: {
+      type: 'array',
+      items: {
+        type: 'object',
+        required: ['test', 'file', 'risk', 'overlapCheck', 'sensitivity'],
+        properties: {
+          test: { type: 'string' },
+          file: { type: 'string' },
+          risk: { type: 'string', description: 'What breakage this catches, and the story line its expected values come from' },
+          overlapCheck: { type: 'string', description: 'The closest existing tests you compared it with, and why none of them already catches this breakage' },
+          sensitivity: { type: 'string', description: 'Each mutant applied (file, line, change), that this test went red on it, and the existing tests run against it that stayed green' },
+        },
+      },
+    },
+    reused: { type: 'array', items: { type: 'object', required: ['test', 'risk'], properties: { test: { type: 'string' }, risk: { type: 'string' } } }, description: 'Existing tests that already protect a risk, so none was added' },
+    changedOrRemoved: { type: 'array', items: { type: 'object', required: ['test', 'action', 'reason'], properties: { test: { type: 'string' }, action: { type: 'string', enum: ['changed', 'removed'] }, reason: { type: 'string' } } } },
+    notAdmitted: {
+      type: 'array',
+      description: 'Ranked oracle rows you did not write a test for, because another test already catches them',
+      items: { type: 'object', required: ['row', 'caughtBy'], properties: { row: { type: 'string' }, caughtBy: { type: 'string', description: 'The existing or newly added test that already catches it' } } },
+    },
+    defect: {
+      type: 'object',
+      properties: { test: { type: 'string' }, observed: { type: 'string' }, expected: { type: 'string' } },
+      description: 'With status found_defect: the behaviour your test exposed as wrong against the story',
+    },
+    blockers: { type: 'string' },
+    learnings: { type: 'array', items: { type: 'string' } },
+  },
+}
+// The tests this run's test authors added, for the authors after them.
+const testsAdded = []
+const WRITE_TESTS = 'Write the story\'s regression tests by the policy above, commit them, and return the result.'
+const RESUME_TESTS = 'An earlier session stopped to ask a question, which the decisions above now settle. What it committed is in the lane worktree: continue from it, do not start over.'
+const authorPrompt = (ctx, base, confirmed, task) => `You write the lasting regression tests for one story of the feature "${feature}", with a fresh context.
+
+## Your worktree
+The lane worktree ${laneDir} holds story/${ctx.story.key} rebased onto ${branch}, on a detached HEAD, and a verifier has confirmed there that it matches its criteria. Work only there: cd into it first, and run every command there. ${LANE_HEAD} Commit on that HEAD: the workflow lands your commits. You own tests; you never change production code.
+
+## The story
+${storyText(ctx)}
+
+### Decisions already taken (settled: test against them as if the spec said so)
+${decisionLines(ctx)}
+
+${docsSection(ctx, 'tests')}
+
+## Criteria the verifier confirmed (observed values are withheld so they cannot shape your oracle)
+${confirmed.map((c) => `- ${c}`).join('\n') || '(none)'}
+${testsAdded.length ? `\n## Tests added earlier in this run (part of the existing suite; do not re-test what they pin)\n${testsAdded.map((x) => `- ${x}`).join('\n')}\n` : ''}
+${BOARD}
+${conventions('Commit on the detached HEAD of the lane worktree. Do not push, check out or create a branch, or amend.')}${TEST_POLICY}
+## Rules
+- Record \`git rev-parse HEAD\` first. You may change only ${TEST_ASSETS}.
+- A criterion marked [test obligation] names a test the story owes: the verifier skipped it, and it is yours. Meet it with a test the gate admits, or name in reused the existing test that already does.
+- ORACLE FIRST (skill step 1): write the oracle table from the story text above BEFORE you open any production file or run the code. Return it in oracle. Every expected value in your tests comes from a row. If the code disagrees with a row and the story clearly supports the row, that is a defect (status found_defect); if the story does not settle it, return status needs_decision with question, options and recommendation. In both cases leave no uncommitted test changes.
+- INVENTORY (skill step 2), before writing any test. Besides the skill's search, search by the names in the story's files and by what \`git diff ${base}..HEAD\` touches. Record each existing test found in existingCoverage, and for each new test the closest existing ones in overlapCheck.
+- PROVE IT GOES RED (skill step 6) for every new test: record in sensitivity each mutant you applied, that the new test went red, and which existing tests you ran against it that stayed green. Production files must be unchanged when you finish (git status shows no production changes).
+- Before you commit, run the test files you touched and the typecheck of their crate or package, not the full suite: the lane ran its checks on this commit before you started, and runs your new tests once more after you with the command you return in check. Leave the working tree clean: no mutant left in a production file, no uncommitted test file. Commit only test files: "test: <summary>". If you add nothing, commit nothing and return an empty commit and an empty check.
+- If you genuinely cannot continue, status blocked with the reason in blockers.
+
+## Acceptance criteria (number: text)
+${numberedCriteria(ctx)}
+
+## Your task now
+${task}
+Return raw structured data only.`
+
+const FINAL_SCHEMA = {
+  type: 'object',
+  required: ['healthy', 'journeys', 'report'],
+  properties: {
+    healthy: { type: 'boolean', description: 'The fast command passed and every cross-story journey worked' },
+    journeys: { type: 'array', items: { type: 'string' }, description: 'Each cross-story journey you exercised, with the outcome' },
+    report: { type: 'string' },
+  },
+}
+const finalPrompt = (landed) => `You run the final check after a delivery run on the feature "${feature}". ${READ_ONLY}
+
+## Where
+The lane worktree ${laneDir}, on a detached HEAD at the tip of ${branch}, where this run landed its stories. Work only there: cd into it first, and run every command there. ${LANE_HEAD}
+
+## The stories this run landed
+${landed.map((key) => `- ${key}`).join('\n')}
+
+${BOARD}
+
+## Your task now
+1. ${checks.fast ? `Run the fast command \`${checks.fast}\` in ${laneDir}.` : 'The project has no fast command: go on to 2.'}
+2. Each story was checked on its own. Find the user journeys in the feature's docs (\`${omniAs('final')} doc list\`, then \`${omniAs('final')} doc read <doc>\`) and in these stories (\`${omniAs('final')} story read <key>\`) that span several of them (one story's output is another's input, a flow through several screens or endpoints), and exercise up to 3 of them for real, with the real components${checks.stack ? `, using the stack command \`${checks.stack}\`` : ''}. Report each with its outcome.
+3. Stop every process and remove every container you started for the journeys, and confirm none is left.
+Do NOT change any code. healthy is false if the fast command fails or a journey fails; a failure is reported, not repaired.
 Return raw structured data only.`
 
 // ---- the council -----------------------------------------------------------
@@ -625,20 +839,25 @@ const started = await carry('start', courierPrompt(`node ${shellPath(HELPER)} st
 runId = started.run
 root = started.root
 branch = started.branch
+laneDir = started.lane
 for (const line of started.log || []) log(line)
 log(`Run ${runId} on ${feature}: stories land on ${branch}, now at ${String(started.tip).slice(0, 7)}`)
 let checks = started.checks
-if (A.checks && typeof A.checks === 'object') checks = (await step('checks-set', { checks: A.checks })).checks
+// The tip of deliver/<slug>: where start left it, then where each story landed.
+let tip = started.tip
+// From here on every step runs in the try at the end, whose finally finishes
+// the run: it posts the report and gives the lock up, after a throw too.
 
 // ---- 2. unblock --------------------------------------------------------------
 // A thread's conclusion is the human's answer, and restarts the story's attempts.
-enter('Unblock')
-const unblocked = await step('unblock-pass', {})
-for (const line of unblocked.log || []) log(line)
-if (unblocked.unblocked.length) log(`Unblocked ${unblocked.unblocked.join(', ')}`)
+let unblocked = { unblocked: [] }
+const unblock = async () => {
+  unblocked = await step('unblock-pass', {})
+  for (const line of unblocked.log || []) log(line)
+  if (unblocked.unblocked.length) log(`Unblocked ${unblocked.unblocked.join(', ')}`)
+}
 
 // ---- 3. clarity --------------------------------------------------------------
-enter('Clarity')
 const IMPACT = ['scope', 'data_security', 'ux', 'technical']
 const clarity = []
 // Stories whose clarity check returned nothing, or failed: not delivered in
@@ -707,26 +926,65 @@ const check = async (key) => {
   const threads = answers.filter((a) => !a.settled).map((a) => a.thread)
   clarity.push({ key, obligations: (r.testObligations || []).length, minor: gaps.filter((x) => !x.blocking).length, deferred: Math.max(blocking.length - CLARITY_QUESTIONS, 0), settled: answers.filter((a) => a.settled).length, threads })
 }
-const pending = (await step('clarity-pending', {})).keys
-await pipeline(pending, async (key) => {
-  try {
-    await clarify(key)
-  } catch (e) {
-    unclear.add(key)
-    if (e && e.atCap) capped = true
-    log(`${key}: the clarity check ${e && e.atCap ? 'stopped at the agent cap' : 'failed'}: ${(e && e.message) || e}; the story is not delivered in this run`)
-  }
-})
+const clarityPass = async () => {
+  const pending = (await step('clarity-pending', {})).keys
+  await pipeline(pending, async (key) => {
+    try {
+      await clarify(key)
+    } catch (e) {
+      unclear.add(key)
+      if (e && e.atCap) capped = true
+      log(`${key}: the clarity check ${e && e.atCap ? 'stopped at the agent cap' : 'failed'}: ${(e && e.message) || e}; the story is not delivered in this run`)
+    }
+  })
+}
 
 // ---- 4. deliver ----------------------------------------------------------------
-enter('Deliver')
 const outcomes = []
+// Why the run takes no new story, once a breaker has stopped it: the stories
+// in flight finish.
+let halted = null
+// Notes for the run's report.
+const notes = []
 
-// An agent that returned nothing, or nothing usable: the story goes back to
-// its waiting state, with no attempt used. The second half of build step 3
-// replaces this with the retries after a wait.
-const noResult = async (key, what) => {
+// Infrastructure trouble with agents. An agent that returns nothing is asked
+// again after each wait in AGAIN_AFTER, with no attempt used, and one that
+// returns something ends the row of stories sent back for nothing.
+let emptyRow = []
+const persist = async (key, who, call) => {
+  for (let i = 0; ; i++) {
+    const r = await call()
+    if (r) {
+      emptyRow = []
+      return r
+    }
+    if (i === AGAIN_AFTER.length) return null
+    log(`${key}: ${who} returned nothing; asking again in ${AGAIN_AFTER[i]} s, with no attempt used`)
+    await step('sleep', { seconds: AGAIN_AFTER[i] }, { key })
+  }
+}
+
+// An agent that returned nothing after its retries, or nothing usable: the
+// story goes back to its waiting state, with no attempt used. Agents that
+// returned nothing for EMPTY_STORIES stories in a row are the
+// infrastructure's trouble: the run takes no new story, and opens one thread
+// for the run.
+let emptied = false
+const noResult = async (key, what, empty = true) => {
   await step('release', { key })
+  if (empty) emptyRow.push(key)
+  if (empty && emptyRow.length >= EMPTY_STORIES && !emptied) {
+    emptied = true
+    const row = emptyRow.join(', ')
+    halted = halted || `agents returned nothing for ${row}, in a row`
+    try {
+      const { thread } = await step('thread-open', { title: `Run ${runId}: agents return nothing`, body: `Agents of run ${runId} returned nothing for ${row}, in a row, each after ${AGAIN_AFTER.length} retries over ${AGAIN_AFTER.reduce((a, s) => a + s, 0)} s; the stories went back to their waiting states with no attempt used.\n\nThe run takes no new story: those in flight finish. Check the Claude Code session that runs it, its limits and its connection, then start a new run.\n` }, { label: 'no-results' })
+      notes.push(`The run took no new story once agents returned nothing for ${row}, in a row (thread ${thread}).`)
+    } catch (e) {
+      log(`The thread about agents that return nothing could not be opened: ${(e && e.message) || e}`)
+    }
+    log(`Agents returned nothing for ${row}, in a row: the run takes no new story`)
+  }
   return { key, outcome: 'no_result', detail: `${what}; the story is released without using an attempt` }
 }
 
@@ -742,12 +1000,6 @@ const stopped = async (key) => {
   log(`${key}: stopped at ${HARD_CAP} agent calls, and released without using an attempt; the next run carries on`)
   return { key, outcome: 'stopped', detail: `stopped at the agent cap of ${HARD_CAP}` }
 }
-
-// Why the run takes no new story, once a breaker has stopped it: the stories
-// in flight finish.
-let halted = null
-// Notes for the run's report.
-const notes = []
 
 // A story whose delivery stopped on an error goes back to its waiting state.
 // The first story an error stops gets a thread with the error, which blocks
@@ -837,8 +1089,8 @@ const implement = async (key, rework) => {
   let task = wt.created ? FRESH : CONTINUE
   for (let asked = 0; ; asked++) {
     const attempt = ctx.attempt + 1
-    const r = await ask('impl', implPrompt(ctx, wt.path, attempt, task), { label: `impl:${key}`, phase: 'Deliver', schema: IMPL_SCHEMA }, MODELS[attempt >= 2 ? 'implRetry' : 'impl'])
-    if (!r) return noResult(key, 'the implementer returned nothing')
+    const r = await persist(key, 'the implementer', () => ask('impl', implPrompt(ctx, wt.path, attempt, task), { label: `impl:${key}`, phase: 'Deliver', schema: IMPL_SCHEMA }, MODELS[attempt >= 2 ? 'implRetry' : 'impl']))
+    if (!r) return noResult(key, `the implementer returned nothing, ${AGAIN_AFTER.length + 1} times`)
     await recordDecisions(ctx, r.decisions)
     if (r.status === 'needs_decision') {
       const answer = await question(ctx, r, 'the implementer', wt.path, 'impl-q', asked)
@@ -873,8 +1125,8 @@ const review = async (key, wt) => {
   for (;;) {
     const ctx = await step('context', { key })
     const n = ctx.story.criteria.length
-    const v = await ask('review', reviewPrompt(ctx, wt), { label: `review:${key}`, phase: 'Deliver', schema: reviewSchema(n) })
-    if (!v) return noResult(key, 'the reviewer returned nothing')
+    const v = await persist(key, 'the reviewer', () => ask('review', reviewPrompt(ctx, wt), { label: `review:${key}`, phase: 'Deliver', schema: reviewSchema(n) }))
+    if (!v) return noResult(key, `the reviewer returned nothing, ${AGAIN_AFTER.length + 1} times`)
     if (v.verdict === 'needs_decision') {
       const answer = await question(ctx, v, 'the reviewer', wt, 'review-q', asked++)
       if (!answer.settled) return { key, outcome: 'needs_decision', thread: answer.thread }
@@ -888,7 +1140,7 @@ const review = async (key, wt) => {
         log(`${key}: the review gave no verdict on criteria ${missing.join(', ')}; asking again`)
         continue
       }
-      return noResult(key, `the reviewer gave no verdict on criteria ${missing.join(', ')}, ${REVIEW_RETRIES + 1} times`)
+      return noResult(key, `the reviewer gave no verdict on criteria ${missing.join(', ')}, ${REVIEW_RETRIES + 1} times`, false)
     }
     const owed = obligationsOf(ctx)
     const owedText = new Set(ctx.story.criteria.filter((c, i) => owed.has(i)).map((c) => c.text.trim()))
@@ -905,15 +1157,15 @@ const review = async (key, wt) => {
 }
 
 // One attempt's review: the claim, the reviewer, and the move to reviewed,
-// or the findings. Gives the story's outcome, or rework when it is sent back
-// for the next attempt.
+// or the findings. Gives reviewed, rework when the story is sent back for the
+// next attempt, or the story's outcome.
 const assess = async (key, wt) => {
   await step('claim', { key, stage: 'review' })
   const verdict = await review(key, wt || (await step('worktree', { key })).path)
   if (verdict.outcome) return verdict
   if (verdict.pass) {
     await step('move', { key, to: 'reviewed' })
-    return { key, outcome: 'reviewed' }
+    return { reviewed: true }
   }
   return sendBack(key, 'review', verdict.findings, true, `its review with ${verdict.findings.length} finding${verdict.findings.length === 1 ? '' : 's'}`)
 }
@@ -930,55 +1182,52 @@ const inSlot = async (slots, held, task) => {
   try { return await task() } finally { slots.release() }
 }
 
-// A story from where it waits, backlog or implemented, through its attempts
-// until it is reviewed or blocked on a thread. `held`: the deliver loop has
-// taken an implementer's slot for its first implementing.
+// A story from where it waits, backlog, implemented or reviewed, through its
+// attempts until it lands or is blocked on a thread. `held`: the deliver loop
+// has taken an implementer's slot for its first implementing. A reviewed
+// story goes to the lane out of its review slot, and waits for its turn there.
 const deliverStory = async (key, from, held) => {
-  let implementing = from === 'backlog'
+  let at = from
   let rework = false
   let wt = null
   for (;;) {
-    if (implementing) {
+    if (at === 'backlog') {
       const built = await inSlot(implSlots, held, () => implement(key, rework))
       held = false
       if (built.outcome) return built
       wt = built.path
+      at = 'implemented'
     }
-    const assessed = await reviewSlots.run(() => assess(key, wt))
-    if (assessed.rework) {
-      // Sent back, the story stays held where it failed, which keeps its
-      // files busy, until an implementer's slot is free: rework goes ahead of
-      // new claims, and only then does the story go back to the backlog.
-      // Unclaimed there while it waited, another story planned on the same
-      // files was claimed beside it.
-      await implSlots.acquire(true)
-      held = true
-      implementing = true
-      rework = true
-      continue
+    if (at === 'implemented') {
+      const assessed = await reviewSlots.run(() => assess(key, wt))
+      if (assessed.outcome) return assessed
+      at = assessed.rework ? 'rework' : 'reviewed'
     }
-    // ---- hand-off: the lane ------------------------------------------------
-    // The second half of build step 3 takes a reviewed story into the lane
-    // here, out of its review slot and under the lane lock: lane-prepare, the
-    // checks as jobs with the rerun on the base, the verifier, the test
-    // author, lane-clean, the test author's check and lane-land. A lane
-    // failure sends the story back for the next attempt, as a failed review
-    // does; so do lane-prepare's dirty and wrong_branch, with the reason as a
-    // finding, while a conflict uses no attempt and infra is not the
-    // story's. Until then a reviewed story waits in reviewed, as do the
-    // stories that were reviewed when the run started.
-    return assessed
+    if (at === 'reviewed') {
+      const tested = await inLane(() => laneStory(key))
+      if (tested.outcome) return tested
+    }
+    // Sent back, the story stays held where it failed, which keeps its files
+    // busy, until an implementer's slot is free: rework goes ahead of new
+    // claims, and only then does the story go back to the backlog. Unclaimed
+    // there while it waited, another story planned on the same files was
+    // claimed beside it.
+    await implSlots.acquire(true)
+    held = true
+    rework = true
+    at = 'backlog'
   }
 }
 
 // Each free implementer's slot goes to the first story the board lists as
 // pickable that this run has not taken: listed again for each claim, since a
 // claimed story's planned files keep others off the pickable list. A story
-// listed as implemented and waiting starts at its review. When nothing new
-// is listed, the board is listed again once a story in flight is done; the
-// run goes on until nothing new is listed and nothing is in flight. A new
-// story is taken only while the agent cap leaves room for it beside those in
-// flight, up to storyLimit, and until a breaker stops the run.
+// listed as implemented starts at its review, and one listed as reviewed at
+// the lane, unless the lane has stopped. When nothing new is listed, the
+// board is listed again once a story in flight is done; the run goes on until
+// nothing new is listed and nothing is in flight. A new story is taken only
+// while the agent cap leaves room for it beside those in flight, up to
+// storyLimit, and until a breaker stops the run.
 const taken = new Set()
 const running = new Set()
 const launch = (key, from, held) => {
@@ -1009,36 +1258,287 @@ const mayTake = () => {
   }
   return true
 }
-let taking = true
-while (taking) {
-  await implSlots.acquire()
-  if (!mayTake()) {
-    implSlots.release()
-    break
+const deliverAll = async () => {
+  let taking = true
+  try {
+    while (taking) {
+      await implSlots.acquire()
+      let held = true
+      try {
+        if (!mayTake()) break
+        const board = await step('list', {})
+        const fresh = (key) => !taken.has(key) && !unclear.has(key)
+        for (const s of board.stories.filter((x) => (x.status === 'implemented' || (x.status === 'reviewed' && !laneStopped)) && !x.blocked && !x.holder && fresh(x.key))) {
+          if (!(taking = mayTake())) break
+          launch(s.key, s.status, false)
+        }
+        const next = board.pickable.find(fresh)
+        if (taking && next && (taking = mayTake())) {
+          launch(next, 'backlog', true)
+          held = false
+          continue
+        }
+      } finally {
+        if (held) implSlots.release()
+      }
+      if (!running.size) break
+      if (taking) await Promise.race(running)
+    }
+  } finally {
+    // The stories in flight finish, also when the board could not be listed.
+    await Promise.all(running)
   }
-  const board = await step('list', {})
-  const fresh = (key) => !taken.has(key) && !unclear.has(key)
-  for (const s of board.stories.filter((x) => x.status === 'implemented' && !x.blocked && !x.holder && fresh(x.key))) {
-    if (!(taking = mayTake())) break
-    launch(s.key, 'implemented', false)
-  }
-  const next = board.pickable.find(fresh)
-  if (taking && next && (taking = mayTake())) {
-    launch(next, 'backlog', true)
-    continue
-  }
-  implSlots.release()
-  if (!running.size) break
-  if (taking) await Promise.race(running)
 }
-await Promise.all(running)
 
-// ---- hand-off: the rest of the run -------------------------------------------
-// The second half of build step 3 goes on from here: failure handling (agents
-// that return nothing get retried after a wait; 3 such stories in a row stop
-// new claims), the journeys check and finish, which posts the report with the
-// council's counts and gives the lock up. The run does not wait for answers:
-// the next run's unblock pass takes them.
+// ---- 5. the lane ---------------------------------------------------------------
+// One story at a time is tested in the lane worktree, and lands on
+// deliver/<slug>. The lane's lock is a promise chain: a story's turn starts
+// once the turn before it has ended, however that ended.
+let laneTurn = Promise.resolve()
+const inLane = (task) => {
+  const turn = laneTurn.then(task)
+  laneTurn = turn.catch(() => {})
+  return turn
+}
+// Why the lane stopped, once it has: it stays stopped for the rest of the run.
+// Implementers and reviewers finish what they hold, and a story that reaches
+// the lane after it waits in reviewed for the next run.
+let laneStopped = null
+const LANE_CHECKS = ['fast', 'stack_up', 'stack']
+
+// A command run as a job in the lane worktree, to its end: one courier starts
+// it, and each one after waits for it within its Bash call.
+const job = async (key, name, cmd, past = false) => {
+  const { id } = await step('job-start', { name, key, cmd, cwd: laneDir }, { past })
+  for (;;) {
+    const w = await step('job-wait', { id, maxSeconds: JOB_WAIT }, { key, past })
+    if (w.done) return { ok: w.result.ok === true, timedOut: w.result.timedOut === true, tail: String(w.tail || '').trim() }
+  }
+}
+const ended = (r) => `${r.timedOut ? 'ran past its limit' : 'failed'}. The end of its output:\n\`\`\`\n${r.tail}\n\`\`\``
+
+// Trouble that is not the story's stops the lane for the rest of the run,
+// with one thread for the run, and the story goes back to reviewed with no
+// attempt used.
+const stopLane = async (key, why, more = '') => {
+  laneStopped = why
+  await step('release', { key })
+  let thread = null
+  try {
+    thread = (await step('thread-open', { title: `Run ${runId}: the lane stopped`, body: `The lane stopped for the rest of run ${runId}, on ${key}: ${why}.${more ? `\n\n${more}` : ''}\n\nThis is not the story's trouble: ${key} is back in reviewed with no attempt used, and a story that reaches the lane after it waits in reviewed for the next run, while implementers and reviewers finish what they hold. Fix the cause, then start a new run.\n` }, { label: 'lane-stop' })).thread
+  } catch (e) {
+    log(`The thread about the lane could not be opened: ${(e && e.message) || e}`)
+  }
+  notes.push(`The lane stopped on ${key}: ${why}${thread ? ` (thread ${thread})` : ''}.`)
+  log(`${key}: the lane stopped for the rest of the run: ${why}`)
+  return { key, outcome: 'lane_stopped', detail: why }
+}
+
+// A story's turn in the lane: lane-prepare rebases it onto the tip and checks
+// it out, detached, in the lane worktree; its checks run there as jobs, and a
+// failed one once more on the base; the verifier runs it; the test author
+// writes its tests; lane-clean, so that the author's check runs on exactly
+// what lands; that check; lane-land. A failure sends the story back for the
+// next attempt, as a failed review does, and puts the lane back at the tip,
+// with the stack rebuilt there when it holds the story's build.
+const laneStory = async (key) => {
+  if (laneStopped) return { key, outcome: 'reviewed', detail: 'the lane stopped earlier in this run, so the story waits in reviewed for the next run' }
+  await step('claim', { key, stage: 'testing' })
+  const prep = await step('lane-prepare', { key })
+  // An outcome but ready leaves the lane as it was.
+  if (prep.outcome === 'infra') return stopLane(key, `lane-prepare found trouble that is not the story's: ${prep.reason}`)
+  if (prep.outcome === 'conflict') return sendBack(key, 'testing', [{ text: `rebase conflict in ${prep.files.join(', ')}: story/${key} no longer rebases onto ${branch}; rebase it onto ${branch} in its worktree and resolve the conflicts`, files: prep.files }], false, `a rebase conflict in ${prep.files.join(', ')}`)
+  if (prep.outcome === 'missing') return sendBack(key, 'testing', [{ text: `${prep.reason}: nothing to land on ${branch}; start again from ${branch}`, files: [] }], false, prep.reason)
+  if (prep.outcome !== 'ready') return sendBack(key, 'testing', [{ text: prep.reason, files: prep.files || [] }], true, `in the lane: ${prep.reason}`)
+  const base = prep.base
+  // Whether the stack holds the story's build: from its stack_up on, until a
+  // stack_up on the base or the rebuild.
+  let stack = false
+  let reset = false
+  const toTip = async (past = false) => {
+    if (reset) return
+    await step('lane-reset', {}, { key, past })
+    reset = true
+    if (!stack) return
+    stack = false
+    const r = await job(key, 'rebuild', checks.stack_up, past)
+    log(r.ok ? `${key}: the stack is rebuilt from ${branch}` : `${key}: the stack did not rebuild from ${branch}: \`${checks.stack_up}\` ${ended(r)}`)
+  }
+  const fail = async (findings, what) => {
+    await toTip()
+    return sendBack(key, 'testing', findings, true, what)
+  }
+  try {
+    for (const name of LANE_CHECKS.filter((n) => checks[n])) {
+      if (name === 'stack_up') stack = true
+      const run = await job(key, name, checks[name])
+      if (run.ok) continue
+      // Once more on the base, the tip without the story; the stack check
+      // after a stack_up there, since until then the stack holds the story's
+      // build.
+      await step('lane-base', {}, { key })
+      let which = null
+      let again = null
+      for (const n of name === 'stack' && checks.stack_up ? ['stack_up', 'stack'] : [name]) {
+        which = n
+        if (n === 'stack_up') stack = false
+        again = await job(key, n, checks[n])
+        if (!again.ok) break
+      }
+      if (!again.ok) {
+        await toTip()
+        return stopLane(key, `the ${name} check failed on it, and the ${which} check on ${branch} without it`, `On ${branch} at ${base.slice(0, 7)}, \`${checks[which]}\` ${ended(again)}`)
+      }
+      return fail([{ text: `The ${name} check (\`${checks[name]}\`) ${ended(run)}\nIt passes on ${branch} without the story.`, files: [] }], `its ${name} check, which passes on ${branch} without it`)
+    }
+
+    const ctx = await step('context', { key })
+    const v = await persist(key, 'the verifier', () => ask('verify', verifyPrompt(ctx), { label: `verify:${key}`, phase: 'Lane', schema: VERIFY_SCHEMA }))
+    if (!v) {
+      await toTip()
+      return noResult(key, `the verifier returned nothing, ${AGAIN_AFTER.length + 1} times`)
+    }
+    // A test obligation is the test author's, whatever the verifier says of it.
+    const owed = obligationsOf(ctx)
+    const ran = new Map()
+    for (const c of v.criteria || []) if (c && Number.isInteger(c.index) && !ran.has(c.index)) ran.set(c.index, c)
+    const unmet = ctx.story.criteria.flatMap((c, i) => (owed.has(i) || (ran.has(i) && ran.get(i).ok === true) ? [] : [{ text: `Criterion not met when run: "${c.text}". ${ran.has(i) ? ran.get(i).evidence : 'The verifier did not exercise it.'}`, files: [] }]))
+    if (unmet.length) return fail(unmet, `its verification with ${unmet.length} criteri${unmet.length === 1 ? 'on' : 'a'} not met`)
+
+    const confirmed = ctx.story.criteria.filter((c, i) => !owed.has(i)).map((c) => c.text)
+    let tctx = ctx
+    let task = WRITE_TESTS
+    let tests = null
+    for (let asked = 0; !tests; ) {
+      const r = await persist(key, 'the test author', () => ask('tests', authorPrompt(tctx, base, confirmed, task), { label: `tests:${key}`, phase: 'Lane', schema: TESTS_SCHEMA }))
+      if (!r) {
+        await toTip()
+        return noResult(key, `the test author returned nothing, ${AGAIN_AFTER.length + 1} times`)
+      }
+      if (r.status === 'needs_decision') {
+        const answer = await question(tctx, r, 'the test author', laneDir, 'tests-q', asked++)
+        if (!answer.settled) {
+          await toTip()
+          return { key, outcome: 'needs_decision', thread: answer.thread }
+        }
+        tctx = await step('context', { key })
+        task = RESUME_TESTS
+        continue
+      }
+      if (r.status === 'found_defect') {
+        const d = r.defect || {}
+        return fail([{ text: `The test author's test ${d.test || '(unnamed)'} found a defect. Observed: ${d.observed || '(not given)'}. Expected: ${d.expected || '(not given)'}`, files: [] }], 'its tests, which found a defect')
+      }
+      if (r.status !== 'done') {
+        const { thread } = await step('thread-open', { key, title: `${key}: the test author is blocked`, body: `${r.blockers || r.status}\n` })
+        await toTip()
+        return { key, outcome: 'blocked', thread }
+      }
+      tests = r
+    }
+
+    const cleaned = await step('lane-clean', {}, { key })
+    if (cleaned.count) log(`${key}: lane-clean threw away ${cleaned.count} file${cleaned.count === 1 ? '' : 's'} the test author left uncommitted: ${cleaned.discarded.join(', ')}`)
+    const check = String(tests.check || '').trim()
+    if (check) {
+      const run = await job(key, 'tests', check)
+      if (!run.ok) return fail([{ text: `The test author's check (\`${check}\`) ${ended(run)}`, files: [] }], 'the test author\'s check')
+    }
+    const landed = await step('lane-land', { key, base })
+    if (!landed.landed) return fail([{ text: `It did not land: ${landed.reason}`, files: [] }], `its landing: ${landed.reason}`)
+    tip = landed.final
+    for (const a of tests.added || []) if (a && a.test) testsAdded.push(`[${key}] ${a.test}${a.file ? ` (${a.file})` : ''}`)
+    log(`${key}: landed on ${branch} at ${tip.slice(0, 7)}`)
+    return { key, outcome: 'done' }
+  } catch (e) {
+    // The lane goes back to the tip whatever stopped the story, past the agent
+    // cap too; the error goes on to the story's chain.
+    try {
+      await toTip(true)
+    } catch (r) {
+      log(`${key}: the lane could not be put back at the tip: ${(r && r.message) || r}`)
+    }
+    throw e
+  }
+}
+
+// ---- 6. report -----------------------------------------------------------------
+// The journeys check of the stories this run landed, then finish, which posts
+// the report on the Run thread and gives the lock up. The run does not wait
+// for answers: the next run's unblock pass takes them.
+const journeys = async () => {
+  const landed = outcomes.filter((o) => o.outcome === 'done').map((o) => o.key)
+  if (!landed.length) return ['no story landed in this run, so no journeys were run']
+  try {
+    await step('lane-reset', {})
+    const r = await ask('final', finalPrompt(landed), { label: 'final', phase: 'Report', schema: FINAL_SCHEMA })
+    if (!r) return ['the journeys check returned nothing']
+    return [`${r.healthy ? 'healthy' : 'NOT healthy'}: ${r.report || ''}`.trim(), ...(r.journeys || []).map(String)]
+  } catch (e) {
+    if (e && e.atCap) return [`not run: the run reached its agent cap of ${HARD_CAP}`]
+    throw e
+  }
+}
+// The stories blocked when the run ends, with their threads.
+const blockedNow = async () => {
+  const board = await step('list', {}, { past: true })
+  const blocked = []
+  for (const s of board.stories.filter((x) => x.blocked && x.status !== 'done' && x.status !== 'cancelled')) {
+    blocked.push({ key: s.key, threads: agentCalls < HARD_CAP ? (await step('context', { key: s.key })).threads : [] })
+  }
+  return blocked
+}
+let finished = null
+const finish = async (journeyLines) => {
+  if (current !== 'Report') enter('Report')
+  let blocked = []
+  try {
+    blocked = await blockedNow()
+  } catch (e) {
+    notes.push(`The blocked stories could not be listed: ${(e && e.message) || e}`)
+  }
+  if (capped) notes.push(`The run stopped taking stories at its agent cap, after ${agentCalls} agent calls; the next run carries on.`)
+  if (taken.size >= storyLimit) notes.push(`The run took its storyLimit of ${storyLimit} stories.`)
+  const report = {
+    outcomes: outcomes.map((o) => ({ key: o.key, outcome: o.outcome, ...(o.detail ? { detail: o.detail } : {}) })),
+    council: tally,
+    blocked,
+    ...(journeyLines ? { journeys: journeyLines } : {}),
+    notes,
+  }
+  finished = await step('finish', { report }, { past: true })
+  log(`The report of ${runId} is on the Run thread ${finished.thread}, and in ${finished.report}`)
+}
+
+// ---- the run -------------------------------------------------------------------
+// Every step after start runs here, and finish runs whenever start succeeded,
+// after a throw too, so that the lock is given up. A finish that fails after
+// a throw is only logged: the run ends with the throw.
+let journeyLines = null
+let threw = true
+try {
+  if (A.checks && typeof A.checks === 'object') checks = (await step('checks-set', { checks: A.checks })).checks
+  enter('Unblock')
+  await unblock()
+  enter('Clarity')
+  await clarityPass()
+  enter('Deliver')
+  await deliverAll()
+  enter('Report')
+  journeyLines = await journeys()
+  threw = false
+} catch (e) {
+  notes.push(`The run stopped on an error: ${(e && e.message) || e}`)
+  throw e
+} finally {
+  try {
+    await finish(journeyLines)
+  } catch (e) {
+    if (!threw) throw e
+    log(`The run could not finish: ${(e && e.message) || e}`)
+  }
+}
+
 return {
   run: runId,
   feature,
@@ -1054,6 +1554,12 @@ return {
   agents: agentCalls,
   capped,
   halted,
+  lane: laneStopped,
   notes,
   storyLimit: storyLimit === Infinity ? null : storyLimit,
+  // The landed state: the stories this run landed, and the tip of the branch.
+  landed: outcomes.filter((o) => o.outcome === 'done').map((o) => o.key),
+  tip,
+  report: finished.report,
+  posted: finished.posted,
 }

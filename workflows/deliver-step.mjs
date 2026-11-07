@@ -80,7 +80,9 @@
 // - lane-clean {}: discarded and count: what it threw away
 // - lane-base {} and lane-reset {}: tip
 // - lane-land {key, base}: key, landed, with base, final, files (how many)
-//   and removed when landed, reason when refused
+//   and removed when landed, reason when refused; refused for a branch
+//   checked out in the lane, it puts deliver/<slug> back at the base and
+//   detaches the lane
 // - finish {report: {outcomes: [{key, outcome, detail?}], council: {settled,
 //   asked}, blocked: [{key, threads}], journeys?: [line], notes?: [line]}}:
 //   thread, posted, report, stopped
@@ -1240,17 +1242,25 @@ const STEPS = {
   // uncommitted, descends from the base and holds story/<key>, and unless the
   // branch is still at the base. A branch at the lane's HEAD proves nothing:
   // a commit made in the lane with deliver/<slug> checked out moves the
-  // branch there too. Only this op's record of the swap it made lets a
-  // repeat, after a try that was cut off, skip it. Then the landed tree must
-  // be the tested one, and the story is done: its files recorded, its
-  // criteria ticked (a human check pending), its open findings resolved, its
-  // worktree and branch gone.
+  // branch there too. So a lane with a branch checked out puts deliver/<slug>
+  // back at the base, by a compare-and-swap from where it is, before it
+  // detaches the lane: a repeat cut off between the two finds the branch
+  // checked out still, and the branch already back. Only this op's record of
+  // the swap it made lets a repeat, after a try that was cut off, skip it.
+  // Then the landed tree must be the tested one, and the story is done: its
+  // files recorded, its criteria ticked (a human check pending), its open
+  // findings resolved, its worktree and branch gone.
   'lane-land': (b, p, { marker, mark }) => missing(p, 'key', 'base') || (() => {
     const refused = (reason) => ({ key: p.key, landed: false, reason })
     let final = marker && marker.swapped
     if (!final) {
       const head = headRef(b.lane)
-      if (head) return refused(`the lane worktree has ${head.replace(/^refs\/heads\//, '')} checked out, not a detached HEAD: a commit there moves that branch without the compare-and-swap`)
+      if (head) {
+        const tip = tipOf(b)
+        if (tip !== p.base) b.git(['update-ref', `refs/heads/${b.branch}`, p.base, tip])
+        b.git(['-C', b.lane, 'checkout', '-q', '--detach'])
+        return refused(`the lane worktree had ${head.replace(/^refs\/heads\//, '')} checked out, not a detached HEAD: a commit there moves that branch without the compare-and-swap. ${tip !== p.base ? `${b.branch} is back at the base ${short(p.base)}, from ${short(tip)}, and the` : 'The'} lane is now detached`)
+      }
       const dirty = changedFiles(b.lane)
       if (dirty.length) return refused(`the lane worktree has uncommitted changes in ${dirty.length} file${dirty.length === 1 ? '' : 's'} (${dirty.slice(0, 5).join(', ')}${dirty.length > 5 ? ', and more' : ''}): what lands must be what was checked, so lane-clean it and check it again`)
       final = b.git(['-C', b.lane, 'rev-parse', 'HEAD']).trim()

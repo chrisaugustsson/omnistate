@@ -1829,7 +1829,7 @@ test("lane-land refuses a lane HEAD that does not descend from the base, or does
   assert.deepEqual([sha(dirs, "refs/heads/deliver/board"), dirs.story("US-1").status], [tip, "testing"]);
 });
 
-test("lane-land refuses a lane worktree with a branch checked out: a commit the test author made on deliver/<slug> there moved the branch without a swap, and is not taken for a landing; nor is a lane HEAD when the story has no branch", (t) => {
+test("lane-land refuses a lane worktree with a branch checked out: a commit the test author made on deliver/<slug> there moved the branch without a swap, so the branch goes back to the base by a compare-and-swap and the lane is detached; with another branch checked out, deliver/<slug> stays; and a lane HEAD is not landed when the story has no branch", (t) => {
   const dirs = scratch(t, [story("US-1", { status: "reviewed" }), story("US-2", { status: "reviewed" })]);
   const { run, lane } = start(dirs);
   storyWork(dirs, run, "US-1");
@@ -1837,15 +1837,23 @@ test("lane-land refuses a lane worktree with a branch checked out: a commit the 
   const { base } = step(dirs, run, "lane-prepare", { key: "US-1" });
   git(lane, "checkout", "-q", "deliver/board");
   const moved = commit(lane, "badge.test");
+  const where = () => [sha(dirs, "refs/heads/deliver/board"), git(lane, "rev-parse", "--abbrev-ref", "HEAD").trim()];
 
   const onBranch = step(dirs, run, "lane-land", { key: "US-1", base });
-  git(lane, "checkout", "-q", "--detach");
-  commit(lane, "other.test");
-  const noBranch = step(dirs, run, "lane-land", { key: "US-2", base: moved });
+  const afterOnBranch = where();
+  step(dirs, run, "lane-reset");
+  git(lane, "checkout", "-q", "-b", "tests");
+  const tests = commit(lane, "other.test");
+  const onOther = step(dirs, run, "lane-land", { key: "US-1", base });
+  const afterOnOther = [...where(), git(lane, "rev-parse", "HEAD").trim()];
+  const noBranch = step(dirs, run, "lane-land", { key: "US-2", base });
 
-  assert.deepEqual(pick(onBranch), { ok: true, key: "US-1", landed: false, reason: "the lane worktree has deliver/board checked out, not a detached HEAD: a commit there moves that branch without the compare-and-swap" });
+  assert.deepEqual(pick(onBranch), { ok: true, key: "US-1", landed: false, reason: `the lane worktree had deliver/board checked out, not a detached HEAD: a commit there moves that branch without the compare-and-swap. deliver/board is back at the base ${base.slice(0, 7)}, from ${moved.slice(0, 7)}, and the lane is now detached` });
+  assert.deepEqual(afterOnBranch, [base, "HEAD"]);
+  assert.deepEqual(pick(onOther), { ok: true, key: "US-1", landed: false, reason: "the lane worktree had tests checked out, not a detached HEAD: a commit there moves that branch without the compare-and-swap. The lane is now detached" });
+  assert.deepEqual(afterOnOther, [base, "HEAD", tests]);
   assert.deepEqual(pick(noBranch), { ok: true, key: "US-2", landed: false, reason: "there is no branch story/US-2 to land" });
-  assert.deepEqual([sha(dirs, "refs/heads/deliver/board"), dirs.story("US-1").status, dirs.story("US-2").status], [moved, "testing", "reviewed"]);
+  assert.deepEqual([dirs.story("US-1").status, dirs.story("US-2").status], ["testing", "reviewed"]);
 });
 
 test("lane-clean throws away what is uncommitted in the lane worktree and says what, keeping ignored files and its HEAD; lane-land refuses a lane with uncommitted changes, so a fix the test author left uncommitted never lands unchecked", (t) => {
