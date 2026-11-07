@@ -7,7 +7,7 @@ export const meta = {
     { title: 'Reconcile', detail: 'undo a merge a dead run left half done (the lane file), then release every story held by another run, and every working story nobody holds' },
     { title: 'Clarity', detail: 'one check per backlog story whose version is new, in parallel: blocking gaps become threads, minor ones agent decisions' },
     { title: 'Unblock', detail: 'a blocked story whose linked threads all have a conclusion gets each conclusion as a human decision and is unblocked' },
-    { title: 'Implement', detail: 'the implement loop polls the board every 5 seconds and when an implementer ends: while fewer than `implementers` run, it claims the first pickable story that passed clarity and starts an implementer in its worktree (an existing one is continued), writing no tests and running only the existing checks its change needs; a finished story moves to implemented, a blocked one gets a thread and stays in the backlog' },
+    { title: 'Implement', detail: 'the implement loop polls the board every 5 seconds and when an implementer ends: while fewer than `implementers` run, it claims the first pickable story that passed clarity and starts an implementer in its worktree (an existing one is continued), writing no tests and running only the existing checks its change needs; a finished story moves to implemented; an implementer that returns nothing is started once more, to continue from what it left in the worktree; a blocked story, or one whose second implementer returned nothing too, gets a thread and stays in the backlog' },
     { title: 'Test lane', detail: 'one story at a time on the main worktree: the lane claims the first reviewed story, writes .omni/lane.json, rebases its branch onto the integration branch and fast-forwards it, runs the fast command, then the stack (a command past its time limit is stopped and fails), then a verifier on its criteria, then a test author writes its regression tests by the writing-tests skill and the lane runs them (a red run drops the test commits and the report says so), and it moves to done; a failure before the tests resets the branch to the lane base and returns the story to the backlog with the findings at priority 0, its branch kept' },
     { title: 'Review', detail: 'up to `reviewers` reviewers at once read each review story\'s branch against its criteria; a fail returns the story to the backlog at priority 0 with the findings, for a fresh implementer that continues from the story\'s branch, and a fresh reviewer; a third failed attempt opens a thread and blocks the story; a pass moves it to reviewed' },
     { title: 'Report', detail: 'claims on unfinished stories are released, a verifier runs the fast command and the journeys of the stories done, and the report is posted on the Run thread' },
@@ -471,8 +471,11 @@ Return raw structured data only.`
       fast = String(checks.fast || '')
     }
   }
-  // Runs the implementer until the fast command passes in the worktree, then
-  // rewrites files_changed. Returns null when it did, else the outcome of the
+  // A session that returned nothing may have died halfway: its retry is told
+  // that its work is in the worktree, so it does not start over.
+  const RETRY_TASK = 'An earlier session on this story ended without a result. What it committed or left uncommitted is in the worktree: continue from it, do not start over, and fix every open finding above.'
+  // Runs the implementer, once more when it returns nothing, then rewrites
+  // files_changed. Returns null when it is ready, else the outcome of the
   // thread that blocked the story.
   const runImplementer = async (key, wt, story, task) => {
     const recorded = new Set()
@@ -487,7 +490,17 @@ Return raw structured data only.`
     // No full build here: the implementer runs the narrow check its change
     // needs, and the fast command runs on the main worktree after the merge
     // (the Check phase). A broken story is caught there and becomes a fix story.
-    const r = (await runAgent(implPrompt(story, wt, task), { schema: IMPL_SCHEMA, label: `impl:${key}`, phase: 'Implement', model: modelFor('impl'), role: 'impl' })) || { status: 'blocked', summary: 'The implementer returned no result (it may have died).' }
+    // An empty result is tried once more, as the other roles are; a second one
+    // gets a thread that says so, not one that calls the implementer blocked.
+    let r = null
+    for (let attempt = 0; attempt < 2 && !r; attempt++) {
+      r = await runAgent(implPrompt(story, wt, attempt ? RETRY_TASK : task), { schema: IMPL_SCHEMA, label: `impl:${key}${attempt ? ' retry' : ''}`, phase: 'Implement', model: modelFor('impl'), role: 'impl' })
+    }
+    if (!r) {
+      const id = openThread(`${key}: the implementer returned nothing`, 'The implementer returned no result twice.\n')
+      linkAndBlock(key, [id])
+      return { key, outcome: 'no_result', thread: id }
+    }
     record(r)
     if (r.status === 'needs_decision') {
       const options = (r.options || []).map((o, i) => `${i + 1}. ${o}`).join('\n')

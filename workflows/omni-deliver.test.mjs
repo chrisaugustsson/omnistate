@@ -589,6 +589,47 @@ test("an implementer returning needs_decision blocks its story with a thread 'US
   assert.equal(existsSync(join(dirs.root, "app-stories", "US-1")), true);
 });
 
+test("an implementer that returns nothing is started once more in the same worktree, told to continue from what the first session left, and the story goes on with no thread", { timeout: 20000 }, async (t) => {
+  const dirs = scratch(t, [story("US-1")]);
+  dirs.checks({ fast: "true", stack_up: "true", stack: "true" });
+  const wt = join(dirs.root, "app-stories", "US-1");
+  const seen = {};
+  const { agent, prompts } = implAgent({ "US-1": async (n) => {
+    if (n === 1) {
+      // The first session commits half the story, then dies without a result.
+      writeFileSync(join(wt, "board.rs"), "half\n");
+      git(wt, "add", "board.rs");
+      git(wt, "commit", "-q", "-m", "feat: Half a board");
+      return null;
+    }
+    seen.head = git(wt, "log", "-1", "--format=%s").trim();
+    return { status: "ready", summary: "done" };
+  } });
+
+  await deliver({ feature: "board" }, agent);
+
+  assert.equal(prompts["US-1"].length, 2);
+  assert.match(prompts["US-1"][1], /An earlier session on this story ended without a result\. What it committed or left uncommitted is in the worktree: continue from it, do not start over/);
+  assert.equal(seen.head, "feat: Half a board");
+  assert.equal(dirs.story("US-1").status, "done");
+  assert.deepEqual(dirs.state().threads.filter((th) => th.title.startsWith("US-1")), []);
+});
+
+test("an implementer that returns nothing twice leaves its story blocked in the backlog with the thread 'US-<n>: the implementer returned nothing', not one that calls it blocked", { timeout: 20000 }, async (t) => {
+  const dirs = scratch(t, [story("US-1")]);
+  dirs.checks({ fast: "true", stack_up: "true", stack: "true" });
+  const { agent, prompts } = implAgent({ "US-1": async () => null });
+
+  const result = await deliver({ feature: "board" }, agent);
+
+  const th = threadOf(dirs, "US-1");
+  assert.equal(prompts["US-1"].length, 2);
+  assert.equal(th.title, "US-1: the implementer returned nothing");
+  assert.deepEqual(th.posts.map((p) => p.body), ["The implementer returned no result twice.\n"]);
+  assert.deepEqual([dirs.story("US-1").status, dirs.story("US-1").blocked], ["backlog", true]);
+  assert.deepEqual(result.implemented, [{ key: "US-1", outcome: "no_result", thread: th.id }]);
+});
+
 test("records the implementer's decisions as agent decisions", async (t) => {
   const dirs = scratch(t, [story("US-1")]);
   dirs.checks({ fast: "true", stack_up: "true", stack: "true" });
