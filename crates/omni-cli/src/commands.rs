@@ -490,18 +490,27 @@ fn whoami(args: &Args) -> Result<()> {
 }
 
 fn checks(args: &Args) -> Result<()> {
-    let [fast, stack_up, stack] = config::checks()?;
+    let checks = config::checks()?;
     if args.json {
-        say(&format!(
-            "{{\"fast\":{},\"stack_up\":{},\"stack\":{}}}",
-            crate::toml::quote(&fast),
-            crate::toml::quote(&stack_up),
-            crate::toml::quote(&stack)
-        ));
+        let fields: Vec<String> = checks
+            .iter()
+            .map(|(name, command)| {
+                format!(
+                    "{}:{}",
+                    crate::toml::quote(name),
+                    crate::toml::quote(command)
+                )
+            })
+            .collect();
+        say(&format!("{{{}}}", fields.join(",")));
+    } else if checks.is_empty() {
+        say("no checks in the [checks] table of .omni.toml");
     } else {
-        say(&format!(
-            "fast: {fast}\nstack_up: {stack_up}\nstack: {stack}"
-        ));
+        let lines: Vec<String> = checks
+            .iter()
+            .map(|(name, command)| format!("{name}: {command}"))
+            .collect();
+        say(&lines.join("\n"));
     }
     Ok(())
 }

@@ -112,28 +112,19 @@ pub fn leftover_keys() -> Result<Vec<String>> {
         .collect())
 }
 
-/// The check commands in the `[checks]` table of the nearest `.omni.toml`:
-/// `fast`, `stack_up` and `stack`, in that order.
-pub fn checks() -> Result<[String; 3]> {
+/// Every entry of the `[checks]` table of the nearest `.omni.toml`, in file
+/// order, as name and command. No name is required; a missing or empty table
+/// means no checks.
+pub fn checks() -> Result<Vec<(String, String)>> {
     let pairs = omni_pairs("[checks]")?
         .ok_or_else(|| CliError::new(".omni.toml not found in this directory or a parent"))?;
-    if !pairs.iter().any(|(name, _)| name.starts_with("checks.")) {
-        bail!(".omni.toml has no [checks] table; add fast, stack_up and stack");
-    }
-    let mut out = Vec::new();
-    for key in ["fast", "stack_up", "stack"] {
-        let found = pairs
-            .iter()
-            .find(|(name, _)| *name == format!("checks.{key}"))
-            .map(|(_, value)| value.clone())
-            .filter(|value| !value.is_empty());
-        match found {
-            Some(value) => out.push(value),
-            None => bail!(".omni.toml [checks] has no {key}"),
-        }
-    }
-    let [fast, stack_up, stack] = <[String; 3]>::try_from(out).expect("three checks");
-    Ok([fast, stack_up, stack])
+    Ok(pairs
+        .into_iter()
+        .filter_map(|(name, value)| {
+            name.strip_prefix("checks.")
+                .map(|name| (name.to_string(), value))
+        })
+        .collect())
 }
 
 /// The pairs of the nearest `.omni.toml`, looking in the current directory and

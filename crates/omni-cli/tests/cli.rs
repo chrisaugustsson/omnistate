@@ -433,38 +433,84 @@ fn checks_needs_no_project_or_feature_key() {
 }
 
 #[test]
-fn checks_without_the_checks_table_exits_1_and_says_what_to_add() {
+fn checks_with_only_some_of_the_three_prints_just_those() {
     let home = logged_in("http://127.0.0.1:9");
-    let dir = omni_toml_dir("project = \"p\"\nfeature = \"f\"\n");
-    let out = omni(&home.path).cwd(&dir.path).args(&["checks"]).run();
-    assert_eq!(out.code, 1);
-    assert_one_line_error(
-        &out,
-        &[".omni.toml has no [checks] table; add fast, stack_up and stack"],
+    let dir = omni_toml_dir("[checks]\nfast = \"a\"\n");
+    let text = omni(&home.path).cwd(&dir.path).args(&["checks"]).run();
+    assert_eq!(text.code, 0, "{}", text.stderr);
+    assert_eq!(text.stdout, "fast: a\n");
+    let json = omni(&home.path)
+        .cwd(&dir.path)
+        .args(&["checks", "--json"])
+        .run();
+    assert_eq!(json.code, 0, "{}", json.stderr);
+    assert_eq!(json.stdout, "{\"fast\":\"a\"}\n");
+
+    let no_fast = omni_toml_dir("[checks]\nstack = \"c\"\nstack_up = \"b\"\n");
+    let out = omni(&home.path)
+        .cwd(&no_fast.path)
+        .args(&["checks", "--json"])
+        .run();
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    assert_eq!(out.stdout, "{\"stack\":\"c\",\"stack_up\":\"b\"}\n");
+}
+
+#[test]
+fn checks_passes_extra_names_through_in_file_order() {
+    let home = logged_in("http://127.0.0.1:9");
+    let dir = omni_toml_dir(
+        "[checks]\nseed = \"s\"\nfast = \"a\"\nlint = \"l\"\nstack = \"c\"\nzeta = \"z\"\n",
+    );
+    let text = omni(&home.path).cwd(&dir.path).args(&["checks"]).run();
+    assert_eq!(text.code, 0, "{}", text.stderr);
+    assert_eq!(
+        text.stdout,
+        "seed: s\nfast: a\nlint: l\nstack: c\nzeta: z\n"
+    );
+    let json = omni(&home.path)
+        .cwd(&dir.path)
+        .args(&["checks", "--json"])
+        .run();
+    assert_eq!(json.code, 0, "{}", json.stderr);
+    assert_eq!(
+        json.stdout,
+        "{\"seed\":\"s\",\"fast\":\"a\",\"lint\":\"l\",\"stack\":\"c\",\"zeta\":\"z\"}\n"
     );
 }
 
 #[test]
-fn checks_without_stack_or_with_an_empty_stack_exits_1_and_names_it() {
+fn checks_without_a_checks_table_or_with_an_empty_one_means_no_checks() {
     let home = logged_in("http://127.0.0.1:9");
-    let missing = omni_toml_dir("[checks]\nfast = \"a\"\nstack_up = \"b\"\n");
-    let out = omni(&home.path).cwd(&missing.path).args(&["checks"]).run();
-    assert_eq!(out.code, 1);
-    assert_one_line_error(&out, &[".omni.toml [checks] has no stack"]);
+    for text in ["project = \"p\"\nfeature = \"f\"\n", "[checks]\n"] {
+        let dir = omni_toml_dir(text);
+        let json = omni(&home.path)
+            .cwd(&dir.path)
+            .args(&["checks", "--json"])
+            .run();
+        assert_eq!(json.code, 0, "{}", json.stderr);
+        assert_eq!(json.stdout, "{}\n", "{text:?}");
 
-    let empty = omni_toml_dir("[checks]\nfast = \"a\"\nstack_up = \"b\"\nstack = \"\"\n");
-    let out = omni(&home.path).cwd(&empty.path).args(&["checks"]).run();
-    assert_eq!(out.code, 1);
-    assert_one_line_error(&out, &[".omni.toml [checks] has no stack"]);
+        let out = omni(&home.path).cwd(&dir.path).args(&["checks"]).run();
+        assert_eq!(out.code, 0, "{}", out.stderr);
+        assert_eq!(out.stdout.lines().count(), 1, "{:?}", out.stdout);
+        assert!(out.stdout.contains("no checks"), "{:?}", out.stdout);
+    }
 }
 
 #[test]
-fn checks_with_several_keys_missing_names_the_first_in_the_order_fast_stack_up_stack() {
+fn checks_json_quotes_a_command_with_quotes_and_backslashes() {
     let home = logged_in("http://127.0.0.1:9");
-    let dir = omni_toml_dir("[checks]\nfast = \"a\"\n");
-    let out = omni(&home.path).cwd(&dir.path).args(&["checks"]).run();
-    assert_eq!(out.code, 1);
-    assert_one_line_error(&out, &[".omni.toml [checks] has no stack_up"]);
+    let dir =
+        omni_toml_dir("[checks]\nlint = \"echo \\\"hi\\\" && grep 'a\\\\b' f\"\nfast = \"a\"\n");
+    let out = omni(&home.path)
+        .cwd(&dir.path)
+        .args(&["checks", "--json"])
+        .run();
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    assert_eq!(
+        out.json(),
+        json!({ "lint": "echo \"hi\" && grep 'a\\b' f", "fast": "a" })
+    );
 }
 
 #[test]
