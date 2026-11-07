@@ -35,10 +35,13 @@
 //   fails; only a repeat is answered without it.
 // - A start repeated by the same session within 5 minutes, before its run
 //   made any call, gets the first start's body back; never with --force.
+// - Every step that runs records its start, its end and its payload's key in
+//   .omni/runs/<runId>/timings.jsonl; finish reports them.
 //
 // The steps, each with its payload and the fields its body has besides ok and
 // received:
-// - start, from flags: run, root, branch, tip, lane, checks, stories, released, log
+// - start, from flags: run, root, branch, tip, lane, thread, checks, stories, released, log
+// - checks-set {checks: {name: command}}: checks, all five
 // - list {}: stories, pickable
 // - context {key}: story, decisions, attempt, findings, uncounted, earlier, docs, threads
 // - claim {key, stage}, release {key}, move {key, to}, block {key} and
@@ -52,9 +55,34 @@
 // - sleep {seconds}: seconds
 // - clarity-pending {}: keys
 // - clarity-record {key}: key, hash
-// Outputs stay small, since a courier repeats every byte: never doc text.
+// - job-start {name, key?, cmd, cwd, limitMinutes?}: id, log
+// - job-wait {id, maxSeconds}: id, done, and once done result and tail
+// - job-kill {id}: id, killed, done, and once done result and tail
+// - lane-prepare {key}: key, outcome (ready, conflict, missing or infra), with
+//   base and candidate when ready, files when conflict, reason otherwise
+// - lane-base {} and lane-reset {}: tip
+// - lane-land {key, base}: key, landed, with base, final, files and removed
+//   when landed, reason when refused
+// - wait-answers {maxSeconds}: answered, waiting
+// - finish {report: {outcomes: [{key, outcome, detail?}], council: {settled,
+//   asked}, blocked: [{key, threads}], journeys?: [line], notes?: [line]}}:
+//   thread, posted, report, stopped
+// Outputs stay small, since a courier repeats every byte: never doc text, and
+// of a job's log only its last 2 KB.
+//
+// Jobs are commands that take longer than a courier's Bash call. job-start
+// starts a detached supervisor (this file's hidden __supervise) and returns.
+// The supervisor runs the command in a process group of its own with no
+// stdin, its output going straight to .omni/runs/<runId>/jobs/<id>.log, and
+// writes the result, {ok, code, signal, timedOut, durationMs, started, ended},
+// to <id>.json when it ends; <id>.job.json holds the job and its pids. At its
+// limit the group gets SIGTERM, then SIGKILL 10 s later. A stopped job can
+// leave behind what it started outside its group, such as containers in a VM:
+// cleaning those up is the project's job, in its stack_up or a preflight.
+// OMNI_DELIVER_KILL_GRACE_MS and OMNI_DELIVER_REBASE_MS set that grace and the
+// lane's rebase limit, for tests.
 
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawn } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -81,6 +109,15 @@ const STALE_MS = 2 * 3600000
 const MAX_SLEEP_S = 480
 // A limit as the errors show it: minutes, or seconds below a minute.
 const span = (ms) => (ms >= 60000 ? `${+(ms / 60000).toFixed(1)} min` : `${+(ms / 1000).toFixed(1)}s`)
+// Every timer delay in whole milliseconds, at most 2^31 - 1: setTimeout fires
+// after 1 ms for anything larger, and execFileSync throws on a fraction.
+const MAX_DELAY_MS = 2 ** 31 - 1
+const delay = (ms) => (ms > 0 ? Math.min(Math.round(ms), MAX_DELAY_MS) : 0)
+const pause = (ms) => new Promise((resolve) => setTimeout(resolve, delay(ms)))
+const nap = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, delay(ms))
+// A wait in seconds, at most 480 so that it fits a courier's Bash call; 480
+// when the payload gives none.
+const waitSeconds = (s) => (typeof s === 'number' ? Math.min(Math.max(s, 0), MAX_SLEEP_S) : MAX_SLEEP_S)
 
 // A long story list or doc read passes the 1 MB that execFileSync takes by default.
 const MAX_BUFFER = 64 * 1024 * 1024
@@ -90,7 +127,7 @@ const run = (cmd, argv, opts = {}) => {
   try {
     return execFileSync(cmd, argv, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: MAX_BUFFER, ...opts, timeout })
   } catch (e) {
-    if (e && e.code === 'ETIMEDOUT') throw new Error(`\`${[cmd, ...argv].join(' ')}\` timed out after ${span(timeout)}`)
+    if (e && e.code === 'ETIMEDOUT') throw Object.assign(new Error(`\`${[cmd, ...argv].join(' ')}\` timed out after ${span(timeout)}`), { timedOut: true })
     throw e
   }
 }
@@ -161,6 +198,23 @@ const recordedOp = (root, runId, opId) => {
   const applied = readJson(appliedPathOf(root, runId)) || {}
   return Object.hasOwn(applied, opId) ? applied[opId] : null
 }
+// run.json holds the run: its feature, root, thread, checks, the tip of
+// deliver/<slug> at its start, and the stories it landed.
+const runPathOf = (root, runId) => path.join(runDirOf(root, runId), 'run.json')
+const updateRun = (root, runId, change) => withLock(runPathOf(root, runId), () => {
+  const info = change(readJson(runPathOf(root, runId)) || {})
+  writeJson(runPathOf(root, runId), info)
+  return info
+})
+// One line per step that ran: appends of whole short lines from parallel calls
+// do not mix.
+const timingsPathOf = (root, runId) => path.join(runDirOf(root, runId), 'timings.jsonl')
+const recordTiming = (root, runId, entry) => { try { fs.appendFileSync(timingsPathOf(root, runId), `${JSON.stringify(entry)}\n`) } catch {} }
+const timingsOf = (root, runId) => {
+  let text = ''
+  try { text = fs.readFileSync(timingsPathOf(root, runId), 'utf8') } catch {}
+  return text.split('\n').filter(Boolean).flatMap((line) => { try { return [JSON.parse(line)] } catch { return [] } })
+}
 
 // ---- the lock --------------------------------------------------------------
 // The lock holds the pid of the Claude Code process that runs the couriers.
@@ -208,6 +262,177 @@ const dropLock = (root, runId) => withLock(lockPathOf(root), () => {
   const held = readJson(lockPathOf(root))
   if (held && held.run === runId) fs.rmSync(lockPathOf(root), { force: true })
 })
+
+// ---- jobs: commands that take longer than a courier's Bash call ------------
+const SELF = fileURLToPath(import.meta.url)
+const SUPERVISE = '__supervise'
+// A job's limit, from limitMinutes rounded to whole milliseconds; 45 minutes,
+// the default limit of a command, when it is not a number above 0.
+const JOB_MS = 45 * 60000
+const jobLimitMs = (minutes) => (typeof minutes === 'number' && minutes > 0 ? Math.max(delay(minutes * 60000), 1) : JOB_MS)
+// A stopped job's group gets SIGKILL this long after its SIGTERM.
+const KILL_GRACE_MS = 10000
+const graceMs = () => delay(Number(process.env.OMNI_DELIVER_KILL_GRACE_MS) || KILL_GRACE_MS)
+// What job-wait and job-kill give of a log: its last 2 KB, from the first
+// whole character.
+const TAIL_BYTES = 2048
+const jobsDirOf = (root, runId) => path.join(runDirOf(root, runId), 'jobs')
+const jobFiles = (dir, id) => ({ job: path.join(dir, `${id}.job.json`), log: path.join(dir, `${id}.log`), result: path.join(dir, `${id}.json`) })
+// A job's id: its key and name, and a number that makes it new in the run. The
+// log is created with it, exclusively, so two job-starts at once never share one.
+const newJobId = (dir, label) => {
+  fs.mkdirSync(dir, { recursive: true })
+  const base = label.replace(/[^A-Za-z0-9._-]+/g, '-')
+  for (let n = 1; ; n++) {
+    try {
+      fs.closeSync(fs.openSync(jobFiles(dir, `${base}-${n}`).log, 'wx'))
+      return `${base}-${n}`
+    } catch (e) {
+      if (e.code !== 'EEXIST') throw e
+    }
+  }
+}
+const jobAt = (dir, id) => {
+  const files = jobFiles(dir, id)
+  const job = readJson(files.job)
+  return job ? { ...job, files } : null
+}
+const jobsOf = (root, runId) => {
+  const dir = jobsDirOf(root, runId)
+  let names = []
+  try { names = fs.readdirSync(dir) } catch {}
+  return names.filter((n) => n.endsWith('.job.json')).map((n) => jobAt(dir, n.slice(0, -'.job.json'.length))).filter(Boolean)
+}
+const runsIn = (root) => { try { return fs.readdirSync(path.join(root, '.omni', 'runs')) } catch { return [] } }
+// Whether the job's supervisor runs: true when its pid runs this file's
+// __supervise on the job, false when it runs nothing or something else (a
+// pid is reused once its process ended), null when ps cannot tell.
+const supervising = (runId, job) => {
+  if (!Number.isInteger(job.supervisor) || !alive(job.supervisor)) return false
+  const args = tryRun('ps', ['-ww', '-o', 'args=', '-p', String(job.supervisor)])
+  if (args === null) return null
+  return args.includes(SUPERVISE) && args.includes(path.join(runId, 'jobs', `${job.id}.job.json`))
+}
+// A job's result once it has ended. A job whose supervisor is gone without
+// one is lost: its supervisor was killed itself.
+const endOf = (runId, job, ask = false) => {
+  const result = readJson(job.files.result)
+  if (result) return result
+  if (alive(job.supervisor) && !(ask && supervising(runId, job) === false)) return null
+  const late = readJson(job.files.result)
+  if (late) return late
+  const lost = { ok: false, code: null, signal: null, timedOut: false, durationMs: null, started: job.started || null, ended: null, error: `the supervisor of the job ${job.id} ended without its result` }
+  writeJson(job.files.result, lost)
+  return lost
+}
+const tailOf = (file) => {
+  let fd
+  try { fd = fs.openSync(file, 'r') } catch { return '' }
+  try {
+    const size = fs.fstatSync(fd).size
+    const n = Math.min(size, TAIL_BYTES)
+    const bytes = Buffer.alloc(n)
+    fs.readSync(fd, bytes, 0, n, size - n)
+    // A cut inside a character drops its continuation bytes.
+    let from = 0
+    if (size > n) while (from < n && (bytes[from] & 0xc0) === 0x80) from++
+    return bytes.subarray(from).toString('utf8')
+  } finally {
+    fs.closeSync(fd)
+  }
+}
+// The jobs of these runs that have not ended, as {run, job}.
+const runningJobs = (root, runIds) => runIds.flatMap((run) => jobsOf(root, run).filter((job) => !fs.existsSync(job.files.result)).map((job) => ({ run, job })))
+// Stops jobs: SIGTERM to each one's supervisor, which stops the job's group as
+// at its limit, and a wait, the grace and 2 s at most, until they have ended.
+// Only a supervisor that ps shows to be one is signalled. Gives those stopped.
+const stopJobs = (list) => {
+  const stopping = list.filter(({ run, job }) => {
+    if (supervising(run, job) !== true) return false
+    try { process.kill(job.supervisor, 'SIGTERM'); return true } catch { return false }
+  })
+  const until = Date.now() + graceMs() + 2000
+  while (stopping.some(({ job }) => !fs.existsSync(job.files.result) && alive(job.supervisor)) && Date.now() < until) nap(50)
+  return stopping
+}
+
+// The supervisor of one job, detached from the job-start that spawned it.
+// It runs the command in a group of its own and writes the result when the
+// command ends. At the limit, or on SIGTERM, the group gets SIGTERM, and
+// SIGKILL after the grace, armed whatever the leader does: a member that
+// ignores SIGTERM outlives its leader. The result comes once the group is gone
+// (ESRCH) or has had its SIGKILL. Messages name the job, never its command.
+const supervise = async (jobFile) => {
+  const job = readJson(jobFile)
+  if (!job) return
+  const files = jobFiles(path.dirname(jobFile), job.id)
+  const note = (text) => { try { fs.appendFileSync(files.log, text) } catch {} }
+  const started = new Date()
+  let child = null
+  let stopping = null
+  let signalled = false
+  let killed = false
+  let killer = null
+  const toGroup = (signal) => { try { process.kill(-child.pid, signal) } catch {} }
+  // The first reason stays. A stop asked for before the command started
+  // reaches it once it has.
+  const stop = (why) => {
+    if (!stopping) stopping = why
+    if (signalled || !child || !child.pid) return
+    signalled = true
+    toGroup('SIGTERM')
+    killer = setTimeout(() => {
+      killed = true
+      toGroup('SIGKILL')
+    }, graceMs())
+  }
+  process.on('SIGTERM', () => stop('request'))
+  // One supervisor to a job: one started by a repeated job-start finds the job
+  // started, and leaves.
+  const mine = withLock(jobFile, () => {
+    const now = readJson(jobFile)
+    if (!now || now.started) return false
+    const out = fs.openSync(files.log, 'a')
+    try {
+      // Straight to the log's descriptor: nothing is decoded on the way.
+      child = spawn(now.cmd, { cwd: now.cwd, shell: true, detached: true, stdio: ['ignore', out, out] })
+    } finally {
+      fs.closeSync(out)
+    }
+    writeJson(jobFile, { ...now, supervisor: process.pid, pgid: child.pid ?? null, started: started.toISOString() })
+    return true
+  })
+  if (!mine) return
+  const exit = new Promise((resolve) => {
+    child.once('exit', (code, signal) => resolve({ code, signal }))
+    child.once('error', (error) => resolve({ error }))
+  })
+  if (stopping) stop(stopping)
+  const limit = setTimeout(() => stop('limit'), delay(job.limitMs))
+  const { code = null, signal = null, error } = await exit
+  clearTimeout(limit)
+  const why = stopping
+  if (why && child.pid) {
+    const gone = () => { try { process.kill(-child.pid, 0); return false } catch (e) { return e.code === 'ESRCH' } }
+    while (!killed && !gone()) await pause(50)
+    clearTimeout(killer)
+  }
+  if (error) note(`The job ${job.id} could not start: ${error.message}\n`)
+  else if (why === 'limit') note(`\nTimed out: the job ${job.id} ran past its limit of ${span(job.limitMs)} and was stopped.\n`)
+  else if (why === 'request') note(`\nStopped: the job ${job.id} was stopped before it ended.\n`)
+  const ended = new Date()
+  writeJson(files.result, {
+    ok: !why && !error && code === 0,
+    code,
+    signal,
+    timedOut: why === 'limit',
+    durationMs: ended - started,
+    started: started.toISOString(),
+    ended: ended.toISOString(),
+    ...(error ? { error: `the job ${job.id} could not start: ${error.message}` } : {}),
+  })
+  process.exit(0)
+}
 
 // ---- the board and the checkout of one run ---------------------------------
 const WORKING = ['implementing', 'review', 'testing']
@@ -269,6 +494,58 @@ const cleanTree = (b, dir) => {
   if (!ownTree(dir)) throw new Error(`${dir} is not a worktree of its own: git there works in a repository around it, so it is not cleaned`)
   b.git(['-C', dir, 'reset', '-q', '--hard'])
   b.git(['-C', dir, 'clean', '-fdq'])
+}
+const isDir = (p) => { try { return fs.statSync(p).isDirectory() } catch { return false } }
+const isAncestorIn = (root, a, c) => tryRun('git', ['-C', root, 'merge-base', '--is-ancestor', a, c]) !== null
+
+// ---- the lane --------------------------------------------------------------
+// One story at a time is tested in the lane worktree, detached, and lands on
+// deliver/<slug> by a compare-and-swap of the branch.
+// A rebase replays each of the story's commits with the checkout's hooks, so
+// it gets longer than a call. One that runs past this is the
+// infrastructure's trouble, not a conflict.
+const REBASE_MS = 5 * 60000
+const rebaseMs = () => delay(Number(process.env.OMNI_DELIVER_REBASE_MS) || REBASE_MS)
+const tipOf = (b) => b.git(['rev-parse', `refs/heads/${b.branch}`]).trim()
+// The lane worktree, clean and detached at rev; made when it is missing.
+const laneAt = (b, rev) => {
+  if (!fs.existsSync(b.lane)) {
+    tryRun('git', ['-C', b.root, 'worktree', 'prune'])
+    fs.mkdirSync(b.storiesDir, { recursive: true })
+    b.git(['worktree', 'add', '-q', '--detach', b.lane, rev])
+    return
+  }
+  if (!isWorktree(b.root, b.lane)) throw new Error(`${b.lane} is not a worktree of ${b.root}, so it cannot be the lane worktree; move it away`)
+  cleanTree(b, b.lane)
+  b.git(['-C', b.lane, 'checkout', '-q', '--detach', rev])
+}
+const laneToTip = (b) => {
+  const tip = tipOf(b)
+  laneAt(b, tip)
+  return { tip }
+}
+// A landed story's worktree leaves git at once, by a rename that takes no
+// time, and its files go in the background: a build folder can take minutes
+// to delete, past a courier's Bash call. A worktree that cannot be moved
+// stays, and says so: the story has landed all the same.
+const removeWorktree = (b, key) => {
+  const wt = b.worktreeOf(key)
+  if (fs.existsSync(wt)) {
+    try {
+      const bin = path.join(b.storiesDir, '_trash')
+      fs.mkdirSync(bin, { recursive: true })
+      const trash = fs.mkdtempSync(path.join(bin, `${key}-`))
+      fs.renameSync(wt, path.join(trash, key))
+      const rm = spawn('rm', ['-rf', trash], { detached: true, stdio: 'ignore' })
+      rm.on('error', () => {})
+      rm.unref()
+    } catch {
+      return false
+    }
+  }
+  tryRun('git', ['-C', b.root, 'worktree', 'prune'])
+  tryRun('git', ['-C', b.root, 'branch', '-D', `story/${key}`])
+  return !fs.existsSync(wt)
 }
 // A story's linked threads as `omni thread read` gives them, while the story
 // is blocked on them; null when it is not. A thread that cannot be read
@@ -377,6 +654,87 @@ const stateWrite = (verb, names, flags, done) => (b, p, { marker }) => missing(p
 const readThread = (b, id) => {
   const parsed = JSON.parse(b.omni(['thread', 'read', id, '--json']))
   return parsed.thread || parsed
+}
+
+// ---- the run's report ------------------------------------------------------
+const took = (ms) => {
+  const s = Math.round(ms / 1000)
+  if (s < 60) return `${s}s`
+  if (s < 3600) return `${Math.floor(s / 60)}m ${s % 60}s`
+  return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`
+}
+const STAGES = ['implementing', 'review', 'testing']
+// How long each story took: from its first step to its last; in each stage,
+// from a claim to the story's last step before its next claim, which takes
+// in the agents between them; in its rebases; and in its jobs by name. A
+// count after a time says how many there were.
+const timingTable = (records, jobs) => {
+  const at = (iso) => Date.parse(iso)
+  const keyed = records.filter((r) => r.key).sort((x, y) => at(x.started) - at(y.started))
+  const ended = jobs.filter((j) => j.key && j.result && Number.isFinite(j.result.durationMs))
+  const keys = [...new Set([...keyed.map((r) => r.key), ...ended.map((j) => j.key)])]
+  if (keys.length === 0) return '- none'
+  const names = [...new Set(ended.map((j) => j.name))]
+  const columns = [...STAGES, 'rebase', ...names.map((n) => `job ${n}`)]
+  const add = (times, column, ms) => {
+    const [sum, n] = times.get(column) || [0, 0]
+    times.set(column, [sum + ms, n + 1])
+  }
+  const rows = keys.map((key) => {
+    const mine = keyed.filter((r) => r.key === key)
+    const theirs = ended.filter((j) => j.key === key)
+    const spans = [...mine.map((r) => [at(r.started), at(r.ended)]), ...theirs.map((j) => [at(j.result.started), at(j.result.ended)])]
+    const times = new Map()
+    let open = null
+    const close = () => { if (open) add(times, open.stage, open.to - open.from) }
+    for (const r of mine) {
+      if (r.step === 'claim') {
+        close()
+        open = { stage: r.stage, from: at(r.started), to: at(r.ended) }
+      } else if (open) open.to = Math.max(open.to, at(r.ended))
+      if (r.step === 'lane-prepare') add(times, 'rebase', r.ms)
+    }
+    close()
+    for (const j of theirs) add(times, `job ${j.name}`, j.result.durationMs)
+    const cells = columns.map((c) => {
+      const [sum, n] = times.get(c) || [0, 0]
+      return n ? `${took(sum)}${n > 1 ? ` (${n})` : ''}` : '-'
+    })
+    return `| ${key} | ${took(Math.max(...spans.map((s) => s[1])) - Math.min(...spans.map((s) => s[0])))} | ${cells.join(' | ')} |`
+  })
+  const head = ['Story', 'Total', ...STAGES, 'rebase', ...names]
+  return [`| ${head.join(' | ')} |`, `|${head.map(() => '---').join('|')}|`, ...rows].join('\n')
+}
+// The report, modelled on the one omni-deliver.js posts: what the script knows
+// (the outcomes, the council's counts, the blocked stories and their threads,
+// the journeys) and what the helper does (the commits landed, the human checks
+// left, the timings).
+const reportText = (b, info, report) => {
+  const list = (v) => (Array.isArray(v) ? v.filter((x) => x !== null && x !== undefined) : [])
+  const lines = (items) => (items.length ? items.map((i) => `- ${i}`).join('\n') : '- none')
+  let stories = []
+  try { stories = b.listStories() } catch {}
+  const titles = new Map(stories.map((s) => [s.key, s.title]))
+  const named = (key) => (titles.get(key) ? `${key} ${titles.get(key)}` : String(key))
+  const landed = list(info.landed)
+  const commitsOf = (l) => (tryRun('git', ['-C', b.root, 'log', '--reverse', '--format=%h %s', `${l.base}..${l.final}`]) || '').split('\n').filter(Boolean)
+  const council = report.council && typeof report.council === 'object' ? report.council : {}
+  const count = (n) => (Number.isInteger(n) && n > 0 ? n : 0)
+  const settled = count(council.settled)
+  const checks = stories.flatMap((s) => (s.criteria || []).filter((c) => c && c.pending).map((c) => `${s.key}: ${criterionOf(c).text}`))
+  const jobs = jobsOf(b.root, b.runId).map((job) => ({ ...job, result: readJson(job.files.result) }))
+  const began = Date.parse(info.started)
+  return `${[
+    `# Run ${b.runId} on ${b.feature}`,
+    ...list(report.notes).map(String),
+    `## Landed on ${b.branch}\n${lines(landed.map((l) => `${named(l.key)}: ${commitsOf(l).join('; ') || 'no commits'}`))}${landed.length ? `\n\nBring them into your branch with \`git merge --ff-only ${b.branch}\`.` : ''}`,
+    `## Blocked\n${lines(list(report.blocked).filter((s) => s.key).map((s) => `${named(s.key)}: thread ${list(s.threads).join(', ') || '(none linked)'}`))}`,
+    `## Outcomes\n${lines(list(report.outcomes).filter((o) => o.key).map((o) => `${named(o.key)}: ${o.outcome}${o.detail ? `: ${o.detail}` : ''}`))}`,
+    `## Council\n- ${settled} question${settled === 1 ? '' : 's'} settled by the council, ${count(council.asked)} sent to the human`,
+    `## Pending human checks\n${lines(checks)}`,
+    ...(Array.isArray(report.journeys) ? [`## Journeys\n${lines(list(report.journeys).map(String))}`] : []),
+    `## Timings\n${Number.isFinite(began) ? `The run took ${took(Date.now() - began)}.\n\n` : ''}${timingTable(timingsOf(b.root, b.runId), jobs)}`,
+  ].join('\n\n')}\n`
 }
 
 // ---- the steps of a run ----------------------------------------------------
@@ -541,7 +899,7 @@ const STEPS = {
   // The wait between retries: the script has no clock.
   sleep: async (b, p) => {
     const seconds = Math.min(Math.max(Number(p.seconds) || 0, 0), MAX_SLEEP_S)
-    await new Promise((resolve) => setTimeout(resolve, seconds * 1000))
+    await pause(seconds * 1000)
     return { seconds }
   },
 
@@ -560,10 +918,193 @@ const STEPS = {
     })
     return { key: p.key, hash }
   })(),
+
+  // The run's checks live in its run.json: start writes those omni checks
+  // gives, and this merges in others. omni checks gives fast, stack_up and
+  // stack, so this is how a run gets seed or lint, or a check its project
+  // lacks.
+  'checks-set': (b, p) => {
+    if (!p.checks || typeof p.checks !== 'object' || Array.isArray(p.checks)) return { ok: false, error: 'the payload needs checks: {name: command}' }
+    const unknown = Object.keys(p.checks).filter((name) => !CHECKS.includes(name))
+    if (unknown.length) return { ok: false, error: `no check ${unknown.join(', ')}; the checks are ${CHECKS.join(', ')}` }
+    const odd = Object.keys(p.checks).filter((name) => typeof p.checks[name] !== 'string')
+    if (odd.length) return { ok: false, error: `a check is a command, as a string: ${odd.join(', ')}` }
+    return { checks: updateRun(b.root, b.runId, (info) => ({ ...info, checks: { ...info.checks, ...p.checks } })).checks }
+  },
+
+  // Starts a job and returns once its supervisor has started the command. A
+  // repeat after a try that was cut off goes on with the job that try made.
+  'job-start': (b, p, { marker, mark }) => missing(p, 'name', 'cmd', 'cwd') || (async () => {
+    if (p.key !== undefined && (typeof p.key !== 'string' || !p.key)) return { ok: false, error: 'the payload key, when given, is a story key' }
+    const cwd = path.resolve(b.root, p.cwd)
+    if (!isDir(cwd)) return { ok: false, error: `the job ${p.name} needs a folder to run in; there is none at ${cwd}` }
+    const dir = jobsDirOf(b.root, b.runId)
+    let id = marker && marker.id
+    if (!id || !fs.existsSync(jobFiles(dir, id).job)) {
+      id = newJobId(dir, p.key ? `${p.key}-${p.name}` : p.name)
+      writeJson(jobFiles(dir, id).job, { id, name: p.name, key: p.key || null, cmd: p.cmd, cwd, limitMs: jobLimitMs(p.limitMinutes) })
+      mark({ id })
+    }
+    const files = jobFiles(dir, id)
+    const started = () => !!(readJson(files.job) || {}).started
+    if (!started()) {
+      const supervisor = spawn(process.execPath, [SELF, SUPERVISE, files.job], { cwd: b.root, detached: true, stdio: 'ignore' })
+      let gone = false
+      supervisor.on('exit', () => { gone = true })
+      supervisor.on('error', () => { gone = true })
+      supervisor.unref()
+      for (const until = Date.now() + 10000; !started(); await pause(20)) {
+        if (gone || Date.now() > until) return { ok: false, id, error: `the job ${id} did not start: its supervisor ${gone ? 'ended first' : 'did not start it within 10 s'}` }
+      }
+    }
+    return { id, log: files.log }
+  })(),
+
+  // The job's result and the tail of its log once it has ended; done false
+  // after maxSeconds (480 at most) while it runs.
+  'job-wait': (b, p) => missing(p, 'id') || (async () => {
+    const job = /^[\w.-]+$/.test(p.id) ? jobAt(jobsDirOf(b.root, b.runId), p.id) : null
+    if (!job) return { ok: false, error: `no job ${p.id} in run ${b.runId}` }
+    const until = Date.now() + waitSeconds(p.maxSeconds) * 1000
+    for (;;) {
+      // At the end of the wait ps also says whether the pid is still the supervisor's.
+      const result = endOf(b.runId, job, Date.now() >= until)
+      if (result) return { id: p.id, done: true, result, tail: tailOf(job.files.log) }
+      if (Date.now() >= until) return { id: p.id, done: false }
+      await pause(Math.min(100, until - Date.now()))
+    }
+  })(),
+
+  'job-kill': (b, p) => missing(p, 'id') || (() => {
+    const job = /^[\w.-]+$/.test(p.id) ? jobAt(jobsDirOf(b.root, b.runId), p.id) : null
+    if (!job) return { ok: false, error: `no job ${p.id} in run ${b.runId}` }
+    const killed = !fs.existsSync(job.files.result) && stopJobs([{ run: b.runId, job }]).length > 0
+    const result = readJson(job.files.result)
+    return { id: p.id, killed, done: !!result, ...(result ? { result, tail: tailOf(job.files.log) } : {}) }
+  })(),
+
+  // Rebases story/<key> onto the tip of deliver/<slug> in the story's
+  // worktree, then checks the story's tip out, detached, in a clean lane
+  // worktree. Outcomes, not errors: a conflict, after which the rebase is
+  // undone and the conflicting files come back; a rebase past its limit
+  // (infra); a story without its worktree or branch (missing).
+  'lane-prepare': (b, p, { marker }) => missing(p, 'key') || (() => {
+    const wt = b.worktreeOf(p.key)
+    const branch = `story/${p.key}`
+    if (!fs.existsSync(wt)) return { key: p.key, outcome: 'missing', reason: `no worktree ${wt}` }
+    if (tryRun('git', ['-C', b.root, 'rev-parse', '--verify', '--quiet', `refs/heads/${branch}`]) === null) return { key: p.key, outcome: 'missing', reason: `no branch ${branch}` }
+    // A try that was cut off may have left its rebase half done.
+    if (marker) tryRun('git', ['-C', wt, 'rebase', '--abort'])
+    const base = tipOf(b)
+    try {
+      b.git(['-C', wt, 'rebase', '-q', base], { timeout: rebaseMs() })
+    } catch (e) {
+      const files = e.timedOut ? [] : (tryRun('git', ['-C', wt, '-c', 'core.quotePath=false', 'diff', '--name-only', '-z', '--diff-filter=U']) || '').split('\0').filter(Boolean)
+      tryRun('git', ['-C', wt, 'rebase', '--abort'])
+      if (e.timedOut) return { key: p.key, outcome: 'infra', reason: `the rebase of ${branch} onto ${b.branch} ran past its limit of ${span(rebaseMs())}` }
+      return { key: p.key, outcome: 'conflict', files: files.length ? files : ['(unknown)'] }
+    }
+    const candidate = b.git(['rev-parse', `refs/heads/${branch}`]).trim()
+    laneAt(b, candidate)
+    return { key: p.key, outcome: 'ready', base, candidate }
+  })(),
+
+  // The lane worktree at the tip of deliver/<slug>, clean: lane-base for the
+  // rerun of a failed check on the base, lane-reset after a failure.
+  'lane-base': (b) => laneToTip(b),
+  'lane-reset': (b) => laneToTip(b),
+
+  // Lands the lane worktree's HEAD, the tested candidate with what the test
+  // author committed on top, by a compare-and-swap of deliver/<slug> from the
+  // base. Refused (landed false) when that HEAD does not descend from the base
+  // or hold the story's branch, or when the branch has moved. Then the landed
+  // tree must be the tested one, and the story is done: its files recorded,
+  // its criteria ticked (a human check pending), its open findings resolved,
+  // its worktree and branch gone. A repeat after a try that was cut off finds
+  // the branch already at that HEAD.
+  'lane-land': (b, p) => missing(p, 'key', 'base') || (() => {
+    const final = b.git(['-C', b.lane, 'rev-parse', 'HEAD']).trim()
+    const refused = (reason) => ({ key: p.key, landed: false, reason })
+    if (!(tipOf(b) === final && final !== p.base)) {
+      if (!isAncestorIn(b.root, p.base, final)) return refused(`the lane's HEAD ${short(final)} does not descend from the base ${short(p.base)}`)
+      const story = (tryRun('git', ['-C', b.root, 'rev-parse', '--verify', '--quiet', `refs/heads/story/${p.key}`]) || '').trim()
+      if (story && !isAncestorIn(b.root, story, final)) return refused(`the lane's HEAD ${short(final)} does not hold story/${p.key} at ${short(story)}`)
+      try {
+        b.git(['update-ref', `refs/heads/${b.branch}`, final, p.base])
+      } catch (e) {
+        const tip = tipOf(b)
+        if (tip !== p.base) return refused(`${b.branch} moved to ${short(tip)} since the base ${short(p.base)}`)
+        throw e
+      }
+    }
+    const landedTree = b.git(['rev-parse', `refs/heads/${b.branch}^{tree}`]).trim()
+    const finalTree = b.git(['rev-parse', `${final}^{tree}`]).trim()
+    if (landedTree !== finalTree) return { ok: false, key: p.key, error: `${b.branch} holds the tree ${short(landedTree)} after the landing, not ${short(finalTree)}, the tree of ${short(final)} that was tested` }
+    updateRun(b.root, b.runId, (info) => ({ ...info, landed: [...(info.landed || []).filter((l) => l.final !== final), { key: p.key, base: p.base, final }] }))
+    const files = b.git(['-c', 'core.quotePath=false', 'diff', '--name-only', '-z', p.base, final]).split('\0').filter(Boolean)
+    try {
+      if (files.length) b.write('files', p.key, files)
+      const story = b.readStory(p.key)
+      ;(story.criteria || []).forEach((c, i) => { if (!c.ticked) b.write('tick', p.key, ['--criterion', String(i), ...(criterionOf(c).human_check ? ['--pending'] : [])]) })
+      ;(story.findings || []).forEach((f, i) => { if (!f.resolved) b.write('resolve', p.key, ['--finding', String(i)]) })
+      if (story.status !== 'done') b.write('move', p.key, ['--to', 'done'])
+    } catch (e) {
+      return { ok: false, key: p.key, landed: true, base: p.base, final, error: `landed on ${b.branch} at ${short(final)}, but the story is not done: ${failure(e)}` }
+    }
+    return { key: p.key, landed: true, base: p.base, final, files, removed: removeWorktree(b, p.key) }
+  })(),
+
+  // Returns as soon as a blocked story's linked threads all have a conclusion,
+  // or after maxSeconds (480 at most); at once when no story waits on a
+  // thread. The script then runs unblock-pass. A story whose thread cannot be
+  // read is left out.
+  'wait-answers': async (b, p) => {
+    const until = Date.now() + waitSeconds(p.maxSeconds) * 1000
+    for (;;) {
+      const answered = []
+      const waiting = []
+      for (const story of b.listStories()) {
+        let threads = null
+        try { threads = threadsOf(b, story) } catch {}
+        if (threads) (threads.every((t) => t.conclusion) ? answered : waiting).push(story.key)
+      }
+      if (answered.length || !waiting.length || Date.now() >= until) return { answered, waiting }
+      await pause(Math.min(ANSWERS_POLL_MS, until - Date.now()))
+    }
+  },
+
+  // Posts the run's report on its thread, from a body file, after stopping
+  // the run's jobs that still run, and gives the lock up. The report is also
+  // kept at .omni/runs/<run>/report.md, which is all there is of it when the
+  // post fails: the run ends and gives its lock up all the same, as
+  // omni-deliver.js does. A repeat after a try that was cut off does not post
+  // twice.
+  finish: (b, p, { info, marker, mark }) => {
+    if (!p.report || typeof p.report !== 'object' || Array.isArray(p.report)) return { ok: false, error: 'the payload needs report: {outcomes, council, blocked}' }
+    try {
+      const stopped = stopJobs(runningJobs(b.root, [b.runId])).map(({ job }) => job.id)
+      const text = reportText(b, info, p.report)
+      const report = path.join(runDirOf(b.root, b.runId), 'report.md')
+      fs.writeFileSync(report, text)
+      if (!(marker && marker.posted)) {
+        try {
+          b.post(info.thread, `Report of ${b.runId}`, text)
+        } catch (e) {
+          return { ok: false, thread: info.thread || null, posted: false, report, stopped, error: `the report could not be posted: ${failure(e)}` }
+        }
+        mark({ posted: true })
+      }
+      return { thread: info.thread, posted: true, report, stopped }
+    } finally {
+      dropLock(b.root, b.runId)
+    }
+  },
 }
+// wait-answers reads the board this often.
+const ANSWERS_POLL_MS = 2000
 // The steps whose bodies are recorded under their opId, so that a repeat does
 // not write twice. The others only read, or wait: a repeat runs them again.
-const WRITES = new Set(['claim', 'release', 'move', 'block', 'unblock', 'finding', 'decision', 'files', 'thread-open', 'unblock-pass', 'worktree', 'clarity-record'])
+const WRITES = new Set(['claim', 'release', 'move', 'block', 'unblock', 'finding', 'decision', 'files', 'thread-open', 'unblock-pass', 'worktree', 'clarity-record', 'checks-set', 'job-start', 'job-kill', 'lane-prepare', 'lane-base', 'lane-reset', 'lane-land', 'finish'])
 
 // ---- start: the lock, reconcile, the deliver branch, the checks ------------
 // A start repeated by a retried courier comes within minutes of the first.
@@ -619,7 +1160,7 @@ const start = (flags) => {
   }
   body = { ok: true, received, ...body }
   fs.mkdirSync(path.join(runDirOf(root, runId), 'in'), { recursive: true })
-  writeJson(path.join(runDirOf(root, runId), 'run.json'), { run: runId, feature, root })
+  writeJson(runPathOf(root, runId), { run: runId, feature, root, thread: body.thread, started: now.toISOString(), tip: body.tip, checks: body.checks, landed: [] })
   recordOp(root, runId, opId, body)
   return body
 }
@@ -657,6 +1198,9 @@ const startRun = (b, log) => {
   tryRun('git', ['-C', root, 'worktree', 'prune'])
   if (fs.existsSync(b.lane) && (!isWorktree(root, b.lane) || !ownTree(b.lane))) return { ok: false, error: `${b.lane} is not a worktree of ${root}, so it cannot be the lane worktree; move it away` }
 
+  // The run's thread, named as omni-deliver.js names it: finish posts the
+  // report there.
+  const thread = b.omni(['thread', 'create', `Run ${b.runId}`]).trim()
   if (move === 'create') git(['update-ref', `refs/heads/${b.branch}`, head, ''])
   if (move === 'fast-forward') git(['update-ref', `refs/heads/${b.branch}`, head, was])
   const tip = move === 'create' || move === 'fast-forward' ? head : was
@@ -666,6 +1210,11 @@ const startRun = (b, log) => {
     'fast-forward': `${b.branch} fast-forwarded from ${short(was)} to ${short(head)}, the checkout's HEAD`,
     ahead: `${b.branch} kept at ${short(was)}, ahead of the checkout's HEAD ${short(head)}`,
   }[move])
+
+  // The jobs of earlier runs that still run, such as a check in the lane
+  // worktree: their supervisors are detached, so a workflow that stopped left
+  // them going. This run holds the lock, so those runs are over.
+  for (const { run, job } of stopJobs(runningJobs(root, runsIn(root)))) log.push(`Stopped the job ${job.id} of run ${run}, which had ended`)
 
   // The lane worktree stays from run to run, detached.
   if (fs.existsSync(b.lane)) {
@@ -690,6 +1239,7 @@ const startRun = (b, log) => {
     branch: b.branch,
     tip,
     lane: b.lane,
+    thread,
     checks: Object.fromEntries(CHECKS.map((name) => [name, String((checks && checks[name]) || '')])),
     stories: b.listStories().map(summary),
     released,
@@ -720,7 +1270,7 @@ const runStep = async (flags) => {
   let payload
   try { payload = JSON.parse(text) } catch { return { ok: false, received, error: 'the payload is not JSON' } }
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return { ok: false, received, error: 'the payload is not a JSON object' }
-  const info = readJson(path.join(runDirOf(root, flags.run), 'run.json'))
+  const info = readJson(runPathOf(root, flags.run))
   if (!info) return { ok: false, received, error: `no run ${flags.run} in ${root}` }
   const writes = WRITES.has(flags.step)
   let marker = null
@@ -742,12 +1292,24 @@ const runStep = async (flags) => {
     recordOp(root, flags.run, payload.opId, pending)
   }
   if (writes && !marker) recordOp(root, flags.run, payload.opId, pending)
+  const began = new Date()
   let body
   try {
     body = { ok: true, received, ...(await step(boardOf(root, flags.run, info.feature), payload, { info, marker, mark })) }
   } catch (e) {
     body = { ok: false, received, error: failure(e) }
   }
+  const ended = new Date()
+  recordTiming(root, flags.run, {
+    step: flags.step,
+    op: payload.opId,
+    ...(typeof payload.key === 'string' ? { key: payload.key } : {}),
+    ...(typeof payload.stage === 'string' ? { stage: payload.stage } : {}),
+    started: began.toISOString(),
+    ended: ended.toISOString(),
+    ms: ended - began,
+    ok: body.ok,
+  })
   if (writes && body.ok) recordOp(root, flags.run, payload.opId, body)
   return body
 }
@@ -763,6 +1325,9 @@ const flagsOf = (argv) => {
 }
 
 export async function main(argv = process.argv.slice(2)) {
+  // A job's supervisor, which job-start spawns detached: it prints nothing,
+  // and the job's files say what happened.
+  if (argv[0] === SUPERVISE) return supervise(argv[1])
   const flags = flagsOf(argv)
   let body
   try {

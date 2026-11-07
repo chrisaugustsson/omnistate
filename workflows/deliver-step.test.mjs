@@ -5,7 +5,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -46,6 +46,19 @@ function scratch(t, stories = [], threads = [], extra = {}) {
   chmodSync(join(bin, "omni"), 0o755);
   const statePath = join(root, "omni-state.json");
   writeFileSync(statePath, JSON.stringify({ stories, threads, calls: [], checks: { fast: "true", stack_up: "true", stack: "true" }, ...extra }));
+  // A job a test left running is stopped, with its supervisor, before its folders go.
+  t.after(() => {
+    for (const run of existsSync(join(repo, ".omni", "runs")) ? readdirSync(join(repo, ".omni", "runs")) : []) {
+      const dir = join(repo, ".omni", "runs", run, "jobs");
+      for (const name of existsSync(dir) ? readdirSync(dir).filter((n) => n.endsWith(".job.json")) : []) {
+        const job = JSON.parse(readFileSync(join(dir, name), "utf8"));
+        if (existsSync(join(dir, name.replace(/\.job\.json$/, ".json")))) continue;
+        for (const pid of [job.pgid > 0 ? -job.pgid : null, job.supervisor > 0 ? job.supervisor : null]) {
+          if (Number.isInteger(pid)) try { process.kill(pid, "SIGKILL"); } catch {}
+        }
+      }
+    }
+  });
   t.after(() => rmSync(root, { recursive: true, force: true }));
 
   const session = liveProcess(t);
@@ -81,6 +94,8 @@ function thread(id, title, conclusion = null) {
 }
 
 const questionLink = (id) => ({ thread_id: id, label: "question" });
+// The threads on the board besides the Run threads that start opens.
+const questions = (dirs) => dirs.state().threads.filter((th) => !/^Run run-\d{8}-\d{6}-\d+$/.test(th.title));
 const sha = (dirs, rev) => git(dirs.repo, "rev-parse", rev).trim();
 const ago = (ms) => new Date(Date.now() - ms).toISOString();
 const readLock = (dirs) => JSON.parse(readFileSync(dirs.lock, "utf8"));
@@ -149,15 +164,23 @@ function stepArgv(dirs, run, name, obj) {
 let ops = 0;
 // A step of the run, with its payload written where a courier writes it; the
 // body must have received the payload's hash. fields.opId sets the opId.
-function step(dirs, run, name, fields = {}) {
+function step(dirs, run, name, fields = {}, env = {}) {
   const obj = { opId: `${name}-${++ops}`, ...fields };
-  const body = helperRun(dirs, stepArgv(dirs, run, name, obj));
+  const body = helperRun(dirs, stepArgv(dirs, run, name, obj), env);
   assert.equal(body.received, fnv1a(JSON.stringify(obj)));
   return body;
 }
 
 const appliedOf = (dirs, run) => JSON.parse(readFileSync(join(dirs.repo, ".omni", "runs", run, "applied.json"), "utf8"));
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const runFile = (dirs, run, name) => join(dirs.repo, ".omni", "runs", run, name);
+const jobOf = (dirs, run, id) => JSON.parse(readFileSync(runFile(dirs, run, join("jobs", `${id}.job.json`)), "utf8"));
+// True once no process has that pid, or with a negative pid, that group.
+const gone = (pid) => { try { process.kill(pid, 0); return false; } catch (e) { return e.code === "ESRCH"; } };
+async function eventually(check, ms = 5000) {
+  for (const end = Date.now() + ms; !check(); await pause(50)) if (Date.now() > end) return false;
+  return true;
+}
 
 // ---- the courier protocol -------------------------------------------------------
 
@@ -222,7 +245,7 @@ test("a write repeated with its opId is answered from .omni/runs/<run>/applied.j
 
   assert.deepEqual(again, first);
   assert.deepEqual(dirs.story("US-1").decisions, [{ question: "Which colour is the badge?", choice: "Red", by: "agent" }]);
-  assert.equal(dirs.state().threads.length, 1);
+  assert.equal(questions(dirs).length, 1);
   const applied = JSON.parse(readFileSync(join(dirs.repo, ".omni", "runs", run, "applied.json"), "utf8"));
   assert.deepEqual([applied["decide-US-1-1"], applied["thread-US-1-1"]], first);
   step(dirs, run, "decision", { ...decision, opId: "decide-US-1-2" });
@@ -261,7 +284,7 @@ test("every write repeated with its opId gets its first body back from the recor
     assert.equal(dirs.state().calls.length, calls, `${name} called nothing again`);
   }
   assert.deepEqual(dirs.story("US-1").files_changed, ["badge.rs"]);
-  assert.deepEqual(dirs.state().threads.map((th) => th.title), ["US-2: Which red?", "Run question"]);
+  assert.deepEqual(dirs.state().threads.map((th) => th.title), ["US-2: Which red?", `Run ${run}`, "Run question"]);
 });
 
 test("a payload that does not hash to the command's --hash is refused before anything, even for an applied op: nothing is written or recorded; start checks its flags the same way", (t) => {
@@ -984,7 +1007,7 @@ test("thread-open creates a thread on the feature with its body posted from a fi
   const plain = step(dirs, run, "thread-open", { title: "Run question", body: "Plain\n" });
   const linked = step(dirs, run, "thread-open", { title: "US-1: Which colour is the badge?", body: "Options:\n1. Paint it red\n2. Paint it blue\n", key: "US-1" });
 
-  assert.deepEqual(dirs.state().threads.map((th) => [th.id, th.title, th.feature, th.posts]), [
+  assert.deepEqual(questions(dirs).map((th) => [th.id, th.title, th.feature, th.posts]), [
     [plain.thread, "Run question", "board", [{ summary: "Run question", body: "Plain\n" }]],
     [linked.thread, "US-1: Which colour is the badge?", "board", [{ summary: "US-1: Which colour is the badge?", body: "Options:\n1. Paint it red\n2. Paint it blue\n" }]],
   ]);
@@ -1157,4 +1180,465 @@ test("a story's clarity check is pending again when its text, criteria, decision
   assert.deepEqual(pendingAfter(us1((s) => { s.decisions.push({ question: "Which red?", choice: "#c00", by: "human" }); })), ["US-1"]);
   assert.deepEqual(pendingAfter(spec({ other: "Changed elsewhere.", inner: "Badges are dark red." })), ["US-1"]);
   assert.deepEqual(pendingAfter(spec({ other: "Changed elsewhere.", inner: "Badges are dark red.", tail: "They do not count." })), ["US-1"]);
+});
+
+// ---- the run's thread, its checks and its timings -------------------------------------
+
+test("start opens the run's thread on the feature, named Run <run> as omni-deliver.js names it, returns it, and keeps it in run.json with the run's start, tip and checks", (t) => {
+  const dirs = scratch(t);
+
+  const body = start(dirs);
+
+  assert.deepEqual(dirs.state().threads.map((th) => [th.id, th.title, th.feature, th.posts]), [[body.thread, `Run ${body.run}`, "board", []]]);
+  const info = JSON.parse(readFileSync(runFile(dirs, body.run, "run.json"), "utf8"));
+  assert.ok(Date.now() - Date.parse(info.started) < 60000);
+  assert.deepEqual({ ...info, started: null }, { run: body.run, feature: "board", root: dirs.repo, thread: body.thread, started: null, tip: body.tip, checks: body.checks, landed: [] });
+});
+
+test("checks-set merges checks into the run's run.json and gives all five back; an unknown check, or a command that is not a string, is refused", (t) => {
+  const dirs = scratch(t, [], [], { checks: { fast: "make fast", stack_up: "make up", stack: "make stack" } });
+  const { run } = start(dirs);
+
+  const body = step(dirs, run, "checks-set", { checks: { seed: "make seed NAME=x", lint: "make lint", fast: "make quick" } });
+  const unknown = step(dirs, run, "checks-set", { checks: { stackup: "make up" } });
+  const odd = step(dirs, run, "checks-set", { checks: { seed: 3 } });
+
+  const checks = { fast: "make quick", stack_up: "make up", stack: "make stack", seed: "make seed NAME=x", lint: "make lint" };
+  assert.deepEqual(body.checks, checks);
+  assert.deepEqual(JSON.parse(readFileSync(runFile(dirs, run, "run.json"), "utf8")).checks, checks);
+  assert.deepEqual([unknown.ok, unknown.error], [false, "no check stackup; the checks are fast, stack_up, stack, seed, lint"]);
+  assert.deepEqual([odd.ok, odd.error], [false, "a check is a command, as a string: seed"]);
+});
+
+test("every step that runs records its step, op, key, stage, start and end in the run's timings.jsonl; a repeat answered from the record does not", (t) => {
+  const dirs = scratch(t, [story("US-1")]);
+  const { run } = start(dirs);
+  const before = Date.now();
+
+  step(dirs, run, "list", { opId: "list-x" });
+  step(dirs, run, "claim", { opId: "claim-x", key: "US-1", stage: "implementing" });
+  step(dirs, run, "claim", { opId: "claim-x", key: "US-1", stage: "implementing" });
+
+  const lines = readFileSync(runFile(dirs, run, "timings.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
+  assert.deepEqual(lines.map((l) => [l.step, l.op, l.key, l.stage, l.ok]), [["list", "list-x", undefined, undefined, true], ["claim", "claim-x", "US-1", "implementing", true]]);
+  for (const l of lines) {
+    assert.ok(Date.parse(l.started) >= before - 1000 && Date.parse(l.ended) >= Date.parse(l.started));
+    assert.equal(l.ms, Date.parse(l.ended) - Date.parse(l.started));
+  }
+});
+
+// ---- jobs -------------------------------------------------------------------------------
+
+test("job-start runs the command in a process group of its own, its output going to the job's log; job-wait answers done: false at maxSeconds while it runs, then the result and the log's tail once it ends", (t) => {
+  const dirs = scratch(t);
+  const { run, lane } = start(dirs);
+
+  const started = step(dirs, run, "job-start", { name: "fast", key: "US-1", cmd: 'echo "leader $$ group $(ps -o pgid= -p $$)"; sleep 2; echo done', cwd: lane });
+  const begun = Date.now();
+  const waiting = step(dirs, run, "job-wait", { id: started.id, maxSeconds: 0.5 });
+  const waited = Date.now() - begun;
+  const ended = step(dirs, run, "job-wait", { id: started.id, maxSeconds: 30 });
+
+  assert.deepEqual(pick(started), { ok: true, id: "US-1-fast-1", log: runFile(dirs, run, join("jobs", "US-1-fast-1.log")) });
+  assert.deepEqual(pick(waiting), { ok: true, id: "US-1-fast-1", done: false });
+  assert.ok(waited >= 500 && waited < 1900, `${waited} ms`);
+  assert.deepEqual(Object.keys(ended.result).sort(), ["code", "durationMs", "ended", "ok", "signal", "started", "timedOut"]);
+  assert.deepEqual([ended.done, ended.result.ok, ended.result.code, ended.result.signal, ended.result.timedOut], [true, true, 0, null, false]);
+  assert.ok(ended.result.durationMs >= 2000);
+  const [, leader, group] = ended.tail.match(/^leader (\d+) group\s+(\d+)\ndone\n$/);
+  assert.equal(leader, group, "the command leads a group of its own");
+  assert.equal(readFileSync(started.log, "utf8"), ended.tail);
+});
+
+test("a job past its limit gets SIGTERM to its whole group, and its result says it timed out; its log ends naming the job, not its command", async (t) => {
+  const dirs = scratch(t);
+  const { run, lane } = start(dirs);
+  const pidFile = join(dirs.root, "child.pid");
+
+  const { id } = step(dirs, run, "job-start", { name: "stack", cmd: `sleep 30 & echo $! > ${pidFile}; wait`, cwd: lane, limitMinutes: 1 / 60 });
+  const body = step(dirs, run, "job-wait", { id, maxSeconds: 30 });
+
+  assert.deepEqual([body.done, body.result.ok, body.result.timedOut, body.result.signal], [true, false, true, "SIGTERM"]);
+  assert.ok(body.result.durationMs >= 1000 && body.result.durationMs < 8000, `${body.result.durationMs} ms`);
+  assert.ok(await eventually(() => gone(Number(readFileSync(pidFile, "utf8")))), "the command's own child was stopped with it");
+  assert.ok(body.tail.endsWith(`\nTimed out: the job ${id} ran past its limit of 1s and was stopped.\n`), body.tail);
+  assert.doesNotMatch(body.tail, /sleep 30/);
+});
+
+test("the SIGKILL stays armed after the group's leader exits: a member that ignores SIGTERM is killed when the grace is over", async (t) => {
+  const dirs = scratch(t);
+  const { run, lane } = start(dirs);
+  const pidFile = join(dirs.root, "stubborn.pid");
+  // The leader waits and dies of SIGTERM; its child ignores SIGTERM and keeps no hold on the log.
+  const cmd = `sh -c 'trap "" TERM; echo $$ > ${pidFile}; exec sleep 30' > /dev/null 2>&1 & wait`;
+
+  const { id } = step(dirs, run, "job-start", { name: "stack", cmd, cwd: lane, limitMinutes: 1 / 60 }, { OMNI_DELIVER_KILL_GRACE_MS: "1000" });
+  const body = step(dirs, run, "job-wait", { id, maxSeconds: 30 });
+
+  assert.deepEqual([body.done, body.result.timedOut], [true, true]);
+  assert.ok(body.result.durationMs >= 2000, `${body.result.durationMs} ms: the result waited for the SIGKILL`);
+  assert.ok(await eventually(() => gone(Number(readFileSync(pidFile, "utf8")))), "the member that ignored SIGTERM got SIGKILL");
+});
+
+test("a job's limit is rounded to whole milliseconds and kept to 2^31 - 1 ms; none, 0 or less, or not a number means 45 minutes", (t) => {
+  const dirs = scratch(t);
+  const { run, lane } = start(dirs);
+  const job = (limitMinutes, cmd = "true") => step(dirs, run, "job-start", { name: "check", cmd, cwd: lane, ...(limitMinutes === undefined ? {} : { limitMinutes }) }).id;
+
+  const huge = job(1e9, "sleep 1");
+  const fraction = job(0.02057, "sleep 5");
+  const odd = [undefined, 0, -5, "soon", null].map((m) => job(m));
+  const results = new Map([huge, fraction, ...odd].map((id) => [id, step(dirs, run, "job-wait", { id, maxSeconds: 30 }).result]));
+
+  assert.deepEqual([huge, fraction, ...odd].map((id) => jobOf(dirs, run, id).limitMs), [2 ** 31 - 1, 1234, ...odd.map(() => 45 * 60000)]);
+  assert.deepEqual([results.get(huge).ok, results.get(huge).timedOut], [true, false]);
+  assert.deepEqual([results.get(fraction).ok, results.get(fraction).timedOut], [false, true]);
+  assert.ok(results.get(fraction).durationMs >= 1234 && results.get(fraction).durationMs < 4000, `${results.get(fraction).durationMs} ms`);
+  for (const id of odd) assert.deepEqual([results.get(id).ok, results.get(id).timedOut], [true, false], id);
+});
+
+test("a job's output reaches its log byte for byte, so a character split across two writes survives; the tail is the log's last 2 KB from its first whole character", (t) => {
+  const dirs = scratch(t);
+  const { run, lane } = start(dirs);
+  // é (C3 A9) split across two writes, then a thousand three-byte 日 (E6 97 A5).
+  const cmd = "printf '\\303'; sleep 0.3; printf '\\251 caf\\303\\251\\n'; i=0; while [ $i -lt 1000 ]; do printf '\\346\\227\\245'; i=$((i+1)); done";
+
+  const { id, log } = step(dirs, run, "job-start", { name: "fast", cmd, cwd: lane });
+  const body = step(dirs, run, "job-wait", { id, maxSeconds: 30 });
+
+  assert.equal(readFileSync(log, "utf8"), `é café\n${"日".repeat(1000)}`);
+  // 3009 bytes: the last 2048 begin inside a 日, whose two remaining bytes are dropped.
+  assert.equal(body.tail, "日".repeat(682));
+});
+
+test("job-kill stops a running job's group, and gives its result and the tail that says so; a second kill finds it ended", async (t) => {
+  const dirs = scratch(t);
+  const { run, lane } = start(dirs);
+  const { id } = step(dirs, run, "job-start", { name: "stack", cmd: "sleep 30", cwd: lane });
+  const { pgid } = jobOf(dirs, run, id);
+
+  const body = step(dirs, run, "job-kill", { id });
+  const again = step(dirs, run, "job-kill", { id });
+
+  assert.deepEqual([body.killed, body.done, body.result.ok, body.result.timedOut, body.result.signal], [true, true, false, false, "SIGTERM"]);
+  assert.ok(body.tail.endsWith(`\nStopped: the job ${id} was stopped before it ended.\n`), body.tail);
+  assert.ok(await eventually(() => gone(-pgid)));
+  assert.deepEqual([again.killed, again.done, again.result], [false, true, body.result]);
+});
+
+test("start stops the jobs of earlier runs that still run, found by the pids in their job files, and logs each", async (t) => {
+  const dirs = scratch(t);
+  const first = start(dirs);
+  const { id } = step(dirs, first.run, "job-start", { name: "stack", cmd: "sleep 30", cwd: first.lane });
+  const { pgid } = jobOf(dirs, first.run, id);
+  // The first run's session ended without a finish.
+  writeLock(dirs, { ...readLock(dirs), pid: deadPid() });
+
+  const next = start(dirs, { op: "start-2" });
+
+  assert.equal(next.ok, true);
+  assert.ok(next.log.includes(`Stopped the job ${id} of run ${first.run}, which had ended`), next.log.join("\n"));
+  assert.ok(await eventually(() => gone(-pgid)));
+  const result = JSON.parse(readFileSync(runFile(dirs, first.run, join("jobs", `${id}.json`)), "utf8"));
+  assert.deepEqual([result.ok, result.signal], [false, "SIGTERM"]);
+});
+
+test("job-wait answers a job whose supervisor is gone without its result as lost", async (t) => {
+  const dirs = scratch(t);
+  const { run, lane } = start(dirs);
+  const { id } = step(dirs, run, "job-start", { name: "stack", cmd: "sleep 30", cwd: lane });
+  const job = jobOf(dirs, run, id);
+  process.kill(job.supervisor, "SIGKILL");
+  await eventually(() => gone(job.supervisor));
+
+  const body = step(dirs, run, "job-wait", { id, maxSeconds: 5 });
+
+  process.kill(-job.pgid, "SIGKILL");
+  assert.deepEqual([body.done, body.result.ok, body.result.error], [true, false, `the supervisor of the job ${id} ended without its result`]);
+});
+
+// ---- the lane ---------------------------------------------------------------------------
+
+// A story whose worktree has one commit.
+function storyWork(dirs, run, key, file = "badge.rs") {
+  const wt = step(dirs, run, "worktree", { key }).path;
+  commit(wt, file);
+  return wt;
+}
+
+test("lane-prepare rebases story/<key> onto the tip of deliver/<slug> in its worktree, and checks the candidate out, detached, in a cleaned lane worktree; the checkout is untouched", (t) => {
+  const dirs = scratch(t, [story("US-1"), story("US-2")]);
+  const { run, lane } = start(dirs);
+  const wt = storyWork(dirs, run, "US-1");
+  const tip = landOn(dirs, "deliver/board", "landed.rs");
+  writeFileSync(join(lane, "README"), "edited in the lane\n");
+  writeFileSync(join(lane, "stray.txt"), "untracked\n");
+  const head = sha(dirs, "HEAD");
+
+  const body = step(dirs, run, "lane-prepare", { key: "US-1" });
+  const missingOne = step(dirs, run, "lane-prepare", { key: "US-2" });
+
+  const candidate = git(wt, "rev-parse", "HEAD").trim();
+  assert.deepEqual(pick(body), { ok: true, key: "US-1", outcome: "ready", base: tip, candidate });
+  assert.deepEqual([sha(dirs, "refs/heads/story/US-1"), git(wt, "rev-parse", "HEAD^").trim()], [candidate, tip]);
+  assert.deepEqual([git(lane, "rev-parse", "HEAD").trim(), git(lane, "rev-parse", "--abbrev-ref", "HEAD").trim(), git(lane, "status", "--porcelain")], [candidate, "HEAD", ""]);
+  assert.deepEqual([sha(dirs, "HEAD"), git(dirs.repo, "rev-parse", "--abbrev-ref", "HEAD").trim()], [head, "main"]);
+  assert.deepEqual(pick(missingOne), { ok: true, key: "US-2", outcome: "missing", reason: `no worktree ${join(dirs.root, "app-stories", "US-2")}` });
+});
+
+test("a rebase conflict is an outcome: lane-prepare undoes the rebase and gives the conflicting files, and the story's branch and the lane stay as they were", (t) => {
+  const dirs = scratch(t, [story("US-1")]);
+  const { run, lane } = start(dirs);
+  const wt = step(dirs, run, "worktree", { key: "US-1" }).path;
+  writeFileSync(join(wt, "README"), "the story's README\n");
+  git(wt, "commit", "-q", "-am", "feat: README");
+  const before = git(wt, "rev-parse", "HEAD").trim();
+  landOn(dirs, "deliver/board", "README");
+  const laneHead = git(lane, "rev-parse", "HEAD").trim();
+
+  const body = step(dirs, run, "lane-prepare", { key: "US-1" });
+
+  assert.deepEqual(pick(body), { ok: true, key: "US-1", outcome: "conflict", files: ["README"] });
+  assert.deepEqual([git(wt, "rev-parse", "HEAD").trim(), git(wt, "rev-parse", "--abbrev-ref", "HEAD").trim(), git(wt, "status", "--porcelain")], [before, "story/US-1", ""]);
+  assert.equal(git(lane, "rev-parse", "HEAD").trim(), laneHead);
+});
+
+test("a rebase past its limit is infra, not a conflict: lane-prepare stops it, undoes it, and says so", (t) => {
+  const dirs = scratch(t, [story("US-1")]);
+  const { run } = start(dirs);
+  const wt = storyWork(dirs, run, "US-1");
+  landOn(dirs, "deliver/board", "landed.rs");
+  const before = git(wt, "rev-parse", "HEAD").trim();
+  hook(dirs, "pre-rebase", "sleep 5");
+  const begun = Date.now();
+
+  const body = step(dirs, run, "lane-prepare", { key: "US-1" }, { OMNI_DELIVER_REBASE_MS: "1000" });
+
+  assert.deepEqual(pick(body), { ok: true, key: "US-1", outcome: "infra", reason: "the rebase of story/US-1 onto deliver/board ran past its limit of 1s" });
+  assert.ok(Date.now() - begun < 4500, "stopped at its limit, not at the hook's end");
+  assert.deepEqual([git(wt, "rev-parse", "HEAD").trim(), git(wt, "rev-parse", "--abbrev-ref", "HEAD").trim()], [before, "story/US-1"]);
+});
+
+test("lane-land lands the lane's HEAD, the candidate with the test author's commits on it, by a compare-and-swap of deliver/<slug>; the story is done with its files, criteria ticked and findings resolved, and its worktree and branch are gone at once", async (t) => {
+  const criteria = [{ text: "The badge is red", human_check: false }, { text: "It looks right", human_check: true }];
+  const dirs = scratch(t, [story("US-1", { status: "reviewed", criteria, findings: [{ stage: "review", text: "[attempt 1] The badge is blue", files: [], resolved: false }] })]);
+  const { run, lane } = start(dirs);
+  const wt = storyWork(dirs, run, "US-1");
+  step(dirs, run, "claim", { key: "US-1", stage: "testing" });
+  const { base, candidate } = step(dirs, run, "lane-prepare", { key: "US-1" });
+  const tested = commit(lane, "badge.test");
+  const head = sha(dirs, "HEAD");
+
+  const body = step(dirs, run, "lane-land", { key: "US-1", base });
+
+  assert.deepEqual(pick(body), { ok: true, key: "US-1", landed: true, base, final: tested, files: ["badge.rs", "badge.test"], removed: true });
+  assert.deepEqual([sha(dirs, "refs/heads/deliver/board"), git(dirs.repo, "rev-parse", `${tested}^`).trim()], [tested, candidate]);
+  const done = dirs.story("US-1");
+  assert.deepEqual([done.status, done.files_changed], ["done", ["badge.rs", "badge.test"]]);
+  assert.deepEqual(done.criteria.map((c) => [c.ticked, !!c.pending]), [[true, false], [true, true]]);
+  assert.deepEqual(done.findings.map((f) => f.resolved), [true]);
+  assert.deepEqual([existsSync(wt), git(dirs.repo, "branch", "--list", "story/US-1")], [false, ""]);
+  assert.doesNotMatch(git(dirs.repo, "worktree", "list", "--porcelain"), /US-1/);
+  assert.ok(await eventually(() => readdirSync(join(dirs.root, "app-stories", "_trash")).length === 0), "its files went in the background");
+  assert.deepEqual([sha(dirs, "HEAD"), git(dirs.repo, "status", "--porcelain")], [head, ""]);
+  assert.deepEqual(JSON.parse(readFileSync(runFile(dirs, run, "run.json"), "utf8")).landed, [{ key: "US-1", base, final: tested }]);
+});
+
+test("lane-land refuses a branch that moved since the base: deliver/<slug> stays where it moved to, and the story is not done", (t) => {
+  const dirs = scratch(t, [story("US-1", { status: "reviewed" })]);
+  const { run } = start(dirs);
+  const wt = storyWork(dirs, run, "US-1");
+  step(dirs, run, "claim", { key: "US-1", stage: "testing" });
+  const { base } = step(dirs, run, "lane-prepare", { key: "US-1" });
+  const moved = landOn(dirs, "deliver/board", "other.rs");
+
+  const body = step(dirs, run, "lane-land", { key: "US-1", base });
+
+  assert.deepEqual(pick(body), { ok: true, key: "US-1", landed: false, reason: `deliver/board moved to ${moved.slice(0, 7)} since the base ${base.slice(0, 7)}` });
+  assert.equal(sha(dirs, "refs/heads/deliver/board"), moved);
+  assert.deepEqual([dirs.story("US-1").status, existsSync(wt)], ["testing", true]);
+});
+
+test("lane-land refuses a lane HEAD that does not descend from the base, or does not hold the story's branch, and moves nothing", (t) => {
+  const dirs = scratch(t, [story("US-1", { status: "reviewed" })]);
+  const { run, lane } = start(dirs);
+  storyWork(dirs, run, "US-1");
+  const tip = landOn(dirs, "deliver/board", "landed.rs");
+  step(dirs, run, "claim", { key: "US-1", stage: "testing" });
+  const { base } = step(dirs, run, "lane-prepare", { key: "US-1" });
+  const story1 = sha(dirs, "refs/heads/story/US-1");
+
+  git(lane, "checkout", "-q", "--detach", base);
+  const testsOnly = commit(lane, "only.test");
+  const dropped = step(dirs, run, "lane-land", { key: "US-1", base });
+  git(lane, "checkout", "-q", "--detach", `${base}^`);
+  const offBase = commit(lane, "elsewhere.test");
+  const elsewhere = step(dirs, run, "lane-land", { key: "US-1", base });
+
+  assert.deepEqual([dropped.landed, dropped.reason], [false, `the lane's HEAD ${testsOnly.slice(0, 7)} does not hold story/US-1 at ${story1.slice(0, 7)}`]);
+  assert.deepEqual([elsewhere.landed, elsewhere.reason], [false, `the lane's HEAD ${offBase.slice(0, 7)} does not descend from the base ${base.slice(0, 7)}`]);
+  assert.deepEqual([sha(dirs, "refs/heads/deliver/board"), dirs.story("US-1").status], [tip, "testing"]);
+});
+
+test("lane-land checks that the landed tree is the tested one: a branch moved again right after the swap is an error, and the story is not done", (t) => {
+  const dirs = scratch(t, [story("US-1", { status: "reviewed" })]);
+  const { run } = start(dirs);
+  storyWork(dirs, run, "US-1");
+  step(dirs, run, "claim", { key: "US-1", stage: "testing" });
+  const { base, candidate } = step(dirs, run, "lane-prepare", { key: "US-1" });
+  // Another writer puts the branch back at the base as soon as the swap is committed.
+  const once = join(dirs.root, "race");
+  writeFileSync(once, base);
+  hook(dirs, "reference-transaction", [
+    '[ "$1" = committed ] || exit 0',
+    "while read old new ref; do",
+    `  if [ "$ref" = refs/heads/deliver/board ] && [ -f "${once}" ]; then`,
+    `    target=$(cat "${once}"); rm "${once}"`,
+    '    git update-ref refs/heads/deliver/board "$target"',
+    "  fi",
+    "done",
+  ].join("\n"));
+
+  const body = step(dirs, run, "lane-land", { key: "US-1", base });
+
+  const tree = (rev) => git(dirs.repo, "rev-parse", `${rev}^{tree}`).trim().slice(0, 7);
+  assert.deepEqual([body.ok, body.error], [false, `deliver/board holds the tree ${tree(base)} after the landing, not ${tree(candidate)}, the tree of ${candidate.slice(0, 7)} that was tested`]);
+  assert.deepEqual([sha(dirs, "refs/heads/deliver/board"), dirs.story("US-1").status], [base, "testing"]);
+});
+
+test("lane-base and lane-reset put the lane worktree back at the tip of deliver/<slug>, clean and detached", (t) => {
+  const dirs = scratch(t, [story("US-1")]);
+  const { run, lane } = start(dirs);
+  storyWork(dirs, run, "US-1");
+  const tip = landOn(dirs, "deliver/board", "landed.rs");
+  step(dirs, run, "lane-prepare", { key: "US-1" });
+  const dirty = () => {
+    writeFileSync(join(lane, "README"), "edited\n");
+    writeFileSync(join(lane, "stray.txt"), "untracked\n");
+  };
+
+  dirty();
+  const onBase = step(dirs, run, "lane-base");
+  const atBase = [git(lane, "rev-parse", "HEAD").trim(), git(lane, "rev-parse", "--abbrev-ref", "HEAD").trim(), git(lane, "status", "--porcelain")];
+  git(lane, "checkout", "-q", "--detach", "refs/heads/story/US-1");
+  dirty();
+  const reset = step(dirs, run, "lane-reset");
+
+  assert.deepEqual([onBase.tip, reset.tip], [tip, tip]);
+  assert.deepEqual(atBase, [tip, "HEAD", ""]);
+  assert.deepEqual([git(lane, "rev-parse", "HEAD").trim(), git(lane, "rev-parse", "--abbrev-ref", "HEAD").trim(), git(lane, "status", "--porcelain")], [tip, "HEAD", ""]);
+});
+
+// ---- waiting for answers --------------------------------------------------------------
+
+test("wait-answers returns as soon as a blocked story's linked threads all have a conclusion", async (t) => {
+  const dirs = scratch(t, [story("US-5", { blocked: true, links: [questionLink("th-1")] })], [thread("th-1", "US-5: Which red?")]);
+  const { run } = start(dirs);
+  const child = spawn(process.execPath, [helper, ...stepArgv(dirs, run, "wait-answers", { opId: "wait-1", maxSeconds: 20 })], { cwd: dirs.repo, env: dirs.env });
+  let out = "";
+  child.stdout.on("data", (d) => { out += d; });
+  const closed = new Promise((resolve) => child.on("close", resolve));
+  const begun = Date.now();
+  await pause(1000);
+  // The human answers. The fake omni writes its whole state on each call, so
+  // the answer is written, whole, until the helper has seen it.
+  const statePath = dirs.env.FAKE_OMNI_STATE;
+  const answer = setInterval(() => {
+    try {
+      const s = dirs.state();
+      if (s.threads.find((th) => th.id === "th-1").conclusion) return;
+      s.threads.find((th) => th.id === "th-1").conclusion = "#c00";
+      writeFileSync(`${statePath}.tmp`, JSON.stringify(s));
+      renameSync(`${statePath}.tmp`, statePath);
+    } catch {}
+  }, 100);
+  await closed;
+  clearInterval(answer);
+
+  assert.deepEqual(pick(JSON.parse(out).body), { ok: true, answered: ["US-5"], waiting: [] });
+  assert.ok(Date.now() - begun < 6000, `${Date.now() - begun} ms`);
+});
+
+test("wait-answers returns at maxSeconds while no answer comes, with the stories that wait; at once when no story waits on a thread", (t) => {
+  const dirs = scratch(t, [story("US-5", { blocked: true, links: [questionLink("th-1")] }), story("US-6", { blocked: true })], [thread("th-1", "US-5: Which red?")]);
+  const { run } = start(dirs);
+
+  let begun = Date.now();
+  const late = step(dirs, run, "wait-answers", { maxSeconds: 1 });
+  const lateMs = Date.now() - begun;
+  dirs.edit((s) => { s.stories[0].links = []; });
+  begun = Date.now();
+  const none = step(dirs, run, "wait-answers", { maxSeconds: 20 });
+  const noneMs = Date.now() - begun;
+
+  assert.deepEqual([late.answered, late.waiting], [[], ["US-5"]]);
+  assert.ok(lateMs >= 1000 && lateMs < 4000, `${lateMs} ms`);
+  assert.deepEqual([none.answered, none.waiting], [[], []]);
+  assert.ok(noneMs < 3000, `${noneMs} ms`);
+});
+
+// ---- finish -----------------------------------------------------------------------------
+
+test("finish stops the run's jobs that still run, posts the report on the run's thread from a body file, keeps it as report.md, and gives the lock up", async (t) => {
+  const dirs = scratch(t, [
+    story("US-1", { status: "reviewed", criteria: [{ text: "The badge is red", human_check: false }, { text: "It looks right", human_check: true }] }),
+    story("US-2", { blocked: true, links: [questionLink("th-1")] }),
+  ], [thread("th-1", "US-2: Which red?")]);
+  const { run, lane, thread: runThread } = start(dirs);
+  const wt = storyWork(dirs, run, "US-1");
+  const feat = git(wt, "rev-parse", "HEAD").trim().slice(0, 7);
+  step(dirs, run, "claim", { key: "US-1", stage: "testing" });
+  const { base } = step(dirs, run, "lane-prepare", { key: "US-1" });
+  const fast = step(dirs, run, "job-start", { name: "fast", key: "US-1", cmd: "true", cwd: lane });
+  step(dirs, run, "job-wait", { id: fast.id, maxSeconds: 30 });
+  const tests = commit(lane, "badge.test").slice(0, 7);
+  step(dirs, run, "lane-land", { key: "US-1", base });
+  const stack = step(dirs, run, "job-start", { name: "stack", key: "US-1", cmd: "sleep 30", cwd: lane });
+  const { pgid } = jobOf(dirs, run, stack.id);
+  const report = {
+    outcomes: [{ key: "US-1", outcome: "done" }, { key: "US-2", outcome: "blocked", detail: "a question for the human" }],
+    council: { settled: 2, asked: 1 },
+    blocked: [{ key: "US-2", threads: ["th-1"] }],
+    journeys: ["healthy: the badge flow works"],
+    notes: ["The lane stopped once: the stack did not start."],
+  };
+
+  const body = step(dirs, run, "finish", { report });
+
+  assert.deepEqual(pick(body), { ok: true, thread: runThread, posted: true, report: runFile(dirs, run, "report.md"), stopped: [stack.id] });
+  assert.ok(await eventually(() => gone(-pgid)), "the running job was stopped");
+  assert.equal(existsSync(dirs.lock), false);
+  const posts = dirs.state().threads.find((th) => th.id === runThread).posts;
+  const text = readFileSync(body.report, "utf8");
+  assert.deepEqual(posts, [{ summary: `Report of ${run}`, body: text }]);
+  const post = dirs.state().calls.find((c) => c.argv[0] === "post" && c.argv[1] === runThread);
+  assert.equal(existsSync(post.argv[post.argv.indexOf("--body-file") + 1]), false, "the body file is gone once posted");
+  const [top, timings] = text.split("## Timings\n");
+  assert.equal(top, `# Run ${run} on board
+
+The lane stopped once: the stack did not start.
+
+## Landed on deliver/board
+- US-1 Story US-1: ${feat} feat: badge.rs; ${tests} feat: badge.test
+
+Bring them into your branch with \`git merge --ff-only deliver/board\`.
+
+## Blocked
+- US-2 Story US-2: thread th-1
+
+## Outcomes
+- US-1 Story US-1: done
+- US-2 Story US-2: blocked: a question for the human
+
+## Council
+- 2 questions settled by the council, 1 sent to the human
+
+## Pending human checks
+- US-1: It looks right
+
+## Journeys
+- healthy: the badge flow works
+
+`);
+  assert.match(timings, /^The run took \d+s\.\n\n\| Story \| Total \| implementing \| review \| testing \| rebase \| fast \| stack \|\n\|---\|---\|---\|---\|---\|---\|---\|---\|\n\| US-1 \| \d+s \| - \| - \| \d+s \| \d+s \| \d+s \| \d+s \|\n$/);
 });
