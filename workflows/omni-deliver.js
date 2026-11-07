@@ -400,13 +400,19 @@ const CONVENTIONS = conventions('Work on the CURRENT branch. Do not push, create
 // The earlier findings of the story, by attempt: those since the human's
 // latest answer to fix, those that used no attempt, and those before the
 // answer for what failed before it. The helper gives those that keep its
-// answer small, and counts the rest, which the board holds.
+// answer small, each cut in the middle when it is long, and counts the rest,
+// which the board holds; once it left one out or cut one, the prompt names
+// the command that reads them all.
 const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`
+const shortened = (ctx) => [
+  ctx.omitted ? plural(ctx.omitted, 'more finding is left out', 'more findings are left out') : '',
+  ctx.cut ? plural(ctx.cut, 'finding is cut', 'findings are cut') : '',
+].filter(Boolean).join(' and ')
 const findingsSection = (ctx, fixing, role) => [
   ctx.findings.length ? `\n\n### Findings of the earlier attempts (${fixing})\n${byAttempt(ctx.findings)}` : '',
   ctx.uncounted.length ? `\n\n### Other open findings (${fixing}; they used no attempt)\n${ctx.uncounted.map(findingLine).join('\n')}` : '',
   ctx.earlier.length ? `\n\n### Findings before the human's latest answer (what failed before it)\n${byAttempt(ctx.earlier)}` : '',
-  ctx.omitted ? `\n\n${plural(ctx.omitted, 'more finding is', 'more findings are')} left out here, to keep this short: \`${omniAs(role)} story read ${ctx.story.key}\` shows every one.` : '',
+  ctx.omitted || ctx.cut ? `\n\n${shortened(ctx)} here, to keep this short: \`${omniAs(role)} story read ${ctx.story.key}\` shows every finding in full.` : '',
 ].join('')
 const FRESH = 'Implement the story: build what the criteria above require, commit it, and return the result.'
 const CONTINUE = 'A worktree of an earlier attempt is in place, with its commits and what it left uncommitted: continue from it, do not start over, and fix every finding above.'
@@ -755,7 +761,7 @@ The lane ran its checks on every story before it landed, so run none of them you
 ${BOARD}
 
 ## Your task now
-1. Each story was checked on its own. Find the user journeys in the feature's docs (\`${omniAs('final')} doc list\`, then \`${omniAs('final')} doc read <doc>\`) and in these stories (\`${omniAs('final')} story read <key>\`) that span several of them (one story's output is another's input, a flow through several screens or endpoints), and exercise up to 3 of them for real, with the real components${checks.stack ? `, using the stack command \`${checks.stack}\`` : ''}. Report each with its outcome.
+1. Each story was checked on its own. Find the user journeys in the feature's docs (\`${omniAs('final')} doc list\`, then \`${omniAs('final')} doc read <doc>\`) and in these stories (\`${omniAs('final')} story read <key>\`) that span several of them (one story's output is another's input, a flow through several screens or endpoints), and exercise up to 3 of them for real, with the real components. Report each with its outcome.
 2. Stop every process and remove every container you started for the journeys, and confirm none is left.
 Do NOT change any code. healthy is false if the lane's last check failed or a journey fails; a failure is reported, not repaired.
 Return raw structured data only.`
@@ -1127,7 +1133,9 @@ const recordDecisions = async (ctx, decisions) => {
 // What the worktree step found when a review started, for the story's next
 // implementer: a worktree it put back on story/<key>, with the commits to
 // bring over, which the next implementing finds on story/<key> with nothing
-// to say, or one it left with work in progress, which it finds again.
+// to say, or one it left with work in progress, which it finds again. A
+// review that passes clears it: the story went on without those commits, and
+// an implementer after a failure in the lane is not told to bring them over.
 const foundAt = new Map()
 
 // One attempt's implementing: the claim, the worktree, the implementer, run
@@ -1241,6 +1249,7 @@ const assess = async (key, wt) => {
   const verdict = await review(key, path)
   if (verdict.outcome) return verdict
   if (verdict.pass) {
+    foundAt.delete(key)
     await step('move', { key, to: 'reviewed' })
     return { reviewed: true }
   }

@@ -852,6 +852,25 @@ test("what the worktree step found when a review started reaches the next implem
   assert.deepEqual(result.outcomes, [{ key: "US-1", outcome: "done" }]);
 });
 
+test("a review that passes clears what the worktree step found when it started: the implementer after a lane failure is not told to cherry-pick the commits the review went without", { timeout: 120000 }, async (t) => {
+  const dirs = scratch(t, [story("US-1", { status: "implemented", criteria: [{ text: "The badge is red", human_check: false }] })]);
+  const wt = dirs.worktree("US-1");
+  git(dirs.repo, "worktree", "add", "-q", "-b", "story/US-1", wt);
+  commit(wt, "US-1.txt");
+  git(wt, "checkout", "-q", "-b", "side");
+  commit(wt, "side.txt");
+  const roles = { "verify:US-1": [verified({ 0: "The badge is blue" })] };
+
+  const { result, error, calls, logs } = await deliver(dirs, {}, roles);
+
+  assert.equal(error, null);
+  assert.ok(logs.some((l) => l.startsWith(`US-1: ${wt} had the branch side checked out, not story/US-1`)), logs.join("\n"));
+  const [impl] = agentsOf(calls, "impl:US-1");
+  assert.ok(impl.prompt.includes('\n- [testing] Criterion not met when run: "The badge is red". The badge is blue\n'), impl.prompt);
+  assert.doesNotMatch(impl.prompt, /cherry-pick/);
+  assert.deepEqual(result.outcomes, [{ key: "US-1", outcome: "done" }]);
+});
+
 test("a story waiting in implemented starts at its review; a criterion that names a test is a test obligation, marked so, that the review never judges, whether clarity recorded it or not", { timeout: 60000 }, async (t) => {
   const criteria = [{ text: "The badge is red", human_check: false }, { text: "A regression test covers the badge", human_check: false }];
   const dirs = scratch(t, [story("US-1", { status: "implemented", criteria }), story("US-2", { criteria })]);
@@ -1075,7 +1094,7 @@ Attempt 1:
   assert.deepEqual(result.outcomes.map((o) => [o.key, o.outcome]).sort(), [["US-1", "attempts_exhausted"], ["US-2", "attempts_exhausted"]]);
 });
 
-test("findings that outgrow the helper's answer come cut to their first 1,500 characters, the newest that fit, and a count of the rest: the implementer and the reviewer are told how to read every one, and the thread of a story out of attempts says how many more the story holds", { timeout: 120000 }, async (t) => {
+test("findings that outgrow the helper's answer come cut to their head and tail, 1,500 characters at most, the newest that fit, and a count of the rest: the implementer and the reviewer are told how to read every one in full, and the thread of a story out of attempts says how many more the story holds", { timeout: 120000 }, async (t) => {
   const many = (attempt, n) => Array.from({ length: n }, (_, i) => ({ stage: "review", text: `[attempt ${attempt}] a${attempt}-${i + 1} ${"x".repeat(3000)}`, files: [], resolved: false }));
   // 11 cut findings fit beside a story: US-1 leaves out 5 of its 16, and US-2 4 of its 15.
   const dirs = scratch(t, [story("US-1", { findings: [...many(1, 8), ...many(2, 8)] }), story("US-2", { findings: [...many(1, 5), ...many(2, 5), ...many(3, 5)] })]);
@@ -1086,12 +1105,36 @@ test("findings that outgrow the helper's answer come cut to their first 1,500 ch
   const [impl] = agentsOf(calls, "impl:US-1");
   const [review] = agentsOf(calls, "review:US-1");
   for (const [prompt, role] of [[impl.prompt, "impl"], [review.prompt, "review"]]) {
-    assert.ok(prompt.includes(`\n\n5 more findings are left out here, to keep this short: \`OMNI_RUN=${result.run} OMNI_ROLE=${role} OMNI_FEATURE='board' omni story read US-1\` shows every one.`), prompt);
-    assert.ok(prompt.includes(`\n- [review] a2-1 ${"x".repeat(1474 - "a2-1 ".length)}… (full text on the board)\n`), prompt);
+    assert.ok(prompt.includes(`\n\n5 more findings are left out and 11 findings are cut here, to keep this short: \`OMNI_RUN=${result.run} OMNI_ROLE=${role} OMNI_FEATURE='board' omni story read US-1\` shows every finding in full.`), prompt);
+    assert.match(prompt, /\n- \[review\] a2-1 x+\n… \(cut; full text on the board\)\nx+\n/);
   }
   const [exhausted] = questions(dirs).filter((th) => th.title === "US-2: still failing after 3 attempts");
-  assert.ok(exhausted.posts[0].body.endsWith("… (full text on the board)\n\n4 more findings are on the story.\n"), exhausted.posts[0].body);
+  assert.match(exhausted.posts[0].body, /\n… \(cut; full text on the board\)\nx+\n\n4 more findings are on the story\.\n$/);
   assert.deepEqual(result.outcomes.map((o) => [o.key, o.outcome]).sort(), [["US-1", "done"], ["US-2", "attempts_exhausted"]]);
+});
+
+test("a check's finding past 1,500 characters loses the middle of its output, not its end: the next implementer and reviewer get its header, its last error, the closing fence and the verdict that it passes without the story, and are told how to read it in full", { timeout: 120000 }, async (t) => {
+  const dirs = scratch(t, [story("US-1", { criteria: [{ text: "The badge is red", human_check: false }] })]);
+  const count = join(dirs.root, "count");
+  // Fails once, on the story's first lane pass, with a log whose last line names the error; passes after.
+  const fast = `n=$(cat ${count} 2>/dev/null || echo 0); echo $((n+1)) > ${count}; if [ "$n" = 0 ]; then seq 1 600; echo "FINAL-$((6*7))-ERROR at src/badge.rs"; exit 1; fi; true`;
+
+  const { result, error, calls } = await deliver(dirs, { implementers: 1, checks: { fast } });
+
+  assert.equal(error, null);
+  const onBoard = dirs.story("US-1").findings.map((f) => f.text);
+  assert.deepEqual(onBoard.map((text) => [text.length > 1500, text.endsWith("FINAL-42-ERROR at src/badge.rs\n```\nIt passes on deliver/board without the story.")]), [[true, true]]);
+  const [, impl] = agentsOf(calls, "impl:US-1");
+  const [, review] = agentsOf(calls, "review:US-1");
+  for (const [prompt, role] of [[impl.prompt, "impl"], [review.prompt, "review"]]) {
+    const [, finding] = prompt.match(/\nAttempt 1:\n- \[testing\] ([\s\S]*?)\n\n(?:1 finding is cut here|## The linked docs)/);
+    assert.ok(finding.startsWith(`The fast check (\`${fast}\`) failed. The end of its output:\n\`\`\`\n`), finding);
+    assert.ok(finding.includes("\n… (cut; full text on the board)\n"), finding);
+    assert.ok(finding.endsWith("\n600\nFINAL-42-ERROR at src/badge.rs\n```\nIt passes on deliver/board without the story."), finding);
+    assert.equal((finding.match(/^```/gm) || []).length, 2, finding);
+    assert.ok(prompt.includes(`\n\n1 finding is cut here, to keep this short: \`OMNI_RUN=${result.run} OMNI_ROLE=${role} OMNI_FEATURE='board' omni story read US-1\` shows every finding in full.`), prompt);
+  }
+  assert.deepEqual(result.outcomes, [{ key: "US-1", outcome: "done" }]);
 });
 
 test("an implementer's question the council settles becomes an agent decision and the implementer runs again with it; a reviewer's question it cannot settle opens a thread and blocks the story", { timeout: 60000 }, async (t) => {
@@ -2144,7 +2187,7 @@ test("the run ends with the journeys check in the lane worktree, then finish get
   assert.deepEqual(phases, ["Start", "Unblock", "Clarity", "Deliver", "Report"]);
 });
 
-test("the journeys check runs no check itself, since its Bash call stops after 10 minutes, and is told the lane's last check instead: here the fast check that failed on deliver/<slug> without the story after the one that landed, and stopped the lane", { timeout: 120000 }, async (t) => {
+test("the journeys check runs no check itself, nor the stack command, since its Bash call stops after 10 minutes, and is told the lane's last check instead: here the fast check that failed on deliver/<slug> without the story after the one that landed, and stopped the lane", { timeout: 120000 }, async (t) => {
   const dirs = scratch(t, [story("US-1"), story("US-2", { blocked_by: ["US-1"] })]);
   const fast = "if [ -e ../red ]; then echo the fast check is red; exit 1; fi";
   // US-2's implementer turns the fast check red for every tree, once US-1 has landed.
@@ -2160,6 +2203,7 @@ test("the journeys check runs no check itself, since its Bash call stops after 1
   const [final] = agentsOf(calls, "final");
   assert.ok(final.prompt.includes(`\n## The lane's checks\nThe lane ran its checks on every story before it landed, so run none of them yourself, not even the fast command: your Bash call stops after 10 minutes, and a check can take longer. The lane's last check, fast (\`${fast}\`) on deliver/board without US-2, failed. The end of its output:\n\`\`\`\nthe fast check is red\n\`\`\`\n`), final.prompt);
   assert.doesNotMatch(final.prompt, /Run the fast command/);
+  assert.ok(final.prompt.includes(" and exercise up to 3 of them for real, with the real components. Report each with its outcome.\n"), final.prompt);
   assert.equal(final.schema.properties.healthy.description, "The lane's last check passed and every cross-story journey worked");
 });
 

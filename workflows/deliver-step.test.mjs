@@ -8,7 +8,7 @@ import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { fnv1a, waitSeconds } from "./deliver-step.mjs";
 
 const helper = fileURLToPath(new URL("./deliver-step.mjs", import.meta.url));
@@ -181,6 +181,12 @@ const runFile = (dirs, run, name) => join(dirs.repo, ".omni", "runs", run, name)
 const jobOf = (dirs, run, id) => JSON.parse(readFileSync(runFile(dirs, run, join("jobs", `${id}.job.json`)), "utf8"));
 // True once no process has that pid, or with a negative pid, that group.
 const gone = (pid) => { try { process.kill(pid, 0); return false; } catch (e) { return e.code === "ESRCH"; } };
+// The pid of the process that runs __supervise on this job file, as ps shows it.
+const supervisorOf = (jobFile) => {
+  const line = execFileSync("ps", ["-ax", "-ww", "-o", "pid=,args="], { encoding: "utf8" }).split("\n").find((l) => l.includes("__supervise") && l.includes(jobFile));
+  assert.ok(line, `no supervisor of ${jobFile}`);
+  return Number(line.trim().split(/\s+/)[0]);
+};
 async function eventually(check, ms = 5000) {
   for (const end = Date.now() + ms; !check(); await pause(50)) if (Date.now() > end) return false;
   return true;
@@ -1074,7 +1080,7 @@ test("context gives the resolved findings of the attempts before the latest answ
   assert.deepEqual([body.attempt, body.findings], [1, [{ attempt: 1, findings: [{ stage: "review", text: "Now too light", files: [] }] }]]);
 });
 
-test("context gives each finding's first 1,500 characters, saying the rest is on the board, and stays within 20,000 characters: of the findings, those of the latest attempt first, those before the latest answer last, and how many it left out", (t) => {
+test("context gives each finding cut to its head and tail, 1,500 characters at most, saying the rest is on the board, and stays within 20,000 characters: of the findings, those of the latest attempt first, those before the latest answer last, and how many it left out and cut", (t) => {
   const finding = (attempt, name, resolved = false) => ({ stage: "review", text: `[attempt ${attempt}] ${name} ${"x".repeat(3000)}`, files: [], resolved });
   const named = (n, attempt, prefix, resolved) => Array.from({ length: n }, (_, i) => finding(attempt, `${prefix}-${i + 1}`, resolved));
   const dirs = scratch(t, [story("US-1", { findings: [...named(2, 1, "before", true), ...named(8, 1, "first"), ...named(8, 2, "second")] })]);
@@ -1083,10 +1089,51 @@ test("context gives each finding's first 1,500 characters, saying the rest is on
   const body = step(dirs, run, "context", { key: "US-1" });
 
   const names = (groups) => groups.map((g) => [g.attempt, g.findings.map((f) => f.text.split(" ")[0])]);
-  // 11 findings of 1,500 characters fit beside the story: the 8 of attempt 2, then the first 3 of attempt 1.
-  assert.deepEqual([names(body.findings), names(body.earlier), body.omitted], [[[1, ["first-1", "first-2", "first-3"]], [2, Array.from({ length: 8 }, (_, i) => `second-${i + 1}`)]], [], 7]);
-  for (const f of body.findings.flatMap((g) => g.findings)) assert.deepEqual([f.text.length, f.text.endsWith("x… (full text on the board)")], [1500, true]);
+  // 11 findings cut to 1,500 characters fit beside the story: the 8 of attempt 2, then the first 3 of attempt 1.
+  assert.deepEqual([names(body.findings), names(body.earlier), body.omitted, body.cut], [[[1, ["first-1", "first-2", "first-3"]], [2, Array.from({ length: 8 }, (_, i) => `second-${i + 1}`)]], [], 7, 11]);
+  for (const f of body.findings.flatMap((g) => g.findings)) assert.deepEqual([f.text.length <= 1500, /^\S+ x+\n… \(cut; full text on the board\)\nx+$/.test(f.text)], [true, true], f.text);
   assert.ok(JSON.stringify({ body, hash: fnv1a(JSON.stringify(body)) }).length <= 20000);
+});
+
+test("a finding is cut in the middle, on a line that says so: a check's keeps its header and its end, the last error, the closing fence and the verdict; a code block the head leaves open is closed, one the tail starts inside is opened again, and one the finding never closes is closed at its end", (t) => {
+  const log = Array.from({ length: 600 }, (_, i) => i + 1).join("\n");
+  const texts = [
+    `The fast check (\`make check\`) failed. The end of its output:\n\`\`\`\n${log}\nFINAL-ERROR at src/badge.rs\n\`\`\`\nIt passes on deliver/board without the story.`,
+    `Seen:\n\`\`\`\n${"a".repeat(3000)}\n\`\`\`\n${"b".repeat(3000)}`,
+    `${"a".repeat(3000)}\n\`\`\`\n${"b".repeat(3000)}\n\`\`\`\nEnd.`,
+    `${"a".repeat(3000)}\n\`\`\`\n${"b".repeat(3000)}`,
+  ];
+  const dirs = scratch(t, [story("US-1", { findings: texts.map((text) => ({ stage: "testing", text: `[attempt 1] ${text}`, files: [], resolved: false })) })]);
+  const { run } = start(dirs);
+
+  const cut = step(dirs, run, "context", { key: "US-1" }).findings[0].findings.map((f) => f.text);
+
+  const fences = (text) => (text.match(/^```/gm) || []).length;
+  assert.deepEqual(cut.map((text) => [text.length <= 1500, fences(text)]), [[true, 2], [true, 2], [true, 2], [true, 2]]);
+  assert.match(cut[0], /^The fast check \(`make check`\) failed\. The end of its output:\n```\n1\n2\n3\n[\d\n]+\n… \(cut; full text on the board\)\n[\d\n]+\n600\nFINAL-ERROR at src\/badge\.rs\n```\nIt passes on deliver\/board without the story\.$/);
+  assert.match(cut[1], /^Seen:\n```\na+\n```\n… \(cut; full text on the board\)\nb+$/);
+  assert.match(cut[2], /^a+\n… \(cut; full text on the board\)\n```\nb+\n```\nEnd\.$/);
+  assert.match(cut[3], /^a+\n… \(cut; full text on the board\)\n```\nb+\n```$/);
+});
+
+test("context gives the findings that used no attempt, which say how to resolve a rebase conflict, first and whatever the room, and the newest attempt's even when the story's text and decisions leave no room; of the rest, those that fit", (t) => {
+  const long = (attempt, name) => ({ stage: "review", text: `[attempt ${attempt}] ${name} ${"x".repeat(3000)}`, files: [], resolved: false });
+  const conflict = { stage: "testing", text: "rebase conflict in README: rebase it onto deliver/board and resolve the conflicts", files: ["README"], resolved: false };
+  const dirs = scratch(t, [
+    story("US-1", { findings: [...Array.from({ length: 10 }, (_, i) => long(1, `first-${i + 1}`)), long(2, "second-1"), long(2, "second-2"), conflict] }),
+    story("US-2", { text: "y".repeat(19000), findings: [long(1, "first-1"), long(2, "second-1"), conflict] }),
+  ]);
+  const { run } = start(dirs);
+
+  const roomy = step(dirs, run, "context", { key: "US-1" });
+  const full = step(dirs, run, "context", { key: "US-2" });
+
+  const names = (groups) => groups.map((g) => [g.attempt, g.findings.map((f) => f.text.split(" ")[0])]);
+  const conflicts = (body) => body.uncounted.map((f) => f.text);
+  // Beside the conflict and the 2 of attempt 2, the first 9 of attempt 1 fit.
+  assert.deepEqual([names(roomy.findings), conflicts(roomy), roomy.omitted], [[[1, Array.from({ length: 9 }, (_, i) => `first-${i + 1}`)], [2, ["second-1", "second-2"]]], [conflict.text], 1]);
+  // The story's text alone passes the room.
+  assert.deepEqual([names(full.findings), conflicts(full), full.omitted, full.cut], [[[2, ["second-1"]]], [conflict.text], 1, 1]);
 });
 
 test("a story list past 1 MB is read whole", (t) => {
@@ -1783,14 +1830,74 @@ test("job-kill finds the job of a job-start whose answer never came back by that
 
   // The supervisor is spawned right after the job file is written.
   await cutOff(t, dirs, run, "job-start", obj, heldFor(() => existsSync(join(dir, "US-1-fast-1.job.json")), 300));
-  const body = step(dirs, run, "job-kill", { start: "job-cut" });
+  // job-kill takes that lock too: the supervisor, stopped where it waits, takes it only after job-kill.
+  const supervisor = supervisorOf(join(dir, "US-1-fast-1.job.json"));
+  process.kill(supervisor, "SIGSTOP");
+  t.after(() => { try { process.kill(supervisor, "SIGKILL"); } catch {} });
   rmSync(lock);
-  await pause(1000);
+  const body = step(dirs, run, "job-kill", { start: "job-cut" });
+  process.kill(supervisor, "SIGCONT");
+  assert.ok(await eventually(() => gone(supervisor)), "the supervisor left");
   const none = step(dirs, run, "job-kill", { start: "job-never" });
 
   assert.deepEqual([body.ok, body.id, body.killed, body.done, body.result?.ok, body.result?.error], [true, "US-1-fast-1", false, true, false, "the supervisor of the job US-1-fast-1 ended without its result"]);
   assert.equal(existsSync(ran), false, "the job never started");
   assert.deepEqual(pick(none), { ok: true, id: null, killed: false, done: false });
+});
+
+// Loaded into a supervisor with --import, it holds the supervisor inside the
+// job file's lock, past its look for a result, where it opens the job's log,
+// while a job-kill it starts there runs: until that job-kill has answered, or
+// has tried to take the lock, which this file, loaded into it too, marks.
+const RACE_HOOK = `import fs from "node:fs";
+import { spawn } from "node:child_process";
+const race = JSON.parse(process.env.RACE);
+const nap = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+if (process.argv.includes("__supervise")) {
+  const open = fs.openSync;
+  fs.openSync = (...a) => {
+    if (a[0] === race.log && a[1] === "a" && !fs.existsSync(race.out)) {
+      const out = open(race.out, "w");
+      spawn(process.execPath, ["--import", race.hook, ...race.kill], { cwd: race.cwd, stdio: ["ignore", out, "ignore"] });
+      for (const until = Date.now() + 20000; Date.now() < until && !fs.existsSync(race.tried) && !fs.readFileSync(race.out, "utf8").endsWith("\\n"); ) nap(20);
+    }
+    return open(...a);
+  };
+} else {
+  const write = fs.writeFileSync;
+  fs.writeFileSync = (file, ...rest) => {
+    if (String(file).endsWith(".job.json.lock")) write(race.tried, "");
+    return write(file, ...rest);
+  };
+}
+`;
+
+test("job-kill never loses a job its supervisor is starting: the supervisor looked for a result under the job file's lock, and job-kill, which waits for that lock, finds the job started and stops it, and the result it gives stays", async (t) => {
+  const dirs = scratch(t);
+  const { run, lane } = start(dirs);
+  const dir = runFile(dirs, run, "jobs");
+  mkdirSync(dir, { recursive: true });
+  // A job-start whose answer never came back made the job, and spawned its supervisor.
+  const jobFile = join(dir, "US-1-fast-1.job.json");
+  writeFileSync(jobFile, JSON.stringify({ id: "US-1-fast-1", run, name: "fast", key: "US-1", cmd: "sleep 5", cwd: lane, limitMs: 60000 }));
+  writeFileSync(join(dir, "US-1-fast-1.log"), "");
+  writeFileSync(runFile(dirs, run, "applied.json"), JSON.stringify({ ...appliedOf(dirs, run), "job-start": { "js-1": { pending: true, received: "x", id: "US-1-fast-1" } } }));
+  const hook = join(dirs.root, "race.mjs");
+  writeFileSync(hook, RACE_HOOK);
+  const race = { log: join(dir, "US-1-fast-1.log"), out: join(dirs.root, "kill.out"), tried: join(dirs.root, "kill.tried"), hook: pathToFileURL(hook).href, kill: [helper, ...stepArgv(dirs, run, "job-kill", { opId: "kill-1", start: "js-1" })], cwd: dirs.repo };
+  const supervisor = spawn(process.execPath, ["--import", race.hook, helper, "__supervise", jobFile], { cwd: dirs.repo, env: { ...dirs.env, RACE: JSON.stringify(race) }, detached: true, stdio: "ignore" });
+  let exited = false;
+  supervisor.on("exit", () => { exited = true; });
+  t.after(() => { try { process.kill(supervisor.pid, "SIGKILL"); } catch {} });
+
+  assert.ok(await eventually(() => existsSync(race.out) && readFileSync(race.out, "utf8").endsWith("\n"), 30000), "job-kill answered");
+  assert.ok(await eventually(() => exited, 15000), "the supervisor ended");
+  const { body } = JSON.parse(readFileSync(race.out, "utf8"));
+  const result = JSON.parse(readFileSync(join(dir, "US-1-fast-1.json"), "utf8"));
+
+  assert.deepEqual([body.ok, body.id, body.killed, body.done, body.result.ok, body.result.signal], [true, "US-1-fast-1", true, true, false, "SIGTERM"]);
+  assert.ok(body.tail.endsWith("\nStopped: the job US-1-fast-1 was stopped before it ended.\n"), body.tail);
+  assert.deepEqual(result, body.result);
 });
 
 // ---- the lane ---------------------------------------------------------------------------

@@ -58,9 +58,10 @@
 //   attempt first, then in the board's order: priority, then how many stories
 //   each one unblocks, then number)
 // - context {key}: story, decisions, attempt, findings, uncounted, earlier,
-//   omitted (how many findings it left out, to stay small), docs, threads,
-//   clarified (whether the clarity cache has a hash of the story; a story
-//   version the old runner kept there is not a check of this workflow's)
+//   omitted (how many findings it left out, to stay small), cut (how many of
+//   those it gives it cut in the middle), docs, threads, clarified (whether
+//   the clarity cache has a hash of the story; a story version the old
+//   runner kept there is not a check of this workflow's)
 // - claim {key, stage}, rework {key}, release {key}, move {key, to}, block
 //   {key} and unblock {key}: key, status, blocked, holder. rework moves a
 //   story sent back to the backlog and claims it for implementing, in one
@@ -112,7 +113,8 @@
 // pass about 20,000 characters: never doc text; of a job's log only its last
 // 2 KB, and only when the job failed; of a list of files or log lines at most
 // 20; of the board's stories only the open ones; of a story's findings each
-// one's first 1,500 characters, and the newest that keep its context within
+// one's head and tail, 1,500 characters at most, those that used no attempt
+// and the newest attempt's, and then the newest that keep its context within
 // 18,000.
 //
 // The lane, story by story: lane-prepare; the checks as jobs in the lane
@@ -788,12 +790,37 @@ const threadsOf = (b, story) => {
 // and an answer restarts the budget.
 const ATTEMPT = /^\[attempt (\d+)\] ?/
 const attemptOf = (story) => (story.findings || []).filter((f) => !f.resolved).reduce((n, f) => Math.max(n, Number((String(f.text).match(ATTEMPT) || [])[1] || 0)), 0)
-// A finding as a context gives it, since a courier repeats every byte: its
-// first 1,500 characters, the story on the board holding the rest. A check's
-// finding quotes the end of its output, and comes back in every later prompt.
+// A finding as a context gives it, since a courier repeats every byte: at
+// most 1,500 characters, its head and its tail on either side of a line that
+// marks the cut, the story on the board holding it whole. A check's finding
+// quotes the end of its output and ends in its last error, the closing fence
+// and the verdict, which the tail keeps; it comes back in every later prompt.
+// A fence the cut goes through goes with the middle; a code block the head
+// leaves open is closed, one the tail starts inside is opened again, and one
+// the text leaves open is closed at its end, so that no prompt reads on as
+// code after it.
 const FINDING_CHARS = 1500
-const MORE = '… (full text on the board)'
-const cut = (text) => (text.length > FINDING_CHARS ? `${text.slice(0, FINDING_CHARS - MORE.length)}${MORE}` : text)
+const CUT = '… (cut; full text on the board)'
+const FENCE = '```'
+// Each fence of a text, a ``` that starts a line, as [start, end].
+const fencesIn = (text) => [...text.matchAll(/^ {0,3}```/gm)].map((m) => [m.index, m.index + m[0].length])
+const cut = (text) => {
+  if (text.length <= FINDING_CHARS) return text
+  // The head and the tail share what the cut's line, a fence beside it and
+  // one at the end leave.
+  const room = FINDING_CHARS - `\n${CUT}\n`.length - 2 * `${FENCE}\n`.length
+  const fences = fencesIn(text)
+  let head = Math.ceil(room / 2)
+  let tail = text.length - (room - head)
+  for (const [from, to] of fences) {
+    if (from < head && head < to) head = from
+    if (from < tail && tail < to) tail = to
+  }
+  const open = (at) => fences.filter(([, to]) => to <= at).length % 2 === 1
+  const shut = open(head) && !open(tail) ? `\n${FENCE}` : ''
+  const reopen = open(tail) && !open(head) ? `\n${FENCE}` : ''
+  return `${text.slice(0, head)}${shut}\n${CUT}${reopen}\n${text.slice(tail)}${open(text.length) ? `\n${FENCE}` : ''}`
+}
 // The open findings by attempt, with their numbers taken off, and apart from
 // them those that used no attempt (a rebase conflict).
 const budgetOf = (story) => {
@@ -825,21 +852,26 @@ const earlierOf = (story) => {
   return groups
 }
 // A story's findings grow with every attempt and every answer, so a context
-// gives those that fit in the room the rest of it leaves, in this order: the
-// attempts since the human's latest answer, the latest first, then those that
-// used no attempt, then those before the answer, the latest first. omitted
-// counts the rest, which the story on the board still holds.
+// gives, whatever the room, those that used no attempt, such as how to
+// resolve a rebase conflict, and then those of the newest attempt, even when
+// the story's text and decisions fill the room; after them, those that fit
+// in the room the rest of it leaves, in this order: the earlier attempts
+// since the human's latest answer, the latest first, then those before the
+// answer, the latest first. omitted counts the rest, which the story on the
+// board still holds, and cut those it gives cut in the middle.
 const CONTEXT_CHARS = 18000
 const fitted = (budget, room) => {
-  const order = [...[...budget.findings].reverse(), { findings: budget.uncounted }, ...[...budget.earlier].reverse()].flatMap((g) => g.findings)
+  const attempts = [...budget.findings].reverse()
+  const always = [...budget.uncounted, ...(attempts.length ? attempts[0].findings : [])]
+  const order = [...always, ...attempts.slice(1).flatMap((g) => g.findings), ...[...budget.earlier].reverse().flatMap((g) => g.findings)]
   const kept = new Set()
   for (const f of order) {
     room -= JSON.stringify(f).length + 1
-    if (room < 0) break
+    if (room < 0 && !always.includes(f)) break
     kept.add(f)
   }
   const keep = (groups) => groups.map((g) => ({ ...g, findings: g.findings.filter((f) => kept.has(f)) })).filter((g) => g.findings.length)
-  return { ...budget, findings: keep(budget.findings), uncounted: budget.uncounted.filter((f) => kept.has(f)), earlier: keep(budget.earlier), omitted: order.length - kept.size }
+  return { ...budget, findings: keep(budget.findings), earlier: keep(budget.earlier), omitted: order.length - kept.size, cut: [...kept].filter((f) => f.text.includes(CUT)).length }
 }
 // A finding's text without the attempt numbers it starts with: an uncounted
 // finding must never count as an attempt, and a counted one gets only its own.
@@ -1289,7 +1321,15 @@ const STEPS = {
     if (typeof id !== 'string' || !id) return { ok: false, error: 'the payload needs id, or start: the opId of a job-start' }
     const job = /^[\w.-]+$/.test(id) ? jobAt(dir, id) : null
     if (!job) return { ok: false, error: `no job ${id} in run ${b.runId}` }
-    const killed = !fs.existsSync(job.files.result) && stopJobs([{ run: b.runId, job }]).length > 0
+    // A supervisor looks for a result and starts its job under the job
+    // file's lock: a job not started yet is lost under that lock, so that its
+    // supervisor leaves it, and one started meanwhile is stopped as it runs.
+    const now = job.started ? job : withLock(job.files.job, () => {
+      const fresh = jobAt(dir, id) || job
+      if (!fresh.started && !fs.existsSync(job.files.result)) lose(fresh)
+      return fresh
+    })
+    const killed = !fs.existsSync(job.files.result) && stopJobs([{ run: b.runId, job: now }]).length > 0
     const result = readJson(job.files.result)
     return { id, killed, done: !!result, ...(result ? { result, tail: tailOf(job.files.log) } : {}) }
   },
