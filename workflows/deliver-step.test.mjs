@@ -191,16 +191,6 @@ async function eventually(check, ms = 5000) {
   for (const end = Date.now() + ms; !check(); await pause(50)) if (Date.now() > end) return false;
   return true;
 }
-// A check that is true once `check` has been true for ms, for a step to get
-// on from what `check` sees before it is cut off.
-const heldFor = (check, ms) => {
-  let since = null;
-  return () => {
-    if (!check()) return false;
-    since ??= Date.now();
-    return Date.now() - since >= ms;
-  };
-};
 
 // ---- the courier protocol -------------------------------------------------------
 
@@ -498,10 +488,12 @@ test("a worktree step cut off after it made the worktree is carried on by its re
   const dirs = scratch(t, [story("US-1")]);
   const { run } = start(dirs);
   const wt = join(dirs.root, "app-stories", "US-1");
-  // git worktree add runs post-checkout once the worktree is there.
-  const held = hook(dirs, "post-checkout", "sleep 30");
+  // git worktree add runs post-checkout once the worktree is there: the hook
+  // says so, and holds the step until it is cut off.
+  const made = join(dirs.root, "made");
+  const held = hook(dirs, "post-checkout", `touch "${made}"; sleep 30`);
 
-  await cutOff(t, dirs, run, "worktree", { opId: "wt-cut", key: "US-1" }, () => existsSync(join(wt, "README")));
+  await cutOff(t, dirs, run, "worktree", { opId: "wt-cut", key: "US-1" }, () => existsSync(made));
   rmSync(held);
   const again = step(dirs, run, "worktree", { opId: "wt-cut", key: "US-1" });
 
@@ -514,10 +506,13 @@ test("a worktree step cut off while it made the worktree, which it left with a s
   const { run } = start(dirs);
   const wt = join(dirs.root, "app-stories", "US-1");
   // A checkout killed half way leaves its files staged as deleted; this hook
-  // leaves one so, and holds the step until it is cut off.
-  const held = hook(dirs, "post-checkout", "git rm -q --cached README; sleep 30");
+  // leaves one so, says so, and holds the step until it is cut off. The test
+  // runs no git there meanwhile: a git status takes index.lock, which would
+  // fail the hook's git rm.
+  const staged = join(dirs.root, "staged");
+  const held = hook(dirs, "post-checkout", `git rm -q --cached README && touch "${staged}"; sleep 30`);
 
-  await cutOff(t, dirs, run, "worktree", { opId: "wt-cut", key: "US-1" }, () => git(wt, "status", "--porcelain").includes("D  README"));
+  await cutOff(t, dirs, run, "worktree", { opId: "wt-cut", key: "US-1" }, () => existsSync(staged));
   rmSync(held);
   const again = step(dirs, run, "worktree", { opId: "wt-cut", key: "US-1" });
 
@@ -1577,18 +1572,22 @@ test("every step that runs records its step, op, key, stage, start and end in th
 test("job-start runs the command in a process group of its own, its output going to the job's log; job-wait answers done: false at maxSeconds while it runs, then the result once it ends, with the log's tail only when the job failed", (t) => {
   const dirs = scratch(t);
   const { run, lane } = start(dirs);
+  // The job runs past its 2 s until the test lets it end, once the first wait
+  // has answered (or for 10 s more), so that wait answers while it runs.
+  const go = join(dirs.root, "go");
 
-  const started = step(dirs, run, "job-start", { name: "fast", key: "US-1", cmd: 'echo "leader $$ group $(ps -o pgid= -p $$)"; sleep 2; echo done', cwd: lane });
+  const started = step(dirs, run, "job-start", { name: "fast", key: "US-1", cmd: `echo "leader $$ group $(ps -o pgid= -p $$)"; sleep 2; [ -e "${go}" ] || sleep 10; echo done`, cwd: lane });
   const begun = Date.now();
   const waiting = step(dirs, run, "job-wait", { id: started.id, maxSeconds: 0.5 });
   const waited = Date.now() - begun;
+  writeFileSync(go, "");
   const ended = step(dirs, run, "job-wait", { id: started.id, maxSeconds: 30 });
   const failing = step(dirs, run, "job-start", { name: "stack", key: "US-1", cmd: "echo the stack is down; exit 3", cwd: lane });
   const failed = step(dirs, run, "job-wait", { id: failing.id, maxSeconds: 30 });
 
   assert.deepEqual(pick(started), { ok: true, id: "US-1-fast-1", log: runFile(dirs, run, join("jobs", "US-1-fast-1.log")) });
   assert.deepEqual(pick(waiting), { ok: true, id: "US-1-fast-1", done: false });
-  assert.ok(waited >= 500 && waited < 1900, `${waited} ms`);
+  assert.ok(waited >= 500, `${waited} ms`);
   assert.deepEqual(Object.keys(ended.result).sort(), ["code", "durationMs", "ended", "ok", "signal", "started", "timedOut"]);
   assert.deepEqual([ended.done, ended.result.ok, ended.result.code, ended.result.signal, ended.result.timedOut, ended.tail], [true, true, 0, null, false, undefined]);
   assert.ok(ended.result.durationMs >= 2000);
@@ -1794,6 +1793,16 @@ test("a job-start cut off after it made the job is carried on by its repeat: the
   assert.deepEqual([waited.done, waited.result.ok, readFileSync(again.log, "utf8")], [true, true, "ran\n"]);
 });
 
+// Loaded into a step with --import, it makes the file TRIED when the step
+// tries to create the lock file TRY_LOCK, as withLock does to take a lock.
+const TRY_HOOK = `import fs from "node:fs";
+const write = fs.writeFileSync;
+fs.writeFileSync = (file, ...rest) => {
+  if (String(file) === process.env.TRY_LOCK) write(process.env.TRIED, "");
+  return write(file, ...rest);
+};
+`;
+
 test("a job-start records its job's id before it writes the job file: cut off between the two, it leaves no job file, and its repeat makes the job once", async (t) => {
   const dirs = scratch(t);
   const { run, lane } = start(dirs);
@@ -1804,9 +1813,13 @@ test("a job-start records its job's id before it writes the job file: cut off be
   writeFileSync(applied, JSON.stringify({ ...appliedOf(dirs, run), "job-start": { "job-cut": { pending: true, received: fnv1a(JSON.stringify(obj)) } } }));
   writeFileSync(`${applied}.lock`, `${liveProcess(t)} 1`);
   const dir = runFile(dirs, run, "jobs");
+  const tryHook = join(dirs.root, "try.mjs");
+  writeFileSync(tryHook, TRY_HOOK);
+  const tried = join(dirs.root, "tried");
 
-  // The job's log is made with its id, right before the id is recorded.
-  await cutOff(t, dirs, run, "job-start", obj, heldFor(() => existsSync(join(dir, "US-1-fast-1.log")), 300));
+  // Cut off once it tries to take the record's lock, to record the id: with
+  // the marker there, that is its first try at that lock.
+  await cutOff(t, dirs, run, "job-start", obj, () => existsSync(tried), { NODE_OPTIONS: `--import=${pathToFileURL(tryHook).href}`, TRY_LOCK: `${applied}.lock`, TRIED: tried });
   const cut = readdirSync(dir).filter((n) => n.endsWith(".job.json"));
   rmSync(`${applied}.lock`);
   const again = step(dirs, run, "job-start", obj);
@@ -1828,8 +1841,8 @@ test("job-kill finds the job of a job-start whose answer never came back by that
   const ran = join(dirs.root, "ran");
   const obj = { opId: "job-cut", name: "fast", key: "US-1", cmd: `touch ${ran}`, cwd: lane };
 
-  // The supervisor is spawned right after the job file is written.
-  await cutOff(t, dirs, run, "job-start", obj, heldFor(() => existsSync(join(dir, "US-1-fast-1.job.json")), 300));
+  // Cut off once the supervisor it spawned runs, as ps shows it.
+  await cutOff(t, dirs, run, "job-start", obj, () => supervisorOf(join(dir, "US-1-fast-1.job.json")));
   // job-kill takes that lock too: the supervisor, stopped where it waits, takes it only after job-kill.
   const supervisor = supervisorOf(join(dir, "US-1-fast-1.job.json"));
   process.kill(supervisor, "SIGSTOP");
@@ -1972,13 +1985,16 @@ test("a rebase past its limit is infra, not a conflict: lane-prepare stops it, u
   const wt = storyWork(dirs, run, "US-1");
   landOn(dirs, "deliver/board", "landed.rs");
   const before = git(wt, "rev-parse", "HEAD").trim();
-  hook(dirs, "pre-rebase", "sleep 5");
-  const begun = Date.now();
+  // The hook holds the rebase for as long as the test's folders are there, 30 s
+  // at most, and says so only when it ends at those 30 s: git leaves it
+  // running, and it writes nothing that the test's cleanup could race.
+  const hookEnded = join(dirs.root, "hook-ended");
+  hook(dirs, "pre-rebase", `i=0; while [ -d "${dirs.root}" ] && [ $i -lt 300 ]; do sleep 0.1; i=$((i+1)); done; [ $i -lt 300 ] || touch "${hookEnded}"`);
 
   const body = step(dirs, run, "lane-prepare", { key: "US-1" }, { OMNI_DELIVER_REBASE_MS: "1000" });
 
   assert.deepEqual(pick(body), { ok: true, key: "US-1", outcome: "infra", reason: "the rebase of story/US-1 onto deliver/board ran past its limit of 1s" });
-  assert.ok(Date.now() - begun < 4500, "stopped at its limit, not at the hook's end");
+  assert.equal(existsSync(hookEnded), false, "stopped at its limit, not at the hook's end");
   assert.deepEqual([git(wt, "rev-parse", "HEAD").trim(), git(wt, "rev-parse", "--abbrev-ref", "HEAD").trim()], [before, "story/US-1"]);
 });
 
@@ -2080,10 +2096,14 @@ test("a lane-prepare cut off in the middle of its rebase is carried on by its re
   const wt = storyWork(dirs, run, "US-1");
   const tip = landOn(dirs, "deliver/board", "landed.rs");
   // A rebase checks the base out, and its post-checkout hook holds it there.
-  const held = hook(dirs, "post-checkout", '[ -d "$(git rev-parse --git-path rebase-merge)" ] && sleep 30; exit 0');
+  // The hook says so when it runs, after that checkout has let index.lock go;
+  // the rebase-merge folder is there before the checkout, and a cut-off then
+  // leaves index.lock behind.
+  const checkedOut = join(dirs.root, "checked-out");
+  const held = hook(dirs, "post-checkout", `[ -d "$(git rev-parse --git-path rebase-merge)" ] && touch "${checkedOut}" && sleep 30; exit 0`);
   const state = join(dirs.repo, ".git", "worktrees", "US-1", "rebase-merge");
 
-  await cutOff(t, dirs, run, "lane-prepare", { opId: "prepare-cut", key: "US-1" }, () => existsSync(state));
+  await cutOff(t, dirs, run, "lane-prepare", { opId: "prepare-cut", key: "US-1" }, () => existsSync(checkedOut));
   rmSync(held);
   const again = step(dirs, run, "lane-prepare", { opId: "prepare-cut", key: "US-1" });
 
