@@ -1,12 +1,12 @@
 export const meta = {
   name: 'omni-deliver',
-  description: 'Delivers a feature\'s stories from the OmniState board: clarity checks with a council in front of every question for the human, then implement and review in story worktrees, at most `implementers` stories at once. Every git and omni command runs in the host helper, reached through courier agents',
-  whenToUse: 'Run with the Workflow tool from the main worktree of a project whose folder is linked to its OmniState project (omni link, or OMNI_PROJECT), with args {feature: "<name>"} (optional: implementers (3), force, checks, models, agentTypes, helper). The host helper is ~/.claude/omni/deliver-step.mjs, as make install-agent-tools links it; args.helper names another path. One run per checkout: the helper\'s .omni/run.lock refuses a second live run, and force takes over a lock whose run the human knows is dead. args.checks ({fast, stack_up, stack, seed, lint}) sets checks on top of omni checks. args.models overrides the model of a role (clarity, council, impl, implRetry, review, verify, tests, final, courier), and args.agentTypes sets the agent type of a role, which has none by default. Stories land on deliver/<feature slug>, never on the checkout\'s branch. Built so far: start, unblock, clarity, implement and review; a reviewed story waits in reviewed for the lane, which is not built yet. Never pushes.',
+  description: 'Delivers a feature\'s stories from the OmniState board: clarity checks with a council in front of every question for the human, then implement and review in story worktrees, at most `implementers` stories implementing and `reviewers` in review at once. Every git and omni command runs in the host helper, reached through courier agents',
+  whenToUse: 'Run with the Workflow tool from the main worktree of a project whose folder is linked to its OmniState project (omni link, or OMNI_PROJECT), with args {feature: "<name>"} (optional: implementers (3), reviewers (3), force, checks, models, agentTypes, helper). The host helper is ~/.claude/omni/deliver-step.mjs, as make install-agent-tools links it; args.helper names another path. One run per checkout: the helper\'s .omni/run.lock refuses a second live run, and force takes over a lock whose run the human knows is dead. args.checks ({fast, stack_up, stack, seed, lint}) sets checks on top of omni checks. args.models overrides the model of a role (clarity, council, impl, implRetry, review, verify, tests, final, courier), and args.agentTypes sets the agent type of a role, which has none by default. Stories land on deliver/<feature slug>, never on the checkout\'s branch. Built so far: start, unblock, clarity, implement and review; a reviewed story waits in reviewed for the lane, which is not built yet. Never pushes.',
   phases: [
     { title: 'Start', detail: 'the helper takes the lock, reconciles claims and the lane worktree, sets deliver/<slug> and reads the checks' },
     { title: 'Unblock', detail: 'a story whose threads all have a conclusion gets each one as a human decision and is unblocked, and its attempts count from there' },
     { title: 'Clarity', detail: 'one check per backlog story whose text, criteria, linked nodes or decisions changed: a criterion that names a test becomes a test obligation, a minor gap takes its recommendation, the 3 blocking gaps of most impact go to the council and the rest take their recommendation, deferred by the cap; what the council cannot settle becomes a thread that blocks the story' },
-    { title: 'Deliver', detail: 'at most `implementers` stories at once: claim, worktree, implementer (on implRetry from attempt 2, with every finding by attempt), review with a verdict per criterion and every defect; a failed review starts the next attempt, and 3 failed attempts open a thread; a question goes to the council first' },
+    { title: 'Deliver', detail: 'at most `implementers` stories implementing at once, each slot free again once its story is implemented: claim, worktree, implementer (on implRetry from attempt 2, with every finding by attempt), files; then at most `reviewers` in review, with a verdict per criterion and every defect; a failed review sends the story back for the next attempt, in a new implementer slot, and 3 failed attempts open a thread; a question goes to the council first' },
   ],
 }
 
@@ -21,6 +21,7 @@ const A = args && typeof args === 'object' ? args : {}
 if (typeof A.feature !== 'string' || !A.feature.trim()) throw new Error('Pass the feature: args {feature: "<name>"}')
 const feature = A.feature
 const implementers = Number.isInteger(A.implementers) && A.implementers > 0 ? A.implementers : 3
+const reviewers = Number.isInteger(A.reviewers) && A.reviewers > 0 ? A.reviewers : 3
 // Where make install-agent-tools links the helper. The script cannot read
 // HOME; the courier's shell expands the ~.
 const HELPER = typeof A.helper === 'string' && A.helper ? A.helper : '~/.claude/omni/deliver-step.mjs'
@@ -668,10 +669,11 @@ const recordDecisions = async (ctx, decisions) => {
   }
 }
 
-// One attempt's implementer, run again after each question the council
-// settles. Gives the worktree once the story is built, else the story's
-// outcome.
+// One attempt's implementing: the claim, the worktree, the implementer, run
+// again after each question the council settles, the files and the move to
+// implemented. Gives the worktree, else the story's outcome.
 const implement = async (key) => {
+  await step('claim', { key, stage: 'implementing' })
   let ctx = await step('context', { key })
   if (ctx.attempt >= MAX_ATTEMPTS) return exhaust(key, ctx)
   const wt = await step('worktree', { key })
@@ -692,6 +694,8 @@ const implement = async (key) => {
       const { thread } = await step('thread-open', { key, title: `${key}: the implementer is blocked`, body: `${r.summary}\n` })
       return { key, outcome: 'blocked', thread }
     }
+    await step('files', { key })
+    await step('move', { key, to: 'implemented' })
     return { path: wt.path }
   }
 }
@@ -721,85 +725,103 @@ const review = async (key, wt) => {
   }
 }
 
-// A story from where it waits, backlog or implemented, through its attempts:
-// implement, review, and on a failed review the next attempt, until it is
-// reviewed or blocked on a thread.
-const deliverStory = async (key, from) => {
-  let reviewing = from === 'implemented'
-  await step('claim', { key, stage: reviewing ? 'review' : 'implementing' })
+// One attempt's review: the claim, the reviewer, and the move to reviewed,
+// or the findings and the move back to the backlog. Gives the story's
+// outcome, or null when it goes back for the next attempt.
+const assess = async (key, wt) => {
+  await step('claim', { key, stage: 'review' })
+  const verdict = await review(key, wt || (await step('worktree', { key })).path)
+  if (verdict.outcome) return verdict
+  if (verdict.pass) {
+    await step('move', { key, to: 'reviewed' })
+    return { key, outcome: 'reviewed' }
+  }
+  const { attempt } = await step('finding', { key, stage: 'review', findings: verdict.findings, counts: true })
+  log(`${key}: attempt ${attempt} failed its review with ${verdict.findings.length} finding${verdict.findings.length === 1 ? '' : 's'}`)
+  await step('move', { key, to: 'backlog' })
+  return attempt >= MAX_ATTEMPTS ? exhaust(key) : null
+}
+
+// An implementer's slot covers only the implementing, so that implementers
+// keep working while stories wait for a review or the lane, and a story that
+// comes back for another attempt takes a new one. Reviews have a limit of
+// their own, and the lane its lock.
+const implSlots = semaphore(implementers)
+const reviewSlots = semaphore(reviewers)
+// A task in a slot: one the caller holds already, or the next one free.
+const inSlot = async (slots, held, task) => {
+  if (!held) await slots.acquire()
+  try { return await task() } finally { slots.release() }
+}
+
+// A story from where it waits, backlog or implemented, through its attempts
+// until it is reviewed or blocked on a thread. `held`: the deliver loop has
+// taken an implementer's slot for its first implementing.
+const deliverStory = async (key, from, held) => {
+  let implementing = from === 'backlog'
+  let wt = null
   for (;;) {
-    let wt = null
-    if (!reviewing) {
-      const built = await implement(key)
+    if (implementing) {
+      const built = await inSlot(implSlots, held, () => implement(key))
+      held = false
       if (built.outcome) return built
       wt = built.path
-      await step('files', { key })
-      await step('move', { key, to: 'implemented' })
-      await step('claim', { key, stage: 'review' })
-    } else {
-      wt = (await step('worktree', { key })).path
     }
-    const verdict = await review(key, wt)
-    if (verdict.outcome) return verdict
-    if (verdict.pass) {
-      await step('move', { key, to: 'reviewed' })
-      // ---- hand-off: the lane --------------------------------------------
-      // The second half of build step 3 takes the story into the lane here,
-      // under the lane lock: lane-prepare, the checks as jobs with the rerun
-      // on the base, the verifier, the test author and lane-land. A lane
-      // failure starts the next attempt, as a failed review does. Until then
-      // a reviewed story waits in reviewed, as do the stories that were
-      // reviewed when the run started.
-      return { key, outcome: 'reviewed' }
+    const assessed = await reviewSlots.run(() => assess(key, wt))
+    if (!assessed) {
+      implementing = true
+      continue
     }
-    const { attempt } = await step('finding', { key, stage: 'review', findings: verdict.findings, counts: true })
-    log(`${key}: attempt ${attempt} failed its review with ${verdict.findings.length} finding${verdict.findings.length === 1 ? '' : 's'}`)
-    await step('move', { key, to: 'backlog' })
-    if (attempt >= MAX_ATTEMPTS) return exhaust(key)
-    await step('claim', { key, stage: 'implementing' })
-    reviewing = false
+    // ---- hand-off: the lane ------------------------------------------------
+    // The second half of build step 3 takes a reviewed story into the lane
+    // here, out of its review slot and under the lane lock: lane-prepare, the
+    // checks as jobs with the rerun on the base, the verifier, the test
+    // author and lane-land. A lane failure sends the story back for the next
+    // attempt, as a failed review does. Until then a reviewed story waits in
+    // reviewed, as do the stories that were reviewed when the run started.
+    return assessed
   }
 }
 
-// Fills each free slot with the first story the board lists as pickable, or
-// as implemented and waiting, that this run has not taken: listed again for
-// each claim, since a claimed story's planned files keep others off the
-// pickable list. When nothing new is listed, the next story to finish frees
-// its slot and the board is listed again; the run goes on until nothing new
-// is listed and nothing is in flight.
-const slots = semaphore(implementers)
+// Each free implementer's slot goes to the first story the board lists as
+// pickable that this run has not taken: listed again for each claim, since a
+// claimed story's planned files keep others off the pickable list. A story
+// listed as implemented and waiting starts at its review. When nothing new
+// is listed, the board is listed again once a story in flight is done; the
+// run goes on until nothing new is listed and nothing is in flight.
 const taken = new Set()
 const running = new Set()
 let capped = false
+const launch = (key, from, held) => {
+  taken.add(key)
+  const chain = deliverStory(key, from, held)
+    .catch((e) => ({ key, outcome: 'failed', detail: String((e && e.message) || e) }))
+    .then((o) => {
+      outcomes.push(o)
+      log(`${o.key}: ${o.outcome}${o.detail ? `: ${o.detail}` : ''}${o.thread ? ` (thread ${o.thread})` : ''}`)
+    })
+    .finally(() => running.delete(chain))
+  running.add(chain)
+}
 for (;;) {
-  await slots.acquire()
+  await implSlots.acquire()
   if (agentCalls >= AGENT_CAP) {
-    slots.release()
+    implSlots.release()
     capped = true
     log(`The run has made ${agentCalls} agent calls, past ${AGENT_CAP}: it claims no new story, and ends once the stories in flight are done; the next run carries on`)
     break
   }
   const board = await step('list', {})
-  const waiting = board.stories.filter((s) => s.status === 'implemented' && !s.blocked && !s.holder).map((s) => ({ key: s.key, from: 'implemented' }))
-  const next = [...waiting, ...board.pickable.map((key) => ({ key, from: 'backlog' }))].find((s) => !taken.has(s.key) && !unclear.has(s.key))
-  if (!next) {
-    slots.release()
-    if (!running.size) break
-    await Promise.race(running)
+  const fresh = (key) => !taken.has(key) && !unclear.has(key)
+  for (const s of board.stories) if (s.status === 'implemented' && !s.blocked && !s.holder && fresh(s.key)) launch(s.key, 'implemented', false)
+  const next = board.pickable.find(fresh)
+  if (next) {
+    launch(next, 'backlog', true)
     continue
   }
-  taken.add(next.key)
-  const chain = deliverStory(next.key, next.from)
-    .catch((e) => ({ key: next.key, outcome: 'failed', detail: String((e && e.message) || e) }))
-    .then((o) => {
-      outcomes.push(o)
-      log(`${o.key}: ${o.outcome}${o.detail ? `: ${o.detail}` : ''}${o.thread ? ` (thread ${o.thread})` : ''}`)
-    })
-    .finally(() => {
-      running.delete(chain)
-      slots.release()
-    })
-  running.add(chain)
+  implSlots.release()
+  if (!running.size) break
+  await Promise.race(running)
 }
 await Promise.all(running)
 

@@ -36,6 +36,11 @@ const NoRandom = Object.create(Math, { random: { value: unavailable("Math.random
 
 const git = (cwd, ...argv) => execFileSync("git", argv, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+// Settles with the promise, or after ms at the latest.
+const within = (promise, ms) => {
+  let timer;
+  return Promise.race([promise, new Promise((resolve) => { timer = setTimeout(resolve, ms); })]).finally(() => clearTimeout(timer));
+};
 
 function liveProcess(t) {
   const child = spawn("sleep", ["60"], { stdio: "ignore" });
@@ -226,6 +231,23 @@ const claimsOf = (dirs, key) => dirs.state().calls.filter((c) => c.argv[0] === "
 const timeline = (dirs, key) => dirs.state().calls
   .filter((c) => c.argv[0] === "story" && (c.argv[1] === "claim" || c.argv[1] === "move") && c.argv[2] === key)
   .map((c) => (c.argv[1] === "claim" ? `claim ${c.argv[c.argv.indexOf("--stage") + 1]}` : `move ${c.argv[c.argv.indexOf("--to") + 1]}`));
+// The run's claims and moves in the order the board got them: "claim <key> <stage>" or "move <key> <status>".
+const boardLog = (dirs) => dirs.state().calls
+  .filter((c) => c.argv[0] === "story" && (c.argv[1] === "claim" || c.argv[1] === "move"))
+  .map((c) => `${c.argv[1]} ${c.argv[2]} ${c.argv[c.argv.indexOf(c.argv[1] === "claim" ? "--stage" : "--to") + 1]}`);
+// The most stories the board had in a stage at once: a claim for the stage
+// counts one in, a move to one of `out` one out.
+const peakIn = (dirs, stage, out) => {
+  let now = 0;
+  let peak = 0;
+  for (const entry of boardLog(dirs)) {
+    const [verb, , where] = entry.split(" ");
+    if (verb === "claim" && where === stage) now++;
+    if (verb === "move" && out.includes(where)) now--;
+    peak = Math.max(peak, now);
+  }
+  return peak;
+};
 // The threads on the board besides the Run thread that start opens.
 const questions = (dirs) => dirs.state().threads.filter((th) => !/^Run run-\d{8}-\d{6}-\d+$/.test(th.title));
 const findingsOf = (dirs, key) => (dirs.story(key).findings || []).map((f) => [f.stage, f.text, f.files, f.resolved]);
@@ -654,30 +676,88 @@ test("an implementer that asks a fourth question in one attempt, after the counc
   assert.deepEqual(result.council, { settled: 3, asked: 1 });
 });
 
-test("with implementers 2, no more than 2 stories are in flight at once, from their claim to their end, and every pickable story is delivered", { timeout: 60000 }, async (t) => {
+test("an implementer's slot is free once its story is implemented: with implementers 3, a fourth story starts implementing while an earlier one waits in review", { timeout: 60000 }, async (t) => {
   const keys = ["US-1", "US-2", "US-3", "US-4"];
   const dirs = scratch(t, keys.map((key) => story(key)));
+  let fourthStarted;
+  const fourth = new Promise((resolve) => { fourthStarted = resolve; });
+  // The first three stories' reviewers answer once the fourth story's
+  // implementer has started, or after 5 s if it never does: with their slots
+  // held through review, it would not start before one of them ended.
+  const waiting = async (call) => {
+    await within(fourth, 5000);
+    return reviewed("pass")(call);
+  };
+  const roles = {
+    ...Object.fromEntries(["US-1", "US-2", "US-3"].map((key) => [`review:${key}`, [waiting]])),
+    "impl:US-4": [(call, serial) => {
+      fourthStarted();
+      return built("US-4.txt")(call, serial);
+    }],
+  };
 
-  const { result, error } = await deliver(dirs, { implementers: 2 });
+  const { result, error } = await deliver(dirs, {}, roles);
 
   assert.equal(error, null);
-  let flying = 0;
-  let peak = 0;
-  for (const c of dirs.state().calls.filter((x) => x.argv[0] === "story" && keys.includes(x.argv[2]))) {
-    if (c.argv[1] === "claim" && c.argv.includes("implementing")) flying++;
-    if (c.argv[1] === "move" && c.argv.includes("reviewed")) flying--;
-    peak = Math.max(peak, flying);
-  }
-  assert.equal(peak, 2);
+  const order = boardLog(dirs);
+  const fourthClaim = order.indexOf("claim US-4 implementing");
+  const earlier = ["US-1", "US-2", "US-3"];
+  assert.ok(fourthClaim !== -1, order.join("\n"));
+  // It started before any of the first three left review, while one was in review already.
+  for (const key of earlier) assert.ok(fourthClaim < order.indexOf(`move ${key} reviewed`), order.join("\n"));
+  assert.ok(earlier.some((key) => order.indexOf(`claim ${key} review`) < fourthClaim), order.join("\n"));
   assert.deepEqual(keys.map((key) => dirs.story(key).status), ["reviewed", "reviewed", "reviewed", "reviewed"]);
   assert.deepEqual(result.outcomes.map((o) => o.key).sort(), keys);
 });
 
+test("at most `implementers` stories implement at once and at most `reviewers` are in review", { timeout: 60000 }, async (t) => {
+  const keys = ["US-1", "US-2", "US-3", "US-4"];
+  const dirs = scratch(t, keys.map((key) => story(key)));
+  // A review takes half a second, long enough for the next story's to start beside it.
+  const slow = async (call) => {
+    await pause(500);
+    return reviewed("pass")(call);
+  };
+
+  const { result, error } = await deliver(dirs, { implementers: 2, reviewers: 1 }, Object.fromEntries(keys.map((key) => [`review:${key}`, [slow]])));
+
+  assert.equal(error, null);
+  assert.deepEqual([peakIn(dirs, "implementing", ["implemented"]), peakIn(dirs, "review", ["reviewed", "backlog"])], [2, 1]);
+  assert.deepEqual(keys.map((key) => dirs.story(key).status), ["reviewed", "reviewed", "reviewed", "reviewed"]);
+  assert.deepEqual(result.outcomes.map((o) => o.key).sort(), keys);
+});
+
+test("a story its review sends back takes a new implementer slot: with implementers 1, the next story implements while the first is in review, and the first waits for the slot to come back", { timeout: 60000 }, async (t) => {
+  const dirs = scratch(t, [story("US-1"), story("US-2")]);
+  // The second story's implementer works on until the first is back in the backlog with its finding.
+  const back = (serial) => serial(() => dirs.story("US-1").status === "backlog" && (dirs.story("US-1").findings || []).length > 0);
+  const roles = {
+    "review:US-1": [reviewed("fail", { defects: [{ text: "The badge is pink", files: ["src/badge.rs"], criterion: "" }] }), reviewed("pass")],
+    "impl:US-2": [async (call, serial) => {
+      for (let i = 0; i < 100 && !(await back(serial)); i++) await pause(50);
+      return built("US-2.txt")(call, serial);
+    }],
+  };
+
+  const { error } = await deliver(dirs, { implementers: 1 }, roles);
+
+  assert.equal(error, null);
+  const order = boardLog(dirs);
+  assert.deepEqual(order.filter((e) => e.startsWith("claim US-1 ") || e.startsWith("move US-1 ")), [
+    "claim US-1 implementing", "move US-1 implemented", "claim US-1 review", "move US-1 backlog",
+    "claim US-1 implementing", "move US-1 implemented", "claim US-1 review", "move US-1 reviewed",
+  ]);
+  assert.ok(order.indexOf("claim US-2 implementing") < order.indexOf("move US-1 backlog"), order.join("\n"));
+  assert.ok(order.indexOf("move US-2 implemented") < order.lastIndexOf("claim US-1 implementing"), order.join("\n"));
+  assert.equal(peakIn(dirs, "implementing", ["implemented"]), 1);
+  assert.deepEqual([dirs.story("US-1").status, dirs.story("US-2").status], ["reviewed", "reviewed"]);
+});
+
 test("the run counts every agent call, couriers too, and claims no new story past 900: the story in flight goes on, the next is not claimed, and the run says so", { timeout: 60000 }, async (t) => {
   assert.ok(SOURCE.includes("\nconst AGENT_CAP = 900\n"), "the cap is 900");
-  // 9 calls come before the first claim and 10 more with the first story, so
-  // a cap of 15 falls inside the first story.
-  const source = SOURCE.replace("\nconst AGENT_CAP = 900\n", "\nconst AGENT_CAP = 15\n");
+  // 9 calls come before the first claim and 7 more until the first story is
+  // implemented, so a cap of 12 falls inside it.
+  const source = SOURCE.replace("\nconst AGENT_CAP = 900\n", "\nconst AGENT_CAP = 12\n");
   const dirs = scratch(t, [story("US-1"), story("US-2")]);
 
   const { result, error, logs } = await deliver(dirs, { implementers: 1 }, {}, { source });
@@ -685,8 +765,8 @@ test("the run counts every agent call, couriers too, and claims no new story pas
   assert.equal(error, null);
   assert.deepEqual([claimsOf(dirs, "US-1"), claimsOf(dirs, "US-2")], [["implementing", "review"], []]);
   assert.deepEqual([dirs.story("US-1").status, dirs.story("US-2").status], ["reviewed", "backlog"]);
-  assert.deepEqual([result.capped, result.agents >= 15], [true, true]);
-  assert.ok(logs.includes(`The run has made ${result.agents} agent calls, past 15: it claims no new story, and ends once the stories in flight are done; the next run carries on`), logs.join("\n"));
+  assert.equal(result.capped, true);
+  assert.ok(logs.some((l) => /^The run has made \d+ agent calls, past 12: it claims no new story, and ends once the stories in flight are done; the next run carries on$/.test(l)), logs.join("\n"));
 });
 
 test("prompts give the context first and the criteria and the task last, name the linked docs and nodes for the agent to read once with omni as this run's role, use absolute paths, say who is read-only and that the workflow makes every board write; models and agent types come from args", { timeout: 60000 }, async (t) => {
