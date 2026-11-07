@@ -1,7 +1,7 @@
 export const meta = {
   name: 'omni-deliver',
   description: 'Delivers a feature\'s stories from the OmniState board: clarity checks with a council in front of every question for the human, then implement and review in story worktrees, at most `implementers` stories implementing and `reviewers` in review at once. Every git and omni command runs in the host helper, reached through courier agents',
-  whenToUse: 'Run with the Workflow tool from the main worktree of a project whose folder is linked to its OmniState project (omni link, or OMNI_PROJECT), with args {feature: "<name>"} (optional: implementers (3), reviewers (3), force, checks, models, agentTypes, helper). The host helper is ~/.claude/omni/deliver-step.mjs, as make install-agent-tools links it; args.helper names another path. One run per checkout: the helper\'s .omni/run.lock refuses a second live run, and force takes over a lock whose run the human knows is dead. args.checks ({fast, stack_up, stack, seed, lint}) sets checks on top of omni checks. args.models overrides the model of a role (clarity, council, impl, implRetry, review, verify, tests, final, courier), and args.agentTypes sets the agent type of a role, which has none by default. Stories land on deliver/<feature slug>, never on the checkout\'s branch. Built so far: start, unblock, clarity, implement and review; a reviewed story waits in reviewed for the lane, which is not built yet. Never pushes.',
+  whenToUse: 'Run with the Workflow tool from the main worktree of a project whose folder is linked to its OmniState project (omni link, or OMNI_PROJECT), with args {feature: "<name>"} (optional: implementers (3), reviewers (3), storyLimit, force, checks, models, agentTypes, helper). The host helper is ~/.claude/omni/deliver-step.mjs, as make install-agent-tools links it; args.helper names another path. One run per checkout: the helper\'s .omni/run.lock refuses a second live run, and force takes over a lock whose run the human knows is dead. args.checks ({fast, stack_up, stack, seed, lint}) sets checks on top of omni checks. args.models overrides the model of a role (clarity, council, impl, implRetry, review, verify, tests, final, courier), and args.agentTypes sets the agent type of a role, which has none by default. Stories land on deliver/<feature slug>, never on the checkout\'s branch. A run takes a new story only while its agent calls leave room under 900 for the stories in flight, at 60 each, and stops a story at 960, released with no attempt used; the next run carries on. A story whose delivery stops on an error is released and blocked on a thread with the error. Built so far: start, unblock, clarity, implement and review; a reviewed story waits in reviewed for the lane, which is not built yet. Never pushes.',
   phases: [
     { title: 'Start', detail: 'the helper takes the lock, reconciles claims and the lane worktree, sets deliver/<slug> and reads the checks' },
     { title: 'Unblock', detail: 'a story whose threads all have a conclusion gets each one as a human decision and is unblocked, and its attempts count from there' },
@@ -22,6 +22,8 @@ if (typeof A.feature !== 'string' || !A.feature.trim()) throw new Error('Pass th
 const feature = A.feature
 const implementers = Number.isInteger(A.implementers) && A.implementers > 0 ? A.implementers : 3
 const reviewers = Number.isInteger(A.reviewers) && A.reviewers > 0 ? A.reviewers : 3
+// The distinct stories a run takes at most, for a first run on a feature.
+const storyLimit = Number.isInteger(A.storyLimit) && A.storyLimit > 0 ? A.storyLimit : Infinity
 // Where make install-agent-tools links the helper. The script cannot read
 // HOME; the courier's shell expands the ~.
 const HELPER = typeof A.helper === 'string' && A.helper ? A.helper : '~/.claude/omni/deliver-step.mjs'
@@ -40,15 +42,29 @@ const CLARITY_QUESTIONS = 3
 // settles. Past this many in one attempt, the next question goes to the
 // human, so that a stream of settled questions cannot run on.
 const QUESTIONS_PER_ATTEMPT = 3
-// The runtime stops a workflow at 1000 agent calls, couriers included. Past
-// this many the run claims no new story and ends cleanly; the next run
-// carries on.
+// The runtime stops a workflow at 1000 agent calls, couriers included, and
+// one story has used 58. A story is claimed, and a clarity check started,
+// only while the calls made and those set aside for the work in flight
+// leave room under AGENT_CAP; the next run carries on. Work that reaches
+// HARD_CAP all the same stops there: its story is released with no attempt
+// used.
 const AGENT_CAP = 900
+const HARD_CAP = 960
+const STORY_CALLS = 60
+const CHECK_CALLS = 20
 const COUNCILS = 2
 const COURIER_RETRIES = 3
+// A review that leaves a criterion without a verdict is asked again this
+// many times.
+const REVIEW_RETRIES = 2
 
 let agentCalls = 0
-const ask = (role, prompt, opts, model = MODELS[role]) => {
+// Set once the run stops taking new work for the cap.
+let capped = false
+const room = (calls, inFlight) => agentCalls + calls * (inFlight + 1) <= AGENT_CAP
+// past: the cleanup of work stopped at HARD_CAP, which the cap lets through.
+const ask = (role, prompt, opts, model = MODELS[role], past = false) => {
+  if (agentCalls >= HARD_CAP && !past) throw Object.assign(new Error(`the run has made ${agentCalls} agent calls, at its hard cap of ${HARD_CAP}`), { atCap: true })
   agentCalls++
   return agent(prompt, { ...opts, model, ...(AGENT_TYPES[role] ? { agentType: AGENT_TYPES[role] } : {}) })
 }
@@ -120,12 +136,15 @@ Return exitCode, the exit code of the command, and output, what it printed on st
 
 // What a courier brought back: the helper's body once the envelope's hash
 // matches its body and the helper received what the script sent, else what
-// went wrong.
+// went wrong. The answer is the last line that starts as the helper's does,
+// so that a warning the shell or node prints around it changes nothing.
 const unpack = (r, expected) => {
   if (!r) return { problem: 'the courier returned nothing' }
   if (r.exitCode !== 0) return { problem: `the helper exited with ${r.exitCode}` }
+  const line = String(r.output).split('\n').map((l) => l.trim()).filter((l) => l.startsWith('{"body":')).pop()
+  if (!line) return { problem: 'its output holds no answer of the helper' }
   let out
-  try { out = JSON.parse(String(r.output).trim()) } catch { return { problem: 'its output is not JSON' } }
+  try { out = JSON.parse(line) } catch { return { problem: 'its output is not JSON' } }
   if (!out || typeof out !== 'object' || !out.body || typeof out.body !== 'object' || typeof out.hash !== 'string') return { problem: 'its output is not the helper\'s answer' }
   if (out.hash !== fnv1a(JSON.stringify(out.body))) return { problem: 'its output does not match its hash: the courier changed it' }
   if (out.body.received !== expected) return { problem: `the helper received another payload than the script sent${out.body.error ? `: ${out.body.error}` : ''}` }
@@ -157,11 +176,11 @@ const opIdOf = (base) => {
 // same opId: the helper answers a write it made from its record, and carries
 // on a write it left half done. A start that failed has given the lock up, so
 // its repeat starts again.
-const carry = async (name, prompt, expected, label) => {
+const carry = async (name, prompt, expected, label, past = false) => {
   let problem = ''
   for (let i = 0; i <= COURIER_RETRIES; i++) {
     if (i) log(`${label}: ${problem}; trying again (${i} of ${COURIER_RETRIES})`)
-    const { body, problem: wrong } = unpack(await ask('courier', prompt, { label, phase: current, schema: COURIER_SCHEMA, effort: 'low' }), expected)
+    const { body, problem: wrong } = unpack(await ask('courier', prompt, { label, phase: current, schema: COURIER_SCHEMA, effort: 'low' }, MODELS.courier, past), expected)
     if (body && body.ok === true) return body
     problem = wrong || `${name} failed: ${body.error}`
   }
@@ -170,12 +189,12 @@ const carry = async (name, prompt, expected, label) => {
 
 // One host step. Its payload, with its opId, goes in a file under the run's
 // folder, and the command carries the payload's hash.
-const step = (name, fields = {}, { label = name, key = fields.key } = {}) => {
+const step = (name, fields = {}, { label = name, key = fields.key, past = false } = {}) => {
   const opId = opIdOf(key ? `${label}-${key}` : label)
   const payload = JSON.stringify({ opId, ...fields })
   const file = `${root}/.omni/runs/${runId}/in/${opId}.json`
   const command = `node ${shellPath(HELPER)} ${name} --run ${runId} --payload ${shellPath(file)} --hash ${fnv1a(payload)}`
-  return carry(name, courierPrompt(command, file, payload), fnv1a(payload), key ? `courier:${name}:${key}` : `courier:${name}`)
+  return carry(name, courierPrompt(command, file, payload), fnv1a(payload), key ? `courier:${name}:${key}` : `courier:${name}`, past)
 }
 
 // ---- prompts ---------------------------------------------------------------
@@ -191,7 +210,17 @@ const decisionLines = (ctx) => ctx.decisions.map((d) => `- ${d.question} -> ${d.
 const findingLine = (f) => `- [${f.stage}] ${f.text}${f.files.length ? ` (${f.files.join(', ')})` : ''}`
 const byAttempt = (groups) => groups.map((g) => `Attempt ${g.attempt}:\n${g.findings.map(findingLine).join('\n')}`).join('\n')
 const criteriaList = (ctx) => ctx.story.criteria.map((c) => `- ${c.text}`).join('\n') || '(none)'
-const numberedCriteria = (ctx) => ctx.story.criteria.map((c, i) => `${i}: ${c.text}${c.human_check ? ' [human check]' : ''}`).join('\n') || '(none)'
+const markedCriteria = (ctx) => ctx.story.criteria.map((c) => `- ${c.text}${c.human_check ? ' [human check]' : ''}`).join('\n') || '(none)'
+// A criterion that names a test is a test obligation, which the lane's test
+// author owns. Clarity records it as this decision; a story implemented
+// before clarity ran has none, so the reviewer also tells them apart.
+const testQuestion = (criterion) => `Is "${criterion}" behaviour or a test?`
+const TEST_OBLIGATION = 'treated as a test obligation: the lane\'s test author owns it, and the verifier skips it'
+const decidedObligations = (ctx) => new Set(ctx.story.criteria.flatMap((c, i) => (ctx.decisions.some((d) => d.question === testQuestion(c.text) && d.choice === TEST_OBLIGATION) ? [i] : [])))
+const numberedCriteria = (ctx) => {
+  const decided = decidedObligations(ctx)
+  return ctx.story.criteria.map((c, i) => `${i}: ${c.text}${c.human_check ? ' [human check]' : ''}${decided.has(i) ? ' [test obligation]' : ''}`).join('\n') || '(none)'
+}
 const storyText = (ctx) => `${ctx.story.key}: ${ctx.story.title}\n${ctx.story.text}`
 const linkedNodes = (ctx) => ctx.docs.map((d) => `- doc ${d.doc}: ${d.nodes.map((n) => `node ${n.node}${n.label ? ` (${n.label})` : ''}`).join(', ')}`).join('\n')
 // Doc text never goes through a courier: each agent reads each linked doc
@@ -299,7 +328,7 @@ The rule below refers to the feature's Spec, Architecture, DB and UI docs. List 
 ${BOARD}
 ${TWO_IMPLEMENTATIONS}${BLOCKING_OR_MINOR}${TESTS_AND_IMPACT}
 ## Acceptance criteria
-${criteriaList(ctx)}
+${markedCriteria(ctx)}
 
 ## Your task now
 Apply the rules above to every criterion, and return the test obligations and the gaps.
@@ -384,21 +413,25 @@ ${criteriaList(ctx)}
 This is attempt ${attempt} of ${MAX_ATTEMPTS} since the human's latest answer. ${task}
 Return raw structured data only.`
 
-const REVIEW_SCHEMA = {
+// Every criterion gets an entry, numbered from 0 as the prompt numbers them.
+const reviewSchema = (n) => ({
   type: 'object',
   required: ['verdict', 'criteria', 'defects'],
   properties: {
     verdict: { type: 'string', enum: ['pass', 'fail', 'needs_decision'] },
     criteria: {
       type: 'array',
-      description: 'One verdict per acceptance criterion of the story, by its number',
+      minItems: n,
+      maxItems: n,
+      description: 'One entry for every acceptance criterion of the story, by its number counting from 0',
       items: {
         type: 'object',
-        required: ['index', 'criterion', 'met', 'evidence'],
+        required: ['index', 'criterion', 'obligation', 'met', 'evidence'],
         properties: {
-          index: { type: 'integer', description: 'The number of the criterion in the list' },
+          index: { type: 'integer', minimum: 0, maximum: Math.max(n - 1, 0), description: 'The number of the criterion in the list, counting from 0' },
           criterion: { type: 'string', description: 'The criterion text, verbatim' },
-          met: { type: 'boolean' },
+          obligation: { type: 'boolean', description: 'true for a test obligation, a criterion marked [test obligation] or one that names a test, which you do not judge' },
+          met: { type: 'boolean', description: 'Whether the code meets the criterion; not read for a test obligation' },
           evidence: { type: 'string', description: 'What the code does about it, with path:line; for a criterion not met, what is wrong and where' },
         },
       },
@@ -420,7 +453,7 @@ const REVIEW_SCHEMA = {
     options: { type: 'array', items: { type: 'string' }, description: 'Only with needs_decision: the concrete options' },
     recommendation: { type: 'string', description: 'Only with needs_decision: the option you suggest' },
   },
-}
+})
 const reviewPrompt = (ctx, wt) => `You review ONE story of the feature "${feature}" before it goes to the test lane. ${READ_ONLY} You run no test, build or app either.
 
 ## The change
@@ -442,11 +475,11 @@ ${BOARD}
 ## Rules
 - Read the diff and the files against every criterion, the interfaces and the linked doc nodes.
 - A new test, test file, test helper, fixture or snapshot in the diff is a defect: the implementer writes no tests, the lane's test author does. An existing test updated to a decision the story names is fine.
-- A criterion that a decision treats as a test obligation is the test author's: give it met, with the evidence "a test obligation".
+- A criterion marked [test obligation], or any other that names a test (a test, test file, suite or case to write or to pass), is a test obligation: the lane's test author owns it, and the review never judges it. Give it obligation true.
 - A [human check] criterion: met unless the code contradicts it; a human confirms it later.
-- Give a verdict on every criterion below, by its number: met or not, with the evidence.
+- Give every criterion below an entry, by its number counting from 0: met or not, with the evidence, or obligation true for a test obligation.
 - List every defect you find, not only the first: one per problem, with the files it is in and the criterion it breaks.
-- verdict pass: every criterion is met, and you found no defect.
+- verdict pass: every criterion that is not a test obligation is met, and you found no defect.
 - verdict fail: a criterion is not met, or you found a defect.
 - verdict needs_decision: only when the spec does not decide the behaviour and the story cannot avoid it; give question, options and recommendation.
 
@@ -521,7 +554,6 @@ const tally = { settled: 0, asked: 0 }
 // until it concludes.
 const askHuman = async (ctx, q, label, recommendation, council) => {
   const key = ctx.story.key
-  tally.asked++
   const body = [
     q.question,
     ...(q.criterion ? [`Criterion: ${q.criterion}`] : []),
@@ -532,25 +564,27 @@ const askHuman = async (ctx, q, label, recommendation, council) => {
     ...(q.reason ? [`Why: ${q.reason}`] : []),
   ].join('\n\n')
   const { thread } = await step('thread-open', { key, title: `${key}: ${q.question}`, body: `${body}\n` }, { label: `${label}-thread` })
+  tally.asked++
   log(`${key}: asked the human "${q.question}" on thread ${thread}`)
   return { settled: false, thread }
 }
+// The members' votes, in one round; a member that died votes nothing.
+const convene = (ctx, q, code) => councilSlots.run(() => parallel(READINGS.map((reading) => () =>
+  ask('council', councilPrompt(ctx, q, reading, code), { label: `council:${ctx.story.key}:${reading.id}`, phase: current, schema: VOTE_SCHEMA }))))
 // The council settles a question when all three pick the same option and a
 // quote supports it, or all three call the gap minor: it becomes an agent
 // decision and no thread opens. Otherwise the thread opens with each
 // member's pick and evidence, and the majority's pick, else the asker's, as
 // its recommendation.
-const settle = async (ctx, q, { code, label }) => {
+const conclude = async (ctx, q, votes, label) => {
   const key = ctx.story.key
   const options = q.options || []
-  const votes = await councilSlots.run(() => parallel(READINGS.map((reading) => () =>
-    ask('council', councilPrompt(ctx, q, reading, code), { label: `council:${key}:${reading.id}`, phase: current, schema: VOTE_SCHEMA }))))
   const picks = votes.map((v) => (v && Number.isInteger(v.pick) && v.pick >= 1 && v.pick <= options.length ? v.pick : 0))
   const evidenced = votes.filter((v) => v && String(v.quote || '').trim() && String(v.source || '').trim())
   if (picks[0] && picks.every((p) => p === picks[0]) && (evidenced.length || votes.every((v) => v && v.minor === true))) {
-    tally.settled++
     const evidence = evidenced.length ? evidenced.map((v) => `"${v.quote.trim()}" (${v.source.trim()})`).join('; ') : 'all three members call the gap minor'
     await step('decision', { key, question: q.question, choice: `${options[picks[0] - 1]} (council: ${evidence})`, by: 'agent' }, { label: `${label}-decision` })
+    tally.settled++
     log(`${key}: the council settled "${q.question}"`)
     return { settled: true }
   }
@@ -564,6 +598,7 @@ const settle = async (ctx, q, { code, label }) => {
   const recommendation = majority ? `${options[majority - 1]} (the council's majority)` : `${q.recommendation || '(none)'} (the recommendation of ${q.asker})`
   return askHuman(ctx, q, label, recommendation, `it did not settle this, in one round with each member on its own:\n${members.join('\n')}`)
 }
+const settle = async (ctx, q, { code, label }) => conclude(ctx, q, await convene(ctx, q, code), label)
 // A question of an implementer or reviewer: to the council, or past the
 // questions it settles in one attempt, to the human.
 const question = (ctx, r, asker, code, label, asked) => {
@@ -597,12 +632,27 @@ if (unblocked.unblocked.length) log(`Unblocked ${unblocked.unblocked.join(', ')}
 // ---- 3. clarity --------------------------------------------------------------
 enter('Clarity')
 const IMPACT = ['scope', 'data_security', 'ux', 'technical']
-const TEST_OBLIGATION = 'treated as a test obligation: the lane\'s test author owns it, and the verifier skips it'
 const clarity = []
 // Stories whose clarity check returned nothing, or failed: not delivered in
 // this run, and checked again at the next start.
 const unclear = new Set()
+// Clarity checks in flight, which the agent cap sets calls aside for.
+let checking = 0
 const clarify = async (key) => {
+  if (!room(CHECK_CALLS, checking)) {
+    unclear.add(key)
+    capped = true
+    log(`${key}: not checked: the run has made ${agentCalls} agent calls, with ${checking} clarity checks in flight, and keeps the rest for them; the story is checked at the next start`)
+    return
+  }
+  checking++
+  try {
+    await check(key)
+  } finally {
+    checking--
+  }
+}
+const check = async (key) => {
   const ctx = await step('context', { key })
   const r = await ask('clarity', clarityPrompt(ctx), { label: `clarity:${key}`, phase: 'Clarity', schema: CLARITY_SCHEMA })
   if (!r) {
@@ -617,13 +667,32 @@ const clarify = async (key) => {
     known.add(q)
     await step('decision', { key, question: q, choice, by: 'agent' })
   }
-  for (const criterion of r.testObligations || []) await decide(`Is "${criterion}" behaviour or a test?`, TEST_OBLIGATION)
+  for (const criterion of r.testObligations || []) await decide(testQuestion(criterion), TEST_OBLIGATION)
   const gaps = (r.gaps || []).filter((g) => !known.has(g.question))
   for (const g of gaps.filter((x) => !x.blocking)) await decide(g.question, g.recommendation)
   const rank = (g) => (IMPACT.includes(g.impact) ? IMPACT.indexOf(g.impact) : IMPACT.length)
   const blocking = gaps.filter((x) => x.blocking).sort((a, b) => rank(a) - rank(b))
   for (const g of blocking.slice(CLARITY_QUESTIONS)) await decide(g.question, `${g.recommendation} (deferred by the cap: a story asks at most ${CLARITY_QUESTIONS} blocking questions)`)
-  const answers = await Promise.all(blocking.slice(0, CLARITY_QUESTIONS).map((g, i) => settle(ctx, { ...g, asker: 'the clarity check' }, { code: null, label: `gap${i + 1}` })))
+  // The councils sit side by side, within the run's limit, and every one is
+  // waited for. Their answers go to the board one at a time, in order: two
+  // thread-opens of one story at once could each link the story without the
+  // other's thread.
+  const asked = blocking.slice(0, CLARITY_QUESTIONS).map((g) => ({ ...g, asker: 'the clarity check' }))
+  const ballots = await Promise.all(asked.map((q) => convene(ctx, q, null).then((votes) => ({ votes }), (error) => ({ error }))))
+  const answers = []
+  const failures = []
+  for (const [i, q] of asked.entries()) {
+    try {
+      if (ballots[i].error) throw ballots[i].error
+      answers.push(await conclude(ctx, q, ballots[i].votes, `gap${i + 1}`))
+    } catch (e) {
+      if (e && e.atCap) throw e
+      failures.push(`"${q.question}": ${(e && e.message) || e}`)
+    }
+  }
+  // A question neither settled nor asked keeps the story unrecorded, so that
+  // the next start checks it again.
+  if (failures.length) throw new Error(`a question was neither settled nor asked: ${failures.join('; ')}`)
   // Recorded after the check's own writes, so that they do not make the
   // story pending again.
   await step('clarity-record', { key })
@@ -636,7 +705,8 @@ await pipeline(pending, async (key) => {
     await clarify(key)
   } catch (e) {
     unclear.add(key)
-    log(`${key}: the clarity check failed: ${(e && e.message) || e}; the story is not delivered in this run`)
+    if (e && e.atCap) capped = true
+    log(`${key}: the clarity check ${e && e.atCap ? 'stopped at the agent cap' : 'failed'}: ${(e && e.message) || e}; the story is not delivered in this run`)
   }
 })
 
@@ -644,12 +714,45 @@ await pipeline(pending, async (key) => {
 enter('Deliver')
 const outcomes = []
 
-// An agent that returned nothing: the story goes back to its waiting state,
-// with no attempt used. The second half of build step 3 replaces this with
-// the retries after a wait.
-const noResult = async (key, who) => {
+// An agent that returned nothing, or nothing usable: the story goes back to
+// its waiting state, with no attempt used. The second half of build step 3
+// replaces this with the retries after a wait.
+const noResult = async (key, what) => {
   await step('release', { key })
-  return { key, outcome: 'no_result', detail: `${who} returned nothing; the story is released without using an attempt` }
+  return { key, outcome: 'no_result', detail: `${what}; the story is released without using an attempt` }
+}
+
+// A story stopped at the hard cap goes back to its waiting state, with no
+// attempt used; the next run carries on with it.
+const stopped = async (key) => {
+  capped = true
+  try {
+    await step('release', { key }, { past: true })
+  } catch (e) {
+    log(`${key}: the release failed too: ${(e && e.message) || e}`)
+  }
+  log(`${key}: stopped at ${HARD_CAP} agent calls, and released without using an attempt; the next run carries on`)
+  return { key, outcome: 'stopped', detail: `stopped at the agent cap of ${HARD_CAP}` }
+}
+
+// A story whose delivery stopped on an error goes back to its waiting state
+// and gets a thread with the error, which blocks it: the human hears of it,
+// and no run takes the story again, failing the same way, until the thread
+// is answered.
+const failed = async (key, e) => {
+  const message = String((e && e.message) || e)
+  let thread = null
+  try {
+    await step('release', { key }, { past: true })
+  } catch (r) {
+    log(`${key}: the release failed too: ${(r && r.message) || r}`)
+  }
+  try {
+    thread = (await step('thread-open', { key, title: `${key}: delivery stopped on an error`, body: `The workflow stopped delivering ${key} on this error:\n\n${message}\n\nThe story is back in its waiting state, and blocked until this thread is answered; answer it once the cause is fixed.\n` }, { past: true })).thread
+  } catch (t) {
+    log(`${key}: the thread about the error could not be opened: ${(t && t.message) || t}`)
+  }
+  return { key, outcome: 'failed', detail: message, ...(thread ? { thread } : {}) }
 }
 
 const exhaust = async (key, known = null) => {
@@ -681,7 +784,7 @@ const implement = async (key) => {
   for (let asked = 0; ; asked++) {
     const attempt = ctx.attempt + 1
     const r = await ask('impl', implPrompt(ctx, wt.path, attempt, task), { label: `impl:${key}`, phase: 'Deliver', schema: IMPL_SCHEMA }, MODELS[attempt >= 2 ? 'implRetry' : 'impl'])
-    if (!r) return noResult(key, 'the implementer')
+    if (!r) return noResult(key, 'the implementer returned nothing')
     await recordDecisions(ctx, r.decisions)
     if (r.status === 'needs_decision') {
       const answer = await question(ctx, r, 'the implementer', wt.path, 'impl-q', asked)
@@ -700,25 +803,41 @@ const implement = async (key) => {
   }
 }
 
-// The reviewer, run again after each question the council settles. A pass
-// needs the verdict pass, every criterion met and no defect; anything else
-// gives the findings, one per criterion not met and one per defect.
+// The reviewer, run again after each question the council settles. Every
+// criterion gets a verdict: a review without one for each is asked again, and
+// after REVIEW_RETRIES the story is released, since a criterion left out is
+// not a criterion met. A test obligation is never judged. A pass needs the
+// verdict pass, every other criterion met and no defect; anything else gives
+// the findings, one per criterion not met and one per defect.
 const review = async (key, wt) => {
-  for (let asked = 0; ; asked++) {
+  let asked = 0
+  let malformed = 0
+  for (;;) {
     const ctx = await step('context', { key })
-    const v = await ask('review', reviewPrompt(ctx, wt), { label: `review:${key}`, phase: 'Deliver', schema: REVIEW_SCHEMA })
-    if (!v) return noResult(key, 'the reviewer')
+    const n = ctx.story.criteria.length
+    const v = await ask('review', reviewPrompt(ctx, wt), { label: `review:${key}`, phase: 'Deliver', schema: reviewSchema(n) })
+    if (!v) return noResult(key, 'the reviewer returned nothing')
     if (v.verdict === 'needs_decision') {
-      const answer = await question(ctx, v, 'the reviewer', wt, 'review-q', asked)
+      const answer = await question(ctx, v, 'the reviewer', wt, 'review-q', asked++)
       if (!answer.settled) return { key, outcome: 'needs_decision', thread: answer.thread }
       continue
     }
-    const judged = new Map((v.criteria || []).filter((c) => c && Number.isInteger(c.index)).map((c) => [c.index, c]))
-    const unmet = ctx.story.criteria.map((c, i) => ({ c, verdict: judged.get(i) })).filter((x) => !x.verdict || x.verdict.met !== true)
+    const judged = new Map()
+    for (const c of v.criteria || []) if (c && Number.isInteger(c.index) && c.index >= 0 && c.index < n && !judged.has(c.index)) judged.set(c.index, c)
+    const missing = ctx.story.criteria.map((c, i) => i).filter((i) => !judged.has(i))
+    if (missing.length) {
+      if (malformed++ < REVIEW_RETRIES) {
+        log(`${key}: the review gave no verdict on criteria ${missing.join(', ')}; asking again`)
+        continue
+      }
+      return noResult(key, `the reviewer gave no verdict on criteria ${missing.join(', ')}, ${REVIEW_RETRIES + 1} times`)
+    }
+    const decided = decidedObligations(ctx)
+    const unmet = ctx.story.criteria.map((c, i) => ({ c, verdict: judged.get(i), i })).filter((x) => !decided.has(x.i) && x.verdict.obligation !== true && x.verdict.met !== true)
     const defects = (v.defects || []).filter((d) => d && d.text)
     if (v.verdict === 'pass' && !unmet.length && !defects.length) return { pass: true }
     const findings = [
-      ...unmet.map(({ c, verdict }) => ({ text: `Criterion not met: "${c.text}". ${verdict ? verdict.evidence : 'The reviewer gave it no verdict.'}`, files: [] })),
+      ...unmet.map(({ c, verdict }) => ({ text: `Criterion not met: "${c.text}". ${verdict.evidence}`, files: [] })),
       ...defects.map((d) => ({ text: d.criterion ? `${d.text} (criterion: "${d.criterion}")` : d.text, files: d.files || [] })),
     ]
     return { findings: findings.length ? findings : [{ text: 'The reviewer failed the story without naming a criterion not met or a defect', files: [] }] }
@@ -788,14 +907,15 @@ const deliverStory = async (key, from, held) => {
 // claimed story's planned files keep others off the pickable list. A story
 // listed as implemented and waiting starts at its review. When nothing new
 // is listed, the board is listed again once a story in flight is done; the
-// run goes on until nothing new is listed and nothing is in flight.
+// run goes on until nothing new is listed and nothing is in flight. A new
+// story is taken only while the agent cap leaves room for it beside those in
+// flight, and up to storyLimit.
 const taken = new Set()
 const running = new Set()
-let capped = false
 const launch = (key, from, held) => {
   taken.add(key)
   const chain = deliverStory(key, from, held)
-    .catch((e) => ({ key, outcome: 'failed', detail: String((e && e.message) || e) }))
+    .catch((e) => (e && e.atCap ? stopped(key) : failed(key, e)))
     .then((o) => {
       outcomes.push(o)
       log(`${o.key}: ${o.outcome}${o.detail ? `: ${o.detail}` : ''}${o.thread ? ` (thread ${o.thread})` : ''}`)
@@ -803,25 +923,40 @@ const launch = (key, from, held) => {
     .finally(() => running.delete(chain))
   running.add(chain)
 }
-for (;;) {
-  await implSlots.acquire()
-  if (agentCalls >= AGENT_CAP) {
-    implSlots.release()
+// Whether the run may take one more story; says why not, once.
+const mayTake = () => {
+  if (taken.size >= storyLimit) {
+    log(`The run has taken ${taken.size} of its storyLimit of ${storyLimit}: it takes no new story`)
+    return false
+  }
+  if (!room(STORY_CALLS, running.size)) {
     capped = true
-    log(`The run has made ${agentCalls} agent calls, past ${AGENT_CAP}: it claims no new story, and ends once the stories in flight are done; the next run carries on`)
+    log(`The run has made ${agentCalls} agent calls, with ${running.size} stories in flight: it takes no new story, and ends once those are done; the next run carries on`)
+    return false
+  }
+  return true
+}
+let taking = true
+while (taking) {
+  await implSlots.acquire()
+  if (!mayTake()) {
+    implSlots.release()
     break
   }
   const board = await step('list', {})
   const fresh = (key) => !taken.has(key) && !unclear.has(key)
-  for (const s of board.stories) if (s.status === 'implemented' && !s.blocked && !s.holder && fresh(s.key)) launch(s.key, 'implemented', false)
+  for (const s of board.stories.filter((x) => x.status === 'implemented' && !x.blocked && !x.holder && fresh(x.key))) {
+    if (!(taking = mayTake())) break
+    launch(s.key, 'implemented', false)
+  }
   const next = board.pickable.find(fresh)
-  if (next) {
+  if (taking && next && (taking = mayTake())) {
     launch(next, 'backlog', true)
     continue
   }
   implSlots.release()
   if (!running.size) break
-  await Promise.race(running)
+  if (taking) await Promise.race(running)
 }
 await Promise.all(running)
 
@@ -844,4 +979,5 @@ return {
   council: tally,
   agents: agentCalls,
   capped,
+  storyLimit: storyLimit === Infinity ? null : storyLimit,
 }

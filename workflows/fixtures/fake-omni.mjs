@@ -7,6 +7,7 @@
 // for 30 s before it goes on, as a call stuck on the server would.
 // FAKE_OMNI_HANG_AFTER="<words>" holds such a call for 30 s after it saved the
 // state: a write that was made, and whose answer never came back.
+// FAKE_OMNI_HANG_MS sets how long either holds, for a call that is only slow.
 // `checks` answers only when the state holds checks; `story list --pickable` applies
 // the board's rule: backlog, not blocked, every blocker done or cancelled, no planned
 // file (files_changed when set, else files_planned) shared with a story in implementing, implemented, review, reviewed or testing. `claim` needs the stage's waiting state (else exit 1, not_waiting); `move` to implemented, reviewed, backlog or done clears the holder; `release` and `block` put a working story in its waiting state and clear the holder. `story finding` appends to the story's findings and
@@ -15,14 +16,40 @@
 // the story after the highest key; `story tick` sets the criterion's ticked/pending.
 // `doc read <id>` prints the state's docs[id], and fails for a doc it lacks;
 // `thread read` fails for a thread it lacks, with the CLI's not_found.
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+// Calls at once each read, change and write the state under a lock file
+// beside it, and a write replaces the file whole, as the server serves
+// requests at once without losing one.
+import { closeSync, existsSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 
 const argv = process.argv.slice(2);
 const named = (variable) => process.env[variable] && `${argv.join(" ")} `.startsWith(`${process.env[variable]} `);
-const hold = () => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 30000);
+const hold = () => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Number(process.env.FAKE_OMNI_HANG_MS) || 30000);
 if (named("FAKE_OMNI_HANG")) hold();
 const statePath = process.env.FAKE_OMNI_STATE;
+// A lock left by a call that was killed while it held it is taken over
+// after 5 s; a call holds it for milliseconds.
+const lockPath = `${statePath}.lock`;
+for (const until = Date.now() + 30000; ;) {
+  try {
+    closeSync(openSync(lockPath, "wx"));
+    break;
+  } catch (e) {
+    if (e.code !== "EEXIST") throw e;
+    let age = 0;
+    try { age = Date.now() - statSync(lockPath).mtimeMs; } catch {}
+    if (age > 5000) rmSync(lockPath, { force: true });
+    else if (Date.now() > until) throw new Error(`${lockPath} stayed taken for 30 s`);
+    else Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
+  }
+}
+let locked = true;
+const unlock = () => {
+  if (!locked) return;
+  locked = false;
+  rmSync(lockPath, { force: true });
+};
+process.on("exit", unlock);
 const state = JSON.parse(readFileSync(statePath, "utf8"));
 const lock = existsSync(".omni/run.lock") ? JSON.parse(readFileSync(".omni/run.lock", "utf8")) : null;
 const down = process.env.FAKE_OMNI_DOWN && existsSync(process.env.FAKE_OMNI_DOWN) && argv[0] === "story" && argv[1] === "list";
@@ -34,7 +61,9 @@ const flag = (name) => {
 };
 const all = (name) => argv.flatMap((a, i) => (a === name ? [argv[i + 1]] : []));
 const save = () => {
-  writeFileSync(statePath, JSON.stringify(state, null, 2));
+  writeFileSync(`${statePath}.${process.pid}.tmp`, JSON.stringify(state, null, 2));
+  renameSync(`${statePath}.${process.pid}.tmp`, statePath);
+  unlock();
   if (named("FAKE_OMNI_HANG_AFTER")) hold();
 };
 const out = (text) => process.stdout.write(text);
