@@ -10,7 +10,8 @@
 // FAKE_OMNI_HANG_MS sets how long either holds, for a call that is only slow.
 // `checks` answers only when the state holds checks; `story list --pickable` applies
 // the board's rule: backlog, not blocked, every blocker done or cancelled, no planned
-// file (files_changed when set, else files_planned) shared with a story in implementing, implemented, review, reviewed or testing. `claim` needs the stage's waiting state (else exit 1, not_waiting); `move` to implemented, reviewed, backlog or done clears the holder; `release` and `block` put a working story in its waiting state and clear the holder. `story finding` appends to the story's findings and
+// file (files_changed when set, else files_planned) shared with a story in implementing, implemented, review, reviewed or testing,
+// in the board's order: priority, then open (not done or cancelled) dependants, most first, then number. `claim` needs the stage's waiting state (else exit 1, not_waiting); `move` to implemented, reviewed, backlog or done clears the holder; `release` and `block` put a working story in its waiting state and clear the holder. `story finding` appends to the story's findings and
 // `story resolve --finding <i>` resolves the i-th (0-based). `story add <file>` reads
 // the heading, Description, Files and criteria the way the CLI does and numbers
 // the story after the highest key; `story tick` sets the criterion's ticked/pending.
@@ -129,7 +130,9 @@ if (noun === "--help") {
     const busy = state.stories.filter((s) => ["implementing", "implemented", "review", "reviewed", "testing"].includes(s.status)).flatMap(filesOf);
     const free = (s) => !filesOf(s).some((f) => busy.includes(f));
     const finished = (key) => ["done", "cancelled"].includes(state.stories.find((x) => x.key === key)?.status);
-    out(state.stories.filter((s) => s.status === "backlog" && !s.blocked && free(s) && (s.blocked_by || []).every(finished)).map((s) => `${s.key}\n`).join(""));
+    const dependants = (s) => state.stories.filter((x) => !["done", "cancelled"].includes(x.status) && (x.blocked_by || []).includes(s.key)).length;
+    const order = (a, b) => (a.priority ?? 3) - (b.priority ?? 3) || dependants(b) - dependants(a) || Number(a.key.slice(3)) - Number(b.key.slice(3));
+    out(state.stories.filter((s) => s.status === "backlog" && !s.blocked && free(s) && (s.blocked_by || []).every(finished)).sort(order).map((s) => `${s.key}\n`).join(""));
   } else {
     out(JSON.stringify({ stories: state.stories }));
   }

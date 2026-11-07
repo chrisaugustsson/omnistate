@@ -23,7 +23,14 @@
 //   step worked, body.error why not, and body.received is fnv1a of the payload
 //   text, so the script can tell when a courier changed either side. Any other
 //   exit code means the helper itself crashed.
-// - A step that writes records its body under its opId in
+// - A body with ok false says whether to try the same command again: retry
+//   true when that can work, after a payload that came wrong or a command that
+//   failed, such as a write cut short, which the repeat carries on; retry
+//   false when the repeat would be refused the same way: the board refused
+//   the write (a claim of a story that is not waiting, or that another run
+//   holds), another run holds the lock, a worktree on the wrong branch, a
+//   payload the step cannot take.
+// - A step that writes records its body under its step name and opId in
 //   .omni/runs/<runId>/applied.json once it worked, and a repeat of that opId
 //   gets the recorded body back without running again: a retried courier
 //   never writes twice. Before it writes, the step records a pending marker
@@ -32,43 +39,67 @@
 //   only the rest. A repeat of an opId with another payload is an error.
 // - .omni/run.lock names the run that holds the checkout. Every call of that
 //   run refreshes its heartbeat, and a call of a run that no longer holds it
-//   fails; only a repeat is answered without it.
+//   fails; only a repeat is answered without it, and a repeat of a finish
+//   that gave the lock up goes on without it.
 // - A start repeated by the same session within 5 minutes, before its run
-//   made any call, gets the first start's body back; never with --force.
+//   made any call, gets the first start's body back, with --force too.
 // - Every step that runs records its start, its end and its payload's key in
-//   .omni/runs/<runId>/timings.jsonl; finish reports them.
+//   .omni/runs/<runId>/timings.jsonl, and lane-prepare its rebase; finish
+//   reports them.
 //
 // The steps, each with its payload and the fields its body has besides ok and
 // received:
-// - start, from flags: run, root, branch, tip, lane, thread, checks, stories, released, log
+// - start, from flags: run, root, branch, tip, lane, thread, checks, stories
+//   ({keys, counts by status, blocked}), released, log
 // - checks-set {checks: {name: command}}: checks, all five
-// - list {}: stories, pickable
+// - list {}: stories, pickable (those with a worktree from an earlier attempt
+//   first, then in the board's order: priority, then how many stories each
+//   one unblocks, then number)
 // - context {key}: story, decisions, attempt, findings, uncounted, earlier, docs, threads
 // - claim {key, stage}, release {key}, move {key, to}, block {key} and
 //   unblock {key}: key, status, blocked, holder
 // - finding {key, stage, findings: [{text, files}], counts}: key, attempt
 // - decision {key, question, choice, by}: key
-// - files {key}: key, files
+// - files {key}: key, files (how many)
 // - thread-open {title, body, key?}: thread, and key when given
 // - unblock-pass {}: unblocked, log
-// - worktree {key}: key, path, branch, created
+// - worktree {key}: key, path, branch, created (true when the story starts on
+//   a branch of its own just cut, false when its branch has earlier work)
 // - sleep {seconds}: seconds
 // - clarity-pending {}: keys
 // - clarity-record {key}: key, hash
 // - job-start {name, key?, cmd, cwd, limitMinutes?}: id, log
 // - job-wait {id, maxSeconds}: id, done, and once done result and tail
 // - job-kill {id}: id, killed, done, and once done result and tail
-// - lane-prepare {key}: key, outcome (ready, conflict, missing or infra), with
-//   base and candidate when ready, files when conflict, reason otherwise
+// - lane-prepare {key}: key, outcome: ready with base and candidate; conflict
+//   with files; dirty with files and count; wrong_branch with head (the
+//   branch checked out, null when detached) and commits (those not on
+//   story/<key>); missing or infra. Every outcome but ready and conflict has
+//   a reason. dirty and wrong_branch are the story's to fix, and count as an
+//   attempt; conflict does not; infra is not the story's.
+// - lane-clean {}: discarded and count: what it threw away
 // - lane-base {} and lane-reset {}: tip
-// - lane-land {key, base}: key, landed, with base, final, files and removed
-//   when landed, reason when refused
-// - wait-answers {maxSeconds}: answered, waiting
+// - lane-land {key, base}: key, landed, with base, final, files (how many)
+//   and removed when landed, reason when refused
 // - finish {report: {outcomes: [{key, outcome, detail?}], council: {settled,
 //   asked}, blocked: [{key, threads}], journeys?: [line], notes?: [line]}}:
 //   thread, posted, report, stopped
-// Outputs stay small, since a courier repeats every byte: never doc text, and
-// of a job's log only its last 2 KB.
+// Outputs stay small, since a courier repeats every byte: never doc text, of
+// a job's log only its last 2 KB, and of a list of files at most 20.
+//
+// The lane, story by story: lane-prepare; the checks as jobs in the lane
+// worktree; the verifier; the test author; lane-clean, so that the test
+// author's check runs on exactly what lands; that check; lane-land. lane-land
+// refuses a lane worktree with uncommitted changes, so a check that leaves
+// files git does not ignore keeps every story from landing: such files belong
+// in .gitignore.
+//
+// Left as they are:
+// - A job's command can leave members of its group running in the background
+//   after its leader exited: the job ends with its leader, and nothing stops
+//   them.
+// - A thread whose `thread create` was cut off after the board made it stays
+//   without a post: the repeat cannot know its id, and creates another.
 //
 // Jobs are commands that take longer than a courier's Bash call. job-start
 // starts a detached supervisor (this file's hidden __supervise) and returns.
@@ -76,15 +107,17 @@
 // stdin, its output going straight to .omni/runs/<runId>/jobs/<id>.log, and
 // writes the result, {ok, code, signal, timedOut, durationMs, started, ended},
 // to <id>.json when it ends; <id>.job.json holds the job and its pids. At its
-// limit the group gets SIGTERM, then SIGKILL 10 s later. A stopped job can
-// leave behind what it started outside its group, such as containers in a VM:
-// cleaning those up is the project's job, in its stack_up or a preflight.
+// limit the group gets SIGTERM, then SIGKILL 10 s later. A job whose
+// supervisor died without a result is lost: job-wait, job-kill and start stop
+// its group the same way when ps shows that the group's leader is still the
+// process the job started. A stopped job can leave behind what it started
+// outside its group, such as containers in a VM: cleaning those up is the
+// project's job, in its stack_up or a preflight.
 // OMNI_DELIVER_KILL_GRACE_MS and OMNI_DELIVER_REBASE_MS set that grace and the
 // lane's rebase limit, for tests.
 
 import { execFileSync, spawn } from 'node:child_process'
 import fs from 'node:fs'
-import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -116,8 +149,9 @@ const delay = (ms) => (ms > 0 ? Math.min(Math.round(ms), MAX_DELAY_MS) : 0)
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, delay(ms)))
 const nap = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, delay(ms))
 // A wait in seconds, at most 480 so that it fits a courier's Bash call; 480
-// when the payload gives none.
-const waitSeconds = (s) => (typeof s === 'number' ? Math.min(Math.max(s, 0), MAX_SLEEP_S) : MAX_SLEEP_S)
+// when the payload gives none. Exported for its test: a wait of 480 s is
+// too long for one.
+export const waitSeconds = (s) => (typeof s === 'number' ? Math.min(Math.max(s, 0), MAX_SLEEP_S) : MAX_SLEEP_S)
 
 // A long story list or doc read passes the 1 MB that execFileSync takes by default.
 const MAX_BUFFER = 64 * 1024 * 1024
@@ -135,6 +169,13 @@ const tryRun = (cmd, argv, opts) => { try { return run(cmd, argv, opts) } catch 
 // A failed call as a body's error: what omni and git print on standard error
 // says what went wrong.
 const failure = (e) => (String((e && e.stderr) || '').trim() || String((e && e.message) || e)).slice(0, 500)
+// Whether the same command again may work: not when the board refused the
+// write for a rule a repeat meets again (a claim of a story that is not
+// waiting for the stage or that another run holds, a write to a story that is
+// closed); yes for any other failure, such as a timeout or a server that
+// could not be reached.
+const REFUSALS = /\b(not_waiting|held|not_holder|not_open|criteria_open)\b/
+const retryable = (e) => !REFUSALS.test(failure(e))
 
 const pad = (n) => String(n).padStart(2, '0')
 const stamp = (d) => `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`
@@ -164,39 +205,71 @@ const writeJson = (file, value) => {
 }
 // A read-modify-write of a file that parallel calls of one run share (the
 // record of applied ops, the clarity cache) holds this lock, a file created
-// exclusively. One left by a call that was killed in the few milliseconds it
-// holds it is taken over after 10 s.
-const withLock = (file, fn) => {
+// exclusively that names its holder's pid. One left by a call that was killed
+// while it held it is taken over: at once when its holder has ended, else
+// once it is older than holdMs (a holder that wrote no pid yet, or a pid that
+// was reused). A takeover holds the lock's takeover file, created exclusively,
+// and looks at the lock again under it: of two waiters that found the same
+// stale lock, the second finds the lock the first has just taken, and leaves
+// it. A holder gives up only its own lock.
+const readText = (file) => { try { return fs.readFileSync(file, 'utf8') } catch { return null } }
+const staleLock = (lock, holdMs) => {
+  let age
+  try { age = Date.now() - fs.statSync(lock).mtimeMs } catch { return false }
+  const pid = Number((readText(lock) || '').split(' ')[0])
+  return (Number.isInteger(pid) && pid > 0 && !alive(pid)) || age > holdMs
+}
+// Whether it removed the stale lock; false while another waiter takes it over.
+const takeOver = (lock, holdMs) => {
+  const guard = `${lock}.takeover`
+  try {
+    fs.closeSync(fs.openSync(guard, 'wx'))
+  } catch (e) {
+    if (e.code !== 'EEXIST') throw e
+    // A takeover lasts milliseconds: a guard this old was left by a call
+    // that was killed during one.
+    try { if (Date.now() - fs.statSync(guard).mtimeMs > 10000) fs.rmSync(guard, { force: true }) } catch {}
+    return false
+  }
+  try {
+    if (!staleLock(lock, holdMs)) return false
+    fs.rmSync(lock, { force: true })
+    return true
+  } finally {
+    fs.rmSync(guard, { force: true })
+  }
+}
+const withLock = (file, fn, { holdMs = 10000, waitMs = 30000 } = {}) => {
   const lock = `${file}.lock`
+  const mine = `${process.pid} ${process.hrtime.bigint()}`
   fs.mkdirSync(path.dirname(lock), { recursive: true })
-  const until = Date.now() + 30000
+  const until = Date.now() + waitMs
   for (;;) {
     try {
-      fs.closeSync(fs.openSync(lock, 'wx'))
+      fs.writeFileSync(lock, mine, { flag: 'wx' })
       break
     } catch (e) {
       if (e.code !== 'EEXIST') throw e
-      let age = 0
-      try { age = Date.now() - fs.statSync(lock).mtimeMs } catch {}
-      if (age > 10000) fs.rmSync(lock, { force: true })
-      else if (Date.now() > until) throw new Error(`${lock} stayed taken for 30 s`)
-      else Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20)
+      if (staleLock(lock, holdMs) && takeOver(lock, holdMs)) continue
+      if (Date.now() > until) throw new Error(`${lock} stayed taken for ${Math.round(waitMs / 1000)} s`)
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20)
     }
   }
-  try { return fn() } finally { fs.rmSync(lock, { force: true }) }
+  try { return fn() } finally { if (readText(lock) === mine) fs.rmSync(lock, { force: true }) }
 }
 const lockPathOf = (root) => path.join(root, '.omni', 'run.lock')
 const runDirOf = (root, runId) => path.join(root, '.omni', 'runs', runId)
 const appliedPathOf = (root, runId) => path.join(runDirOf(root, runId), 'applied.json')
 const clarityPathOf = (root) => path.join(root, '.omni', 'clarity.json')
-const recordOp = (root, runId, opId, body) => withLock(appliedPathOf(root, runId), () => {
+// Applied ops by step and opId: an opId of one step never answers another.
+const recordOp = (root, runId, step, opId, body) => withLock(appliedPathOf(root, runId), () => {
   const applied = readJson(appliedPathOf(root, runId)) || {}
-  applied[opId] = body
+  applied[step] = { ...applied[step], [opId]: body }
   writeJson(appliedPathOf(root, runId), applied)
 })
-const recordedOp = (root, runId, opId) => {
-  const applied = readJson(appliedPathOf(root, runId)) || {}
-  return Object.hasOwn(applied, opId) ? applied[opId] : null
+const recordedOp = (root, runId, step, opId) => {
+  const ops = (readJson(appliedPathOf(root, runId)) || {})[step] || {}
+  return Object.hasOwn(ops, opId) ? ops[opId] : null
 }
 // run.json holds the run: its feature, root, thread, checks, the tip of
 // deliver/<slug> at its start, and the stories it landed.
@@ -313,17 +386,39 @@ const supervising = (runId, job) => {
   if (args === null) return null
   return args.includes(SUPERVISE) && args.includes(path.join(runId, 'jobs', `${job.id}.job.json`))
 }
-// A job's result once it has ended. A job whose supervisor is gone without
-// one is lost: its supervisor was killed itself.
+// Whether the leader of a job's group, pid = pgid, still runs the job's
+// command: whether it is the process the supervisor started for it, which
+// ps shows running since the job started. Its arguments cannot tell: a shell
+// runs a simple command by exec, without the variables set in front of it
+// and its redirections. A pid that was reused started later, and is never
+// signalled.
+const leading = (job) => {
+  if (!Number.isInteger(job.pgid) || job.pgid <= 0 || !alive(job.pgid)) return false
+  // ps's etime: [[dd-]hh:]mm:ss.
+  const m = (tryRun('ps', ['-o', 'etime=', '-p', String(job.pgid)]) || '').trim().match(/^(?:(\d+)-)?(?:(\d+):)?(\d+):(\d+)$/)
+  const started = Date.parse(job.started)
+  if (!m || !Number.isFinite(started)) return false
+  const age = ((Number(m[1] || 0) * 24 + Number(m[2] || 0)) * 60 + Number(m[3])) * 60 + Number(m[4])
+  return Math.abs((Date.now() - started) / 1000 - age) <= 2
+}
+const groupGone = (pgid) => { try { process.kill(-pgid, 0); return false } catch (e) { return e.code === 'ESRCH' } }
+// A job whose supervisor is gone without its result is lost: its supervisor
+// was killed itself.
+const lose = (job) => {
+  const lost = { ok: false, code: null, signal: null, timedOut: false, durationMs: null, started: job.started || null, ended: null, error: `the supervisor of the job ${job.id} ended without its result` }
+  writeJson(job.files.result, lost)
+  return lost
+}
+// A job's result once it has ended. One whose supervisor is gone is stopped,
+// if its command still runs, and lost.
 const endOf = (runId, job, ask = false) => {
   const result = readJson(job.files.result)
   if (result) return result
   if (alive(job.supervisor) && !(ask && supervising(runId, job) === false)) return null
   const late = readJson(job.files.result)
   if (late) return late
-  const lost = { ok: false, code: null, signal: null, timedOut: false, durationMs: null, started: job.started || null, ended: null, error: `the supervisor of the job ${job.id} ended without its result` }
-  writeJson(job.files.result, lost)
-  return lost
+  stopJobs([{ run: runId, job }])
+  return readJson(job.files.result) || lose(job)
 }
 const tailOf = (file) => {
   let fd
@@ -343,17 +438,39 @@ const tailOf = (file) => {
 }
 // The jobs of these runs that have not ended, as {run, job}.
 const runningJobs = (root, runIds) => runIds.flatMap((run) => jobsOf(root, run).filter((job) => !fs.existsSync(job.files.result)).map((job) => ({ run, job })))
-// Stops jobs: SIGTERM to each one's supervisor, which stops the job's group as
-// at its limit, and a wait, the grace and 2 s at most, until they have ended.
-// Only a supervisor that ps shows to be one is signalled. Gives those stopped.
+// Stops jobs that have not ended: SIGTERM to each one's supervisor, which
+// stops the job's group as at its limit. A job whose supervisor is gone gets
+// what the supervisor would have done: SIGTERM to its group when its leader
+// still runs the job's command, SIGKILL after the grace unless the group is
+// gone, and the result that says it is lost. A wait, the grace and 2 s at
+// most, until they have ended. Only a supervisor that ps shows to be one is
+// signalled, and ps that cannot tell signals nothing. Gives those stopped.
 const stopJobs = (list) => {
-  const stopping = list.filter(({ run, job }) => {
-    if (supervising(run, job) !== true) return false
-    try { process.kill(job.supervisor, 'SIGTERM'); return true } catch { return false }
-  })
-  const until = Date.now() + graceMs() + 2000
-  while (stopping.some(({ job }) => !fs.existsSync(job.files.result) && alive(job.supervisor)) && Date.now() < until) nap(50)
-  return stopping
+  const supervised = []
+  const orphans = []
+  for (const entry of list) {
+    if (fs.existsSync(entry.job.files.result)) continue
+    const supervisor = supervising(entry.run, entry.job)
+    if (supervisor === true) {
+      try { process.kill(entry.job.supervisor, 'SIGTERM'); supervised.push(entry) } catch {}
+    } else if (supervisor === false) {
+      if (leading(entry.job)) { try { process.kill(-entry.job.pgid, 'SIGTERM'); orphans.push(entry) } catch {} }
+      if (!orphans.includes(entry)) lose(entry.job)
+    }
+  }
+  const killAt = Date.now() + graceMs()
+  const until = killAt + 2000
+  let killed = false
+  const running = () => supervised.some(({ job }) => !fs.existsSync(job.files.result) && alive(job.supervisor)) || orphans.some(({ job }) => !groupGone(job.pgid))
+  while (running() && Date.now() < until) {
+    if (!killed && Date.now() >= killAt) {
+      killed = true
+      for (const { job } of orphans) { try { process.kill(-job.pgid, 'SIGKILL') } catch {} }
+    }
+    nap(50)
+  }
+  for (const { job } of orphans) lose(job)
+  return [...supervised, ...orphans]
 }
 
 // The supervisor of one job, detached from the job-start that spawned it.
@@ -452,11 +569,12 @@ const boardOf = (root, runId, feature) => {
   const listStories = () => JSON.parse(omni(['story', 'list', '--json'])).stories
   const readStory = (key) => omniJson(['story', 'read', key])
   const write = (verb, key, extra = []) => omniJson(['story', verb, key, '--run', runId, ...extra])
-  // A post's body goes through a file: fed through stdin, the synchronous
-  // spawn once left `omni post` waiting on its stdin for over an hour, and the
-  // run with it.
+  // A post's body goes through a file in the run's folder: fed through stdin,
+  // the synchronous spawn once left `omni post` waiting on its stdin for over
+  // an hour, and the run with it.
   const post = (id, summary, body) => {
-    const file = path.join(os.tmpdir(), `omni-post-${id}.md`)
+    const file = path.join(runDirOf(root, runId), `post-${id}-${process.pid}.md`)
+    fs.mkdirSync(path.dirname(file), { recursive: true })
     fs.writeFileSync(file, body)
     try {
       omni(['post', id, '--summary', summary, '--body-file', file])
@@ -465,11 +583,18 @@ const boardOf = (root, runId, feature) => {
     }
   }
   // A question for the human is a thread on the feature named after the story,
-  // linked from the story, and the story is blocked until it concludes.
+  // linked from the story, and the story is blocked until it concludes. An
+  // edit sets all of a story's links, so one story's link writes go one at a
+  // time, under a lock of the story: two thread-opens at once each linked the
+  // story from what they read, and the second dropped the first's thread. A
+  // link write is two calls, a minute each at most, so the lock is held for
+  // minutes where the others are held for milliseconds.
   const linkAndBlock = (key, threadIds) => {
-    const fresh = readStory(key)
-    const links = [...(fresh.links || []).map((l) => (l.thread_id ? `thread:${l.thread_id}:${l.label}` : `${l.doc_id}:${l.node_id}:${l.label}`)), ...threadIds.map((id) => `thread:${id}:question`)]
-    omni(['story', 'edit', key, ...links.flatMap((l) => ['--link', l])])
+    withLock(path.join(root, '.omni', 'stories', key), () => {
+      const fresh = readStory(key)
+      const links = [...(fresh.links || []).map((l) => (l.thread_id ? `thread:${l.thread_id}:${l.label}` : `${l.doc_id}:${l.node_id}:${l.label}`)), ...threadIds.map((id) => `thread:${id}:question`)]
+      omni(['story', 'edit', key, ...links.flatMap((l) => ['--link', l])])
+    }, { holdMs: 10 * 60000, waitMs: 5 * 60000 })
     return write('block', key)
   }
   // A doc as `omni doc read` prints it, read once per call.
@@ -497,6 +622,33 @@ const cleanTree = (b, dir) => {
 }
 const isDir = (p) => { try { return fs.statSync(p).isDirectory() } catch { return false } }
 const isAncestorIn = (root, a, c) => tryRun('git', ['-C', root, 'merge-base', '--is-ancestor', a, c]) !== null
+// The ref a worktree has checked out, '' when its HEAD is detached.
+const headRef = (dir) => (tryRun('git', ['-C', dir, 'symbolic-ref', '-q', 'HEAD']) || '').trim()
+const hasBranch = (root, name) => tryRun('git', ['-C', root, 'rev-parse', '--verify', '--quiet', `refs/heads/${name}`]) !== null
+// The paths git status shows in a worktree: changed tracked files, and
+// untracked ones it does not ignore. -z gives each path as it is.
+const changedFiles = (dir) => {
+  const entries = run('git', ['-C', dir, 'status', '--porcelain', '-z']).split('\0')
+  const files = []
+  for (let i = 0; i < entries.length; i++) {
+    if (!entries[i]) continue
+    files.push(entries[i].slice(3))
+    // A rename or copy is followed by the path it came from.
+    if ('RC'.includes(entries[i][0])) i++
+  }
+  return files
+}
+// A list in a body: its first 20 entries.
+const LISTED = 20
+// The branch a rebase in progress in a worktree rebases ('' when it does not
+// say), or null when no rebase is in progress there.
+const rebasingIn = (dir) => {
+  for (const name of ['rebase-merge', 'rebase-apply']) {
+    const at = (tryRun('git', ['-C', dir, 'rev-parse', '--git-path', name]) || '').trim()
+    if (at && isDir(path.resolve(dir, at))) return (readText(path.join(path.resolve(dir, at), 'head-name')) || '').trim()
+  }
+  return null
+}
 
 // ---- the lane --------------------------------------------------------------
 // One story at a time is tested in the lane worktree, detached, and lands on
@@ -527,10 +679,13 @@ const laneToTip = (b) => {
 // A landed story's worktree leaves git at once, by a rename that takes no
 // time, and its files go in the background: a build folder can take minutes
 // to delete, past a courier's Bash call. A worktree that cannot be moved
-// stays, and says so: the story has landed all the same.
+// stays, and says so: the story has landed all the same. So does a folder in
+// its place that is not the story's own worktree of this checkout on
+// story/<key>, and the branch with it.
 const removeWorktree = (b, key) => {
   const wt = b.worktreeOf(key)
   if (fs.existsSync(wt)) {
+    if (!isWorktree(b.root, wt) || !ownTree(wt) || headRef(wt) !== `refs/heads/story/${key}`) return false
     try {
       const bin = path.join(b.storiesDir, '_trash')
       fs.mkdirSync(bin, { recursive: true })
@@ -658,6 +813,7 @@ const readThread = (b, id) => {
 
 // ---- the run's report ------------------------------------------------------
 const took = (ms) => {
+  if (ms < 1000) return '<1s'
   const s = Math.round(ms / 1000)
   if (s < 60) return `${s}s`
   if (s < 3600) return `${Math.floor(s / 60)}m ${s % 60}s`
@@ -665,8 +821,9 @@ const took = (ms) => {
 }
 const STAGES = ['implementing', 'review', 'testing']
 // How long each story took: from its first step to its last; in each stage,
-// from a claim to the story's last step before its next claim, which takes
-// in the agents between them; in its rebases; and in its jobs by name. A
+// from a claim the board took to the story's last step before its next one,
+// which takes in the agents between them; in its rebases, which lane-prepare
+// times apart from the lane's checkout; and in its jobs, by name in order. A
 // count after a time says how many there were.
 const timingTable = (records, jobs) => {
   const at = (iso) => Date.parse(iso)
@@ -674,7 +831,7 @@ const timingTable = (records, jobs) => {
   const ended = jobs.filter((j) => j.key && j.result && Number.isFinite(j.result.durationMs))
   const keys = [...new Set([...keyed.map((r) => r.key), ...ended.map((j) => j.key)])]
   if (keys.length === 0) return '- none'
-  const names = [...new Set(ended.map((j) => j.name))]
+  const names = [...new Set(ended.map((j) => j.name))].sort()
   const columns = [...STAGES, 'rebase', ...names.map((n) => `job ${n}`)]
   const add = (times, column, ms) => {
     const [sum, n] = times.get(column) || [0, 0]
@@ -688,11 +845,11 @@ const timingTable = (records, jobs) => {
     let open = null
     const close = () => { if (open) add(times, open.stage, open.to - open.from) }
     for (const r of mine) {
-      if (r.step === 'claim') {
+      if (r.step === 'claim' && r.ok) {
         close()
         open = { stage: r.stage, from: at(r.started), to: at(r.ended) }
       } else if (open) open.to = Math.max(open.to, at(r.ended))
-      if (r.step === 'lane-prepare') add(times, 'rebase', r.ms)
+      if (r.step === 'rebase') add(times, 'rebase', r.ms)
     }
     close()
     for (const j of theirs) add(times, `job ${j.name}`, j.result.durationMs)
@@ -703,7 +860,7 @@ const timingTable = (records, jobs) => {
     return `| ${key} | ${took(Math.max(...spans.map((s) => s[1])) - Math.min(...spans.map((s) => s[0])))} | ${cells.join(' | ')} |`
   })
   const head = ['Story', 'Total', ...STAGES, 'rebase', ...names]
-  return [`| ${head.join(' | ')} |`, `|${head.map(() => '---').join('|')}|`, ...rows].join('\n')
+  return [`| ${head.join(' | ')} |`, `|${head.map(() => '---').join('|')}|`, ...rows, '', 'A time with (n) after it adds up n of them: claims of the stage, rebases, or runs of the job.'].join('\n')
 }
 // The report, modelled on the one omni-deliver.js posts: what the script knows
 // (the outcomes, the council's counts, the blocked stories and their threads,
@@ -739,7 +896,17 @@ const reportText = (b, info, report) => {
 
 // ---- the steps of a run ----------------------------------------------------
 const STEPS = {
-  list: (b) => ({ stories: b.listStories().map(summary), pickable: pickableKeys(b) }),
+  // The pickable stories that still have a worktree from an earlier attempt
+  // come first, so that work begun is finished first; the board gives the
+  // order besides: priority, then how many open stories each one unblocks,
+  // then number.
+  list: (b) => {
+    const stories = b.listStories().map(summary)
+    const keys = pickableKeys(b)
+    const trees = new Set((tryRun('git', ['-C', b.root, 'worktree', 'list', '--porcelain']) || '').split('\n').filter((l) => l.startsWith('worktree ')).map((l) => real(l.slice(9))))
+    const kept = keys.filter((key) => trees.has(real(b.worktreeOf(key))))
+    return { stories, pickable: [...kept, ...keys.filter((key) => !kept.includes(key))] }
+  },
 
   // What a prompt needs about the story, and never doc text: agents read each
   // linked doc once themselves, with `omni doc read`.
@@ -811,7 +978,7 @@ const STEPS = {
     if (!fs.existsSync(wt)) return { ok: false, error: `no worktree ${wt}` }
     const paths = b.git(['-C', wt, '-c', 'core.quotePath=false', 'diff', '--name-only', '-z', `refs/heads/${b.branch}...HEAD`]).split('\0').filter(Boolean)
     if (paths.length) b.write('files', p.key, paths)
-    return { key: p.key, files: paths }
+    return { key: p.key, files: paths.length }
   })(),
 
   // A repeat uses the thread the first try opened, and posts, links and
@@ -830,7 +997,7 @@ const STEPS = {
       if (!story || !(story.links || []).some((l) => l.thread_id === thread)) b.linkAndBlock(p.key, [thread])
       else if (!story.blocked) b.write('block', p.key)
     } catch (e) {
-      return { ok: false, thread, key: p.key, error: failure(e) }
+      return { ok: false, thread, key: p.key, error: failure(e), retry: retryable(e) }
     }
     return { thread, key: p.key }
   })(),
@@ -866,34 +1033,43 @@ const STEPS = {
         unblocked.push(story.key)
       }
     } catch (e) {
-      return { ok: false, unblocked, log, error: failure(e) }
+      return { ok: false, unblocked, log, error: failure(e), retry: retryable(e) }
     }
     return { unblocked, log }
   },
 
   // A new worktree starts at the tip of deliver/<slug>, what the lane last
-  // landed. An existing one is kept, with what earlier attempts committed and
-  // left in it, when it is a worktree of the checkout on story/<key>; any
-  // other folder in its place is an error. The marker says whether the folder
-  // was there before the first try: a repeat after a try that cut the
-  // worktree still answers created.
+  // landed, on a new branch story/<key>. A branch story/<key> without its
+  // worktree keeps its work: the worktree is made again on it. An existing
+  // worktree is kept, with what earlier attempts committed and left in it,
+  // when it is a worktree of the checkout on story/<key>; any other folder in
+  // its place is an error. The marker says what was there before the first
+  // try, so that a repeat answers created as the first try would have. A
+  // worktree the first try was still making counts only when it is clean and
+  // on story/<key>, since a checkout that was killed leaves one with most of
+  // its files missing; else it is removed and made again.
   worktree: (b, p, { marker, mark }) => missing(p, 'key') || (() => {
     const wt = b.worktreeOf(p.key)
     const branch = `story/${p.key}`
     const known = marker && typeof marker.existed === 'boolean'
-    const existed = known ? marker.existed : fs.existsSync(wt)
-    if (!known) mark({ existed })
-    if (fs.existsSync(wt)) {
-      const head = (tryRun('git', ['-C', wt, 'symbolic-ref', '-q', 'HEAD']) || '').trim()
-      if (!isWorktree(b.root, wt) || !ownTree(wt) || head !== `refs/heads/${branch}`) return { ok: false, error: `${wt} is not a worktree of ${b.root} on ${branch}; move it away` }
-      return { key: p.key, path: wt, branch, created: !existed }
+    const { existed, fresh } = known ? marker : { existed: fs.existsSync(wt), fresh: !hasBranch(b.root, branch) }
+    if (!known) mark({ existed, fresh })
+    const onBranch = () => isWorktree(b.root, wt) && ownTree(wt) && headRef(wt) === `refs/heads/${branch}`
+    const clean = () => { try { return changedFiles(wt).length === 0 } catch { return false } }
+    if (fs.existsSync(wt) && !existed && isWorktree(b.root, wt) && !(onBranch() && clean())) {
+      // -f twice: git keeps a worktree it was making locked.
+      tryRun('git', ['-C', b.root, 'worktree', 'remove', '--force', '--force', wt])
+      if (fs.existsSync(wt)) return { ok: false, error: `${wt}, a worktree the first try was making, could not be removed; move it away` }
     }
-    // A branch left without its worktree goes, so the new one starts clean.
+    if (fs.existsSync(wt)) {
+      if (!onBranch()) return { ok: false, error: `${wt} is not a worktree of ${b.root} on ${branch}; move it away` }
+      return { key: p.key, path: wt, branch, created: fresh }
+    }
     tryRun('git', ['-C', b.root, 'worktree', 'prune'])
-    tryRun('git', ['-C', b.root, 'branch', '-D', branch])
     fs.mkdirSync(b.storiesDir, { recursive: true })
-    b.git(['worktree', 'add', wt, '-b', branch, b.git(['rev-parse', `refs/heads/${b.branch}`]).trim()])
-    return { key: p.key, path: wt, branch, created: true }
+    if (hasBranch(b.root, branch)) b.git(['worktree', 'add', wt, branch])
+    else b.git(['worktree', 'add', wt, '-b', branch, tipOf(b)])
+    return { key: p.key, path: wt, branch, created: fresh }
   })(),
 
   // The wait between retries: the script has no clock.
@@ -954,7 +1130,7 @@ const STEPS = {
       supervisor.on('error', () => { gone = true })
       supervisor.unref()
       for (const until = Date.now() + 10000; !started(); await pause(20)) {
-        if (gone || Date.now() > until) return { ok: false, id, error: `the job ${id} did not start: its supervisor ${gone ? 'ended first' : 'did not start it within 10 s'}` }
+        if (gone || Date.now() > until) return { ok: false, id, error: `the job ${id} did not start: its supervisor ${gone ? 'ended first' : 'did not start it within 10 s'}`, retry: true }
       }
     }
     return { id, log: files.log }
@@ -985,29 +1161,73 @@ const STEPS = {
 
   // Rebases story/<key> onto the tip of deliver/<slug> in the story's
   // worktree, then checks the story's tip out, detached, in a clean lane
-  // worktree. Outcomes, not errors: a conflict, after which the rebase is
-  // undone and the conflicting files come back; a rebase past its limit
-  // (infra); a story without its worktree or branch (missing).
+  // worktree. Git runs only in the story's own worktree of this checkout, on
+  // story/<key>: in a folder that lost its .git file, git works in a
+  // repository around it, whose rebase an abort would undo. Outcomes, not
+  // errors, first those found before the rebase: a story without its
+  // worktree or branch, or a folder that is not its worktree (missing); a
+  // rebase in progress there (infra), but for this op's own, which a try
+  // that was cut off left half done and the repeat undoes; another branch or
+  // a detached HEAD checked out (wrong_branch), whose commits would not land;
+  // uncommitted changes (dirty), which would not land either. Then the
+  // rebase: unmerged paths are a conflict, after which the rebase is undone
+  // and their files come back; a rebase past its limit, or one that failed
+  // any other way, on a lock or a hook, is infra, with git's message.
   'lane-prepare': (b, p, { marker }) => missing(p, 'key') || (() => {
     const wt = b.worktreeOf(p.key)
     const branch = `story/${p.key}`
-    if (!fs.existsSync(wt)) return { key: p.key, outcome: 'missing', reason: `no worktree ${wt}` }
-    if (tryRun('git', ['-C', b.root, 'rev-parse', '--verify', '--quiet', `refs/heads/${branch}`]) === null) return { key: p.key, outcome: 'missing', reason: `no branch ${branch}` }
-    // A try that was cut off may have left its rebase half done.
-    if (marker) tryRun('git', ['-C', wt, 'rebase', '--abort'])
+    const ref = `refs/heads/${branch}`
+    const outcome = (name, fields) => ({ key: p.key, outcome: name, ...fields })
+    if (!fs.existsSync(wt)) return outcome('missing', { reason: `no worktree ${wt}` })
+    if (!hasBranch(b.root, branch)) return outcome('missing', { reason: `no branch ${branch}` })
+    if (!isWorktree(b.root, wt) || !ownTree(wt)) return outcome('missing', { reason: `${wt} is not a worktree of ${b.root} of its own, so git does nothing in it` })
+    if (marker && rebasingIn(wt) === ref) tryRun('git', ['-C', wt, 'rebase', '--abort'])
+    const rebasing = rebasingIn(wt)
+    if (rebasing !== null) return outcome('infra', { reason: `a rebase${rebasing ? ` of ${rebasing.replace(/^refs\/heads\//, '')}` : ''} is in progress in ${wt}` })
+    const head = headRef(wt)
+    if (head !== ref) {
+      const commits = (tryRun('git', ['-C', wt, 'log', '--format=%h %s', `${ref}..HEAD`]) || '').split('\n').filter(Boolean)
+      const name = head ? head.replace(/^refs\/heads\//, '') : null
+      const what = name ? `the branch ${name} checked out` : `a detached HEAD at ${short(b.git(['-C', wt, 'rev-parse', 'HEAD']).trim())}`
+      const lost = commits.length ? `, so its ${commits.length} commit${commits.length === 1 ? '' : 's'} not on ${branch} would be lost (${commits.slice(0, 3).join('; ')}${commits.length > 3 ? '; and more' : ''})` : ''
+      return outcome('wrong_branch', { head: name, commits: commits.slice(0, LISTED), reason: `${wt} has ${what}, not ${branch}: only ${branch} lands${lost}. Commit on ${branch}` })
+    }
+    const dirty = changedFiles(wt)
+    if (dirty.length) return outcome('dirty', { files: dirty.slice(0, LISTED), count: dirty.length, reason: `${wt} has uncommitted changes in ${dirty.length} file${dirty.length === 1 ? '' : 's'}, which would not land: commit or discard them` })
     const base = tipOf(b)
+    // The rebase is timed apart from the step, whose lane checkout can take
+    // longer than the rebase itself.
+    const began = new Date()
+    let failed = null
     try {
       b.git(['-C', wt, 'rebase', '-q', base], { timeout: rebaseMs() })
     } catch (e) {
-      const files = e.timedOut ? [] : (tryRun('git', ['-C', wt, '-c', 'core.quotePath=false', 'diff', '--name-only', '-z', '--diff-filter=U']) || '').split('\0').filter(Boolean)
-      tryRun('git', ['-C', wt, 'rebase', '--abort'])
-      if (e.timedOut) return { key: p.key, outcome: 'infra', reason: `the rebase of ${branch} onto ${b.branch} ran past its limit of ${span(rebaseMs())}` }
-      return { key: p.key, outcome: 'conflict', files: files.length ? files : ['(unknown)'] }
+      failed = e
     }
-    const candidate = b.git(['rev-parse', `refs/heads/${branch}`]).trim()
+    const ended = new Date()
+    recordTiming(b.root, b.runId, { step: 'rebase', op: p.opId, key: p.key, started: began.toISOString(), ended: ended.toISOString(), ms: ended - began, ok: !failed })
+    if (failed) {
+      const files = failed.timedOut ? [] : (tryRun('git', ['-C', wt, '-c', 'core.quotePath=false', 'diff', '--name-only', '-z', '--diff-filter=U']) || '').split('\0').filter(Boolean)
+      if (rebasingIn(wt) !== null) tryRun('git', ['-C', wt, 'rebase', '--abort'])
+      if (failed.timedOut) return outcome('infra', { reason: `the rebase of ${branch} onto ${b.branch} ran past its limit of ${span(rebaseMs())}` })
+      if (files.length) return outcome('conflict', { files })
+      return outcome('infra', { reason: `the rebase of ${branch} onto ${b.branch} failed: ${failure(failed)}` })
+    }
+    const candidate = b.git(['rev-parse', ref]).trim()
     laneAt(b, candidate)
-    return { key: p.key, outcome: 'ready', base, candidate }
+    return outcome('ready', { base, candidate })
   })(),
+
+  // Throws away what is uncommitted in the lane worktree, as start does
+  // (reset --hard and clean -fd, never -x: ignored build caches stay warm),
+  // and says what: after the test author and before its check, so that the
+  // check runs on exactly what lands.
+  'lane-clean': (b) => {
+    if (!isWorktree(b.root, b.lane) || !ownTree(b.lane)) return { ok: false, error: `${b.lane} is not a worktree of ${b.root}, so it cannot be the lane worktree; move it away` }
+    const files = changedFiles(b.lane)
+    cleanTree(b, b.lane)
+    return { discarded: files.slice(0, LISTED), count: files.length }
+  },
 
   // The lane worktree at the tip of deliver/<slug>, clean: lane-base for the
   // rerun of a failed check on the base, lane-reset after a failure.
@@ -1016,19 +1236,28 @@ const STEPS = {
 
   // Lands the lane worktree's HEAD, the tested candidate with what the test
   // author committed on top, by a compare-and-swap of deliver/<slug> from the
-  // base. Refused (landed false) when that HEAD does not descend from the base
-  // or hold the story's branch, or when the branch has moved. Then the landed
-  // tree must be the tested one, and the story is done: its files recorded,
-  // its criteria ticked (a human check pending), its open findings resolved,
-  // its worktree and branch gone. A repeat after a try that was cut off finds
-  // the branch already at that HEAD.
-  'lane-land': (b, p) => missing(p, 'key', 'base') || (() => {
-    const final = b.git(['-C', b.lane, 'rev-parse', 'HEAD']).trim()
+  // base. Refused (landed false) unless that HEAD is detached, with nothing
+  // uncommitted, descends from the base and holds story/<key>, and unless the
+  // branch is still at the base. A branch at the lane's HEAD proves nothing:
+  // a commit made in the lane with deliver/<slug> checked out moves the
+  // branch there too. Only this op's record of the swap it made lets a
+  // repeat, after a try that was cut off, skip it. Then the landed tree must
+  // be the tested one, and the story is done: its files recorded, its
+  // criteria ticked (a human check pending), its open findings resolved, its
+  // worktree and branch gone.
+  'lane-land': (b, p, { marker, mark }) => missing(p, 'key', 'base') || (() => {
     const refused = (reason) => ({ key: p.key, landed: false, reason })
-    if (!(tipOf(b) === final && final !== p.base)) {
+    let final = marker && marker.swapped
+    if (!final) {
+      const head = headRef(b.lane)
+      if (head) return refused(`the lane worktree has ${head.replace(/^refs\/heads\//, '')} checked out, not a detached HEAD: a commit there moves that branch without the compare-and-swap`)
+      const dirty = changedFiles(b.lane)
+      if (dirty.length) return refused(`the lane worktree has uncommitted changes in ${dirty.length} file${dirty.length === 1 ? '' : 's'} (${dirty.slice(0, 5).join(', ')}${dirty.length > 5 ? ', and more' : ''}): what lands must be what was checked, so lane-clean it and check it again`)
+      final = b.git(['-C', b.lane, 'rev-parse', 'HEAD']).trim()
       if (!isAncestorIn(b.root, p.base, final)) return refused(`the lane's HEAD ${short(final)} does not descend from the base ${short(p.base)}`)
       const story = (tryRun('git', ['-C', b.root, 'rev-parse', '--verify', '--quiet', `refs/heads/story/${p.key}`]) || '').trim()
-      if (story && !isAncestorIn(b.root, story, final)) return refused(`the lane's HEAD ${short(final)} does not hold story/${p.key} at ${short(story)}`)
+      if (!story) return refused(`there is no branch story/${p.key} to land`)
+      if (!isAncestorIn(b.root, story, final)) return refused(`the lane's HEAD ${short(final)} does not hold story/${p.key} at ${short(story)}`)
       try {
         b.git(['update-ref', `refs/heads/${b.branch}`, final, p.base])
       } catch (e) {
@@ -1036,6 +1265,7 @@ const STEPS = {
         if (tip !== p.base) return refused(`${b.branch} moved to ${short(tip)} since the base ${short(p.base)}`)
         throw e
       }
+      mark({ swapped: final })
     }
     const landedTree = b.git(['rev-parse', `refs/heads/${b.branch}^{tree}`]).trim()
     const finalTree = b.git(['rev-parse', `${final}^{tree}`]).trim()
@@ -1049,36 +1279,19 @@ const STEPS = {
       ;(story.findings || []).forEach((f, i) => { if (!f.resolved) b.write('resolve', p.key, ['--finding', String(i)]) })
       if (story.status !== 'done') b.write('move', p.key, ['--to', 'done'])
     } catch (e) {
-      return { ok: false, key: p.key, landed: true, base: p.base, final, error: `landed on ${b.branch} at ${short(final)}, but the story is not done: ${failure(e)}` }
+      return { ok: false, key: p.key, landed: true, base: p.base, final, error: `landed on ${b.branch} at ${short(final)}, but the story is not done: ${failure(e)}`, retry: retryable(e) }
     }
-    return { key: p.key, landed: true, base: p.base, final, files, removed: removeWorktree(b, p.key) }
+    return { key: p.key, landed: true, base: p.base, final, files: files.length, removed: removeWorktree(b, p.key) }
   })(),
-
-  // Returns as soon as a blocked story's linked threads all have a conclusion,
-  // or after maxSeconds (480 at most); at once when no story waits on a
-  // thread. The script then runs unblock-pass. A story whose thread cannot be
-  // read is left out.
-  'wait-answers': async (b, p) => {
-    const until = Date.now() + waitSeconds(p.maxSeconds) * 1000
-    for (;;) {
-      const answered = []
-      const waiting = []
-      for (const story of b.listStories()) {
-        let threads = null
-        try { threads = threadsOf(b, story) } catch {}
-        if (threads) (threads.every((t) => t.conclusion) ? answered : waiting).push(story.key)
-      }
-      if (answered.length || !waiting.length || Date.now() >= until) return { answered, waiting }
-      await pause(Math.min(ANSWERS_POLL_MS, until - Date.now()))
-    }
-  },
 
   // Posts the run's report on its thread, from a body file, after stopping
   // the run's jobs that still run, and gives the lock up. The report is also
   // kept at .omni/runs/<run>/report.md, which is all there is of it when the
   // post fails: the run ends and gives its lock up all the same, as
-  // omni-deliver.js does. A repeat after a try that was cut off does not post
-  // twice.
+  // omni-deliver.js does, and a repeat of this finish goes on without the
+  // lock, to post it then. A repeat posts only when the first try did not:
+  // its marker says so, or the Run thread holds the report already, as after
+  // a try that was cut off right after its post.
   finish: (b, p, { info, marker, mark }) => {
     if (!p.report || typeof p.report !== 'object' || Array.isArray(p.report)) return { ok: false, error: 'the payload needs report: {outcomes, council, blocked}' }
     try {
@@ -1086,25 +1299,27 @@ const STEPS = {
       const text = reportText(b, info, p.report)
       const report = path.join(runDirOf(b.root, b.runId), 'report.md')
       fs.writeFileSync(report, text)
-      if (!(marker && marker.posted)) {
+      const summary = `Report of ${b.runId}`
+      if (!(marker && (marker.posted || (readThread(b, info.thread).posts || []).some((post) => post.summary === summary)))) {
         try {
-          b.post(info.thread, `Report of ${b.runId}`, text)
+          b.post(info.thread, summary, text)
         } catch (e) {
-          return { ok: false, thread: info.thread || null, posted: false, report, stopped, error: `the report could not be posted: ${failure(e)}` }
+          return { ok: false, thread: info.thread || null, posted: false, report, stopped, error: `the report could not be posted: ${failure(e)}`, retry: retryable(e) }
         }
         mark({ posted: true })
       }
       return { thread: info.thread, posted: true, report, stopped }
     } finally {
+      // Marked first, so that a repeat that finds no lock knows this finish
+      // gave it up.
+      mark({ released: true })
       dropLock(b.root, b.runId)
     }
   },
 }
-// wait-answers reads the board this often.
-const ANSWERS_POLL_MS = 2000
 // The steps whose bodies are recorded under their opId, so that a repeat does
 // not write twice. The others only read, or wait: a repeat runs them again.
-const WRITES = new Set(['claim', 'release', 'move', 'block', 'unblock', 'finding', 'decision', 'files', 'thread-open', 'unblock-pass', 'worktree', 'clarity-record', 'checks-set', 'job-start', 'job-kill', 'lane-prepare', 'lane-base', 'lane-reset', 'lane-land', 'finish'])
+const WRITES = new Set(['claim', 'release', 'move', 'block', 'unblock', 'finding', 'decision', 'files', 'thread-open', 'unblock-pass', 'worktree', 'clarity-record', 'checks-set', 'job-start', 'job-kill', 'lane-prepare', 'lane-clean', 'lane-base', 'lane-reset', 'lane-land', 'finish'])
 
 // ---- start: the lock, reconcile, the deliver branch, the checks ------------
 // A start repeated by a retried courier comes within minutes of the first.
@@ -1114,10 +1329,11 @@ const start = (flags) => {
   const { op: opId, feature } = flags
   const force = flags.force === true
   const received = fnv1a(JSON.stringify({ opId, feature, force }))
-  if (!opId || !feature || !flags.hash) return { ok: false, received, error: 'start needs --op <opId>, --feature <name> and --hash <fnv1a of {opId, feature, force}>' }
-  if (flags.hash !== received) return { ok: false, received, error: `the flags hash to ${received}, not ${flags.hash}: run the command again exactly` }
+  // Flags that do not hash to --hash came wrong from the courier.
+  if (!opId || !feature || !flags.hash) return { ok: false, received, error: 'start needs --op <opId>, --feature <name> and --hash <fnv1a of {opId, feature, force}>', retry: true }
+  if (flags.hash !== received) return { ok: false, received, error: `the flags hash to ${received}, not ${flags.hash}: run the command again exactly`, retry: true }
   const top = tryRun('git', ['rev-parse', '--show-toplevel'])
-  if (top === null) return { ok: false, received, error: `${process.cwd()} is not in a git checkout` }
+  if (top === null) return { ok: false, received, error: `${process.cwd()} is not in a git checkout`, retry: false }
   const root = top.trim()
   const session = sessionPid()
   const lockPath = lockPathOf(root)
@@ -1134,9 +1350,11 @@ const start = (flags) => {
     if (held) {
       // The same start again, from this session, soon after and before its
       // run made any call: its courier failed after the helper ran. Its
-      // record answers. Never under force, which asks for a new run.
-      const retried = !force && session !== null && held.pid === session && held.op === opId && held.feature === feature && held.heartbeat === held.started && Date.now() - Date.parse(held.started) < REPLAY_MS
-      const recorded = retried ? recordedOp(root, held.run, opId) : null
+      // record answers while its run holds the lock, a forced start's too:
+      // the retry of a start with force would take over the lock of the run
+      // its first try started.
+      const retried = session !== null && held.pid === session && held.op === opId && held.feature === feature && held.heartbeat === held.started && Date.now() - Date.parse(held.started) < REPLAY_MS
+      const recorded = retried ? recordedOp(root, held.run, 'start', opId) : null
       if (recorded && recorded.received === received) return { replay: recorded }
       const stale = retried ? 'its start, from this session, ended before it finished' : staleness(held)
       if (!stale && !force) return { refused: `the tree is held by run ${held.run} for feature ${held.feature}, last heard from at ${held.heartbeat || held.started}; start with force if that run is dead` }
@@ -1146,22 +1364,22 @@ const start = (flags) => {
     return {}
   })
   if (taken.replay) return taken.replay
-  if (taken.refused) return { ok: false, received, error: taken.refused }
+  if (taken.refused) return { ok: false, received, error: taken.refused, retry: false }
   let body
   try {
     body = startRun(boardOf(root, runId, feature), log)
   } catch (e) {
-    body = { ok: false, error: failure(e) }
+    body = { ok: false, error: failure(e), retry: retryable(e) }
   }
   // A start that stops gives the lock up, and says what it did before.
   if (body.ok === false) {
     dropLock(root, runId)
-    return { ok: false, received, error: body.error, log }
+    return { ok: false, received, error: body.error, retry: body.retry === true, log }
   }
   body = { ok: true, received, ...body }
   fs.mkdirSync(path.join(runDirOf(root, runId), 'in'), { recursive: true })
   writeJson(runPathOf(root, runId), { run: runId, feature, root, thread: body.thread, started: now.toISOString(), tip: body.tip, checks: body.checks, landed: [] })
-  recordOp(root, runId, opId, body)
+  recordOp(root, runId, 'start', opId, body)
   return body
 }
 
@@ -1189,7 +1407,7 @@ const startRun = (b, log) => {
   try {
     checks = JSON.parse(b.omni(['checks', '--json']))
   } catch (e) {
-    return { ok: false, error: `the checks could not be read: ${failure(e)}` }
+    return { ok: false, error: `the checks could not be read: ${failure(e)}`, retry: retryable(e) }
   }
   // Pruned first: a lane folder that lost its .git file is still listed until
   // the prune, and would pass for the lane worktree. git there would work in
@@ -1197,6 +1415,17 @@ const startRun = (b, log) => {
   // that one.
   tryRun('git', ['-C', root, 'worktree', 'prune'])
   if (fs.existsSync(b.lane) && (!isWorktree(root, b.lane) || !ownTree(b.lane))) return { ok: false, error: `${b.lane} is not a worktree of ${root}, so it cannot be the lane worktree; move it away` }
+  // The stories folder lies beside the checkout, where a session's sandbox
+  // lets nothing write unless the human added it: found here, not at the
+  // first worktree.
+  try {
+    fs.mkdirSync(b.storiesDir, { recursive: true })
+    const probe = path.join(b.storiesDir, `.omni-write-${process.pid}`)
+    fs.writeFileSync(probe, '')
+    fs.rmSync(probe, { force: true })
+  } catch (e) {
+    return { ok: false, error: `${b.storiesDir} cannot be written (${e.code || e.message}): add ${b.storiesDir} to this session's working directories, then start again` }
+  }
 
   // The run's thread, named as omni-deliver.js names it: finish posts the
   // report there.
@@ -1233,6 +1462,11 @@ const startRun = (b, log) => {
     if (story.holder ? story.holder.run === b.runId : !WORKING.includes(story.status)) continue
     released.push({ key: story.key, status: b.write('release', story.key).status })
   }
+  // The feature's stories as keys and counts: the script lists them itself
+  // when it needs more.
+  const stories = b.listStories()
+  const counts = {}
+  for (const s of stories) counts[s.status] = (counts[s.status] || 0) + 1
   return {
     run: b.runId,
     root,
@@ -1241,7 +1475,7 @@ const startRun = (b, log) => {
     lane: b.lane,
     thread,
     checks: Object.fromEntries(CHECKS.map((name) => [name, String((checks && checks[name]) || '')])),
-    stories: b.listStories().map(summary),
+    stories: { keys: stories.map((s) => s.key), counts, blocked: stories.filter((s) => s.blocked).length },
     released,
     log,
   }
@@ -1253,35 +1487,43 @@ const startRun = (b, log) => {
 const PAYLOAD_PATH = /^(.+)\/\.omni\/runs\/([^/]+)\/in\/[^/]+\.json$/
 const runStep = async (flags) => {
   const step = STEPS[flags.step]
-  if (!step) return { ok: false, received: null, error: `no step ${flags.step}; the steps are start, ${Object.keys(STEPS).join(', ')}` }
-  if (!flags.run || !flags.payload || !flags.hash) return { ok: false, received: null, error: `${flags.step} needs --run <runId> --payload <file> --hash <fnv1a of the payload>` }
+  // What the courier ran or wrote came wrong: the same command, as the
+  // script gave it, can work.
+  if (!step) return { ok: false, received: null, error: `no step ${flags.step}; the steps are start, ${Object.keys(STEPS).join(', ')}`, retry: true }
+  if (!flags.run || !flags.payload || !flags.hash) return { ok: false, received: null, error: `${flags.step} needs --run <runId> --payload <file> --hash <fnv1a of the payload>`, retry: true }
   const file = path.resolve(flags.payload)
   const where = file.match(PAYLOAD_PATH)
-  if (!where || where[2] !== flags.run) return { ok: false, received: null, error: `the payload goes in <root>/.omni/runs/${flags.run}/in/<opId>.json, not ${file}` }
+  if (!where || where[2] !== flags.run) return { ok: false, received: null, error: `the payload goes in <root>/.omni/runs/${flags.run}/in/<opId>.json, not ${file}`, retry: true }
   const root = where[1]
   let text
-  try { text = fs.readFileSync(file, 'utf8') } catch { return { ok: false, received: null, error: `no payload at ${file}` } }
+  try { text = fs.readFileSync(file, 'utf8') } catch { return { ok: false, received: null, error: `no payload at ${file}`, retry: true } }
   fs.rmSync(file, { force: true })
   if (text.endsWith('\n')) text = text.slice(0, -1)
   const received = fnv1a(text)
   // Before anything else: a payload the courier copied wrong is neither acted
   // on nor looked up.
-  if (received !== flags.hash) return { ok: false, received, error: `the payload hashes to ${received}, not ${flags.hash}: write it again exactly` }
+  if (received !== flags.hash) return { ok: false, received, error: `the payload hashes to ${received}, not ${flags.hash}: write it again exactly`, retry: true }
+  // The payload is the script's own from here on: what is refused now is
+  // refused again.
+  const refuse = (error) => ({ ok: false, received, error, retry: false })
   let payload
-  try { payload = JSON.parse(text) } catch { return { ok: false, received, error: 'the payload is not JSON' } }
-  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return { ok: false, received, error: 'the payload is not a JSON object' }
+  try { payload = JSON.parse(text) } catch { return refuse('the payload is not JSON') }
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return refuse('the payload is not a JSON object')
   const info = readJson(runPathOf(root, flags.run))
-  if (!info) return { ok: false, received, error: `no run ${flags.run} in ${root}` }
+  if (!info) return refuse(`no run ${flags.run} in ${root}`)
   const writes = WRITES.has(flags.step)
   let marker = null
   if (writes) {
-    if (typeof payload.opId !== 'string' || !payload.opId) return { ok: false, received, error: `${flags.step} writes, so its payload needs an opId` }
-    const recorded = recordedOp(root, flags.run, payload.opId)
-    if (recorded && recorded.received !== received) return { ok: false, received, error: `the op ${payload.opId} was applied with another payload, which hashed to ${recorded.received}; a new payload needs a new opId` }
+    if (typeof payload.opId !== 'string' || !payload.opId) return refuse(`${flags.step} writes, so its payload needs an opId`)
+    const recorded = recordedOp(root, flags.run, flags.step, payload.opId)
+    if (recorded && recorded.received !== received) return refuse(`the op ${payload.opId} was applied with another payload, which hashed to ${recorded.received}; a new payload needs a new opId`)
     if (recorded && !recorded.pending) return recorded
     marker = recorded
   }
-  if (!holdLock(root, flags.run)) return { ok: false, received, error: `run ${flags.run} no longer holds the lock` }
+  // finish gives the lock up even when its post failed: its repeat goes on
+  // without the lock, unless another run has taken it since.
+  const released = flags.step === 'finish' && marker && marker.released === true && !fs.existsSync(lockPathOf(root))
+  if (!released && !holdLock(root, flags.run)) return refuse(`run ${flags.run} no longer holds the lock`)
   // The marker goes down before the first write, and the body replaces it
   // once the step worked. A step that failed leaves it: the script tries a
   // failed write again with the same opId, and the repeat carries it on.
@@ -1289,16 +1531,18 @@ const runStep = async (flags) => {
   const mark = (fields) => {
     if (!writes) return
     pending = { ...pending, ...fields }
-    recordOp(root, flags.run, payload.opId, pending)
+    recordOp(root, flags.run, flags.step, payload.opId, pending)
   }
-  if (writes && !marker) recordOp(root, flags.run, payload.opId, pending)
+  if (writes && !marker) recordOp(root, flags.run, flags.step, payload.opId, pending)
   const began = new Date()
   let body
   try {
     body = { ok: true, received, ...(await step(boardOf(root, flags.run, info.feature), payload, { info, marker, mark })) }
   } catch (e) {
-    body = { ok: false, received, error: failure(e) }
+    body = { ok: false, received, error: failure(e), retry: retryable(e) }
   }
+  // A step's own refusal, of a payload or of what it found, is final.
+  if (body.ok === false && typeof body.retry !== 'boolean') body.retry = false
   const ended = new Date()
   recordTiming(root, flags.run, {
     step: flags.step,
@@ -1310,7 +1554,7 @@ const runStep = async (flags) => {
     ms: ended - began,
     ok: body.ok,
   })
-  if (writes && body.ok) recordOp(root, flags.run, payload.opId, body)
+  if (writes && body.ok) recordOp(root, flags.run, flags.step, payload.opId, body)
   return body
 }
 
@@ -1331,10 +1575,10 @@ export async function main(argv = process.argv.slice(2)) {
   const flags = flagsOf(argv)
   let body
   try {
-    if (flags.unknown !== undefined) body = { ok: false, received: null, error: `unknown argument ${flags.unknown}; see the header of workflows/deliver-step.mjs` }
+    if (flags.unknown !== undefined) body = { ok: false, received: null, error: `unknown argument ${flags.unknown}; see the header of workflows/deliver-step.mjs`, retry: true }
     else body = flags.step === 'start' ? start(flags) : await runStep(flags)
   } catch (e) {
-    body = { ok: false, received: null, error: failure(e) }
+    body = { ok: false, received: null, error: failure(e), retry: retryable(e) }
   }
   process.stdout.write(`${JSON.stringify({ body, hash: fnv1a(JSON.stringify(body)) })}\n`)
 }

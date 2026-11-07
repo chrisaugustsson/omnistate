@@ -433,6 +433,19 @@ test("a courier's output may carry other lines around the helper's answer, as a 
   assert.deepEqual(logs.filter((l) => l.includes("trying again")), []);
 });
 
+test("a step the helper refuses for good, with retry false, is not sent again: a start against the lock of a live run stops the run at once, after one courier", { timeout: 60000 }, async (t) => {
+  const dirs = scratch(t);
+  const now = new Date().toISOString();
+  mkdirSync(join(dirs.repo, ".omni"), { recursive: true });
+  writeFileSync(join(dirs.repo, ".omni", "run.lock"), JSON.stringify({ run: "run-20261107-090000-1", feature: "billing", pid: liveProcess(t), op: "start-1", started: now, heartbeat: now }));
+
+  const { error, calls, logs } = await deliver(dirs);
+
+  assert.equal(couriersOf(calls).length, 1);
+  assert.match(error.message, /^courier:start: start failed: the tree is held by run run-20261107-090000-1 for feature billing, .*start with force if that run is dead$/);
+  assert.deepEqual(logs, []);
+});
+
 // ---- clarity ------------------------------------------------------------------------
 
 test("clarity records a criterion that names a test as a test obligation and a minor gap's recommendation as agent decisions, sends the 3 blocking gaps of most impact to the council, scope first, then data and security, UX and technical, and defers the rest by the cap", { timeout: 60000 }, async (t) => {
@@ -641,7 +654,7 @@ test("an implementer that returns nothing has its story released with no attempt
   assert.equal(dirs.story("US-3").status, "reviewed");
 });
 
-test("a story whose delivery throws is released and gets a thread with the error, which blocks it, so the human hears and no run cycles on it: here an implementer left its worktree on another branch", { timeout: 60000 }, async (t) => {
+test("a story whose delivery throws is released and gets a thread with the error, which blocks it, so the human hears and no run cycles on it: here an implementer left its worktree on another branch, which the helper refuses for good, so its courier is not sent again", { timeout: 60000 }, async (t) => {
   const dirs = scratch(t, [story("US-1", { criteria: [{ text: "The badge is red", human_check: false }] })]);
   const roles = {
     "impl:US-1": [async (call, serial) => {
@@ -655,12 +668,14 @@ test("a story whose delivery throws is released and gets a thread with the error
     "review:US-1": [reviewed("fail", { unmet: { 0: "Pink" } })],
   };
 
-  const { result, error } = await deliver(dirs, {}, roles);
+  const { result, error, calls, logs } = await deliver(dirs, {}, roles);
 
   assert.equal(error, null);
   const [stopped] = questions(dirs);
   assert.equal(stopped.title, "US-1: delivery stopped on an error");
-  assert.match(stopped.posts[0].body, /^The workflow stopped delivering US-1 on this error:\n\ncourier:worktree:US-1: worktree failed: \S+ is not a worktree of \S+ on story\/US-1; move it away, after 3 retries\n\nThe story is back in its waiting state, and blocked until this thread is answered; answer it once the cause is fixed\.\n$/);
+  assert.match(stopped.posts[0].body, /^The workflow stopped delivering US-1 on this error:\n\ncourier:worktree:US-1: worktree failed: \S+ is not a worktree of \S+ on story\/US-1; move it away\n\nThe story is back in its waiting state, and blocked until this thread is answered; answer it once the cause is fixed\.\n$/);
+  assert.equal(agentsOf(calls, "courier:worktree:US-1").length, 2, "one for each attempt, and no retry of the refusal");
+  assert.deepEqual(logs.filter((l) => l.startsWith("courier:worktree:US-1: ")), []);
   const done = dirs.story("US-1");
   assert.deepEqual([done.status, done.holder, done.blocked, done.links], ["backlog", null, true, [{ thread_id: stopped.id, label: "question" }]]);
   assert.deepEqual(result.outcomes.map((o) => [o.key, o.outcome, o.thread]), [["US-1", "failed", stopped.id]]);
@@ -709,6 +724,18 @@ test("criteria are numbered from 0 in the review's schema, which wants an entry 
   assert.equal(agentsOf(calls, "review:US-2").length, 3);
   assert.deepEqual(result.outcomes.find((o) => o.key === "US-2"), { key: "US-2", outcome: "no_result", detail: "the reviewer gave no verdict on criteria 0, 3 times; the story is released without using an attempt" });
   assert.deepEqual([dirs.story("US-2").status, dirs.story("US-2").holder, dirs.story("US-2").findings || []], ["implemented", null, []]);
+});
+
+test("the run takes the pickable stories in the helper's order: one with a worktree from an earlier attempt before one of higher priority, and its implementer goes on with that worktree", { timeout: 60000 }, async (t) => {
+  const dirs = scratch(t, [story("US-1", { priority: 1 }), story("US-2")]);
+  git(dirs.repo, "worktree", "add", "-q", "-b", "story/US-2", dirs.worktree("US-2"));
+  commit(dirs.worktree("US-2"), "src/half.rs");
+
+  const { error, calls } = await deliver(dirs, { implementers: 1 });
+
+  assert.equal(error, null);
+  assert.deepEqual(boardLog(dirs).filter((e) => e.endsWith(" implementing")), ["claim US-2 implementing", "claim US-1 implementing"]);
+  assert.match(lineAfter(agentsOf(calls, "impl:US-2")[0].prompt, "## Your task now\n"), /A worktree of an earlier attempt is in place/);
 });
 
 test("with storyLimit, the run takes at most that many distinct stories", { timeout: 60000 }, async (t) => {

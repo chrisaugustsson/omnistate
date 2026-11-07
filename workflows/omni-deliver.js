@@ -172,16 +172,20 @@ const opIdOf = (base) => {
   return `${clean}-${n}`
 }
 
-// A courier that failed, and a step that failed, are tried again with the
-// same opId: the helper answers a write it made from its record, and carries
-// on a write it left half done. A start that failed has given the lock up, so
-// its repeat starts again.
+// A courier that failed, and a step the helper says may work again (retry
+// true: a payload that came wrong, a command that failed), are tried again
+// with the same opId: the helper answers a write it made from its record,
+// and carries on a write it left half done. A start that failed has given
+// the lock up, so its repeat starts again. A step the helper refused for
+// good (retry false: the board refused the write, another run holds the
+// lock, a worktree on the wrong branch) is not tried again.
 const carry = async (name, prompt, expected, label, past = false) => {
   let problem = ''
   for (let i = 0; i <= COURIER_RETRIES; i++) {
     if (i) log(`${label}: ${problem}; trying again (${i} of ${COURIER_RETRIES})`)
     const { body, problem: wrong } = unpack(await ask('courier', prompt, { label, phase: current, schema: COURIER_SCHEMA, effort: 'low' }, MODELS.courier, past), expected)
     if (body && body.ok === true) return body
+    if (body && body.retry !== true) throw new Error(`${label}: ${name} failed: ${body.error}`)
     problem = wrong || `${name} failed: ${body.error}`
   }
   throw new Error(`${label}: ${problem}, after ${COURIER_RETRIES} retries`)
@@ -895,9 +899,12 @@ const deliverStory = async (key, from, held) => {
     // The second half of build step 3 takes a reviewed story into the lane
     // here, out of its review slot and under the lane lock: lane-prepare, the
     // checks as jobs with the rerun on the base, the verifier, the test
-    // author and lane-land. A lane failure sends the story back for the next
-    // attempt, as a failed review does. Until then a reviewed story waits in
-    // reviewed, as do the stories that were reviewed when the run started.
+    // author, lane-clean, the test author's check and lane-land. A lane
+    // failure sends the story back for the next attempt, as a failed review
+    // does; so do lane-prepare's dirty and wrong_branch, with the reason as a
+    // finding, while a conflict uses no attempt and infra is not the
+    // story's. Until then a reviewed story waits in reviewed, as do the
+    // stories that were reviewed when the run started.
     return assessed
   }
 }
@@ -963,8 +970,9 @@ await Promise.all(running)
 // ---- hand-off: the rest of the run -------------------------------------------
 // The second half of build step 3 goes on from here: failure handling (agents
 // that return nothing get retried after a wait; 3 such stories in a row stop
-// new claims), waiting for answers, the journeys check and finish, which
-// posts the report with the council's counts and gives the lock up.
+// new claims), the journeys check and finish, which posts the report with the
+// council's counts and gives the lock up. The run does not wait for answers:
+// the next run's unblock pass takes them.
 return {
   run: runId,
   feature,

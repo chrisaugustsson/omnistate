@@ -5,11 +5,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { fnv1a } from "./deliver-step.mjs";
+import { fnv1a, waitSeconds } from "./deliver-step.mjs";
 
 const helper = fileURLToPath(new URL("./deliver-step.mjs", import.meta.url));
 const fakeOmni = fileURLToPath(new URL("./fixtures/fake-omni.mjs", import.meta.url));
@@ -63,7 +63,7 @@ function scratch(t, stories = [], threads = [], extra = {}) {
 
   const session = liveProcess(t);
   const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, FAKE_OMNI_STATE: statePath, OMNI_DELIVER_SESSION_PID: String(session) };
-  for (const name of ["FAKE_OMNI_FAIL", "FAKE_OMNI_DOWN", "FAKE_OMNI_HANG"]) delete env[name];
+  for (const name of ["FAKE_OMNI_FAIL", "FAKE_OMNI_DOWN", "FAKE_OMNI_HANG", "FAKE_OMNI_HANG_AFTER"]) delete env[name];
   const state = () => JSON.parse(readFileSync(statePath, "utf8"));
   return {
     root,
@@ -171,7 +171,11 @@ function step(dirs, run, name, fields = {}, env = {}) {
   return body;
 }
 
-const appliedOf = (dirs, run) => JSON.parse(readFileSync(join(dirs.repo, ".omni", "runs", run, "applied.json"), "utf8"));
+// The record of applied ops, of one step when given.
+const appliedOf = (dirs, run, step) => {
+  const applied = JSON.parse(readFileSync(join(dirs.repo, ".omni", "runs", run, "applied.json"), "utf8"));
+  return step ? applied[step] || {} : applied;
+};
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const runFile = (dirs, run, name) => join(dirs.repo, ".omni", "runs", run, name);
 const jobOf = (dirs, run, id) => JSON.parse(readFileSync(runFile(dirs, run, join("jobs", `${id}.job.json`)), "utf8"));
@@ -247,7 +251,7 @@ test("a write repeated with its opId is answered from .omni/runs/<run>/applied.j
   assert.deepEqual(dirs.story("US-1").decisions, [{ question: "Which colour is the badge?", choice: "Red", by: "agent" }]);
   assert.equal(questions(dirs).length, 1);
   const applied = JSON.parse(readFileSync(join(dirs.repo, ".omni", "runs", run, "applied.json"), "utf8"));
-  assert.deepEqual([applied["decide-US-1-1"], applied["thread-US-1-1"]], first);
+  assert.deepEqual([applied.decision["decide-US-1-1"], applied["thread-open"]["thread-US-1-1"]], first);
   step(dirs, run, "decision", { ...decision, opId: "decide-US-1-2" });
   assert.equal(dirs.story("US-1").decisions.length, 2);
 });
@@ -296,7 +300,7 @@ test("a payload that does not hash to the command's --hash is refused before any
   const asSent = (obj) => helperRun(dirs, [...stepArgv(dirs, run, "decision", obj).slice(0, -1), fnv1a(JSON.stringify(sent))]);
 
   const refused = asSent(copied);
-  const recorded = appliedOf(dirs, run)["decide-1"];
+  const recorded = appliedOf(dirs, run, "decision")["decide-1"];
   const applied = asSent(sent);
   const late = asSent(copied);
   const badStart = helperRun(dirs, [...startArgv({ op: "start-2", force: true }).slice(0, -1), fnv1a("{}")]);
@@ -320,6 +324,46 @@ test("a repeat of an applied opId with another payload is an error, not a replay
   assert.equal(first.ok, true);
   assert.deepEqual([other.ok, other.error], [false, `the op decide-1 was applied with another payload, which hashed to ${first.received}; a new payload needs a new opId`]);
   assert.equal(dirs.story("US-1").decisions.length, 1);
+});
+
+test("the record of applied ops is keyed by step name and opId: an opId one step used is new to another", (t) => {
+  const dirs = scratch(t, [story("US-1")]);
+  const { run } = start(dirs);
+
+  const decided = step(dirs, run, "decision", { opId: "op-1", key: "US-1", question: "Which red?", choice: "#c00", by: "agent" });
+  const claimed = step(dirs, run, "claim", { opId: "op-1", key: "US-1", stage: "implementing" });
+
+  assert.deepEqual([decided.ok, claimed.ok, claimed.status], [true, true, "implementing"]);
+  assert.deepEqual([appliedOf(dirs, run, "decision")["op-1"], appliedOf(dirs, run, "claim")["op-1"]], [decided, claimed]);
+});
+
+test("a body with ok false says whether the same command again can work: retry true for flags or a payload that came wrong and for a write that failed, which the repeat carries on; false for a claim the board refuses, a lock another run holds, a worktree on another branch, a start that must merge first and a payload the step cannot take", (t) => {
+  const dirs = scratch(t, [story("US-1"), story("US-2", { status: "implemented" }), story("US-3")]);
+  const { run } = start(dirs);
+  const decision = { opId: "decide-1", key: "US-1", question: "Which red?", choice: "#c00", by: "agent" };
+  const question = { opId: "thread-1", title: "Run question", body: "Plain\n" };
+
+  const miscopied = helperRun(dirs, [...stepArgv(dirs, run, "decision", decision).slice(0, -1), "00000000"]);
+  const badFlags = helperRun(dirs, [...startArgv({ op: "start-2" }).slice(0, -1), "00000000"]);
+  const cutShort = step(dirs, run, "thread-open", question, { FAKE_OMNI_FAIL: "thread" });
+  const carried = step(dirs, run, "thread-open", question);
+  const notWaiting = step(dirs, run, "claim", { key: "US-2", stage: "testing" });
+  git(dirs.repo, "worktree", "add", "-q", "-b", "elsewhere", join(dirs.root, "app-stories", "US-3"));
+  const wrongBranch = step(dirs, run, "worktree", { key: "US-3" });
+  const unfit = step(dirs, run, "decision", { key: "US-1" });
+  writeLock(dirs, { ...readLock(dirs), run: "run-20261107-120000-1" });
+  const lost = step(dirs, run, "list");
+  const held = start(dirs, { op: "start-3" });
+  rmSync(dirs.lock);
+  landOn(dirs, "deliver/board", "landed.rs");
+  commit(dirs.repo, "main.rs");
+  const diverged = start(dirs, { op: "start-4" });
+
+  const flags = (body) => [body.ok, body.retry];
+  assert.deepEqual([miscopied, badFlags, cutShort].map(flags), [[false, true], [false, true], [false, true]]);
+  assert.deepEqual([carried.ok, questions(dirs).length], [true, 1]);
+  assert.deepEqual([notWaiting, wrongBranch, unfit, lost, held, diverged].map(flags), [[false, false], [false, false], [false, false], [false, false], [false, false], [false, false]]);
+  assert.match(notWaiting.error, /^not_waiting: /);
 });
 
 // Runs a step as a courier's helper does, and kills that helper once `made`
@@ -368,12 +412,12 @@ test("a write whose helper was cut off after its board write left a pending mark
   for (const [name, fields, made] of cases) {
     const obj = { opId: `${name}-cut`, ...fields };
     await cutOff(t, dirs, run, name, obj, () => made(dirs.story(fields.key)), { FAKE_OMNI_HANG_AFTER: `story ${name} ${fields.key}` });
-    const marker = appliedOf(dirs, run)[obj.opId];
+    const marker = appliedOf(dirs, run, name)[obj.opId];
     const again = step(dirs, run, name, obj);
 
     assert.equal(marker.pending, true, `${name} left a pending marker`);
     assert.equal(again.ok, true, `${name}: ${again.error}`);
-    assert.deepEqual(appliedOf(dirs, run)[obj.opId], again, `${name} recorded its body`);
+    assert.deepEqual(appliedOf(dirs, run, name)[obj.opId], again, `${name} recorded its body`);
     assert.equal(dirs.state().calls.filter((c) => c.argv[1] === name && c.argv[2] === fields.key).length, name === "finding" ? 2 : 1, `${name} wrote each thing once`);
   }
   assert.deepEqual(dirs.story("US-1").holder, held);
@@ -386,7 +430,7 @@ test("a claim cut off before its write is made by its repeat", async (t) => {
   const { run } = start(dirs);
   const obj = { opId: "claim-cut", key: "US-1", stage: "implementing" };
 
-  await cutOff(t, dirs, run, "claim", obj, () => appliedOf(dirs, run)["claim-cut"].pending, { FAKE_OMNI_HANG: "story claim US-1" });
+  await cutOff(t, dirs, run, "claim", obj, () => appliedOf(dirs, run, "claim")["claim-cut"].pending, { FAKE_OMNI_HANG: "story claim US-1" });
   const before = dirs.story("US-1").status;
   const again = step(dirs, run, "claim", obj);
 
@@ -414,6 +458,26 @@ test("a thread-open cut off after its post, or after its link, is carried on by 
   }
 });
 
+test("two thread-opens on one story at once both link it: a story's link writes go one at a time, under a lock of the story", async (t) => {
+  const dirs = scratch(t, [story("US-1")]);
+  const { run } = start(dirs);
+  // Each read of the story takes a second: thread-opens at once would each
+  // link the story from what they read, and the second would drop the first's.
+  const env = { ...dirs.env, FAKE_OMNI_HANG_AFTER: "story read US-1", FAKE_OMNI_HANG_MS: "1000" };
+  const open = (n) => new Promise((resolve) => {
+    const child = spawn(process.execPath, [helper, ...stepArgv(dirs, run, "thread-open", { opId: `thread-${n}`, key: "US-1", title: `US-1: Question ${n}?`, body: `Body ${n}\n` })], { cwd: dirs.repo, env });
+    let out = "";
+    child.stdout.on("data", (d) => { out += d; });
+    child.on("close", () => resolve(JSON.parse(out).body));
+  });
+
+  const bodies = await Promise.all([open(1), pause(300).then(() => open(2))]);
+
+  assert.deepEqual(bodies.map((b) => b.ok), [true, true]);
+  assert.deepEqual(dirs.story("US-1").links.map((l) => l.thread_id).sort(), bodies.map((b) => b.thread).sort());
+  assert.equal(dirs.story("US-1").blocked, true);
+});
+
 test("a worktree step cut off after it made the worktree is carried on by its repeat, which keeps that worktree and answers created", async (t) => {
   const dirs = scratch(t, [story("US-1")]);
   const { run } = start(dirs);
@@ -427,6 +491,22 @@ test("a worktree step cut off after it made the worktree is carried on by its re
 
   assert.deepEqual(pick(again), { ok: true, key: "US-1", path: wt, branch: "story/US-1", created: true });
   assert.equal(git(wt, "rev-parse", "--abbrev-ref", "HEAD").trim(), "story/US-1");
+});
+
+test("a worktree step cut off while it made the worktree, which it left with a staged deletion, removes that worktree on its repeat and makes it again: one it was making counts only when clean and on story/<key>", async (t) => {
+  const dirs = scratch(t, [story("US-1")]);
+  const { run } = start(dirs);
+  const wt = join(dirs.root, "app-stories", "US-1");
+  // A checkout killed half way leaves its files staged as deleted; this hook
+  // leaves one so, and holds the step until it is cut off.
+  const held = hook(dirs, "post-checkout", "git rm -q --cached README; sleep 30");
+
+  await cutOff(t, dirs, run, "worktree", { opId: "wt-cut", key: "US-1" }, () => git(wt, "status", "--porcelain").includes("D  README"));
+  rmSync(held);
+  const again = step(dirs, run, "worktree", { opId: "wt-cut", key: "US-1" });
+
+  assert.deepEqual(pick(again), { ok: true, key: "US-1", path: wt, branch: "story/US-1", created: true });
+  assert.deepEqual([git(wt, "status", "--porcelain"), git(wt, "rev-parse", "--abbrev-ref", "HEAD").trim()], ["", "story/US-1"]);
 });
 
 test("a write waits to record its op while another call holds the record's lock, and takes over a lock left for more than 10 s", async (t) => {
@@ -455,7 +535,48 @@ test("a write waits to record its op while another call holds the record's lock,
   assert.equal(late.ok, true);
   assert.ok(Date.now() - started < 10000, "the stale lock was taken over at once");
   assert.equal(existsSync(lock), false);
-  assert.deepEqual(Object.keys(JSON.parse(readFileSync(join(dirs.repo, ".omni", "runs", run, "applied.json"), "utf8"))), ["start-1", "decide-1", "decide-2"]);
+  assert.deepEqual(Object.entries(appliedOf(dirs, run)).map(([name, ops]) => [name, Object.keys(ops)]), [["start", ["start-1"]], ["decision", ["decide-1", "decide-2"]]]);
+});
+
+test("a waiter takes a stale lock over only while it holds the lock's takeover guard, after a fresh look under it: while another waiter takes it over it waits, and the lock that waiter has just taken stays", async (t) => {
+  const dirs = scratch(t, [story("US-1")]);
+  const { run } = start(dirs);
+  const lock = join(dirs.repo, ".omni", "runs", run, "applied.json.lock");
+  // A lock its holder left 20 s ago, and another waiter in the middle of taking it over.
+  writeFileSync(lock, `${deadPid()} 1`);
+  const old = new Date(Date.now() - 20000);
+  utimesSync(lock, old, old);
+  writeFileSync(`${lock}.takeover`, "");
+  const child = spawn(process.execPath, [helper, ...stepArgv(dirs, run, "decision", { opId: "decide-1", key: "US-1", question: "Which red?", choice: "#c00", by: "agent" })], { cwd: dirs.repo, env: dirs.env });
+  let out = "";
+  child.stdout.on("data", (d) => { out += d; });
+  const closed = new Promise((resolve) => child.on("close", resolve));
+  await pause(1500);
+  const whileTaking = out;
+  // That waiter has taken the lock, and gives its guard up.
+  const taker = liveProcess(t);
+  writeFileSync(lock, `${taker} 2`);
+  rmSync(`${lock}.takeover`);
+  await pause(1500);
+  const whileHeld = [out, readFileSync(lock, "utf8")];
+  rmSync(lock);
+  await closed;
+
+  assert.equal(whileTaking, "", "no answer while another waiter takes the lock over");
+  assert.deepEqual(whileHeld, ["", `${taker} 2`], "the lock that waiter took stays, and is waited for");
+  assert.equal(JSON.parse(out).body.ok, true);
+});
+
+test("a lock whose holder has ended is taken over at once, young as it is", (t) => {
+  const dirs = scratch(t, [story("US-1")]);
+  const { run } = start(dirs);
+  writeFileSync(join(dirs.repo, ".omni", "runs", run, "applied.json.lock"), `${deadPid()} 1`);
+  const begun = Date.now();
+
+  const body = step(dirs, run, "decision", { key: "US-1", question: "Which red?", choice: "#c00", by: "agent" });
+
+  assert.equal(body.ok, true);
+  assert.ok(Date.now() - begun < 5000, `${Date.now() - begun} ms`);
 });
 
 test("each call with --run refreshes the lock's heartbeat; once another run holds the lock, every step of the run fails, a write writes nothing, and the lock stays as it is", (t) => {
@@ -476,7 +597,7 @@ test("each call with --run refreshes the lock's heartbeat; once another run hold
   assert.deepEqual(lost.map((b) => [b.ok, b.error]), [[false, `run ${run} no longer holds the lock`], [false, `run ${run} no longer holds the lock`]]);
   assert.deepEqual(readLock(dirs), other);
   assert.deepEqual(dirs.writes(), []);
-  assert.equal(appliedOf(dirs, run)["claim-late"], undefined);
+  assert.equal(appliedOf(dirs, run, "claim")["claim-late"], undefined);
 });
 
 test("the helper runs through a symlink to it, as ~/.claude/omni/deliver-step.mjs links it", (t) => {
@@ -580,7 +701,7 @@ test("the same start again from the same session, before its run made any call, 
   assert.match(late.error, new RegExp(`^the tree is held by run ${first.run} for feature board`));
 });
 
-test("the same start from the same session is answered from its record only within 5 minutes of it, and never with force, which starts a new run with received of {force: true}", (t) => {
+test("the same start from the same session is answered from its record only within 5 minutes of it; a forced start's retry too, which gets the run its first try started instead of taking its lock over", (t) => {
   const dirs = scratch(t);
   const first = start(dirs);
   const sixMinutes = ago(6 * 60000);
@@ -589,17 +710,20 @@ test("the same start from the same session is answered from its record only with
   const later = start(dirs);
   const forced = start(dirs, { force: true });
   const forcedAgain = start(dirs, { force: true });
+  const lockAfter = readLock(dirs);
   const fiveHours = ago(5 * 3600000);
   writeLock(dirs, { ...readLock(dirs), started: fiveHours, heartbeat: fiveHours });
   const next = start(dirs);
 
   assert.equal(later.ok, false);
   assert.match(later.error, new RegExp(`^the tree is held by run ${first.run} for feature board`));
-  assert.deepEqual([forced.ok, forcedAgain.ok], [true, true]);
-  assert.equal(new Set([first.run, forced.run, forcedAgain.run]).size, 3);
-  assert.equal(forced.received, fnv1a(JSON.stringify({ opId: "start-1", feature: "board", force: true })));
+  assert.deepEqual([forced.ok, forced.received], [true, fnv1a(JSON.stringify({ opId: "start-1", feature: "board", force: true }))]);
+  assert.notEqual(forced.run, first.run);
+  assert.deepEqual(forcedAgain, forced);
+  assert.equal(lockAfter.run, forced.run);
+  assert.deepEqual(dirs.state().threads.map((th) => th.title), [`Run ${first.run}`, `Run ${forced.run}`, `Run ${next.run}`]);
   assert.equal(next.ok, true);
-  assert.notEqual(next.run, forcedAgain.run);
+  assert.notEqual(next.run, forced.run);
   assert.equal(readLock(dirs).run, next.run);
 });
 
@@ -816,15 +940,29 @@ test("a lane folder that lost its .git file inside an enclosing repository stops
   assert.deepEqual([readFileSync(join(dirs.lane, "target", "cache.bin"), "utf8"), readFileSync(join(dirs.lane, "README"), "utf8")], ["warm\n", "app\n"]);
 });
 
+// root writes anywhere, so a folder it may not write takes another user.
+test("a start that cannot write the stories folder beside the checkout stops before any work, and says to add it to the session's working directories", { skip: process.getuid?.() === 0 && "run as root" }, (t) => {
+  const dirs = scratch(t, [story("US-1", { status: "review", holder: { run: "run-old", stage: "review" } })]);
+  const stories = join(dirs.root, "app-stories");
+  // Empty, so that the scratch's removal takes it all the same.
+  mkdirSync(stories);
+  chmodSync(stories, 0o555);
+
+  const body = start(dirs);
+
+  assert.deepEqual([body.ok, body.retry, body.error], [false, false, `${stories} cannot be written (EACCES): add ${stories} to this session's working directories, then start again`]);
+  assert.deepEqual([existsSync(dirs.lock), dirs.writes(), dirs.state().threads, git(dirs.repo, "branch", "--list", "deliver/*")], [false, [], [], ""]);
+});
+
 // ---- start: reconcile ---------------------------------------------------------------
 
-test("start releases the stories another run holds, and the working ones nobody holds, to their waiting states, keeping an implementing story's worktree, and lists them and the feature's stories", (t) => {
+test("start releases the stories another run holds, and the working ones nobody holds, to their waiting states, keeping an implementing story's worktree, and lists them; of the feature's stories it gives only their keys and counts, since outputs stay small", (t) => {
   const dirs = scratch(t, [
     story("US-1", { status: "review", holder: { run: "run-old", stage: "review" } }),
     story("US-2", { status: "testing", holder: { run: "run-old", stage: "testing" } }),
     story("US-3", { status: "implementing", holder: { run: "run-old", stage: "implementing" } }),
     story("US-4", { status: "review" }),
-    story("US-5", { status: "implemented" }),
+    story("US-5", { status: "implemented", blocked: true }),
   ]);
   const wt = join(dirs.root, "app-stories", "US-3");
   git(dirs.repo, "worktree", "add", "-q", "-b", "story/US-3", wt);
@@ -834,7 +972,7 @@ test("start releases the stories another run holds, and the working ones nobody 
 
   assert.deepEqual(body.released, [{ key: "US-1", status: "implemented" }, { key: "US-2", status: "reviewed" }, { key: "US-3", status: "backlog" }, { key: "US-4", status: "implemented" }]);
   assert.deepEqual(dirs.state().calls.filter((c) => c.argv[1] === "release").map((c) => c.argv[c.argv.indexOf("--run") + 1]), [body.run, body.run, body.run, body.run]);
-  assert.deepEqual(body.stories.map((s) => [s.key, s.status, s.holder]), [["US-1", "implemented", null], ["US-2", "reviewed", null], ["US-3", "backlog", null], ["US-4", "implemented", null], ["US-5", "implemented", null]]);
+  assert.deepEqual(body.stories, { keys: ["US-1", "US-2", "US-3", "US-4", "US-5"], counts: { implemented: 3, reviewed: 1, backlog: 1 }, blocked: 1 });
   assert.equal(readFileSync(join(wt, "work.rs"), "utf8"), "work.rs\n");
 });
 
@@ -852,6 +990,18 @@ test("list gives each story's key, title, status, priority, blocked and holder, 
     { key: "US-3", title: "Story US-3", status: "implemented", priority: 3, blocked: false, holder: null },
   ]);
   assert.deepEqual(body.pickable, ["US-1"]);
+});
+
+test("list gives the pickable stories with a worktree from an earlier attempt first, then in the board's order: priority, then how many open stories each one unblocks, then number", (t) => {
+  const dirs = scratch(t, [story("US-1"), story("US-2", { priority: 1 }), story("US-3"), story("US-4"), story("US-5", { blocked_by: ["US-4"] }), story("US-6")]);
+  const { run } = start(dirs);
+  // US-6 kept the worktree of an attempt that failed; US-1 has a folder that is not a worktree.
+  storyWork(dirs, run, "US-6");
+  mkdirSync(join(dirs.root, "app-stories", "US-1"));
+
+  const body = step(dirs, run, "list");
+
+  assert.deepEqual(body.pickable, ["US-6", "US-2", "US-4", "US-1", "US-3"]);
 });
 
 test("context gives the story's fields and decisions, its open findings by attempt with the numbers taken off and those of no attempt apart, and its linked docs once each with their nodes, never their text", (t) => {
@@ -973,7 +1123,7 @@ test("a finding's text loses any attempt number it brings: an uncounted one can 
   assert.equal(counted.attempt, 1);
 });
 
-test("files gives a path that is not ASCII as it is, not quoted", (t) => {
+test("files records a path that is not ASCII as it is, not quoted, and gives how many files, not their paths", (t) => {
   const dirs = scratch(t, [story("US-1")]);
   const { run } = start(dirs);
   const wt = step(dirs, run, "worktree", { key: "US-1" }).path;
@@ -982,7 +1132,7 @@ test("files gives a path that is not ASCII as it is, not quoted", (t) => {
 
   const body = step(dirs, run, "files", { key: "US-1" });
 
-  assert.deepEqual(body.files, ["docs/översikt.md"]);
+  assert.equal(body.files, 1);
   assert.deepEqual(dirs.story("US-1").files_changed, ["docs/översikt.md"]);
 });
 
@@ -995,11 +1145,11 @@ test("files sets the story's files_changed to what its branch changed since it l
 
   const body = step(dirs, run, "files", { key: "US-1" });
 
-  assert.deepEqual(body.files, ["board.rs"]);
+  assert.equal(body.files, 1);
   assert.deepEqual(dirs.story("US-1").files_changed, ["board.rs"]);
 });
 
-test("thread-open creates a thread on the feature with its body posted from a file that is gone after; given a key, it links the thread from the story, keeping its links, and blocks it", (t) => {
+test("thread-open creates a thread on the feature with its body posted from a file in the run's folder that is gone after; given a key, it links the thread from the story, keeping its links, and blocks it", (t) => {
   const dirs = scratch(t, [story("US-1", { links: [{ doc_id: "doc-spec", node_id: "n1", label: "spec" }] })]);
   const { run } = start(dirs);
   step(dirs, run, "claim", { key: "US-1", stage: "implementing" });
@@ -1011,7 +1161,10 @@ test("thread-open creates a thread on the feature with its body posted from a fi
     [plain.thread, "Run question", "board", [{ summary: "Run question", body: "Plain\n" }]],
     [linked.thread, "US-1: Which colour is the badge?", "board", [{ summary: "US-1: Which colour is the badge?", body: "Options:\n1. Paint it red\n2. Paint it blue\n" }]],
   ]);
-  for (const c of dirs.state().calls.filter((c) => c.argv[0] === "post")) assert.equal(existsSync(c.argv[c.argv.indexOf("--body-file") + 1]), false);
+  for (const c of dirs.state().calls.filter((c) => c.argv[0] === "post")) {
+    const file = c.argv[c.argv.indexOf("--body-file") + 1];
+    assert.deepEqual([dirname(file), existsSync(file)], [join(dirs.repo, ".omni", "runs", run), false]);
+  }
   assert.deepEqual(dirs.story("US-1").links, [{ doc_id: "doc-spec", node_id: "n1", label: "spec" }, questionLink(linked.thread)]);
   assert.deepEqual([dirs.story("US-1").status, dirs.story("US-1").blocked, dirs.story("US-1").holder], ["backlog", true, null]);
   assert.equal(linked.key, "US-1");
@@ -1130,6 +1283,19 @@ test("worktree keeps an existing folder only when it is a worktree of the checko
   ]);
   assert.equal(readFileSync(join(plain, "notes"), "utf8"), "mine\n");
   assert.equal(git(other, "rev-parse", "--abbrev-ref", "HEAD").trim(), "elsewhere");
+});
+
+test("a worktree step that finds story/<key> without its worktree makes the worktree again on that branch, so its commits stay, and answers created false: the story has earlier work", (t) => {
+  const dirs = scratch(t, [story("US-1")]);
+  const { run } = start(dirs);
+  const wt = step(dirs, run, "worktree", { key: "US-1" }).path;
+  const work = commit(wt, "half.rs");
+  rmSync(wt, { recursive: true, force: true });
+
+  const body = step(dirs, run, "worktree", { key: "US-1" });
+
+  assert.deepEqual(pick(body), { ok: true, key: "US-1", path: wt, branch: "story/US-1", created: false });
+  assert.deepEqual([git(wt, "rev-parse", "HEAD").trim(), git(wt, "rev-parse", "--abbrev-ref", "HEAD").trim(), readFileSync(join(wt, "half.rs"), "utf8")], [work, "story/US-1", "half.rs\n"]);
 });
 
 test("sleep waits the seconds it is given", (t) => {
@@ -1343,7 +1509,7 @@ test("start stops the jobs of earlier runs that still run, found by the pids in 
   assert.deepEqual([result.ok, result.signal], [false, "SIGTERM"]);
 });
 
-test("job-wait answers a job whose supervisor is gone without its result as lost", async (t) => {
+test("job-wait answers a job whose supervisor is gone without its result as lost, and stops its command, which the group's leader still runs", async (t) => {
   const dirs = scratch(t);
   const { run, lane } = start(dirs);
   const { id } = step(dirs, run, "job-start", { name: "stack", cmd: "sleep 30", cwd: lane });
@@ -1353,8 +1519,85 @@ test("job-wait answers a job whose supervisor is gone without its result as lost
 
   const body = step(dirs, run, "job-wait", { id, maxSeconds: 5 });
 
-  process.kill(-job.pgid, "SIGKILL");
   assert.deepEqual([body.done, body.result.ok, body.result.error], [true, false, `the supervisor of the job ${id} ended without its result`]);
+  assert.ok(await eventually(() => gone(-job.pgid)), "its command was stopped");
+});
+
+// A job whose supervisor was killed, its command still running.
+async function orphan(dirs, run, cwd, cmd = "sleep 30") {
+  const { id } = step(dirs, run, "job-start", { name: "stack", cmd, cwd });
+  const job = jobOf(dirs, run, id);
+  process.kill(job.supervisor, "SIGKILL");
+  await eventually(() => gone(job.supervisor));
+  return { id, job };
+}
+
+test("job-kill stops a job whose supervisor died: its group, whose leader still runs the job's command, gets SIGTERM, and the job is lost", async (t) => {
+  const dirs = scratch(t);
+  const { run, lane } = start(dirs);
+  const { id, job } = await orphan(dirs, run, lane);
+
+  const body = step(dirs, run, "job-kill", { id });
+
+  assert.deepEqual([body.killed, body.done, body.result.ok, body.result.error], [true, true, false, `the supervisor of the job ${id} ended without its result`]);
+  assert.ok(await eventually(() => gone(-job.pgid)), "its command was stopped");
+});
+
+test("start stops the job of an ended run whose supervisor died, and records it lost", async (t) => {
+  const dirs = scratch(t);
+  const first = start(dirs);
+  // A command a shell runs with exec leads the group itself: the leader is sleep, not sh.
+  const { id, job } = await orphan(dirs, first.run, first.lane, "exec sleep 30");
+  writeLock(dirs, { ...readLock(dirs), pid: deadPid() });
+
+  const next = start(dirs, { op: "start-2" });
+
+  assert.ok(next.log.includes(`Stopped the job ${id} of run ${first.run}, which had ended`), next.log.join("\n"));
+  assert.ok(await eventually(() => gone(-job.pgid)), "its command was stopped");
+  assert.equal(JSON.parse(readFileSync(runFile(dirs, first.run, join("jobs", `${id}.json`)), "utf8")).error, `the supervisor of the job ${id} ended without its result`);
+});
+
+test("pids of a job that other processes took are never signalled: a supervisor's pid that runs something else, and a group whose leader runs another command; the job is lost all the same", async (t) => {
+  const dirs = scratch(t);
+  const { run, lane } = start(dirs);
+  const { id, job } = await orphan(dirs, run, lane);
+  process.kill(-job.pgid, "SIGKILL");
+  await eventually(() => gone(-job.pgid));
+  // The job started a minute ago, and processes started since have its pids:
+  // one of them leads a group of its own.
+  const other = spawn("sleep", ["61"], { stdio: "ignore" });
+  const leader = spawn("sleep", ["62"], { stdio: "ignore", detached: true });
+  t.after(() => { other.kill("SIGKILL"); try { process.kill(-leader.pid, "SIGKILL"); } catch {} });
+  writeFileSync(runFile(dirs, run, join("jobs", `${id}.job.json`)), JSON.stringify({ ...job, started: ago(60000), supervisor: other.pid, pgid: leader.pid }));
+
+  const body = step(dirs, run, "job-kill", { id }, { OMNI_DELIVER_KILL_GRACE_MS: "500" });
+  await pause(500);
+
+  assert.deepEqual([body.killed, body.done, body.result.error], [false, true, `the supervisor of the job ${id} ended without its result`]);
+  assert.deepEqual([other.signalCode, other.exitCode, leader.signalCode, leader.exitCode], [null, null, null, null]);
+});
+
+test("a wait is kept to 0 to 480 seconds, so that it fits a courier's Bash call, and is 480 when the payload gives no number", () => {
+  assert.deepEqual([-5, 0.5, 480, 1e9, undefined, "20"].map(waitSeconds), [0, 0.5, 480, 480, 480, 480]);
+});
+
+test("a job-start cut off after it made the job is carried on by its repeat: the same job, run once", async (t) => {
+  const dirs = scratch(t);
+  const { run, lane } = start(dirs);
+  // The job's supervisor waits for the job file's lock, which holds the step until it is cut off.
+  const dir = runFile(dirs, run, "jobs");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "US-1-fast-1.job.json.lock"), `${liveProcess(t)} 1`);
+  const obj = { opId: "job-cut", name: "fast", key: "US-1", cmd: "echo ran", cwd: lane };
+
+  await cutOff(t, dirs, run, "job-start", obj, () => existsSync(join(dir, "US-1-fast-1.job.json")));
+  rmSync(join(dir, "US-1-fast-1.job.json.lock"));
+  const again = step(dirs, run, "job-start", obj);
+  const waited = step(dirs, run, "job-wait", { id: again.id, maxSeconds: 30 });
+
+  assert.deepEqual([again.ok, again.id], [true, "US-1-fast-1"]);
+  assert.deepEqual(readdirSync(dir).filter((n) => n.endsWith(".job.json")), ["US-1-fast-1.job.json"]);
+  assert.deepEqual([waited.done, waited.result.ok, waited.tail], [true, true, "ran\n"]);
 });
 
 // ---- the lane ---------------------------------------------------------------------------
@@ -1419,6 +1662,112 @@ test("a rebase past its limit is infra, not a conflict: lane-prepare stops it, u
   assert.deepEqual([git(wt, "rev-parse", "HEAD").trim(), git(wt, "rev-parse", "--abbrev-ref", "HEAD").trim()], [before, "story/US-1"]);
 });
 
+test("lane-prepare refuses a story worktree on another branch or on a detached HEAD as wrong_branch, naming what is checked out and the commits that are not on story/<key>, which would not land; nothing is rebased, and the lane stays", (t) => {
+  const dirs = scratch(t, [story("US-1"), story("US-2")]);
+  const { run, lane } = start(dirs);
+  const own = step(dirs, run, "worktree", { key: "US-1" }).path;
+  git(own, "checkout", "-q", "-b", "fix-badge");
+  const onBranch = commit(own, "badge.rs");
+  const detached = storyWork(dirs, run, "US-2");
+  const story2 = sha(dirs, "refs/heads/story/US-2");
+  git(detached, "checkout", "-q", "--detach");
+  const loose = commit(detached, "fix.rs");
+  landOn(dirs, "deliver/board", "landed.rs");
+  const laneHead = git(lane, "rev-parse", "HEAD").trim();
+
+  const named = step(dirs, run, "lane-prepare", { key: "US-1" });
+  const headless = step(dirs, run, "lane-prepare", { key: "US-2" });
+
+  const one = (rev, file) => `${rev.slice(0, 7)} feat: ${file}`;
+  assert.deepEqual(pick(named), { ok: true, key: "US-1", outcome: "wrong_branch", head: "fix-badge", commits: [one(onBranch, "badge.rs")], reason: `${own} has the branch fix-badge checked out, not story/US-1: only story/US-1 lands, so its 1 commit not on story/US-1 would be lost (${one(onBranch, "badge.rs")}). Commit on story/US-1` });
+  assert.deepEqual(pick(headless), { ok: true, key: "US-2", outcome: "wrong_branch", head: null, commits: [one(loose, "fix.rs")], reason: `${detached} has a detached HEAD at ${loose.slice(0, 7)}, not story/US-2: only story/US-2 lands, so its 1 commit not on story/US-2 would be lost (${one(loose, "fix.rs")}). Commit on story/US-2` });
+  assert.deepEqual([git(own, "rev-parse", "HEAD").trim(), sha(dirs, "refs/heads/story/US-2"), git(lane, "rev-parse", "HEAD").trim()], [onBranch, story2, laneHead]);
+});
+
+test("lane-prepare gives dirty, with the files, for uncommitted changes in the story worktree, which would not land; a rebase in progress there that is not its own, or a rebase that fails on anything but unmerged paths, is infra, with git's message, and the rebase in progress stays", (t) => {
+  const dirs = scratch(t, [story("US-1"), story("US-2"), story("US-3")]);
+  const { run } = start(dirs);
+  const dirty = storyWork(dirs, run, "US-1");
+  writeFileSync(join(dirty, "README"), "left uncommitted\n");
+  writeFileSync(join(dirty, "notes.txt"), "untracked\n");
+  // US-2's implementer left a rebase of its own stopped on a conflict.
+  const stuck = storyWork(dirs, run, "US-2", "README");
+  git(stuck, "checkout", "-q", "-b", "other", "HEAD~1");
+  writeFileSync(join(stuck, "README"), "other\n");
+  git(stuck, "commit", "-q", "-am", "other README");
+  git(stuck, "checkout", "-q", "story/US-2");
+  assert.throws(() => git(stuck, "rebase", "other"));
+  storyWork(dirs, run, "US-3");
+  landOn(dirs, "deliver/board", "landed.rs");
+  const refusing = () => hook(dirs, "pre-rebase", "exit 1");
+
+  const changed = step(dirs, run, "lane-prepare", { key: "US-1" });
+  const midRebase = step(dirs, run, "lane-prepare", { key: "US-2" });
+  refusing();
+  const hooked = step(dirs, run, "lane-prepare", { key: "US-3" });
+
+  assert.deepEqual(pick(changed), { ok: true, key: "US-1", outcome: "dirty", files: ["README", "notes.txt"], count: 2, reason: `${dirty} has uncommitted changes in 2 files, which would not land: commit or discard them` });
+  assert.deepEqual(pick(midRebase), { ok: true, key: "US-2", outcome: "infra", reason: `a rebase of story/US-2 is in progress in ${stuck}` });
+  assert.ok(existsSync(join(dirs.repo, ".git", "worktrees", "US-2", "rebase-merge")), "the rebase in progress stays");
+  assert.equal(hooked.outcome, "infra");
+  assert.match(hooked.reason, /^the rebase of story\/US-3 onto deliver\/board failed: .*pre-rebase hook refused to rebase/);
+});
+
+test("lane-prepare does nothing in a story folder that is not a worktree of its own: in one that lost its .git file, inside a repository stopped in a rebase, that rebase stays as it was", (t) => {
+  const dirs = scratch(t, [story("US-1")]);
+  const { run } = start(dirs);
+  const wt = storyWork(dirs, run, "US-1");
+  // The folder around the checkout is a repository of its own, stopped in a rebase on a conflict.
+  const outer = (...argv) => git(dirs.root, ...argv);
+  outer("init", "-q", "-b", "main");
+  outer("config", "user.email", "test@example.com");
+  outer("config", "user.name", "Test");
+  writeFileSync(join(dirs.root, ".gitignore"), "app/\napp-stories/\nbin/\nomni-state.json*\n");
+  writeFileSync(join(dirs.root, "notes.txt"), "base\n");
+  outer("add", ".gitignore", "notes.txt");
+  outer("commit", "-q", "-m", "base");
+  outer("checkout", "-q", "-b", "side");
+  writeFileSync(join(dirs.root, "notes.txt"), "side\n");
+  outer("commit", "-q", "-am", "side");
+  outer("checkout", "-q", "main");
+  writeFileSync(join(dirs.root, "notes.txt"), "main\n");
+  outer("commit", "-q", "-am", "main");
+  assert.throws(() => outer("rebase", "side"));
+  rmSync(join(wt, ".git"));
+
+  const body = step(dirs, run, "lane-prepare", { key: "US-1" });
+
+  assert.deepEqual(pick(body), { ok: true, key: "US-1", outcome: "missing", reason: `${wt} is not a worktree of ${dirs.repo} of its own, so git does nothing in it` });
+  assert.ok(existsSync(join(dirs.root, ".git", "rebase-merge")), "the outer rebase is still in progress");
+});
+
+test("a lane-prepare cut off in the middle of its rebase is carried on by its repeat, which undoes that rebase of story/<key> and does it again", async (t) => {
+  const dirs = scratch(t, [story("US-1")]);
+  const { run, lane } = start(dirs);
+  const wt = storyWork(dirs, run, "US-1");
+  const tip = landOn(dirs, "deliver/board", "landed.rs");
+  // A rebase checks the base out, and its post-checkout hook holds it there.
+  const held = hook(dirs, "post-checkout", '[ -d "$(git rev-parse --git-path rebase-merge)" ] && sleep 30; exit 0');
+  const state = join(dirs.repo, ".git", "worktrees", "US-1", "rebase-merge");
+
+  await cutOff(t, dirs, run, "lane-prepare", { opId: "prepare-cut", key: "US-1" }, () => existsSync(state));
+  rmSync(held);
+  const again = step(dirs, run, "lane-prepare", { opId: "prepare-cut", key: "US-1" });
+
+  assert.deepEqual([again.outcome, again.base], ["ready", tip]);
+  assert.deepEqual([existsSync(state), git(wt, "rev-parse", "--abbrev-ref", "HEAD").trim(), git(wt, "rev-parse", "HEAD^").trim(), git(lane, "rev-parse", "HEAD").trim()], [false, "story/US-1", tip, again.candidate]);
+});
+
+test("lane-prepare gives missing for a story worktree without its branch", (t) => {
+  const dirs = scratch(t, [story("US-1")]);
+  const { run } = start(dirs);
+  git(dirs.repo, "worktree", "add", "-q", "--detach", join(dirs.root, "app-stories", "US-1"));
+
+  const body = step(dirs, run, "lane-prepare", { key: "US-1" });
+
+  assert.deepEqual(pick(body), { ok: true, key: "US-1", outcome: "missing", reason: "no branch story/US-1" });
+});
+
 test("lane-land lands the lane's HEAD, the candidate with the test author's commits on it, by a compare-and-swap of deliver/<slug>; the story is done with its files, criteria ticked and findings resolved, and its worktree and branch are gone at once", async (t) => {
   const criteria = [{ text: "The badge is red", human_check: false }, { text: "It looks right", human_check: true }];
   const dirs = scratch(t, [story("US-1", { status: "reviewed", criteria, findings: [{ stage: "review", text: "[attempt 1] The badge is blue", files: [], resolved: false }] })]);
@@ -1431,7 +1780,7 @@ test("lane-land lands the lane's HEAD, the candidate with the test author's comm
 
   const body = step(dirs, run, "lane-land", { key: "US-1", base });
 
-  assert.deepEqual(pick(body), { ok: true, key: "US-1", landed: true, base, final: tested, files: ["badge.rs", "badge.test"], removed: true });
+  assert.deepEqual(pick(body), { ok: true, key: "US-1", landed: true, base, final: tested, files: 2, removed: true });
   assert.deepEqual([sha(dirs, "refs/heads/deliver/board"), git(dirs.repo, "rev-parse", `${tested}^`).trim()], [tested, candidate]);
   const done = dirs.story("US-1");
   assert.deepEqual([done.status, done.files_changed], ["done", ["badge.rs", "badge.test"]]);
@@ -1478,6 +1827,82 @@ test("lane-land refuses a lane HEAD that does not descend from the base, or does
   assert.deepEqual([dropped.landed, dropped.reason], [false, `the lane's HEAD ${testsOnly.slice(0, 7)} does not hold story/US-1 at ${story1.slice(0, 7)}`]);
   assert.deepEqual([elsewhere.landed, elsewhere.reason], [false, `the lane's HEAD ${offBase.slice(0, 7)} does not descend from the base ${base.slice(0, 7)}`]);
   assert.deepEqual([sha(dirs, "refs/heads/deliver/board"), dirs.story("US-1").status], [tip, "testing"]);
+});
+
+test("lane-land refuses a lane worktree with a branch checked out: a commit the test author made on deliver/<slug> there moved the branch without a swap, and is not taken for a landing; nor is a lane HEAD when the story has no branch", (t) => {
+  const dirs = scratch(t, [story("US-1", { status: "reviewed" }), story("US-2", { status: "reviewed" })]);
+  const { run, lane } = start(dirs);
+  storyWork(dirs, run, "US-1");
+  step(dirs, run, "claim", { key: "US-1", stage: "testing" });
+  const { base } = step(dirs, run, "lane-prepare", { key: "US-1" });
+  git(lane, "checkout", "-q", "deliver/board");
+  const moved = commit(lane, "badge.test");
+
+  const onBranch = step(dirs, run, "lane-land", { key: "US-1", base });
+  git(lane, "checkout", "-q", "--detach");
+  commit(lane, "other.test");
+  const noBranch = step(dirs, run, "lane-land", { key: "US-2", base: moved });
+
+  assert.deepEqual(pick(onBranch), { ok: true, key: "US-1", landed: false, reason: "the lane worktree has deliver/board checked out, not a detached HEAD: a commit there moves that branch without the compare-and-swap" });
+  assert.deepEqual(pick(noBranch), { ok: true, key: "US-2", landed: false, reason: "there is no branch story/US-2 to land" });
+  assert.deepEqual([sha(dirs, "refs/heads/deliver/board"), dirs.story("US-1").status, dirs.story("US-2").status], [moved, "testing", "reviewed"]);
+});
+
+test("lane-clean throws away what is uncommitted in the lane worktree and says what, keeping ignored files and its HEAD; lane-land refuses a lane with uncommitted changes, so a fix the test author left uncommitted never lands unchecked", (t) => {
+  const dirs = scratch(t, [story("US-1", { status: "reviewed" })]);
+  writeFileSync(join(dirs.repo, ".gitignore"), ".omni/\ntarget/\n");
+  git(dirs.repo, "commit", "-q", "-am", "ignore target");
+  const { run, lane } = start(dirs);
+  storyWork(dirs, run, "US-1");
+  step(dirs, run, "claim", { key: "US-1", stage: "testing" });
+  const { base } = step(dirs, run, "lane-prepare", { key: "US-1" });
+  // The test author fixed the story's code to pass its test, and committed only the test.
+  writeFileSync(join(lane, "badge.rs"), "fixed\n");
+  const tested = commit(lane, "badge.test");
+  mkdirSync(join(lane, "target"));
+  writeFileSync(join(lane, "target", "build.out"), "warm\n");
+
+  const refused = step(dirs, run, "lane-land", { key: "US-1", base });
+  const cleaned = step(dirs, run, "lane-clean");
+  const landed = step(dirs, run, "lane-land", { key: "US-1", base });
+
+  assert.deepEqual(pick(refused), { ok: true, key: "US-1", landed: false, reason: "the lane worktree has uncommitted changes in 1 file (badge.rs): what lands must be what was checked, so lane-clean it and check it again" });
+  assert.deepEqual(pick(cleaned), { ok: true, discarded: ["badge.rs"], count: 1 });
+  assert.deepEqual([readFileSync(join(lane, "badge.rs"), "utf8"), readFileSync(join(lane, "target", "build.out"), "utf8"), git(lane, "rev-parse", "HEAD").trim()], ["badge.rs\n", "warm\n", tested]);
+  assert.deepEqual([landed.landed, landed.final, sha(dirs, "refs/heads/deliver/board")], [true, tested, tested]);
+});
+
+test("a lane-land cut off after its swap is carried on by its repeat from its record of that swap: the branch moved once, and the story is done", async (t) => {
+  const dirs = scratch(t, [story("US-1", { status: "reviewed", criteria: [{ text: "The badge is red", human_check: false }] })]);
+  const { run, lane } = start(dirs);
+  storyWork(dirs, run, "US-1");
+  step(dirs, run, "claim", { key: "US-1", stage: "testing" });
+  const { base } = step(dirs, run, "lane-prepare", { key: "US-1" });
+  const tested = commit(lane, "badge.test");
+  const obj = { opId: "land-cut", key: "US-1", base };
+
+  await cutOff(t, dirs, run, "lane-land", obj, () => (dirs.story("US-1").files_changed || []).length > 0, { FAKE_OMNI_HANG_AFTER: "story files US-1" });
+  const marker = appliedOf(dirs, run, "lane-land")["land-cut"];
+  const again = step(dirs, run, "lane-land", obj);
+
+  assert.deepEqual([marker.pending, marker.swapped], [true, tested]);
+  assert.deepEqual([again.ok, again.landed, again.final, again.files], [true, true, tested, 2]);
+  assert.deepEqual([sha(dirs, "refs/heads/deliver/board"), dirs.story("US-1").status, dirs.story("US-1").criteria[0].ticked], [tested, "done", true]);
+});
+
+test("lane-land leaves the story's folder alone when it is not its worktree on story/<key>, and says so: removed false", (t) => {
+  const dirs = scratch(t, [story("US-1", { status: "reviewed" })]);
+  const { run, lane } = start(dirs);
+  const wt = storyWork(dirs, run, "US-1");
+  step(dirs, run, "claim", { key: "US-1", stage: "testing" });
+  const { base } = step(dirs, run, "lane-prepare", { key: "US-1" });
+  commit(lane, "badge.test");
+  git(wt, "checkout", "-q", "-b", "other");
+
+  const body = step(dirs, run, "lane-land", { key: "US-1", base });
+
+  assert.deepEqual([body.landed, body.removed, dirs.story("US-1").status], [true, false, "done"]);
+  assert.deepEqual([existsSync(wt), git(wt, "rev-parse", "--abbrev-ref", "HEAD").trim()], [true, "other"]);
 });
 
 test("lane-land checks that the landed tree is the tested one: a branch moved again right after the swap is an error, and the story is not done", (t) => {
@@ -1527,54 +1952,6 @@ test("lane-base and lane-reset put the lane worktree back at the tip of deliver/
   assert.deepEqual([onBase.tip, reset.tip], [tip, tip]);
   assert.deepEqual(atBase, [tip, "HEAD", ""]);
   assert.deepEqual([git(lane, "rev-parse", "HEAD").trim(), git(lane, "rev-parse", "--abbrev-ref", "HEAD").trim(), git(lane, "status", "--porcelain")], [tip, "HEAD", ""]);
-});
-
-// ---- waiting for answers --------------------------------------------------------------
-
-test("wait-answers returns as soon as a blocked story's linked threads all have a conclusion", async (t) => {
-  const dirs = scratch(t, [story("US-5", { blocked: true, links: [questionLink("th-1")] })], [thread("th-1", "US-5: Which red?")]);
-  const { run } = start(dirs);
-  const child = spawn(process.execPath, [helper, ...stepArgv(dirs, run, "wait-answers", { opId: "wait-1", maxSeconds: 20 })], { cwd: dirs.repo, env: dirs.env });
-  let out = "";
-  child.stdout.on("data", (d) => { out += d; });
-  const closed = new Promise((resolve) => child.on("close", resolve));
-  const begun = Date.now();
-  await pause(1000);
-  // The human answers. The fake omni writes its whole state on each call, so
-  // the answer is written, whole, until the helper has seen it.
-  const statePath = dirs.env.FAKE_OMNI_STATE;
-  const answer = setInterval(() => {
-    try {
-      const s = dirs.state();
-      if (s.threads.find((th) => th.id === "th-1").conclusion) return;
-      s.threads.find((th) => th.id === "th-1").conclusion = "#c00";
-      writeFileSync(`${statePath}.tmp`, JSON.stringify(s));
-      renameSync(`${statePath}.tmp`, statePath);
-    } catch {}
-  }, 100);
-  await closed;
-  clearInterval(answer);
-
-  assert.deepEqual(pick(JSON.parse(out).body), { ok: true, answered: ["US-5"], waiting: [] });
-  assert.ok(Date.now() - begun < 6000, `${Date.now() - begun} ms`);
-});
-
-test("wait-answers returns at maxSeconds while no answer comes, with the stories that wait; at once when no story waits on a thread", (t) => {
-  const dirs = scratch(t, [story("US-5", { blocked: true, links: [questionLink("th-1")] }), story("US-6", { blocked: true })], [thread("th-1", "US-5: Which red?")]);
-  const { run } = start(dirs);
-
-  let begun = Date.now();
-  const late = step(dirs, run, "wait-answers", { maxSeconds: 1 });
-  const lateMs = Date.now() - begun;
-  dirs.edit((s) => { s.stories[0].links = []; });
-  begun = Date.now();
-  const none = step(dirs, run, "wait-answers", { maxSeconds: 20 });
-  const noneMs = Date.now() - begun;
-
-  assert.deepEqual([late.answered, late.waiting], [[], ["US-5"]]);
-  assert.ok(lateMs >= 1000 && lateMs < 4000, `${lateMs} ms`);
-  assert.deepEqual([none.answered, none.waiting], [[], []]);
-  assert.ok(noneMs < 3000, `${noneMs} ms`);
 });
 
 // ---- finish -----------------------------------------------------------------------------
@@ -1640,5 +2017,62 @@ Bring them into your branch with \`git merge --ff-only deliver/board\`.
 - healthy: the badge flow works
 
 `);
-  assert.match(timings, /^The run took \d+s\.\n\n\| Story \| Total \| implementing \| review \| testing \| rebase \| fast \| stack \|\n\|---\|---\|---\|---\|---\|---\|---\|---\|\n\| US-1 \| \d+s \| - \| - \| \d+s \| \d+s \| \d+s \| \d+s \|\n$/);
+  const time = String.raw`(?:<1s|\d+s)`;
+  assert.match(timings, new RegExp(String.raw`^The run took ${time}\.\n\n\| Story \| Total \| implementing \| review \| testing \| rebase \| fast \| stack \|\n\|---\|---\|---\|---\|---\|---\|---\|---\|\n\| US-1 \| ${time} \| - \| - \| ${time} \| ${time} \| ${time} \| ${time} \|\n\nA time with \(n\) after it adds up n of them: claims of the stage, rebases, or runs of the job\.\n$`));
+});
+
+const noReport = { outcomes: [], council: { settled: 0, asked: 0 }, blocked: [] };
+
+test("a finish whose post failed keeps the report as report.md, gives the lock up, and says it may be tried again; its repeat with the same opId goes on without the lock and posts the report once", (t) => {
+  const dirs = scratch(t);
+  const { run, thread: runThread } = start(dirs);
+  const obj = { opId: "finish-1", report: noReport };
+  const threads = dirs.state().threads;
+  // omni cannot find the Run thread for a while.
+  dirs.edit((s) => { s.threads = []; });
+
+  const failed = step(dirs, run, "finish", obj);
+  const lockAfter = existsSync(dirs.lock);
+  dirs.edit((s) => { s.threads = threads; });
+  const again = step(dirs, run, "finish", obj);
+
+  assert.deepEqual([failed.ok, failed.posted, failed.retry, failed.report, lockAfter], [false, false, true, runFile(dirs, run, "report.md"), false]);
+  assert.match(failed.error, /^the report could not be posted: /);
+  assert.deepEqual(pick(again), { ok: true, thread: runThread, posted: true, report: failed.report, stopped: [] });
+  assert.deepEqual(dirs.state().threads.find((th) => th.id === runThread).posts.map((p) => [p.summary, p.body]), [[`Report of ${run}`, readFileSync(failed.report, "utf8")]]);
+  assert.equal(existsSync(dirs.lock), false);
+});
+
+test("a finish cut off right after its post finds the report on the Run thread, and its repeat does not post it again", async (t) => {
+  const dirs = scratch(t);
+  const { run, thread: runThread } = start(dirs);
+  const obj = { opId: "finish-cut", report: noReport };
+  const posts = () => dirs.state().threads.find((th) => th.id === runThread).posts;
+
+  await cutOff(t, dirs, run, "finish", obj, () => posts().length === 1, { FAKE_OMNI_HANG_AFTER: `post ${runThread}` });
+  const again = step(dirs, run, "finish", obj);
+
+  assert.deepEqual([again.ok, again.posted], [true, true]);
+  assert.deepEqual(posts().map((p) => p.summary), [`Report of ${run}`]);
+  assert.equal(existsSync(dirs.lock), false);
+});
+
+test("the report's timings sort the job columns by name, show a time under a second as <1s, say what a count means, open no stage for a claim the board refused, and time the rebase apart from the lane's checkout", (t) => {
+  const dirs = scratch(t, [story("US-1", { status: "reviewed" }), story("US-2")]);
+  const { run, lane } = start(dirs);
+  storyWork(dirs, run, "US-1");
+  step(dirs, run, "claim", { key: "US-1", stage: "testing" });
+  // The lane's checkout takes 2 s, and the rebase none of it.
+  hook(dirs, "post-checkout", '[ -d "$(git rev-parse --git-path rebase-merge)" ] || sleep 2');
+  step(dirs, run, "lane-prepare", { key: "US-1" });
+  // Their ids sort the other way: US-1-zeta-1 before US-2-alpha-1.
+  for (const [key, name] of [["US-1", "zeta"], ["US-2", "alpha"]]) step(dirs, run, "job-wait", { id: step(dirs, run, "job-start", { name, key, cmd: "true", cwd: lane }).id, maxSeconds: 30 });
+  const refused = step(dirs, run, "claim", { key: "US-1", stage: "review" });
+
+  const body = step(dirs, run, "finish", { report: noReport });
+
+  assert.equal(refused.ok, false);
+  const timings = readFileSync(body.report, "utf8").split("## Timings\n")[1];
+  const time = String.raw`(?:<1s|\d+s)`;
+  assert.match(timings, new RegExp(String.raw`^The run took ${time}\.\n\n\| Story \| Total \| implementing \| review \| testing \| rebase \| alpha \| zeta \|\n\|---\|---\|---\|---\|---\|---\|---\|---\|\n\| US-1 \| ${time} \| - \| - \| [1-9]\d*s \| <1s \| - \| <1s \|\n\| US-2 \| ${time} \| - \| - \| - \| - \| <1s \| - \|\n\nA time with \(n\) after it adds up n of them: claims of the stage, rebases, or runs of the job\.\n$`), timings);
 });
