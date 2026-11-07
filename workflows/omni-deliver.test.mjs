@@ -681,14 +681,71 @@ test("a story whose delivery throws is released and gets a thread with the error
   assert.deepEqual(result.outcomes.map((o) => [o.key, o.outcome, o.thread]), [["US-1", "failed", stopped.id]]);
 });
 
-test("a story waiting in implemented starts at its review; a criterion that names a test is a test obligation the review never judges, whether clarity recorded it or the reviewer names it", { timeout: 60000 }, async (t) => {
+test("a story whose delivery throws is released even when its thread cannot be opened, so that no run finds it held", { timeout: 60000 }, async (t) => {
+  const dirs = scratch(t, [story("US-1", { criteria: [{ text: "The badge is red", human_check: false }] })]);
+  const roles = {
+    "impl:US-1": [async (call, serial) => {
+      await serial(() => {
+        const wt = worktreeIn(call.prompt);
+        commit(wt, "src/badge.rs");
+        git(wt, "checkout", "-q", "-b", "side");
+      });
+      return { status: "ready", summary: "Built.", decisions: [], commits: [] };
+    }],
+    "review:US-1": [reviewed("fail", { unmet: { 0: "Pink" } })],
+  };
+  const fault = (call) => {
+    if (call.label === "courier:thread-open:US-1") dirs.env.FAKE_OMNI_FAIL = "thread";
+    return null;
+  };
+
+  const { result, error, logs } = await deliver(dirs, {}, roles, { fault });
+
+  assert.equal(error, null);
+  assert.deepEqual(questions(dirs), []);
+  assert.ok(logs.some((l) => l.startsWith("US-1: the thread about the error could not be opened: ")), logs.join("\n"));
+  const done = dirs.story("US-1");
+  assert.deepEqual([done.status, done.holder, done.blocked], ["backlog", null, false]);
+  assert.deepEqual(result.outcomes.map((o) => [o.key, o.outcome, o.thread]), [["US-1", "failed", undefined]]);
+});
+
+test("a second story stopped by the same error, its key aside, stops the run taking stories with one thread for the run: the first story has its own thread, and every later failure is only released", { timeout: 60000 }, async (t) => {
+  const keys = ["US-1", "US-2", "US-3", "US-4", "US-5"];
+  const dirs = scratch(t, keys.map((key) => story(key)));
+  // A lasting cause: the deliver branch is deleted before any story is delivered.
+  const roles = { "clarity:US-1": [async (call, serial) => {
+    await serial(() => git(dirs.repo, "update-ref", "-d", "refs/heads/deliver/board"));
+    return { testObligations: [], gaps: [] };
+  }] };
+
+  const { result, error, logs } = await deliver(dirs, {}, roles);
+
+  assert.equal(error, null);
+  const blocked = keys.filter((key) => dirs.story(key).blocked);
+  assert.equal(blocked.length, 1, keys.map((key) => `${key} ${dirs.story(key).blocked}`).join(", "));
+  const threads = questions(dirs);
+  const own = threads.find((th) => th.title === `${blocked[0]}: delivery stopped on an error`);
+  const run = threads.find((th) => th.title === `Run ${result.run}: stories stop on the same error`);
+  assert.deepEqual([threads.length, !!own, !!run], [2, true, true], threads.map((th) => th.title).join("\n"));
+  assert.deepEqual(dirs.story(blocked[0]).links, [{ thread_id: own.id, label: "question" }]);
+  const [, first, second] = run.posts[0].body.match(/^(US-\d) and (US-\d) stopped on the same error:\n\ncourier:worktree:US-\d: worktree failed: /);
+  assert.equal(first, blocked[0]);
+  assert.equal(result.halted, `${first} and ${second} stopped on the same error`);
+  assert.ok(result.notes.includes(`The run took no new story once ${first} and ${second} stopped on the same error (thread ${run.id}).`), result.notes.join("\n"));
+  assert.ok(logs.includes(`The run takes no new story: ${first} and ${second} stopped on the same error`), logs.join("\n"));
+  for (const key of keys.filter((k) => k !== first)) assert.deepEqual([dirs.story(key).status, dirs.story(key).holder, dirs.story(key).blocked], ["backlog", null, false], key);
+  assert.deepEqual(claimsOf(dirs, "US-5"), []);
+  assert.ok(result.outcomes.every((o) => o.outcome === "failed"), JSON.stringify(result.outcomes));
+});
+
+test("a story waiting in implemented starts at its review; a criterion that names a test is a test obligation, marked so, that the review never judges, whether clarity recorded it or not", { timeout: 60000 }, async (t) => {
   const criteria = [{ text: "The badge is red", human_check: false }, { text: "A regression test covers the badge", human_check: false }];
   const dirs = scratch(t, [story("US-1", { status: "implemented", criteria }), story("US-2", { criteria })]);
   git(dirs.repo, "worktree", "add", "-q", "-b", "story/US-1", dirs.worktree("US-1"));
   commit(dirs.worktree("US-1"), "src/badge.rs");
   const roles = {
-    // US-1 came before clarity, so no decision: its reviewer names the obligation.
-    "review:US-1": [reviewed("pass", { unmet: { 1: "No test in the diff" }, obligations: [1] })],
+    // US-1 came before clarity, so no decision: the criterion names a test all the same.
+    "review:US-1": [reviewed("pass", { unmet: { 1: "No test in the diff" } })],
     "clarity:US-2": [{ testObligations: ["A regression test covers the badge"], gaps: [] }],
     // US-2's reviewer judges the obligation clarity recorded; the judgement is not read.
     "review:US-2": [reviewed("pass", { unmet: { 1: "No test in the diff" } })],
@@ -700,8 +757,7 @@ test("a story waiting in implemented starts at its review; a criterion that name
   assert.deepEqual([timeline(dirs, "US-1"), dirs.story("US-1").status], [["claim review", "move reviewed"], "reviewed"]);
   assert.deepEqual(agentsOf(calls, "impl:US-1"), []);
   assert.equal(dirs.story("US-2").status, "reviewed");
-  assert.match(agentsOf(calls, "review:US-2")[0].prompt, /\n0: The badge is red\n1: A regression test covers the badge \[test obligation\]\n/);
-  assert.match(agentsOf(calls, "review:US-1")[0].prompt, /\n0: The badge is red\n1: A regression test covers the badge\n/);
+  for (const key of ["US-1", "US-2"]) assert.match(agentsOf(calls, `review:${key}`)[0].prompt, /\n0: The badge is red\n1: A regression test covers the badge \[test obligation\]\n/);
   assert.deepEqual([dirs.story("US-1").findings || [], dirs.story("US-2").findings || []], [[], []]);
   assert.deepEqual(result.outcomes.map((o) => o.outcome), ["reviewed", "reviewed"]);
 });
@@ -774,6 +830,30 @@ test("a review fails on a criterion not met, even with the verdict pass, and on 
     "claim implementing", "move implemented", "claim review", "move reviewed",
   ]);
   assert.deepEqual(result.outcomes, [{ key: "US-1", outcome: "reviewed" }]);
+});
+
+test("the script decides a review from its verdicts on the criteria and its defects, not from the reviewer's verdict: a test obligation's verdict and a defect that names only an obligation are not read, and a reviewer's obligation true counts for no other criterion", { timeout: 60000 }, async (t) => {
+  const criteria = [{ text: "The badge is red", human_check: false }, { text: "A regression test covers the badge", human_check: false }];
+  const dirs = scratch(t, [story("US-1", { criteria }), story("US-2", { criteria }), story("US-3", { criteria })]);
+  const obligation = { testObligations: ["A regression test covers the badge"], gaps: [] };
+  const roles = {
+    "clarity:US-1": [obligation],
+    "clarity:US-2": [obligation],
+    // Judges the obligation clarity recorded, and fails the story for it.
+    "review:US-1": [reviewed("fail", { unmet: { 1: "No test in the diff" } })],
+    // Leaves the obligation unjudged, and files a defect that names it.
+    "review:US-2": [reviewed("fail", { obligations: [1], defects: [{ text: "No regression test for the badge", files: [], criterion: "A regression test covers the badge" }] })],
+    // Calls a behaviour an obligation, which leaves it unjudged.
+    "review:US-3": [reviewed("pass", { unmet: { 0: "Not judged: a test obligation" }, obligations: [0] })],
+  };
+
+  const { error } = await deliver(dirs, {}, roles);
+
+  assert.equal(error, null);
+  const once = ["claim implementing", "move implemented", "claim review", "move reviewed"];
+  assert.deepEqual(["US-1", "US-2"].map((key) => [timeline(dirs, key), findingsOf(dirs, key)]), [[once, []], [once, []]]);
+  assert.deepEqual(findingsOf(dirs, "US-3"), [["review", '[attempt 1] Criterion not met: "The badge is red". Not judged: a test obligation', [], false]]);
+  assert.deepEqual(timeline(dirs, "US-3").slice(-2), ["claim review", "move reviewed"]);
 });
 
 test("from attempt 2 the implementer runs on implRetry, in the same worktree, and its prompt lists every finding since the human's latest answer by attempt, those that used no attempt, and the earlier ones apart", { timeout: 60000 }, async (t) => {
@@ -939,15 +1019,24 @@ test("at most `implementers` stories implement at once and at most `reviewers` a
   assert.deepEqual(result.outcomes.map((o) => o.key).sort(), keys);
 });
 
-test("a story its review sends back takes a new implementer slot: with implementers 1, the next story implements while the first is in review, and the first waits for the slot to come back", { timeout: 60000 }, async (t) => {
-  const dirs = scratch(t, [story("US-1"), story("US-2")]);
-  // The second story's implementer works on until the first is back in the backlog with its finding.
-  const back = (serial) => serial(() => dirs.story("US-1").status === "backlog" && (dirs.story("US-1").findings || []).length > 0);
+test("a story its review sends back stays in review, its files busy, until an implementer slot is free, takes that slot ahead of new claims, and only then goes back to the backlog and is claimed again, back to back: no story planned on its files is claimed meanwhile", { timeout: 60000 }, async (t) => {
+  const dirs = scratch(t, [
+    story("US-1", { priority: 1, files_planned: ["src/badge.rs"] }),
+    story("US-2", { files_planned: ["src/a.rs"] }),
+    story("US-3", { files_planned: ["src/b.rs"] }),
+    story("US-5", { priority: 2, files_planned: ["src/badge.rs"] }),
+  ]);
+  let meanwhile = null;
   const roles = {
+    "impl:US-1": [built("src/badge.rs"), built("src/badge.rs")],
     "review:US-1": [reviewed("fail", { defects: [{ text: "The badge is pink", files: ["src/badge.rs"], criterion: "" }] }), reviewed("pass")],
+    // US-2 holds the one slot until US-1 has its finding, and a second more
+    // for US-1 to go back to the backlog, which it does not while it waits.
     "impl:US-2": [async (call, serial) => {
-      for (let i = 0; i < 100 && !(await back(serial)); i++) await pause(50);
-      return built("US-2.txt")(call, serial);
+      for (let i = 0; i < 400 && !(await serial(() => (dirs.story("US-1").findings || []).length > 0)); i++) await pause(50);
+      for (let i = 0; i < 20 && (await serial(() => dirs.story("US-1").status)) !== "backlog"; i++) await pause(50);
+      meanwhile = await serial(() => dirs.story("US-1").status);
+      return built("src/a.rs")(call, serial);
     }],
   };
 
@@ -955,14 +1044,17 @@ test("a story its review sends back takes a new implementer slot: with implement
 
   assert.equal(error, null);
   const order = boardLog(dirs);
+  assert.equal(meanwhile, "review");
   assert.deepEqual(order.filter((e) => e.startsWith("claim US-1 ") || e.startsWith("move US-1 ")), [
     "claim US-1 implementing", "move US-1 implemented", "claim US-1 review", "move US-1 backlog",
     "claim US-1 implementing", "move US-1 implemented", "claim US-1 review", "move US-1 reviewed",
   ]);
-  assert.ok(order.indexOf("claim US-2 implementing") < order.indexOf("move US-1 backlog"), order.join("\n"));
-  assert.ok(order.indexOf("move US-2 implemented") < order.lastIndexOf("claim US-1 implementing"), order.join("\n"));
+  const back = order.indexOf("move US-1 backlog");
+  assert.ok(order.indexOf("move US-2 implemented") < back, order.join("\n"));
+  assert.equal(order.slice(back + 1).find((e) => e.endsWith(" implementing")), "claim US-1 implementing", order.join("\n"));
+  assert.ok(order.indexOf("claim US-3 implementing") > order.lastIndexOf("claim US-1 implementing"), order.join("\n"));
+  assert.deepEqual(claimsOf(dirs, "US-5"), []);
   assert.equal(peakIn(dirs, "implementing", ["implemented"]), 1);
-  assert.deepEqual([dirs.story("US-1").status, dirs.story("US-2").status], ["reviewed", "reviewed"]);
 });
 
 // The script with its agent cap set lower; the real values are pinned first.
