@@ -206,10 +206,3 @@ $(EMCC):
 	test -d "$(EMSDK)" || git clone --depth 1 --branch $(EMSDK_VERSION) https://github.com/emscripten-core/emsdk.git "$(EMSDK)"
 	"$(EMSDK)/emsdk" install $(EMSDK_VERSION)
 	"$(EMSDK)/emsdk" activate $(EMSDK_VERSION)
-
-# Runs omni-deliver on a feature's board under Node, each agent a headless
-# `claude -p` session (workflows/run-omni-deliver.mjs). From a clean main
-# worktree: make deliver FEATURE="<name>" [ARGS='--implementers 2 --story-limit 3'].
-deliver:
-	@test -n "$(FEATURE)" || { echo 'make deliver FEATURE="<name>"'; exit 1; }
-	node workflows/run-omni-deliver.mjs --feature "$(FEATURE)" $(ARGS)
