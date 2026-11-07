@@ -20,11 +20,18 @@ A run starts from a Claude Code session in the project's main checkout:
 
 - The checkout's folder is linked to its OmniState project (`omni link`, or
   `OMNI_PROJECT`).
-- The stories folder beside the checkout, `<checkout>-stories`
-  (`../omnistate-stories` here), is among the session's working directories
-  (`claude --add-dir`, or `/add-dir`). The story worktrees and the lane
-  worktree live there, and the run stops at its start when it cannot write
-  there.
+- Add the stories folder beside the checkout, `../<repo>-stories`
+  (`../omnistate-stories` here), as a working directory of the session that
+  runs the workflow: `claude --add-dir ../<repo>-stories`, or `/add-dir` in
+  the session. The story worktrees and the lane worktree live there, and the
+  run stops at its start when it cannot write there.
+- A project with a heavy setup per worktree, such as dependencies to install
+  or a long first build, warms the lane worktree, `<stories dir>/_lane`, before
+  its first run: the first `fast` there starts cold, and has 45 minutes, the
+  limit of a job, to finish. Make the worktree with
+  `git worktree add --detach ../<repo>-stories/_lane`, then run the setup and
+  `fast` in it once by hand. A run's start keeps that worktree, and its
+  clean leaves ignored build caches in place.
 
 Then ask Claude to run the workflow `omni-deliver` with the Workflow tool, with
 args such as `{"feature": "Rename a project", "storyLimit": 3}`:
@@ -66,7 +73,9 @@ files: it reads the checkout's HEAD at its start, and keeps its own state in
   button shows Connected" is behaviour. A story clarity never checked, such
   as one implemented before it ran, is read for a test as the thing
   delivered: "A regression test covers ...", "Add a test ...", "Tests cover
-  ...". A minor gap takes its recommendation.
+  ...". The story versions that the old runner kept in `clarity.json` are not
+  checks of this kind, since it recorded no test obligation. A minor gap takes
+  its recommendation.
   The 3 blocking gaps of most impact go to the council, and the rest take
   their recommendation.
 - **The council** answers a question before the human is asked: clarity's
@@ -79,7 +88,8 @@ files: it reads the checkout's HEAD at its start, and keeps its own state in
   the thread has a conclusion.
 - **Deliver,** in the three stages below.
 - **Report.** A check of the user journeys across the stories landed, then the
-  report.
+  report. The journeys check runs none of the checks, since an agent's Bash
+  call stops after 10 minutes: it is told the result of the lane's last one.
 
 The run does not wait for answers: the next run's Unblock takes them.
 
@@ -88,8 +98,11 @@ The run does not wait for answers: the next run's Unblock takes them.
 A story goes through the board's three working stages: implementing, review
 and testing.
 
-1. **Implementing,** at most `implementers` stories at once. The implementer
-   works in the story's worktree, `<stories dir>/<key>`, on the branch
+1. **Implementing,** at most `implementers` stories at once. The board is
+   listed for the next story only once the last one's claim is made, since a
+   claimed story's planned files keep the stories planned on them off the
+   pickable list. The implementer works in the story's worktree,
+   `<stories dir>/<key>`, on the branch
    `story/<key>`. A new worktree is cut from the tip of `deliver/<slug>`; one
    from an earlier attempt is kept, with its commits, and its story is picked
    first. From the second attempt on, the implementer runs on `implRetry`,
@@ -108,7 +121,8 @@ and testing.
    - `lane-prepare` rebases `story/<key>` onto the tip of `deliver/<slug>` in
      the story's worktree, and checks the result out in the lane worktree.
    - The checks `fast`, `stack_up` and `stack` run there, in that order, as
-     jobs.
+     jobs. The run's first `stack_up` comes after `stack_reset`, when it is
+     set, for what a run that was stopped left on the stack.
    - A verifier exercises every criterion but the test obligations, on the
      stack that `stack_up` started.
    - A test author writes the story's regression tests and commits them on the
@@ -202,10 +216,10 @@ prompts leave it out.
 
 | Check | Run by | What for |
 | --- | --- | --- |
-| `fast` | the lane, as a job, and the journeys check | the project's own tests and checks |
+| `fast` | the lane, as a job | the project's own tests and checks |
 | `stack_up` | the lane, as a job | builds and starts the test stack from the lane worktree, and builds it again after a failure |
 | `stack` | the lane, as a job | the tests that need the stack |
-| `stack_reset` | the lane, as a job | resets the test stack's state, such as its database, before a stack check runs again on `deliver/<slug>` and before the stack is rebuilt after a failure |
+| `stack_reset` | the lane, as a job | resets the test stack's state, such as its database, before the run's first `stack_up`, before a stack check runs again on `deliver/<slug>`, and before the stack is rebuilt after a failure |
 | `seed` | the verifier | a credential on the test stack: it prints what to sign in with |
 | `lint` | the verifier | a criterion about lint, which the verifier checks by running it, as it does `fast` and `stack` |
 
@@ -242,9 +256,12 @@ and by its pid the Claude Code session that runs the couriers, and every
 helper call of the run refreshes its heartbeat. A start while that run is alive
 is refused. The lock is stale once its session has ended, or once the run has
 made no call for 2 hours, and the next start takes it over and says so; `force`
-takes over a lock whose run the human knows is dead. The helper finds the
-session as the nearest process above it that is not a shell, which has been
-checked on macOS only.
+takes over a lock whose run the human knows is dead. A run stopped from
+outside, by stopping the workflow in its session, keeps its lock: the session
+lives on and the heartbeat is recent, so a start is refused until 2 hours
+after the run's last call. Start the next run with `force: true`. The helper finds the session as the
+nearest process above it that is not a shell, which has been checked on macOS
+only.
 
 `.omni/` also holds the clarity cache, `clarity.json`, and a folder for each
 run, `.omni/runs/<run>/`: the payloads in flight, the record of applied steps,
@@ -367,9 +384,12 @@ migrations in the test database, which `deliver/<slug>` never got, and from
 then on `stack_up` fails for every tree without them. That is what
 `stack_reset` is for: the lane runs it before a stack check runs again on the
 base, and before it rebuilds the stack after a failure, so that both start
-from an empty database and the failure stays the story's. With
-`make test-stack-down` as `stack_reset`, each reset also drops the build
-caches, and the `stack_up` after it compiles the test binaries again.
+from an empty database and the failure stays the story's. It runs it before
+the run's first `stack_up` too, since a run that was stopped can leave a
+story's migrations behind, which the next run's first story would otherwise
+pay an attempt for. With `make test-stack-down` as `stack_reset`, each reset
+also drops the build caches, and the `stack_up` after it compiles the test
+binaries again.
 
 Without a `stack_reset`:
 

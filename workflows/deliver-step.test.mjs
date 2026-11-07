@@ -185,6 +185,16 @@ async function eventually(check, ms = 5000) {
   for (const end = Date.now() + ms; !check(); await pause(50)) if (Date.now() > end) return false;
   return true;
 }
+// A check that is true once `check` has been true for ms, for a step to get
+// on from what `check` sees before it is cut off.
+const heldFor = (check, ms) => {
+  let since = null;
+  return () => {
+    if (!check()) return false;
+    since ??= Date.now();
+    return Date.now() - since >= ms;
+  };
+};
 
 // ---- the courier protocol -------------------------------------------------------
 
@@ -861,12 +871,12 @@ test("start gives the checks fast, stack_up, stack, stack_reset, seed and lint a
   assert.deepEqual(body.checks, { fast: "make fast", stack_up: "", stack: "make stack", stack_reset: "make stack-down", seed: "make seed NAME=x", lint: "" });
 });
 
-test("a start whose checks cannot be read stops before any work and leaves no lock", (t) => {
+test("a start whose checks cannot be read stops before any work and leaves no lock, and is not tried again: a repeat would read the same configuration", (t) => {
   const dirs = scratch(t, [story("US-1", { status: "review", holder: { run: "run-old", stage: "review" } })], [], { checks: null });
 
   const body = start(dirs);
 
-  assert.equal(body.ok, false);
+  assert.deepEqual([body.ok, body.retry], [false, false]);
   assert.match(body.error, /^the checks could not be read: /);
   assert.equal(existsSync(dirs.lock), false);
   assert.deepEqual(dirs.writes(), []);
@@ -978,16 +988,16 @@ test("start releases the stories another run holds, and the working ones nobody 
 
 // ---- the board steps ------------------------------------------------------------------
 
-test("list gives each story's key, title, status, priority, blocked and holder, and the keys the board calls pickable", (t) => {
-  const dirs = scratch(t, [story("US-1", { priority: 1 }), story("US-2", { blocked: true }), story("US-3", { status: "implemented" })]);
+test("list gives the stories that are not done or cancelled, each with its key, status, blocked and holder, since outputs stay small, and the keys the board calls pickable", (t) => {
+  const dirs = scratch(t, [story("US-1", { priority: 1 }), story("US-2", { blocked: true }), story("US-3", { status: "implemented" }), story("US-4", { status: "done" }), story("US-5", { status: "cancelled" })]);
   const { run } = start(dirs);
 
   const body = step(dirs, run, "list");
 
   assert.deepEqual(body.stories, [
-    { key: "US-1", title: "Story US-1", status: "backlog", priority: 1, blocked: false, holder: null },
-    { key: "US-2", title: "Story US-2", status: "backlog", priority: 3, blocked: true, holder: null },
-    { key: "US-3", title: "Story US-3", status: "implemented", priority: 3, blocked: false, holder: null },
+    { key: "US-1", status: "backlog", blocked: false, holder: null },
+    { key: "US-2", status: "backlog", blocked: true, holder: null },
+    { key: "US-3", status: "implemented", blocked: false, holder: null },
   ]);
   assert.deepEqual(body.pickable, ["US-1"]);
 });
@@ -1062,6 +1072,21 @@ test("context gives the resolved findings of the attempts before the latest answ
     { attempt: 1, findings: [{ stage: "review", text: "Too dark a red", files: [] }] },
   ]);
   assert.deepEqual([body.attempt, body.findings], [1, [{ attempt: 1, findings: [{ stage: "review", text: "Now too light", files: [] }] }]]);
+});
+
+test("context gives each finding's first 1,500 characters, saying the rest is on the board, and stays within 20,000 characters: of the findings, those of the latest attempt first, those before the latest answer last, and how many it left out", (t) => {
+  const finding = (attempt, name, resolved = false) => ({ stage: "review", text: `[attempt ${attempt}] ${name} ${"x".repeat(3000)}`, files: [], resolved });
+  const named = (n, attempt, prefix, resolved) => Array.from({ length: n }, (_, i) => finding(attempt, `${prefix}-${i + 1}`, resolved));
+  const dirs = scratch(t, [story("US-1", { findings: [...named(2, 1, "before", true), ...named(8, 1, "first"), ...named(8, 2, "second")] })]);
+  const { run } = start(dirs);
+
+  const body = step(dirs, run, "context", { key: "US-1" });
+
+  const names = (groups) => groups.map((g) => [g.attempt, g.findings.map((f) => f.text.split(" ")[0])]);
+  // 11 findings of 1,500 characters fit beside the story: the 8 of attempt 2, then the first 3 of attempt 1.
+  assert.deepEqual([names(body.findings), names(body.earlier), body.omitted], [[[1, ["first-1", "first-2", "first-3"]], [2, Array.from({ length: 8 }, (_, i) => `second-${i + 1}`)]], [], 7]);
+  for (const f of body.findings.flatMap((g) => g.findings)) assert.deepEqual([f.text.length, f.text.endsWith("x… (full text on the board)")], [1500, true]);
+  assert.ok(JSON.stringify({ body, hash: fnv1a(JSON.stringify(body)) }).length <= 20000);
 });
 
 test("a story list past 1 MB is read whole", (t) => {
@@ -1203,6 +1228,19 @@ test("unblock-pass keeps a story whose thread cannot be read blocked, says so in
 
   assert.deepEqual([body.ok, body.unblocked, body.log], [true, ["US-2"], ["US-1 stays blocked: the thread th-gone could not be read: not_found: no thread th-gone in this project"]]);
   assert.deepEqual([dirs.story("US-1").blocked, dirs.story("US-2").blocked], [true, false]);
+});
+
+test("unblock-pass logs the first 20 stories it keeps blocked on threads it cannot read, and counts the rest, since outputs stay small", (t) => {
+  const keys = Array.from({ length: 22 }, (_, i) => `US-${i + 1}`);
+  const dirs = scratch(t, keys.map((key) => story(key, { blocked: true, links: [questionLink(`th-${key}`)] })));
+  const { run } = start(dirs);
+
+  const body = step(dirs, run, "unblock-pass");
+
+  assert.deepEqual(body.log, [
+    ...keys.slice(0, 20).map((key) => `${key} stays blocked: the thread th-${key} could not be read: not_found: no thread th-${key} in this project`),
+    "and 2 more stories stay blocked on threads that could not be read",
+  ]);
 });
 
 test("unblock-pass records only the conclusions that are not human decisions yet", (t) => {
@@ -1366,13 +1404,14 @@ test("a worktree step cut off while it put a worktree back on story/<key> is car
   assert.deepEqual([git(wt, "rev-parse", "--abbrev-ref", "HEAD").trim(), git(wt, "status", "--porcelain")], ["story/US-1", ""]);
 });
 
-test("context says whether the clarity cache has a record of the story, as clarified", (t) => {
-  const dirs = scratch(t, [story("US-1"), story("US-2")]);
+test("context says whether the clarity cache has a hash of the story, as clarified; a story version the old runner kept there is not one, since that runner recorded no test obligation", (t) => {
+  const dirs = scratch(t, [story("US-1"), story("US-2"), story("US-3")]);
   const { run } = start(dirs);
+  writeFileSync(join(dirs.repo, ".omni", "clarity.json"), JSON.stringify({ "US-3": 7 }));
 
   step(dirs, run, "clarity-record", { key: "US-1" });
 
-  assert.deepEqual(["US-1", "US-2"].map((key) => step(dirs, run, "context", { key }).clarified), [true, false]);
+  assert.deepEqual(["US-1", "US-2", "US-3"].map((key) => step(dirs, run, "context", { key }).clarified), [true, false, false]);
 });
 
 test("rework moves a story sent back to the backlog and claims it for implementing, in one call; a rework cut off after its move is carried on by its repeat, which only claims", async (t) => {
@@ -1488,7 +1527,7 @@ test("every step that runs records its step, op, key, stage, start and end in th
 
 // ---- jobs -------------------------------------------------------------------------------
 
-test("job-start runs the command in a process group of its own, its output going to the job's log; job-wait answers done: false at maxSeconds while it runs, then the result and the log's tail once it ends", (t) => {
+test("job-start runs the command in a process group of its own, its output going to the job's log; job-wait answers done: false at maxSeconds while it runs, then the result once it ends, with the log's tail only when the job failed", (t) => {
   const dirs = scratch(t);
   const { run, lane } = start(dirs);
 
@@ -1497,16 +1536,18 @@ test("job-start runs the command in a process group of its own, its output going
   const waiting = step(dirs, run, "job-wait", { id: started.id, maxSeconds: 0.5 });
   const waited = Date.now() - begun;
   const ended = step(dirs, run, "job-wait", { id: started.id, maxSeconds: 30 });
+  const failing = step(dirs, run, "job-start", { name: "stack", key: "US-1", cmd: "echo the stack is down; exit 3", cwd: lane });
+  const failed = step(dirs, run, "job-wait", { id: failing.id, maxSeconds: 30 });
 
   assert.deepEqual(pick(started), { ok: true, id: "US-1-fast-1", log: runFile(dirs, run, join("jobs", "US-1-fast-1.log")) });
   assert.deepEqual(pick(waiting), { ok: true, id: "US-1-fast-1", done: false });
   assert.ok(waited >= 500 && waited < 1900, `${waited} ms`);
   assert.deepEqual(Object.keys(ended.result).sort(), ["code", "durationMs", "ended", "ok", "signal", "started", "timedOut"]);
-  assert.deepEqual([ended.done, ended.result.ok, ended.result.code, ended.result.signal, ended.result.timedOut], [true, true, 0, null, false]);
+  assert.deepEqual([ended.done, ended.result.ok, ended.result.code, ended.result.signal, ended.result.timedOut, ended.tail], [true, true, 0, null, false, undefined]);
   assert.ok(ended.result.durationMs >= 2000);
-  const [, leader, group] = ended.tail.match(/^leader (\d+) group\s+(\d+)\ndone\n$/);
+  const [, leader, group] = readFileSync(started.log, "utf8").match(/^leader (\d+) group\s+(\d+)\ndone\n$/);
   assert.equal(leader, group, "the command leads a group of its own");
-  assert.equal(readFileSync(started.log, "utf8"), ended.tail);
+  assert.deepEqual([failed.done, failed.result.ok, failed.result.code, failed.tail], [true, false, 3, "the stack is down\n"]);
 });
 
 test("a job's command runs with OMNI_RUN set to its run, and OMNI_STORY to its story's key, unset for a job without one, so that a project's check can tell runs and stories apart", (t) => {
@@ -1518,8 +1559,8 @@ test("a job's command runs with OMNI_RUN set to its run, and OMNI_STORY to its s
   const keyed = step(dirs, run, "job-start", { name: "seed", key: "US-1", cmd: 'echo "story=$OMNI_STORY run=$OMNI_RUN"', cwd: lane }, shell);
   const bare = step(dirs, run, "job-start", { name: "fast", cmd: 'echo "story=${OMNI_STORY-unset} run=$OMNI_RUN"', cwd: lane }, shell);
 
-  const tails = [keyed, bare].map(({ id }) => step(dirs, run, "job-wait", { id, maxSeconds: 30 }).tail);
-  assert.deepEqual(tails, [`story=US-1 run=${run}\n`, `story=unset run=${run}\n`]);
+  for (const { id } of [keyed, bare]) step(dirs, run, "job-wait", { id, maxSeconds: 30 });
+  assert.deepEqual([keyed, bare].map(({ log }) => readFileSync(log, "utf8")), [`story=US-1 run=${run}\n`, `story=unset run=${run}\n`]);
 });
 
 test("a job past its limit gets SIGTERM to its whole group, and its result says it timed out; its log ends naming the job, not its command", async (t) => {
@@ -1569,11 +1610,11 @@ test("a job's limit is rounded to whole milliseconds and kept to 2^31 - 1 ms; no
   for (const id of odd) assert.deepEqual([results.get(id).ok, results.get(id).timedOut], [true, false], id);
 });
 
-test("a job's output reaches its log byte for byte, so a character split across two writes survives; the tail is the log's last 2 KB from its first whole character", (t) => {
+test("a job's output reaches its log byte for byte, so a character split across two writes survives; the tail of a job that failed is the log's last 2 KB from its first whole character", (t) => {
   const dirs = scratch(t);
   const { run, lane } = start(dirs);
   // é (C3 A9) split across two writes, then a thousand three-byte 日 (E6 97 A5).
-  const cmd = "printf '\\303'; sleep 0.3; printf '\\251 caf\\303\\251\\n'; i=0; while [ $i -lt 1000 ]; do printf '\\346\\227\\245'; i=$((i+1)); done";
+  const cmd = "printf '\\303'; sleep 0.3; printf '\\251 caf\\303\\251\\n'; i=0; while [ $i -lt 1000 ]; do printf '\\346\\227\\245'; i=$((i+1)); done; exit 1";
 
   const { id, log } = step(dirs, run, "job-start", { name: "fast", cmd, cwd: lane });
   const body = step(dirs, run, "job-wait", { id, maxSeconds: 30 });
@@ -1703,7 +1744,53 @@ test("a job-start cut off after it made the job is carried on by its repeat: the
 
   assert.deepEqual([again.ok, again.id], [true, "US-1-fast-1"]);
   assert.deepEqual(readdirSync(dir).filter((n) => n.endsWith(".job.json")), ["US-1-fast-1.job.json"]);
-  assert.deepEqual([waited.done, waited.result.ok, waited.tail], [true, true, "ran\n"]);
+  assert.deepEqual([waited.done, waited.result.ok, readFileSync(again.log, "utf8")], [true, true, "ran\n"]);
+});
+
+test("a job-start records its job's id before it writes the job file: cut off between the two, it leaves no job file, and its repeat makes the job once", async (t) => {
+  const dirs = scratch(t);
+  const { run, lane } = start(dirs);
+  const obj = { opId: "job-cut", name: "fast", key: "US-1", cmd: "echo ran", cwd: lane };
+  // An earlier try left its pending marker, and the record's lock, held by a
+  // live process, holds this try where it records the job's id.
+  const applied = runFile(dirs, run, "applied.json");
+  writeFileSync(applied, JSON.stringify({ ...appliedOf(dirs, run), "job-start": { "job-cut": { pending: true, received: fnv1a(JSON.stringify(obj)) } } }));
+  writeFileSync(`${applied}.lock`, `${liveProcess(t)} 1`);
+  const dir = runFile(dirs, run, "jobs");
+
+  // The job's log is made with its id, right before the id is recorded.
+  await cutOff(t, dirs, run, "job-start", obj, heldFor(() => existsSync(join(dir, "US-1-fast-1.log")), 300));
+  const cut = readdirSync(dir).filter((n) => n.endsWith(".job.json"));
+  rmSync(`${applied}.lock`);
+  const again = step(dirs, run, "job-start", obj);
+  const waited = step(dirs, run, "job-wait", { id: again.id, maxSeconds: 30 });
+
+  assert.deepEqual(cut, []);
+  assert.deepEqual(readdirSync(dir).filter((n) => n.endsWith(".job.json")), [`${again.id}.job.json`]);
+  assert.deepEqual([waited.done, waited.result.ok, readFileSync(again.log, "utf8")], [true, true, "ran\n"]);
+});
+
+test("job-kill finds the job of a job-start whose answer never came back by that start's opId: a job its supervisor has not started yet is lost, and the supervisor never starts it; a start that made no job has nothing to stop", async (t) => {
+  const dirs = scratch(t);
+  const { run, lane } = start(dirs);
+  // The job's supervisor waits for the job file's lock, which holds the step until it is cut off.
+  const dir = runFile(dirs, run, "jobs");
+  mkdirSync(dir, { recursive: true });
+  const lock = join(dir, "US-1-fast-1.job.json.lock");
+  writeFileSync(lock, `${liveProcess(t)} 1`);
+  const ran = join(dirs.root, "ran");
+  const obj = { opId: "job-cut", name: "fast", key: "US-1", cmd: `touch ${ran}`, cwd: lane };
+
+  // The supervisor is spawned right after the job file is written.
+  await cutOff(t, dirs, run, "job-start", obj, heldFor(() => existsSync(join(dir, "US-1-fast-1.job.json")), 300));
+  const body = step(dirs, run, "job-kill", { start: "job-cut" });
+  rmSync(lock);
+  await pause(1000);
+  const none = step(dirs, run, "job-kill", { start: "job-never" });
+
+  assert.deepEqual([body.ok, body.id, body.killed, body.done, body.result?.ok, body.result?.error], [true, "US-1-fast-1", false, true, false, "the supervisor of the job US-1-fast-1 ended without its result"]);
+  assert.equal(existsSync(ran), false, "the job never started");
+  assert.deepEqual(pick(none), { ok: true, id: null, killed: false, done: false });
 });
 
 // ---- the lane ---------------------------------------------------------------------------
@@ -1747,9 +1834,29 @@ test("a rebase conflict is an outcome: lane-prepare undoes the rebase and gives 
 
   const body = step(dirs, run, "lane-prepare", { key: "US-1" });
 
-  assert.deepEqual(pick(body), { ok: true, key: "US-1", outcome: "conflict", files: ["README"] });
+  assert.deepEqual(pick(body), { ok: true, key: "US-1", outcome: "conflict", files: ["README"], count: 1 });
   assert.deepEqual([git(wt, "rev-parse", "HEAD").trim(), git(wt, "rev-parse", "--abbrev-ref", "HEAD").trim(), git(wt, "status", "--porcelain")], [before, "story/US-1", ""]);
   assert.equal(git(lane, "rev-parse", "HEAD").trim(), laneHead);
+});
+
+test("lane-prepare gives a conflict in more than 20 files as the first 20 and the count of them all, since outputs stay small", (t) => {
+  const dirs = scratch(t, [story("US-1")]);
+  const { run } = start(dirs);
+  const names = Array.from({ length: 25 }, (_, i) => `f${String(i).padStart(2, "0")}.rs`);
+  const both = (cwd, text) => {
+    for (const name of names) writeFileSync(join(cwd, name), text);
+    git(cwd, "add", ...names);
+    git(cwd, "commit", "-q", "-m", `feat: ${text.trim()}`);
+  };
+  both(step(dirs, run, "worktree", { key: "US-1" }).path, "the story's\n");
+  const other = join(dirs.root, "other");
+  git(dirs.repo, "worktree", "add", "-q", other, "deliver/board");
+  both(other, "deliver's\n");
+  git(dirs.repo, "worktree", "remove", other);
+
+  const body = step(dirs, run, "lane-prepare", { key: "US-1" });
+
+  assert.deepEqual([body.outcome, body.files, body.count], ["conflict", names.slice(0, 20), 25]);
 });
 
 test("a rebase past its limit is infra, not a conflict: lane-prepare stops it, undoes it, and says so", (t) => {

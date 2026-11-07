@@ -6,9 +6,9 @@ export const meta = {
     { title: 'Start', detail: 'the helper takes the lock, reconciles claims and the lane worktree, sets deliver/<slug> and reads the checks' },
     { title: 'Unblock', detail: 'a story whose threads all have a conclusion gets each one as a human decision and is unblocked, and its attempts count from there' },
     { title: 'Clarity', detail: 'one check per backlog story whose text, criteria, linked nodes or decisions changed: a criterion that names a test becomes a test obligation, and once a story is checked its obligations come from these decisions alone, a minor gap takes its recommendation, the 3 blocking gaps of most impact go to the council and the rest take their recommendation, deferred by the cap; what the council cannot settle becomes a thread that blocks the story' },
-    { title: 'Deliver', detail: 'at most `implementers` stories implementing at once, each slot free again once its story is implemented: claim, worktree, implementer (on implRetry from attempt 2, with every finding by attempt), files; then at most `reviewers` in review, with a verdict per criterion and every defect, from which the script decides, never judging a test obligation; a failed review, or a failure in the lane, sends the story back for the next attempt, held where it failed until an implementer slot is free, ahead of new claims, then moved to the backlog and claimed in one step, and 3 failed attempts open a thread; a worktree an implementer left on another branch goes back on story/<key> when it is clean, and the next implementer is told which commits to bring over; a question goes to the council first' },
-    { title: 'Lane', detail: 'one story at a time in the lane worktree <stories dir>/_lane: lane-prepare rebases story/<key> onto deliver/<slug> and checks it out, detached (a conflict or a missing worktree sends the story back with no attempt used, but from the third conflict of a story in a run; uncommitted changes, a rebase left in progress, an index.lock or another branch use one; trouble that is not the story\'s stops the lane); fast, stack_up and stack run there as jobs, and a failed one runs again on the base, after stack_reset for a stack check, where failing too stops the lane and passing uses an attempt; a verifier runs every criterion but the test obligations, a test author writes the regression tests and its questions go to the council, lane-clean throws away what it left uncommitted, its check runs as a job, lane-clean throws away what the check left, and lane-land moves deliver/<slug> by a compare-and-swap; a red check gets the author once more, with its output, and tests still red, or that lane-land refuses for the lane they left, are dropped, and the story lands without them; after a failure the lane goes back to the tip, and the stack, when it holds the story\'s build, is reset with stack_reset and rebuilt there' },
-    { title: 'Report', detail: 'the journeys check of the stories landed, then finish posts the report on the Run thread, with the outcomes, the council\'s counts, the blocked stories with their threads, the notes and the timings, and gives the lock up' },
+    { title: 'Deliver', detail: 'at most `implementers` stories implementing at once, each slot free again once its story is implemented: claim, after which the board is listed for the next story, worktree, implementer (on implRetry from attempt 2, with every finding by attempt), files; then at most `reviewers` in review, with a verdict per criterion and every defect, from which the script decides, never judging a test obligation; a failed review, or a failure in the lane, sends the story back for the next attempt, held where it failed until an implementer slot is free, ahead of new claims, then moved to the backlog and claimed in one step, and 3 failed attempts open a thread; a worktree an implementer left on another branch goes back on story/<key> when it is clean, and the next implementer is told which commits to bring over; a question goes to the council first' },
+    { title: 'Lane', detail: 'one story at a time in the lane worktree <stories dir>/_lane: lane-prepare rebases story/<key> onto deliver/<slug> and checks it out, detached (a conflict or a missing worktree sends the story back with no attempt used, but from the third conflict of a story in a run; uncommitted changes, a rebase left in progress, an index.lock or another branch use one; trouble that is not the story\'s stops the lane); fast, stack_up and stack run there as jobs, the run\'s first stack_up after stack_reset, for what a stopped run left on the stack, and a failed one runs again on the base, after stack_reset for a stack check, where failing too stops the lane and passing uses an attempt; a verifier runs every criterion but the test obligations, a test author writes the regression tests and its questions go to the council, lane-clean throws away what it left uncommitted, its check runs as a job, lane-clean throws away what the check left, and lane-land moves deliver/<slug> by a compare-and-swap; a red check gets the author once more, with its output, and tests still red, or that lane-land refuses for the lane they left, are dropped, and the story lands without them; after a failure the lane goes back to the tip, and the stack, when it holds the story\'s build, is reset with stack_reset and rebuilt there' },
+    { title: 'Report', detail: 'the journeys check of the stories landed, which runs no check and is told the lane\'s last one, then finish posts the report on the Run thread, with the outcomes, the council\'s counts, the blocked stories with their threads, the notes and the timings, and gives the lock up' },
   ],
 }
 
@@ -210,9 +210,9 @@ const carry = async (name, prompt, expected, label, past = false) => {
 }
 
 // One host step. Its payload, with its opId, goes in a file under the run's
-// folder, and the command carries the payload's hash.
-const step = (name, fields = {}, { label = name, key = fields.key, past = false } = {}) => {
-  const opId = opIdOf(key ? `${label}-${key}` : label)
+// folder, and the command carries the payload's hash. opId: the one the
+// caller took for the step already, as job() does.
+const step = (name, fields = {}, { label = name, key = fields.key, past = false, opId = opIdOf(key ? `${label}-${key}` : label) } = {}) => {
   const payload = JSON.stringify({ opId, ...fields })
   const file = `${root}/.omni/runs/${runId}/in/${opId}.json`
   const command = `node ${shellPath(HELPER)} ${name} --run ${runId} --payload ${shellPath(file)} --hash ${fnv1a(payload)}`
@@ -399,11 +399,14 @@ const conventions = (where) => `
 const CONVENTIONS = conventions('Work on the CURRENT branch. Do not push, create branches or amend.')
 // The earlier findings of the story, by attempt: those since the human's
 // latest answer to fix, those that used no attempt, and those before the
-// answer for what failed before it.
-const findingsSection = (ctx, fixing) => [
+// answer for what failed before it. The helper gives those that keep its
+// answer small, and counts the rest, which the board holds.
+const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`
+const findingsSection = (ctx, fixing, role) => [
   ctx.findings.length ? `\n\n### Findings of the earlier attempts (${fixing})\n${byAttempt(ctx.findings)}` : '',
   ctx.uncounted.length ? `\n\n### Other open findings (${fixing}; they used no attempt)\n${ctx.uncounted.map(findingLine).join('\n')}` : '',
   ctx.earlier.length ? `\n\n### Findings before the human's latest answer (what failed before it)\n${byAttempt(ctx.earlier)}` : '',
+  ctx.omitted ? `\n\n${plural(ctx.omitted, 'more finding is', 'more findings are')} left out here, to keep this short: \`${omniAs(role)} story read ${ctx.story.key}\` shows every one.` : '',
 ].join('')
 const FRESH = 'Implement the story: build what the criteria above require, commit it, and return the result.'
 const CONTINUE = 'A worktree of an earlier attempt is in place, with its commits and what it left uncommitted: continue from it, do not start over, and fix every finding above.'
@@ -422,7 +425,7 @@ ${storyText(ctx)}
 ${ctx.story.files_planned.join('\n') || '(none named)'}
 
 ### Decisions already taken (settled: build against them as if the spec said so)
-${decisionLines(ctx)}${findingsSection(ctx, 'fix every one of them')}
+${decisionLines(ctx)}${findingsSection(ctx, 'fix every one of them', 'impl')}
 
 ${docsSection(ctx, 'impl')}
 
@@ -431,7 +434,7 @@ ${CONVENTIONS}
 ## Rules
 - Implement only this story. No unrelated cleanup, no groundwork for later stories.
 - Commit a feat: commit, then fix: commits for later corrections. Commit the story's production files.
-- Write NO tests: no new test, test file, test helper, fixture or snapshot. The lane's test author writes the story's tests from the story text, by the writing-tests skill, after a verifier has confirmed the story works; a criterion that a decision treats as a test obligation is theirs. The one exception: an existing test that asserts the behaviour this story changes may be updated to the story's decision; name it in decisions.
+- Write NO tests: no new test, test file, test helper, fixture or snapshot. The lane's test author writes the story's tests from the story text, after a verifier has confirmed the story works; a criterion that a decision treats as a test obligation is theirs. The one exception: an existing test that asserts the behaviour this story changes may be updated to the story's decision; name it in decisions.
 - Before you finish, run the narrowest existing check that proves your change: one crate's existing tests, one package's typecheck. Do not run the full check command: the lane runs it, in a worktree of its own, after the review.
 - Never start the stack or run the stack tests${checks.stack ? ` (\`${checks.stack}\`)` : ''}, and never run \`docker compose up\` or \`docker compose run\`: the stack is shared, and the lane runs it on the story after the review. When your change needs the stack to be checked, say so in decisions.
 - If the story needs a product decision the spec does not make and the story cannot avoid, STOP: status needs_decision with question, options and recommendation. Never guess a product rule. Ordinary technical choices are yours.
@@ -498,7 +501,7 @@ ${storyText(ctx)}
 ${ctx.story.files_planned.join('\n') || '(none named)'}
 
 ### Decisions already taken (settled: judge against them as if the spec said so)
-${decisionLines(ctx)}${findingsSection(ctx, 'check that each is fixed')}
+${decisionLines(ctx)}${findingsSection(ctx, 'check that each is fixed', 'review')}
 
 ${docsSection(ctx, 'review')}
 
@@ -566,7 +569,7 @@ ${docsSection(ctx, 'verify')}
 ${BOARD}
 
 ## Rules
-- Exercise EVERY criterion by running the behaviour in ${laneDir}: call the endpoint, run the command, open the page with the dev-browser skill for browser criteria. Reading code is not a check.
+- Exercise EVERY criterion by running the behaviour in ${laneDir}: call the endpoint, run the command, and for a criterion about a page, open the page: use a browser tool if one is available. Reading code is not a check.
 - A criterion marked [test obligation] is the lane's test author's: skip it, with ok true and the evidence "a test obligation".
 - The stack has no users until the seed runs${checks.seed ? `. For a credential, run the seed command as \`OMNI_STORY=${ctx.story.key} OMNI_RUN=${runId} sh -c ${quote(checks.seed)}\` in ${laneDir}: it prints what to sign in with` : ', and this run has no seed command'}. Never write into the stack's database yourself.
 ${commandsOf().length ? `- A criterion about a command is checked by running that command: ${commandsOf().join(', ')}.\n` : ''}- A [human check] criterion: exercise what you can; ok is true unless what you ran contradicts it. A human confirms it later.
@@ -579,23 +582,52 @@ ${numberedCriteria(ctx)}
 Exercise every criterion above, and return one entry for each, by its number.
 Return raw structured data only.`
 
+// The policy carries the rules of the writing-tests skill itself: another
+// machine may not have the skill.
 const TEST_SKILL = '~/.claude/skills/writing-tests/SKILL.md'
 const TEST_ASSETS = `test and spec files, test helpers, fixtures, snapshots, test-runner,
 coverage and lint configuration, and skip/only/todo markers`
 const TEST_POLICY = `
 ## Regression-test policy (MUST follow)
-- FIRST read ${TEST_SKILL} and the reference files it points to as you reach them.
-  Follow it exactly; the story below and its linked doc nodes are its spec, and the
-  verifier's list of confirmed criteria tells you which behaviours were confirmed.
+These rules are complete. The writing-tests skill (${TEST_SKILL}), where this
+machine has it, explains them at more length; reading it is optional.
 - The story already WORKS: a verifier exercised it. You are not proving it works.
   You are choosing the few tests that would catch it breaking later. Criteria are not
-  test cases: one test per criterion is the pattern this replaces, and a criterion
-  that states a detail with no rule behind it gets no test (skill step 1).
-- NO TARGET COUNT: rank the oracle rows (skill step 1) and admit tests in rank order
-  through the gate (skill step 8). Zero is a correct answer when existing tests
-  already catch everything. A row you rank but do not write, because a test already
-  catches it, goes in notAdmitted with the test that catches it. List added tests in
-  rank order, highest first.
+  test cases: one test per criterion is the pattern this replaces. The story below,
+  its decisions and its linked doc nodes are the spec, and the verifier's list of
+  confirmed criteria tells you which behaviours were confirmed.
+- THE ORACLE TABLE: one row per key example, with the input, the expected result and
+  the words of the spec it comes from, written from the spec alone, before you read
+  the production code. Rank the rows, highest first: a defect found in this work;
+  each explicit decision where another answer was plausible, one row per input it
+  covers; each business rule with real logic, at its normal case and at each
+  boundary the spec states; each error path the spec defines; a seam the story
+  introduces that nothing else exercises. A detail with no rule behind it (an exact
+  message, a field list, a default no decision explains, rendering with no logic)
+  gets no row.
+- THE INVENTORY: find the existing tests of the behaviour, by the functions, routes,
+  components and types involved and by the domain terms, and run them. Each row is
+  already caught (reuse that test and write nothing), nearly caught (strengthen that
+  test) or not caught (write one). A behaviour is tested once, at the smallest seam
+  that catches it.
+- A TEST: its expected values come from the table as written, never from the code's
+  output. It enters through the public boundary the behaviour was specified at, at
+  the smallest size that reaches it, with real collaborators, and doubles only where
+  the test cannot own the dependency. One behaviour, named for condition and
+  outcome, no logic in the test, exact assertions (the value, the state, the error,
+  the absence of a side effect; never only non-null, a type, a length or a call
+  count), and nothing that depends on the clock, randomness or test order.
+- PROVE IT GOES RED: break the behaviour with small mutants in the production code,
+  one at a time (flip a comparison, drop a condition, move a boundary by one, delete
+  a statement, return a default), and run the new test and the existing ones on
+  each. A new test must go red on a mutant that no other test catches; when every
+  mutant it catches is caught already, it is a duplicate: drop it. Restore each file
+  after its mutant. Then run each new test several times, alone and with its file:
+  a test that fails once is flaky, so fix the cause.
+- NO TARGET COUNT: admit tests in rank order, each only when it meets every rule
+  above. Zero is a correct answer when existing tests already catch everything. A row
+  you rank but do not write, because a test already catches it, goes in notAdmitted
+  with the test that catches it. List added tests in rank order, highest first.
 - The implementer wrote no tests for this story: every test of its behaviour is yours
   to rank and admit, and the inventory tells you what earlier tests already catch.
 - Tests added by earlier stories in this run are part of the existing suite.
@@ -613,7 +645,7 @@ const TESTS_SCHEMA = {
     check: { type: 'string', description: 'The one command, run from the lane worktree, that runs exactly the tests you added (e.g. cargo test -p omni-core --test design_tokens, or pnpm --filter web exec vitest run src/x.test.tsx); empty when you added nothing' },
     oracle: {
       type: 'array',
-      description: 'The oracle table (skill step 1), written from the story before reading the implementation: one row per key example',
+      description: 'The oracle table, written from the story before reading the implementation: one row per key example',
       items: {
         type: 'object',
         required: ['input', 'expected', 'clause'],
@@ -687,9 +719,9 @@ ${conventions('Commit on the detached HEAD of the lane worktree. Do not push, ch
 ## Rules
 - Record \`git rev-parse HEAD\` first. You may change only ${TEST_ASSETS}.
 - A criterion marked [test obligation] names a test the story owes: the verifier skipped it, and it is yours. Meet it with a test the gate admits, or name in reused the existing test that already does.
-- ORACLE FIRST (skill step 1): write the oracle table from the story text above BEFORE you open any production file or run the code. Return it in oracle. Every expected value in your tests comes from a row. If the code disagrees with a row and the story clearly supports the row, that is a defect (status found_defect); if the story does not settle it, return status needs_decision with question, options and recommendation. In both cases leave no uncommitted test changes.
-- INVENTORY (skill step 2), before writing any test. Besides the skill's search, search by the names in the story's files and by what \`git diff ${base}..HEAD\` touches. Record each existing test found in existingCoverage, and for each new test the closest existing ones in overlapCheck.
-- PROVE IT GOES RED (skill step 6) for every new test: record in sensitivity each mutant you applied, that the new test went red, and which existing tests you ran against it that stayed green. Production files must be unchanged when you finish (git status shows no production changes).
+- ORACLE FIRST: write the oracle table from the story text above BEFORE you open any production file or run the code. Return it in oracle. Every expected value in your tests comes from a row. If the code disagrees with a row and the story clearly supports the row, that is a defect (status found_defect); if the story does not settle it, return status needs_decision with question, options and recommendation. In both cases leave no uncommitted test changes.
+- INVENTORY, before writing any test. Besides the search the policy names, search by the names in the story's files and by what \`git diff ${base}..HEAD\` touches. Record each existing test found in existingCoverage, and for each new test the closest existing ones in overlapCheck.
+- PROVE IT GOES RED for every new test: record in sensitivity each mutant you applied, that the new test went red, and which existing tests you ran against it that stayed green. Production files must be unchanged when you finish (git status shows no production changes).
 - Before you commit, run the test files you touched and the typecheck of their crate or package, not the full suite: the lane ran its checks on this commit before you started, and runs your new tests once more after you with the command you return in check. Leave the working tree clean: no mutant left in a production file, no uncommitted test file. Commit only test files: "test: <summary>". If you add nothing, commit nothing and return an empty commit and an empty check.
 - If you genuinely cannot continue, status blocked with the reason in blockers.
 
@@ -704,7 +736,7 @@ const FINAL_SCHEMA = {
   type: 'object',
   required: ['healthy', 'journeys', 'report'],
   properties: {
-    healthy: { type: 'boolean', description: 'The fast command passed and every cross-story journey worked' },
+    healthy: { type: 'boolean', description: 'The lane\'s last check passed and every cross-story journey worked' },
     journeys: { type: 'array', items: { type: 'string' }, description: 'Each cross-story journey you exercised, with the outcome' },
     report: { type: 'string' },
   },
@@ -717,13 +749,15 @@ The lane worktree ${laneDir}, on a detached HEAD at the tip of ${branch}, where 
 ## The stories this run landed
 ${landed.map((key) => `- ${key}`).join('\n')}
 
+## The lane's checks
+The lane ran its checks on every story before it landed, so run none of them yourself, not even the fast command: your Bash call stops after 10 minutes, and a check can take longer. ${lastCheck ? `The lane's last check, ${lastCheck.name} (\`${checks[lastCheck.name]}\`) on ${lastCheck.on}, ${lastCheck.run.ok ? 'passed.' : ended(lastCheck.run)}` : 'The lane ran no check in this run.'}
+
 ${BOARD}
 
 ## Your task now
-1. ${checks.fast ? `Run the fast command \`${checks.fast}\` in ${laneDir}.` : 'The project has no fast command: go on to 2.'}
-2. Each story was checked on its own. Find the user journeys in the feature's docs (\`${omniAs('final')} doc list\`, then \`${omniAs('final')} doc read <doc>\`) and in these stories (\`${omniAs('final')} story read <key>\`) that span several of them (one story's output is another's input, a flow through several screens or endpoints), and exercise up to 3 of them for real, with the real components${checks.stack ? `, using the stack command \`${checks.stack}\`` : ''}. Report each with its outcome.
-3. Stop every process and remove every container you started for the journeys, and confirm none is left.
-Do NOT change any code. healthy is false if the fast command fails or a journey fails; a failure is reported, not repaired.
+1. Each story was checked on its own. Find the user journeys in the feature's docs (\`${omniAs('final')} doc list\`, then \`${omniAs('final')} doc read <doc>\`) and in these stories (\`${omniAs('final')} story read <key>\`) that span several of them (one story's output is another's input, a flow through several screens or endpoints), and exercise up to 3 of them for real, with the real components${checks.stack ? `, using the stack command \`${checks.stack}\`` : ''}. Report each with its outcome.
+2. Stop every process and remove every container you started for the journeys, and confirm none is left.
+Do NOT change any code. healthy is false if the lane's last check failed or a journey fails; a failure is reported, not repaired.
 Return raw structured data only.`
 
 // ---- the council -----------------------------------------------------------
@@ -1063,7 +1097,7 @@ const failed = async (key, e) => {
 
 const exhaust = async (key, known = null) => {
   const ctx = known || (await step('context', { key }))
-  const body = `The story failed ${ctx.attempt} attempts since the human's latest answer. The findings of every attempt:\n\n${byAttempt(ctx.findings)}${ctx.earlier.length ? `\n\nBefore the latest answer:\n\n${byAttempt(ctx.earlier)}` : ''}\n`
+  const body = `The story failed ${ctx.attempt} attempts since the human's latest answer. The findings of every attempt:\n\n${byAttempt(ctx.findings)}${ctx.earlier.length ? `\n\nBefore the latest answer:\n\n${byAttempt(ctx.earlier)}` : ''}${ctx.omitted ? `\n\n${plural(ctx.omitted, 'more finding is', 'more findings are')} on the story.` : ''}\n`
   const { thread } = await step('thread-open', { key, title: `${key}: still failing after ${ctx.attempt} attempts`, body })
   log(`${key}: still failing after ${ctx.attempt} attempts; blocked with thread ${thread}`)
   return { key, outcome: 'attempts_exhausted', thread }
@@ -1090,27 +1124,40 @@ const recordDecisions = async (ctx, decisions) => {
   }
 }
 
+// What the worktree step found when a review started, for the story's next
+// implementer: a worktree it put back on story/<key>, with the commits to
+// bring over, which the next implementing finds on story/<key> with nothing
+// to say, or one it left with work in progress, which it finds again.
+const foundAt = new Map()
+
 // One attempt's implementing: the claim, the worktree, the implementer, run
 // again after each question the council settles, the files and the move to
-// implemented. Gives the worktree, else the story's outcome.
-const implement = async (key, rework) => {
+// implemented. Gives the worktree, else the story's outcome. claimed is
+// called once the claim is made, or has failed.
+const implement = async (key, rework, claimed) => {
   // A story sent back waited for this slot held where it failed, which kept
   // its files busy: rework moves it to the backlog and claims it again in one
   // helper call, so that no story planned on its files is claimed between
   // the two. Past the hard cap too: a story left where it failed would be
   // judged again with nothing changed.
-  if (rework) await step('rework', { key }, { past: true })
-  else await step('claim', { key, stage: 'implementing' })
+  try {
+    if (rework) await step('rework', { key }, { past: true })
+    else await step('claim', { key, stage: 'implementing' })
+  } finally {
+    claimed()
+  }
   let ctx = await step('context', { key })
   if (ctx.attempt >= MAX_ATTEMPTS) return exhaust(key, ctx)
   // A worktree an implementer left on another branch: a clean one is back on
   // story/<key>, and the next implementer is told what to bring over.
   const wt = await step('worktree', { key })
   if (wt.reason) log(`${key}: ${wt.reason}`)
+  const found = [...new Set([foundAt.get(key), wt.reason].filter(Boolean))].join('\n')
+  foundAt.delete(key)
   let task = wt.created ? FRESH : CONTINUE
   for (let asked = 0; ; asked++) {
     const attempt = ctx.attempt + 1
-    const r = await persist(key, 'the implementer', () => ask('impl', implPrompt(ctx, wt.path, attempt, task, wt.reason), { label: `impl:${key}`, phase: 'Deliver', schema: IMPL_SCHEMA }, MODELS[attempt >= 2 ? 'implRetry' : 'impl']))
+    const r = await persist(key, 'the implementer', () => ask('impl', implPrompt(ctx, wt.path, attempt, task, found), { label: `impl:${key}`, phase: 'Deliver', schema: IMPL_SCHEMA }, MODELS[attempt >= 2 ? 'implRetry' : 'impl']))
     if (!r) return noResult(key, `the implementer returned nothing, ${AGAIN_AFTER.length + 1} times`)
     await recordDecisions(ctx, r.decisions)
     if (r.status === 'needs_decision') {
@@ -1185,7 +1232,10 @@ const assess = async (key, wt) => {
   let path = wt
   if (!path) {
     const found = await step('worktree', { key })
-    if (found.reason) log(`${key}: ${found.reason}`)
+    if (found.reason) {
+      log(`${key}: ${found.reason}`)
+      foundAt.set(key, found.reason)
+    }
     path = found.path
   }
   const verdict = await review(key, path)
@@ -1213,13 +1263,14 @@ const inSlot = async (slots, held, task) => {
 // attempts until it lands or is blocked on a thread. `held`: the deliver loop
 // has taken an implementer's slot for its first implementing. A reviewed
 // story goes to the lane out of its review slot, and waits for its turn there.
-const deliverStory = async (key, from, held) => {
+// claimed: called once the story's implementing claim is made, or has failed.
+const deliverStory = async (key, from, held, claimed) => {
   let at = from
   let rework = false
   let wt = null
   for (;;) {
     if (at === 'backlog') {
-      const built = await inSlot(implSlots, held, () => implement(key, rework))
+      const built = await inSlot(implSlots, held, () => implement(key, rework, claimed))
       held = false
       if (built.outcome) return built
       wt = built.path
@@ -1247,26 +1298,33 @@ const deliverStory = async (key, from, held) => {
 }
 
 // Each free implementer's slot goes to the first story the board lists as
-// pickable that this run has not taken: listed again for each claim, since a
-// claimed story's planned files keep others off the pickable list. A story
-// listed as implemented starts at its review, and one listed as reviewed at
-// the lane, unless the lane has stopped. When nothing new is listed, the
-// board is listed again once a story in flight is done; the run goes on until
-// nothing new is listed and nothing is in flight. A new story is taken only
-// while the agent cap leaves room for it beside those in flight, up to
-// storyLimit, and until a breaker stops the run.
+// pickable that this run has not taken: listed again for each claim, once that
+// claim is made, since a claimed story's planned files keep others off the
+// pickable list. A story listed as implemented starts at its review, and one
+// listed as reviewed at the lane, unless the lane has stopped. When nothing
+// new is listed, the board is listed again once a story in flight is done;
+// the run goes on until nothing new is listed and nothing is in flight. A new
+// story is taken only while the agent cap leaves room for it beside those in
+// flight, up to storyLimit, and until a breaker stops the run.
 const taken = new Set()
 const running = new Set()
+// Gives a promise of the story's first implementing claim, made or failed.
 const launch = (key, from, held) => {
   taken.add(key)
-  const chain = deliverStory(key, from, held)
+  let claimed = null
+  const claim = new Promise((resolve) => { claimed = resolve })
+  const chain = deliverStory(key, from, held, claimed)
     .catch((e) => (e && e.atCap ? stopped(key) : failed(key, e)))
     .then((o) => {
       outcomes.push(o)
       log(`${o.key}: ${o.outcome}${o.detail ? `: ${o.detail}` : ''}${o.thread ? ` (thread ${o.thread})` : ''}`)
     })
-    .finally(() => running.delete(chain))
+    .finally(() => {
+      claimed()
+      running.delete(chain)
+    })
   running.add(chain)
+  return claim
 }
 // Whether the run may take one more story; says why not, once.
 const mayTake = () => {
@@ -1301,8 +1359,11 @@ const deliverAll = async () => {
         }
         const next = board.pickable.find(fresh)
         if (taking && next && (taking = mayTake())) {
-          launch(next, 'backlog', true)
+          const claim = launch(next, 'backlog', true)
           held = false
+          // Listed before the claim is made, a story planned on the same
+          // files is still pickable, and was built beside it.
+          await claim
           continue
         }
       } finally {
@@ -1332,23 +1393,34 @@ const inLane = (task) => {
 // the lane after it waits in reviewed for the next run.
 let laneStopped = null
 const LANE_CHECKS = ['fast', 'stack_up', 'stack']
+// Whether this run has run stack_reset before its first stack_up: a run that
+// stopped can have left a story's state on the stack, which the first story
+// of the next run would pay an attempt for.
+let stackReset = false
+// The lane's last check, on a story or on the base, for the journeys check,
+// which runs none itself: an agent's Bash call stops after 10 minutes.
+let lastCheck = null
 
 // A command run as a job in the lane worktree, to its end: one courier starts
-// it, and each one after waits for it within its Bash call. A wait that
-// throws, on a courier that failed or at the hard cap, stops the job first,
-// past the cap: the job would run on beside the lane's next pass.
+// it, and each one after waits for it within its Bash call. A start or a wait
+// that throws, on a courier that failed or at the hard cap, stops the job
+// first, past the cap: the job would run on beside the lane's next pass. A
+// start whose answer never came back may have started its job all the same,
+// which job-kill finds by the start's opId.
 const job = async (key, name, cmd, past = false) => {
-  const { id } = await step('job-start', { name, key, cmd, cwd: laneDir }, { past })
+  const start = opIdOf(`job-start-${key}`)
+  let id = null
   try {
+    id = (await step('job-start', { name, key, cmd, cwd: laneDir }, { past, opId: start })).id
     for (;;) {
       const w = await step('job-wait', { id, maxSeconds: JOB_WAIT }, { key, past })
       if (w.done) return { ok: w.result.ok === true, timedOut: w.result.timedOut === true, tail: String(w.tail || '').trim() }
     }
   } catch (e) {
     try {
-      await step('job-kill', { id }, { key, past: true })
+      await step('job-kill', id ? { id } : { start }, { key, past: true })
     } catch (k) {
-      log(`${key}: the job ${id} could not be stopped: ${(k && k.message) || k}`)
+      log(`${key}: the job ${id || `of ${start}`} could not be stopped: ${(k && k.message) || k}`)
     }
     throw e
   }
@@ -1382,17 +1454,18 @@ const stopLane = async (key, why, more = '') => {
 const conflicts = new Map()
 
 // A story's turn in the lane: lane-prepare rebases it onto the tip and checks
-// it out, detached, in the lane worktree; its checks run there as jobs, and a
-// failed one once more on the base, after stack_reset for a stack check; the
-// verifier runs it; the test author writes its tests; lane-clean, so that the
-// author's check runs on exactly what lands; that check, and lane-clean again
-// for what it left; lane-land. A failure sends the story back for the next
-// attempt, as a failed review does, and puts the lane back at the tip, with
-// the stack reset and rebuilt there when it holds the story's build. The
-// test author's own trouble costs the verified story nothing: a red check
-// gets the author once more, with its output, and tests whose check is still
-// red, or that lane-land refuses for the state they left the lane in, are
-// dropped, and the story lands without them.
+// it out, detached, in the lane worktree; its checks run there as jobs, the
+// run's first stack_up after stack_reset, and a failed one once more on the
+// base, after stack_reset for a stack check; the verifier runs it; the test
+// author writes its tests; lane-clean, so that the author's check runs on
+// exactly what lands; that check, and lane-clean again for what it left;
+// lane-land. A failure sends the story back for the next attempt, as a failed
+// review does, and puts the lane back at the tip, with the stack reset and
+// rebuilt there when it holds the story's build. The test author's own
+// trouble costs the verified story nothing: a red check gets the author once
+// more, with its output, and tests whose check is still red, or that
+// lane-land refuses for the state they left the lane in, are dropped, and the
+// story lands without them.
 const laneStory = async (key) => {
   if (laneStopped) return { key, outcome: 'reviewed', detail: 'the lane stopped earlier in this run, so the story waits in reviewed for the next run' }
   await step('claim', { key, stage: 'testing' })
@@ -1402,7 +1475,9 @@ const laneStory = async (key) => {
   if (prep.outcome === 'conflict') {
     const n = (conflicts.get(key) || 0) + 1
     conflicts.set(key, n)
-    return sendBack(key, 'testing', [{ text: `rebase conflict in ${prep.files.join(', ')}: story/${key} no longer rebases onto ${branch}; rebase it onto ${branch} in its worktree and resolve the conflicts`, files: prep.files }], n > CONFLICTS, `a rebase conflict in ${prep.files.join(', ')}${n > CONFLICTS ? `, conflict ${n} of this run, past the ${CONFLICTS} that use no attempt` : ''}`)
+    // lane-prepare names the first 20 files, and counts them all.
+    const files = `${prep.files.join(', ')}${prep.count > prep.files.length ? ` and ${prep.count - prep.files.length} more` : ''}`
+    return sendBack(key, 'testing', [{ text: `rebase conflict in ${files}: story/${key} no longer rebases onto ${branch}; rebase it onto ${branch} in its worktree and resolve the conflicts`, files: prep.files }], n > CONFLICTS, `a rebase conflict in ${files}${n > CONFLICTS ? `, conflict ${n} of this run, past the ${CONFLICTS} that use no attempt` : ''}`)
   }
   if (prep.outcome === 'missing') return sendBack(key, 'testing', [{ text: `${prep.reason}: nothing to land on ${branch}; start again from ${branch}`, files: [] }], false, prep.reason)
   if (prep.outcome !== 'ready') return sendBack(key, 'testing', [{ text: prep.reason, files: prep.files || [] }], true, `in the lane: ${prep.reason}`)
@@ -1433,8 +1508,16 @@ const laneStory = async (key) => {
   }
   try {
     for (const name of LANE_CHECKS.filter((n) => checks[n])) {
-      if (name === 'stack_up') stack = true
+      if (name === 'stack_up') {
+        stack = true
+        if (checks.stack_reset && !stackReset) {
+          const cleared = await job(key, 'stack_reset', checks.stack_reset)
+          stackReset = true
+          if (!cleared.ok) log(`${key}: the stack did not reset before the run's first stack_up: \`${checks.stack_reset}\` ${ended(cleared)}`)
+        }
+      }
       const run = await job(key, name, checks[name])
+      lastCheck = { name, on: `${key} rebased onto ${branch}`, run }
       if (run.ok) continue
       // Once more on the base, the tip without the story: a stack check after
       // stack_reset, and the stack check after a stack_up there, since until
@@ -1446,6 +1529,7 @@ const laneStory = async (key) => {
         which = n
         if (n === 'stack_up') stack = false
         again = await job(key, n, checks[n])
+        if (n !== 'stack_reset') lastCheck = { name: n, on: `${branch} without ${key}`, run: again }
         if (!again.ok) break
       }
       if (!again.ok) {

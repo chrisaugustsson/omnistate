@@ -827,6 +827,31 @@ test("a story whose implementer committed on another branch reaches an implement
   assert.deepEqual([result.halted, questions(dirs), result.outcomes.map((o) => o.outcome)], [null, [], ["done", "done", "done"]]);
 });
 
+test("what the worktree step found when a review started reaches the next implementer: a story waiting in implemented, whose worktree had another branch checked out, is back on story/<key> for its review, and the implementer after the review fails is told which commits to cherry-pick, which land", { timeout: 120000 }, async (t) => {
+  const dirs = scratch(t, [story("US-1", { status: "implemented", criteria: [{ text: "The badge is red", human_check: false }] })]);
+  const wt = dirs.worktree("US-1");
+  git(dirs.repo, "worktree", "add", "-q", "-b", "story/US-1", wt);
+  commit(wt, "US-1.txt");
+  git(wt, "checkout", "-q", "-b", "side");
+  commit(wt, "side.txt");
+  const sideCommit = git(wt, "log", "-1", "--format=%h %s").trim();
+  // Brings over the commits its prompt names, with git cherry-pick.
+  const picks = async (call, serial) => {
+    const named = call.prompt.match(/ with git cherry-pick, oldest first: (.+)\.\n/)[1].split("; ").map((c) => c.split(" ")[0]);
+    await serial(() => git(worktreeIn(call.prompt), "cherry-pick", ...named));
+    return { status: "ready", summary: "Picked.", decisions: [], commits: [] };
+  };
+  const roles = { "review:US-1": [reviewed("fail", { unmet: { 0: "No side.txt in the diff" } }), reviewed("pass")], "impl:US-1": [picks] };
+
+  const { result, error, calls } = await deliver(dirs, {}, roles);
+
+  assert.equal(error, null);
+  const [impl] = agentsOf(calls, "impl:US-1");
+  assert.ok(impl.prompt.includes(`\n${wt} had the branch side checked out, not story/US-1, which is what lands: the workflow checked story/US-1 out again. Bring over its 1 commit not on story/US-1 with git cherry-pick, oldest first: ${sideCommit}.\n`), impl.prompt);
+  assert.equal(git(dirs.repo, "show", "refs/heads/deliver/board:side.txt"), git(dirs.repo, "show", "side:side.txt"));
+  assert.deepEqual(result.outcomes, [{ key: "US-1", outcome: "done" }]);
+});
+
 test("a story waiting in implemented starts at its review; a criterion that names a test is a test obligation, marked so, that the review never judges, whether clarity recorded it or not", { timeout: 60000 }, async (t) => {
   const criteria = [{ text: "The badge is red", human_check: false }, { text: "A regression test covers the badge", human_check: false }];
   const dirs = scratch(t, [story("US-1", { status: "implemented", criteria }), story("US-2", { criteria })]);
@@ -970,6 +995,22 @@ test("a story clarity has checked has its test obligations from clarity's decisi
   assert.deepEqual(result.outcomes.map((o) => [o.key, o.outcome]).sort(), [["US-1", "done"], ["US-2", "done"]]);
 });
 
+test("a story version the old runner kept in the clarity cache is not a clarity check of this workflow's, which records test obligations: a story implemented before this run is read for a test as the thing delivered, with that cache as without one", { timeout: 120000 }, async (t) => {
+  const criteria = [{ text: "A regression test covers the badge colour", human_check: false }, { text: "The badge is red", human_check: false }];
+  for (const cache of [null, { "US-1": 7 }]) {
+    const dirs = scratch(t, [story("US-1", { status: "implemented", criteria })]);
+    if (cache) {
+      mkdirSync(join(dirs.repo, ".omni"), { recursive: true });
+      writeFileSync(join(dirs.repo, ".omni", "clarity.json"), JSON.stringify(cache));
+    }
+
+    const { error, calls } = await deliver(dirs);
+
+    assert.equal(error, null);
+    for (const role of ["review", "verify"]) assert.match(agentsOf(calls, `${role}:US-1`)[0].prompt, /\n0: A regression test covers the badge colour \[test obligation\]\n1: The badge is red\n/, `${role} with ${JSON.stringify(cache)}`);
+  }
+});
+
 test("from attempt 2 the implementer runs on implRetry, in the same worktree, and its prompt lists every finding since the human's latest answer by attempt, those that used no attempt, and the earlier ones apart", { timeout: 60000 }, async (t) => {
   const answered = { stage: "testing", text: "[attempt 1] The badge was blue", files: [], resolved: true };
   const conflict = { stage: "testing", text: "rebase conflict in README: rebase it onto deliver/board", files: ["README"], resolved: false };
@@ -1032,6 +1073,25 @@ Attempt 1:
   assert.equal(agentsOf(calls, "impl:US-2").length, 0);
   assert.deepEqual([dirs.story("US-2").status, dirs.story("US-2").blocked, threads.has("US-2: still failing after 3 attempts")], ["backlog", true, true]);
   assert.deepEqual(result.outcomes.map((o) => [o.key, o.outcome]).sort(), [["US-1", "attempts_exhausted"], ["US-2", "attempts_exhausted"]]);
+});
+
+test("findings that outgrow the helper's answer come cut to their first 1,500 characters, the newest that fit, and a count of the rest: the implementer and the reviewer are told how to read every one, and the thread of a story out of attempts says how many more the story holds", { timeout: 120000 }, async (t) => {
+  const many = (attempt, n) => Array.from({ length: n }, (_, i) => ({ stage: "review", text: `[attempt ${attempt}] a${attempt}-${i + 1} ${"x".repeat(3000)}`, files: [], resolved: false }));
+  // 11 cut findings fit beside a story: US-1 leaves out 5 of its 16, and US-2 4 of its 15.
+  const dirs = scratch(t, [story("US-1", { findings: [...many(1, 8), ...many(2, 8)] }), story("US-2", { findings: [...many(1, 5), ...many(2, 5), ...many(3, 5)] })]);
+
+  const { result, error, calls } = await deliver(dirs, { implementers: 1 });
+
+  assert.equal(error, null);
+  const [impl] = agentsOf(calls, "impl:US-1");
+  const [review] = agentsOf(calls, "review:US-1");
+  for (const [prompt, role] of [[impl.prompt, "impl"], [review.prompt, "review"]]) {
+    assert.ok(prompt.includes(`\n\n5 more findings are left out here, to keep this short: \`OMNI_RUN=${result.run} OMNI_ROLE=${role} OMNI_FEATURE='board' omni story read US-1\` shows every one.`), prompt);
+    assert.ok(prompt.includes(`\n- [review] a2-1 ${"x".repeat(1474 - "a2-1 ".length)}… (full text on the board)\n`), prompt);
+  }
+  const [exhausted] = questions(dirs).filter((th) => th.title === "US-2: still failing after 3 attempts");
+  assert.ok(exhausted.posts[0].body.endsWith("… (full text on the board)\n\n4 more findings are on the story.\n"), exhausted.posts[0].body);
+  assert.deepEqual(result.outcomes.map((o) => [o.key, o.outcome]).sort(), [["US-1", "done"], ["US-2", "attempts_exhausted"]]);
 });
 
 test("an implementer's question the council settles becomes an agent decision and the implementer runs again with it; a reviewer's question it cannot settle opens a thread and blocks the story", { timeout: 60000 }, async (t) => {
@@ -1170,6 +1230,22 @@ test("a story its review sends back stays in review, its files busy, until an im
   assert.ok(order.indexOf("claim US-3 implementing") > order.lastIndexOf("claim US-1 implementing"), order.join("\n"));
   assert.ok(order.indexOf("claim US-5 implementing") > order.indexOf("move US-1 done"), order.join("\n"));
   assert.equal(peakIn(dirs, "implementing", ["implemented"]), 1);
+});
+
+test("the deliver loop lists the board for the next story only once its last claim is made: of two stories planned on one file, with two implementer slots, the second is claimed once the first is done, whether that claim is slow or quick", { timeout: 120000 }, async (t) => {
+  for (const slow of [true, false]) {
+    const dirs = scratch(t, [story("US-1", { files_planned: ["shared.rs"] }), story("US-2", { files_planned: ["shared.rs"] })]);
+    // US-1's claims take 2 s on the board, as a slow courier would leave them.
+    if (slow) Object.assign(dirs.env, { FAKE_OMNI_HANG: "story claim US-1", FAKE_OMNI_HANG_MS: "2000" });
+
+    const { result, error } = await deliver(dirs, { implementers: 2 });
+
+    assert.equal(error, null);
+    const order = boardLog(dirs);
+    assert.ok(order.indexOf("claim US-2 implementing") > order.indexOf("move US-1 done"), `${slow ? "slow" : "quick"} claim:\n${order.join("\n")}`);
+    assert.equal(peakIn(dirs, "implementing", ["implemented", "backlog", "done"]), 1);
+    assert.deepEqual(result.outcomes, [{ key: "US-1", outcome: "done" }, { key: "US-2", outcome: "done" }]);
+  }
 });
 
 // The script with its agent cap or its job wait set lower; the real values are pinned first.
@@ -1408,6 +1484,22 @@ test("the verifier's prompt leaves out the seed and lint commands when the check
   assert.deepEqual([result.outcomes, findingsOf(dirs, "US-1")], [[{ key: "US-1", outcome: "done" }], []]);
 });
 
+test("no prompt needs a skill this machine may lack: the verifier opens a page with a browser tool if one is available, and the test author's policy carries the rules of writing tests itself, naming the writing-tests skill as optional", { timeout: 120000 }, async (t) => {
+  const dirs = scratch(t, [story("US-1", { criteria: [{ text: "The badge is red", human_check: false }] })]);
+
+  const { error, calls } = await deliver(dirs);
+
+  assert.equal(error, null);
+  const [impl] = agentsOf(calls, "impl:US-1");
+  const [verify] = agentsOf(calls, "verify:US-1");
+  const [tests] = agentsOf(calls, "tests:US-1");
+  assert.ok(verify.prompt.includes(": call the endpoint, run the command, and for a criterion about a page, open the page: use a browser tool if one is available. Reading code is not a check."), verify.prompt);
+  assert.ok(tests.prompt.includes("\nThese rules are complete. The writing-tests skill (~/.claude/skills/writing-tests/SKILL.md), where this\nmachine has it, explains them at more length; reading it is optional.\n"), tests.prompt);
+  for (const rule of ["THE ORACLE TABLE: ", "Rank the rows, highest first: ", "THE INVENTORY: ", "A TEST: ", "PROVE IT GOES RED: ", "NO TARGET COUNT: "]) assert.ok(tests.prompt.includes(rule), rule);
+  assert.doesNotMatch(tests.prompt, /skill step|skill's search|FIRST read/);
+  for (const prompt of [impl.prompt, verify.prompt]) assert.doesNotMatch(prompt, /dev-browser|writing-tests/);
+});
+
 test("a rebase conflict in lane-prepare sends the story back with no attempt used and the conflict as a finding; its next implementer, still on attempt 1, starts again from deliver/<slug>, and the story lands", { timeout: 120000 }, async (t) => {
   const dirs = scratch(t, [story("US-1")]);
   const roles = {
@@ -1440,6 +1532,41 @@ test("a rebase conflict in lane-prepare sends the story back with no attempt use
   const impls = agentsOf(calls, "impl:US-1");
   assert.deepEqual(impls.map((c) => [c.model, lineAfter(c.prompt, "## Your task now\n").startsWith("This is attempt 1 of 3 since ")]), [["sonnet", true], ["sonnet", true]]);
   assert.ok(impls[1].prompt.includes("\n### Other open findings (fix every one of them; they used no attempt)\n- [testing] rebase conflict in README: "), impls[1].prompt);
+  assert.deepEqual(result.outcomes, [{ key: "US-1", outcome: "done" }]);
+});
+
+test("a rebase conflict in more than 20 files names the first 20 in its finding, which lane-prepare gives, and counts the rest", { timeout: 120000 }, async (t) => {
+  const dirs = scratch(t, [story("US-1")]);
+  const names = Array.from({ length: 21 }, (_, i) => `f${String(i).padStart(2, "0")}.rs`);
+  const write = (cwd, text) => {
+    for (const name of names) writeFileSync(join(cwd, name), text);
+    git(cwd, "add", ...names);
+    git(cwd, "commit", "-q", "-m", `feat: ${text.trim()}`);
+  };
+  const roles = {
+    "impl:US-1": [async (call, serial) => {
+      await serial(() => {
+        write(worktreeIn(call.prompt), "the story's\n");
+        const other = join(dirs.root, "other");
+        git(dirs.repo, "worktree", "add", "-q", other, "deliver/board");
+        write(other, "deliver's\n");
+        git(dirs.repo, "worktree", "remove", other);
+      });
+      return { status: "ready", summary: "Built.", decisions: [], commits: [] };
+    }, async (call, serial) => {
+      await serial(() => {
+        const wt = worktreeIn(call.prompt);
+        git(wt, "reset", "-q", "--hard", "refs/heads/deliver/board");
+        commit(wt, "src/badge.rs");
+      });
+      return { status: "ready", summary: "Rebuilt.", decisions: [], commits: [] };
+    }],
+  };
+
+  const { result, error } = await deliver(dirs, {}, roles);
+
+  assert.equal(error, null);
+  assert.deepEqual(findingsOf(dirs, "US-1"), [["testing", `rebase conflict in ${names.slice(0, 20).join(", ")} and 1 more: story/US-1 no longer rebases onto deliver/board; rebase it onto deliver/board in its worktree and resolve the conflicts`, names.slice(0, 20), true]]);
   assert.deepEqual(result.outcomes, [{ key: "US-1", outcome: "done" }]);
 });
 
@@ -1681,6 +1808,25 @@ test("a job is stopped when the lane throws: a story whose job-wait courier fail
   assert.deepEqual(questions(dirs).map((th) => th.title), [`${victim}: delivery stopped on an error`]);
 });
 
+test("a job whose job-start throws is stopped all the same: the helper started it, its courier changed the answer every time, and job-kill finds the job by the start's opId before the lane goes back to the tip", { timeout: 120000 }, async (t) => {
+  const dirs = scratch(t, [story("US-1")]);
+  const fault = (call) => (call.label === "courier:job-start:US-1" ? "output" : null);
+
+  const { result, error, calls } = await deliver(dirs, { checks: { fast: "sleep 30" } }, {}, { fault });
+
+  assert.equal(error, null);
+  const labels = couriersOf(calls).map((c) => c.label);
+  const kill = labels.indexOf("courier:job-kill:US-1");
+  assert.ok(kill !== -1 && kill < labels.indexOf("courier:lane-reset:US-1"), labels.join("\n"));
+  assert.deepEqual(payloadOf(couriersOf(calls)[kill]), { opId: "job-kill-US-1-1", start: "job-start-US-1-1" });
+  const stopped = JSON.parse(readFileSync(join(dirs.repo, ".omni", "runs", result.run, "jobs", "US-1-fast-1.json"), "utf8"));
+  assert.deepEqual([stopped.ok, stopped.signal], [false, "SIGTERM"]);
+  // Stopped by that job-kill, not by finish at the end of the run.
+  const reset = readFileSync(join(dirs.repo, ".omni", "runs", result.run, "timings.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l)).find((r) => r.op === "lane-reset-US-1-1");
+  assert.ok(Date.parse(stopped.ended) <= Date.parse(reset.started), `${stopped.ended} ${reset.started}`);
+  assert.deepEqual(result.outcomes.map((o) => [o.key, o.outcome, o.detail]), [["US-1", "failed", "courier:job-start:US-1: its output does not match its hash: the courier changed it, after 3 retries"]]);
+});
+
 test("a story that reaches the hard cap in the lane stops there: the job it waits on is stopped, the lane goes back to the tip, and the story is released with no attempt used", { timeout: 120000 }, async (t) => {
   // About 25 calls come before the lane's first job; each wait after that is one more.
   const source = capped({ AGENT_CAP: 25, HARD_CAP: 32, STORY_CALLS: 1, CHECK_CALLS: 1, JOB_WAIT: 1 });
@@ -1779,7 +1925,8 @@ test("a story's rebase conflicts send it back with no attempt used twice in a ru
 const STACK_UP = 'for f in $(cat ../db 2>/dev/null); do [ -f "$f" ] || { echo "migration $f was previously applied but is missing"; exit 1; }; done; ls migrations/*.sql 2>/dev/null >> ../db; sort -u ../db -o ../db 2>/dev/null; true';
 
 test("a story whose stack check fails leaves its migration in the stack: with stack_reset, the rerun on the base resets the stack first, so the failure is the story's, which uses an attempt, and the lane goes on", { timeout: 120000 }, async (t) => {
-  const dirs = scratch(t, [story("US-1"), story("US-2")]);
+  // US-2 waits for US-1, whose stack_up is the run's first, after a stack_reset.
+  const dirs = scratch(t, [story("US-1"), story("US-2", { blocked_by: ["US-1"] })]);
   const stack = 'if [ -f migrations/US-1.sql ]; then echo "US-1 breaks the stack tests"; exit 1; fi';
   const roles = { "impl:US-1": [built("migrations/US-1.sql"), async (call, serial) => {
     await serial(() => {
@@ -1794,7 +1941,7 @@ test("a story whose stack check fails leaves its migration in the stack: with st
 
   assert.equal(error, null);
   assert.deepEqual(findingsOf(dirs, "US-1"), [["testing", `[attempt 1] The stack check (\`${stack}\`) failed. The end of its output:\n\`\`\`\nUS-1 breaks the stack tests\n\`\`\`\nIt passes on deliver/board without the story.`, [], true]]);
-  assert.deepEqual(jobsOf(dirs, result.run).filter((j) => j.key === "US-1").map((j) => j.name), ["fast", "stack_up", "stack", "stack_reset", "stack_up", "stack", "fast", "stack_up", "stack"]);
+  assert.deepEqual(jobsOf(dirs, result.run).filter((j) => j.key === "US-1").map((j) => j.name), ["fast", "stack_reset", "stack_up", "stack", "stack_reset", "stack_up", "stack", "fast", "stack_up", "stack"]);
   assert.deepEqual([result.lane, questions(dirs), result.outcomes.map((o) => [o.key, o.outcome]).sort()], [null, [], [["US-1", "done"], ["US-2", "done"]]]);
 });
 
@@ -1811,15 +1958,31 @@ test("without stack_reset, a story whose migration stays in the stack stops the 
 });
 
 test("a story the verifier fails leaves its migration in the stack: with stack_reset, the rebuild at the tip resets the stack first, so the next pass of the lane is clean, and both stories land", { timeout: 120000 }, async (t) => {
-  const dirs = scratch(t, [story("US-1", { criteria: [{ text: "The badge is red", human_check: false }] }), story("US-2")]);
+  // US-2 waits for US-1, whose stack_up is the run's first, after a stack_reset.
+  const dirs = scratch(t, [story("US-1", { criteria: [{ text: "The badge is red", human_check: false }] }), story("US-2", { blocked_by: ["US-1"] })]);
   const roles = { "impl:US-1": [built("migrations/US-1.sql")], "verify:US-1": [verified({ 0: "It is pink" })] };
 
   const { result, error, logs } = await deliver(dirs, { implementers: 1, checks: { fast: "true", stack_up: STACK_UP, stack: "true", stack_reset: "rm -f ../db" } }, roles);
 
   assert.equal(error, null);
-  assert.deepEqual(jobsOf(dirs, result.run).filter((j) => j.key === "US-1").map((j) => j.name).slice(0, 5), ["fast", "stack_up", "stack", "stack_reset", "rebuild"]);
+  assert.deepEqual(jobsOf(dirs, result.run).filter((j) => j.key === "US-1").map((j) => j.name).slice(0, 6), ["fast", "stack_reset", "stack_up", "stack", "stack_reset", "rebuild"]);
   assert.ok(logs.includes("US-1: the stack is rebuilt from deliver/board"), logs.join("\n"));
   assert.deepEqual([result.lane, result.outcomes.map((o) => [o.key, o.outcome]).sort()], [null, [["US-1", "done"], ["US-2", "done"]]]);
+});
+
+test("what a stopped run left on the stack costs the next run's first story nothing: with stack_reset set, the run's first stack_up comes after a stack_reset, the only one of the run, and both stories land at their first attempt", { timeout: 120000 }, async (t) => {
+  const dirs = scratch(t, [story("US-1"), story("US-2")]);
+  // A story of the stopped run left this behind, and stack_up fails until stack_reset removes it.
+  const leftover = join(dirs.root, "leftover-migration");
+  writeFileSync(leftover, "");
+
+  const { result, error } = await deliver(dirs, { implementers: 1, checks: { stack_up: `test ! -e ${leftover}`, stack_reset: `rm -f ${leftover}` } });
+
+  assert.equal(error, null);
+  const names = jobsOf(dirs, result.run).map((j) => j.name);
+  assert.deepEqual([names.filter((n) => n === "stack_reset").length, names.indexOf("stack_reset") + 1], [1, names.indexOf("stack_up")], names.join(", "));
+  assert.deepEqual(["US-1", "US-2"].map((key) => [findingsOf(dirs, key), dirs.story(key).status]), [[[], "done"], [[], "done"]]);
+  assert.deepEqual(boardLog(dirs).filter((e) => e.endsWith(" backlog")), []);
 });
 
 test("a test author's check that leaves a file behind costs the story nothing: lane-clean runs again after the check, and the story lands with its tests at its first attempt", { timeout: 120000 }, async (t) => {
@@ -1979,6 +2142,25 @@ test("the run ends with the journeys check in the lane worktree, then finish get
   assert.deepEqual([result.landed, result.tip], [["US-1"], git(dirs.repo, "rev-parse", "refs/heads/deliver/board").trim()]);
   assert.equal(existsSync(join(dirs.repo, ".omni", "run.lock")), false);
   assert.deepEqual(phases, ["Start", "Unblock", "Clarity", "Deliver", "Report"]);
+});
+
+test("the journeys check runs no check itself, since its Bash call stops after 10 minutes, and is told the lane's last check instead: here the fast check that failed on deliver/<slug> without the story after the one that landed, and stopped the lane", { timeout: 120000 }, async (t) => {
+  const dirs = scratch(t, [story("US-1"), story("US-2", { blocked_by: ["US-1"] })]);
+  const fast = "if [ -e ../red ]; then echo the fast check is red; exit 1; fi";
+  // US-2's implementer turns the fast check red for every tree, once US-1 has landed.
+  const roles = { "impl:US-2": [(call, serial) => {
+    writeFileSync(join(dirs.root, "app-stories", "red"), "");
+    return built("US-2.txt")(call, serial);
+  }] };
+
+  const { result, error, calls } = await deliver(dirs, { checks: { fast } }, roles);
+
+  assert.equal(error, null);
+  assert.deepEqual([result.landed, result.lane], [["US-1"], "the fast check failed on it, and the fast check on deliver/board without it"]);
+  const [final] = agentsOf(calls, "final");
+  assert.ok(final.prompt.includes(`\n## The lane's checks\nThe lane ran its checks on every story before it landed, so run none of them yourself, not even the fast command: your Bash call stops after 10 minutes, and a check can take longer. The lane's last check, fast (\`${fast}\`) on deliver/board without US-2, failed. The end of its output:\n\`\`\`\nthe fast check is red\n\`\`\`\n`), final.prompt);
+  assert.doesNotMatch(final.prompt, /Run the fast command/);
+  assert.equal(final.schema.properties.healthy.description, "The lane's last check passed and every cross-story journey worked");
 });
 
 test("a journeys check whose lane-reset fails is not run: the report says why, and the run finishes", { timeout: 120000 }, async (t) => {
