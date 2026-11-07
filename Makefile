@@ -183,14 +183,16 @@ OMNI_PENPOT ?= $(CARGO) run --quiet -p omni-penpot --
 penpot-compare:
 	$(OMNI_PENPOT) report "$(PENPOT_FIXTURES)" --out "$(PENPOT_REPORT)"
 
-# Links the agent skills (agent-skills/*) into ~/.claude/skills/ and the
-# workflows (workflows/*.js) into ~/.claude/workflows/ as absolute symlinks.
+# Links the agent skills (agent-skills/*) into ~/.claude/skills/, the workflows
+# (workflows/*.js) into ~/.claude/workflows/, and the omni-deliver workflow's
+# host helper to ~/.claude/omni/deliver-step.mjs, the path the workflow runs it
+# from, as absolute symlinks.
 # Running it again changes nothing; a link to somewhere else is replaced, and a
 # real file or directory in the way is reported and left untouched.
 CLAUDE_HOME ?= $(HOME)/.claude
 
 install-agent-tools:
-	@mkdir -p "$(CLAUDE_HOME)/skills" "$(CLAUDE_HOME)/workflows"
+	@mkdir -p "$(CLAUDE_HOME)/skills" "$(CLAUDE_HOME)/workflows" "$(CLAUDE_HOME)/omni"
 	@for src in $(CURDIR)/agent-skills/*/; do \
 		[ -d "$$src" ] || continue; src=$${src%/}; dst="$(CLAUDE_HOME)/skills/$$(basename "$$src")"; \
 		if [ -e "$$dst" ] && [ ! -L "$$dst" ]; then echo "skipped $$dst: exists and is not a link"; \
@@ -201,6 +203,9 @@ install-agent-tools:
 		if [ -e "$$dst" ] && [ ! -L "$$dst" ]; then echo "skipped $$dst: exists and is not a link"; \
 		else ln -sfn "$$src" "$$dst"; fi; \
 	done
+	@src="$(CURDIR)/workflows/deliver-step.mjs"; dst="$(CLAUDE_HOME)/omni/deliver-step.mjs"; \
+	if [ -e "$$dst" ] && [ ! -L "$$dst" ]; then echo "skipped $$dst: exists and is not a link"; \
+	elif [ -f "$$src" ]; then ln -sfn "$$src" "$$dst"; fi
 
 $(EMCC):
 	test -d "$(EMSDK)" || git clone --depth 1 --branch $(EMSDK_VERSION) https://github.com/emscripten-core/emsdk.git "$(EMSDK)"

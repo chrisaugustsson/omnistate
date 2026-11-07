@@ -3,12 +3,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { copyFileSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const makefile = fileURLToPath(new URL("../Makefile", import.meta.url));
+const helper = fileURLToPath(new URL("./deliver-step.mjs", import.meta.url));
+const workflow = fileURLToPath(new URL("./omni-deliver.js", import.meta.url));
 
 function scratch(t) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "install-agent-tools-")));
@@ -72,4 +74,39 @@ test("links each workflow script into the workflows directory", (t) => {
   install(dirs);
 
   assert.equal(readlinkSync(join(dirs.home, "workflows", "omni-deliver.js")), join(dirs.repo, "workflows", "omni-deliver.js"));
+});
+
+// omni-deliver cannot read HOME: it names its helper with a ~ path for the
+// courier's shell to expand, so the link must be where that path points.
+// HOME is the scratch one here, and nothing that could carry another
+// CLAUDE_HOME reaches make.
+test("links the delivery helper where omni-deliver runs it by default, ~/.claude/omni/deliver-step.mjs, and the helper answers through the link", (t) => {
+  const dirs = scratch(t);
+  copyFileSync(helper, join(dirs.repo, "workflows", "deliver-step.mjs"));
+  const home = join(dirs.root, "home");
+  const env = { ...process.env, HOME: home };
+  for (const name of ["CLAUDE_HOME", "MAKEFLAGS", "MFLAGS", "GNUMAKEFLAGS"]) delete env[name];
+  const fallback = readFileSync(workflow, "utf8").match(/^const HELPER = .* : '~\/([^']+)'$/m);
+  assert.ok(fallback, "omni-deliver.js names a default helper under ~/");
+
+  execFileSync("make", ["-s", "--no-print-directory", "-f", makefile, "-C", dirs.repo, "install-agent-tools"], { env, encoding: "utf8" });
+
+  const link = join(home, fallback[1]);
+  assert.equal(readlinkSync(link), join(dirs.repo, "workflows", "deliver-step.mjs"));
+  const answer = JSON.parse(execFileSync(process.execPath, [link, "list"], { cwd: dirs.root, encoding: "utf8" }));
+  assert.match(answer.body.error, /^list needs --run <runId> --payload <file> --hash/);
+});
+
+test("leaves a real file in the delivery helper's place untouched and names it in its output", (t) => {
+  const dirs = scratch(t);
+  copyFileSync(helper, join(dirs.repo, "workflows", "deliver-step.mjs"));
+  const inTheWay = join(dirs.home, "omni", "deliver-step.mjs");
+  mkdirSync(join(dirs.home, "omni"), { recursive: true });
+  writeFileSync(inTheWay, "hand-written\n");
+
+  const output = install(dirs);
+
+  assert.equal(lstatSync(inTheWay).isFile(), true);
+  assert.equal(readFileSync(inTheWay, "utf8"), "hand-written\n");
+  assert.match(output, new RegExp(inTheWay));
 });
