@@ -11,6 +11,7 @@
 // `story resolve --finding <i>` resolves the i-th (0-based). `story add <file>` reads
 // the heading, Description, Files and criteria the way the CLI does and numbers
 // the story after the highest key; `story tick` sets the criterion's ticked/pending.
+// `doc read <id>` prints the state's docs[id], and fails for a doc it lacks.
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 
@@ -62,6 +63,13 @@ if (noun === "--help") {
   const thread = state.threads.find((t) => t.id === target);
   save();
   out(JSON.stringify({ thread: { id: thread.id, question: thread.title, conclusion: thread.conclusion ?? null, posts: thread.posts } }));
+} else if (noun === "doc" && verb === "read") {
+  save();
+  if (state.docs?.[target] === undefined) {
+    process.stderr.write(`no doc ${target}\n`);
+    process.exit(1);
+  }
+  out(state.docs[target]);
 } else if (noun === "checks" && state.checks) {
   save();
   out(JSON.stringify(state.checks));
@@ -145,7 +153,7 @@ if (noun === "--help") {
     const c = typeof s.criteria[i] === "string" ? { text: s.criteria[i], human_check: false } : s.criteria[i];
     s.criteria[i] = { ...c, ticked: true, ...(argv.includes("--pending") ? { pending: true } : {}) };
   }
-  else if (verb === "files") s.files_changed = argv.slice(3).filter((a, i, rest) => a !== "--run" && a !== "--feature" && rest[i - 1] !== "--run" && rest[i - 1] !== "--feature");
+  else if (verb === "files") s.files_changed = argv.slice(3).filter((a, i, rest) => a !== "--run" && a !== "--feature" && a !== "--json" && rest[i - 1] !== "--run" && rest[i - 1] !== "--feature");
   else {
     process.stderr.write(`fake omni: unknown story verb ${verb}\n`);
     process.exit(2);
