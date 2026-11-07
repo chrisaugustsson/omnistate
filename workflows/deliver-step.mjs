@@ -28,8 +28,8 @@
 //   failed, such as a write cut short, which the repeat carries on; retry
 //   false when the repeat would be refused the same way: the board refused
 //   the write (a claim of a story that is not waiting, or that another run
-//   holds), another run holds the lock, a worktree on the wrong branch, a
-//   payload the step cannot take.
+//   holds), another run holds the lock, a story worktree with no
+//   story/<key> to go back on, a payload the step cannot take.
 // - A step that writes records its body under its step name and opId in
 //   .omni/runs/<runId>/applied.json once it worked, and a repeat of that opId
 //   gets the recorded body back without running again: a retried courier
@@ -51,38 +51,53 @@
 // received:
 // - start, from flags: run, root, branch, tip, lane, thread, checks, stories
 //   ({keys, counts by status, blocked}), released, log
-// - checks-set {checks: {name: command}}: checks, all five
+// - checks-set {checks: {name: command}}: checks, all six
 // - list {}: stories, pickable (those with a worktree from an earlier attempt
 //   first, then in the board's order: priority, then how many stories each
 //   one unblocks, then number)
-// - context {key}: story, decisions, attempt, findings, uncounted, earlier, docs, threads
-// - claim {key, stage}, release {key}, move {key, to}, block {key} and
-//   unblock {key}: key, status, blocked, holder
+// - context {key}: story, decisions, attempt, findings, uncounted, earlier,
+//   docs, threads, clarified (whether the clarity cache has a record of the
+//   story)
+// - claim {key, stage}, rework {key}, release {key}, move {key, to}, block
+//   {key} and unblock {key}: key, status, blocked, holder. rework moves a
+//   story sent back to the backlog and claims it for implementing, in one
+//   call, so that no story planned on its files is claimed in between
 // - finding {key, stage, findings: [{text, files}], counts}: key, attempt
 // - decision {key, question, choice, by}: key
 // - files {key}: key, files (how many)
 // - thread-open {title, body, key?}: thread, and key when given
 // - unblock-pass {}: unblocked, log
 // - worktree {key}: key, path, branch, created (true when the story starts on
-//   a branch of its own just cut, false when its branch has earlier work)
+//   a branch of its own just cut, false when its branch has earlier work);
+//   for a worktree found with another branch or a detached HEAD checked out,
+//   also head (that branch, null when detached), commits (those not on
+//   story/<key>, oldest first), back (true when it checked story/<key> out
+//   again, false when it left a worktree with work in progress as it was)
+//   and reason, what the implementer has to do about it
 // - sleep {seconds}: seconds
 // - clarity-pending {}: keys
 // - clarity-record {key}: key, hash
-// - job-start {name, key?, cmd, cwd, limitMinutes?}: id, log
+// - job-start {name, key?, cmd, cwd, limitMinutes?}: id, log. The command
+//   runs with OMNI_RUN set to the run, and OMNI_STORY to the key when given
 // - job-wait {id, maxSeconds}: id, done, and once done result and tail
 // - job-kill {id}: id, killed, done, and once done result and tail
 // - lane-prepare {key}: key, outcome: ready with base and candidate; conflict
-//   with files; dirty with files and count; wrong_branch with head (the
-//   branch checked out, null when detached) and commits (those not on
-//   story/<key>); missing or infra. Every outcome but ready and conflict has
-//   a reason. dirty and wrong_branch are the story's to fix, and count as an
-//   attempt; conflict does not; infra is not the story's.
+//   with files; dirty with files and count (uncommitted changes, a rebase in
+//   progress or an index.lock in the story's worktree); wrong_branch with
+//   head (the branch checked out, null when detached) and commits (those not
+//   on story/<key>); missing or infra. Every outcome but ready and conflict
+//   has a reason. dirty and wrong_branch are the story's to fix, and count as
+//   an attempt; conflict does not; infra is not the story's.
 // - lane-clean {}: discarded and count: what it threw away
 // - lane-base {} and lane-reset {}: tip
+// - lane-candidate {candidate}: head; the lane worktree back at the candidate
+//   lane-prepare gave, without what the test author committed
 // - lane-land {key, base}: key, landed, with base, final, files (how many)
-//   and removed when landed, reason when refused; refused for a branch
-//   checked out in the lane, it puts deliver/<slug> back at the base and
-//   detaches the lane
+//   and removed when landed, reason when refused, and inLane true when the
+//   lane worktree's state refused it (a branch checked out, uncommitted
+//   changes, a HEAD that does not descend from the base or hold the story);
+//   refused for deliver/<slug> checked out in the lane, it puts the branch
+//   back at the base and detaches the lane
 // - finish {report: {outcomes: [{key, outcome, detail?}], council: {settled,
 //   asked}, blocked: [{key, threads}], journeys?: [line], notes?: [line]}}:
 //   thread, posted, report, stopped
@@ -91,10 +106,11 @@
 //
 // The lane, story by story: lane-prepare; the checks as jobs in the lane
 // worktree; the verifier; the test author; lane-clean, so that the test
-// author's check runs on exactly what lands; that check; lane-land. lane-land
-// refuses a lane worktree with uncommitted changes, so a check that leaves
-// files git does not ignore keeps every story from landing: such files belong
-// in .gitignore.
+// author's check runs on exactly what lands; that check; lane-clean again, for
+// what the check left behind; lane-land, which refuses a lane worktree with
+// uncommitted changes. When the author's tests cannot land, lane-candidate
+// puts the lane back at the story as its checks and verifier found it, and
+// the story lands without them.
 //
 // Left as they are:
 // - A job's command can leave members of its group running in the background
@@ -106,7 +122,9 @@
 // Jobs are commands that take longer than a courier's Bash call. job-start
 // starts a detached supervisor (this file's hidden __supervise) and returns.
 // The supervisor runs the command in a process group of its own with no
-// stdin, its output going straight to .omni/runs/<runId>/jobs/<id>.log, and
+// stdin, with OMNI_RUN and OMNI_STORY in its environment, so that a project's
+// check can tell runs and stories apart (a seed that makes a user per story),
+// its output going straight to .omni/runs/<runId>/jobs/<id>.log, and
 // writes the result, {ok, code, signal, timedOut, durationMs, started, ended},
 // to <id>.json when it ends; <id>.job.json holds the job and its pids. At its
 // limit the group gets SIGTERM, then SIGKILL 10 s later. A job whose
@@ -512,9 +530,12 @@ const supervise = async (jobFile) => {
     const now = readJson(jobFile)
     if (!now || now.started) return false
     const out = fs.openSync(files.log, 'a')
+    const env = { ...process.env, OMNI_RUN: now.run }
+    if (now.key) env.OMNI_STORY = now.key
+    else delete env.OMNI_STORY
     try {
       // Straight to the log's descriptor: nothing is decoded on the way.
-      child = spawn(now.cmd, { cwd: now.cwd, shell: true, detached: true, stdio: ['ignore', out, out] })
+      child = spawn(now.cmd, { cwd: now.cwd, shell: true, detached: true, stdio: ['ignore', out, out], env })
     } finally {
       fs.closeSync(out)
     }
@@ -555,7 +576,7 @@ const supervise = async (jobFile) => {
 
 // ---- the board and the checkout of one run ---------------------------------
 const WORKING = ['implementing', 'review', 'testing']
-const CHECKS = ['fast', 'stack_up', 'stack', 'seed', 'lint']
+const CHECKS = ['fast', 'stack_up', 'stack', 'stack_reset', 'seed', 'lint']
 const slugOf = (feature) => feature.toLowerCase().replace(/[^a-z0-9]/g, '-')
 const boardOf = (root, runId, feature) => {
   const git = (argv, opts) => run('git', ['-C', root, ...argv], opts)
@@ -650,6 +671,35 @@ const rebasingIn = (dir) => {
     if (at && isDir(path.resolve(dir, at))) return (readText(path.join(path.resolve(dir, at), 'head-name')) || '').trim()
   }
   return null
+}
+// The index.lock a git command that was stopped left in a worktree, or null:
+// every later command there that writes the index fails on it.
+const indexLockIn = (dir) => {
+  const at = (tryRun('git', ['-C', dir, 'rev-parse', '--git-path', 'index.lock']) || '').trim()
+  return at && fs.existsSync(path.resolve(dir, at)) ? path.resolve(dir, at) : null
+}
+const listed = (items) => `${items.slice(0, LISTED).join('; ')}${items.length > LISTED ? '; and more' : ''}`
+// A story worktree found with another branch or a detached HEAD checked out,
+// where only story/<key> lands: that branch, its commits not on story/<key>,
+// oldest first, and what the implementer has to do. A clean one goes back on
+// story/<key> (back true), and the commits wait for a cherry-pick; one with a
+// rebase in progress, an index.lock or uncommitted changes is the
+// implementer's to sort out, and stays as it is.
+const awayFrom = (b, wt, key) => {
+  const branch = `story/${key}`
+  const head = headRef(wt).replace(/^refs\/heads\//, '') || null
+  const what = head ? `the branch ${head}` : `a detached HEAD at ${short(b.git(['-C', wt, 'rev-parse', 'HEAD']).trim())}`
+  const rebasing = rebasingIn(wt)
+  // A rebase has HEAD on the commits it replays: those are not the story's to pick.
+  const commits = rebasing === null ? (tryRun('git', ['-C', wt, 'log', '--reverse', '--format=%h %s', `refs/heads/${branch}..HEAD`]) || '').split('\n').filter(Boolean) : []
+  const these = `${commits.length} commit${commits.length === 1 ? '' : 's'} not on ${branch}`
+  const lock = indexLockIn(wt)
+  const files = changedFiles(wt)
+  const found = { head, commits: commits.slice(0, LISTED) }
+  if (rebasing === null && !lock && !files.length) return { ...found, back: true, reason: `${wt} had ${what} checked out, not ${branch}, which is what lands: the workflow checked ${branch} out again.${commits.length ? ` Bring over its ${these} with git cherry-pick, oldest first: ${listed(commits)}.` : ''}` }
+  const state = rebasing !== null ? `a rebase${rebasing ? ` of ${rebasing.replace(/^refs\/heads\//, '')}` : ''} in progress` : lock ? `${lock}, which a git command that was stopped left` : `uncommitted changes in ${files.length} file${files.length === 1 ? '' : 's'} (${listed(files)})`
+  const first = rebasing !== null ? 'finish the rebase or abort it' : lock ? 'remove the index.lock once no git command runs there' : 'commit or stash the changes'
+  return { ...found, back: false, reason: `${wt} has ${what} checked out, not ${branch}, which is what lands, with ${state}, so the workflow left it as it is: ${first}, check ${branch} out${commits.length ? `, bring over the ${these} with git cherry-pick, oldest first (${listed(commits)})` : ''}, and commit the story's work there.` }
 }
 
 // ---- the lane --------------------------------------------------------------
@@ -911,7 +961,9 @@ const STEPS = {
   },
 
   // What a prompt needs about the story, and never doc text: agents read each
-  // linked doc once themselves, with `omni doc read`.
+  // linked doc once themselves, with `omni doc read`. clarified says whether
+  // the clarity cache has a record of the story: the script takes a story's
+  // test obligations from clarity's decisions once it has one.
   context: (b, p) => missing(p, 'key') || (() => {
     const stories = b.listStories()
     const story = stories.find((s) => s.key === p.key)
@@ -929,10 +981,21 @@ const STEPS = {
       ...budgetOf(story),
       docs,
       threads: (story.links || []).map((l) => l.thread_id).filter(Boolean),
+      clarified: Object.hasOwn(readJson(clarityPathOf(b.root)) || {}, story.key),
     }
   })(),
 
   claim: stateWrite('claim', ['stage'], (p) => ['--stage', p.stage], (s, p, b) => s.status === p.stage && !!s.holder && s.holder.run === b.runId),
+  // A story sent back for its next attempt, held where it failed: to the
+  // backlog and claimed for implementing in one call, where two couriers left
+  // it unclaimed in between, for a story planned on its files to be claimed.
+  // A repeat does only what the first try did not.
+  rework: (b, p, { marker }) => missing(p, 'key') || (() => {
+    const was = marker ? b.readStory(p.key) : null
+    if (was && was.status === 'implementing' && was.holder && was.holder.run === b.runId) return statusOf(was)
+    if (!(was && was.status === 'backlog')) b.write('move', p.key, ['--to', 'backlog'])
+    return statusOf(b.write('claim', p.key, ['--stage', 'implementing']))
+  })(),
   release: stateWrite('release', [], () => [], (s, p, b) => !s.holder || s.holder.run !== b.runId),
   move: stateWrite('move', ['to'], (p) => ['--to', p.to], (s, p) => s.status === p.to),
   block: stateWrite('block', [], () => [], (s) => !!s.blocked),
@@ -1044,12 +1107,17 @@ const STEPS = {
   // landed, on a new branch story/<key>. A branch story/<key> without its
   // worktree keeps its work: the worktree is made again on it. An existing
   // worktree is kept, with what earlier attempts committed and left in it,
-  // when it is a worktree of the checkout on story/<key>; any other folder in
-  // its place is an error. The marker says what was there before the first
-  // try, so that a repeat answers created as the first try would have. A
-  // worktree the first try was still making counts only when it is clean and
-  // on story/<key>, since a checkout that was killed leaves one with most of
-  // its files missing; else it is removed and made again.
+  // when it is a worktree of the checkout on story/<key>. One that an
+  // implementer left with another branch or a detached HEAD checked out is
+  // the implementer's next attempt to put right: a clean one goes back on
+  // story/<key>, and one with work in progress stays as it is, and the body
+  // says what to do (awayFrom). Any other folder in its place is an error.
+  // The marker says what was there before the first try, so that a repeat
+  // answers as the first try would have, and holds the switch back before it
+  // is made, so that a repeat carries it on. A worktree the first try was
+  // still making counts only when it is clean and on story/<key>, since a
+  // checkout that was killed leaves one with most of its files missing; else
+  // it is removed and made again.
   worktree: (b, p, { marker, mark }) => missing(p, 'key') || (() => {
     const wt = b.worktreeOf(p.key)
     const branch = `story/${p.key}`
@@ -1064,8 +1132,21 @@ const STEPS = {
       if (fs.existsSync(wt)) return { ok: false, error: `${wt}, a worktree the first try was making, could not be removed; move it away` }
     }
     if (fs.existsSync(wt)) {
-      if (!onBranch()) return { ok: false, error: `${wt} is not a worktree of ${b.root} on ${branch}; move it away` }
-      return { key: p.key, path: wt, branch, created: fresh }
+      const body = { key: p.key, path: wt, branch, created: fresh }
+      // The worktree was clean before the switch, so what is uncommitted
+      // after one that was cut off is that switch's own.
+      if (marker && marker.away) {
+        if (headRef(wt) !== `refs/heads/${branch}`) b.git(['-C', wt, 'checkout', '-q', '-f', branch])
+        return { ...body, ...marker.away }
+      }
+      if (onBranch()) return body
+      if (!isWorktree(b.root, wt) || !ownTree(wt) || !hasBranch(b.root, branch)) return { ok: false, error: `${wt} is not a worktree of ${b.root} on ${branch}; move it away` }
+      const away = awayFrom(b, wt, p.key)
+      if (away.back) {
+        mark({ away })
+        b.git(['-C', wt, 'checkout', '-q', branch])
+      }
+      return { ...body, ...away }
     }
     tryRun('git', ['-C', b.root, 'worktree', 'prune'])
     fs.mkdirSync(b.storiesDir, { recursive: true })
@@ -1120,7 +1201,7 @@ const STEPS = {
     let id = marker && marker.id
     if (!id || !fs.existsSync(jobFiles(dir, id).job)) {
       id = newJobId(dir, p.key ? `${p.key}-${p.name}` : p.name)
-      writeJson(jobFiles(dir, id).job, { id, name: p.name, key: p.key || null, cmd: p.cmd, cwd, limitMs: jobLimitMs(p.limitMinutes) })
+      writeJson(jobFiles(dir, id).job, { id, run: b.runId, name: p.name, key: p.key || null, cmd: p.cmd, cwd, limitMs: jobLimitMs(p.limitMinutes) })
       mark({ id })
     }
     const files = jobFiles(dir, id)
@@ -1167,14 +1248,17 @@ const STEPS = {
   // story/<key>: in a folder that lost its .git file, git works in a
   // repository around it, whose rebase an abort would undo. Outcomes, not
   // errors, first those found before the rebase: a story without its
-  // worktree or branch, or a folder that is not its worktree (missing); a
-  // rebase in progress there (infra), but for this op's own, which a try
-  // that was cut off left half done and the repeat undoes; another branch or
-  // a detached HEAD checked out (wrong_branch), whose commits would not land;
-  // uncommitted changes (dirty), which would not land either. Then the
-  // rebase: unmerged paths are a conflict, after which the rebase is undone
-  // and their files come back; a rebase past its limit, or one that failed
-  // any other way, on a lock or a hook, is infra, with git's message.
+  // worktree or branch, or a folder that is not its worktree (missing); what
+  // the implementer left half done in the story's own worktree (dirty), which
+  // is the story's to finish: a rebase in progress, but for this op's own,
+  // which a try that was cut off left half done and the repeat undoes, an
+  // index.lock, or uncommitted changes, on whatever branch, since only a
+  // clean worktree goes back on story/<key> by itself (the worktree step);
+  // another branch or a detached HEAD checked out (wrong_branch), whose
+  // commits would not land. Then the rebase: unmerged paths are a conflict,
+  // after which the rebase is undone and their files come back; a rebase past
+  // its limit, or one that failed any other way, on a hook or a lock outside
+  // the story's worktree, is infra, with git's message.
   'lane-prepare': (b, p, { marker }) => missing(p, 'key') || (() => {
     const wt = b.worktreeOf(p.key)
     const branch = `story/${p.key}`
@@ -1184,8 +1268,13 @@ const STEPS = {
     if (!hasBranch(b.root, branch)) return outcome('missing', { reason: `no branch ${branch}` })
     if (!isWorktree(b.root, wt) || !ownTree(wt)) return outcome('missing', { reason: `${wt} is not a worktree of ${b.root} of its own, so git does nothing in it` })
     if (marker && rebasingIn(wt) === ref) tryRun('git', ['-C', wt, 'rebase', '--abort'])
+    const dirty = changedFiles(wt)
+    const left = { files: dirty.slice(0, LISTED), count: dirty.length }
     const rebasing = rebasingIn(wt)
-    if (rebasing !== null) return outcome('infra', { reason: `a rebase${rebasing ? ` of ${rebasing.replace(/^refs\/heads\//, '')}` : ''} is in progress in ${wt}` })
+    if (rebasing !== null) return outcome('dirty', { ...left, reason: `a rebase${rebasing ? ` of ${rebasing.replace(/^refs\/heads\//, '')}` : ''} is in progress in ${wt}: finish it or abort it, and commit the story's work on ${branch}` })
+    const lock = indexLockIn(wt)
+    if (lock) return outcome('dirty', { ...left, reason: `${wt} has ${lock}, which a git command that was stopped left, and every git command there that writes fails on it: remove it once no git command runs there` })
+    if (dirty.length) return outcome('dirty', { ...left, reason: `${wt} has uncommitted changes in ${dirty.length} file${dirty.length === 1 ? '' : 's'}, which would not land: commit or discard them` })
     const head = headRef(wt)
     if (head !== ref) {
       const commits = (tryRun('git', ['-C', wt, 'log', '--format=%h %s', `${ref}..HEAD`]) || '').split('\n').filter(Boolean)
@@ -1194,8 +1283,6 @@ const STEPS = {
       const lost = commits.length ? `, so its ${commits.length} commit${commits.length === 1 ? '' : 's'} not on ${branch} would be lost (${commits.slice(0, 3).join('; ')}${commits.length > 3 ? '; and more' : ''})` : ''
       return outcome('wrong_branch', { head: name, commits: commits.slice(0, LISTED), reason: `${wt} has ${what}, not ${branch}: only ${branch} lands${lost}. Commit on ${branch}` })
     }
-    const dirty = changedFiles(wt)
-    if (dirty.length) return outcome('dirty', { files: dirty.slice(0, LISTED), count: dirty.length, reason: `${wt} has uncommitted changes in ${dirty.length} file${dirty.length === 1 ? '' : 's'}, which would not land: commit or discard them` })
     const base = tipOf(b)
     // The rebase is timed apart from the step, whose lane checkout can take
     // longer than the rebase itself.
@@ -1223,7 +1310,8 @@ const STEPS = {
   // Throws away what is uncommitted in the lane worktree, as start does
   // (reset --hard and clean -fd, never -x: ignored build caches stay warm),
   // and says what: after the test author and before its check, so that the
-  // check runs on exactly what lands.
+  // check runs on exactly what lands, and after that check, which can leave
+  // files of its own, such as a report.
   'lane-clean': (b) => {
     if (!isWorktree(b.root, b.lane) || !ownTree(b.lane)) return { ok: false, error: `${b.lane} is not a worktree of ${b.root}, so it cannot be the lane worktree; move it away` }
     const files = changedFiles(b.lane)
@@ -1235,39 +1323,50 @@ const STEPS = {
   // rerun of a failed check on the base, lane-reset after a failure.
   'lane-base': (b) => laneToTip(b),
   'lane-reset': (b) => laneToTip(b),
+  // The lane worktree back at the candidate lane-prepare checked out, clean
+  // and detached: the story as its checks and its verifier found it, without
+  // the tests its author could not get to land.
+  'lane-candidate': (b, p) => missing(p, 'candidate') || (() => {
+    if (!/^[0-9a-f]{40,64}$/.test(p.candidate)) return { ok: false, error: `the candidate is a commit's full hash, not ${p.candidate}` }
+    laneAt(b, p.candidate)
+    return { head: b.git(['-C', b.lane, 'rev-parse', 'HEAD']).trim() }
+  })(),
 
   // Lands the lane worktree's HEAD, the tested candidate with what the test
   // author committed on top, by a compare-and-swap of deliver/<slug> from the
   // base. Refused (landed false) unless that HEAD is detached, with nothing
   // uncommitted, descends from the base and holds story/<key>, and unless the
-  // branch is still at the base. A branch at the lane's HEAD proves nothing:
-  // a commit made in the lane with deliver/<slug> checked out moves the
-  // branch there too. So a lane with a branch checked out puts deliver/<slug>
-  // back at the base, by a compare-and-swap from where it is, before it
-  // detaches the lane: a repeat cut off between the two finds the branch
-  // checked out still, and the branch already back. Only this op's record of
-  // the swap it made lets a repeat, after a try that was cut off, skip it.
-  // Then the landed tree must be the tested one, and the story is done: its
-  // files recorded, its criteria ticked (a human check pending), its open
-  // findings resolved, its worktree and branch gone.
+  // branch is still at the base; inLane says that the lane worktree's state
+  // refused it, which a test author can leave. A branch at the lane's HEAD
+  // proves nothing: a commit made in the lane with deliver/<slug> checked out
+  // moves the branch there too. So a lane with deliver/<slug> checked out
+  // puts the branch back at the base, by a compare-and-swap from where it is,
+  // before it detaches the lane: a repeat cut off between the two finds the
+  // branch checked out still, and the branch already back. A lane with
+  // another branch checked out moved only that one, and deliver/<slug> stays.
+  // Only this op's record of the swap it made lets a repeat, after a try that
+  // was cut off, skip it. Then the landed tree must be the tested one, and
+  // the story is done: its files recorded, its criteria ticked (a human check
+  // pending), its open findings resolved, its worktree and branch gone.
   'lane-land': (b, p, { marker, mark }) => missing(p, 'key', 'base') || (() => {
-    const refused = (reason) => ({ key: p.key, landed: false, reason })
+    const refused = (reason, inLane = false) => ({ key: p.key, landed: false, reason, ...(inLane ? { inLane } : {}) })
     let final = marker && marker.swapped
     if (!final) {
       const head = headRef(b.lane)
       if (head) {
         const tip = tipOf(b)
-        if (tip !== p.base) b.git(['update-ref', `refs/heads/${b.branch}`, p.base, tip])
+        const back = head === `refs/heads/${b.branch}` && tip !== p.base
+        if (back) b.git(['update-ref', `refs/heads/${b.branch}`, p.base, tip])
         b.git(['-C', b.lane, 'checkout', '-q', '--detach'])
-        return refused(`the lane worktree had ${head.replace(/^refs\/heads\//, '')} checked out, not a detached HEAD: a commit there moves that branch without the compare-and-swap. ${tip !== p.base ? `${b.branch} is back at the base ${short(p.base)}, from ${short(tip)}, and the` : 'The'} lane is now detached`)
+        return refused(`the lane worktree had ${head.replace(/^refs\/heads\//, '')} checked out, not a detached HEAD: a commit there moves that branch without the compare-and-swap. ${back ? `${b.branch} is back at the base ${short(p.base)}, from ${short(tip)}, and the` : 'The'} lane is now detached`, true)
       }
       const dirty = changedFiles(b.lane)
-      if (dirty.length) return refused(`the lane worktree has uncommitted changes in ${dirty.length} file${dirty.length === 1 ? '' : 's'} (${dirty.slice(0, 5).join(', ')}${dirty.length > 5 ? ', and more' : ''}): what lands must be what was checked, so lane-clean it and check it again`)
+      if (dirty.length) return refused(`the lane worktree has uncommitted changes in ${dirty.length} file${dirty.length === 1 ? '' : 's'} (${dirty.slice(0, 5).join(', ')}${dirty.length > 5 ? ', and more' : ''}): what lands must be what was checked, so lane-clean it and check it again`, true)
       final = b.git(['-C', b.lane, 'rev-parse', 'HEAD']).trim()
-      if (!isAncestorIn(b.root, p.base, final)) return refused(`the lane's HEAD ${short(final)} does not descend from the base ${short(p.base)}`)
+      if (!isAncestorIn(b.root, p.base, final)) return refused(`the lane's HEAD ${short(final)} does not descend from the base ${short(p.base)}`, true)
       const story = (tryRun('git', ['-C', b.root, 'rev-parse', '--verify', '--quiet', `refs/heads/story/${p.key}`]) || '').trim()
       if (!story) return refused(`there is no branch story/${p.key} to land`)
-      if (!isAncestorIn(b.root, story, final)) return refused(`the lane's HEAD ${short(final)} does not hold story/${p.key} at ${short(story)}`)
+      if (!isAncestorIn(b.root, story, final)) return refused(`the lane's HEAD ${short(final)} does not hold story/${p.key} at ${short(story)}`, true)
       try {
         b.git(['update-ref', `refs/heads/${b.branch}`, final, p.base])
       } catch (e) {
@@ -1329,7 +1428,7 @@ const STEPS = {
 }
 // The steps whose bodies are recorded under their opId, so that a repeat does
 // not write twice. The others only read, or wait: a repeat runs them again.
-const WRITES = new Set(['claim', 'release', 'move', 'block', 'unblock', 'finding', 'decision', 'files', 'thread-open', 'unblock-pass', 'worktree', 'clarity-record', 'checks-set', 'job-start', 'job-kill', 'lane-prepare', 'lane-clean', 'lane-base', 'lane-reset', 'lane-land', 'finish'])
+const WRITES = new Set(['claim', 'rework', 'release', 'move', 'block', 'unblock', 'finding', 'decision', 'files', 'thread-open', 'unblock-pass', 'worktree', 'clarity-record', 'checks-set', 'job-start', 'job-kill', 'lane-prepare', 'lane-clean', 'lane-base', 'lane-reset', 'lane-candidate', 'lane-land', 'finish'])
 
 // ---- start: the lock, reconcile, the deliver branch, the checks ------------
 // A start repeated by a retried courier comes within minutes of the first.

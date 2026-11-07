@@ -337,7 +337,7 @@ test("the record of applied ops is keyed by step name and opId: an opId one step
   assert.deepEqual([appliedOf(dirs, run, "decision")["op-1"], appliedOf(dirs, run, "claim")["op-1"]], [decided, claimed]);
 });
 
-test("a body with ok false says whether the same command again can work: retry true for flags or a payload that came wrong and for a write that failed, which the repeat carries on; false for a claim the board refuses, a lock another run holds, a worktree on another branch, a start that must merge first and a payload the step cannot take", (t) => {
+test("a body with ok false says whether the same command again can work: retry true for flags or a payload that came wrong and for a write that failed, which the repeat carries on; false for a claim the board refuses, a lock another run holds, a worktree on another branch with no story/<key>, a start that must merge first and a payload the step cannot take", (t) => {
   const dirs = scratch(t, [story("US-1"), story("US-2", { status: "implemented" }), story("US-3")]);
   const { run } = start(dirs);
   const decision = { opId: "decide-1", key: "US-1", question: "Which red?", choice: "#c00", by: "agent" };
@@ -853,12 +853,12 @@ test("start stops with 'merge first' when deliver/<slug> and the checkout's HEAD
   assert.equal(existsSync(dirs.lane), false);
 });
 
-test("start gives the checks fast, stack_up, stack, seed and lint as omni checks has them, each an empty string when unset", (t) => {
-  const dirs = scratch(t, [], [], { checks: { fast: "make fast", stack: "make stack", seed: "make seed NAME=x" } });
+test("start gives the checks fast, stack_up, stack, stack_reset, seed and lint as omni checks has them, each an empty string when unset", (t) => {
+  const dirs = scratch(t, [], [], { checks: { fast: "make fast", stack: "make stack", stack_reset: "make stack-down", seed: "make seed NAME=x" } });
 
   const body = start(dirs);
 
-  assert.deepEqual(body.checks, { fast: "make fast", stack_up: "", stack: "make stack", seed: "make seed NAME=x", lint: "" });
+  assert.deepEqual(body.checks, { fast: "make fast", stack_up: "", stack: "make stack", stack_reset: "make stack-down", seed: "make seed NAME=x", lint: "" });
 });
 
 test("a start whose checks cannot be read stops before any work and leaves no lock", (t) => {
@@ -1266,7 +1266,7 @@ test("an existing story worktree is kept, with its commits and what it left unco
   assert.equal(readFileSync(join(wt, "wip.rs"), "utf8"), "wip\n");
 });
 
-test("worktree keeps an existing folder only when it is a worktree of the checkout on story/<key>: a plain folder or a worktree on another branch is an error, and stays as it is", (t) => {
+test("worktree keeps an existing folder only when it is a worktree of the checkout: a plain folder, or a worktree on another branch with no story/<key> to go back to, is an error, and stays as it is", (t) => {
   const dirs = scratch(t, [story("US-1"), story("US-2")]);
   const { run } = start(dirs);
   const plain = join(dirs.root, "app-stories", "US-1");
@@ -1296,6 +1296,99 @@ test("a worktree step that finds story/<key> without its worktree makes the work
 
   assert.deepEqual(pick(body), { ok: true, key: "US-1", path: wt, branch: "story/US-1", created: false });
   assert.deepEqual([git(wt, "rev-parse", "HEAD").trim(), git(wt, "rev-parse", "--abbrev-ref", "HEAD").trim(), readFileSync(join(wt, "half.rs"), "utf8")], [work, "story/US-1", "half.rs\n"]);
+});
+
+test("a worktree an implementer left clean, with another branch or a detached HEAD checked out, goes back on story/<key>: the body names what it had and its commits not on story/<key>, oldest first, for a cherry-pick, and those commits stay where they are", (t) => {
+  const dirs = scratch(t, [story("US-1"), story("US-2")]);
+  const { run } = start(dirs);
+  const side = storyWork(dirs, run, "US-1");
+  const onStory = sha(dirs, "refs/heads/story/US-1");
+  git(side, "checkout", "-q", "-b", "side");
+  const first = commit(side, "first.rs");
+  const second = commit(side, "second.rs");
+  const loose = storyWork(dirs, run, "US-2");
+  git(loose, "checkout", "-q", "--detach");
+  const detached = commit(loose, "loose.rs");
+
+  const named = step(dirs, run, "worktree", { key: "US-1" });
+  const headless = step(dirs, run, "worktree", { key: "US-2" });
+
+  const one = (rev, file) => `${rev.slice(0, 7)} feat: ${file}`;
+  assert.deepEqual(pick(named), { ok: true, key: "US-1", path: side, branch: "story/US-1", created: false, head: "side", commits: [one(first, "first.rs"), one(second, "second.rs")], back: true, reason: `${side} had the branch side checked out, not story/US-1, which is what lands: the workflow checked story/US-1 out again. Bring over its 2 commits not on story/US-1 with git cherry-pick, oldest first: ${one(first, "first.rs")}; ${one(second, "second.rs")}.` });
+  assert.deepEqual(pick(headless), { ok: true, key: "US-2", path: loose, branch: "story/US-2", created: false, head: null, commits: [one(detached, "loose.rs")], back: true, reason: `${loose} had a detached HEAD at ${detached.slice(0, 7)} checked out, not story/US-2, which is what lands: the workflow checked story/US-2 out again. Bring over its 1 commit not on story/US-2 with git cherry-pick, oldest first: ${one(detached, "loose.rs")}.` });
+  assert.deepEqual([git(side, "rev-parse", "--abbrev-ref", "HEAD").trim(), git(side, "rev-parse", "HEAD").trim(), git(side, "status", "--porcelain"), sha(dirs, "refs/heads/side")], ["story/US-1", onStory, "", second]);
+  assert.deepEqual([git(loose, "rev-parse", "--abbrev-ref", "HEAD").trim(), git(loose, "cat-file", "-t", detached).trim()], ["story/US-2", "commit"]);
+});
+
+test("a worktree an implementer left with another branch or a detached HEAD checked out and work in progress stays as it is, back false, and the body says what to do first: commit or stash uncommitted changes, finish or abort a rebase in progress, remove an index.lock", (t) => {
+  const dirs = scratch(t, [story("US-1"), story("US-2"), story("US-3")]);
+  const { run } = start(dirs);
+  const changed = storyWork(dirs, run, "US-1");
+  git(changed, "checkout", "-q", "-b", "side");
+  const onSide = commit(changed, "side.rs");
+  writeFileSync(join(changed, "README"), "half done\n");
+  // US-2's implementer stopped in a rebase of its own, on a conflict, on a detached HEAD.
+  const stuck = step(dirs, run, "worktree", { key: "US-2" }).path;
+  writeFileSync(join(stuck, "README"), "the story's README\n");
+  git(stuck, "commit", "-q", "-am", "feat: README");
+  landOn(dirs, "deliver/board", "README");
+  assert.throws(() => git(stuck, "rebase", "deliver/board"));
+  const rebasing = git(stuck, "rev-parse", "HEAD").trim();
+  const locked = storyWork(dirs, run, "US-3");
+  git(locked, "checkout", "-q", "-b", "other");
+  const lock = join(dirs.repo, ".git", "worktrees", "US-3", "index.lock");
+  writeFileSync(lock, "");
+
+  const [left, mid, stopped] = ["US-1", "US-2", "US-3"].map((key) => step(dirs, run, "worktree", { key }));
+
+  const one = `${onSide.slice(0, 7)} feat: side.rs`;
+  assert.deepEqual(pick(left), { ok: true, key: "US-1", path: changed, branch: "story/US-1", created: false, head: "side", commits: [one], back: false, reason: `${changed} has the branch side checked out, not story/US-1, which is what lands, with uncommitted changes in 1 file (README), so the workflow left it as it is: commit or stash the changes, check story/US-1 out, bring over the 1 commit not on story/US-1 with git cherry-pick, oldest first (${one}), and commit the story's work there.` });
+  assert.deepEqual(pick(mid), { ok: true, key: "US-2", path: stuck, branch: "story/US-2", created: false, head: null, commits: [], back: false, reason: `${stuck} has a detached HEAD at ${rebasing.slice(0, 7)} checked out, not story/US-2, which is what lands, with a rebase of story/US-2 in progress, so the workflow left it as it is: finish the rebase or abort it, check story/US-2 out, and commit the story's work there.` });
+  assert.deepEqual(pick(stopped), { ok: true, key: "US-3", path: locked, branch: "story/US-3", created: false, head: "other", commits: [], back: false, reason: `${locked} has the branch other checked out, not story/US-3, which is what lands, with ${lock}, which a git command that was stopped left, so the workflow left it as it is: remove the index.lock once no git command runs there, check story/US-3 out, and commit the story's work there.` });
+  assert.deepEqual([git(changed, "rev-parse", "--abbrev-ref", "HEAD").trim(), readFileSync(join(changed, "README"), "utf8"), existsSync(join(dirs.repo, ".git", "worktrees", "US-2", "rebase-merge")), existsSync(lock)], ["side", "half done\n", true, true]);
+});
+
+test("a worktree step cut off while it put a worktree back on story/<key> is carried on by its repeat, which answers as the first try found it: the branch it had, and its commits to cherry-pick", async (t) => {
+  const dirs = scratch(t, [story("US-1")]);
+  const { run } = start(dirs);
+  const wt = storyWork(dirs, run, "US-1");
+  git(wt, "checkout", "-q", "-b", "side");
+  const work = commit(wt, "side.rs");
+  // The switch back runs post-checkout once story/US-1 is checked out.
+  const held = hook(dirs, "post-checkout", "sleep 30");
+
+  await cutOff(t, dirs, run, "worktree", { opId: "wt-back", key: "US-1" }, () => git(wt, "rev-parse", "--abbrev-ref", "HEAD").trim() === "story/US-1");
+  rmSync(held);
+  const again = step(dirs, run, "worktree", { opId: "wt-back", key: "US-1" });
+
+  assert.deepEqual([again.ok, again.created, again.head, again.commits, again.back], [true, false, "side", [`${work.slice(0, 7)} feat: side.rs`], true]);
+  assert.match(again.reason, /^\S+ had the branch side checked out, not story\/US-1, which is what lands: the workflow checked story\/US-1 out again\. Bring over its 1 commit not on story\/US-1 with git cherry-pick/);
+  assert.deepEqual([git(wt, "rev-parse", "--abbrev-ref", "HEAD").trim(), git(wt, "status", "--porcelain")], ["story/US-1", ""]);
+});
+
+test("context says whether the clarity cache has a record of the story, as clarified", (t) => {
+  const dirs = scratch(t, [story("US-1"), story("US-2")]);
+  const { run } = start(dirs);
+
+  step(dirs, run, "clarity-record", { key: "US-1" });
+
+  assert.deepEqual(["US-1", "US-2"].map((key) => step(dirs, run, "context", { key }).clarified), [true, false]);
+});
+
+test("rework moves a story sent back to the backlog and claims it for implementing, in one call; a rework cut off after its move is carried on by its repeat, which only claims", async (t) => {
+  const dirs = scratch(t, [story("US-1"), story("US-2")]);
+  const { run } = start(dirs);
+  dirs.edit((s) => {
+    for (const held of s.stories) Object.assign(held, { status: "review", holder: { run, stage: "review" } });
+  });
+
+  const body = step(dirs, run, "rework", { key: "US-1" });
+  await cutOff(t, dirs, run, "rework", { opId: "rework-cut", key: "US-2" }, () => dirs.story("US-2").status === "backlog", { FAKE_OMNI_HANG_AFTER: "story move US-2" });
+  const again = step(dirs, run, "rework", { opId: "rework-cut", key: "US-2" });
+
+  assert.deepEqual(pick(body), { ok: true, key: "US-1", status: "implementing", blocked: false, holder: run });
+  assert.deepEqual([again.ok, again.status, again.holder], [true, "implementing", run]);
+  assert.deepEqual(dirs.writes(), ["move US-1", "claim US-1", "move US-2", "claim US-2"]);
 });
 
 test("sleep waits the seconds it is given", (t) => {
@@ -1361,18 +1454,18 @@ test("start opens the run's thread on the feature, named Run <run> as omni-deliv
   assert.deepEqual({ ...info, started: null }, { run: body.run, feature: "board", root: dirs.repo, thread: body.thread, started: null, tip: body.tip, checks: body.checks, landed: [] });
 });
 
-test("checks-set merges checks into the run's run.json and gives all five back; an unknown check, or a command that is not a string, is refused", (t) => {
+test("checks-set merges checks into the run's run.json and gives all six back, stack_reset among them; an unknown check, or a command that is not a string, is refused", (t) => {
   const dirs = scratch(t, [], [], { checks: { fast: "make fast", stack_up: "make up", stack: "make stack" } });
   const { run } = start(dirs);
 
-  const body = step(dirs, run, "checks-set", { checks: { seed: "make seed NAME=x", lint: "make lint", fast: "make quick" } });
+  const body = step(dirs, run, "checks-set", { checks: { seed: "make seed NAME=x", lint: "make lint", fast: "make quick", stack_reset: "make down" } });
   const unknown = step(dirs, run, "checks-set", { checks: { stackup: "make up" } });
   const odd = step(dirs, run, "checks-set", { checks: { seed: 3 } });
 
-  const checks = { fast: "make quick", stack_up: "make up", stack: "make stack", seed: "make seed NAME=x", lint: "make lint" };
+  const checks = { fast: "make quick", stack_up: "make up", stack: "make stack", stack_reset: "make down", seed: "make seed NAME=x", lint: "make lint" };
   assert.deepEqual(body.checks, checks);
   assert.deepEqual(JSON.parse(readFileSync(runFile(dirs, run, "run.json"), "utf8")).checks, checks);
-  assert.deepEqual([unknown.ok, unknown.error], [false, "no check stackup; the checks are fast, stack_up, stack, seed, lint"]);
+  assert.deepEqual([unknown.ok, unknown.error], [false, "no check stackup; the checks are fast, stack_up, stack, stack_reset, seed, lint"]);
   assert.deepEqual([odd.ok, odd.error], [false, "a check is a command, as a string: seed"]);
 });
 
@@ -1414,6 +1507,19 @@ test("job-start runs the command in a process group of its own, its output going
   const [, leader, group] = ended.tail.match(/^leader (\d+) group\s+(\d+)\ndone\n$/);
   assert.equal(leader, group, "the command leads a group of its own");
   assert.equal(readFileSync(started.log, "utf8"), ended.tail);
+});
+
+test("a job's command runs with OMNI_RUN set to its run, and OMNI_STORY to its story's key, unset for a job without one, so that a project's check can tell runs and stories apart", (t) => {
+  const dirs = scratch(t);
+  const { run, lane } = start(dirs);
+  // A story the courier's own shell names is not the job's.
+  const shell = { OMNI_STORY: "US-9", OMNI_RUN: "run-elsewhere" };
+
+  const keyed = step(dirs, run, "job-start", { name: "seed", key: "US-1", cmd: 'echo "story=$OMNI_STORY run=$OMNI_RUN"', cwd: lane }, shell);
+  const bare = step(dirs, run, "job-start", { name: "fast", cmd: 'echo "story=${OMNI_STORY-unset} run=$OMNI_RUN"', cwd: lane }, shell);
+
+  const tails = [keyed, bare].map(({ id }) => step(dirs, run, "job-wait", { id, maxSeconds: 30 }).tail);
+  assert.deepEqual(tails, [`story=US-1 run=${run}\n`, `story=unset run=${run}\n`]);
 });
 
 test("a job past its limit gets SIGTERM to its whole group, and its result says it timed out; its log ends naming the job, not its command", async (t) => {
@@ -1684,8 +1790,8 @@ test("lane-prepare refuses a story worktree on another branch or on a detached H
   assert.deepEqual([git(own, "rev-parse", "HEAD").trim(), sha(dirs, "refs/heads/story/US-2"), git(lane, "rev-parse", "HEAD").trim()], [onBranch, story2, laneHead]);
 });
 
-test("lane-prepare gives dirty, with the files, for uncommitted changes in the story worktree, which would not land; a rebase in progress there that is not its own, or a rebase that fails on anything but unmerged paths, is infra, with git's message, and the rebase in progress stays", (t) => {
-  const dirs = scratch(t, [story("US-1"), story("US-2"), story("US-3")]);
+test("lane-prepare gives dirty, with the files, for what the implementer left half done in the story's own worktree, which would not land, on whatever branch: uncommitted changes, a rebase in progress that is not its own, which stays, and an index.lock; a rebase that fails on anything but unmerged paths is infra, with git's message", (t) => {
+  const dirs = scratch(t, ["US-1", "US-2", "US-3", "US-4", "US-5"].map((key) => story(key)));
   const { run } = start(dirs);
   const dirty = storyWork(dirs, run, "US-1");
   writeFileSync(join(dirty, "README"), "left uncommitted\n");
@@ -1697,18 +1803,31 @@ test("lane-prepare gives dirty, with the files, for uncommitted changes in the s
   git(stuck, "commit", "-q", "-am", "other README");
   git(stuck, "checkout", "-q", "story/US-2");
   assert.throws(() => git(stuck, "rebase", "other"));
+  // US-4's implementer was stopped in the middle of a git command.
+  const locked = storyWork(dirs, run, "US-4");
+  const lock = join(dirs.repo, ".git", "worktrees", "US-4", "index.lock");
+  writeFileSync(lock, "");
+  // US-5's implementer left another branch checked out, with a change it did not commit.
+  const away = storyWork(dirs, run, "US-5");
+  git(away, "checkout", "-q", "-b", "side");
+  writeFileSync(join(away, "README"), "left on side\n");
   storyWork(dirs, run, "US-3");
   landOn(dirs, "deliver/board", "landed.rs");
   const refusing = () => hook(dirs, "pre-rebase", "exit 1");
 
   const changed = step(dirs, run, "lane-prepare", { key: "US-1" });
   const midRebase = step(dirs, run, "lane-prepare", { key: "US-2" });
+  const stopped = step(dirs, run, "lane-prepare", { key: "US-4" });
+  const elsewhere = step(dirs, run, "lane-prepare", { key: "US-5" });
   refusing();
   const hooked = step(dirs, run, "lane-prepare", { key: "US-3" });
 
   assert.deepEqual(pick(changed), { ok: true, key: "US-1", outcome: "dirty", files: ["README", "notes.txt"], count: 2, reason: `${dirty} has uncommitted changes in 2 files, which would not land: commit or discard them` });
-  assert.deepEqual(pick(midRebase), { ok: true, key: "US-2", outcome: "infra", reason: `a rebase of story/US-2 is in progress in ${stuck}` });
+  assert.deepEqual(pick(midRebase), { ok: true, key: "US-2", outcome: "dirty", files: ["README"], count: 1, reason: `a rebase of story/US-2 is in progress in ${stuck}: finish it or abort it, and commit the story's work on story/US-2` });
   assert.ok(existsSync(join(dirs.repo, ".git", "worktrees", "US-2", "rebase-merge")), "the rebase in progress stays");
+  assert.deepEqual(pick(stopped), { ok: true, key: "US-4", outcome: "dirty", files: [], count: 0, reason: `${locked} has ${lock}, which a git command that was stopped left, and every git command there that writes fails on it: remove it once no git command runs there` });
+  assert.deepEqual(pick(elsewhere), { ok: true, key: "US-5", outcome: "dirty", files: ["README"], count: 1, reason: `${away} has uncommitted changes in 1 file, which would not land: commit or discard them` });
+  assert.deepEqual([existsSync(lock), git(away, "rev-parse", "--abbrev-ref", "HEAD").trim()], [true, "side"]);
   assert.equal(hooked.outcome, "infra");
   assert.match(hooked.reason, /^the rebase of story\/US-3 onto deliver\/board failed: .*pre-rebase hook refused to rebase/);
 });
@@ -1808,7 +1927,7 @@ test("lane-land refuses a branch that moved since the base: deliver/<slug> stays
   assert.deepEqual([dirs.story("US-1").status, existsSync(wt)], ["testing", true]);
 });
 
-test("lane-land refuses a lane HEAD that does not descend from the base, or does not hold the story's branch, and moves nothing", (t) => {
+test("lane-land refuses a lane HEAD that does not descend from the base, or does not hold the story's branch, as the lane's state, inLane, and moves nothing", (t) => {
   const dirs = scratch(t, [story("US-1", { status: "reviewed" })]);
   const { run, lane } = start(dirs);
   storyWork(dirs, run, "US-1");
@@ -1824,12 +1943,12 @@ test("lane-land refuses a lane HEAD that does not descend from the base, or does
   const offBase = commit(lane, "elsewhere.test");
   const elsewhere = step(dirs, run, "lane-land", { key: "US-1", base });
 
-  assert.deepEqual([dropped.landed, dropped.reason], [false, `the lane's HEAD ${testsOnly.slice(0, 7)} does not hold story/US-1 at ${story1.slice(0, 7)}`]);
-  assert.deepEqual([elsewhere.landed, elsewhere.reason], [false, `the lane's HEAD ${offBase.slice(0, 7)} does not descend from the base ${base.slice(0, 7)}`]);
+  assert.deepEqual([dropped.landed, dropped.reason, dropped.inLane], [false, `the lane's HEAD ${testsOnly.slice(0, 7)} does not hold story/US-1 at ${story1.slice(0, 7)}`, true]);
+  assert.deepEqual([elsewhere.landed, elsewhere.reason, elsewhere.inLane], [false, `the lane's HEAD ${offBase.slice(0, 7)} does not descend from the base ${base.slice(0, 7)}`, true]);
   assert.deepEqual([sha(dirs, "refs/heads/deliver/board"), dirs.story("US-1").status], [tip, "testing"]);
 });
 
-test("lane-land refuses a lane worktree with a branch checked out: a commit the test author made on deliver/<slug> there moved the branch without a swap, so the branch goes back to the base by a compare-and-swap and the lane is detached; with another branch checked out, deliver/<slug> stays; and a lane HEAD is not landed when the story has no branch", (t) => {
+test("lane-land refuses a lane worktree with a branch checked out, as the lane's state, inLane: a commit the test author made on deliver/<slug> there moved the branch without a swap, so the branch goes back to the base by a compare-and-swap and the lane is detached; with another branch checked out, deliver/<slug> stays where it is, moved by another writer as it may be; and a lane HEAD is not landed when the story has no branch", (t) => {
   const dirs = scratch(t, [story("US-1", { status: "reviewed" }), story("US-2", { status: "reviewed" })]);
   const { run, lane } = start(dirs);
   storyWork(dirs, run, "US-1");
@@ -1844,14 +1963,15 @@ test("lane-land refuses a lane worktree with a branch checked out: a commit the 
   step(dirs, run, "lane-reset");
   git(lane, "checkout", "-q", "-b", "tests");
   const tests = commit(lane, "other.test");
+  const elsewhere = landOn(dirs, "deliver/board", "elsewhere.rs");
   const onOther = step(dirs, run, "lane-land", { key: "US-1", base });
   const afterOnOther = [...where(), git(lane, "rev-parse", "HEAD").trim()];
   const noBranch = step(dirs, run, "lane-land", { key: "US-2", base });
 
-  assert.deepEqual(pick(onBranch), { ok: true, key: "US-1", landed: false, reason: `the lane worktree had deliver/board checked out, not a detached HEAD: a commit there moves that branch without the compare-and-swap. deliver/board is back at the base ${base.slice(0, 7)}, from ${moved.slice(0, 7)}, and the lane is now detached` });
+  assert.deepEqual(pick(onBranch), { ok: true, key: "US-1", landed: false, inLane: true, reason: `the lane worktree had deliver/board checked out, not a detached HEAD: a commit there moves that branch without the compare-and-swap. deliver/board is back at the base ${base.slice(0, 7)}, from ${moved.slice(0, 7)}, and the lane is now detached` });
   assert.deepEqual(afterOnBranch, [base, "HEAD"]);
-  assert.deepEqual(pick(onOther), { ok: true, key: "US-1", landed: false, reason: "the lane worktree had tests checked out, not a detached HEAD: a commit there moves that branch without the compare-and-swap. The lane is now detached" });
-  assert.deepEqual(afterOnOther, [base, "HEAD", tests]);
+  assert.deepEqual(pick(onOther), { ok: true, key: "US-1", landed: false, inLane: true, reason: "the lane worktree had tests checked out, not a detached HEAD: a commit there moves that branch without the compare-and-swap. The lane is now detached" });
+  assert.deepEqual(afterOnOther, [elsewhere, "HEAD", tests]);
   assert.deepEqual(pick(noBranch), { ok: true, key: "US-2", landed: false, reason: "there is no branch story/US-2 to land" });
   assert.deepEqual([dirs.story("US-1").status, dirs.story("US-2").status], ["testing", "reviewed"]);
 });
@@ -1874,7 +1994,7 @@ test("lane-clean throws away what is uncommitted in the lane worktree and says w
   const cleaned = step(dirs, run, "lane-clean");
   const landed = step(dirs, run, "lane-land", { key: "US-1", base });
 
-  assert.deepEqual(pick(refused), { ok: true, key: "US-1", landed: false, reason: "the lane worktree has uncommitted changes in 1 file (badge.rs): what lands must be what was checked, so lane-clean it and check it again" });
+  assert.deepEqual(pick(refused), { ok: true, key: "US-1", landed: false, inLane: true, reason: "the lane worktree has uncommitted changes in 1 file (badge.rs): what lands must be what was checked, so lane-clean it and check it again" });
   assert.deepEqual(pick(cleaned), { ok: true, discarded: ["badge.rs"], count: 1 });
   assert.deepEqual([readFileSync(join(lane, "badge.rs"), "utf8"), readFileSync(join(lane, "target", "build.out"), "utf8"), git(lane, "rev-parse", "HEAD").trim()], ["badge.rs\n", "warm\n", tested]);
   assert.deepEqual([landed.landed, landed.final, sha(dirs, "refs/heads/deliver/board")], [true, tested, tested]);
@@ -1960,6 +2080,22 @@ test("lane-base and lane-reset put the lane worktree back at the tip of deliver/
   assert.deepEqual([onBase.tip, reset.tip], [tip, tip]);
   assert.deepEqual(atBase, [tip, "HEAD", ""]);
   assert.deepEqual([git(lane, "rev-parse", "HEAD").trim(), git(lane, "rev-parse", "--abbrev-ref", "HEAD").trim(), git(lane, "status", "--porcelain")], [tip, "HEAD", ""]);
+});
+
+test("lane-candidate puts the lane worktree back at the candidate lane-prepare gave, clean and detached, without what the test author committed; a candidate that is not a commit's full hash is refused", (t) => {
+  const dirs = scratch(t, [story("US-1")]);
+  const { run, lane } = start(dirs);
+  storyWork(dirs, run, "US-1");
+  const { candidate } = step(dirs, run, "lane-prepare", { key: "US-1" });
+  commit(lane, "badge.test");
+  writeFileSync(join(lane, "stray.txt"), "left behind\n");
+
+  const body = step(dirs, run, "lane-candidate", { candidate });
+  const odd = step(dirs, run, "lane-candidate", { candidate: "HEAD~1" });
+
+  assert.deepEqual(pick(body), { ok: true, head: candidate });
+  assert.deepEqual([git(lane, "rev-parse", "HEAD").trim(), git(lane, "rev-parse", "--abbrev-ref", "HEAD").trim(), git(lane, "status", "--porcelain")], [candidate, "HEAD", ""]);
+  assert.deepEqual([odd.ok, odd.error], [false, "the candidate is a commit's full hash, not HEAD~1"]);
 });
 
 // ---- finish -----------------------------------------------------------------------------

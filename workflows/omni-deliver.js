@@ -1,13 +1,13 @@
 export const meta = {
   name: 'omni-deliver',
   description: 'Delivers a feature\'s stories from the OmniState board: clarity checks with a council in front of every question for the human, implement and review in story worktrees, at most `implementers` stories implementing and `reviewers` in review at once, then a lane that tests one story at a time in a worktree of its own and lands it on deliver/<feature slug>, and a report on the Run thread. Every git and omni command runs in the host helper, reached through courier agents',
-  whenToUse: 'Run it with the Workflow tool, as the workflow omni-deliver with args {feature: "<name>"} (optional: implementers (3), reviewers (3), storyLimit, force, checks, models, agentTypes, helper), from a session in the main worktree of a project whose folder is linked to its OmniState project (omni link, or OMNI_PROJECT). That session needs the stories folder beside the checkout, <checkout>-stories, among its working directories, and the host helper at ~/.claude/omni/deliver-step.mjs, as make install-agent-tools links it; args.helper names another path. One run per checkout: the helper\'s .omni/run.lock refuses a second live run, and force takes over a lock whose run the human knows is dead. args.checks ({fast, stack_up, stack, seed, lint}) sets checks on top of omni checks. args.models overrides the model of a role (clarity, council, impl, implRetry, review, verify, tests, final, courier), and args.agentTypes sets the agent type of a role, which has none by default. Stories land on deliver/<feature slug>, never on the checkout\'s branch: the report says to bring them in with git merge --ff-only deliver/<feature slug>. A run takes a new story only while its agent calls leave room under 900 for the stories in flight, at 60 each, and stops a story at 960, released with no attempt used; the next run carries on. An agent that returns nothing is asked again after 30 s and after 2 minutes, with no attempt used; agents that return nothing for 3 stories in a row stop new claims, with one thread for the run. A story whose delivery stops on an error is released and blocked on a thread with the error; when the same error stops a second story, the run takes no new story and opens one thread for the run, and later failures are only released. A failed check that fails again on deliver/<slug> without the story stops the lane for the rest of the run, with one thread for the run, and the story goes back to reviewed with no attempt used. The run ends with the journeys check of the stories it landed and finish, which posts the report and gives the lock up, after an error too; it does not wait for answers, which the next run\'s unblock pass takes. Never pushes.',
+  whenToUse: 'Run it with the Workflow tool, as the workflow omni-deliver with args {feature: "<name>"} (optional: implementers (3), reviewers (3), storyLimit, force, checks, models, agentTypes, helper), from a session in the main worktree of a project whose folder is linked to its OmniState project (omni link, or OMNI_PROJECT). That session needs the stories folder beside the checkout, <checkout>-stories, among its working directories, and the host helper at ~/.claude/omni/deliver-step.mjs, as make install-agent-tools links it; args.helper names another path. One run per checkout: the helper\'s .omni/run.lock refuses a second live run, and force takes over a lock whose run the human knows is dead. args.checks ({fast, stack_up, stack, stack_reset, seed, lint}) sets checks on top of omni checks; every check command runs with OMNI_STORY and OMNI_RUN in its environment. args.models overrides the model of a role (clarity, council, impl, implRetry, review, verify, tests, final, courier), and args.agentTypes sets the agent type of a role, which has none by default. Stories land on deliver/<feature slug>, never on the checkout\'s branch: the report says to bring them in with git merge --ff-only deliver/<feature slug>. A run takes a new story only while its agent calls leave room under 900 for the stories in flight, at 90 each, and stops a story at 960, released with no attempt used; the next run carries on. An agent that returns nothing is asked again after 30 s and after 2 minutes, with no attempt used; agents that return nothing for 3 stories in a row stop new claims, with one thread for the run. A story whose delivery stops on an error is released and blocked on a thread with the error; when the same error stops a second story, the run takes no new story and opens one thread for the run, and later failures are only released. A failed check that fails again on deliver/<slug> without the story, after stack_reset for a stack check, stops the lane for the rest of the run, with one thread for the run, and the story goes back to reviewed with no attempt used. Tests whose author cannot get them to land are dropped, and the verified story lands without them, which the report notes. The run ends with the journeys check of the stories it landed and finish, which posts the report and gives the lock up, after an error too; it does not wait for answers, which the next run\'s unblock pass takes. Never pushes.',
   phases: [
     { title: 'Start', detail: 'the helper takes the lock, reconciles claims and the lane worktree, sets deliver/<slug> and reads the checks' },
     { title: 'Unblock', detail: 'a story whose threads all have a conclusion gets each one as a human decision and is unblocked, and its attempts count from there' },
-    { title: 'Clarity', detail: 'one check per backlog story whose text, criteria, linked nodes or decisions changed: a criterion that names a test becomes a test obligation, a minor gap takes its recommendation, the 3 blocking gaps of most impact go to the council and the rest take their recommendation, deferred by the cap; what the council cannot settle becomes a thread that blocks the story' },
-    { title: 'Deliver', detail: 'at most `implementers` stories implementing at once, each slot free again once its story is implemented: claim, worktree, implementer (on implRetry from attempt 2, with every finding by attempt), files; then at most `reviewers` in review, with a verdict per criterion and every defect, from which the script decides, never judging a test obligation; a failed review, or a failure in the lane, sends the story back for the next attempt, held where it failed until an implementer slot is free, ahead of new claims, and 3 failed attempts open a thread; a question goes to the council first' },
-    { title: 'Lane', detail: 'one story at a time in the lane worktree <stories dir>/_lane: lane-prepare rebases story/<key> onto deliver/<slug> and checks it out, detached (a conflict or a missing worktree sends the story back with no attempt used, uncommitted changes or another branch use one, and trouble that is not the story\'s stops the lane); fast, stack_up and stack run there as jobs, and a failed one runs again on the base, where failing too stops the lane and passing uses an attempt; a verifier runs every criterion but the test obligations, a test author writes the regression tests and its questions go to the council, lane-clean throws away what it left uncommitted, its check runs as a job, and lane-land moves deliver/<slug> by a compare-and-swap; after a failure the lane goes back to the tip, and the stack, when it holds the story\'s build, is rebuilt there' },
+    { title: 'Clarity', detail: 'one check per backlog story whose text, criteria, linked nodes or decisions changed: a criterion that names a test becomes a test obligation, and once a story is checked its obligations come from these decisions alone, a minor gap takes its recommendation, the 3 blocking gaps of most impact go to the council and the rest take their recommendation, deferred by the cap; what the council cannot settle becomes a thread that blocks the story' },
+    { title: 'Deliver', detail: 'at most `implementers` stories implementing at once, each slot free again once its story is implemented: claim, worktree, implementer (on implRetry from attempt 2, with every finding by attempt), files; then at most `reviewers` in review, with a verdict per criterion and every defect, from which the script decides, never judging a test obligation; a failed review, or a failure in the lane, sends the story back for the next attempt, held where it failed until an implementer slot is free, ahead of new claims, then moved to the backlog and claimed in one step, and 3 failed attempts open a thread; a worktree an implementer left on another branch goes back on story/<key> when it is clean, and the next implementer is told which commits to bring over; a question goes to the council first' },
+    { title: 'Lane', detail: 'one story at a time in the lane worktree <stories dir>/_lane: lane-prepare rebases story/<key> onto deliver/<slug> and checks it out, detached (a conflict or a missing worktree sends the story back with no attempt used, but from the third conflict of a story in a run; uncommitted changes, a rebase left in progress, an index.lock or another branch use one; trouble that is not the story\'s stops the lane); fast, stack_up and stack run there as jobs, and a failed one runs again on the base, after stack_reset for a stack check, where failing too stops the lane and passing uses an attempt; a verifier runs every criterion but the test obligations, a test author writes the regression tests and its questions go to the council, lane-clean throws away what it left uncommitted, its check runs as a job, lane-clean throws away what the check left, and lane-land moves deliver/<slug> by a compare-and-swap; a red check gets the author once more, with its output, and tests still red, or that lane-land refuses for the lane they left, are dropped, and the story lands without them; after a failure the lane goes back to the tip, and the stack, when it holds the story\'s build, is reset with stack_reset and rebuilt there' },
     { title: 'Report', detail: 'the journeys check of the stories landed, then finish posts the report on the Run thread, with the outcomes, the council\'s counts, the blocked stories with their threads, the notes and the timings, and gives the lock up' },
   ],
 }
@@ -46,16 +46,20 @@ const CLARITY_QUESTIONS = 3
 // human, so that a stream of settled questions cannot run on.
 const QUESTIONS_PER_ATTEMPT = 3
 // The runtime stops a workflow at 1000 agent calls, couriers included, and
-// one story has used 58. A story is claimed, and a clarity check started,
-// only while the calls made and those set aside for the work in flight
-// leave room under AGENT_CAP; the next run carries on. Work that reaches
-// HARD_CAP all the same stops there: its story is released with no attempt
-// used.
+// one story has used 89, through three failed passes of the lane. A story is
+// claimed, and a clarity check started, only while the calls made and those
+// set aside for the work in flight leave room under AGENT_CAP; the next run
+// carries on. Work that reaches HARD_CAP all the same stops there: its story
+// is released with no attempt used.
 const AGENT_CAP = 900
 const HARD_CAP = 960
-const STORY_CALLS = 60
+const STORY_CALLS = 90
 const CHECK_CALLS = 20
 const COUNCILS = 2
+// Rebase conflicts that send a story back with no attempt used, per story in
+// a run. One the implementer resolves by a merge, which the lane's rebase
+// meets again, would otherwise cycle with no end.
+const CONFLICTS = 2
 const COURIER_RETRIES = 3
 // A review that leaves a criterion without a verdict is asked again this
 // many times.
@@ -191,7 +195,8 @@ const opIdOf = (base) => {
 // and carries on a write it left half done. A start that failed has given
 // the lock up, so its repeat starts again. A step the helper refused for
 // good (retry false: the board refused the write, another run holds the
-// lock, a worktree on the wrong branch) is not tried again.
+// lock, a story worktree with no story/<key> to go back on) is not tried
+// again.
 const carry = async (name, prompt, expected, label, past = false) => {
   let problem = ''
   for (let i = 0; i <= COURIER_RETRIES; i++) {
@@ -229,13 +234,16 @@ const byAttempt = (groups) => groups.map((g) => `Attempt ${g.attempt}:\n${g.find
 const criteriaList = (ctx) => ctx.story.criteria.map((c) => `- ${c.text}`).join('\n') || '(none)'
 const markedCriteria = (ctx) => ctx.story.criteria.map((c) => `- ${c.text}${c.human_check ? ' [human check]' : ''}`).join('\n') || '(none)'
 // A criterion that names a test is a test obligation, which the lane's test
-// author owns. Clarity records it as this decision; a story implemented
-// before clarity ran has none, so the script also looks for a test, test
-// file, suite or case in the criterion itself.
+// author owns. Clarity records it as this decision, and a story clarity has
+// checked has its obligations from those decisions alone: "The Test
+// connection button shows Connected" is behaviour. A story implemented
+// before clarity ran has none, so for it the script looks in the criterion
+// itself for a test as the thing delivered: a kind of test, a test for or
+// that, tests to add or write, or tests that pass or cover.
 const testQuestion = (criterion) => `Is "${criterion}" behaviour or a test?`
 const TEST_OBLIGATION = 'treated as a test obligation: the lane\'s test author owns it, and the verifier skips it'
-const NAMES_TEST = /\b(tests?|suites?)\b/i
-const obligationsOf = (ctx) => new Set(ctx.story.criteria.flatMap((c, i) => (NAMES_TEST.test(c.text) || ctx.decisions.some((d) => d.question === testQuestion(c.text) && d.choice === TEST_OBLIGATION) ? [i] : [])))
+const NAMES_TEST = /^(an?|the)\s+(unit|integration|e2e|regression)\s+tests?\b|^(an?|the)\s+tests?\s+(for|that|of)\b|\b(add|write)s?\b[^.]{0,30}\btests?\b|\btests?\s+(pass|cover)/i
+const obligationsOf = (ctx) => new Set(ctx.story.criteria.flatMap((c, i) => (ctx.decisions.some((d) => d.question === testQuestion(c.text) && d.choice === TEST_OBLIGATION) || (!ctx.clarified && NAMES_TEST.test(c.text)) ? [i] : [])))
 const numberedCriteria = (ctx) => {
   const owed = obligationsOf(ctx)
   return ctx.story.criteria.map((c, i) => `${i}: ${c.text}${c.human_check ? ' [human check]' : ''}${owed.has(i) ? ' [test obligation]' : ''}`).join('\n') || '(none)'
@@ -400,10 +408,12 @@ const findingsSection = (ctx, fixing) => [
 const FRESH = 'Implement the story: build what the criteria above require, commit it, and return the result.'
 const CONTINUE = 'A worktree of an earlier attempt is in place, with its commits and what it left uncommitted: continue from it, do not start over, and fix every finding above.'
 const RESUME = 'An earlier session of this attempt stopped to ask a question, which the decisions above now settle. What it committed or left uncommitted is in the worktree: continue from it, do not start over.'
-const implPrompt = (ctx, wt, attempt, task) => `You implement ONE story of the feature "${feature}" in its own git worktree.
+// found: what the worktree step found when the worktree was not on
+// story/<key>, and what to do about it.
+const implPrompt = (ctx, wt, attempt, task, found) => `You implement ONE story of the feature "${feature}" in its own git worktree.
 
 ## Your worktree
-${wt} (branch story/${ctx.story.key}, cut from ${branch}). Work only there: cd into it first, and run every command there.
+${wt} (branch story/${ctx.story.key}, cut from ${branch}). Work only there: cd into it first, and run every command there.${found ? `\n${found}` : ''}
 
 ## The story
 ${storyText(ctx)}
@@ -558,7 +568,8 @@ ${BOARD}
 ## Rules
 - Exercise EVERY criterion by running the behaviour in ${laneDir}: call the endpoint, run the command, open the page with the dev-browser skill for browser criteria. Reading code is not a check.
 - A criterion marked [test obligation] is the lane's test author's: skip it, with ok true and the evidence "a test obligation".
-${checks.seed ? `- For a credential, run the seed command \`${checks.seed}\` in ${laneDir}: it prints what to sign in with. Never write into the stack's database yourself.\n` : ''}${commandsOf().length ? `- A criterion about a command is checked by running that command: ${commandsOf().join(', ')}.\n` : ''}- A [human check] criterion: exercise what you can; ok is true unless what you ran contradicts it. A human confirms it later.
+- The stack has no users until the seed runs${checks.seed ? `. For a credential, run the seed command as \`OMNI_STORY=${ctx.story.key} OMNI_RUN=${runId} sh -c ${quote(checks.seed)}\` in ${laneDir}: it prints what to sign in with` : ', and this run has no seed command'}. Never write into the stack's database yourself.
+${commandsOf().length ? `- A criterion about a command is checked by running that command: ${commandsOf().join(', ')}.\n` : ''}- A [human check] criterion: exercise what you can; ok is true unless what you ran contradicts it. A human confirms it later.
 - ok false only for a criterion the behaviour does not meet. Say what is wrong and where.
 
 ## Acceptance criteria (number: text)
@@ -652,6 +663,9 @@ const TESTS_SCHEMA = {
 const testsAdded = []
 const WRITE_TESTS = 'Write the story\'s regression tests by the policy above, commit them, and return the result.'
 const RESUME_TESTS = 'An earlier session stopped to ask a question, which the decisions above now settle. What it committed is in the lane worktree: continue from it, do not start over.'
+// The author asked once more, after its check came out red.
+const fixTests = (check, r) => `An earlier session committed tests in the lane worktree, and their check \`${check}\` ${ended(r)}
+The story itself passed its checks and its verifier. Fix the tests, never the production code, so that the check passes, commit the fix, and return the result with the check.`
 const authorPrompt = (ctx, base, confirmed, task) => `You write the lasting regression tests for one story of the feature "${feature}", with a fresh context.
 
 ## Your worktree
@@ -1010,9 +1024,12 @@ const stopped = async (key) => {
 // from then on a story that fails is only released.
 const errors = new Map()
 let repeated = false
+// An error as the breaker compares it: the story's key taken out where it
+// stands as a word of its own, so that US-1 is not taken out of US-10.
+const causeOf = (message, key) => message.replace(new RegExp(`(^|\\W)${key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?!\\w)`, 'g'), '$1<story>')
 const failed = async (key, e) => {
   const message = String((e && e.message) || e)
-  const cause = message.split(key).join('<story>')
+  const cause = causeOf(message, key)
   // Decided before any wait, in the order the chains threw.
   const first = repeated ? null : errors.get(cause)
   if (!repeated && first === undefined) errors.set(cause, key)
@@ -1078,18 +1095,22 @@ const recordDecisions = async (ctx, decisions) => {
 // implemented. Gives the worktree, else the story's outcome.
 const implement = async (key, rework) => {
   // A story sent back waited for this slot held where it failed, which kept
-  // its files busy: it goes back to the backlog and is claimed again at once.
-  // Past the hard cap too: a story left where it failed would be judged again
-  // with nothing changed.
-  if (rework) await step('move', { key, to: 'backlog' }, { past: true })
-  await step('claim', { key, stage: 'implementing' })
+  // its files busy: rework moves it to the backlog and claims it again in one
+  // helper call, so that no story planned on its files is claimed between
+  // the two. Past the hard cap too: a story left where it failed would be
+  // judged again with nothing changed.
+  if (rework) await step('rework', { key }, { past: true })
+  else await step('claim', { key, stage: 'implementing' })
   let ctx = await step('context', { key })
   if (ctx.attempt >= MAX_ATTEMPTS) return exhaust(key, ctx)
+  // A worktree an implementer left on another branch: a clean one is back on
+  // story/<key>, and the next implementer is told what to bring over.
   const wt = await step('worktree', { key })
+  if (wt.reason) log(`${key}: ${wt.reason}`)
   let task = wt.created ? FRESH : CONTINUE
   for (let asked = 0; ; asked++) {
     const attempt = ctx.attempt + 1
-    const r = await persist(key, 'the implementer', () => ask('impl', implPrompt(ctx, wt.path, attempt, task), { label: `impl:${key}`, phase: 'Deliver', schema: IMPL_SCHEMA }, MODELS[attempt >= 2 ? 'implRetry' : 'impl']))
+    const r = await persist(key, 'the implementer', () => ask('impl', implPrompt(ctx, wt.path, attempt, task, wt.reason), { label: `impl:${key}`, phase: 'Deliver', schema: IMPL_SCHEMA }, MODELS[attempt >= 2 ? 'implRetry' : 'impl']))
     if (!r) return noResult(key, `the implementer returned nothing, ${AGAIN_AFTER.length + 1} times`)
     await recordDecisions(ctx, r.decisions)
     if (r.status === 'needs_decision') {
@@ -1161,7 +1182,13 @@ const review = async (key, wt) => {
 // next attempt, or the story's outcome.
 const assess = async (key, wt) => {
   await step('claim', { key, stage: 'review' })
-  const verdict = await review(key, wt || (await step('worktree', { key })).path)
+  let path = wt
+  if (!path) {
+    const found = await step('worktree', { key })
+    if (found.reason) log(`${key}: ${found.reason}`)
+    path = found.path
+  }
+  const verdict = await review(key, path)
   if (verdict.outcome) return verdict
   if (verdict.pass) {
     await step('move', { key, to: 'reviewed' })
@@ -1307,12 +1334,23 @@ let laneStopped = null
 const LANE_CHECKS = ['fast', 'stack_up', 'stack']
 
 // A command run as a job in the lane worktree, to its end: one courier starts
-// it, and each one after waits for it within its Bash call.
+// it, and each one after waits for it within its Bash call. A wait that
+// throws, on a courier that failed or at the hard cap, stops the job first,
+// past the cap: the job would run on beside the lane's next pass.
 const job = async (key, name, cmd, past = false) => {
   const { id } = await step('job-start', { name, key, cmd, cwd: laneDir }, { past })
-  for (;;) {
-    const w = await step('job-wait', { id, maxSeconds: JOB_WAIT }, { key, past })
-    if (w.done) return { ok: w.result.ok === true, timedOut: w.result.timedOut === true, tail: String(w.tail || '').trim() }
+  try {
+    for (;;) {
+      const w = await step('job-wait', { id, maxSeconds: JOB_WAIT }, { key, past })
+      if (w.done) return { ok: w.result.ok === true, timedOut: w.result.timedOut === true, tail: String(w.tail || '').trim() }
+    }
+  } catch (e) {
+    try {
+      await step('job-kill', { id }, { key, past: true })
+    } catch (k) {
+      log(`${key}: the job ${id} could not be stopped: ${(k && k.message) || k}`)
+    }
+    throw e
   }
 }
 const ended = (r) => `${r.timedOut ? 'ran past its limit' : 'failed'}. The end of its output:\n\`\`\`\n${r.tail}\n\`\`\``
@@ -1322,7 +1360,13 @@ const ended = (r) => `${r.timedOut ? 'ran past its limit' : 'failed'}. The end o
 // attempt used.
 const stopLane = async (key, why, more = '') => {
   laneStopped = why
-  await step('release', { key })
+  // A release that fails leaves the story held in testing, which the next
+  // run's start releases: the lane stops all the same.
+  try {
+    await step('release', { key })
+  } catch (e) {
+    notes.push(`${key} could not be released when the lane stopped, and stays in testing until the next run's start releases it: ${(e && e.message) || e}`)
+  }
   let thread = null
   try {
     thread = (await step('thread-open', { title: `Run ${runId}: the lane stopped`, body: `The lane stopped for the rest of run ${runId}, on ${key}: ${why}.${more ? `\n\n${more}` : ''}\n\nThis is not the story's trouble: ${key} is back in reviewed with no attempt used, and a story that reaches the lane after it waits in reviewed for the next run, while implementers and reviewers finish what they hold. Fix the cause, then start a new run.\n` }, { label: 'lane-stop' })).thread
@@ -1334,20 +1378,32 @@ const stopLane = async (key, why, more = '') => {
   return { key, outcome: 'lane_stopped', detail: why }
 }
 
+// Rebase conflicts that sent each story back in this run.
+const conflicts = new Map()
+
 // A story's turn in the lane: lane-prepare rebases it onto the tip and checks
 // it out, detached, in the lane worktree; its checks run there as jobs, and a
-// failed one once more on the base; the verifier runs it; the test author
-// writes its tests; lane-clean, so that the author's check runs on exactly
-// what lands; that check; lane-land. A failure sends the story back for the
-// next attempt, as a failed review does, and puts the lane back at the tip,
-// with the stack rebuilt there when it holds the story's build.
+// failed one once more on the base, after stack_reset for a stack check; the
+// verifier runs it; the test author writes its tests; lane-clean, so that the
+// author's check runs on exactly what lands; that check, and lane-clean again
+// for what it left; lane-land. A failure sends the story back for the next
+// attempt, as a failed review does, and puts the lane back at the tip, with
+// the stack reset and rebuilt there when it holds the story's build. The
+// test author's own trouble costs the verified story nothing: a red check
+// gets the author once more, with its output, and tests whose check is still
+// red, or that lane-land refuses for the state they left the lane in, are
+// dropped, and the story lands without them.
 const laneStory = async (key) => {
   if (laneStopped) return { key, outcome: 'reviewed', detail: 'the lane stopped earlier in this run, so the story waits in reviewed for the next run' }
   await step('claim', { key, stage: 'testing' })
   const prep = await step('lane-prepare', { key })
   // An outcome but ready leaves the lane as it was.
   if (prep.outcome === 'infra') return stopLane(key, `lane-prepare found trouble that is not the story's: ${prep.reason}`)
-  if (prep.outcome === 'conflict') return sendBack(key, 'testing', [{ text: `rebase conflict in ${prep.files.join(', ')}: story/${key} no longer rebases onto ${branch}; rebase it onto ${branch} in its worktree and resolve the conflicts`, files: prep.files }], false, `a rebase conflict in ${prep.files.join(', ')}`)
+  if (prep.outcome === 'conflict') {
+    const n = (conflicts.get(key) || 0) + 1
+    conflicts.set(key, n)
+    return sendBack(key, 'testing', [{ text: `rebase conflict in ${prep.files.join(', ')}: story/${key} no longer rebases onto ${branch}; rebase it onto ${branch} in its worktree and resolve the conflicts`, files: prep.files }], n > CONFLICTS, `a rebase conflict in ${prep.files.join(', ')}${n > CONFLICTS ? `, conflict ${n} of this run, past the ${CONFLICTS} that use no attempt` : ''}`)
+  }
   if (prep.outcome === 'missing') return sendBack(key, 'testing', [{ text: `${prep.reason}: nothing to land on ${branch}; start again from ${branch}`, files: [] }], false, prep.reason)
   if (prep.outcome !== 'ready') return sendBack(key, 'testing', [{ text: prep.reason, files: prep.files || [] }], true, `in the lane: ${prep.reason}`)
   const base = prep.base
@@ -1355,12 +1411,19 @@ const laneStory = async (key) => {
   // stack_up on the base or the rebuild.
   let stack = false
   let reset = false
+  // stack_reset, when the project sets one, clears what a story left in the
+  // stack, such as a migration in its database, before the stack is built
+  // from a tree without the story, whose stack_up would fail on it.
   const toTip = async (past = false) => {
     if (reset) return
     await step('lane-reset', {}, { key, past })
     reset = true
     if (!stack) return
     stack = false
+    if (checks.stack_reset) {
+      const cleared = await job(key, 'stack_reset', checks.stack_reset, past)
+      if (!cleared.ok) log(`${key}: the stack did not reset: \`${checks.stack_reset}\` ${ended(cleared)}`)
+    }
     const r = await job(key, 'rebuild', checks.stack_up, past)
     log(r.ok ? `${key}: the stack is rebuilt from ${branch}` : `${key}: the stack did not rebuild from ${branch}: \`${checks.stack_up}\` ${ended(r)}`)
   }
@@ -1373,13 +1436,13 @@ const laneStory = async (key) => {
       if (name === 'stack_up') stack = true
       const run = await job(key, name, checks[name])
       if (run.ok) continue
-      // Once more on the base, the tip without the story; the stack check
-      // after a stack_up there, since until then the stack holds the story's
-      // build.
+      // Once more on the base, the tip without the story: a stack check after
+      // stack_reset, and the stack check after a stack_up there, since until
+      // then the stack holds the story's build and what it left.
       await step('lane-base', {}, { key })
       let which = null
       let again = null
-      for (const n of name === 'stack' && checks.stack_up ? ['stack_up', 'stack'] : [name]) {
+      for (const n of [...(name !== 'fast' && checks.stack_reset ? ['stack_reset'] : []), ...(name === 'stack' && checks.stack_up ? ['stack_up', 'stack'] : [name])]) {
         which = n
         if (n === 'stack_up') stack = false
         again = await job(key, n, checks[n])
@@ -1387,7 +1450,8 @@ const laneStory = async (key) => {
       }
       if (!again.ok) {
         await toTip()
-        return stopLane(key, `the ${name} check failed on it, and the ${which} check on ${branch} without it`, `On ${branch} at ${base.slice(0, 7)}, \`${checks[which]}\` ${ended(again)}`)
+        const state = which === 'fast' ? '' : '\n\nIf a story left state on the stack, make stack_reset (or stack_up) reset it: a migration of a story the lane sent back, for one, stays in the stack\'s database, and fails every stack_up of a tree without it.'
+        return stopLane(key, `the ${name} check failed on it, and the ${which} check on ${branch} without it`, `On ${branch} at ${base.slice(0, 7)}, \`${checks[which]}\` ${ended(again)}${state}`)
       }
       return fail([{ text: `The ${name} check (\`${checks[name]}\`) ${ended(run)}\nIt passes on ${branch} without the story.`, files: [] }], `its ${name} check, which passes on ${branch} without it`)
     }
@@ -1407,47 +1471,81 @@ const laneStory = async (key) => {
 
     const confirmed = ctx.story.criteria.filter((c, i) => !owed.has(i)).map((c) => c.text)
     let tctx = ctx
-    let task = WRITE_TESTS
-    let tests = null
-    for (let asked = 0; !tests; ) {
-      const r = await persist(key, 'the test author', () => ask('tests', authorPrompt(tctx, base, confirmed, task), { label: `tests:${key}`, phase: 'Lane', schema: TESTS_SCHEMA }))
-      if (!r) {
-        await toTip()
-        return noResult(key, `the test author returned nothing, ${AGAIN_AFTER.length + 1} times`)
-      }
-      if (r.status === 'needs_decision') {
-        const answer = await question(tctx, r, 'the test author', laneDir, 'tests-q', asked++)
-        if (!answer.settled) {
+    let asked = 0
+    // The test author, run again after each question the council settles:
+    // its result, or how the story's turn ends.
+    const author = async (task) => {
+      for (;;) {
+        const r = await persist(key, 'the test author', () => ask('tests', authorPrompt(tctx, base, confirmed, task), { label: `tests:${key}`, phase: 'Lane', schema: TESTS_SCHEMA }))
+        if (!r) {
           await toTip()
-          return { key, outcome: 'needs_decision', thread: answer.thread }
+          return { end: await noResult(key, `the test author returned nothing, ${AGAIN_AFTER.length + 1} times`) }
         }
-        tctx = await step('context', { key })
-        task = RESUME_TESTS
-        continue
+        if (r.status === 'needs_decision') {
+          const answer = await question(tctx, r, 'the test author', laneDir, 'tests-q', asked++)
+          if (!answer.settled) {
+            await toTip()
+            return { end: { key, outcome: 'needs_decision', thread: answer.thread } }
+          }
+          tctx = await step('context', { key })
+          task = RESUME_TESTS
+          continue
+        }
+        if (r.status === 'found_defect') {
+          const d = r.defect || {}
+          return { end: await fail([{ text: `The test author's test ${d.test || '(unnamed)'} found a defect. Observed: ${d.observed || '(not given)'}. Expected: ${d.expected || '(not given)'}`, files: [] }], 'its tests, which found a defect') }
+        }
+        if (r.status !== 'done') {
+          const { thread } = await step('thread-open', { key, title: `${key}: the test author is blocked`, body: `${r.blockers || r.status}\n` })
+          await toTip()
+          return { end: { key, outcome: 'blocked', thread } }
+        }
+        return { tests: r }
       }
-      if (r.status === 'found_defect') {
-        const d = r.defect || {}
-        return fail([{ text: `The test author's test ${d.test || '(unnamed)'} found a defect. Observed: ${d.observed || '(not given)'}. Expected: ${d.expected || '(not given)'}`, files: [] }], 'its tests, which found a defect')
-      }
-      if (r.status !== 'done') {
-        const { thread } = await step('thread-open', { key, title: `${key}: the test author is blocked`, body: `${r.blockers || r.status}\n` })
-        await toTip()
-        return { key, outcome: 'blocked', thread }
-      }
-      tests = r
     }
-
-    const cleaned = await step('lane-clean', {}, { key })
-    if (cleaned.count) log(`${key}: lane-clean threw away ${cleaned.count} file${cleaned.count === 1 ? '' : 's'} the test author left uncommitted: ${cleaned.discarded.join(', ')}`)
-    const check = String(tests.check || '').trim()
-    if (check) {
+    // lane-clean, so that the author's check runs on exactly what lands; that
+    // check; and lane-clean again for what the check left, such as a report.
+    // Gives the check and its run when it is red. An author asked once more
+    // that gives no check is held to the check it gave before.
+    const checkTests = async (tests, before = '') => {
+      const cleaned = await step('lane-clean', {}, { key })
+      if (cleaned.count) log(`${key}: lane-clean threw away ${cleaned.count} file${cleaned.count === 1 ? '' : 's'} the test author left uncommitted: ${cleaned.discarded.join(', ')}`)
+      const check = String(tests.check || before).trim()
+      if (!check) return null
       const run = await job(key, 'tests', check)
-      if (!run.ok) return fail([{ text: `The test author's check (\`${check}\`) ${ended(run)}`, files: [] }], 'the test author\'s check')
+      const after = await step('lane-clean', {}, { key })
+      if (after.count) log(`${key}: lane-clean threw away ${after.count} file${after.count === 1 ? '' : 's'} the test author's check left: ${after.discarded.join(', ')}`)
+      return run.ok ? null : { check, run }
     }
-    const landed = await step('lane-land', { key, base })
+    let written = await author(WRITE_TESTS)
+    if (written.end) return written.end
+    // Why the story lands without its tests, once they are dropped.
+    let without = null
+    let red = await checkTests(written.tests)
+    if (red) {
+      log(`${key}: the test author's check \`${red.check}\` ${red.run.timedOut ? 'ran past its limit' : 'failed'}; the author is asked once more, with its output`)
+      written = await author(fixTests(red.check, red.run))
+      if (written.end) return written.end
+      red = await checkTests(written.tests, red.check)
+      if (red) {
+        without = `the test author's check \`${red.check}\` ${red.run.timedOut ? 'ran past its limit' : 'failed'} again, after the author was asked once more`
+        await step('lane-candidate', { candidate: prep.candidate }, { key })
+      }
+    }
+    let landed = await step('lane-land', { key, base })
+    if (!landed.landed && landed.inLane && !without) {
+      without = `lane-land refused the lane the test author left: ${landed.reason}`
+      await step('lane-candidate', { candidate: prep.candidate }, { key })
+      landed = await step('lane-land', { key, base })
+    }
     if (!landed.landed) return fail([{ text: `It did not land: ${landed.reason}`, files: [] }], `its landing: ${landed.reason}`)
     tip = landed.final
-    for (const a of tests.added || []) if (a && a.test) testsAdded.push(`[${key}] ${a.test}${a.file ? ` (${a.file})` : ''}`)
+    if (without) {
+      notes.push(`${key} landed without regression tests: ${without}.`)
+      log(`${key}: landed without regression tests: ${without}`)
+    } else {
+      for (const a of written.tests.added || []) if (a && a.test) testsAdded.push(`[${key}] ${a.test}${a.file ? ` (${a.file})` : ''}`)
+    }
     log(`${key}: landed on ${branch} at ${tip.slice(0, 7)}`)
     return { key, outcome: 'done' }
   } catch (e) {
@@ -1469,8 +1567,16 @@ const laneStory = async (key) => {
 const journeys = async () => {
   const landed = outcomes.filter((o) => o.outcome === 'done').map((o) => o.key)
   if (!landed.length) return ['no story landed in this run, so no journeys were run']
+  // The journeys need the lane at the tip; without it the run still finishes,
+  // and its report says why they did not run.
   try {
     await step('lane-reset', {})
+  } catch (e) {
+    if (e && e.atCap) return [`not run: the run reached its agent cap of ${HARD_CAP}`]
+    log(`The lane worktree could not be put back at the tip for the journeys check: ${(e && e.message) || e}`)
+    return [`not run: the lane worktree could not be put back at the tip of ${branch}: ${(e && e.message) || e}`]
+  }
+  try {
     const r = await ask('final', finalPrompt(landed), { label: 'final', phase: 'Report', schema: FINAL_SCHEMA })
     if (!r) return ['the journeys check returned nothing']
     return [`${r.healthy ? 'healthy' : 'NOT healthy'}: ${r.report || ''}`.trim(), ...(r.journeys || []).map(String)]

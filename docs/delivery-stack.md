@@ -61,7 +61,12 @@ files: it reads the checkout's HEAD at its start, and keeps its own state in
   nodes or decisions changed since its last check. A criterion that names a
   test becomes a test obligation, which the lane's test author owns and the
   verifier skips; the omni-stories skill writes test obligations under
-  `Tests:` in the story's text instead. A minor gap takes its recommendation.
+  `Tests:` in the story's text instead. Once clarity has checked a story, its
+  obligations are those it recorded, and nothing else: "The Test connection
+  button shows Connected" is behaviour. A story clarity never checked, such
+  as one implemented before it ran, is read for a test as the thing
+  delivered: "A regression test covers ...", "Add a test ...", "Tests cover
+  ...". A minor gap takes its recommendation.
   The 3 blocking gaps of most impact go to the council, and the rest take
   their recommendation.
 - **The council** answers a question before the human is asked: clarity's
@@ -89,7 +94,12 @@ and testing.
    from an earlier attempt is kept, with its commits, and its story is picked
    first. From the second attempt on, the implementer runs on `implRetry`,
    with every earlier finding by attempt. Implementers write no tests and never
-   start the stack.
+   start the stack. A worktree an implementer left with another branch or a
+   detached HEAD checked out goes back on `story/<key>` when it is clean, and
+   the next implementer is told which commits to bring over with
+   `git cherry-pick`; one with work in progress (uncommitted changes, a rebase
+   in progress, an `index.lock`) stays as it is, and the next implementer is
+   told what to do first.
 2. **Review,** at most `reviewers` stories at once. A read-only reviewer gives a
    verdict on every criterion and lists every defect, and the script decides
    the review from those. Test obligations are not judged.
@@ -103,26 +113,42 @@ and testing.
      stack that `stack_up` started.
    - A test author writes the story's regression tests and commits them on the
      lane's detached HEAD. `lane-clean` throws away what it left uncommitted,
-     so that its check, which runs next as a job, runs on exactly what lands.
+     so that its check, which runs next as a job, runs on exactly what lands,
+     and again after the check, for what the check left, such as a report.
    - `lane-land` lands the story, moves it to done, and removes its worktree
      and `story/<key>`.
 
+   The test author's trouble costs the verified story nothing. A check of its
+   tests that comes out red gets the author once more, with the check's
+   output. When the check is still red, or `lane-land` refuses the lane the
+   author left (a branch checked out, files a process it started wrote), the
+   tests are dropped: `lane-candidate` puts the lane back at the story as its
+   checks and verifier found it, the story lands without them, and the
+   report notes "landed without regression tests" with the reason. A defect
+   its tests find is the story's, and uses an attempt.
+
 What sends a story back:
 
-- A failed review or verification, or a failed check of the test author's
-  tests, uses one of the story's 3 attempts since the human's latest answer.
-  The story stays held where it failed until an implementer's slot is free,
-  ahead of new stories, and its next implementer goes on in its worktree.
-  After the third, the story is blocked on a thread with every attempt's
-  findings.
-- A failed lane check runs once more on the tip without the story. When it
-  passes there, the failure is the story's, and uses an attempt. When it fails
-  there too, the trouble is not the story's: the lane stops for the rest of the
-  run, with one thread for the run, and the story goes back to reviewed with no
-  attempt used. Implementers and reviewers finish what they hold.
+- A failed review or verification, or a defect the test author's tests find,
+  uses one of the story's 3 attempts since the human's latest answer. The
+  story stays held where it failed until an implementer's slot is free, ahead
+  of new stories; then one helper step, `rework`, moves it to the backlog and
+  claims it again, and its next implementer goes on in its worktree. After the
+  third, the story is blocked on a thread with every attempt's findings.
+- A failed lane check runs once more on the tip without the story, after
+  `stack_reset` when the check is `stack_up` or `stack` (see The checks). When
+  it passes there, the failure is the story's, and uses an attempt. When it
+  fails there too, the trouble is not the story's: the lane stops for the rest
+  of the run, with one thread for the run, and the story goes back to reviewed
+  with no attempt used. Implementers and reviewers finish what they hold. For
+  a stack check, the thread names the likely cause: a story left state on the
+  stack, which `stack_reset` (or `stack_up`) should reset.
 - A rebase conflict sends the story back with no attempt used, to rebase and
-  resolve in its worktree. Uncommitted changes there, or another branch
-  checked out, use an attempt.
+  resolve in its worktree, twice per story in a run: from the third, a
+  conflict uses an attempt, so that one resolved by a merge, which the lane's
+  rebase meets again, cannot cycle. Uncommitted changes there, a rebase left
+  in progress, an `index.lock`, or another branch checked out, use an
+  attempt.
 - An agent that returns nothing is asked again after 30 s and after 2 minutes,
   and then its story goes back to where it waited, with no attempt used. When
   agents return nothing for 3 stories in a row, the run takes no new story and
@@ -132,9 +158,12 @@ What sends a story back:
   new story and opens one thread for the run.
 
 After a failure in the lane, the lane worktree goes back to the tip, and when
-the stack holds the story's build, `stack_up` runs again there, so that the
-test stack is left on the build of `deliver/<slug>`. A story that fails at
-`fast` never started the stack, and nothing is rebuilt.
+the stack holds the story's build, `stack_reset` (when set) and `stack_up` run
+again there, so that the test stack is left on the build of `deliver/<slug>`,
+without what the story left in it. A story that fails at `fast` never started
+the stack, and nothing is rebuilt. When the lane's turn stops on an error, a
+check still running is stopped first, so that it never runs beside the next
+story's checks.
 
 ## Landing on deliver/<slug>
 
@@ -176,13 +205,19 @@ prompts leave it out.
 | `fast` | the lane, as a job, and the journeys check | the project's own tests and checks |
 | `stack_up` | the lane, as a job | builds and starts the test stack from the lane worktree, and builds it again after a failure |
 | `stack` | the lane, as a job | the tests that need the stack |
+| `stack_reset` | the lane, as a job | resets the test stack's state, such as its database, before a stack check runs again on `deliver/<slug>` and before the stack is rebuilt after a failure |
 | `seed` | the verifier | a credential on the test stack: it prints what to sign in with |
 | `lint` | the verifier | a criterion about lint, which the verifier checks by running it, as it does `fast` and `stack` |
+
+Every check the lane runs has `OMNI_STORY` (the story's key) and `OMNI_RUN`
+(the run) in its environment, and the verifier runs the seed with them too,
+so that a project can tell stories and runs apart: a seed that makes a user
+of its own for each story, for one.
 
 The omni CLI on main requires `fast`, `stack_up` and `stack`, and gives only
 those three. The branch `omni-checks-optional` makes every check optional and
 passes the others through. Until it is merged, `args.checks` is how a run gets
-`seed` and `lint`.
+`stack_reset`, `seed` and `lint`.
 
 Every check runs as a job: a detached supervisor runs the command in the lane
 worktree, in a process group of its own and with no standard input, and logs
@@ -227,7 +262,8 @@ lock up. When the post fails, the file still holds the report.
 
 The report has:
 
-- the run's notes, such as why it stopped taking stories;
+- the run's notes, such as why it stopped taking stories, and the stories
+  that landed without regression tests, with the reason;
 - the stories landed on `deliver/<slug>`, with their commits and the command
   that brings them in;
 - the blocked stories, with their threads;
@@ -242,11 +278,12 @@ The report has:
 ## Limits
 
 - **The agent cap.** The runtime stops a workflow at 1000 agent calls,
-  couriers included, and one story has taken close to 60. A run takes a new
-  story only while its calls leave room under 900 for the stories in flight,
-  at 60 each, and stops a story that reaches 960 all the same, released with
-  no attempt used. A long feature takes more than one run: the report says
-  when a run stopped for the cap, and the next run carries on.
+  couriers included, and one story has taken 89, through three failed passes
+  of the lane. A run takes a new story only while its calls leave room under
+  900 for the stories in flight, at 90 each, and stops a story that reaches
+  960 all the same, released with no attempt used. A long feature takes more
+  than one run: the report says when a run stopped for the cap, and the next
+  run carries on.
 - **Small machines.** The runtime runs at most min(16, CPUs - 2) agents at
   once, couriers included. With 4 CPUs that is 2, and a courier waiting on a
   check holds one of them. The run still finishes, just slowly.
@@ -301,13 +338,16 @@ rows live in the test database until `make test-stack-down` removes its
 volumes, and a NAME used before fails, since a user's email is unique.
 
 `.omni.toml` does not set it as the `seed` yet, so a run gets it, with a new
-NAME each time, through its args:
+NAME each time, through its args, with the `stack_reset` the next section
+explains:
 
 ```json
-{"feature": "<name>", "checks": {"seed": "make test-stack-seed NAME=lane$(date +%s)", "lint": "make lint"}}
+{"feature": "<name>", "checks": {"stack_reset": "make test-stack-down", "seed": "make test-stack-seed NAME=lane$(date +%s)", "lint": "make lint"}}
 ```
 
-Without a seed, the verifier has no credential on the test stack.
+Without a seed, the verifier has no credential on the test stack. The seed
+runs with `OMNI_STORY` and `OMNI_RUN` set, but a story can run it more than
+once in a run, so the NAME above takes the time as well.
 
 ### Bringing the test stack down
 
@@ -324,7 +364,14 @@ The API applies its migrations on start, and refuses to start on a database
 that holds a migration it does not carry, or one that changed after it was
 applied. So a story the lane sends back after its `stack_up` leaves its
 migrations in the test database, which `deliver/<slug>` never got, and from
-then on `stack_up` fails for every tree without them:
+then on `stack_up` fails for every tree without them. That is what
+`stack_reset` is for: the lane runs it before a stack check runs again on the
+base, and before it rebuilds the stack after a failure, so that both start
+from an empty database and the failure stays the story's. With
+`make test-stack-down` as `stack_reset`, each reset also drops the build
+caches, and the `stack_up` after it compiles the test binaries again.
+
+Without a `stack_reset`:
 
 - the rebuild after the failure fails, and the next story's `stack_up` fails
   on the story and on the base, which stops the lane, as trouble that is not
@@ -333,7 +380,7 @@ then on `stack_up` fails for every tree without them:
   since the rerun on the base meets its migration, and it does so again in
   every run after, with no attempt used.
 
-`docker compose -p omnistate-test logs api` shows the cause: `migration <n> was
+The lane-stop thread names that likely cause, and
+`docker compose -p omnistate-test logs api` shows it: `migration <n> was
 previously applied but is missing in the resolved migrations`. Run
-`make test-stack-down` before the next run. Until this repo's `stack_up` resets
-the test database itself, a story in the second case needs the human.
+`make test-stack-down` before the next run.
