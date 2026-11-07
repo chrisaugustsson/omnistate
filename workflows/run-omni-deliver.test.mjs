@@ -132,6 +132,21 @@ test("a session that emits no event for the stall limit is stopped and returns n
   assert.ok(await gone(s.calls()[0].pid));
 });
 
+test("with no limit set, a session that emits no event is stopped after 30 minutes, not sooner", { timeout: 20000 }, async (t) => {
+  const s = scratch(t);
+  s.env.FAKE_CLAUDE_HANG = "silent";
+  const lines = [];
+  const agent = makeAgent({ cwd: s.root, runDir: s.runDir, env: s.env, log: (m) => lines.push(m) });
+  // Mocked timers stand in for the half hour; the session's process is real.
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+
+  const out = agent("Build it.", { label: "impl:US-1", role: "impl", schema: { type: "object", properties: {} } });
+  t.mock.timers.tick(30 * 60000);
+
+  assert.equal(await out, null);
+  assert.match(lines.at(-1), /^impl:US-1: timed out after \d+s, with no event for 30 min$/);
+});
+
 test("a stopped session that ignores SIGTERM gets SIGKILL 10 s later", { timeout: 30000 }, async (t) => {
   const s = scratch(t);
   s.env.FAKE_CLAUDE_HANG = "silent";

@@ -394,7 +394,9 @@ Return raw structured data only.`
     let output = ''
     let timedOut = false
     let killer = null
-    const child = cp.spawn(cmd, { cwd, shell: true, detached: true })
+    // No stdin: a command that reads it ends at once, where an open pipe that
+    // nothing writes to held it until its limit.
+    const child = cp.spawn(cmd, { cwd, shell: true, detached: true, stdio: ['ignore', 'pipe', 'pipe'] })
     if (child.pid) groups.add(child.pid)
     const signal = (sig) => { try { process.kill(-child.pid, sig) } catch {} }
     const timer = setTimeout(() => {

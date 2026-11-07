@@ -38,7 +38,8 @@ in the run's args sets another for its name, in minutes (`fast`, `stack_up`,
 `--args '{"timeouts":{"stack":60}}'`. A command still running at its limit is
 stopped with everything it started (its process group gets SIGTERM, then
 SIGKILL 10 s later) and counts as failed; its output, which the finding
-quotes, ends with the limit it ran past.
+quotes, ends with the limit it ran past. A command gets no standard input, so
+one that reads it sees the end at once instead of waiting for its limit.
 
 When a lane fails after `stack_up` ran (the stack did not start, the stack
 command failed, a criterion failed, the test author found a defect, or the

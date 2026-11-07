@@ -16,7 +16,7 @@
 //
 // Every session has a time limit by its role, in minutes: clarity 20, impl 90,
 // review 30, verify 45, tests 60, wrap 20, council 20. A session that emits no
-// event for 15 minutes (stall) is stopped as well. A stopped session's process
+// event for 30 minutes (stall) is stopped as well. A stopped session's process
 // group gets SIGTERM, then SIGKILL 10 s later, and the call returns null, as a
 // failed one does. OMNI_DELIVER_TIMEOUTS overrides any of them by name, as
 // JSON in minutes ('{"impl":120}'), and so does `timeouts` in --args, which
@@ -39,9 +39,11 @@ import { fileURLToPath } from "node:url";
 const scriptPath = fileURLToPath(new URL("./omni-deliver.js", import.meta.url));
 
 // Minutes a session may run, by the role the workflow gives it, and without an
-// event (stall). The stall limit is generous: Gas Town found that killing a
-// healthy worker costs more than finding a stalled one late.
-const TIMEOUTS = { clarity: 20, impl: 90, review: 30, verify: 45, tests: 60, wrap: 20, council: 20, stall: 15 };
+// event (stall). The stall limit is generous, at Gas Town's figure: a session
+// waiting on a long background command emits nothing while it waits, and Gas
+// Town found that killing a healthy worker costs more than finding a stalled
+// one late.
+const TIMEOUTS = { clarity: 20, impl: 90, review: 30, verify: 45, tests: 60, wrap: 20, council: 20, stall: 30 };
 const KILL_GRACE_MS = 10000;
 
 /** The limits OMNI_DELIVER_TIMEOUTS sets, then those of `timeouts` in --args, which win; minutes by name. */

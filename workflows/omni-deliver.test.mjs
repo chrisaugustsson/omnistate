@@ -1521,6 +1521,19 @@ test("a lane command running past its time limit is stopped with everything it s
   assert.throws(() => process.kill(Number(readFileSync(childPid, "utf8")), 0), { code: "ESRCH" }, "the command's own child was stopped with it");
 });
 
+test("a lane command that reads standard input gets none, so it ends at once instead of waiting for its time limit", { timeout: 20000 }, async (t) => {
+  const dirs = scratch(t, [story("US-1", { status: "reviewed" })]);
+  dirs.checks({ fast: "cat", stack_up: "true", stack: "true" });
+  reviewed(dirs, "US-1");
+  const lines = [];
+  const { agent } = implAgent({ "US-1": stopped });
+
+  await workflow({ feature: "board", timeouts: { fast: seconds(5) } }, agent, () => {}, (fns) => Promise.all(fns.map((f) => f())), (m) => lines.push(m));
+
+  assert.ok(lines.includes("lane:US-1: fast passed"), lines.filter((l) => l.startsWith("lane:")).join("\n"));
+  assert.equal(dirs.story("US-1").status, "done");
+});
+
 test("a call that hangs fails at the call limit with an error that says it timed out, so a hung post of the report leaves the run to end unposted", { timeout: 20000 }, async (t) => {
   scratch(t);
   process.env.FAKE_OMNI_HANG = "post";
