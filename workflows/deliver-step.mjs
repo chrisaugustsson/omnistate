@@ -5,8 +5,8 @@
 // The script reaches this helper through a courier agent, which writes the
 // step's payload to a file with the Write tool and runs one of:
 //
-//   node ~/.claude/omni/deliver-step.mjs start --op <opId> --feature <name> [--force]
-//   node ~/.claude/omni/deliver-step.mjs <step> --run <runId> --payload <root>/.omni/runs/<runId>/in/<opId>.json
+//   node ~/.claude/omni/deliver-step.mjs start --op <opId> --feature <name> [--force] --hash <hash>
+//   node ~/.claude/omni/deliver-step.mjs <step> --run <runId> --payload <root>/.omni/runs/<runId>/in/<opId>.json --hash <hash>
 //
 // The courier protocol (tasks/omni-deliver-native-design.md):
 // - The payload file holds JSON.stringify(obj) of the script's object, which
@@ -14,29 +14,40 @@
 //   newline if there is one, parses it and deletes the file. start has no run
 //   or root yet, so its object, {opId, feature, force} in that order, comes as
 //   flags.
+// - --hash is fnv1a of that payload text, as the script computed it. The
+//   helper compares it with the payload it got before anything else, even
+//   before it looks in the record of applied ops: a payload the courier copied
+//   wrong is refused, and nothing is written or recorded.
 // - Every call prints exactly one line, JSON.stringify({ body, hash }) with
 //   hash = fnv1a(JSON.stringify(body)), and exits 0. body.ok says whether the
 //   step worked, body.error why not, and body.received is fnv1a of the payload
 //   text, so the script can tell when a courier changed either side. Any other
 //   exit code means the helper itself crashed.
 // - A step that writes records its body under its opId in
-//   .omni/runs/<runId>/applied.json, and a repeat of that opId gets the
-//   recorded body back without running again: a retried courier never writes
-//   twice.
-// - Every call with --run refreshes the heartbeat in .omni/run.lock.
+//   .omni/runs/<runId>/applied.json once it worked, and a repeat of that opId
+//   gets the recorded body back without running again: a retried courier
+//   never writes twice. Before it writes, the step records a pending marker
+//   there. A repeat that finds the marker, after a helper that was killed or a
+//   write that failed, checks the board for what the first try did and does
+//   only the rest. A repeat of an opId with another payload is an error.
+// - .omni/run.lock names the run that holds the checkout. Every call of that
+//   run refreshes its heartbeat, and a call of a run that no longer holds it
+//   fails; only a repeat is answered without it.
+// - A start repeated by the same session within 5 minutes, before its run
+//   made any call, gets the first start's body back; never with --force.
 //
 // The steps, each with its payload and the fields its body has besides ok and
 // received:
 // - start, from flags: run, root, branch, tip, lane, checks, stories, released, log
 // - list {}: stories, pickable
-// - context {key}: story, decisions, attempt, findings, uncounted, docs, threads
+// - context {key}: story, decisions, attempt, findings, uncounted, earlier, docs, threads
 // - claim {key, stage}, release {key}, move {key, to}, block {key} and
 //   unblock {key}: key, status, blocked, holder
 // - finding {key, stage, findings: [{text, files}], counts}: key, attempt
 // - decision {key, question, choice, by}: key
 // - files {key}: key, files
 // - thread-open {title, body, key?}: thread, and key when given
-// - unblock-pass {}: unblocked
+// - unblock-pass {}: unblocked, log
 // - worktree {key}: key, path, branch, created
 // - sleep {seconds}: seconds
 // - clarity-pending {}: keys
@@ -71,10 +82,13 @@ const MAX_SLEEP_S = 480
 // A limit as the errors show it: minutes, or seconds below a minute.
 const span = (ms) => (ms >= 60000 ? `${+(ms / 60000).toFixed(1)} min` : `${+(ms / 1000).toFixed(1)}s`)
 
+// A long story list or doc read passes the 1 MB that execFileSync takes by default.
+const MAX_BUFFER = 64 * 1024 * 1024
+
 const run = (cmd, argv, opts = {}) => {
   const timeout = opts.timeout || CALL_MS
   try {
-    return execFileSync(cmd, argv, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], ...opts, timeout })
+    return execFileSync(cmd, argv, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: MAX_BUFFER, ...opts, timeout })
   } catch (e) {
     if (e && e.code === 'ETIMEDOUT') throw new Error(`\`${[cmd, ...argv].join(' ')}\` timed out after ${span(timeout)}`)
     throw e
@@ -92,6 +106,14 @@ const alive = (pid) => {
   try { process.kill(pid, 0); return true } catch (e) { return e.code === 'EPERM' }
 }
 const short = (sha) => sha.slice(0, 7)
+const real = (p) => { try { return fs.realpathSync(p) } catch { return p } }
+// True when git in dir works in dir itself. A worktree folder that lost its
+// .git file is not: git there finds a repository around it, and a reset or
+// clean would hit that one.
+const ownTree = (dir) => {
+  const top = (tryRun('git', ['-C', dir, 'rev-parse', '--show-toplevel']) || '').trim()
+  return top !== '' && real(top) === real(dir)
+}
 
 // ---- files under .omni/ ----------------------------------------------------
 const readJson = (file) => { try { return JSON.parse(fs.readFileSync(file, 'utf8')) } catch { return null } }
@@ -145,8 +167,10 @@ const recordedOp = (root, runId, opId) => {
 // On macOS the chain is claude, then the courier's shell (/bin/zsh), then this
 // node; a shell that runs its last command with exec leaves claude as the
 // parent. So it is the nearest ancestor that is not a shell.
-// OMNI_DELIVER_SESSION_PID sets it, for tests. null when ps cannot tell: such a
-// lock goes stale only by its heartbeat.
+// That walk is checked on macOS only. OMNI_DELIVER_SESSION_PID sets the pid
+// instead, for tests and for a machine where the walk finds the wrong
+// process. null when ps cannot tell: such a lock goes stale only by its
+// heartbeat.
 const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh', 'mksh', 'fish', 'tcsh', 'csh', 'ash'])
 const sessionPid = () => {
   const given = process.env.OMNI_DELIVER_SESSION_PID
@@ -169,16 +193,21 @@ const staleness = (held) => {
   if (Number.isFinite(beat) && Date.now() - beat > STALE_MS) return `its last heartbeat, ${held.heartbeat}, is more than 2 hours old`
   return null
 }
-// Every call of the run says it is alive. A lock that another run holds now,
-// after a takeover, is left as it is.
-const refreshHeartbeat = (root, runId) => {
+// The lock is read and written under withLock, so that two starts at once
+// cannot both take it, and a heartbeat never lands on a lock another run has
+// just taken.
+// Every call of the run says it is alive. false when the run no longer holds
+// the lock: another run took it over, or the run finished.
+const holdLock = (root, runId) => withLock(lockPathOf(root), () => {
   const held = readJson(lockPathOf(root))
-  if (held && held.run === runId) writeJson(lockPathOf(root), { ...held, heartbeat: new Date().toISOString() })
-}
-const dropLock = (root, runId) => {
+  if (!held || held.run !== runId) return false
+  writeJson(lockPathOf(root), { ...held, heartbeat: new Date().toISOString() })
+  return true
+})
+const dropLock = (root, runId) => withLock(lockPathOf(root), () => {
   const held = readJson(lockPathOf(root))
   if (held && held.run === runId) fs.rmSync(lockPathOf(root), { force: true })
-}
+})
 
 // ---- the board and the checkout of one run ---------------------------------
 const WORKING = ['implementing', 'review', 'testing']
@@ -212,11 +241,6 @@ const boardOf = (root, runId, feature) => {
   }
   // A question for the human is a thread on the feature named after the story,
   // linked from the story, and the story is blocked until it concludes.
-  const openThread = (title, body) => {
-    const id = omni(['thread', 'create', title]).trim()
-    post(id, title.slice(0, 200), body)
-    return id
-  }
   const linkAndBlock = (key, threadIds) => {
     const fresh = readStory(key)
     const links = [...(fresh.links || []).map((l) => (l.thread_id ? `thread:${l.thread_id}:${l.label}` : `${l.doc_id}:${l.node_id}:${l.label}`)), ...threadIds.map((id) => `thread:${id}:question`)]
@@ -229,17 +253,37 @@ const boardOf = (root, runId, feature) => {
     if (!docs.has(id)) docs.set(id, tryRun('omni', ['doc', 'read', id], { cwd: root, env: identity }) ?? `(the doc ${id} could not be read)`)
     return docs.get(id)
   }
-  return { root, runId, feature, git, storiesDir, lane: path.join(storiesDir, '_lane'), branch, omni, listStories, readStory, write, openThread, linkAndBlock, docText, worktreeOf: (key) => path.join(storiesDir, key) }
+  return { root, runId, feature, git, storiesDir, lane: path.join(storiesDir, '_lane'), branch, omni, listStories, readStory, write, post, linkAndBlock, docText, worktreeOf: (key) => path.join(storiesDir, key) }
 }
 
 const summary = (s) => ({ key: s.key, title: s.title, status: s.status, priority: s.priority ?? 3, blocked: !!s.blocked, holder: s.holder ? s.holder.run : null })
 const statusOf = (s) => ({ key: s.key, status: s.status, blocked: !!s.blocked, holder: s.holder ? s.holder.run : null })
 const pickableKeys = (b) => b.omni(['story', 'list', '--pickable']).split('\n').map((l) => l.trim().split(/\s+/)[0]).filter(Boolean)
 const criterionOf = (c) => (typeof c === 'string' ? { text: c, human_check: false } : { text: c.text, human_check: !!c.human_check })
-const isWorktree = (root, dir) => {
-  const real = (p) => { try { return fs.realpathSync(p) } catch { return p } }
-  return (tryRun('git', ['-C', root, 'worktree', 'list', '--porcelain']) || '').split('\n')
-    .filter((l) => l.startsWith('worktree ')).some((l) => real(l.slice(9)) === real(dir))
+const isWorktree = (root, dir) => (tryRun('git', ['-C', root, 'worktree', 'list', '--porcelain']) || '').split('\n')
+  .filter((l) => l.startsWith('worktree ')).some((l) => real(l.slice(9)) === real(dir))
+// Undoes every edit in a worktree and removes what is untracked. Never -x:
+// ignored build caches stay warm. Checked right before: git must work in the
+// folder itself, not in a repository around it.
+const cleanTree = (b, dir) => {
+  if (!ownTree(dir)) throw new Error(`${dir} is not a worktree of its own: git there works in a repository around it, so it is not cleaned`)
+  b.git(['-C', dir, 'reset', '-q', '--hard'])
+  b.git(['-C', dir, 'clean', '-fdq'])
+}
+// A story's linked threads as `omni thread read` gives them, while the story
+// is blocked on them; null when it is not. A thread that cannot be read
+// throws, naming it.
+const threadsOf = (b, story) => {
+  if (!story.blocked || story.status === 'done' || story.status === 'cancelled') return null
+  const ids = (story.links || []).map((l) => l.thread_id).filter(Boolean)
+  if (ids.length === 0) return null
+  return ids.map((id) => {
+    try {
+      return readThread(b, id)
+    } catch (e) {
+      throw new Error(`the thread ${id} could not be read: ${failure(e)}`)
+    }
+  })
 }
 
 // ---- attempts --------------------------------------------------------------
@@ -261,8 +305,27 @@ const budgetOf = (story) => {
     else byAttempt.set(Number(m[1]), [...(byAttempt.get(Number(m[1])) || []), item])
   }
   const findings = [...byAttempt.keys()].sort((a, c) => a - c).map((n) => ({ attempt: n, findings: byAttempt.get(n) }))
-  return { attempt: attemptOf(story), findings, uncounted }
+  return { attempt: attemptOf(story), findings, uncounted, earlier: earlierOf(story) }
 }
+// The resolved findings of the attempts before the human's latest answers, in
+// the order they came, one group per attempt: the next implementer still
+// sees what failed before them. An attempt number that comes again after an
+// answer starts a new group.
+const earlierOf = (story) => {
+  const groups = []
+  for (const f of (story.findings || []).filter((x) => x.resolved)) {
+    const m = String(f.text).match(ATTEMPT)
+    if (!m) continue
+    const item = { stage: f.stage, text: String(f.text).slice(m[0].length), files: f.files || [] }
+    const last = groups[groups.length - 1]
+    if (last && last.attempt === Number(m[1])) last.findings.push(item)
+    else groups.push({ attempt: Number(m[1]), findings: [item] })
+  }
+  return groups
+}
+// A finding's text without the attempt numbers it starts with: an uncounted
+// finding must never count as an attempt, and a counted one gets only its own.
+const unnumbered = (text) => String(text).replace(/^(?:\[attempt \d+\] ?)+/, '')
 
 // ---- clarity: .omni/clarity.json -------------------------------------------
 // A backlog story gets a clarity check when what the check reads changed since
@@ -300,6 +363,22 @@ const missing = (payload, ...names) => {
   return absent.length ? { ok: false, error: `the payload needs ${absent.join(', ')}` } : null
 }
 
+// A step that writes gets, besides the board and the payload, its op's
+// pending marker as `marker` when an earlier try of the same op was cut off or
+// failed. It then checks the board for what that try did, and does only the
+// rest. `mark` adds to the marker what such a later try needs to know.
+// A write that puts the story in a state: a repeat writes only when the story
+// is not in that state yet.
+const stateWrite = (verb, names, flags, done) => (b, p, { marker }) => missing(p, 'key', ...names) || (() => {
+  const was = marker ? b.readStory(p.key) : null
+  if (was && done(was, p, b)) return statusOf(was)
+  return statusOf(b.write(verb, p.key, flags(p)))
+})()
+const readThread = (b, id) => {
+  const parsed = JSON.parse(b.omni(['thread', 'read', id, '--json']))
+  return parsed.thread || parsed
+}
+
 // ---- the steps of a run ----------------------------------------------------
 const STEPS = {
   list: (b) => ({ stories: b.listStories().map(summary), pickable: pickableKeys(b) }),
@@ -326,44 +405,75 @@ const STEPS = {
     }
   })(),
 
-  claim: (b, p) => missing(p, 'key', 'stage') || statusOf(b.write('claim', p.key, ['--stage', p.stage])),
-  release: (b, p) => missing(p, 'key') || statusOf(b.write('release', p.key)),
-  move: (b, p) => missing(p, 'key', 'to') || statusOf(b.write('move', p.key, ['--to', p.to])),
-  block: (b, p) => missing(p, 'key') || statusOf(b.write('block', p.key)),
-  unblock: (b, p) => missing(p, 'key') || statusOf(b.write('unblock', p.key)),
+  claim: stateWrite('claim', ['stage'], (p) => ['--stage', p.stage], (s, p, b) => s.status === p.stage && !!s.holder && s.holder.run === b.runId),
+  release: stateWrite('release', [], () => [], (s, p, b) => !s.holder || s.holder.run !== b.runId),
+  move: stateWrite('move', ['to'], (p) => ['--to', p.to], (s, p) => s.status === p.to),
+  block: stateWrite('block', [], () => [], (s) => !!s.blocked),
+  unblock: stateWrite('unblock', [], () => [], (s) => !s.blocked),
 
   // The findings of a failed attempt get its number, one past the attempts the
   // story has used; a failure that uses no attempt (counts false: a rebase
   // conflict, the infrastructure) gets none. An attempt that counts leaves at
-  // least one finding, else the budget would not see it.
-  finding: (b, p) => missing(p, 'key', 'stage') || (() => {
+  // least one finding, else the budget would not see it. The first try fixes
+  // the number, so that a repeat finds what that try wrote and writes only
+  // the rest, instead of counting the attempt twice.
+  finding: (b, p, { marker, mark }) => missing(p, 'key', 'stage') || (() => {
     const counts = p.counts !== false
     if (!Array.isArray(p.findings) || p.findings.some((f) => !f || typeof f.text !== 'string') || (counts && p.findings.length === 0)) return { ok: false, error: 'the payload needs findings: [{text, files}], at least one when the attempt counts' }
-    const attempt = attemptOf(b.readStory(p.key)) + (counts ? 1 : 0)
+    const story = b.readStory(p.key)
+    const fixed = marker && Number.isInteger(marker.attempt)
+    const attempt = fixed ? marker.attempt : attemptOf(story) + (counts ? 1 : 0)
+    if (!fixed) mark({ attempt })
     const prefix = counts ? `[attempt ${attempt}] ` : ''
-    for (const f of p.findings) b.write('finding', p.key, ['--stage', p.stage, '--text', `${prefix}${f.text}`, ...(f.files || []).flatMap((file) => ['--file', file])])
+    const written = marker ? (story.findings || []).filter((f) => !f.resolved && f.stage === p.stage).map((f) => f.text) : []
+    for (const f of p.findings) {
+      const text = `${prefix}${unnumbered(f.text)}`
+      const at = written.indexOf(text)
+      if (at !== -1) {
+        written.splice(at, 1)
+        continue
+      }
+      b.write('finding', p.key, ['--stage', p.stage, '--text', text, ...(f.files || []).flatMap((file) => ['--file', file])])
+    }
     return { key: p.key, attempt }
   })(),
 
-  decision: (b, p) => missing(p, 'key', 'question', 'choice', 'by') || (() => {
-    b.write('decision', p.key, ['--question', p.question, '--choice', p.choice, '--by', p.by])
+  decision: (b, p, { marker }) => missing(p, 'key', 'question', 'choice', 'by') || (() => {
+    const was = marker ? b.readStory(p.key) : null
+    if (!(was && (was.decisions || []).some((d) => d.question === p.question && d.choice === p.choice && d.by === p.by))) b.write('decision', p.key, ['--question', p.question, '--choice', p.choice, '--by', p.by])
     return { key: p.key }
   })(),
 
   // What the story's branch changed since it left deliver/<slug> becomes its
   // files_changed, by which the board keeps stories on the same files apart.
+  // -z gives each path as it is, where git otherwise quotes one that is not
+  // ASCII.
   files: (b, p) => missing(p, 'key') || (() => {
     const wt = b.worktreeOf(p.key)
     if (!fs.existsSync(wt)) return { ok: false, error: `no worktree ${wt}` }
-    const paths = b.git(['-C', wt, 'diff', '--name-only', `refs/heads/${b.branch}...HEAD`]).split('\n').filter(Boolean)
+    const paths = b.git(['-C', wt, '-c', 'core.quotePath=false', 'diff', '--name-only', '-z', `refs/heads/${b.branch}...HEAD`]).split('\0').filter(Boolean)
     if (paths.length) b.write('files', p.key, paths)
     return { key: p.key, files: paths }
   })(),
 
-  'thread-open': (b, p) => missing(p, 'title', 'body') || (() => {
-    const thread = b.openThread(p.title, p.body)
+  // A repeat uses the thread the first try opened, and posts, links and
+  // blocks only what that try did not.
+  'thread-open': (b, p, { marker, mark }) => missing(p, 'title', 'body') || (() => {
+    let thread = marker && marker.thread
+    const posted = thread ? (readThread(b, thread).posts || []).length > 0 : false
+    if (!thread) {
+      thread = b.omni(['thread', 'create', p.title]).trim()
+      mark({ thread })
+    }
+    if (!posted) b.post(thread, p.title.slice(0, 200), p.body)
     if (!p.key) return { thread }
-    try { b.linkAndBlock(p.key, [thread]) } catch (e) { return { ok: false, thread, key: p.key, error: failure(e) } }
+    try {
+      const story = marker ? b.readStory(p.key) : null
+      if (!story || !(story.links || []).some((l) => l.thread_id === thread)) b.linkAndBlock(p.key, [thread])
+      else if (!story.blocked) b.write('block', p.key)
+    } catch (e) {
+      return { ok: false, thread, key: p.key, error: failure(e) }
+    }
     return { thread, key: p.key }
   })(),
 
@@ -371,20 +481,23 @@ const STEPS = {
   // conclusion as a human decision and is unblocked: a thread's conclusion is
   // the human's answer. The answer restarts the story's attempt budget: its
   // open findings are resolved, and attempts count from there (attemptOf).
-  // A failure stops the pass with the keys it unblocked so far; the stories
-  // after it are tried again by the next pass.
+  // A thread that cannot be read keeps its story blocked, says so in the log,
+  // and the pass goes on. Any other failure stops the pass with the keys it
+  // unblocked so far; the stories after it are tried again by the next pass.
+  // A repeat runs the pass again: what the first try wrote is not written twice.
   'unblock-pass': (b) => {
     const unblocked = []
+    const log = []
     try {
       for (const story of b.listStories()) {
-        if (!story.blocked || story.status === 'done' || story.status === 'cancelled') continue
-        const ids = (story.links || []).map((l) => l.thread_id).filter(Boolean)
-        if (ids.length === 0) continue
-        const threads = ids.map((id) => {
-          const parsed = JSON.parse(b.omni(['thread', 'read', id, '--json']))
-          return parsed.thread || parsed
-        })
-        if (threads.some((t) => !t.conclusion)) continue
+        let threads
+        try {
+          threads = threadsOf(b, story)
+        } catch (e) {
+          log.push(`${story.key} stays blocked: ${e.message}`)
+          continue
+        }
+        if (!threads || threads.some((t) => !t.conclusion)) continue
         const recorded = (story.decisions || []).filter((d) => d.by === 'human')
         for (const t of threads) {
           if (recorded.some((d) => d.question === t.question && d.choice === t.conclusion)) continue
@@ -395,18 +508,28 @@ const STEPS = {
         unblocked.push(story.key)
       }
     } catch (e) {
-      return { ok: false, unblocked, error: failure(e) }
+      return { ok: false, unblocked, log, error: failure(e) }
     }
-    return { unblocked }
+    return { unblocked, log }
   },
 
   // A new worktree starts at the tip of deliver/<slug>, what the lane last
-  // landed; an existing one is kept, with what earlier attempts committed and
-  // left in it.
-  worktree: (b, p) => missing(p, 'key') || (() => {
+  // landed. An existing one is kept, with what earlier attempts committed and
+  // left in it, when it is a worktree of the checkout on story/<key>; any
+  // other folder in its place is an error. The marker says whether the folder
+  // was there before the first try: a repeat after a try that cut the
+  // worktree still answers created.
+  worktree: (b, p, { marker, mark }) => missing(p, 'key') || (() => {
     const wt = b.worktreeOf(p.key)
     const branch = `story/${p.key}`
-    if (fs.existsSync(wt)) return { key: p.key, path: wt, branch, created: false }
+    const known = marker && typeof marker.existed === 'boolean'
+    const existed = known ? marker.existed : fs.existsSync(wt)
+    if (!known) mark({ existed })
+    if (fs.existsSync(wt)) {
+      const head = (tryRun('git', ['-C', wt, 'symbolic-ref', '-q', 'HEAD']) || '').trim()
+      if (!isWorktree(b.root, wt) || !ownTree(wt) || head !== `refs/heads/${branch}`) return { ok: false, error: `${wt} is not a worktree of ${b.root} on ${branch}; move it away` }
+      return { key: p.key, path: wt, branch, created: !existed }
+    }
     // A branch left without its worktree goes, so the new one starts clean.
     tryRun('git', ['-C', b.root, 'worktree', 'prune'])
     tryRun('git', ['-C', b.root, 'branch', '-D', branch])
@@ -439,48 +562,60 @@ const STEPS = {
   })(),
 }
 // The steps whose bodies are recorded under their opId, so that a repeat does
-// not write twice. The others only read, or wait.
+// not write twice. The others only read, or wait: a repeat runs them again.
 const WRITES = new Set(['claim', 'release', 'move', 'block', 'unblock', 'finding', 'decision', 'files', 'thread-open', 'unblock-pass', 'worktree', 'clarity-record'])
 
 // ---- start: the lock, reconcile, the deliver branch, the checks ------------
+// A start repeated by a retried courier comes within minutes of the first.
+// The same op from the same session later is a new run the human started.
+const REPLAY_MS = 5 * 60000
 const start = (flags) => {
   const { op: opId, feature } = flags
   const force = flags.force === true
   const received = fnv1a(JSON.stringify({ opId, feature, force }))
-  if (!opId || !feature) return { ok: false, received, error: 'start needs --op <opId> and --feature <name>' }
+  if (!opId || !feature || !flags.hash) return { ok: false, received, error: 'start needs --op <opId>, --feature <name> and --hash <fnv1a of {opId, feature, force}>' }
+  if (flags.hash !== received) return { ok: false, received, error: `the flags hash to ${received}, not ${flags.hash}: run the command again exactly` }
   const top = tryRun('git', ['rev-parse', '--show-toplevel'])
   if (top === null) return { ok: false, received, error: `${process.cwd()} is not in a git checkout` }
   const root = top.trim()
   const session = sessionPid()
   const lockPath = lockPathOf(root)
   const log = []
-  let raw = null
-  try { raw = fs.readFileSync(lockPath, 'utf8') } catch {}
-  const held = raw === null ? null : readJson(lockPath)
-  if (raw !== null && !held) log.push('The lock file could not be read; taking it over')
-  if (held) {
-    // The same start again, from this session, before its run made any call:
-    // its courier failed after the helper ran. Its record answers.
-    const retried = session !== null && held.pid === session && held.op === opId && held.feature === feature && held.heartbeat === held.started
-    const recorded = retried ? recordedOp(root, held.run, opId) : null
-    if (recorded) return recorded
-    const stale = retried ? 'its start, from this session, ended before it finished' : staleness(held)
-    if (!stale && !force) return { ok: false, received, error: `the tree is held by run ${held.run} for feature ${held.feature}, last heard from at ${held.heartbeat || held.started}; start with force if that run is dead` }
-    log.push(`Took over the lock of run ${held.run} for feature ${held.feature}: ${stale || 'start with force'}`)
-  }
   const now = new Date()
   const runId = `run-${stamp(now)}-${process.pid}`
-  writeJson(lockPath, { run: runId, feature, pid: session, op: opId, started: now.toISOString(), heartbeat: now.toISOString() })
+  // The lock is read and taken in one step: of two starts at once, one waits
+  // for the other and then finds its lock.
+  const taken = withLock(lockPath, () => {
+    let raw = null
+    try { raw = fs.readFileSync(lockPath, 'utf8') } catch {}
+    const held = raw === null ? null : readJson(lockPath)
+    if (raw !== null && !held) log.push('The lock file could not be read; taking it over')
+    if (held) {
+      // The same start again, from this session, soon after and before its
+      // run made any call: its courier failed after the helper ran. Its
+      // record answers. Never under force, which asks for a new run.
+      const retried = !force && session !== null && held.pid === session && held.op === opId && held.feature === feature && held.heartbeat === held.started && Date.now() - Date.parse(held.started) < REPLAY_MS
+      const recorded = retried ? recordedOp(root, held.run, opId) : null
+      if (recorded && recorded.received === received) return { replay: recorded }
+      const stale = retried ? 'its start, from this session, ended before it finished' : staleness(held)
+      if (!stale && !force) return { refused: `the tree is held by run ${held.run} for feature ${held.feature}, last heard from at ${held.heartbeat || held.started}; start with force if that run is dead` }
+      log.push(`Took over the lock of run ${held.run} for feature ${held.feature}: ${stale || 'start with force'}`)
+    }
+    writeJson(lockPath, { run: runId, feature, pid: session, op: opId, started: now.toISOString(), heartbeat: now.toISOString() })
+    return {}
+  })
+  if (taken.replay) return taken.replay
+  if (taken.refused) return { ok: false, received, error: taken.refused }
   let body
   try {
     body = startRun(boardOf(root, runId, feature), log)
   } catch (e) {
     body = { ok: false, error: failure(e) }
   }
-  // A start that stops gives the lock up.
+  // A start that stops gives the lock up, and says what it did before.
   if (body.ok === false) {
     dropLock(root, runId)
-    return { ok: false, received, error: body.error }
+    return { ok: false, received, error: body.error, log }
   }
   body = { ok: true, received, ...body }
   fs.mkdirSync(path.join(runDirOf(root, runId), 'in'), { recursive: true })
@@ -515,7 +650,12 @@ const startRun = (b, log) => {
   } catch (e) {
     return { ok: false, error: `the checks could not be read: ${failure(e)}` }
   }
-  if (fs.existsSync(b.lane) && !isWorktree(root, b.lane)) return { ok: false, error: `${b.lane} is not a worktree of ${root}, so it cannot be the lane worktree; move it away` }
+  // Pruned first: a lane folder that lost its .git file is still listed until
+  // the prune, and would pass for the lane worktree. git there would work in
+  // whatever repository is around the folder, and the clean below would hit
+  // that one.
+  tryRun('git', ['-C', root, 'worktree', 'prune'])
+  if (fs.existsSync(b.lane) && (!isWorktree(root, b.lane) || !ownTree(b.lane))) return { ok: false, error: `${b.lane} is not a worktree of ${root}, so it cannot be the lane worktree; move it away` }
 
   if (move === 'create') git(['update-ref', `refs/heads/${b.branch}`, head, ''])
   if (move === 'fast-forward') git(['update-ref', `refs/heads/${b.branch}`, head, was])
@@ -527,12 +667,9 @@ const startRun = (b, log) => {
     ahead: `${b.branch} kept at ${short(was)}, ahead of the checkout's HEAD ${short(head)}`,
   }[move])
 
-  // The lane worktree stays from run to run, detached. Cleaning it never uses
-  // -x: ignored build caches stay warm.
-  tryRun('git', ['-C', root, 'worktree', 'prune'])
+  // The lane worktree stays from run to run, detached.
   if (fs.existsSync(b.lane)) {
-    git(['-C', b.lane, 'reset', '-q', '--hard'])
-    git(['-C', b.lane, 'clean', '-fdq'])
+    cleanTree(b, b.lane)
   } else {
     fs.mkdirSync(b.storiesDir, { recursive: true })
     git(['worktree', 'add', '-q', '--detach', b.lane, tip])
@@ -567,35 +704,51 @@ const PAYLOAD_PATH = /^(.+)\/\.omni\/runs\/([^/]+)\/in\/[^/]+\.json$/
 const runStep = async (flags) => {
   const step = STEPS[flags.step]
   if (!step) return { ok: false, received: null, error: `no step ${flags.step}; the steps are start, ${Object.keys(STEPS).join(', ')}` }
-  if (!flags.run || !flags.payload) return { ok: false, received: null, error: `${flags.step} needs --run <runId> --payload <file>` }
+  if (!flags.run || !flags.payload || !flags.hash) return { ok: false, received: null, error: `${flags.step} needs --run <runId> --payload <file> --hash <fnv1a of the payload>` }
   const file = path.resolve(flags.payload)
   const where = file.match(PAYLOAD_PATH)
   if (!where || where[2] !== flags.run) return { ok: false, received: null, error: `the payload goes in <root>/.omni/runs/${flags.run}/in/<opId>.json, not ${file}` }
   const root = where[1]
-  refreshHeartbeat(root, flags.run)
   let text
   try { text = fs.readFileSync(file, 'utf8') } catch { return { ok: false, received: null, error: `no payload at ${file}` } }
   fs.rmSync(file, { force: true })
   if (text.endsWith('\n')) text = text.slice(0, -1)
   const received = fnv1a(text)
+  // Before anything else: a payload the courier copied wrong is neither acted
+  // on nor looked up.
+  if (received !== flags.hash) return { ok: false, received, error: `the payload hashes to ${received}, not ${flags.hash}: write it again exactly` }
   let payload
   try { payload = JSON.parse(text) } catch { return { ok: false, received, error: 'the payload is not JSON' } }
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return { ok: false, received, error: 'the payload is not a JSON object' }
   const info = readJson(path.join(runDirOf(root, flags.run), 'run.json'))
   if (!info) return { ok: false, received, error: `no run ${flags.run} in ${root}` }
   const writes = WRITES.has(flags.step)
+  let marker = null
   if (writes) {
     if (typeof payload.opId !== 'string' || !payload.opId) return { ok: false, received, error: `${flags.step} writes, so its payload needs an opId` }
     const recorded = recordedOp(root, flags.run, payload.opId)
-    if (recorded) return recorded
+    if (recorded && recorded.received !== received) return { ok: false, received, error: `the op ${payload.opId} was applied with another payload, which hashed to ${recorded.received}; a new payload needs a new opId` }
+    if (recorded && !recorded.pending) return recorded
+    marker = recorded
   }
+  if (!holdLock(root, flags.run)) return { ok: false, received, error: `run ${flags.run} no longer holds the lock` }
+  // The marker goes down before the first write, and the body replaces it
+  // once the step worked. A step that failed leaves it: the script tries a
+  // failed write again with the same opId, and the repeat carries it on.
+  let pending = marker || { pending: true, received }
+  const mark = (fields) => {
+    if (!writes) return
+    pending = { ...pending, ...fields }
+    recordOp(root, flags.run, payload.opId, pending)
+  }
+  if (writes && !marker) recordOp(root, flags.run, payload.opId, pending)
   let body
   try {
-    body = { ok: true, received, ...(await step(boardOf(root, flags.run, info.feature), payload)) }
+    body = { ok: true, received, ...(await step(boardOf(root, flags.run, info.feature), payload, { info, marker, mark })) }
   } catch (e) {
     body = { ok: false, received, error: failure(e) }
   }
-  if (writes) recordOp(root, flags.run, payload.opId, body)
+  if (writes && body.ok) recordOp(root, flags.run, payload.opId, body)
   return body
 }
 
@@ -603,7 +756,7 @@ const flagsOf = (argv) => {
   const flags = { step: argv[0] }
   for (let i = 1; i < argv.length; i++) {
     if (argv[i] === '--force') flags.force = true
-    else if (['--run', '--payload', '--op', '--feature'].includes(argv[i])) flags[argv[i].slice(2)] = argv[++i]
+    else if (['--run', '--payload', '--op', '--feature', '--hash'].includes(argv[i])) flags[argv[i].slice(2)] = argv[++i]
     else flags.unknown = argv[i]
   }
   return flags

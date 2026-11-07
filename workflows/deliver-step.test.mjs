@@ -122,8 +122,13 @@ function helperRun(dirs, argv, env = {}) {
   return out.body;
 }
 
-function start(dirs, { feature = "board", op = "start-1", force = false } = {}) {
-  return helperRun(dirs, ["start", "--op", op, "--feature", feature, ...(force ? ["--force"] : [])]);
+// start's flags as the command carries them, with the hash of its payload object.
+function startArgv({ feature = "board", op = "start-1", force = false } = {}) {
+  return ["start", "--op", op, "--feature", feature, ...(force ? ["--force"] : []), "--hash", fnv1a(JSON.stringify({ opId: op, feature, force }))];
+}
+
+function start(dirs, options = {}) {
+  return helperRun(dirs, startArgv(options));
 }
 
 function payloadPath(dirs, run, opId) {
@@ -132,18 +137,27 @@ function payloadPath(dirs, run, opId) {
   return file;
 }
 
-let ops = 0;
-// A step of the run, with its payload written where a courier writes it; the
-// body must have received the payload's hash.
-function step(dirs, run, name, fields = {}) {
-  const obj = { opId: `${name}-${++ops}`, ...fields };
+// A step's command as a courier runs it, after writing the payload where it
+// goes; the command carries the payload's hash.
+function stepArgv(dirs, run, name, obj) {
   const payload = JSON.stringify(obj);
   const file = payloadPath(dirs, run, obj.opId);
   writeFileSync(file, payload);
-  const body = helperRun(dirs, [name, "--run", run, "--payload", file]);
-  assert.equal(body.received, fnv1a(payload));
+  return [name, "--run", run, "--payload", file, "--hash", fnv1a(payload)];
+}
+
+let ops = 0;
+// A step of the run, with its payload written where a courier writes it; the
+// body must have received the payload's hash. fields.opId sets the opId.
+function step(dirs, run, name, fields = {}) {
+  const obj = { opId: `${name}-${++ops}`, ...fields };
+  const body = helperRun(dirs, stepArgv(dirs, run, name, obj));
+  assert.equal(body.received, fnv1a(JSON.stringify(obj)));
   return body;
 }
+
+const appliedOf = (dirs, run) => JSON.parse(readFileSync(join(dirs.repo, ".omni", "runs", run, "applied.json"), "utf8"));
+const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // ---- the courier protocol -------------------------------------------------------
 
@@ -168,7 +182,8 @@ test("a step reads its payload file as UTF-8, removes one trailing newline, dele
   const receivedFor = (text) => {
     const file = payloadPath(dirs, run, "list-1");
     writeFileSync(file, text);
-    const body = helperRun(dirs, ["list", "--run", run, "--payload", file]);
+    const body = helperRun(dirs, ["list", "--run", run, "--payload", file, "--hash", fnv1a(text.replace(/\n$/, ""))]);
+    assert.equal(body.ok, true);
     assert.equal(existsSync(file), false, "the payload file is deleted");
     return body.received;
   };
@@ -181,10 +196,9 @@ test("a step reads its payload file as UTF-8, removes one trailing newline, dele
 test("every call prints one line, JSON.stringify({body, hash}) with the FNV-1a of JSON.stringify(body), and exits 0, also when the step fails or the call is wrong", (t) => {
   const dirs = scratch(t, [story("US-1")]);
   const { run } = start(dirs);
-  const file = payloadPath(dirs, run, "claim-1");
-  writeFileSync(file, JSON.stringify({ opId: "claim-1", key: "US-1", stage: "review" }));
+  const claim = stepArgv(dirs, run, "claim", { opId: "claim-1", key: "US-1", stage: "review" });
 
-  for (const argv of [["claim", "--run", run, "--payload", file], ["no-such-step"], ["list", "--run", run, "--payload", join(dirs.repo, "elsewhere.json")]]) {
+  for (const argv of [claim, ["no-such-step"], ["list", "--run", run, "--payload", join(dirs.repo, "elsewhere.json"), "--hash", "811c9dc5"]]) {
     const r = spawnSync(process.execPath, [helper, ...argv], { cwd: dirs.repo, env: dirs.env, encoding: "utf8" });
     assert.equal(r.status, 0);
     assert.equal(r.stderr, "");
@@ -215,18 +229,191 @@ test("a write repeated with its opId is answered from .omni/runs/<run>/applied.j
   assert.equal(dirs.story("US-1").decisions.length, 2);
 });
 
+test("every write repeated with its opId gets its first body back from the record and calls nothing again", (t) => {
+  const dirs = scratch(t, [story("US-1"), story("US-2", { blocked: true, links: [questionLink("th-1")] })], [thread("th-1", "US-2: Which red?", "#c00")]);
+  const { run } = start(dirs);
+  const writes = [
+    ["claim", { key: "US-1", stage: "implementing" }],
+    ["worktree", { key: "US-1" }],
+    ["files", { key: "US-1" }],
+    ["finding", { key: "US-1", stage: "review", findings: [{ text: "The badge is blue" }] }],
+    ["decision", { key: "US-1", question: "Which red?", choice: "#c00", by: "agent" }],
+    ["move", { key: "US-1", to: "implemented" }],
+    ["claim", { key: "US-1", stage: "review" }],
+    ["block", { key: "US-1" }],
+    ["unblock", { key: "US-1" }],
+    ["claim", { key: "US-1", stage: "review" }],
+    ["release", { key: "US-1" }],
+    ["thread-open", { title: "Run question", body: "Plain\n" }],
+    ["unblock-pass", {}],
+    ["clarity-record", { key: "US-1" }],
+  ];
+
+  for (const [i, [name, fields]] of writes.entries()) {
+    const obj = { opId: `${name}-${i}`, ...fields };
+    const first = step(dirs, run, name, obj);
+    if (name === "worktree") commit(first.path, "badge.rs");
+    const calls = dirs.state().calls.length;
+    const again = step(dirs, run, name, obj);
+
+    assert.equal(first.ok, true, `${name}: ${first.error}`);
+    assert.deepEqual(again, first, name);
+    assert.equal(dirs.state().calls.length, calls, `${name} called nothing again`);
+  }
+  assert.deepEqual(dirs.story("US-1").files_changed, ["badge.rs"]);
+  assert.deepEqual(dirs.state().threads.map((th) => th.title), ["US-2: Which red?", "Run question"]);
+});
+
+test("a payload that does not hash to the command's --hash is refused before anything, even for an applied op: nothing is written or recorded; start checks its flags the same way", (t) => {
+  const dirs = scratch(t, [story("US-1")]);
+  const { run } = start(dirs);
+  const sent = { opId: "decide-1", key: "US-1", question: "Which red?", choice: "#c00", by: "agent" };
+  const copied = { ...sent, choice: "#c0O" };
+  // The courier wrote `obj`; the command carries the hash of what the script sent.
+  const asSent = (obj) => helperRun(dirs, [...stepArgv(dirs, run, "decision", obj).slice(0, -1), fnv1a(JSON.stringify(sent))]);
+
+  const refused = asSent(copied);
+  const recorded = appliedOf(dirs, run)["decide-1"];
+  const applied = asSent(sent);
+  const late = asSent(copied);
+  const badStart = helperRun(dirs, [...startArgv({ op: "start-2", force: true }).slice(0, -1), fnv1a("{}")]);
+
+  assert.deepEqual([refused.ok, refused.received, recorded], [false, fnv1a(JSON.stringify(copied)), undefined]);
+  assert.equal(refused.error, `the payload hashes to ${fnv1a(JSON.stringify(copied))}, not ${fnv1a(JSON.stringify(sent))}: write it again exactly`);
+  assert.deepEqual([applied.ok, late.ok, late.error], [true, false, refused.error]);
+  assert.deepEqual(dirs.story("US-1").decisions, [{ question: "Which red?", choice: "#c00", by: "agent" }]);
+  assert.deepEqual([badStart.ok, readLock(dirs).run], [false, run]);
+  assert.match(badStart.error, /^the flags hash to [0-9a-f]{8}, not [0-9a-f]{8}: run the command again exactly$/);
+});
+
+test("a repeat of an applied opId with another payload is an error, not a replay, and writes nothing", (t) => {
+  const dirs = scratch(t, [story("US-1")]);
+  const { run } = start(dirs);
+  const decision = { opId: "decide-1", key: "US-1", question: "Which red?", choice: "#c00", by: "agent" };
+
+  const first = step(dirs, run, "decision", decision);
+  const other = step(dirs, run, "decision", { ...decision, choice: "#f00" });
+
+  assert.equal(first.ok, true);
+  assert.deepEqual([other.ok, other.error], [false, `the op decide-1 was applied with another payload, which hashed to ${first.received}; a new payload needs a new opId`]);
+  assert.equal(dirs.story("US-1").decisions.length, 1);
+});
+
+// Runs a step as a courier's helper does, and kills that helper once `made`
+// sees the step's first write on the board. FAKE_OMNI_HANG_AFTER holds the
+// write's omni call after the fake saved it, so the write is made and its
+// answer never comes back, as when a courier's Bash call is cut off.
+async function cutOff(t, dirs, run, name, obj, made, env = {}) {
+  const child = spawn(process.execPath, [helper, ...stepArgv(dirs, run, name, obj)], { cwd: dirs.repo, env: { ...dirs.env, ...env }, detached: true, stdio: "ignore" });
+  const exited = new Promise((resolve) => child.on("exit", resolve));
+  t.after(() => { try { process.kill(-child.pid, "SIGKILL"); } catch {} });
+  const seen = () => { try { return made(); } catch { return false; } };
+  for (const until = Date.now() + 10000; !seen(); await pause(20)) assert.ok(Date.now() < until, `${name} made no write to be cut off after`);
+  process.kill(-child.pid, "SIGKILL");
+  await exited;
+}
+
+// A git hook in the checkout, whatever core.hooksPath the machine sets.
+function hook(dirs, name, script) {
+  const dir = join(dirs.repo, ".git", "hooks");
+  git(dirs.repo, "config", "core.hooksPath", dir);
+  writeFileSync(join(dir, name), `#!/bin/sh\n${script}\n`);
+  chmodSync(join(dir, name), 0o755);
+  return join(dir, name);
+}
+
+test("a write whose helper was cut off after its board write left a pending marker, and its repeat carries it on without writing twice: claim, release, move, block, unblock, decision and finding", async (t) => {
+  const dirs = scratch(t, ["US-1", "US-2", "US-3", "US-4", "US-5", "US-6", "US-7"].map((key) => story(key)));
+  const { run } = start(dirs);
+  const held = { run, stage: "implementing" };
+  dirs.edit((s) => {
+    const at = (key) => s.stories.find((x) => x.key === key);
+    Object.assign(at("US-2"), { status: "implementing", holder: held });
+    Object.assign(at("US-3"), { status: "implementing", holder: held });
+    at("US-5").blocked = true;
+  });
+  const cases = [
+    ["claim", { key: "US-1", stage: "implementing" }, (s) => s.status === "implementing"],
+    ["release", { key: "US-2" }, (s) => s.holder === null],
+    ["move", { key: "US-3", to: "implemented" }, (s) => s.status === "implemented"],
+    ["block", { key: "US-4" }, (s) => s.blocked],
+    ["unblock", { key: "US-5" }, (s) => !s.blocked],
+    ["decision", { key: "US-6", question: "Which red?", choice: "#c00", by: "agent" }, (s) => s.decisions.length === 1],
+    ["finding", { key: "US-7", stage: "review", findings: [{ text: "First" }, { text: "Second" }] }, (s) => (s.findings || []).length === 1],
+  ];
+
+  for (const [name, fields, made] of cases) {
+    const obj = { opId: `${name}-cut`, ...fields };
+    await cutOff(t, dirs, run, name, obj, () => made(dirs.story(fields.key)), { FAKE_OMNI_HANG_AFTER: `story ${name} ${fields.key}` });
+    const marker = appliedOf(dirs, run)[obj.opId];
+    const again = step(dirs, run, name, obj);
+
+    assert.equal(marker.pending, true, `${name} left a pending marker`);
+    assert.equal(again.ok, true, `${name}: ${again.error}`);
+    assert.deepEqual(appliedOf(dirs, run)[obj.opId], again, `${name} recorded its body`);
+    assert.equal(dirs.state().calls.filter((c) => c.argv[1] === name && c.argv[2] === fields.key).length, name === "finding" ? 2 : 1, `${name} wrote each thing once`);
+  }
+  assert.deepEqual(dirs.story("US-1").holder, held);
+  assert.deepEqual(dirs.story("US-6").decisions, [{ question: "Which red?", choice: "#c00", by: "agent" }]);
+  assert.deepEqual(dirs.story("US-7").findings.map((f) => f.text), ["[attempt 1] First", "[attempt 1] Second"]);
+});
+
+test("a claim cut off before its write is made by its repeat", async (t) => {
+  const dirs = scratch(t, [story("US-1")]);
+  const { run } = start(dirs);
+  const obj = { opId: "claim-cut", key: "US-1", stage: "implementing" };
+
+  await cutOff(t, dirs, run, "claim", obj, () => appliedOf(dirs, run)["claim-cut"].pending, { FAKE_OMNI_HANG: "story claim US-1" });
+  const before = dirs.story("US-1").status;
+  const again = step(dirs, run, "claim", obj);
+
+  assert.equal(before, "backlog");
+  assert.deepEqual([again.ok, again.status, again.holder], [true, "implementing", run]);
+});
+
+test("a thread-open cut off after its post, or after its link, is carried on by its repeat: one thread with one post, linked from the story, which is blocked", async (t) => {
+  const dirs = scratch(t, [story("US-1"), story("US-2")]);
+  const { run } = start(dirs);
+  const titled = (title) => dirs.state().threads.filter((th) => th.title === title);
+
+  for (const [key, words, made] of [
+    ["US-1", "post", (title) => titled(title).some((th) => th.posts.length === 1)],
+    ["US-2", "story edit US-2", () => dirs.story("US-2").links.length === 1],
+  ]) {
+    const obj = { opId: `thread-${key}`, key, title: `${key}: Which colour is the badge?`, body: "Options:\n1. Red\n2. Blue\n" };
+    await cutOff(t, dirs, run, "thread-open", obj, () => made(obj.title), { FAKE_OMNI_HANG_AFTER: words });
+    const again = step(dirs, run, "thread-open", obj);
+
+    const threads = titled(obj.title);
+    assert.equal(threads.length, 1, `${key}: one thread`);
+    assert.equal(threads[0].posts.length, 1, `${key}: one post`);
+    assert.deepEqual([again.ok, again.thread, dirs.story(key).links, dirs.story(key).blocked], [true, threads[0].id, [questionLink(threads[0].id)], true]);
+  }
+});
+
+test("a worktree step cut off after it made the worktree is carried on by its repeat, which keeps that worktree and answers created", async (t) => {
+  const dirs = scratch(t, [story("US-1")]);
+  const { run } = start(dirs);
+  const wt = join(dirs.root, "app-stories", "US-1");
+  // git worktree add runs post-checkout once the worktree is there.
+  const held = hook(dirs, "post-checkout", "sleep 30");
+
+  await cutOff(t, dirs, run, "worktree", { opId: "wt-cut", key: "US-1" }, () => existsSync(join(wt, "README")));
+  rmSync(held);
+  const again = step(dirs, run, "worktree", { opId: "wt-cut", key: "US-1" });
+
+  assert.deepEqual(pick(again), { ok: true, key: "US-1", path: wt, branch: "story/US-1", created: true });
+  assert.equal(git(wt, "rev-parse", "--abbrev-ref", "HEAD").trim(), "story/US-1");
+});
+
 test("a write waits to record its op while another call holds the record's lock, and takes over a lock left for more than 10 s", async (t) => {
   const dirs = scratch(t, [story("US-1")]);
   const { run } = start(dirs);
   const lock = join(dirs.repo, ".omni", "runs", run, "applied.json.lock");
-  const decision = (opId) => {
-    const file = payloadPath(dirs, run, opId);
-    writeFileSync(file, JSON.stringify({ opId, key: "US-1", question: `Question ${opId}?`, choice: "A", by: "agent" }));
-    return file;
-  };
+  const decision = (opId) => stepArgv(dirs, run, "decision", { opId, key: "US-1", question: `Question ${opId}?`, choice: "A", by: "agent" });
   writeFileSync(lock, "");
 
-  const child = spawn(process.execPath, [helper, "decision", "--run", run, "--payload", decision("decide-1")], { cwd: dirs.repo, env: dirs.env });
+  const child = spawn(process.execPath, [helper, ...decision("decide-1")], { cwd: dirs.repo, env: dirs.env });
   let out = "";
   child.stdout.on("data", (d) => { out += d; });
   const closed = new Promise((resolve) => child.on("close", resolve));
@@ -238,7 +425,7 @@ test("a write waits to record its op while another call holds the record's lock,
   const old = new Date(Date.now() - 20000);
   utimesSync(lock, old, old);
   const started = Date.now();
-  const late = helperRun(dirs, ["decision", "--run", run, "--payload", decision("decide-2")]);
+  const late = helperRun(dirs, decision("decide-2"));
 
   assert.equal(whileHeld, "", "no answer while the lock is held");
   assert.equal(JSON.parse(out).body.ok, true);
@@ -248,8 +435,8 @@ test("a write waits to record its op while another call holds the record's lock,
   assert.deepEqual(Object.keys(JSON.parse(readFileSync(join(dirs.repo, ".omni", "runs", run, "applied.json"), "utf8"))), ["start-1", "decide-1", "decide-2"]);
 });
 
-test("each call with --run refreshes the lock's heartbeat, and leaves a lock that another run holds as it is", (t) => {
-  const dirs = scratch(t);
+test("each call with --run refreshes the lock's heartbeat; once another run holds the lock, every step of the run fails, a write writes nothing, and the lock stays as it is", (t) => {
+  const dirs = scratch(t, [story("US-1")]);
   const { run } = start(dirs);
   const old = { ...readLock(dirs), heartbeat: "2026-01-01T00:00:00.000Z" };
   writeLock(dirs, old);
@@ -262,8 +449,11 @@ test("each call with --run refreshes the lock's heartbeat, and leaves a lock tha
   assert.ok(Date.parse(lock.heartbeat) >= before, `${lock.heartbeat} is the time of the call`);
   const other = { ...lock, run: "run-20261107-120000-1" };
   writeLock(dirs, other);
-  step(dirs, run, "list");
+  const lost = [step(dirs, run, "list"), step(dirs, run, "claim", { opId: "claim-late", key: "US-1", stage: "implementing" })];
+  assert.deepEqual(lost.map((b) => [b.ok, b.error]), [[false, `run ${run} no longer holds the lock`], [false, `run ${run} no longer holds the lock`]]);
   assert.deepEqual(readLock(dirs), other);
+  assert.deepEqual(dirs.writes(), []);
+  assert.equal(appliedOf(dirs, run)["claim-late"], undefined);
 });
 
 test("the helper runs through a symlink to it, as ~/.claude/omni/deliver-step.mjs links it", (t) => {
@@ -272,7 +462,7 @@ test("the helper runs through a symlink to it, as ~/.claude/omni/deliver-step.mj
   mkdirSync(dirname(link));
   symlinkSync(helper, link);
 
-  const r = spawnSync(process.execPath, [link, "start", "--op", "start-1", "--feature", "board"], { cwd: dirs.repo, env: dirs.env, encoding: "utf8" });
+  const r = spawnSync(process.execPath, [link, ...startArgv()], { cwd: dirs.repo, env: dirs.env, encoding: "utf8" });
 
   assert.equal(JSON.parse(r.stdout).body.ok, true);
 });
@@ -296,7 +486,7 @@ test("start takes .omni/run.lock: the run, the feature, the session's pid, the o
 test("start names the run by the local time of its start", (t) => {
   const dirs = scratch(t);
 
-  const body = helperRun(dirs, ["start", "--op", "start-1", "--feature", "board"], { TZ: "Asia/Tokyo" });
+  const body = helperRun(dirs, startArgv(), { TZ: "Asia/Tokyo" });
 
   // Tokyo is UTC+9 all year.
   const tokyo = new Date(Date.parse(readLock(dirs).started) + 9 * 3600000);
@@ -367,16 +557,74 @@ test("the same start again from the same session, before its run made any call, 
   assert.match(late.error, new RegExp(`^the tree is held by run ${first.run} for feature board`));
 });
 
+test("the same start from the same session is answered from its record only within 5 minutes of it, and never with force, which starts a new run with received of {force: true}", (t) => {
+  const dirs = scratch(t);
+  const first = start(dirs);
+  const sixMinutes = ago(6 * 60000);
+  writeLock(dirs, { ...readLock(dirs), started: sixMinutes, heartbeat: sixMinutes });
+
+  const later = start(dirs);
+  const forced = start(dirs, { force: true });
+  const forcedAgain = start(dirs, { force: true });
+  const fiveHours = ago(5 * 3600000);
+  writeLock(dirs, { ...readLock(dirs), started: fiveHours, heartbeat: fiveHours });
+  const next = start(dirs);
+
+  assert.equal(later.ok, false);
+  assert.match(later.error, new RegExp(`^the tree is held by run ${first.run} for feature board`));
+  assert.deepEqual([forced.ok, forcedAgain.ok], [true, true]);
+  assert.equal(new Set([first.run, forced.run, forcedAgain.run]).size, 3);
+  assert.equal(forced.received, fnv1a(JSON.stringify({ opId: "start-1", feature: "board", force: true })));
+  assert.equal(next.ok, true);
+  assert.notEqual(next.run, forcedAgain.run);
+  assert.equal(readLock(dirs).run, next.run);
+});
+
+test("start reads and takes the lock while it holds the lock's own lock: a start waits while another start holds it, then finds that start's lock and is refused", async (t) => {
+  const dirs = scratch(t);
+  mkdirSync(dirname(dirs.lock), { recursive: true });
+  writeFileSync(`${dirs.lock}.lock`, "");
+  const child = spawn(process.execPath, [helper, ...startArgv()], { cwd: dirs.repo, env: dirs.env });
+  let out = "";
+  child.stdout.on("data", (d) => { out += d; });
+  const closed = new Promise((resolve) => child.on("close", resolve));
+  await pause(1500);
+  const whileHeld = out;
+  const other = { run: "run-20261107-120000-1", feature: "billing", pid: liveProcess(t), op: "start-1", started: ago(1000), heartbeat: ago(1000) };
+  writeLock(dirs, other);
+  rmSync(`${dirs.lock}.lock`);
+  await closed;
+
+  assert.equal(whileHeld, "", "no answer while the lock's lock is held");
+  const body = JSON.parse(out).body;
+  assert.equal(body.ok, false);
+  assert.match(body.error, /^the tree is held by run run-20261107-120000-1 for feature billing/);
+  assert.deepEqual(readLock(dirs), other);
+});
+
+test("a start that stops keeps the log of what it did before it stopped", (t) => {
+  const dirs = scratch(t);
+  writeLock(dirs, { run: "run-old", feature: "billing", pid: deadPid(), op: "start-1", started: ago(60000), heartbeat: ago(60000) });
+  landOn(dirs, "deliver/board", "landed.rs");
+  commit(dirs.repo, "main.rs");
+
+  const body = start(dirs);
+
+  assert.equal(body.ok, false);
+  assert.match(body.error, /^deliver\/board and HEAD have diverged/);
+  assert.ok(body.log.some((l) => /^Took over the lock of run run-old for feature billing: its session \(pid \d+\) has ended$/.test(l)), JSON.stringify(body.log));
+});
+
 test("without OMNI_DELIVER_SESSION_PID the lock holds the nearest ancestor that is not a shell: the process that ran the helper, directly or through sh", (t) => {
   const dirs = scratch(t);
   const env = { ...dirs.env };
   delete env.OMNI_DELIVER_SESSION_PID;
 
-  const direct = spawnSync(process.execPath, [helper, "start", "--op", "start-1", "--feature", "board"], { cwd: dirs.repo, env, encoding: "utf8" });
+  const direct = spawnSync(process.execPath, [helper, ...startArgv()], { cwd: dirs.repo, env, encoding: "utf8" });
   const directPid = readLock(dirs).pid;
   rmSync(dirs.lock);
   // `; exit $?` keeps sh from running node with exec, so sh is node's parent.
-  const viaShell = spawnSync("/bin/sh", ["-c", `"${process.execPath}" "${helper}" start --op start-2 --feature board; exit $?`], { cwd: dirs.repo, env, encoding: "utf8" });
+  const viaShell = spawnSync("/bin/sh", ["-c", `"${process.execPath}" "${helper}" ${startArgv({ op: "start-2" }).join(" ")}; exit $?`], { cwd: dirs.repo, env, encoding: "utf8" });
 
   assert.deepEqual([JSON.parse(direct.stdout).body.ok, JSON.parse(viaShell.stdout).body.ok], [true, true]);
   assert.deepEqual([directPid, readLock(dirs).pid], [process.pid, process.pid]);
@@ -521,6 +769,30 @@ test("a directory in the lane worktree's place that is not a worktree of the che
   assert.equal(existsSync(dirs.lock), false);
 });
 
+test("a lane folder that lost its .git file inside an enclosing repository stops the start, and neither that repository nor the folder is touched", (t) => {
+  const dirs = scratch(t);
+  // The checkout sits in a repository of its own, as in a monorepo folder or a home kept in git.
+  git(dirs.root, "init", "-q", "-b", "main");
+  git(dirs.root, "config", "user.email", "test@example.com");
+  git(dirs.root, "config", "user.name", "Test");
+  writeFileSync(join(dirs.root, "notes.txt"), "committed\n");
+  git(dirs.root, "add", "notes.txt");
+  git(dirs.root, "commit", "-q", "-m", "outer");
+  start(dirs);
+  rmSync(dirs.lock);
+  rmSync(join(dirs.lane, ".git"));
+  mkdirSync(join(dirs.lane, "target"));
+  writeFileSync(join(dirs.lane, "target", "cache.bin"), "warm\n");
+  writeFileSync(join(dirs.root, "notes.txt"), "uncommitted work\n");
+
+  const body = start(dirs, { op: "start-2" });
+
+  assert.equal(body.ok, false);
+  assert.equal(body.error, `${dirs.lane} is not a worktree of ${dirs.repo}, so it cannot be the lane worktree; move it away`);
+  assert.equal(readFileSync(join(dirs.root, "notes.txt"), "utf8"), "uncommitted work\n");
+  assert.deepEqual([readFileSync(join(dirs.lane, "target", "cache.bin"), "utf8"), readFileSync(join(dirs.lane, "README"), "utf8")], ["warm\n", "app\n"]);
+});
+
 // ---- start: reconcile ---------------------------------------------------------------
 
 test("start releases the stories another run holds, and the working ones nobody holds, to their waiting states, keeping an implementing story's worktree, and lists them and the feature's stories", (t) => {
@@ -597,6 +869,37 @@ test("context gives the story's fields and decisions, its open findings by attem
   assert.doesNotMatch(JSON.stringify(body), /NODE/);
 });
 
+test("context gives the resolved findings of the attempts before the latest answers as earlier, one group per attempt in the order they came", (t) => {
+  const finding = (text, resolved, stage = "review") => ({ stage, text, files: [], resolved });
+  const dirs = scratch(t, [story("US-1", { findings: [
+    finding("[attempt 1] The badge is blue", true),
+    finding("[attempt 1] It has no border", true),
+    finding("[attempt 2] Still blue", true, "testing"),
+    finding("rebase conflict in README", true, "testing"),
+    finding("[attempt 1] Too dark a red", true),
+    finding("[attempt 1] Now too light", false),
+  ] })]);
+  const { run } = start(dirs);
+
+  const body = step(dirs, run, "context", { key: "US-1" });
+
+  assert.deepEqual(body.earlier, [
+    { attempt: 1, findings: [{ stage: "review", text: "The badge is blue", files: [] }, { stage: "review", text: "It has no border", files: [] }] },
+    { attempt: 2, findings: [{ stage: "testing", text: "Still blue", files: [] }] },
+    { attempt: 1, findings: [{ stage: "review", text: "Too dark a red", files: [] }] },
+  ]);
+  assert.deepEqual([body.attempt, body.findings], [1, [{ attempt: 1, findings: [{ stage: "review", text: "Now too light", files: [] }] }]]);
+});
+
+test("a story list past 1 MB is read whole", (t) => {
+  const dirs = scratch(t, [story("US-1", { text: "x".repeat(2 * 1024 * 1024) })]);
+  const { run } = start(dirs);
+
+  const body = step(dirs, run, "list");
+
+  assert.deepEqual(body.stories.map((s) => s.key), ["US-1"]);
+});
+
 test("claim, move, block, unblock and release write the story as this run and give back its status; a claim the board refuses is ok: false with the board's reason", (t) => {
   const dirs = scratch(t, [story("US-1"), story("US-2", { status: "implemented" })]);
   const { run } = start(dirs);
@@ -634,6 +937,30 @@ test("finding numbers the findings of a failed attempt one past the attempts the
   ]);
   assert.equal(empty.ok, false);
   assert.equal(dirs.story("US-1").findings.length, 5);
+});
+
+test("a finding's text loses any attempt number it brings: an uncounted one can never count as an attempt, and a counted one gets only its own", (t) => {
+  const dirs = scratch(t, [story("US-1")]);
+  const { run } = start(dirs);
+
+  step(dirs, run, "finding", { key: "US-1", stage: "testing", findings: [{ text: "[attempt 3] rebase conflict in README" }], counts: false });
+  const counted = step(dirs, run, "finding", { key: "US-1", stage: "review", findings: [{ text: "[attempt 9] [attempt 8] The badge is blue" }] });
+
+  assert.deepEqual(dirs.story("US-1").findings.map((f) => f.text), ["rebase conflict in README", "[attempt 1] The badge is blue"]);
+  assert.equal(counted.attempt, 1);
+});
+
+test("files gives a path that is not ASCII as it is, not quoted", (t) => {
+  const dirs = scratch(t, [story("US-1")]);
+  const { run } = start(dirs);
+  const wt = step(dirs, run, "worktree", { key: "US-1" }).path;
+  mkdirSync(join(wt, "docs"));
+  commit(wt, "docs/översikt.md");
+
+  const body = step(dirs, run, "files", { key: "US-1" });
+
+  assert.deepEqual(body.files, ["docs/översikt.md"]);
+  assert.deepEqual(dirs.story("US-1").files_changed, ["docs/översikt.md"]);
 });
 
 test("files sets the story's files_changed to what its branch changed since it left deliver/<slug>, not what landed there since", (t) => {
@@ -690,6 +1017,16 @@ test("unblock-pass keeps a story blocked, with no decision, while one of its thr
   assert.deepEqual(body.unblocked, []);
   assert.equal(dirs.story("US-5").blocked, true);
   assert.deepEqual(dirs.story("US-5").decisions, []);
+});
+
+test("unblock-pass keeps a story whose thread cannot be read blocked, says so in its log, and goes on with the next story", (t) => {
+  const dirs = scratch(t, [story("US-1", { blocked: true, links: [questionLink("th-gone")] }), story("US-2", { blocked: true, links: [questionLink("th-2")] })], [thread("th-2", "US-2: Which red?", "#c00")]);
+  const { run } = start(dirs);
+
+  const body = step(dirs, run, "unblock-pass");
+
+  assert.deepEqual([body.ok, body.unblocked, body.log], [true, ["US-2"], ["US-1 stays blocked: the thread th-gone could not be read: not_found: no thread th-gone in this project"]]);
+  assert.deepEqual([dirs.story("US-1").blocked, dirs.story("US-2").blocked], [true, false]);
 });
 
 test("unblock-pass records only the conclusions that are not human decisions yet", (t) => {
@@ -751,6 +1088,25 @@ test("an existing story worktree is kept, with its commits and what it left unco
   assert.equal(body.created, false);
   assert.equal(git(wt, "rev-parse", "HEAD").trim(), head);
   assert.equal(readFileSync(join(wt, "wip.rs"), "utf8"), "wip\n");
+});
+
+test("worktree keeps an existing folder only when it is a worktree of the checkout on story/<key>: a plain folder or a worktree on another branch is an error, and stays as it is", (t) => {
+  const dirs = scratch(t, [story("US-1"), story("US-2")]);
+  const { run } = start(dirs);
+  const plain = join(dirs.root, "app-stories", "US-1");
+  mkdirSync(plain);
+  writeFileSync(join(plain, "notes"), "mine\n");
+  const other = join(dirs.root, "app-stories", "US-2");
+  git(dirs.repo, "worktree", "add", "-q", "-b", "elsewhere", other);
+
+  const bodies = [step(dirs, run, "worktree", { key: "US-1" }), step(dirs, run, "worktree", { key: "US-2" })];
+
+  assert.deepEqual(bodies.map((b) => [b.ok, b.error]), [
+    [false, `${plain} is not a worktree of ${dirs.repo} on story/US-1; move it away`],
+    [false, `${other} is not a worktree of ${dirs.repo} on story/US-2; move it away`],
+  ]);
+  assert.equal(readFileSync(join(plain, "notes"), "utf8"), "mine\n");
+  assert.equal(git(other, "rev-parse", "--abbrev-ref", "HEAD").trim(), "elsewhere");
 });
 
 test("sleep waits the seconds it is given", (t) => {
