@@ -19,11 +19,12 @@ Each story is a vertical slice through every layer it needs (schema, API, CLI, w
 
 - **Size.** At most 4 behaviour criteria per story, not counting the standard check line (`Typecheck/lint passes`) or the browser line. More than 4: split the story. If the change cannot be described in 2-3 sentences, it is too big.
 - **Contract.** Each story names, in its Description, the contract operations (or tables, or screens) it implements, by their exact names from the frozen docs. A prefactor story that implements no operation names none.
-- **Criteria** are verifiable: a concrete input and the exact expected value, status, error text or row count. "Works correctly" is not a criterion.
+- **Criteria** describe outside behaviour, what a user or caller observes, and are verifiable: a concrete input and the exact expected value, status, error text or row count. "Works correctly" is not a criterion. A criterion never names a test: the verifier checks each criterion by running the behaviour, and what the tests must pin goes under `Tests:`.
 - **UI stories** carry the criterion `**[UI stories only]** Verify in browser using dev-browser skill`, written as `Verify in browser using dev-browser skill (<what the page shows>)`.
 - **Interfaces** list the exact names and signatures the story adds that later stories use, and the existing ones it uses.
 - **Dependencies.** A story that uses an Interface another story adds names that story in `Blocked by`. A story with no such dependency says `Blocked by: none`. Never block on order alone.
-- **Files.** `change:` lists the paths the story changes, found by reading the repository, as backticked paths. `read first:` lists at most 6 paths, e.g. the closest existing test to copy. Never hardcode a sequence number that depends on story order (a migration `V003__`): write "the next free migration number".
+- **Files.** `change:` lists the paths the story changes, found by reading the repository, as backticked paths. `read first:` lists at most 6 paths, e.g. the closest existing code to follow. Never hardcode a sequence number that depends on story order (a migration `V003__`): write "the next free migration number".
+- **Tests.** The `Tests:` lines hold the story's test obligations: one `- ` line for each test the story must have, such as the regression test of the bug a bugfix story fixes, stated as what it pins. Their last line is `- copy:` with the closest existing test to copy, as a backticked path. The lane's test author owns these lines, and the verifier skips them. Write `Tests:` plain, on the line right after `**Files:**`, with no blank line between: `omni story add` keeps only the Description, Topic, Interfaces and Files blocks of the file as the story's text, and a bold label or a blank line ends the Files block.
 - **Links.** Every story, prefactor stories included, links at least one Spec, Architecture or DB node it builds from with `--link <doc>:<node>`, and each UI story also links its design board. Repeat `--link` for more than one; `<doc>` and `<node>` are IDs, an optional `:<label>` follows.
 
 ## Story file
@@ -37,9 +38,12 @@ Write each story to a scratch file outside the repo (the session's scratch direc
 **Blocked by:** <US-xxx, ... or none>
 **Interfaces:** <names and signatures added for later stories, and existing ones used>
 **Files:** change: `<path>`, `<path>` · read first: `<path>`
+Tests:
+- <a test obligation, when the story owes one: what the test pins>
+- copy: `<the closest existing test>`
 
 **Acceptance Criteria:**
-- [ ] <behaviour criterion with the exact expected value>
+- [ ] <outside behaviour, with the exact expected value>
 - [ ] Typecheck/lint passes
 - [ ] **[UI stories only]** Verify in browser using dev-browser skill
 ```

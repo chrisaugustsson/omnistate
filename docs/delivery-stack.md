@@ -1,14 +1,266 @@
 # The delivery stack
 
-A delivery run (`make deliver FEATURE=...`, the `omni-deliver` workflow) reads
-its board from the OmniState instance on this machine and, in its test lane,
-builds and tests every merged story. Those are two different compose projects
-of the same `docker-compose.yml`:
+A delivery run is the `omni-deliver` workflow (`workflows/omni-deliver.js`),
+which Claude Code runs with its Workflow tool. It takes a feature's stories
+from the OmniState board, implements, reviews and tests them, and lands them on
+the branch `deliver/<feature slug>`. The script holds the flow, but it can run
+no command itself: every git, omni and check command runs in its host helper,
+`workflows/deliver-step.mjs`, which a cheap courier agent runs for each step.
+The helper's header describes that protocol and every step; the script's
+`meta` sums up a run.
+
+## Starting a run
+
+Once per machine, `make install-agent-tools` links the workflow at
+`~/.claude/workflows/omni-deliver.js` and its helper at
+`~/.claude/omni/deliver-step.mjs`, the path the workflow runs it from. Both
+links point into this checkout.
+
+A run starts from a Claude Code session in the project's main checkout:
+
+- The checkout's folder is linked to its OmniState project (`omni link`, or
+  `OMNI_PROJECT`).
+- The stories folder beside the checkout, `<checkout>-stories`
+  (`../omnistate-stories` here), is among the session's working directories
+  (`claude --add-dir`, or `/add-dir`). The story worktrees and the lane
+  worktree live there, and the run stops at its start when it cannot write
+  there.
+
+Then ask Claude to run the workflow `omni-deliver` with the Workflow tool, with
+args such as `{"feature": "Rename a project", "storyLimit": 3}`:
+
+| Arg | Default | What it sets |
+| --- | --- | --- |
+| `feature` | required | the feature whose stories the run delivers |
+| `implementers` | 3 | how many stories are implementing at once |
+| `reviewers` | 3 | how many stories are in review at once |
+| `storyLimit` | none | the most stories the run takes, for a first run on a feature |
+| `force` | false | takes over the lock of a run the human knows is dead |
+| `checks` | none | check commands on top of those in `.omni.toml` (see The checks) |
+| `models` | see below | the model of a role: `clarity`, `council`, `impl`, `implRetry`, `review`, `verify`, `tests`, `final` or `courier` |
+| `agentTypes` | none | the agent type of a role, such as `implementer`, where this machine has one |
+| `helper` | `~/.claude/omni/deliver-step.mjs` | another path to the helper |
+
+Every role runs on opus, except `impl`, a story's first attempt, on sonnet, and
+`courier` on haiku.
+
+The run never pushes, and never moves the checkout's branch or changes its
+files: it reads the checkout's HEAD at its start, and keeps its own state in
+`.omni/`, which git ignores.
+
+## What a run does
+
+- **Start.** The helper takes the lock, sets `deliver/<slug>`, reads the checks
+  and opens the run's thread, `Run <run id>`. It releases the stories a dead
+  run still holds, stops the jobs of earlier runs that still run, and cleans
+  the lane worktree with `reset --hard` and `clean -fd`, never `-x`, so that
+  ignored build caches stay warm.
+- **Unblock.** A story whose threads all have a conclusion gets each one as a
+  human decision, and is unblocked. Its attempts count from there.
+- **Clarity.** One check for each backlog story whose text, criteria, linked
+  nodes or decisions changed since its last check. A criterion that names a
+  test becomes a test obligation, which the lane's test author owns and the
+  verifier skips; the omni-stories skill writes test obligations under
+  `Tests:` in the story's text instead. A minor gap takes its recommendation.
+  The 3 blocking gaps of most impact go to the council, and the rest take
+  their recommendation.
+- **The council** answers a question before the human is asked: clarity's
+  blocking gaps, and the questions of the implementer, the reviewer and the
+  test author. Three members each read one thing: the spec docs and decisions,
+  the code, or what the user would expect. When all three pick the same
+  option, and a member quotes its source or all three call the gap minor, the
+  answer becomes an agent decision and the story goes on. Otherwise a thread
+  opens with each member's pick and evidence, and the story is blocked until
+  the thread has a conclusion.
+- **Deliver,** in the three stages below.
+- **Report.** A check of the user journeys across the stories landed, then the
+  report.
+
+The run does not wait for answers: the next run's Unblock takes them.
+
+## The three stages and the lane
+
+A story goes through the board's three working stages: implementing, review
+and testing.
+
+1. **Implementing,** at most `implementers` stories at once. The implementer
+   works in the story's worktree, `<stories dir>/<key>`, on the branch
+   `story/<key>`. A new worktree is cut from the tip of `deliver/<slug>`; one
+   from an earlier attempt is kept, with its commits, and its story is picked
+   first. From the second attempt on, the implementer runs on `implRetry`,
+   with every earlier finding by attempt. Implementers write no tests and never
+   start the stack.
+2. **Review,** at most `reviewers` stories at once. A read-only reviewer gives a
+   verdict on every criterion and lists every defect, and the script decides
+   the review from those. Test obligations are not judged.
+3. **Testing,** one story at a time, in the lane worktree `<stories dir>/_lane`.
+   It stays from run to run, on a detached HEAD.
+   - `lane-prepare` rebases `story/<key>` onto the tip of `deliver/<slug>` in
+     the story's worktree, and checks the result out in the lane worktree.
+   - The checks `fast`, `stack_up` and `stack` run there, in that order, as
+     jobs.
+   - A verifier exercises every criterion but the test obligations, on the
+     stack that `stack_up` started.
+   - A test author writes the story's regression tests and commits them on the
+     lane's detached HEAD. `lane-clean` throws away what it left uncommitted,
+     so that its check, which runs next as a job, runs on exactly what lands.
+   - `lane-land` lands the story, moves it to done, and removes its worktree
+     and `story/<key>`.
+
+What sends a story back:
+
+- A failed review or verification, or a failed check of the test author's
+  tests, uses one of the story's 3 attempts since the human's latest answer.
+  The story stays held where it failed until an implementer's slot is free,
+  ahead of new stories, and its next implementer goes on in its worktree.
+  After the third, the story is blocked on a thread with every attempt's
+  findings.
+- A failed lane check runs once more on the tip without the story. When it
+  passes there, the failure is the story's, and uses an attempt. When it fails
+  there too, the trouble is not the story's: the lane stops for the rest of the
+  run, with one thread for the run, and the story goes back to reviewed with no
+  attempt used. Implementers and reviewers finish what they hold.
+- A rebase conflict sends the story back with no attempt used, to rebase and
+  resolve in its worktree. Uncommitted changes there, or another branch
+  checked out, use an attempt.
+- An agent that returns nothing is asked again after 30 s and after 2 minutes,
+  and then its story goes back to where it waited, with no attempt used. When
+  agents return nothing for 3 stories in a row, the run takes no new story and
+  opens one thread for the run.
+- A story whose delivery stops on an error is released and blocked on a thread
+  with the error. When the same error stops a second story, the run takes no
+  new story and opens one thread for the run.
+
+After a failure in the lane, the lane worktree goes back to the tip, and when
+the stack holds the story's build, `stack_up` runs again there, so that the
+test stack is left on the build of `deliver/<slug>`. A story that fails at
+`fast` never started the stack, and nothing is rebuilt.
+
+## Landing on deliver/<slug>
+
+The slug is the feature's name in lowercase, with every character other than
+a-z and 0-9 turned into `-`: the feature "Rename a project" lands on
+`deliver/rename-a-project`. The branch is checked out nowhere. At a run's
+start:
+
+- when it is missing, it is created at the checkout's HEAD;
+- when HEAD is ahead of it, it is fast-forwarded to HEAD;
+- when it is ahead of HEAD, with the stories of an earlier run, it is kept;
+- when the two have diverged, the run stops before any work and says to merge
+  first.
+
+`lane-land` moves the branch with a compare-and-swap, from the tip the story
+was tested on to the tested commit, and checks that the branch then holds the
+tested tree. A branch that moved in between is not swapped.
+
+The report lists the stories landed, with their commits. To bring them into
+main:
+
+```bash
+git merge --ff-only deliver/<slug>
+```
+
+When main has moved on since, `git merge deliver/<slug>` instead; the next run
+fast-forwards the branch to that merge.
+
+## The checks
+
+A run's checks come from the `[checks]` table of the project's `.omni.toml`,
+which the run's start reads with `omni checks --json`. `args.checks` sets
+others on top, for one run. The workflow treats every check as optional: one
+that is unset, or set to an empty command in `args.checks`, is skipped, and the
+prompts leave it out.
+
+| Check | Run by | What for |
+| --- | --- | --- |
+| `fast` | the lane, as a job, and the journeys check | the project's own tests and checks |
+| `stack_up` | the lane, as a job | builds and starts the test stack from the lane worktree, and builds it again after a failure |
+| `stack` | the lane, as a job | the tests that need the stack |
+| `seed` | the verifier | a credential on the test stack: it prints what to sign in with |
+| `lint` | the verifier | a criterion about lint, which the verifier checks by running it, as it does `fast` and `stack` |
+
+The omni CLI on main requires `fast`, `stack_up` and `stack`, and gives only
+those three. The branch `omni-checks-optional` makes every check optional and
+passes the others through. Until it is merged, `args.checks` is how a run gets
+`seed` and `lint`.
+
+Every check runs as a job: a detached supervisor runs the command in the lane
+worktree, in a process group of its own and with no standard input, and logs
+its output under `.omni/runs/<run>/jobs/`. A courier waits for it up to 8
+minutes at a time. A job has 45 minutes: past that, its group gets SIGTERM,
+then SIGKILL 10 s later, and the check counts as failed. Its finding quotes the
+end of the output, which says that the job ran past its limit. A workflow
+stopped from outside leaves its jobs running, and the next start stops them;
+finish stops those of its own run.
+
+A stopped check can leave behind what it started outside its process group,
+such as the container of a `docker compose run`, which runs in Docker's VM.
+Cleaning that up is the project's job, in its `stack_up` or a preflight. This
+repo's `stack_up` does not do it yet: a `stack` check stopped at its limit can
+leave its test container running, which
+`docker ps --filter label=com.docker.compose.project=omnistate-test` lists.
+
+## The lock
+
+`.omni/run.lock` keeps one run to a checkout. It names the run, the feature,
+and by its pid the Claude Code session that runs the couriers, and every
+helper call of the run refreshes its heartbeat. A start while that run is alive
+is refused. The lock is stale once its session has ended, or once the run has
+made no call for 2 hours, and the next start takes it over and says so; `force`
+takes over a lock whose run the human knows is dead. The helper finds the
+session as the nearest process above it that is not a shell, which has been
+checked on macOS only.
+
+`.omni/` also holds the clarity cache, `clarity.json`, and a folder for each
+run, `.omni/runs/<run>/`: the payloads in flight, the record of applied steps,
+the jobs with their logs, the timings and the report. A run's start adds
+`.omni/` to `.git/info/exclude` when git does not ignore it already; this
+repo's `.gitignore` does.
+
+## The report and the timings
+
+The helper records the start and the end of every step and every job in
+`.omni/runs/<run>/timings.jsonl`. Every run that started ends with `finish`,
+after an error too: it stops the run's jobs that still run, writes the report
+to `.omni/runs/<run>/report.md`, posts it on the run's thread, and gives the
+lock up. When the post fails, the file still holds the report.
+
+The report has:
+
+- the run's notes, such as why it stopped taking stories;
+- the stories landed on `deliver/<slug>`, with their commits and the command
+  that brings them in;
+- the blocked stories, with their threads;
+- every story's outcome;
+- how many questions the council settled, and how many it sent to the human;
+- the human checks still pending;
+- the journeys check;
+- the timings: for each story its total time, its time in each stage, its
+  rebases, and each of its jobs by name. A time with (n) after it adds up n of
+  them.
+
+## Limits
+
+- **The agent cap.** The runtime stops a workflow at 1000 agent calls,
+  couriers included, and one story has taken close to 60. A run takes a new
+  story only while its calls leave room under 900 for the stories in flight,
+  at 60 each, and stops a story that reaches 960 all the same, released with
+  no attempt used. A long feature takes more than one run: the report says
+  when a run stopped for the cap, and the next run carries on.
+- **Small machines.** The runtime runs at most min(16, CPUs - 2) agents at
+  once, couriers included. With 4 CPUs that is 2, and a courier waiting on a
+  check holds one of them. The run still finishes, just slowly.
+
+## The test stack
+
+A run reads its board from the OmniState instance on this machine, and its
+lane builds and tests each story on a second one. Those are two compose
+projects of the same `docker-compose.yml`:
 
 | Project | Address | Holds | Started by |
 | --- | --- | --- | --- |
 | `omnistate` | http://omnistate.localhost | the board the run claims stories from, and the human's data | `docker compose up` (never a run) |
-| `omnistate-test` | http://omnistate-test.localhost | the integration branch's build, and whatever the stack tests wrote | the lane's `stack_up` command |
+| `omnistate-test` | http://omnistate-test.localhost | the build of the story in the lane, or of `deliver/<slug>`, and whatever the stack tests wrote | the lane's `stack_up` check |
 
 Both route through the edge (`docker/edge/README.md`); without it they are
 http://localhost:8420 and http://localhost:8421. Each project has volumes of its
@@ -16,99 +268,72 @@ own (`omnistate-test_postgres-data`, `omnistate-test_rustfs-data`,
 `omnistate-test_test-target`, `omnistate-test_test-cargo-registry`), so nothing
 a run builds, migrates or writes reaches the board.
 
-## What the lane runs
-
-The commands come from `[checks]` in `.omni.toml` (`omni checks --json`), and
-run from the main worktree after the story is merged onto the integration
-branch:
+This repo's `.omni.toml` sets three checks. `fast` runs lint, the WebAssembly
+renderer's build, and the Rust, web and workflow tests. The stack checks are:
 
 - `stack_up`: `OMNI_PORT=8421 docker compose -p omnistate-test up --build --wait --detach proxy`
 - `stack`: `OMNI_PORT=8421 docker compose -p omnistate-test run --rm test`
 
-The same two steps are `make test-stack-up` and `make test-stack` for running
-them by hand. The lane runs the fast command first and `stack_up` only after
-it passed: the web image copies `web/public/render`, which the fast command's
-`make render-wasm` rebuilds, so a stack built at the same time served a stale
-renderer and the verifier checked the wrong build. The verifier that exercises the story is told which stack
-`stack_up` started and checks the story against that one.
+They run in the lane worktree, so `stack_up` builds the images from the tree
+in the lane. The same two stack steps are `make test-stack-up` and
+`make test-stack` for running them by hand. The lane runs `fast` first and
+`stack_up` only after it passed: the web image copies `web/public/render`,
+which the fast command's `make render-wasm` rebuilds, so a stack built at the
+same time served a stale renderer and the verifier checked the wrong build.
 
-Every command the lane runs has a time limit: 45 minutes, unless `timeouts`
-in the run's args sets another for its name, in minutes (`fast`, `stack_up`,
-`stack`, and `check` for the test author's command), as in
-`--args '{"timeouts":{"stack":60}}'`. A command still running at its limit is
-stopped with everything it started (its process group gets SIGTERM, then
-SIGKILL 10 s later) and counts as failed; its output, which the finding
-quotes, ends with the limit it ran past. A command gets no standard input, so
-one that reads it sees the end at once instead of waiting for its limit.
-
-When a lane fails after `stack_up` ran (the stack did not start, the stack
-command failed, a criterion failed, the test author found a defect, or the
-verifier returned nothing), the run resets the integration branch to the lane's
-base and runs `stack_up` again from that tree, logging
-`lane:<key>: rebuilding the stack from <branch> at <sha>`, so the test stack is
-left on the integration branch's head rather than on the story it sent back.
-A lane that fails at the fast command never started the stack and does not
-rebuild it.
-
-After the verifier, the test author writes the story's regression tests on
-the main worktree and returns the command that runs them; the lane runs that
-command on its test commit. A red run drops the test commits, the story stays
-done on its verified implementation, and the report's Tests section says
-`tests dropped`.
-
-## A credential on the test stack
+### A credential on the test stack
 
 The test stack starts with no users, and the permission classifier refuses an
-agent that writes into its database by hand. A verifier that has to call the
-API or open the app there gets a credential with
+agent that writes into its database by hand. The verifier gets a credential
+from the run's `seed` check, which it runs in the lane worktree. In this repo
+that command is
 
 ```bash
 make test-stack-seed NAME=us26
 ```
 
-from the main worktree, which inserts a workspace, a user `<NAME>@example.com`
-with a live session and a membership, mints an API key through the API, and
-prints three lines: `workspace=<id>`, `session=<token>` and `api_key=<secret>`.
-A human route takes the cookie `omni_session=<token>`; an agent route, and the
-omni CLI with `OMNI_SERVER=http://localhost:8421`, take
-`Authorization: Bearer <secret>`. The rows live in the test database until
-`make test-stack-down` removes its volumes.
+which inserts a workspace, a user `<NAME>@example.com` with a live session and
+a membership, mints an API key through the API, and prints three lines:
+`workspace=<id>`, `session=<token>` and `api_key=<secret>`. A human route takes
+the cookie `omni_session=<token>`; an agent route, and the omni CLI with
+`OMNI_SERVER=http://localhost:8421`, take `Authorization: Bearer <secret>`. The
+rows live in the test database until `make test-stack-down` removes its
+volumes, and a NAME used before fails, since a user's email is unique.
 
-## Bringing the test stack down
+`.omni.toml` does not set it as the `seed` yet, so a run gets it, with a new
+NAME each time, through its args:
+
+```json
+{"feature": "<name>", "checks": {"seed": "make test-stack-seed NAME=lane$(date +%s)", "lint": "make lint"}}
+```
+
+Without a seed, the verifier has no credential on the test stack.
+
+### Bringing the test stack down
 
 ```bash
 make test-stack-down
 ```
 
-which is `docker compose -p omnistate-test down --volumes`. The next lane story
-(or `make test-stack-up`) creates it again from scratch; the first build after
-that compiles the test binaries into a fresh `test-target` volume, which takes
-a while.
+which is `docker compose -p omnistate-test down --volumes`. The next story in
+the lane (or `make test-stack-up`) creates it again from scratch; the first
+build after that compiles the test binaries into a fresh `test-target` volume,
+which takes a while.
 
-The API applies its migrations on start, and `docker compose up` on the test
-project does not undo one. A migration from a story the lane sent back stays
-applied to the test database, even though the branch was reset and the rebuilt
-API no longer carries it, until the command above removes the volumes. A story
-that reads from a migration-created table and then fails to start because the
-table already exists, or passes only because a sent-back story's table is still
-there, is the sign to run it.
+The API applies its migrations on start, and refuses to start on a database
+that holds a migration it does not carry, or one that changed after it was
+applied. So a story the lane sends back after its `stack_up` leaves its
+migrations in the test database, which `deliver/<slug>` never got, and from
+then on `stack_up` fails for every tree without them:
 
-## Where a story's worktree starts
+- the rebuild after the failure fails, and the next story's `stack_up` fails
+  on the story and on the base, which stops the lane, as trouble that is not
+  the story's;
+- a story with a migration whose `stack` check fails stops the lane at once,
+  since the rerun on the base meets its migration, and it does so again in
+  every run after, with no attempt used.
 
-While the lane holds a merge, main carries a story that may yet be sent back
-and reset away. A worktree cut from that head would carry the story's commits
-and replay them at its own merge, so a new worktree starts from the lane's
-base (the last head that passed) while the lane holds a merge, and the commit
-it was cut from is recorded on the branch as `branch.story/<key>.omnibase`.
-The lane rebases a story with `--onto main <that base>`, falling back to git's
-fork point and then the merge base for a branch cut by an older run, so only
-the story's own commits reach main. The recorded base counts only while the
-branch still sits on it: when an implementer has rebased the branch onto main
-itself (after a rebase conflict), the lane rebases from the merge base
-instead, and a base that is on neither main nor the branch is ignored. Once the lane has rebased a story, the
-recorded base moves to the head it was rebased onto, so a story the lane sends
-back and merges again replays only its own commits.
-
-A story that review or the lane sends back keeps its worktree and branch: the
-next implementer continues from them and fixes the findings. Only a story that
-passes the lane loses its worktree and branch.
+`docker compose -p omnistate-test logs api` shows the cause: `migration <n> was
+previously applied but is missing in the resolved migrations`. Run
+`make test-stack-down` before the next run. Until this repo's `stack_up` resets
+the test database itself, a story in the second case needs the human.
