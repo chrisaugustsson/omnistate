@@ -46,6 +46,7 @@ function scratch(t, stories = [], threads = []) {
     else process.env.FAKE_OMNI_STATE = saved.state;
     delete process.env.FAKE_OMNI_FAIL;
     delete process.env.FAKE_OMNI_DOWN;
+    delete process.env.FAKE_OMNI_HANG;
     rmSync(root, { recursive: true, force: true });
   });
   return {
@@ -1497,4 +1498,63 @@ test("a branch rebuilt on the integration branch, whose recorded base is on neit
 
   assert.deepEqual(subjects(dirs), ["feat: US-1 attempt", "chore: main edits shared.rs", "chore: main edits shared.rs", "chore: shared", "init"]);
   assert.equal(dirs.story("US-1").status, "done");
+});
+
+// ---- time limits: no call, command or post waits forever --------------------------
+
+// Time limits are in minutes; the tests use tiny ones.
+const seconds = (s) => s / 60;
+
+test("a lane command running past its time limit is stopped with everything it started, and the story is sent back with a finding that names the limit", { timeout: 20000 }, async (t) => {
+  const dirs = scratch(t, [story("US-1", { status: "reviewed" })]);
+  const childPid = join(dirs.root, "child.pid");
+  dirs.checks({ fast: "true", stack_up: "true", stack: `sleep 30 & echo $! > ${childPid}; wait` });
+  reviewed(dirs, "US-1");
+  const seen = {};
+  const { agent } = implAgent({ "US-1": stopped });
+
+  await workflow({ feature: "board", timeouts: { stack: seconds(1) } }, agent, onSendBack(dirs, "US-1", seen), (fns) => Promise.all(fns.map((f) => f())), () => {});
+
+  const [finding] = seen.sentBack.findings;
+  assert.match(finding.text, /^\[attempt 1\] The stack command .* failed on the main worktree\. Output:\n/);
+  assert.match(finding.text, /Timed out: the stack command ran past its limit of 1s \(args\.timeouts\.stack\) and was stopped\./);
+  assert.throws(() => process.kill(Number(readFileSync(childPid, "utf8")), 0), { code: "ESRCH" }, "the command's own child was stopped with it");
+});
+
+test("a call that hangs fails at the call limit with an error that says it timed out, so a hung post of the report leaves the run to end unposted", { timeout: 20000 }, async (t) => {
+  scratch(t);
+  process.env.FAKE_OMNI_HANG = "post";
+  const lines = [];
+
+  const result = await workflow({ feature: "board", timeouts: { call: seconds(2) } }, clarityAgent().agent, () => {}, (fns) => Promise.all(fns.map((f) => f())), (m) => lines.push(m));
+
+  assert.equal(result.posted, false);
+  assert.ok(lines.some((l) => /^The report could not be posted: `omni post \S+ --summary Report of run-\S+ --body-file \S+ --feature board` timed out after 2s$/.test(l)), lines.join("\n"));
+});
+
+test("the clarity question and the run's report are posted from body files, which are gone once posted", { timeout: 20000 }, async (t) => {
+  const dirs = scratch(t, [story("US-7")]);
+
+  const result = await start("board", clarityAgent({ "US-7": [blockingGap] }).agent);
+
+  const posts = dirs.state().calls.filter((c) => c.argv[0] === "post");
+  assert.deepEqual(posts.map((c) => c.argv.includes("--body-file")), [true, true]);
+  for (const c of posts) assert.equal(existsSync(c.argv[c.argv.indexOf("--body-file") + 1]), false, "the body file is removed after the post");
+  const threads = dirs.state().threads;
+  assert.match(threads.find((th) => th.title === "US-7: Which colour is the badge?").posts[0].body, /Options:\n1\. Paint it red\n2\. Paint it blue\n/);
+  assert.equal(threads.find((th) => th.title.startsWith("Run ")).posts[0].body, result.report);
+});
+
+test("every agent call names its role, by which the runner sets the session's time limit", { timeout: 20000 }, async (t) => {
+  const dirs = scratch(t, [story("US-1")]);
+  dirs.checks({ fast: "true", stack_up: "true", stack: "true" });
+  const roles = {};
+  const impl = implAgent({ "US-1": async () => ({ status: "ready", summary: "done" }) });
+
+  await deliver({ feature: "board" }, async (prompt, opts) => {
+    roles[opts.label] = opts.role;
+    return impl.agent(prompt, opts);
+  });
+
+  assert.deepEqual(roles, { "clarity:US-1": "clarity", "impl:US-1": "impl", "review:US-1": "review", "verify:US-1": "verify", "tests:US-1": "tests", "final check": "wrap" });
 });

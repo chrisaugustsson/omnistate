@@ -1,14 +1,14 @@
 export const meta = {
   name: 'omni-deliver',
   description: 'Delivers a feature\'s stories from the OmniState board with three loops (implement, review, test) and a single test lane: locks the main worktree, reconciles claims left by dead runs, and clarity-checks the backlog before any worktree exists',
-  whenToUse: 'Run from the main worktree of a project with a clean tree, with args {feature: "<name>"} (optional: implementers (3), reviewers (3), storyLimit, models). One run per checkout, whatever the feature: the lock file .omni/run.lock holds the run, and a live pid refuses a second one. Needs the omni CLI on PATH and the folder linked to its project (omni link, or OMNI_PROJECT). Stories come from `omni story`; questions for the human become threads on the feature named after the story. A run has three loops, implement, review and test, that pull stories from the board by status, and the test step is a single lane: one story at a time on the main worktree. Never pushes.',
+  whenToUse: 'Run from the main worktree of a project with a clean tree, with args {feature: "<name>"} (optional: implementers (3), reviewers (3), storyLimit, models, timeouts). One run per checkout, whatever the feature: the lock file .omni/run.lock holds the run, and a live pid refuses a second one. Needs the omni CLI on PATH and the folder linked to its project (omni link, or OMNI_PROJECT). Stories come from `omni story`; questions for the human become threads on the feature named after the story. A run has three loops, implement, review and test, that pull stories from the board by status, and the test step is a single lane: one story at a time on the main worktree. A git or omni call that runs past 1 minute fails with an error that says it timed out, and a shell command (fast, stack_up, stack, the test author\'s check) that runs past 45 minutes is stopped with everything it started and fails; args.timeouts sets any of these limits by name, in minutes (call, fast, stack_up, stack, check), and the Node runner reads its agent sessions\' limits from the same map. Never pushes.',
   phases: [
     { title: 'Start', detail: 'clean tree, lock, the Run thread' },
     { title: 'Reconcile', detail: 'undo a merge a dead run left half done (the lane file), then release every story held by another run, and every working story nobody holds' },
     { title: 'Clarity', detail: 'one check per backlog story whose version is new, in parallel: blocking gaps become threads, minor ones agent decisions' },
     { title: 'Unblock', detail: 'a blocked story whose linked threads all have a conclusion gets each conclusion as a human decision and is unblocked' },
     { title: 'Implement', detail: 'the implement loop polls the board every 5 seconds and when an implementer ends: while fewer than `implementers` run, it claims the first pickable story that passed clarity and starts an implementer in its worktree (an existing one is continued), writing no tests and running only the existing checks its change needs; a finished story moves to implemented, a blocked one gets a thread and stays in the backlog' },
-    { title: 'Test lane', detail: 'one story at a time on the main worktree: the lane claims the first reviewed story, writes .omni/lane.json, rebases its branch onto the integration branch and fast-forwards it, runs the fast command, then the stack, then a verifier on its criteria, then a test author writes its regression tests by the writing-tests skill and the lane runs them (a red run drops the test commits and the report says so), and it moves to done; a failure before the tests resets the branch to the lane base and returns the story to the backlog with the findings at priority 0, its branch kept' },
+    { title: 'Test lane', detail: 'one story at a time on the main worktree: the lane claims the first reviewed story, writes .omni/lane.json, rebases its branch onto the integration branch and fast-forwards it, runs the fast command, then the stack (a command past its time limit is stopped and fails), then a verifier on its criteria, then a test author writes its regression tests by the writing-tests skill and the lane runs them (a red run drops the test commits and the report says so), and it moves to done; a failure before the tests resets the branch to the lane base and returns the story to the backlog with the findings at priority 0, its branch kept' },
     { title: 'Review', detail: 'up to `reviewers` reviewers at once read each review story\'s branch against its criteria; a fail returns the story to the backlog at priority 0 with the findings, for a fresh implementer that continues from the story\'s branch, and a fresh reviewer; a third failed attempt opens a thread and blocks the story; a pass moves it to reviewed' },
     { title: 'Report', detail: 'claims on unfinished stories are released, a verifier runs the fast command and the journeys of the stories done, and the report is posted on the Run thread' },
   ],
@@ -22,14 +22,28 @@ const implementers = A.implementers || 3
 const reviewers = A.reviewers || 3
 const storyLimit = A.storyLimit || Infinity
 const POLL_MS = 5000
+// ---- time limits -----------------------------------------------------------
+// Minutes: `call` for each git and omni call, the others for the shell
+// command of that name. args.timeouts overrides any of them; the Node runner
+// takes its agent sessions' limits from the same map.
+const LIMITS = { call: 1, fast: 45, stack_up: 45, stack: 45, check: 45 }
+const limitMs = (name) => {
+  const minutes = Number((A.timeouts || {})[name])
+  return 60000 * (minutes > 0 ? minutes : LIMITS[name])
+}
+// A stopped command gets SIGTERM first, and SIGKILL this much later.
+const KILL_GRACE_MS = 10000
+// A limit as the log and findings show it: minutes, or seconds below a minute.
+const span = (ms) => (ms >= 60000 ? `${+(ms / 60000).toFixed(1)} min` : `${+(ms / 1000).toFixed(1)}s`)
 // ---- model routing per role ------------------------------------------------
 // Same mapping as ralph-spec: Sonnet builds, Opus judges. Override per role with
 // args.models, or force one model everywhere with args.model.
 const MODELS = { clarity: 'opus', impl: 'sonnet', implRetry: 'opus', review: 'opus', verify: 'opus', tests: 'opus', wrap: 'sonnet', ...(A.models || {}) }
 const modelFor = (role) => A.model || MODELS[role]
 const AGENT_TYPES = { clarity: 'verifier', impl: 'implementer', review: 'verifier', verify: 'verifier', tests: 'implementer', wrap: 'verifier', ...(A.agentTypes || {}) }
-const runAgent = (prompt, { role, ...opts } = {}) =>
-  agent(prompt, AGENT_TYPES[role] ? { ...opts, agentType: AGENT_TYPES[role] } : opts)
+// The role goes along: the Node runner sets the session's time limit by it.
+const runAgent = (prompt, opts = {}) =>
+  agent(prompt, AGENT_TYPES[opts.role] ? { ...opts, agentType: AGENT_TYPES[opts.role] } : opts)
 
 // ---- git and omni through node:child_process -------------------------------
 const cp = await import('node:child_process')
@@ -37,8 +51,23 @@ const fs = await import('node:fs')
 const path = await import('node:path')
 const os = await import('node:os')
 
-const run = (cmd, argv, opts = {}) => cp.execFileSync(cmd, argv, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], ...opts })
+// Every call has a time limit: a synchronous `omni post` once held a run for
+// 76 minutes. Past it the call is killed, and the error says it timed out.
+const run = (cmd, argv, opts = {}) => {
+  const timeout = opts.timeout || limitMs('call')
+  try {
+    return cp.execFileSync(cmd, argv, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], ...opts, timeout })
+  } catch (e) {
+    if (e && e.code === 'ETIMEDOUT') throw new Error(`\`${[cmd, ...argv].join(' ')}\` timed out after ${span(timeout)}`)
+    throw e
+  }
+}
 const tryRun = (cmd, argv, opts) => { try { return run(cmd, argv, opts) } catch { return null } }
+// The process groups of the shell commands running now (runCmd). A detached
+// group no longer gets the terminal's Ctrl-C, so what still runs when the
+// run ends, or the process exits, is stopped.
+const groups = new Set()
+const stopGroups = () => { for (const pid of groups) { try { process.kill(-pid, 'SIGTERM') } catch {} } }
 const root = run('git', ['rev-parse', '--show-toplevel']).trim()
 const git = (argv, opts) => run('git', ['-C', root, ...argv], opts)
 const repoName = path.basename(root)
@@ -90,6 +119,7 @@ const write = (verb, key, extra = []) => {
   return omni(['story', verb, key, '--run', runId, ...extra])
 }
 
+process.on('exit', stopGroups)
 try {
   log(`Run ${runId} on feature ${feature}, integration branch ${integration}`)
   const threadId = omni(['thread', 'create', `Run ${runId}`]).trim()
@@ -101,7 +131,8 @@ try {
   const dropWorktree = (key) => {
     const wt = worktreeOf(key)
     if (fs.existsSync(wt)) {
-      if (tryRun('git', ['-C', root, 'worktree', 'remove', '--force', wt]) === null) fs.rmSync(wt, { recursive: true, force: true })
+      // Removing a worktree deletes its build output too, which takes minutes.
+      if (tryRun('git', ['-C', root, 'worktree', 'remove', '--force', wt], { timeout: Math.max(limitMs('call'), 10 * 60000) }) === null) fs.rmSync(wt, { recursive: true, force: true })
     }
     tryRun('git', ['-C', root, 'worktree', 'prune'])
     tryRun('git', ['-C', root, 'branch', '-D', `story/${key}`])
@@ -142,20 +173,23 @@ try {
     released.push({ key: story.key, status: readStory(story.key).status })
   }
 
-  // A question for the human is a thread on the feature named after the story,
-  // linked from the story, and the story is blocked until it concludes.
-  // The body goes through a file: fed through stdin, the synchronous spawn
-  // once left `omni post` waiting on its stdin for over an hour, and the run
-  // with it.
-  const openThread = (title, body) => {
-    const id = omni(['thread', 'create', title]).trim()
+  // A post's body goes through a file: fed through stdin, the synchronous
+  // spawn once left `omni post` waiting on its stdin for over an hour, and the
+  // run with it.
+  const post = (id, summary, body) => {
     const file = path.join(os.tmpdir(), `omni-post-${id}.md`)
     fs.writeFileSync(file, body)
     try {
-      omni(['post', id, '--summary', title.slice(0, 200), '--body-file', file])
+      omni(['post', id, '--summary', summary, '--body-file', file])
     } finally {
       try { fs.unlinkSync(file) } catch {}
     }
+  }
+  // A question for the human is a thread on the feature named after the story,
+  // linked from the story, and the story is blocked until it concludes.
+  const openThread = (title, body) => {
+    const id = omni(['thread', 'create', title]).trim()
+    post(id, title.slice(0, 200), body)
     return id
   }
   const linkAndBlock = (key, threadIds) => {
@@ -264,7 +298,7 @@ Return raw structured data only.`
       const summary = `Options and recommendation for ${key}`.slice(0, 200)
       const body = `${gap.question}\n\nCriterion: ${gap.criterion}\n\nOptions:\n${gap.options.map((o, i) => `${i + 1}. ${o}`).join('\n')}\n\nRecommendation: ${gap.recommendation}\n\nWhy: ${gap.reason}\n`
       const id = omni(['thread', 'create', `${key}: ${gap.question}`]).trim()
-      omni(['post', id, '--summary', summary], { input: body, stdio: ['pipe', 'pipe', 'pipe'] })
+      post(id, summary, body)
       threads.push({ thread: id, question: gap.question })
     }
     if (threads.length) linkAndBlock(key, threads.map((t) => t.thread))
@@ -350,16 +384,43 @@ Return raw structured data only.`
     if (!(id in docCache)) docCache[id] = tryRun('omni', ['doc', 'read', id], { env: { ...process.env, OMNI_RUN: runId, OMNI_ROLE: 'deliver' } }) || '(the doc could not be read)'
     return docCache[id]
   }
-  const runCmd = (cmd, cwd) => new Promise((resolve) => {
+  // Runs a shell command within the time limit of its name. The command gets a
+  // process group of its own, so that the limit stops everything it started:
+  // SIGTERM to the group, then SIGKILL. A stopped command fails, and its
+  // output ends with the limit it ran into.
+  const runCmd = (cmd, cwd, name) => new Promise((resolve) => {
     if (!cmd.trim()) return resolve({ ok: true, output: '' })
+    const limit = limitMs(name)
     let output = ''
-    const child = cp.spawn(cmd, { cwd, shell: true })
+    let timedOut = false
+    let killer = null
+    const child = cp.spawn(cmd, { cwd, shell: true, detached: true })
+    if (child.pid) groups.add(child.pid)
+    const signal = (sig) => { try { process.kill(-child.pid, sig) } catch {} }
+    const timer = setTimeout(() => {
+      timedOut = true
+      signal('SIGTERM')
+      killer = setTimeout(() => {
+        signal('SIGKILL')
+        // A process that left the group may still hold the pipes open.
+        child.stdout.destroy()
+        child.stderr.destroy()
+      }, KILL_GRACE_MS)
+    }, limit)
+    const finish = (result) => {
+      clearTimeout(timer)
+      clearTimeout(killer)
+      groups.delete(child.pid)
+      resolve(result)
+    }
     child.stdout.on('data', (d) => { output += d })
     child.stderr.on('data', (d) => { output += d })
-    child.on('error', (e) => resolve({ ok: false, output: output + String(e.message) }))
-    child.on('close', (code) => resolve({ ok: code === 0, output }))
+    child.on('error', (e) => finish({ ok: false, output: output + String(e.message) }))
+    child.on('close', (code) => finish(timedOut
+      ? { ok: false, timedOut: true, output: `${output}\nTimed out: the ${name} command ran past its limit of ${span(limit)} (args.timeouts.${name}) and was stopped.\n` }
+      : { ok: code === 0, output }))
   })
-  const runFast = (cwd) => runCmd(fast, cwd)
+  const runFast = (cwd) => runCmd(fast, cwd, 'fast')
   const implPrompt = (story, wt, task) => {
     const open = (story.findings || []).filter((f) => !f.resolved)
     const docs = (story.links || []).filter((l) => l.doc_id)
@@ -895,7 +956,7 @@ Return raw structured data only.`
     // test commits: the story is verified without them, and the report says so.
     const check = String(result.check || '').trim()
     if (entry.commits.length && check) {
-      const run = await runCmd(check, root)
+      const run = await runCmd(check, root, 'check')
       if (run.ok) laneLog(key, 'tests passed')
       else {
         git(['reset', '--hard', start])
@@ -1038,9 +1099,9 @@ Return raw structured data only.`
   // True while the lane runs stack_up or the stack command, which restart the
   // server behind omni: the loops read it when a poll fails.
   let stackBusy = false
-  const runStack = async (cmd) => {
+  const runStack = async (cmd, name) => {
     stackBusy = true
-    try { return await runCmd(cmd, root) } finally { stackBusy = false }
+    try { return await runCmd(cmd, root, name) } finally { stackBusy = false }
   }
   // True once this lane story ran stack_up: the stack then holds the story's
   // build, and a lane that fails after that rebuilds it from the reset tree,
@@ -1050,7 +1111,7 @@ Return raw structured data only.`
   const rebuildStack = async (key, base) => {
     if (!stackUpRan) return
     laneLog(key, `rebuilding the stack from ${integration} at ${base.slice(0, 7)}`)
-    const up = await runStack(stackUp)
+    const up = await runStack(stackUp, 'stack_up')
     laneLog(key, up.ok ? `stack rebuilt from ${integration} at ${base.slice(0, 7)}` : `the stack did not rebuild: \`${stackUp}\` exited non-zero\n${tail(up.output, 1000)}`)
   }
   // The story's branch and worktree, which an older run may have dropped after
@@ -1088,9 +1149,9 @@ Return raw structured data only.`
     if (!fastResult.ok) return failLane(key, base, [{ text: `The fast command (\`${fast}\`) failed on the main worktree. Output:\n\`\`\`\n${tail(fastResult.output)}\n\`\`\``, files: [] }], 'the fast command failed')
     laneLog(key, 'fast passed')
     stackUpRan = true
-    const up = await runStack(stackUp)
+    const up = await runStack(stackUp, 'stack_up')
     if (!up.ok) return failLane(key, base, [stackFinding(`The stack did not start: \`${stackUp}\` exited non-zero.`, up)], 'the stack did not start')
-    const stackResult = await runStack(stackCmd)
+    const stackResult = await runStack(stackCmd, 'stack')
     if (!stackResult.ok) return failLane(key, base, [stackFinding(`The stack command (\`${stackCmd}\`) failed on the main worktree.`, stackResult)], 'the stack command failed')
     laneLog(key, 'stack passed')
     const r = await exercise(key)
@@ -1254,7 +1315,7 @@ ${limitLine}${remainingLines.length ? 'Not done:' : 'Nothing remains.'}
 ${remainingLines.length ? lines(remainingLines) : ''}
 `
   let posted = true
-  try { omni(['post', threadId, '--summary', `Report of ${runId}`], { input: report, stdio: ['pipe', 'pipe', 'pipe'] }) } catch (e) {
+  try { post(threadId, `Report of ${runId}`, report) } catch (e) {
     posted = false
     log(`The report could not be posted: ${e && e.message || e}`)
   }
@@ -1263,5 +1324,7 @@ ${remainingLines.length ? lines(remainingLines) : ''}
   const pickable = omni(['story', 'list', '--pickable']).split('\n').filter(Boolean).length
   return { run: runId, feature, integration, thread: threadId, implementers, reviewers, storyLimit: storyLimit === Infinity ? null : storyLimit, released, clarity, unblocked, resumed, implemented: outcomes, reviewed: reviewOutcomes, merged: mergeOutcomes, checked: checkOutcomes, done: doneKeys, pickable, report, posted }
 } finally {
+  stopGroups()
+  process.off('exit', stopGroups)
   fs.rmSync(lockPath, { force: true })
 }

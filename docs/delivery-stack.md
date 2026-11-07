@@ -32,6 +32,14 @@ it passed: the web image copies `web/public/render`, which the fast command's
 renderer and the verifier checked the wrong build. The verifier that exercises the story is told which stack
 `stack_up` started and checks the story against that one.
 
+Every command the lane runs has a time limit: 45 minutes, unless `timeouts`
+in the run's args sets another for its name, in minutes (`fast`, `stack_up`,
+`stack`, and `check` for the test author's command), as in
+`--args '{"timeouts":{"stack":60}}'`. A command still running at its limit is
+stopped with everything it started (its process group gets SIGTERM, then
+SIGKILL 10 s later) and counts as failed; its output, which the finding
+quotes, ends with the limit it ran past.
+
 When a lane fails after `stack_up` ran (the stack did not start, the stack
 command failed, a criterion failed, the test author found a defect, or the
 verifier returned nothing), the run resets the integration branch to the lane's
