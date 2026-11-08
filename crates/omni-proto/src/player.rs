@@ -805,7 +805,9 @@ impl Player {
                 }
                 Revert::Swap { visit, before } => {
                     if let Some(top) = self.frame.overlays.iter_mut().find(|o| o.visit == visit) {
+                        let swapped_in = top.board;
                         *top = before;
+                        self.forget(swapped_in);
                         changed = true;
                     }
                 }

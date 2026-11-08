@@ -416,6 +416,7 @@ impl Session {
             || before.board != after.board
             || before.overlays != after.overlays
             || before.variant_swaps != after.variant_swaps
+            || before.nested_swaps != after.nested_swaps
             || (after.transition.is_some() && after.transition != before.transition);
         let hint_ended = hinting && self.player.hint_until().is_none();
         let settled = moving && self.player.frame().transition.is_none();
