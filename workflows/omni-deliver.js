@@ -1,7 +1,7 @@
 export const meta = {
   name: 'omni-deliver',
   description: 'Delivers a feature\'s stories from the OmniState board: clarity checks with a council in front of every question for the human, implement and review in story worktrees, at most `implementers` stories implementing and `reviewers` in review at once, then a lane that tests one story at a time in a worktree of its own and lands it on deliver/<feature slug>, and a report on the Run thread. Every git and omni command runs in the host helper, reached through courier agents',
-  whenToUse: 'Run it with the Workflow tool, as the workflow omni-deliver with args {feature: "<name>"} (optional: implementers (3), reviewers (3), storyLimit, force, checks, models, agentTypes, helper), from a session in the main worktree of a project whose folder is linked to its OmniState project (omni link, or OMNI_PROJECT). That session needs the stories folder beside the checkout, <checkout>-stories, among its working directories, and the host helper at ~/.claude/omni/deliver-step.mjs, as make install-agent-tools links it; args.helper names another path. One run per checkout: the helper\'s .omni/run.lock refuses a second live run, and force takes over a lock whose run the human knows is dead. args.checks ({fast, stack_up, stack, stack_reset, seed, lint}) sets checks on top of omni checks; every check command runs with OMNI_STORY and OMNI_RUN in its environment. args.models overrides the model of a role (clarity, council, impl, implRetry, review, verify, tests, final, courier), and args.agentTypes the agent type of a role: by default each role runs as omni-<role> (omni-impl for implRetry too), an agent type that lists only the tools the role needs, as make install-agent-tools links them into ~/.claude/agents/. Stories land on deliver/<feature slug>, never on the checkout\'s branch: the report says to bring them in with git merge --ff-only deliver/<feature slug>. A run takes a new story only while its agent calls leave room under 900 for the stories in flight, at 90 each, and stops a story at 960, released with no attempt used; the next run carries on. An agent that returns nothing is asked again after 30 s and after 2 minutes, with no attempt used; agents that return nothing for 3 stories in a row stop new claims, with one thread for the run. A story whose delivery stops on an error is released and blocked on a thread with the error; when the same error stops a second story, the run takes no new story and opens one thread for the run, and later failures are only released. A failed check that fails again on deliver/<slug> without the story, after stack_reset for a stack check, stops the lane for the rest of the run, with one thread for the run, and the story goes back to reviewed with no attempt used. Tests whose author cannot get them to land are dropped, and the verified story lands without them, which the report notes. The run ends with the journeys check of the stories it landed and finish, which posts the report and gives the lock up, after an error too; it does not wait for answers, which the next run\'s unblock pass takes. Never pushes.',
+  whenToUse: 'Run it with the Workflow tool, as the workflow omni-deliver with args {feature: "<name>"} (optional: implementers (3), reviewers (3), storyLimit, force, checks, models, agentTypes, helper), from a session in the main worktree of a project whose folder is linked to its OmniState project (omni link, or OMNI_PROJECT). That session needs the stories folder beside the checkout, <checkout>-stories, among its working directories, and the host helper at ~/.claude/omni/deliver-step.mjs, as make install-agent-tools links it; args.helper names another path. One run per checkout: the helper\'s .omni/run.lock refuses a second live run, and force takes over a lock whose run the human knows is dead. args.checks ({fast, stack_up, stack, stack_reset, seed, lint}) sets checks on top of omni checks; every check command runs with OMNI_STORY and OMNI_RUN in its environment. args.models overrides the model of a role (clarity, council, impl, implRetry, review, verify, tests, final, courier), and args.agentTypes the agent type of a role: by default each role runs as omni-<role> (omni-impl for implRetry too), an agent type that lists only the tools the role needs, as make install-agent-tools links them into ~/.claude/agents/; a role whose type is not installed runs without it, which the log and the report\'s notes say once per type. Stories land on deliver/<feature slug>, never on the checkout\'s branch: the report says to bring them in with git merge --ff-only deliver/<feature slug>. A run takes a new story only while its agent calls leave room under 900 for the stories in flight, at 90 each, and stops a story at 960, released with no attempt used; the next run carries on. An agent that returns nothing is asked again after 30 s and after 2 minutes, with no attempt used; agents that return nothing for 3 stories in a row stop new claims, with one thread for the run. A story whose delivery stops on an error is released and blocked on a thread with the error; when the same error stops a second story, the run takes no new story and opens one thread for the run, and later failures are only released. A failed check that fails again on deliver/<slug> without the story, after stack_reset for a stack check, stops the lane for the rest of the run, with one thread for the run, and the story goes back to reviewed with no attempt used. Tests whose author cannot get them to land are dropped, and the verified story lands without them, which the report notes. The run ends with the journeys check of the stories it landed and finish, which posts the report and gives the lock up, after an error too; it does not wait for answers, which the next run\'s unblock pass takes. Never pushes.',
   phases: [
     { title: 'Start', detail: 'the helper takes the lock, reconciles claims and the lane worktree, sets deliver/<slug> and reads the checks' },
     { title: 'Unblock', detail: 'a story whose threads all have a conclusion gets each one as a human decision and is unblocked, and its attempts count from there' },
@@ -83,11 +83,49 @@ let agentCalls = 0
 // Set once the run stops taking new work for the cap.
 let capped = false
 const room = (calls, inFlight) => agentCalls + calls * (inFlight + 1) <= AGENT_CAP
+// Notes for the run's report.
+const notes = []
+// An agent type this machine has not installed: the runtime refuses it at
+// once, and its role runs without it, as the default agent, for the rest of
+// the run. A type's first call holds back the others of that type until the
+// runtime has refused it or a few turns have passed, so that the type is
+// tried once; a call that tries it all the same falls back too.
+const missingTypes = new Set()
+const tried = new Map()
+const notFound = (e, type) => String((e && e.message) || e).includes(`agent type '${type}' not found`)
+const missingType = (type, role) => {
+  if (missingTypes.has(type)) return
+  missingTypes.add(type)
+  const line = `agent type ${type} is not installed (make install-agent-tools); running role ${role} without it`
+  log(line)
+  notes.push(line)
+}
+const turns = async (n) => { for (let i = 0; i < n; i++) await null }
+const typed = async (role, prompt, opts) => {
+  const type = AGENT_TYPES[role]
+  if (type && tried.has(type)) await tried.get(type)
+  if (!type || missingTypes.has(type)) return agent(prompt, opts)
+  let call
+  try { call = Promise.resolve(agent(prompt, { ...opts, agentType: type })) } catch (e) { call = Promise.reject(e) }
+  if (!tried.has(type)) {
+    let open
+    tried.set(type, new Promise((resolve) => { open = resolve }))
+    call.then(open, (e) => { if (notFound(e, type)) missingType(type, role); open() })
+    turns(10).then(open)
+  }
+  try {
+    return await call
+  } catch (e) {
+    if (!notFound(e, type)) throw e
+    missingType(type, role)
+    return agent(prompt, opts)
+  }
+}
 // past: the cleanup of work stopped at HARD_CAP, which the cap lets through.
 const ask = (role, prompt, opts, model = MODELS[role], past = false) => {
   if (agentCalls >= HARD_CAP && !past) throw Object.assign(new Error(`the run has made ${agentCalls} agent calls, at its hard cap of ${HARD_CAP}`), { atCap: true })
   agentCalls++
-  return agent(prompt, { ...opts, model, ...(AGENT_TYPES[role] ? { agentType: AGENT_TYPES[role] } : {}) })
+  return typed(role, prompt, { ...opts, model })
 }
 
 // At most n holders at once; the others wait their turn, first come first
@@ -1175,8 +1213,6 @@ const outcomes = []
 // Why the run takes no new story, once a breaker has stopped it: the stories
 // in flight finish.
 let halted = null
-// Notes for the run's report.
-const notes = []
 
 // Infrastructure trouble with agents. An agent that returns nothing is asked
 // again after each wait in AGAIN_AFTER, with no attempt used, and one that

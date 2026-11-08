@@ -60,6 +60,13 @@ Once per machine, `make install-agent-tools` links the workflow at
 `~/.claude/omni/deliver-step.mjs`, the path the workflow runs it from. The
 links point into this checkout.
 
+The agent types are not required: the runtime refuses an agent type that is
+not installed, and the workflow then runs that role without it, as the default
+agent with every tool, for the rest of the run. It tries each type once per
+run, and the log and the report's notes say once per type: "agent type X is
+not installed (make install-agent-tools); running role Y without it". Any
+other error from the runtime is rethrown unchanged.
+
 ### The agent types
 
 Every tool definition an agent has is in its starting context: a haiku

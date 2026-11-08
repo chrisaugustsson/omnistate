@@ -12,7 +12,10 @@
 // null for no file. An agent asked to write its result again writes the
 // result its prompt gives, through `written` too. The runtime hands the
 // script a copy of what an agent returned, and parallel a copy of what its
-// thunks gave, as a runtime that serializes results would.
+// thunks gave, as a runtime that serializes results would. With `installed`,
+// the agent types it knows, it refuses any other agentType at once, as the
+// runtime does, and `broken` gives an error it throws for an agentType; each
+// refused call goes in `refused`, not in `calls`.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFile, execFileSync, spawn, spawnSync } from "node:child_process";
@@ -218,8 +221,9 @@ function slept(prompt, sleeps) {
 // as the runtime's agents do, or with `serial`, one at a time. The fake
 // agents' own git commands go one at a time (serial), and in that line with
 // the couriers when those are too.
-function runtime(dirs, roles, fault, concurrent, written) {
+function runtime(dirs, roles, fault, concurrent, written, installed, broken) {
   const calls = [];
+  const refused = [];
   const logs = [];
   const phases = [];
   const sleeps = [];
@@ -232,6 +236,14 @@ function runtime(dirs, roles, fault, concurrent, written) {
   };
   const agent = async (prompt, opts = {}) => {
     const call = { prompt, ...opts };
+    if (opts.agentType && broken[opts.agentType]) {
+      refused.push(call);
+      throw broken[opts.agentType];
+    }
+    if (opts.agentType && installed && !installed.includes(opts.agentType)) {
+      refused.push(call);
+      throw new Error(`agent({agentType}): agent type '${opts.agentType}' not found. Available agents: claude, ${installed.join(", ")}`);
+    }
     calls.push(call);
     await pause(0);
     if (String(opts.label).startsWith("courier:sleep")) return slept(prompt, sleeps);
@@ -266,13 +278,13 @@ function runtime(dirs, roles, fault, concurrent, written) {
   // throws drops it to null.
   const pipeline = (items, ...stages) => Promise.all(items.map((item, index) =>
     stages.reduce((prev, stage) => prev.then((value) => stage(value, item, index)), Promise.resolve(item)).catch(() => null)));
-  return { calls, logs, phases, sleeps, agent, parallel, pipeline, phase: (title) => phases.push(title), log: (message) => logs.push(message) };
+  return { calls, refused, logs, phases, sleeps, agent, parallel, pipeline, phase: (title) => phases.push(title), log: (message) => logs.push(message) };
 }
 
 // Runs the workflow to its end under the fake runtime, with the worktree's
 // helper; gives what it returned or threw, and the runtime's record.
-async function deliver(dirs, args = {}, roles = {}, { fault = () => null, source = SOURCE, concurrent = true, written = (call, r) => JSON.stringify(r) } = {}) {
-  const rt = runtime(dirs, roles, fault, concurrent, written);
+async function deliver(dirs, args = {}, roles = {}, { fault = () => null, source = SOURCE, concurrent = true, written = (call, r) => JSON.stringify(r), installed = null, broken = {} } = {}) {
+  const rt = runtime(dirs, roles, fault, concurrent, written, installed, broken);
   let result = null;
   let error = null;
   try {
@@ -280,7 +292,7 @@ async function deliver(dirs, args = {}, roles = {}, { fault = () => null, source
   } catch (e) {
     error = e;
   }
-  return { result, error, calls: rt.calls, logs: rt.logs, phases: rt.phases, sleeps: rt.sleeps };
+  return { result, error, calls: rt.calls, refused: rt.refused, logs: rt.logs, phases: rt.phases, sleeps: rt.sleeps };
 }
 
 let testOps = 0;
@@ -1685,7 +1697,7 @@ test("prompts give the context first and the criteria and the task last, tell th
 // One story through every role: a clarity gap the council settles, a review
 // that fails once, so that attempt 2 runs on implRetry, the lane's verifier
 // and test author, and the final check.
-async function everyRole(t, agentTypes) {
+async function everyRole(t, agentTypes, runtimeOpts = {}) {
   const dirs = scratch(t, [story("US-1", { criteria: [{ text: "The badge has a colour", human_check: false }] })]);
   const quoted = vote(1, { quote: "Badges are red", source: "doc doc-spec node n1" });
   const roles = {
@@ -1693,7 +1705,7 @@ async function everyRole(t, agentTypes) {
     ...councilOf("US-1", [quoted], [vote(1)], [vote(1)]),
     "review:US-1": [reviewed("fail", { unmet: { 0: "The badge has no colour" } }), reviewed("pass")],
   };
-  const run = await deliver(dirs, agentTypes ? { agentTypes } : {}, roles);
+  const run = await deliver(dirs, agentTypes ? { agentTypes } : {}, roles, runtimeOpts);
   assert.equal(run.error, null);
   assert.equal(dirs.story("US-1").status, "done");
   // Each call by role: the label's first part, and implRetry for the
@@ -1704,23 +1716,54 @@ async function everyRole(t, agentTypes) {
     if (role === "impl" && byRole.impl) role = "implRetry";
     (byRole[role] ||= []).push(c);
   }
-  return byRole;
+  return { byRole, run };
 }
 const ROLES = ["clarity", "council", "impl", "implRetry", "review", "verify", "tests", "final", "courier"];
 const typeOf = (role) => (role === "implRetry" ? "omni-impl" : `omni-${role}`);
 
 test("every role runs as its omni- agent type by default, omni-impl for implRetry too, and the courier as omni-courier", { timeout: 60000 }, async (t) => {
-  const byRole = await everyRole(t);
+  const { byRole } = await everyRole(t);
 
   assert.deepEqual(Object.keys(byRole).sort(), [...ROLES].sort());
   for (const role of ROLES) assert.deepEqual([...new Set(byRole[role].map((c) => c.agentType))], [typeOf(role)], role);
 });
 
 test("args.agentTypes overrides the agent type of the roles it names, implRetry apart from impl, and leaves the others at their default", { timeout: 60000 }, async (t) => {
-  const byRole = await everyRole(t, { implRetry: "implementer", courier: "carrier" });
+  const { byRole } = await everyRole(t, { implRetry: "implementer", courier: "carrier" });
 
   const expected = { ...Object.fromEntries(ROLES.map((role) => [role, typeOf(role)])), implRetry: "implementer", courier: "carrier" };
   for (const role of ROLES) assert.deepEqual([...new Set(byRole[role].map((c) => c.agentType))], [expected[role]], role);
+});
+
+const notInstalled = (type, role) => `agent type ${type} is not installed (make install-agent-tools); running role ${role} without it`;
+
+test("a role whose agent type is not installed runs without it: the runtime refuses each missing type once in the run, every other call of its roles goes without an agentType, the installed types still apply, and the log and the report's notes say it once per type", { timeout: 60000 }, async (t) => {
+  const missing = ["omni-courier", "omni-council", "omni-impl"];
+  const installed = ROLES.map(typeOf).filter((type) => !missing.includes(type));
+  const { byRole, run } = await everyRole(t, undefined, { installed });
+
+  assert.deepEqual(run.refused.map((c) => c.agentType).sort(), [...missing].sort());
+  for (const role of ROLES) assert.deepEqual([...new Set(byRole[role].map((c) => c.agentType))], [missing.includes(typeOf(role)) ? undefined : typeOf(role)], role);
+  // The refused call's role runs all the same, with the same prompt.
+  for (const refused of run.refused) assert.ok(run.calls.some((c) => c.label === refused.label && c.prompt === refused.prompt && c.agentType === undefined), refused.label);
+  const lines = [notInstalled("omni-courier", "courier"), notInstalled("omni-council", "council"), notInstalled("omni-impl", "impl")];
+  assert.deepEqual(run.logs.filter((l) => l.includes("is not installed")), lines);
+  assert.deepEqual(run.result.notes, lines);
+  const report = readFileSync(run.result.report, "utf8");
+  for (const line of lines) assert.equal(report.split(line).length - 1, 1, report);
+});
+
+test("an error other than a missing agent type is rethrown unchanged: in a run whose couriers go without omni-courier, the journeys check's own error stops the run, its role never runs without its type, and the log says only that the courier's type is missing", { timeout: 60000 }, async (t) => {
+  const dirs = scratch(t, [story("US-1")]);
+  const lost = new Error("agent({agentType}): the runtime lost its agents");
+  const installed = ROLES.map(typeOf).filter((type) => type !== "omni-courier");
+  const run = await deliver(dirs, {}, {}, { installed, broken: { "omni-final": lost } });
+
+  assert.equal(run.error, lost);
+  assert.equal(dirs.story("US-1").status, "done");
+  assert.deepEqual(run.refused.map((c) => c.agentType), ["omni-courier", "omni-final"]);
+  assert.deepEqual(run.calls.filter((c) => c.label.startsWith("final")), []);
+  assert.deepEqual(run.logs.filter((l) => l.includes("is not installed")), [notInstalled("omni-courier", "courier")]);
 });
 
 test("every agent file parses, is named after its file, and lists the tools its role's prompts ask for: Write and Read for a result or payload file, Bash for a command, Edit only where the prompt is not read-only, a browser where it says to use one", { timeout: 60000 }, async (t) => {
@@ -1731,7 +1774,7 @@ test("every agent file parses, is named after its file, and lists the tools its 
     assert.ok(a.tools.length && a.body, a.file);
   }
   const byName = new Map(agents.map((a) => [a.name, a]));
-  const byRole = await everyRole(t);
+  const { byRole } = await everyRole(t);
 
   assert.deepEqual([...byName.keys()].sort(), [...new Set(ROLES.map(typeOf))].sort());
   for (const role of ROLES) {
