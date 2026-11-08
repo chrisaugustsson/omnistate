@@ -609,7 +609,8 @@ fn restart_clears_history_overlays_and_swaps() {
     let before = player.frame();
     assert_eq!(before.board, id(B2));
     assert_eq!(before.overlays.len(), 1);
-    assert_eq!(before.variant_swaps.len(), 1);
+    // Navigating away ended the visit of B1, and its swap with it.
+    assert!(before.variant_swaps.is_empty());
 
     player.restart(id(B1));
 

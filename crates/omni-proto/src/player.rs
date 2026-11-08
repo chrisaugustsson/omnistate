@@ -8,7 +8,7 @@
 //! transition lets the pointer carry it.
 
 use crate::history::{History, Play};
-use crate::input::{DragTarget, Follow, Hover, Press, Revert};
+use crate::input::{DragTarget, Follow, Holder, Hover, Press, Revert, Site};
 use crate::keys::{self, Mods};
 use crate::overlay;
 use crate::timers::{Target, Timer};
@@ -18,7 +18,9 @@ use omni_core::design::proto::{
     Action, Direction, Interaction, OverlayAnchor, OverlayPosition, Trigger,
 };
 use omni_core::design::tokens::{ModeChoice, TokenTree};
-use omni_core::design::{Node, NodeAddress, NodeData, NodeId, NodeKind, Page, TokenOr};
+use omni_core::design::{
+    Node, NodeAddress, NodeData, NodeId, NodeKind, Page, PropDef, PropDefs, TokenOr,
+};
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
 
@@ -153,8 +155,12 @@ pub struct Frame {
     /// Open overlays, the top one last.
     pub overlays: Vec<OverlayState>,
     pub transition: Option<Running>,
-    /// The component each swapped instance shows now, by instance.
+    /// The component each swapped instance of a board shows now, by the
+    /// instance's node ID.
     pub variant_swaps: BTreeMap<NodeId, NodeId>,
+    /// The same for an instance inside another instance, by its address: the
+    /// instance of the board and the node inside its component.
+    pub nested_swaps: HashMap<NodeAddress, NodeId>,
     /// What the session has set: token values and the modes of boards.
     pub variables: PlayVariables,
 }
@@ -173,7 +179,7 @@ struct Found {
     id: NodeId,
     depth: usize,
     interactions: Vec<Interaction>,
-    holder: Option<NodeId>,
+    site: Site,
     rect: Rect,
 }
 
@@ -204,11 +210,18 @@ fn deepest(under: &[Under], matches: impl Fn(&Trigger) -> bool) -> Option<Found>
             id: layer.entry.id,
             depth: layer.entry.depth,
             interactions,
-            holder: layer.entry.holder,
+            site: layer.entry.site.clone(),
             rect: layer.rect,
         });
     }
     best
+}
+
+/// The swaps of one board's visit.
+#[derive(Default)]
+struct BoardSwaps {
+    top: BTreeMap<NodeId, NodeId>,
+    nested: HashMap<NodeAddress, NodeId>,
 }
 
 /// A layer that reacts to touch.
@@ -216,8 +229,8 @@ struct Entry {
     id: NodeId,
     depth: usize,
     interactions: Vec<Interaction>,
-    /// The nearest instance that holds the layer, or is the layer.
-    holder: Option<NodeId>,
+    /// Its board and the instances that hold the layer, or are the layer.
+    site: Site,
 }
 
 pub struct Player {
@@ -229,6 +242,9 @@ pub struct Player {
     /// The component each instance shows, where the caller chose a variant.
     shown: HashMap<NodeId, NodeId>,
     frame: Frame,
+    /// The swaps made while each board was shown or open, by board: they
+    /// last as long as the visit. `frame.variant_swaps` holds them all.
+    swaps: HashMap<NodeId, BoardSwaps>,
     history: History,
     press: Option<Press>,
     /// The layers the pointer is over.
@@ -274,8 +290,10 @@ impl Player {
                 overlays: Vec::new(),
                 transition: None,
                 variant_swaps: BTreeMap::new(),
+                nested_swaps: HashMap::new(),
                 variables: PlayVariables::default(),
             },
+            swaps: HashMap::new(),
             history: History::default(),
             press: None,
             hovered: Vec::new(),
@@ -351,6 +369,22 @@ impl Player {
         self.frame.clone()
     }
 
+    /// The swaps of `board`'s visit, by instance: a board that is not shown
+    /// or open has none. An instance inside another instance is in
+    /// `nested_swaps_for`.
+    pub fn swaps_for(&self, board: NodeId) -> &BTreeMap<NodeId, NodeId> {
+        static NONE: BTreeMap<NodeId, NodeId> = BTreeMap::new();
+        self.swaps.get(&board).map_or(&NONE, |swaps| &swaps.top)
+    }
+
+    /// The swaps of `board`'s visit of instances inside instances, by the
+    /// instance of the board and the node inside its component.
+    pub fn nested_swaps_for(&self, board: NodeId) -> &HashMap<NodeAddress, NodeId> {
+        static NONE: std::sync::LazyLock<HashMap<NodeAddress, NodeId>> =
+            std::sync::LazyLock::new(HashMap::new);
+        self.swaps.get(&board).map_or(&NONE, |swaps| &swaps.nested)
+    }
+
     /// The boards that navigate left, the newest last.
     pub fn history(&self) -> &[NodeId] {
         self.history.boards()
@@ -390,7 +424,7 @@ impl Player {
             visit: self.source_visit(),
             drag: deepest(&under, |trigger| *trigger == Trigger::OnDrag).map(|found| DragTarget {
                 interactions: found.interactions,
-                holder: found.holder,
+                site: found.site,
                 rect: found.rect,
             }),
             dragged: false,
@@ -400,7 +434,7 @@ impl Player {
         if let Some(found) = deepest(&under, |trigger| *trigger == Trigger::MouseDown) {
             changed |= self.fire(
                 &found.interactions,
-                found.holder,
+                &found.site,
                 found.rect,
                 true,
                 at,
@@ -411,7 +445,7 @@ impl Player {
             let (pressed, reverts) = self.recording(|player| {
                 player.fire(
                     &found.interactions,
-                    found.holder,
+                    &found.site,
                     found.rect,
                     false,
                     at,
@@ -445,7 +479,7 @@ impl Player {
         if let Some(found) = deepest(&under, |trigger| *trigger == Trigger::MouseUp) {
             changed |= self.fire(
                 &found.interactions,
-                found.holder,
+                &found.site,
                 found.rect,
                 true,
                 at,
@@ -524,7 +558,7 @@ impl Player {
             changed |= self.fire_on(
                 hover.source_visit,
                 &hover.leave,
-                hover.holder,
+                &hover.site,
                 hover.rect,
                 true,
                 at,
@@ -567,16 +601,16 @@ impl Player {
             if enter.is_empty() && hover.is_empty() && leave.is_empty() {
                 continue;
             }
-            let (holder, rect) = (layer.entry.holder, layer.rect);
-            changed |= self.fire_on(source, &enter, holder, rect, true, at, effects);
+            let (site, rect) = (layer.entry.site.clone(), layer.rect);
+            changed |= self.fire_on(source, &enter, &site, rect, true, at, effects);
             let (hovered, reverts) =
-                self.recording(|player| player.fire(&hover, holder, rect, false, at, effects));
+                self.recording(|player| player.fire(&hover, &site, rect, false, at, effects));
             changed |= hovered;
             self.hovered.push(Hover {
                 id: layer.entry.id,
                 depth: layer.entry.depth,
                 rect,
-                holder,
+                site,
                 leave,
                 reverts,
                 board_visit: visit,
@@ -601,7 +635,7 @@ impl Player {
                 changed |= self.fire_on(
                     hover.source_visit,
                     &hover.leave,
-                    hover.holder,
+                    &hover.site,
                     hover.rect,
                     true,
                     at,
@@ -646,7 +680,7 @@ impl Player {
         };
         press.dragged = true;
         let before = self.frame.transition.clone();
-        let mut changed = self.run(&interaction, target.holder, target.rect, at, effects);
+        let mut changed = self.run(&interaction, &target.site, target.rect, at, effects);
         let direction = interaction.transition.direction();
         if let (Some(direction), true) = (direction, self.frame.transition != before) {
             if let Some(running) = &mut self.frame.transition {
@@ -743,22 +777,29 @@ impl Player {
                     }
                     self.history.truncate(history_len);
                     let running = self.running(to, from, true, play, at);
+                    self.end_visit();
                     self.frame.board = from;
                     self.board_visit = visit;
-                    self.frame.overlays.clear();
                     self.frame.transition = Some(running);
                     changed = true;
                 }
-                Revert::Variant { instance, previous } => {
-                    match previous {
-                        Some(component) => self.frame.variant_swaps.insert(instance, component),
-                        None => self.frame.variant_swaps.remove(&instance),
-                    };
-                    changed = true;
+                Revert::Variant {
+                    board,
+                    instance,
+                    previous,
+                } => {
+                    // The visit it was made in is over otherwise.
+                    if self.frame.board == board
+                        || self.frame.overlays.iter().any(|o| o.board == board)
+                    {
+                        self.set_swap(board, instance, previous);
+                        changed = true;
+                    }
                 }
                 Revert::Overlay { visit } => {
                     if let Some(open) = self.frame.overlays.iter().position(|o| o.visit == visit) {
-                        self.frame.overlays.remove(open);
+                        let closed = self.frame.overlays.remove(open);
+                        self.forget(closed.board);
                         changed = true;
                     }
                 }
@@ -778,14 +819,14 @@ impl Player {
     fn fire(
         &mut self,
         interactions: &[Interaction],
-        holder: Option<NodeId>,
+        site: &Site,
         rect: Rect,
         delayable: bool,
         at: f64,
         effects: &mut Vec<Effect>,
     ) -> bool {
         let visit = self.source_visit();
-        self.fire_on(visit, interactions, holder, rect, delayable, at, effects)
+        self.fire_on(visit, interactions, site, rect, delayable, at, effects)
     }
 
     /// `fire` for waits that belong to the showing `visit`.
@@ -794,7 +835,7 @@ impl Player {
         &mut self,
         visit: u64,
         interactions: &[Interaction],
-        holder: Option<NodeId>,
+        site: &Site,
         rect: Rect,
         delayable: bool,
         at: f64,
@@ -806,13 +847,13 @@ impl Player {
                 self.timers.push(Timer::new(
                     visit,
                     interaction.clone(),
-                    holder,
+                    site.clone(),
                     Target::Rect(rect),
                     at,
                     interaction.delay_ms,
                 ));
             } else {
-                changed |= self.run(interaction, holder, rect, at, effects);
+                changed |= self.run(interaction, site, rect, at, effects);
             }
         }
         changed
@@ -822,7 +863,7 @@ impl Player {
     fn run(
         &mut self,
         interaction: &Interaction,
-        holder: Option<NodeId>,
+        site: &Site,
         trigger: Rect,
         at: f64,
         effects: &mut Vec<Effect>,
@@ -834,7 +875,7 @@ impl Player {
         };
         let mut changed = false;
         for action in &interaction.actions {
-            changed |= self.apply(action, play, holder, trigger, at, effects);
+            changed |= self.apply(action, play, site, trigger, at, effects);
         }
         changed
     }
@@ -891,7 +932,7 @@ impl Player {
                     self.timers.push(Timer::new(
                         visit,
                         interaction.clone(),
-                        entry.holder,
+                        entry.site.clone(),
                         Target::Layer {
                             board,
                             id: entry.id,
@@ -908,8 +949,8 @@ impl Player {
     /// Shows `board` as a new showing from `at`, as a navigate, back or a
     /// start over does.
     fn show(&mut self, board: NodeId, at: f64) {
+        self.end_visit();
         self.frame.board = board;
-        self.frame.overlays.clear();
         self.board_visit = self.next_visit();
         // Layers entered on the board left are not on this one.
         self.hovered.retain(|hover| !hover.reverts.is_empty());
@@ -952,7 +993,7 @@ impl Player {
                         |rect| rect.offset(*origin),
                     ),
             };
-            changed |= self.run(&timer.interaction, timer.holder, rect, now, effects);
+            changed |= self.run(&timer.interaction, &timer.site, rect, now, effects);
         }
         self.prune();
         changed
@@ -1010,11 +1051,13 @@ impl Player {
     /// Starts over on `board`: no history, overlays or swaps.
     pub fn restart(&mut self, board: NodeId) {
         self.history.clear();
+        self.swaps.clear();
         self.frame = Frame {
             board,
             overlays: Vec::new(),
             transition: None,
             variant_swaps: BTreeMap::new(),
+            nested_swaps: HashMap::new(),
             variables: PlayVariables::default(),
         };
         self.press = None;
@@ -1167,7 +1210,7 @@ impl Player {
                 .is_some_and(|rect| rect.offset(top.origin).contains(x, y));
             if !inside {
                 if top.close_on_outside {
-                    self.frame.overlays.pop();
+                    self.close_overlay();
                     return true;
                 }
                 return false;
@@ -1182,7 +1225,7 @@ impl Player {
         }
         let mut changed = false;
         for interaction in &found.interactions {
-            changed |= self.run(interaction, found.holder, found.rect, at, effects);
+            changed |= self.run(interaction, &found.site, found.rect, at, effects);
         }
         changed
     }
@@ -1235,9 +1278,9 @@ impl Player {
                             if keys::split(text) == (mods, key.clone()))
                     })
                     .collect();
-                (!matching.is_empty()).then_some((matching, entry.holder, entry.id))
+                (!matching.is_empty()).then_some((matching, entry.site, entry.id))
             });
-            let Some((interactions, holder, id)) = found else {
+            let Some((interactions, site, id)) = found else {
                 continue;
             };
             let rect = self
@@ -1256,7 +1299,7 @@ impl Player {
             effects.push(Effect::KeyHandled);
             let mut changed = false;
             for interaction in &interactions {
-                changed |= self.run(interaction, holder, rect, at, &mut effects);
+                changed |= self.run(interaction, &site, rect, at, &mut effects);
             }
             if changed {
                 effects.push(Effect::NeedsFrame);
@@ -1295,7 +1338,7 @@ impl Player {
         &mut self,
         action: &Action,
         play: Play,
-        holder: Option<NodeId>,
+        site: &Site,
         trigger: Rect,
         at: f64,
         effects: &mut Vec<Effect>,
@@ -1380,6 +1423,8 @@ impl Player {
                 let top = self.frame.overlays.last_mut().expect("checked above");
                 let before = top.clone();
                 top.board = board;
+                self.forget(before.board);
+                let top = self.frame.overlays.last_mut().expect("checked above");
                 top.origin = origin;
                 top.opened_at = at;
                 top.visit = visit;
@@ -1387,7 +1432,7 @@ impl Player {
                 self.schedule(board, visit, origin, at);
                 true
             }
-            Action::CloseOverlay => self.frame.overlays.pop().is_some(),
+            Action::CloseOverlay => self.close_overlay(),
             Action::OpenUrl { url, new_tab } => {
                 effects.push(Effect::OpenUrl {
                     url: url.clone(),
@@ -1396,14 +1441,29 @@ impl Player {
                 false
             }
             Action::ChangeTo { dest } => {
-                let (Some(instance), Ok(component)) = (holder, dest.parse::<NodeId>()) else {
+                let Ok(component) = dest.parse::<NodeId>() else {
                     return false;
                 };
-                if !self.components.contains_key(&component) {
+                // The innermost instance whose variants include the
+                // destination changes; the layer's own instance when it is
+                // the one that fires.
+                let Some(destination) = self.components.get(&component) else {
                     return false;
-                }
-                let previous = self.frame.variant_swaps.insert(instance, component);
-                self.note(Revert::Variant { instance, previous });
+                };
+                let Some(instance) = site.holders.iter().rev().find(|holder| {
+                    self.components
+                        .get(&holder.shown)
+                        .is_some_and(|shown| same_set(shown, destination))
+                }) else {
+                    return false;
+                };
+                let address = instance.address.clone();
+                let previous = self.set_swap(site.board, address.clone(), Some(component));
+                self.note(Revert::Variant {
+                    board: site.board,
+                    instance: address,
+                    previous,
+                });
                 true
             }
             Action::SetVariable {
@@ -1425,7 +1485,7 @@ impl Player {
                     if holds {
                         let mut changed = false;
                         for action in &block.actions {
-                            changed |= self.apply(action, play, holder, trigger, at, effects);
+                            changed |= self.apply(action, play, site, trigger, at, effects);
                         }
                         return changed;
                     }
@@ -1434,6 +1494,72 @@ impl Player {
             }
             // Scrolling comes in a later story.
             _ => false,
+        }
+    }
+
+    /// Ends the visit of the board shown and of its overlays: their swaps go.
+    fn end_visit(&mut self) {
+        self.forget(self.frame.board);
+        for overlay in std::mem::take(&mut self.frame.overlays) {
+            self.forget(overlay.board);
+        }
+    }
+
+    /// Closes the top overlay, with the swaps made inside it.
+    fn close_overlay(&mut self) -> bool {
+        let Some(top) = self.frame.overlays.pop() else {
+            return false;
+        };
+        self.forget(top.board);
+        true
+    }
+
+    /// Drops the swaps of `board`'s visit.
+    fn forget(&mut self, board: NodeId) {
+        let Some(swaps) = self.swaps.remove(&board) else {
+            return;
+        };
+        for instance in swaps.top.keys() {
+            self.frame.variant_swaps.remove(instance);
+        }
+        for address in swaps.nested.keys() {
+            self.frame.nested_swaps.remove(address);
+        }
+    }
+
+    /// Sets, or with `None` clears, the swap of the instance at `address` in
+    /// `board`'s visit, and gives the one it had.
+    fn set_swap(
+        &mut self,
+        board: NodeId,
+        address: NodeAddress,
+        to: Option<NodeId>,
+    ) -> Option<NodeId> {
+        let swaps = self.swaps.entry(board).or_default();
+        match address.instance() {
+            None => {
+                let id = *address.node();
+                match to {
+                    Some(component) => {
+                        self.frame.variant_swaps.insert(id, component);
+                        swaps.top.insert(id, component)
+                    }
+                    None => {
+                        self.frame.variant_swaps.remove(&id);
+                        swaps.top.remove(&id)
+                    }
+                }
+            }
+            Some(_) => match to {
+                Some(component) => {
+                    self.frame.nested_swaps.insert(address.clone(), component);
+                    swaps.nested.insert(address, component)
+                }
+                None => {
+                    self.frame.nested_swaps.remove(&address);
+                    swaps.nested.remove(&address)
+                }
+            },
         }
     }
 
@@ -1590,12 +1716,16 @@ impl Player {
             })
             .unwrap_or_default();
         let mut entries = Vec::new();
-        self.walk(root, board, 0, None, None, &inverse, &mut entries);
+        let site = Site {
+            board: *board,
+            holders: Vec::new(),
+        };
+        self.walk(root, board, 0, None, &site, &inverse, &mut entries);
         entries
     }
 
     /// `outer` is the instance of the page that the node is inside, which
-    /// addresses it; `holder` is the nearest instance around it.
+    /// addresses it; `site` is the board and the instances around it.
     #[allow(clippy::too_many_arguments)]
     fn walk(
         &self,
@@ -1603,7 +1733,7 @@ impl Player {
         board: &NodeId,
         depth: usize,
         outer: Option<NodeId>,
-        holder: Option<NodeId>,
+        site: &Site,
         inverse: &HashMap<(NodeId, NodeId), NodeId>,
         out: &mut Vec<Entry>,
     ) {
@@ -1615,13 +1745,20 @@ impl Player {
             Some(outer) => inverse.get(&(outer, *node.id())).copied(),
         };
         if let NodeData::Instance(instance) = node.data() {
-            let shown = self
-                .frame
-                .variant_swaps
-                .get(node.id())
+            let address = NodeAddress::new(outer, *node.id());
+            let swapped = match outer {
+                None => self.frame.variant_swaps.get(node.id()),
+                Some(_) => self.frame.nested_swaps.get(&address),
+            };
+            let shown = swapped
                 .or_else(|| self.shown.get(node.id()))
                 .unwrap_or(&instance.component);
             let component = self.components.get(shown);
+            let mut site = site.clone();
+            site.holders.push(Holder {
+                address,
+                shown: *shown,
+            });
             // An instance's own interaction wins over its variant's for the
             // same trigger.
             let mut interactions = node.interactions().to_vec();
@@ -1644,21 +1781,13 @@ impl Player {
                     id,
                     depth,
                     interactions,
-                    holder: Some(*node.id()),
+                    site: site.clone(),
                 });
             }
             if let Some(NodeData::Component(component)) = component.map(Node::data) {
                 let outer = outer.unwrap_or(*node.id());
                 for child in &component.frame.children {
-                    self.walk(
-                        child,
-                        board,
-                        depth + 1,
-                        Some(outer),
-                        Some(*node.id()),
-                        inverse,
-                        out,
-                    );
+                    self.walk(child, board, depth + 1, Some(outer), &site, inverse, out);
                 }
             }
             return;
@@ -1668,11 +1797,31 @@ impl Player {
                 id,
                 depth,
                 interactions: node.interactions().to_vec(),
-                holder,
+                site: site.clone(),
             });
         }
         for child in node.children() {
-            self.walk(child, board, depth + 1, outer, holder, inverse, out);
+            self.walk(child, board, depth + 1, outer, site, inverse, out);
         }
     }
+}
+
+/// Whether `a` and `b` are variants of one component: the same name and the
+/// same variant properties with the same values.
+fn same_set(a: &Node, b: &Node) -> bool {
+    fn variants(node: &Node) -> Vec<(&String, &Vec<String>)> {
+        let NodeData::Component(component) = node.data() else {
+            return Vec::new();
+        };
+        component
+            .props
+            .iter()
+            .flat_map(PropDefs::iter)
+            .filter_map(|(name, def)| match def {
+                PropDef::Variant { values, .. } => Some((name, values)),
+                _ => None,
+            })
+            .collect()
+    }
+    a.name() == b.name() && variants(a) == variants(b)
 }

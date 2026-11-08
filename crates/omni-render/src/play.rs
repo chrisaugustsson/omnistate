@@ -9,7 +9,7 @@
 use crate::view::{Scene, Viewport};
 use omni_core::design::proto::{Direction, Transition};
 use omni_core::design::tokens::{ModeChoice, TokenValue};
-use omni_core::design::{NodeData, NodeId, NodeKind};
+use omni_core::design::{NodeAddress, NodeData, NodeId, NodeKind};
 use omni_proto::keys::gamepad_button;
 use omni_proto::transition::progress;
 use omni_proto::{Effect, HINT_MS, KeyEvent, Player, PointerEvent, PointerKind, Rect, Running};
@@ -70,8 +70,13 @@ pub struct Session {
     resolved: HashMap<NodeId, PlayResolve>,
 }
 
-/// The token values and the modes of its own that a board was resolved with.
-type PlayResolve = (BTreeMap<String, TokenValue>, Option<ModeChoice>);
+/// The token values, the modes of its own and the variant swaps that a board
+/// was resolved with.
+type PlayResolve = (
+    BTreeMap<String, TokenValue>,
+    Option<ModeChoice>,
+    HashMap<NodeAddress, NodeId>,
+);
 
 /// Gives the player the boxes of the layers of `board` as the scene has them.
 fn give_boxes(player: &mut Player, scene: &Scene, board: &NodeId) {
@@ -189,24 +194,62 @@ impl Session {
         boards
     }
 
+    /// The instances of `board` that the visit has swapped, by address.
+    fn swaps_of(&self, board: NodeId) -> HashMap<NodeAddress, NodeId> {
+        let top = self.player.swaps_for(board);
+        let nested = self.player.nested_swaps_for(board);
+        top.iter()
+            .map(|(instance, component)| (NodeAddress::new(None, *instance), *component))
+            .chain(
+                nested
+                    .iter()
+                    .map(|(at, component)| (at.clone(), *component)),
+            )
+            .collect()
+    }
+
     /// Resolves the boards that the frame draws again where the session's
-    /// variables changed them (or no longer do), and gives the player their
-    /// new boxes.
+    /// variables or the visit's swaps changed them (or no longer do), and
+    /// gives the player their new boxes. A board that a transition leaves is
+    /// drawn as it was left until the transition ends.
     fn refresh(&mut self, scene: &mut Scene) {
-        for board in self.drawn_boards() {
-            let variables = self.player.variables();
-            let now: PlayResolve = (
-                variables.values.clone(),
-                variables.modes.get(&board).cloned(),
-            );
+        let shown = self.player.frame();
+        let mut staying = vec![shown.board];
+        staying.extend(shown.overlays.iter().map(|overlay| overlay.board));
+        let drawing = self.drawn_boards();
+        let mut boards = drawing.clone();
+        boards.extend(self.resolved.keys().copied());
+        let mut seen = Vec::new();
+        for board in boards {
+            if seen.contains(&board) {
+                continue;
+            }
+            seen.push(board);
             let before = self.resolved.get(&board).cloned().unwrap_or_default();
+            let variables = self.player.variables();
+            let drawn = drawing.contains(&board);
+            let now: PlayResolve = if drawn {
+                (
+                    variables.values.clone(),
+                    variables.modes.get(&board).cloned(),
+                    if staying.contains(&board) {
+                        self.swaps_of(board)
+                    } else {
+                        before.2.clone()
+                    },
+                )
+            } else if before.2.is_empty() {
+                continue;
+            } else {
+                (before.0.clone(), before.1.clone(), HashMap::new())
+            };
             if now == before {
                 continue;
             }
             let done = if now == PlayResolve::default() {
                 scene.designed_board(&board)
             } else {
-                scene.play_board(&board, now.1.as_ref(), &now.0)
+                scene.play_board(&board, now.1.as_ref(), &now.0, &now.2)
             };
             if !done {
                 continue;

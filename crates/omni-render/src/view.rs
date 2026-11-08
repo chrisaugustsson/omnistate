@@ -828,7 +828,7 @@ pub fn board_images(board: &Node, system: Option<&DesignSystem>) -> Vec<String> 
     let json = match system {
         Some(system) => {
             let choice = system.first_modes();
-            serde_json::to_value(&resolve::resolve(board, system, &choice).page)
+            serde_json::to_value(&resolve::resolve(board, system, &choice, &HashMap::new()).page)
         }
         None => serde_json::to_value(board),
     };
@@ -868,7 +868,7 @@ impl Scene {
     /// `system`, in its first mode.
     pub fn with_system(page: Node, assets: Assets, system: DesignSystem) -> Self {
         let choice = system.first_modes();
-        let resolved = resolve::resolve(&page, &system, &choice);
+        let resolved = resolve::resolve(&page, &system, &choice, &HashMap::new());
         let laid = lay_out(
             &resolved.page,
             &assets,
@@ -906,7 +906,7 @@ impl Scene {
             None => self.page.clone(),
         };
         let choice = system.first_modes();
-        let resolved = resolve::resolve(&page, &system, &choice);
+        let resolved = resolve::resolve(&page, &system, &choice, &HashMap::new());
         self.source = Some(page);
         self.system = Some(Resolving { system, choice });
         self.adopt(resolved);
@@ -923,7 +923,7 @@ impl Scene {
             return Err("the scene has no design system, so it has no modes".to_string());
         };
         let choice = resolving.system.choose(&resolving.choice, text)?;
-        let resolved = resolve::resolve(source, &resolving.system, &choice);
+        let resolved = resolve::resolve(source, &resolving.system, &choice, &HashMap::new());
         resolving.choice = choice;
         self.adopt(resolved);
         Ok(())
@@ -1100,7 +1100,7 @@ impl Scene {
                 }
                 Job::Resolving(
                     position,
-                    resolve::begin_board(board, &mut self.taken, &mut self.next_id),
+                    resolve::begin_board(board, HashMap::new(), &mut self.taken, &mut self.next_id),
                 )
             }
             _ => Job::Place(
@@ -1312,15 +1312,17 @@ impl Scene {
     }
 
     /// Resolves the board `board` again for a play session: the tokens of
-    /// `values` hold those values, and `modes`, if given, are the board's
-    /// `modes`. The page as given is left as it is (`designed_board` puts the
-    /// board back). Returns whether the scene has such a board and a design
+    /// `values` hold those values, `modes`, if given, are the board's `modes`,
+    /// and the instances in `swaps`, by address, show the components they map
+    /// to (D19). The page as given is left as it is (`designed_board` puts
+    /// the board back). Returns whether the scene has such a board and a design
     /// system.
     pub fn play_board(
         &mut self,
         board: &NodeId,
         modes: Option<&ModeChoice>,
         values: &BTreeMap<String, TokenValue>,
+        swaps: &HashMap<NodeAddress, NodeId>,
     ) -> bool {
         while self.work() {}
         let (Some(resolving), Some(source)) = (&self.system, &self.source) else {
@@ -1340,7 +1342,7 @@ impl Scene {
         }
         let system = resolving.system.overlaid(values);
         let choice = resolving.choice.clone();
-        self.resolve_now(position, node, &system, &choice)
+        self.resolve_now(position, node, &system, &choice, swaps)
     }
 
     /// Resolves the board `board` as the page gives it, in the scene's modes
@@ -1358,7 +1360,7 @@ impl Scene {
         };
         let node = board_nodes(source)[position].clone();
         let (system, choice) = (resolving.system.clone(), resolving.choice.clone());
-        self.resolve_now(position, node, &system, &choice)
+        self.resolve_now(position, node, &system, &choice, &HashMap::new())
     }
 
     /// Resolves `board` against `system` in `choice`, all at once, and puts
@@ -1369,11 +1371,13 @@ impl Scene {
         board: Node,
         system: &DesignSystem,
         choice: &ModeChoice,
+        swaps: &resolve::Swaps,
     ) -> bool {
         for gone in &ids_of(&board_nodes(&self.page)[position]) {
             self.taken.remove(gone);
         }
-        let mut resolving = resolve::begin_board(board, &mut self.taken, &mut self.next_id);
+        let mut resolving =
+            resolve::begin_board(board, swaps.clone(), &mut self.taken, &mut self.next_id);
         let Some(resolved) = resolving.step(
             system,
             choice,
