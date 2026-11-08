@@ -4,7 +4,7 @@
 
 use omni_core::design::devices::{DEVICES, device};
 use omni_core::design::proto::{
-    Action, Easing, Interaction, OverlayAnchor, OverlayPosition, Transition, Trigger,
+    Action, Direction, Easing, Interaction, OverlayAnchor, OverlayPosition, Transition, Trigger,
 };
 use omni_core::design::proto::{Overflow, PrototypeSettings, ScrollPosition};
 use omni_core::design::tags::{self, TagError};
@@ -1049,4 +1049,27 @@ fn only_a_board_takes_modes_in_tags_and_in_json() {
         error.to_string().contains("frame nodes have no `modes`"),
         "{error}"
     );
+}
+
+// US-36: which drags start an `onDrag` transition.
+
+#[test]
+fn a_directional_transition_takes_a_drag_toward_its_side_up_to_an_exact_diagonal() {
+    let left = Transition::SlideIn {
+        direction: Direction::Left,
+    };
+    let top = Transition::MoveIn {
+        direction: Direction::Top,
+    };
+
+    assert!(left.accepts_drag(-10.0, -10.0));
+    assert!(top.accepts_drag(-10.0, -10.0));
+    assert!(!left.accepts_drag(-10.0, -11.0));
+}
+
+#[test]
+fn instant_dissolve_and_smart_animate_take_a_drag_any_way() {
+    assert!(Transition::Instant.accepts_drag(3.0, -7.0));
+    assert!(Transition::Dissolve.accepts_drag(-7.0, 3.0));
+    assert!(Transition::SmartAnimate.accepts_drag(0.0, 9.0));
 }

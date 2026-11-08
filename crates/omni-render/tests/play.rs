@@ -965,3 +965,55 @@ fn play_after_exit_draws_the_design_systems_values() {
 
     assert_eq!(stage.pixel(300, 250), SURFACE_WHITE);
 }
+
+// US-36: the page's loop keeps ticking while a `delayMs` or `afterDelay` wait
+// is pending, so that the wait is seen to run out.
+
+const MOVE: u32 = 1;
+
+fn link_to(url: &str) -> Value {
+    json!({"type": "openUrl", "url": url, "newTab": false})
+}
+
+#[test]
+fn a_pending_wait_asks_for_frames_until_it_has_run_out_also_on_a_frame_that_drew() {
+    let first = json!([{"trigger": {"type": "afterDelay", "ms": 500},
+        "actions": [link_to("https://example.com/splash")]}]);
+    let second = json!([{"trigger": {"type": "afterDelay", "ms": 1000},
+        "actions": [{"type": "navigate", "dest": B2}]}]);
+    let mut scene = scene_of(&page(vec![
+        filled_board(
+            B1,
+            0.0,
+            400.0,
+            200.0,
+            "#ffffff",
+            vec![
+                spot("a0000011", 0.0, 0.0, 50.0, 50.0, first),
+                spot("a0000012", 100.0, 0.0, 50.0, 50.0, second),
+            ],
+        ),
+        filled_board(B2, 1000.0, 400.0, 200.0, "#ffffff", vec![]),
+    ]));
+    let mut session = Session::start(&scene, B1).expect("the page has the board");
+    draw(&mut session, &mut scene, 400, 200);
+
+    // The waits count from the first frame.
+    assert_eq!(session.tick(1000.0), Tick::Waiting);
+    assert_eq!(session.tick(1499.0), Tick::Waiting);
+    assert_eq!(session.tick(1500.0), Tick::Animating);
+    draw(&mut session, &mut scene, 400, 200);
+    assert_eq!(session.tick(2000.0), Tick::Changed);
+    assert_eq!(session.state()["board"], json!(B2));
+}
+
+#[test]
+fn a_gesture_that_starts_a_wait_asks_for_a_frame() {
+    let (_scene, mut session) = board_with_a_hotspot(json!([{
+        "trigger": "mouseEnter",
+        "delayMs": 500,
+        "actions": [{"type": "navigate", "dest": B2}]
+    }]));
+
+    assert!(session.pointer(MOVE, 200.0, 100.0));
+}

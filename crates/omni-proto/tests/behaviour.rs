@@ -1263,3 +1263,538 @@ fn a_key_fires_the_open_overlays_trigger_and_not_the_boards_under_it() {
     assert!(frame.overlays.is_empty());
     assert!(player.history().is_empty());
 }
+
+// US-36: the pointer and timer triggers, after FigCraft's rules.
+
+const L3: &str = "a0000003";
+
+fn on(trigger: Value, actions: Value) -> Value {
+    json!({"trigger": trigger, "actions": actions})
+}
+
+fn go(dest: &str) -> Value {
+    json!({"type": "navigate", "dest": dest})
+}
+
+fn link(name: &str) -> Value {
+    json!({"type": "openUrl", "url": format!("https://example.com/{name}"), "newTab": false})
+}
+
+/// The names `link` gave the links among `effects`.
+fn links(effects: &[Effect]) -> Vec<String> {
+    effects
+        .iter()
+        .filter_map(|effect| match effect {
+            Effect::OpenUrl { url, .. } => Some(url.replace("https://example.com/", "")),
+            _ => None,
+        })
+        .collect()
+}
+
+fn moved(player: &mut Player, x: f64, y: f64, at: f64) -> Vec<Effect> {
+    player.pointer(event(PointerKind::Move, x, y, at))
+}
+
+/// A player on a 400 × 800 `B1` holding `b1`, a 200 × 100 `B2` holding `b2`
+/// and an empty `B3`, with the layer boxes `boxed`.
+fn pointer_player(b1: Vec<Value>, b2: Vec<Value>, boxed: &[(&str, Rect)]) -> Player {
+    let mut boxes = vec![
+        (B1, rect(0.0, 0.0, 400.0, 800.0)),
+        (B2, rect(0.0, 0.0, 200.0, 100.0)),
+        (B3, rect(0.0, 0.0, 100.0, 300.0)),
+    ];
+    boxes.extend_from_slice(boxed);
+    player(
+        vec![board(B1, b1), board(B2, b2), board(B3, vec![])],
+        vec![],
+        &boxes,
+    )
+}
+
+#[test]
+fn a_hover_navigate_holds_in_the_layers_box_and_returns_without_a_history_step() {
+    let hover = json!({
+        "trigger": "onHover",
+        "actions": [go(B2)],
+        "transition": {"type": "slideIn", "direction": "left"},
+        "durationMs": 200,
+        "easing": "linear"
+    });
+    let mut player = pointer_player(
+        vec![layer(L1, json!([hover]))],
+        vec![],
+        &[(L1, rect(0.0, 0.0, 100.0, 100.0))],
+    );
+
+    moved(&mut player, 50.0, 50.0, 0.0);
+    assert_eq!(player.frame().board, id(B2));
+    // B2 draws nothing there: the box L1 had on B1 stays the hotspot.
+    moved(&mut player, 90.0, 90.0, 10.0);
+    assert_eq!(player.frame().board, id(B2));
+
+    moved(&mut player, 150.0, 50.0, 20.0);
+
+    let frame = player.frame();
+    assert_eq!(frame.board, id(B1));
+    assert!(player.history().is_empty());
+    let running = frame.transition.unwrap();
+    assert_eq!((running.from, running.to), (id(B2), id(B1)));
+    assert!(running.reversed);
+    assert_eq!(running.duration_ms, 200);
+    assert_eq!(running.easing, Easing::Linear);
+    assert_eq!(running.started, 20.0);
+}
+
+#[test]
+fn a_mouse_enter_navigate_stays_when_the_pointer_leaves() {
+    let mut player = pointer_player(
+        vec![layer(L1, json!([on(json!("mouseEnter"), json!([go(B2)]))]))],
+        vec![],
+        &[(L1, rect(0.0, 0.0, 100.0, 100.0))],
+    );
+
+    moved(&mut player, 50.0, 50.0, 0.0);
+    moved(&mut player, 150.0, 50.0, 10.0);
+
+    assert_eq!(player.frame().board, id(B2));
+    assert_eq!(player.history(), &[id(B1)]);
+}
+
+#[test]
+fn moving_onto_a_child_enters_it_and_leaves_its_parent_entered() {
+    let mut parent = layer(
+        L1,
+        json!([
+            on(json!("mouseEnter"), json!([link("parent-enter")])),
+            on(json!("mouseLeave"), json!([link("parent-leave")])),
+        ]),
+    );
+    parent["children"] = json!([layer(
+        L2,
+        json!([on(json!("mouseEnter"), json!([link("child-enter")]))])
+    )]);
+    let mut player = pointer_player(
+        vec![parent],
+        vec![],
+        &[
+            (L1, rect(0.0, 0.0, 100.0, 100.0)),
+            (L2, rect(0.0, 0.0, 50.0, 50.0)),
+        ],
+    );
+
+    assert_eq!(
+        links(&moved(&mut player, 75.0, 75.0, 0.0)),
+        ["parent-enter"]
+    );
+    assert_eq!(
+        links(&moved(&mut player, 25.0, 25.0, 10.0)),
+        ["child-enter"]
+    );
+    assert_eq!(
+        links(&moved(&mut player, 150.0, 150.0, 20.0)),
+        ["parent-leave"]
+    );
+}
+
+#[test]
+fn a_parent_never_left_is_not_entered_or_left_again_when_its_childs_hover_reverts() {
+    let mut parent = layer(
+        L1,
+        json!([
+            on(json!("mouseEnter"), json!([link("parent-enter")])),
+            on(json!("mouseLeave"), json!([link("parent-leave")])),
+        ]),
+    );
+    parent["children"] = json!([layer(L2, json!([on(json!("onHover"), json!([go(B2)]))]))]);
+    let mut player = pointer_player(
+        vec![parent],
+        vec![],
+        &[
+            (L1, rect(0.0, 0.0, 100.0, 100.0)),
+            (L2, rect(0.0, 0.0, 50.0, 50.0)),
+        ],
+    );
+    moved(&mut player, 75.0, 75.0, 0.0);
+    moved(&mut player, 25.0, 25.0, 10.0);
+    assert_eq!(player.frame().board, id(B2));
+
+    let back_on_the_parent = moved(&mut player, 75.0, 75.0, 20.0);
+
+    assert_eq!(player.frame().board, id(B1));
+    assert!(links(&back_on_the_parent).is_empty());
+    assert_eq!(
+        links(&moved(&mut player, 150.0, 150.0, 30.0)),
+        ["parent-leave"]
+    );
+}
+
+#[test]
+fn a_hover_revert_leaves_the_layers_hovered_on_the_board_it_returns_from() {
+    let mut player = pointer_player(
+        vec![layer(L1, json!([on(json!("onHover"), json!([go(B2)]))]))],
+        vec![layer(
+            L2,
+            json!([on(json!("mouseLeave"), json!([link("b2-leave")]))]),
+        )],
+        &[
+            (L1, rect(0.0, 0.0, 100.0, 100.0)),
+            (L2, rect(0.0, 0.0, 200.0, 100.0)),
+        ],
+    );
+    moved(&mut player, 50.0, 50.0, 0.0);
+    moved(&mut player, 60.0, 60.0, 10.0);
+
+    // Out of L1's box, still inside L2's box on B2.
+    let effects = moved(&mut player, 150.0, 50.0, 20.0);
+
+    assert_eq!(player.frame().board, id(B1));
+    assert_eq!(links(&effects), ["b2-leave"]);
+}
+
+#[test]
+fn a_press_revert_leaves_the_layers_hovered_on_the_board_it_returns_from() {
+    let mut player = pointer_player(
+        vec![layer(L1, json!([on(json!("onPress"), json!([go(B2)]))]))],
+        vec![layer(
+            L2,
+            json!([on(json!("mouseLeave"), json!([link("b2-leave")]))]),
+        )],
+        &[
+            (L1, rect(0.0, 0.0, 100.0, 100.0)),
+            (L2, rect(0.0, 0.0, 200.0, 100.0)),
+        ],
+    );
+    player.pointer(event(PointerKind::Down, 50.0, 50.0, 0.0));
+    assert_eq!(player.frame().board, id(B2));
+    moved(&mut player, 60.0, 60.0, 10.0);
+
+    let effects = player.pointer(event(PointerKind::Up, 60.0, 60.0, 20.0));
+
+    assert_eq!(player.frame().board, id(B1));
+    assert!(player.history().is_empty());
+    assert_eq!(links(&effects), ["b2-leave"]);
+}
+
+#[test]
+fn mouse_up_fires_on_the_layer_under_the_pointer_at_release() {
+    let mut player = pointer_player(
+        vec![
+            layer(L1, json!([on(json!("mouseUp"), json!([go(B2)]))])),
+            layer(L2, json!([on(json!("mouseUp"), json!([go(B3)]))])),
+        ],
+        vec![],
+        &[
+            (L1, rect(0.0, 0.0, 100.0, 100.0)),
+            (L2, rect(200.0, 0.0, 100.0, 100.0)),
+        ],
+    );
+
+    player.pointer(event(PointerKind::Down, 50.0, 50.0, 0.0));
+    moved(&mut player, 250.0, 50.0, 10.0);
+    player.pointer(event(PointerKind::Up, 250.0, 50.0, 20.0));
+
+    assert_eq!(player.frame().board, id(B3));
+    assert_eq!(player.history(), &[id(B1)]);
+}
+
+#[test]
+fn a_mouse_down_with_delay_ms_acts_that_long_after_the_down_and_once() {
+    let mut player = pointer_player(
+        vec![layer(
+            L1,
+            json!([{"trigger": "mouseDown", "delayMs": 300, "actions": [go(B2)]}]),
+        )],
+        vec![],
+        &[(L1, rect(0.0, 0.0, 100.0, 100.0))],
+    );
+
+    player.pointer(event(PointerKind::Down, 50.0, 50.0, 1000.0));
+    player.pointer(event(PointerKind::Up, 50.0, 50.0, 1010.0));
+    assert_eq!(player.frame().board, id(B1));
+    player.tick(1299.0);
+    assert_eq!(player.frame().board, id(B1));
+
+    player.tick(1300.0);
+    assert_eq!(player.frame().board, id(B2));
+    player.tick(2000.0);
+    assert_eq!(player.history(), &[id(B1)]);
+    assert!(player.timers().is_empty());
+}
+
+#[test]
+fn delay_ms_on_a_hover_is_ignored() {
+    let mut player = pointer_player(
+        vec![layer(
+            L1,
+            json!([{"trigger": "onHover", "delayMs": 500, "actions": [go(B2)]}]),
+        )],
+        vec![],
+        &[(L1, rect(0.0, 0.0, 100.0, 100.0))],
+    );
+
+    moved(&mut player, 50.0, 50.0, 0.0);
+
+    assert_eq!(player.frame().board, id(B2));
+}
+
+#[test]
+fn a_delayed_mouse_enter_is_dropped_when_its_board_goes_away() {
+    let mut player = pointer_player(
+        vec![layer(
+            L1,
+            json!([{"trigger": "mouseEnter", "delayMs": 500, "actions": [go(B3)]}]),
+        )],
+        vec![],
+        &[(L1, rect(0.0, 0.0, 100.0, 100.0))],
+    );
+    moved(&mut player, 50.0, 50.0, 0.0);
+    assert!(player.go(id(B2)));
+
+    player.tick(500.0);
+
+    assert_eq!(player.frame().board, id(B2));
+    assert_eq!(player.history(), &[id(B1)]);
+}
+
+#[test]
+fn a_delayed_mouse_leave_of_a_board_layer_outlives_an_overlay_closing_over_the_board() {
+    let mut card = layer(
+        L1,
+        json!([{"trigger": "mouseLeave", "delayMs": 500, "actions": [go(B3)]}]),
+    );
+    card["children"] = json!([layer(
+        L2,
+        json!([actions(
+            json!([{"type": "openOverlay", "dest": B2, "closeOnOutside": true}])
+        )])
+    )]);
+    let mut player = pointer_player(
+        vec![card],
+        vec![],
+        &[
+            (L1, rect(0.0, 0.0, 100.0, 100.0)),
+            (L2, rect(0.0, 0.0, 50.0, 50.0)),
+        ],
+    );
+    moved(&mut player, 10.0, 10.0, 0.0);
+    click(&mut player, 10.0, 10.0, 10.0);
+    assert_eq!(player.frame().overlays.len(), 1);
+    // The centred overlay spans 100..300, 350..450.
+    moved(&mut player, 150.0, 150.0, 30.0);
+    click(&mut player, 150.0, 150.0, 40.0);
+    assert!(player.frame().overlays.is_empty());
+
+    player.tick(530.0);
+
+    assert_eq!(player.frame().board, id(B3));
+}
+
+#[test]
+fn a_delayed_mouse_leave_of_an_overlay_layer_is_dropped_when_the_overlay_closes() {
+    let mut player = pointer_player(
+        vec![layer(
+            L1,
+            json!([actions(
+                json!([{"type": "openOverlay", "dest": B2, "closeOnOutside": true}])
+            )]),
+        )],
+        vec![layer(
+            L3,
+            json!([{"trigger": "mouseLeave", "delayMs": 500, "actions": [go(B3)]}]),
+        )],
+        &[
+            (L1, rect(0.0, 0.0, 50.0, 50.0)),
+            (L3, rect(0.0, 0.0, 50.0, 50.0)),
+        ],
+    );
+    click(&mut player, 10.0, 10.0, 0.0);
+    // The centred overlay spans 100..300, 350..450, L3 100..150, 350..400.
+    moved(&mut player, 110.0, 360.0, 10.0);
+    moved(&mut player, 200.0, 420.0, 20.0);
+    click(&mut player, 10.0, 700.0, 30.0);
+    assert!(player.frame().overlays.is_empty());
+
+    player.tick(520.0);
+
+    assert_eq!(player.frame().board, id(B1));
+    assert!(player.history().is_empty());
+}
+
+#[test]
+fn after_delay_fires_its_ms_after_the_board_is_shown_once_per_visit() {
+    let mut player = pointer_player(
+        vec![layer(
+            L1,
+            json!([on(
+                json!({"type": "afterDelay", "ms": 1000}),
+                json!([link("splash")])
+            )]),
+        )],
+        vec![],
+        &[(L1, rect(0.0, 0.0, 100.0, 100.0))],
+    );
+
+    assert!(links(&player.tick(999.0)).is_empty());
+    assert_eq!(links(&player.tick(1000.0)), ["splash"]);
+    assert!(links(&player.tick(1500.0)).is_empty());
+
+    assert!(player.go(id(B2)));
+    player.back();
+
+    assert!(links(&player.tick(2499.0)).is_empty());
+    assert_eq!(links(&player.tick(2500.0)), ["splash"]);
+}
+
+#[test]
+fn after_delay_keeps_counting_through_a_hover_navigate_and_its_revert() {
+    let mut player = pointer_player(
+        vec![
+            layer(L1, json!([on(json!("onHover"), json!([go(B2)]))])),
+            layer(
+                L2,
+                json!([on(
+                    json!({"type": "afterDelay", "ms": 1000}),
+                    json!([link("splash")])
+                )]),
+            ),
+        ],
+        vec![],
+        &[
+            (L1, rect(0.0, 0.0, 100.0, 100.0)),
+            (L2, rect(200.0, 0.0, 100.0, 100.0)),
+        ],
+    );
+    moved(&mut player, 50.0, 50.0, 100.0);
+    moved(&mut player, 150.0, 150.0, 200.0);
+    assert_eq!(player.frame().board, id(B1));
+
+    assert_eq!(links(&player.tick(1000.0)), ["splash"]);
+    assert!(links(&player.tick(1200.0)).is_empty());
+}
+
+#[test]
+fn an_overlay_a_hover_opened_closes_when_the_hover_ends() {
+    let mut player = pointer_player(
+        vec![layer(
+            L1,
+            json!([on(
+                json!("onHover"),
+                json!([{"type": "openOverlay", "dest": B2}])
+            )]),
+        )],
+        vec![],
+        &[(L1, rect(0.0, 0.0, 50.0, 50.0))],
+    );
+
+    moved(&mut player, 10.0, 10.0, 0.0);
+    assert_eq!(player.frame().overlays.len(), 1);
+    moved(&mut player, 60.0, 60.0, 10.0);
+
+    assert!(player.frame().overlays.is_empty());
+    assert_eq!(player.frame().board, id(B1));
+}
+
+#[test]
+fn a_hover_change_to_returns_to_the_variant_when_the_hover_ends() {
+    let change = json!([on(
+        json!("onHover"),
+        json!([{"type": "changeTo", "dest": COMP_ON}])
+    )]);
+    let mut player = instance_player(
+        vec![instance(INST_A, change)],
+        vec![
+            component_with_layer(COMP, json!([])),
+            component_with_layer(COMP_ON, json!([])),
+        ],
+    );
+
+    moved(&mut player, 10.0, 10.0, 0.0);
+    assert_eq!(player.frame().variant_swaps[&id(INST_A)], id(COMP_ON));
+    moved(&mut player, 300.0, 300.0, 10.0);
+
+    assert!(player.frame().variant_swaps.is_empty());
+}
+
+#[test]
+fn the_4px_of_a_click_are_screen_pixels() {
+    let mut player = two_boards(json!([navigate(B2)]));
+    player.set_scale(2.0);
+
+    player.pointer(event(PointerKind::Down, 10.0, 10.0, 0.0));
+    let effects = player.pointer(event(PointerKind::Up, 13.0, 10.0, 10.0));
+
+    assert!(effects.is_empty());
+    assert_eq!(player.frame().board, id(B1));
+}
+
+#[test]
+fn an_up_within_4px_on_another_layer_is_no_click() {
+    let mut player = pointer_player(
+        vec![
+            layer(L1, json!([navigate(B2)])),
+            layer(L2, json!([navigate(B3)])),
+        ],
+        vec![],
+        &[
+            (L1, rect(0.0, 0.0, 100.0, 100.0)),
+            (L2, rect(101.0, 0.0, 100.0, 100.0)),
+        ],
+    );
+
+    player.pointer(event(PointerKind::Down, 99.0, 10.0, 0.0));
+    player.pointer(event(PointerKind::Up, 102.0, 10.0, 10.0));
+
+    assert_eq!(player.frame().board, id(B1));
+    assert!(player.history().is_empty());
+}
+
+fn drag_slide_in_left() -> Player {
+    let drag = json!({
+        "trigger": "onDrag",
+        "actions": [go(B2)],
+        "transition": {"type": "slideIn", "direction": "left"},
+        "durationMs": 400,
+        "easing": "linear"
+    });
+    pointer_player(
+        vec![layer(L1, json!([drag]))],
+        vec![],
+        &[(L1, rect(0.0, 0.0, 100.0, 100.0))],
+    )
+}
+
+#[test]
+fn a_drag_against_a_slide_ins_direction_does_nothing() {
+    let mut player = drag_slide_in_left();
+
+    player.pointer(event(PointerKind::Down, 50.0, 50.0, 0.0));
+    moved(&mut player, 60.0, 50.0, 10.0);
+    player.pointer(event(PointerKind::Up, 60.0, 50.0, 20.0));
+
+    let frame = player.frame();
+    assert_eq!(frame.board, id(B1));
+    assert!(frame.transition.is_none());
+}
+
+#[test]
+fn a_drag_started_slide_follows_the_pointer_and_plays_the_rest_of_its_duration_on_release() {
+    let mut player = drag_slide_in_left();
+    player.pointer(event(PointerKind::Down, 50.0, 50.0, 0.0));
+    moved(&mut player, 40.0, 50.0, 10.0);
+    assert_eq!(player.frame().board, id(B2));
+    assert!(player.frame().transition.unwrap().follows_pointer);
+
+    // 50 of B2's 200 wide: a quarter of the 400 ms.
+    moved(&mut player, 0.0, 50.0, 20.0);
+    assert_eq!(player.frame().transition.unwrap().started, -80.0);
+
+    player.pointer(event(PointerKind::Up, 0.0, 50.0, 30.0));
+    let running = player.frame().transition.unwrap();
+    assert!(!running.follows_pointer);
+    assert_eq!(running.started, -70.0);
+
+    player.tick(329.0);
+    assert!(player.frame().transition.is_some());
+    player.tick(330.0);
+    assert!(player.frame().transition.is_none());
+}
