@@ -70,6 +70,8 @@ pub struct Args {
     pub number_from: Option<String>,
     pub status: Option<String>,
     pub pickable: bool,
+    /// `omni story list --summary`: counts per status instead of the list.
+    pub summarize: bool,
     /// The options of the `omni story` writes: `--run`, `--stage`, `--to`,
     /// `--criterion`, `--finding`, `--question`, `--choice`, `--by`, `--text`,
     /// `--blocked-by`, `--file` (repeatable), `--pending` and `--unticked`.
@@ -140,6 +142,14 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Args> {
             }
             "--pickable" => {
                 parsed.pickable = true;
+                continue;
+            }
+            "--summary"
+                if parsed
+                    .words
+                    .starts_with(&["story".to_string(), "list".to_string()]) =>
+            {
+                parsed.summarize = true;
                 continue;
             }
             "--pending" => {

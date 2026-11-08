@@ -168,9 +168,10 @@ Usage:
                                       Description, Topic, Interfaces, Files, Blocked by,
                                       Acceptance Criteria) in the feature; the server numbers it;
                                       prints its key
-  omni story list [--status <status>] [--pickable]
+  omni story list [--status <status>] [--pickable] [--summary]
                                       list the feature's stories: key, priority, status and title;
-                                      --pickable lists those an implementer may take
+                                      --pickable lists those an implementer may take;
+                                      --summary prints how many are in each status instead
   omni story read <key|id>            print a story: text, criteria, blockers, holder and the
                                       open findings
   omni story edit <key> [--priority <n>] [--blocked-by US-1,US-2] [--text <file>] [--link <doc>:<node>[:<label>]]...
@@ -254,6 +255,8 @@ Options (before or after the command):
   --status <status>     `omni story list`: only the stories in this status
   --open                `omni thread list`: only the threads without a conclusion
   --pickable            `omni story list`: only the stories that can be picked
+  --summary             `omni story list`: count the stories per status; `omni post` takes
+                        --summary <text> instead
   --json                print the full JSON instead of short text
   -h, --help            show this help
   -V, --version         show the version

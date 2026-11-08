@@ -10,7 +10,7 @@ use crate::projects::{creation_feature, is_uuid, project_id};
 
 const ADD_USAGE: &str =
     "omni story add <file> [--priority <n>] [--link <doc>:<node>[:<label>]]... [--number-from <n>]";
-const LIST_USAGE: &str = "omni story list [--status <status>] [--pickable]";
+const LIST_USAGE: &str = "omni story list [--status <status>] [--pickable] [--summary]";
 const READ_USAGE: &str = "omni story read <key|id>";
 
 fn unreadable() -> CliError {
@@ -304,7 +304,61 @@ pub fn add(args: &Args, file: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-/// `omni story list [--status <status>] [--pickable]`
+/// The statuses in the board's order.
+const STATUS_ORDER: [&str; 8] = [
+    "backlog",
+    "implementing",
+    "implemented",
+    "review",
+    "reviewed",
+    "testing",
+    "done",
+    "cancelled",
+];
+
+/// `omni story list --summary`: how many stories are in each status, and how
+/// many are blocked. A status without stories is left out.
+fn summarize(args: &Args, stories: Vec<Value>) -> Result<()> {
+    let mut counts: Vec<(String, usize)> = Vec::new();
+    let mut blocked = 0;
+    for story in &stories {
+        let status = story.str_at("status").unwrap_or("?");
+        match counts.iter_mut().find(|(name, _)| name == status) {
+            Some((_, count)) => *count += 1,
+            None => counts.push((status.to_string(), 1)),
+        }
+        if story.get("blocked") == Some(&Value::Bool(true)) {
+            blocked += 1;
+        }
+    }
+    let rank = |name: &str| {
+        STATUS_ORDER
+            .iter()
+            .position(|s| *s == name)
+            .unwrap_or(usize::MAX)
+    };
+    counts.sort_by_key(|(name, _)| rank(name));
+    if args.json {
+        let fields: Vec<String> = counts
+            .iter()
+            .map(|(name, count)| format!("{}:{count}", quote(name)))
+            .collect();
+        say(&format!(
+            "{{\"counts\":{{{}}},\"blocked\":{blocked}}}",
+            fields.join(",")
+        ));
+        return Ok(());
+    }
+    for (name, count) in &counts {
+        say(&format!("{name}: {count}"));
+    }
+    if blocked > 0 {
+        say(&format!("blocked: {blocked}"));
+    }
+    Ok(())
+}
+
+/// `omni story list [--status <status>] [--pickable] [--summary]`
 pub fn list(args: &Args) -> Result<()> {
     let agent = agent(args)?;
     let mut path = stories_path(args, &agent)?;
@@ -320,6 +374,9 @@ pub fn list(args: &Args) -> Result<()> {
     }
     if !query.is_empty() {
         path = format!("{path}?{}", query.join("&"));
+    }
+    if args.summarize {
+        return summarize(args, list_stories(&agent, &path)?);
     }
     if args.json {
         let response = agent.request("GET", &path, None)?;
