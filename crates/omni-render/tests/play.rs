@@ -30,10 +30,19 @@
 //!   shortest form and the frame hugging it follows, a fill follows its colour
 //!   token, and a board set to dark is drawn dark while other boards are not.
 //!   Restart, and Exit followed by Play, draw the design system's values.
+//! - US-33: a `changeTo` fired by a layer inside a component swaps the
+//!   instance that holds the layer, and the board is laid out again: the
+//!   instance grows to the destination variant and a frame hugging it follows,
+//!   while other instances stay as designed. Inside an outer component that
+//!   appears more than once, only the clicked one changes. The swapped
+//!   instance keeps its other props and its overrides, and its variant props
+//!   take the destination's defaults. A board that a transition leaves is
+//!   drawn with its swaps until the transition ends, and as designed after.
 
 mod design;
 
 use design::{at, board, fixed, flex, frame, node, none, rect, text, with};
+use omni_core::design::NodeAddress;
 use omni_render::paint::Assets;
 use omni_render::play::{Session, Tick};
 use omni_render::system::DesignSystem;
@@ -1016,4 +1025,265 @@ fn a_gesture_that_starts_a_wait_asks_for_a_frame() {
     }]));
 
     assert!(session.pointer(MOVE, 200.0, 100.0));
+}
+
+// US-33: a change to swaps the instance that holds the layer, and the board is
+// laid out again with the swap (D19).
+
+const BUTTON: &str = "cb000001";
+const BUTTON_HOVER: &str = "cb000002";
+const BUTTON_LABEL: &str = "ct000001";
+const HOVER_LABEL: &str = "ct000002";
+const HOVER_NOTE: &str = "ct000003";
+const CARD: &str = "cc000001";
+const CARD_BUTTON: &str = "cn000001";
+const ROW: &str = "a0000020";
+const FIRST: &str = "e0000001";
+const OTHER: &str = "e0000002";
+const GO_ON: &str = "a0000021";
+
+/// A Button that hugs its Label with a padding of `pad`, in the variant
+/// `state` of the set default | hover, whose `label` prop defaults to `label`.
+fn button(id: &str, state: &str, label: &str, pad: f64, children: Vec<Value>) -> Value {
+    json!({
+        "id": id,
+        "type": "component",
+        "name": "Button",
+        "width": "hug",
+        "height": "hug",
+        "layout": {"mode": "flex", "padding": {"top": pad, "right": pad, "bottom": pad, "left": pad}},
+        "props": {
+            "state": {"type": "variant", "values": ["default", "hover"], "default": state},
+            "label": {"type": "text", "default": label}
+        },
+        "children": children
+    })
+}
+
+/// A 16 px Label showing the `label` prop.
+fn label(id: &str, content: &str) -> Value {
+    with(
+        &text(id, content, 16.0, 1.25),
+        "bind",
+        json!({"content": "label"}),
+    )
+}
+
+/// Button (default): "Go" with a padding of 8, whose Label changes the
+/// instance to the hover variant on a click. Button (hover): "Go further now"
+/// and a Note "!!!!" with a padding of 20. Card hugs one default Button.
+fn button_system() -> DesignSystem {
+    let change = json!([{"actions": [{"type": "changeTo", "dest": BUTTON_HOVER}]}]);
+    let default = button(
+        BUTTON,
+        "default",
+        "Go",
+        8.0,
+        vec![with(&label(BUTTON_LABEL, "Go"), "interactions", change)],
+    );
+    let hover = button(
+        BUTTON_HOVER,
+        "hover",
+        "Go further now",
+        20.0,
+        vec![
+            label(HOVER_LABEL, "Go further now"),
+            text(HOVER_NOTE, "!!!!", 16.0, 1.25),
+        ],
+    );
+    let card = json!({
+        "id": CARD,
+        "type": "component",
+        "name": "Card",
+        "width": "hug",
+        "height": "hug",
+        "layout": {"mode": "flex"},
+        "children": [{"id": CARD_BUTTON, "type": "instance", "name": "Button", "component": BUTTON}]
+    });
+    DesignSystem::from_json(&json!({"$components": [default, hover, card]}))
+        .unwrap_or_else(|error| panic!("the design system fixture must be read, but: {error}"))
+}
+
+fn instance_of(id: &str, component: &str) -> Value {
+    json!({"id": id, "type": "instance", "name": id, "component": component})
+}
+
+/// A row at 0, 0 that hugs `children`.
+fn row(children: Vec<Value>) -> Value {
+    at(
+        &frame(ROW, json!("hug"), json!("hug"), flex(json!({})), children),
+        0.0,
+        0.0,
+    )
+}
+
+/// A scene of one 400 x 300 board B1 with `children`, laid out.
+fn button_scene(children: Vec<Value>) -> Scene {
+    let board = at(
+        &board(B1, fixed(400.0), fixed(300.0), none(), children),
+        0.0,
+        0.0,
+    );
+    let mut scene = Scene::with_system(node(&page(vec![board])), Assets::new(), button_system());
+    while scene.work() {}
+    scene
+}
+
+fn width_at(scene: &Scene, instance: Option<&str>, node: &str) -> f32 {
+    let address = NodeAddress::new(
+        instance.map(|id| id.parse().unwrap()),
+        node.parse().unwrap(),
+    );
+    scene
+        .bounds_of(&address)
+        .unwrap_or_else(|| panic!("the scene has {node}"))
+        .width
+}
+
+#[test]
+fn a_change_to_grows_the_instance_that_holds_the_layer_and_the_row_hugging_it_but_not_its_sibling()
+{
+    let mut scene = button_scene(vec![row(vec![
+        instance_of(FIRST, BUTTON),
+        instance_of(OTHER, BUTTON),
+    ])]);
+    let designed = button_scene(vec![row(vec![
+        instance_of(FIRST, BUTTON_HOVER),
+        instance_of(OTHER, BUTTON),
+    ])]);
+    let mut session = Session::start(&scene, B1).expect("the page has the board");
+    draw(&mut session, &mut scene, 400, 300);
+    assert!(click(&mut session, 12.0, 18.0), "the first Button's Label");
+
+    draw(&mut session, &mut scene, 400, 300);
+
+    let widths = |scene: &Scene| {
+        (
+            width_at(scene, None, FIRST),
+            width_at(scene, None, OTHER),
+            width_at(scene, None, ROW),
+        )
+    };
+    assert_eq!(widths(&scene), widths(&designed));
+}
+
+#[test]
+fn a_change_to_inside_one_card_changes_only_that_cards_button() {
+    let mut scene = button_scene(vec![row(vec![
+        instance_of(FIRST, CARD),
+        instance_of(OTHER, CARD),
+    ])]);
+    let designed = button_scene(vec![row(vec![
+        instance_of(FIRST, BUTTON_HOVER),
+        instance_of(OTHER, BUTTON),
+    ])]);
+    let mut session = Session::start(&scene, B1).expect("the page has the board");
+    draw(&mut session, &mut scene, 400, 300);
+    assert!(
+        click(&mut session, 12.0, 18.0),
+        "the first Card's Button's Label"
+    );
+
+    draw(&mut session, &mut scene, 400, 300);
+
+    assert_eq!(
+        (
+            width_at(&scene, Some(FIRST), CARD_BUTTON),
+            width_at(&scene, Some(OTHER), CARD_BUTTON),
+        ),
+        (
+            width_at(&designed, None, FIRST),
+            width_at(&designed, None, OTHER),
+        )
+    );
+}
+
+#[test]
+fn a_swapped_instance_shows_the_destination_with_its_label_and_overrides_and_not_its_old_variant() {
+    let overrides = json!({HOVER_NOTE: {"visible": false}});
+    let send = |component: &str, props: Value| {
+        with(
+            &with(
+                &at(&instance_of(FIRST, component), 0.0, 0.0),
+                "props",
+                props,
+            ),
+            "overrides",
+            overrides.clone(),
+        )
+    };
+    let mut scene = button_scene(vec![send(
+        BUTTON,
+        json!({"state": "default", "label": "Send"}),
+    )]);
+    let designed = button_scene(vec![send(BUTTON_HOVER, json!({"label": "Send"}))]);
+    let mut session = Session::start(&scene, B1).expect("the page has the board");
+    draw(&mut session, &mut scene, 400, 300);
+    assert!(click(&mut session, 12.0, 18.0), "the Button's Label");
+
+    draw(&mut session, &mut scene, 400, 300);
+
+    assert_eq!(
+        width_at(&scene, None, FIRST),
+        width_at(&designed, None, FIRST)
+    );
+}
+
+#[test]
+fn a_board_a_dissolve_leaves_keeps_its_swaps_until_the_dissolve_ends() {
+    let away = json!([{
+        "actions": [{"type": "navigate", "dest": B2}],
+        "transition": {"type": "dissolve"},
+        "durationMs": 300
+    }]);
+    let b1 = at(
+        &board(
+            B1,
+            fixed(400.0),
+            fixed(300.0),
+            none(),
+            vec![
+                at(&instance_of(FIRST, BUTTON), 0.0, 0.0),
+                with(
+                    &at(&rect(GO_ON, 100.0, 100.0), 200.0, 100.0),
+                    "interactions",
+                    away,
+                ),
+            ],
+        ),
+        0.0,
+        0.0,
+    );
+    let b2 = at(
+        &board(B2, fixed(400.0), fixed(300.0), none(), vec![]),
+        1000.0,
+        0.0,
+    );
+    let mut scene = Scene::with_system(node(&page(vec![b1, b2])), Assets::new(), button_system());
+    while scene.work() {}
+    let designed = button_scene(vec![at(&instance_of(FIRST, BUTTON), 0.0, 0.0)]);
+    let swapped = button_scene(vec![at(&instance_of(FIRST, BUTTON_HOVER), 0.0, 0.0)]);
+    let mut session = Session::start(&scene, B1).expect("the page has the board");
+    draw(&mut session, &mut scene, 400, 300);
+    session.tick(1000.0);
+    assert!(click(&mut session, 12.0, 18.0), "the Button's Label");
+    draw(&mut session, &mut scene, 400, 300);
+    assert!(click(&mut session, 250.0, 150.0), "the hotspot to B2");
+    session.tick(1000.0);
+
+    session.tick(1150.0);
+    draw(&mut session, &mut scene, 400, 300);
+    assert_eq!(
+        width_at(&scene, None, FIRST),
+        width_at(&swapped, None, FIRST),
+        "150 ms into the dissolve"
+    );
+
+    session.tick(1300.0);
+    draw(&mut session, &mut scene, 400, 300);
+    assert_eq!(
+        width_at(&scene, None, FIRST),
+        width_at(&designed, None, FIRST),
+        "once the dissolve has ended"
+    );
 }

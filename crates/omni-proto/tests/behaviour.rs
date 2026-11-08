@@ -6,7 +6,7 @@ use omni_core::design::proto::{Direction, Easing, Transition};
 use omni_core::design::{Node, NodeAddress, NodeData, NodeId};
 use omni_proto::{Effect, KeyEvent, Player, PointerEvent, PointerKind, Rect};
 use serde_json::{Value, json};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 const B1: &str = "b0000001";
 const B2: &str = "b0000002";
@@ -620,6 +620,68 @@ fn restart_clears_history_overlays_and_swaps() {
     assert!(frame.overlays.is_empty());
     assert!(frame.variant_swaps.is_empty());
     assert!(frame.transition.is_none());
+}
+
+#[test]
+fn closing_an_overlay_drops_the_swaps_made_in_it_and_keeps_those_of_the_board_under_it() {
+    let change = json!([actions(json!([{"type": "changeTo", "dest": COMP_ON}]))]);
+    let open = json!([actions(json!([{"type": "openOverlay", "dest": B2}]))]);
+    let close = json!([actions(json!([{"type": "closeOverlay"}]))]);
+    let mut player = player(
+        vec![
+            board(B1, vec![instance(INST_A, json!([])), layer(L1, open)]),
+            board(B2, vec![instance(INST_B, json!([])), layer(L2, close)]),
+        ],
+        vec![
+            component_with_layer(COMP, change),
+            component_with_layer(COMP_ON, json!([])),
+        ],
+        &[],
+    );
+    let sizes = [
+        (id(B1), rect(0.0, 0.0, 400.0, 800.0)),
+        (id(B2), rect(0.0, 0.0, 200.0, 100.0)),
+    ];
+    let mut b1 = HashMap::from(sizes);
+    b1.extend([
+        (id(RESOLVED_A), rect(0.0, 0.0, 50.0, 50.0)),
+        (id(L1), rect(100.0, 0.0, 50.0, 50.0)),
+    ]);
+    player.set_boxes(
+        id(B1),
+        b1,
+        HashMap::from([(
+            id(RESOLVED_A),
+            NodeAddress::new(Some(id(INST_A)), id(INNER)),
+        )]),
+    );
+    let mut b2 = HashMap::from(sizes);
+    b2.extend([
+        (id(RESOLVED_B), rect(0.0, 0.0, 50.0, 50.0)),
+        (id(L2), rect(50.0, 0.0, 50.0, 50.0)),
+    ]);
+    player.set_boxes(
+        id(B2),
+        b2,
+        HashMap::from([(
+            id(RESOLVED_B),
+            NodeAddress::new(Some(id(INST_B)), id(INNER)),
+        )]),
+    );
+    click(&mut player, 10.0, 10.0, 0.0);
+    click(&mut player, 110.0, 10.0, 100.0);
+    // The overlay is centred, so its top-left corner is at 100, 350.
+    click(&mut player, 110.0, 360.0, 200.0);
+    assert_eq!(player.frame().variant_swaps.len(), 2);
+
+    click(&mut player, 160.0, 360.0, 300.0);
+
+    let frame = player.frame();
+    assert!(frame.overlays.is_empty());
+    assert_eq!(
+        frame.variant_swaps,
+        BTreeMap::from([(id(INST_A), id(COMP_ON))])
+    );
 }
 
 #[test]
