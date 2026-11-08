@@ -311,7 +311,7 @@ test("a payload names the parts of agents' result files it writes, by path, in t
   assert.ok(JSON.stringify(finding).length < 200);
 });
 
-test("a result file that is missing, or whose parts hash otherwise than the object the agent returned, is refused with retry true before anything is written or recorded, and the same op goes on once the file is right; outs that name a file outside the run's out folder are refused for good", (t) => {
+test("a result file that is missing, or whose parts hash otherwise than the object the agent returned, is refused with retry false, naming the file, before anything is written or recorded, since the file cannot change once its agent has finished; the same op goes on once the file is right; outs that name a file outside the run's out folder are refused for good", (t) => {
   const dirs = scratch(t, [story("US-1")]);
   const { run } = start(dirs);
   const file = join(dirs.repo, ".omni", "runs", run, "out", "impl-US-1-1.json");
@@ -326,13 +326,13 @@ test("a result file that is missing, or whose parts hash otherwise than the obje
   const right = helperRun(dirs, stepArgv(dirs, run, "decision", obj));
   const outside = helperRun(dirs, stepArgv(dirs, run, "decision", { ...obj, opId: "decision-out-2", outs: [{ file: join(dirs.repo, "impl-US-1-1.json"), hash: obj.outs[0].hash }] }));
 
-  assert.deepEqual([missing.ok, missing.retry, changed.ok, changed.retry], [false, true, false, true]);
+  assert.deepEqual([missing.ok, missing.retry, missing.outFile, changed.ok, changed.retry, changed.outFile], [false, false, file, false, false, file]);
   assert.equal(missing.error, `the agent's result file ${file} is missing: the agent did not write it`);
   assert.equal(changed.error, `the agent's result in ${file} is not what the agent returned: the parts the payload takes from it hash to ${partsHash("Which red?", "#c01")}, not ${obj.outs[0].hash}`);
   assert.deepEqual(before, [0, undefined]);
   assert.deepEqual([right.ok, right.recorded], [true, true]);
   assert.deepEqual(dirs.story("US-1").decisions, [{ question: "Which red?", choice: "#c00", by: "agent" }]);
-  assert.deepEqual([outside.ok, outside.retry], [false, false]);
+  assert.deepEqual([outside.ok, outside.retry, outside.outFile], [false, false, undefined]);
 });
 
 test("every write repeated with its opId gets its first body back from the record and calls nothing again", (t) => {
@@ -1167,6 +1167,17 @@ test("obligations writes the test obligation decision of each criterion by index
   assert.deepEqual([written.recorded, again.recorded], [1, 0]);
   assert.deepEqual(dirs.story("US-1").decisions, [{ question: testQuestion(criteria[1].text), choice: TEST_OBLIGATION, by: "agent" }]);
   assert.deepEqual(step(dirs, run, "context", { key: "US-1" }).obligations, [1]);
+});
+
+test("obligations writes one decision for two criteria with the same text, which share its question", (t) => {
+  const criteria = [{ text: "A regression test covers the badge" }, { text: "A regression test covers the badge" }];
+  const dirs = scratch(t, [story("US-1", { criteria })]);
+  const { run } = start(dirs);
+
+  const written = step(dirs, run, "obligations", { key: "US-1", indexes: [0, 1] });
+
+  assert.equal(written.recorded, 1);
+  assert.deepEqual(dirs.story("US-1").decisions, [{ question: testQuestion(criteria[0].text), choice: TEST_OBLIGATION, by: "agent" }]);
 });
 
 test("exhaust opens a thread named after the story's attempts, with every attempt's findings whole, those that used no attempt and those before the latest answer, read from the board, links it and blocks the story; its answer gives none of them", (t) => {

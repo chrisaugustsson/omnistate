@@ -54,7 +54,9 @@
 //   JSON.stringify of the parts the payload takes from it, in the order they
 //   come, a part the file lacks as null, as the script computed it from the
 //   object the agent returned. A file that is missing or not JSON, or whose
-//   parts hash otherwise, is refused with retry true, and nothing is written.
+//   parts hash otherwise, is refused with retry false and outFile, the file,
+//   and nothing is written: the file cannot change once its agent has
+//   finished, so the script carries those parts another way.
 // - Every step that runs records its start, its end and its payload's key in
 //   .omni/runs/<runId>/timings.jsonl, and lane-prepare its rebase; finish
 //   reports them.
@@ -1132,10 +1134,13 @@ const STEPS = {
     const criteria = (story.criteria || []).map(criterionOf)
     const wrong = p.indexes.filter((i) => !Number.isInteger(i) || i < 0 || i >= criteria.length)
     if (wrong.length) return { ok: false, error: `${p.key} has ${criteria.length} criteria, numbered from 0, so ${wrong.map((i) => JSON.stringify(i)).join(', ')} names none of them` }
+    // Two criteria with the same text have one question: it is written once.
+    const asked = new Set((story.decisions || []).filter((d) => d.choice === TEST_OBLIGATION).map((d) => d.question))
     let recorded = 0
     for (const i of [...new Set(p.indexes)]) {
       const question = testQuestion(criteria[i].text)
-      if ((story.decisions || []).some((d) => d.question === question && d.choice === TEST_OBLIGATION)) continue
+      if (asked.has(question)) continue
+      asked.add(question)
       b.write('decision', p.key, ['--question', question, '--choice', TEST_OBLIGATION, '--by', 'agent'])
       recorded++
     }
@@ -1735,10 +1740,10 @@ const startRun = (b, log) => {
 // A role agent writes its result to the run's out folder, and a payload names
 // the parts of it a step writes, by path, so that no courier copies an
 // agent's text: its findings, decisions, questions or reports. The payload
-// with those parts put in, or why it cannot have them: retry true for a file
-// that is missing or holds other parts than the agent returned, which the
-// courier's repeat finds again, and false for a payload that names them
-// wrong. One file's parts are hashed in the order they come, depth first,
+// with those parts put in, or why it cannot have them: lost, with the file,
+// for a file that is missing or holds other parts than the agent returned,
+// which the script carries another way, and refused for a payload that names
+// them wrong. One file's parts are hashed in the order they come, depth first,
 // keys in their order in the payload, as the script hashes them.
 const outsOf = (root, runId, payload) => {
   if (payload.outs === undefined) return { payload }
@@ -1750,8 +1755,8 @@ const outsOf = (root, runId, payload) => {
   const results = []
   for (const o of outs) {
     const text = readText(o.file)
-    if (text === null) return { retry: `the agent's result file ${o.file} is missing: the agent did not write it` }
-    try { results.push(JSON.parse(text)) } catch { return { retry: `the agent's result file ${o.file} is not JSON` } }
+    if (text === null) return { lost: `the agent's result file ${o.file} is missing: the agent did not write it`, file: o.file }
+    try { results.push(JSON.parse(text)) } catch { return { lost: `the agent's result file ${o.file} is not JSON`, file: o.file } }
   }
   const parts = outs.map(() => [])
   let wrong = null
@@ -1785,7 +1790,7 @@ const outsOf = (root, runId, payload) => {
   if (wrong) return { refused: wrong }
   for (const [i, o] of outs.entries()) {
     const hash = fnv1a(JSON.stringify(parts[i]))
-    if (hash !== o.hash) return { retry: `the agent's result in ${o.file} is not what the agent returned: the parts the payload takes from it hash to ${hash}, not ${o.hash}` }
+    if (hash !== o.hash) return { lost: `the agent's result in ${o.file} is not what the agent returned: the parts the payload takes from it hash to ${hash}, not ${o.hash}`, file: o.file }
   }
   return { payload: filled }
 }
@@ -1836,7 +1841,7 @@ const runStep = async (flags) => {
   // The parts of the agents' results the payload names, before any write.
   const filled = outsOf(root, flags.run, payload)
   if (filled.refused) return refuse(filled.refused)
-  if (filled.retry) return { ok: false, received, error: filled.retry, retry: true }
+  if (filled.lost) return { ok: false, received, error: filled.lost, retry: false, outFile: filled.file }
   payload = filled.payload
   // The marker goes down before the first write, and the body replaces it
   // once the step worked. A step that failed leaves it: the script tries a

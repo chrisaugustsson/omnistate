@@ -9,7 +9,10 @@
 // sleep courier, which it answers at once. It answers the role agents from
 // canned results by label, and writes each result to the file its prompt
 // names, as the agent does, unless `written` says what to write instead:
-// null for no file.
+// null for no file. An agent asked to write its result again writes the
+// result its prompt gives, through `written` too. The runtime hands the
+// script a copy of what an agent returned, and parallel a copy of what its
+// thunks gave, as a runtime that serializes results would.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFile, execFileSync, spawn, spawnSync } from "node:child_process";
@@ -236,6 +239,15 @@ function runtime(dirs, roles, fault, concurrent, written) {
       call.output = r && r.output;
       return r;
     }
+    if (String(opts.label).startsWith("again:")) {
+      const file = lineAfter(prompt, "Use the Write tool to create this file:\n");
+      const text = written(call, JSON.parse(between(prompt, "\n<<<RESULT\n", "\nRESULT>>>\n")));
+      if (text !== null) {
+        mkdirSync(dirname(file), { recursive: true });
+        writeFileSync(file, text);
+      }
+      return { written: true };
+    }
     const queue = queues.get(opts.label);
     const answer = queue && queue.length ? queue.shift() : byDefault;
     const r = await (typeof answer === "function" ? answer(call, serial, dirs) : answer);
@@ -245,10 +257,10 @@ function runtime(dirs, roles, fault, concurrent, written) {
       mkdirSync(dirname(file), { recursive: true });
       writeFileSync(file, text);
     }
-    return r;
+    return r === null || r === undefined ? r : structuredClone(r);
   };
   // A barrier: every thunk runs, and one that throws gives null.
-  const parallel = (thunks) => Promise.all(thunks.map((thunk) => Promise.resolve().then(thunk).catch(() => null)));
+  const parallel = (thunks) => Promise.all(thunks.map((thunk) => Promise.resolve().then(thunk).then((r) => (r === null || r === undefined ? r : structuredClone(r))).catch(() => null)));
   // No barrier: each item goes through the stages on its own, and a stage that
   // throws drops it to null.
   const pipeline = (items, ...stages) => Promise.all(items.map((item, index) =>
@@ -1215,18 +1227,96 @@ test("clarity names a test obligation by the criterion's number, and the helper 
   assert.deepEqual([agentsOf(calls, "impl:US-2"), result.outcomes.map((o) => [o.key, o.outcome])], [[], [["US-1", "done"]]]);
 });
 
-test("a journeys check whose result file the helper cannot read keeps neither the report off the Run thread nor the lock: its finish is refused, sent again, and then the report goes without the journeys, saying so", { timeout: 120000 }, async (t) => {
+test("a journeys check that writes no result file keeps neither its journeys off the report nor the lock: short, they go in the finish payload, which the helper takes", { timeout: 120000 }, async (t) => {
   const dirs = scratch(t, [story("US-1")]);
   const roles = { final: [{ healthy: true, journeys: ["Badge: works"], report: "Fine." }] };
 
   const { result, error, calls, logs } = await deliver(dirs, {}, roles, { written: (call, r) => (call.label === "final" ? null : JSON.stringify(r)) });
 
   assert.equal(error, null);
-  assert.equal(agentsOf(calls, "courier:finish").length, 5);
+  assert.deepEqual([agentsOf(calls, "courier:finish").length, agentsOf(calls, "again:final").length], [2, 0]);
   const posted = dirs.state().threads.find((th) => th.id === result.thread).posts;
   assert.deepEqual([posted.length, result.posted, existsSync(join(dirs.repo, ".omni", "run.lock"))], [1, true, false]);
-  assert.ok(posted[0].body.includes("\n## Journeys\n- not given: the journeys check's result file could not be read; the run's log says why\n"), posted[0].body);
-  assert.ok(logs.some((l) => l.startsWith("The report goes without the journeys check's: ") && l.includes("is missing: the agent did not write it")), logs.join("\n"));
+  assert.ok(posted[0].body.includes("\n## Journeys\n- healthy: Fine.\n- Badge: works\n"), posted[0].body);
+  assert.ok(logs.some((l) => l.startsWith("courier:finish: ") && l.includes("cannot be read as its agent returned it; its 17 characters go in the payload")), logs.join("\n"));
+});
+
+test("an agent that writes no result file costs no story: an implementer's question and decision, and a council member's vote, reach the board from the payload when short, from the file the same role writes once more when long, and cut to 500 characters with a note when that file is wrong too; no story is blocked or stops on an error", { timeout: 300000 }, async (t) => {
+  const keys = ["US-1", "US-2", "US-3"];
+  const dirs = scratch(t, keys.map((key) => story(key)));
+  // US-1's texts are short; US-2's and US-3's long.
+  const text = (key, what) => (key === "US-1" ? `${what}?` : `${key}-${what}-LONG ${"x".repeat(1000)}`);
+  const roles = Object.fromEntries(keys.flatMap((key) => [
+    [`impl:${key}`, [
+      { status: "needs_decision", summary: "Stopped.", question: text(key, "q"), options: ["Red", "Blue"], recommendation: "Red" },
+      built(`${key}.txt`, { decisions: [{ question: text(key, "decision"), choice: "None" }] }),
+    ]],
+    ...Object.entries(councilOf(key, [vote(1, { quote: text(key, "quote"), source: "doc d1 node n1" })], [vote(1, { quote: "red", source: "src/a.rs:1" })], [vote(1, { quote: "red", source: "src/b.rs:1" })])),
+  ]));
+  // The implementers and the spec members write no file; asked again, US-3's write none either.
+  const written = (call, r) => {
+    const label = call.label.replace(/^again:/, "");
+    const slips = label.startsWith("impl:") || label.endsWith(":spec");
+    return slips && (!call.label.startsWith("again:") || label.includes("US-3")) ? null : JSON.stringify(r);
+  };
+
+  const { result, error, calls } = await deliver(dirs, {}, roles, { written });
+
+  assert.equal(error, null);
+  assert.deepEqual(result.outcomes.map((o) => [o.key, o.outcome]).sort(), keys.map((key) => [key, "done"]));
+  assert.deepEqual([questions(dirs), keys.map((key) => dirs.story(key).blocked), result.halted], [[], [false, false, false], null]);
+  const choice = (quote) => `Red (council: "${quote}" (doc d1 node n1); "red" (src/a.rs:1); "red" (src/b.rs:1))`;
+  assert.deepEqual(dirs.story("US-1").decisions, [{ question: "q?", choice: choice("quote?"), by: "agent" }, { question: "decision?", choice: "None", by: "agent" }]);
+  assert.deepEqual(dirs.story("US-2").decisions, [{ question: text("US-2", "q"), choice: choice(text("US-2", "quote")), by: "agent" }, { question: text("US-2", "decision"), choice: "None", by: "agent" }]);
+  // Cut, a part shares the 500 characters with the other parts of its file: "Red", "None" and the source.
+  const cut = (s, n) => `${s.slice(0, n).trimEnd()}… [cut: the agent's full result could not be carried]`;
+  assert.deepEqual(dirs.story("US-3").decisions, [{ question: cut(text("US-3", "q"), 497), choice: choice(cut(text("US-3", "quote"), 486)), by: "agent" }, { question: cut(text("US-3", "decision"), 496), choice: "None", by: "agent" }]);
+  const again = calls.filter((c) => c.label.startsWith("again:"));
+  assert.deepEqual(again.map((c) => c.label).sort(), ["again:council:US-2:spec", "again:council:US-3:spec", "again:impl:US-2", "again:impl:US-2", "again:impl:US-3", "again:impl:US-3"]);
+  assert.deepEqual([...new Set(again.map((c) => c.model))].sort(), ["opus", "sonnet"]);
+});
+
+test("an error over an agent's result file never counts toward the stop on a repeated error, nor blocks its story: two stories that stop on one, with errors alike once their keys are taken out, are only released", { timeout: 120000 }, async (t) => {
+  const keys = ["US-1", "US-2"];
+  const dirs = scratch(t, keys.map((key) => story(key)));
+  // Without the fallback, a refused result file reaches the breaker.
+  const carriedOn = "const next = e && e.outFile ? await recover(sent, e.outFile, courier, past) : null";
+  assert.ok(SOURCE.includes(carriedOn));
+  const roles = Object.fromEntries(keys.map((key) => [`impl:${key}`, [built(`${key}.txt`, { decisions: [{ question: "Which red?", choice: "#c00" }] })]]));
+
+  const { result, error, logs } = await deliver(dirs, {}, roles, { source: SOURCE.replace(carriedOn, "const next = null"), written: (call, r) => (call.label.startsWith("impl:") ? null : JSON.stringify(r)) });
+
+  assert.equal(error, null);
+  assert.deepEqual([result.halted, questions(dirs)], [null, []]);
+  assert.deepEqual(keys.map((key) => [dirs.story(key).status, dirs.story(key).holder, dirs.story(key).blocked]), [["backlog", null, false], ["backlog", null, false]]);
+  assert.deepEqual(result.outcomes.map((o) => o.outcome), ["failed", "failed"]);
+  assert.ok(logs.some((l) => l.startsWith("US-1: stopped on an agent's result file, and released without a thread: ")), logs.join("\n"));
+});
+
+test("the runtime may hand the script a copy of what an agent returned, and parallel of what its thunks gave: a council member's quote still reaches the board whole", { timeout: 120000 }, async (t) => {
+  const dirs = scratch(t, [story("US-1", { blocked_by: ["US-9"] }), blocker()]);
+  const roles = {
+    "clarity:US-1": [{ testObligations: [], gaps: [gap("Which colour is the badge?", "ux")] }],
+    ...councilOf("US-1", [vote(1, { quote: "Badges are red", source: "doc d1 node n1" })], [vote(1)], [vote(1)]),
+  };
+
+  const { error } = await deliver(dirs, {}, roles);
+
+  assert.equal(error, null);
+  assert.deepEqual(dirs.story("US-1").decisions, [{ question: "Which colour is the badge?", choice: 'Red (council: "Badges are red" (doc d1 node n1))', by: "agent" }]);
+});
+
+test("a part of an agent's result whose file the script does not know fails loudly, and nothing is written in its place", { timeout: 120000 }, async (t) => {
+  const dirs = scratch(t, [story("US-1", { blocked_by: ["US-9"] }), blocker()]);
+  const marked = "return r && typeof r === 'object' && !Array.isArray(r) ? { ...r, [WRITTEN]: { file, role, model, label: opts.label } } : r";
+  assert.ok(SOURCE.includes(marked));
+  const roles = { "clarity:US-1": [{ testObligations: [], gaps: [gap("Which colour is the badge?", "ux", { blocking: false })] }] };
+
+  const { error, logs } = await deliver(dirs, {}, roles, { source: SOURCE.replace(marked, "return r") });
+
+  assert.equal(error, null);
+  assert.ok(logs.some((l) => l.startsWith("US-1: the clarity check failed: ") && l.includes("with no result file on it")), logs.join("\n"));
+  assert.deepEqual(dirs.story("US-1").decisions, []);
 });
 
 test("a check's finding quotes the end of the check's log, which the helper reads by the job's id: no courier carries the output, and the next implementer reads the finding from the board", { timeout: 120000 }, async (t) => {

@@ -38,11 +38,19 @@ Every role agent writes its result, the object it returns, to
 `.omni/runs/<run>/out/<label>.json` as well. A payload names the parts of that
 file a step writes, such as a finding's evidence or a decision's choice, with
 the fnv1a of those parts as the script got them back from the agent, and the
-helper reads them from the file. A file that is missing, or whose parts hash
-otherwise, is refused, and the courier is sent again; a step still refused
-after its retries stops the story on an error. Only the report's journeys
-have a fallback: when their file cannot be read, the report goes without them
-and says so, so that the run still posts it and gives its lock up.
+helper reads them from the file. The script keeps the file's path on the
+result itself, so a runtime that hands it a copy changes nothing.
+
+A file that is missing, or whose parts hash otherwise, is the agent's slip,
+and it cannot change once the agent has finished: the helper refuses it for
+good, naming the file, and the script sends the step again with that file's
+parts carried another way. Parts of 500 characters or less in all go in the
+payload, as text. Longer ones come from a file that the same role writes once
+more from the result. When that file is wrong too, they go in the payload cut
+to 500 characters, with a note that the agent's full result could not be
+carried. This holds for each council member's file on its own, and for the
+report's journeys. A missing file never blocks a story, and an error about one
+never counts toward the stop on a repeated error.
 
 ## Starting a run
 

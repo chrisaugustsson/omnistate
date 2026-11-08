@@ -200,14 +200,16 @@ const opIdOf = (base) => {
 // the lock up, so its repeat starts again. A step the helper refused for
 // good (retry false: the board refused the write, another run holds the
 // lock, a story worktree with no story/<key> to go back on) is not tried
-// again.
+// again. Nor is one whose agent's result file was missing or held something
+// else, which cannot change once its agent has finished: the error names the
+// file as outFile, and step() carries its parts another way.
 const carry = async (name, prompt, expected, label, past = false) => {
   let problem = ''
   for (let i = 0; i <= COURIER_RETRIES; i++) {
     if (i) log(`${label}: ${problem}; trying again (${i} of ${COURIER_RETRIES})`)
     const { body, problem: wrong } = unpack(await ask('courier', prompt, { label, phase: current, schema: COURIER_SCHEMA, effort: 'low' }, MODELS.courier, past), expected)
     if (body && body.ok === true) return body
-    if (body && body.retry !== true) throw new Error(`${label}: ${name} failed: ${body.error}`)
+    if (body && body.retry !== true) throw Object.assign(new Error(`${label}: ${name} failed: ${body.error}`), typeof body.outFile === 'string' ? { outFile: body.outFile } : {})
     problem = wrong || `${name} failed: ${body.error}`
   }
   throw new Error(`${label}: ${problem}, after ${COURIER_RETRIES} retries`)
@@ -224,19 +226,30 @@ const carry = async (name, prompt, expected, label, past = false) => {
 // {$join}, and gives each file the fnv1a of the parts it takes from the
 // object the agent returned; the helper reads the file and refuses parts that
 // hash otherwise (deliver-step.mjs).
-const written = new WeakMap()
+// act() puts the file on the result itself, under WRITTEN, with the role,
+// model and label that wrote it: the runtime may hand the script a copy of
+// the object an agent returned, so nothing hangs on its identity. A part of
+// a result with no file on it is the script's mistake, and throws.
+const WRITTEN = '$written'
 const PART = Symbol('part')
 const WORDS = Symbol('words')
 const valueAt = (r, at) => at.reduce((v, k) => (v !== null && typeof v === 'object' && Object.prototype.hasOwnProperty.call(v, k) ? v[k] : undefined), r)
+const writtenOf = (r, at) => {
+  const w = r && typeof r === 'object' ? r[WRITTEN] : undefined
+  if (!w || typeof w.file !== 'string') throw new Error(`the script names the part ${JSON.stringify(at)} of an agent's result with no result file on it`)
+  return w
+}
 // A part of an agent's result that is a text, else the fallback, a literal.
 const part = (r, at, fallback = '') => {
+  const w = writtenOf(r, at)
   const value = valueAt(r, at)
-  return written.has(r) && typeof value === 'string' && value.trim() ? { [PART]: true, file: written.get(r), at, value } : fallback
+  return typeof value === 'string' && value.trim() ? { [PART]: true, file: w.file, at, value, r } : fallback
 }
 // A list of strings in an agent's result, such as a defect's files.
 const list = (r, at) => {
+  const w = writtenOf(r, at)
   const value = valueAt(r, at)
-  return written.has(r) && Array.isArray(value) && value.length ? { [PART]: true, file: written.get(r), at, value } : []
+  return Array.isArray(value) && value.length ? { [PART]: true, file: w.file, at, value, r } : []
 }
 const words = (...parts) => ({ [WORDS]: parts.flat() })
 const encode = (fields) => {
@@ -252,7 +265,12 @@ const encode = (fields) => {
       parts[i].push(v.value === undefined ? null : v.value)
       return { $out: i, at: v.at }
     }
-    if (v && v[WORDS]) return { $join: v[WORDS].map((p) => (typeof p === 'string' ? p : walk(p))) }
+    // A text of literals only, such as one whose parts went inline, is joined
+    // here: the helper reads $join only in a payload with outs.
+    if (v && v[WORDS]) {
+      const joined = v[WORDS].map((p) => (typeof p === 'string' ? p : walk(p)))
+      return joined.every((p) => typeof p === 'string') ? joined.join('') : { $join: joined }
+    }
     if (Array.isArray(v)) return v.map(walk)
     if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, walk(x)]))
     return v
@@ -271,18 +289,129 @@ Its whole content is your result as JSON: the same object you return, with the s
 const act = async (role, prompt, opts, model = MODELS[role]) => {
   const file = `${root}/.omni/runs/${runId}/out/${opIdOf(opts.label)}.json`
   const r = await ask(role, prompt(file), opts, model)
-  if (r && typeof r === 'object') written.set(r, file)
-  return r
+  return r && typeof r === 'object' && !Array.isArray(r) ? { ...r, [WRITTEN]: { file, role, model, label: opts.label } } : r
 }
 
+// ---- a result file the helper cannot take ------------------------------------
+// An agent that wrote no file, or another object than it returned, is a slip
+// of that agent: the file cannot change once it has finished, so the helper
+// refuses it for good (outFile), and step() carries that file's parts another
+// way, in this order: inline, as before the files, when they are short
+// (CARRY_LIMIT characters in all); else from a file the same role writes
+// again from the result, asked once per file; else inline, cut to
+// CARRY_LIMIT characters, saying so. No story stops on a missing file.
+const CARRY_LIMIT = 500
+const CUT = '[cut: the agent\'s full result could not be carried]'
+// A result file → the promise of the file its role wrote it to again.
+const rewrites = new Map()
+const AGAIN_SCHEMA = { type: 'object', required: ['written'], properties: { written: { type: 'boolean', description: 'true once the file is written' } } }
+const againPrompt = (file, result) => `An agent of a workflow returned the result below, but its result file is missing or holds something else, and the workflow writes to the board from that file. Write it, and do nothing else: run no command and change no other file.
+
+Use the Write tool to create this file:
+${file}
+Its whole content is the one line between the two marker lines below, copied character for character: change, add or drop nothing, not a space, a quote or a backslash. If the Write tool refuses because the file exists, Read the file, then Write it.
+<<<RESULT
+${JSON.stringify(result)}
+RESULT>>>
+
+Then return written true.`
+const rewrite = (r, past) => {
+  const w = r[WRITTEN]
+  if (!rewrites.has(w.file)) {
+    const file = w.file.replace(/\.json$/, '-again.json')
+    const { [WRITTEN]: _, ...result } = r
+    // An agent that cannot be asked, at the hard cap too, leaves the cut.
+    rewrites.set(w.file, Promise.resolve().then(() => ask(w.role, againPrompt(file, result), { label: `again:${w.label}`, phase: current, schema: AGAIN_SCHEMA }, w.model, past)).then(() => file, (e) => {
+      log(`${w.label}: its result could not be written again: ${(e && e.message) || e}`)
+      return null
+    }))
+  }
+  return rewrites.get(w.file)
+}
+// Files the helper refused: a part of one is never sent from it again.
+const lost = new Set()
+// The parts in a step's fields, and the fields with some of them replaced.
+const partsIn = (v, found = []) => {
+  if (v && v[PART]) found.push(v)
+  else if (v && v[WORDS]) v[WORDS].forEach((p) => partsIn(p, found))
+  else if (Array.isArray(v)) v.forEach((x) => partsIn(x, found))
+  else if (v && typeof v === 'object') Object.values(v).forEach((x) => partsIn(x, found))
+  return found
+}
+const mapParts = (v, fn, joined = false) => {
+  if (v && v[PART]) return fn(v, joined)
+  if (v && v[WORDS]) return { [WORDS]: v[WORDS].map((p) => (typeof p === 'string' ? p : mapParts(p, fn, true))) }
+  if (Array.isArray(v)) return v.map((x) => mapParts(x, fn, joined))
+  if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, mapParts(x, fn, joined)]))
+  return v
+}
+const textOf = (value) => (Array.isArray(value) ? value.join('') : String(value))
+// A part as a literal: trimmed in a text, as the helper trims it, and cut to
+// `room` characters when given.
+const literal = (node, joined, room = Infinity) => {
+  if (Array.isArray(node.value)) {
+    let used = 0
+    return node.value.filter((x) => (used += String(x).length) <= room)
+  }
+  const text = joined ? node.value.trim() : node.value
+  return text.length <= room ? text : `${text.slice(0, room).trimEnd()}… ${CUT}`
+}
+// The room each part gets when they are cut: an even share of CARRY_LIMIT,
+// a short one leaving what it does not use to the others.
+const shares = (nodes) => {
+  const room = new Map()
+  let left = CARRY_LIMIT
+  const order = [...nodes].sort((a, b) => textOf(a.value).length - textOf(b.value).length)
+  for (const [i, n] of order.entries()) {
+    const take = Math.min(textOf(n.value).length, Math.floor(left / (order.length - i)))
+    room.set(n, take)
+    left -= take
+  }
+  return room
+}
+// The fields with the parts from `file` carried another way, or null when
+// they name none.
+const recover = async (fields, file, label, past) => {
+  const nodes = partsIn(fields).filter((n) => n.file === file)
+  if (!nodes.length) return null
+  lost.add(file)
+  const size = nodes.reduce((s, n) => s + textOf(n.value).length, 0)
+  if (size <= CARRY_LIMIT) {
+    log(`${label}: ${file} cannot be read as its agent returned it; its ${size} characters go in the payload`)
+    return mapParts(fields, (n, joined) => (n.file === file ? literal(n, joined) : n))
+  }
+  // Parts from their agent's own file get it written again; parts from a file
+  // written again already are cut.
+  const again = nodes[0].r[WRITTEN].file === file ? await rewrite(nodes[0].r, past) : null
+  if (again && !lost.has(again)) {
+    log(`${label}: ${file} cannot be read as its agent returned it; its agent wrote it again, to ${again}`)
+    return mapParts(fields, (n) => (n.file === file ? { ...n, file: again } : n))
+  }
+  log(`${label}: ${file} cannot be read as its agent returned it, nor written again; its ${size} characters go in the payload cut to ${CARRY_LIMIT}`)
+  const room = shares(nodes)
+  return mapParts(fields, (n, joined) => (n.file === file ? literal(n, joined, room.get(n)) : n))
+}
 // One host step. Its payload, with its opId, goes in a file under the run's
 // folder, and the command carries the payload's hash. opId: the one the
-// caller took for the step already, as job() does.
-const step = (name, fields = {}, { label = name, key = fields.key, past = false, opId = opIdOf(key ? `${label}-${key}` : label) } = {}) => {
-  const payload = JSON.stringify(encode({ opId, ...fields }))
-  const file = `${root}/.omni/runs/${runId}/in/${opId}.json`
-  const command = `node ${shellPath(HELPER)} ${name} --run ${runId} --payload ${shellPath(file)} --hash ${fnv1a(payload)}`
-  return carry(name, courierPrompt(command, file, payload), fnv1a(payload), key ? `courier:${name}:${key}` : `courier:${name}`, past)
+// caller took for the step already, as job() does. A payload the helper
+// refuses for an agent's result file goes again, with that file's parts
+// carried another way (recover), under an opId of its own.
+const step = async (name, fields = {}, { label = name, key = fields.key, past = false, opId = opIdOf(key ? `${label}-${key}` : label) } = {}) => {
+  const courier = key ? `courier:${name}:${key}` : `courier:${name}`
+  let sent = fields
+  for (let n = 0; ; n++) {
+    const id = n ? `${opId}.r${n}` : opId
+    const payload = JSON.stringify(encode({ opId: id, ...sent }))
+    const file = `${root}/.omni/runs/${runId}/in/${id}.json`
+    const command = `node ${shellPath(HELPER)} ${name} --run ${runId} --payload ${shellPath(file)} --hash ${fnv1a(payload)}`
+    try {
+      return await carry(name, courierPrompt(command, file, payload), fnv1a(payload), courier, past)
+    } catch (e) {
+      const next = e && e.outFile ? await recover(sent, e.outFile, courier, past) : null
+      if (!next) throw e
+      sent = next
+    }
+  }
 }
 
 // ---- prompts ---------------------------------------------------------------
@@ -1098,8 +1227,22 @@ let repeated = false
 // An error as the breaker compares it: the story's key taken out where it
 // stands as a word of its own, so that US-1 is not taken out of US-10.
 const causeOf = (message, key) => message.replace(new RegExp(`(^|\\W)${key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?!\\w)`, 'g'), '$1<story>')
+// An error over an agent's result file is that agent's slip, not a lasting
+// cause, and its path names the story: step() carries such a file's parts
+// another way, so none should get here, and one that does only releases the
+// story. It neither counts toward the stop nor blocks the story.
+const fileSlip = (e, message) => Boolean(e && e.outFile) || /\/\.omni\/runs\/[^/\s]+\/out\//.test(message)
 const failed = async (key, e) => {
   const message = String((e && e.message) || e)
+  if (fileSlip(e, message)) {
+    try {
+      await step('release', { key }, { past: true })
+    } catch (r) {
+      log(`${key}: the release failed too: ${(r && r.message) || r}`)
+    }
+    log(`${key}: stopped on an agent's result file, and released without a thread: ${message}`)
+    return { key, outcome: 'failed', detail: message }
+  }
   const cause = causeOf(message, key)
   // Decided before any wait, in the order the chains threw.
   const first = repeated ? null : errors.get(cause)
@@ -1749,15 +1892,9 @@ const finish = async (journeyLines) => {
     ...(journeyLines ? { journeys: journeyLines } : {}),
     notes,
   }
-  // A journeys check whose file the helper cannot take would keep the report
-  // off the board and the lock held: the report goes without its journeys.
-  try {
-    finished = await step('finish', { report }, { past: true })
-  } catch (e) {
-    if (!/the agent's result/.test(String((e && e.message) || e))) throw e
-    log(`The report goes without the journeys check's: ${(e && e.message) || e}`)
-    finished = await step('finish', { report: { ...report, journeys: ['not given: the journeys check\'s result file could not be read; the run\'s log says why'] } }, { past: true })
-  }
+  // A journeys check whose file the helper cannot take has its journeys
+  // carried another way, by step().
+  finished = await step('finish', { report }, { past: true })
   log(`The report of ${runId} is on the Run thread ${finished.thread}, and in ${finished.report}`)
 }
 
