@@ -568,7 +568,7 @@ impl Player {
                 continue;
             }
             let (holder, rect) = (layer.entry.holder, layer.rect);
-            changed |= self.fire(&enter, holder, rect, true, at, effects);
+            changed |= self.fire_on(source, &enter, holder, rect, true, at, effects);
             let (hovered, reverts) =
                 self.recording(|player| player.fire(&hover, holder, rect, false, at, effects));
             changed |= hovered;
