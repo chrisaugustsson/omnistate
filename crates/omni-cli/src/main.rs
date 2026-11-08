@@ -219,7 +219,7 @@ Options (before or after the command):
   --as <run>/<role>     the agent identity of this run (fallback: OMNI_RUN, OMNI_ROLE)
   --model <name>        the model behind the agent (fallback: OMNI_MODEL)
   --harness <name>      the harness that runs the agent (fallback: OMNI_HARNESS)
-  --server <url>        the API address (fallback: OMNI_SERVER, then the config file)
+  --server <url>        the API address, http:// or https:// (fallback: OMNI_SERVER, then the config file)
   --project <name|id>   the project to work in (fallback: OMNI_PROJECT, then the folder's link)
   --feature <name|id>   the feature that `omni doc create` creates a doc in and `omni doc list` shows (fallback: OMNI_FEATURE)
   --global              `omni doc create` creates an app-level doc, whatever OMNI_FEATURE says;

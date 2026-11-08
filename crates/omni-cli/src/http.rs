@@ -1,10 +1,14 @@
-//! A plain HTTP/1.1 client over `std::net`: one request per connection, with
-//! `Connection: close`. The v1 server is the Compose proxy on a local port, so
-//! there is no TLS; an `https://` address is refused with a clear message.
+//! An HTTP/1.1 client over `std::net`: one request per connection, with
+//! `Connection: close`. An `http://` address is plain TCP; an `https://` one
+//! wraps the connection in rustls, which checks the certificate against the
+//! operating system's roots, plus the certificates in `OMNI_CA_FILE`.
 
 use crate::error::{CliError, Result, bail};
+use rustls::pki_types::pem::PemObject;
+use rustls::pki_types::{CertificateDer, ServerName};
 use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
+use std::sync::Arc;
 use std::time::Duration;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -16,19 +20,19 @@ pub struct Server {
     host: String,
     port: u16,
     base: String,
+    tls: bool,
 }
 
 impl Server {
     pub fn parse(text: &str) -> Result<Server> {
         let text = text.trim();
-        if text.starts_with("https://") {
+        let (tls, rest) = if let Some(rest) = text.strip_prefix("https://") {
+            (true, rest)
+        } else if let Some(rest) = text.strip_prefix("http://") {
+            (false, rest)
+        } else {
             bail!(
-                "{text}: https is not supported yet; use an http address such as http://omnistate.localhost (--server or OMNI_SERVER)"
-            );
-        }
-        let Some(rest) = text.strip_prefix("http://") else {
-            bail!(
-                "{text:?} is not a server address; use one like http://omnistate.localhost (--server or OMNI_SERVER)"
+                "{text:?} is not a server address; use one like http://omnistate.localhost or https://omnistate.example.com (--server or OMNI_SERVER)"
             );
         };
         let (authority, base) = match rest.find('/') {
@@ -47,18 +51,22 @@ impl Server {
             }
         };
         let port = match port {
+            None if tls => 443,
             None => 80,
             Some(port) => port
                 .parse()
                 .map_err(|_| CliError::new(format!("{text:?} has an invalid port")))?,
         };
         if host.is_empty() {
-            bail!("{text:?} has no host; use an address like http://omnistate.localhost");
+            bail!(
+                "{text:?} has no host; use an address like http://omnistate.localhost or https://omnistate.example.com"
+            );
         }
         Ok(Server {
             host: host.to_string(),
             port,
             base: base.to_string(),
+            tls,
         })
     }
 
@@ -153,7 +161,12 @@ pub fn send(
     stream.flush().map_err(io_error)?;
 
     let mut raw = Vec::new();
-    stream.read_to_end(&mut raw).map_err(io_error)?;
+    if let Err(e) = stream.read_to_end(&mut raw) {
+        // A TLS server may close without a close_notify once it has sent everything.
+        if !(server.tls && e.kind() == std::io::ErrorKind::UnexpectedEof && !raw.is_empty()) {
+            return Err(io_error(e));
+        }
+    }
     parse_response(raw, method == "HEAD").ok_or_else(|| {
         CliError::new(format!(
             "the server at {address} sent something that is not an HTTP response; is --server or OMNI_SERVER right?"
@@ -161,11 +174,19 @@ pub fn send(
     })
 }
 
-fn connect(server: &Server, address: &str) -> Result<TcpStream> {
+trait Stream: Read + Write {}
+impl<T: Read + Write> Stream for T {}
+
+fn connect(server: &Server, address: &str) -> Result<Box<dyn Stream>> {
     let unreachable = |reason: String| {
         CliError::new(format!(
-            "cannot reach the server at {address} ({reason}); check that the stack is running and that --server or OMNI_SERVER is right"
+            "cannot reach the server at {address} ({reason}); check that the stack is running and that --server or OMNI_SERVER is right (an http:// or https:// address)"
         ))
+    };
+    let tls_config = if server.tls {
+        Some(tls_config()?)
+    } else {
+        None
     };
     let addrs = (server.host.as_str(), server.port)
         .to_socket_addrs()
@@ -177,12 +198,83 @@ fn connect(server: &Server, address: &str) -> Result<TcpStream> {
                 let _ = stream.set_read_timeout(Some(IO_TIMEOUT));
                 let _ = stream.set_write_timeout(Some(IO_TIMEOUT));
                 let _ = stream.set_nodelay(true);
-                return Ok(stream);
+                let Some(config) = tls_config else {
+                    return Ok(Box::new(stream));
+                };
+                return tls_handshake(server, address, config, stream);
             }
             Err(e) => last = e.to_string(),
         }
     }
     Err(unreachable(last))
+}
+
+/// The client configuration: the operating system's roots and `OMNI_CA_FILE`'s
+/// certificates. There is no way to switch the check off.
+fn tls_config() -> Result<Arc<rustls::ClientConfig>> {
+    let mut roots = rustls::RootCertStore::empty();
+    roots.add_parsable_certificates(rustls_native_certs::load_native_certs().certs);
+    if let Some(path) = std::env::var_os("OMNI_CA_FILE").filter(|path| !path.is_empty()) {
+        let shown = path.to_string_lossy().into_owned();
+        let certs = CertificateDer::pem_file_iter(&path)
+            .and_then(|certs| certs.collect::<std::result::Result<Vec<_>, _>>())
+            .map_err(|e| {
+                CliError::new(format!(
+                    "OMNI_CA_FILE {shown:?} could not be read as a PEM file of certificates ({e}); fix the path or unset OMNI_CA_FILE"
+                ))
+            })?;
+        if certs.is_empty() {
+            bail!(
+                "OMNI_CA_FILE {shown:?} holds no certificate; fix the path or unset OMNI_CA_FILE"
+            );
+        }
+        let (_, rejected) = roots.add_parsable_certificates(certs);
+        if rejected > 0 {
+            bail!(
+                "OMNI_CA_FILE {shown:?} holds a certificate that is not valid; fix the file or unset OMNI_CA_FILE"
+            );
+        }
+    }
+    let config = rustls::ClientConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .map_err(|e| CliError::new(format!("cannot set up TLS ({e})")))?
+    .with_root_certificates(roots)
+    .with_no_client_auth();
+    Ok(Arc::new(config))
+}
+
+/// Runs the TLS handshake, so a certificate that fails the check is refused
+/// before any request is sent.
+fn tls_handshake(
+    server: &Server,
+    address: &str,
+    config: Arc<rustls::ClientConfig>,
+    mut tcp: TcpStream,
+) -> Result<Box<dyn Stream>> {
+    let name = ServerName::try_from(server.host.clone())
+        .map_err(|_| CliError::new(format!("{:?} is not a valid host name", server.host)))?;
+    let mut conn = rustls::ClientConnection::new(config, name)
+        .map_err(|e| CliError::new(format!("cannot set up TLS to {address} ({e})")))?;
+    while conn.is_handshaking() {
+        if let Err(e) = conn.complete_io(&mut tcp) {
+            let certificate = e
+                .get_ref()
+                .and_then(|inner| inner.downcast_ref::<rustls::Error>())
+                .is_some_and(|inner| matches!(inner, rustls::Error::InvalidCertificate(_)));
+            return Err(if certificate {
+                CliError::new(format!(
+                    "the certificate of the server at {address} could not be verified ({e}); nothing was sent. For a server with its own certificate authority, set OMNI_CA_FILE to a PEM file with its certificate"
+                ))
+            } else {
+                CliError::new(format!(
+                    "cannot reach the server at {address} over TLS ({e}); check that it serves https:// and that --server or OMNI_SERVER is right"
+                ))
+            });
+        }
+    }
+    Ok(Box::new(rustls::StreamOwned::new(conn, tcp)))
 }
 
 fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
@@ -258,13 +350,15 @@ mod tests {
         let server = Server::parse("http://example.test/api-prefix/").unwrap();
         assert_eq!(server.address(), "example.test:80");
         assert_eq!(server.base, "/api-prefix");
+        let server = Server::parse("https://example.test/p").unwrap();
+        assert_eq!(server.address(), "example.test:443");
         assert_eq!(
             Server::parse("http://[::1]:9").unwrap().address(),
             "[::1]:9"
         );
         for bad in [
             "localhost:8080",
-            "https://example.test",
+            "ftp://example.test",
             "http://",
             "http://h:x",
         ] {
