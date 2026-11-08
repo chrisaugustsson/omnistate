@@ -785,13 +785,11 @@ impl Player {
                 }
                 Revert::Variant {
                     board,
+                    visit,
                     instance,
                     previous,
                 } => {
-                    // The visit it was made in is over otherwise.
-                    if self.frame.board == board
-                        || self.frame.overlays.iter().any(|o| o.board == board)
-                    {
+                    if self.visit_of(board) == Some(visit) {
                         self.set_swap(board, instance, previous);
                         changed = true;
                     }
@@ -888,6 +886,17 @@ impl Player {
             .overlays
             .last()
             .map_or(self.board_visit, |top| top.visit)
+    }
+
+    /// The showing `board` is on the screen in, the top overlay first.
+    fn visit_of(&self, board: NodeId) -> Option<u64> {
+        self.frame
+            .overlays
+            .iter()
+            .rev()
+            .find(|o| o.board == board)
+            .map(|o| o.visit)
+            .or((self.frame.board == board).then_some(self.board_visit))
     }
 
     /// Whether `visit` is a showing that is on the screen.
@@ -1460,9 +1469,13 @@ impl Player {
                     return false;
                 };
                 let address = instance.address.clone();
+                let Some(visit) = self.visit_of(site.board) else {
+                    return false;
+                };
                 let previous = self.set_swap(site.board, address.clone(), Some(component));
                 self.note(Revert::Variant {
                     board: site.board,
+                    visit,
                     instance: address,
                     previous,
                 });

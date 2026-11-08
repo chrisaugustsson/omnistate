@@ -20,9 +20,11 @@ pub(crate) enum Revert {
         play: Play,
     },
     /// A change to: the variant the instance, by its address on `board`,
-    /// showed before.
+    /// showed before; skipped when the `visit` of `board` it was made in is
+    /// over.
     Variant {
         board: NodeId,
+        visit: u64,
         instance: NodeAddress,
         previous: Option<NodeId>,
     },
