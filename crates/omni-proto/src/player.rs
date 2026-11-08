@@ -12,7 +12,7 @@ use crate::input::{DragTarget, Follow, Holder, Hover, Press, Revert, Site};
 use crate::keys::{self, Mods};
 use crate::overlay;
 use crate::timers::{Target, Timer};
-use crate::transition::{duration_ms, progress, reversed};
+use crate::transition::{Progress, duration_ms, progress, progress_of, reversed};
 use crate::variables::{self, PlayVariables, TokenValue};
 use omni_core::design::proto::{
     Action, Direction, Interaction, OverlayAnchor, OverlayPosition, Trigger,
@@ -141,6 +141,30 @@ pub struct Running {
     pub interrupted: Option<Box<Interrupted>>,
 }
 
+/// A change of an instance's variant that smart animates, while it plays.
+#[derive(Clone, Debug, PartialEq)]
+pub struct VariantRun {
+    /// Tells the runs apart.
+    pub id: u64,
+    /// The board or overlay the instance is on.
+    pub board: NodeId,
+    /// The instance that changes variant.
+    pub instance: NodeAddress,
+    pub started: f64,
+    pub duration_ms: u32,
+    pub easing: omni_core::design::proto::Easing,
+    /// Whether the caller has yet to time it from its own clock.
+    fresh: bool,
+}
+
+impl VariantRun {
+    /// How far the run has come at `now`, in milliseconds.
+    pub fn progress(&self, now: f64) -> Progress {
+        let duration = f64::from(self.easing.spring_duration_ms().unwrap_or(self.duration_ms));
+        progress_of(self.easing, duration, self.started, now)
+    }
+}
+
 /// A transition that a new one cut short, and when.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Interrupted {
@@ -161,6 +185,8 @@ pub struct Frame {
     /// The same for an instance inside another instance, by its address: the
     /// instance of the board and the node inside its component.
     pub nested_swaps: HashMap<NodeAddress, NodeId>,
+    /// The changes of variant that smart animate and are playing.
+    pub variant_runs: Vec<VariantRun>,
     /// What the session has set: token values and the modes of boards.
     pub variables: PlayVariables,
 }
@@ -250,6 +276,8 @@ pub struct Player {
     /// The layers the pointer is over.
     hovered: Vec<Hover>,
     timers: Vec<Timer>,
+    /// How many changes of variant have smart animated, to tell them apart.
+    runs: u64,
     /// How many boards and overlays have been shown, to tell the showings
     /// apart.
     visits: u64,
@@ -291,6 +319,7 @@ impl Player {
                 transition: None,
                 variant_swaps: BTreeMap::new(),
                 nested_swaps: HashMap::new(),
+                variant_runs: Vec::new(),
                 variables: PlayVariables::default(),
             },
             swaps: HashMap::new(),
@@ -298,6 +327,7 @@ impl Player {
             press: None,
             hovered: Vec::new(),
             timers: Vec::new(),
+            runs: 0,
             visits: 1,
             board_visit: 1,
             scale: 1.0,
@@ -1019,9 +1049,18 @@ impl Player {
             self.hint_until = None;
         }
         self.pin(now);
-        let moving = self.frame.transition.is_some();
+        let moving = self.frame.transition.is_some() || !self.frame.variant_runs.is_empty();
         let mut effects = Vec::new();
         let changed = self.run_due(now, &mut effects);
+        // A change of variant that a wait made counts from this tick.
+        for run in &mut self.frame.variant_runs {
+            if std::mem::take(&mut run.fresh) {
+                run.started = now;
+            }
+        }
+        self.frame
+            .variant_runs
+            .retain(|run| !run.progress(now).done);
         if let Some(running) = &self.frame.transition {
             if !running.follows_pointer && progress(running, now).done {
                 self.frame.transition = None;
@@ -1069,6 +1108,7 @@ impl Player {
             transition: None,
             variant_swaps: BTreeMap::new(),
             nested_swaps: HashMap::new(),
+            variant_runs: Vec::new(),
             variables: PlayVariables::default(),
         };
         self.press = None;
@@ -1093,6 +1133,11 @@ impl Player {
             running.started = at - done;
             if let Some(cut) = &mut running.interrupted {
                 cut.at = at;
+            }
+        }
+        for run in &mut self.frame.variant_runs {
+            if std::mem::take(&mut run.fresh) {
+                run.started = at;
             }
         }
     }
@@ -1473,6 +1518,24 @@ impl Player {
                     return false;
                 };
                 let previous = self.set_swap(site.board, address.clone(), Some(component));
+                if play.transition == omni_core::design::proto::Transition::SmartAnimate
+                    && previous != Some(component)
+                {
+                    self.runs += 1;
+                    let run = VariantRun {
+                        id: self.runs,
+                        board: site.board,
+                        instance: address.clone(),
+                        started: at,
+                        duration_ms: play.duration_ms,
+                        easing: play.easing,
+                        fresh: true,
+                    };
+                    self.frame
+                        .variant_runs
+                        .retain(|other| other.board != run.board || other.instance != run.instance);
+                    self.frame.variant_runs.push(run);
+                }
                 self.note(Revert::Variant {
                     board: site.board,
                     visit,

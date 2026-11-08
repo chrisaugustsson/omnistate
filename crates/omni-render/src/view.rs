@@ -1410,6 +1410,61 @@ impl Scene {
         self.index.board_boxes(board)
     }
 
+    /// The layer `root` of `board` (the board itself when `root` is `None`)
+    /// with everything below it, as the scene has it resolved now, with the
+    /// boxes in page coordinates and the shaped texts.
+    pub(crate) fn layers_of_board(
+        &self,
+        board: &NodeId,
+        root: Option<&NodeId>,
+    ) -> Option<crate::play::Layers> {
+        let board = board_nodes(&self.page)
+            .iter()
+            .find(|held| held.id() == board)?;
+        let node = match root {
+            Some(root) => find_node(board, root)?,
+            None => board,
+        };
+        let mut layers = crate::play::Layers {
+            node: node.clone(),
+            boxes: HashMap::new(),
+            texts: ShapedTexts::new(),
+        };
+        let mut pending = vec![node];
+        while let Some(at) = pending.pop() {
+            if let Some(held) = self.boxes.get(at.id()) {
+                layers.boxes.insert(*at.id(), *held);
+            }
+            if let Some(shaped) = self.texts.get(at.id()) {
+                layers.texts.insert(*at.id(), shaped.clone());
+            }
+            pending.extend(at.children());
+        }
+        Some(layers)
+    }
+
+    /// Draws `layers`, boxes in page coordinates, as `render` draws a board
+    /// in full.
+    pub(crate) fn draw_layers(
+        &self,
+        canvas: &Canvas,
+        viewport: &Viewport,
+        layers: &crate::play::Layers,
+    ) {
+        let (x, y) = viewport.origin();
+        canvas.save();
+        canvas.scale((viewport.zoom(), viewport.zoom()));
+        canvas.translate((-x, -y));
+        paint::draw_counted(
+            canvas,
+            &layers.node,
+            &layers.boxes,
+            &layers.texts,
+            &self.assets,
+        );
+        canvas.restore();
+    }
+
     /// The topmost visible node at the page point `point`: the deepest node
     /// whose box holds it, with later siblings above earlier ones. Hidden
     /// nodes and what lies outside a clipping ancestor cannot be hit.

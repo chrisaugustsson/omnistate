@@ -6,16 +6,24 @@
 //! the boxes of the layers (`Scene::board_boxes`), draws what it shows and
 //! says what the page has to do next.
 
+use crate::layout::{LayoutBox, ShapedTexts};
 use crate::view::{Scene, Viewport};
 use omni_core::design::proto::{Direction, Transition};
 use omni_core::design::tokens::{ModeChoice, TokenValue};
-use omni_core::design::{NodeAddress, NodeData, NodeId, NodeKind};
+use omni_core::design::{
+    Color as DesignColor, Fill, Node, NodeAddress, NodeData, NodeId, NodeKind, Radius, Stroke,
+    TokenOr,
+};
 use omni_proto::keys::gamepad_button;
-use omni_proto::transition::progress;
-use omni_proto::{Effect, HINT_MS, KeyEvent, Player, PointerEvent, PointerKind, Rect, Running};
+use omni_proto::matching::match_layers;
+use omni_proto::transition::{duration_ms, progress};
+use omni_proto::{
+    Effect, HINT_MS, KeyEvent, Player, PointerEvent, PointerKind, Rect, Running, VariantRun,
+};
 use serde_json::{Value, json};
 use skia_safe::{Canvas, Color};
 use std::collections::{BTreeMap, HashMap};
+use std::str::FromStr;
 
 /// FigCraft's default background, for a page whose settings do not say.
 const DEFAULT_BACKGROUND: Color = Color::from_argb(255, 0x1e, 0x1e, 0x1e);
@@ -68,6 +76,9 @@ pub struct Session {
     /// What each board that the scene has resolved for play was resolved
     /// with, where that is not the design system's own.
     resolved: HashMap<NodeId, PlayResolve>,
+    /// The instance each smart-animated change of variant starts from, as it
+    /// was drawn before the change, by the run's ID.
+    snapshots: HashMap<u64, Layers>,
 }
 
 /// The token values, the modes of its own and the variant swaps that a board
@@ -169,6 +180,7 @@ impl Session {
             now: 0.0,
             size: None,
             resolved: HashMap::new(),
+            snapshots: HashMap::new(),
         })
     }
 
@@ -293,10 +305,12 @@ impl Session {
     /// Applies what the player asked for after an event. Returns whether what
     /// it shows changed and whether a key trigger fired.
     fn take(&mut self, effects: Vec<Effect>) -> (bool, bool) {
-        let before = self.player.frame().transition;
+        let before = self.player.frame();
         let (changed, handled) = self.absorb(effects);
         self.changed |= changed;
-        self.fresh |= self.player.frame().transition != before;
+        let after = self.player.frame();
+        self.fresh |=
+            after.transition != before.transition || after.variant_runs != before.variant_runs;
         (changed, handled)
     }
 
@@ -402,7 +416,11 @@ impl Session {
         // Waits that began at an event count from the first frame after it.
         self.player.restart_timers(now);
         let hinting = self.player.hint_until().is_some();
-        let moving = self.player.frame().transition.is_some();
+        let playing = |player: &Player| {
+            let frame = player.frame();
+            frame.transition.is_some() || !frame.variant_runs.is_empty()
+        };
+        let moving = playing(&self.player);
         let before = self.player.frame();
         let effects = self.player.tick(now);
         let linked = effects
@@ -419,9 +437,10 @@ impl Session {
             || before.nested_swaps != after.nested_swaps
             || (after.transition.is_some() && after.transition != before.transition);
         let hint_ended = hinting && self.player.hint_until().is_none();
-        let settled = moving && self.player.frame().transition.is_none();
+        let settled = moving && !playing(&self.player);
         self.changed |= hint_ended || settled || acted;
         let animating = self.player.hint_until().is_some()
+            || !self.player.frame().variant_runs.is_empty()
             || self
                 .player
                 .frame()
@@ -466,9 +485,24 @@ impl Session {
         &self,
         scene: &mut Scene,
         canvas: &Canvas,
+        size: (f32, f32),
+        board: &NodeId,
+        offset: (f32, f32),
+    ) {
+        let playing = self.board_layers(scene, board);
+        self.draw_board_with(scene, canvas, size, board, offset, playing.as_ref());
+    }
+
+    /// As `draw_board`, drawing `layers`, in the page coordinates of `board`,
+    /// in place of the board when there are any.
+    fn draw_board_with(
+        &self,
+        scene: &mut Scene,
+        canvas: &Canvas,
         (width, height): (f32, f32),
         board: &NodeId,
         offset: (f32, f32),
+        layers: Option<&Layers>,
     ) {
         let Some(bounds) = scene.board_bounds(board) else {
             return;
@@ -493,8 +527,62 @@ impl Session {
             None,
             None,
         );
-        scene.render_board(canvas, &viewport, board);
+        match layers {
+            Some(layers) => scene.draw_layers(canvas, &viewport, layers),
+            None => {
+                scene.render_board(canvas, &viewport, board);
+            }
+        }
         canvas.restore();
+    }
+
+    /// `board` with the instances that smart animate a change of variant
+    /// drawn as they are now, or `None` when none does.
+    fn board_layers(&self, scene: &Scene, board: &NodeId) -> Option<Layers> {
+        let runs: Vec<VariantRun> = self
+            .player
+            .frame()
+            .variant_runs
+            .into_iter()
+            .filter(|run| run.board == *board && self.snapshots.contains_key(&run.id))
+            .collect();
+        if runs.is_empty() {
+            return None;
+        }
+        let mut whole = scene.layers_of_board(board, None)?;
+        for run in runs {
+            let Some(instance) = instance_layer(scene, board, &run.instance) else {
+                continue;
+            };
+            let Some(to) = scene.layers_of_board(board, Some(&instance)) else {
+                continue;
+            };
+            let eased = run.progress(self.now).t;
+            let switched = self.now - run.started >= duration_of(&run) / 2.0;
+            let mixed = smart_animate(self.snapshots[&run.id].clone(), to, eased, switched);
+            splice(&mut whole.node, &instance, &mut Some(mixed.node));
+            whole.boxes.extend(mixed.boxes);
+            whole.texts.extend(mixed.texts);
+        }
+        Some(whole)
+    }
+
+    /// Takes the instances that start a smart-animated change of variant as
+    /// the scene draws them, before the change is drawn.
+    fn capture(&mut self, scene: &Scene) {
+        let runs = self.player.frame().variant_runs;
+        self.snapshots
+            .retain(|id, _| runs.iter().any(|run| run.id == *id));
+        for run in runs {
+            if self.snapshots.contains_key(&run.id) {
+                continue;
+            }
+            let layers = instance_layer(scene, &run.board, &run.instance)
+                .and_then(|instance| scene.layers_of_board(&run.board, Some(&instance)));
+            if let Some(layers) = layers {
+                self.snapshots.insert(run.id, layers);
+            }
+        }
     }
 
     /// Draws a change of board `now` moments in: the board it changes from, as
@@ -522,7 +610,13 @@ impl Session {
         let incoming = |this: &Session, scene: &mut Scene, canvas: &Canvas, offset| {
             this.draw_board(scene, canvas, size, &running.to, offset);
         };
-        match running.transition {
+        // A smart animate that cut another short has no layers of its own to
+        // match the old board against: it dissolves.
+        let transition = match running.transition {
+            Transition::SmartAnimate if running.interrupted.is_some() => Transition::Dissolve,
+            other => other,
+        };
+        match transition {
             Transition::Dissolve => {
                 self.draw_outgoing(scene, canvas, size, running, (0.0, 0.0));
                 let alpha = eased.clamp(0.0, 1.0);
@@ -545,10 +639,39 @@ impl Session {
                 self.draw_outgoing(scene, canvas, size, running, outbound(direction));
                 incoming(self, scene, canvas, inbound(direction));
             }
-            Transition::Instant | Transition::SmartAnimate => {
+            Transition::SmartAnimate => {
+                if !self.draw_smart(scene, canvas, size, running, now) {
+                    incoming(self, scene, canvas, (0.0, 0.0));
+                }
+            }
+            Transition::Instant => {
                 incoming(self, scene, canvas, (0.0, 0.0));
             }
         }
+    }
+
+    /// Draws the layers that the two boards of a smart animate share, moved
+    /// and restyled between them, and the others faded. Returns whether it
+    /// could.
+    fn draw_smart(
+        &self,
+        scene: &mut Scene,
+        canvas: &Canvas,
+        size: (f32, f32),
+        running: &Running,
+        now: f64,
+    ) -> bool {
+        let (Some(from), Some(to)) = (
+            scene.layers_of_board(&running.from, None),
+            scene.layers_of_board(&running.to, None),
+        ) else {
+            return false;
+        };
+        let eased = progress(running, now).t;
+        let switched = now - running.started >= duration_ms(running) / 2.0;
+        let mixed = smart_animate(from, to, eased, switched);
+        self.draw_board_with(scene, canvas, size, &running.to, (0.0, 0.0), Some(&mixed));
+        true
     }
 
     /// Draws what a change of board changes from, moved by `offset`: the board
@@ -588,6 +711,7 @@ impl Session {
             (height * pixel_ratio).round() as i32,
             pixel_ratio,
         ));
+        self.capture(scene);
         self.refresh(scene);
         self.changed = false;
         canvas.clear(self.background);
@@ -645,7 +769,13 @@ impl Session {
                 width,
                 height,
             );
-            scene.render_board(canvas, &viewport, &board);
+            let playing = self.board_layers(scene, &board);
+            match playing {
+                Some(layers) => scene.draw_layers(canvas, &viewport, &layers),
+                None => {
+                    scene.render_board(canvas, &viewport, &board);
+                }
+            }
         }
         if let Some(until) = self.player.hint_until().filter(|until| *until > self.now) {
             let alpha = ((until - self.now) / HINT_MS).clamp(0.0, 1.0) as f32;
@@ -675,5 +805,510 @@ impl Session {
                 );
             }
         }
+    }
+}
+
+/// The layer `root` of a board with everything below it, as the scene had it
+/// drawn: its boxes in page coordinates and its shaped texts.
+#[derive(Clone)]
+pub(crate) struct Layers {
+    pub(crate) node: Node,
+    pub(crate) boxes: HashMap<NodeId, LayoutBox>,
+    pub(crate) texts: ShapedTexts,
+}
+
+/// How long `run` takes, in milliseconds.
+fn duration_of(run: &VariantRun) -> f64 {
+    f64::from(run.easing.spring_duration_ms().unwrap_or(run.duration_ms))
+}
+
+/// The ID that the instance at `address` of `board` has in the board as the
+/// scene resolved it.
+fn instance_layer(scene: &Scene, board: &NodeId, address: &NodeAddress) -> Option<NodeId> {
+    if address.instance().is_none() {
+        return Some(*address.node());
+    }
+    scene
+        .board_boxes(board)?
+        .1
+        .into_iter()
+        .find_map(|(id, held)| (held == *address).then_some(id))
+}
+
+/// Puts `with` in place of the node `id` of `root` or below it.
+fn splice(root: &mut Node, id: &NodeId, with: &mut Option<Node>) -> bool {
+    if root.id() == id {
+        if let Some(with) = with.take() {
+            *root = with;
+        }
+        return true;
+    }
+    let Some(children) = root.children_mut() else {
+        return false;
+    };
+    children.iter_mut().any(|child| splice(child, id, with))
+}
+
+/// What smart animate mixes of a layer besides its box.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Style {
+    pub opacity: Option<TokenOr<f64>>,
+    pub radius: Option<Radius>,
+    pub fills: Option<Vec<Fill>>,
+    pub strokes: Option<Vec<Stroke>>,
+    /// The colour of a Text.
+    pub text_color: Option<TokenOr<DesignColor>>,
+}
+
+impl Style {
+    /// The style of `node`: the properties its kind has.
+    pub fn of(node: &Node) -> Style {
+        match node.data() {
+            NodeData::Board(frame) | NodeData::Frame(frame) => Style {
+                opacity: frame.opacity.clone(),
+                radius: frame.radius.clone(),
+                fills: frame.fills.clone(),
+                strokes: frame.strokes.clone(),
+                text_color: None,
+            },
+            NodeData::Text(text) => Style {
+                opacity: text.opacity.clone(),
+                text_color: text.color.clone(),
+                ..Style::default()
+            },
+            NodeData::Image(image) => Style {
+                opacity: image.opacity.clone(),
+                radius: image.radius.clone(),
+                strokes: image.strokes.clone(),
+                ..Style::default()
+            },
+            NodeData::Vector(vector) => Style {
+                opacity: vector.opacity.clone(),
+                fills: vector.fills.clone(),
+                strokes: vector.strokes.clone(),
+                ..Style::default()
+            },
+            _ => Style::default(),
+        }
+    }
+
+    /// Gives `node` this style, for the properties its kind has.
+    pub fn set(self, node: &mut Node) {
+        match node.data_mut() {
+            NodeData::Board(frame) | NodeData::Frame(frame) => {
+                frame.opacity = self.opacity;
+                frame.radius = self.radius;
+                frame.fills = self.fills;
+                frame.strokes = self.strokes;
+            }
+            NodeData::Text(text) => {
+                text.opacity = self.opacity;
+                text.color = self.text_color;
+            }
+            NodeData::Image(image) => {
+                image.opacity = self.opacity;
+                image.radius = self.radius;
+                image.strokes = self.strokes;
+            }
+            NodeData::Vector(vector) => {
+                vector.opacity = self.opacity;
+                vector.fills = self.fills;
+                vector.strokes = self.strokes;
+            }
+            _ => {}
+        }
+    }
+}
+
+fn lerp(from: f64, to: f64, t: f64) -> f64 {
+    from + (to - from) * t
+}
+
+fn lerp_box(from: LayoutBox, to: LayoutBox, t: f64) -> LayoutBox {
+    let mix = |from: f32, to: f32| lerp(f64::from(from), f64::from(to), t) as f32;
+    LayoutBox {
+        x: mix(from.x, to.x),
+        y: mix(from.y, to.y),
+        width: mix(from.width, to.width),
+        height: mix(from.height, to.height),
+    }
+}
+
+/// The straight (not premultiplied) red, green, blue and alpha of `color`,
+/// from 0 to 255.
+fn channels(color: &DesignColor) -> Option<[f64; 4]> {
+    let hex = color.as_str().strip_prefix('#')?;
+    let channel = |at: usize| {
+        Some(f64::from(
+            u8::from_str_radix(hex.get(at * 2..at * 2 + 2)?, 16).ok()?,
+        ))
+    };
+    let alpha = if hex.len() == 8 { channel(3)? } else { 255.0 };
+    Some([channel(0)?, channel(1)?, channel(2)?, alpha])
+}
+
+/// The colour `t` of the way from `from` to `to`, mixed channel by channel.
+/// `None` when either is a token or not a colour.
+fn mix_color(
+    from: &TokenOr<DesignColor>,
+    to: &TokenOr<DesignColor>,
+    t: f64,
+) -> Option<TokenOr<DesignColor>> {
+    let (TokenOr::Literal(from), TokenOr::Literal(to)) = (from, to) else {
+        return None;
+    };
+    let [fr, fg, fb, fa] = channels(from)?;
+    let [tr, tg, tb, ta] = channels(to)?;
+    let part = |from: f64, to: f64| lerp(from, to, t).round().clamp(0.0, 255.0) as u8;
+    let (r, g, b, a) = (part(fr, tr), part(fg, tg), part(fb, tb), part(fa, ta));
+    let opaque = from.as_str().len() == 7 && to.as_str().len() == 7;
+    let text = if opaque {
+        format!("#{r:02x}{g:02x}{b:02x}")
+    } else {
+        format!("#{r:02x}{g:02x}{b:02x}{a:02x}")
+    };
+    DesignColor::from_str(&text).ok().map(TokenOr::Literal)
+}
+
+/// A number `t` of the way from `from` to `to`; `None` when either is a token.
+fn mix_number(from: &TokenOr<f64>, to: &TokenOr<f64>, t: f64) -> Option<TokenOr<f64>> {
+    match (from, to) {
+        (TokenOr::Literal(from), TokenOr::Literal(to)) => {
+            Some(TokenOr::Literal(lerp(*from, *to, t)))
+        }
+        _ => None,
+    }
+}
+
+/// `from` or `to`, whichever the switch at the middle has come to.
+fn pick<T: Clone>(from: &T, to: &T, switched: bool) -> T {
+    if switched { to } else { from }.clone()
+}
+
+fn mix_fills(from: &[Fill], to: &[Fill], t: f64, switched: bool) -> Vec<Fill> {
+    if from.len() != to.len() {
+        return pick(&from.to_vec(), &to.to_vec(), switched);
+    }
+    from.iter()
+        .zip(to)
+        .map(|pair| match pair {
+            (Fill::Solid { color: from }, Fill::Solid { color: to }) => Fill::Solid {
+                color: mix_color(from, to, t).unwrap_or_else(|| pick(from, to, switched)),
+            },
+            (from, to) => pick(from, to, switched),
+        })
+        .collect()
+}
+
+fn mix_strokes(from: &[Stroke], to: &[Stroke], t: f64, switched: bool) -> Vec<Stroke> {
+    if from.len() != to.len() {
+        return pick(&from.to_vec(), &to.to_vec(), switched);
+    }
+    from.iter()
+        .zip(to)
+        .map(|(from, to)| {
+            let mut stroke = pick(from, to, switched);
+            stroke.color = mix_color(&from.color, &to.color, t).unwrap_or(stroke.color);
+            stroke.width = mix_number(&from.width, &to.width, t).unwrap_or(stroke.width);
+            stroke
+        })
+        .collect()
+}
+
+fn mix_radius(from: &Radius, to: &Radius, t: f64, switched: bool) -> Radius {
+    let zero = TokenOr::Literal(0.0);
+    let corner = |from: &Option<TokenOr<f64>>, to: &Option<TokenOr<f64>>| {
+        let (from, to) = (from.as_ref().unwrap_or(&zero), to.as_ref().unwrap_or(&zero));
+        Some(mix_number(from, to, t).unwrap_or_else(|| pick(from, to, switched)))
+    };
+    Radius {
+        top_left: corner(&from.top_left, &to.top_left),
+        top_right: corner(&from.top_right, &to.top_right),
+        bottom_right: corner(&from.bottom_right, &to.bottom_right),
+        bottom_left: corner(&from.bottom_left, &to.bottom_left),
+    }
+}
+
+/// A layer `t` of the way from one board to the other, in the box and the
+/// style that a smart animate has it in: the position, size, opacity, radius,
+/// fills, strokes and text colour mixed by `t`, the eased progress. What
+/// cannot be mixed (a fill against a fill of another kind, fills or strokes
+/// of another number, a token that is not resolved) is the old layer's until
+/// `t` passes one half and the new layer's after.
+pub fn interpolate(
+    from_box: LayoutBox,
+    to_box: LayoutBox,
+    from_style: &Style,
+    to_style: &Style,
+    t: f64,
+) -> (LayoutBox, Style) {
+    interpolate_at(from_box, to_box, from_style, to_style, t, t >= 0.5)
+}
+
+/// As [`interpolate`], with `switched` saying whether what cannot be mixed
+/// has come to the new layer's.
+pub fn interpolate_at(
+    from_box: LayoutBox,
+    to_box: LayoutBox,
+    from_style: &Style,
+    to_style: &Style,
+    t: f64,
+    switched: bool,
+) -> (LayoutBox, Style) {
+    let opaque = TokenOr::Literal(1.0);
+    let opacity = match (&from_style.opacity, &to_style.opacity) {
+        (None, None) => None,
+        (from, to) => {
+            let (from, to) = (
+                from.as_ref().unwrap_or(&opaque),
+                to.as_ref().unwrap_or(&opaque),
+            );
+            Some(mix_number(from, to, t).unwrap_or_else(|| pick(from, to, switched)))
+        }
+    };
+    let radius = match (&from_style.radius, &to_style.radius) {
+        (None, None) => None,
+        (from, to) => {
+            let none = Radius::default();
+            Some(mix_radius(
+                from.as_ref().unwrap_or(&none),
+                to.as_ref().unwrap_or(&none),
+                t,
+                switched,
+            ))
+        }
+    };
+    let fills = match (&from_style.fills, &to_style.fills) {
+        (None, None) => None,
+        (Some(from), Some(to)) => Some(mix_fills(from, to, t, switched)),
+        (from, to) => pick(from, to, switched),
+    };
+    let strokes = match (&from_style.strokes, &to_style.strokes) {
+        (None, None) => None,
+        (Some(from), Some(to)) => Some(mix_strokes(from, to, t, switched)),
+        (from, to) => pick(from, to, switched),
+    };
+    let text_color = match (&from_style.text_color, &to_style.text_color) {
+        (None, None) => None,
+        (from, to) => {
+            let black =
+                TokenOr::Literal(DesignColor::from_str("#000000").expect("black is a colour"));
+            let (from, to) = (
+                from.as_ref().unwrap_or(&black),
+                to.as_ref().unwrap_or(&black),
+            );
+            Some(mix_color(from, to, t).unwrap_or_else(|| pick(from, to, switched)))
+        }
+    };
+    (
+        lerp_box(from_box, to_box, t),
+        Style {
+            opacity,
+            radius,
+            fills,
+            strokes,
+            text_color,
+        },
+    )
+}
+
+/// Whether two layers of one name can be one layer that changes: boards and
+/// frames can, and other kinds only with their own.
+fn alike(a: &Node, b: &Node) -> bool {
+    let group = |node: &Node| match node.kind() {
+        NodeKind::Board | NodeKind::Frame | NodeKind::Component => NodeKind::Frame,
+        other => other,
+    };
+    group(a) == group(b)
+}
+
+/// The boxes and shaped texts of one side of a smart animate.
+struct Side {
+    boxes: HashMap<NodeId, LayoutBox>,
+    texts: ShapedTexts,
+}
+
+/// The two sides of a smart animate and what it has made so far.
+struct Mixer {
+    from: Side,
+    to: Side,
+    /// Where the roots are, which the boxes inside are measured from.
+    from_origin: (f32, f32),
+    to_origin: (f32, f32),
+    /// The layers of the new side by the layer of the old side that they pair
+    /// with.
+    pairs: HashMap<NodeId, NodeId>,
+    eased: f64,
+    switched: bool,
+    boxes: HashMap<NodeId, LayoutBox>,
+    texts: ShapedTexts,
+}
+
+/// The layers that two boards of a smart animate (or the two variants of an
+/// instance) make `eased` of the way from `from` to `to`, in the page
+/// coordinates of `to`: a layer on both moves and restyles, one that is only
+/// on `from` fades out where its parent carries it, and one that is only on
+/// `to` fades in. The roots are drawn as one layer in the box of the new
+/// root. `switched` says whether the halfway point has passed, from which what
+/// cannot be mixed is the new layer's. The faded layers of the old side paint
+/// beneath the layers of the new side, which keep its order.
+pub(crate) fn smart_animate(from: Layers, to: Layers, eased: f64, switched: bool) -> Layers {
+    if !alike(&from.node, &to.node) {
+        return to;
+    }
+    let origin = |layers: &Layers| {
+        layers
+            .boxes
+            .get(layers.node.id())
+            .map_or((0.0, 0.0), |held| (held.x, held.y))
+    };
+    let (from_origin, to_origin) = (origin(&from), origin(&to));
+    let pairs = match_layers(&from.node, &to.node).into_iter().collect();
+    let (old, new) = (from.node, to.node);
+    let mut mixer = Mixer {
+        from: Side {
+            boxes: from.boxes,
+            texts: from.texts,
+        },
+        to: Side {
+            boxes: to.boxes,
+            texts: to.texts,
+        },
+        from_origin,
+        to_origin,
+        pairs,
+        eased,
+        switched,
+        boxes: HashMap::new(),
+        texts: ShapedTexts::new(),
+    };
+    let node = mixer.merge(old, new, true);
+    Layers {
+        node,
+        boxes: mixer.boxes,
+        texts: mixer.texts,
+    }
+}
+
+impl Mixer {
+    /// The one layer that `old` and `new` make, with the children of both.
+    fn merge(&mut self, mut old: Node, mut new: Node, root: bool) -> Node {
+        let old_box = self.from.boxes.get(old.id()).copied().unwrap_or_default();
+        let new_box = self.to.boxes.get(new.id()).copied().unwrap_or_default();
+        let inside = |laid: LayoutBox, origin: (f32, f32)| LayoutBox {
+            x: laid.x - origin.0,
+            y: laid.y - origin.1,
+            ..laid
+        };
+        let (laid, style) = interpolate_at(
+            inside(old_box, self.from_origin),
+            inside(new_box, self.to_origin),
+            &Style::of(&old),
+            &Style::of(&new),
+            self.eased,
+            self.switched,
+        );
+        let placed = if root {
+            new_box
+        } else {
+            LayoutBox {
+                x: laid.x + self.to_origin.0,
+                y: laid.y + self.to_origin.1,
+                ..laid
+            }
+        };
+        let old_children = old.take_children();
+        let mut new_children: Vec<Option<Node>> =
+            new.take_children().into_iter().map(Some).collect();
+        // The layer keeps what is not mixed from the side the halfway point
+        // has come to.
+        let (mut node, texts) = if self.switched {
+            (new, &self.to.texts)
+        } else {
+            (old, &self.from.texts)
+        };
+        if let Some(shaped) = texts.get(node.id()) {
+            self.texts.insert(*node.id(), shaped.clone());
+        }
+        style.set(&mut node);
+        self.boxes.insert(*node.id(), placed);
+
+        let partner = |this: &Mixer, old: &Node, new: &[Option<Node>]| {
+            let wanted = this.pairs.get(old.id())?;
+            let at = new
+                .iter()
+                .position(|held| held.as_ref().is_some_and(|new| new.id() == wanted))?;
+            let new = new[at].as_ref()?;
+            (alike(old, new) && old.visible() && new.visible()).then_some(at)
+        };
+        let partners: Vec<Option<usize>> = old_children
+            .iter()
+            .map(|old| partner(self, old, &new_children))
+            .collect();
+        let mut children = Vec::new();
+        let gone = (placed.x - old_box.x, placed.y - old_box.y);
+        let mut mates: HashMap<usize, Node> = HashMap::new();
+        for (old, at) in old_children.into_iter().zip(partners) {
+            match at {
+                Some(at) => {
+                    mates.insert(at, old);
+                }
+                None => children.extend(self.fade(old, true, gone)),
+            }
+        }
+        let come = (placed.x - new_box.x, placed.y - new_box.y);
+        for (at, new) in new_children.iter_mut().enumerate() {
+            let Some(new) = new.take() else { continue };
+            match mates.remove(&at) {
+                Some(old) => {
+                    let merged = self.merge(old, new, false);
+                    children.push(merged);
+                }
+                None => children.extend(self.fade(new, false, come)),
+            }
+        }
+        node.set_children(children);
+        node
+    }
+
+    /// `layer` and what is below it moved by `by`, faded out if `leaving` and
+    /// in otherwise, as far as the progress has come. `None` for a layer that
+    /// is hidden.
+    fn fade(&mut self, mut layer: Node, leaving: bool, by: (f32, f32)) -> Option<Node> {
+        if !layer.visible() {
+            return None;
+        }
+        let alpha = if leaving {
+            1.0 - self.eased
+        } else {
+            self.eased
+        }
+        .clamp(0.0, 1.0);
+        let mut style = Style::of(&layer);
+        let held = match &style.opacity {
+            Some(TokenOr::Literal(held)) => *held,
+            _ => 1.0,
+        };
+        style.opacity = Some(TokenOr::Literal(held * alpha));
+        style.set(&mut layer);
+        let side = if leaving { &self.from } else { &self.to };
+        let mut pending = vec![&layer];
+        while let Some(at) = pending.pop() {
+            if let Some(laid) = side.boxes.get(at.id()) {
+                self.boxes.insert(
+                    *at.id(),
+                    LayoutBox {
+                        x: laid.x + by.0,
+                        y: laid.y + by.1,
+                        ..*laid
+                    },
+                );
+            }
+            if let Some(shaped) = side.texts.get(at.id()) {
+                self.texts.insert(*at.id(), shaped.clone());
+            }
+            pending.extend(at.children());
+        }
+        Some(layer)
     }
 }

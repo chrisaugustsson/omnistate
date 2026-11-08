@@ -10,6 +10,7 @@ pub mod easing;
 mod history;
 mod input;
 pub mod keys;
+pub mod matching;
 pub mod overlay;
 mod player;
 pub mod timers;
@@ -19,6 +20,6 @@ pub mod variables;
 pub use history::Play;
 pub use player::{
     Effect, Frame, HINT_MS, Interrupted, KeyEvent, OverlayState, Player, PointerEvent, PointerKind,
-    Rect, Running,
+    Rect, Running, VariantRun,
 };
 pub use timers::Timer;
