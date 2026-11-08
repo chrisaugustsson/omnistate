@@ -309,6 +309,82 @@ impl MockServer {
     }
 }
 
+/// An HTTPS server on a local port, like `MockServer`, with a certificate
+/// for 127.0.0.1 only. A certificate authority made for this server signed
+/// it; `ca_pem` is that authority's certificate as PEM. The server ends each
+/// connection without TLS's close_notify, as some servers do.
+pub struct HttpsServer {
+    pub server: MockServer,
+    pub ca_pem: String,
+}
+
+impl HttpsServer {
+    pub fn start(handler: impl Fn(&Recorded) -> Reply + Send + Sync + 'static) -> Self {
+        let ca_key = rcgen::KeyPair::generate().expect("make the CA key");
+        let mut ca_params = rcgen::CertificateParams::new(Vec::<String>::new()).unwrap();
+        ca_params
+            .distinguished_name
+            .push(rcgen::DnType::CommonName, "omni-cli test CA");
+        ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+        ca_params.key_usages = vec![
+            rcgen::KeyUsagePurpose::KeyCertSign,
+            rcgen::KeyUsagePurpose::CrlSign,
+        ];
+        let ca = rcgen::CertifiedIssuer::self_signed(ca_params, ca_key).expect("make the CA");
+        let server_key = rcgen::KeyPair::generate().expect("make the server key");
+        let server_cert = rcgen::CertificateParams::new(vec!["127.0.0.1".to_string()])
+            .unwrap()
+            .signed_by(&server_key, &ca)
+            .expect("sign the server certificate");
+        let config = rustls::ServerConfig::builder_with_provider(Arc::new(
+            rustls::crypto::ring::default_provider(),
+        ))
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_no_client_auth()
+        .with_single_cert(
+            vec![server_cert.der().clone()],
+            rustls::pki_types::PrivatePkcs8KeyDer::from(server_key.serialize_der()).into(),
+        )
+        .expect("set up the server's TLS");
+        let config = Arc::new(config);
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind a local port");
+        let port = listener.local_addr().unwrap().port();
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let handler = Arc::new(handler);
+        let log = requests.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming().flatten() {
+                let handler = handler.clone();
+                let log = log.clone();
+                let config = config.clone();
+                std::thread::spawn(move || {
+                    stream
+                        .set_read_timeout(Some(Duration::from_secs(10)))
+                        .unwrap();
+                    let conn = rustls::ServerConnection::new(config).unwrap();
+                    let mut tls = rustls::StreamOwned::new(conn, stream);
+                    let Some(request) = read_request(&mut tls) else {
+                        return;
+                    };
+                    let reply = handler(&request);
+                    log.lock().unwrap().push(request);
+                    write_reply(&mut tls, &reply);
+                    let _ = tls.sock.shutdown(std::net::Shutdown::Write);
+                });
+            }
+        });
+        Self {
+            server: MockServer {
+                url: format!("https://127.0.0.1:{port}"),
+                requests,
+            },
+            ca_pem: ca.pem(),
+        }
+    }
+}
+
 /// A URL on a local port that nothing listens on.
 pub fn closed_port_url() -> String {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind a local port");
@@ -326,6 +402,11 @@ fn serve(mut stream: TcpStream, handler: &dyn Fn(&Recorded) -> Reply, log: &Mute
     };
     let reply = handler(&request);
     log.lock().unwrap().push(request);
+    write_reply(&mut stream, &reply);
+    let _ = stream.shutdown(std::net::Shutdown::Write);
+}
+
+fn write_reply(stream: &mut impl Write, reply: &Reply) {
     let mut head = format!(
         "HTTP/1.1 {} Reply\r\nContent-Length: {}\r\nConnection: close\r\n",
         reply.status,
@@ -338,10 +419,9 @@ fn serve(mut stream: TcpStream, handler: &dyn Fn(&Recorded) -> Reply, log: &Mute
     let _ = stream.write_all(head.as_bytes());
     let _ = stream.write_all(reply.body.as_bytes());
     let _ = stream.flush();
-    let _ = stream.shutdown(std::net::Shutdown::Write);
 }
 
-fn read_request(stream: &mut TcpStream) -> Option<Recorded> {
+fn read_request(stream: &mut (impl Read + Write)) -> Option<Recorded> {
     let mut raw = Vec::new();
     let mut buf = [0u8; 8192];
     let split = loop {

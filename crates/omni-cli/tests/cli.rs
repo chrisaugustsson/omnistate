@@ -13,17 +13,21 @@ fn whoami_body() -> Value {
     json!({ "workspace_id": WORKSPACE, "actor": { "kind": "agent" }, "extra": [1, 2, 3] })
 }
 
+/// The answer of the mock servers: `whoami` and the echo route, and 404 for
+/// the rest.
+fn answer(request: &Recorded) -> Reply {
+    if request.path == format!("/api/v1/w/{WORKSPACE}/whoami") {
+        Reply::json(200, &whoami_body())
+    } else if request.path.starts_with("/api/v1/echo") {
+        Reply::json(200, &json!({ "ok": true }))
+    } else {
+        Reply::json(404, &json!({ "error": "not_found" }))
+    }
+}
+
 /// A server that answers `whoami` and the echo route, and 404 for the rest.
 fn mock() -> MockServer {
-    MockServer::start(|request| {
-        if request.path == format!("/api/v1/w/{WORKSPACE}/whoami") {
-            Reply::json(200, &whoami_body())
-        } else if request.path.starts_with("/api/v1/echo") {
-            Reply::json(200, &json!({ "ok": true }))
-        } else {
-            Reply::json(404, &json!({ "error": "not_found" }))
-        }
-    })
+    MockServer::start(answer)
 }
 
 /// A home directory with a config file as `omni login` leaves it.
@@ -392,6 +396,102 @@ fn the_server_comes_from_the_flag_or_the_environment_before_the_config_file() {
         .run();
     assert_eq!(by_flag.code, 0, "--server: {}", by_flag.stderr);
     assert_eq!(server.requests().len(), 2);
+}
+
+/// A home logged in to `server`, with the HTTPS server's certificate
+/// authority in a file for OMNI_CA_FILE.
+fn logged_in_with_ca(server: &str, https: &HttpsServer) -> (Scratch, String) {
+    let home = logged_in(server);
+    let ca_file = home.join("ca.pem");
+    std::fs::write(&ca_file, &https.ca_pem).unwrap();
+    (home, ca_file.display().to_string())
+}
+
+#[test]
+fn an_https_server_whose_certificate_omni_ca_file_trusts_gets_the_request_and_its_answer_is_read() {
+    // The server closes without close_notify, which the CLI tolerates.
+    let https = HttpsServer::start(answer);
+    let (home, ca_file) = logged_in_with_ca(&https.server.url, &https);
+    let out = omni(&home.path)
+        .env("OMNI_CA_FILE", &ca_file)
+        .args(&["whoami", "--as", "run-1/explorer", "--json"])
+        .run();
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    assert_eq!(out.json(), whoami_body());
+
+    let requests = https.server.requests();
+    assert_eq!(requests.len(), 1, "{requests:?}");
+    assert_eq!(requests[0].method, "GET");
+    assert_eq!(requests[0].path, format!("/api/v1/w/{WORKSPACE}/whoami"));
+    assert_eq!(
+        requests[0].header("authorization"),
+        Some(format!("Bearer {API_KEY}").as_str())
+    );
+    assert_eq!(requests[0].header("x-omni-run"), Some("run-1"));
+}
+
+#[test]
+fn a_certificate_that_fails_the_check_is_refused_naming_the_server_and_nothing_is_sent() {
+    let https = HttpsServer::start(answer);
+
+    // Without OMNI_CA_FILE no trusted root signed the certificate.
+    let home = logged_in(&https.server.url);
+    let untrusted = omni(&home.path)
+        .args(&["whoami", "--as", "run-1/explorer"])
+        .run();
+    let address = https.server.url.trim_start_matches("https://");
+    assert_one_line_error(&untrusted, &[address, "could not be verified"]);
+
+    // A trusted certificate for 127.0.0.1 does not name localhost.
+    let by_name = https.server.url.replace("127.0.0.1", "localhost");
+    let (home, ca_file) = logged_in_with_ca(&by_name, &https);
+    let wrong_name = omni(&home.path)
+        .env("OMNI_CA_FILE", &ca_file)
+        .args(&["whoami", "--as", "run-1/explorer"])
+        .run();
+    let address = by_name.trim_start_matches("https://");
+    assert_one_line_error(&wrong_name, &[address, "could not be verified"]);
+
+    assert!(
+        https.server.requests().is_empty(),
+        "{:?}",
+        https.server.requests()
+    );
+}
+
+#[test]
+fn an_omni_ca_file_that_cannot_be_read_fails_naming_it_and_sends_nothing() {
+    let https = HttpsServer::start(answer);
+    let home = logged_in(&https.server.url);
+    let missing = home.join("no-such-ca.pem");
+    let out = omni(&home.path)
+        .env("OMNI_CA_FILE", missing.to_str().unwrap())
+        .args(&["whoami", "--as", "run-1/explorer"])
+        .run();
+    assert_one_line_error(&out, &["OMNI_CA_FILE", "no-such-ca.pem"]);
+    assert!(
+        https.server.requests().is_empty(),
+        "{:?}",
+        https.server.requests()
+    );
+}
+
+#[test]
+fn an_omni_ca_file_without_a_certificate_fails_naming_it_and_sends_nothing() {
+    let https = HttpsServer::start(answer);
+    let home = logged_in(&https.server.url);
+    let empty = home.join("not-a-ca.pem");
+    std::fs::write(&empty, "no certificate in here\n").unwrap();
+    let out = omni(&home.path)
+        .env("OMNI_CA_FILE", empty.to_str().unwrap())
+        .args(&["whoami", "--as", "run-1/explorer"])
+        .run();
+    assert_one_line_error(&out, &["OMNI_CA_FILE", "not-a-ca.pem"]);
+    assert!(
+        https.server.requests().is_empty(),
+        "{:?}",
+        https.server.requests()
+    );
 }
 
 /// A project directory whose `.omni.toml` holds `text`.

@@ -28,6 +28,9 @@ omni-api = { path = "../omni-api" }
 axum = "0.8"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "time"] }
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres"] }
+# The HTTPS tests (tests/cli.rs) make a certificate authority and a server
+# certificate for each run, so no key is kept in the repository.
+rcgen = { version = "0.14", default-features = false, features = ["ring", "pem"] }
 
 [features]
 # tests/stack.rs, tests/stack_attachments.rs, tests/stack_docs.rs,
