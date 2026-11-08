@@ -1203,11 +1203,26 @@ impl Player {
 
     /// The boxes of the layers a pointer can trigger on the board shown and on
     /// its open overlays, on the screen: the layers with an interaction that
-    /// a click, hover or press runs and whose target is there.
+    /// a click, hover or press runs and whose target is there. Each box is cut
+    /// to the part of it that is drawn: inside the device screen and the
+    /// scrolling frames around it; a layer with no part drawn has none.
     pub fn hotspot_rects(&self) -> Vec<Rect> {
         let mut shown = vec![(self.frame.board, [0.0, 0.0])];
         shown.extend(self.frame.overlays.iter().map(|o| (o.board, o.origin)));
         let mut rects = Vec::new();
+        let screen = self.screen.map(|[width, height]| Rect {
+            x: 0.0,
+            y: 0.0,
+            width,
+            height,
+        });
+        let visible = |rect: Rect, clip: Option<Rect>| {
+            [screen, clip]
+                .into_iter()
+                .flatten()
+                .try_fold(rect, |rect, clip| rect.intersect(&clip))
+                .filter(|rect| rect.width > 0.0 && rect.height > 0.0)
+        };
         let base = self.placement(&self.frame.board, self.last_at);
         for (index, (board, origin)) in shown.into_iter().enumerate() {
             let Some(boxes) = self.boxes.get(&board) else {
@@ -1233,10 +1248,10 @@ impl Player {
                             .anchor(&entry)
                             .and_then(|anchor| placement.nodes.get(&anchor));
                         if let Some(shown) = shown {
-                            rects.push(rect.offset(shown.shift));
+                            rects.extend(visible(rect.offset(shown.shift), Some(shown.clip)));
                         }
                     }
-                    None => rects.push(rect.offset(origin)),
+                    None => rects.extend(visible(rect.offset(origin), None)),
                 }
             }
         }
