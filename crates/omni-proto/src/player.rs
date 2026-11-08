@@ -522,7 +522,7 @@ impl Player {
             let before = self.board_visit;
             changed |= self.revert(hover.reverts, at);
             changed |= self.fire_on(
-                hover.board_visit,
+                hover.source_visit,
                 &hover.leave,
                 hover.holder,
                 hover.rect,
@@ -547,6 +547,8 @@ impl Player {
         entered.sort_by(|a, b| b.entry.depth.cmp(&a.entry.depth));
         // The layers were found on this showing, whatever their actions show.
         let visit = self.board_visit;
+        // `under` hit the top overlay when one is open, else the board.
+        let source = self.source_visit();
         for layer in entered {
             let with = |wanted: Trigger| -> Vec<Interaction> {
                 layer
@@ -578,6 +580,7 @@ impl Player {
                 leave,
                 reverts,
                 board_visit: visit,
+                source_visit: source,
             });
         }
         changed
@@ -596,7 +599,7 @@ impl Player {
                 let before = self.board_visit;
                 changed |= self.revert(hover.reverts, at);
                 changed |= self.fire_on(
-                    hover.board_visit,
+                    hover.source_visit,
                     &hover.leave,
                     hover.holder,
                     hover.rect,

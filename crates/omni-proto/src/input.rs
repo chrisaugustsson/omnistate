@@ -44,6 +44,9 @@ pub(crate) struct Hover {
     pub(crate) reverts: Vec<Revert>,
     /// The showing of the board it was entered on.
     pub(crate) board_visit: u64,
+    /// The showing of the board or overlay it was hit on: what its delayed
+    /// leave waits on.
+    pub(crate) source_visit: u64,
 }
 
 /// A layer that reacts to a drag.
