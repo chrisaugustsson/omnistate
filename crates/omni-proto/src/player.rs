@@ -11,6 +11,7 @@ use crate::history::{History, Play};
 use crate::input::{DragTarget, Follow, Holder, Hover, Press, Revert, Site};
 use crate::keys::{self, Mods};
 use crate::overlay;
+use crate::scroll::{self, Placement, ScrollState, ScrollView, Scrolls};
 use crate::timers::{Target, Timer};
 use crate::transition::{Progress, duration_ms, progress, progress_of, reversed};
 use crate::variables::{self, PlayVariables, TokenValue};
@@ -44,16 +45,30 @@ pub struct Rect {
 }
 
 impl Rect {
-    fn contains(&self, x: f64, y: f64) -> bool {
+    pub(crate) fn contains(&self, x: f64, y: f64) -> bool {
         x >= self.x && x <= self.x + self.width && y >= self.y && y <= self.y + self.height
     }
 
-    fn offset(self, by: [f64; 2]) -> Rect {
+    pub(crate) fn offset(self, by: [f64; 2]) -> Rect {
         Rect {
             x: self.x + by[0],
             y: self.y + by[1],
             ..self
         }
+    }
+
+    /// The part both boxes hold, `None` when they share none.
+    pub(crate) fn intersect(&self, other: &Rect) -> Option<Rect> {
+        let left = self.x.max(other.x);
+        let top = self.y.max(other.y);
+        let right = (self.x + self.width).min(other.x + other.width);
+        let bottom = (self.y + self.height).min(other.y + other.height);
+        (right >= left && bottom >= top).then_some(Rect {
+            x: left,
+            y: top,
+            width: right - left,
+            height: bottom - top,
+        })
     }
 }
 
@@ -251,12 +266,12 @@ struct BoardSwaps {
 }
 
 /// A layer that reacts to touch.
-struct Entry {
-    id: NodeId,
+pub(crate) struct Entry {
+    pub(crate) id: NodeId,
     depth: usize,
     interactions: Vec<Interaction>,
     /// Its board and the instances that hold the layer, or are the layer.
-    site: Site,
+    pub(crate) site: Site,
 }
 
 pub struct Player {
@@ -295,6 +310,14 @@ pub struct Player {
     last_at: f64,
     /// Until when the hotspots are outlined after a click that missed.
     hint_until: Option<f64>,
+    /// The size of the device screen that clips the board shown, if the
+    /// prototype has one.
+    screen: Option<[f64; 2]>,
+    /// How far each container of a board is scrolled, by board: the
+    /// showing the board is on.
+    scrolls: HashMap<NodeId, Scrolls>,
+    /// Where the pointer last was, which `scroll` acts at.
+    pointer_at: Option<[f64; 2]>,
 }
 
 impl Player {
@@ -335,6 +358,9 @@ impl Player {
             recording: None,
             last_at: 0.0,
             hint_until: None,
+            screen: None,
+            scrolls: HashMap::new(),
+            pointer_at: None,
         };
         player.schedule(start, 1, [0.0, 0.0], 0.0);
         player
@@ -347,6 +373,18 @@ impl Player {
         if scale > 0.0 {
             self.scale = scale;
         }
+    }
+
+    /// Tells the player the size of the screen of the device the prototype is
+    /// shown on, which clips the board shown and which it scrolls inside. A
+    /// side that is not above zero leaves the board at its own size.
+    pub fn set_screen(&mut self, width: f64, height: f64) {
+        self.screen = (width > 0.0 && height > 0.0).then_some([width, height]);
+    }
+
+    /// The size of the screen, if there is one.
+    pub fn screen(&self) -> Option<[f64; 2]> {
+        self.screen
     }
 
     /// The waits that are running: an `afterDelay` of the board or overlay
@@ -422,6 +460,7 @@ impl Player {
 
     pub fn pointer(&mut self, event: PointerEvent) -> Vec<Effect> {
         self.last_at = event.at;
+        self.pointer_at = (event.kind != PointerKind::Leave).then_some([event.x, event.y]);
         let mut effects = Vec::new();
         let changed = match event.kind {
             PointerKind::Down => self.down(event, &mut effects),
@@ -460,6 +499,7 @@ impl Player {
             dragged: false,
             follow: None,
             reverts: Vec::new(),
+            last: [x, y],
         });
         if let Some(found) = deepest(&under, |trigger| *trigger == Trigger::MouseDown) {
             changed |= self.fire(
@@ -697,8 +737,11 @@ impl Player {
         if press.dragged || !press.moved {
             return false;
         }
+        // A drag that starts on no layer with an on-drag interaction scrolls.
         let Some(target) = press.drag.clone() else {
-            return false;
+            let (from, last) = ([press.x, press.y], press.last);
+            press.last = [x, y];
+            return self.scroll_at(from[0], from[1], last[0] - x, last[1] - y);
         };
         let Some(interaction) = target
             .interactions
@@ -992,6 +1035,7 @@ impl Player {
     fn show(&mut self, board: NodeId, at: f64) {
         self.end_visit();
         self.frame.board = board;
+        self.scrolls.remove(&board);
         self.board_visit = self.next_visit();
         // Layers entered on the board left are not on this one.
         self.hovered.retain(|hover| !hover.reverts.is_empty());
@@ -1049,9 +1093,15 @@ impl Player {
             self.hint_until = None;
         }
         self.pin(now);
-        let moving = self.frame.transition.is_some() || !self.frame.variant_runs.is_empty();
+        let moving = self.frame.transition.is_some()
+            || !self.frame.variant_runs.is_empty()
+            || self.gliding();
         let mut effects = Vec::new();
         let changed = self.run_due(now, &mut effects);
+        // A scroll that a wait or an event began counts from this tick.
+        for state in self.scrolls.values_mut().flat_map(HashMap::values_mut) {
+            state.advance(now);
+        }
         // A change of variant that a wait made counts from this tick.
         for run in &mut self.frame.variant_runs {
             if std::mem::take(&mut run.fresh) {
@@ -1092,7 +1142,8 @@ impl Player {
             easing: defaults.easing,
         };
         let from = self.frame.board;
-        self.history.push(from, play);
+        let left = self.scrolls_left(from, self.last_at);
+        self.history.push(from, play, left);
         self.show(board, self.last_at);
         self.frame.transition = Some(self.running(from, board, false, play, self.last_at));
         true
@@ -1101,6 +1152,7 @@ impl Player {
     /// Starts over on `board`: no history, overlays or swaps.
     pub fn restart(&mut self, board: NodeId) {
         self.history.clear();
+        self.scrolls.clear();
         self.swaps.clear();
         self.frame = Frame {
             board,
@@ -1156,10 +1208,12 @@ impl Player {
         let mut shown = vec![(self.frame.board, [0.0, 0.0])];
         shown.extend(self.frame.overlays.iter().map(|o| (o.board, o.origin)));
         let mut rects = Vec::new();
-        for (board, origin) in shown {
+        let base = self.placement(&self.frame.board, self.last_at);
+        for (index, (board, origin)) in shown.into_iter().enumerate() {
             let Some(boxes) = self.boxes.get(&board) else {
                 continue;
             };
+            let placement = base.as_ref().filter(|_| index == 0);
             for entry in self.entries(&board) {
                 let reacts = entry.interactions.iter().any(|interaction| {
                     !matches!(
@@ -1170,8 +1224,19 @@ impl Player {
                         .iter()
                         .any(|action| self.resolves(action))
                 });
-                if let (true, Some(rect)) = (reacts, boxes.rects.get(&entry.id)) {
-                    rects.push(rect.offset(origin));
+                let Some(rect) = boxes.rects.get(&entry.id).filter(|_| reacts) else {
+                    continue;
+                };
+                match placement {
+                    Some(placement) => {
+                        let shown = placement
+                            .anchor(&entry)
+                            .and_then(|anchor| placement.nodes.get(&anchor));
+                        if let Some(shown) = shown {
+                            rects.push(rect.offset(shown.shift));
+                        }
+                    }
+                    None => rects.push(rect.offset(origin)),
                 }
             }
         }
@@ -1228,12 +1293,20 @@ impl Player {
         offset: Option<[f64; 2]>,
         trigger: Rect,
     ) -> [f64; 2] {
-        let screen = self.root_rect(&self.frame.board).unwrap_or(Rect {
-            x: 0.0,
-            y: 0.0,
-            width: 0.0,
-            height: 0.0,
-        });
+        let screen = match self.screen {
+            Some([width, height]) => Rect {
+                x: 0.0,
+                y: 0.0,
+                width,
+                height,
+            },
+            None => self.root_rect(&self.frame.board).unwrap_or(Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 0.0,
+                height: 0.0,
+            }),
+        };
         let size = self
             .root_rect(board)
             .map_or([0.0, 0.0], |rect| [rect.width, rect.height]);
@@ -1381,11 +1454,35 @@ impl Player {
         let Some(boxes) = self.boxes.get(&board) else {
             return Vec::new();
         };
+        // The board shown is drawn scrolled, with its fixed layers on top: a
+        // point is hit where the layers are drawn.
+        let placement = if self.frame.overlays.is_empty() {
+            self.placement(&board, self.last_at)
+        } else {
+            None
+        };
+        let top = placement
+            .as_ref()
+            .and_then(|placement| placement.raised_hit(x, y));
         self.entries(&board)
             .into_iter()
             .filter_map(|entry| {
-                let rect = boxes.rects.get(&entry.id)?.offset(origin);
-                rect.contains(x, y).then_some(Under { entry, rect })
+                let design = *boxes.rects.get(&entry.id)?;
+                let Some(placement) = &placement else {
+                    let rect = design.offset(origin);
+                    return rect.contains(x, y).then_some(Under { entry, rect });
+                };
+                let anchor = placement.anchor(&entry)?;
+                let shown = placement.nodes.get(&anchor)?;
+                let rect = design.offset(shown.shift);
+                if !rect.contains(x, y) || !shown.clip.contains(x, y) {
+                    return None;
+                }
+                // What a fixed layer covers cannot be reached through it.
+                if top.is_some_and(|top| !placement.related(anchor, top)) {
+                    return None;
+                }
+                Some(Under { entry, rect })
             })
             .collect()
     }
@@ -1400,14 +1497,19 @@ impl Player {
         effects: &mut Vec<Effect>,
     ) -> bool {
         match action {
-            Action::Navigate { dest, .. } => {
+            Action::Navigate {
+                dest,
+                preserve_scroll,
+            } => {
                 let Some(to) = self.board_id(dest) else {
                     return false;
                 };
                 let from = self.frame.board;
                 let history_len = self.history.boards().len();
                 let visit = self.board_visit;
-                self.history.push(from, play);
+                let left = self.scrolls_left(from, at);
+                let carried = left.get(&from).map(|state| [state.x, state.y]);
+                self.history.push(from, play, left);
                 // What a hover or press puts back returns to the board it
                 // left, and the layers the pointer never left stay hovered.
                 let kept = if self.recording.is_some() {
@@ -1420,6 +1522,12 @@ impl Player {
                     Vec::new()
                 };
                 self.show(to, at);
+                if let (true, Some([x, y])) = (*preserve_scroll, carried) {
+                    self.scrolls
+                        .entry(to)
+                        .or_default()
+                        .insert(to, ScrollState::at(x, y));
+                }
                 self.hovered.extend(kept);
                 self.frame.transition = Some(self.running(from, to, false, play, at));
                 self.note(Revert::Board {
@@ -1570,8 +1678,7 @@ impl Player {
                 }
                 false
             }
-            // Scrolling comes in a later story.
-            _ => false,
+            Action::ScrollTo { dest, offset } => self.scroll_to(dest, *offset, play, at),
         }
     }
 
@@ -1729,11 +1836,12 @@ impl Player {
     }
 
     fn go_back(&mut self, at: f64) -> bool {
-        let Some((to, play)) = self.history.pop() else {
+        let Some((to, play, scrolls)) = self.history.pop() else {
             return false;
         };
         let from = self.frame.board;
         self.show(to, at);
+        self.scrolls.insert(to, scrolls);
         self.frame.transition = Some(self.running(from, to, true, play, at));
         true
     }
@@ -1768,6 +1876,159 @@ impl Player {
             follows_pointer: false,
             interrupted,
         }
+    }
+
+    /// Where the layers of `board` are with its scrolls at `now`.
+    fn placement(&self, board: &NodeId, now: f64) -> Option<Placement> {
+        let root = self.boards.get(board)?;
+        let boxes = self.boxes.get(board)?;
+        let none = Scrolls::new();
+        let scrolls = self.scrolls.get(board).unwrap_or(&none);
+        Some(scroll::place(root, &boxes.rects, self.screen, scrolls, now))
+    }
+
+    /// How `board` is drawn at `now` with the scrolls it has: how far each
+    /// layer moves, which draw above their siblings and which frames clip.
+    pub fn scroll_view(&self, board: NodeId, now: f64) -> ScrollView {
+        self.placement(&board, now)
+            .map_or_else(ScrollView::default, |placement| placement.view())
+    }
+
+    /// Whether a scroll is animating.
+    pub fn gliding(&self) -> bool {
+        self.scrolls
+            .values()
+            .flat_map(HashMap::values)
+            .any(ScrollState::gliding)
+    }
+
+    /// The scrolls of `board` as they stand at `at`, for the history, which a
+    /// back restores them from.
+    fn scrolls_left(&self, board: NodeId, at: f64) -> Scrolls {
+        self.scrolls
+            .get(&board)
+            .map(|scrolls| {
+                scrolls
+                    .iter()
+                    .map(|(id, state)| {
+                        let [x, y] = state.offset(at);
+                        (*id, ScrollState::at(x, y))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Scrolls by `dx`, `dy` the container under the pointer's last place.
+    /// See `scroll_at`.
+    pub fn scroll(&mut self, dx: f64, dy: f64) -> bool {
+        match self.pointer_at {
+            Some([x, y]) => self.scroll_at(x, y, dx, dy),
+            None => false,
+        }
+    }
+
+    /// Scrolls the content under the point `x`, `y` by `dx`, `dy`, which
+    /// moves it that far the other way. The innermost container that scrolls
+    /// on an axis takes what it can and the rest goes to the container around
+    /// it; no offset leaves its container's range. Returns whether anything
+    /// moved.
+    pub fn scroll_at(&mut self, x: f64, y: f64, dx: f64, dy: f64) -> bool {
+        // The board under an overlay is not scrolled.
+        if !self.frame.overlays.is_empty() {
+            return false;
+        }
+        let board = self.frame.board;
+        let Some(placement) = self.placement(&board, self.last_at) else {
+            return false;
+        };
+        let mut hit: Vec<_> = placement
+            .containers
+            .iter()
+            .filter(|container| container.hit(x, y))
+            .collect();
+        hit.sort_by_key(|container| std::cmp::Reverse(container.depth));
+        let mut left = [dx, dy];
+        let mut moved: Vec<(NodeId, [f64; 2])> = Vec::new();
+        for container in hit {
+            let mut offset = container.offset;
+            let mut changed = false;
+            for axis in 0..2 {
+                if left[axis] == 0.0 || !container.axes[axis] {
+                    continue;
+                }
+                let to = (offset[axis] + left[axis]).clamp(0.0, container.max[axis]);
+                let used = to - offset[axis];
+                if used != 0.0 {
+                    offset[axis] = to;
+                    left[axis] -= used;
+                    changed = true;
+                }
+            }
+            if changed {
+                moved.push((container.id, offset));
+            }
+        }
+        let scrolls = self.scrolls.entry(board).or_default();
+        for (id, offset) in &moved {
+            scrolls.entry(*id).or_default().set(*offset);
+        }
+        !moved.is_empty()
+    }
+
+    /// Scrolls the innermost container that scrolls the layer `dest` so that
+    /// the layer sits `offset` from the container's top-left corner, animated
+    /// as the interaction plays. Returns whether something scrolls.
+    fn scroll_to(&mut self, dest: &str, offset: [f64; 2], play: Play, at: f64) -> bool {
+        let Ok(dest) = dest.parse::<NodeId>() else {
+            return false;
+        };
+        let board = self.frame.board;
+        let Some(root) = self.boards.get(&board) else {
+            return false;
+        };
+        let Some(rect) = self
+            .boxes
+            .get(&board)
+            .and_then(|boxes| boxes.rects.get(&dest))
+            .copied()
+        else {
+            return false;
+        };
+        let Some(path) = path_to(root, &dest) else {
+            return false;
+        };
+        let Some(placement) = self.placement(&board, at) else {
+            return false;
+        };
+        // A layer that stays where it is does not scroll.
+        let Some(container) = path[..path.len() - 1]
+            .iter()
+            .rev()
+            .find_map(|id| placement.containers.iter().find(|c| c.id == *id))
+        else {
+            return false;
+        };
+        let mut to = container.offset;
+        let wanted = [
+            rect.x - container.origin[0] - offset[0],
+            rect.y - container.origin[1] - offset[1],
+        ];
+        for axis in 0..2 {
+            if container.axes[axis] {
+                to[axis] = wanted[axis].clamp(0.0, container.max[axis]);
+            }
+        }
+        if to == container.offset {
+            return false;
+        }
+        self.scrolls
+            .entry(board)
+            .or_default()
+            .entry(container.id)
+            .or_default()
+            .glide_to(to, at, play.duration_ms, play.easing);
+        true
     }
 
     fn board_id(&self, dest: &str) -> Option<NodeId> {
@@ -1902,4 +2163,19 @@ fn same_set(a: &Node, b: &Node) -> bool {
             .collect()
     }
     a.name() == b.name() && variants(a) == variants(b)
+}
+
+/// The IDs from `root` down to `id`, both included, or `None` when `id` is
+/// not below `root`.
+fn path_to(root: &Node, id: &NodeId) -> Option<Vec<NodeId>> {
+    if root.id() == id {
+        return Some(vec![*id]);
+    }
+    for child in root.children() {
+        if let Some(mut path) = path_to(child, id) {
+            path.insert(0, *root.id());
+            return Some(path);
+        }
+    }
+    None
 }

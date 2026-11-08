@@ -48,6 +48,8 @@ mod exports {
         static ERRORS: RefCell<CString> = RefCell::new(CString::default());
         /// The result of the last `omni_render_play_state`.
         static PLAY_STATE: RefCell<CString> = RefCell::new(CString::default());
+        /// The result of the last `omni_render_play_screen`.
+        static PLAY_SCREEN: RefCell<CString> = RefCell::new(CString::default());
     }
 
     /// Takes the text or bytes at `ptr` and `len` from the page.
@@ -778,6 +780,43 @@ mod exports {
         }
     }
 
+    /// A wheel turn of `dx`, `dy` CSS pixels at the stage point `x`, `y`.
+    /// Returns whether anything scrolled.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn omni_render_play_wheel(x: f32, y: f32, dx: f32, dy: f32) -> bool {
+        match omni_render::web::play_wheel(x, y, dx, dy) {
+            Ok(moved) => moved,
+            Err(reason) => {
+                fail(&reason);
+                false
+            }
+        }
+    }
+
+    /// Shows the prototype on the device with this name. Returns whether it
+    /// did; `omni_render_error` has the reason if not.
+    ///
+    /// # Safety
+    /// The pointer and length must be a block from `omni_render_alloc`.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn omni_render_play_device(name: *const u8, name_len: usize) -> bool {
+        // SAFETY: the caller promises the block is there.
+        let result = unsafe { text(name, name_len) }.and_then(omni_render::web::play_device);
+        succeeded(result)
+    }
+
+    /// Sets the scale of the screen on the stage: `fit`, `100` or `50`.
+    /// Returns whether it did.
+    ///
+    /// # Safety
+    /// The pointer and length must be a block from `omni_render_alloc`.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn omni_render_play_scale(name: *const u8, name_len: usize) -> bool {
+        // SAFETY: the caller promises the block is there.
+        let result = unsafe { text(name, name_len) }.and_then(omni_render::web::play_scale);
+        succeeded(result)
+    }
+
     /// Goes back to the board the last navigate left. Returns whether there
     /// was one.
     #[unsafe(no_mangle)]
@@ -831,6 +870,24 @@ mod exports {
             Ok(state) => {
                 PLAY_STATE.set(CString::new(state).unwrap_or_default());
                 PLAY_STATE.with_borrow(|state| state.as_ptr())
+            }
+            Err(reason) => {
+                fail(&reason);
+                std::ptr::null()
+            }
+        }
+    }
+
+    /// The screen the prototype is shown on, as a NUL-ended JSON object that
+    /// stays until the next call: `{"device": "iPhone 16", "scale": "fit",
+    /// "devices": [{"name": "iPhone 16", "width": 393, "height": 852}]}`.
+    /// Null if no session is playing.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn omni_render_play_screen() -> *const c_char {
+        match omni_render::web::play_screen() {
+            Ok(screen) => {
+                PLAY_SCREEN.set(CString::new(screen).unwrap_or_default());
+                PLAY_SCREEN.with_borrow(|screen| screen.as_ptr())
             }
             Err(reason) => {
                 fail(&reason);

@@ -128,6 +128,14 @@ function fakePlayer(boards: () => string[]): FakePlayer {
       buttons.push(`${button} ${down ? "down" : "up"}`);
       return false;
     },
+    wheel() {
+      return false;
+    },
+    setDevice() {},
+    setScale() {},
+    screen() {
+      return { device: "None", scale: "fit", devices: [] };
+    },
     back() {
       calls.push("back");
       const shown = now();

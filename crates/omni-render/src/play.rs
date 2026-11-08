@@ -8,7 +8,8 @@
 
 use crate::layout::{LayoutBox, ShapedTexts};
 use crate::view::{Scene, Viewport};
-use omni_core::design::proto::{Direction, Transition};
+use omni_core::design::devices::{self, CUSTOM};
+use omni_core::design::proto::{Direction, Rotation, Transition};
 use omni_core::design::tokens::{ModeChoice, TokenValue};
 use omni_core::design::{
     Color as DesignColor, Fill, Node, NodeAddress, NodeData, NodeId, NodeKind, Radius, Stroke,
@@ -18,7 +19,8 @@ use omni_proto::keys::gamepad_button;
 use omni_proto::matching::match_layers;
 use omni_proto::transition::{duration_ms, progress};
 use omni_proto::{
-    Effect, HINT_MS, KeyEvent, Player, PointerEvent, PointerKind, Rect, Running, VariantRun,
+    Effect, HINT_MS, KeyEvent, Player, PointerEvent, PointerKind, Rect, Running, ScrollView,
+    VariantRun,
 };
 use serde_json::{Value, json};
 use skia_safe::{Canvas, Color};
@@ -30,6 +32,40 @@ const DEFAULT_BACKGROUND: Color = Color::from_argb(255, 0x1e, 0x1e, 0x1e);
 
 /// The width of the outline around a hotspot, in CSS pixels.
 const HINT_WIDTH: f32 = 2.0;
+
+/// The width of the band in the device's colour around its screen, in the
+/// screen's own pixels.
+const BAND_WIDTH: f32 = 12.0;
+
+/// How the screen is scaled on the stage.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Scale {
+    /// Down to the stage, never up.
+    Fit,
+    Full,
+    Half,
+}
+
+impl Scale {
+    fn name(self) -> &'static str {
+        match self {
+            Scale::Fit => "fit",
+            Scale::Full => "100",
+            Scale::Half => "50",
+        }
+    }
+
+    /// The scale of a `width` x `height` screen on a stage of `stage`.
+    fn of(self, stage: (f32, f32), (width, height): (f32, f32)) -> f32 {
+        match self {
+            Scale::Fit => (stage.0 / width.max(1.0))
+                .min(stage.1 / height.max(1.0))
+                .min(1.0),
+            Scale::Full => 1.0,
+            Scale::Half => 0.5,
+        }
+    }
+}
 
 /// What the page does next, after `Session::tick`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -81,6 +117,55 @@ pub struct Session {
     snapshots: HashMap<u64, (VariantRun, Layers)>,
     /// The time the last frame was drawn at.
     drawn: f64,
+    /// The device the prototype is shown on, by its name in the device table.
+    device: String,
+    scale: Scale,
+    /// What the page's `prototype` says of the device.
+    page: PageDevice,
+}
+
+/// The device settings of the page.
+struct PageDevice {
+    device: String,
+    color: Option<String>,
+    rotation: Rotation,
+    custom_size: Option<[f64; 2]>,
+}
+
+impl PageDevice {
+    /// The size of the screen of the device `name` as it is shown: `None` for
+    /// a device with no screen, rotated when the page says landscape and the
+    /// device turns.
+    fn screen(&self, name: &str) -> Option<(f32, f32)> {
+        if name == CUSTOM {
+            return self
+                .custom_size
+                .map(|[width, height]| (width as f32, height as f32));
+        }
+        let device = devices::device(name)?;
+        if device.width <= 0.0 || device.height <= 0.0 {
+            return None;
+        }
+        let (width, height) = (device.width as f32, device.height as f32);
+        Some(if device.rotates && self.rotation == Rotation::Landscape {
+            (height, width)
+        } else {
+            (width, height)
+        })
+    }
+
+    /// The colour of the band around the screen of the device `name`: the
+    /// page's, when it is the page's device, else the device's first.
+    fn band(&self, name: &str) -> Option<Color> {
+        let device = devices::device(name)?;
+        let chosen = self
+            .color
+            .as_deref()
+            .filter(|_| name == self.device)
+            .and_then(|wanted| device.colors.iter().find(|color| color.name == wanted));
+        let [r, g, b] = chosen.or(device.colors.first())?.rgb;
+        Some(Color::from_rgb(r, g, b))
+    }
 }
 
 /// The token values, the modes of its own and the variant swaps that a board
@@ -157,13 +242,24 @@ impl Session {
             .map(|node| *node.id())
             .filter(|id| drawn.contains(id))
             .collect();
-        let background = color(page.prototype().background.as_str()).unwrap_or(DEFAULT_BACKGROUND);
+        let settings = page.prototype();
+        let background = color(settings.background.as_str()).unwrap_or(DEFAULT_BACKGROUND);
+        let page_device = PageDevice {
+            device: settings.device.clone(),
+            color: settings.color.clone(),
+            rotation: settings.rotation,
+            custom_size: settings.custom_size,
+        };
         let mut player = Player::new(page, scene.components(), start);
         if let Some(tokens) = scene.tokens() {
             player.set_tokens(tokens.clone());
         }
         for id in &boards {
             give_boxes(&mut player, scene, id);
+        }
+        let device = page_device.device.clone();
+        if let Some((width, height)) = page_device.screen(&device) {
+            player.set_screen(f64::from(width), f64::from(height));
         }
         Ok(Session {
             player,
@@ -184,6 +280,9 @@ impl Session {
             resolved: HashMap::new(),
             snapshots: HashMap::new(),
             drawn: 0.0,
+            device,
+            scale: Scale::Fit,
+            page: page_device,
         })
     }
 
@@ -397,6 +496,69 @@ impl Session {
         Ok(())
     }
 
+    /// Scrolls the content under the stage point `x`, `y` by a wheel's
+    /// `dx`, `dy` in CSS pixels. Returns whether anything moved.
+    pub fn wheel(&mut self, x: f32, y: f32, dx: f32, dy: f32) -> bool {
+        let Placement {
+            scale,
+            x: left,
+            y: top,
+        } = self.placement;
+        let scale = f64::from(scale);
+        let moved = self.player.scroll_at(
+            f64::from(x - left) / scale,
+            f64::from(y - top) / scale,
+            f64::from(dx) / scale,
+            f64::from(dy) / scale,
+        );
+        self.changed |= moved;
+        moved
+    }
+
+    /// Shows the prototype on the device `name` of the device table (`Custom`
+    /// only where the page's device is `Custom`). Fails for another name.
+    pub fn set_device(&mut self, name: &str) -> Result<(), String> {
+        let listed = self.devices().iter().any(|(listed, _)| listed == name);
+        if !listed {
+            return Err(format!("`{name}` is not a device of this prototype"));
+        }
+        self.device = name.to_string();
+        let (width, height) = self.page.screen(name).unwrap_or((0.0, 0.0));
+        self.player.set_screen(f64::from(width), f64::from(height));
+        self.changed = true;
+        Ok(())
+    }
+
+    /// Sets how the screen is scaled on the stage: `fit`, `100` or `50`.
+    pub fn set_scale(&mut self, name: &str) -> Result<(), String> {
+        self.scale = match name {
+            "fit" => Scale::Fit,
+            "100" => Scale::Full,
+            "50" => Scale::Half,
+            other => return Err(format!("`{other}` is not a scale: write fit, 100 or 50")),
+        };
+        self.changed = true;
+        Ok(())
+    }
+
+    /// The devices to pick from with the size of the screen of each as it
+    /// would be shown, `None` for the device that has no screen.
+    fn devices(&self) -> Vec<(String, Option<(f32, f32)>)> {
+        devices::DEVICES
+            .iter()
+            .filter(|device| device.name != CUSTOM || self.page.device == CUSTOM)
+            .map(|device| (device.name.to_string(), self.page.screen(device.name)))
+            .collect()
+    }
+
+    /// The size of the frame `bounds`, the board's own size, is shown in: the
+    /// screen of the device, or the board at its own size.
+    fn framed(&self, bounds: &crate::layout::LayoutBox) -> (f32, f32) {
+        self.page
+            .screen(&self.device)
+            .unwrap_or((bounds.width, bounds.height))
+    }
+
     fn board(&self, board: &str) -> Result<NodeId, String> {
         board
             .parse::<NodeId>()
@@ -422,7 +584,7 @@ impl Session {
         let hinting = self.player.hint_until().is_some();
         let playing = |player: &Player| {
             let frame = player.frame();
-            frame.transition.is_some() || !frame.variant_runs.is_empty()
+            frame.transition.is_some() || !frame.variant_runs.is_empty() || player.gliding()
         };
         let moving = playing(&self.player);
         let before = self.player.frame();
@@ -445,6 +607,7 @@ impl Session {
         self.changed |= hint_ended || settled || acted;
         let animating = self.player.hint_until().is_some()
             || !self.player.frame().variant_runs.is_empty()
+            || self.player.gliding()
             || self
                 .player
                 .frame()
@@ -483,6 +646,21 @@ impl Session {
         })
     }
 
+    /// The screen the prototype is shown on: `{"device": "iPhone 16", "scale":
+    /// "fit", "devices": [{"name": "iPhone 16", "width": 393, "height": 852}]}`.
+    /// `scale` is `fit`, `100` or `50`; `devices` lists the devices to pick
+    /// from with the size of each one's screen as it would be shown, `null`
+    /// for the device that has none.
+    pub fn screen(&self) -> Value {
+        json!({
+            "device": self.device,
+            "scale": self.scale.name(),
+            "devices": self.devices().into_iter().map(|(name, size)| {
+                json!({"name": name, "width": size.map(|size| size.0), "height": size.map(|size| size.1)})
+            }).collect::<Vec<_>>(),
+        })
+    }
+
     /// Draws `board` at its own size in the middle of the stage, scaled down
     /// to fit, moved by `offset` CSS pixels and clipped to its own box.
     fn draw_board(
@@ -511,12 +689,11 @@ impl Session {
         let Some(bounds) = scene.board_bounds(board) else {
             return;
         };
-        let scale = (width / bounds.width.max(1.0))
-            .min(height / bounds.height.max(1.0))
-            .min(1.0);
+        let frame = self.framed(&bounds);
+        let scale = self.scale.of((width, height), frame);
         let at = (
-            (width - bounds.width * scale) / 2.0 + offset.0,
-            (height - bounds.height * scale) / 2.0 + offset.1,
+            (width - frame.0 * scale) / 2.0 + offset.0,
+            (height - frame.1 * scale) / 2.0 + offset.1,
         );
         let viewport = Viewport::at(
             bounds.x - at.0 / scale,
@@ -527,11 +704,24 @@ impl Session {
         );
         canvas.save();
         canvas.clip_rect(
-            skia_safe::Rect::from_xywh(at.0, at.1, bounds.width * scale, bounds.height * scale),
+            skia_safe::Rect::from_xywh(at.0, at.1, frame.0 * scale, frame.1 * scale),
             None,
             None,
         );
-        match layers {
+        // A board that scrolls, or has layers that stay or stick, is drawn
+        // from its layers, moved; any other from the picture the scene keeps.
+        let view = self.player.scroll_view(*board, self.now);
+        let scrolled = (!view.is_plain())
+            .then(|| {
+                let mut whole = match layers {
+                    Some(layers) => Some(layers.clone()),
+                    None => scene.layers_of_board(board, None),
+                }?;
+                scroll(&mut whole, &view);
+                Some(whole)
+            })
+            .flatten();
+        match scrolled.as_ref().or(layers) {
             Some(layers) => scene.draw_layers(canvas, &viewport, layers),
             None => {
                 scene.render_board(canvas, &viewport, board);
@@ -744,17 +934,37 @@ impl Session {
         let Some(bounds) = scene.board_bounds(&frame.board) else {
             return;
         };
-        let scale = (width / bounds.width.max(1.0))
-            .min(height / bounds.height.max(1.0))
-            .min(1.0);
-        let left = (width - bounds.width * scale) / 2.0;
-        let top = (height - bounds.height * scale) / 2.0;
+        let shown = self.framed(&bounds);
+        let scale = self.scale.of((width, height), shown);
+        let left = (width - shown.0 * scale) / 2.0;
+        let top = (height - shown.1 * scale) / 2.0;
         self.player.set_scale(f64::from(scale));
         self.placement = Placement {
             scale,
             x: left,
             y: top,
         };
+        // The device's colour shows as a band around its screen.
+        if let Some(band) = self
+            .page
+            .screen(&self.device)
+            .and(self.page.band(&self.device))
+        {
+            let around = BAND_WIDTH * scale;
+            canvas.draw_rrect(
+                skia_safe::RRect::new_rect_xy(
+                    skia_safe::Rect::from_xywh(left, top, shown.0 * scale, shown.1 * scale)
+                        .with_outset((around, around)),
+                    around * 2.0,
+                    around * 2.0,
+                ),
+                &skia_safe::Paint::new(skia_safe::Color4f::from(band), None),
+            );
+            canvas.draw_rect(
+                skia_safe::Rect::from_xywh(left, top, shown.0 * scale, shown.1 * scale),
+                &skia_safe::Paint::new(skia_safe::Color4f::from(self.background), None),
+            );
+        }
         match &frame.transition {
             Some(running) if running.transition != Transition::Instant => {
                 self.draw_running(scene, canvas, (width, height), running, self.now);
@@ -771,12 +981,7 @@ impl Session {
         for (board, origin, sheet) in overlays {
             if let Some(sheet) = sheet {
                 canvas.draw_rect(
-                    skia_safe::Rect::from_xywh(
-                        left,
-                        top,
-                        bounds.width * scale,
-                        bounds.height * scale,
-                    ),
+                    skia_safe::Rect::from_xywh(left, top, shown.0 * scale, shown.1 * scale),
                     &skia_safe::Paint::new(skia_safe::Color4f::from(sheet), None),
                 );
             }
@@ -795,12 +1000,22 @@ impl Session {
                 height,
             );
             let playing = self.board_layers(scene, &board);
+            // An overlay does not leave the screen.
+            canvas.save();
+            if self.page.screen(&self.device).is_some() {
+                canvas.clip_rect(
+                    skia_safe::Rect::from_xywh(left, top, shown.0 * scale, shown.1 * scale),
+                    None,
+                    None,
+                );
+            }
             match playing {
                 Some(layers) => scene.draw_layers(canvas, &viewport, &layers),
                 None => {
                     scene.render_board(canvas, &viewport, &board);
                 }
             }
+            canvas.restore();
         }
         if let Some(until) = self.player.hint_until().filter(|until| *until > self.now) {
             let alpha = ((until - self.now) / HINT_MS).clamp(0.0, 1.0) as f32;
@@ -831,6 +1046,37 @@ impl Session {
             }
         }
     }
+}
+
+/// Moves the layers of `layers` as `view` has them scrolled: each layer and
+/// what is in it by its shift, the fixed and stuck layers after their
+/// siblings so that they draw on top, and the scrolling frames clipping.
+fn scroll(layers: &mut Layers, view: &ScrollView) {
+    fn visit(
+        node: &mut Node,
+        view: &ScrollView,
+        inherited: [f64; 2],
+        boxes: &mut HashMap<NodeId, LayoutBox>,
+    ) {
+        let shift = view.shifts.get(node.id()).copied().unwrap_or(inherited);
+        if let (true, Some(layout)) = (shift != [0.0, 0.0], boxes.get_mut(node.id())) {
+            layout.x += shift[0] as f32;
+            layout.y += shift[1] as f32;
+        }
+        if view.clipped.contains(node.id()) {
+            if let NodeData::Frame(frame) = node.data_mut() {
+                frame.clip = Some(true);
+            }
+        }
+        if let Some(children) = node.children_mut() {
+            for child in children.iter_mut() {
+                visit(child, view, shift, boxes);
+            }
+            // Stable, so the others keep their order.
+            children.sort_by_key(|child| view.raised.contains(child.id()));
+        }
+    }
+    visit(&mut layers.node, view, [0.0, 0.0], &mut layers.boxes);
 }
 
 /// The layer `root` of a board with everything below it, as the scene had it

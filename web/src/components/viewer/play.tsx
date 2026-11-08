@@ -1,13 +1,14 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { FloatingAlerts } from "@/components/viewer/chrome";
-import type { DesignRenderer, PlayState } from "@/design/renderer";
+import type { DesignRenderer, PlayScale, PlayState } from "@/design/renderer";
 
 // Play mode: a prototype played full window over the design viewer. The
 // renderer draws the board the player shows on a canvas that lives in the stage
 // for as long as the session lasts, and takes the pointer; this component is the
-// two bars (Exit and the flow on top, Restart, Previous, Next and Back below)
-// and keeps the address bar on the board the player is on. Transitions are
+// two bars (Exit, the flow, the device and the scale of its screen on top,
+// Restart, Previous, Next and Back below) and keeps the address bar on the
+// board the player is on. Transitions are
 // instant, so a click on a hotspot shows its board at once. A link asks first
 // (LinkNotice), a click on nothing says so in a toast while the renderer
 // outlines the hotspots, and Cmd/Ctrl+\ hides the bars. Keys and controller
@@ -37,6 +38,15 @@ function keyName(event: KeyboardEvent) {
 function typesElsewhere(target: EventTarget | null) {
   return target instanceof Element && target.closest("select, input, textarea, [role=alertdialog]") !== null;
 }
+
+const scales: { value: PlayScale; label: string }[] = [
+  { value: "fit", label: "Fit" },
+  { value: "100", label: "100%" },
+  { value: "50", label: "50%" },
+];
+
+const picker =
+  "h-7 max-w-56 rounded-md border-0 bg-neutral-700 px-2 text-[12px] font-medium text-neutral-100 outline-none focus-visible:ring-[3px] focus-visible:ring-white/30";
 
 const noticeKey = "omni.play.linkNotice";
 const toastMs = 4000;
@@ -336,6 +346,15 @@ export function PlayMode({
     return () => cancelAnimationFrame(frame);
   }, [renderer, playing]);
 
+  // The device and the scale shown follow every change of what the player shows.
+  const screen = useMemo(() => {
+    if (!state) return null;
+    try {
+      return renderer.play.screen();
+    } catch {
+      return null;
+    }
+  }, [renderer, state]);
   const chosen = flows.find((candidate) => candidate.name === flow);
   const at = state ? boards.findIndex((candidate) => candidate.id === state.board) : -1;
 
@@ -375,7 +394,7 @@ export function PlayMode({
           <label className="flex items-center gap-1.5 text-[12px] text-neutral-400">
             Flow
             <select
-              className="h-7 max-w-56 rounded-md border-0 bg-neutral-700 px-2 text-[12px] font-medium text-neutral-100 outline-none focus-visible:ring-[3px] focus-visible:ring-white/30"
+              className={picker}
               value={chosen?.name ?? ""}
               onChange={(event) => {
                 const next = flows.find((candidate) => candidate.name === event.target.value);
@@ -391,6 +410,38 @@ export function PlayMode({
             </select>
           </label>
         )}
+        {screen?.devices?.length ? (
+          <>
+            <label className="flex items-center gap-1.5 text-[12px] text-neutral-400">
+              Device
+              <select
+                className={picker}
+                value={screen.device}
+                onChange={(event) => act(() => renderer.play.setDevice(event.target.value))}
+              >
+                {screen.devices.map((candidate) => (
+                  <option key={candidate.name} value={candidate.name}>
+                    {candidate.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="flex items-center gap-1.5 text-[12px] text-neutral-400">
+              Scale
+              <select
+                className={picker}
+                value={screen.scale}
+                onChange={(event) => act(() => renderer.play.setScale(event.target.value as PlayScale))}
+              >
+                {scales.map((candidate) => (
+                  <option key={candidate.value} value={candidate.value}>
+                    {candidate.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </>
+        ) : null}
       </div>
       <div ref={stage} tabIndex={-1} className="relative min-h-0 flex-1 overflow-hidden bg-[#1e1e1e] outline-none">
         {error ? (

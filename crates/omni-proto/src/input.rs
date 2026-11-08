@@ -99,4 +99,6 @@ pub(crate) struct Press {
     pub(crate) dragged: bool,
     pub(crate) follow: Option<Follow>,
     pub(crate) reverts: Vec<Revert>,
+    /// Where the pointer was when a drag last scrolled.
+    pub(crate) last: [f64; 2],
 }

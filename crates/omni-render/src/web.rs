@@ -887,6 +887,23 @@ pub fn play_gamepad(button: u32, down: bool) -> Result<bool, String> {
     with_play(|play| play.gamepad(button, down))
 }
 
+/// A wheel turn of `dx`, `dy` CSS pixels at the stage point `x`, `y`
+/// (`Session::wheel`). Returns whether anything scrolled.
+pub fn play_wheel(x: f32, y: f32, dx: f32, dy: f32) -> Result<bool, String> {
+    with_play(|play| play.wheel(x, y, dx, dy))
+}
+
+/// Shows the prototype on the device named `name` (`Session::set_device`).
+pub fn play_device(name: &str) -> Result<(), String> {
+    with_play(|play| play.set_device(name))?
+}
+
+/// Sets the scale of the screen on the stage: `fit`, `100` or `50`
+/// (`Session::set_scale`).
+pub fn play_scale(name: &str) -> Result<(), String> {
+    with_play(|play| play.set_scale(name))?
+}
+
 /// Goes back (`Session::back`). Returns whether there was a board to go back to.
 pub fn play_back() -> Result<bool, String> {
     with_play(Session::back)
@@ -905,6 +922,11 @@ pub fn play_restart(board: &str) -> Result<(), String> {
 /// Where the player is, as JSON (`Session::state`).
 pub fn play_state() -> Result<String, String> {
     with_play(|play| play.state().to_string())
+}
+
+/// The screen the prototype is shown on, as JSON (`Session::screen`).
+pub fn play_screen() -> Result<String, String> {
+    with_play(|play| play.screen().to_string())
 }
 
 /// Moves the session on to `now` (milliseconds) and draws it, at the size of
