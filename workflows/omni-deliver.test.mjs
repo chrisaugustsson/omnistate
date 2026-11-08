@@ -7,7 +7,9 @@
 // workflows/deliver-step.mjs in a temp git repository with a fake omni first
 // on PATH (fixtures/fake-omni.mjs) whose state is a JSON file, but for the
 // sleep courier, which it answers at once. It answers the role agents from
-// canned results by label.
+// canned results by label, and writes each result to the file its prompt
+// names, as the agent does, unless `written` says what to write instead:
+// null for no file.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFile, execFileSync, spawn, spawnSync } from "node:child_process";
@@ -109,6 +111,8 @@ const between = (text, open, close) => {
 const fileIn = (prompt) => lineAfter(prompt, "Use the Write tool to create this file:\n");
 const payloadIn = (prompt) => between(prompt, "\n<<<PAYLOAD\n", "\nPAYLOAD>>>\n");
 const commandIn = (prompt) => lineAfter(prompt, "run this command exactly as written, once:\n");
+// The file a role agent writes its result to, as its prompt names it.
+const resultFileIn = (prompt) => lineAfter(prompt, "Before you return, use the Write tool to create this file:\n");
 
 const sh = (command, dirs) => new Promise((resolve) => {
   execFile("/bin/sh", ["-c", command], { cwd: dirs.repo, env: dirs.env, maxBuffer: 64 * 1024 * 1024 }, (error, stdout) => {
@@ -210,7 +214,7 @@ function slept(prompt, sleeps) {
 // as the runtime's agents do, or with `serial`, one at a time. The fake
 // agents' own git commands go one at a time (serial), and in that line with
 // the couriers when those are too.
-function runtime(dirs, roles, fault, concurrent) {
+function runtime(dirs, roles, fault, concurrent, written) {
   const calls = [];
   const logs = [];
   const phases = [];
@@ -234,7 +238,14 @@ function runtime(dirs, roles, fault, concurrent) {
     }
     const queue = queues.get(opts.label);
     const answer = queue && queue.length ? queue.shift() : byDefault;
-    return typeof answer === "function" ? answer(call, serial, dirs) : answer;
+    const r = await (typeof answer === "function" ? answer(call, serial, dirs) : answer);
+    const file = resultFileIn(prompt);
+    const text = r && file ? written(call, r) : null;
+    if (text !== null) {
+      mkdirSync(dirname(file), { recursive: true });
+      writeFileSync(file, text);
+    }
+    return r;
   };
   // A barrier: every thunk runs, and one that throws gives null.
   const parallel = (thunks) => Promise.all(thunks.map((thunk) => Promise.resolve().then(thunk).catch(() => null)));
@@ -247,8 +258,8 @@ function runtime(dirs, roles, fault, concurrent) {
 
 // Runs the workflow to its end under the fake runtime, with the worktree's
 // helper; gives what it returned or threw, and the runtime's record.
-async function deliver(dirs, args = {}, roles = {}, { fault = () => null, source = SOURCE, concurrent = true } = {}) {
-  const rt = runtime(dirs, roles, fault, concurrent);
+async function deliver(dirs, args = {}, roles = {}, { fault = () => null, source = SOURCE, concurrent = true, written = (call, r) => JSON.stringify(r) } = {}) {
+  const rt = runtime(dirs, roles, fault, concurrent, written);
   let result = null;
   let error = null;
   try {
@@ -498,7 +509,7 @@ test("clarity records a criterion that names a test as a test obligation and a m
   ];
   const quoted = vote(1, { quote: "Badges are red", source: "doc doc-spec node n1" });
   const roles = {
-    "clarity:US-1": [{ testObligations: ["A regression test covers the badge"], gaps }],
+    "clarity:US-1": [{ testObligations: [1], gaps }],
     "clarity:US-2": [null],
     ...councilOf("US-1", [quoted, quoted, quoted], [vote(1), vote(1), vote(1)], [vote(1), vote(1), vote(1)]),
   };
@@ -883,7 +894,7 @@ test("a story waiting in implemented starts at its review; a criterion that name
   const roles = {
     // US-1 came before clarity, so no decision: the criterion names a test all the same.
     "review:US-1": [reviewed("pass", { unmet: { 1: "No test in the diff" } })],
-    "clarity:US-2": [{ testObligations: ["A regression test covers the badge"], gaps: [] }],
+    "clarity:US-2": [{ testObligations: [1], gaps: [] }],
     // US-2's reviewer judges the obligation clarity recorded; the judgement is not read.
     "review:US-2": [reviewed("pass", { unmet: { 1: "No test in the diff" } })],
   };
@@ -975,7 +986,7 @@ test("a review fails on a criterion not met, even with the verdict pass, and on 
 test("the script decides a review from its verdicts on the criteria and its defects, not from the reviewer's verdict: a test obligation's verdict and a defect that names only an obligation are not read, and a reviewer's obligation true counts for no other criterion", { timeout: 60000 }, async (t) => {
   const criteria = [{ text: "The badge is red", human_check: false }, { text: "A regression test covers the badge", human_check: false }];
   const dirs = scratch(t, [story("US-1", { criteria }), story("US-2", { criteria }), story("US-3", { criteria })]);
-  const obligation = { testObligations: ["A regression test covers the badge"], gaps: [] };
+  const obligation = { testObligations: [1], gaps: [] };
   const roles = {
     "clarity:US-1": [obligation],
     "clarity:US-2": [obligation],
@@ -1123,6 +1134,99 @@ test("no courier carries story content: however long a story's text, criteria, d
   const [exhausted] = questions(dirs).filter((th) => th.title === "US-2: still failing after 3 attempts");
   for (const f of dirs.story("US-2").findings) assert.ok(exhausted.posts[0].body.includes(f.text.replace(/^\[attempt \d\] /, "")), f.text.slice(0, 40));
   assert.deepEqual(result.outcomes.map((o) => [o.key, o.outcome]).sort(), [["US-1", "done"], ["US-2", "attempts_exhausted"]]);
+});
+
+// Every string in a payload, however deep.
+const stringsIn = (v) => (typeof v === "string" ? [v] : Array.isArray(v) ? v.flatMap(stringsIn) : v && typeof v === "object" ? Object.values(v).flatMap(stringsIn) : []);
+
+test("no payload carries an agent's long text: whatever clarity, the council, the implementer, the reviewer, the verifier, the test author and the journeys check return, no string a courier copies passes 500 characters, and the board gets their text whole, from the files the agents wrote", { timeout: 300000 }, async (t) => {
+  const long = (label) => `${label}-LONG "quoted" \\ ${"x".repeat(3000)}`;
+  const criteria = [{ text: "The badge is red", human_check: false }, { text: "A regression test covers the badge", human_check: false }];
+  const dirs = scratch(t, ["US-1", "US-2", "US-3", "US-4", "US-5"].map((key) => story(key, { criteria })));
+  const asked = (label, impact, fields = {}) => gap(long(label), impact, { criterion: long(`${label}-criterion`), options: [long(`${label}-a`), long(`${label}-b`)], recommendation: long(`${label}-rec`), reason: long(`${label}-reason`), ...fields });
+  // A member settles one gap with a long quote, splits on another, and has no pick for the third.
+  const member = (reading) => (call) => {
+    const q = questionIn(call.prompt);
+    if (q.startsWith("settled")) return vote(1, { quote: long(`settled-${reading}-quote`), source: long("settled-source") });
+    if (q.startsWith("split")) return vote(reading === "code" ? 2 : 1, { quote: long(`split-${reading}-quote`), source: "doc d1 node n1", why: long(`split-${reading}-why`) });
+    if (q.startsWith("impl")) return vote(1, { quote: long(`impl-${reading}-quote`), source: "src/badge.rs:1" });
+    return vote(0);
+  };
+  const council = (key) => councilOf(key, ...["spec", "code", "user"].map((reading) => Array.from({ length: 3 }, () => member(reading))));
+  const roles = {
+    "clarity:US-1": [{ testObligations: [1], gaps: [asked("minor", "ux", { blocking: false }), asked("settled", "scope"), asked("split", "scope"), asked("third", "ux"), asked("deferred", "technical")] }],
+    ...council("US-1"),
+    ...council("US-2"),
+    "impl:US-2": [
+      { status: "needs_decision", summary: "", question: long("impl-q"), options: [long("impl-a"), long("impl-b")], recommendation: long("impl-rec") },
+      built("US-2.txt", { decisions: [{ question: long("decision-q"), choice: long("decision-c") }] }),
+    ],
+    "review:US-2": [reviewed("fail", { unmet: { 0: long("evidence") }, defects: [{ text: long("defect"), files: ["src/badge.rs"], criterion: long("defect-criterion") }] })],
+    "verify:US-2": [verified({ 0: long("observed") })],
+    "tests:US-2": [authored({ status: "found_defect", defect: { test: long("test"), observed: long("test-observed"), expected: long("test-expected") } })],
+    "impl:US-3": [{ status: "blocked", summary: long("summary") }],
+    "tests:US-4": [authored({ status: "blocked", blockers: long("blockers") })],
+    final: [{ healthy: true, journeys: [long("journey")], report: long("report") }],
+  };
+
+  const { result, error, calls } = await deliver(dirs, {}, roles);
+
+  assert.equal(error, null);
+  const longest = couriersOf(calls).filter((c) => fileIn(c.prompt) !== null).map((c) => [c.label, Math.max(0, ...stringsIn(payloadOf(c)).map((x) => x.length))]);
+  assert.deepEqual(longest.filter(([, n]) => n > 500), [], JSON.stringify([...longest].sort((a, b) => b[1] - a[1]).slice(0, 3)));
+  assert.doesNotMatch(couriersOf(calls).map((c) => payloadIn(c.prompt) || "").join("\n"), /LONG/);
+  assert.deepEqual(result.outcomes.map((o) => [o.key, o.outcome]).sort(), [["US-2", "attempts_exhausted"], ["US-3", "blocked"], ["US-4", "blocked"], ["US-5", "done"]]);
+  const board = JSON.stringify(dirs.state().stories) + JSON.stringify(dirs.state().threads);
+  for (const label of [
+    "minor", "minor-rec", "deferred", "deferred-rec", "settled", "settled-a", "settled-spec-quote", "settled-source", "split", "split-criterion", "split-a", "split-b", "split-code-quote", "split-user-why", "split-reason", "third",
+    "impl-q", "impl-a", "impl-user-quote", "decision-q", "decision-c", "evidence", "defect", "defect-criterion", "observed", "test", "test-observed", "test-expected",
+    "summary", "blockers", "journey", "report",
+  ]) assert.ok(board.includes(JSON.stringify(long(label)).slice(1, -1)), label);
+});
+
+test("the test author ignores the story's findings: its oracle comes from the story's text, criteria, decisions and linked doc nodes only; the implementer and the reviewer still read them", { timeout: 120000 }, async (t) => {
+  const dirs = scratch(t, [story("US-1", { criteria: [{ text: "The badge is red", human_check: false }], findings: [{ stage: "testing", text: "rebase conflict in README", files: ["README"], resolved: false }] })]);
+
+  const { error, calls } = await deliver(dirs);
+
+  assert.equal(error, null);
+  const [tests] = agentsOf(calls, "tests:US-1");
+  assert.ok(tests.prompt.includes("\n- findings: ignore them, though the JSON holds them. They say what earlier attempts got wrong, not what the story requires: your oracle comes from the story's text, its criteria, its decisions and its linked doc nodes only.\n"), tests.prompt);
+  for (const role of ["impl", "review"]) {
+    const [c] = agentsOf(calls, `${role}:US-1`);
+    assert.match(c.prompt, /\n- findings: each with its stage, text, files and resolved\./, role);
+    assert.doesNotMatch(c.prompt, /ignore them/, role);
+  }
+});
+
+test("clarity names a test obligation by the criterion's number, and the helper writes its decision from the criterion's text on the board, so that no copy can miss it: the review is told it is an obligation; a number past the story's criteria fails the check, and the story is not delivered in this run", { timeout: 120000 }, async (t) => {
+  const criteria = [{ text: "The badge is red", human_check: false }, { text: "A regression test covers the \"red\" badge in `src/badge.rs`", human_check: false }];
+  const dirs = scratch(t, [story("US-1", { criteria }), story("US-2", { criteria })]);
+  const roles = { "clarity:US-1": [{ testObligations: [1], gaps: [] }], "clarity:US-2": [{ testObligations: [2], gaps: [] }] };
+
+  const { result, error, calls, logs } = await deliver(dirs, {}, roles);
+
+  assert.equal(error, null);
+  assert.deepEqual(dirs.story("US-1").decisions, [{ question: `Is "${criteria[1].text}" behaviour or a test?`, choice: "treated as a test obligation: the lane's test author owns it, and the verifier skips it", by: "agent" }]);
+  assert.equal(owedIn(agentsOf(calls, "review:US-1")[0].prompt), "Criterion 1 is a test obligation.");
+  assert.deepEqual(dirs.story("US-2").decisions, []);
+  assert.equal(agentsOf(calls, "courier:obligations:US-2").length, 1);
+  assert.ok(logs.some((l) => l.startsWith("US-2: the clarity check failed: ") && l.includes("US-2 has 2 criteria, numbered from 0, so 2 names none of them")), logs.join("\n"));
+  assert.deepEqual([agentsOf(calls, "impl:US-2"), result.outcomes.map((o) => [o.key, o.outcome])], [[], [["US-1", "done"]]]);
+});
+
+test("a journeys check whose result file the helper cannot read keeps neither the report off the Run thread nor the lock: its finish is refused, sent again, and then the report goes without the journeys, saying so", { timeout: 120000 }, async (t) => {
+  const dirs = scratch(t, [story("US-1")]);
+  const roles = { final: [{ healthy: true, journeys: ["Badge: works"], report: "Fine." }] };
+
+  const { result, error, calls, logs } = await deliver(dirs, {}, roles, { written: (call, r) => (call.label === "final" ? null : JSON.stringify(r)) });
+
+  assert.equal(error, null);
+  assert.equal(agentsOf(calls, "courier:finish").length, 5);
+  const posted = dirs.state().threads.find((th) => th.id === result.thread).posts;
+  assert.deepEqual([posted.length, result.posted, existsSync(join(dirs.repo, ".omni", "run.lock"))], [1, true, false]);
+  assert.ok(posted[0].body.includes("\n## Journeys\n- not given: the journeys check's result file could not be read; the run's log says why\n"), posted[0].body);
+  assert.ok(logs.some((l) => l.startsWith("The report goes without the journeys check's: ") && l.includes("is missing: the agent did not write it")), logs.join("\n"));
 });
 
 test("a check's finding quotes the end of the check's log, which the helper reads by the job's id: no courier carries the output, and the next implementer reads the finding from the board", { timeout: 120000 }, async (t) => {
@@ -1402,9 +1506,9 @@ test("prompts give the context first and the criteria and the task last, tell th
   assert.equal(result.checks.stack, "make stack-tests");
   const order = (prompt, headings) => headings.map((h) => prompt.indexOf(`\n${h}\n`));
   for (const [prompt, headings] of [
-    [clarity.prompt, ["## The story", "## The shared parts", "## The board", "## Acceptance criteria", "## Your task now"]],
-    [impl.prompt, ["## Your worktree", "## The story", "## The board", "## Rules", "## Acceptance criteria", "## Your task now"]],
-    [review.prompt, ["## The change", "## The story", "## The board", "## Rules", "## Acceptance criteria", "## Your task now"]],
+    [clarity.prompt, ["## The story", "## The shared parts", "## The board", "## Acceptance criteria", "## Your result, as a file", "## Your task now"]],
+    [impl.prompt, ["## Your worktree", "## The story", "## The board", "## Rules", "## Acceptance criteria", "## Your result, as a file", "## Your task now"]],
+    [review.prompt, ["## The change", "## The story", "## The board", "## Rules", "## Acceptance criteria", "## Your result, as a file", "## Your task now"]],
   ]) {
     const at = order(prompt, headings);
     assert.ok(at.every((n) => n > 0), `${headings} in ${prompt}`);
@@ -1413,6 +1517,7 @@ test("prompts give the context first and the criteria and the task last, tell th
     assert.doesNotMatch(prompt, /SPEC NODE|Show a badge|The badge is red|It looks right|Which red|#c00|doc-spec|n1|counts/);
   }
   for (const [prompt, role] of [[clarity.prompt, "clarity"], [impl.prompt, "impl"], [review.prompt, "review"]]) {
+    assert.equal(resultFileIn(prompt), join(dirs.repo, ".omni", "runs", result.run, "out", `${role}-US-1-1.json`));
     assert.ok(prompt.includes(`\n## The story\nRead the story US-1 first, from OmniState, with \`OMNI_RUN=${result.run} OMNI_ROLE=${role} OMNI_FEATURE='board' omni story read US-1 --json\`. It prints the story as JSON:\n`), prompt);
     assert.ok(prompt.includes(`\n- links: each one with a doc_id and a node_id is a node of a doc the story links. Read each of those docs once, with \`OMNI_RUN=${result.run} OMNI_ROLE=${role} OMNI_FEATURE='board' omni doc read <doc_id>\`, and find in it each linked node: the element whose data-omni-id is the node_id.\n`), prompt);
   }
@@ -1423,7 +1528,7 @@ test("prompts give the context first and the criteria and the task last, tell th
   assert.match(impl.prompt, /Never start the stack or run the stack tests \(`make stack-tests`\)/);
   assert.ok(review.prompt.includes(`See the diff with \`git -C ${dirs.worktree("US-1")} diff refs/heads/deliver/board...HEAD\``));
   assert.match(review.prompt, /\n## Acceptance criteria\nThe story's 2 criteria, numbered from 0 to 1 in the order the story gives them\. No criterion is a test obligation\.\n/);
-  for (const prompt of [clarity.prompt, review.prompt]) assert.match(prompt, /You are read-only: you change no file, make no commit, and write nothing to the board\./);
+  for (const prompt of [clarity.prompt, review.prompt]) assert.match(prompt, /You are read-only: you change no file but your result file, make no commit, and write nothing to the board\./);
   assert.doesNotMatch(impl.prompt, /You are read-only/);
 });
 
@@ -1439,6 +1544,20 @@ const jobsOf = (dirs, run) => {
 };
 // What the script sent a courier, as the payload object.
 const payloadOf = (call) => JSON.parse(payloadIn(call.prompt));
+// The payload with the parts of the agents' result files it names put in, as
+// the helper puts them in.
+const filledOf = (call) => {
+  const { outs = [], ...payload } = payloadOf(call);
+  const results = outs.map((o) => JSON.parse(readFileSync(o.file, "utf8")));
+  const fill = (v) => {
+    if (Array.isArray(v)) return v.map(fill);
+    if (!v || typeof v !== "object") return v;
+    if ("$out" in v) return v.at.reduce((x, k) => (x == null ? undefined : x[k]), results[v.$out]);
+    if ("$join" in v) return v.$join.map((p) => (typeof p === "string" ? p : String(fill(p) ?? "").trim())).join("");
+    return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, fill(x)]));
+  };
+  return fill(payload);
+};
 // A commit on deliver/board that this run did not make, as another landing would.
 function advance(dirs, file, text) {
   const wt = join(dirs.root, `advance-${++edits}`);
@@ -1528,7 +1647,7 @@ test("a test author that checked deliver/<slug> out in the lane and committed th
 test("the verifier's prompt leaves out the seed and lint commands when the checks set none, and says all the same that the stack has no users until the seed runs and never to write into its database; a test obligation is the test author's: the verifier skips it, and the story lands without it judged", { timeout: 120000 }, async (t) => {
   const criteria = [{ text: "The badge is red", human_check: false }, { text: "A regression test covers the badge", human_check: false }];
   const dirs = scratch(t, [story("US-1", { criteria })], [], { checks: { fast: "true" } });
-  const roles = { "clarity:US-1": [{ testObligations: ["A regression test covers the badge"], gaps: [] }], "verify:US-1": [verified({ 1: "No test ran" })] };
+  const roles = { "clarity:US-1": [{ testObligations: [1], gaps: [] }], "verify:US-1": [verified({ 1: "No test ran" })] };
 
   const { result, error, calls } = await deliver(dirs, {}, roles);
 
@@ -2187,7 +2306,7 @@ test("the run ends with the journeys check in the lane worktree, then finish get
   assert.ok(final.prompt.includes(`The lane worktree ${laneOf(dirs)}, on a detached HEAD at the tip of deliver/board, where this run landed its stories.`), final.prompt);
   assert.ok(final.prompt.includes("\n## The stories this run landed\n- US-1\n"), final.prompt);
   const [finish] = agentsOf(calls, "courier:finish");
-  const { report } = payloadOf(finish);
+  const { report } = filledOf(finish);
   assert.deepEqual({ ...report, outcomes: [...report.outcomes].sort((a, b) => a.key.localeCompare(b.key)) }, {
     outcomes: [{ key: "US-1", outcome: "done" }, { key: "US-2", outcome: "blocked" }],
     council: { settled: 0, asked: 0 },

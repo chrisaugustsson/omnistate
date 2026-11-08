@@ -31,6 +31,19 @@ holds:
 - The helper writes the thread of a story out of attempts, and the report's
   list of blocked stories, from the board.
 
+A courier copies the payload it writes for the helper the same way, so no
+payload carries an agent's text either: no string in one passes about 500
+characters, however long a reviewer's evidence or a council member's quote.
+Every role agent writes its result, the object it returns, to
+`.omni/runs/<run>/out/<label>.json` as well. A payload names the parts of that
+file a step writes, such as a finding's evidence or a decision's choice, with
+the fnv1a of those parts as the script got them back from the agent, and the
+helper reads them from the file. A file that is missing, or whose parts hash
+otherwise, is refused, and the courier is sent again; a step still refused
+after its retries stops the story on an error. Only the report's journeys
+have a fallback: when their file cannot be read, the report goes without them
+and says so, so that the run still posts it and gives its lock up.
+
 ## Starting a run
 
 Once per machine, `make install-agent-tools` links the workflow at
@@ -89,7 +102,10 @@ files: it reads the checkout's HEAD at its start, and keeps its own state in
 - **Clarity.** One check for each backlog story whose text, criteria, linked
   nodes or decisions changed since its last check. A criterion that names a
   test becomes a test obligation, which the lane's test author owns and the
-  verifier skips; the omni-stories skill writes test obligations under
+  verifier skips. The check names it by its number, and the helper records
+  the decision with the criterion's text from the board; a number the story
+  has no criterion for fails the check, and the story waits for the next
+  run; the omni-stories skill writes test obligations under
   `Tests:` in the story's text instead. Once clarity has checked a story, its
   obligations are those it recorded, and nothing else: "The Test connection
   button shows Connected" is behaviour. A story clarity never checked, such
@@ -148,7 +164,8 @@ and testing.
    - A verifier exercises every criterion but the test obligations, on the
      stack that `stack_up` started.
    - A test author writes the story's regression tests and commits them on the
-     lane's detached HEAD. `lane-clean` throws away what it left uncommitted,
+     lane's detached HEAD. Its oracle comes from the story's text, criteria,
+     decisions and linked doc nodes: it ignores the story's findings. `lane-clean` throws away what it left uncommitted,
      so that its check, which runs next as a job, runs on exactly what lands,
      and again after the check, for what the check left, such as a report.
    - `lane-land` lands the story, moves it to done, and removes its worktree
@@ -288,10 +305,10 @@ nearest process above it that is not a shell, which has been checked on macOS
 only.
 
 `.omni/` also holds the clarity cache, `clarity.json`, and a folder for each
-run, `.omni/runs/<run>/`: the payloads in flight, the record of applied steps,
-the jobs with their logs, the timings and the report. A run's start adds
-`.omni/` to `.git/info/exclude` when git does not ignore it already; this
-repo's `.gitignore` does.
+run, `.omni/runs/<run>/`: the payloads in flight, the agents' results, the
+record of applied steps, the jobs with their logs, the timings and the report.
+A run's start adds `.omni/` to `.git/info/exclude` when git does not ignore it
+already; this repo's `.gitignore` does.
 
 ## The report and the timings
 
@@ -307,7 +324,8 @@ The report has:
   that landed without regression tests, with the reason;
 - the stories landed on `deliver/<slug>`, with their commits and the command
   that brings them in;
-- the blocked stories, with their threads, from the board;
+- the blocked stories, with their threads, from the board, or that the board
+  could not be read;
 - every story's outcome;
 - how many questions the council settled, and how many it sent to the human;
 - the human checks still pending;

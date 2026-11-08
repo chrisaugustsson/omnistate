@@ -44,6 +44,17 @@
 //   that gave the lock up goes on without it.
 // - A start repeated by the same session within 5 minutes, before its run
 //   made any call, gets the first start's body back, with --force too.
+// - No payload carries an agent's text: a role agent writes its result, the
+//   object it returns, to <root>/.omni/runs/<runId>/out/<label>.json, and the
+//   payload names its parts. outs, [{file, hash}], lists the files; a value
+//   {"$out": i, "at": [key or index, ...]} stands for the part at that path in
+//   the file outs[i] names, and {"$join": [part, ...]} for the text of its
+//   parts, each a literal string or such a value, trimmed. The helper puts
+//   them in before the step runs. Each file's hash is fnv1a of
+//   JSON.stringify of the parts the payload takes from it, in the order they
+//   come, a part the file lacks as null, as the script computed it from the
+//   object the agent returned. A file that is missing or not JSON, or whose
+//   parts hash otherwise, is refused with retry true, and nothing is written.
 // - Every step that runs records its start, its end and its payload's key in
 //   .omni/runs/<runId>/timings.jsonl, and lane-prepare its rebase; finish
 //   reports them.
@@ -73,6 +84,10 @@
 //   attempt. A finding that names a job gets the end of its log
 // - decision {key, question, choice, by}: key, recorded (false when the
 //   story has that question with that choice already)
+// - obligations {key, indexes}: key, recorded (how many it wrote); the test
+//   obligation decision of each criterion by index from 0, written with the
+//   criterion's text from the board. An index the story has no criterion for
+//   is refused, and nothing is written
 // - files {key}: key, files (how many)
 // - thread-open {title, body, key?, job?}: thread, and key when given. A
 //   body that names a job gets the end of its log
@@ -830,12 +845,12 @@ const findingsOf = (story) => {
   return { findings, uncounted, earlier }
 }
 // A criterion that names a test is a test obligation, which the lane's test
-// author owns. Clarity records it as a decision with this question and
-// choice, which the script writes, and a story clarity has checked has its
-// obligations from those decisions alone. A story implemented before clarity
-// ran has none, so for it a test must be the thing the criterion delivers.
-// The script carries the same question and choice; a test checks that the two
-// agree.
+// author owns. Clarity names it by index, and the obligations step records
+// it as a decision with this question and choice, from the criterion's text
+// on the board, so that no copy of the text can miss the match below. A
+// story clarity has checked has its obligations from those decisions alone.
+// A story implemented before clarity ran has none, so for it a test must be
+// the thing the criterion delivers.
 export const TEST_OBLIGATION = 'treated as a test obligation: the lane\'s test author owns it, and the verifier skips it'
 export const testQuestion = (criterion) => `Is "${criterion}" behaviour or a test?`
 const NAMES_TEST = /^(an?|the)\s+(unit|integration|e2e|regression)\s+tests?\b|^(an?|the)\s+tests?\s+(for|that|of)\b|\b(add|write)s?\b[^.]{0,30}\btests?\b|\btests?\s+(pass|cover)/i
@@ -954,8 +969,11 @@ const timingTable = (records, jobs) => {
 const reportText = (b, info, report) => {
   const list = (v) => (Array.isArray(v) ? v.filter((x) => x !== null && x !== undefined) : [])
   const lines = (items) => (items.length ? items.map((i) => `- ${i}`).join('\n') : '- none')
+  // A board that cannot be read leaves the lists that come from it unknown,
+  // which the report says, rather than none.
   let stories = []
-  try { stories = b.listStories() } catch {}
+  let unread = null
+  try { stories = b.listStories() } catch (e) { unread = `- unknown: the board could not be read (${failure(e)})` }
   const titles = new Map(stories.map((s) => [s.key, s.title]))
   const named = (key) => (titles.get(key) ? `${key} ${titles.get(key)}` : String(key))
   const landed = list(info.landed)
@@ -970,10 +988,10 @@ const reportText = (b, info, report) => {
     `# Run ${b.runId} on ${b.feature}`,
     ...list(report.notes).map(String),
     `## Landed on ${b.branch}\n${lines(landed.map((l) => `${named(l.key)}: ${commitsOf(l).join('; ') || 'no commits'}`))}${landed.length ? `\n\nBring them into your branch with \`git merge --ff-only ${b.branch}\`.` : ''}`,
-    `## Blocked\n${lines(stories.filter((s) => s.blocked && s.status !== 'done' && s.status !== 'cancelled').map((s) => `${named(s.key)}: thread ${(s.links || []).map((l) => l.thread_id).filter(Boolean).join(', ') || '(none linked)'}`))}`,
+    `## Blocked\n${unread || lines(stories.filter((s) => s.blocked && s.status !== 'done' && s.status !== 'cancelled').map((s) => `${named(s.key)}: thread ${(s.links || []).map((l) => l.thread_id).filter(Boolean).join(', ') || '(none linked)'}`))}`,
     `## Outcomes\n${lines(list(report.outcomes).filter((o) => o.key).map((o) => `${named(o.key)}: ${o.outcome}${o.detail ? `: ${o.detail}` : ''}`))}`,
     `## Council\n- ${settled} question${settled === 1 ? '' : 's'} settled by the council, ${count(council.asked)} sent to the human`,
-    `## Pending human checks\n${lines(checks)}`,
+    `## Pending human checks\n${unread || lines(checks)}`,
     ...(Array.isArray(report.journeys) ? [`## Journeys\n${lines(list(report.journeys).map(String))}`] : []),
     `## Timings\n${Number.isFinite(began) ? `The run took ${took(Date.now() - began)}.\n\n` : ''}${timingTable(timingsOf(b.root, b.runId), jobs)}`,
   ].join('\n\n')}\n`
@@ -1102,6 +1120,26 @@ const STEPS = {
     if ((was.decisions || []).some((d) => d.question === p.question && d.choice === p.choice)) return { key: p.key, recorded: false }
     b.write('decision', p.key, ['--question', p.question, '--choice', p.choice, '--by', p.by])
     return { key: p.key, recorded: true }
+  })(),
+
+  // Clarity's test obligations, by index: the question carries the
+  // criterion's text as the board has it, which obligationsOf matches. Every
+  // index is checked before the first write; one the story already has is
+  // not written again.
+  obligations: (b, p) => missing(p, 'key') || (() => {
+    if (!Array.isArray(p.indexes)) return { ok: false, error: 'the payload needs indexes: [criterion index, ...]' }
+    const story = b.readStory(p.key)
+    const criteria = (story.criteria || []).map(criterionOf)
+    const wrong = p.indexes.filter((i) => !Number.isInteger(i) || i < 0 || i >= criteria.length)
+    if (wrong.length) return { ok: false, error: `${p.key} has ${criteria.length} criteria, numbered from 0, so ${wrong.map((i) => JSON.stringify(i)).join(', ')} names none of them` }
+    let recorded = 0
+    for (const i of [...new Set(p.indexes)]) {
+      const question = testQuestion(criteria[i].text)
+      if ((story.decisions || []).some((d) => d.question === question && d.choice === TEST_OBLIGATION)) continue
+      b.write('decision', p.key, ['--question', question, '--choice', TEST_OBLIGATION, '--by', 'agent'])
+      recorded++
+    }
+    return { key: p.key, recorded }
   })(),
 
   // What the story's branch changed since it left deliver/<slug> becomes its
@@ -1529,7 +1567,7 @@ const STEPS = {
 }
 // The steps whose bodies are recorded under their opId, so that a repeat does
 // not write twice. The others only read, or wait: a repeat runs them again.
-const WRITES = new Set(['claim', 'rework', 'release', 'move', 'block', 'unblock', 'finding', 'decision', 'files', 'thread-open', 'exhaust', 'unblock-pass', 'worktree', 'clarity-record', 'checks-set', 'job-start', 'job-kill', 'lane-prepare', 'lane-clean', 'lane-base', 'lane-reset', 'lane-candidate', 'lane-land', 'finish'])
+const WRITES = new Set(['claim', 'rework', 'release', 'move', 'block', 'unblock', 'finding', 'decision', 'obligations', 'files', 'thread-open', 'exhaust', 'unblock-pass', 'worktree', 'clarity-record', 'checks-set', 'job-start', 'job-kill', 'lane-prepare', 'lane-clean', 'lane-base', 'lane-reset', 'lane-candidate', 'lane-land', 'finish'])
 
 // ---- start: the lock, reconcile, the deliver branch, the checks ------------
 // A start repeated by a retried courier comes within minutes of the first.
@@ -1693,6 +1731,65 @@ const startRun = (b, log) => {
   }
 }
 
+// ---- what agents wrote -----------------------------------------------------
+// A role agent writes its result to the run's out folder, and a payload names
+// the parts of it a step writes, by path, so that no courier copies an
+// agent's text: its findings, decisions, questions or reports. The payload
+// with those parts put in, or why it cannot have them: retry true for a file
+// that is missing or holds other parts than the agent returned, which the
+// courier's repeat finds again, and false for a payload that names them
+// wrong. One file's parts are hashed in the order they come, depth first,
+// keys in their order in the payload, as the script hashes them.
+const outsOf = (root, runId, payload) => {
+  if (payload.outs === undefined) return { payload }
+  const { outs, ...rest } = payload
+  const dir = path.join(runDirOf(root, runId), 'out')
+  if (!Array.isArray(outs) || outs.some((o) => !o || typeof o.file !== 'string' || typeof o.hash !== 'string' || path.dirname(path.resolve(o.file)) !== dir || !o.file.endsWith('.json'))) {
+    return { refused: `outs must be [{file, hash}], each file a .json in ${dir}` }
+  }
+  const results = []
+  for (const o of outs) {
+    const text = readText(o.file)
+    if (text === null) return { retry: `the agent's result file ${o.file} is missing: the agent did not write it` }
+    try { results.push(JSON.parse(text)) } catch { return { retry: `the agent's result file ${o.file} is not JSON` } }
+  }
+  const parts = outs.map(() => [])
+  let wrong = null
+  const at = (value, keys) => keys.reduce((v, k) => (v !== null && typeof v === 'object' && Object.hasOwn(v, k) ? v[k] : undefined), value)
+  const fill = (v) => {
+    if (Array.isArray(v)) return v.map(fill)
+    if (v === null || typeof v !== 'object') return v
+    if (Object.hasOwn(v, '$out')) {
+      if (!Number.isInteger(v.$out) || v.$out < 0 || v.$out >= outs.length || !Array.isArray(v.at)) {
+        wrong = wrong || `${JSON.stringify(v)} names no part of a file in outs`
+        return null
+      }
+      const value = at(results[v.$out], v.at)
+      parts[v.$out].push(value === undefined ? null : value)
+      return value
+    }
+    if (Object.hasOwn(v, '$join')) {
+      if (!Array.isArray(v.$join)) {
+        wrong = wrong || '$join needs an array of parts'
+        return ''
+      }
+      return v.$join.map((part) => {
+        if (typeof part === 'string') return part
+        const value = fill(part)
+        return typeof value === 'string' ? value.trim() : value === null || value === undefined ? '' : String(value)
+      }).join('')
+    }
+    return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, fill(x)]))
+  }
+  const filled = fill(rest)
+  if (wrong) return { refused: wrong }
+  for (const [i, o] of outs.entries()) {
+    const hash = fnv1a(JSON.stringify(parts[i]))
+    if (hash !== o.hash) return { retry: `the agent's result in ${o.file} is not what the agent returned: the parts the payload takes from it hash to ${hash}, not ${o.hash}` }
+  }
+  return { payload: filled }
+}
+
 // ---- a step of a run -------------------------------------------------------
 // The courier writes the payload at <root>/.omni/runs/<runId>/in/<opId>.json,
 // so the root comes from its path.
@@ -1736,6 +1833,11 @@ const runStep = async (flags) => {
   // without the lock, unless another run has taken it since.
   const released = flags.step === 'finish' && marker && marker.released === true && !fs.existsSync(lockPathOf(root))
   if (!released && !holdLock(root, flags.run)) return refuse(`run ${flags.run} no longer holds the lock`)
+  // The parts of the agents' results the payload names, before any write.
+  const filled = outsOf(root, flags.run, payload)
+  if (filled.refused) return refuse(filled.refused)
+  if (filled.retry) return { ok: false, received, error: filled.retry, retry: true }
+  payload = filled.payload
   // The marker goes down before the first write, and the body replaces it
   // once the step worked. A step that failed leaves it: the script tries a
   // failed write again with the same opId, and the repeat carries it on.

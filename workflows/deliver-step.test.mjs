@@ -273,6 +273,68 @@ test("a decision the story has already, the same question with the same choice, 
   assert.deepEqual(dirs.story("US-1").decisions, [{ question: "Which red?", choice: "#c00", by: "human" }, { question: "Which red?", choice: "#f00", by: "agent" }]);
 });
 
+// An agent's result as the agent writes it in the run's out folder, pretty
+// printed, which the parts' hash does not see.
+function result(dirs, run, name, r) {
+  const file = join(dirs.repo, ".omni", "runs", run, "out", `${name}.json`);
+  mkdirSync(dirname(file), { recursive: true });
+  writeFileSync(file, JSON.stringify(r, null, 2));
+  return file;
+}
+// The hash of the parts a payload takes from one file, in their order, as
+// the script computes it from the object the agent returned.
+const partsHash = (...values) => fnv1a(JSON.stringify(values));
+
+test("a payload names the parts of agents' result files it writes, by path, in text joined with literal strings and trimmed, so that no courier copies an agent's text: the helper reads each file, checks its parts' hash, and writes them; its answer stays small", (t) => {
+  const dirs = scratch(t, [story("US-1")]);
+  const { run } = start(dirs);
+  const evidence = `Pink at src/badge.rs:1\n${'a "quoted" \\ backslash '.repeat(300)}`;
+  const reviewFile = result(dirs, run, "review-US-1-1", { verdict: "fail", criteria: [{ index: 0, criterion: "The badge is red", met: false, evidence: ` ${evidence}\n` }], defects: [{ text: "No border", files: ["src/badge.rs", "src/b.css"], criterion: "" }] });
+  const voteFile = result(dirs, run, "council-US-1-spec-1", { pick: 1, quote: "red, always", source: "doc d1 node n1" });
+  const clarityFile = result(dirs, run, "clarity-US-1-1", { testObligations: [], gaps: [{ question: "Which red?", options: ["#c00", "#f00"] }] });
+
+  const finding = step(dirs, run, "finding", { key: "US-1", stage: "review", findings: [
+    { text: { $join: ["Criterion not met: \"", { $out: 0, at: ["criteria", 0, "criterion"] }, "\". ", { $out: 0, at: ["criteria", 0, "evidence"] }] }, files: [] },
+    { text: { $join: [{ $out: 0, at: ["defects", 0, "text"] }] }, files: { $out: 0, at: ["defects", 0, "files"] } },
+  ], outs: [{ file: reviewFile, hash: partsHash("The badge is red", ` ${evidence}\n`, "No border", ["src/badge.rs", "src/b.css"]) }] });
+  const decision = step(dirs, run, "decision", {
+    key: "US-1",
+    question: { $out: 0, at: ["gaps", 0, "question"] },
+    choice: { $join: [{ $out: 0, at: ["gaps", 0, "options", 0] }, " (council: \"", { $out: 1, at: ["quote"] }, "\" (", { $out: 1, at: ["source"] }, "))"] },
+    by: "agent",
+    outs: [{ file: clarityFile, hash: partsHash("Which red?", "#c00") }, { file: voteFile, hash: partsHash("red, always", "doc d1 node n1") }],
+  });
+
+  assert.deepEqual([finding.ok, decision.ok], [true, true]);
+  assert.deepEqual(dirs.story("US-1").findings.map((f) => [f.text, f.files]), [[`[attempt 1] Criterion not met: "The badge is red". ${evidence.trim()}`, []], ["[attempt 1] No border", ["src/badge.rs", "src/b.css"]]]);
+  assert.deepEqual(dirs.story("US-1").decisions, [{ question: "Which red?", choice: '#c00 (council: "red, always" (doc d1 node n1))', by: "agent" }]);
+  assert.ok(JSON.stringify(finding).length < 200);
+});
+
+test("a result file that is missing, or whose parts hash otherwise than the object the agent returned, is refused with retry true before anything is written or recorded, and the same op goes on once the file is right; outs that name a file outside the run's out folder are refused for good", (t) => {
+  const dirs = scratch(t, [story("US-1")]);
+  const { run } = start(dirs);
+  const file = join(dirs.repo, ".omni", "runs", run, "out", "impl-US-1-1.json");
+  const obj = { opId: "decision-out-1", key: "US-1", question: { $out: 0, at: ["decisions", 0, "question"] }, choice: { $out: 0, at: ["decisions", 0, "choice"] }, by: "agent", outs: [{ file, hash: partsHash("Which red?", "#c00") }] };
+
+  const missing = helperRun(dirs, stepArgv(dirs, run, "decision", obj));
+  result(dirs, run, "impl-US-1-1", { status: "ready", decisions: [{ question: "Which red?", choice: "#c01" }] });
+  const changed = helperRun(dirs, stepArgv(dirs, run, "decision", obj));
+  const before = [dirs.story("US-1").decisions.length, appliedOf(dirs, run, "decision")[obj.opId]];
+  // The same object with its keys in another order.
+  result(dirs, run, "impl-US-1-1", { decisions: [{ choice: "#c00", question: "Which red?" }], status: "ready" });
+  const right = helperRun(dirs, stepArgv(dirs, run, "decision", obj));
+  const outside = helperRun(dirs, stepArgv(dirs, run, "decision", { ...obj, opId: "decision-out-2", outs: [{ file: join(dirs.repo, "impl-US-1-1.json"), hash: obj.outs[0].hash }] }));
+
+  assert.deepEqual([missing.ok, missing.retry, changed.ok, changed.retry], [false, true, false, true]);
+  assert.equal(missing.error, `the agent's result file ${file} is missing: the agent did not write it`);
+  assert.equal(changed.error, `the agent's result in ${file} is not what the agent returned: the parts the payload takes from it hash to ${partsHash("Which red?", "#c01")}, not ${obj.outs[0].hash}`);
+  assert.deepEqual(before, [0, undefined]);
+  assert.deepEqual([right.ok, right.recorded], [true, true]);
+  assert.deepEqual(dirs.story("US-1").decisions, [{ question: "Which red?", choice: "#c00", by: "agent" }]);
+  assert.deepEqual([outside.ok, outside.retry], [false, false]);
+});
+
 test("every write repeated with its opId gets its first body back from the record and calls nothing again", (t) => {
   const dirs = scratch(t, [story("US-1"), story("US-2", { blocked: true, links: [questionLink("th-1")] })], [thread("th-1", "US-2: Which red?", "#c00")]);
   const { run } = start(dirs);
@@ -1088,14 +1150,23 @@ test("context gives as test obligations, once clarity has checked the story, onl
   assert.deepEqual([checked.clarified, checked.obligations], [true, [0]]);
 });
 
-test("the helper's test-obligation question and choice are the script's, which records them", () => {
-  const source = readFileSync(fileURLToPath(new URL("./omni-deliver.js", import.meta.url)), "utf8");
-  const choice = source.match(/^const TEST_OBLIGATION = '((?:[^'\\]|\\.)*)'$/m);
-  const question = source.match(/^const testQuestion = \(criterion\) => `(.*)`$/m);
+test("obligations writes the test obligation decision of each criterion by index, with the criterion's text from the board, which context then names; an index the story has no criterion for is refused for good, and nothing is written; a repeat writes none twice", (t) => {
+  const criteria = [{ text: "The badge is red" }, { text: "A regression test covers the badge's \"red\" colour" }];
+  const dirs = scratch(t, [story("US-1", { criteria })]);
+  const { run } = start(dirs);
+  mkdirSync(join(dirs.repo, ".omni"), { recursive: true });
+  writeFileSync(join(dirs.repo, ".omni", "clarity.json"), JSON.stringify({ "US-1": "0123abcd" }));
 
-  assert.ok(choice && question, "the script declares TEST_OBLIGATION and testQuestion");
-  assert.equal(choice[1].replace(/\\'/g, "'"), TEST_OBLIGATION);
-  assert.equal(question[1].replace("${criterion}", "X"), testQuestion("X"));
+  const past = step(dirs, run, "obligations", { key: "US-1", indexes: [1, 2] });
+  const negative = step(dirs, run, "obligations", { key: "US-1", indexes: [-1] });
+  const written = step(dirs, run, "obligations", { key: "US-1", indexes: [1, 1] });
+  const again = step(dirs, run, "obligations", { key: "US-1", indexes: [1] });
+
+  assert.deepEqual([past.ok, past.retry, negative.ok, negative.retry], [false, false, false, false]);
+  assert.equal(past.error, "US-1 has 2 criteria, numbered from 0, so 2 names none of them");
+  assert.deepEqual([written.recorded, again.recorded], [1, 0]);
+  assert.deepEqual(dirs.story("US-1").decisions, [{ question: testQuestion(criteria[1].text), choice: TEST_OBLIGATION, by: "agent" }]);
+  assert.deepEqual(step(dirs, run, "context", { key: "US-1" }).obligations, [1]);
 });
 
 test("exhaust opens a thread named after the story's attempts, with every attempt's findings whole, those that used no attempt and those before the latest answer, read from the board, links it and blocks the story; its answer gives none of them", (t) => {
@@ -1137,6 +1208,25 @@ Attempt 1:
   assert.deepEqual([dirs.story("US-1").blocked, dirs.story("US-1").links], [true, [questionLink(th.id)]]);
   assert.deepEqual(again, body);
   assert.ok(JSON.stringify(body).length < 300);
+});
+
+test("an exhaust cut off after its post is carried on by its repeat from its pending marker: the attempt the first try fixed and its thread, with one post, linked from the story, which is blocked", async (t) => {
+  const findings = [1, 2, 3].map((n) => ({ stage: "review", text: `[attempt ${n}] Still blue`, files: [], resolved: false }));
+  const dirs = scratch(t, [story("US-1", { findings })]);
+  const { run } = start(dirs);
+  const obj = { opId: "exhaust-US-1-cut", key: "US-1" };
+
+  await cutOff(t, dirs, run, "exhaust", obj, () => questions(dirs).some((th) => th.posts.length === 1), { FAKE_OMNI_HANG_AFTER: "post" });
+  const pending = appliedOf(dirs, run, "exhaust")[obj.opId];
+  // Another failed attempt reaches the board before the repeat.
+  dirs.edit((s) => { s.stories[0].findings.push({ stage: "testing", text: "[attempt 4] Blue again", files: [], resolved: false }); });
+  const again = step(dirs, run, "exhaust", obj);
+
+  const [th, ...others] = questions(dirs);
+  assert.deepEqual([pending.pending, pending.attempt, pending.thread], [true, 3, th.id]);
+  assert.deepEqual(pick(again), { ok: true, thread: th.id, key: "US-1", attempt: 3 });
+  assert.deepEqual([th.title, th.posts.length, others], ["US-1: still failing after 3 attempts", 1, []]);
+  assert.deepEqual([dirs.story("US-1").blocked, dirs.story("US-1").links], [true, [questionLink(th.id)]]);
 });
 
 test("a story list past 1 MB is read whole", (t) => {
@@ -2438,6 +2528,20 @@ Bring them into your branch with \`git merge --ff-only deliver/board\`.
 });
 
 const noReport = { outcomes: [], council: { settled: 0, asked: 0 } };
+
+test("a finish that cannot read the board says so in the report's blocked stories and pending human checks, instead of none", (t) => {
+  const dirs = scratch(t, [story("US-1", { blocked: true, criteria: [{ text: "It looks right", human_check: true, pending: true }] })]);
+  const { run, thread: runThread } = start(dirs);
+  const down = join(dirs.root, "down");
+  writeFileSync(down, "Connection refused\n");
+
+  const body = step(dirs, run, "finish", { report: noReport }, { FAKE_OMNI_DOWN: down });
+
+  const text = readFileSync(body.report, "utf8");
+  assert.deepEqual([body.ok, dirs.state().threads.find((th) => th.id === runThread).posts.length], [true, 1]);
+  assert.ok(text.includes("\n## Blocked\n- unknown: the board could not be read (Connection refused)\n\n"), text);
+  assert.ok(text.includes("\n## Pending human checks\n- unknown: the board could not be read (Connection refused)\n\n"), text);
+});
 
 test("a finish whose post failed keeps the report as report.md, gives the lock up, and says it may be tried again; its repeat with the same opId goes on without the lock and posts the report once", (t) => {
   const dirs = scratch(t);

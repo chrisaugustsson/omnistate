@@ -19,7 +19,9 @@ export const meta = {
 // command runs in the host helper, workflows/deliver-step.mjs, which a
 // courier agent runs for each step. No agent writes to the board itself, and
 // no courier carries story content: each agent reads its story from OmniState
-// with omni story read, and the helper gives the script only small facts.
+// with omni story read, and the helper gives the script only small facts. Nor
+// does a courier carry an agent's text: the helper writes it to the board
+// from the file the agent wrote its result to.
 
 // ---- args ------------------------------------------------------------------
 const A = args && typeof args === 'object' ? args : {}
@@ -211,11 +213,73 @@ const carry = async (name, prompt, expected, label, past = false) => {
   throw new Error(`${label}: ${problem}, after ${COURIER_RETRIES} retries`)
 }
 
+// ---- what agents return, as files --------------------------------------------
+// A courier cannot copy an agent's long text exactly: a finding with a
+// reviewer's evidence, a few KB of escaped JSON, failed the copy 4 times. So
+// every role agent also writes its result, the object it returns, to a file
+// in the run's out folder, and a payload names the parts of it a step writes:
+// part(r, path) for a text in it, list(r, path) for a list of strings,
+// words(...) for a text of literal strings and parts, each part trimmed by
+// the helper. step() turns them into {$out, at} and
+// {$join}, and gives each file the fnv1a of the parts it takes from the
+// object the agent returned; the helper reads the file and refuses parts that
+// hash otherwise (deliver-step.mjs).
+const written = new WeakMap()
+const PART = Symbol('part')
+const WORDS = Symbol('words')
+const valueAt = (r, at) => at.reduce((v, k) => (v !== null && typeof v === 'object' && Object.prototype.hasOwnProperty.call(v, k) ? v[k] : undefined), r)
+// A part of an agent's result that is a text, else the fallback, a literal.
+const part = (r, at, fallback = '') => {
+  const value = valueAt(r, at)
+  return written.has(r) && typeof value === 'string' && value.trim() ? { [PART]: true, file: written.get(r), at, value } : fallback
+}
+// A list of strings in an agent's result, such as a defect's files.
+const list = (r, at) => {
+  const value = valueAt(r, at)
+  return written.has(r) && Array.isArray(value) && value.length ? { [PART]: true, file: written.get(r), at, value } : []
+}
+const words = (...parts) => ({ [WORDS]: parts.flat() })
+const encode = (fields) => {
+  const files = []
+  const parts = []
+  const walk = (v) => {
+    if (v && v[PART]) {
+      let i = files.indexOf(v.file)
+      if (i === -1) {
+        i = files.push(v.file) - 1
+        parts.push([])
+      }
+      parts[i].push(v.value === undefined ? null : v.value)
+      return { $out: i, at: v.at }
+    }
+    if (v && v[WORDS]) return { $join: v[WORDS].map((p) => (typeof p === 'string' ? p : walk(p))) }
+    if (Array.isArray(v)) return v.map(walk)
+    if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, walk(x)]))
+    return v
+  }
+  const out = walk(fields)
+  return files.length ? { ...out, outs: files.map((file, i) => ({ file, hash: fnv1a(JSON.stringify(parts[i])) })) } : out
+}
+// The prompt's section that asks for the file.
+const resultFile = (file) => `## Your result, as a file
+The workflow writes to the board from a file of yours, not from a copy of your words. Before you return, use the Write tool to create this file:
+${file}
+Its whole content is your result as JSON: the same object you return, with the same fields and the same text, character for character. If the Write tool refuses because the file exists, Read the file, then Write it.
+`
+// A role agent, whose result the script may write to the board: the prompt,
+// a function of the file, asks for that file as well.
+const act = async (role, prompt, opts, model = MODELS[role]) => {
+  const file = `${root}/.omni/runs/${runId}/out/${opIdOf(opts.label)}.json`
+  const r = await ask(role, prompt(file), opts, model)
+  if (r && typeof r === 'object') written.set(r, file)
+  return r
+}
+
 // One host step. Its payload, with its opId, goes in a file under the run's
 // folder, and the command carries the payload's hash. opId: the one the
 // caller took for the step already, as job() does.
 const step = (name, fields = {}, { label = name, key = fields.key, past = false, opId = opIdOf(key ? `${label}-${key}` : label) } = {}) => {
-  const payload = JSON.stringify({ opId, ...fields })
+  const payload = JSON.stringify(encode({ opId, ...fields }))
   const file = `${root}/.omni/runs/${runId}/in/${opId}.json`
   const command = `node ${shellPath(HELPER)} ${name} --run ${runId} --payload ${shellPath(file)} --hash ${fnv1a(payload)}`
   return carry(name, courierPrompt(command, file, payload), fnv1a(payload), key ? `courier:${name}:${key}` : `courier:${name}`, past)
@@ -226,7 +290,7 @@ const step = (name, fields = {}, { label = name, key = fields.key, past = false,
 // project needs no naming: omni finds the link of the main worktree from any
 // git worktree of it.
 const omniAs = (role) => `OMNI_RUN=${runId} OMNI_ROLE=${role} OMNI_FEATURE=${quote(feature)} omni`
-const READ_ONLY = 'You are read-only: you change no file, make no commit, and write nothing to the board.'
+const READ_ONLY = 'You are read-only: you change no file but your result file, make no commit, and write nothing to the board.'
 const BOARD = `## The board
 The workflow makes every write to the board itself, through its helper, from what you return. Never run an omni command that writes (a story claim, move, finding, decision, edit or block, a post, a thread create); reading with omni is fine.`
 
@@ -259,11 +323,6 @@ const findingCounts = (ctx, task) => {
 const owedList = (ctx) => (ctx.obligations.length ? `${ctx.obligations.length === 1 ? 'Criterion' : 'Criteria'} ${ctx.obligations.join(', ')} ${ctx.obligations.length === 1 ? 'is a test obligation' : 'are test obligations'}` : 'No criterion is a test obligation')
 const criteriaSection = (ctx, owed = true) => `## Acceptance criteria
 ${ctx.criteria ? `The story's ${plural(ctx.criteria, 'criterion', 'criteria')}, numbered from 0 to ${ctx.criteria - 1} in the order the story gives them.${owed ? ` ${owedList(ctx)}.` : ''}` : 'The story has no criteria.'}`
-// The decision clarity records for a criterion that names a test. The helper
-// carries the same question and choice, and gives a story's test obligations
-// from these decisions once clarity has checked it, by index.
-const testQuestion = (criterion) => `Is "${criterion}" behaviour or a test?`
-const TEST_OBLIGATION = 'treated as a test obligation: the lane\'s test author owns it, and the verifier skips it'
 
 const TWO_IMPLEMENTATIONS = `
 ## The two-implementation test (MUST apply to every acceptance criterion)
@@ -305,9 +364,10 @@ next check finds a smaller edge in it.
 const TESTS_AND_IMPACT = `
 ## A criterion that names a test
 A criterion that names a test (a test, test file, suite or case to write or to pass)
-does not describe outside behaviour. List it in testObligations, verbatim, and raise
-no gap for it: the workflow records it as a test obligation, which the lane's test
-author owns and the verifier skips.
+does not describe outside behaviour. List its number in testObligations, counting
+from 0 in the order the story gives its criteria, and raise no gap for it: the
+workflow records it as a test obligation, which the lane's test author owns and the
+verifier skips.
 
 ## Impact (decide for every gap)
 Say what the answer decides: scope (what the story does at all), data_security (what
@@ -321,7 +381,7 @@ const CLARITY_SCHEMA = {
   type: 'object',
   required: ['testObligations', 'gaps'],
   properties: {
-    testObligations: { type: 'array', items: { type: 'string' }, description: 'The criteria that name a test instead of outside behaviour, verbatim' },
+    testObligations: { type: 'array', items: { type: 'integer', minimum: 0 }, description: 'The numbers of the criteria that name a test instead of outside behaviour, counting from 0 in the order the story gives them' },
     gaps: {
       type: 'array',
       description: 'Criteria in this story that fail the two-implementation test. Empty when every criterion decides the behaviour',
@@ -341,7 +401,7 @@ const CLARITY_SCHEMA = {
     },
   },
 }
-const clarityPrompt = (ctx) => `You check ONE story of the feature "${feature}" for gaps before any code is written. ${READ_ONLY}
+const clarityPrompt = (ctx, file) => `You check ONE story of the feature "${feature}" for gaps before any code is written. ${READ_ONLY}
 
 ${storySection(ctx, 'clarity', { decisions: 'They are settled: a gap one of them already settles is NOT raised again.' })}
 
@@ -352,6 +412,7 @@ ${BOARD}
 ${TWO_IMPLEMENTATIONS}${BLOCKING_OR_MINOR}${TESTS_AND_IMPACT}
 ${criteriaSection(ctx, false)} A criterion with human_check true is confirmed by a human later.
 
+${resultFile(file)}
 ## Your task now
 Apply the rules above to every criterion of the story, and return the test obligations and the gaps.
 Return raw structured data only.`
@@ -397,7 +458,7 @@ const CONTINUE = 'A worktree of an earlier attempt is in place, with its commits
 const RESUME = 'An earlier session of this attempt stopped to ask a question, which the story\'s decisions now settle. What it committed or left uncommitted is in the worktree: continue from it, do not start over.'
 // found: what the worktree step found when the worktree was not on
 // story/<key>, and what to do about it.
-const implPrompt = (ctx, wt, attempt, task, found) => `You implement ONE story of the feature "${feature}" in its own git worktree.
+const implPrompt = (ctx, wt, attempt, task, found, file) => `You implement ONE story of the feature "${feature}" in its own git worktree.
 
 ## Your worktree
 ${wt} (branch story/${ctx.key}, cut from ${branch}). Work only there: cd into it first, and run every command there.${found ? `\n${found}` : ''}
@@ -418,6 +479,7 @@ ${CONVENTIONS}
 
 ${criteriaSection(ctx)}
 
+${resultFile(file)}
 ## Your task now
 This is attempt ${attempt} of ${MAX_ATTEMPTS} since the human's latest answer. ${task}
 Return raw structured data only.`
@@ -463,7 +525,7 @@ const reviewSchema = (n) => ({
     recommendation: { type: 'string', description: 'Only with needs_decision: the option you suggest' },
   },
 })
-const reviewPrompt = (ctx, wt) => `You review ONE story of the feature "${feature}" before it goes to the test lane. ${READ_ONLY} You run no test, build or app either.
+const reviewPrompt = (ctx, wt, file) => `You review ONE story of the feature "${feature}" before it goes to the test lane. ${READ_ONLY} You run no test, build or app either.
 
 ## The change
 Worktree ${wt}, branch story/${ctx.key}, cut from ${branch}. See the diff with \`git -C ${wt} diff refs/heads/${branch}...HEAD\` and read the changed files there.
@@ -485,6 +547,7 @@ ${BOARD}
 
 ${criteriaSection(ctx)}
 
+${resultFile(file)}
 ## Your task now
 Review the change against every criterion of the story.
 Return raw structured data only.`
@@ -517,7 +580,7 @@ const VERIFY_SCHEMA = {
 // The project's commands a criterion about one is checked by; those unset
 // are left out.
 const commandsOf = () => ['fast', 'stack', 'lint'].filter((name) => checks[name]).map((name) => `${name} is \`${checks[name]}\``)
-const verifyPrompt = (ctx) => `You check ONE story of the feature "${feature}" by running it. ${READ_ONLY}
+const verifyPrompt = (ctx, file) => `You check ONE story of the feature "${feature}" by running it. ${READ_ONLY}
 
 ## Where
 The lane worktree ${laneDir} holds story/${ctx.key} rebased onto ${branch}, on a detached HEAD, and the story's checks passed there${checks.stack_up ? `; the stack is up, as \`${checks.stack_up}\` started it from there. Exercise the story against that stack, not another copy on the machine` : ''}. Work only there: cd into it first, and run every command there. ${LANE_HEAD}
@@ -535,6 +598,7 @@ ${commandsOf().length ? `- A criterion about a command is checked by running tha
 
 ${criteriaSection(ctx)}
 
+${resultFile(file)}
 ## Your task now
 Exercise every criterion of the story, and return one entry for each, by its number, with its text copied verbatim.
 Return raw structured data only.`
@@ -655,12 +719,13 @@ const RESUME_TESTS = 'An earlier session stopped to ask a question, which the st
 // The author asked once more, after its check came out red.
 const fixTests = (check, r) => `An earlier session committed tests in the lane worktree, and their check \`${check}\` ${ended(r)}: read the end of it.
 The story itself passed its checks and its verifier. Fix the tests, never the production code, so that the check passes, commit the fix, and return the result with the check.`
-const authorPrompt = (ctx, base, confirmed, task) => `You write the lasting regression tests for one story of the feature "${feature}", with a fresh context.
+const authorPrompt = (ctx, base, confirmed, task, file) => `You write the lasting regression tests for one story of the feature "${feature}", with a fresh context.
 
 ## Your worktree
 The lane worktree ${laneDir} holds story/${ctx.key} rebased onto ${branch}, on a detached HEAD, and a verifier has confirmed there that it matches its criteria. Work only there: cd into it first, and run every command there. ${LANE_HEAD} Commit on that HEAD: the workflow lands your commits. You own tests; you never change production code.
 
 ${storySection(ctx, 'tests', { decisions: 'They are settled: test against them as if the spec said so.' })}
+- findings: ignore them, though the JSON holds them. They say what earlier attempts got wrong, not what the story requires: your oracle comes from the story's text, its criteria, its decisions and its linked doc nodes only.
 
 ## Criteria the verifier confirmed (observed values are withheld so they cannot shape your oracle)
 ${confirmed.length ? `${confirmed.length === 1 ? 'Criterion' : 'Criteria'} ${confirmed.join(', ')} of the story.` : '(none)'}
@@ -678,6 +743,7 @@ ${conventions('Commit on the detached HEAD of the lane worktree. Do not push, ch
 
 ${criteriaSection(ctx)}
 
+${resultFile(file)}
 ## Your task now
 ${task}
 Return raw structured data only.`
@@ -691,7 +757,7 @@ const FINAL_SCHEMA = {
     report: { type: 'string' },
   },
 }
-const finalPrompt = (landed) => `You run the final check after a delivery run on the feature "${feature}". ${READ_ONLY}
+const finalPrompt = (landed, file) => `You run the final check after a delivery run on the feature "${feature}". ${READ_ONLY}
 
 ## Where
 The lane worktree ${laneDir}, on a detached HEAD at the tip of ${branch}, where this run landed its stories. Work only there: cd into it first, and run every command there. ${LANE_HEAD}
@@ -704,6 +770,7 @@ The lane ran its checks on every story before it landed, so run none of them you
 
 ${BOARD}
 
+${resultFile(file)}
 ## Your task now
 1. Each story was checked on its own. Find the user journeys in the feature's docs (\`${omniAs('final')} doc list\`, then \`${omniAs('final')} doc read <doc>\`) and in these stories (\`${omniAs('final')} story read <key>\`) that span several of them (one story's output is another's input, a flow through several screens or endpoints), and exercise up to 3 of them for real, with the real components. Report each with its outcome.
 2. Stop every process and remove every container you started for the journeys, and confirm none is left.
@@ -739,7 +806,7 @@ const readingText = (reading, ctx, code) => {
   }
   return 'You judge as the feature\'s user, and nothing else: which option would surprise them least? The story says who they are and what they are doing. Quote a doc node or a decision only when one says so; otherwise give no evidence.'
 }
-const councilPrompt = (ctx, q, reading, code) => `You are one member of a council of three that settles a question a story raised, so that the human is asked only what the spec, the code and the user's expectations leave open. ${READ_ONLY} You answer on your own: the other members never see your answer, and there is one round.
+const councilPrompt = (ctx, q, reading, code, file) => `You are one member of a council of three that settles a question a story raised, so that the human is asked only what the spec, the code and the user's expectations leave open. ${READ_ONLY} You answer on your own: the other members never see your answer, and there is one round.
 
 ${storySection(ctx, 'council', { decisions: 'They are settled.', docs: false })}
 
@@ -755,6 +822,7 @@ ${q.criterion ? `Criterion: ${q.criterion}\n` : ''}Asked by ${q.asker}, who reco
 Options:
 ${(q.options || []).map((o, i) => `${i + 1}. ${o}`).join('\n') || '(none given)'}
 
+${resultFile(file)}
 ## Your task now
 Pick the option your reading supports, or 0 when it supports none. Give your evidence: the words that support the pick, quoted exactly, with their source (doc <id> node <id>, the decision "<question>", or path:line); leave quote and source empty when you have none. Say whether the gap is minor under the rule above.
 Return raw structured data only.`
@@ -762,28 +830,41 @@ Return raw structured data only.`
 const councilSlots = semaphore(COUNCILS)
 // For the run's report: questions the council settled, and those sent to the human.
 const tally = { settled: 0, asked: 0 }
+// A question an agent asked, at `at` in its result r: its text, for the
+// prompts and the logs, and where it is, for what the board gets, which
+// comes from the agent's file (said).
+const questionOf = (r, at, asker) => {
+  const q = valueAt(r, at) || {}
+  return { r, at, asker, question: String(q.question || '(no question given)'), criterion: q.criterion || '', options: Array.isArray(q.options) ? q.options : [], recommendation: q.recommendation || '', reason: q.reason || '' }
+}
+const said = (q, path, fallback = '') => part(q.r, [...q.at, ...path], fallback)
+const option = (q, n) => said(q, ['options', n - 1], String(q.options[n - 1]))
+// A member's quote and its source, as the council's evidence.
+const quoted = (v) => ['"', part(v, ['quote']), '" (', part(v, ['source']), ')']
 // A question for the human: a thread named after the story, with the
 // options and a recommendation, linked from the story, which is blocked
-// until it concludes.
+// until it concludes. recommendation and council: the parts of their text.
 const askHuman = async (ctx, q, label, recommendation, council) => {
   const key = ctx.key
-  const body = [
-    q.question,
-    ...(q.criterion ? [`Criterion: ${q.criterion}`] : []),
-    `Asked by ${q.asker}.`,
-    `Options:\n${(q.options || []).map((o, i) => `${i + 1}. ${o}`).join('\n') || '(none given)'}`,
-    `The council: ${council}`,
-    `Recommendation: ${recommendation}`,
-    ...(q.reason ? [`Why: ${q.reason}`] : []),
-  ].join('\n\n')
-  const { thread } = await step('thread-open', { key, title: `${key}: ${q.question}`, body: `${body}\n` }, { label: `${label}-thread` })
+  const body = words(
+    said(q, ['question'], q.question),
+    ...(q.criterion ? ['\n\nCriterion: ', said(q, ['criterion'])] : []),
+    `\n\nAsked by ${q.asker}.`,
+    '\n\nOptions:\n',
+    ...(q.options.length ? q.options.flatMap((o, i) => [`${i ? '\n' : ''}${i + 1}. `, option(q, i + 1)]) : ['(none given)']),
+    '\n\nThe council: ', ...council,
+    '\n\nRecommendation: ', ...recommendation,
+    ...(q.reason ? ['\n\nWhy: ', said(q, ['reason'])] : []),
+    '\n',
+  )
+  const { thread } = await step('thread-open', { key, title: words(`${key}: `, said(q, ['question'], q.question)), body }, { label: `${label}-thread` })
   tally.asked++
   log(`${key}: asked the human "${q.question}" on thread ${thread}`)
   return { settled: false, thread }
 }
 // The members' votes, in one round; a member that died votes nothing.
 const convene = (ctx, q, code) => councilSlots.run(() => parallel(READINGS.map((reading) => () =>
-  ask('council', councilPrompt(ctx, q, reading, code), { label: `council:${ctx.key}:${reading.id}`, phase: current, schema: VOTE_SCHEMA }))))
+  act('council', (file) => councilPrompt(ctx, q, reading, code, file), { label: `council:${ctx.key}:${reading.id}`, phase: current, schema: VOTE_SCHEMA }))))
 // The council settles a question when all three pick the same option and a
 // quote supports it, or all three call the gap minor: it becomes an agent
 // decision and no thread opens. Otherwise the thread opens with each
@@ -791,33 +872,39 @@ const convene = (ctx, q, code) => councilSlots.run(() => parallel(READINGS.map((
 // its recommendation.
 const conclude = async (ctx, q, votes, label) => {
   const key = ctx.key
-  const options = q.options || []
+  const options = q.options
   const picks = votes.map((v) => (v && Number.isInteger(v.pick) && v.pick >= 1 && v.pick <= options.length ? v.pick : 0))
-  const evidenced = votes.filter((v) => v && String(v.quote || '').trim() && String(v.source || '').trim())
+  const supported = (v) => v && String(v.quote || '').trim() && String(v.source || '').trim()
+  const evidenced = votes.filter(supported)
   if (picks[0] && picks.every((p) => p === picks[0]) && (evidenced.length || votes.every((v) => v && v.minor === true))) {
-    const evidence = evidenced.length ? evidenced.map((v) => `"${v.quote.trim()}" (${v.source.trim()})`).join('; ') : 'all three members call the gap minor'
-    await step('decision', { key, question: q.question, choice: `${options[picks[0] - 1]} (council: ${evidence})`, by: 'agent' }, { label: `${label}-decision` })
+    const evidence = evidenced.length ? evidenced.flatMap((v, i) => [...(i ? ['; '] : []), ...quoted(v)]) : ['all three members call the gap minor']
+    await step('decision', { key, question: said(q, ['question'], q.question), choice: words(option(q, picks[0]), ' (council: ', ...evidence, ')'), by: 'agent' }, { label: `${label}-decision` })
     tally.settled++
     log(`${key}: the council settled "${q.question}"`)
     return { settled: true }
   }
   const majority = picks.find((p) => p && picks.filter((x) => x === p).length >= 2)
-  const members = READINGS.map((reading, i) => {
+  const members = READINGS.flatMap((reading, i) => {
     const v = votes[i]
-    if (!v) return `- ${reading.name}: returned nothing`
-    const evidence = String(v.quote || '').trim() && String(v.source || '').trim() ? `"${v.quote.trim()}" (${v.source.trim()})` : 'no evidence'
-    return `- ${reading.name}: ${picks[i] ? `option ${picks[i]}, ${options[picks[i] - 1]}` : 'no option'}; evidence: ${evidence}; minor: ${v.minor === true ? 'yes' : 'no'}${v.why ? `. ${v.why}` : ''}`
+    if (!v) return [`\n- ${reading.name}: returned nothing`]
+    return [
+      `\n- ${reading.name}: `,
+      ...(picks[i] ? [`option ${picks[i]}, `, option(q, picks[i])] : ['no option']),
+      '; evidence: ', ...(supported(v) ? quoted(v) : ['no evidence']),
+      `; minor: ${v.minor === true ? 'yes' : 'no'}`,
+      ...(part(v, ['why']) ? ['. ', part(v, ['why'])] : []),
+    ]
   })
-  const recommendation = majority ? `${options[majority - 1]} (the council's majority)` : `${q.recommendation || '(none)'} (the recommendation of ${q.asker})`
-  return askHuman(ctx, q, label, recommendation, `it did not settle this, in one round with each member on its own:\n${members.join('\n')}`)
+  const recommendation = majority ? [option(q, majority), " (the council's majority)"] : [said(q, ['recommendation'], '(none)'), ` (the recommendation of ${q.asker})`]
+  return askHuman(ctx, q, label, recommendation, ['it did not settle this, in one round with each member on its own:', ...members])
 }
 const settle = async (ctx, q, { code, label }) => conclude(ctx, q, await convene(ctx, q, code), label)
-// A question of an implementer or reviewer: to the council, or past the
-// questions it settles in one attempt, to the human.
+// A question of an implementer, a reviewer or a test author: to the
+// council, or past the questions it settles in one attempt, to the human.
 const question = (ctx, r, asker, code, label, asked) => {
-  const q = { question: r.question || '(no question given)', options: r.options || [], recommendation: r.recommendation || '', asker }
+  const q = questionOf(r, [], asker)
   if (asked < QUESTIONS_PER_ATTEMPT) return settle(ctx, q, { code, label })
-  return askHuman(ctx, q, label, `${q.recommendation || '(none)'} (the recommendation of ${asker})`, `not asked: it settled ${QUESTIONS_PER_ATTEMPT} questions of ${asker} in this attempt already`)
+  return askHuman(ctx, q, label, [said(q, ['recommendation'], '(none)'), ` (the recommendation of ${asker})`], [`not asked: it settled ${QUESTIONS_PER_ATTEMPT} questions of ${asker} in this attempt already`])
 }
 
 // ---- 1. start ----------------------------------------------------------------
@@ -872,31 +959,37 @@ const clarify = async (key) => {
 }
 const check = async (key) => {
   const ctx = await step('context', { key })
-  const r = await ask('clarity', clarityPrompt(ctx), { label: `clarity:${key}`, phase: 'Clarity', schema: CLARITY_SCHEMA })
+  const r = await act('clarity', (file) => clarityPrompt(ctx, file), { label: `clarity:${key}`, phase: 'Clarity', schema: CLARITY_SCHEMA })
   if (!r) {
     unclear.add(key)
     log(`${key}: the clarity check returned nothing; the story is not delivered in this run, and is checked again at the next start`)
     return
   }
+  // The test obligations go by index: the helper writes each decision from
+  // the criterion's text on the board, and refuses an index the story has no
+  // criterion for, which fails the check.
+  const owed = [...new Set(r.testObligations || [])]
+  if (owed.length) await step('obligations', { key, indexes: owed })
   // A question the story has a decision on is settled. The context gives the
-  // fnv1a of each decision's question, not its text.
+  // fnv1a of each decision's question, not its text. A gap's decision is
+  // written from the clarity check's file: its question, and its
+  // recommendation with what follows it.
   const known = new Set(ctx.questions)
-  const decide = async (q, choice) => {
-    if (known.has(fnv1a(q))) return
-    known.add(fnv1a(q))
-    await step('decision', { key, question: q, choice, by: 'agent' })
+  const decide = async (g, ...after) => {
+    if (known.has(fnv1a(String(g.question)))) return
+    known.add(fnv1a(String(g.question)))
+    await step('decision', { key, question: part(r, ['gaps', g.at, 'question'], String(g.question)), choice: words(part(r, ['gaps', g.at, 'recommendation']), ...after), by: 'agent' })
   }
-  for (const criterion of r.testObligations || []) await decide(testQuestion(criterion), TEST_OBLIGATION)
-  const gaps = (r.gaps || []).filter((g) => !known.has(fnv1a(String(g.question))))
-  for (const g of gaps.filter((x) => !x.blocking)) await decide(g.question, g.recommendation)
+  const gaps = (r.gaps || []).map((g, at) => ({ ...g, at })).filter((g) => !known.has(fnv1a(String(g.question))))
+  for (const g of gaps.filter((x) => !x.blocking)) await decide(g)
   const rank = (g) => (IMPACT.includes(g.impact) ? IMPACT.indexOf(g.impact) : IMPACT.length)
   const blocking = gaps.filter((x) => x.blocking).sort((a, b) => rank(a) - rank(b))
-  for (const g of blocking.slice(CLARITY_QUESTIONS)) await decide(g.question, `${g.recommendation} (deferred by the cap: a story asks at most ${CLARITY_QUESTIONS} blocking questions)`)
+  for (const g of blocking.slice(CLARITY_QUESTIONS)) await decide(g, ` (deferred by the cap: a story asks at most ${CLARITY_QUESTIONS} blocking questions)`)
   // The councils sit side by side, within the run's limit, and every one is
   // waited for. Their answers go to the board one at a time, in order: two
   // thread-opens of one story at once could each link the story without the
   // other's thread.
-  const asked = blocking.slice(0, CLARITY_QUESTIONS).map((g) => ({ ...g, asker: 'the clarity check' }))
+  const asked = blocking.slice(0, CLARITY_QUESTIONS).map((g) => questionOf(r, ['gaps', g.at], 'the clarity check'))
   const ballots = await Promise.all(asked.map((q) => convene(ctx, q, null).then((votes) => ({ votes }), (error) => ({ error }))))
   const answers = []
   const failures = []
@@ -916,7 +1009,7 @@ const check = async (key) => {
   // story pending again.
   await step('clarity-record', { key })
   const threads = answers.filter((a) => !a.settled).map((a) => a.thread)
-  clarity.push({ key, obligations: (r.testObligations || []).length, minor: gaps.filter((x) => !x.blocking).length, deferred: Math.max(blocking.length - CLARITY_QUESTIONS, 0), settled: answers.filter((a) => a.settled).length, threads })
+  clarity.push({ key, obligations: owed.length, minor: gaps.filter((x) => !x.blocking).length, deferred: Math.max(blocking.length - CLARITY_QUESTIONS, 0), settled: answers.filter((a) => a.settled).length, threads })
 }
 const clarityPass = async () => {
   const pending = (await step('clarity-pending', {})).keys
@@ -1064,14 +1157,16 @@ const sendBack = async (key, stage, findings, counts, what) => {
 // its courier.
 const recorded = new Map()
 // A criterion as a finding names it: as the agent copied it, else by number.
-const named = (i, c) => (c && String(c.criterion || '').trim() ? `"${String(c.criterion).trim()}"` : `criterion ${i} of the story`)
-const recordDecisions = async (key, decisions) => {
+// r: the agent's result, and pos: where in its criteria the verdict is.
+const named = (i, r, pos) => (pos !== undefined && part(r, ['criteria', pos, 'criterion']) ? ['"', part(r, ['criteria', pos, 'criterion']), '"'] : [`criterion ${i} of the story`])
+// An implementer's decisions, from its file.
+const recordDecisions = async (key, r) => {
   if (!recorded.has(key)) recorded.set(key, new Set())
   const known = recorded.get(key)
-  for (const d of decisions || []) {
+  for (const [i, d] of (Array.isArray(r.decisions) ? r.decisions : []).entries()) {
     if (!d || !d.question || !d.choice || known.has(`${d.question}\n${d.choice}`)) continue
     known.add(`${d.question}\n${d.choice}`)
-    await step('decision', { key, question: d.question, choice: d.choice, by: 'agent' })
+    await step('decision', { key, question: part(r, ['decisions', i, 'question'], String(d.question)), choice: part(r, ['decisions', i, 'choice'], String(d.choice)), by: 'agent' })
   }
 }
 
@@ -1110,9 +1205,9 @@ const implement = async (key, rework, claimed) => {
   let task = wt.created ? FRESH : CONTINUE
   for (let asked = 0; ; asked++) {
     const attempt = ctx.attempt + 1
-    const r = await persist(key, 'the implementer', () => ask('impl', implPrompt(ctx, wt.path, attempt, task, found), { label: `impl:${key}`, phase: 'Deliver', schema: IMPL_SCHEMA }, MODELS[attempt >= 2 ? 'implRetry' : 'impl']))
+    const r = await persist(key, 'the implementer', () => act('impl', (file) => implPrompt(ctx, wt.path, attempt, task, found, file), { label: `impl:${key}`, phase: 'Deliver', schema: IMPL_SCHEMA }, MODELS[attempt >= 2 ? 'implRetry' : 'impl']))
     if (!r) return noResult(key, `the implementer returned nothing, ${AGAIN_AFTER.length + 1} times`)
-    await recordDecisions(key, r.decisions)
+    await recordDecisions(key, r)
     if (r.status === 'needs_decision') {
       const answer = await question(ctx, r, 'the implementer', wt.path, 'impl-q', asked)
       if (!answer.settled) return { key, outcome: 'needs_decision', thread: answer.thread }
@@ -1121,7 +1216,7 @@ const implement = async (key, rework, claimed) => {
       continue
     }
     if (r.status !== 'ready') {
-      const { thread } = await step('thread-open', { key, title: `${key}: the implementer is blocked`, body: `${r.summary}\n` })
+      const { thread } = await step('thread-open', { key, title: `${key}: the implementer is blocked`, body: words(part(r, ['summary'], String(r.summary)), '\n') })
       return { key, outcome: 'blocked', thread }
     }
     await step('files', { key })
@@ -1146,15 +1241,22 @@ const review = async (key, wt) => {
   for (;;) {
     const ctx = await step('context', { key })
     const n = ctx.criteria
-    const v = await persist(key, 'the reviewer', () => ask('review', reviewPrompt(ctx, wt), { label: `review:${key}`, phase: 'Deliver', schema: reviewSchema(n) }))
+    const v = await persist(key, 'the reviewer', () => act('review', (file) => reviewPrompt(ctx, wt, file), { label: `review:${key}`, phase: 'Deliver', schema: reviewSchema(n) }))
     if (!v) return noResult(key, `the reviewer returned nothing, ${AGAIN_AFTER.length + 1} times`)
     if (v.verdict === 'needs_decision') {
       const answer = await question(ctx, v, 'the reviewer', wt, 'review-q', asked++)
       if (!answer.settled) return { key, outcome: 'needs_decision', thread: answer.thread }
       continue
     }
+    // Each criterion's verdict, and where it is in the reviewer's criteria.
     const judged = new Map()
-    for (const c of v.criteria || []) if (c && Number.isInteger(c.index) && c.index >= 0 && c.index < n && !judged.has(c.index)) judged.set(c.index, c)
+    const at = new Map()
+    for (const [pos, c] of (v.criteria || []).entries()) {
+      if (c && Number.isInteger(c.index) && c.index >= 0 && c.index < n && !judged.has(c.index)) {
+        judged.set(c.index, c)
+        at.set(c.index, pos)
+      }
+    }
     const missing = range(n).filter((i) => !judged.has(i))
     if (missing.length) {
       if (malformed++ < REVIEW_RETRIES) {
@@ -1167,13 +1269,15 @@ const review = async (key, wt) => {
     // a defect that names an obligation names it as the reviewer copied it.
     const owed = new Set(ctx.obligations)
     const owedText = new Set([...owed].map((i) => String(judged.get(i).criterion || '').trim()).filter(Boolean))
-    const unmet = range(n).filter((i) => !owed.has(i) && judged.get(i).met !== true).map((i) => ({ i, verdict: judged.get(i) }))
-    const defects = (v.defects || []).filter((d) => d && d.text && !owedText.has(String(d.criterion || '').trim()))
+    const unmet = range(n).filter((i) => !owed.has(i) && judged.get(i).met !== true)
+    const defects = (v.defects || []).map((d, pos) => ({ d, pos })).filter(({ d }) => d && d.text && !owedText.has(String(d.criterion || '').trim()))
     if (!unmet.length && !defects.length) return { pass: true }
+    // The findings' text comes from the reviewer's file.
+    const its = (...path) => part(v, path, String(valueAt(v, path) ?? ''))
     return {
       findings: [
-        ...unmet.map(({ i, verdict }) => ({ text: `Criterion not met: ${named(i, verdict)}. ${verdict.evidence}`, files: [] })),
-        ...defects.map((d) => ({ text: d.criterion ? `${d.text} (criterion: "${d.criterion}")` : d.text, files: d.files || [] })),
+        ...unmet.map((i) => ({ text: words('Criterion not met: ', ...named(i, v, at.get(i)), '. ', its('criteria', at.get(i), 'evidence')), files: [] })),
+        ...defects.map(({ d, pos }) => ({ text: d.criterion ? words(its('defects', pos, 'text'), ' (criterion: "', its('defects', pos, 'criterion'), '")') : words(its('defects', pos, 'text')), files: list(v, ['defects', pos, 'files']) })),
       ],
     }
   }
@@ -1501,16 +1605,19 @@ const laneStory = async (key) => {
     }
 
     const ctx = await step('context', { key })
-    const v = await persist(key, 'the verifier', () => ask('verify', verifyPrompt(ctx), { label: `verify:${key}`, phase: 'Lane', schema: VERIFY_SCHEMA }))
+    const v = await persist(key, 'the verifier', () => act('verify', (file) => verifyPrompt(ctx, file), { label: `verify:${key}`, phase: 'Lane', schema: VERIFY_SCHEMA }))
     if (!v) {
       await toTip()
       return noResult(key, `the verifier returned nothing, ${AGAIN_AFTER.length + 1} times`)
     }
     // A test obligation is the test author's, whatever the verifier says of it.
     const owed = new Set(ctx.obligations)
+    // Each criterion's result, by where it is in the verifier's criteria,
+    // whose file the findings' text comes from.
     const ran = new Map()
-    for (const c of v.criteria || []) if (c && Number.isInteger(c.index) && !ran.has(c.index)) ran.set(c.index, c)
-    const unmet = range(ctx.criteria).flatMap((i) => (owed.has(i) || (ran.has(i) && ran.get(i).ok === true) ? [] : [{ text: `Criterion not met when run: ${named(i, ran.get(i))}. ${ran.has(i) ? ran.get(i).evidence : 'The verifier did not exercise it.'}`, files: [] }]))
+    for (const [pos, c] of (v.criteria || []).entries()) if (c && Number.isInteger(c.index) && !ran.has(c.index)) ran.set(c.index, pos)
+    const evidence = (pos) => part(v, ['criteria', pos, 'evidence'], String(v.criteria[pos].evidence ?? ''))
+    const unmet = range(ctx.criteria).flatMap((i) => (owed.has(i) || (ran.has(i) && v.criteria[ran.get(i)].ok === true) ? [] : [{ text: words('Criterion not met when run: ', ...named(i, v, ran.get(i)), '. ', ran.has(i) ? evidence(ran.get(i)) : 'The verifier did not exercise it.'), files: [] }]))
     if (unmet.length) return fail(unmet, `its verification with ${unmet.length} criteri${unmet.length === 1 ? 'on' : 'a'} not met`)
 
     const confirmed = range(ctx.criteria).filter((i) => !owed.has(i))
@@ -1520,7 +1627,7 @@ const laneStory = async (key) => {
     // its result, or how the story's turn ends.
     const author = async (task) => {
       for (;;) {
-        const r = await persist(key, 'the test author', () => ask('tests', authorPrompt(tctx, base, confirmed, task), { label: `tests:${key}`, phase: 'Lane', schema: TESTS_SCHEMA }))
+        const r = await persist(key, 'the test author', () => act('tests', (file) => authorPrompt(tctx, base, confirmed, task, file), { label: `tests:${key}`, phase: 'Lane', schema: TESTS_SCHEMA }))
         if (!r) {
           await toTip()
           return { end: await noResult(key, `the test author returned nothing, ${AGAIN_AFTER.length + 1} times`) }
@@ -1536,11 +1643,11 @@ const laneStory = async (key) => {
           continue
         }
         if (r.status === 'found_defect') {
-          const d = r.defect || {}
-          return { end: await fail([{ text: `The test author's test ${d.test || '(unnamed)'} found a defect. Observed: ${d.observed || '(not given)'}. Expected: ${d.expected || '(not given)'}`, files: [] }], 'its tests, which found a defect') }
+          const d = (name, none) => part(r, ['defect', name], none)
+          return { end: await fail([{ text: words('The test author\'s test ', d('test', '(unnamed)'), ' found a defect. Observed: ', d('observed', '(not given)'), '. Expected: ', d('expected', '(not given)')), files: [] }], 'its tests, which found a defect') }
         }
         if (r.status !== 'done') {
-          const { thread } = await step('thread-open', { key, title: `${key}: the test author is blocked`, body: `${r.blockers || r.status}\n` })
+          const { thread } = await step('thread-open', { key, title: `${key}: the test author is blocked`, body: words(part(r, ['blockers'], String(r.status)), '\n') })
           await toTip()
           return { end: { key, outcome: 'blocked', thread } }
         }
@@ -1621,9 +1728,11 @@ const journeys = async () => {
     return [`not run: the lane worktree could not be put back at the tip of ${branch}: ${(e && e.message) || e}`]
   }
   try {
-    const r = await ask('final', finalPrompt(landed), { label: 'final', phase: 'Report', schema: FINAL_SCHEMA })
+    const r = await act('final', (file) => finalPrompt(landed, file), { label: 'final', phase: 'Report', schema: FINAL_SCHEMA })
     if (!r) return ['the journeys check returned nothing']
-    return [`${r.healthy ? 'healthy' : 'NOT healthy'}: ${r.report || ''}`.trim(), ...(r.journeys || []).map(String)]
+    // The report's journeys come from the check's file.
+    const health = r.healthy ? 'healthy' : 'NOT healthy'
+    return [part(r, ['report']) ? words(`${health}: `, part(r, ['report'])) : `${health}:`, ...(r.journeys || []).map((j, i) => part(r, ['journeys', i], String(j)))]
   } catch (e) {
     if (e && e.atCap) return [`not run: the run reached its agent cap of ${HARD_CAP}`]
     throw e
@@ -1640,7 +1749,15 @@ const finish = async (journeyLines) => {
     ...(journeyLines ? { journeys: journeyLines } : {}),
     notes,
   }
-  finished = await step('finish', { report }, { past: true })
+  // A journeys check whose file the helper cannot take would keep the report
+  // off the board and the lock held: the report goes without its journeys.
+  try {
+    finished = await step('finish', { report }, { past: true })
+  } catch (e) {
+    if (!/the agent's result/.test(String((e && e.message) || e))) throw e
+    log(`The report goes without the journeys check's: ${(e && e.message) || e}`)
+    finished = await step('finish', { report: { ...report, journeys: ['not given: the journeys check\'s result file could not be read; the run\'s log says why'] } }, { past: true })
+  }
   log(`The report of ${runId} is on the Run thread ${finished.thread}, and in ${finished.report}`)
 }
 
