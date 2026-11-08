@@ -9,6 +9,28 @@ no command itself: every git, omni and check command runs in its host helper,
 The helper's header describes that protocol and every step; the script's
 `meta` sums up a run.
 
+A courier copies the helper's whole answer back, and a long answer does not
+come back exactly: in the first real run, the courier of a story's context
+failed four times on the hash check. So no courier carries story content, and
+no answer the script reads passes about 2,000 characters, whatever a story
+holds:
+
+- The helper gives the script small facts, such as a story's attempt, how many
+  criteria it has and which of them are test obligations, by index, and how
+  many findings it has of each kind.
+- Every agent reads its story itself, with
+  `OMNI_RUN=<run> OMNI_ROLE=<role> OMNI_FEATURE=<feature> omni story read <key> --json`:
+  its text, criteria, decisions, findings and linked doc nodes. Its prompt
+  says how to tell the findings of this attempt budget, marked
+  `[attempt N]` and open, from those that used no attempt and from those
+  before the human's latest answer, and it reads the linked docs with
+  `omni doc read`.
+- An agent that needs a check's output reads the job's log by the path the
+  prompt names. A finding or a thread about a check names the job, and the
+  helper adds the end of its log.
+- The helper writes the thread of a story out of attempts, and the report's
+  list of blocked stories, from the board.
+
 ## Starting a run
 
 Once per machine, `make install-agent-tools` links the workflow at
@@ -106,8 +128,8 @@ and testing.
    `story/<key>`. A new worktree is cut from the tip of `deliver/<slug>`; one
    from an earlier attempt is kept, with its commits, and its story is picked
    first. From the second attempt on, the implementer runs on `implRetry`,
-   with every earlier finding by attempt. Implementers write no tests and never
-   start the stack. A worktree an implementer left with another branch or a
+   and reads every earlier finding, by attempt, on the board. Implementers
+   write no tests and never start the stack. A worktree an implementer left with another branch or a
    detached HEAD checked out goes back on `story/<key>` when it is clean, and
    the next implementer is told which commits to bring over with
    `git cherry-pick`; one with work in progress (uncommitted changes, a rebase
@@ -148,7 +170,8 @@ What sends a story back:
   story stays held where it failed until an implementer's slot is free, ahead
   of new stories; then one helper step, `rework`, moves it to the backlog and
   claims it again, and its next implementer goes on in its worktree. After the
-  third, the story is blocked on a thread with every attempt's findings.
+  third, the story is blocked on a thread with every attempt's findings, which
+  the helper writes from the board.
 - A failed lane check runs once more on the tip without the story, after
   `stack_reset` when the check is `stack_up` or `stack` (see The checks). When
   it passes there, the failure is the story's, and uses an attempt. When it
@@ -238,7 +261,8 @@ worktree, in a process group of its own and with no standard input, and logs
 its output under `.omni/runs/<run>/jobs/`. A courier waits for it up to 8
 minutes at a time. A job has 45 minutes: past that, its group gets SIGTERM,
 then SIGKILL 10 s later, and the check counts as failed. Its finding quotes the
-end of the output, which says that the job ran past its limit. A workflow
+end of the log, which the helper reads, and which says that the job ran past
+its limit. A workflow
 stopped from outside leaves its jobs running, and the next start stops them;
 finish stops those of its own run.
 
@@ -283,7 +307,7 @@ The report has:
   that landed without regression tests, with the reason;
 - the stories landed on `deliver/<slug>`, with their commits and the command
   that brings them in;
-- the blocked stories, with their threads;
+- the blocked stories, with their threads, from the board;
 - every story's outcome;
 - how many questions the council settled, and how many it sent to the human;
 - the human checks still pending;

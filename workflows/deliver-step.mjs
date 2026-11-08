@@ -53,23 +53,31 @@
 // - start, from flags: run, root, branch, tip, lane, thread, checks, stories
 //   ({keys, counts by status, blocked}), released, log
 // - checks-set {checks: {name: command}}: checks, all six
-// - list {}: stories (those not done or cancelled, each with key, status,
-//   blocked and holder), pickable (those with a worktree from an earlier
-//   attempt first, then in the board's order: priority, then how many stories
-//   each one unblocks, then number)
-// - context {key}: story, decisions, attempt, findings, uncounted, earlier,
-//   omitted (how many findings it left out, to stay small), cut (how many of
-//   those it gives it cut in the middle), docs, threads, clarified (whether
-//   the clarity cache has a hash of the story; a story version the old
-//   runner kept there is not a check of this workflow's)
+// - list {}: waiting (the implemented and reviewed stories not blocked,
+//   each with key and status), pickable (those with a
+//   worktree from an earlier attempt first, then in the board's order:
+//   priority, then how many stories each one unblocks, then number)
+// - context {key}: key, status, blocked, attempt, clarified (whether the
+//   clarity cache has a hash of the story; a story version the old runner
+//   kept there is not a check of this workflow's), criteria (how many),
+//   obligations (the indexes of the criteria that are test obligations),
+//   findings ({open, uncounted, earlier}: how many open findings count an
+//   attempt, how many used none, how many came before the human's latest
+//   answer) and questions (the fnv1a of each decision's question). No text
+//   of the story: every agent reads it with omni story read
 // - claim {key, stage}, rework {key}, release {key}, move {key, to}, block
 //   {key} and unblock {key}: key, status, blocked, holder. rework moves a
 //   story sent back to the backlog and claims it for implementing, in one
 //   call, so that no story planned on its files is claimed in between
-// - finding {key, stage, findings: [{text, files}], counts}: key, attempt
-// - decision {key, question, choice, by}: key
+// - finding {key, stage, findings: [{text, files, job?}], counts}: key,
+//   attempt. A finding that names a job gets the end of its log
+// - decision {key, question, choice, by}: key, recorded (false when the
+//   story has that question with that choice already)
 // - files {key}: key, files (how many)
-// - thread-open {title, body, key?}: thread, and key when given
+// - thread-open {title, body, key?, job?}: thread, and key when given. A
+//   body that names a job gets the end of its log
+// - exhaust {key}: thread, key, attempt; the thread of a story that used its
+//   last attempt, with the findings of every attempt, from the board
 // - unblock-pass {}: unblocked, log (at most 20 lines, then a count)
 // - worktree {key}: key, path, branch, created (true when the story starts on
 //   a branch of its own just cut, false when its branch has earlier work);
@@ -83,11 +91,10 @@
 // - clarity-record {key}: key, hash
 // - job-start {name, key?, cmd, cwd, limitMinutes?}: id, log. The command
 //   runs with OMNI_RUN set to the run, and OMNI_STORY to the key when given
-// - job-wait {id, maxSeconds}: id, done, and once done result, and tail when
-//   the job failed
+// - job-wait {id, maxSeconds}: id, done, and once done result
 // - job-kill {id}, or {start}, the opId of a job-start whose answer never
 //   came back: id (null when that start made no job), killed, done, and once
-//   done result and tail
+//   done result
 // - lane-prepare {key}: key, outcome: ready with base and candidate; conflict
 //   with files and count; dirty with files and count (uncommitted changes, a
 //   rebase in progress or an index.lock in the story's worktree);
@@ -107,15 +114,16 @@
 //   refused for deliver/<slug> checked out in the lane, it puts the branch
 //   back at the base and detaches the lane
 // - finish {report: {outcomes: [{key, outcome, detail?}], council: {settled,
-//   asked}, blocked: [{key, threads}], journeys?: [line], notes?: [line]}}:
-//   thread, posted, report, stopped
-// Outputs stay small, since a courier repeats every byte, and none should
-// pass about 20,000 characters: never doc text; of a job's log only its last
-// 2 KB, and only when the job failed; of a list of files or log lines at most
-// 20; of the board's stories only the open ones; of a story's findings each
-// one's head and tail, 1,500 characters at most, those that used no attempt
-// and the newest attempt's, and then the newest that keep its context within
-// 18,000.
+//   asked}, journeys?: [line], notes?: [line]}}: thread, posted, report,
+//   stopped. The blocked stories and their threads come from the board
+// Outputs stay small, since a courier repeats every byte: whatever a story
+// holds, no output the script reads passes about 2,000 characters. No output
+// carries story content (text, criteria, decisions, findings), doc text or a
+// job's output: the agents read the story with omni story read, docs with
+// omni doc read and a job's log by the path job-start gives, and the helper
+// writes from the board, or from the log, what quotes them (a finding, a
+// thread, the report). Of a list of files or log lines an output gives at
+// most 20.
 //
 // The lane, story by story: lane-prepare; the checks as jobs in the lane
 // worktree; the verifier; the test author; lane-clean, so that the test
@@ -379,8 +387,8 @@ const jobLimitMs = (minutes) => (typeof minutes === 'number' && minutes > 0 ? Ma
 // A stopped job's group gets SIGKILL this long after its SIGTERM.
 const KILL_GRACE_MS = 10000
 const graceMs = () => delay(Number(process.env.OMNI_DELIVER_KILL_GRACE_MS) || KILL_GRACE_MS)
-// What job-wait and job-kill give of a log: its last 2 KB, from the first
-// whole character.
+// What a finding or a thread that names a job quotes of its log: its last
+// 2 KB, from the first whole character.
 const TAIL_BYTES = 2048
 const jobsDirOf = (root, runId) => path.join(runDirOf(root, runId), 'jobs')
 const jobFiles = (dir, id) => ({ job: path.join(dir, `${id}.job.json`), log: path.join(dir, `${id}.log`), result: path.join(dir, `${id}.json`) })
@@ -468,6 +476,13 @@ const tailOf = (file) => {
   } finally {
     fs.closeSync(fd)
   }
+}
+// The end of a job's log as a finding or a thread the helper writes quotes
+// it: the script names the job by its id, and no courier carries its output.
+// null for a job the run does not have.
+const jobTail = (root, runId, id) => {
+  const job = typeof id === 'string' && /^[\w.-]+$/.test(id) ? jobAt(jobsDirOf(root, runId), id) : null
+  return job ? `The end of its output:\n\`\`\`\n${tailOf(job.files.log).replace(/\n+$/, '')}\n\`\`\`` : null
 }
 // The jobs of these runs that have not ended, as {run, job}.
 const runningJobs = (root, runIds) => runIds.flatMap((run) => jobsOf(root, run).filter((job) => !fs.existsSync(job.files.result)).map((job) => ({ run, job })))
@@ -790,89 +805,41 @@ const threadsOf = (b, story) => {
 // and an answer restarts the budget.
 const ATTEMPT = /^\[attempt (\d+)\] ?/
 const attemptOf = (story) => (story.findings || []).filter((f) => !f.resolved).reduce((n, f) => Math.max(n, Number((String(f.text).match(ATTEMPT) || [])[1] || 0)), 0)
-// A finding as a context gives it, since a courier repeats every byte: at
-// most 1,500 characters, its head and its tail on either side of a line that
-// marks the cut, the story on the board holding it whole. A check's finding
-// quotes the end of its output and ends in its last error, the closing fence
-// and the verdict, which the tail keeps; it comes back in every later prompt.
-// A fence the cut goes through goes with the middle; a code block the head
-// leaves open is closed, one the tail starts inside is opened again, and one
-// the text leaves open is closed at its end, so that no prompt reads on as
-// code after it.
-const FINDING_CHARS = 1500
-const CUT = '… (cut; full text on the board)'
-const FENCE = '```'
-// Each fence of a text, a ``` that starts a line, as [start, end].
-const fencesIn = (text) => [...text.matchAll(/^ {0,3}```/gm)].map((m) => [m.index, m.index + m[0].length])
-const cut = (text) => {
-  if (text.length <= FINDING_CHARS) return text
-  // The head and the tail share what the cut's line, a fence beside it and
-  // one at the end leave.
-  const room = FINDING_CHARS - `\n${CUT}\n`.length - 2 * `${FENCE}\n`.length
-  const fences = fencesIn(text)
-  let head = Math.ceil(room / 2)
-  let tail = text.length - (room - head)
-  for (const [from, to] of fences) {
-    if (from < head && head < to) head = from
-    if (from < tail && tail < to) tail = to
-  }
-  const open = (at) => fences.filter(([, to]) => to <= at).length % 2 === 1
-  const shut = open(head) && !open(tail) ? `\n${FENCE}` : ''
-  const reopen = open(tail) && !open(head) ? `\n${FENCE}` : ''
-  return `${text.slice(0, head)}${shut}\n${CUT}${reopen}\n${text.slice(tail)}${open(text.length) ? `\n${FENCE}` : ''}`
-}
-// The open findings by attempt, with their numbers taken off, and apart from
-// them those that used no attempt (a rebase conflict).
-const budgetOf = (story) => {
+// The open findings by attempt, with their numbers taken off, those that
+// used no attempt (a rebase conflict) apart, and the resolved ones of the
+// attempts before the human's latest answers, one group per attempt in the
+// order they came: an attempt number that comes again after an answer starts
+// a new group. The exhaustion thread gives them whole: it is posted from the
+// board, and no courier carries it.
+const findingsOf = (story) => {
   const byAttempt = new Map()
   const uncounted = []
-  for (const f of (story.findings || []).filter((x) => !x.resolved)) {
+  const earlier = []
+  for (const f of story.findings || []) {
     const m = String(f.text).match(ATTEMPT)
-    const item = { stage: f.stage, text: cut(m ? String(f.text).slice(m[0].length) : String(f.text)), files: f.files || [] }
-    if (!m) uncounted.push(item)
+    const item = { stage: f.stage, text: m ? String(f.text).slice(m[0].length) : String(f.text), files: f.files || [] }
+    if (f.resolved) {
+      if (!m) continue
+      const last = earlier[earlier.length - 1]
+      if (last && last.attempt === Number(m[1])) last.findings.push(item)
+      else earlier.push({ attempt: Number(m[1]), findings: [item] })
+    } else if (!m) uncounted.push(item)
     else byAttempt.set(Number(m[1]), [...(byAttempt.get(Number(m[1])) || []), item])
   }
   const findings = [...byAttempt.keys()].sort((a, c) => a - c).map((n) => ({ attempt: n, findings: byAttempt.get(n) }))
-  return { attempt: attemptOf(story), findings, uncounted, earlier: earlierOf(story) }
+  return { findings, uncounted, earlier }
 }
-// The resolved findings of the attempts before the human's latest answers, in
-// the order they came, one group per attempt: the next implementer still
-// sees what failed before them. An attempt number that comes again after an
-// answer starts a new group.
-const earlierOf = (story) => {
-  const groups = []
-  for (const f of (story.findings || []).filter((x) => x.resolved)) {
-    const m = String(f.text).match(ATTEMPT)
-    if (!m) continue
-    const item = { stage: f.stage, text: cut(String(f.text).slice(m[0].length)), files: f.files || [] }
-    const last = groups[groups.length - 1]
-    if (last && last.attempt === Number(m[1])) last.findings.push(item)
-    else groups.push({ attempt: Number(m[1]), findings: [item] })
-  }
-  return groups
-}
-// A story's findings grow with every attempt and every answer, so a context
-// gives, whatever the room, those that used no attempt, such as how to
-// resolve a rebase conflict, and then those of the newest attempt, even when
-// the story's text and decisions fill the room; after them, those that fit
-// in the room the rest of it leaves, in this order: the earlier attempts
-// since the human's latest answer, the latest first, then those before the
-// answer, the latest first. omitted counts the rest, which the story on the
-// board still holds, and cut those it gives cut in the middle.
-const CONTEXT_CHARS = 18000
-const fitted = (budget, room) => {
-  const attempts = [...budget.findings].reverse()
-  const always = [...budget.uncounted, ...(attempts.length ? attempts[0].findings : [])]
-  const order = [...always, ...attempts.slice(1).flatMap((g) => g.findings), ...[...budget.earlier].reverse().flatMap((g) => g.findings)]
-  const kept = new Set()
-  for (const f of order) {
-    room -= JSON.stringify(f).length + 1
-    if (room < 0 && !always.includes(f)) break
-    kept.add(f)
-  }
-  const keep = (groups) => groups.map((g) => ({ ...g, findings: g.findings.filter((f) => kept.has(f)) })).filter((g) => g.findings.length)
-  return { ...budget, findings: keep(budget.findings), earlier: keep(budget.earlier), omitted: order.length - kept.size, cut: [...kept].filter((f) => f.text.includes(CUT)).length }
-}
+// A criterion that names a test is a test obligation, which the lane's test
+// author owns. Clarity records it as a decision with this question and
+// choice, which the script writes, and a story clarity has checked has its
+// obligations from those decisions alone. A story implemented before clarity
+// ran has none, so for it a test must be the thing the criterion delivers.
+// The script carries the same question and choice; a test checks that the two
+// agree.
+export const TEST_OBLIGATION = 'treated as a test obligation: the lane\'s test author owns it, and the verifier skips it'
+export const testQuestion = (criterion) => `Is "${criterion}" behaviour or a test?`
+const NAMES_TEST = /^(an?|the)\s+(unit|integration|e2e|regression)\s+tests?\b|^(an?|the)\s+tests?\s+(for|that|of)\b|\b(add|write)s?\b[^.]{0,30}\btests?\b|\btests?\s+(pass|cover)/i
+const obligationsOf = (story, clarified) => (story.criteria || []).map(criterionOf).flatMap((c, i) => ((story.decisions || []).some((d) => d.question === testQuestion(c.text) && d.choice === TEST_OBLIGATION) || (!clarified && NAMES_TEST.test(c.text)) ? [i] : []))
 // A finding's text without the attempt numbers it starts with: an uncounted
 // finding must never count as an attempt, and a counted one gets only its own.
 const unnumbered = (text) => String(text).replace(/^(?:\[attempt \d+\] ?)+/, '')
@@ -981,9 +948,9 @@ const timingTable = (records, jobs) => {
   return [`| ${head.join(' | ')} |`, `|${head.map(() => '---').join('|')}|`, ...rows, '', 'A time with (n) after it adds up n of them: claims of the stage, rebases, or runs of the job.'].join('\n')
 }
 // The report, modelled on the one omni-deliver.js posts: what the script knows
-// (the outcomes, the council's counts, the blocked stories and their threads,
-// the journeys) and what the helper does (the commits landed, the human checks
-// left, the timings).
+// (the outcomes, the council's counts, the journeys, the notes) and what the
+// helper does (the commits landed, the blocked stories and their threads, the
+// human checks left, the timings), from the board.
 const reportText = (b, info, report) => {
   const list = (v) => (Array.isArray(v) ? v.filter((x) => x !== null && x !== undefined) : [])
   const lines = (items) => (items.length ? items.map((i) => `- ${i}`).join('\n') : '- none')
@@ -1003,7 +970,7 @@ const reportText = (b, info, report) => {
     `# Run ${b.runId} on ${b.feature}`,
     ...list(report.notes).map(String),
     `## Landed on ${b.branch}\n${lines(landed.map((l) => `${named(l.key)}: ${commitsOf(l).join('; ') || 'no commits'}`))}${landed.length ? `\n\nBring them into your branch with \`git merge --ff-only ${b.branch}\`.` : ''}`,
-    `## Blocked\n${lines(list(report.blocked).filter((s) => s.key).map((s) => `${named(s.key)}: thread ${list(s.threads).join(', ') || '(none linked)'}`))}`,
+    `## Blocked\n${lines(stories.filter((s) => s.blocked && s.status !== 'done' && s.status !== 'cancelled').map((s) => `${named(s.key)}: thread ${(s.links || []).map((l) => l.thread_id).filter(Boolean).join(', ') || '(none linked)'}`))}`,
     `## Outcomes\n${lines(list(report.outcomes).filter((o) => o.key).map((o) => `${named(o.key)}: ${o.outcome}${o.detail ? `: ${o.detail}` : ''}`))}`,
     `## Council\n- ${settled} question${settled === 1 ? '' : 's'} settled by the council, ${count(council.asked)} sent to the human`,
     `## Pending human checks\n${lines(checks)}`,
@@ -1012,45 +979,71 @@ const reportText = (b, info, report) => {
   ].join('\n\n')}\n`
 }
 
+// A thread on the feature with one post, linked from the story and blocking
+// it when a key is given. A repeat uses the thread the first try opened, and
+// posts, links and blocks only what that try did not.
+const openThread = (b, p, marker, mark) => {
+  let thread = marker && marker.thread
+  const posted = thread ? (readThread(b, thread).posts || []).length > 0 : false
+  if (!thread) {
+    thread = b.omni(['thread', 'create', p.title]).trim()
+    mark({ thread })
+  }
+  if (!posted) b.post(thread, p.title.slice(0, 200), p.body)
+  if (!p.key) return { thread }
+  try {
+    const story = marker ? b.readStory(p.key) : null
+    if (!story || !(story.links || []).some((l) => l.thread_id === thread)) b.linkAndBlock(p.key, [thread])
+    else if (!story.blocked) b.write('block', p.key)
+  } catch (e) {
+    return { ok: false, thread, key: p.key, error: failure(e), retry: retryable(e) }
+  }
+  return { thread, key: p.key }
+}
+
 // ---- the steps of a run ----------------------------------------------------
 const STEPS = {
   // The pickable stories that still have a worktree from an earlier attempt
   // come first, so that work begun is finished first; the board gives the
   // order besides: priority, then how many open stories each one unblocks,
-  // then number. Of the stories, only the open ones, with what the script
-  // reads of them: a feature's done stories only grow.
+  // then number. Of the other stories, only those the script takes up where
+  // they wait, implemented or reviewed and not blocked, as key and status: a
+  // feature's stories only grow. A waiting story has no holder.
   list: (b) => {
-    const stories = b.listStories().filter((s) => s.status !== 'done' && s.status !== 'cancelled').map(statusOf)
+    const waiting = b.listStories().filter((s) => (s.status === 'implemented' || s.status === 'reviewed') && !s.blocked).map((s) => ({ key: s.key, status: s.status }))
     const keys = pickableKeys(b)
     const trees = new Set((tryRun('git', ['-C', b.root, 'worktree', 'list', '--porcelain']) || '').split('\n').filter((l) => l.startsWith('worktree ')).map((l) => real(l.slice(9))))
     const kept = keys.filter((key) => trees.has(real(b.worktreeOf(key))))
-    return { stories, pickable: [...kept, ...keys.filter((key) => !kept.includes(key))] }
+    return { waiting, pickable: [...kept, ...keys.filter((key) => !kept.includes(key))] }
   },
 
-  // What a prompt needs about the story, and never doc text: agents read each
-  // linked doc once themselves, with `omni doc read`. clarified says whether
-  // the clarity cache has a hash of the story: the script takes a story's
-  // test obligations from clarity's decisions once it has one. The old runner
-  // kept story versions there, and recorded no test obligation.
+  // The facts the script decides by, and no text of the story: a courier
+  // repeats every byte, and an agent reads the story itself, with
+  // `omni story read`. The attempts used since the human's latest answer;
+  // clarified, whether the clarity cache has a hash of the story (a story
+  // version the old runner kept there is not a check of this workflow's);
+  // how many criteria the story has, and which of them, by index from 0, are
+  // test obligations; how many open findings count an attempt, how many used
+  // none, and how many came before the human's latest answer; and the fnv1a
+  // of each decision's question, so that the script asks no question a
+  // decision settles.
   context: (b, p) => missing(p, 'key') || (() => {
-    const stories = b.listStories()
-    const story = stories.find((s) => s.key === p.key)
+    const story = b.listStories().find((s) => s.key === p.key)
     if (!story) return { ok: false, error: `no story ${p.key} in the feature` }
-    const keyOf = new Map(stories.map((s) => [s.id, s.key]))
-    const docs = []
-    for (const l of (story.links || []).filter((x) => x.doc_id)) {
-      let doc = docs.find((d) => d.doc === l.doc_id)
-      if (!doc) docs.push((doc = { doc: l.doc_id, nodes: [] }))
-      doc.nodes.push({ node: l.node_id, label: l.label || '' })
+    const clarified = typeof (readJson(clarityPathOf(b.root)) || {})[story.key] === 'string'
+    const { findings, uncounted, earlier } = findingsOf(story)
+    const count = (groups) => groups.reduce((n, g) => n + g.findings.length, 0)
+    return {
+      key: story.key,
+      status: story.status,
+      blocked: !!story.blocked,
+      attempt: attemptOf(story),
+      clarified,
+      criteria: (story.criteria || []).length,
+      obligations: obligationsOf(story, clarified),
+      findings: { open: count(findings), uncounted: uncounted.length, earlier: count(earlier) },
+      questions: [...new Set((story.decisions || []).map((d) => fnv1a(String(d.question))))],
     }
-    const body = {
-      story: { key: story.key, title: story.title, status: story.status, priority: story.priority ?? 3, blocked: !!story.blocked, text: story.text || '', criteria: (story.criteria || []).map(criterionOf), files_planned: story.files_planned || [], blocked_by: (story.blocked_by || []).map((id) => keyOf.get(id) || id) },
-      decisions: (story.decisions || []).map((d) => ({ question: d.question, choice: d.choice, by: d.by })),
-      docs,
-      threads: (story.links || []).map((l) => l.thread_id).filter(Boolean),
-      clarified: typeof (readJson(clarityPathOf(b.root)) || {})[story.key] === 'string',
-    }
-    return { ...body, ...fitted(budgetOf(story), CONTEXT_CHARS - JSON.stringify(body).length) }
   })(),
 
   claim: stateWrite('claim', ['stage'], (p) => ['--stage', p.stage], (s, p, b) => s.status === p.stage && !!s.holder && s.holder.run === b.runId),
@@ -1074,18 +1067,22 @@ const STEPS = {
   // conflict, the infrastructure) gets none. An attempt that counts leaves at
   // least one finding, else the budget would not see it. The first try fixes
   // the number, so that a repeat finds what that try wrote and writes only
-  // the rest, instead of counting the attempt twice.
+  // the rest, instead of counting the attempt twice. A finding that names a
+  // job of the run gets the end of the job's log after its text: the script
+  // never has the output.
   finding: (b, p, { marker, mark }) => missing(p, 'key', 'stage') || (() => {
     const counts = p.counts !== false
-    if (!Array.isArray(p.findings) || p.findings.some((f) => !f || typeof f.text !== 'string') || (counts && p.findings.length === 0)) return { ok: false, error: 'the payload needs findings: [{text, files}], at least one when the attempt counts' }
+    if (!Array.isArray(p.findings) || p.findings.some((f) => !f || typeof f.text !== 'string') || (counts && p.findings.length === 0)) return { ok: false, error: 'the payload needs findings: [{text, files, job?}], at least one when the attempt counts' }
+    const tails = p.findings.map((f) => (f.job === undefined ? '' : jobTail(b.root, b.runId, f.job)))
+    if (tails.includes(null)) return { ok: false, error: `no job ${p.findings.filter((f, i) => tails[i] === null).map((f) => f.job).join(', ')} in run ${b.runId}` }
     const story = b.readStory(p.key)
     const fixed = marker && Number.isInteger(marker.attempt)
     const attempt = fixed ? marker.attempt : attemptOf(story) + (counts ? 1 : 0)
     if (!fixed) mark({ attempt })
     const prefix = counts ? `[attempt ${attempt}] ` : ''
     const written = marker ? (story.findings || []).filter((f) => !f.resolved && f.stage === p.stage).map((f) => f.text) : []
-    for (const f of p.findings) {
-      const text = `${prefix}${unnumbered(f.text)}`
+    for (const [i, f] of p.findings.entries()) {
+      const text = `${prefix}${unnumbered(f.text)}${tails[i] ? `\n\n${tails[i]}` : ''}`
       const at = written.indexOf(text)
       if (at !== -1) {
         written.splice(at, 1)
@@ -1096,10 +1093,15 @@ const STEPS = {
     return { key: p.key, attempt }
   })(),
 
-  decision: (b, p, { marker }) => missing(p, 'key', 'question', 'choice', 'by') || (() => {
-    const was = marker ? b.readStory(p.key) : null
-    if (!(was && (was.decisions || []).some((d) => d.question === p.question && d.choice === p.choice && d.by === p.by))) b.write('decision', p.key, ['--question', p.question, '--choice', p.choice, '--by', p.by])
-    return { key: p.key }
+  // A decision the story has already, the same question with the same
+  // choice, is not written again (recorded false): the script no longer
+  // knows the story's decisions, and an implementer asked again gives its
+  // decisions again.
+  decision: (b, p) => missing(p, 'key', 'question', 'choice', 'by') || (() => {
+    const was = b.readStory(p.key)
+    if ((was.decisions || []).some((d) => d.question === p.question && d.choice === p.choice)) return { key: p.key, recorded: false }
+    b.write('decision', p.key, ['--question', p.question, '--choice', p.choice, '--by', p.by])
+    return { key: p.key, recorded: true }
   })(),
 
   // What the story's branch changed since it left deliver/<slug> becomes its
@@ -1114,25 +1116,31 @@ const STEPS = {
     return { key: p.key, files: paths.length }
   })(),
 
-  // A repeat uses the thread the first try opened, and posts, links and
-  // blocks only what that try did not.
+  // A thread that names a job of the run gets the end of the job's log after
+  // its body: the script never has the output.
   'thread-open': (b, p, { marker, mark }) => missing(p, 'title', 'body') || (() => {
-    let thread = marker && marker.thread
-    const posted = thread ? (readThread(b, thread).posts || []).length > 0 : false
-    if (!thread) {
-      thread = b.omni(['thread', 'create', p.title]).trim()
-      mark({ thread })
-    }
-    if (!posted) b.post(thread, p.title.slice(0, 200), p.body)
-    if (!p.key) return { thread }
-    try {
-      const story = marker ? b.readStory(p.key) : null
-      if (!story || !(story.links || []).some((l) => l.thread_id === thread)) b.linkAndBlock(p.key, [thread])
-      else if (!story.blocked) b.write('block', p.key)
-    } catch (e) {
-      return { ok: false, thread, key: p.key, error: failure(e), retry: retryable(e) }
-    }
-    return { thread, key: p.key }
+    const tail = p.job === undefined ? '' : jobTail(b.root, b.runId, p.job)
+    if (tail === null) return { ok: false, error: `no job ${p.job} in run ${b.runId}` }
+    return openThread(b, { key: p.key, title: p.title, body: tail ? `${p.body.replace(/\n+$/, '')}\n\n${tail}\n` : p.body }, marker, mark)
+  })(),
+
+  // A story that used its last attempt: a thread with the findings of every
+  // attempt, whole, which the helper writes from the board, blocks it. The
+  // script names only the story: no courier carries the findings.
+  exhaust: (b, p, { marker, mark }) => missing(p, 'key') || (() => {
+    const story = b.readStory(p.key)
+    const attempt = marker && Number.isInteger(marker.attempt) ? marker.attempt : attemptOf(story)
+    if (!marker || !Number.isInteger(marker.attempt)) mark({ attempt })
+    const { findings, uncounted, earlier } = findingsOf(story)
+    const line = (f) => `- [${f.stage}] ${f.text}${f.files.length ? ` (${f.files.join(', ')})` : ''}`
+    const groups = (list) => list.map((g) => `Attempt ${g.attempt}:\n${g.findings.map(line).join('\n')}`).join('\n\n')
+    const body = [
+      `The story failed ${attempt} attempts since the human's latest answer. The findings of every attempt:`,
+      groups(findings) || '(none)',
+      ...(uncounted.length ? [`Open findings that used no attempt:\n${uncounted.map(line).join('\n')}`] : []),
+      ...(earlier.length ? [`Before the latest answer:\n\n${groups(earlier)}`] : []),
+    ].join('\n\n')
+    return { ...openThread(b, { key: p.key, title: `${p.key}: still failing after ${attempt} attempts`, body: `${body}\n` }, marker, mark), attempt }
   })(),
 
   // A blocked story whose linked threads all have a conclusion gets each
@@ -1292,9 +1300,10 @@ const STEPS = {
     return { id, log: files.log }
   })(),
 
-  // The job's result once it has ended, with the tail of its log when it
-  // failed, the only time the script reads it; done false after maxSeconds
-  // (480 at most) while it runs.
+  // The job's result once it has ended, without its output: a finding or a
+  // thread quotes the end of its log, which the helper adds when the script
+  // names the job, and an agent reads the log by its path, which job-start
+  // gave. done false after maxSeconds (480 at most) while it runs.
   'job-wait': (b, p) => missing(p, 'id') || (async () => {
     const job = /^[\w.-]+$/.test(p.id) ? jobAt(jobsDirOf(b.root, b.runId), p.id) : null
     if (!job) return { ok: false, error: `no job ${p.id} in run ${b.runId}` }
@@ -1302,7 +1311,7 @@ const STEPS = {
     for (;;) {
       // At the end of the wait ps also says whether the pid is still the supervisor's.
       const result = endOf(b.runId, job, Date.now() >= until)
-      if (result) return { id: p.id, done: true, result, ...(result.ok === true ? {} : { tail: tailOf(job.files.log) }) }
+      if (result) return { id: p.id, done: true, result }
       if (Date.now() >= until) return { id: p.id, done: false }
       await pause(Math.min(100, until - Date.now()))
     }
@@ -1331,7 +1340,7 @@ const STEPS = {
     })
     const killed = !fs.existsSync(job.files.result) && stopJobs([{ run: b.runId, job: now }]).length > 0
     const result = readJson(job.files.result)
-    return { id, killed, done: !!result, ...(result ? { result, tail: tailOf(job.files.log) } : {}) }
+    return { id, killed, done: !!result, ...(result ? { result } : {}) }
   },
 
   // Rebases story/<key> onto the tip of deliver/<slug> in the story's
@@ -1494,7 +1503,7 @@ const STEPS = {
   // its marker says so, or the Run thread holds the report already, as after
   // a try that was cut off right after its post.
   finish: (b, p, { info, marker, mark }) => {
-    if (!p.report || typeof p.report !== 'object' || Array.isArray(p.report)) return { ok: false, error: 'the payload needs report: {outcomes, council, blocked}' }
+    if (!p.report || typeof p.report !== 'object' || Array.isArray(p.report)) return { ok: false, error: 'the payload needs report: {outcomes, council}' }
     try {
       const stopped = stopJobs(runningJobs(b.root, [b.runId])).map(({ job }) => job.id)
       const text = reportText(b, info, p.report)
@@ -1520,7 +1529,7 @@ const STEPS = {
 }
 // The steps whose bodies are recorded under their opId, so that a repeat does
 // not write twice. The others only read, or wait: a repeat runs them again.
-const WRITES = new Set(['claim', 'rework', 'release', 'move', 'block', 'unblock', 'finding', 'decision', 'files', 'thread-open', 'unblock-pass', 'worktree', 'clarity-record', 'checks-set', 'job-start', 'job-kill', 'lane-prepare', 'lane-clean', 'lane-base', 'lane-reset', 'lane-candidate', 'lane-land', 'finish'])
+const WRITES = new Set(['claim', 'rework', 'release', 'move', 'block', 'unblock', 'finding', 'decision', 'files', 'thread-open', 'exhaust', 'unblock-pass', 'worktree', 'clarity-record', 'checks-set', 'job-start', 'job-kill', 'lane-prepare', 'lane-clean', 'lane-base', 'lane-reset', 'lane-candidate', 'lane-land', 'finish'])
 
 // ---- start: the lock, reconcile, the deliver branch, the checks ------------
 // A start repeated by a retried courier comes within minutes of the first.

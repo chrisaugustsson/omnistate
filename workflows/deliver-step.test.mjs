@@ -9,7 +9,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSyn
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { fnv1a, waitSeconds } from "./deliver-step.mjs";
+import { fnv1a, TEST_OBLIGATION, testQuestion, waitSeconds } from "./deliver-step.mjs";
 
 const helper = fileURLToPath(new URL("./deliver-step.mjs", import.meta.url));
 const fakeOmni = fileURLToPath(new URL("./fixtures/fake-omni.mjs", import.meta.url));
@@ -258,8 +258,19 @@ test("a write repeated with its opId is answered from .omni/runs/<run>/applied.j
   assert.equal(questions(dirs).length, 1);
   const applied = JSON.parse(readFileSync(join(dirs.repo, ".omni", "runs", run, "applied.json"), "utf8"));
   assert.deepEqual([applied.decision["decide-US-1-1"], applied["thread-open"]["thread-US-1-1"]], first);
-  step(dirs, run, "decision", { ...decision, opId: "decide-US-1-2" });
+  step(dirs, run, "decision", { ...decision, opId: "decide-US-1-2", choice: "Blue" });
   assert.equal(dirs.story("US-1").decisions.length, 2);
+});
+
+test("a decision the story has already, the same question with the same choice, is not written again under a new opId, whoever took it: the script no longer knows the story's decisions", (t) => {
+  const dirs = scratch(t, [story("US-1", { decisions: [{ question: "Which red?", choice: "#c00", by: "human" }] })]);
+  const { run } = start(dirs);
+
+  const same = step(dirs, run, "decision", { key: "US-1", question: "Which red?", choice: "#c00", by: "agent" });
+  const other = step(dirs, run, "decision", { key: "US-1", question: "Which red?", choice: "#f00", by: "agent" });
+
+  assert.deepEqual([same.recorded, other.recorded], [false, true]);
+  assert.deepEqual(dirs.story("US-1").decisions, [{ question: "Which red?", choice: "#c00", by: "human" }, { question: "Which red?", choice: "#f00", by: "agent" }]);
 });
 
 test("every write repeated with its opId gets its first body back from the record and calls nothing again", (t) => {
@@ -989,18 +1000,23 @@ test("start releases the stories another run holds, and the working ones nobody 
 
 // ---- the board steps ------------------------------------------------------------------
 
-test("list gives the stories that are not done or cancelled, each with its key, status, blocked and holder, since outputs stay small, and the keys the board calls pickable", (t) => {
-  const dirs = scratch(t, [story("US-1", { priority: 1 }), story("US-2", { blocked: true }), story("US-3", { status: "implemented" }), story("US-4", { status: "done" }), story("US-5", { status: "cancelled" })]);
+test("list gives, of the other stories, only those the script takes up where they wait, implemented or reviewed and not blocked, as key and status, since outputs stay small, and the keys the board calls pickable", (t) => {
+  const dirs = scratch(t, [
+    story("US-1", { priority: 1 }),
+    story("US-2", { blocked: true }),
+    story("US-3", { status: "implemented" }),
+    story("US-4", { status: "done" }),
+    story("US-5", { status: "cancelled" }),
+    story("US-6", { status: "reviewed" }),
+    story("US-7", { status: "reviewed", blocked: true }),
+  ]);
   const { run } = start(dirs);
 
   const body = step(dirs, run, "list");
 
-  assert.deepEqual(body.stories, [
-    { key: "US-1", status: "backlog", blocked: false, holder: null },
-    { key: "US-2", status: "backlog", blocked: true, holder: null },
-    { key: "US-3", status: "implemented", blocked: false, holder: null },
-  ]);
+  assert.deepEqual(body.waiting, [{ key: "US-3", status: "implemented" }, { key: "US-6", status: "reviewed" }]);
   assert.deepEqual(body.pickable, ["US-1"]);
+  assert.equal(body.stories, undefined);
 });
 
 test("list gives the pickable stories with a worktree from an earlier attempt first, then in the board's order: priority, then how many open stories each one unblocks, then number", (t) => {
@@ -1015,24 +1031,27 @@ test("list gives the pickable stories with a worktree from an earlier attempt fi
   assert.deepEqual(body.pickable, ["US-6", "US-2", "US-4", "US-1", "US-3"]);
 });
 
-test("context gives the story's fields and decisions, its open findings by attempt with the numbers taken off and those of no attempt apart, and its linked docs once each with their nodes, never their text", (t) => {
-  const docs = { "doc-spec": '<p data-omni-id="n1" data-rev="1">SPEC NODE ONE</p><p data-omni-id="n2" data-rev="1">SPEC NODE TWO</p>', "doc-ui": '<h1 data-omni-id="u1">UI NODE</h1>' };
+test("context gives only the facts the script decides by, and no text of the story: the attempt, the status, blocked, clarified, how many criteria, which are test obligations by index, how many findings are open, used no attempt or came before the latest answer, and the fnv1a of each decision's question", (t) => {
+  const docs = { "doc-spec": '<p data-omni-id="n1" data-rev="1">SPEC NODE ONE</p>' };
   const dirs = scratch(t, [
     story("US-1", { id: "id-1", status: "done" }),
     story("US-2", {
       id: "id-2",
-      text: "Show a badge.",
-      criteria: [{ text: "The badge is red", human_check: false }, { text: "It looks right", human_check: true }],
+      status: "implemented",
+      blocked: true,
+      text: "STORY TEXT: show a badge.",
+      criteria: [{ text: "The badge is red", human_check: false }, { text: "A regression test covers the badge", human_check: false }, { text: "It looks right", human_check: true }],
       files_planned: ["src/badge.rs"],
       blocked_by: ["id-1"],
-      decisions: [{ question: "Which red?", choice: "#c00", by: "human" }],
-      links: [{ doc_id: "doc-spec", node_id: "n1", label: "spec" }, questionLink("th-1"), { doc_id: "doc-ui", node_id: "u1", label: "" }, { doc_id: "doc-spec", node_id: "n2", label: "counts" }],
+      decisions: [{ question: "Which red?", choice: "#c00", by: "human" }, { question: "Which red?", choice: "#f00", by: "agent" }, { question: "How big?", choice: "16px", by: "agent" }],
+      links: [{ doc_id: "doc-spec", node_id: "n1", label: "spec" }, questionLink("th-1")],
       findings: [
         { stage: "review", text: "[attempt 1] An old one, answered", files: [], resolved: true },
         { stage: "review", text: "[attempt 1] The badge is blue", files: ["src/badge.rs"], resolved: false },
         { stage: "testing", text: "[attempt 2] The count is missing", files: [], resolved: false },
         { stage: "review", text: "[attempt 1] It has no border", files: [], resolved: false },
         { stage: "testing", text: "rebase conflict in README: rebase it", files: ["README"], resolved: false },
+        { stage: "testing", text: "an uncounted one, resolved", files: [], resolved: true },
       ],
     }),
   ], [], { docs });
@@ -1040,104 +1059,93 @@ test("context gives the story's fields and decisions, its open findings by attem
 
   const body = step(dirs, run, "context", { key: "US-2" });
 
-  assert.deepEqual(body.story, { key: "US-2", title: "Story US-2", status: "backlog", priority: 3, blocked: false, text: "Show a badge.", criteria: [{ text: "The badge is red", human_check: false }, { text: "It looks right", human_check: true }], files_planned: ["src/badge.rs"], blocked_by: ["US-1"] });
-  assert.deepEqual(body.decisions, [{ question: "Which red?", choice: "#c00", by: "human" }]);
-  assert.equal(body.attempt, 2);
-  assert.deepEqual(body.findings, [
-    { attempt: 1, findings: [{ stage: "review", text: "The badge is blue", files: ["src/badge.rs"] }, { stage: "review", text: "It has no border", files: [] }] },
-    { attempt: 2, findings: [{ stage: "testing", text: "The count is missing", files: [] }] },
-  ]);
-  assert.deepEqual(body.uncounted, [{ stage: "testing", text: "rebase conflict in README: rebase it", files: ["README"] }]);
-  assert.deepEqual(body.docs, [{ doc: "doc-spec", nodes: [{ node: "n1", label: "spec" }, { node: "n2", label: "counts" }] }, { doc: "doc-ui", nodes: [{ node: "u1", label: "" }] }]);
-  assert.deepEqual(body.threads, ["th-1"]);
-  assert.doesNotMatch(JSON.stringify(body), /NODE/);
+  assert.deepEqual(pick(body), {
+    ok: true,
+    key: "US-2",
+    status: "implemented",
+    blocked: true,
+    attempt: 2,
+    clarified: false,
+    criteria: 3,
+    obligations: [1],
+    findings: { open: 3, uncounted: 1, earlier: 1 },
+    questions: [fnv1a("Which red?"), fnv1a("How big?")],
+  });
+  assert.doesNotMatch(JSON.stringify(body), /NODE|STORY TEXT|badge|#c00|border|README|doc-spec|th-1/);
 });
 
-test("context gives the resolved findings of the attempts before the latest answers as earlier, one group per attempt in the order they came", (t) => {
-  const finding = (text, resolved, stage = "review") => ({ stage, text, files: [], resolved });
-  const dirs = scratch(t, [story("US-1", { findings: [
-    finding("[attempt 1] The badge is blue", true),
-    finding("[attempt 1] It has no border", true),
-    finding("[attempt 2] Still blue", true, "testing"),
-    finding("rebase conflict in README", true, "testing"),
-    finding("[attempt 1] Too dark a red", true),
-    finding("[attempt 1] Now too light", false),
+test("context gives as test obligations, once clarity has checked the story, only the criteria clarity's decisions name, with the question and choice the script writes; before, a criterion that delivers a test, never one with a bare test or suite in it", (t) => {
+  const criteria = [{ text: "The Test connection button shows Connected" }, { text: "A regression test covers the badge" }, { text: "The suite of badges loads" }, { text: "Tests cover the badge count" }];
+  const decided = { question: testQuestion("The Test connection button shows Connected"), choice: TEST_OBLIGATION, by: "agent" };
+  const dirs = scratch(t, [story("US-1", { criteria }), story("US-2", { criteria, decisions: [decided] })]);
+  const { run } = start(dirs);
+  mkdirSync(join(dirs.repo, ".omni"), { recursive: true });
+  writeFileSync(join(dirs.repo, ".omni", "clarity.json"), JSON.stringify({ "US-2": "0123abcd" }));
+
+  const [unchecked, checked] = ["US-1", "US-2"].map((key) => step(dirs, run, "context", { key }));
+
+  assert.deepEqual([unchecked.clarified, unchecked.obligations], [false, [1, 3]]);
+  assert.deepEqual([checked.clarified, checked.obligations], [true, [0]]);
+});
+
+test("the helper's test-obligation question and choice are the script's, which records them", () => {
+  const source = readFileSync(fileURLToPath(new URL("./omni-deliver.js", import.meta.url)), "utf8");
+  const choice = source.match(/^const TEST_OBLIGATION = '((?:[^'\\]|\\.)*)'$/m);
+  const question = source.match(/^const testQuestion = \(criterion\) => `(.*)`$/m);
+
+  assert.ok(choice && question, "the script declares TEST_OBLIGATION and testQuestion");
+  assert.equal(choice[1].replace(/\\'/g, "'"), TEST_OBLIGATION);
+  assert.equal(question[1].replace("${criterion}", "X"), testQuestion("X"));
+});
+
+test("exhaust opens a thread named after the story's attempts, with every attempt's findings whole, those that used no attempt and those before the latest answer, read from the board, links it and blocks the story; its answer gives none of them", (t) => {
+  const long = `Seen:\n\`\`\`\n${"a".repeat(5000)}\nFINAL-ERROR\n\`\`\``;
+  const dirs = scratch(t, [story("US-1", { status: "backlog", findings: [
+    { stage: "review", text: "[attempt 1] Before the answer", files: [], resolved: true },
+    { stage: "review", text: "[attempt 1] The badge is blue", files: ["src/badge.rs"], resolved: false },
+    { stage: "testing", text: `[attempt 2] ${long}`, files: [], resolved: false },
+    { stage: "testing", text: "rebase conflict in README", files: ["README"], resolved: false },
+    { stage: "review", text: "[attempt 3] Still blue", files: [], resolved: false },
   ] })]);
   const { run } = start(dirs);
 
-  const body = step(dirs, run, "context", { key: "US-1" });
+  const body = step(dirs, run, "exhaust", { key: "US-1", opId: "exhaust-US-1-1" });
+  const again = step(dirs, run, "exhaust", { key: "US-1", opId: "exhaust-US-1-1" });
 
-  assert.deepEqual(body.earlier, [
-    { attempt: 1, findings: [{ stage: "review", text: "The badge is blue", files: [] }, { stage: "review", text: "It has no border", files: [] }] },
-    { attempt: 2, findings: [{ stage: "testing", text: "Still blue", files: [] }] },
-    { attempt: 1, findings: [{ stage: "review", text: "Too dark a red", files: [] }] },
-  ]);
-  assert.deepEqual([body.attempt, body.findings], [1, [{ attempt: 1, findings: [{ stage: "review", text: "Now too light", files: [] }] }]]);
-});
+  const [th] = questions(dirs);
+  assert.deepEqual(pick(body), { ok: true, thread: th.id, key: "US-1", attempt: 3 });
+  assert.equal(th.title, "US-1: still failing after 3 attempts");
+  assert.deepEqual(th.posts.map((p) => p.body), [`The story failed 3 attempts since the human's latest answer. The findings of every attempt:
 
-test("context gives each finding cut to its head and tail, 1,500 characters at most, saying the rest is on the board, and stays within 20,000 characters: of the findings, those of the latest attempt first, those before the latest answer last, and how many it left out and cut", (t) => {
-  const finding = (attempt, name, resolved = false) => ({ stage: "review", text: `[attempt ${attempt}] ${name} ${"x".repeat(3000)}`, files: [], resolved });
-  const named = (n, attempt, prefix, resolved) => Array.from({ length: n }, (_, i) => finding(attempt, `${prefix}-${i + 1}`, resolved));
-  const dirs = scratch(t, [story("US-1", { findings: [...named(2, 1, "before", true), ...named(8, 1, "first"), ...named(8, 2, "second")] })]);
-  const { run } = start(dirs);
+Attempt 1:
+- [review] The badge is blue (src/badge.rs)
 
-  const body = step(dirs, run, "context", { key: "US-1" });
+Attempt 2:
+- [testing] ${long}
 
-  const names = (groups) => groups.map((g) => [g.attempt, g.findings.map((f) => f.text.split(" ")[0])]);
-  // 11 findings cut to 1,500 characters fit beside the story: the 8 of attempt 2, then the first 3 of attempt 1.
-  assert.deepEqual([names(body.findings), names(body.earlier), body.omitted, body.cut], [[[1, ["first-1", "first-2", "first-3"]], [2, Array.from({ length: 8 }, (_, i) => `second-${i + 1}`)]], [], 7, 11]);
-  for (const f of body.findings.flatMap((g) => g.findings)) assert.deepEqual([f.text.length <= 1500, /^\S+ x+\n… \(cut; full text on the board\)\nx+$/.test(f.text)], [true, true], f.text);
-  assert.ok(JSON.stringify({ body, hash: fnv1a(JSON.stringify(body)) }).length <= 20000);
-});
+Attempt 3:
+- [review] Still blue
 
-test("a finding is cut in the middle, on a line that says so: a check's keeps its header and its end, the last error, the closing fence and the verdict; a code block the head leaves open is closed, one the tail starts inside is opened again, and one the finding never closes is closed at its end", (t) => {
-  const log = Array.from({ length: 600 }, (_, i) => i + 1).join("\n");
-  const texts = [
-    `The fast check (\`make check\`) failed. The end of its output:\n\`\`\`\n${log}\nFINAL-ERROR at src/badge.rs\n\`\`\`\nIt passes on deliver/board without the story.`,
-    `Seen:\n\`\`\`\n${"a".repeat(3000)}\n\`\`\`\n${"b".repeat(3000)}`,
-    `${"a".repeat(3000)}\n\`\`\`\n${"b".repeat(3000)}\n\`\`\`\nEnd.`,
-    `${"a".repeat(3000)}\n\`\`\`\n${"b".repeat(3000)}`,
-  ];
-  const dirs = scratch(t, [story("US-1", { findings: texts.map((text) => ({ stage: "testing", text: `[attempt 1] ${text}`, files: [], resolved: false })) })]);
-  const { run } = start(dirs);
+Open findings that used no attempt:
+- [testing] rebase conflict in README (README)
 
-  const cut = step(dirs, run, "context", { key: "US-1" }).findings[0].findings.map((f) => f.text);
+Before the latest answer:
 
-  const fences = (text) => (text.match(/^```/gm) || []).length;
-  assert.deepEqual(cut.map((text) => [text.length <= 1500, fences(text)]), [[true, 2], [true, 2], [true, 2], [true, 2]]);
-  assert.match(cut[0], /^The fast check \(`make check`\) failed\. The end of its output:\n```\n1\n2\n3\n[\d\n]+\n… \(cut; full text on the board\)\n[\d\n]+\n600\nFINAL-ERROR at src\/badge\.rs\n```\nIt passes on deliver\/board without the story\.$/);
-  assert.match(cut[1], /^Seen:\n```\na+\n```\n… \(cut; full text on the board\)\nb+$/);
-  assert.match(cut[2], /^a+\n… \(cut; full text on the board\)\n```\nb+\n```\nEnd\.$/);
-  assert.match(cut[3], /^a+\n… \(cut; full text on the board\)\n```\nb+\n```$/);
-});
-
-test("context gives the findings that used no attempt, which say how to resolve a rebase conflict, first and whatever the room, and the newest attempt's even when the story's text and decisions leave no room; of the rest, those that fit", (t) => {
-  const long = (attempt, name) => ({ stage: "review", text: `[attempt ${attempt}] ${name} ${"x".repeat(3000)}`, files: [], resolved: false });
-  const conflict = { stage: "testing", text: "rebase conflict in README: rebase it onto deliver/board and resolve the conflicts", files: ["README"], resolved: false };
-  const dirs = scratch(t, [
-    story("US-1", { findings: [...Array.from({ length: 10 }, (_, i) => long(1, `first-${i + 1}`)), long(2, "second-1"), long(2, "second-2"), conflict] }),
-    story("US-2", { text: "y".repeat(19000), findings: [long(1, "first-1"), long(2, "second-1"), conflict] }),
-  ]);
-  const { run } = start(dirs);
-
-  const roomy = step(dirs, run, "context", { key: "US-1" });
-  const full = step(dirs, run, "context", { key: "US-2" });
-
-  const names = (groups) => groups.map((g) => [g.attempt, g.findings.map((f) => f.text.split(" ")[0])]);
-  const conflicts = (body) => body.uncounted.map((f) => f.text);
-  // Beside the conflict and the 2 of attempt 2, the first 9 of attempt 1 fit.
-  assert.deepEqual([names(roomy.findings), conflicts(roomy), roomy.omitted], [[[1, Array.from({ length: 9 }, (_, i) => `first-${i + 1}`)], [2, ["second-1", "second-2"]]], [conflict.text], 1]);
-  // The story's text alone passes the room.
-  assert.deepEqual([names(full.findings), conflicts(full), full.omitted, full.cut], [[[2, ["second-1"]]], [conflict.text], 1, 1]);
+Attempt 1:
+- [review] Before the answer
+`]);
+  assert.deepEqual([dirs.story("US-1").blocked, dirs.story("US-1").links], [true, [questionLink(th.id)]]);
+  assert.deepEqual(again, body);
+  assert.ok(JSON.stringify(body).length < 300);
 });
 
 test("a story list past 1 MB is read whole", (t) => {
   const dirs = scratch(t, [story("US-1", { text: "x".repeat(2 * 1024 * 1024) })]);
   const { run } = start(dirs);
 
-  const body = step(dirs, run, "list");
+  const body = step(dirs, run, "context", { key: "US-1" });
 
-  assert.deepEqual(body.stories.map((s) => s.key), ["US-1"]);
+  assert.equal(body.key, "US-1");
 });
 
 test("claim, move, block, unblock and release write the story as this run and give back its status; a claim the board refuses is ok: false with the board's reason", (t) => {
@@ -1305,7 +1313,7 @@ test("an answer restarts the attempt budget: unblock-pass resolves the story's o
   const context = step(dirs, run, "context", { key: "US-1" });
   const attempts = [1, 2, 3].map(() => step(dirs, run, "finding", { key: "US-1", stage: "review", findings: [{ text: "Still not red" }] }).attempt);
 
-  assert.deepEqual([context.attempt, context.findings], [0, []]);
+  assert.deepEqual([context.attempt, context.findings], [0, { open: 0, uncounted: 0, earlier: 3 }]);
   assert.deepEqual(attempts, [1, 2, 3]);
   assert.deepEqual(dirs.story("US-1").findings.map((f) => [f.text, f.resolved]), [
     ["[attempt 1] Still blue", true],
@@ -1569,7 +1577,7 @@ test("every step that runs records its step, op, key, stage, start and end in th
 
 // ---- jobs -------------------------------------------------------------------------------
 
-test("job-start runs the command in a process group of its own, its output going to the job's log; job-wait answers done: false at maxSeconds while it runs, then the result once it ends, with the log's tail only when the job failed", (t) => {
+test("job-start runs the command in a process group of its own, its output going to the job's log; job-wait answers done: false at maxSeconds while it runs, then the result once it ends, never its output, which the log holds", (t) => {
   const dirs = scratch(t);
   const { run, lane } = start(dirs);
   // The job runs past its 2 s until the test lets it end, once the first wait
@@ -1593,7 +1601,8 @@ test("job-start runs the command in a process group of its own, its output going
   assert.ok(ended.result.durationMs >= 2000);
   const [, leader, group] = readFileSync(started.log, "utf8").match(/^leader (\d+) group\s+(\d+)\ndone\n$/);
   assert.equal(leader, group, "the command leads a group of its own");
-  assert.deepEqual([failed.done, failed.result.ok, failed.result.code, failed.tail], [true, false, 3, "the stack is down\n"]);
+  assert.deepEqual([failed.done, failed.result.ok, failed.result.code, failed.tail], [true, false, 3, undefined]);
+  assert.equal(readFileSync(failing.log, "utf8"), "the stack is down\n");
 });
 
 test("a job's command runs with OMNI_RUN set to its run, and OMNI_STORY to its story's key, unset for a job without one, so that a project's check can tell runs and stories apart", (t) => {
@@ -1614,14 +1623,15 @@ test("a job past its limit gets SIGTERM to its whole group, and its result says 
   const { run, lane } = start(dirs);
   const pidFile = join(dirs.root, "child.pid");
 
-  const { id } = step(dirs, run, "job-start", { name: "stack", cmd: `sleep 30 & echo $! > ${pidFile}; wait`, cwd: lane, limitMinutes: 1 / 60 });
+  const { id, log } = step(dirs, run, "job-start", { name: "stack", cmd: `sleep 30 & echo $! > ${pidFile}; wait`, cwd: lane, limitMinutes: 1 / 60 });
   const body = step(dirs, run, "job-wait", { id, maxSeconds: 30 });
 
   assert.deepEqual([body.done, body.result.ok, body.result.timedOut, body.result.signal], [true, false, true, "SIGTERM"]);
   assert.ok(body.result.durationMs >= 1000 && body.result.durationMs < 8000, `${body.result.durationMs} ms`);
   assert.ok(await eventually(() => gone(Number(readFileSync(pidFile, "utf8")))), "the command's own child was stopped with it");
-  assert.ok(body.tail.endsWith(`\nTimed out: the job ${id} ran past its limit of 1s and was stopped.\n`), body.tail);
-  assert.doesNotMatch(body.tail, /sleep 30/);
+  const text = readFileSync(log, "utf8");
+  assert.ok(text.endsWith(`\nTimed out: the job ${id} ran past its limit of 1s and was stopped.\n`), text);
+  assert.doesNotMatch(text, /sleep 30/);
 });
 
 test("the SIGKILL stays armed after the group's leader exits: a member that ignores SIGTERM is killed when the grace is over", async (t) => {
@@ -1656,31 +1666,57 @@ test("a job's limit is rounded to whole milliseconds and kept to 2^31 - 1 ms; no
   for (const id of odd) assert.deepEqual([results.get(id).ok, results.get(id).timedOut], [true, false], id);
 });
 
-test("a job's output reaches its log byte for byte, so a character split across two writes survives; the tail of a job that failed is the log's last 2 KB from its first whole character", (t) => {
-  const dirs = scratch(t);
+test("a job's output reaches its log byte for byte, so a character split across two writes survives; a finding that names a job that failed quotes the log's last 2 KB from its first whole character", (t) => {
+  const dirs = scratch(t, [story("US-1")]);
   const { run, lane } = start(dirs);
   // é (C3 A9) split across two writes, then a thousand three-byte 日 (E6 97 A5).
   const cmd = "printf '\\303'; sleep 0.3; printf '\\251 caf\\303\\251\\n'; i=0; while [ $i -lt 1000 ]; do printf '\\346\\227\\245'; i=$((i+1)); done; exit 1";
 
   const { id, log } = step(dirs, run, "job-start", { name: "fast", cmd, cwd: lane });
   const body = step(dirs, run, "job-wait", { id, maxSeconds: 30 });
+  step(dirs, run, "finding", { key: "US-1", stage: "testing", findings: [{ text: "The fast check failed.", files: [], job: id }] });
 
   assert.equal(readFileSync(log, "utf8"), `é café\n${"日".repeat(1000)}`);
+  assert.equal(body.tail, undefined);
   // 3009 bytes: the last 2048 begin inside a 日, whose two remaining bytes are dropped.
-  assert.equal(body.tail, "日".repeat(682));
+  assert.equal(dirs.story("US-1").findings[0].text, `[attempt 1] The fast check failed.\n\nThe end of its output:\n\`\`\`\n${"日".repeat(682)}\n\`\`\``);
 });
 
-test("job-kill stops a running job's group, and gives its result and the tail that says so; a second kill finds it ended", async (t) => {
+test("a finding or a thread that names a job of the run gets the end of the job's log after its text, which the helper reads, so that no courier carries the output; one that names no job of the run is refused and writes nothing", (t) => {
+  const dirs = scratch(t, [story("US-1")]);
+  const { run, lane } = start(dirs);
+  const { id } = step(dirs, run, "job-start", { name: "stack", cmd: "echo booting; echo FAILED: db is down; exit 1", cwd: lane });
+  step(dirs, run, "job-wait", { id, maxSeconds: 30 });
+  const block = "The end of its output:\n```\nbooting\nFAILED: db is down\n```";
+
+  const finding = step(dirs, run, "finding", { key: "US-1", stage: "testing", findings: [{ text: "The stack check failed.", files: [], job: id }, { text: "Another", files: [] }] });
+  const opened = step(dirs, run, "thread-open", { title: "Run: the lane stopped", body: "The lane stopped.\n", job: id });
+  const unknown = [
+    step(dirs, run, "finding", { key: "US-1", stage: "testing", findings: [{ text: "x", files: [], job: "US-1-nope-1" }] }),
+    step(dirs, run, "thread-open", { title: "Run: x", body: "x\n", job: "../escape" }),
+  ];
+
+  assert.equal(finding.ok, true);
+  assert.deepEqual(dirs.story("US-1").findings.map((f) => f.text), [`[attempt 1] The stack check failed.\n\n${block}`, "[attempt 1] Another"]);
+  assert.equal(opened.ok, true);
+  assert.deepEqual(questions(dirs).find((th) => th.id === opened.thread).posts.map((p) => p.body), [`The lane stopped.\n\n${block}\n`]);
+  assert.deepEqual(unknown.map((b) => [b.ok, b.retry, b.error]), [[false, false, `no job US-1-nope-1 in run ${run}`], [false, false, `no job ../escape in run ${run}`]]);
+  assert.equal(dirs.story("US-1").findings.length, 2);
+  assert.equal(questions(dirs).length, 1);
+});
+
+test("job-kill stops a running job's group, and gives its result, its log saying so; a second kill finds it ended", async (t) => {
   const dirs = scratch(t);
   const { run, lane } = start(dirs);
-  const { id } = step(dirs, run, "job-start", { name: "stack", cmd: "sleep 30", cwd: lane });
+  const { id, log } = step(dirs, run, "job-start", { name: "stack", cmd: "sleep 30", cwd: lane });
   const { pgid } = jobOf(dirs, run, id);
 
   const body = step(dirs, run, "job-kill", { id });
   const again = step(dirs, run, "job-kill", { id });
 
   assert.deepEqual([body.killed, body.done, body.result.ok, body.result.timedOut, body.result.signal], [true, true, false, false, "SIGTERM"]);
-  assert.ok(body.tail.endsWith(`\nStopped: the job ${id} was stopped before it ended.\n`), body.tail);
+  assert.equal(body.tail, undefined);
+  assert.ok(readFileSync(log, "utf8").endsWith(`\nStopped: the job ${id} was stopped before it ended.\n`));
   assert.ok(await eventually(() => gone(-pgid)));
   assert.deepEqual([again.killed, again.done, again.result], [false, true, body.result]);
 });
@@ -1909,7 +1945,7 @@ test("job-kill never loses a job its supervisor is starting: the supervisor look
   const result = JSON.parse(readFileSync(join(dir, "US-1-fast-1.json"), "utf8"));
 
   assert.deepEqual([body.ok, body.id, body.killed, body.done, body.result.ok, body.result.signal], [true, "US-1-fast-1", true, true, false, "SIGTERM"]);
-  assert.ok(body.tail.endsWith("\nStopped: the job US-1-fast-1 was stopped before it ended.\n"), body.tail);
+  assert.ok(readFileSync(race.log, "utf8").endsWith("\nStopped: the job US-1-fast-1 was stopped before it ended.\n"));
   assert.deepEqual(result, body.result);
 });
 
@@ -2334,10 +2370,12 @@ test("lane-candidate puts the lane worktree back at the candidate lane-prepare g
 
 // ---- finish -----------------------------------------------------------------------------
 
-test("finish stops the run's jobs that still run, posts the report on the run's thread from a body file, keeps it as report.md, and gives the lock up", async (t) => {
+test("finish stops the run's jobs that still run, posts the report on the run's thread from a body file, with the blocked stories and their threads from the board, keeps it as report.md, and gives the lock up", async (t) => {
   const dirs = scratch(t, [
     story("US-1", { status: "reviewed", criteria: [{ text: "The badge is red", human_check: false }, { text: "It looks right", human_check: true }] }),
-    story("US-2", { blocked: true, links: [questionLink("th-1")] }),
+    story("US-2", { blocked: true, links: [{ doc_id: "doc-spec", node_id: "n1", label: "spec" }, questionLink("th-1")] }),
+    story("US-3", { blocked: true }),
+    story("US-4", { status: "cancelled", blocked: true, links: [questionLink("th-2")] }),
   ], [thread("th-1", "US-2: Which red?")]);
   const { run, lane, thread: runThread } = start(dirs);
   const wt = storyWork(dirs, run, "US-1");
@@ -2353,7 +2391,6 @@ test("finish stops the run's jobs that still run, posts the report on the run's 
   const report = {
     outcomes: [{ key: "US-1", outcome: "done" }, { key: "US-2", outcome: "blocked", detail: "a question for the human" }],
     council: { settled: 2, asked: 1 },
-    blocked: [{ key: "US-2", threads: ["th-1"] }],
     journeys: ["healthy: the badge flow works"],
     notes: ["The lane stopped once: the stack did not start."],
   };
@@ -2380,6 +2417,7 @@ Bring them into your branch with \`git merge --ff-only deliver/board\`.
 
 ## Blocked
 - US-2 Story US-2: thread th-1
+- US-3 Story US-3: thread (none linked)
 
 ## Outcomes
 - US-1 Story US-1: done
@@ -2399,7 +2437,7 @@ Bring them into your branch with \`git merge --ff-only deliver/board\`.
   assert.match(timings, new RegExp(String.raw`^The run took ${time}\.\n\n\| Story \| Total \| implementing \| review \| testing \| rebase \| fast \| stack \|\n\|---\|---\|---\|---\|---\|---\|---\|---\|\n\| US-1 \| ${time} \| - \| - \| ${time} \| ${time} \| ${time} \| ${time} \|\n\nA time with \(n\) after it adds up n of them: claims of the stage, rebases, or runs of the job\.\n$`));
 });
 
-const noReport = { outcomes: [], council: { settled: 0, asked: 0 }, blocked: [] };
+const noReport = { outcomes: [], council: { settled: 0, asked: 0 } };
 
 test("a finish whose post failed keeps the report as report.md, gives the lock up, and says it may be tried again; its repeat with the same opId goes on without the lock and posts the report once", (t) => {
   const dirs = scratch(t);
@@ -2453,4 +2491,82 @@ test("the report's timings sort the job columns by name, show a time under a sec
   const timings = readFileSync(body.report, "utf8").split("## Timings\n")[1];
   const time = String.raw`(?:<1s|\d+s)`;
   assert.match(timings, new RegExp(String.raw`^The run took ${time}\.\n\n\| Story \| Total \| implementing \| review \| testing \| rebase \| alpha \| zeta \|\n\|---\|---\|---\|---\|---\|---\|---\|---\|\n\| US-1 \| ${time} \| - \| - \| [1-9]\d*s \| <1s \| - \| <1s \|\n\| US-2 \| ${time} \| - \| - \| - \| - \| <1s \| - \|\n\nA time with \(n\) after it adds up n of them: claims of the stage, rebases, or runs of the job\.\n$`), timings);
+});
+
+// ---- the size of what a courier carries back ----------------------------------------------
+
+test("no output the script reads passes 2,000 characters, however long a story's text, criteria, decisions and findings, a thread's answer or a job's log: a courier copies every byte back", (t) => {
+  const huge = (label, n) => `${label}: ${'a "quoted" line\\ with a backslash, and a new one\n'.repeat(n)}`;
+  const many = (n, make) => Array.from({ length: n }, (_, i) => make(i));
+  const files = many(30, (j) => `src/a-rather-long-folder-name/and-a-longer-file-name-${j}.rs`);
+  const big = {
+    title: huge("title", 10),
+    text: huge("story", 2000),
+    criteria: many(30, (i) => ({ text: huge(`criterion ${i}`, 40), human_check: i % 5 === 0 })),
+    decisions: many(30, (i) => ({ question: huge(`question ${i}`, 40), choice: huge(`choice ${i}`, 40), by: i % 2 ? "agent" : "human" })),
+    findings: [
+      ...many(10, (i) => ({ stage: "review", text: `[attempt 1] ${huge(`answered ${i}`, 80)}`, files, resolved: true })),
+      ...many(10, (i) => ({ stage: "review", text: `[attempt 1] ${huge(`open ${i}`, 80)}`, files, resolved: false })),
+      ...many(10, (i) => ({ stage: "testing", text: `[attempt 2] ${huge(`check ${i}`, 80)}`, files: [], resolved: false })),
+      ...many(5, (i) => ({ stage: "testing", text: huge(`conflict ${i}`, 80), files, resolved: false })),
+    ],
+    files_planned: files,
+    links: [{ doc_id: "doc-spec", node_id: "n1", label: huge("label", 5) }],
+  };
+  const dirs = scratch(t, [
+    story("US-1", big),
+    story("US-2", { ...big, status: "implemented" }),
+    story("US-3", { ...big, blocked: true, links: [questionLink("th-1")] }),
+  ], [thread("th-1", huge("US-3: which?", 40), huge("the answer", 200))], { docs: { "doc-spec": `<p data-omni-id="n1">${huge("doc", 2000)}</p>` } });
+  const sizes = [];
+  // A step as a courier runs it, with the length of what it printed.
+  const sized = (argv) => {
+    const r = spawnSync(process.execPath, [helper, ...argv], { cwd: dirs.repo, env: dirs.env, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+    const body = JSON.parse(r.stdout).body;
+    assert.equal(body.ok, true, `${argv[0]}: ${body.error}`);
+    sizes.push([argv[0], r.stdout.length]);
+    return body;
+  };
+  const go = (name, fields = {}) => sized(stepArgv(dirs, run, name, { opId: `${name}-${++ops}`, ...fields }));
+  const { run, lane } = sized(startArgv());
+
+  go("checks-set", { checks: { seed: "./seed", lint: "./lint" } });
+  go("unblock-pass");
+  go("clarity-pending");
+  for (const key of ["US-1", "US-2", "US-3"]) go("context", { key });
+  go("decision", { key: "US-1", question: huge("a new question", 100), choice: huge("a new choice", 100), by: "agent" });
+  go("clarity-record", { key: "US-1" });
+  go("list");
+  go("claim", { key: "US-1", stage: "implementing" });
+  const wt = go("worktree", { key: "US-1" }).path;
+  commit(wt, "badge.rs");
+  go("files", { key: "US-1" });
+  go("move", { key: "US-1", to: "implemented" });
+  go("claim", { key: "US-1", stage: "review" });
+  go("move", { key: "US-1", to: "reviewed" });
+  go("claim", { key: "US-1", stage: "testing" });
+  const { base, candidate } = go("lane-prepare", { key: "US-1" });
+  const { id } = go("job-start", { name: "fast", key: "US-1", cmd: `i=0; while [ $i -lt 2000 ]; do echo "error \\"$i\\" at C:\\\\path\\\\to\\\\file.rs, line $i"; i=$((i+1)); done; exit 1`, cwd: lane });
+  go("job-wait", { id, maxSeconds: 30 });
+  go("job-kill", { id });
+  go("lane-clean");
+  go("lane-base");
+  go("lane-reset");
+  go("lane-candidate", { candidate });
+  go("lane-land", { key: "US-1", base });
+  go("claim", { key: "US-2", stage: "review" });
+  go("finding", { key: "US-2", stage: "testing", findings: [{ text: huge("a check failed", 100), files, job: id }, { text: huge("a defect", 100), files }], counts: true });
+  go("rework", { key: "US-2" });
+  go("release", { key: "US-2" });
+  go("thread-open", { key: "US-2", title: huge("US-2: a question", 5), body: huge("the options", 200), job: id });
+  go("exhaust", { key: "US-2" });
+  go("unblock", { key: "US-2" });
+  go("block", { key: "US-2" });
+  go("sleep", { seconds: 0 });
+  go("finish", { report: { outcomes: [{ key: "US-1", outcome: "done" }, { key: "US-2", outcome: "failed", detail: huge("an error", 100) }], council: { settled: 1, asked: 1 }, journeys: [huge("a journey", 100)], notes: [huge("a note", 100)] } });
+
+  t.diagnostic(`the largest outputs: ${JSON.stringify([...sizes].sort((a, b) => b[1] - a[1]).slice(0, 3))}`);
+  const over = sizes.filter(([, n]) => n > 2000);
+  assert.deepEqual(over, [], `the largest: ${JSON.stringify([...sizes].sort((a, b) => b[1] - a[1]).slice(0, 5))}`);
+  assert.ok(sizes.length >= 36, sizes.length);
 });

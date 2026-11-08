@@ -144,12 +144,12 @@ function commit(cwd, file) {
 }
 
 const worktreeIn = (prompt) => lineAfter(prompt, "## Your worktree\n").split(" (branch ")[0];
-const criteriaIn = (prompt) => {
-  const text = between(prompt, "## Acceptance criteria (number: text)\n", "\n\n## Your task now");
-  if (text === "(none)") return [];
-  return text.split("\n").map((l) => l.match(/^(\d+): (.*?)(?: \[(?:human check|test obligation)\])*$/)).map((m) => ({ index: Number(m[1]), criterion: m[2] }));
-};
+// The criteria of the story an agent's label names, numbered from 0, as the
+// agent reads them from the board: no prompt carries them.
+const criteriaIn = (call, dirs) => (dirs.story(call.label.split(":")[1]).criteria || []).map((c, index) => ({ index, criterion: typeof c === "string" ? c : c.text }));
 const questionIn = (prompt) => lineAfter(prompt, "## The question\n");
+// What a prompt says of the test obligations, which it names by number.
+const owedIn = (prompt) => lineAfter(prompt, "## Acceptance criteria\n").split(" in the order the story gives them. ")[1];
 
 // An implementer that commits a file in its worktree and is ready.
 const built = (file, fields = {}) => async (call, serial) => {
@@ -158,9 +158,9 @@ const built = (file, fields = {}) => async (call, serial) => {
 };
 // A reviewer's verdict on every criterion of its prompt: met, but for those
 // unmet names with their evidence and the test obligations it names.
-const reviewed = (verdict, { unmet = {}, defects = [], obligations = [] } = {}) => (call) => ({
+const reviewed = (verdict, { unmet = {}, defects = [], obligations = [] } = {}) => (call, serial, dirs) => ({
   verdict,
-  criteria: criteriaIn(call.prompt).map((c) => ({ ...c, obligation: obligations.includes(c.index), met: !(c.index in unmet), evidence: unmet[c.index] || "Seen in the diff" })),
+  criteria: criteriaIn(call, dirs).map((c) => ({ ...c, obligation: obligations.includes(c.index), met: !(c.index in unmet), evidence: unmet[c.index] || "Seen in the diff" })),
   defects,
 });
 const vote = (pick, fields = {}) => ({ pick, quote: "", source: "", minor: false, ...fields });
@@ -170,7 +170,7 @@ const gap = (question, impact, fields = {}) => ({ criterion: "The badge has a co
 
 // A verifier that ran every criterion of its prompt: ok, but for those failed
 // names with what it saw.
-const verified = (failed = {}) => (call) => ({ criteria: criteriaIn(call.prompt).map((c) => ({ ...c, ok: !(c.index in failed), evidence: failed[c.index] || "Ran it" })) });
+const verified = (failed = {}) => (call, serial, dirs) => ({ criteria: criteriaIn(call, dirs).map((c) => ({ ...c, ok: !(c.index in failed), evidence: failed[c.index] || "Ran it" })) });
 // A test author that is done; `fields` gives its commit, check and added tests.
 const authored = (fields = {}) => ({ status: "done", commit: "", check: "", oracle: [], existingCoverage: [], added: [], reused: [], changedOrRemoved: [], notAdmitted: [], ...fields });
 // A test author that commits a test file in the lane worktree, with a check.
@@ -184,13 +184,13 @@ const testsIn = (dirs, file, check = "true") => async (call, serial) => {
 // every criterion, a council member with no pick, a verifier that finds every
 // criterion met, a test author that adds no test, and a final check that
 // finds the run healthy.
-const byDefault = (call, serial) => {
+const byDefault = (call, serial, dirs) => {
   const [role, key] = call.label.split(":");
   if (role === "clarity") return { testObligations: [], gaps: [] };
   if (role === "impl") return built(`${key}.txt`)(call, serial);
-  if (role === "review") return reviewed("pass")(call);
+  if (role === "review") return reviewed("pass")(call, serial, dirs);
   if (role === "council") return vote(0);
-  if (role === "verify") return verified()(call);
+  if (role === "verify") return verified()(call, serial, dirs);
   if (role === "tests") return authored();
   if (role === "final") return { healthy: true, journeys: [], report: "Nothing spans the stories." };
   throw new Error(`no answer for the agent ${call.label}`);
@@ -227,10 +227,14 @@ function runtime(dirs, roles, fault, concurrent) {
     calls.push(call);
     await pause(0);
     if (String(opts.label).startsWith("courier:sleep")) return slept(prompt, sleeps);
-    if (String(opts.label).startsWith("courier:")) return concurrent ? carryOut(dirs, prompt, fault(call)) : serial(() => carryOut(dirs, prompt, fault(call)));
+    if (String(opts.label).startsWith("courier:")) {
+      const r = await (concurrent ? carryOut(dirs, prompt, fault(call)) : serial(() => carryOut(dirs, prompt, fault(call))));
+      call.output = r && r.output;
+      return r;
+    }
     const queue = queues.get(opts.label);
     const answer = queue && queue.length ? queue.shift() : byDefault;
-    return typeof answer === "function" ? answer(call, serial) : answer;
+    return typeof answer === "function" ? answer(call, serial, dirs) : answer;
   };
   // A barrier: every thunk runs, and one that throws gives null.
   const parallel = (thunks) => Promise.all(thunks.map((thunk) => Promise.resolve().then(thunk).catch(() => null)));
@@ -385,7 +389,7 @@ test("a courier is a haiku agent at low effort with the schema {exitCode, output
 
   assert.equal(error, null);
   const couriers = couriersOf(calls);
-  assert.deepEqual(couriers.map((c) => c.label), ["courier:start", "courier:unblock-pass", "courier:clarity-pending", "courier:list", "courier:list", "courier:finish"]);
+  assert.deepEqual(couriers.map((c) => c.label), ["courier:start", "courier:unblock-pass", "courier:clarity-pending", "courier:list", "courier:finish"]);
   for (const c of couriers) {
     assert.deepEqual([c.model, c.effort, c.agentType, c.schema.required], ["haiku", "low", undefined, ["exitCode", "output"]]);
     assert.match(c.prompt, /\. Run the helper\. Use the Bash tool, with its timeout set to 600000, to run this command exactly as written, once:\n/);
@@ -866,7 +870,7 @@ test("a review that passes clears what the worktree step found when it started: 
   assert.equal(error, null);
   assert.ok(logs.some((l) => l.startsWith(`US-1: ${wt} had the branch side checked out, not story/US-1`)), logs.join("\n"));
   const [impl] = agentsOf(calls, "impl:US-1");
-  assert.ok(impl.prompt.includes('\n- [testing] Criterion not met when run: "The badge is red". The badge is blue\n'), impl.prompt);
+  assert.deepEqual(findingsOf(dirs, "US-1"), [["testing", '[attempt 1] Criterion not met when run: "The badge is red". The badge is blue', [], true]]);
   assert.doesNotMatch(impl.prompt, /cherry-pick/);
   assert.deepEqual(result.outcomes, [{ key: "US-1", outcome: "done" }]);
 });
@@ -890,7 +894,7 @@ test("a story waiting in implemented starts at its review; a criterion that name
   assert.deepEqual([timeline(dirs, "US-1"), dirs.story("US-1").status], [["claim review", "move reviewed", "claim testing", "move done"], "done"]);
   assert.deepEqual(agentsOf(calls, "impl:US-1"), []);
   assert.equal(dirs.story("US-2").status, "done");
-  for (const key of ["US-1", "US-2"]) assert.match(agentsOf(calls, `review:${key}`)[0].prompt, /\n0: The badge is red\n1: A regression test covers the badge \[test obligation\]\n/);
+  for (const key of ["US-1", "US-2"]) assert.equal(owedIn(agentsOf(calls, `review:${key}`)[0].prompt), "Criterion 1 is a test obligation.");
   assert.deepEqual([dirs.story("US-1").findings || [], dirs.story("US-2").findings || []], [[], []]);
   assert.deepEqual(result.outcomes.map((o) => o.outcome), ["done", "done"]);
 });
@@ -899,7 +903,7 @@ test("criteria are numbered from 0 in the review's schema, which wants an entry 
   const criteria = [{ text: "The badge is red", human_check: false }, { text: "The badge counts", human_check: false }];
   const dirs = scratch(t, [story("US-1", { criteria }), story("US-2", { criteria })]);
   // Numbered from 1: the entry for 0 is missing, and the one for 2 is past the end.
-  const fromOne = (call) => ({ verdict: "pass", criteria: criteriaIn(call.prompt).map((c) => ({ ...c, index: c.index + 1, obligation: false, met: true, evidence: "Seen" })), defects: [] });
+  const fromOne = (call, serial, dirs) => ({ verdict: "pass", criteria: criteriaIn(call, dirs).map((c) => ({ ...c, index: c.index + 1, obligation: false, met: true, evidence: "Seen" })), defects: [] });
   const roles = { "review:US-1": [fromOne, reviewed("pass")], "review:US-2": [fromOne, fromOne, fromOne] };
 
   const { result, error, calls, logs } = await deliver(dirs, {}, roles);
@@ -1009,8 +1013,8 @@ test("a story clarity has checked has its test obligations from clarity's decisi
     ["review", '[attempt 1] Criterion not met: "The Test connection button shows Connected". It shows nothing', [], true],
     ["testing", '[attempt 2] Criterion not met when run: "The Test connection button shows Connected". The button shows an error', [], true],
   ]);
-  assert.match(agentsOf(calls, "review:US-1")[0].prompt, /\n0: The Test connection button shows Connected\n1: A user can add a test drive to the booking\n\n/);
-  assert.match(agentsOf(calls, "review:US-2")[0].prompt, /\n0: The Test connection button shows Connected\n1: The suite of badges loads\n2: Tests cover the badge count \[test obligation\]\n/);
+  assert.equal(owedIn(agentsOf(calls, "review:US-1")[0].prompt), "No criterion is a test obligation.");
+  assert.equal(owedIn(agentsOf(calls, "review:US-2")[0].prompt), "Criterion 2 is a test obligation.");
   assert.deepEqual(result.outcomes.map((o) => [o.key, o.outcome]).sort(), [["US-1", "done"], ["US-2", "done"]]);
 });
 
@@ -1026,38 +1030,35 @@ test("a story version the old runner kept in the clarity cache is not a clarity 
     const { error, calls } = await deliver(dirs);
 
     assert.equal(error, null);
-    for (const role of ["review", "verify"]) assert.match(agentsOf(calls, `${role}:US-1`)[0].prompt, /\n0: A regression test covers the badge colour \[test obligation\]\n1: The badge is red\n/, `${role} with ${JSON.stringify(cache)}`);
+    for (const role of ["review", "verify"]) assert.equal(owedIn(agentsOf(calls, `${role}:US-1`)[0].prompt), "Criterion 0 is a test obligation.", `${role} with ${JSON.stringify(cache)}`);
   }
 });
 
-test("from attempt 2 the implementer runs on implRetry, in the same worktree, and its prompt lists every finding since the human's latest answer by attempt, those that used no attempt, and the earlier ones apart", { timeout: 60000 }, async (t) => {
+test("from attempt 2 the implementer runs on implRetry, in the same worktree; it reads the story with omni story read as this run's impl, and its prompt counts the open findings by kind, those since the human's latest answer, those that used no attempt and those before it, never quoting one", { timeout: 60000 }, async (t) => {
   const answered = { stage: "testing", text: "[attempt 1] The badge was blue", files: [], resolved: true };
   const conflict = { stage: "testing", text: "rebase conflict in README: rebase it onto deliver/board", files: ["README"], resolved: false };
   const dirs = scratch(t, [story("US-1", { criteria: [{ text: "The badge is red", human_check: false }], findings: [answered, conflict] })]);
   const defect = (text, file) => reviewed("fail", { defects: [{ text, files: [file], criterion: "" }] });
   const roles = { "review:US-1": [defect("The badge is pink", "src/badge.rs"), defect("The badge has no border", "src/border.rs"), reviewed("pass")] };
 
-  const { error, calls } = await deliver(dirs, {}, roles);
+  const { result, error, calls } = await deliver(dirs, {}, roles);
 
   assert.equal(error, null);
   const impls = agentsOf(calls, "impl:US-1");
   assert.deepEqual(impls.map((c) => c.model), ["sonnet", "opus", "opus"]);
   assert.deepEqual(impls.map((c) => worktreeIn(c.prompt)), [1, 2, 3].map(() => dirs.worktree("US-1")));
   assert.deepEqual(impls.map((c) => lineAfter(c.prompt, "## Your task now\n")), [
-    "This is attempt 1 of 3 since the human's latest answer. Implement the story: build what the criteria above require, commit it, and return the result.",
-    "This is attempt 2 of 3 since the human's latest answer. A worktree of an earlier attempt is in place, with its commits and what it left uncommitted: continue from it, do not start over, and fix every finding above.",
-    "This is attempt 3 of 3 since the human's latest answer. A worktree of an earlier attempt is in place, with its commits and what it left uncommitted: continue from it, do not start over, and fix every finding above.",
+    "This is attempt 1 of 3 since the human's latest answer. Implement the story: build what its criteria require, commit it, and return the result.",
+    "This is attempt 2 of 3 since the human's latest answer. A worktree of an earlier attempt is in place, with its commits and what it left uncommitted: continue from it, do not start over, and fix every open finding of the story.",
+    "This is attempt 3 of 3 since the human's latest answer. A worktree of an earlier attempt is in place, with its commits and what it left uncommitted: continue from it, do not start over, and fix every open finding of the story.",
   ]);
-  const earlier = "\n### Findings before the human's latest answer (what failed before it)\nAttempt 1:\n- [testing] The badge was blue\n";
-  const uncounted = "\n### Other open findings (fix every one of them; they used no attempt)\n- [testing] rebase conflict in README: rebase it onto deliver/board (README)\n";
-  assert.ok(impls[0].prompt.includes(`${uncounted}${earlier}`), impls[0].prompt);
-  assert.doesNotMatch(impls[0].prompt, /Findings of the earlier attempts/);
-  assert.ok(impls[2].prompt.includes(`\n### Findings of the earlier attempts (fix every one of them)
-Attempt 1:
-- [review] The badge is pink (src/badge.rs)
-Attempt 2:
-- [review] The badge has no border (src/border.rs)
-${uncounted}${earlier}`), impls[2].prompt);
+  const counts = (open) => `The story has ${open} of earlier attempts, 1 open finding that used no attempt, and 1 finding from before the human's latest answer. Fix every open one.`;
+  assert.deepEqual(impls.map((c) => c.prompt.split("[attempt N] failed before the human's latest answer, and says what failed before it. ")[1].split("\n")[0]), [counts("0 open findings"), counts("1 open finding"), counts("2 open findings")]);
+  for (const c of impls) {
+    assert.ok(c.prompt.includes(`\nRead the story US-1 first, from OmniState, with \`OMNI_RUN=${result.run} OMNI_ROLE=impl OMNI_FEATURE='board' omni story read US-1 --json\`.`), c.prompt);
+    assert.doesNotMatch(c.prompt, /pink|border|README|was blue|The badge is red/);
+  }
+  assert.deepEqual(findingsOf(dirs, "US-1").slice(2, 4), [["review", "[attempt 1] The badge is pink", ["src/badge.rs"], true], ["review", "[attempt 2] The badge has no border", ["src/border.rs"], true]]);
 });
 
 test("after 3 failed attempts the story goes back to the backlog, blocked, with one thread holding every attempt's findings and those before the latest answer; a story that comes with 3 failed attempts gets its thread without an implementer", { timeout: 60000 }, async (t) => {
@@ -1077,8 +1078,10 @@ test("after 3 failed attempts the story goes back to the backlog, blocked, with 
 
 Attempt 1:
 - [review] Criterion not met: "The badge is red". Pink at src/badge.rs:1
+
 Attempt 2:
 - [review] Criterion not met: "The badge is red". Still pink at src/badge.rs:1
+
 Attempt 3:
 - [review] Criterion not met: "The badge is red". Pink again at src/badge.rs:2
 
@@ -1094,26 +1097,35 @@ Attempt 1:
   assert.deepEqual(result.outcomes.map((o) => [o.key, o.outcome]).sort(), [["US-1", "attempts_exhausted"], ["US-2", "attempts_exhausted"]]);
 });
 
-test("findings that outgrow the helper's answer come cut to their head and tail, 1,500 characters at most, the newest that fit, and a count of the rest: the implementer and the reviewer are told how to read every one in full, and the thread of a story out of attempts says how many more the story holds", { timeout: 120000 }, async (t) => {
-  const many = (attempt, n) => Array.from({ length: n }, (_, i) => ({ stage: "review", text: `[attempt ${attempt}] a${attempt}-${i + 1} ${"x".repeat(3000)}`, files: [], resolved: false }));
-  // 11 cut findings fit beside a story: US-1 leaves out 5 of its 16, and US-2 4 of its 15.
-  const dirs = scratch(t, [story("US-1", { findings: [...many(1, 8), ...many(2, 8)] }), story("US-2", { findings: [...many(1, 5), ...many(2, 5), ...many(3, 5)] })]);
+test("no courier carries story content: however long a story's text, criteria, decisions and findings, no prompt quotes them and every courier's answer stays within 2,000 characters; every agent is told how to read the story itself, and the thread of a story out of attempts holds every finding whole", { timeout: 120000 }, async (t) => {
+  const long = (label) => `${label}-LONG ${"x".repeat(3000)}`;
+  const many = (attempt, n) => Array.from({ length: n }, (_, i) => ({ stage: "review", text: `[attempt ${attempt}] ${long(`a${attempt}-${i + 1}`)}`, files: [], resolved: false }));
+  const fields = (findings) => ({
+    text: long("text"),
+    criteria: [{ text: long("criterion"), human_check: false }, { text: "A regression test covers the badge", human_check: false }],
+    decisions: Array.from({ length: 10 }, (_, i) => ({ question: long(`question-${i}`), choice: long(`choice-${i}`), by: "human" })),
+    findings,
+  });
+  const dirs = scratch(t, [story("US-1", fields([...many(1, 8), ...many(2, 8)])), story("US-2", fields([...many(1, 5), ...many(2, 5), ...many(3, 5)]))]);
 
   const { result, error, calls } = await deliver(dirs, { implementers: 1 });
 
   assert.equal(error, null);
-  const [impl] = agentsOf(calls, "impl:US-1");
-  const [review] = agentsOf(calls, "review:US-1");
-  for (const [prompt, role] of [[impl.prompt, "impl"], [review.prompt, "review"]]) {
-    assert.ok(prompt.includes(`\n\n5 more findings are left out and 11 findings are cut here, to keep this short: \`OMNI_RUN=${result.run} OMNI_ROLE=${role} OMNI_FEATURE='board' omni story read US-1\` shows every finding in full.`), prompt);
-    assert.match(prompt, /\n- \[review\] a2-1 x+\n… \(cut; full text on the board\)\nx+\n/);
+  const roles = ["clarity", "impl", "review", "verify", "tests"];
+  for (const role of roles) {
+    const [c] = agentsOf(calls, `${role}:US-1`);
+    assert.ok(c.prompt.includes(`\`OMNI_RUN=${result.run} OMNI_ROLE=${role} OMNI_FEATURE='board' omni story read US-1 --json\``), `${role}: ${c.prompt}`);
+    assert.doesNotMatch(c.prompt, /LONG|regression test covers/, role);
   }
+  const outputs = couriersOf(calls).map((c) => [c.label, String(c.output || "").length]);
+  assert.deepEqual(outputs.filter(([, n]) => n > 2000), [], JSON.stringify([...outputs].sort((a, b) => b[1] - a[1]).slice(0, 3)));
+  assert.doesNotMatch(couriersOf(calls).map((c) => c.output).join("\n"), /LONG/);
   const [exhausted] = questions(dirs).filter((th) => th.title === "US-2: still failing after 3 attempts");
-  assert.match(exhausted.posts[0].body, /\n… \(cut; full text on the board\)\nx+\n\n4 more findings are on the story\.\n$/);
+  for (const f of dirs.story("US-2").findings) assert.ok(exhausted.posts[0].body.includes(f.text.replace(/^\[attempt \d\] /, "")), f.text.slice(0, 40));
   assert.deepEqual(result.outcomes.map((o) => [o.key, o.outcome]).sort(), [["US-1", "done"], ["US-2", "attempts_exhausted"]]);
 });
 
-test("a check's finding past 1,500 characters loses the middle of its output, not its end: the next implementer and reviewer get its header, its last error, the closing fence and the verdict that it passes without the story, and are told how to read it in full", { timeout: 120000 }, async (t) => {
+test("a check's finding quotes the end of the check's log, which the helper reads by the job's id: no courier carries the output, and the next implementer reads the finding from the board", { timeout: 120000 }, async (t) => {
   const dirs = scratch(t, [story("US-1", { criteria: [{ text: "The badge is red", human_check: false }] })]);
   const count = join(dirs.root, "count");
   // Fails once, on the story's first lane pass, with a log whose last line names the error; passes after.
@@ -1122,18 +1134,13 @@ test("a check's finding past 1,500 characters loses the middle of its output, no
   const { result, error, calls } = await deliver(dirs, { implementers: 1, checks: { fast } });
 
   assert.equal(error, null);
-  const onBoard = dirs.story("US-1").findings.map((f) => f.text);
-  assert.deepEqual(onBoard.map((text) => [text.length > 1500, text.endsWith("FINAL-42-ERROR at src/badge.rs\n```\nIt passes on deliver/board without the story.")]), [[true, true]]);
+  const [finding] = dirs.story("US-1").findings.map((f) => f.text);
+  assert.ok(finding.startsWith(`[attempt 1] The fast check (\`${fast}\`) failed. It passes on deliver/board without the story.\n\nThe end of its output:\n\`\`\`\n`), finding);
+  assert.ok(finding.endsWith("\n599\n600\nFINAL-42-ERROR at src/badge.rs\n```"), finding);
+  assert.doesNotMatch(couriersOf(calls).map((c) => c.output).join("\n"), /FINAL-42-ERROR/);
   const [, impl] = agentsOf(calls, "impl:US-1");
-  const [, review] = agentsOf(calls, "review:US-1");
-  for (const [prompt, role] of [[impl.prompt, "impl"], [review.prompt, "review"]]) {
-    const [, finding] = prompt.match(/\nAttempt 1:\n- \[testing\] ([\s\S]*?)\n\n(?:1 finding is cut here|## The linked docs)/);
-    assert.ok(finding.startsWith(`The fast check (\`${fast}\`) failed. The end of its output:\n\`\`\`\n`), finding);
-    assert.ok(finding.includes("\n… (cut; full text on the board)\n"), finding);
-    assert.ok(finding.endsWith("\n600\nFINAL-42-ERROR at src/badge.rs\n```\nIt passes on deliver/board without the story."), finding);
-    assert.equal((finding.match(/^```/gm) || []).length, 2, finding);
-    assert.ok(prompt.includes(`\n\n1 finding is cut here, to keep this short: \`OMNI_RUN=${result.run} OMNI_ROLE=${role} OMNI_FEATURE='board' omni story read US-1\` shows every finding in full.`), prompt);
-  }
+  assert.doesNotMatch(impl.prompt, /FINAL/);
+  assert.ok(impl.prompt.includes("The story has 1 open finding of earlier attempts"), impl.prompt);
   assert.deepEqual(result.outcomes, [{ key: "US-1", outcome: "done" }]);
 });
 
@@ -1155,10 +1162,17 @@ test("an implementer's question the council settles becomes an agent decision an
   assert.equal(error, null);
   const impls = agentsOf(calls, "impl:US-1");
   assert.equal(impls.length, 2);
-  assert.match(impls[1].prompt, /\n- Which red\? -> #c00 \(council: "const RED = '#c00'" \(src\/colors\.rs:3\)\) \(agent\)\n/);
-  assert.match(lineAfter(impls[1].prompt, "## Your task now\n"), /An earlier session of this attempt stopped to ask a question, which the decisions above now settle\./);
+  assert.deepEqual(dirs.story("US-1").decisions, [{ question: "Which red?", choice: "#c00 (council: \"const RED = '#c00'\" (src/colors.rs:3))", by: "agent" }]);
+  assert.match(lineAfter(impls[1].prompt, "## Your task now\n"), /An earlier session of this attempt stopped to ask a question, which the story's decisions now settle\./);
   for (const c of agentsOf(calls, "council:US-1:code")) assert.ok(c.prompt.includes(`You read the code, and nothing else: the story's worktree ${dirs.worktree("US-1")}.`), c.prompt);
   assert.equal(agentsOf(calls, "council:US-1:code").length, 2);
+  // Every member reads the story itself; only the spec member reads its linked docs.
+  for (const reading of ["spec", "code", "user"]) {
+    const [c] = agentsOf(calls, `council:US-1:${reading}`);
+    assert.ok(c.prompt.includes(`\`OMNI_RUN=${result.run} OMNI_ROLE=council OMNI_FEATURE='board' omni story read US-1 --json\``), c.prompt);
+    assert.equal(c.prompt.includes("doc read <doc_id>"), reading === "spec", reading);
+    assert.doesNotMatch(c.prompt, /The badge is red/);
+  }
   const [blinking] = questions(dirs);
   assert.deepEqual([questions(dirs).length, blinking.title], [1, "US-1: Should the badge blink?"]);
   assert.match(blinking.posts[0].body, /\nAsked by the reviewer\.\n[\s\S]*\nRecommendation: No \(the council's majority\)\n$/);
@@ -1193,9 +1207,9 @@ test("an implementer's slot is free once its story is implemented: with implemen
   // The first three stories' reviewers answer once the fourth story's
   // implementer has started, or after 5 s if it never does: with their slots
   // held through review, it would not start before one of them ended.
-  const waiting = async (call) => {
+  const waiting = async (call, serial, board) => {
     await within(fourth, 5000);
-    return reviewed("pass")(call);
+    return reviewed("pass")(call, serial, board);
   };
   const roles = {
     ...Object.fromEntries(["US-1", "US-2", "US-3"].map((key) => [`review:${key}`, [waiting]])),
@@ -1223,9 +1237,9 @@ test("at most `implementers` stories implement at once and at most `reviewers` a
   const keys = ["US-1", "US-2", "US-3", "US-4"];
   const dirs = scratch(t, keys.map((key) => story(key)));
   // A review takes half a second, long enough for the next story's to start beside it.
-  const slow = async (call) => {
+  const slow = async (call, serial, board) => {
     await pause(500);
-    return reviewed("pass")(call);
+    return reviewed("pass")(call, serial, board);
   };
 
   const { result, error } = await deliver(dirs, { implementers: 2, reviewers: 1 }, Object.fromEntries(keys.map((key) => [`review:${key}`, [slow]])));
@@ -1369,7 +1383,7 @@ test("clarity starts a check only while the calls made and those set aside for t
   assert.deepEqual([result.capped, keys.flatMap((key) => claimsOf(dirs, key))], [true, []]);
 });
 
-test("prompts give the context first and the criteria and the task last, name the linked docs and nodes for the agent to read once with omni as this run's role, use absolute paths, say who is read-only and that the workflow makes every board write; models and agent types come from args", { timeout: 60000 }, async (t) => {
+test("prompts give the context first and the criteria and the task last, tell the agent to read the story, its decisions and its linked doc nodes with omni as this run's role and quote none of them, use absolute paths, say who is read-only and that the workflow makes every board write; models and agent types come from args", { timeout: 60000 }, async (t) => {
   const docs = { "doc-spec": '<p data-omni-id="n1">SPEC NODE ONE</p><p data-omni-id="n2">SPEC NODE TWO</p>' };
   const dirs = scratch(t, [story("US-1", {
     text: "Show a badge.",
@@ -1389,25 +1403,26 @@ test("prompts give the context first and the criteria and the task last, name th
   const order = (prompt, headings) => headings.map((h) => prompt.indexOf(`\n${h}\n`));
   for (const [prompt, headings] of [
     [clarity.prompt, ["## The story", "## The shared parts", "## The board", "## Acceptance criteria", "## Your task now"]],
-    [impl.prompt, ["## Your worktree", "## The story", "## The linked docs", "## The board", "## Rules", "## Acceptance criteria", "## Your task now"]],
-    [review.prompt, ["## The change", "## The story", "## The linked docs", "## The board", "## Rules", "## Acceptance criteria (number: text)", "## Your task now"]],
+    [impl.prompt, ["## Your worktree", "## The story", "## The board", "## Rules", "## Acceptance criteria", "## Your task now"]],
+    [review.prompt, ["## The change", "## The story", "## The board", "## Rules", "## Acceptance criteria", "## Your task now"]],
   ]) {
     const at = order(prompt, headings);
     assert.ok(at.every((n) => n > 0), `${headings} in ${prompt}`);
     assert.deepEqual(at, [...at].sort((a, b) => a - b), prompt);
     assert.match(prompt, /\nThe workflow makes every write to the board itself, through its helper, from what you return\./);
-    assert.doesNotMatch(prompt, /SPEC NODE/);
+    assert.doesNotMatch(prompt, /SPEC NODE|Show a badge|The badge is red|It looks right|Which red|#c00|doc-spec|n1|counts/);
   }
-  const nodes = "- doc doc-spec: node n1 (spec), node n2 (counts)";
-  assert.ok(impl.prompt.includes(`Read each doc below once, with \`OMNI_RUN=${result.run} OMNI_ROLE=impl OMNI_FEATURE='board' omni doc read <doc>\`, and find in it the nodes the story links: each is the element with that data-omni-id.\n${nodes}`), impl.prompt);
-  assert.ok(review.prompt.includes(`OMNI_RUN=${result.run} OMNI_ROLE=review OMNI_FEATURE='board' omni doc read <doc>`));
+  for (const [prompt, role] of [[clarity.prompt, "clarity"], [impl.prompt, "impl"], [review.prompt, "review"]]) {
+    assert.ok(prompt.includes(`\n## The story\nRead the story US-1 first, from OmniState, with \`OMNI_RUN=${result.run} OMNI_ROLE=${role} OMNI_FEATURE='board' omni story read US-1 --json\`. It prints the story as JSON:\n`), prompt);
+    assert.ok(prompt.includes(`\n- links: each one with a doc_id and a node_id is a node of a doc the story links. Read each of those docs once, with \`OMNI_RUN=${result.run} OMNI_ROLE=${role} OMNI_FEATURE='board' omni doc read <doc_id>\`, and find in it each linked node: the element whose data-omni-id is the node_id.\n`), prompt);
+  }
   assert.ok(clarity.prompt.includes(`\`OMNI_RUN=${result.run} OMNI_ROLE=clarity OMNI_FEATURE='board' omni doc list\``));
-  assert.ok(clarity.prompt.includes(nodes));
-  assert.match(clarity.prompt, /\n## Acceptance criteria\n- The badge is red\n- It looks right \[human check\]\n/);
-  assert.match(impl.prompt, /\n- Which red\? -> #c00 \(human\)\n/);
+  assert.match(clarity.prompt, /\n- decisions: each a question, the choice taken, and by whom, agent or human\. They are settled: a gap one of them already settles is NOT raised again\.\n/);
+  assert.match(clarity.prompt, /\n## Acceptance criteria\nThe story's 2 criteria, numbered from 0 to 1 in the order the story gives them\. A criterion with human_check true is confirmed by a human later\.\n/);
+  assert.match(impl.prompt, /\n- decisions: each a question, the choice taken, and by whom, agent or human\. They are settled: build against them as if the spec said so\.\n/);
   assert.match(impl.prompt, /Never start the stack or run the stack tests \(`make stack-tests`\)/);
   assert.ok(review.prompt.includes(`See the diff with \`git -C ${dirs.worktree("US-1")} diff refs/heads/deliver/board...HEAD\``));
-  assert.match(review.prompt, /\n## Acceptance criteria \(number: text\)\n0: The badge is red\n1: It looks right \[human check\]\n/);
+  assert.match(review.prompt, /\n## Acceptance criteria\nThe story's 2 criteria, numbered from 0 to 1 in the order the story gives them\. No criterion is a test obligation\.\n/);
   for (const prompt of [clarity.prompt, review.prompt]) assert.match(prompt, /You are read-only: you change no file, make no commit, and write nothing to the board\./);
   assert.doesNotMatch(impl.prompt, /You are read-only/);
 });
@@ -1522,8 +1537,10 @@ test("the verifier's prompt leaves out the seed and lint commands when the check
   assert.ok(verify.prompt.includes("\n- The stack has no users until the seed runs, and this run has no seed command. Never write into the stack's database yourself.\n"), verify.prompt);
   assert.doesNotMatch(verify.prompt, /seed command as|OMNI_STORY|lint|the stack is up/);
   assert.ok(verify.prompt.includes("\n- A criterion about a command is checked by running that command: fast is `true`.\n"), verify.prompt);
-  assert.match(verify.prompt, /\n0: The badge is red\n1: A regression test covers the badge \[test obligation\]\n/);
-  assert.match(agentsOf(calls, "tests:US-1")[0].prompt, /\n1: A regression test covers the badge \[test obligation\]\n/);
+  assert.equal(owedIn(verify.prompt), "Criterion 1 is a test obligation.");
+  const [author] = agentsOf(calls, "tests:US-1");
+  assert.equal(owedIn(author.prompt), "Criterion 1 is a test obligation.");
+  assert.ok(author.prompt.includes("\n## Criteria the verifier confirmed (observed values are withheld so they cannot shape your oracle)\nCriterion 0 of the story.\n"), author.prompt);
   assert.deepEqual([result.outcomes, findingsOf(dirs, "US-1")], [[{ key: "US-1", outcome: "done" }], []]);
 });
 
@@ -1574,7 +1591,7 @@ test("a rebase conflict in lane-prepare sends the story back with no attempt use
   ]);
   const impls = agentsOf(calls, "impl:US-1");
   assert.deepEqual(impls.map((c) => [c.model, lineAfter(c.prompt, "## Your task now\n").startsWith("This is attempt 1 of 3 since ")]), [["sonnet", true], ["sonnet", true]]);
-  assert.ok(impls[1].prompt.includes("\n### Other open findings (fix every one of them; they used no attempt)\n- [testing] rebase conflict in README: "), impls[1].prompt);
+  assert.ok(impls[1].prompt.includes("The story has 0 open findings of earlier attempts, 1 open finding that used no attempt, and 0 findings from before the human's latest answer. Fix every open one."), impls[1].prompt);
   assert.deepEqual(result.outcomes, [{ key: "US-1", outcome: "done" }]);
 });
 
@@ -1675,7 +1692,7 @@ test("trouble in lane-prepare that is not the story's stops the lane for the res
   assert.deepEqual(result.outcomes.map((o) => [o.key, o.outcome]).sort(), [["US-1", "lane_stopped"], ["US-2", "reviewed"]]);
 });
 
-test("a check that fails on the story runs once more on the base, deliver/<slug> without it: passing there, the story uses an attempt with the check's tail as its finding, and the lane goes on; the stack is not rebuilt, since the story's build never reached it", { timeout: 120000 }, async (t) => {
+test("a check that fails on the story runs once more on the base, deliver/<slug> without it: passing there, the story uses an attempt with a finding that quotes the end of the check's log, and the lane goes on; the stack is not rebuilt, since the story's build never reached it", { timeout: 120000 }, async (t) => {
   const dirs = scratch(t, [story("US-1")]);
   const fast = "if [ -f US-1.txt ]; then echo US-1.txt breaks the build; exit 1; fi";
   const roles = {
@@ -1692,13 +1709,13 @@ test("a check that fails on the story runs once more on the base, deliver/<slug>
   const { result, error, calls } = await deliver(dirs, { checks: { fast, stack_up: "true", stack: "true" } }, roles);
 
   assert.equal(error, null);
-  assert.deepEqual(findingsOf(dirs, "US-1"), [["testing", `[attempt 1] The fast check (\`${fast}\`) failed. The end of its output:\n\`\`\`\nUS-1.txt breaks the build\n\`\`\`\nIt passes on deliver/board without the story.`, [], true]]);
+  assert.deepEqual(findingsOf(dirs, "US-1"), [["testing", `[attempt 1] The fast check (\`${fast}\`) failed. It passes on deliver/board without the story.\n\nThe end of its output:\n\`\`\`\nUS-1.txt breaks the build\n\`\`\``, [], true]]);
   assert.deepEqual(jobsOf(dirs, result.run).map((j) => j.name), ["fast", "fast", "fast", "stack_up", "stack"]);
   assert.equal(agentsOf(calls, "courier:lane-base:US-1").length, 1);
   assert.deepEqual([dirs.story("US-1").status, result.lane, questions(dirs)], ["done", null, []]);
 });
 
-test("a check that fails on the story and again on the base stops the lane for the rest of the run, with one thread for the run that holds the base's tail: the story goes back to reviewed with no attempt used, and a story reviewed after it waits there", { timeout: 120000 }, async (t) => {
+test("a check that fails on the story and again on the base stops the lane for the rest of the run, with one thread for the run that quotes the end of the base's log: the story goes back to reviewed with no attempt used, and a story reviewed after it waits there", { timeout: 120000 }, async (t) => {
   const dirs = scratch(t, [story("US-1"), story("US-2")]);
   const stack = "echo the stack lost its database; exit 1";
   const lane = laneOf(dirs);
@@ -1710,7 +1727,7 @@ test("a check that fails on the story and again on the base stops the lane for t
   assert.deepEqual([questions(dirs).length, stop.title], [1, `Run ${result.run}: the lane stopped`]);
   const [first] = result.outcomes.filter((o) => o.outcome === "lane_stopped").map((o) => o.key);
   const second = first === "US-1" ? "US-2" : "US-1";
-  assert.match(stop.posts[0].body, new RegExp(`^The lane stopped for the rest of run ${result.run}, on ${first}: the stack check failed on it, and the stack check on deliver/board without it\\.\\n\\nOn deliver/board at [0-9a-f]{7}, \`echo the stack lost its database; exit 1\` failed\\. The end of its output:\\n\`\`\`\\nthe stack lost its database\\n\`\`\`\\n`));
+  assert.match(stop.posts[0].body, new RegExp(`^The lane stopped for the rest of run ${result.run}, on ${first}: the stack check failed on it, and the stack check on deliver/board without it\\.\\n\\nOn deliver/board at [0-9a-f]{7}, \`echo the stack lost its database; exit 1\` failed\\.\\n\\nIf a story left state on the stack, [^\\n]+\\n\\nThis is not the story's trouble: [^\\n]+\\n\\nThe end of its output:\\n\`\`\`\\nthe stack lost its database\\n\`\`\`\\n$`));
   // On the base, the stack check ran after a stack_up there.
   assert.deepEqual(jobsOf(dirs, result.run).map((j) => [j.name, j.key, j.cwd]), ["fast", "stack_up", "stack", "stack_up", "stack"].map((name) => [name, first, lane]));
   assert.deepEqual([first, second].map((key) => [dirs.story(key).status, dirs.story(key).findings || []]), [["reviewed", []], ["reviewed", []]]);
@@ -1781,8 +1798,8 @@ test("a test author's question goes to the council: settled, the author runs aga
   assert.equal(error, null);
   const authors = agentsOf(calls, "tests:US-1");
   assert.equal(authors.length, 2);
-  assert.match(authors[1].prompt, /\n- Does the badge blink\? -> Yes \(council: "Badges blink" \(doc doc-spec node n1\)\) \(agent\)\n/);
-  assert.match(lineAfter(authors[1].prompt, "## Your task now\n"), /^An earlier session stopped to ask a question, which the decisions above now settle\./);
+  assert.deepEqual(dirs.story("US-1").decisions, [{ question: "Does the badge blink?", choice: "Yes (council: \"Badges blink\" (doc doc-spec node n1))", by: "agent" }]);
+  assert.match(lineAfter(authors[1].prompt, "## Your task now\n"), /^An earlier session stopped to ask a question, which the story's decisions now settle\./);
   for (const c of agentsOf(calls, "council:US-1:code")) assert.ok(c.prompt.includes(`You read the code, and nothing else: the story's worktree ${laneOf(dirs)}.`), c.prompt);
   const [asked] = questions(dirs);
   assert.deepEqual([questions(dirs).length, asked.title], [1, "US-2: Does the count wrap?"]);
@@ -1983,7 +2000,7 @@ test("a story whose stack check fails leaves its migration in the stack: with st
   const { result, error } = await deliver(dirs, { implementers: 1, checks: { fast: "true", stack_up: STACK_UP, stack, stack_reset: "rm -f ../db" } }, roles);
 
   assert.equal(error, null);
-  assert.deepEqual(findingsOf(dirs, "US-1"), [["testing", `[attempt 1] The stack check (\`${stack}\`) failed. The end of its output:\n\`\`\`\nUS-1 breaks the stack tests\n\`\`\`\nIt passes on deliver/board without the story.`, [], true]]);
+  assert.deepEqual(findingsOf(dirs, "US-1"), [["testing", `[attempt 1] The stack check (\`${stack}\`) failed. It passes on deliver/board without the story.\n\nThe end of its output:\n\`\`\`\nUS-1 breaks the stack tests\n\`\`\``, [], true]]);
   assert.deepEqual(jobsOf(dirs, result.run).filter((j) => j.key === "US-1").map((j) => j.name), ["fast", "stack_reset", "stack_up", "stack", "stack_reset", "stack_up", "stack", "fast", "stack_up", "stack"]);
   assert.deepEqual([result.lane, questions(dirs), result.outcomes.map((o) => [o.key, o.outcome]).sort()], [null, [], [["US-1", "done"], ["US-2", "done"]]]);
 });
@@ -1997,7 +2014,8 @@ test("without stack_reset, a story whose migration stays in the stack stops the 
   assert.equal(error, null);
   assert.equal(result.lane, "the stack check failed on it, and the stack_up check on deliver/board without it");
   const [stop] = questions(dirs);
-  assert.ok(stop.posts[0].body.includes("\n```\nmigration migrations/US-1.sql was previously applied but is missing\n```\n\nIf a story left state on the stack, make stack_reset (or stack_up) reset it: a migration of a story the lane sent back, for one, stays in the stack's database, and fails every stack_up of a tree without it.\n\n"), stop.posts[0].body);
+  assert.ok(stop.posts[0].body.includes(" failed.\n\nIf a story left state on the stack, make stack_reset (or stack_up) reset it: a migration of a story the lane sent back, for one, stays in the stack's database, and fails every stack_up of a tree without it.\n\nThis is not the story's trouble: "), stop.posts[0].body);
+  assert.ok(stop.posts[0].body.endsWith("\n\nThe end of its output:\n```\nmigration migrations/US-1.sql was previously applied but is missing\n```\n"), stop.posts[0].body);
 });
 
 test("a story the verifier fails leaves its migration in the stack: with stack_reset, the rebuild at the tip resets the stack first, so the next pass of the lane is clean, and both stories land", { timeout: 120000 }, async (t) => {
@@ -2043,7 +2061,7 @@ test("a test author's check that leaves a file behind costs the story nothing: l
   assert.deepEqual([git(dirs.repo, "log", "-1", "--format=%s", "refs/heads/deliver/board").trim(), result.outcomes, findingsOf(dirs, "US-1"), result.notes], ["feat: badge.test", [{ key: "US-1", outcome: "done" }], [], []]);
 });
 
-test("a test author's check that comes out red gets the author once more, with its output: tests it fixes land with the story, at its first attempt", { timeout: 120000 }, async (t) => {
+test("a test author's check that comes out red gets the author once more, told where the check's output is: tests it fixes land with the story, at its first attempt", { timeout: 120000 }, async (t) => {
   const dirs = scratch(t, [story("US-1")]);
   const lane = laneOf(dirs);
   const check = "test -f fixed.test || { echo badge.test fails; exit 1; }";
@@ -2061,7 +2079,9 @@ test("a test author's check that comes out red gets the author once more, with i
   assert.equal(error, null);
   const authors = agentsOf(calls, "tests:US-1");
   assert.equal(authors.length, 2);
-  assert.equal(between(authors[1].prompt, "## Your task now\n", "\nReturn raw structured data only."), `An earlier session committed tests in the lane worktree, and their check \`${check}\` failed. The end of its output:\n\`\`\`\nbadge.test fails\n\`\`\`\nThe story itself passed its checks and its verifier. Fix the tests, never the production code, so that the check passes, commit the fix, and return the result with the check.`);
+  const log = join(dirs.repo, ".omni", "runs", result.run, "jobs", "US-1-tests-1.log");
+  assert.equal(between(authors[1].prompt, "## Your task now\n", "\nReturn raw structured data only."), `An earlier session committed tests in the lane worktree, and their check \`${check}\` failed: its output is in ${log}: read the end of it.\nThe story itself passed its checks and its verifier. Fix the tests, never the production code, so that the check passes, commit the fix, and return the result with the check.`);
+  assert.equal(readFileSync(log, "utf8"), "badge.test fails\n");
   assert.deepEqual(git(dirs.repo, "log", "--format=%s", `${head}..refs/heads/deliver/board`).trim().split("\n"), ["feat: fixed.test", "feat: badge.test", "feat: US-1.txt"]);
   assert.deepEqual([result.outcomes, findingsOf(dirs, "US-1"), result.notes], [[{ key: "US-1", outcome: "done" }], [], []]);
 });
@@ -2151,7 +2171,7 @@ test("a lane stop whose release fails stops the lane all the same, with its thre
 
 // ---- the end of the run ---------------------------------------------------------------
 
-test("the run ends with the journeys check in the lane worktree, then finish gets the report: every outcome, the council's counts, the blocked stories with their threads, the journeys and the notes; the report goes on the Run thread, the lock is given up, and the run returns the report's path and the landed state", { timeout: 120000 }, async (t) => {
+test("the run ends with the journeys check in the lane worktree, then finish gets the report: every outcome, the council's counts, the journeys and the notes, and the helper adds the blocked stories with their threads from the board, with no courier for them; the report goes on the Run thread, the lock is given up, and the run returns the report's path and the landed state", { timeout: 120000 }, async (t) => {
   const dirs = scratch(t, [story("US-1"), story("US-2"), story("US-3", { blocked: true, links: [{ thread_id: "th-1", label: "question" }] })], [{ id: "th-1", title: "US-3: Which red?", feature: "board", posts: [], conclusion: null }]);
   const roles = {
     "impl:US-2": [{ status: "blocked", summary: "The badge API is missing." }],
@@ -2171,13 +2191,13 @@ test("the run ends with the journeys check in the lane worktree, then finish get
   assert.deepEqual({ ...report, outcomes: [...report.outcomes].sort((a, b) => a.key.localeCompare(b.key)) }, {
     outcomes: [{ key: "US-1", outcome: "done" }, { key: "US-2", outcome: "blocked" }],
     council: { settled: 0, asked: 0 },
-    blocked: [{ key: "US-2", threads: [blocked.id] }, { key: "US-3", threads: ["th-1"] }],
     journeys: ["healthy: One journey spans them.", "Badge, then count: works"],
     notes: ["The run took its storyLimit of 2 stories."],
   });
   const posted = dirs.state().threads.find((th) => th.id === result.thread).posts;
   assert.deepEqual([posted.length, posted[0].summary, result.posted], [1, `Report of ${result.run}`, true]);
   assert.equal(posted[0].body, readFileSync(result.report, "utf8"));
+  assert.deepEqual(agentsOf(calls, "courier:context:US-3"), []);
   assert.equal(result.report, join(dirs.repo, ".omni", "runs", result.run, "report.md"));
   assert.match(posted[0].body, /\n## Landed on deliver\/board\n- US-1 Story US-1: [0-9a-f]{7} feat: US-1\.txt\n\nBring them into your branch with `git merge --ff-only deliver\/board`\.\n/);
   assert.ok(posted[0].body.includes(`\n## Blocked\n- US-2 Story US-2: thread ${blocked.id}\n- US-3 Story US-3: thread th-1\n`), posted[0].body);
@@ -2201,7 +2221,7 @@ test("the journeys check runs no check itself, nor the stack command, since its 
   assert.equal(error, null);
   assert.deepEqual([result.landed, result.lane], [["US-1"], "the fast check failed on it, and the fast check on deliver/board without it"]);
   const [final] = agentsOf(calls, "final");
-  assert.ok(final.prompt.includes(`\n## The lane's checks\nThe lane ran its checks on every story before it landed, so run none of them yourself, not even the fast command: your Bash call stops after 10 minutes, and a check can take longer. The lane's last check, fast (\`${fast}\`) on deliver/board without US-2, failed. The end of its output:\n\`\`\`\nthe fast check is red\n\`\`\`\n`), final.prompt);
+  assert.ok(final.prompt.includes(`\n## The lane's checks\nThe lane ran its checks on every story before it landed, so run none of them yourself, not even the fast command: your Bash call stops after 10 minutes, and a check can take longer. The lane's last check, fast (\`${fast}\`) on deliver/board without US-2, failed: its output is in ${join(dirs.repo, ".omni", "runs", result.run, "jobs", "US-2-fast-2.log")}.\n`), final.prompt);
   assert.doesNotMatch(final.prompt, /Run the fast command/);
   assert.ok(final.prompt.includes(" and exercise up to 3 of them for real, with the real components. Report each with its outcome.\n"), final.prompt);
   assert.equal(final.schema.properties.healthy.description, "The lane's last check passed and every cross-story journey worked");
@@ -2222,7 +2242,7 @@ test("a journeys check whose lane-reset fails is not run: the report says why, a
 
 test("finish runs whenever start succeeded: a run that throws posts its report, with the error among its notes, and gives the lock up before the throw goes on", { timeout: 120000 }, async (t) => {
   const dirs = scratch(t, [story("US-1")]);
-  // The board cannot be listed: the deliver loop throws, and so does the list of blocked stories.
+  // The board cannot be listed: the deliver loop throws, and finish lists the blocked stories itself.
   const fault = (call) => (call.label === "courier:list" ? "nothing" : null);
 
   const { error, calls } = await deliver(dirs, {}, {}, { fault });
@@ -2232,6 +2252,6 @@ test("finish runs whenever start succeeded: a run that throws posts its report, 
   const [run] = dirs.state().threads.filter((th) => /^Run run-\d{8}-\d{6}-\d+$/.test(th.title));
   assert.equal(run.posts.length, 1);
   assert.ok(run.posts[0].body.includes("\nThe run stopped on an error: courier:list: the courier returned nothing, after 3 retries\n"), run.posts[0].body);
-  assert.ok(run.posts[0].body.includes("\nThe blocked stories could not be listed: courier:list: the courier returned nothing, after 3 retries\n"), run.posts[0].body);
+  assert.ok(run.posts[0].body.includes("\n## Blocked\n- none\n"), run.posts[0].body);
   assert.equal(agentsOf(calls, "courier:finish").length, 1);
 });
