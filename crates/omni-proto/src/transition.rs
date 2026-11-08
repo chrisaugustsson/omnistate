@@ -1,7 +1,7 @@
 //! How far a running transition has come.
 
 use crate::player::Running;
-use omni_core::design::proto::{Direction, Transition};
+use omni_core::design::proto::{Direction, Easing, Transition};
 
 /// Where a transition is at a moment.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -26,14 +26,19 @@ pub fn duration_ms(running: &Running) -> f64 {
 /// The progress of `running` at `now`, in milliseconds. A spring's own length
 /// replaces the transition's duration.
 pub fn progress(running: &Running, now: f64) -> Progress {
-    let duration = duration_ms(running);
+    progress_of(running.easing, duration_ms(running), running.started, now)
+}
+
+/// The progress of something that began at `started` and takes `duration`
+/// milliseconds under `easing`, at `now`.
+pub fn progress_of(easing: Easing, duration: f64, started: f64, now: f64) -> Progress {
     let linear = if duration == 0.0 {
         1.0
     } else {
-        ((now - running.started) / duration).clamp(0.0, 1.0)
+        ((now - started) / duration).clamp(0.0, 1.0)
     };
     Progress {
-        t: running.easing.eval(linear),
+        t: easing.eval(linear),
         done: linear >= 1.0,
     }
 }

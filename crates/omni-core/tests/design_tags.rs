@@ -992,3 +992,90 @@ fn the_format_doc_documents_every_tag_and_attribute() {
         missing.join(", ")
     );
 }
+
+/// The heading lines of a Markdown doc, outside its fenced code blocks.
+fn headings(doc: &str) -> Vec<&str> {
+    let mut in_code = false;
+    doc.lines()
+        .filter(|line| {
+            if line.starts_with("```") {
+                in_code = !in_code;
+            }
+            !in_code && line.starts_with('#')
+        })
+        .collect()
+}
+
+#[test]
+fn the_format_doc_describes_interactions_in_one_section() {
+    let doc = fs::read_to_string(repo_root().join("docs/formats/design-tags.md"))
+        .expect("docs/formats/design-tags.md exists");
+    let levels: Vec<&str> = headings(&doc)
+        .into_iter()
+        .filter(|heading| {
+            heading
+                .trim_start_matches('#')
+                .trim_start()
+                .starts_with("Interactions")
+        })
+        .filter_map(|heading| heading.split(' ').next())
+        .collect();
+    assert_eq!(levels, ["###"]);
+}
+
+// `skill/designs.md` shows the agent working examples.
+
+/// The fenced blocks labelled `label` under the `## heading` section of the
+/// skill file.
+fn skill_blocks(heading: &str, label: &str) -> Vec<String> {
+    let path = repo_root().join("skill/designs.md");
+    let doc = fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("skill/designs.md must exist: {error}"));
+    let mut blocks = Vec::new();
+    let mut in_section = false;
+    let mut current: Option<String> = None;
+    for line in doc.lines() {
+        if let Some(block) = current.as_mut() {
+            if line.starts_with("```") {
+                blocks.push(current.take().unwrap());
+            } else {
+                block.push_str(line);
+                block.push('\n');
+            }
+        } else if let Some(title) = line.strip_prefix("## ") {
+            in_section = title.trim() == heading;
+        } else if in_section && line.trim() == format!("```{label}") {
+            current = Some(String::new());
+        }
+    }
+    blocks
+}
+
+#[test]
+fn every_tag_example_in_the_skill_parses() {
+    for heading in ["Prototyping", "Variables"] {
+        let blocks = skill_blocks(heading, "tags");
+        assert!(
+            !blocks.is_empty(),
+            "skill/designs.md `## {heading}` must show tag examples in ```tags blocks"
+        );
+        for block in blocks {
+            tags::parse(&block).unwrap_or_else(|error| {
+                panic!("a tag example in skill/designs.md `## {heading}` must parse: {error:?}\n{block}")
+            });
+        }
+    }
+}
+
+#[test]
+fn the_token_example_in_the_skill_is_a_valid_token_tree() {
+    let blocks = skill_blocks("Variables", "json");
+    assert_eq!(
+        blocks.len(),
+        1,
+        "skill/designs.md `## Variables` must show one ```json token tree"
+    );
+    let tree: Value = serde_json::from_str(&blocks[0]).expect("the token example is JSON");
+    omni_core::design::tokens::TokenTree::from_json(&tree)
+        .unwrap_or_else(|error| panic!("the token example must be a valid token tree: {error:?}"));
+}

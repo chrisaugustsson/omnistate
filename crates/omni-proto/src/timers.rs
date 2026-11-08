@@ -3,6 +3,7 @@
 //! trigger counting from its gesture. Ported from the timer rules of
 //! FigCraft's `proto_run.rs` (MIT OR Apache-2.0; see `NOTICE`).
 
+use crate::input::Site;
 use crate::player::Rect;
 use omni_core::design::NodeId;
 use omni_core::design::proto::Interaction;
@@ -28,7 +29,7 @@ pub struct Timer {
     /// The visit of the board or overlay it was started on.
     pub(crate) visit: u64,
     pub(crate) interaction: Interaction,
-    pub(crate) holder: Option<NodeId>,
+    pub(crate) site: Site,
     pub(crate) target: Target,
     since: f64,
     delay_ms: u32,
@@ -41,7 +42,7 @@ impl Timer {
     pub(crate) fn new(
         visit: u64,
         interaction: Interaction,
-        holder: Option<NodeId>,
+        site: Site,
         target: Target,
         since: f64,
         delay_ms: u32,
@@ -49,7 +50,7 @@ impl Timer {
         Timer {
             visit,
             interaction,
-            holder,
+            site,
             target,
             since,
             delay_ms,

@@ -31,7 +31,7 @@ pub(crate) struct ComponentDef {
 
 impl ComponentDef {
     /// The variant properties of the component, by name with their values.
-    fn variants(&self) -> Vec<(&str, &[String])> {
+    pub(crate) fn variants(&self) -> Vec<(&str, &[String])> {
         self.props
             .iter()
             .filter_map(|(name, def)| match def {
@@ -209,7 +209,7 @@ impl DesignSystem {
     /// `choice`: an ordinary page that layout and painting handle like any
     /// other, and the nodes that were drawn as error placeholders.
     pub fn resolve(&self, page: &Node, choice: &ModeChoice) -> (Node, Vec<RenderError>) {
-        let resolved = crate::resolve::resolve(page, self, choice);
+        let resolved = crate::resolve::resolve(page, self, choice, &HashMap::new());
         (resolved.page, resolved.errors)
     }
 

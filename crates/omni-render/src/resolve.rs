@@ -116,6 +116,9 @@ pub(crate) struct ResolvedBoard {
     pub(crate) errors: Vec<RenderError>,
 }
 
+/// The component that each swapped instance shows, by the instance's address.
+pub(crate) type Swaps = HashMap<NodeAddress, NodeId>;
+
 /// A property value of an instance.
 #[derive(Clone)]
 enum Prop {
@@ -134,11 +137,18 @@ struct Inside {
 }
 
 /// Expands the instances of `page` and resolves its token references against
-/// `system` in `choice`.
-pub(crate) fn resolve(page: &Node, system: &DesignSystem, choice: &ModeChoice) -> Resolved {
+/// `system` in `choice`. An instance in `swaps`, by its address, shows the
+/// component it maps to, as a change to made in play mode (D19).
+pub(crate) fn resolve(
+    page: &Node,
+    system: &DesignSystem,
+    choice: &ModeChoice,
+    swaps: &Swaps,
+) -> Resolved {
     let source = serde_json::to_value(page).unwrap_or(Value::Null);
     let mut resolver = Resolver {
         system,
+        swaps,
         choice: choice.clone(),
         used: ids_of(page),
         next: 0,
@@ -171,6 +181,7 @@ pub(crate) fn resolve(page: &Node, system: &DesignSystem, choice: &ModeChoice) -
 /// board does not hold the page for as long as the whole board takes.
 pub(crate) struct BoardResolving {
     board: Node,
+    swaps: Swaps,
     /// The board as JSON, until `step` opens it.
     root: Option<Value>,
     /// The containers being resolved, outermost first.
@@ -201,9 +212,10 @@ struct Partial {
 /// page has and how many were made up (`Resolved::taken`); they go into the
 /// resolving until it is finished and are given back with the board (the
 /// caller takes the IDs of the board that this one replaces out of `taken`
-/// first).
+/// first). `swaps` is as in `resolve`.
 pub(crate) fn begin_board(
     board: Node,
+    swaps: Swaps,
     taken: &mut HashSet<NodeId>,
     next: &mut u64,
 ) -> BoardResolving {
@@ -211,6 +223,7 @@ pub(crate) fn begin_board(
     BoardResolving {
         root: Some(serde_json::to_value(&board).unwrap_or(Value::Null)),
         board,
+        swaps,
         open: Vec::new(),
         finished: None,
         used: std::mem::take(taken),
@@ -237,6 +250,7 @@ impl BoardResolving {
         let started = Instant::now();
         let mut resolver = Resolver {
             system,
+            swaps: &self.swaps,
             choice: choice.clone(),
             used: std::mem::take(&mut self.used),
             next: self.next,
@@ -331,6 +345,8 @@ fn keep_readable(source: &Value, mut resolved: Value) -> Option<Node> {
 
 struct Resolver<'a> {
     system: &'a DesignSystem,
+    /// The component each swapped instance shows, by the instance's address.
+    swaps: &'a Swaps,
     /// The modes the node being resolved is in: the page's choice, overlaid
     /// with the `modes` of each board that holds the node, the innermost last.
     choice: ModeChoice,
@@ -506,7 +522,7 @@ impl Resolver<'_> {
     /// Expands the instance `value` into a frame with the ID `out_id`.
     fn instance(
         &mut self,
-        value: Value,
+        mut value: Value,
         out_id: NodeId,
         address: NodeAddress,
         inside: Option<&Inside>,
@@ -517,6 +533,25 @@ impl Resolver<'_> {
             .and_then(Value::as_str)
             .and_then(|id| id.parse::<NodeId>().ok())
             .unwrap_or(out_id);
+        if let Some(swapped) = self
+            .swaps
+            .get(&address)
+            .and_then(|dest| self.system.component(dest))
+        {
+            // The destination shows its own variant values; the other
+            // properties and the overrides stay.
+            let variants: Vec<&str> = swapped
+                .variants()
+                .into_iter()
+                .map(|(name, _)| name)
+                .collect();
+            if let Some(node) = value.as_object_mut() {
+                node.insert("component".to_string(), json!(swapped.id));
+                if let Some(props) = node.get_mut("props").and_then(Value::as_object_mut) {
+                    props.retain(|name, _| !variants.contains(&name.as_str()));
+                }
+            }
+        }
         let component = value
             .get("component")
             .and_then(Value::as_str)

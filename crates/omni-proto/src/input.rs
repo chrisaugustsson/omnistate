@@ -4,8 +4,8 @@
 
 use crate::history::Play;
 use crate::player::{OverlayState, Rect};
-use omni_core::design::NodeId;
 use omni_core::design::proto::{Direction, Interaction};
+use omni_core::design::{NodeAddress, NodeId};
 
 /// What a hover or press puts back when it ends.
 #[derive(Clone, Debug)]
@@ -19,15 +19,34 @@ pub(crate) enum Revert {
         history_len: usize,
         play: Play,
     },
-    /// A change to: the variant the instance showed before.
+    /// A change to: the variant the instance, by its address on `board`,
+    /// showed before; skipped when the `visit` of `board` it was made in is
+    /// over.
     Variant {
-        instance: NodeId,
+        board: NodeId,
+        visit: u64,
+        instance: NodeAddress,
         previous: Option<NodeId>,
     },
     /// An open overlay: closed again.
     Overlay { visit: u64 },
     /// A swap overlay: the overlay as it was.
     Swap { visit: u64, before: OverlayState },
+}
+
+/// An instance, by where it is, and the component it shows now.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Holder {
+    pub(crate) address: NodeAddress,
+    pub(crate) shown: NodeId,
+}
+
+/// Where a layer is: its board and the instances that hold it, or that it is,
+/// the nearest last.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Site {
+    pub(crate) board: NodeId,
+    pub(crate) holders: Vec<Holder>,
 }
 
 /// A layer the pointer is over.
@@ -38,7 +57,7 @@ pub(crate) struct Hover {
     /// Its box on the screen, as it was on the board it was entered on: the
     /// hotspot whatever the board shows there later.
     pub(crate) rect: Rect,
-    pub(crate) holder: Option<NodeId>,
+    pub(crate) site: Site,
     /// What leaving runs.
     pub(crate) leave: Vec<Interaction>,
     pub(crate) reverts: Vec<Revert>,
@@ -53,7 +72,7 @@ pub(crate) struct Hover {
 #[derive(Clone, Debug)]
 pub(crate) struct DragTarget {
     pub(crate) interactions: Vec<Interaction>,
-    pub(crate) holder: Option<NodeId>,
+    pub(crate) site: Site,
     pub(crate) rect: Rect,
 }
 
@@ -80,4 +99,6 @@ pub(crate) struct Press {
     pub(crate) dragged: bool,
     pub(crate) follow: Option<Follow>,
     pub(crate) reverts: Vec<Revert>,
+    /// Where the pointer was when a drag last scrolled.
+    pub(crate) last: [f64; 2],
 }

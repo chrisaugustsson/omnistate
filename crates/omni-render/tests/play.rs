@@ -30,12 +30,29 @@
 //!   shortest form and the frame hugging it follows, a fill follows its colour
 //!   token, and a board set to dark is drawn dark while other boards are not.
 //!   Restart, and Exit followed by Play, draw the design system's values.
+//! - US-33: a `changeTo` fired by a layer inside a component swaps the
+//!   instance that holds the layer, and the board is laid out again: the
+//!   instance grows to the destination variant and a frame hugging it follows,
+//!   while other instances stay as designed. Inside an outer component that
+//!   appears more than once, only the clicked one changes. The swapped
+//!   instance keeps its other props and its overrides, and its variant props
+//!   take the destination's defaults. A board that a transition leaves is
+//!   drawn with its swaps until the transition ends, and as designed after.
+//! - US-34: during a smart animate a layer on both boards is at the box and
+//!   in the colour the eased progress mixes, the roots' fills mix, and a layer
+//!   on one board only (hidden there, or of another kind) fades, beneath the
+//!   new board's layers. A smart-animated change to animates the instance's
+//!   layers the same way. A Text's content and what cannot be mixed switch at
+//!   half the duration; `interpolate` switches them at a `t` of 0.5, mixes
+//!   colours straight, alpha too, and carries a box on past 1.
 
 mod design;
 
 use design::{at, board, fixed, flex, frame, node, none, rect, text, with};
+use omni_core::design::NodeAddress;
+use omni_render::layout::LayoutBox;
 use omni_render::paint::Assets;
-use omni_render::play::{Session, Tick};
+use omni_render::play::{Session, Style, Tick, interpolate};
 use omni_render::system::DesignSystem;
 use omni_render::view::Scene;
 use serde_json::{Value, json};
@@ -1016,4 +1033,822 @@ fn a_gesture_that_starts_a_wait_asks_for_a_frame() {
     }]));
 
     assert!(session.pointer(MOVE, 200.0, 100.0));
+}
+
+// US-33: a change to swaps the instance that holds the layer, and the board is
+// laid out again with the swap (D19).
+
+const BUTTON: &str = "cb000001";
+const BUTTON_HOVER: &str = "cb000002";
+const BUTTON_LABEL: &str = "ct000001";
+const HOVER_LABEL: &str = "ct000002";
+const HOVER_NOTE: &str = "ct000003";
+const CARD: &str = "cc000001";
+const CARD_BUTTON: &str = "cn000001";
+const ROW: &str = "a0000020";
+const FIRST: &str = "e0000001";
+const OTHER: &str = "e0000002";
+const GO_ON: &str = "a0000021";
+
+/// A Button that hugs its Label with a padding of `pad`, in the variant
+/// `state` of the set default | hover, whose `label` prop defaults to `label`.
+fn button(id: &str, state: &str, label: &str, pad: f64, children: Vec<Value>) -> Value {
+    json!({
+        "id": id,
+        "type": "component",
+        "name": "Button",
+        "width": "hug",
+        "height": "hug",
+        "layout": {"mode": "flex", "padding": {"top": pad, "right": pad, "bottom": pad, "left": pad}},
+        "props": {
+            "state": {"type": "variant", "values": ["default", "hover"], "default": state},
+            "label": {"type": "text", "default": label}
+        },
+        "children": children
+    })
+}
+
+/// A 16 px Label showing the `label` prop.
+fn label(id: &str, content: &str) -> Value {
+    with(
+        &text(id, content, 16.0, 1.25),
+        "bind",
+        json!({"content": "label"}),
+    )
+}
+
+/// Button (default): "Go" with a padding of 8, whose Label changes the
+/// instance to the hover variant on a click. Button (hover): "Go further now"
+/// and a Note "!!!!" with a padding of 20. Card hugs one default Button.
+fn button_system() -> DesignSystem {
+    let change = json!([{"actions": [{"type": "changeTo", "dest": BUTTON_HOVER}]}]);
+    let default = button(
+        BUTTON,
+        "default",
+        "Go",
+        8.0,
+        vec![with(&label(BUTTON_LABEL, "Go"), "interactions", change)],
+    );
+    let hover = button(
+        BUTTON_HOVER,
+        "hover",
+        "Go further now",
+        20.0,
+        vec![
+            label(HOVER_LABEL, "Go further now"),
+            text(HOVER_NOTE, "!!!!", 16.0, 1.25),
+        ],
+    );
+    let card = json!({
+        "id": CARD,
+        "type": "component",
+        "name": "Card",
+        "width": "hug",
+        "height": "hug",
+        "layout": {"mode": "flex"},
+        "children": [{"id": CARD_BUTTON, "type": "instance", "name": "Button", "component": BUTTON}]
+    });
+    DesignSystem::from_json(&json!({"$components": [default, hover, card]}))
+        .unwrap_or_else(|error| panic!("the design system fixture must be read, but: {error}"))
+}
+
+fn instance_of(id: &str, component: &str) -> Value {
+    json!({"id": id, "type": "instance", "name": id, "component": component})
+}
+
+/// A row at 0, 0 that hugs `children`.
+fn row(children: Vec<Value>) -> Value {
+    at(
+        &frame(ROW, json!("hug"), json!("hug"), flex(json!({})), children),
+        0.0,
+        0.0,
+    )
+}
+
+/// A scene of one 400 x 300 board B1 with `children`, laid out.
+fn button_scene(children: Vec<Value>) -> Scene {
+    let board = at(
+        &board(B1, fixed(400.0), fixed(300.0), none(), children),
+        0.0,
+        0.0,
+    );
+    let mut scene = Scene::with_system(node(&page(vec![board])), Assets::new(), button_system());
+    while scene.work() {}
+    scene
+}
+
+fn width_at(scene: &Scene, instance: Option<&str>, node: &str) -> f32 {
+    let address = NodeAddress::new(
+        instance.map(|id| id.parse().unwrap()),
+        node.parse().unwrap(),
+    );
+    scene
+        .bounds_of(&address)
+        .unwrap_or_else(|| panic!("the scene has {node}"))
+        .width
+}
+
+#[test]
+fn a_change_to_grows_the_instance_that_holds_the_layer_and_the_row_hugging_it_but_not_its_sibling()
+{
+    let mut scene = button_scene(vec![row(vec![
+        instance_of(FIRST, BUTTON),
+        instance_of(OTHER, BUTTON),
+    ])]);
+    let designed = button_scene(vec![row(vec![
+        instance_of(FIRST, BUTTON_HOVER),
+        instance_of(OTHER, BUTTON),
+    ])]);
+    let mut session = Session::start(&scene, B1).expect("the page has the board");
+    draw(&mut session, &mut scene, 400, 300);
+    assert!(click(&mut session, 12.0, 18.0), "the first Button's Label");
+
+    draw(&mut session, &mut scene, 400, 300);
+
+    let widths = |scene: &Scene| {
+        (
+            width_at(scene, None, FIRST),
+            width_at(scene, None, OTHER),
+            width_at(scene, None, ROW),
+        )
+    };
+    assert_eq!(widths(&scene), widths(&designed));
+}
+
+#[test]
+fn a_change_to_inside_one_card_changes_only_that_cards_button() {
+    let mut scene = button_scene(vec![row(vec![
+        instance_of(FIRST, CARD),
+        instance_of(OTHER, CARD),
+    ])]);
+    let designed = button_scene(vec![row(vec![
+        instance_of(FIRST, BUTTON_HOVER),
+        instance_of(OTHER, BUTTON),
+    ])]);
+    let mut session = Session::start(&scene, B1).expect("the page has the board");
+    draw(&mut session, &mut scene, 400, 300);
+    assert!(
+        click(&mut session, 12.0, 18.0),
+        "the first Card's Button's Label"
+    );
+
+    draw(&mut session, &mut scene, 400, 300);
+
+    assert_eq!(
+        (
+            width_at(&scene, Some(FIRST), CARD_BUTTON),
+            width_at(&scene, Some(OTHER), CARD_BUTTON),
+        ),
+        (
+            width_at(&designed, None, FIRST),
+            width_at(&designed, None, OTHER),
+        )
+    );
+}
+
+#[test]
+fn a_swapped_instance_shows_the_destination_with_its_label_and_overrides_and_not_its_old_variant() {
+    let overrides = json!({HOVER_NOTE: {"visible": false}});
+    let send = |component: &str, props: Value| {
+        with(
+            &with(
+                &at(&instance_of(FIRST, component), 0.0, 0.0),
+                "props",
+                props,
+            ),
+            "overrides",
+            overrides.clone(),
+        )
+    };
+    let mut scene = button_scene(vec![send(
+        BUTTON,
+        json!({"state": "default", "label": "Send"}),
+    )]);
+    let designed = button_scene(vec![send(BUTTON_HOVER, json!({"label": "Send"}))]);
+    let mut session = Session::start(&scene, B1).expect("the page has the board");
+    draw(&mut session, &mut scene, 400, 300);
+    assert!(click(&mut session, 12.0, 18.0), "the Button's Label");
+
+    draw(&mut session, &mut scene, 400, 300);
+
+    assert_eq!(
+        width_at(&scene, None, FIRST),
+        width_at(&designed, None, FIRST)
+    );
+}
+
+#[test]
+fn a_board_a_dissolve_leaves_keeps_its_swaps_until_the_dissolve_ends() {
+    let away = json!([{
+        "actions": [{"type": "navigate", "dest": B2}],
+        "transition": {"type": "dissolve"},
+        "durationMs": 300
+    }]);
+    let b1 = at(
+        &board(
+            B1,
+            fixed(400.0),
+            fixed(300.0),
+            none(),
+            vec![
+                at(&instance_of(FIRST, BUTTON), 0.0, 0.0),
+                with(
+                    &at(&rect(GO_ON, 100.0, 100.0), 200.0, 100.0),
+                    "interactions",
+                    away,
+                ),
+            ],
+        ),
+        0.0,
+        0.0,
+    );
+    let b2 = at(
+        &board(B2, fixed(400.0), fixed(300.0), none(), vec![]),
+        1000.0,
+        0.0,
+    );
+    let mut scene = Scene::with_system(node(&page(vec![b1, b2])), Assets::new(), button_system());
+    while scene.work() {}
+    let designed = button_scene(vec![at(&instance_of(FIRST, BUTTON), 0.0, 0.0)]);
+    let swapped = button_scene(vec![at(&instance_of(FIRST, BUTTON_HOVER), 0.0, 0.0)]);
+    let mut session = Session::start(&scene, B1).expect("the page has the board");
+    draw(&mut session, &mut scene, 400, 300);
+    session.tick(1000.0);
+    assert!(click(&mut session, 12.0, 18.0), "the Button's Label");
+    draw(&mut session, &mut scene, 400, 300);
+    assert!(click(&mut session, 250.0, 150.0), "the hotspot to B2");
+    session.tick(1000.0);
+
+    session.tick(1150.0);
+    draw(&mut session, &mut scene, 400, 300);
+    assert_eq!(
+        width_at(&scene, None, FIRST),
+        width_at(&swapped, None, FIRST),
+        "150 ms into the dissolve"
+    );
+
+    session.tick(1300.0);
+    draw(&mut session, &mut scene, 400, 300);
+    assert_eq!(
+        width_at(&scene, None, FIRST),
+        width_at(&designed, None, FIRST),
+        "once the dissolve has ended"
+    );
+}
+
+// US-34: smart animate (D16). A layer on both boards, by name under the same
+// parent names, moves and restyles by the eased progress; a layer on one board
+// only fades; the two roots are drawn as one layer whose fills mix. What
+// cannot be mixed switches to the new board's at half the duration. easeOut
+// at 200 of 400 ms is 0.685.
+
+const BOX_OLD: &str = "a0000003";
+const BOX_NEW: &str = "a0000013";
+
+/// A `width` x `height` layer `id` named `name` at `x`, `y`, filled `color`.
+fn named(id: &str, name: &str, (x, y, width, height): (f64, f64, f64, f64), color: &str) -> Value {
+    solid(
+        &with(&at(&rect(id, width, height), x, y), "name", json!(name)),
+        color,
+    )
+}
+
+fn smart_to(dest: &str) -> Value {
+    json!([{
+        "actions": [{"type": "navigate", "dest": dest}],
+        "transition": {"type": "smartAnimate"},
+        "durationMs": 400,
+        "easing": "easeOut"
+    }])
+}
+
+/// A black board B1 and a white board B2, 200 x 100 on a 200 x 100 stage,
+/// after a click on B1 began a 400 ms easeOut smart animate to B2 at 1000 ms.
+/// `b1` and `b2` are the layers each board has besides the hotspot on B1.
+fn smart_animating(b1: Vec<Value>, b2: Vec<Value>) -> (Scene, Session) {
+    let mut first = vec![spot(HOTSPOT, 0.0, 0.0, 200.0, 100.0, smart_to(B2))];
+    first.extend(b1);
+    let page = page(vec![
+        filled_board(B1, 0.0, 200.0, 100.0, "#000000", first),
+        filled_board(B2, 1000.0, 200.0, 100.0, "#ffffff", b2),
+    ]);
+    let mut scene = scene_of(&page);
+    let mut session = Session::start(&scene, B1).expect("the page has the board");
+    draw(&mut session, &mut scene, 200, 100);
+    session.tick(1000.0);
+    click(&mut session, 100.0, 50.0);
+    session.tick(1000.0);
+    (scene, session)
+}
+
+/// Asserts that the pixel at `x`, `y` is `expected`, give or take 2 per
+/// channel for blending.
+#[track_caller]
+fn assert_near(stage: &Stage, (x, y): (i32, i32), expected: [u8; 3], case: &str) {
+    let actual = stage.pixel(x, y);
+    let near = actual
+        .iter()
+        .zip(expected)
+        .all(|(actual, expected)| actual.abs_diff(expected) <= 2);
+    assert!(near, "{case}: {actual:?}, expected {expected:?}");
+}
+
+/// The stage 200 ms into a smart animate in which the Box moves from 0, 0,
+/// 40 x 40 on B1 to 100, 40, 60 x 60 on B2 and turns from red to green; Old is
+/// only on B1 at 150, 0 and New only on B2 at 0, 80; Hidden is hidden on B1 and
+/// shown on B2 at 150, 30; Odd is a Text on B1 at 60, 82 and a frame on B2
+/// at 100, 0; Under on B1 and Over on B2 both cover 150, 80.
+fn smart_animate_at_200_ms() -> Stage {
+    let (mut scene, mut session) = smart_animating(
+        vec![
+            named(BOX_OLD, "Box", (0.0, 0.0, 40.0, 40.0), "#ff0000"),
+            named("a0000004", "Old", (150.0, 0.0, 50.0, 20.0), "#0000ff"),
+            with(
+                &named("a0000005", "Hidden", (150.0, 30.0, 50.0, 20.0), "#ff0000"),
+                "visible",
+                json!(false),
+            ),
+            named("a0000006", "Under", (150.0, 80.0, 50.0, 20.0), "#0000ff"),
+            with(
+                &at(&text("a0000008", "Odd", 16.0, 1.25), 60.0, 82.0),
+                "name",
+                json!("Odd"),
+            ),
+        ],
+        vec![
+            named(BOX_NEW, "Box", (100.0, 40.0, 60.0, 60.0), "#00ff00"),
+            named("a0000014", "New", (0.0, 80.0, 50.0, 20.0), "#ff0000"),
+            named("a0000015", "Hidden", (150.0, 30.0, 50.0, 20.0), "#ff0000"),
+            named("a0000016", "Over", (150.0, 80.0, 50.0, 20.0), "#ff0000"),
+            named("a0000018", "Odd", (100.0, 0.0, 40.0, 20.0), "#ff0000"),
+        ],
+    );
+    session.tick(1200.0);
+    draw(&mut session, &mut scene, 200, 100)
+}
+
+// The roots mix from black to white: 175 grey.
+const ROOT_MIXED: [u8; 3] = [175, 175, 175];
+
+#[test]
+fn half_way_through_a_smart_animate_a_layer_on_both_boards_is_at_the_eased_box_and_colour() {
+    let stage = smart_animate_at_200_ms();
+
+    // The Box is at 68.5, 27.4, 53.7 x 53.7, red 31.5% and green 68.5%.
+    let mixed = [80, 175, 0];
+    assert_eq!(stage.pixel(70, 30), mixed, "the Box's top-left corner");
+    assert_eq!(stage.pixel(120, 79), mixed, "the Box's bottom-right corner");
+    assert_eq!(stage.pixel(66, 30), ROOT_MIXED, "left of the Box");
+    assert_eq!(stage.pixel(90, 25), ROOT_MIXED, "above the Box");
+    assert_eq!(stage.pixel(125, 50), ROOT_MIXED, "right of the Box");
+    assert_eq!(stage.pixel(100, 85), ROOT_MIXED, "below the Box");
+    assert_eq!(stage.pixel(30, 60), ROOT_MIXED, "the roots, mixed");
+}
+
+#[test]
+fn half_way_through_a_smart_animate_a_layer_on_one_board_has_faded_by_the_eased_progress() {
+    let stage = smart_animate_at_200_ms();
+
+    // Blue at 31.5% over the grey, and red at 68.5%.
+    assert_near(&stage, (175, 10), [120, 120, 200], "Old, fading out");
+    assert_near(&stage, (25, 90), [230, 55, 55], "New, fading in");
+    assert_near(
+        &stage,
+        (195, 40),
+        [230, 55, 55],
+        "Hidden, fading in at its own box",
+    );
+    assert_near(&stage, (130, 10), [230, 55, 55], "Odd, a frame fading in");
+}
+
+#[test]
+fn a_layer_only_on_the_old_board_fades_out_beneath_one_only_on_the_new_board() {
+    let stage = smart_animate_at_200_ms();
+
+    // Red at 68.5% over blue at 31.5% over the grey.
+    assert_near(&stage, (175, 90), [212, 38, 63], "Over, above Under");
+}
+
+/// The pixels of `stage` in `x` x `y` that are red rather than grey.
+fn reddish(stage: &Stage, x: std::ops::Range<i32>, y: std::ops::Range<i32>) -> usize {
+    y.flat_map(|y| x.clone().map(move |x| (x, y)))
+        .filter(|&(x, y)| {
+            let [red, green, _] = stage.pixel(x, y);
+            red > green.saturating_add(50)
+        })
+        .count()
+}
+
+#[test]
+fn a_text_on_both_boards_switches_its_content_at_half_the_duration_not_at_half_the_progress() {
+    let caption = |id: &str, content: &str| {
+        with(
+            &with(
+                &at(&text(id, content, 40.0, 1.25), 10.0, 10.0),
+                "name",
+                json!("Caption"),
+            ),
+            "color",
+            json!("#ff0000"),
+        )
+    };
+    let (mut scene, mut session) = smart_animating(
+        vec![caption("a0000007", ".")],
+        vec![caption("a0000017", "WWWW")],
+    );
+
+    // easeOut at 150 of 400 ms is 0.54.
+    session.tick(1150.0);
+    let before = draw(&mut session, &mut scene, 200, 100);
+    session.tick(1200.0);
+    let after = draw(&mut session, &mut scene, 200, 100);
+
+    assert_eq!(
+        reddish(&before, 40..190, 0..100),
+        0,
+        "150 ms: the old \".\""
+    );
+    assert_ne!(
+        reddish(&after, 40..190, 0..100),
+        0,
+        "200 ms: the new \"WWWW\""
+    );
+}
+
+const TOGGLE_OFF: &str = "cg000001";
+const TOGGLE_ON: &str = "cg000002";
+
+/// An 80 x 40 Toggle in the variant `state` of the set off | on, filled
+/// `track`, with a white 40 x 40 Knob at `knob`, 0 and a 10 x 10 Mark at 65, 28
+/// filled `mark`.
+fn toggle(id: &str, state: &str, track: &str, knob: f64, mark: Value, change: Value) -> Value {
+    solid(
+        &json!({
+            "id": id,
+            "type": "component",
+            "name": "Toggle",
+            "width": {"fixed": 80},
+            "height": {"fixed": 40},
+            "layout": {"mode": "none"},
+            "props": {"state": {"type": "variant", "values": ["off", "on"], "default": state}},
+            "children": [
+                with(
+                    &named(&format!("k{}", &id[1..]), "Knob", (knob, 0.0, 40.0, 40.0), "#ffffff"),
+                    "interactions",
+                    change
+                ),
+                with(
+                    &named(&format!("m{}", &id[1..]), "Mark", (65.0, 28.0, 10.0, 10.0), "#ffffff"),
+                    "fills",
+                    mark
+                )
+            ]
+        }),
+        track,
+    )
+}
+
+/// A black 200 x 100 board B1 on a 200 x 100 stage with an off Toggle at 0, 0,
+/// after a click on its Knob began a 400 ms easeOut smart-animated change to
+/// on at 1000 ms. The off Toggle is red with its Knob at 0 and a white Mark;
+/// the on Toggle is green with its Knob at 40 and a white and a blue fill on
+/// its Mark, which cannot be mixed.
+fn toggling() -> (Scene, Session) {
+    let change = json!([{
+        "actions": [{"type": "changeTo", "dest": TOGGLE_ON}],
+        "transition": {"type": "smartAnimate"},
+        "durationMs": 400,
+        "easing": "easeOut"
+    }]);
+    let white = json!({"type": "solid", "color": "#ffffff"});
+    let blue = json!({"type": "solid", "color": "#0000ff"});
+    let system = DesignSystem::from_json(&json!({"$components": [
+        toggle(TOGGLE_OFF, "off", "#ff0000", 0.0, json!([white]), change),
+        toggle(TOGGLE_ON, "on", "#00ff00", 40.0, json!([white, blue]), json!([])),
+    ]}))
+    .unwrap_or_else(|error| panic!("the design system fixture must be read, but: {error}"));
+    let board = filled_board(
+        B1,
+        0.0,
+        200.0,
+        100.0,
+        "#000000",
+        vec![at(&instance_of(FIRST, TOGGLE_OFF), 0.0, 0.0)],
+    );
+    let mut scene = Scene::with_system(node(&page(vec![board])), Assets::new(), system);
+    let mut session = Session::start(&scene, B1).expect("the page has the board");
+    draw(&mut session, &mut scene, 200, 100);
+    session.tick(1000.0);
+    assert!(click(&mut session, 20.0, 20.0), "the Knob");
+    session.tick(1000.0);
+    draw(&mut session, &mut scene, 200, 100);
+    (scene, session)
+}
+
+#[test]
+fn half_way_through_a_smart_animated_change_to_the_instances_layers_are_at_the_eased_box_and_colour()
+ {
+    let (mut scene, mut session) = toggling();
+
+    session.tick(1200.0);
+    let stage = draw(&mut session, &mut scene, 200, 100);
+
+    // The Knob is at 27.4..67.4 and the track red 31.5% and green 68.5%.
+    let track = [80, 175, 0];
+    let knob = [0xff, 0xff, 0xff];
+    assert_eq!(stage.pixel(25, 20), track, "left of the Knob");
+    assert_eq!(stage.pixel(29, 20), knob, "the Knob's left edge");
+    assert_eq!(stage.pixel(66, 20), knob, "the Knob's right edge");
+    assert_eq!(stage.pixel(70, 20), track, "right of the Knob");
+    assert_eq!(
+        stage.pixel(85, 20),
+        [0, 0, 0],
+        "the board, beside the instance"
+    );
+}
+
+#[test]
+fn a_smart_animated_change_to_switches_what_it_cannot_mix_at_half_the_duration() {
+    let (mut scene, mut session) = toggling();
+
+    // easeOut at 150 of 400 ms is 0.54.
+    session.tick(1150.0);
+    let before = draw(&mut session, &mut scene, 200, 100);
+    session.tick(1200.0);
+    let after = draw(&mut session, &mut scene, 200, 100);
+
+    assert_eq!(
+        before.pixel(70, 33),
+        [0xff, 0xff, 0xff],
+        "150 ms: the off Mark"
+    );
+    assert_eq!(
+        after.pixel(70, 33),
+        [0x00, 0x00, 0xff],
+        "200 ms: the on Mark"
+    );
+}
+
+fn layout_box(x: f32, y: f32, width: f32, height: f32) -> LayoutBox {
+    LayoutBox {
+        x,
+        y,
+        width,
+        height,
+    }
+}
+
+/// The style of a frame with `properties`.
+fn style_of(properties: Value) -> Style {
+    let mut frame = rect("a0000001", 10.0, 10.0);
+    for (key, value) in properties.as_object().expect("properties are an object") {
+        frame = with(&frame, key, value.clone());
+    }
+    Style::of(&node(&frame))
+}
+
+fn corners(radius: f64) -> Value {
+    json!({"topLeft": radius, "topRight": radius, "bottomRight": radius, "bottomLeft": radius})
+}
+
+#[test]
+fn interpolate_mixes_the_box_radius_opacity_and_a_solid_fill_straight_a_quarter_of_the_way() {
+    let from = style_of(json!({
+        "fills": [{"type": "solid", "color": "#ff000080"}],
+        "radius": corners(8.0),
+        "opacity": 1
+    }));
+    let to = style_of(json!({
+        "fills": [{"type": "solid", "color": "#0000ff00"}],
+        "radius": corners(16.0),
+        "opacity": 0.5
+    }));
+
+    let mixed = interpolate(
+        layout_box(0.0, 0.0, 40.0, 40.0),
+        layout_box(100.0, 40.0, 60.0, 60.0),
+        &from,
+        &to,
+        0.25,
+    );
+
+    // Each channel a quarter of the way, alpha too: not premultiplied.
+    let expected = style_of(json!({
+        "fills": [{"type": "solid", "color": "#bf004060"}],
+        "radius": corners(10.0),
+        "opacity": 0.875
+    }));
+    assert_eq!(mixed, (layout_box(25.0, 10.0, 45.0, 45.0), expected));
+}
+
+#[test]
+fn interpolate_keeps_fills_it_cannot_mix_from_the_old_layer_until_half_way() {
+    let gradient = json!({"type": "linear-gradient", "angle": 90,
+        "stops": [{"position": 0, "color": "#000000"}, {"position": 1, "color": "#ffffff"}]});
+    let red = json!({"type": "solid", "color": "#ff0000"});
+    let green = json!({"type": "solid", "color": "#00ff00"});
+    let shaded = style_of(json!({"fills": [gradient]}));
+    let plain = style_of(json!({"fills": [green]}));
+    let one = style_of(json!({"fills": [red]}));
+    let two = style_of(json!({"fills": [red, green]}));
+    let fills = |from: &Style, to: &Style, t: f64| {
+        interpolate(LayoutBox::default(), LayoutBox::default(), from, to, t)
+            .1
+            .fills
+    };
+
+    assert_eq!(
+        fills(&shaded, &plain, 0.49),
+        shaded.fills,
+        "a gradient, at 0.49"
+    );
+    assert_eq!(fills(&shaded, &plain, 0.5), plain.fills, "a solid, at 0.5");
+    assert_eq!(fills(&one, &two, 0.49), one.fills, "one fill, at 0.49");
+    assert_eq!(fills(&one, &two, 0.5), two.fills, "two fills, at 0.5");
+}
+
+#[test]
+fn interpolate_mixes_the_colour_of_a_text() {
+    let colour = |color: &str| {
+        Style::of(&node(&with(
+            &text("a0000001", "Go", 16.0, 1.25),
+            "color",
+            json!(color),
+        )))
+    };
+
+    let mixed = interpolate(
+        LayoutBox::default(),
+        LayoutBox::default(),
+        &colour("#000000"),
+        &colour("#ff8040"),
+        0.25,
+    );
+
+    assert_eq!(mixed.1, colour("#402010"));
+}
+
+#[test]
+fn interpolate_past_the_end_carries_the_box_on_and_keeps_a_colour_in_range() {
+    let from = style_of(json!({"fills": [{"type": "solid", "color": "#000000"}]}));
+    let to = style_of(json!({"fills": [{"type": "solid", "color": "#ff8000"}]}));
+
+    let mixed = interpolate(
+        layout_box(0.0, 0.0, 40.0, 40.0),
+        layout_box(100.0, 0.0, 60.0, 40.0),
+        &from,
+        &to,
+        1.5,
+    );
+
+    let expected = style_of(json!({"fills": [{"type": "solid", "color": "#ffc000"}]}));
+    assert_eq!(mixed, (layout_box(150.0, 0.0, 70.0, 40.0), expected));
+}
+
+const SECTION: &str = "a0000301";
+const FIXED: &str = "a0000302";
+const LATER: &str = "a0000303";
+const PAGE_BACKGROUND: [u8; 3] = [0x33, 0x66, 0xcc];
+
+/// A page shown on `prototype`'s device, on a #3366cc background.
+fn device_page(prototype: Value, boards: Vec<Value>) -> Value {
+    let mut settings = prototype;
+    settings["background"] = json!("#3366cc");
+    with(&page(boards), "prototype", settings)
+}
+
+fn custom(width: f64, height: f64) -> Value {
+    json!({"device": "Custom", "customSize": [width, height]})
+}
+
+#[test]
+fn a_fixed_frame_in_a_section_draws_above_the_sibling_of_the_section_scrolled_under_it() {
+    // A 400 x 1000 board on a 400 x 400 screen: a section at the top holds a
+    // red fixed frame at y 100..150, and a green frame after the section sits
+    // at y 300..500.
+    let fixed_frame = with(
+        &solid(&at(&rect(FIXED, 400.0, 50.0), 0.0, 100.0), "#ff0000"),
+        "scrollPosition",
+        json!("fixed"),
+    );
+    let section = at(
+        &frame(
+            SECTION,
+            fixed(400.0),
+            fixed(300.0),
+            none(),
+            vec![fixed_frame],
+        ),
+        0.0,
+        0.0,
+    );
+    let later = solid(&at(&rect(LATER, 400.0, 200.0), 0.0, 300.0), "#00ff00");
+    let mut scene = scene_of(&device_page(
+        custom(400.0, 400.0),
+        vec![filled_board(
+            B1,
+            0.0,
+            400.0,
+            1000.0,
+            "#ffffff",
+            vec![section, later],
+        )],
+    ));
+    let mut session = Session::start(&scene, B1).expect("the page has the board");
+    draw(&mut session, &mut scene, 400, 400);
+
+    // Scrolled 250, the green frame is at 50..250, under the fixed one.
+    assert!(session.wheel(200.0, 350.0, 0.0, 250.0));
+    let stage = draw(&mut session, &mut scene, 400, 400);
+
+    assert_eq!(stage.pixel(200, 125), [255, 0, 0], "the fixed frame");
+    assert_eq!(
+        stage.pixel(200, 75),
+        [0, 255, 0],
+        "the green frame above it"
+    );
+}
+
+#[test]
+fn a_board_taller_than_the_device_screen_is_cut_at_the_screens_bottom_edge() {
+    // A 200 x 200 screen on a 400 x 400 stage spans 100..300 on both axes.
+    let mut scene = scene_of(&device_page(
+        custom(200.0, 200.0),
+        vec![filled_board(B1, 0.0, 200.0, 400.0, "#ff0000", vec![])],
+    ));
+    let mut session = Session::start(&scene, B1).expect("the page has the board");
+
+    let stage = draw(&mut session, &mut scene, 400, 400);
+
+    assert_eq!(stage.pixel(200, 295), [255, 0, 0], "inside the screen");
+    assert_eq!(stage.pixel(200, 305), PAGE_BACKGROUND, "below the screen");
+}
+
+#[test]
+fn at_50_percent_the_screen_is_drawn_at_half_its_size_in_the_middle() {
+    // A 200 x 200 screen at half size on a 400 x 400 stage spans 150..250.
+    let mut scene = scene_of(&device_page(
+        custom(200.0, 200.0),
+        vec![filled_board(B1, 0.0, 200.0, 200.0, "#ff0000", vec![])],
+    ));
+    let mut session = Session::start(&scene, B1).expect("the page has the board");
+
+    session.set_scale("50").expect("50 is a scale");
+    let stage = draw(&mut session, &mut scene, 400, 400);
+
+    assert_eq!(stage.pixel(155, 155), [255, 0, 0], "inside its top-left");
+    assert_eq!(
+        stage.pixel(245, 245),
+        [255, 0, 0],
+        "inside its bottom-right"
+    );
+    assert_eq!(stage.pixel(145, 200), PAGE_BACKGROUND, "left of it");
+    assert_eq!(stage.pixel(255, 200), PAGE_BACKGROUND, "right of it");
+}
+
+#[test]
+fn at_100_percent_a_screen_wider_than_the_stage_is_not_scaled_down() {
+    // An 800 x 400 screen at full size on a 400 x 400 stage fills it; at fit
+    // it would be drawn at half size, at y 100..300.
+    let mut scene = scene_of(&device_page(
+        custom(800.0, 400.0),
+        vec![filled_board(B1, 0.0, 800.0, 400.0, "#ff0000", vec![])],
+    ));
+    let mut session = Session::start(&scene, B1).expect("the page has the board");
+
+    session.set_scale("100").expect("100 is a scale");
+    let stage = draw(&mut session, &mut scene, 400, 400);
+
+    assert_eq!(stage.pixel(200, 50), [255, 0, 0]);
+}
+
+#[test]
+fn the_device_select_starts_at_the_pages_device_turned_when_the_page_says_landscape() {
+    let scene = scene_of(&device_page(
+        json!({"device": "iPhone 16", "rotation": "landscape"}),
+        vec![filled_board(B1, 0.0, 400.0, 400.0, "#ffffff", vec![])],
+    ));
+    let session = Session::start(&scene, B1).expect("the page has the board");
+
+    let screen = session.screen();
+    let listed = |name: &str| {
+        screen["devices"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|device| device["name"] == name)
+            .cloned()
+    };
+
+    assert_eq!(screen["device"], "iPhone 16");
+    assert_eq!(
+        listed("iPhone 16"),
+        Some(json!({"name": "iPhone 16", "width": 852.0, "height": 393.0})),
+        "a phone turns"
+    );
+    assert_eq!(
+        listed("MacBook Air"),
+        Some(json!({"name": "MacBook Air", "width": 1280.0, "height": 832.0})),
+        "a laptop does not"
+    );
 }

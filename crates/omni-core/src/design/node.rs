@@ -107,6 +107,11 @@ impl Node {
         &self.data
     }
 
+    /// The node's type, with the properties of that type, to change.
+    pub fn data_mut(&mut self) -> &mut NodeData {
+        &mut self.data
+    }
+
     /// The property of its component that a layer of a component takes.
     pub fn bind(&self) -> Option<&Bind> {
         self.bind.as_ref()

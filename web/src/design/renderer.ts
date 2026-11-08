@@ -93,6 +93,18 @@ export type PlayState = {
   url: { url: string; newTab: boolean } | null;
 };
 
+/** The scales the screen can be shown at on the stage: down to fit it, or at 100% or 50%. */
+export type PlayScale = "fit" | "100" | "50";
+
+/** The screen the prototype is shown on (omni-render's `play_screen`). */
+export type PlayScreen = {
+  /** The device shown, by its name in the device table. */
+  device: string;
+  scale: PlayScale;
+  /** The devices to pick from, each with its screen as it would be shown; no size for `None`, which shows a board at its own size. */
+  devices: { name: string; width: number | null; height: number | null }[];
+};
+
 /** The kind of a pointer event on the stage: the names, or the numbers `play_pointer` takes. */
 export type PlayPointerKind = "down" | "move" | "up" | "leave" | 0 | 1 | 2 | 3;
 
@@ -119,6 +131,14 @@ export type DesignPlayer = {
   gamepad(button: number, down: boolean): boolean;
   /** Goes back to the board the last navigate left; returns whether there was one. */
   back(): boolean;
+  /** A wheel turn of `dx`, `dy` CSS pixels at the stage point `x`, `y`; returns whether content scrolled. */
+  wheel(x: number, y: number, dx: number, dy: number): boolean;
+  /** Shows the prototype on the device `name` of `screen().devices`. Throws the renderer's reason for another name. */
+  setDevice(name: string): void;
+  /** Sets the scale of the screen on the stage. */
+  setScale(scale: PlayScale): void;
+  /** The device and the scale shown, and the devices to pick from. */
+  screen(): PlayScreen;
   /** Goes to `board` as a navigate does, so that `back` returns to the board it leaves; returns whether it moved. */
   go(board: string): boolean;
   /** Starts over on `board`, with no history. */
@@ -295,6 +315,10 @@ type OmniRender = {
   _omni_render_play_gamepad(button: number, down: boolean): boolean;
   _omni_render_play_tick(now: number): number;
   _omni_render_play_back(): boolean;
+  _omni_render_play_wheel(x: number, y: number, dx: number, dy: number): boolean;
+  _omni_render_play_device(name: number, nameLength: number): boolean;
+  _omni_render_play_scale(name: number, nameLength: number): boolean;
+  _omni_render_play_screen(): number;
   _omni_render_play_go(board: number, boardLength: number): boolean;
   _omni_render_play_restart(board: number, boardLength: number): boolean;
   _omni_render_play_state(): number;
@@ -346,6 +370,10 @@ const FUNCTIONS: Record<Extract<keyof OmniRender, `_omni_render_${string}`>, tru
   _omni_render_play_gamepad: true,
   _omni_render_play_tick: true,
   _omni_render_play_back: true,
+  _omni_render_play_wheel: true,
+  _omni_render_play_device: true,
+  _omni_render_play_scale: true,
+  _omni_render_play_screen: true,
   _omni_render_play_go: true,
   _omni_render_play_restart: true,
   _omni_render_play_state: true,
@@ -548,9 +576,15 @@ export async function createDesignRenderer(canvas: HTMLCanvasElement): Promise<D
   let ignoreClick = false;
 
   const onWheel = (event: WheelEvent) => {
-    if (!loaded || playing) return;
+    if (!loaded) return;
     const [x, y] = position(event);
     const unit = [1, 16, cssHeight][event.deltaMode] ?? 1;
+    if (playing) {
+      // The wheel scrolls what is under the pointer; the browser's own scrolling stays out of play.
+      event.preventDefault();
+      if (module._omni_render_play_wheel(x, y, event.deltaX * unit, event.deltaY * unit)) playChanged();
+      return;
+    }
     // Ctrl + wheel is also how browsers report a trackpad pinch.
     if (module._omni_render_view_wheel(event.deltaX * unit, event.deltaY * unit, x, y, event.ctrlKey, event.metaKey)) {
       event.preventDefault();
@@ -852,6 +886,24 @@ export async function createDesignRenderer(canvas: HTMLCanvasElement): Promise<D
         const moved = module._omni_render_play_back();
         if (moved) playChanged();
         return moved;
+      },
+      wheel(x, y, dx, dy) {
+        const moved = module._omni_render_play_wheel(x, y, dx, dy);
+        if (moved) playChanged();
+        return moved;
+      },
+      setDevice(name) {
+        if (!withText(name, (pointer, length) => module._omni_render_play_device(pointer, length))) throw failure();
+        playChanged();
+      },
+      setScale(scale) {
+        if (!withText(scale, (pointer, length) => module._omni_render_play_scale(pointer, length))) throw failure();
+        playChanged();
+      },
+      screen() {
+        const text = module._omni_render_play_screen();
+        if (!text) throw failure();
+        return readJson<PlayScreen>(text);
       },
       go(board) {
         const moved = withText(board, (pointer, length) => module._omni_render_play_go(pointer, length));
