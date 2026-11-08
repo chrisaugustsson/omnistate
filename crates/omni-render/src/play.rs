@@ -77,8 +77,10 @@ pub struct Session {
     /// with, where that is not the design system's own.
     resolved: HashMap<NodeId, PlayResolve>,
     /// The instance each smart-animated change of variant starts from, as it
-    /// was drawn before the change, by the run's ID.
-    snapshots: HashMap<u64, Layers>,
+    /// was drawn before the change, with the run, by the run's ID.
+    snapshots: HashMap<u64, (VariantRun, Layers)>,
+    /// The time the last frame was drawn at.
+    drawn: f64,
 }
 
 /// The token values, the modes of its own and the variant swaps that a board
@@ -181,6 +183,7 @@ impl Session {
             size: None,
             resolved: HashMap::new(),
             snapshots: HashMap::new(),
+            drawn: 0.0,
         })
     }
 
@@ -309,8 +312,9 @@ impl Session {
         let (changed, handled) = self.absorb(effects);
         self.changed |= changed;
         let after = self.player.frame();
-        self.fresh |=
-            after.transition != before.transition || after.variant_runs != before.variant_runs;
+        // A change of variant is timed by the player itself: only a new
+        // transition restarts the clock of the one that plays.
+        self.fresh |= after.transition != before.transition;
         (changed, handled)
     }
 
@@ -559,7 +563,7 @@ impl Session {
             };
             let eased = run.progress(self.now).t;
             let switched = self.now - run.started >= duration_of(&run) / 2.0;
-            let mixed = smart_animate(self.snapshots[&run.id].clone(), to, eased, switched);
+            let mixed = smart_animate(self.snapshots[&run.id].1.clone(), to, eased, switched);
             splice(&mut whole.node, &instance, &mut Some(mixed.node));
             whole.boxes.extend(mixed.boxes);
             whole.texts.extend(mixed.texts);
@@ -568,20 +572,40 @@ impl Session {
     }
 
     /// Takes the instances that start a smart-animated change of variant as
-    /// the scene draws them, before the change is drawn.
+    /// the last frame drew them, before the change is drawn: as the scene has
+    /// them, or, where the change cut short another on the same instance, as
+    /// that one had mixed them.
     fn capture(&mut self, scene: &Scene) {
         let runs = self.player.frame().variant_runs;
-        self.snapshots
-            .retain(|id, _| runs.iter().any(|run| run.id == *id));
+        let (kept, mut cut): (HashMap<_, _>, HashMap<_, _>) = std::mem::take(&mut self.snapshots)
+            .into_iter()
+            .partition(|(id, _)| runs.iter().any(|run| run.id == *id));
+        self.snapshots = kept;
         for run in runs {
-            if self.snapshots.contains_key(&run.id) {
+            // The run as the player times it now, for a later change to cut
+            // it short at.
+            if let Some(held) = self.snapshots.get_mut(&run.id) {
+                held.0 = run;
                 continue;
             }
-            let layers = instance_layer(scene, &run.board, &run.instance)
-                .and_then(|instance| scene.layers_of_board(&run.board, Some(&instance)));
-            if let Some(layers) = layers {
-                self.snapshots.insert(run.id, layers);
-            }
+            let Some(layers) = instance_layer(scene, &run.board, &run.instance)
+                .and_then(|instance| scene.layers_of_board(&run.board, Some(&instance)))
+            else {
+                continue;
+            };
+            let before = cut
+                .iter()
+                .find(|(_, (other, _))| other.board == run.board && other.instance == run.instance)
+                .map(|(id, _)| *id);
+            let layers = match before.and_then(|id| cut.remove(&id)) {
+                Some((other, from)) => {
+                    let eased = other.progress(self.drawn).t;
+                    let switched = self.drawn - other.started >= duration_of(&other) / 2.0;
+                    smart_animate(from, layers, eased, switched)
+                }
+                None => layers,
+            };
+            self.snapshots.insert(run.id, (run, layers));
         }
     }
 
@@ -712,6 +736,7 @@ impl Session {
             pixel_ratio,
         ));
         self.capture(scene);
+        self.drawn = self.now;
         self.refresh(scene);
         self.changed = false;
         canvas.clear(self.background);
