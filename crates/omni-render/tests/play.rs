@@ -1704,3 +1704,151 @@ fn interpolate_past_the_end_carries_the_box_on_and_keeps_a_colour_in_range() {
     let expected = style_of(json!({"fills": [{"type": "solid", "color": "#ffc000"}]}));
     assert_eq!(mixed, (layout_box(150.0, 0.0, 70.0, 40.0), expected));
 }
+
+const SECTION: &str = "a0000301";
+const FIXED: &str = "a0000302";
+const LATER: &str = "a0000303";
+const PAGE_BACKGROUND: [u8; 3] = [0x33, 0x66, 0xcc];
+
+/// A page shown on `prototype`'s device, on a #3366cc background.
+fn device_page(prototype: Value, boards: Vec<Value>) -> Value {
+    let mut settings = prototype;
+    settings["background"] = json!("#3366cc");
+    with(&page(boards), "prototype", settings)
+}
+
+fn custom(width: f64, height: f64) -> Value {
+    json!({"device": "Custom", "customSize": [width, height]})
+}
+
+#[test]
+fn a_fixed_frame_in_a_section_draws_above_the_sibling_of_the_section_scrolled_under_it() {
+    // A 400 x 1000 board on a 400 x 400 screen: a section at the top holds a
+    // red fixed frame at y 100..150, and a green frame after the section sits
+    // at y 300..500.
+    let fixed_frame = with(
+        &solid(&at(&rect(FIXED, 400.0, 50.0), 0.0, 100.0), "#ff0000"),
+        "scrollPosition",
+        json!("fixed"),
+    );
+    let section = at(
+        &frame(
+            SECTION,
+            fixed(400.0),
+            fixed(300.0),
+            none(),
+            vec![fixed_frame],
+        ),
+        0.0,
+        0.0,
+    );
+    let later = solid(&at(&rect(LATER, 400.0, 200.0), 0.0, 300.0), "#00ff00");
+    let mut scene = scene_of(&device_page(
+        custom(400.0, 400.0),
+        vec![filled_board(
+            B1,
+            0.0,
+            400.0,
+            1000.0,
+            "#ffffff",
+            vec![section, later],
+        )],
+    ));
+    let mut session = Session::start(&scene, B1).expect("the page has the board");
+    draw(&mut session, &mut scene, 400, 400);
+
+    // Scrolled 250, the green frame is at 50..250, under the fixed one.
+    assert!(session.wheel(200.0, 350.0, 0.0, 250.0));
+    let stage = draw(&mut session, &mut scene, 400, 400);
+
+    assert_eq!(stage.pixel(200, 125), [255, 0, 0], "the fixed frame");
+    assert_eq!(
+        stage.pixel(200, 75),
+        [0, 255, 0],
+        "the green frame above it"
+    );
+}
+
+#[test]
+fn a_board_taller_than_the_device_screen_is_cut_at_the_screens_bottom_edge() {
+    // A 200 x 200 screen on a 400 x 400 stage spans 100..300 on both axes.
+    let mut scene = scene_of(&device_page(
+        custom(200.0, 200.0),
+        vec![filled_board(B1, 0.0, 200.0, 400.0, "#ff0000", vec![])],
+    ));
+    let mut session = Session::start(&scene, B1).expect("the page has the board");
+
+    let stage = draw(&mut session, &mut scene, 400, 400);
+
+    assert_eq!(stage.pixel(200, 295), [255, 0, 0], "inside the screen");
+    assert_eq!(stage.pixel(200, 305), PAGE_BACKGROUND, "below the screen");
+}
+
+#[test]
+fn at_50_percent_the_screen_is_drawn_at_half_its_size_in_the_middle() {
+    // A 200 x 200 screen at half size on a 400 x 400 stage spans 150..250.
+    let mut scene = scene_of(&device_page(
+        custom(200.0, 200.0),
+        vec![filled_board(B1, 0.0, 200.0, 200.0, "#ff0000", vec![])],
+    ));
+    let mut session = Session::start(&scene, B1).expect("the page has the board");
+
+    session.set_scale("50").expect("50 is a scale");
+    let stage = draw(&mut session, &mut scene, 400, 400);
+
+    assert_eq!(stage.pixel(155, 155), [255, 0, 0], "inside its top-left");
+    assert_eq!(
+        stage.pixel(245, 245),
+        [255, 0, 0],
+        "inside its bottom-right"
+    );
+    assert_eq!(stage.pixel(145, 200), PAGE_BACKGROUND, "left of it");
+    assert_eq!(stage.pixel(255, 200), PAGE_BACKGROUND, "right of it");
+}
+
+#[test]
+fn at_100_percent_a_screen_wider_than_the_stage_is_not_scaled_down() {
+    // An 800 x 400 screen at full size on a 400 x 400 stage fills it; at fit
+    // it would be drawn at half size, at y 100..300.
+    let mut scene = scene_of(&device_page(
+        custom(800.0, 400.0),
+        vec![filled_board(B1, 0.0, 800.0, 400.0, "#ff0000", vec![])],
+    ));
+    let mut session = Session::start(&scene, B1).expect("the page has the board");
+
+    session.set_scale("100").expect("100 is a scale");
+    let stage = draw(&mut session, &mut scene, 400, 400);
+
+    assert_eq!(stage.pixel(200, 50), [255, 0, 0]);
+}
+
+#[test]
+fn the_device_select_starts_at_the_pages_device_turned_when_the_page_says_landscape() {
+    let scene = scene_of(&device_page(
+        json!({"device": "iPhone 16", "rotation": "landscape"}),
+        vec![filled_board(B1, 0.0, 400.0, 400.0, "#ffffff", vec![])],
+    ));
+    let session = Session::start(&scene, B1).expect("the page has the board");
+
+    let screen = session.screen();
+    let listed = |name: &str| {
+        screen["devices"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|device| device["name"] == name)
+            .cloned()
+    };
+
+    assert_eq!(screen["device"], "iPhone 16");
+    assert_eq!(
+        listed("iPhone 16"),
+        Some(json!({"name": "iPhone 16", "width": 852.0, "height": 393.0})),
+        "a phone turns"
+    );
+    assert_eq!(
+        listed("MacBook Air"),
+        Some(json!({"name": "MacBook Air", "width": 1280.0, "height": 832.0})),
+        "a laptop does not"
+    );
+}
