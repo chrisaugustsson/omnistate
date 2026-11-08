@@ -85,7 +85,8 @@ fn state(thread: &Value) -> String {
 }
 
 /// `omni thread list`: one line for each thread of the project, of every
-/// scope, oldest first: its ID, what it is and its question.
+/// scope, oldest first: its ID, what it is and its question. With `--open`,
+/// only the threads without a conclusion.
 pub fn list(args: &Args) -> Result<()> {
     let agent = agent(args)?;
     let project = project_id(args, &agent)?;
@@ -98,11 +99,25 @@ pub fn list(args: &Args) -> Result<()> {
         None,
     )?;
     let text = response.text();
-    if args.json {
+    if args.json && !args.open {
         say(text.trim_end());
         return Ok(());
     }
-    let body = Value::parse(&text).map_err(|_| unreadable())?;
+    let mut body = Value::parse(&text).map_err(|_| unreadable())?;
+    if args.open {
+        let Value::Object(fields) = &mut body else {
+            return Err(unreadable());
+        };
+        for (key, value) in fields.iter_mut() {
+            if let (true, Value::Array(threads)) = (key == "threads", value) {
+                threads.retain(|thread| thread.str_at("conclusion").is_none());
+            }
+        }
+    }
+    if args.json {
+        say(&body.to_string());
+        return Ok(());
+    }
     let threads = body
         .get("threads")
         .and_then(Value::as_array)

@@ -55,6 +55,8 @@ pub struct Args {
     pub token_type: Option<String>,
     /// `omni thread create <question> --sealed`.
     pub sealed: bool,
+    /// `omni thread list --open`.
+    pub open: bool,
     /// `omni post <thread> --summary <text> [<body>] [--attach <file>]...
     /// [--link <target>]... [--confidence <n>] [--replaces <post>]`.
     pub summary: Option<String>,
@@ -130,6 +132,10 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Args> {
             }
             "--sealed" => {
                 parsed.sealed = true;
+                continue;
+            }
+            "--open" => {
+                parsed.open = true;
                 continue;
             }
             "--pickable" => {

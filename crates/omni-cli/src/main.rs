@@ -128,8 +128,9 @@ Usage:
                                       at the app level or in a feature; with --sealed an
                                       agent reads no other agent's posts until it has posted
                                       itself; prints its ID
-  omni thread list                    list the project's threads, of every scope: ID, scope,
-                                      whether it is sealed or concluded, and the question
+  omni thread list [--open]           list the project's threads, of every scope: ID, scope,
+                                      whether it is sealed or concluded, and the question;
+                                      --open lists only those without a conclusion
   omni thread read <thread>           print the question, the posts you may read (a sealed
                                       thread hides the posts of others until you have posted)
                                       and the conclusion when there is one
@@ -251,6 +252,7 @@ Options (before or after the command):
   --priority <n>        `omni story add`: the story's priority, 0 to 3 (3 by default)
   --number-from <n>     `omni story add`: the number the project's first story starts after
   --status <status>     `omni story list`: only the stories in this status
+  --open                `omni thread list`: only the threads without a conclusion
   --pickable            `omni story list`: only the stories that can be picked
   --json                print the full JSON instead of short text
   -h, --help            show this help
