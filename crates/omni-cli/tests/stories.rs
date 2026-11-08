@@ -35,6 +35,12 @@
 //! --help` documents. `tick` sends `pending` only with `--pending`; `finding`
 //! always sends `files`, `[]` without `--file`. There is no `omni story
 //! check`: the human clears checks on the board.
+//!
+//! US-45 adds `omni story list --summary`: one `<status>: <n>` line per status
+//! with stories, in the board's order (a status outside it after, in the
+//! order first seen), then `blocked: <n>` counting the stories whose
+//! `blocked` flag is set, left out at 0; `--json` prints
+//! `{"counts":{...},"blocked":<n>}`, `blocked` always there.
 
 mod common;
 
@@ -772,4 +778,119 @@ fn the_other_writes_post_to_their_own_routes_with_the_version_read() {
             ),
         ]
     );
+}
+
+/// A story of the summary's feature: `key` in `status`, its `blocked` flag set
+/// when `blocked`.
+fn summary_story(number: u32, status: &str, blocked: bool) -> Value {
+    let id = format!("01900000-0000-7000-8000-0000000004{number:02}");
+    let mut story = story_json(&id, &format!("US-4{number:02}"), 2, status, "Summary");
+    story["blocked"] = json!(blocked);
+    story
+}
+
+/// 2 done stories, 1 blocked backlog story and 1 story in review, listed out
+/// of the board's order. The review story and a done story name the backlog
+/// story in `blocked_by` but have no `blocked` flag; the blocked one names
+/// no blocker.
+fn summary_feature() -> Vec<Value> {
+    let mut review = summary_story(2, "review", false);
+    review["blocked_by"] = json!(["01900000-0000-7000-8000-000000000403"]);
+    let mut done = summary_story(4, "done", false);
+    done["blocked_by"] = json!(["01900000-0000-7000-8000-000000000403"]);
+    vec![
+        summary_story(1, "done", false),
+        review,
+        summary_story(3, "backlog", true),
+        done,
+    ]
+}
+
+/// An API that lists `stories`, only those in the status of a `status=`
+/// query when one is given.
+fn summary_mock(stories: Vec<Value>) -> MockServer {
+    MockServer::start(move |request| {
+        let (path, query) = request.path.split_once('?').unwrap_or((&request.path, ""));
+        if request.method != "GET" || path != stories_path() {
+            return Reply::json(404, &json!({ "error": "not_found" }));
+        }
+        let status = query.strip_prefix("status=");
+        let listed: Vec<&Value> = stories
+            .iter()
+            .filter(|s| status.is_none_or(|status| s["status"] == status))
+            .collect();
+        Reply::json(200, &json!({ "stories": listed }))
+    })
+}
+
+#[test]
+fn summary_prints_each_status_in_the_board_order_then_the_stories_with_the_blocked_flag() {
+    let server = summary_mock(summary_feature());
+    let home = logged_in(&server);
+
+    let out = run(&home, &["story", "list", "--summary"]);
+
+    assert_eq!(out.code, 0, "stderr: {}", out.stderr);
+    assert_eq!(out.stdout, "backlog: 1\nreview: 1\ndone: 2\nblocked: 1\n");
+}
+
+#[test]
+fn summary_json_prints_the_counts_and_the_blocked_number() {
+    let server = summary_mock(summary_feature());
+    let home = logged_in(&server);
+
+    let out = run(&home, &["story", "list", "--summary", "--json"]);
+
+    assert_eq!(out.code, 0, "stderr: {}", out.stderr);
+    assert_eq!(
+        out.stdout,
+        "{\"counts\":{\"backlog\":1,\"review\":1,\"done\":2},\"blocked\":1}\n"
+    );
+}
+
+#[test]
+fn summary_with_a_status_no_story_is_in_prints_nothing_and_json_empty_counts_and_blocked_0() {
+    let server = summary_mock(summary_feature());
+    let home = logged_in(&server);
+
+    let text = run(
+        &home,
+        &["story", "list", "--summary", "--status", "cancelled"],
+    );
+    let json = run(
+        &home,
+        &[
+            "story",
+            "list",
+            "--summary",
+            "--status",
+            "cancelled",
+            "--json",
+        ],
+    );
+
+    assert_eq!(text.code, 0, "stderr: {}", text.stderr);
+    assert_eq!(text.stdout, "");
+    assert_eq!(json.code, 0, "stderr: {}", json.stderr);
+    assert_eq!(json.json(), json!({ "counts": {}, "blocked": 0 }));
+    assert_eq!(
+        get_paths(&server),
+        vec![format!("{}?status=cancelled", stories_path()); 2]
+    );
+}
+
+#[test]
+fn summary_puts_a_status_outside_the_board_after_the_known_ones_in_the_order_first_seen() {
+    let server = summary_mock(vec![
+        summary_story(1, "zeta", false),
+        summary_story(2, "done", false),
+        summary_story(3, "alpha", false),
+        summary_story(4, "backlog", false),
+    ]);
+    let home = logged_in(&server);
+
+    let out = run(&home, &["story", "list", "--summary"]);
+
+    assert_eq!(out.code, 0, "stderr: {}", out.stderr);
+    assert_eq!(out.stdout, "backlog: 1\ndone: 1\nzeta: 1\nalpha: 1\n");
 }
