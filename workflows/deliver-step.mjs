@@ -131,7 +131,7 @@
 //   refused for deliver/<slug> checked out in the lane, it puts the branch
 //   back at the base and detaches the lane
 // - finish {report: {outcomes: [{key, outcome, detail?}], council: {settled,
-//   asked}, journeys?: [line], notes?: [line]}}: thread, posted, report,
+//   majority, asked}, journeys?: [line], notes?: [line]}}: thread, posted, report,
 //   stopped. The blocked stories and their threads come from the board
 // Outputs stay small, since a courier repeats every byte: whatever a story
 // holds, no output the script reads passes about 2,000 characters. No output
@@ -992,7 +992,7 @@ const reportText = (b, info, report) => {
     `## Landed on ${b.branch}\n${lines(landed.map((l) => `${named(l.key)}: ${commitsOf(l).join('; ') || 'no commits'}`))}${landed.length ? `\n\nBring them into your branch with \`git merge --ff-only ${b.branch}\`.` : ''}`,
     `## Blocked\n${unread || lines(stories.filter((s) => s.blocked && s.status !== 'done' && s.status !== 'cancelled').map((s) => `${named(s.key)}: thread ${(s.links || []).map((l) => l.thread_id).filter(Boolean).join(', ') || '(none linked)'}`))}`,
     `## Outcomes\n${lines(list(report.outcomes).filter((o) => o.key).map((o) => `${named(o.key)}: ${o.outcome}${o.detail ? `: ${o.detail}` : ''}`))}`,
-    `## Council\n- ${settled} question${settled === 1 ? '' : 's'} settled by the council, ${count(council.asked)} sent to the human`,
+    `## Council\n- ${settled} question${settled === 1 ? '' : 's'} settled by the council, ${count(council.majority)} of them by a majority of 2, ${count(council.asked)} sent to the human`,
     `## Pending human checks\n${unread || lines(checks)}`,
     ...(Array.isArray(report.journeys) ? [`## Journeys\n${lines(list(report.journeys).map(String))}`] : []),
     `## Timings\n${Number.isFinite(began) ? `The run took ${took(Date.now() - began)}.\n\n` : ''}${timingTable(timingsOf(b.root, b.runId), jobs)}`,

@@ -2491,7 +2491,7 @@ test("finish stops the run's jobs that still run, posts the report on the run's 
   const { pgid } = jobOf(dirs, run, stack.id);
   const report = {
     outcomes: [{ key: "US-1", outcome: "done" }, { key: "US-2", outcome: "blocked", detail: "a question for the human" }],
-    council: { settled: 2, asked: 1 },
+    council: { settled: 2, majority: 1, asked: 1 },
     journeys: ["healthy: the badge flow works"],
     notes: ["The lane stopped once: the stack did not start."],
   };
@@ -2525,7 +2525,7 @@ Bring them into your branch with \`git merge --ff-only deliver/board\`.
 - US-2 Story US-2: blocked: a question for the human
 
 ## Council
-- 2 questions settled by the council, 1 sent to the human
+- 2 questions settled by the council, 1 of them by a majority of 2, 1 sent to the human
 
 ## Pending human checks
 - US-1: It looks right

@@ -129,9 +129,12 @@ files: it reads the checkout's HEAD at its start, and keeps its own state in
   test author. Three members each read one thing: the spec docs and decisions,
   the code, or what the user would expect. When all three pick the same
   option, and a member quotes its source or all three call the gap minor, the
-  answer becomes an agent decision and the story goes on. Otherwise a thread
-  opens with each member's pick and evidence, and the story is blocked until
-  the thread has a conclusion.
+  answer becomes an agent decision and the story goes on. So it does when two
+  of the three pick the same option and each of the two quotes its source:
+  the decision then says it was 2 of 3 and names the third member's pick, so
+  the human can see the split. Otherwise, with no majority or a majority
+  without a quote from each of its two, a thread opens with each member's pick
+  and evidence, and the story is blocked until the thread has a conclusion.
 - **Deliver,** in the three stages below.
 - **Report.** A check of the user journeys across the stories landed, then the
   report. The journeys check runs none of the checks, since an agent's Bash
@@ -335,7 +338,8 @@ The report has:
 - the blocked stories, with their threads, from the board, or that the board
   could not be read;
 - every story's outcome;
-- how many questions the council settled, and how many it sent to the human;
+- how many questions the council settled, how many of those by a majority of
+  2, and how many it sent to the human;
 - the human checks still pending;
 - the journeys check;
 - the timings: for each story its total time, its time in each stage, its

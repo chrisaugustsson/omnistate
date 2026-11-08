@@ -5,10 +5,10 @@ export const meta = {
   phases: [
     { title: 'Start', detail: 'the helper takes the lock, reconciles claims and the lane worktree, sets deliver/<slug> and reads the checks' },
     { title: 'Unblock', detail: 'a story whose threads all have a conclusion gets each one as a human decision and is unblocked, and its attempts count from there' },
-    { title: 'Clarity', detail: 'one check per backlog story whose text, criteria, linked nodes or decisions changed: a criterion that names a test becomes a test obligation, and once a story is checked its obligations come from these decisions alone, a minor gap takes its recommendation, the 3 blocking gaps of most impact go to the council and the rest take their recommendation, deferred by the cap; what the council cannot settle becomes a thread that blocks the story' },
+    { title: 'Clarity', detail: 'one check per backlog story whose text, criteria, linked nodes or decisions changed: a criterion that names a test becomes a test obligation, and once a story is checked its obligations come from these decisions alone, a minor gap takes its recommendation, the 3 blocking gaps of most impact go to the council and the rest take their recommendation, deferred by the cap; the council settles a question when all three members pick the same option and one quotes its source, or all three call the gap minor, or two pick the same option and each quotes its source, a decision that then says 2 of 3 and names the pick of the third; what it cannot settle becomes a thread that blocks the story' },
     { title: 'Deliver', detail: 'at most `implementers` stories implementing at once, each slot free again once its story is implemented: claim, after which the board is listed for the next story, worktree, implementer (on implRetry from attempt 2, reading every finding by attempt from the board, as every agent reads its story itself), files; then at most `reviewers` in review, with a verdict per criterion and every defect, from which the script decides, never judging a test obligation; a failed review, or a failure in the lane, sends the story back for the next attempt, held where it failed until an implementer slot is free, ahead of new claims, then moved to the backlog and claimed in one step, and 3 failed attempts open a thread; a worktree an implementer left on another branch goes back on story/<key> when it is clean, and the next implementer is told which commits to bring over; a question goes to the council first' },
     { title: 'Lane', detail: 'one story at a time in the lane worktree <stories dir>/_lane: lane-prepare rebases story/<key> onto deliver/<slug> and checks it out, detached (a conflict or a missing worktree sends the story back with no attempt used, but from the third conflict of a story in a run; uncommitted changes, a rebase left in progress, an index.lock or another branch use one; trouble that is not the story\'s stops the lane); fast, stack_up and stack run there as jobs, the run\'s first stack_up after stack_reset, for what a stopped run left on the stack, and a failed one runs again on the base, after stack_reset for a stack check, where failing too stops the lane and passing uses an attempt; a verifier runs every criterion but the test obligations, a test author writes the regression tests and its questions go to the council, lane-clean throws away what it left uncommitted, its check runs as a job, lane-clean throws away what the check left, and lane-land moves deliver/<slug> by a compare-and-swap; a red check gets the author once more, with its output, and tests still red, or that lane-land refuses for the lane they left, are dropped, and the story lands without them; after a failure the lane goes back to the tip, and the stack, when it holds the story\'s build, is reset with stack_reset and rebuilt there' },
-    { title: 'Report', detail: 'the journeys check of the stories landed, which runs no check and is told the lane\'s last one, then finish posts the report on the Run thread, with the outcomes, the council\'s counts, the blocked stories with their threads, the notes and the timings, and gives the lock up' },
+    { title: 'Report', detail: 'the journeys check of the stories landed, which runs no check and is told the lane\'s last one, then finish posts the report on the Run thread, with the outcomes, the council\'s counts, with how many it settled by a majority of 2, the blocked stories with their threads, the notes and the timings, and gives the lock up' },
   ],
 }
 
@@ -957,8 +957,9 @@ Pick the option your reading supports, or 0 when it supports none. Give your evi
 Return raw structured data only.`
 
 const councilSlots = semaphore(COUNCILS)
-// For the run's report: questions the council settled, and those sent to the human.
-const tally = { settled: 0, asked: 0 }
+// For the run's report: questions the council settled, how many of those by
+// a majority of 2 to 1, and those sent to the human.
+const tally = { settled: 0, majority: 0, asked: 0 }
 // A question an agent asked, at `at` in its result r: its text, for the
 // prompts and the logs, and where it is, for what the board gets, which
 // comes from the agent's file (said).
@@ -995,24 +996,37 @@ const askHuman = async (ctx, q, label, recommendation, council) => {
 const convene = (ctx, q, code) => councilSlots.run(() => parallel(READINGS.map((reading) => () =>
   act('council', (file) => councilPrompt(ctx, q, reading, code, file), { label: `council:${ctx.key}:${reading.id}`, phase: current, schema: VOTE_SCHEMA }))))
 // The council settles a question when all three pick the same option and a
-// quote supports it, or all three call the gap minor: it becomes an agent
-// decision and no thread opens. Otherwise the thread opens with each
-// member's pick and evidence, and the majority's pick, else the asker's, as
-// its recommendation.
+// quote supports it, or all three call the gap minor, or two of the three
+// pick the same option and each of the two quotes its source: it becomes an
+// agent decision and no thread opens. A decision of two notes that it was 2
+// of 3 and names the third member's pick, so the human sees the split.
+// Otherwise the thread opens with each member's pick and evidence, and the
+// majority's pick, else the asker's, as its recommendation.
 const conclude = async (ctx, q, votes, label) => {
   const key = ctx.key
   const options = q.options
   const picks = votes.map((v) => (v && Number.isInteger(v.pick) && v.pick >= 1 && v.pick <= options.length ? v.pick : 0))
   const supported = (v) => v && String(v.quote || '').trim() && String(v.source || '').trim()
   const evidenced = votes.filter(supported)
-  if (picks[0] && picks.every((p) => p === picks[0]) && (evidenced.length || votes.every((v) => v && v.minor === true))) {
-    const evidence = evidenced.length ? evidenced.flatMap((v, i) => [...(i ? ['; '] : []), ...quoted(v)]) : ['all three members call the gap minor']
-    await step('decision', { key, question: said(q, ['question'], q.question), choice: words(option(q, picks[0]), ' (council: ', ...evidence, ')'), by: 'agent' }, { label: `${label}-decision` })
+  const decide = async (pick, evidence) => {
+    await step('decision', { key, question: said(q, ['question'], q.question), choice: words(option(q, pick), ' (council', ...evidence, ')'), by: 'agent' }, { label: `${label}-decision` })
     tally.settled++
     log(`${key}: the council settled "${q.question}"`)
     return { settled: true }
   }
+  const quotes = (vs) => vs.flatMap((v, i) => [...(i ? ['; '] : []), ...quoted(v)])
+  if (picks[0] && picks.every((p) => p === picks[0]) && (evidenced.length || votes.every((v) => v && v.minor === true))) {
+    return decide(picks[0], [': ', ...(evidenced.length ? quotes(evidenced) : ['all three members call the gap minor'])])
+  }
   const majority = picks.find((p) => p && picks.filter((x) => x === p).length >= 2)
+  const two = majority ? READINGS.map((_, i) => i).filter((i) => picks[i] === majority) : []
+  if (two.length === 2 && two.every((i) => supported(votes[i]))) {
+    const d = READINGS.findIndex((_, i) => !two.includes(i))
+    const dissent = !votes[d] ? ['returned nothing'] : picks[d] ? [`option ${picks[d]}, `, option(q, picks[d])] : ['no option']
+    const settled = await decide(majority, [', 2 of 3: ', ...quotes(two.map((i) => votes[i])), `; dissent: ${READINGS[d].name}: `, ...dissent])
+    tally.majority++
+    return settled
+  }
   const members = READINGS.flatMap((reading, i) => {
     const v = votes[i]
     if (!v) return [`\n- ${reading.name}: returned nothing`]

@@ -543,7 +543,7 @@ test("clarity records a criterion that names a test as a test obligation and a m
   for (const d of decisions.slice(4)) assert.deepEqual([d.choice, d.by], ['Red (council: "Badges are red" (doc doc-spec node n1))', "agent"]);
   assert.deepEqual([questions(dirs), dirs.story("US-1").blocked], [[], false]);
   assert.deepEqual(result.clarity, [{ key: "US-1", obligations: 1, minor: 1, deferred: 2, settled: 3, threads: [] }]);
-  assert.deepEqual(result.council, { settled: 3, asked: 0 });
+  assert.deepEqual(result.council, { settled: 3, majority: 0, asked: 0 });
   // A check that returned nothing records nothing, and keeps its story out of delivery.
   const seen = JSON.parse(readFileSync(join(dirs.repo, ".omni", "clarity.json"), "utf8"));
   assert.deepEqual([Object.keys(seen), claimsOf(dirs, "US-2")], [["US-1"], []]);
@@ -594,7 +594,63 @@ Why: "warning colour"
   assert.match(bodyOf("US-4"), /\nRecommendation: Blue \(the recommendation of the clarity check\)\n/);
   assert.match(bodyOf("US-5"), /- What the user would expect: option 1, Red; evidence: no evidence; minor: yes\n\nRecommendation: Red \(the council's majority\)\n/);
   assert.deepEqual(["US-3", "US-4", "US-5"].map((key) => dirs.story(key).decisions), [[], [], []]);
-  assert.deepEqual(result.council, { settled: 2, asked: 3 });
+  assert.deepEqual(result.council, { settled: 2, majority: 0, asked: 3 });
+});
+
+test("the council settles a question two of the three members pick the same option for when each of the two quotes its source, as an agent decision that says 2 of 3 and names the third member's pick, and counts it as settled by a majority", { timeout: 60000 }, async (t) => {
+  const keys = ["US-1", "US-2", "US-3"];
+  const dirs = scratch(t, [...keys.map((key) => story(key, { blocked_by: ["US-9"] })), blocker()]);
+  const spec = vote(1, { quote: "Badges are red", source: "doc doc-spec node n1" });
+  const code = vote(1, { quote: "const BADGE = RED", source: "src/badge.rs:4" });
+  const roles = {
+    ...Object.fromEntries(keys.map((key) => [`clarity:${key}`, [{ testObligations: [], gaps: [gap("Which colour is the badge?", "ux")] }]])),
+    ...councilOf("US-1", [spec], [code], [vote(2, { quote: "Blue is calm", source: "doc doc-ux node n2" })]),
+    ...councilOf("US-2", [spec], [vote(0)], [vote(1, { quote: "Users expect red", source: "doc doc-ux node n3" })]),
+    ...councilOf("US-3", [null], [code], [vote(1, { quote: "Users expect red", source: "doc doc-ux node n3" })]),
+  };
+
+  const { result, error } = await deliver(dirs, {}, roles);
+
+  assert.equal(error, null);
+  assert.deepEqual(keys.map((key) => dirs.story(key).decisions), [
+    [{ question: "Which colour is the badge?", choice: 'Red (council, 2 of 3: "Badges are red" (doc doc-spec node n1); "const BADGE = RED" (src/badge.rs:4); dissent: What the user would expect: option 2, Blue)', by: "agent" }],
+    [{ question: "Which colour is the badge?", choice: 'Red (council, 2 of 3: "Badges are red" (doc doc-spec node n1); "Users expect red" (doc doc-ux node n3); dissent: The code: no option)', by: "agent" }],
+    [{ question: "Which colour is the badge?", choice: 'Red (council, 2 of 3: "const BADGE = RED" (src/badge.rs:4); "Users expect red" (doc doc-ux node n3); dissent: The spec docs and decisions: returned nothing)', by: "agent" }],
+  ]);
+  assert.deepEqual([questions(dirs), keys.map((key) => dirs.story(key).blocked)], [[], [false, false, false]]);
+  assert.deepEqual(result.council, { settled: 3, majority: 3, asked: 0 });
+});
+
+test("a question two members pick the same option for, but only one of them with a quote, goes to the human, with the majority's pick as the recommendation, and counts as asked, not settled by a majority", { timeout: 60000 }, async (t) => {
+  const dirs = scratch(t, [story("US-1", { blocked_by: ["US-9"] }), blocker()]);
+  const roles = {
+    "clarity:US-1": [{ testObligations: [], gaps: [gap("Which colour is the badge?", "ux")] }],
+    ...councilOf("US-1", [vote(1, { quote: "Badges are red", source: "doc doc-spec node n1" })], [vote(1, { quote: "", source: "src/badge.rs:4" })], [vote(2, { quote: "Blue is calm", source: "doc doc-ux node n2" })]),
+  };
+
+  const { result, error } = await deliver(dirs, {}, roles);
+
+  assert.equal(error, null);
+  assert.deepEqual([dirs.story("US-1").decisions, dirs.story("US-1").blocked], [[], true]);
+  const [thread] = questions(dirs);
+  assert.match(thread.posts[0].body, /\n- The code: option 1, Red; evidence: no evidence; minor: no\n[\s\S]*\nRecommendation: Red \(the council's majority\)\n/);
+  assert.deepEqual(result.council, { settled: 0, majority: 0, asked: 1 });
+});
+
+test("a question each member picks a different option for goes to the human, though every member quotes its source, and counts as asked, not settled by a majority", { timeout: 60000 }, async (t) => {
+  const dirs = scratch(t, [story("US-1", { blocked_by: ["US-9"] }), blocker()]);
+  const roles = {
+    "clarity:US-1": [{ testObligations: [], gaps: [gap("Which colour is the badge?", "ux", { options: ["Red", "Blue", "Green"] })] }],
+    ...councilOf("US-1", [vote(1, { quote: "Badges are red", source: "doc doc-spec node n1" })], [vote(2, { quote: "const BADGE = BLUE", source: "src/badge.rs:4" })], [vote(3, { quote: "Green means go", source: "doc doc-ux node n2" })]),
+  };
+
+  const { result, error } = await deliver(dirs, {}, roles);
+
+  assert.equal(error, null);
+  assert.deepEqual([dirs.story("US-1").decisions, dirs.story("US-1").blocked], [[], true]);
+  const [thread] = questions(dirs);
+  assert.match(thread.posts[0].body, /\nRecommendation: Blue \(the recommendation of the clarity check\)\n/);
+  assert.deepEqual(result.council, { settled: 0, majority: 0, asked: 1 });
 });
 
 test("a story's clarity councils write their answers one at a time: two questions sent to the human leave two threads linked from the story, though its reads are slow", { timeout: 60000 }, async (t) => {
@@ -673,7 +729,7 @@ test("at most 2 councils run at once", { timeout: 60000 }, async (t) => {
   assert.equal(peak, 2);
   assert.equal(calls.filter((c) => c.label.startsWith("council:")).length, 12);
   assert.deepEqual(keys.map((key) => dirs.story(key).decisions.length), [1, 1, 1, 1]);
-  assert.deepEqual(result.council, { settled: 4, asked: 0 });
+  assert.deepEqual(result.council, { settled: 4, majority: 0, asked: 0 });
 });
 
 // ---- deliver: implement and review ---------------------------------------------------------
@@ -1156,11 +1212,12 @@ test("no payload carries an agent's long text: whatever clarity, the council, th
   const criteria = [{ text: "The badge is red", human_check: false }, { text: "A regression test covers the badge", human_check: false }];
   const dirs = scratch(t, ["US-1", "US-2", "US-3", "US-4", "US-5"].map((key) => story(key, { criteria })));
   const asked = (label, impact, fields = {}) => gap(long(label), impact, { criterion: long(`${label}-criterion`), options: [long(`${label}-a`), long(`${label}-b`)], recommendation: long(`${label}-rec`), reason: long(`${label}-reason`), ...fields });
-  // A member settles one gap with a long quote, splits on another, and has no pick for the third.
+  // A member settles one gap with a long quote, splits on another, where the
+  // user's member gives no quote, and has no pick for the third.
   const member = (reading) => (call) => {
     const q = questionIn(call.prompt);
     if (q.startsWith("settled")) return vote(1, { quote: long(`settled-${reading}-quote`), source: long("settled-source") });
-    if (q.startsWith("split")) return vote(reading === "code" ? 2 : 1, { quote: long(`split-${reading}-quote`), source: "doc d1 node n1", why: long(`split-${reading}-why`) });
+    if (q.startsWith("split")) return vote(reading === "code" ? 2 : 1, { quote: reading === "user" ? "" : long(`split-${reading}-quote`), source: reading === "user" ? "" : "doc d1 node n1", why: long(`split-${reading}-why`) });
     if (q.startsWith("impl")) return vote(1, { quote: long(`impl-${reading}-quote`), source: "src/badge.rs:1" });
     return vote(0);
   };
@@ -1372,7 +1429,7 @@ test("an implementer's question the council settles becomes an agent decision an
   assert.match(blinking.posts[0].body, /\nAsked by the reviewer\.\n[\s\S]*\nRecommendation: No \(the council's majority\)\n$/);
   assert.deepEqual([dirs.story("US-1").status, dirs.story("US-1").blocked], ["implemented", true]);
   assert.deepEqual(result.outcomes, [{ key: "US-1", outcome: "needs_decision", thread: blinking.id }]);
-  assert.deepEqual(result.council, { settled: 1, asked: 1 });
+  assert.deepEqual(result.council, { settled: 1, majority: 0, asked: 1 });
 });
 
 test("an implementer that asks a fourth question in one attempt, after the council settled three, has it sent to the human without a council", { timeout: 60000 }, async (t) => {
@@ -1390,7 +1447,7 @@ test("an implementer that asks a fourth question in one attempt, after the counc
   assert.equal(fourth.title, "US-1: Question 4?");
   assert.match(fourth.posts[0].body, /\nThe council: not asked: it settled 3 questions of the implementer in this attempt already\n\nRecommendation: B \(the recommendation of the implementer\)\n$/);
   assert.deepEqual([dirs.story("US-1").status, dirs.story("US-1").blocked], ["backlog", true]);
-  assert.deepEqual(result.council, { settled: 3, asked: 1 });
+  assert.deepEqual(result.council, { settled: 3, majority: 0, asked: 1 });
 });
 
 test("an implementer's slot is free once its story is implemented: with implementers 3, a fourth story starts implementing while an earlier one waits in review", { timeout: 60000 }, async (t) => {
@@ -2016,7 +2073,7 @@ test("a test author's question goes to the council: settled, the author runs aga
   const outcome = (key) => result.outcomes.find((o) => o.key === key);
   assert.deepEqual([outcome("US-1"), outcome("US-2")], [{ key: "US-1", outcome: "done" }, { key: "US-2", outcome: "needs_decision", thread: asked.id }]);
   assert.deepEqual([dirs.story("US-2").status, dirs.story("US-2").blocked], ["reviewed", true]);
-  assert.deepEqual(result.council, { settled: 1, asked: 1 });
+  assert.deepEqual(result.council, { settled: 1, majority: 0, asked: 1 });
 });
 
 test("agents that return nothing for 3 stories in a row stop the run taking stories, with one thread for the run; each story goes back with no attempt used", { timeout: 120000 }, async (t) => {
@@ -2399,7 +2456,7 @@ test("the run ends with the journeys check in the lane worktree, then finish get
   const { report } = filledOf(finish);
   assert.deepEqual({ ...report, outcomes: [...report.outcomes].sort((a, b) => a.key.localeCompare(b.key)) }, {
     outcomes: [{ key: "US-1", outcome: "done" }, { key: "US-2", outcome: "blocked" }],
-    council: { settled: 0, asked: 0 },
+    council: { settled: 0, majority: 0, asked: 0 },
     journeys: ["healthy: One journey spans them.", "Badge, then count: works"],
     notes: ["The run took its storyLimit of 2 stories."],
   });
