@@ -359,6 +359,44 @@ fn thread_list_prints_one_line_per_thread_with_its_id_and_question() {
 }
 
 #[test]
+fn thread_list_open_prints_the_thread_without_a_conclusion_and_not_the_concluded_one() {
+    let server = mock();
+    let home = logged_in(&server.url);
+    let out = run(&home, &["thread", "list", "--open"]);
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    let lines = non_empty_lines(&out.stdout);
+    assert_eq!(
+        lines.len(),
+        1,
+        "one line, the open thread: {:?}",
+        out.stdout
+    );
+    assert!(lines[0].contains(NEW_THREAD), "{:?}", lines[0]);
+    assert!(lines[0].contains(OTHER_QUESTION), "{:?}", lines[0]);
+    assert!(
+        !out.stdout.contains(THREAD) && !out.stdout.contains(QUESTION),
+        "the concluded thread is left out: {:?}",
+        out.stdout
+    );
+}
+
+#[test]
+fn thread_list_open_json_holds_only_the_thread_without_a_conclusion() {
+    let server = mock();
+    let home = logged_in(&server.url);
+    let out = run(&home, &["thread", "list", "--open", "--json"]);
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    let printed: Value = serde_json::from_str(out.stdout.trim())
+        .unwrap_or_else(|e| panic!("--json prints JSON ({e}): {:?}", out.stdout));
+    assert_eq!(
+        printed,
+        json!({ "threads": [
+            thread_json(NEW_THREAD, None, &json!(OTHER_QUESTION), false, Value::Null)
+        ] })
+    );
+}
+
+#[test]
 fn thread_read_prints_the_question_the_posts_and_the_conclusion() {
     let server = mock();
     let home = logged_in(&server.url);
