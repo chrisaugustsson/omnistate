@@ -76,6 +76,36 @@ test("links each workflow script into the workflows directory", (t) => {
   assert.equal(readlinkSync(join(dirs.home, "workflows", "omni-deliver.js")), join(dirs.repo, "workflows", "omni-deliver.js"));
 });
 
+test("links each agent file of workflows/agents into the agents directory, and a second run changes nothing", (t) => {
+  const dirs = scratch(t);
+  mkdirSync(join(dirs.repo, "workflows", "agents"));
+  for (const name of ["omni-impl.md", "omni-courier.md"]) writeFileSync(join(dirs.repo, "workflows", "agents", name), "---\nname: x\n---\n");
+
+  install(dirs);
+  const first = readdirSync(join(dirs.home, "agents")).sort();
+  const output = install(dirs);
+
+  assert.deepEqual(first, ["omni-courier.md", "omni-impl.md"]);
+  assert.deepEqual(readdirSync(join(dirs.home, "agents")).sort(), first);
+  for (const name of first) assert.equal(readlinkSync(join(dirs.home, "agents", name)), join(dirs.repo, "workflows", "agents", name));
+  assert.equal(output, "");
+});
+
+test("leaves a real agent file in the way untouched and names it in its output", (t) => {
+  const dirs = scratch(t);
+  mkdirSync(join(dirs.repo, "workflows", "agents"));
+  writeFileSync(join(dirs.repo, "workflows", "agents", "omni-impl.md"), "from the checkout\n");
+  const inTheWay = join(dirs.home, "agents", "omni-impl.md");
+  mkdirSync(join(dirs.home, "agents"), { recursive: true });
+  writeFileSync(inTheWay, "hand-written\n");
+
+  const output = install(dirs);
+
+  assert.equal(lstatSync(inTheWay).isFile(), true);
+  assert.equal(readFileSync(inTheWay, "utf8"), "hand-written\n");
+  assert.match(output, new RegExp(inTheWay));
+});
+
 // omni-deliver cannot read HOME: it names its helper with a ~ path for the
 // courier's shell to expand, so the link must be where that path points.
 // HOME is the scratch one here, and nothing that could carry another

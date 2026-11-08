@@ -55,9 +55,41 @@ never counts toward the stop on a repeated error.
 ## Starting a run
 
 Once per machine, `make install-agent-tools` links the workflow at
-`~/.claude/workflows/omni-deliver.js` and its helper at
-`~/.claude/omni/deliver-step.mjs`, the path the workflow runs it from. Both
+`~/.claude/workflows/omni-deliver.js`, its agent types at
+`~/.claude/agents/omni-*.md`, and its helper at
+`~/.claude/omni/deliver-step.mjs`, the path the workflow runs it from. The
 links point into this checkout.
+
+### The agent types
+
+Every tool definition an agent has is in its starting context: a haiku
+`claude -p` with every default tool starts at 44,200 tokens, and agents in
+real runs started at about 65k. So each role runs as an agent type of its own,
+in `workflows/agents/`, whose `tools:` lists only what the role uses, and whose
+body says no more than that the prompt defines the task:
+
+| Role | Agent type | Tools |
+| --- | --- | --- |
+| `courier` | `omni-courier` | Bash, Write, Read |
+| `clarity`, `council`, `review` | `omni-clarity`, `omni-council`, `omni-review` | Read, Grep, Glob, Bash, Write |
+| `impl`, `implRetry` | `omni-impl` | Read, Edit, Write, Bash, Grep, Glob, Monitor, ToolSearch |
+| `tests` | `omni-tests` | Read, Edit, Write, Bash, Grep, Glob, Monitor, ToolSearch |
+| `verify`, `final` | `omni-verify`, `omni-final` | Read, Grep, Glob, Bash, Write, Monitor, ToolSearch, `mcp__Claude_Browser` |
+
+Write is for the result file every role writes, and Read for the file the
+Write tool refuses because it exists. Monitor goes with ToolSearch: with
+ToolSearch, Monitor is a deferred tool and costs a line, without it its whole
+definition. The test author reads the writing-tests skill by its path, so it
+has no Skill tool, whose list of every skill is about 11k tokens.
+
+A `tools:` entry names an MCP tool as `mcp__<server>__<tool>`, and every tool of
+a server as `mcp__<server>`: `mcp__Claude_Browser` is the desktop app's
+browser, preview included. A name the machine lacks is left out without an
+error, so the verifier on a CLI without that browser runs without one.
+
+`make measure-agents` prints each type's starting context: a haiku `claude -p`
+with the type's tools and body, asked for one word. It spends real tokens, so
+no test runs it. A tool the CLI lacks is not counted.
 
 A run starts from a Claude Code session in the project's main checkout:
 
@@ -88,7 +120,7 @@ args such as `{"feature": "Rename a project", "storyLimit": 3}`:
 | `force` | false | takes over the lock of a run the human knows is dead |
 | `checks` | none | check commands on top of those in `.omni.toml` (see The checks) |
 | `models` | see below | the model of a role: `clarity`, `council`, `impl`, `implRetry`, `review`, `verify`, `tests`, `final` or `courier` |
-| `agentTypes` | none | the agent type of a role, such as `implementer`, where this machine has one |
+| `agentTypes` | `omni-<role>` | the agent type of a role (see The agent types); `implRetry` is set apart from `impl` |
 | `helper` | `~/.claude/omni/deliver-step.mjs` | another path to the helper |
 
 Every role runs on opus, except `impl`, a story's first attempt, on sonnet, and

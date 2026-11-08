@@ -21,6 +21,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { fnv1a } from "./deliver-step.mjs";
+import { readAgents } from "./measure-agents.mjs";
 
 const SOURCE = readFileSync(fileURLToPath(new URL("./omni-deliver.js", import.meta.url)), "utf8");
 const helper = fileURLToPath(new URL("./deliver-step.mjs", import.meta.url));
@@ -414,7 +415,7 @@ test("a courier is a haiku agent at low effort with the schema {exitCode, output
   const couriers = couriersOf(calls);
   assert.deepEqual(couriers.map((c) => c.label), ["courier:start", "courier:unblock-pass", "courier:clarity-pending", "courier:list", "courier:finish"]);
   for (const c of couriers) {
-    assert.deepEqual([c.model, c.effort, c.agentType, c.schema.required], ["haiku", "low", undefined, ["exitCode", "output"]]);
+    assert.deepEqual([c.model, c.effort, c.agentType, c.schema.required], ["haiku", "low", "omni-courier", ["exitCode", "output"]]);
     assert.match(c.prompt, /\. Run the helper\. Use the Bash tool, with its timeout set to 600000, to run this command exactly as written, once:\n/);
   }
   const startHash = fnv1a(JSON.stringify({ opId: "start-1", feature: "Bob's board", force: true }));
@@ -1649,7 +1650,7 @@ test("prompts give the context first and the criteria and the task last, tell th
   const [clarity] = agentsOf(calls, "clarity:US-1");
   const [impl] = agentsOf(calls, "impl:US-1");
   const [review] = agentsOf(calls, "review:US-1");
-  assert.deepEqual([clarity, impl, review].map((c) => [c.model, c.agentType]), [["opus", undefined], ["sonnet", "implementer"], ["sonnet", "verifier"]]);
+  assert.deepEqual([clarity, impl, review].map((c) => [c.model, c.agentType]), [["opus", "omni-clarity"], ["sonnet", "implementer"], ["sonnet", "verifier"]]);
   assert.equal(result.checks.stack, "make stack-tests");
   const order = (prompt, headings) => headings.map((h) => prompt.indexOf(`\n${h}\n`));
   for (const [prompt, headings] of [
@@ -1677,6 +1678,75 @@ test("prompts give the context first and the criteria and the task last, tell th
   assert.match(review.prompt, /\n## Acceptance criteria\nThe story's 2 criteria, numbered from 0 to 1 in the order the story gives them\. No criterion is a test obligation\.\n/);
   for (const prompt of [clarity.prompt, review.prompt]) assert.match(prompt, /You are read-only: you change no file but your result file, make no commit, and write nothing to the board\./);
   assert.doesNotMatch(impl.prompt, /You are read-only/);
+});
+
+// ---- the agent types ------------------------------------------------------------------
+
+// One story through every role: a clarity gap the council settles, a review
+// that fails once, so that attempt 2 runs on implRetry, the lane's verifier
+// and test author, and the final check.
+async function everyRole(t, agentTypes) {
+  const dirs = scratch(t, [story("US-1", { criteria: [{ text: "The badge has a colour", human_check: false }] })]);
+  const quoted = vote(1, { quote: "Badges are red", source: "doc doc-spec node n1" });
+  const roles = {
+    "clarity:US-1": [{ testObligations: [], gaps: [gap("Which colour is the badge?", "ux")] }],
+    ...councilOf("US-1", [quoted], [vote(1)], [vote(1)]),
+    "review:US-1": [reviewed("fail", { unmet: { 0: "The badge has no colour" } }), reviewed("pass")],
+  };
+  const run = await deliver(dirs, agentTypes ? { agentTypes } : {}, roles);
+  assert.equal(run.error, null);
+  assert.equal(dirs.story("US-1").status, "done");
+  // Each call by role: the label's first part, and implRetry for the
+  // implementer's second attempt.
+  const byRole = {};
+  for (const c of run.calls) {
+    let role = c.label.split(":")[0];
+    if (role === "impl" && byRole.impl) role = "implRetry";
+    (byRole[role] ||= []).push(c);
+  }
+  return byRole;
+}
+const ROLES = ["clarity", "council", "impl", "implRetry", "review", "verify", "tests", "final", "courier"];
+const typeOf = (role) => (role === "implRetry" ? "omni-impl" : `omni-${role}`);
+
+test("every role runs as its omni- agent type by default, omni-impl for implRetry too, and the courier as omni-courier", { timeout: 60000 }, async (t) => {
+  const byRole = await everyRole(t);
+
+  assert.deepEqual(Object.keys(byRole).sort(), [...ROLES].sort());
+  for (const role of ROLES) assert.deepEqual([...new Set(byRole[role].map((c) => c.agentType))], [typeOf(role)], role);
+});
+
+test("args.agentTypes overrides the agent type of the roles it names, implRetry apart from impl, and leaves the others at their default", { timeout: 60000 }, async (t) => {
+  const byRole = await everyRole(t, { implRetry: "implementer", courier: "carrier" });
+
+  const expected = { ...Object.fromEntries(ROLES.map((role) => [role, typeOf(role)])), implRetry: "implementer", courier: "carrier" };
+  for (const role of ROLES) assert.deepEqual([...new Set(byRole[role].map((c) => c.agentType))], [expected[role]], role);
+});
+
+test("every agent file parses, is named after its file, and lists the tools its role's prompts ask for: Write and Read for a result or payload file, Bash for a command, Edit only where the prompt is not read-only, a browser where it says to use one", { timeout: 60000 }, async (t) => {
+  const agents = readAgents();
+  for (const a of agents) {
+    assert.equal(a.file, `${a.name}.md`);
+    assert.ok(a.description && !a.description.includes(": "), `${a.file}: a description with no ": ", which YAML would read as a mapping`);
+    assert.ok(a.tools.length && a.body, a.file);
+  }
+  const byName = new Map(agents.map((a) => [a.name, a]));
+  const byRole = await everyRole(t);
+
+  assert.deepEqual([...byName.keys()].sort(), [...new Set(ROLES.map(typeOf))].sort());
+  for (const role of ROLES) {
+    const { tools } = byName.get(typeOf(role));
+    for (const { prompt } of byRole[role]) {
+      const needs = [];
+      if (/\bWrite tool\b/.test(prompt)) needs.push("Write");
+      if (/\bRead the file\b/.test(prompt)) needs.push("Read");
+      if (/\bBash tool\b|`[^`\n]*\b(omni|git)\b[^`\n]*`/.test(prompt)) needs.push("Bash");
+      if (role !== "courier" && !/You are read-only/.test(prompt)) needs.push("Edit");
+      for (const tool of needs) assert.ok(tools.includes(tool), `${role} needs ${tool}: ${tools}`);
+      if (/You are read-only/.test(prompt)) assert.ok(!tools.includes("Edit"), `${role} is read-only but has Edit`);
+      if (/use a browser tool/.test(prompt)) assert.ok(tools.includes("mcp__Claude_Browser"), `${role} is told to use a browser`);
+    }
+  }
 });
 
 // ---- the lane -------------------------------------------------------------------------

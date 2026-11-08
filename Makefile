@@ -15,7 +15,7 @@ SANDBOX_BUILD := render-sandbox/build
 # Where the web app's design viewer loads the renderer from (served as /render/).
 WEB_RENDER := web/public/render
 
-.PHONY: edge test-stack-up test-stack test-stack-down lint test web-deps web-api render-wasm chrome-boxes stress-file nodes-boxes bench-render check-layout penpot-compare bench-ops bench-ordrar install-agent-tools
+.PHONY: edge test-stack-up test-stack test-stack-down lint test web-deps web-api render-wasm chrome-boxes stress-file nodes-boxes bench-render check-layout penpot-compare bench-ops bench-ordrar install-agent-tools measure-agents
 
 # The machine's edge: the Traefik on port 80 that makes the stack
 # http://omnistate.localhost (docker/edge/README.md). Run once per machine; it
@@ -184,15 +184,16 @@ penpot-compare:
 	$(OMNI_PENPOT) report "$(PENPOT_FIXTURES)" --out "$(PENPOT_REPORT)"
 
 # Links the agent skills (agent-skills/*) into ~/.claude/skills/, the workflows
-# (workflows/*.js) into ~/.claude/workflows/, and the omni-deliver workflow's
-# host helper to ~/.claude/omni/deliver-step.mjs, the path the workflow runs it
-# from, as absolute symlinks.
+# (workflows/*.js) into ~/.claude/workflows/, the omni-deliver workflow's agent
+# types (workflows/agents/*.md) into ~/.claude/agents/, and its host helper to
+# ~/.claude/omni/deliver-step.mjs, the path the workflow runs it from, as
+# absolute symlinks.
 # Running it again changes nothing; a link to somewhere else is replaced, and a
 # real file or directory in the way is reported and left untouched.
 CLAUDE_HOME ?= $(HOME)/.claude
 
 install-agent-tools:
-	@mkdir -p "$(CLAUDE_HOME)/skills" "$(CLAUDE_HOME)/workflows" "$(CLAUDE_HOME)/omni"
+	@mkdir -p "$(CLAUDE_HOME)/skills" "$(CLAUDE_HOME)/workflows" "$(CLAUDE_HOME)/agents" "$(CLAUDE_HOME)/omni"
 	@for src in $(CURDIR)/agent-skills/*/; do \
 		[ -d "$$src" ] || continue; src=$${src%/}; dst="$(CLAUDE_HOME)/skills/$$(basename "$$src")"; \
 		if [ -e "$$dst" ] && [ ! -L "$$dst" ]; then echo "skipped $$dst: exists and is not a link"; \
@@ -203,9 +204,20 @@ install-agent-tools:
 		if [ -e "$$dst" ] && [ ! -L "$$dst" ]; then echo "skipped $$dst: exists and is not a link"; \
 		else ln -sfn "$$src" "$$dst"; fi; \
 	done
+	@for src in $(CURDIR)/workflows/agents/*.md; do \
+		[ -f "$$src" ] || continue; dst="$(CLAUDE_HOME)/agents/$$(basename "$$src")"; \
+		if [ -e "$$dst" ] && [ ! -L "$$dst" ]; then echo "skipped $$dst: exists and is not a link"; \
+		else ln -sfn "$$src" "$$dst"; fi; \
+	done
 	@src="$(CURDIR)/workflows/deliver-step.mjs"; dst="$(CLAUDE_HOME)/omni/deliver-step.mjs"; \
 	if [ -e "$$dst" ] && [ ! -L "$$dst" ]; then echo "skipped $$dst: exists and is not a link"; \
 	elif [ -f "$$src" ]; then ln -sfn "$$src" "$$dst"; fi
+
+# Prints each omni-deliver agent type's starting context in tokens: a haiku
+# claude -p with the type's tools and body, asked for one word. It spends real
+# tokens, so no test runs it.
+measure-agents:
+	node workflows/measure-agents.mjs
 
 $(EMCC):
 	test -d "$(EMSDK)" || git clone --depth 1 --branch $(EMSDK_VERSION) https://github.com/emscripten-core/emsdk.git "$(EMSDK)"
