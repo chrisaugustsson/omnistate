@@ -993,6 +993,36 @@ fn the_format_doc_documents_every_tag_and_attribute() {
     );
 }
 
+/// The heading lines of a Markdown doc, outside its fenced code blocks.
+fn headings(doc: &str) -> Vec<&str> {
+    let mut in_code = false;
+    doc.lines()
+        .filter(|line| {
+            if line.starts_with("```") {
+                in_code = !in_code;
+            }
+            !in_code && line.starts_with('#')
+        })
+        .collect()
+}
+
+#[test]
+fn the_format_doc_describes_interactions_in_one_section() {
+    let doc = fs::read_to_string(repo_root().join("docs/formats/design-tags.md"))
+        .expect("docs/formats/design-tags.md exists");
+    let levels: Vec<&str> = headings(&doc)
+        .into_iter()
+        .filter(|heading| {
+            heading
+                .trim_start_matches('#')
+                .trim_start()
+                .starts_with("Interactions")
+        })
+        .filter_map(|heading| heading.split(' ').next())
+        .collect();
+    assert_eq!(levels, ["###"]);
+}
+
 // `skill/designs.md` shows the agent working examples.
 
 /// The fenced blocks labelled `label` under the `## heading` section of the

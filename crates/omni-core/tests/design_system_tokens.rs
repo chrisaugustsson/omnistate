@@ -890,6 +890,27 @@ fn the_format_doc_has_an_example_that_the_rules_accept() {
     );
 }
 
+#[test]
+fn the_format_doc_describes_collections_and_modes_in_one_section() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/formats/tokens.md");
+    let text = std::fs::read_to_string(&path).expect("docs/formats/tokens.md exists");
+    let mut in_code = false;
+    let sections: Vec<&str> = text
+        .lines()
+        .filter(|line| {
+            if line.starts_with("```") {
+                in_code = !in_code;
+            }
+            !in_code && line.starts_with('#')
+        })
+        .filter(|heading| {
+            let title = heading.trim_start_matches('#').trim_start();
+            title.starts_with("Modes") || title.starts_with("Collections")
+        })
+        .collect();
+    assert_eq!(sections, ["## Collections and modes"]);
+}
+
 // ---------------------------------------------------------------------------
 // Collections
 // ---------------------------------------------------------------------------
