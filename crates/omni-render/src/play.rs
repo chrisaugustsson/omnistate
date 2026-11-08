@@ -1049,8 +1049,9 @@ impl Session {
 }
 
 /// Moves the layers of `layers` as `view` has them scrolled: each layer and
-/// what is in it by its shift, the fixed and stuck layers after their
-/// siblings so that they draw on top, and the scrolling frames clipping.
+/// what is in it by its shift, the fixed and stuck layers to the end of their
+/// container so that they draw above all that scrolls in it, and the
+/// scrolling frames clipping.
 fn scroll(layers: &mut Layers, view: &ScrollView) {
     fn visit(
         node: &mut Node,
@@ -1072,11 +1073,44 @@ fn scroll(layers: &mut Layers, view: &ScrollView) {
             for child in children.iter_mut() {
                 visit(child, view, shift, boxes);
             }
-            // Stable, so the others keep their order.
-            children.sort_by_key(|child| view.raised.contains(child.id()));
         }
     }
+    /// Takes the layer `id` out of the children of `node` or below it, with
+    /// whether a layer around it is hidden.
+    fn take(node: &mut Node, id: &NodeId) -> Option<(Node, bool)> {
+        let hidden = !node.visible();
+        let children = node.children_mut()?;
+        if let Some(at) = children.iter().position(|child| child.id() == id) {
+            return Some((children.remove(at), hidden));
+        }
+        children
+            .iter_mut()
+            .find_map(|child| take(child, id))
+            .map(|(layer, inner)| (layer, hidden || inner))
+    }
+    fn find<'a>(node: &'a mut Node, id: &NodeId) -> Option<&'a mut Node> {
+        if node.id() == id {
+            return Some(node);
+        }
+        node.children_mut()?
+            .iter_mut()
+            .find_map(|child| find(child, id))
+    }
     visit(&mut layers.node, view, [0.0, 0.0], &mut layers.boxes);
+    // The boxes are in page coordinates, so a layer keeps its place when it
+    // moves in the tree.
+    for (id, target) in &view.raised {
+        let Some((layer, hidden)) = take(&mut layers.node, id) else {
+            continue;
+        };
+        // A layer in a hidden one is not drawn where it goes either.
+        if hidden {
+            continue;
+        }
+        if let Some(children) = find(&mut layers.node, target).and_then(Node::children_mut) {
+            children.push(layer);
+        }
+    }
 }
 
 /// The layer `root` of a board with everything below it, as the scene had it

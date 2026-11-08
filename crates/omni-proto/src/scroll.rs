@@ -154,6 +154,9 @@ pub(crate) struct Placement {
     /// The fixed layers and the sticky ones that are stuck, which draw above
     /// the content of their container, in drawing order.
     pub(crate) raised: Vec<NodeId>,
+    /// The layer each raised layer is drawn last in: its nearest container,
+    /// or its parent when it has none.
+    pub(crate) lifts: HashMap<NodeId, NodeId>,
     /// The frames that clip their content to their box.
     pub(crate) clipped: HashSet<NodeId>,
 }
@@ -202,21 +205,26 @@ impl Placement {
                 .iter()
                 .map(|(id, shown)| (*id, shown.shift))
                 .collect(),
-            raised: self.raised.iter().copied().collect(),
+            raised: self
+                .raised
+                .iter()
+                .filter_map(|id| Some((*id, *self.lifts.get(id)?)))
+                .collect(),
             clipped: self.clipped.clone(),
         }
     }
 }
 
 /// How a board is drawn scrolled: how far each layer moves, which layers
-/// draw above their siblings, and which frames clip.
+/// draw above the content of their container, and which frames clip.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ScrollView {
     /// By layer. A layer inside an instance moves with the instance.
     pub shifts: HashMap<NodeId, [f64; 2]>,
-    /// The fixed layers and the sticky ones that are stuck: they draw last
-    /// among their siblings.
-    pub raised: HashSet<NodeId>,
+    /// The fixed layers and the sticky ones that are stuck, in drawing order,
+    /// each with the layer it draws last in: its nearest scrolling container,
+    /// above all that scrolls in it, or its parent when it has none.
+    pub raised: Vec<(NodeId, NodeId)>,
     /// The frames that clip their content to their box.
     pub clipped: HashSet<NodeId>,
 }
@@ -231,6 +239,9 @@ impl ScrollView {
 }
 
 struct Ctx {
+    id: NodeId,
+    /// The part of the screen its viewport leaves visible.
+    clip: Rect,
     /// How far the container is scrolled.
     offset: [f64; 2],
     /// Where its viewport's top edge is on the screen.
@@ -242,6 +253,9 @@ struct Walk<'a> {
     screen: Option<[f64; 2]>,
     scrolls: &'a Scrolls,
     now: f64,
+    /// The raised layers waiting for the layer they draw last in to be done,
+    /// by that layer.
+    pending: HashMap<NodeId, Vec<NodeId>>,
     out: Placement,
 }
 
@@ -260,6 +274,7 @@ pub(crate) fn place(
         screen,
         scrolls,
         now,
+        pending: HashMap::new(),
         out: Placement::default(),
     };
     let everything = Rect {
@@ -337,6 +352,8 @@ impl Walk<'_> {
             inner_clip = clip.intersect(&displayed).unwrap_or(NOTHING);
             scrolled = [shift[0] - offset[0], shift[1] - offset[1]];
             own = Some(Ctx {
+                id,
+                clip: inner_clip,
                 offset,
                 top: displayed.y,
             });
@@ -367,10 +384,23 @@ impl Walk<'_> {
                     (moved, stuck)
                 }
             };
+            let mut child_clip = inner_clip;
             if lifted && !raised {
-                self.out.raised.push(*child.id());
+                // Drawn above all that scrolls in its container, it is cut
+                // only by the container, whatever its parent's box.
+                let target = ctx.map_or(id, |ctx| ctx.id);
+                if let Some(ctx) = ctx {
+                    child_clip = ctx.clip;
+                }
+                self.out.lifts.insert(*child.id(), target);
+                self.pending.entry(target).or_default().push(*child.id());
             }
-            self.visit(child, Some(id), child_shift, inner_clip, ctx, depth + 1);
+            self.visit(child, Some(id), child_shift, child_clip, ctx, depth + 1);
+        }
+        // What is raised in this layer draws after all of it, so a container
+        // nested in it draws its own raised layers first.
+        if let Some(done) = self.pending.remove(&id) {
+            self.out.raised.extend(done);
         }
     }
 
@@ -378,7 +408,7 @@ impl Walk<'_> {
     fn inside_raised(&self, id: NodeId) -> bool {
         let mut at = Some(id);
         while let Some(id) = at {
-            if self.out.raised.contains(&id) {
+            if self.out.lifts.contains_key(&id) {
                 return true;
             }
             at = self.out.nodes.get(&id).and_then(|shown| shown.parent);
