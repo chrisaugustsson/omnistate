@@ -179,10 +179,12 @@ files: it reads the checkout's HEAD at its start, and keeps its own state in
   The 3 blocking gaps of most impact go to the council, and the rest take
   their recommendation.
   The checks run beside the delivery: the run starts them all and goes on to
-  Deliver at once. A story is not taken while its own check runs, so a story
-  whose check has ended is implemented while other checks still run, and the
-  stories are taken in the board's order among those checked, not in the
-  board's order over all. The run waits for every check before its report.
+  Deliver at once. The stories are still taken in the board's order, which is
+  the human's priority and decides which of two stories planned on the same
+  files goes first: the run waits for the check of the next story in that
+  order, and takes no later story ahead of it. So the first story is
+  implemented while the checks of those after it still run. The run waits for
+  every check before its report.
 - **The council** answers a question before the human is asked: clarity's
   blocking gaps, and the questions of the implementer, the reviewer and the
   test author. Three members each read one thing: the spec docs and decisions,

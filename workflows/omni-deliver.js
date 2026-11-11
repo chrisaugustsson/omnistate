@@ -5,7 +5,7 @@ export const meta = {
   phases: [
     { title: 'Start', detail: 'the helper takes the lock, reconciles claims and the lane worktree, sets deliver/<slug> and reads the checks' },
     { title: 'Unblock', detail: 'a story whose threads all have a conclusion gets each one as a human decision and is unblocked, and its attempts count from there' },
-    { title: 'Clarity', detail: 'beside the delivery, which takes no story whose own check still runs: one check per backlog story whose text, criteria, linked nodes or decisions changed: a criterion that names a test becomes a test obligation, and once a story is checked its obligations come from these decisions alone, a minor gap takes its recommendation, the 3 blocking gaps of most impact go to the council and the rest take their recommendation, deferred by the cap; the council settles a question when all three members pick the same option and one quotes its source, or all three call the gap minor, or two pick the same option and each quotes its source, a decision that then says 2 of 3 and names the pick of the third; what it cannot settle becomes a thread that blocks the story' },
+    { title: 'Clarity', detail: 'beside the delivery, which takes the stories in the board\'s order and waits for the check of the next one, not for the checks of those after it: one check per backlog story whose text, criteria, linked nodes or decisions changed: a criterion that names a test becomes a test obligation, and once a story is checked its obligations come from these decisions alone, a minor gap takes its recommendation, the 3 blocking gaps of most impact go to the council and the rest take their recommendation, deferred by the cap; the council settles a question when all three members pick the same option and one quotes its source, or all three call the gap minor, or two pick the same option and each quotes its source, a decision that then says 2 of 3 and names the pick of the third; what it cannot settle becomes a thread that blocks the story' },
     { title: 'Deliver', detail: 'at most `implementers` stories implementing at once, each slot free again once its story is implemented: claim, after which the board is listed for the next story, worktree, implementer (on implRetry from attempt 2, reading every finding by attempt from the board, as every agent reads its story itself), files; then at most `reviewers` in review, with a verdict per criterion and every defect, from which the script decides, never judging a test obligation; a failed review, or a failure in the lane, sends the story back for the next attempt, held where it failed until an implementer slot is free, ahead of new claims, then moved to the backlog and claimed in one step, and 3 failed attempts open a thread; a worktree an implementer left on another branch goes back on story/<key> when it is clean, and the next implementer is told which commits to bring over; a question goes to the council first' },
     { title: 'Lane', detail: 'one story at a time in the lane worktree <stories dir>/_lane: lane-prepare rebases story/<key> onto deliver/<slug> and checks it out, detached (a conflict or a missing worktree sends the story back with no attempt used, but from the third conflict of a story in a run; uncommitted changes, a rebase left in progress, an index.lock or another branch use one; trouble that is not the story\'s stops the lane); fast, stack_up and stack run there as jobs, the run\'s first stack_up after stack_reset, for what a stopped run left on the stack, and a failed one runs again on the base, after stack_reset for a stack check, where failing too stops the lane and passing uses an attempt; a verifier runs every criterion but the test obligations, lane-clean throws away what it left uncommitted, and lane-land moves deliver/<slug> by a compare-and-swap, makes the story done and keeps its worktree for its test author; after a failure the lane goes back to the tip, and the stack, when it holds the story\'s build, is reset with stack_reset and rebuilt there' },
     { title: 'Tests', detail: 'a landed story\'s regression tests, outside the lane\'s lock, one author at a time: tests-prepare brings the story\'s worktree to the tip of deliver/<slug>, the author writes and commits there, never using the stack, and its questions go to the council; then a short turn in the lane, where lane-prepare rebases story/<key> onto the tip, the author\'s check runs as a job, with no fast, stack_up or stack check, and lane-land lands the tests and removes the worktree; a turn that fails, on a rebase conflict, a red check or a refused landing, gets the author once more, and a second failure drops the tests, as does a defect, which opens a thread and uses no attempt, a question the council does not settle, an author that is blocked or returns nothing, a lane that has stopped and the hard cap: the report notes each story that landed without regression tests' },
@@ -1175,7 +1175,8 @@ const unclear = new Set()
 // those of the stories in flight.
 let checking = 0
 // The clarity pass runs beside the delivery. The stories whose check has not
-// ended, which the deliver loop does not take; the checks themselves, which
+// ended, which the deliver loop waits for when one is next in the board's
+// order; the checks themselves, which
 // it waits on when nothing else is left, and which the run waits for before
 // its report; and how many have ended.
 const unchecked = new Set()
@@ -1257,7 +1258,8 @@ const check = async (key) => {
   clarity.push({ key, obligations: owed.length, minor: gaps.filter((x) => !x.blocking).length, deferred: Math.max(blocking.length - CLARITY_QUESTIONS, 0), settled: answers.filter((a) => a.settled).length, threads })
 }
 // Starts every pending story's check, and waits for none: the delivery starts
-// beside them, with the stories checked already.
+// beside them, with the first story in the board's order once its own check
+// has ended.
 const clarityPass = () => {
   for (const key of pendingClarity) {
     unchecked.add(key)
@@ -1629,10 +1631,11 @@ const deliverStory = async (key, from, held, claimed) => {
 // pickable that this run has not taken: listed again for each claim, once that
 // claim is made, since a claimed story's planned files keep others off the
 // pickable list. A story listed as implemented starts at its review, and one
-// listed as reviewed at the lane, unless the lane has stopped. A story whose
-// clarity check is still running is left where it is. When nothing new is
-// listed, the board is listed again once a story in flight is done or a
-// clarity check has ended; the run goes on until nothing new is listed and
+// listed as reviewed at the lane, unless the lane has stopped. While the
+// clarity check of the first such pickable story is still running, the run
+// takes no story from the backlog: it waits for that check. When nothing new
+// is listed, or the next story's check still runs, the board is listed again
+// once a story in flight is done or a clarity check has ended; the run goes on until nothing new is listed and
 // nothing is in flight. A new story is taken only while the agent cap leaves
 // room for it beside the stories and the clarity checks in flight, up to
 // storyLimit, and until a breaker stops the run.
@@ -1683,23 +1686,26 @@ const deliverAll = async () => {
     while (taking) {
       await implSlots.acquire()
       let held = true
-      // A story whose clarity check had not ended when the board was listed is
-      // not taken from that listing, which may be older than the thread its
-      // check blocked it with: a check that ends meanwhile has the board listed
-      // again.
+      // The stories are taken in the board's order, which is the human's
+      // priority, and decides which of two stories planned on the same files
+      // goes first: when the next story's clarity check has not ended, the run
+      // waits for it, and takes no later story ahead of it. A check that had
+      // not ended when the board was listed counts as running for that
+      // listing, which may be older than the thread the check blocked its
+      // story with: a check that ends meanwhile has the board listed again.
       const seen = checksEnded
       const pending = new Set(unchecked)
       try {
         if (!mayTake()) break
         if (!crowded()) {
           const board = await step('list', {})
-          const fresh = (key) => !taken.has(key) && !unclear.has(key) && !pending.has(key)
+          const fresh = (key) => !taken.has(key) && !unclear.has(key)
           for (const s of board.waiting.filter((x) => (x.status === 'implemented' || (x.status === 'reviewed' && !laneStopped)) && fresh(x.key))) {
             if (!(taking = mayTake()) || crowded()) break
             launch(s.key, s.status, false)
           }
           const next = board.pickable.find(fresh)
-          if (taking && next && (taking = mayTake()) && !crowded()) {
+          if (taking && next && !pending.has(next) && (taking = mayTake()) && !crowded()) {
             const claim = launch(next, 'backlog', true)
             held = false
             // Listed before the claim is made, a story planned on the same
@@ -2082,7 +2088,10 @@ const writeTests = async (key, { base, final, confirmed }) => {
 // the hard cap too.
 const queueTests = (key, story) => {
   const run = inTests(() => writeTests(key, story))
-    .catch((e) => dropTests(key, e && e.atCap ? `the run reached its agent cap of ${HARD_CAP}` : `their writing stopped on an error: ${(e && e.message) || e}`))
+    .catch((e) => {
+      if (e && e.atCap) capped = true
+      return dropTests(key, e && e.atCap ? `the run reached its agent cap of ${HARD_CAP}` : `their writing stopped on an error: ${(e && e.message) || e}`)
+    })
     .then((o) => { testsOutcomes.push(o) })
     .finally(() => testsRuns.delete(run))
   testsRuns.add(run)

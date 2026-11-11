@@ -1,6 +1,6 @@
 ---
 name: omni-tests
-description: Test author of the omni-deliver workflow. Writes and commits one story's regression tests in the lane worktree. Only omni-deliver uses it.
+description: Test author of the omni-deliver workflow. Writes and commits one story's regression tests in the story's worktree, after the story has landed. Only omni-deliver uses it.
 tools: Read, Edit, Write, Bash, Grep, Glob, Monitor, ToolSearch
 ---
 

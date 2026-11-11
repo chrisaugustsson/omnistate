@@ -12,6 +12,7 @@
 // the board's rule: backlog, not blocked, every blocker done or cancelled, no planned
 // file (files_changed when set, else files_planned) shared with a story in implementing, implemented, review, reviewed or testing,
 // in the board's order: priority, then open (not done or cancelled) dependants, most first, then number. `claim` needs the stage's waiting state (else exit 1, not_waiting); `move` to implemented, reviewed, backlog or done clears the holder; `release` and `block` put a working story in its waiting state and clear the holder. `story finding` appends to the story's findings and
+// `story edit` of a story that is done or cancelled is refused (exit 1, not_open), as the board refuses it: no thread can be linked from one.
 // `story resolve --finding <i>` resolves the i-th (0-based). `story add <file>` reads
 // the heading, Description, Files and criteria the way the CLI does and numbers
 // the story after the highest key; `story tick` sets the criterion's ticked/pending.
@@ -189,7 +190,16 @@ if (noun === "--help") {
   }
   else if (verb === "unblock") s.blocked = false;
   else if (verb === "decision") s.decisions.push({ question: flag("--question"), choice: flag("--choice"), by: flag("--by") });
-  else if (verb === "edit") { if (all("--link").length) s.links = all("--link").map(link); if (flag("--priority") !== undefined) s.priority = Number(flag("--priority")); }
+  else if (verb === "edit") {
+    // The board changes nothing of a story that is done or cancelled, its links included.
+    if (s.status === "done" || s.status === "cancelled") {
+      save();
+      process.stderr.write(`not_open: story ${s.key} is ${s.status}\n`);
+      process.exit(1);
+    }
+    if (all("--link").length) s.links = all("--link").map(link);
+    if (flag("--priority") !== undefined) s.priority = Number(flag("--priority"));
+  }
   else if (verb === "finding") (s.findings ||= []).push({ stage: flag("--stage"), text: flag("--text"), files: all("--file"), resolved: false });
   else if (verb === "resolve") s.findings[Number(flag("--finding"))].resolved = true;
   else if (verb === "tick") {

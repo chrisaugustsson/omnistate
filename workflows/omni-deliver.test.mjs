@@ -98,17 +98,6 @@ function story(key, fields = {}) {
   return { key, title: `Story ${key}`, text: "", criteria: [], status: "backlog", blocked: false, holder: null, version: 1, decisions: [], links: [], blocked_by: [], files_planned: [], ...fields };
 }
 
-// A scratch for a test that needs its stories taken in the board's order: its
-// run ends every clarity check before the delivery starts, as when an earlier
-// run has checked the stories. The delivery starts beside the clarity pass, so
-// the order the checks end in would otherwise decide which story is first.
-const ordered = (...args) => Object.assign(scratch(...args), { checkedFirst: true });
-const checkedFirst = (source) => {
-  const start = "  clarityPass()\n  enter('Deliver')\n";
-  assert.ok(source.includes(start), "the run starts the clarity pass, then the delivery");
-  return source.replace(start, "  clarityPass()\n  await Promise.all(clarityRuns)\n  enter('Deliver')\n");
-};
-
 // A story that stays blocked: another that waits on it is clarity-checked but
 // never picked, which keeps a clarity test out of delivery.
 const blocker = () => story("US-9", { blocked: true });
@@ -299,7 +288,7 @@ async function deliver(dirs, args = {}, roles = {}, { fault = () => null, source
   let result = null;
   let error = null;
   try {
-    result = await compile(dirs.checkedFirst ? checkedFirst(source) : source)({ feature: "board", helper, ...args }, rt.agent, rt.parallel, rt.pipeline, rt.phase, rt.log, NoDate, NoRandom);
+    result = await compile(source)({ feature: "board", helper, ...args }, rt.agent, rt.parallel, rt.pipeline, rt.phase, rt.log, NoDate, NoRandom);
   } catch (e) {
     error = e;
   }
@@ -827,7 +816,7 @@ test("a story is claimed, gets its worktree and an implementer on sonnet, record
 });
 
 test("an implementer that returns nothing is asked again after 30 s and after 2 minutes, and then has its story released with no attempt used; one that is blocked opens a thread with its reason, which blocks the story; one that is ready has its decisions recorded as the agent's", { timeout: 60000 }, async (t) => {
-  const dirs = ordered(t, [story("US-1"), story("US-2"), story("US-3")]);
+  const dirs = scratch(t, [story("US-1"), story("US-2"), story("US-3")]);
   const roles = {
     "impl:US-1": [null, null, null],
     "impl:US-2": [{ status: "blocked", summary: "The badge API is missing from the spec." }],
@@ -906,7 +895,7 @@ test("a story whose delivery throws is released even when its thread cannot be o
 
 test("a second story stopped by the same error, its key aside, stops the run taking stories with one thread for the run: the first story has its own thread, and every later failure is only released", { timeout: 60000 }, async (t) => {
   const keys = ["US-1", "US-2", "US-3", "US-4", "US-5"];
-  const dirs = ordered(t, keys.map((key) => story(key)));
+  const dirs = scratch(t, keys.map((key) => story(key)));
   // A lasting cause: the deliver branch is deleted before any story is delivered.
   const roles = { "clarity:US-1": [async (call, serial) => {
     await serial(() => git(dirs.repo, "update-ref", "-d", "refs/heads/deliver/board"));
@@ -935,7 +924,7 @@ test("a second story stopped by the same error, its key aside, stops the run tak
 
 test("the breaker takes a story's key out of an error only where it stands as a word of its own: two stories stopped by an error that names the branch deliver/us-10, one of them us-1, trip it", { timeout: 60000 }, async (t) => {
   const keys = ["us-1", "us-2"];
-  const dirs = ordered(t, keys.map((key) => story(key)));
+  const dirs = scratch(t, keys.map((key) => story(key)));
   // A lasting cause whose error holds us-1 inside a longer word: the deliver branch of the feature us-10 is deleted.
   const roles = { "clarity:us-1": [async (call, serial) => {
     await serial(() => git(dirs.repo, "update-ref", "-d", "refs/heads/deliver/us-10"));
@@ -953,7 +942,7 @@ test("the breaker takes a story's key out of an error only where it stands as a 
 
 test("a story whose implementer committed on another branch reaches an implementer again: lane-prepare's wrong_branch uses an attempt, the worktree step puts the worktree back on story/<key>, and the next implementer is told which commits to cherry-pick, which land; no story stops on an error", { timeout: 120000 }, async (t) => {
   const keys = ["US-1", "US-2", "US-3"];
-  const dirs = ordered(t, keys.map((key) => story(key)));
+  const dirs = scratch(t, keys.map((key) => story(key)));
   const side = async (call, serial) => {
     const key = call.label.split(":")[1];
     await serial(() => {
@@ -1031,7 +1020,7 @@ test("a review that passes clears what the worktree step found when it started: 
 
 test("a story waiting in implemented starts at its review; a criterion that names a test is a test obligation, marked so, that the review never judges, whether clarity recorded it or not", { timeout: 60000 }, async (t) => {
   const criteria = [{ text: "The badge is red", human_check: false }, { text: "A regression test covers the badge", human_check: false }];
-  const dirs = ordered(t, [story("US-1", { status: "implemented", criteria }), story("US-2", { criteria })]);
+  const dirs = scratch(t, [story("US-1", { status: "implemented", criteria }), story("US-2", { criteria })]);
   git(dirs.repo, "worktree", "add", "-q", "-b", "story/US-1", dirs.worktree("US-1"));
   commit(dirs.worktree("US-1"), "src/badge.rs");
   const roles = {
@@ -1055,7 +1044,7 @@ test("a story waiting in implemented starts at its review; a criterion that name
 
 test("criteria are numbered from 0 in the review's schema, which wants an entry for each; a review that leaves one without a verdict is malformed and asked again, never taken as met, and a story whose reviewer stays malformed is released with no attempt used", { timeout: 60000 }, async (t) => {
   const criteria = [{ text: "The badge is red", human_check: false }, { text: "The badge counts", human_check: false }];
-  const dirs = ordered(t, [story("US-1", { criteria }), story("US-2", { criteria })]);
+  const dirs = scratch(t, [story("US-1", { criteria }), story("US-2", { criteria })]);
   // Numbered from 1: the entry for 0 is missing, and the one for 2 is past the end.
   const fromOne = (call, serial, dirs) => ({ verdict: "pass", criteria: criteriaIn(call, dirs).map((c) => ({ ...c, index: c.index + 1, obligation: false, met: true, evidence: "Seen" })), defects: [] });
   const roles = { "review:US-1": [fromOne, reviewed("pass")], "review:US-2": [fromOne, fromOne, fromOne] };
@@ -1074,7 +1063,7 @@ test("criteria are numbered from 0 in the review's schema, which wants an entry 
 });
 
 test("the run takes the pickable stories in the helper's order: one with a worktree from an earlier attempt before one of higher priority, and its implementer goes on with that worktree", { timeout: 60000 }, async (t) => {
-  const dirs = ordered(t, [story("US-1", { priority: 1 }), story("US-2")]);
+  const dirs = scratch(t, [story("US-1", { priority: 1 }), story("US-2")]);
   git(dirs.repo, "worktree", "add", "-q", "-b", "story/US-2", dirs.worktree("US-2"));
   commit(dirs.worktree("US-2"), "src/half.rs");
 
@@ -1086,7 +1075,7 @@ test("the run takes the pickable stories in the helper's order: one with a workt
 });
 
 test("with storyLimit, the run takes at most that many distinct stories", { timeout: 60000 }, async (t) => {
-  const dirs = ordered(t, [story("US-1"), story("US-2")]);
+  const dirs = scratch(t, [story("US-1"), story("US-2")]);
   const roles = { "review:US-1": [reviewed("fail", { defects: [{ text: "Pink", files: [], criterion: "" }] }), reviewed("pass")] };
 
   const { result, error, logs } = await deliver(dirs, { storyLimit: 1 }, roles);
@@ -1128,7 +1117,7 @@ test("a review fails on a criterion not met, even with the verdict pass, and on 
 
 test("the script decides a review from its verdicts on the criteria and its defects, not from the reviewer's verdict: a test obligation's verdict and a defect that names only an obligation are not read, and a reviewer's obligation true counts for no other criterion", { timeout: 60000 }, async (t) => {
   const criteria = [{ text: "The badge is red", human_check: false }, { text: "A regression test covers the badge", human_check: false }];
-  const dirs = ordered(t, [story("US-1", { criteria }), story("US-2", { criteria }), story("US-3", { criteria })]);
+  const dirs = scratch(t, [story("US-1", { criteria }), story("US-2", { criteria }), story("US-3", { criteria })]);
   const obligation = { testObligations: [1], gaps: [] };
   const roles = {
     "clarity:US-1": [obligation],
@@ -1155,7 +1144,7 @@ test("a story clarity has checked has its test obligations from clarity's decisi
   // Behaviour that reads as a test to add, which clarity, having checked the story, did not record as one.
   const drive = { text: "A user can add a test drive to the booking", human_check: false };
   const criteria = [button, { text: "The suite of badges loads", human_check: false }, { text: "Tests cover the badge count", human_check: false }];
-  const dirs = ordered(t, [story("US-1", { criteria: [button, drive] }), story("US-2", { status: "implemented", criteria })]);
+  const dirs = scratch(t, [story("US-1", { criteria: [button, drive] }), story("US-2", { status: "implemented", criteria })]);
   git(dirs.repo, "worktree", "add", "-q", "-b", "story/US-2", dirs.worktree("US-2"));
   commit(dirs.worktree("US-2"), "src/badge.rs");
   const roles = { "review:US-1": [reviewed("fail", { unmet: { 0: "It shows nothing" } })], "verify:US-1": [verified({ 0: "The button shows an error" })] };
@@ -1218,7 +1207,7 @@ test("from attempt 2 the implementer runs on implRetry, in the same worktree; it
 test("after 3 failed attempts the story goes back to the backlog, blocked, with one thread holding every attempt's findings and those before the latest answer; a story that comes with 3 failed attempts gets its thread without an implementer", { timeout: 60000 }, async (t) => {
   const open = [1, 2, 3].map((n) => ({ stage: "review", text: `[attempt ${n}] Still pink`, files: [], resolved: false }));
   const answered = { stage: "testing", text: "[attempt 1] The badge was blue", files: [], resolved: true };
-  const dirs = ordered(t, [story("US-1", { criteria: [{ text: "The badge is red", human_check: false }], findings: [answered] }), story("US-2", { findings: open })]);
+  const dirs = scratch(t, [story("US-1", { criteria: [{ text: "The badge is red", human_check: false }], findings: [answered] }), story("US-2", { findings: open })]);
   const unmet = (evidence) => reviewed("fail", { unmet: { 0: evidence } });
   const roles = { "review:US-1": [unmet("Pink at src/badge.rs:1"), unmet("Still pink at src/badge.rs:1"), unmet("Pink again at src/badge.rs:2")] };
 
@@ -1260,7 +1249,7 @@ test("no courier carries story content: however long a story's text, criteria, d
     decisions: Array.from({ length: 10 }, (_, i) => ({ question: long(`question-${i}`), choice: long(`choice-${i}`), by: "human" })),
     findings,
   });
-  const dirs = ordered(t, [story("US-1", fields([...many(1, 8), ...many(2, 8)])), story("US-2", fields([...many(1, 5), ...many(2, 5), ...many(3, 5)]))]);
+  const dirs = scratch(t, [story("US-1", fields([...many(1, 8), ...many(2, 8)])), story("US-2", fields([...many(1, 5), ...many(2, 5), ...many(3, 5)]))]);
 
   const { result, error, calls } = await deliver(dirs, { implementers: 1 });
 
@@ -1345,7 +1334,7 @@ test("the test author ignores the story's findings: its oracle comes from the st
 
 test("clarity names a test obligation by the criterion's number, and the helper writes its decision from the criterion's text on the board, so that no copy can miss it: the review is told it is an obligation; a number past the story's criteria fails the check, and the story is not delivered in this run", { timeout: 120000 }, async (t) => {
   const criteria = [{ text: "The badge is red", human_check: false }, { text: "A regression test covers the \"red\" badge in `src/badge.rs`", human_check: false }];
-  const dirs = ordered(t, [story("US-1", { criteria }), story("US-2", { criteria })]);
+  const dirs = scratch(t, [story("US-1", { criteria }), story("US-2", { criteria })]);
   const roles = { "clarity:US-1": [{ testObligations: [1], gaps: [] }], "clarity:US-2": [{ testObligations: [2], gaps: [] }] };
 
   const { result, error, calls, logs } = await deliver(dirs, {}, roles);
@@ -1375,7 +1364,7 @@ test("a journeys check that writes no result file keeps neither its journeys off
 
 test("an agent that writes no result file costs no story: an implementer's question and decision, and a council member's vote, reach the board from the payload when short, from the file the same role writes once more when long, and cut to 500 characters with a note when that file is wrong too; no story is blocked or stops on an error", { timeout: 300000 }, async (t) => {
   const keys = ["US-1", "US-2", "US-3"];
-  const dirs = ordered(t, keys.map((key) => story(key)));
+  const dirs = scratch(t, keys.map((key) => story(key)));
   // US-1's texts are short; US-2's and US-3's long.
   const text = (key, what) => (key === "US-1" ? `${what}?` : `${key}-${what}-LONG ${"x".repeat(1000)}`);
   const roles = Object.fromEntries(keys.flatMap((key) => [
@@ -1410,7 +1399,7 @@ test("an agent that writes no result file costs no story: an implementer's quest
 
 test("an error over an agent's result file never counts toward the stop on a repeated error, nor blocks its story: two stories that stop on one, with errors alike once their keys are taken out, are only released", { timeout: 120000 }, async (t) => {
   const keys = ["US-1", "US-2"];
-  const dirs = ordered(t, keys.map((key) => story(key)));
+  const dirs = scratch(t, keys.map((key) => story(key)));
   // Without the fallback, a refused result file reaches the breaker.
   const carriedOn = "const next = e && e.outFile ? await recover(sent, e.outFile, courier, past, phase) : null";
   assert.ok(SOURCE.includes(carriedOn));
@@ -1527,7 +1516,7 @@ test("an implementer that asks a fourth question in one attempt, after the counc
 
 test("an implementer's slot is free once its story is implemented: with implementers 3, a fourth story starts implementing while an earlier one waits in review", { timeout: 60000 }, async (t) => {
   const keys = ["US-1", "US-2", "US-3", "US-4"];
-  const dirs = ordered(t, keys.map((key) => story(key)));
+  const dirs = scratch(t, keys.map((key) => story(key)));
   let fourthStarted;
   const fourth = new Promise((resolve) => { fourthStarted = resolve; });
   // The first three stories' reviewers answer once the fourth story's
@@ -1561,7 +1550,7 @@ test("an implementer's slot is free once its story is implemented: with implemen
 
 test("at most `implementers` stories implement at once and at most `reviewers` are in review", { timeout: 60000 }, async (t) => {
   const keys = ["US-1", "US-2", "US-3", "US-4"];
-  const dirs = ordered(t, keys.map((key) => story(key)));
+  const dirs = scratch(t, keys.map((key) => story(key)));
   // An implementer and a review each take half a second, long enough for the
   // next story's to start beside it.
   const slow = async (call, serial, board) => {
@@ -1582,7 +1571,7 @@ test("at most `implementers` stories implement at once and at most `reviewers` a
 });
 
 test("a story its review sends back stays in review, its files busy, until an implementer slot is free, takes that slot ahead of new claims, and only then goes back to the backlog and is claimed again, back to back: a story planned on its files is claimed only once it is done", { timeout: 60000 }, async (t) => {
-  const dirs = ordered(t, [
+  const dirs = scratch(t, [
     story("US-1", { priority: 1, files_planned: ["src/badge.rs"] }),
     story("US-2", { files_planned: ["src/a.rs"] }),
     story("US-3", { files_planned: ["src/b.rs"] }),
@@ -1622,7 +1611,7 @@ test("a story its review sends back stays in review, its files busy, until an im
 
 test("the deliver loop lists the board for the next story only once its last claim is made: of two stories planned on one file, with two implementer slots, the second is claimed once the first is done, whether that claim is slow or quick", { timeout: 120000 }, async (t) => {
   for (const slow of [true, false]) {
-    const dirs = ordered(t, [story("US-1", { files_planned: ["shared.rs"] }), story("US-2", { files_planned: ["shared.rs"] })]);
+    const dirs = scratch(t, [story("US-1", { files_planned: ["shared.rs"] }), story("US-2", { files_planned: ["shared.rs"] })]);
     // US-1's claims take 2 s on the board, as a slow courier would leave them.
     if (slow) Object.assign(dirs.env, { FAKE_OMNI_HANG: "story claim US-1", FAKE_OMNI_HANG_MS: "2000" });
 
@@ -1651,7 +1640,7 @@ test("the run counts every agent call, couriers too, and takes a new story only 
   // 12 calls come before the first claim. With 60 and 15 for 900 and 60, the
   // first two stories fit; the third would be the third in flight, past 60.
   const source = capped({ AGENT_CAP: 60, STORY_CALLS: 15 });
-  const dirs = ordered(t, [story("US-1"), story("US-2"), story("US-3")]);
+  const dirs = scratch(t, [story("US-1"), story("US-2"), story("US-3")]);
 
   const { result, error, logs } = await deliver(dirs, { implementers: 2 }, {}, { source });
 
@@ -1700,7 +1689,7 @@ test("clarity starts a check only while the calls made and those set aside for t
   const source = capped({ AGENT_CAP: 20, CHECK_CALLS: 5 });
   const keys = ["US-1", "US-2", "US-3", "US-4", "US-5"];
   const decided = { question: "Which colour is the badge?", choice: "Red", by: "human" };
-  const dirs = ordered(t, keys.map((key) => story(key, key === "US-1" ? { decisions: [decided] } : {})));
+  const dirs = scratch(t, keys.map((key) => story(key, key === "US-1" ? { decisions: [decided] } : {})));
   const roles = { "clarity:US-1": [{ testObligations: [], gaps: [gap("Which colour is the badge?", "ux"), gap("Which shade?", "ux", { blocking: false, recommendation: "Crimson" })] }] };
 
   const { result, error, calls, logs } = await deliver(dirs, {}, roles, { source });
@@ -1723,7 +1712,7 @@ const slowCheck = (until, seen = () => {}, after = 0) => async () => {
   return { testObligations: [], gaps: [] };
 };
 
-test("the delivery starts while clarity still runs: a story whose check is done is delivered while another story's check runs, no story is claimed before its own check ends, and the run goes on while a check is in flight and takes its story afterwards; a check's calls stay in the phase Clarity", { timeout: 120000 }, async (t) => {
+test("the delivery starts while clarity still runs: the first story in the board's order is delivered, once its check is done, while a later story's check runs, no story is claimed before its own check ends, and the run goes on while a check is in flight and takes its story afterwards; a check's calls stay in the phase Clarity", { timeout: 120000 }, async (t) => {
   const dirs = scratch(t, [story("US-1"), story("US-2")]);
   const seen = {};
   // The check of US-2 ends a second after US-1 is done: nothing is in flight
@@ -1739,6 +1728,21 @@ test("the delivery starts while clarity still runs: a story whose check is done 
   assert.ok(calls.findIndex((c) => c.label.startsWith("courier:") && c.phase === "Deliver") < record, "the check of US-2 was recorded once the delivery had begun");
   assert.ok(record < calls.findIndex((c) => c.label === "impl:US-2"));
   assert.deepEqual(calls.filter((c) => /^(courier:(context|clarity-record)|clarity):US-2$/.test(c.label) && calls.indexOf(c) <= record).map((c) => c.phase), ["Clarity", "Clarity", "Clarity"]);
+});
+
+test("the stories are taken in the board's order, whichever clarity check ends first: while the check of the first pickable story still runs, a later story whose check is done is not taken ahead of it", { timeout: 120000 }, async (t) => {
+  const dirs = scratch(t, [story("US-1"), story("US-2")]);
+  const checked = () => { try { return Object.keys(JSON.parse(readFileSync(join(dirs.repo, ".omni", "clarity.json"), "utf8"))); } catch { return []; } };
+  const seen = {};
+  // The check of US-1 ends well after that of US-2 is recorded: long enough for a claim of US-2, which is a list and a claim away.
+  const roles = { "clarity:US-1": [slowCheck(() => checked().includes("US-2"), () => Object.assign(seen, { checked: checked(), claims: claimsOf(dirs, "US-2") }), 1500)] };
+
+  const { result, error } = await deliver(dirs, {}, roles);
+
+  assert.equal(error, null);
+  assert.deepEqual(seen, { checked: ["US-2"], claims: [] });
+  assert.deepEqual(boardLog(dirs).filter((e) => e.endsWith(" implementing")), ["claim US-1 implementing", "claim US-2 implementing"]);
+  assert.deepEqual(result.outcomes.map((o) => [o.key, o.outcome]).sort(), [["US-1", "done"], ["US-2", "done"]]);
 });
 
 test("the run waits for every clarity check before its report and its finish, after an error too: a check still running when the run takes no more stories is recorded before the journeys check starts and before finish gives the lock up", { timeout: 120000 }, async (t) => {
@@ -2198,7 +2202,7 @@ test("a rebase conflict in more than 20 files names the first 20 in its finding,
 });
 
 test("lane-prepare's dirty and wrong_branch use an attempt, with the reason as the finding, and missing uses none: a story with uncommitted changes is fixed on attempt 2, one whose worktree is gone starts again from deliver/<slug>, and one on another branch is back on story/<key> for its attempt 2", { timeout: 120000 }, async (t) => {
-  const dirs = ordered(t, [story("US-1"), story("US-2", { status: "reviewed" }), story("US-3")]);
+  const dirs = scratch(t, [story("US-1"), story("US-2", { status: "reviewed" }), story("US-3")]);
   const roles = {
     "impl:US-1": [async (call, serial) => {
       await serial(() => {
@@ -2239,7 +2243,7 @@ test("lane-prepare's dirty and wrong_branch use an attempt, with the reason as t
 });
 
 test("trouble in lane-prepare that is not the story's stops the lane for the rest of the run with one thread for the run: the story goes back to reviewed with no attempt used, and the next reviewed story waits there unclaimed", { timeout: 120000 }, async (t) => {
-  const dirs = ordered(t, [story("US-1", { status: "reviewed" }), story("US-2", { status: "reviewed" })]);
+  const dirs = scratch(t, [story("US-1", { status: "reviewed" }), story("US-2", { status: "reviewed" })]);
   reviewedStory(dirs, "US-1");
   commit(dirs.repo, "other.rs");
   // A hook that refuses every rebase.
@@ -2283,7 +2287,7 @@ test("a check that fails on the story runs once more on the base, deliver/<slug>
 });
 
 test("a check that fails on the story and again on the base stops the lane for the rest of the run, with one thread for the run that quotes the end of the base's log: the story goes back to reviewed with no attempt used, and a story reviewed after it waits there", { timeout: 120000 }, async (t) => {
-  const dirs = ordered(t, [story("US-1"), story("US-2")]);
+  const dirs = scratch(t, [story("US-1"), story("US-2")]);
   const stack = "echo the stack lost its database; exit 1";
   const lane = laneOf(dirs);
 
@@ -2350,7 +2354,7 @@ test("a lane agent that returns nothing is asked again after 30 s and after 2 mi
 });
 
 test("a test author's question goes to the council, which reads the story's worktree: settled, the author runs again with the decision and its tests land; not settled, it opens a thread that names the story and is not linked from it, since the story is done, and the tests are dropped", { timeout: 120000 }, async (t) => {
-  const dirs = ordered(t, [story("US-1"), story("US-2")]);
+  const dirs = scratch(t, [story("US-1"), story("US-2")]);
   const asks = (question) => authored({ status: "needs_decision", question, options: ["Yes", "No"], recommendation: "No" });
   const quoted = vote(1, { quote: "Badges blink", source: "doc doc-spec node n1" });
   const roles = {
@@ -2383,7 +2387,7 @@ test("a test author's question goes to the council, which reads the story's work
 
 test("agents that return nothing for 3 stories in a row stop the run taking stories, with one thread for the run; each story goes back with no attempt used", { timeout: 120000 }, async (t) => {
   const keys = ["US-1", "US-2", "US-3", "US-4"];
-  const dirs = ordered(t, keys.map((key) => story(key)));
+  const dirs = scratch(t, keys.map((key) => story(key)));
   const roles = Object.fromEntries(keys.map((key) => [`impl:${key}`, [null, null, null]]));
 
   const { result, error, logs } = await deliver(dirs, { implementers: 1 }, roles);
@@ -2400,7 +2404,7 @@ test("agents that return nothing for 3 stories in a row stop the run taking stor
 
 test("an agent that returns something ends the row: two stories sent back for nothing, then one whose implementer answers, then one more sent back, do not stop the run", { timeout: 120000 }, async (t) => {
   const keys = ["US-1", "US-2", "US-3", "US-4", "US-5"];
-  const dirs = ordered(t, keys.map((key) => story(key)));
+  const dirs = scratch(t, keys.map((key) => story(key)));
   const roles = Object.fromEntries(["US-1", "US-2", "US-4"].map((key) => [`impl:${key}`, [null, null, null]]));
 
   const { result, error } = await deliver(dirs, { implementers: 1 }, roles);
@@ -2411,7 +2415,7 @@ test("an agent that returns something ends the row: two stories sent back for no
 });
 
 test("a job is stopped when the lane throws: a story whose job-wait courier fails has its fast check stopped before the next story's turn in the lane starts, the lane goes back to the tip, and the story gets its thread", { timeout: 120000 }, async (t) => {
-  const dirs = ordered(t, [story("US-1"), story("US-2")]);
+  const dirs = scratch(t, [story("US-1"), story("US-2")]);
   const fast = 'm=$(git log -1 --format=%s); echo "start $m" >> ../jobs.log; sleep 6; echo "end $m" >> ../jobs.log';
   let victim = null;
   const fault = (call) => {
@@ -2484,7 +2488,7 @@ test("a story that reaches the hard cap in the lane stops there: the job it wait
 });
 
 test("a rebase the implementer left in progress in the story's worktree is the story's: lane-prepare gives dirty, the story uses an attempt and the lane goes on, and the next implementer gets the worktree as it is, told to finish or abort the rebase", { timeout: 120000 }, async (t) => {
-  const dirs = ordered(t, [story("US-1"), story("US-2")]);
+  const dirs = scratch(t, [story("US-1"), story("US-2")]);
   let stuck = null;
   const roles = {
     "impl:US-1": [async (call, serial) => {
@@ -2561,7 +2565,7 @@ const STACK_UP = 'for f in $(cat ../db 2>/dev/null); do [ -f "$f" ] || { echo "m
 
 test("a story whose stack check fails leaves its migration in the stack: with stack_reset, the rerun on the base resets the stack first, so the failure is the story's, which uses an attempt, and the lane goes on", { timeout: 120000 }, async (t) => {
   // US-2 waits for US-1, whose stack_up is the run's first, after a stack_reset.
-  const dirs = ordered(t, [story("US-1"), story("US-2", { blocked_by: ["US-1"] })]);
+  const dirs = scratch(t, [story("US-1"), story("US-2", { blocked_by: ["US-1"] })]);
   const stack = 'if [ -f migrations/US-1.sql ]; then echo "US-1 breaks the stack tests"; exit 1; fi';
   const roles = { "impl:US-1": [built("migrations/US-1.sql"), async (call, serial) => {
     await serial(() => {
@@ -2581,7 +2585,7 @@ test("a story whose stack check fails leaves its migration in the stack: with st
 });
 
 test("without stack_reset, a story whose migration stays in the stack stops the lane on the base's stack_up, and the lane-stop thread names that likely cause", { timeout: 120000 }, async (t) => {
-  const dirs = ordered(t, [story("US-1"), story("US-2")]);
+  const dirs = scratch(t, [story("US-1"), story("US-2")]);
   const stack = 'if [ -f migrations/US-1.sql ]; then echo "US-1 breaks the stack tests"; exit 1; fi';
 
   const { result, error } = await deliver(dirs, { implementers: 1, checks: { fast: "true", stack_up: STACK_UP, stack } }, { "impl:US-1": [built("migrations/US-1.sql")] });
@@ -2595,7 +2599,7 @@ test("without stack_reset, a story whose migration stays in the stack stops the 
 
 test("a story the verifier fails leaves its migration in the stack: with stack_reset, the rebuild at the tip resets the stack first, so the next pass of the lane is clean, and both stories land", { timeout: 120000 }, async (t) => {
   // US-2 waits for US-1, whose stack_up is the run's first, after a stack_reset.
-  const dirs = ordered(t, [story("US-1", { criteria: [{ text: "The badge is red", human_check: false }] }), story("US-2", { blocked_by: ["US-1"] })]);
+  const dirs = scratch(t, [story("US-1", { criteria: [{ text: "The badge is red", human_check: false }] }), story("US-2", { blocked_by: ["US-1"] })]);
   const roles = { "impl:US-1": [built("migrations/US-1.sql")], "verify:US-1": [verified({ 0: "It is pink" })] };
 
   const { result, error, logs } = await deliver(dirs, { implementers: 1, checks: { fast: "true", stack_up: STACK_UP, stack: "true", stack_reset: "rm -f ../db" } }, roles);
@@ -2607,7 +2611,7 @@ test("a story the verifier fails leaves its migration in the stack: with stack_r
 });
 
 test("what a stopped run left on the stack costs the next run's first story nothing: with stack_reset set, the run's first stack_up comes after a stack_reset, the only one of the run, and both stories land at their first attempt", { timeout: 120000 }, async (t) => {
-  const dirs = ordered(t, [story("US-1"), story("US-2")]);
+  const dirs = scratch(t, [story("US-1"), story("US-2")]);
   // A story of the stopped run left this behind, and stack_up fails until stack_reset removes it.
   const leftover = join(dirs.root, "leftover-migration");
   writeFileSync(leftover, "");
@@ -2731,7 +2735,7 @@ test("a defect the test author's test finds after the story has landed opens a t
 });
 
 test("a test author that is blocked opens a thread with its reason, which names the story and does not block it, and one that returns nothing is asked again after 30 s and after 2 minutes: either way the story stays done and its tests are dropped, which the report notes", { timeout: 120000 }, async (t) => {
-  const dirs = ordered(t, [story("US-1"), story("US-2")]);
+  const dirs = scratch(t, [story("US-1"), story("US-2")]);
   const roles = { "tests:US-1": [authored({ status: "blocked", blockers: "No test runner for the badge." })], "tests:US-2": [null, null, null] };
 
   const { result, error, calls, sleeps } = await deliver(dirs, {}, roles);
@@ -2751,7 +2755,7 @@ test("a test author that is blocked opens a thread with its reason, which names 
 
 test("a story's tests are written outside the lane's lock, one author at a time: the next story is tested and lands while the first story's author still writes, whose tests then land on the tip that moved; the second author starts once those have landed, from a worktree that holds them and with their names in its prompt; and the run's report waits for the last tests", { timeout: 120000 }, async (t) => {
   // US-2 waits on US-1, so it reaches the lane only once the author of US-1 is at work.
-  const dirs = ordered(t, [story("US-1"), story("US-2", { blocked_by: ["US-1"] })]);
+  const dirs = scratch(t, [story("US-1"), story("US-2", { blocked_by: ["US-1"] })]);
   const seen = {};
   const roles = {
     // The author of US-1 writes until US-2 is done, or for 30 s.
@@ -2784,7 +2788,7 @@ test("a story's tests are written outside the lane's lock, one author at a time:
 test("a story is taken only while the calls set aside for it and for the landed stories' tests in flight fit under the cap: one that fits once those tests have ended waits for them, and is taken then", { timeout: 120000 }, async (t) => {
   // US-1 has landed after some 22 calls. US-2, which waited on it, needs 30 more, and the tests of US-1 another 30 while they are in flight: over 75 with them, under it without.
   const source = capped({ AGENT_CAP: 75, STORY_CALLS: 30, CHECK_CALLS: 1 });
-  const dirs = ordered(t, [story("US-1"), story("US-2", { blocked_by: ["US-1"] })]);
+  const dirs = scratch(t, [story("US-1"), story("US-2", { blocked_by: ["US-1"] })]);
   const seen = {};
   const roles = { "tests:US-1": [async (call, serial) => {
     // Long enough for a claim of US-2, which is a list and a claim away.
@@ -2798,6 +2802,52 @@ test("a story is taken only while the calls set aside for it and for the landed 
   assert.equal(error, null);
   assert.deepEqual(seen, { first: "done", claims: [] });
   assert.deepEqual([result.outcomes.map((o) => [o.key, o.outcome]), result.tests.map((o) => [o.key, o.outcome])], [[["US-1", "done"], ["US-2", "done"]], [["US-1", "landed"], ["US-2", "none"]]], logs.join("\n"));
+});
+
+test("tests still being written when the run reaches its hard cap are dropped past it: the story stays done, its worktree and branch go, nothing of the tests lands, and the report notes that it landed without regression tests", { timeout: 120000 }, async (t) => {
+  // The story has landed after some 20 calls, and its tests need 5 more: the cap falls before their landing.
+  const source = capped({ HARD_CAP: 23 });
+  const dirs = scratch(t, [story("US-1")]);
+  const head = git(dirs.repo, "rev-parse", "HEAD").trim();
+
+  const { result, error, logs } = await deliver(dirs, {}, { "tests:US-1": [testsIn("badge.test")] }, { source });
+
+  assert.equal(error, null, logs.join("\n"));
+  const why = "the run reached its agent cap of 23";
+  assert.deepEqual([result.outcomes, result.tests], [[{ key: "US-1", outcome: "done" }], [{ key: "US-1", outcome: "dropped", detail: why }]], logs.join("\n"));
+  const note = `US-1 landed without regression tests: ${why}.`;
+  assert.ok(result.notes.includes(note), result.notes.join("\n"));
+  assert.ok(readFileSync(result.report, "utf8").includes(`\n${note}\n`), readFileSync(result.report, "utf8"));
+  assert.deepEqual([existsSync(dirs.worktree("US-1")), git(dirs.repo, "branch", "--list", "story/US-1").trim()], [false, ""]);
+  const tip = git(dirs.repo, "rev-parse", "refs/heads/deliver/board").trim();
+  assert.deepEqual(git(dirs.repo, "log", "--format=%s", `${head}..${tip}`).trim(), "feat: US-1.txt");
+  const lane = laneOf(dirs);
+  assert.deepEqual([git(lane, "rev-parse", "HEAD").trim(), git(lane, "status", "--porcelain"), dirs.story("US-1").status, result.capped], [tip, "", "done", true]);
+});
+
+test("tests whose author returns after the lane has stopped for the run are dropped: they take no turn in a stopped lane, the story stays done, its worktree and branch go, and the report notes it", { timeout: 120000 }, async (t) => {
+  // The fast check fails for US-2, on the story and on the base: that stops the lane while the author of US-1 writes.
+  const dirs = scratch(t, [story("US-1"), story("US-2", { blocked_by: ["US-1"] })], [], { checks: { fast: 'test "$OMNI_STORY" != US-2', stack_up: "true", stack: "true" } });
+  const stopped = () => dirs.state().threads.some((th) => /: the lane stopped$/.test(th.title));
+  const seen = {};
+  const roles = { "tests:US-1": [async (call, serial) => {
+    for (let i = 0; i < 600 && !stopped(); i++) await pause(50);
+    seen.stopped = stopped();
+    return testsIn("US-1.test")(call, serial);
+  }] };
+  const head = git(dirs.repo, "rev-parse", "HEAD").trim();
+
+  const { result, error, calls, logs } = await deliver(dirs, {}, roles);
+
+  assert.equal(error, null, logs.join("\n"));
+  assert.equal(seen.stopped, true);
+  const why = "the lane stopped earlier in this run";
+  assert.deepEqual([result.tests, result.outcomes.map((o) => [o.key, o.outcome])], [[{ key: "US-1", outcome: "dropped", detail: why }], [["US-1", "done"], ["US-2", "lane_stopped"]]], logs.join("\n"));
+  assert.ok(result.notes.includes(`US-1 landed without regression tests: ${why}.`), result.notes.join("\n"));
+  // No turn in the lane for the tests: the only lane-prepare after the stop would have been theirs.
+  assert.deepEqual(stepsNamed(calls, "lane-prepare").map((s) => s.fields.key), ["US-1", "US-2"]);
+  assert.deepEqual([existsSync(dirs.worktree("US-1")), git(dirs.repo, "branch", "--list", "story/US-1").trim(), dirs.story("US-1").status, dirs.story("US-2").status], [false, "", "done", "reviewed"]);
+  assert.deepEqual(git(dirs.repo, "log", "--format=%s", `${head}..refs/heads/deliver/board`).trim(), "feat: US-1.txt");
 });
 
 test("a lane stop whose release fails stops the lane all the same, with its thread, and the report notes the release", { timeout: 120000 }, async (t) => {
@@ -2820,7 +2870,7 @@ test("a lane stop whose release fails stops the lane all the same, with its thre
 // ---- the end of the run ---------------------------------------------------------------
 
 test("the run ends with the journeys check in the lane worktree, then finish gets the report: every outcome, the council's counts, the journeys and the notes, and the helper adds the blocked stories with their threads from the board, with no courier for them; the report goes on the Run thread, the lock is given up, and the run returns the report's path and the landed state", { timeout: 120000 }, async (t) => {
-  const dirs = ordered(t, [story("US-1"), story("US-2"), story("US-3", { blocked: true, links: [{ thread_id: "th-1", label: "question" }] })], [{ id: "th-1", title: "US-3: Which red?", feature: "board", posts: [], conclusion: null }]);
+  const dirs = scratch(t, [story("US-1"), story("US-2"), story("US-3", { blocked: true, links: [{ thread_id: "th-1", label: "question" }] })], [{ id: "th-1", title: "US-3: Which red?", feature: "board", posts: [], conclusion: null }]);
   const roles = {
     "impl:US-2": [{ status: "blocked", summary: "The badge API is missing." }],
     final: [{ healthy: true, journeys: ["Badge, then count: works"], report: "One journey spans them." }],
@@ -2856,7 +2906,7 @@ test("the run ends with the journeys check in the lane worktree, then finish get
 });
 
 test("the journeys check runs no check itself, nor the stack command, since its Bash call stops after 10 minutes, and is told the lane's last check instead: here the fast check that failed on deliver/<slug> without the story after the one that landed, and stopped the lane", { timeout: 120000 }, async (t) => {
-  const dirs = ordered(t, [story("US-1"), story("US-2", { blocked_by: ["US-1"] })]);
+  const dirs = scratch(t, [story("US-1"), story("US-2", { blocked_by: ["US-1"] })]);
   const fast = "if [ -e ../red ]; then echo the fast check is red; exit 1; fi";
   // US-2's implementer turns the fast check red for every tree, once US-1 has landed.
   const roles = { "impl:US-2": [(call, serial) => {
