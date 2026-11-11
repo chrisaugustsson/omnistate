@@ -5,7 +5,7 @@ export const meta = {
   phases: [
     { title: 'Start', detail: 'the helper takes the lock, reconciles claims and the lane worktree, sets deliver/<slug> and reads the checks' },
     { title: 'Unblock', detail: 'a story whose threads all have a conclusion gets each one as a human decision and is unblocked, and its attempts count from there' },
-    { title: 'Clarity', detail: 'one check per backlog story whose text, criteria, linked nodes or decisions changed: a criterion that names a test becomes a test obligation, and once a story is checked its obligations come from these decisions alone, a minor gap takes its recommendation, the 3 blocking gaps of most impact go to the council and the rest take their recommendation, deferred by the cap; the council settles a question when all three members pick the same option and one quotes its source, or all three call the gap minor, or two pick the same option and each quotes its source, a decision that then says 2 of 3 and names the pick of the third; what it cannot settle becomes a thread that blocks the story' },
+    { title: 'Clarity', detail: 'beside the delivery, which takes no story whose own check still runs: one check per backlog story whose text, criteria, linked nodes or decisions changed: a criterion that names a test becomes a test obligation, and once a story is checked its obligations come from these decisions alone, a minor gap takes its recommendation, the 3 blocking gaps of most impact go to the council and the rest take their recommendation, deferred by the cap; the council settles a question when all three members pick the same option and one quotes its source, or all three call the gap minor, or two pick the same option and each quotes its source, a decision that then says 2 of 3 and names the pick of the third; what it cannot settle becomes a thread that blocks the story' },
     { title: 'Deliver', detail: 'at most `implementers` stories implementing at once, each slot free again once its story is implemented: claim, after which the board is listed for the next story, worktree, implementer (on implRetry from attempt 2, reading every finding by attempt from the board, as every agent reads its story itself), files; then at most `reviewers` in review, with a verdict per criterion and every defect, from which the script decides, never judging a test obligation; a failed review, or a failure in the lane, sends the story back for the next attempt, held where it failed until an implementer slot is free, ahead of new claims, then moved to the backlog and claimed in one step, and 3 failed attempts open a thread; a worktree an implementer left on another branch goes back on story/<key> when it is clean, and the next implementer is told which commits to bring over; a question goes to the council first' },
     { title: 'Lane', detail: 'one story at a time in the lane worktree <stories dir>/_lane: lane-prepare rebases story/<key> onto deliver/<slug> and checks it out, detached (a conflict or a missing worktree sends the story back with no attempt used, but from the third conflict of a story in a run; uncommitted changes, a rebase left in progress, an index.lock or another branch use one; trouble that is not the story\'s stops the lane); fast, stack_up and stack run there as jobs, the run\'s first stack_up after stack_reset, for what a stopped run left on the stack, and a failed one runs again on the base, after stack_reset for a stack check, where failing too stops the lane and passing uses an attempt; a verifier runs every criterion but the test obligations, a test author writes the regression tests and its questions go to the council, lane-clean throws away what it left uncommitted, its check runs as a job, lane-clean throws away what the check left, and lane-land moves deliver/<slug> by a compare-and-swap; a red check gets the author once more, with its output, and tests still red, or that lane-land refuses for the lane they left, are dropped, and the story lands without them; after a failure the lane goes back to the tip, and the stack, when it holds the story\'s build, is reset with stack_reset and rebuilt there' },
     { title: 'Report', detail: 'the journeys check of the stories landed, which runs no check and is told the lane\'s last one, then finish posts the report on the Run thread, with the outcomes, the council\'s counts, with how many it settled by a majority of 2, the blocked stories with their threads, the notes and the timings, and gives the lock up' },
@@ -58,8 +58,8 @@ const QUESTIONS_PER_ATTEMPT = 3
 // had a courier of its own; with the steps that follow each other in one
 // call, such a story makes about 50, and a clean one 10 couriers. A story is
 // claimed, and a clarity check started, only while the calls made and those
-// set aside for the work in flight leave room under AGENT_CAP; the next run
-// carries on. Work that reaches HARD_CAP all the same stops there: its story
+// set aside for the work in flight, stories and clarity checks, leave room
+// under AGENT_CAP; the next run carries on. Work that reaches HARD_CAP all the same stops there: its story
 // is released with no attempt used.
 const AGENT_CAP = 900
 const HARD_CAP = 960
@@ -85,7 +85,9 @@ const EMPTY_STORIES = 3
 let agentCalls = 0
 // Set once the run stops taking new work for the cap.
 let capped = false
-const room = (calls, inFlight) => agentCalls + calls * (inFlight + 1) <= AGENT_CAP
+// Whether the calls made, and those set aside for that many stories and
+// clarity checks in flight, fit under AGENT_CAP.
+const fits = (stories, checksInFlight) => agentCalls + STORY_CALLS * stories + CHECK_CALLS * checksInFlight <= AGENT_CAP
 // Notes for the run's report.
 const notes = []
 // An agent type this machine has not installed: the runtime refuses it at
@@ -248,11 +250,11 @@ const opIdOf = (base) => {
 // else, which cannot change once its agent has finished: the error names the
 // file as outFile, and step() carries its parts another way. A batch that
 // failed names the sub-step that stopped it, as step.
-const carry = async (name, prompt, expected, label, past = false) => {
+const carry = async (name, prompt, expected, label, past = false, phase = current) => {
   let problem = ''
   for (let i = 0; i <= COURIER_RETRIES; i++) {
     if (i) log(`${label}: ${problem}; trying again (${i} of ${COURIER_RETRIES})`)
-    const { body, problem: wrong } = unpack(await ask('courier', prompt, { label, phase: current, schema: COURIER_SCHEMA, effort: 'low' }, MODELS.courier, past), expected)
+    const { body, problem: wrong } = unpack(await ask('courier', prompt, { label, phase, schema: COURIER_SCHEMA, effort: 'low' }, MODELS.courier, past), expected)
     if (body && body.ok === true) return body
     const failed = body && typeof body.step === 'string' ? body.step : name
     if (body && body.retry !== true) throw Object.assign(new Error(`${label}: ${failed} failed: ${body.error}`), typeof body.outFile === 'string' ? { outFile: body.outFile } : {})
@@ -361,13 +363,13 @@ ${JSON.stringify(result)}
 RESULT>>>
 
 Then return written true.`
-const rewrite = (r, past) => {
+const rewrite = (r, past, phase = current) => {
   const w = r[WRITTEN]
   if (!rewrites.has(w.file)) {
     const file = w.file.replace(/\.json$/, '-again.json')
     const { [WRITTEN]: _, ...result } = r
     // An agent that cannot be asked, at the hard cap too, leaves the cut.
-    rewrites.set(w.file, Promise.resolve().then(() => ask(w.role, againPrompt(file, result), { label: `again:${w.label}`, phase: current, schema: AGAIN_SCHEMA }, w.model, past)).then(() => file, (e) => {
+    rewrites.set(w.file, Promise.resolve().then(() => ask(w.role, againPrompt(file, result), { label: `again:${w.label}`, phase, schema: AGAIN_SCHEMA }, w.model, past)).then(() => file, (e) => {
       log(`${w.label}: its result could not be written again: ${(e && e.message) || e}`)
       return null
     }))
@@ -417,7 +419,7 @@ const shares = (nodes) => {
 }
 // The fields with the parts from `file` carried another way, or null when
 // they name none.
-const recover = async (fields, file, label, past) => {
+const recover = async (fields, file, label, past, phase) => {
   const nodes = partsIn(fields).filter((n) => n.file === file)
   if (!nodes.length) return null
   lost.add(file)
@@ -428,7 +430,7 @@ const recover = async (fields, file, label, past) => {
   }
   // Parts from their agent's own file get it written again; parts from a file
   // written again already are cut.
-  const again = nodes[0].r[WRITTEN].file === file ? await rewrite(nodes[0].r, past) : null
+  const again = nodes[0].r[WRITTEN].file === file ? await rewrite(nodes[0].r, past, phase) : null
   if (again && !lost.has(again)) {
     log(`${label}: ${file} cannot be read as its agent returned it; its agent wrote it again, to ${again}`)
     return mapParts(fields, (n) => (n.file === file ? { ...n, file: again } : n))
@@ -441,7 +443,8 @@ const recover = async (fields, file, label, past) => {
 // file under the run's folder, and the command carries the payload's hash. A
 // payload the helper refuses for an agent's result file goes again, with that
 // file's parts carried another way (recover), under an opId of its own.
-const send = async (name, courier, opId, wrap, fields, past) => {
+// phase: the progress group of its courier, when not the run's current one.
+const send = async (name, courier, opId, wrap, fields, past, phase) => {
   let sent = fields
   for (let n = 0; ; n++) {
     const id = n ? `${opId}.r${n}` : opId
@@ -449,9 +452,9 @@ const send = async (name, courier, opId, wrap, fields, past) => {
     const file = `${root}/.omni/runs/${runId}/in/${id}.json`
     const command = `node ${shellPath(HELPER)} ${name} --run ${runId} --payload ${shellPath(file)} --hash ${fnv1a(payload)}`
     try {
-      return await carry(name, courierPrompt(command, file, payload), fnv1a(payload), courier, past)
+      return await carry(name, courierPrompt(command, file, payload), fnv1a(payload), courier, past, phase)
     } catch (e) {
-      const next = e && e.outFile ? await recover(sent, e.outFile, courier, past) : null
+      const next = e && e.outFile ? await recover(sent, e.outFile, courier, past, phase) : null
       if (!next) throw e
       sent = next
     }
@@ -459,8 +462,8 @@ const send = async (name, courier, opId, wrap, fields, past) => {
 }
 // One host step. opId: the one the caller took for the step already, as
 // job() does.
-const step = (name, fields = {}, { label = name, key = fields.key, past = false, opId = opIdOf(key ? `${label}-${key}` : label) } = {}) =>
-  send(name, key ? `courier:${name}:${key}` : `courier:${name}`, opId, (id, sent) => ({ opId: id, ...sent }), fields, past)
+const step = (name, fields = {}, { label = name, key = fields.key, past = false, opId = opIdOf(key ? `${label}-${key}` : label), phase } = {}) =>
+  send(name, key ? `courier:${name}:${key}` : `courier:${name}`, opId, (id, sent) => ({ opId: id, ...sent }), fields, past, phase)
 // Several host steps in one courier call, for steps that always follow each
 // other with nothing to decide in between: [name, fields] pairs, which the
 // helper's batch runs in order, each under the opId <opId>.<n>, n from 1. It
@@ -468,11 +471,11 @@ const step = (name, fields = {}, { label = name, key = fields.key, past = false,
 // carries on after those that were applied. Gives their bodies, in order. One
 // step goes as itself, and none makes no call. The courier is named after
 // the steps, a row of the same one once.
-const steps = async (list, { key, past = false, opId } = {}) => {
+const steps = async (list, { key, past = false, opId, phase } = {}) => {
   if (!list.length) return []
-  if (list.length === 1) return [await step(list[0][0], list[0][1], { key, past, ...(opId ? { opId } : {}) })]
+  if (list.length === 1) return [await step(list[0][0], list[0][1], { key, past, phase, ...(opId ? { opId } : {}) })]
   const names = list.map(([name]) => name).filter((name, i, all) => name !== all[i - 1]).join('+')
-  const batch = await send('batch', key ? `courier:${names}:${key}` : `courier:${names}`, opId || opIdOf(key ? `${names}-${key}` : names), (id, sent) => ({ opId: id, steps: sent }), list.map(([name, fields = {}]) => ({ name, fields })), past)
+  const batch = await send('batch', key ? `courier:${names}:${key}` : `courier:${names}`, opId || opIdOf(key ? `${names}-${key}` : names), (id, sent) => ({ opId: id, steps: sent }), list.map(([name, fields = {}]) => ({ name, fields })), past, phase)
   return batch.results
 }
 
@@ -1036,7 +1039,8 @@ const quoted = (v) => ['"', part(v, ['quote']), '" (', part(v, ['source']), ')']
 // A question for the human: a thread named after the story, with the
 // options and a recommendation, linked from the story, which is blocked
 // until it concludes. recommendation and council: the parts of their text.
-const askHuman = async (ctx, q, label, recommendation, council) => {
+// phase: as for step(), here and for the council below.
+const askHuman = async (ctx, q, label, recommendation, council, phase) => {
   const key = ctx.key
   const body = words(
     said(q, ['question'], q.question),
@@ -1049,14 +1053,14 @@ const askHuman = async (ctx, q, label, recommendation, council) => {
     ...(q.reason ? ['\n\nWhy: ', said(q, ['reason'])] : []),
     '\n',
   )
-  const { thread } = await step('thread-open', { key, title: words(`${key}: `, said(q, ['question'], q.question)), body }, { label: `${label}-thread` })
+  const { thread } = await step('thread-open', { key, title: words(`${key}: `, said(q, ['question'], q.question)), body }, { label: `${label}-thread`, phase })
   tally.asked++
   log(`${key}: asked the human "${q.question}" on thread ${thread}`)
   return { settled: false, thread }
 }
 // The members' votes, in one round; a member that died votes nothing.
-const convene = (ctx, q, code) => councilSlots.run(() => parallel(READINGS.map((reading) => () =>
-  act('council', (file) => councilPrompt(ctx, q, reading, code, file), { label: `council:${ctx.key}:${reading.id}`, phase: current, schema: VOTE_SCHEMA }))))
+const convene = (ctx, q, code, phase = current) => councilSlots.run(() => parallel(READINGS.map((reading) => () =>
+  act('council', (file) => councilPrompt(ctx, q, reading, code, file), { label: `council:${ctx.key}:${reading.id}`, phase, schema: VOTE_SCHEMA }))))
 // The council settles a question when all three pick the same option and a
 // quote supports it, or all three call the gap minor, or two of the three
 // pick the same option and each of the two quotes its source: it becomes an
@@ -1064,14 +1068,14 @@ const convene = (ctx, q, code) => councilSlots.run(() => parallel(READINGS.map((
 // of 3 and names the third member's pick, so the human sees the split.
 // Otherwise the thread opens with each member's pick and evidence, and the
 // majority's pick, else the asker's, as its recommendation.
-const conclude = async (ctx, q, votes, label) => {
+const conclude = async (ctx, q, votes, label, phase) => {
   const key = ctx.key
   const options = q.options
   const picks = votes.map((v) => (v && Number.isInteger(v.pick) && v.pick >= 1 && v.pick <= options.length ? v.pick : 0))
   const supported = (v) => v && String(v.quote || '').trim() && String(v.source || '').trim()
   const evidenced = votes.filter(supported)
   const decide = async (pick, evidence) => {
-    await step('decision', { key, question: said(q, ['question'], q.question), choice: words(option(q, pick), ' (council', ...evidence, ')'), by: 'agent' }, { label: `${label}-decision` })
+    await step('decision', { key, question: said(q, ['question'], q.question), choice: words(option(q, pick), ' (council', ...evidence, ')'), by: 'agent' }, { label: `${label}-decision`, phase })
     tally.settled++
     log(`${key}: the council settled "${q.question}"`)
     return { settled: true }
@@ -1101,15 +1105,15 @@ const conclude = async (ctx, q, votes, label) => {
     ]
   })
   const recommendation = majority ? [option(q, majority), " (the council's majority)"] : [said(q, ['recommendation'], '(none)'), ` (the recommendation of ${q.asker})`]
-  return askHuman(ctx, q, label, recommendation, ['it did not settle this, in one round with each member on its own:', ...members])
+  return askHuman(ctx, q, label, recommendation, ['it did not settle this, in one round with each member on its own:', ...members], phase)
 }
-const settle = async (ctx, q, { code, label }) => conclude(ctx, q, await convene(ctx, q, code), label)
+const settle = async (ctx, q, { code, label, phase }) => conclude(ctx, q, await convene(ctx, q, code, phase), label, phase)
 // A question of an implementer, a reviewer or a test author: to the
 // council, or past the questions it settles in one attempt, to the human.
-const question = (ctx, r, asker, code, label, asked) => {
+const question = (ctx, r, asker, code, label, asked, phase) => {
   const q = questionOf(r, [], asker)
-  if (asked < QUESTIONS_PER_ATTEMPT) return settle(ctx, q, { code, label })
-  return askHuman(ctx, q, label, [said(q, ['recommendation'], '(none)'), ` (the recommendation of ${asker})`], [`not asked: it settled ${QUESTIONS_PER_ATTEMPT} questions of ${asker} in this attempt already`])
+  if (asked < QUESTIONS_PER_ATTEMPT) return settle(ctx, q, { code, label, phase })
+  return askHuman(ctx, q, label, [said(q, ['recommendation'], '(none)'), ` (the recommendation of ${asker})`], [`not asked: it settled ${QUESTIONS_PER_ATTEMPT} questions of ${asker} in this attempt already`], phase)
 }
 
 // ---- 1. start ----------------------------------------------------------------
@@ -1153,13 +1157,21 @@ const clarity = []
 // Stories whose clarity check returned nothing, or failed: not delivered in
 // this run, and checked again at the next start.
 const unclear = new Set()
-// Clarity checks in flight, which the agent cap sets calls aside for.
+// Clarity checks in flight, which the agent cap sets calls aside for, beside
+// those of the stories in flight.
 let checking = 0
+// The clarity pass runs beside the delivery. The stories whose check has not
+// ended, which the deliver loop does not take; the checks themselves, which
+// it waits on when nothing else is left, and which the run waits for before
+// its report; and how many have ended.
+const unchecked = new Set()
+const clarityRuns = new Set()
+let checksEnded = 0
 const clarify = async (key) => {
-  if (!room(CHECK_CALLS, checking)) {
+  if (!fits(running.size, checking + 1)) {
     unclear.add(key)
     capped = true
-    log(`${key}: not checked: the run has made ${agentCalls} agent calls, with ${checking} clarity checks in flight, and keeps the rest for them; the story is checked at the next start`)
+    log(`${key}: not checked: the run has made ${agentCalls} agent calls, with ${checking} clarity checks${running.size ? ` and ${running.size} stories` : ''} in flight, and keeps the rest for them; the story is checked at the next start`)
     return
   }
   checking++
@@ -1169,9 +1181,12 @@ const clarify = async (key) => {
     checking--
   }
 }
+// Every call of a check, its couriers and its councils included, is in the
+// phase Clarity, whatever phase the run is in by then.
+const CLARITY = 'Clarity'
 const check = async (key) => {
-  const ctx = await step('context', { key })
-  const r = await act('clarity', (file) => clarityPrompt(ctx, file), { label: `clarity:${key}`, phase: 'Clarity', schema: CLARITY_SCHEMA })
+  const ctx = await step('context', { key }, { phase: CLARITY })
+  const r = await act('clarity', (file) => clarityPrompt(ctx, file), { label: `clarity:${key}`, phase: CLARITY, schema: CLARITY_SCHEMA })
   if (!r) {
     unclear.add(key)
     log(`${key}: the clarity check returned nothing; the story is not delivered in this run, and is checked again at the next start`)
@@ -1200,19 +1215,19 @@ const check = async (key) => {
   const rank = (g) => (IMPACT.includes(g.impact) ? IMPACT.indexOf(g.impact) : IMPACT.length)
   const blocking = gaps.filter((x) => x.blocking).sort((a, b) => rank(a) - rank(b))
   for (const g of blocking.slice(CLARITY_QUESTIONS)) decide(g, ` (deferred by the cap: a story asks at most ${CLARITY_QUESTIONS} blocking questions)`)
-  await steps(writes, { key })
+  await steps(writes, { key, phase: CLARITY })
   // The councils sit side by side, within the run's limit, and every one is
   // waited for. Their answers go to the board one at a time, in order: two
   // thread-opens of one story at once could each link the story without the
   // other's thread.
   const asked = blocking.slice(0, CLARITY_QUESTIONS).map((g) => questionOf(r, ['gaps', g.at], 'the clarity check'))
-  const ballots = await Promise.all(asked.map((q) => convene(ctx, q, null).then((votes) => ({ votes }), (error) => ({ error }))))
+  const ballots = await Promise.all(asked.map((q) => convene(ctx, q, null, CLARITY).then((votes) => ({ votes }), (error) => ({ error }))))
   const answers = []
   const failures = []
   for (const [i, q] of asked.entries()) {
     try {
       if (ballots[i].error) throw ballots[i].error
-      answers.push(await conclude(ctx, q, ballots[i].votes, `gap${i + 1}`))
+      answers.push(await conclude(ctx, q, ballots[i].votes, `gap${i + 1}`, CLARITY))
     } catch (e) {
       if (e && e.atCap) throw e
       failures.push(`"${q.question}": ${(e && e.message) || e}`)
@@ -1223,20 +1238,26 @@ const check = async (key) => {
   if (failures.length) throw new Error(`a question was neither settled nor asked: ${failures.join('; ')}`)
   // Recorded after the check's own writes, so that they do not make the
   // story pending again.
-  await step('clarity-record', { key })
+  await step('clarity-record', { key }, { phase: CLARITY })
   const threads = answers.filter((a) => !a.settled).map((a) => a.thread)
   clarity.push({ key, obligations: owed.length, minor: gaps.filter((x) => !x.blocking).length, deferred: Math.max(blocking.length - CLARITY_QUESTIONS, 0), settled: answers.filter((a) => a.settled).length, threads })
 }
-const clarityPass = async () => {
-  await pipeline(pendingClarity, async (key) => {
-    try {
-      await clarify(key)
-    } catch (e) {
+// Starts every pending story's check, and waits for none: the delivery starts
+// beside them, with the stories checked already.
+const clarityPass = () => {
+  for (const key of pendingClarity) {
+    unchecked.add(key)
+    const run = clarify(key).catch((e) => {
       unclear.add(key)
       if (e && e.atCap) capped = true
       log(`${key}: the clarity check ${e && e.atCap ? 'stopped at the agent cap' : 'failed'}: ${(e && e.message) || e}; the story is not delivered in this run`)
-    }
-  })
+    }).finally(() => {
+      unchecked.delete(key)
+      clarityRuns.delete(run)
+      checksEnded++
+    })
+    clarityRuns.add(run)
+  }
 }
 
 // ---- 4. deliver ----------------------------------------------------------------
@@ -1594,11 +1615,13 @@ const deliverStory = async (key, from, held, claimed) => {
 // pickable that this run has not taken: listed again for each claim, once that
 // claim is made, since a claimed story's planned files keep others off the
 // pickable list. A story listed as implemented starts at its review, and one
-// listed as reviewed at the lane, unless the lane has stopped. When nothing
-// new is listed, the board is listed again once a story in flight is done;
-// the run goes on until nothing new is listed and nothing is in flight. A new
-// story is taken only while the agent cap leaves room for it beside those in
-// flight, up to storyLimit, and until a breaker stops the run.
+// listed as reviewed at the lane, unless the lane has stopped. A story whose
+// clarity check is still running is left where it is. When nothing new is
+// listed, the board is listed again once a story in flight is done or a
+// clarity check has ended; the run goes on until nothing new is listed and
+// nothing is in flight. A new story is taken only while the agent cap leaves
+// room for it beside the stories and the clarity checks in flight, up to
+// storyLimit, and until a breaker stops the run.
 const taken = new Set()
 const running = new Set()
 // Gives a promise of the story's first implementing claim, made or failed.
@@ -1629,41 +1652,55 @@ const mayTake = () => {
     log(`The run has taken ${taken.size} of its storyLimit of ${storyLimit}: it takes no new story`)
     return false
   }
-  if (!room(STORY_CALLS, running.size)) {
+  if (!fits(running.size + 1, 0)) {
     capped = true
     log(`The run has made ${agentCalls} agent calls, with ${running.size} stories in flight: it takes no new story, and ends once those are done; the next run carries on`)
     return false
   }
   return true
 }
+// Whether the calls set aside for the clarity checks in flight leave no room
+// for one more story yet: there is room again once a check has ended.
+const crowded = () => !fits(running.size + 1, checking)
 const deliverAll = async () => {
   let taking = true
   try {
     while (taking) {
       await implSlots.acquire()
       let held = true
+      // A story whose clarity check had not ended when the board was listed is
+      // not taken from that listing, which may be older than the thread its
+      // check blocked it with: a check that ends meanwhile has the board listed
+      // again.
+      const seen = checksEnded
+      const pending = new Set(unchecked)
       try {
         if (!mayTake()) break
-        const board = await step('list', {})
-        const fresh = (key) => !taken.has(key) && !unclear.has(key)
-        for (const s of board.waiting.filter((x) => (x.status === 'implemented' || (x.status === 'reviewed' && !laneStopped)) && fresh(x.key))) {
-          if (!(taking = mayTake())) break
-          launch(s.key, s.status, false)
-        }
-        const next = board.pickable.find(fresh)
-        if (taking && next && (taking = mayTake())) {
-          const claim = launch(next, 'backlog', true)
-          held = false
-          // Listed before the claim is made, a story planned on the same
-          // files is still pickable, and was built beside it.
-          await claim
-          continue
+        if (!crowded()) {
+          const board = await step('list', {})
+          const fresh = (key) => !taken.has(key) && !unclear.has(key) && !pending.has(key)
+          for (const s of board.waiting.filter((x) => (x.status === 'implemented' || (x.status === 'reviewed' && !laneStopped)) && fresh(x.key))) {
+            if (!(taking = mayTake()) || crowded()) break
+            launch(s.key, s.status, false)
+          }
+          const next = board.pickable.find(fresh)
+          if (taking && next && (taking = mayTake()) && !crowded()) {
+            const claim = launch(next, 'backlog', true)
+            held = false
+            // Listed before the claim is made, a story planned on the same
+            // files is still pickable, and was built beside it.
+            await claim
+            continue
+          }
         }
       } finally {
         if (held) implSlots.release()
       }
-      if (!running.size) break
-      if (taking) await Promise.race(running)
+      if (seen !== checksEnded) continue
+      // Nothing new is listed: the run goes on while a story or a clarity
+      // check is in flight, and lists the board again once one has ended.
+      if (!running.size && !clarityRuns.size) break
+      if (taking) await Promise.race([...running, ...clarityRuns])
     }
   } finally {
     // The stories in flight finish, also when the board could not be listed.
@@ -2011,9 +2048,10 @@ try {
   enter('Unblock')
   await unblock()
   enter('Clarity')
-  await clarityPass()
+  clarityPass()
   enter('Deliver')
   await deliverAll()
+  await Promise.all(clarityRuns)
   enter('Report')
   journeyLines = await journeys()
   threw = false
@@ -2021,6 +2059,9 @@ try {
   notes.push(`The run stopped on an error: ${(e && e.message) || e}`)
   throw e
 } finally {
+  // Nothing writes to the board once finish has given the lock up: the
+  // clarity checks still in flight end first, after a throw too.
+  await Promise.all(clarityRuns)
   try {
     await finish(journeyLines)
   } catch (e) {

@@ -177,6 +177,11 @@ files: it reads the checkout's HEAD at its start, and keeps its own state in
   its recommendation.
   The 3 blocking gaps of most impact go to the council, and the rest take
   their recommendation.
+  The checks run beside the delivery: the run starts them all and goes on to
+  Deliver at once. A story is not taken while its own check runs, so a story
+  whose check has ended is implemented while other checks still run, and the
+  stories are taken in the board's order among those checked, not in the
+  board's order over all. The run waits for every check before its report.
 - **The council** answers a question before the human is asked: clarity's
   blocking gaps, and the questions of the implementer, the reviewer and the
   test author. Three members each read one thing: the spec docs and decisions,
@@ -407,7 +412,9 @@ The report has:
   couriers included. A story that fails the lane three times makes about 50;
   one took 89 when every step had a call of its own, which is where the 90
   set aside for a story comes from. A run takes a new story only while its
-  calls leave room under 900 for the stories in flight, at 90 each, and stops
+  calls leave room under 900 for the stories in flight, at 90 each, and for
+  the clarity checks in flight, at 20 each; a story that only the checks
+  leave no room for waits until one has ended. It stops
   a story that reaches 960 all the same, released with no attempt used. A
   long feature takes more than one run: the report says when a run stopped
   for the cap, and the next run carries on.
