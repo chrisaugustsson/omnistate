@@ -565,6 +565,16 @@ describe("the doc viewer", () => {
     expect(viewerPolicyProblems(srcdoc, { workspaceId: WORKSPACE_ID, origin: window.location.origin })).toEqual([]);
   });
 
+  // A frame takes `prefers-color-scheme` from the color scheme of the element
+  // that holds it. The app is light, so a doc's own dark styles must not match
+  // when the reader's system is dark.
+  test("the frame tells the doc the color scheme is light, whatever the reader's system says", async () => {
+    fakeApi();
+    renderAt(DOC_PATH);
+    const frame = await findFrame();
+    expect(frame.style.getPropertyValue("color-scheme")).toBe("light");
+  });
+
   test("the frame is shown the doc's head, and there is no version picker", async () => {
     const api = fakeApi();
     renderAt(DOC_PATH);
