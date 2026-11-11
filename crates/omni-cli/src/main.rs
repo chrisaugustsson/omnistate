@@ -60,8 +60,12 @@ Usage:
                                       feature's name), kind, pillar and title; --feature
                                       <name|id> or --global list one scope only; --pillar
                                       <pillar> lists one pillar only
-  omni doc read <doc>                 print the doc's head: HTML with data-omni-id and
-                                      data-rev (a design's tags)
+  omni doc read <doc> [--node <id>]...
+                                      print the doc's head: HTML with data-omni-id and
+                                      data-rev (a design's tags). --node prints only that
+                                      node with what is inside it (in a design, the tag
+                                      with that id); given several times, the nodes come in
+                                      the doc's order, and a node the doc lacks is an error
   omni doc show <doc>                 show the doc's metadata
   omni doc edit <doc>                 apply a batch of operations (a JSON array, from
                                       --body-file or standard input) to the doc, at once and

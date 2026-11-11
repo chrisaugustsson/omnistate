@@ -45,6 +45,9 @@ pub struct Args {
     /// to list and where the page ends.
     pub limit: Option<String>,
     pub before: Option<String>,
+    /// `omni doc read <doc> --node <id>` (repeatable): the nodes to print
+    /// instead of the whole head.
+    pub node: Vec<String>,
     /// `omni tokens export --out <file or directory>`: where to write.
     pub out: Option<String>,
     /// `omni tokens export --per-mode`: one file per collection and mode.
@@ -178,6 +181,13 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Args> {
                     bail!("{arg} needs a value; see `omni --help`");
                 };
                 parsed.file.push(value);
+                continue;
+            }
+            "--node" => {
+                let Some(value) = inline.or_else(|| args.next()) else {
+                    bail!("{arg} needs a value; see `omni --help`");
+                };
+                parsed.node.push(value);
                 continue;
             }
             "--attach" | "--link" => {

@@ -5,6 +5,7 @@ A `design` doc holds pages of boards (screens, states) as nodes in a JSX-like ta
 ## Reading
 
 - `omni doc read <doc>` prints the whole head as tags. `omni design read --doc <doc> --board <board>` prints one board; use it on large designs.
+- `omni doc read <doc> --node <id>` (repeatable) prints only the tags with those IDs, each with its children and without `rev`; read the board before you edit.
 - A new design doc starts with one `<Page id="..." name="Page 1"/>`; boards go under it.
 
 ## Tags

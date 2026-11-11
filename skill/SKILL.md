@@ -29,7 +29,7 @@ OmniState holds everything about what an app and its features are meant to be, w
 Run it whenever the human asks you to read the comments, and after finishing a recipe.
 
 1. `omni comment list --as ...` (add `--feature <name|id>` or `--doc <id>` to narrow). **Open** comments are the ones without the mark `waiting on you`, orphaned ones included. That mark means your reply is the latest and the human has not answered; leave those until they do.
-2. For each open comment, read the node it names (`omni doc read <doc>`, or `omni design read --doc <doc> --board <board>`), work out what the human asks, and act: edit the doc, or start a thread when the answer needs a decision.
+2. For each open comment, read the node it names (`omni doc read <doc> --node <id>`, or `omni design read --doc <doc> --board <board>`), work out what the human asks, and act: edit the doc, or start a thread when the answer needs a decision.
 3. Reply with what you did or decided: `omni comment reply <comment> "<text>"`. For an orphaned comment, say where its content went or why it is gone.
 4. Run `omni comment list` again. You are done when every comment shows `waiting on you`.
 

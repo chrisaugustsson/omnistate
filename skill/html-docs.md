@@ -4,7 +4,7 @@ Specs, architecture, db and research notes are html docs: any HTML, CSS and inli
 
 ## Nodes
 
-Every block-level element (`section`, `div`, `h1`..`h6`, `p`, `ul`, `ol`, `li`, `table`, `tr`, `td`, `th`, `pre`, `blockquote`, `details`, `figure`, `svg`, `hr`, ...) is a node with a `data-omni-id`. Inline elements (`span`, `a`, `strong`, `code`, `img`) belong to the node that holds them. `omni doc read <doc>` prints the doc with `data-omni-id` and `data-rev` on every node. The server assigns IDs; leave `data-omni-id` and `data-rev` out of what you write.
+Every block-level element (`section`, `div`, `h1`..`h6`, `p`, `ul`, `ol`, `li`, `table`, `tr`, `td`, `th`, `pre`, `blockquote`, `details`, `figure`, `svg`, `hr`, ...) is a node with a `data-omni-id`. Inline elements (`span`, `a`, `strong`, `code`, `img`) belong to the node that holds them. `omni doc read <doc>` prints the doc with `data-omni-id` and `data-rev` on every node; `--node <id>` (repeatable) prints only those nodes, each with what is inside it. The server assigns IDs; leave `data-omni-id` and `data-rev` out of what you write.
 
 ## Writing
 
