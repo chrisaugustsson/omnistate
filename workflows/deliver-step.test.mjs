@@ -695,6 +695,109 @@ test("the helper runs through a symlink to it, as ~/.claude/omni/deliver-step.mj
   assert.equal(JSON.parse(r.stdout).body.ok, true);
 });
 
+// ---- batch ------------------------------------------------------------------------
+
+// A batch as a courier runs it: [name, fields] pairs under one opId.
+function batch(dirs, run, list, { opId = `batch-${++ops}`, outs, env = {} } = {}) {
+  const obj = { opId, steps: list.map(([name, fields = {}]) => ({ name, fields })), ...(outs ? { outs } : {}) };
+  const body = helperRun(dirs, stepArgv(dirs, run, "batch", obj), env);
+  assert.equal(body.received, fnv1a(JSON.stringify(obj)));
+  return body;
+}
+const timedOps = (dirs, run) => readFileSync(runFile(dirs, run, "timings.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l)).map((l) => `${l.step} ${l.op}`);
+
+test("a batch runs its steps in order in one call, each as a step of its own under <opId>.<n>, recorded and timed as one, and answers with their bodies in order, without ok and received", (t) => {
+  const dirs = scratch(t, [story("US-1"), story("US-2")]);
+  const { run } = start(dirs);
+
+  const body = batch(dirs, run, [["claim", { key: "US-1", stage: "implementing" }], ["context", { key: "US-1" }], ["worktree", { key: "US-1" }]], { opId: "begin-US-1-1" });
+  const alone = [step(dirs, run, "claim", { key: "US-2", stage: "implementing" }), step(dirs, run, "context", { key: "US-2" }), step(dirs, run, "worktree", { key: "US-2" })];
+
+  assert.deepEqual(Object.keys(body).sort(), ["ok", "received", "results"]);
+  assert.equal(body.ok, true);
+  assert.equal(JSON.stringify(body.results).replaceAll("US-1", "US-2"), JSON.stringify(alone.map(({ ok, received, ...rest }) => rest)));
+  assert.deepEqual(dirs.writes().slice(0, 1), ["claim US-1"]);
+  assert.equal(git(dirs.repo, "worktree", "list").includes(body.results[2].path), true);
+  assert.deepEqual([Object.keys(appliedOf(dirs, run, "claim"))[0], Object.keys(appliedOf(dirs, run, "worktree"))[0]], ["begin-US-1-1.1", "begin-US-1-1.3"]);
+  assert.deepEqual(timedOps(dirs, run).slice(0, 3), ["claim begin-US-1-1.1", "context begin-US-1-1.2", "worktree begin-US-1-1.3"]);
+});
+
+test("a batch stops at the first step that fails: its body names that step's index, name, error and retry, with the bodies of those before it, and no step after it runs", (t) => {
+  const dirs = scratch(t, [story("US-1")]);
+  const { run } = start(dirs);
+  const decision = (choice) => ["decision", { key: "US-1", question: `Which ${choice}?`, choice, by: "agent" }];
+
+  // A claim for review of a story in the backlog, which the board refuses.
+  const body = batch(dirs, run, [decision("red"), ["claim", { key: "US-1", stage: "review" }], decision("blue")]);
+
+  assert.deepEqual([body.ok, body.at, body.step, body.retry], [false, 1, "claim", false]);
+  assert.match(body.error, /not_waiting/);
+  assert.deepEqual(body.results, [{ key: "US-1", recorded: true }]);
+  assert.deepEqual(dirs.story("US-1").decisions.map((d) => d.choice), ["red"]);
+  assert.equal(dirs.story("US-1").status, "backlog");
+});
+
+test("a batch repeated with its opId answers the steps that were applied from the record, without writing them again, and carries on with the rest", (t) => {
+  const dirs = scratch(t, [story("US-1")]);
+  const { run } = start(dirs);
+  const list = [
+    ["decision", { key: "US-1", question: "Which red?", choice: "#c00", by: "agent" }],
+    ["thread-open", { key: "US-1", title: "US-1: Which size?", body: "Options:\n1. Small\n2. Large\n" }],
+    ["decision", { key: "US-1", question: "Which blue?", choice: "#00c", by: "agent" }],
+  ];
+
+  const cut = batch(dirs, run, list, { opId: "writes-US-1-1", env: { FAKE_OMNI_FAIL: "thread" } });
+  const between = dirs.story("US-1").decisions.map((d) => d.choice);
+  const again = batch(dirs, run, list, { opId: "writes-US-1-1" });
+
+  assert.deepEqual([cut.ok, cut.at, cut.step, cut.retry], [false, 1, "thread-open", true]);
+  assert.deepEqual(between, ["#c00"]);
+  assert.equal(again.ok, true);
+  assert.deepEqual(again.results[0], cut.results[0]);
+  assert.deepEqual(dirs.story("US-1").decisions.map((d) => d.choice), ["#c00", "#00c"]);
+  assert.deepEqual(dirs.writes(), ["decision US-1", "edit US-1", "block US-1", "decision US-1"]);
+  assert.equal(questions(dirs).length, 1);
+  assert.deepEqual(batch(dirs, run, list, { opId: "writes-US-1-1" }), again);
+});
+
+test("a batch that names a result file the helper cannot take is refused before its first step runs, with the file: nothing is written or recorded, and the same batch goes on once the file is right", (t) => {
+  const dirs = scratch(t, [story("US-1")]);
+  const { run } = start(dirs);
+  const file = join(dirs.repo, ".omni", "runs", run, "out", "impl-US-1-1.json");
+  const list = [
+    ["decision", { key: "US-1", question: "Which red?", choice: "#c00", by: "agent" }],
+    ["decision", { key: "US-1", question: { $out: 0, at: ["decisions", 0, "question"] }, choice: { $join: [{ $out: 0, at: ["decisions", 0, "choice"] }, " (the implementer)"] }, by: "agent" }],
+  ];
+  const outs = [{ file, hash: partsHash("Which blue?", " #00c ") }];
+
+  const missing = batch(dirs, run, list, { opId: "writes-US-1-1", outs });
+  const before = [dirs.story("US-1").decisions.length, appliedOf(dirs, run, "decision")];
+  result(dirs, run, "impl-US-1-1", { status: "ready", decisions: [{ question: "Which blue?", choice: " #00c " }] });
+  const right = batch(dirs, run, list, { opId: "writes-US-1-1", outs });
+
+  assert.deepEqual(pick(missing), { ok: false, error: `the agent's result file ${file} is missing: the agent did not write it`, retry: false, outFile: file });
+  assert.deepEqual(before, [0, {}]);
+  assert.equal(right.ok, true);
+  assert.deepEqual(dirs.story("US-1").decisions.map((d) => [d.question, d.choice]), [["Which red?", "#c00"], ["Which blue?", "#00c (the implementer)"]]);
+});
+
+test("a batch takes neither start, finish nor a batch, nor a step the helper lacks: it is refused for good, and none of its steps runs", (t) => {
+  const dirs = scratch(t, [story("US-1")]);
+  const { run } = start(dirs);
+  const decision = ["decision", { key: "US-1", question: "Which red?", choice: "#c00", by: "agent" }];
+
+  const bodies = ["start", "finish", "batch", "no-such-step"].map((name) => batch(dirs, run, [decision, [name, {}]]));
+  const empty = helperRun(dirs, stepArgv(dirs, run, "batch", { opId: "batch-empty", steps: [] }));
+
+  for (const [i, name] of ["start", "finish", "batch", "no-such-step"].entries()) {
+    assert.deepEqual([bodies[i].ok, bodies[i].retry, bodies[i].results], [false, false, undefined], name);
+    assert.match(bodies[i].error, new RegExp(`^no step ${name} in a batch; a batch takes `));
+  }
+  assert.deepEqual([empty.ok, empty.retry], [false, false]);
+  assert.deepEqual(dirs.story("US-1").decisions, []);
+  assert.equal(existsSync(dirs.lock), true, "no finish ran");
+});
+
 // ---- start: the lock --------------------------------------------------------------
 
 test("start takes .omni/run.lock: the run, the feature, the session's pid, the op, and a heartbeat that starts at the run's start; received is the hash of {opId, feature, force}", (t) => {
@@ -1706,6 +1809,23 @@ test("job-start runs the command in a process group of its own, its output going
   assert.equal(readFileSync(failing.log, "utf8"), "the stack is down\n");
 });
 
+test("job-start with waitSeconds waits for its job as job-wait does: done with the result for a job that ends within the wait, done false at the end of the wait for one that still runs", (t) => {
+  const dirs = scratch(t);
+  const { run, lane } = start(dirs);
+
+  const short = step(dirs, run, "job-start", { name: "fast", cmd: "echo quick; exit 3", cwd: lane, waitSeconds: 30 });
+  const begun = Date.now();
+  const long = step(dirs, run, "job-start", { name: "stack", cmd: "sleep 30", cwd: lane, waitSeconds: 0.5 });
+  const waited = Date.now() - begun;
+  const stopped = step(dirs, run, "job-kill", { id: long.id });
+
+  assert.deepEqual(Object.keys(short).sort(), ["done", "id", "log", "ok", "received", "result"]);
+  assert.deepEqual([short.id, short.done, short.result.ok, short.result.code, short.result.timedOut], ["fast-1", true, false, 3, false]);
+  assert.deepEqual(pick(long), { ok: true, id: "stack-1", log: runFile(dirs, run, join("jobs", "stack-1.log")), done: false });
+  assert.ok(waited >= 500 && waited < 10000, `${waited} ms`);
+  assert.equal(stopped.killed, true);
+});
+
 test("a job's command runs with OMNI_RUN set to its run, and OMNI_STORY to its story's key, unset for a job without one, so that a project's check can tell runs and stories apart", (t) => {
   const dirs = scratch(t);
   const { run, lane } = start(dirs);
@@ -2676,6 +2796,11 @@ test("no output the script reads passes 2,000 characters, however long a story's
   go("thread-open", { key: "US-2", title: huge("US-2: a question", 5), body: huge("the options", 200), job: id });
   go("exhaust", { key: "US-2" });
   go("unblock", { key: "US-2" });
+  // The batches the script sends carry several bodies in one answer.
+  const together = (...list) => sized(stepArgv(dirs, run, "batch", { opId: `batch-${++ops}`, steps: list.map(([name, fields = {}]) => ({ name, fields })) }));
+  together(["unblock-pass"], ["clarity-pending"]);
+  together(["claim", { key: "US-2", stage: "implementing" }], ["context", { key: "US-2" }], ["worktree", { key: "US-2" }]);
+  together(["release", { key: "US-2" }], ["context", { key: "US-1" }], ["context", { key: "US-2" }], ["context", { key: "US-3" }]);
   go("block", { key: "US-2" });
   go("sleep", { seconds: 0 });
   go("finish", { report: { outcomes: [{ key: "US-1", outcome: "done" }, { key: "US-2", outcome: "failed", detail: huge("an error", 100) }], council: { settled: 1, asked: 1 }, journeys: [huge("a journey", 100)], notes: [huge("a note", 100)] } });
@@ -2683,5 +2808,5 @@ test("no output the script reads passes 2,000 characters, however long a story's
   t.diagnostic(`the largest outputs: ${JSON.stringify([...sizes].sort((a, b) => b[1] - a[1]).slice(0, 3))}`);
   const over = sizes.filter(([, n]) => n > 2000);
   assert.deepEqual(over, [], `the largest: ${JSON.stringify([...sizes].sort((a, b) => b[1] - a[1]).slice(0, 5))}`);
-  assert.ok(sizes.length >= 36, sizes.length);
+  assert.ok(sizes.length >= 39, sizes.length);
 });

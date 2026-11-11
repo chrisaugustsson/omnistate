@@ -313,6 +313,17 @@ async function nextRun(dirs) {
 
 const couriersOf = (calls) => calls.filter((c) => c.label.startsWith("courier:"));
 const agentsOf = (calls, label) => calls.filter((c) => c.label === label);
+// The helper steps the run's couriers carried, in the order they were sent, a
+// batch as each of its steps: the step's name, its fields, its opId and its
+// courier's label. A courier sent again counts again.
+const stepsOf = (calls) => couriersOf(calls).filter((c) => fileIn(c.prompt) !== null).flatMap((c) => {
+  const name = commandIn(c.prompt).split(" --run ")[0].split(" ").pop();
+  const { opId, ...payload } = JSON.parse(payloadIn(c.prompt));
+  if (name !== "batch") return [{ name, fields: payload, opId, label: c.label }];
+  return payload.steps.map((s, i) => ({ name: s.name, fields: s.fields, opId: `${opId}.${i + 1}`, label: c.label }));
+});
+// Those of one step, and of one story when a key is given.
+const stepsNamed = (calls, name, key) => stepsOf(calls).filter((s) => s.name === name && (key === undefined || s.fields.key === key));
 // The stages the board was asked to claim the story for, in order.
 const claimsOf = (dirs, key) => dirs.state().calls.filter((c) => c.argv[0] === "story" && c.argv[1] === "claim" && c.argv[2] === key).map((c) => c.argv[c.argv.indexOf("--stage") + 1]);
 // The claims and moves the run sent for the story, in order: "claim <stage>" or "move <status>".
@@ -418,23 +429,25 @@ test("the script's own fnv1a agrees with the helper's on ASCII, Unicode, emoji a
   }
 });
 
-test("a courier is a haiku agent at low effort with the schema {exitCode, output}: it writes the payload to <root>/.omni/runs/<run>/in/<opId>.json and runs node <helper> <step> --run --payload --hash in a Bash call with the timeout at 600000; start goes by flags, its feature quoted and --force from args.force", { timeout: 60000 }, async (t) => {
+test("a courier is a haiku agent at low effort with the schema {exitCode, output}: it writes the payload to <root>/.omni/runs/<run>/in/<opId>.json and runs node <helper> <step> --run --payload --hash in a Bash call with the timeout at 600000, steps that always follow each other as one batch, named after them; start goes by flags, its feature quoted and --force from args.force", { timeout: 60000 }, async (t) => {
   const dirs = scratch(t);
 
   const { result, error, calls, phases } = await deliver(dirs, { feature: "Bob's board", force: true });
 
   assert.equal(error, null);
   const couriers = couriersOf(calls);
-  assert.deepEqual(couriers.map((c) => c.label), ["courier:start", "courier:unblock-pass", "courier:clarity-pending", "courier:list", "courier:finish"]);
+  assert.deepEqual(couriers.map((c) => c.label), ["courier:start", "courier:unblock-pass+clarity-pending", "courier:list", "courier:finish"]);
   for (const c of couriers) {
     assert.deepEqual([c.model, c.effort, c.agentType, c.schema.required], ["haiku", "low", "omni-courier", ["exitCode", "output"]]);
     assert.match(c.prompt, /\. Run the helper\. Use the Bash tool, with its timeout set to 600000, to run this command exactly as written, once:\n/);
   }
   const startHash = fnv1a(JSON.stringify({ opId: "start-1", feature: "Bob's board", force: true }));
   assert.deepEqual([fileIn(couriers[0].prompt), commandIn(couriers[0].prompt)], [null, `node ${helper} start --op start-1 --feature 'Bob'\\''s board' --force --hash ${startHash}`]);
-  const file = join(dirs.repo, ".omni", "runs", result.run, "in", "unblock-pass-1.json");
-  const payload = JSON.stringify({ opId: "unblock-pass-1" });
-  assert.deepEqual([fileIn(couriers[1].prompt), payloadIn(couriers[1].prompt), commandIn(couriers[1].prompt)], [file, payload, `node ${helper} unblock-pass --run ${result.run} --payload ${file} --hash ${fnv1a(payload)}`]);
+  const file = join(dirs.repo, ".omni", "runs", result.run, "in", "unblock-pass-clarity-pending-1.json");
+  const payload = JSON.stringify({ opId: "unblock-pass-clarity-pending-1", steps: [{ name: "unblock-pass", fields: {} }, { name: "clarity-pending", fields: {} }] });
+  assert.deepEqual([fileIn(couriers[1].prompt), payloadIn(couriers[1].prompt), commandIn(couriers[1].prompt)], [file, payload, `node ${helper} batch --run ${result.run} --payload ${file} --hash ${fnv1a(payload)}`]);
+  const list = join(dirs.repo, ".omni", "runs", result.run, "in", "list-1.json");
+  assert.deepEqual([fileIn(couriers[2].prompt), payloadIn(couriers[2].prompt), commandIn(couriers[2].prompt)], [list, '{"opId":"list-1"}', `node ${helper} list --run ${result.run} --payload ${list} --hash ${fnv1a('{"opId":"list-1"}')}`]);
   assert.deepEqual([result.feature, result.branch, JSON.parse(readFileSync(join(dirs.repo, ".omni", "runs", result.run, "run.json"), "utf8")).feature], ["Bob's board", "deliver/bob-s-board", "Bob's board"]);
   assert.deepEqual(phases, ["Start", "Unblock", "Clarity", "Deliver", "Report"]);
 });
@@ -456,22 +469,57 @@ test("a courier that returns nothing, miscopies the payload or changes the outpu
   const dirs = scratch(t, [story("US-1")]);
   const faults = ["nothing", "payload", "output"];
   let tries = 0;
-  const fault = (call) => (call.label === "courier:claim:US-1" && tries < faults.length ? faults[tries++] : null);
+  // The claim for implementing goes in one call with the context and the worktree.
+  const first = "courier:claim+context+worktree:US-1";
+  const fault = (call) => (call.label === first && tries < faults.length ? faults[tries++] : null);
 
   const { result, error, calls, logs } = await deliver(dirs, {}, {}, { fault });
 
   assert.equal(error, null);
-  const claims = agentsOf(calls, "courier:claim:US-1");
-  assert.equal(claims.length, 6, "four tries of the first claim, then the claims for review and testing");
-  assert.equal(new Set(claims.slice(0, 4).map((c) => c.prompt)).size, 1);
-  assert.equal(fileIn(claims[0].prompt), join(dirs.repo, ".omni", "runs", result.run, "in", "claim-US-1-1.json"));
+  const claims = agentsOf(calls, first);
+  assert.equal(claims.length, 4, "four tries of the first claim");
+  assert.equal(new Set(claims.map((c) => c.prompt)).size, 1);
+  assert.equal(fileIn(claims[0].prompt), join(dirs.repo, ".omni", "runs", result.run, "in", "claim-context-worktree-US-1-1.json"));
   assert.deepEqual(claimsOf(dirs, "US-1"), ["implementing", "review", "testing"]);
-  const retries = logs.filter((l) => l.startsWith("courier:claim:US-1: "));
+  const retries = logs.filter((l) => l.startsWith(`${first}: `));
   assert.equal(retries.length, 3);
-  assert.equal(retries[0], "courier:claim:US-1: the courier returned nothing; trying again (1 of 3)");
-  assert.match(retries[1], /^courier:claim:US-1: the helper received another payload than the script sent: the payload hashes to [0-9a-f]{8}, not [0-9a-f]{8}: write it again exactly; trying again \(2 of 3\)$/);
-  assert.equal(retries[2], "courier:claim:US-1: its output does not match its hash: the courier changed it; trying again (3 of 3)");
+  assert.equal(retries[0], `${first}: the courier returned nothing; trying again (1 of 3)`);
+  assert.match(retries[1], /^courier:claim\+context\+worktree:US-1: the helper received another payload than the script sent: the payload hashes to [0-9a-f]{8}, not [0-9a-f]{8}: write it again exactly; trying again \(2 of 3\)$/);
+  assert.equal(retries[2], `${first}: its output does not match its hash: the courier changed it; trying again (3 of 3)`);
   assert.deepEqual(result.outcomes, [{ key: "US-1", outcome: "done" }]);
+});
+
+test("a clean story takes 10 courier calls from its claim to its landing: steps that always follow each other go in one call, and a check that ends within its start's wait needs no wait of its own", { timeout: 120000 }, async (t) => {
+  const dirs = scratch(t, [story("US-1", { criteria: [{ text: "The badge is red", human_check: false }] })]);
+  const roles = {
+    "impl:US-1": [built("src/badge.rs", { decisions: [{ question: "Which red?", choice: "#c00" }] })],
+    "tests:US-1": [testsIn(dirs, "badge.test")],
+  };
+
+  const { result, error, calls } = await deliver(dirs, {}, roles);
+
+  assert.equal(error, null);
+  assert.deepEqual(result.outcomes, [{ key: "US-1", outcome: "done" }]);
+  const own = (label) => label.endsWith(":US-1");
+  const labels = couriersOf(calls).map((c) => c.label).filter(own);
+  assert.deepEqual(labels.slice(labels.indexOf("courier:claim+context+worktree:US-1")), [
+    "courier:claim+context+worktree:US-1",
+    "courier:decision+files+move:US-1",
+    "courier:claim+context:US-1",
+    "courier:move:US-1",
+    "courier:claim+lane-prepare+context:US-1",
+    "courier:job-start:US-1",
+    "courier:job-start:US-1",
+    "courier:job-start:US-1",
+    "courier:lane-clean+job-start:US-1",
+    "courier:lane-clean+lane-land:US-1",
+  ]);
+  // The same steps as before, in the same order, in fewer calls.
+  const sent = stepsOf(calls).filter((s) => own(s.label)).map((s) => s.name);
+  assert.deepEqual(sent.slice(sent.indexOf("claim")), ["claim", "context", "worktree", "decision", "files", "move", "claim", "context", "move", "claim", "lane-prepare", "context", "job-start", "job-start", "job-start", "lane-clean", "job-start", "lane-clean", "lane-land"]);
+  assert.deepEqual(stepsNamed(calls, "job-start", "US-1").map((s) => s.fields.waitSeconds), [480, 480, 480, 480]);
+  assert.deepEqual(timeline(dirs, "US-1"), ["claim implementing", "move implemented", "claim review", "move reviewed", "claim testing", "move done"]);
+  assert.deepEqual(dirs.story("US-1").decisions, [{ question: "Which red?", choice: "#c00", by: "agent" }]);
 });
 
 test("a step that fails is sent again with the same opId, which carries the failed write on: a question whose thread create failed opens one thread", { timeout: 60000 }, async (t) => {
@@ -806,9 +854,9 @@ test("a story whose delivery throws is released and gets a thread with the error
   assert.equal(error, null);
   const [stopped] = questions(dirs);
   assert.equal(stopped.title, "US-1: delivery stopped on an error");
-  assert.match(stopped.posts[0].body, /^The workflow stopped delivering US-1 on this error:\n\ncourier:worktree:US-1: worktree failed: \S+ is not a worktree of \S+ on story\/US-1; move it away\n\nThe story is back in its waiting state, and blocked until this thread is answered; answer it once the cause is fixed\.\n$/);
-  assert.equal(agentsOf(calls, "courier:worktree:US-1").length, 2, "one for each attempt, and no retry of the refusal");
-  assert.deepEqual(logs.filter((l) => l.startsWith("courier:worktree:US-1: ")), []);
+  assert.match(stopped.posts[0].body, /^The workflow stopped delivering US-1 on this error:\n\ncourier:rework\+context\+worktree:US-1: worktree failed: \S+ is not a worktree of \S+ on story\/US-1; move it away\n\nThe story is back in its waiting state, and blocked until this thread is answered; answer it once the cause is fixed\.\n$/);
+  assert.equal(stepsNamed(calls, "worktree", "US-1").length, 2, "one for each attempt, and no retry of the refusal");
+  assert.deepEqual(logs.filter((l) => l.startsWith("courier:rework+context+worktree:US-1: ")), []);
   const done = dirs.story("US-1");
   assert.deepEqual([done.status, done.holder, done.blocked, done.links], ["backlog", null, true, [{ thread_id: stopped.id, label: "question" }]]);
   assert.deepEqual(result.outcomes.map((o) => [o.key, o.outcome, o.thread]), [["US-1", "failed", stopped.id]]);
@@ -861,7 +909,7 @@ test("a second story stopped by the same error, its key aside, stops the run tak
   const run = threads.find((th) => th.title === `Run ${result.run}: stories stop on the same error`);
   assert.deepEqual([threads.length, !!own, !!run], [2, true, true], threads.map((th) => th.title).join("\n"));
   assert.deepEqual(dirs.story(blocked[0]).links, [{ thread_id: own.id, label: "question" }]);
-  const [, first, second] = run.posts[0].body.match(/^(US-\d) and (US-\d) stopped on the same error:\n\ncourier:worktree:US-\d: worktree failed: /);
+  const [, first, second] = run.posts[0].body.match(/^(US-\d) and (US-\d) stopped on the same error:\n\ncourier:claim\+context\+worktree:US-\d: worktree failed: /);
   assert.equal(first, blocked[0]);
   assert.equal(result.halted, `${first} and ${second} stopped on the same error`);
   assert.ok(result.notes.includes(`The run took no new story once ${first} and ${second} stopped on the same error (thread ${run.id}).`), result.notes.join("\n"));
@@ -1049,8 +1097,8 @@ test("a review fails on a criterion not met, even with the verdict pass, and on 
 
   assert.equal(error, null);
   // Each send-back goes back to the backlog and is claimed again in one courier.
-  const reworks = agentsOf(calls, "courier:rework:US-1");
-  assert.deepEqual([reworks.length, agentsOf(calls, "courier:move:US-1").map(payloadOf).filter((p) => p.to === "backlog")], [2, []]);
+  const reworks = stepsNamed(calls, "rework", "US-1");
+  assert.deepEqual([reworks.length, stepsNamed(calls, "move", "US-1").filter((m) => m.fields.to === "backlog")], [2, []]);
   assert.deepEqual(findingsOf(dirs, "US-1"), [
     ["review", '[attempt 1] Criterion not met: "The badge counts". No count at src/badge.rs:3', [], true],
     ["review", "[attempt 2] A new test file in the diff", ["badge.test.rs"], true],
@@ -1292,7 +1340,7 @@ test("clarity names a test obligation by the criterion's number, and the helper 
   assert.deepEqual(dirs.story("US-1").decisions, [{ question: `Is "${criteria[1].text}" behaviour or a test?`, choice: "treated as a test obligation: the lane's test author owns it, and the verifier skips it", by: "agent" }]);
   assert.equal(owedIn(agentsOf(calls, "review:US-1")[0].prompt), "Criterion 1 is a test obligation.");
   assert.deepEqual(dirs.story("US-2").decisions, []);
-  assert.equal(agentsOf(calls, "courier:obligations:US-2").length, 1);
+  assert.equal(stepsNamed(calls, "obligations", "US-2").length, 1);
   assert.ok(logs.some((l) => l.startsWith("US-2: the clarity check failed: ") && l.includes("US-2 has 2 criteria, numbered from 0, so 2 names none of them")), logs.join("\n"));
   assert.deepEqual([agentsOf(calls, "impl:US-2"), result.outcomes.map((o) => [o.key, o.outcome])], [[], [["US-1", "done"]]]);
 });
@@ -1500,13 +1548,18 @@ test("an implementer's slot is free once its story is implemented: with implemen
 test("at most `implementers` stories implement at once and at most `reviewers` are in review", { timeout: 60000 }, async (t) => {
   const keys = ["US-1", "US-2", "US-3", "US-4"];
   const dirs = scratch(t, keys.map((key) => story(key)));
-  // A review takes half a second, long enough for the next story's to start beside it.
+  // An implementer and a review each take half a second, long enough for the
+  // next story's to start beside it.
   const slow = async (call, serial, board) => {
     await pause(500);
     return reviewed("pass")(call, serial, board);
   };
+  const slowly = (key) => async (call, serial) => {
+    await pause(500);
+    return built(`${key}.txt`)(call, serial);
+  };
 
-  const { result, error } = await deliver(dirs, { implementers: 2, reviewers: 1 }, Object.fromEntries(keys.map((key) => [`review:${key}`, [slow]])));
+  const { result, error } = await deliver(dirs, { implementers: 2, reviewers: 1 }, Object.fromEntries(keys.flatMap((key) => [[`review:${key}`, [slow]], [`impl:${key}`, [slowly(key)]]])));
 
   assert.equal(error, null);
   assert.deepEqual([peakIn(dirs, "implementing", ["implemented"]), peakIn(dirs, "review", ["reviewed", "backlog"])], [2, 1]);
@@ -1595,7 +1648,7 @@ test("the run counts every agent call, couriers too, and takes a new story only 
   assert.ok(logs.some((l) => /^The run has made \d+ agent calls, with 2 stories in flight: it takes no new story, and ends once those are done; the next run carries on$/.test(l)), logs.join("\n"));
 });
 
-test("a story in flight has 90 agent calls set aside: one whose lane fails three times makes more than 60 and at most 90, couriers included", { timeout: 120000 }, async (t) => {
+test("a story in flight has 90 agent calls set aside: one whose lane fails three times makes more than 40 and at most 60, couriers included, now that steps that follow each other go in one call", { timeout: 120000 }, async (t) => {
   const dirs = scratch(t, [story("US-1", { criteria: [{ text: "The badge is red", human_check: false }] })]);
   const pink = verified({ 0: "It is pink" });
 
@@ -1604,7 +1657,7 @@ test("a story in flight has 90 agent calls set aside: one whose lane fails three
   assert.equal(error, null);
   assert.deepEqual(result.outcomes.map((o) => o.outcome), ["attempts_exhausted"]);
   const made = calls.filter((c) => c.label.endsWith(":US-1") || c.label.includes(":US-1:")).length;
-  assert.ok(made > 60 && made <= 90, `${made} calls`);
+  assert.ok(made > 40 && made <= 60, `${made} calls`);
   assert.ok(SOURCE.includes("\nconst STORY_CALLS = 90\n"), "STORY_CALLS is 90");
 });
 
@@ -1856,8 +1909,10 @@ test("the lane runs a reviewed story's checks as jobs in the lane worktree, fast
 
   assert.equal(error, null);
   assert.deepEqual(jobsOf(dirs, result.run), ["fast", "stack_up", "stack"].map((name) => ({ name, key: "US-1", cmd: "true", cwd: lane })).concat([{ name: "tests", key: "US-1", cmd: check, cwd: lane }]));
-  const couriers = couriersOf(calls).map((c) => c.label);
-  assert.ok(couriers.indexOf("courier:lane-clean:US-1") < couriers.lastIndexOf("courier:job-start:US-1"), couriers.join("\n"));
+  // lane-clean goes ahead of the check's start, in one call with it, and again with lane-land.
+  const sent = stepsOf(calls).map((s) => s.name);
+  assert.deepEqual(sent.slice(sent.lastIndexOf("job-start") - 1).slice(0, 4), ["lane-clean", "job-start", "lane-clean", "lane-land"], sent.join("\n"));
+  assert.deepEqual(couriersOf(calls).map((c) => c.label).filter((l) => l.includes("lane-clean")), ["courier:lane-clean+job-start:US-1", "courier:lane-clean+lane-land:US-1"]);
   assert.ok(logs.includes("US-1: lane-clean threw away 2 files the test author left uncommitted: US-1.txt, stray.txt"), logs.join("\n"));
   const tip = git(dirs.repo, "rev-parse", "refs/heads/deliver/board").trim();
   assert.deepEqual(git(dirs.repo, "log", "--format=%s", `${head}..${tip}`).trim().split("\n"), ["feat: badge.test", "feat: US-1.txt"]);
@@ -2228,8 +2283,10 @@ test("a job is stopped when the lane throws: a story whose job-wait courier fail
     if (!victim) victim = key;
     return key === victim ? "nothing" : null;
   };
+  // The start waits a second for its job, so that the job-wait after it is sent.
+  const source = capped({ JOB_WAIT: 1 });
 
-  const { result, error, calls } = await deliver(dirs, { implementers: 1, checks: { fast } }, {}, { fault });
+  const { result, error, calls } = await deliver(dirs, { implementers: 1, checks: { fast } }, {}, { fault, source });
 
   assert.equal(error, null);
   const other = victim === "US-1" ? "US-2" : "US-1";
@@ -2239,7 +2296,7 @@ test("a job is stopped when the lane throws: a story whose job-wait courier fail
   const labels = couriersOf(calls).map((c) => c.label);
   // The lane's turns go one at a time: the next one starts with lane-prepare.
   assert.ok(labels.indexOf(`courier:job-kill:${victim}`) < labels.indexOf(`courier:lane-reset:${victim}`), labels.join("\n"));
-  assert.ok(labels.indexOf(`courier:lane-reset:${victim}`) < labels.indexOf(`courier:lane-prepare:${other}`), labels.join("\n"));
+  assert.ok(labels.indexOf(`courier:lane-reset:${victim}`) < labels.indexOf(`courier:claim+lane-prepare+context:${other}`), labels.join("\n"));
   const killed = JSON.parse(readFileSync(join(dirs.repo, ".omni", "runs", result.run, "jobs", `${victim}-fast-1.json`), "utf8"));
   assert.equal(killed.ok, false);
   const outcome = (key) => result.outcomes.find((o) => o.key === key);
@@ -2250,8 +2307,10 @@ test("a job is stopped when the lane throws: a story whose job-wait courier fail
 test("a job whose job-start throws is stopped all the same: the helper started it, its courier changed the answer every time, and job-kill finds the job by the start's opId before the lane goes back to the tip", { timeout: 120000 }, async (t) => {
   const dirs = scratch(t, [story("US-1")]);
   const fault = (call) => (call.label === "courier:job-start:US-1" ? "output" : null);
+  // The start waits a second for its job, not the job's 30.
+  const source = capped({ JOB_WAIT: 1 });
 
-  const { result, error, calls } = await deliver(dirs, { checks: { fast: "sleep 30" } }, {}, { fault });
+  const { result, error, calls } = await deliver(dirs, { checks: { fast: "sleep 30" } }, {}, { fault, source });
 
   assert.equal(error, null);
   const labels = couriersOf(calls).map((c) => c.label);
@@ -2488,11 +2547,21 @@ test("a lane that is dirty when lane-land runs, from something the test author l
   const dirs = scratch(t, [story("US-1")]);
   const lane = laneOf(dirs);
   let late = false;
-  // A file that appears after the last lane-clean, as a process the author left running would write it.
+  // A file that appears after the last lane-clean, as a process the author
+  // left running would write it: lane-clean and lane-land go in one call, so
+  // the file is there before it, and written once more as soon as lane-clean
+  // has thrown it away.
   const fault = (call) => {
-    if (call.label === "courier:lane-land:US-1" && !late) {
+    if (call.label === "courier:lane-clean+lane-land:US-1" && !late) {
       late = true;
-      writeFileSync(join(lane, "late.log"), "written after the clean\n");
+      const file = join(lane, "late.log");
+      writeFileSync(file, "written before the clean\n");
+      const again = setInterval(() => {
+        if (existsSync(file)) return;
+        writeFileSync(file, "written after the clean\n");
+        clearInterval(again);
+      }, 1);
+      t.after(() => clearInterval(again));
     }
     return null;
   };
@@ -2513,8 +2582,8 @@ test("a test author whose test finds a defect sends the story back for its next 
 
   assert.equal(error, null);
   assert.deepEqual(findingsOf(dirs, "US-1"), [["testing", "[attempt 1] The test author's test badge_is_red found a defect. Observed: pink. Expected: red", [], true]]);
-  const labels = couriersOf(calls).map((c) => c.label);
-  assert.ok(labels.indexOf("courier:lane-reset:US-1") < labels.indexOf("courier:rework:US-1"), labels.join("\n"));
+  const sent = stepsOf(calls).map((s) => s.name);
+  assert.ok(sent.includes("lane-reset") && sent.indexOf("lane-reset") < sent.indexOf("rework"), sent.join("\n"));
   assert.deepEqual([agentsOf(calls, "impl:US-1").length, result.outcomes], [2, [{ key: "US-1", outcome: "done" }]]);
 });
 
@@ -2576,7 +2645,7 @@ test("the run ends with the journeys check in the lane worktree, then finish get
   const posted = dirs.state().threads.find((th) => th.id === result.thread).posts;
   assert.deepEqual([posted.length, posted[0].summary, result.posted], [1, `Report of ${result.run}`, true]);
   assert.equal(posted[0].body, readFileSync(result.report, "utf8"));
-  assert.deepEqual(agentsOf(calls, "courier:context:US-3"), []);
+  assert.deepEqual(stepsNamed(calls, "context", "US-3"), []);
   assert.equal(result.report, join(dirs.repo, ".omni", "runs", result.run, "report.md"));
   assert.match(posted[0].body, /\n## Landed on deliver\/board\n- US-1 Story US-1: [0-9a-f]{7} feat: US-1\.txt\n\nBring them into your branch with `git merge --ff-only deliver\/board`\.\n/);
   assert.ok(posted[0].body.includes(`\n## Blocked\n- US-2 Story US-2: thread ${blocked.id}\n- US-3 Story US-3: thread th-1\n`), posted[0].body);

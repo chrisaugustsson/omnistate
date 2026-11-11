@@ -17,7 +17,8 @@ export const meta = {
 // the council, the lane's lock and the report.
 // It has no files, no processes and no clock, so every git, omni and check
 // command runs in the host helper, workflows/deliver-step.mjs, which a
-// courier agent runs for each step. No agent writes to the board itself, and
+// courier agent runs for each step, or for a batch of steps that always
+// follow each other. No agent writes to the board itself, and
 // no courier carries story content: each agent reads its story from OmniState
 // with omni story read, and the helper gives the script only small facts. Nor
 // does a courier carry an agent's text: the helper writes it to the board
@@ -52,8 +53,10 @@ const CLARITY_QUESTIONS = 3
 // settles. Past this many in one attempt, the next question goes to the
 // human, so that a stream of settled questions cannot run on.
 const QUESTIONS_PER_ATTEMPT = 3
-// The runtime stops a workflow at 1000 agent calls, couriers included, and
-// one story has used 89, through three failed passes of the lane. A story is
+// The runtime stops a workflow at 1000 agent calls, couriers included. One
+// story used 89, through three failed passes of the lane, when every step
+// had a courier of its own; with the steps that follow each other in one
+// call, such a story makes about 50, and a clean one 10 couriers. A story is
 // claimed, and a clarity check started, only while the calls made and those
 // set aside for the work in flight leave room under AGENT_CAP; the next run
 // carries on. Work that reaches HARD_CAP all the same stops there: its story
@@ -243,15 +246,17 @@ const opIdOf = (base) => {
 // lock, a story worktree with no story/<key> to go back on) is not tried
 // again. Nor is one whose agent's result file was missing or held something
 // else, which cannot change once its agent has finished: the error names the
-// file as outFile, and step() carries its parts another way.
+// file as outFile, and step() carries its parts another way. A batch that
+// failed names the sub-step that stopped it, as step.
 const carry = async (name, prompt, expected, label, past = false) => {
   let problem = ''
   for (let i = 0; i <= COURIER_RETRIES; i++) {
     if (i) log(`${label}: ${problem}; trying again (${i} of ${COURIER_RETRIES})`)
     const { body, problem: wrong } = unpack(await ask('courier', prompt, { label, phase: current, schema: COURIER_SCHEMA, effort: 'low' }, MODELS.courier, past), expected)
     if (body && body.ok === true) return body
-    if (body && body.retry !== true) throw Object.assign(new Error(`${label}: ${name} failed: ${body.error}`), typeof body.outFile === 'string' ? { outFile: body.outFile } : {})
-    problem = wrong || `${name} failed: ${body.error}`
+    const failed = body && typeof body.step === 'string' ? body.step : name
+    if (body && body.retry !== true) throw Object.assign(new Error(`${label}: ${failed} failed: ${body.error}`), typeof body.outFile === 'string' ? { outFile: body.outFile } : {})
+    problem = wrong || `${failed} failed: ${body.error}`
   }
   throw new Error(`${label}: ${problem}, after ${COURIER_RETRIES} retries`)
 }
@@ -432,17 +437,15 @@ const recover = async (fields, file, label, past) => {
   const room = shares(nodes)
   return mapParts(fields, (n, joined) => (n.file === file ? literal(n, joined, room.get(n)) : n))
 }
-// One host step. Its payload, with its opId, goes in a file under the run's
-// folder, and the command carries the payload's hash. opId: the one the
-// caller took for the step already, as job() does. A payload the helper
-// refuses for an agent's result file goes again, with that file's parts
-// carried another way (recover), under an opId of its own.
-const step = async (name, fields = {}, { label = name, key = fields.key, past = false, opId = opIdOf(key ? `${label}-${key}` : label) } = {}) => {
-  const courier = key ? `courier:${name}:${key}` : `courier:${name}`
+// One courier call to the helper. Its payload, wrap(opId, fields), goes in a
+// file under the run's folder, and the command carries the payload's hash. A
+// payload the helper refuses for an agent's result file goes again, with that
+// file's parts carried another way (recover), under an opId of its own.
+const send = async (name, courier, opId, wrap, fields, past) => {
   let sent = fields
   for (let n = 0; ; n++) {
     const id = n ? `${opId}.r${n}` : opId
-    const payload = JSON.stringify(encode({ opId: id, ...sent }))
+    const payload = JSON.stringify(encode(wrap(id, sent)))
     const file = `${root}/.omni/runs/${runId}/in/${id}.json`
     const command = `node ${shellPath(HELPER)} ${name} --run ${runId} --payload ${shellPath(file)} --hash ${fnv1a(payload)}`
     try {
@@ -453,6 +456,24 @@ const step = async (name, fields = {}, { label = name, key = fields.key, past = 
       sent = next
     }
   }
+}
+// One host step. opId: the one the caller took for the step already, as
+// job() does.
+const step = (name, fields = {}, { label = name, key = fields.key, past = false, opId = opIdOf(key ? `${label}-${key}` : label) } = {}) =>
+  send(name, key ? `courier:${name}:${key}` : `courier:${name}`, opId, (id, sent) => ({ opId: id, ...sent }), fields, past)
+// Several host steps in one courier call, for steps that always follow each
+// other with nothing to decide in between: [name, fields] pairs, which the
+// helper's batch runs in order, each under the opId <opId>.<n>, n from 1. It
+// stops at the first that fails, whose name the error carries, and a repeat
+// carries on after those that were applied. Gives their bodies, in order. One
+// step goes as itself, and none makes no call. The courier is named after
+// the steps, a row of the same one once.
+const steps = async (list, { key, past = false, opId } = {}) => {
+  if (!list.length) return []
+  if (list.length === 1) return [await step(list[0][0], list[0][1], { key, past, ...(opId ? { opId } : {}) })]
+  const names = list.map(([name]) => name).filter((name, i, all) => name !== all[i - 1]).join('+')
+  const batch = await send('batch', key ? `courier:${names}:${key}` : `courier:${names}`, opId || opIdOf(key ? `${names}-${key}` : names), (id, sent) => ({ opId: id, steps: sent }), list.map(([name, fields = {}]) => ({ name, fields })), past)
+  return batch.results
 }
 
 // ---- prompts ---------------------------------------------------------------
@@ -1112,9 +1133,16 @@ let tip = started.tip
 
 // ---- 2. unblock --------------------------------------------------------------
 // A thread's conclusion is the human's answer, and restarts the story's attempts.
+// One call carries the run's first steps: the checks args.checks sets, the
+// unblock pass, and the stories the clarity pass has to check.
 let unblocked = { unblocked: [] }
+let pendingClarity = []
 const unblock = async () => {
-  unblocked = await step('unblock-pass', {})
+  const own = A.checks && typeof A.checks === 'object'
+  const bodies = await steps([...(own ? [['checks-set', { checks: A.checks }]] : []), ['unblock-pass', {}], ['clarity-pending', {}]])
+  if (own) checks = bodies[0].checks
+  unblocked = bodies[bodies.length - 2]
+  pendingClarity = bodies[bodies.length - 1].keys
   for (const line of unblocked.log || []) log(line)
   if (unblocked.unblocked.length) log(`Unblocked ${unblocked.unblocked.join(', ')}`)
 }
@@ -1153,22 +1181,26 @@ const check = async (key) => {
   // the criterion's text on the board, and refuses an index the story has no
   // criterion for, which fails the check.
   const owed = [...new Set(r.testObligations || [])]
-  if (owed.length) await step('obligations', { key, indexes: owed })
+  // The obligations and the decisions the check takes by itself go to the
+  // board in one call, in this order: the obligations, the minor gaps, then
+  // the blocking gaps past the cap.
+  const writes = owed.length ? [['obligations', { key, indexes: owed }]] : []
   // A question the story has a decision on is settled. The context gives the
   // fnv1a of each decision's question, not its text. A gap's decision is
   // written from the clarity check's file: its question, and its
   // recommendation with what follows it.
   const known = new Set(ctx.questions)
-  const decide = async (g, ...after) => {
+  const decide = (g, ...after) => {
     if (known.has(fnv1a(String(g.question)))) return
     known.add(fnv1a(String(g.question)))
-    await step('decision', { key, question: part(r, ['gaps', g.at, 'question'], String(g.question)), choice: words(part(r, ['gaps', g.at, 'recommendation']), ...after), by: 'agent' })
+    writes.push(['decision', { key, question: part(r, ['gaps', g.at, 'question'], String(g.question)), choice: words(part(r, ['gaps', g.at, 'recommendation']), ...after), by: 'agent' }])
   }
   const gaps = (r.gaps || []).map((g, at) => ({ ...g, at })).filter((g) => !known.has(fnv1a(String(g.question))))
-  for (const g of gaps.filter((x) => !x.blocking)) await decide(g)
+  for (const g of gaps.filter((x) => !x.blocking)) decide(g)
   const rank = (g) => (IMPACT.includes(g.impact) ? IMPACT.indexOf(g.impact) : IMPACT.length)
   const blocking = gaps.filter((x) => x.blocking).sort((a, b) => rank(a) - rank(b))
-  for (const g of blocking.slice(CLARITY_QUESTIONS)) await decide(g, ` (deferred by the cap: a story asks at most ${CLARITY_QUESTIONS} blocking questions)`)
+  for (const g of blocking.slice(CLARITY_QUESTIONS)) decide(g, ` (deferred by the cap: a story asks at most ${CLARITY_QUESTIONS} blocking questions)`)
+  await steps(writes, { key })
   // The councils sit side by side, within the run's limit, and every one is
   // waited for. Their answers go to the board one at a time, in order: two
   // thread-opens of one story at once could each link the story without the
@@ -1196,8 +1228,7 @@ const check = async (key) => {
   clarity.push({ key, obligations: owed.length, minor: gaps.filter((x) => !x.blocking).length, deferred: Math.max(blocking.length - CLARITY_QUESTIONS, 0), settled: answers.filter((a) => a.settled).length, threads })
 }
 const clarityPass = async () => {
-  const pending = (await step('clarity-pending', {})).keys
-  await pipeline(pending, async (key) => {
+  await pipeline(pendingClarity, async (key) => {
     try {
       await clarify(key)
     } catch (e) {
@@ -1355,15 +1386,17 @@ const recorded = new Map()
 // A criterion as a finding names it: as the agent copied it, else by number.
 // r: the agent's result, and pos: where in its criteria the verdict is.
 const named = (i, r, pos) => (pos !== undefined && part(r, ['criteria', pos, 'criterion']) ? ['"', part(r, ['criteria', pos, 'criterion']), '"'] : [`criterion ${i} of the story`])
-// An implementer's decisions, from its file.
-const recordDecisions = async (key, r) => {
+// An implementer's decisions, from its file, as the steps that write them.
+const decisionSteps = (key, r) => {
   if (!recorded.has(key)) recorded.set(key, new Set())
   const known = recorded.get(key)
+  const writes = []
   for (const [i, d] of (Array.isArray(r.decisions) ? r.decisions : []).entries()) {
     if (!d || !d.question || !d.choice || known.has(`${d.question}\n${d.choice}`)) continue
     known.add(`${d.question}\n${d.choice}`)
-    await step('decision', { key, question: part(r, ['decisions', i, 'question'], String(d.question)), choice: part(r, ['decisions', i, 'choice'], String(d.choice)), by: 'agent' })
+    writes.push(['decision', { key, question: part(r, ['decisions', i, 'question'], String(d.question)), choice: part(r, ['decisions', i, 'choice'], String(d.choice)), by: 'agent' }])
   }
+  return writes
 }
 
 // What the worktree step found when a review started, for the story's next
@@ -1384,17 +1417,17 @@ const implement = async (key, rework, claimed) => {
   // helper call, so that no story planned on its files is claimed between
   // the two. Past the hard cap too: a story left where it failed would be
   // judged again with nothing changed.
+  // The claim, the story's context and its worktree come in one call. A
+  // worktree an implementer left on another branch: a clean one is back on
+  // story/<key>, and the next implementer is told what to bring over.
+  let ctx = null
+  let wt = null
   try {
-    if (rework) await step('rework', { key }, { past: true })
-    else await step('claim', { key, stage: 'implementing' })
+    ;[, ctx, wt] = await steps([rework ? ['rework', { key }] : ['claim', { key, stage: 'implementing' }], ['context', { key }], ['worktree', { key }]], { key, past: rework })
   } finally {
     claimed()
   }
-  let ctx = await step('context', { key })
   if (ctx.attempt >= MAX_ATTEMPTS) return exhaust(key)
-  // A worktree an implementer left on another branch: a clean one is back on
-  // story/<key>, and the next implementer is told what to bring over.
-  const wt = await step('worktree', { key })
   if (wt.reason) log(`${key}: ${wt.reason}`)
   const found = [...new Set([foundAt.get(key), wt.reason].filter(Boolean))].join('\n')
   foundAt.delete(key)
@@ -1403,7 +1436,9 @@ const implement = async (key, rework, claimed) => {
     const attempt = ctx.attempt + 1
     const r = await persist(key, 'the implementer', () => act(attempt >= 2 ? 'implRetry' : 'impl', (file) => implPrompt(ctx, wt.path, attempt, task, found, file), { label: `impl:${key}`, phase: 'Deliver', schema: IMPL_SCHEMA }))
     if (!r) return noResult(key, `the implementer returned nothing, ${AGAIN_AFTER.length + 1} times`)
-    await recordDecisions(key, r)
+    // Its decisions, and for a story that is ready its files and its move to
+    // implemented, go to the board in one call.
+    await steps([...decisionSteps(key, r), ...(r.status === 'ready' ? [['files', { key }], ['move', { key, to: 'implemented' }]] : [])], { key })
     if (r.status === 'needs_decision') {
       const answer = await question(ctx, r, 'the implementer', wt.path, 'impl-q', asked)
       if (!answer.settled) return { key, outcome: 'needs_decision', thread: answer.thread }
@@ -1415,8 +1450,6 @@ const implement = async (key, rework, claimed) => {
       const { thread } = await step('thread-open', { key, title: `${key}: the implementer is blocked`, body: words(part(r, ['summary'], String(r.summary)), '\n') })
       return { key, outcome: 'blocked', thread }
     }
-    await step('files', { key })
-    await step('move', { key, to: 'implemented' })
     return { path: wt.path }
   }
 }
@@ -1431,11 +1464,14 @@ const implement = async (key, rework, claimed) => {
 // obligation is not the implementer's. A pass needs every other criterion
 // met and no other defect; anything else gives the findings, one per
 // criterion not met and one per defect.
-const review = async (key, wt) => {
+const review = async (key, wt, first) => {
   let asked = 0
   let malformed = 0
+  // The context the claim's call brought, then one read again for each pass.
+  let read = first
   for (;;) {
-    const ctx = await step('context', { key })
+    const ctx = read || await step('context', { key })
+    read = null
     const n = ctx.criteria
     const v = await persist(key, 'the reviewer', () => act('review', (file) => reviewPrompt(ctx, wt, file), { label: `review:${key}`, phase: 'Deliver', schema: reviewSchema(n) }))
     if (!v) return noResult(key, `the reviewer returned nothing, ${AGAIN_AFTER.length + 1} times`)
@@ -1483,17 +1519,18 @@ const review = async (key, wt) => {
 // or the findings. Gives reviewed, rework when the story is sent back for the
 // next attempt, or the story's outcome.
 const assess = async (key, wt) => {
-  await step('claim', { key, stage: 'review' })
+  // The claim and the story's context come in one call, with its worktree
+  // when the story starts at its review.
+  const [, ctx, found] = await steps([['claim', { key, stage: 'review' }], ['context', { key }], ...(wt ? [] : [['worktree', { key }]])], { key })
   let path = wt
   if (!path) {
-    const found = await step('worktree', { key })
     if (found.reason) {
       log(`${key}: ${found.reason}`)
       foundAt.set(key, found.reason)
     }
     path = found.path
   }
-  const verdict = await review(key, path)
+  const verdict = await review(key, path, ctx)
   if (verdict.outcome) return verdict
   if (verdict.pass) {
     foundAt.delete(key)
@@ -1658,21 +1695,25 @@ let stackReset = false
 let lastCheck = null
 
 // A command run as a job in the lane worktree, to its end: one courier starts
-// it, and each one after waits for it within its Bash call. A start or a wait
+// it and waits for it within its Bash call, and each one after waits again
+// while it runs. before: steps that go ahead of the start in the same call,
+// whose bodies come back as before. A start or a wait
 // that throws, on a courier that failed or at the hard cap, stops the job
 // first, past the cap: the job would run on beside the lane's next pass. A
 // start whose answer never came back may have started its job all the same,
 // which job-kill finds by the start's opId.
-const job = async (key, name, cmd, past = false) => {
-  const start = opIdOf(`job-start-${key}`)
+const job = async (key, name, cmd, past = false, before = []) => {
+  const call = opIdOf(`job-start-${key}`)
+  // The start's own opId: in a batch, the call's with its place in it.
+  const start = before.length ? `${call}.${before.length + 1}` : call
   let id = null
   try {
-    const started = await step('job-start', { name, key, cmd, cwd: laneDir }, { past, opId: start })
+    const bodies = await steps([...before, ['job-start', { name, key, cmd, cwd: laneDir, waitSeconds: JOB_WAIT }]], { key, past, opId: call })
+    const started = bodies[bodies.length - 1]
     id = started.id
-    for (;;) {
-      const w = await step('job-wait', { id, maxSeconds: JOB_WAIT }, { key, past })
-      if (w.done) return { ok: w.result.ok === true, timedOut: w.result.timedOut === true, id, log: started.log }
-    }
+    let w = started
+    while (!w.done) w = await step('job-wait', { id, maxSeconds: JOB_WAIT }, { key, past })
+    return { ok: w.result.ok === true, timedOut: w.result.timedOut === true, id, log: started.log, before: bodies.slice(0, -1) }
   } catch (e) {
     try {
       await step('job-kill', id ? { id } : { start }, { key, past: true })
@@ -1728,8 +1769,9 @@ const conflicts = new Map()
 // story lands without them.
 const laneStory = async (key) => {
   if (laneStopped) return { key, outcome: 'reviewed', detail: 'the lane stopped earlier in this run, so the story waits in reviewed for the next run' }
-  await step('claim', { key, stage: 'testing' })
-  const prep = await step('lane-prepare', { key })
+  // The claim, the rebase into the lane and the story's context, for the
+  // verifier, come in one call.
+  const [, prep, ctx] = await steps([['claim', { key, stage: 'testing' }], ['lane-prepare', { key }], ['context', { key }]], { key })
   // An outcome but ready leaves the lane as it was.
   if (prep.outcome === 'infra') return stopLane(key, `lane-prepare found trouble that is not the story's: ${prep.reason}`)
   if (prep.outcome === 'conflict') {
@@ -1800,7 +1842,6 @@ const laneStory = async (key) => {
       return fail([{ text: `The ${name} check (\`${checks[name]}\`) ${failedHow(run)}. It passes on ${branch} without the story.`, files: [], job: run.id }], `its ${name} check, which passes on ${branch} without it`)
     }
 
-    const ctx = await step('context', { key })
     const v = await persist(key, 'the verifier', () => act('verify', (file) => verifyPrompt(ctx, file), { label: `verify:${key}`, phase: 'Lane', schema: VERIFY_SCHEMA }))
     if (!v) {
       await toTip()
@@ -1850,36 +1891,45 @@ const laneStory = async (key) => {
         return { tests: r }
       }
     }
-    // lane-clean, so that the author's check runs on exactly what lands; that
-    // check; and lane-clean again for what the check left, such as a report.
-    // Gives the check and its run when it is red. An author asked once more
-    // that gives no check is held to the check it gave before.
-    const checkTests = async (tests, before = '') => {
-      const cleaned = await step('lane-clean', {}, { key })
-      if (cleaned.count) log(`${key}: lane-clean threw away ${cleaned.count} file${cleaned.count === 1 ? '' : 's'} the test author left uncommitted: ${cleaned.discarded.join(', ')}`)
+    // lane-clean, so that the author's check runs on exactly what lands, in
+    // one call with that check's start; then lane-clean again for what the
+    // check left, such as a report, in one call with lane-land when the check
+    // is green, or there is none. Gives red, the check and its run, when it
+    // is red, else landed, lane-land's answer. An author asked once more that
+    // gives no check is held to the check it gave before.
+    const checkAndLand = async (tests, before = '') => {
+      const threw = (cleaned, whose) => {
+        if (cleaned.count) log(`${key}: lane-clean threw away ${cleaned.count} file${cleaned.count === 1 ? '' : 's'} ${whose}: ${cleaned.discarded.join(', ')}`)
+      }
       const check = String(tests.check || before).trim()
-      if (!check) return null
-      const run = await job(key, 'tests', check)
-      const after = await step('lane-clean', {}, { key })
-      if (after.count) log(`${key}: lane-clean threw away ${after.count} file${after.count === 1 ? '' : 's'} the test author's check left: ${after.discarded.join(', ')}`)
-      return run.ok ? null : { check, run }
+      const run = check ? await job(key, 'tests', check, false, [['lane-clean', {}]]) : null
+      if (run) threw(run.before[0], 'the test author left uncommitted')
+      if (run && !run.ok) {
+        threw(await step('lane-clean', {}, { key }), 'the test author\'s check left')
+        return { red: { check, run } }
+      }
+      const [cleaned, landing] = await steps([['lane-clean', {}], ['lane-land', { key, base }]], { key })
+      threw(cleaned, run ? 'the test author\'s check left' : 'the test author left uncommitted')
+      return { landed: landing }
     }
     let written = await author(WRITE_TESTS)
     if (written.end) return written.end
     // Why the story lands without its tests, once they are dropped.
     let without = null
-    let red = await checkTests(written.tests)
-    if (red) {
-      log(`${key}: the test author's check \`${red.check}\` ${red.run.timedOut ? 'ran past its limit' : 'failed'}; the author is asked once more, with its output`)
-      written = await author(fixTests(red.check, red.run))
+    let tried = await checkAndLand(written.tests)
+    if (tried.red) {
+      const first = tried.red
+      log(`${key}: the test author's check \`${first.check}\` ${first.run.timedOut ? 'ran past its limit' : 'failed'}; the author is asked once more, with its output`)
+      written = await author(fixTests(first.check, first.run))
       if (written.end) return written.end
-      red = await checkTests(written.tests, red.check)
-      if (red) {
-        without = `the test author's check \`${red.check}\` ${red.run.timedOut ? 'ran past its limit' : 'failed'} again, after the author was asked once more`
+      tried = await checkAndLand(written.tests, first.check)
+      if (tried.red) {
+        without = `the test author's check \`${tried.red.check}\` ${tried.red.run.timedOut ? 'ran past its limit' : 'failed'} again, after the author was asked once more`
         await step('lane-candidate', { candidate: prep.candidate }, { key })
+        tried = { landed: await step('lane-land', { key, base }) }
       }
     }
-    let landed = await step('lane-land', { key, base })
+    let landed = tried.landed
     if (!landed.landed && landed.inLane && !without) {
       without = `lane-land refused the lane the test author left: ${landed.reason}`
       await step('lane-candidate', { candidate: prep.candidate }, { key })
@@ -1958,7 +2008,6 @@ const finish = async (journeyLines) => {
 let journeyLines = null
 let threw = true
 try {
-  if (A.checks && typeof A.checks === 'object') checks = (await step('checks-set', { checks: A.checks })).checks
   enter('Unblock')
   await unblock()
   enter('Clarity')

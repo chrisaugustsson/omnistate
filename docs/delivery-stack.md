@@ -9,6 +9,18 @@ no command itself: every git, omni and check command runs in its host helper,
 The helper's header describes that protocol and every step; the script's
 `meta` sums up a run.
 
+A courier call takes about ten seconds, of which the helper works a fraction
+of one, so steps that always follow each other with nothing to decide in
+between go in one call: the helper's `batch` step runs them in order, each as
+a step of its own, recorded and timed as one, and stops at the first that
+fails; a repeat of the batch carries on after those that were applied. A
+story's claim comes with its context and its worktree, an implementer's
+decisions with the story's files and its move to implemented, the claim for
+the lane with the rebase and the context, and `lane-clean` with the start of
+the test author's check and then with `lane-land`. A clean story takes 10
+courier calls from its claim to its landing; with a call for every step it
+took 23.
+
 A courier copies the helper's whole answer back, and a long answer does not
 come back exactly: in the first real run, the courier of a story's context
 failed four times on the hash check. So no courier carries story content, and
@@ -325,8 +337,10 @@ passes the others through. Until it is merged, `args.checks` is how a run gets
 
 Every check runs as a job: a detached supervisor runs the command in the lane
 worktree, in a process group of its own and with no standard input, and logs
-its output under `.omni/runs/<run>/jobs/`. A courier waits for it up to 8
-minutes at a time. A job has 45 minutes: past that, its group gets SIGTERM,
+its output under `.omni/runs/<run>/jobs/`. The courier that starts a job
+waits for it too, up to 8 minutes, so a check that ends within that takes one
+call; while the job still runs, a courier waits again, up to 8 minutes at a
+time. A job has 45 minutes: past that, its group gets SIGTERM,
 then SIGKILL 10 s later, and the check counts as failed. Its finding quotes the
 end of the log, which the helper reads, and which says that the job ran past
 its limit. A workflow
@@ -388,12 +402,13 @@ The report has:
 ## Limits
 
 - **The agent cap.** The runtime stops a workflow at 1000 agent calls,
-  couriers included, and one story has taken 89, through three failed passes
-  of the lane. A run takes a new story only while its calls leave room under
-  900 for the stories in flight, at 90 each, and stops a story that reaches
-  960 all the same, released with no attempt used. A long feature takes more
-  than one run: the report says when a run stopped for the cap, and the next
-  run carries on.
+  couriers included. A story that fails the lane three times makes about 50;
+  one took 89 when every step had a call of its own, which is where the 90
+  set aside for a story comes from. A run takes a new story only while its
+  calls leave room under 900 for the stories in flight, at 90 each, and stops
+  a story that reaches 960 all the same, released with no attempt used. A
+  long feature takes more than one run: the report says when a run stopped
+  for the cap, and the next run carries on.
 - **Small machines.** The runtime runs at most min(16, CPUs - 2) agents at
   once, couriers included. With 4 CPUs that is 2, and a courier waiting on a
   check holds one of them. The run still finishes, just slowly.
