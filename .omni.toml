@@ -1,5 +1,7 @@
 [checks]
-fast = "make lint && make render-wasm && cargo test --workspace && pnpm -r test && node --test workflows/*.test.mjs"
+# The delivery tooling's own tests take close to 5 minutes, so they run only
+# on a tree whose tooling differs from main's; a missing main runs them too.
+fast = "make lint && make render-wasm && cargo test --workspace && pnpm -r test && (git diff --quiet main HEAD -- workflows Makefile agent-skills || node --test workflows/*.test.mjs)"
 # The stack checks run on the test stack, compose project omnistate-test at
 # http://omnistate-test.localhost (docs/delivery-stack.md), never on the project
 # omnistate that holds the board.
