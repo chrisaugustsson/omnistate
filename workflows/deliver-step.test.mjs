@@ -2589,6 +2589,124 @@ test("lane-candidate puts the lane worktree back at the candidate lane-prepare g
   assert.deepEqual([odd.ok, odd.error], [false, "the candidate is a commit's full hash, not HEAD~1"]);
 });
 
+test("lane-land with keep lands the story and keeps its worktree and branch for its test author; tests-prepare brings that worktree to the tip of deliver/<slug>, on story/<key> and clean; lane-land with tests lands the author's commits on the story that is done: their files join the story's, nothing else of it is written, the worktree and the branch go, and the report lists the tests apart, with the time their writing took", (t) => {
+  const dirs = scratch(t, [story("US-1", { status: "reviewed", criteria: [{ text: "The badge is red", human_check: false }] })]);
+  const { run, lane } = start(dirs);
+  const wt = storyWork(dirs, run, "US-1");
+  step(dirs, run, "claim", { key: "US-1", stage: "testing" });
+  const first = step(dirs, run, "lane-prepare", { key: "US-1" });
+
+  const kept = step(dirs, run, "lane-land", { key: "US-1", base: first.base, keep: true });
+
+  assert.deepEqual(pick(kept), { ok: true, key: "US-1", landed: true, base: first.base, final: first.candidate, files: 1, removed: false });
+  assert.deepEqual([dirs.story("US-1").status, existsSync(wt), git(dirs.repo, "rev-parse", "refs/heads/story/US-1").trim()], ["done", true, first.candidate]);
+
+  // The tip moves on, and the worktree was left on another commit, with an edit.
+  const moved = landOn(dirs, "deliver/board", "other.rs");
+  git(wt, "checkout", "-q", "--detach");
+  writeFileSync(join(wt, "left.txt"), "left behind\n");
+  const prepared = step(dirs, run, "tests-prepare", { key: "US-1" });
+
+  assert.deepEqual(pick(prepared), { ok: true, key: "US-1", path: wt, branch: "story/US-1", tip: moved });
+  assert.deepEqual([git(wt, "rev-parse", "HEAD").trim(), git(wt, "rev-parse", "--abbrev-ref", "HEAD").trim(), git(wt, "status", "--porcelain")], [moved, "story/US-1", ""]);
+
+  const test = commit(wt, "badge.test");
+  const second = step(dirs, run, "lane-prepare", { key: "US-1" });
+  const before = dirs.writes().length;
+  const landed = step(dirs, run, "lane-land", { key: "US-1", base: second.base, tests: true });
+
+  assert.deepEqual([second.base, second.candidate], [moved, test]);
+  assert.deepEqual(pick(landed), { ok: true, key: "US-1", landed: true, base: moved, final: test, files: 1, removed: true });
+  assert.deepEqual([sha(dirs, "refs/heads/deliver/board"), git(lane, "rev-parse", "HEAD").trim()], [test, test]);
+  assert.deepEqual(dirs.writes().slice(before), ["files US-1"]);
+  assert.deepEqual([dirs.story("US-1").status, dirs.story("US-1").files_changed], ["done", ["badge.rs", "badge.test"]]);
+  assert.deepEqual([existsSync(wt), git(dirs.repo, "branch", "--list", "story/US-1")], [false, ""]);
+  assert.deepEqual(JSON.parse(readFileSync(runFile(dirs, run, "run.json"), "utf8")).landed, [{ key: "US-1", base: first.base, final: first.candidate }, { key: "US-1", base: moved, final: test, tests: true }]);
+
+  const report = readFileSync(step(dirs, run, "finish", { report: { outcomes: [{ key: "US-1", outcome: "done" }], council: { settled: 0, majority: 0, asked: 0 } } }).report, "utf8");
+  assert.ok(report.includes("\n- US-1 Story US-1: ") && report.includes("\n- US-1 Story US-1, its tests: "), report);
+  assert.ok(report.includes("\n| Story | Total | implementing | review | testing | test writing | rebase |"), report);
+  assert.match(report, /\n\| US-1 \| [^|]+ \| - \| - \| [^|-][^|]* \| [^|-][^|]* \| [^|]+ \(2\) \|/);
+});
+
+test("tests-prepare refuses a worktree whose story/<key> holds a commit that is not on deliver/<slug>, which it would lose, and one that is not the story's worktree: nothing is reset", (t) => {
+  const dirs = scratch(t, [story("US-1", { status: "reviewed" }), story("US-2")]);
+  const { run } = start(dirs);
+  const wt = storyWork(dirs, run, "US-1");
+  step(dirs, run, "claim", { key: "US-1", stage: "testing" });
+  const { base } = step(dirs, run, "lane-prepare", { key: "US-1" });
+  step(dirs, run, "lane-land", { key: "US-1", base, keep: true });
+  const unlanded = commit(wt, "late.rs");
+
+  const body = step(dirs, run, "tests-prepare", { key: "US-1" });
+  const none = step(dirs, run, "tests-prepare", { key: "US-2" });
+
+  assert.deepEqual(pick(body), { ok: false, error: "story/US-1 holds commits that are not on deliver/board, so it is not brought to its tip", retry: false });
+  assert.equal(git(wt, "rev-parse", "HEAD").trim(), unlanded);
+  assert.deepEqual([none.ok, none.retry], [false, false]);
+  assert.match(none.error, /app-stories\/US-2 is not the worktree of US-2 on story\/US-2, which its landing kept for the test author$/);
+});
+
+test("tests-drop removes the worktree of a landed story whatever it has checked out, with what its test author left in it, and the branch; a folder in its place that is not that worktree stays, and it says so", (t) => {
+  const dirs = scratch(t, [story("US-1", { status: "reviewed" }), story("US-2")]);
+  const { run } = start(dirs);
+  const wt = storyWork(dirs, run, "US-1");
+  step(dirs, run, "claim", { key: "US-1", stage: "testing" });
+  const { base } = step(dirs, run, "lane-prepare", { key: "US-1" });
+  step(dirs, run, "lane-land", { key: "US-1", base, keep: true });
+  commit(wt, "badge.test");
+  git(wt, "checkout", "-q", "--detach");
+  writeFileSync(join(wt, "mutant.rs"), "left behind\n");
+  const tip = sha(dirs, "refs/heads/deliver/board");
+  const other = join(dirs.root, "app-stories", "US-2");
+  mkdirSync(other, { recursive: true });
+  writeFileSync(join(other, "notes.txt"), "not a worktree\n");
+
+  const body = step(dirs, run, "tests-drop", { key: "US-1" });
+  const kept = step(dirs, run, "tests-drop", { key: "US-2" });
+
+  assert.deepEqual(pick(body), { ok: true, key: "US-1", removed: true });
+  assert.deepEqual([existsSync(wt), git(dirs.repo, "branch", "--list", "story/US-1"), sha(dirs, "refs/heads/deliver/board"), dirs.story("US-1").status], [false, "", tip, "done"]);
+  assert.doesNotMatch(git(dirs.repo, "worktree", "list", "--porcelain"), /US-1/);
+  assert.deepEqual([pick(kept), existsSync(join(other, "notes.txt"))], [{ ok: true, key: "US-2", removed: false }, true]);
+});
+
+test("lane-prepare with clean throws away what is uncommitted in the story's worktree before it looks, and says what, so that a test author's leftovers cost its commits nothing; without clean they are dirty", (t) => {
+  const dirs = scratch(t, [story("US-1")]);
+  const { run, lane } = start(dirs);
+  const wt = storyWork(dirs, run, "US-1");
+  const head = git(wt, "rev-parse", "HEAD").trim();
+  writeFileSync(join(wt, "badge.rs"), "a mutant\n");
+  writeFileSync(join(wt, "report.xml"), "left behind\n");
+
+  const dirty = step(dirs, run, "lane-prepare", { key: "US-1" });
+  const ready = step(dirs, run, "lane-prepare", { key: "US-1", clean: true });
+
+  assert.deepEqual([dirty.outcome, dirty.count], ["dirty", 2]);
+  assert.deepEqual(pick(ready), { ok: true, key: "US-1", outcome: "ready", base: sha(dirs, "refs/heads/deliver/board"), candidate: head, cleaned: { discarded: ["badge.rs", "report.xml"], count: 2 } });
+  assert.deepEqual([git(wt, "status", "--porcelain"), git(lane, "rev-parse", "HEAD").trim()], ["", head]);
+});
+
+test("start removes the worktree and the branch a stopped run left of a story that is done, kept for a test author that never finished, and logs it; a story that is not done keeps its worktree", (t) => {
+  const dirs = scratch(t, [story("US-1", { status: "reviewed" }), story("US-2")]);
+  const first = start(dirs);
+  const wt = storyWork(dirs, first.run, "US-1");
+  const other = storyWork(dirs, first.run, "US-2", "count.rs");
+  step(dirs, first.run, "claim", { key: "US-1", stage: "testing" });
+  const { base } = step(dirs, first.run, "lane-prepare", { key: "US-1" });
+  step(dirs, first.run, "lane-land", { key: "US-1", base, keep: true });
+  commit(wt, "badge.test");
+  writeFileSync(join(wt, "half.test"), "half written\n");
+  const tip = sha(dirs, "refs/heads/deliver/board");
+
+  const next = start(dirs, { op: "start-2", force: true });
+
+  assert.equal(next.ok, true);
+  assert.ok(next.log.includes("Removed the worktree of US-1, which is done: a run that stopped left it for its test author, and its regression tests were not written"), next.log.join("\n"));
+  assert.deepEqual([existsSync(wt), existsSync(other), git(dirs.repo, "for-each-ref", "--format=%(refname:short)", "refs/heads/story/").trim()], [false, true, "story/US-2"]);
+  assert.deepEqual([sha(dirs, "refs/heads/deliver/board"), dirs.story("US-1").status], [tip, "done"]);
+});
+
 // ---- finish -----------------------------------------------------------------------------
 
 test("finish stops the run's jobs that still run, posts the report on the run's thread from a body file, with the blocked stories and their threads from the board, keeps it as report.md, and gives the lock up", async (t) => {

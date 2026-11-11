@@ -195,9 +195,9 @@ const gap = (question, impact, fields = {}) => ({ criterion: "The badge has a co
 const verified = (failed = {}) => (call, serial, dirs) => ({ criteria: criteriaIn(call, dirs).map((c) => ({ ...c, ok: !(c.index in failed), evidence: failed[c.index] || "Ran it" })) });
 // A test author that is done; `fields` gives its commit, check and added tests.
 const authored = (fields = {}) => ({ status: "done", commit: "", check: "", oracle: [], existingCoverage: [], added: [], reused: [], changedOrRemoved: [], notAdmitted: [], ...fields });
-// A test author that commits a test file in the lane worktree, with a check.
-const testsIn = (dirs, file, check = "true") => async (call, serial) => {
-  await serial(() => commit(join(dirs.root, "app-stories", "_lane"), file));
+// A test author that commits a test file in its worktree, the story's, with a check.
+const testsIn = (file, check = "true") => async (call, serial) => {
+  await serial(() => commit(worktreeIn(call.prompt), file));
   return authored({ check, added: [{ test: file, file, risk: "", overlapCheck: "", sensitivity: "" }] });
 };
 
@@ -500,11 +500,11 @@ test("a courier that returns nothing, miscopies the payload or changes the outpu
   assert.deepEqual(result.outcomes, [{ key: "US-1", outcome: "done" }]);
 });
 
-test("a clean story takes 10 courier calls from its claim to its landing: steps that always follow each other go in one call, and a check that ends within its start's wait needs no wait of its own", { timeout: 120000 }, async (t) => {
+test("a clean story takes 9 courier calls from its claim to its landing, and its tests 4 more: steps that always follow each other go in one call, and a check that ends within its start's wait needs no wait of its own", { timeout: 120000 }, async (t) => {
   const dirs = scratch(t, [story("US-1", { criteria: [{ text: "The badge is red", human_check: false }] })]);
   const roles = {
     "impl:US-1": [built("src/badge.rs", { decisions: [{ question: "Which red?", choice: "#c00" }] })],
-    "tests:US-1": [testsIn(dirs, "badge.test")],
+    "tests:US-1": [testsIn("badge.test")],
   };
 
   const { result, error, calls } = await deliver(dirs, {}, roles);
@@ -522,12 +522,15 @@ test("a clean story takes 10 courier calls from its claim to its landing: steps 
     "courier:job-start:US-1",
     "courier:job-start:US-1",
     "courier:job-start:US-1",
-    "courier:lane-clean+job-start:US-1",
+    "courier:lane-clean+lane-land:US-1",
+    "courier:tests-prepare+context:US-1",
+    "courier:lane-prepare:US-1",
+    "courier:job-start:US-1",
     "courier:lane-clean+lane-land:US-1",
   ]);
   // The same steps as before, in the same order, in fewer calls.
   const sent = stepsOf(calls).filter((s) => own(s.label)).map((s) => s.name);
-  assert.deepEqual(sent.slice(sent.indexOf("claim")), ["claim", "context", "worktree", "decision", "files", "move", "claim", "context", "move", "claim", "lane-prepare", "context", "job-start", "job-start", "job-start", "lane-clean", "job-start", "lane-clean", "lane-land"]);
+  assert.deepEqual(sent.slice(sent.indexOf("claim")), ["claim", "context", "worktree", "decision", "files", "move", "claim", "context", "move", "claim", "lane-prepare", "context", "job-start", "job-start", "job-start", "lane-clean", "lane-land", "tests-prepare", "context", "lane-prepare", "job-start", "lane-clean", "lane-land"]);
   assert.deepEqual(stepsNamed(calls, "job-start", "US-1").map((s) => s.fields.waitSeconds), [480, 480, 480, 480]);
   assert.deepEqual(timeline(dirs, "US-1"), ["claim implementing", "move implemented", "claim review", "move reviewed", "claim testing", "move done"]);
   assert.deepEqual(dirs.story("US-1").decisions, [{ question: "Which red?", choice: "#c00", by: "agent" }]);
@@ -1316,7 +1319,7 @@ test("no payload carries an agent's long text: whatever clarity, the council, th
   const longest = couriersOf(calls).filter((c) => fileIn(c.prompt) !== null).map((c) => [c.label, Math.max(0, ...stringsIn(payloadOf(c)).map((x) => x.length))]);
   assert.deepEqual(longest.filter(([, n]) => n > 500), [], JSON.stringify([...longest].sort((a, b) => b[1] - a[1]).slice(0, 3)));
   assert.doesNotMatch(couriersOf(calls).map((c) => payloadIn(c.prompt) || "").join("\n"), /LONG/);
-  assert.deepEqual(result.outcomes.map((o) => [o.key, o.outcome]).sort(), [["US-2", "attempts_exhausted"], ["US-3", "blocked"], ["US-4", "blocked"], ["US-5", "done"]]);
+  assert.deepEqual(result.outcomes.map((o) => [o.key, o.outcome]).sort(), [["US-2", "done"], ["US-3", "blocked"], ["US-4", "done"], ["US-5", "done"]]);
   const board = JSON.stringify(dirs.state().stories) + JSON.stringify(dirs.state().threads);
   for (const label of [
     "minor", "minor-rec", "deferred", "deferred-rec", "settled", "settled-a", "settled-spec-quote", "settled-source", "split", "split-criterion", "split-a", "split-b", "split-code-quote", "split-user-why", "split-reason", "third",
@@ -1637,7 +1640,7 @@ test("the deliver loop lists the board for the next story only once its last cla
 const capped = (values) => {
   let source = SOURCE;
   for (const [name, value] of Object.entries(values)) {
-    const real = { AGENT_CAP: 900, HARD_CAP: 960, STORY_CALLS: 90, CHECK_CALLS: 20, JOB_WAIT: 480 }[name];
+    const real = { AGENT_CAP: 900, HARD_CAP: 960, STORY_CALLS: 90, CHECK_CALLS: 20, TESTS_CALLS: 30, JOB_WAIT: 480 }[name];
     assert.ok(source.includes(`\nconst ${name} = ${real}\n`), `${name} is ${real}`);
     source = source.replace(`\nconst ${name} = ${real}\n`, `\nconst ${name} = ${value}\n`);
   }
@@ -1971,19 +1974,22 @@ function reviewedStory(dirs, key) {
   commit(dirs.worktree(key), `${key}.txt`);
 }
 
-test("the lane runs a reviewed story's checks as jobs in the lane worktree, fast, stack_up and stack in turn; a verifier on opus runs the story there, with the seed command as this story and run, a test author on opus writes its tests there, lane-clean throws away what the author left uncommitted before the author's check runs as a job, and lane-land moves deliver/<slug> to the tested commit: the story is done, its worktree gone, and the main checkout untouched", { timeout: 120000 }, async (t) => {
+test("the lane runs a reviewed story's checks as jobs in the lane worktree, fast, stack_up and stack in turn; a verifier on opus runs the story there, with the seed command as this story and run; lane-clean throws away what the verifier left, and lane-land moves deliver/<slug> to the verified commit: the story is done before its test author starts, with its worktree kept for that author, and the main checkout untouched", { timeout: 120000 }, async (t) => {
   const dirs = scratch(t, [story("US-1", { criteria: [{ text: "The badge is red", human_check: false }] })]);
   const lane = laneOf(dirs);
-  const check = "test ! -f stray.txt && git diff --quiet";
+  const seen = {};
   const roles = {
-    "tests:US-1": [async (call, serial) => {
+    "verify:US-1": [async (call, serial, d) => {
+      // Left behind: an untracked file and an edit, which must not land.
       await serial(() => {
-        commit(lane, "badge.test");
-        // Left behind: an untracked file and an edit, which the check must not see.
         writeFileSync(join(lane, "stray.txt"), "stray\n");
         writeFileSync(join(lane, "US-1.txt"), "edited\n");
       });
-      return authored({ check, added: [{ test: "badge.test", file: "badge.test", risk: "", overlapCheck: "", sensitivity: "" }] });
+      return verified()(call, serial, d);
+    }],
+    "tests:US-1": [async (call, serial) => {
+      Object.assign(seen, await serial(() => ({ status: dirs.story("US-1").status, worktree: existsSync(dirs.worktree("US-1")), tip: git(dirs.repo, "rev-parse", "refs/heads/deliver/board").trim(), lane: git(lane, "status", "--porcelain") })));
+      return authored();
     }],
   };
   const head = git(dirs.repo, "rev-parse", "HEAD").trim();
@@ -1992,55 +1998,98 @@ test("the lane runs a reviewed story's checks as jobs in the lane worktree, fast
   const { result, error, calls, logs } = await deliver(dirs, { checks }, roles);
 
   assert.equal(error, null);
-  assert.deepEqual(jobsOf(dirs, result.run), ["fast", "stack_up", "stack"].map((name) => ({ name, key: "US-1", cmd: "true", cwd: lane })).concat([{ name: "tests", key: "US-1", cmd: check, cwd: lane }]));
-  // lane-clean goes ahead of the check's start, in one call with it, and again with lane-land.
+  assert.deepEqual(jobsOf(dirs, result.run), ["fast", "stack_up", "stack"].map((name) => ({ name, key: "US-1", cmd: "true", cwd: lane })));
+  // lane-clean goes ahead of lane-land, in one call with it, right after the last check.
   const sent = stepsOf(calls).map((s) => s.name);
-  assert.deepEqual(sent.slice(sent.lastIndexOf("job-start") - 1).slice(0, 4), ["lane-clean", "job-start", "lane-clean", "lane-land"], sent.join("\n"));
-  assert.deepEqual(couriersOf(calls).map((c) => c.label).filter((l) => l.includes("lane-clean")), ["courier:lane-clean+job-start:US-1", "courier:lane-clean+lane-land:US-1"]);
-  assert.ok(logs.includes("US-1: lane-clean threw away 2 files the test author left uncommitted: US-1.txt, stray.txt"), logs.join("\n"));
+  assert.deepEqual(sent.slice(sent.lastIndexOf("job-start") + 1).slice(0, 2), ["lane-clean", "lane-land"], sent.join("\n"));
+  assert.deepEqual(couriersOf(calls).map((c) => c.label).filter((l) => l.includes("lane-clean")), ["courier:lane-clean+lane-land:US-1"]);
+  assert.ok(logs.includes("US-1: lane-clean threw away 2 files the verifier left uncommitted: US-1.txt, stray.txt"), logs.join("\n"));
   const tip = git(dirs.repo, "rev-parse", "refs/heads/deliver/board").trim();
-  assert.deepEqual(git(dirs.repo, "log", "--format=%s", `${head}..${tip}`).trim().split("\n"), ["feat: badge.test", "feat: US-1.txt"]);
-  assert.deepEqual([dirs.story("US-1").status, existsSync(dirs.worktree("US-1"))], ["done", false]);
+  assert.deepEqual(git(dirs.repo, "log", "--format=%s", `${head}..${tip}`).trim().split("\n"), ["feat: US-1.txt"]);
+  assert.deepEqual(seen, { status: "done", worktree: true, tip, lane: "" });
   assert.deepEqual([git(dirs.repo, "rev-parse", "HEAD").trim(), git(dirs.repo, "rev-parse", "--abbrev-ref", "HEAD").trim(), git(dirs.repo, "status", "--porcelain")], [head, "main", ""]);
-  assert.deepEqual([result.landed, result.tip, result.outcomes], [["US-1"], tip, [{ key: "US-1", outcome: "done" }]]);
+  // Its author added no test: nothing lands after it, and its worktree goes.
+  assert.deepEqual([result.landed, result.tip, result.outcomes, result.tests, result.notes], [["US-1"], tip, [{ key: "US-1", outcome: "done" }], [{ key: "US-1", outcome: "none" }], []]);
+  assert.deepEqual([existsSync(dirs.worktree("US-1")), git(dirs.repo, "branch", "--list", "story/US-1").trim()], [false, ""]);
   const [verify] = agentsOf(calls, "verify:US-1");
-  const [tests] = agentsOf(calls, "tests:US-1");
-  assert.deepEqual([verify.model, tests.model, verify.phase, tests.phase], ["opus", "opus", "Lane", "Lane"]);
-  for (const prompt of [verify.prompt, tests.prompt]) {
-    assert.ok(prompt.includes(`The lane worktree ${lane} holds story/US-1 rebased onto deliver/board, on a detached HEAD`), prompt);
-    assert.ok(prompt.includes("Stay on the detached HEAD: never check out or create a branch."), prompt);
-  }
+  assert.deepEqual([verify.model, verify.phase], ["opus", "Lane"]);
+  assert.ok(verify.prompt.includes(`The lane worktree ${lane} holds story/US-1 rebased onto deliver/board, on a detached HEAD`), verify.prompt);
+  assert.ok(verify.prompt.includes("Stay on the detached HEAD: never check out or create a branch."), verify.prompt);
   assert.ok(verify.prompt.includes(`\n- The stack has no users until the seed runs. For a credential, run the seed command as \`OMNI_STORY=US-1 OMNI_RUN=${result.run} sh -c './seed --story'\` in ${lane}: it prints what to sign in with. Never write into the stack's database yourself.\n- A criterion about a command is checked by running that command: fast is \`true\`, stack is \`true\`, lint is \`./lint\`.\n`), verify.prompt);
   assert.match(verify.prompt, /You are read-only/);
-  assert.ok(tests.prompt.includes(`\`git diff ${head}..HEAD\``), tests.prompt);
 });
 
-test("a test author that checked deliver/<slug> out in the lane and committed there costs the story nothing: lane-land refuses the lane it left and puts the branch back at the base, and the verified story lands without the author's commit at its first attempt, which the report notes", { timeout: 120000 }, async (t) => {
+test("a landed story's tests are written in the story's own worktree, on story/<key> at the tip of deliver/<slug>, by an author on opus in the phase Tests that is told never to use the stack; what it left uncommitted is thrown away, its check runs as a job in the lane on what it committed, with no other check, and lane-land lands the tests: their files join the story's, and the worktree and the branch are gone", { timeout: 120000 }, async (t) => {
+  const dirs = scratch(t, [story("US-1", { criteria: [{ text: "The badge is red", human_check: false }] })]);
+  const lane = laneOf(dirs);
+  const check = "test -f badge.test && test -f US-1.txt";
+  const seen = {};
+  const roles = {
+    "tests:US-1": [async (call, serial) => {
+      const wt = worktreeIn(call.prompt);
+      await serial(() => {
+        Object.assign(seen, { wt, branch: git(wt, "rev-parse", "--abbrev-ref", "HEAD").trim(), head: git(wt, "rev-parse", "HEAD").trim(), tip: git(dirs.repo, "rev-parse", "refs/heads/deliver/board").trim() });
+        commit(wt, "badge.test");
+        // Left behind: an untracked file and an edit, which must not keep the tests from landing.
+        writeFileSync(join(wt, "stray.txt"), "stray\n");
+        writeFileSync(join(wt, "US-1.txt"), "edited\n");
+      });
+      return authored({ check, added: [{ test: "badge.test", file: "badge.test", risk: "", overlapCheck: "", sensitivity: "" }] });
+    }],
+  };
+  const head = git(dirs.repo, "rev-parse", "HEAD").trim();
+
+  const { result, error, calls, logs } = await deliver(dirs, {}, roles);
+
+  assert.equal(error, null);
+  assert.deepEqual([seen.wt, seen.branch, seen.head], [dirs.worktree("US-1"), "story/US-1", seen.tip]);
+  assert.deepEqual(jobsOf(dirs, result.run), ["fast", "stack_up", "stack"].map((name) => ({ name, key: "US-1", cmd: "true", cwd: lane })).concat([{ name: "tests", key: "US-1", cmd: check, cwd: lane }]));
+  assert.ok(logs.includes("US-1: threw away 2 files the test author left uncommitted in its worktree: US-1.txt, stray.txt"), logs.join("\n"));
+  const tip = git(dirs.repo, "rev-parse", "refs/heads/deliver/board").trim();
+  assert.deepEqual(git(dirs.repo, "log", "--format=%s", `${head}..${tip}`).trim().split("\n"), ["feat: badge.test", "feat: US-1.txt"]);
+  assert.deepEqual([existsSync(dirs.worktree("US-1")), git(dirs.repo, "branch", "--list", "story/US-1").trim()], [false, ""]);
+  assert.deepEqual([git(lane, "rev-parse", "HEAD").trim(), git(lane, "status", "--porcelain")], [tip, ""]);
+  assert.deepEqual(dirs.story("US-1").files_changed, ["US-1.txt", "badge.test"]);
+  assert.deepEqual([result.tip, result.outcomes, result.tests, result.notes], [tip, [{ key: "US-1", outcome: "done" }], [{ key: "US-1", outcome: "landed" }], []]);
+  // The story was done when its tests landed: the board gets its files, and nothing else of it.
+  const after = dirs.state().calls.map((c) => c.argv).filter((argv) => argv[0] === "story" && argv[2] === "US-1" && !["read", "list"].includes(argv[1]));
+  assert.deepEqual(after.slice(after.findIndex((argv) => argv[1] === "move" && argv.includes("done")) + 1).map((argv) => argv[1]), ["files"]);
+  const report = readFileSync(result.report, "utf8");
+  assert.ok(report.includes("\n- US-1 Story US-1: ") && report.includes("\n- US-1 Story US-1, its tests: "), report);
+  const [tests] = agentsOf(calls, "tests:US-1");
+  assert.deepEqual([tests.model, tests.phase], ["opus", "Tests"]);
+  assert.ok(tests.prompt.includes(`\n## Your worktree\n${dirs.worktree("US-1")} (branch story/US-1), at the tip of deliver/board, where the story has landed`), tests.prompt);
+  assert.ok(tests.prompt.includes("\n- Never start the stack or run the stack tests (`true`), and never run `docker compose up` or `docker compose run`: the stack is shared, and by now it may hold another story's build."), tests.prompt);
+  assert.ok(tests.prompt.includes(`\`git diff ${head}..${seen.tip}\``), tests.prompt);
+  assert.doesNotMatch(tests.prompt, /detached HEAD/);
+});
+
+test("a verifier that checked deliver/<slug> out in the lane and committed there costs the story nothing: lane-land refuses the lane it left and puts the branch back at the base, the lane goes back to the story as it was checked, and the story lands without the stray commit at its first attempt", { timeout: 120000 }, async (t) => {
   const dirs = scratch(t, [story("US-1")]);
   const lane = laneOf(dirs);
   let stray = null;
   const roles = {
-    "tests:US-1": [async (call, serial) => {
+    "verify:US-1": [async (call, serial, d) => {
       await serial(() => {
         git(lane, "checkout", "-q", "deliver/board");
         commit(lane, "stray.test");
         stray = git(lane, "rev-parse", "HEAD").trim();
       });
-      return authored();
+      return verified()(call, serial, d);
     }],
   };
   const base = git(dirs.repo, "rev-parse", "HEAD").trim();
 
-  const { result, error, calls } = await deliver(dirs, {}, roles);
+  const { result, error, calls, logs } = await deliver(dirs, {}, roles);
 
   assert.equal(error, null);
   const tip = git(dirs.repo, "rev-parse", "refs/heads/deliver/board").trim();
   assert.throws(() => git(dirs.repo, "merge-base", "--is-ancestor", stray, tip));
   assert.deepEqual([git(dirs.repo, "log", "--format=%s", `${base}..${tip}`).trim(), findingsOf(dirs, "US-1"), agentsOf(calls, "impl:US-1").length], ["feat: US-1.txt", [], 1]);
-  const note = `US-1 landed without regression tests: lane-land refused the lane the test author left: the lane worktree had deliver/board checked out, not a detached HEAD: a commit there moves that branch without the compare-and-swap. deliver/board is back at the base ${base.slice(0, 7)}, from ${stray.slice(0, 7)}, and the lane is now detached.`;
-  assert.deepEqual(result.notes, [note]);
-  assert.ok(readFileSync(result.report, "utf8").includes(`\n${note}\n`), readFileSync(result.report, "utf8"));
-  assert.deepEqual([dirs.story("US-1").status, result.landed, result.tip, result.outcomes], ["done", ["US-1"], tip, [{ key: "US-1", outcome: "done" }]]);
+  assert.ok(logs.includes(`US-1: lane-land refused the lane as the verifier left it: the lane worktree had deliver/board checked out, not a detached HEAD: a commit there moves that branch without the compare-and-swap. deliver/board is back at the base ${base.slice(0, 7)}, from ${stray.slice(0, 7)}, and the lane is now detached; the lane goes back to the story as it was checked`), logs.join("\n"));
+  const sent = stepsOf(calls).map((s) => s.name).filter((name) => name === "lane-candidate" || name === "lane-land");
+  assert.deepEqual(sent.slice(0, 3), ["lane-land", "lane-candidate", "lane-land"]);
+  assert.deepEqual([dirs.story("US-1").status, result.landed, result.tip, result.outcomes, result.notes], ["done", ["US-1"], tip, [{ key: "US-1", outcome: "done" }], []]);
 });
 
 test("the verifier's prompt leaves out the seed and lint commands when the checks set none, and says all the same that the stack has no users until the seed runs and never to write into its database; a test obligation is the test author's: the verifier skips it, and the story lands without it judged", { timeout: 120000 }, async (t) => {
@@ -2300,12 +2349,12 @@ test("a lane agent that returns nothing is asked again after 30 s and after 2 mi
   assert.deepEqual([git(lane, "rev-parse", "HEAD").trim(), git(lane, "status", "--porcelain")], [git(dirs.repo, "rev-parse", "refs/heads/deliver/board").trim(), ""]);
 });
 
-test("a test author's question goes to the council: settled, the author runs again with the decision and the story lands; not settled, it opens a thread that blocks the story in reviewed, and the lane goes back to the tip", { timeout: 120000 }, async (t) => {
+test("a test author's question goes to the council, which reads the story's worktree: settled, the author runs again with the decision and its tests land; not settled, it opens a thread that names the story and is not linked from it, since the story is done, and the tests are dropped", { timeout: 120000 }, async (t) => {
   const dirs = ordered(t, [story("US-1"), story("US-2")]);
   const asks = (question) => authored({ status: "needs_decision", question, options: ["Yes", "No"], recommendation: "No" });
   const quoted = vote(1, { quote: "Badges blink", source: "doc doc-spec node n1" });
   const roles = {
-    "tests:US-1": [asks("Does the badge blink?"), authored()],
+    "tests:US-1": [asks("Does the badge blink?"), testsIn("badge.test")],
     "tests:US-2": [asks("Does the count wrap?")],
     ...councilOf("US-1", [quoted], [vote(1)], [vote(1)]),
     ...councilOf("US-2", [vote(1)], [vote(2)], [vote(0)]),
@@ -2317,14 +2366,18 @@ test("a test author's question goes to the council: settled, the author runs aga
   const authors = agentsOf(calls, "tests:US-1");
   assert.equal(authors.length, 2);
   assert.deepEqual(dirs.story("US-1").decisions, [{ question: "Does the badge blink?", choice: "Yes (council: \"Badges blink\" (doc doc-spec node n1))", by: "agent" }]);
-  assert.match(lineAfter(authors[1].prompt, "## Your task now\n"), /^An earlier session stopped to ask a question, which the story's decisions now settle\./);
-  for (const c of agentsOf(calls, "council:US-1:code")) assert.ok(c.prompt.includes(`You read the code, and nothing else: the story's worktree ${laneOf(dirs)}.`), c.prompt);
+  assert.match(lineAfter(authors[1].prompt, "## Your task now\n"), /^An earlier session stopped to ask a question, which the story's decisions now settle\. What it committed is in your worktree: /);
+  for (const c of agentsOf(calls, "council:US-1:code")) assert.ok(c.prompt.includes(`You read the code, and nothing else: the story's worktree ${dirs.worktree("US-1")}.`), c.prompt);
   const [asked] = questions(dirs);
   assert.deepEqual([questions(dirs).length, asked.title], [1, "US-2: Does the count wrap?"]);
   assert.match(asked.posts[0].body, /\nAsked by the test author\.\n/);
-  const outcome = (key) => result.outcomes.find((o) => o.key === key);
-  assert.deepEqual([outcome("US-1"), outcome("US-2")], [{ key: "US-1", outcome: "done" }, { key: "US-2", outcome: "needs_decision", thread: asked.id }]);
-  assert.deepEqual([dirs.story("US-2").status, dirs.story("US-2").blocked], ["reviewed", true]);
+  assert.deepEqual(result.outcomes.map((o) => [o.key, o.outcome]).sort(), [["US-1", "done"], ["US-2", "done"]]);
+  const note = `US-2 landed without regression tests: the test author asked a question the council did not settle (thread ${asked.id}).`;
+  assert.deepEqual([result.tests, result.notes], [[{ key: "US-1", outcome: "landed" }, { key: "US-2", outcome: "dropped", detail: note.slice("US-2 landed without regression tests: ".length, -1) }], [note]]);
+  // The board lets nothing be linked from a story that is done, nor is it blocked.
+  assert.deepEqual([dirs.story("US-2").status, dirs.story("US-2").blocked, dirs.story("US-2").links], ["done", false, []]);
+  assert.equal(dirs.state().calls.filter((c) => c.argv[0] === "story" && (c.argv[1] === "edit" || c.argv[1] === "block")).length, 0);
+  assert.deepEqual([existsSync(dirs.worktree("US-1")), existsSync(dirs.worktree("US-2")), git(dirs.repo, "branch", "--list", "story/*").trim()], [false, false, ""]);
   assert.deepEqual(result.council, { settled: 1, majority: 0, asked: 1 });
 });
 
@@ -2568,31 +2621,25 @@ test("what a stopped run left on the stack costs the next run's first story noth
   assert.deepEqual(boardLog(dirs).filter((e) => e.endsWith(" backlog")), []);
 });
 
-test("a test author's check that leaves a file behind costs the story nothing: lane-clean runs again after the check, and the story lands with its tests at its first attempt", { timeout: 120000 }, async (t) => {
+test("a test author's check that leaves a file behind in the lane costs its tests nothing: lane-clean runs after the check, in one call with lane-land, and the tests land", { timeout: 120000 }, async (t) => {
   const dirs = scratch(t, [story("US-1")]);
-  const lane = laneOf(dirs);
-  const roles = { "tests:US-1": [async (call, serial) => {
-    await serial(() => commit(lane, "badge.test"));
-    return authored({ check: "echo report > junit.xml", added: [{ test: "badge", file: "badge.test", risk: "", overlapCheck: "", sensitivity: "" }] });
-  }] };
+  const roles = { "tests:US-1": [testsIn("badge.test", "echo report > junit.xml")] };
 
   const { result, error, logs } = await deliver(dirs, {}, roles);
 
   assert.equal(error, null);
   assert.ok(logs.includes("US-1: lane-clean threw away 1 file the test author's check left: junit.xml"), logs.join("\n"));
-  assert.deepEqual([git(dirs.repo, "log", "-1", "--format=%s", "refs/heads/deliver/board").trim(), result.outcomes, findingsOf(dirs, "US-1"), result.notes], ["feat: badge.test", [{ key: "US-1", outcome: "done" }], [], []]);
+  assert.deepEqual([git(dirs.repo, "log", "-1", "--format=%s", "refs/heads/deliver/board").trim(), result.outcomes, result.tests, findingsOf(dirs, "US-1"), result.notes], ["feat: badge.test", [{ key: "US-1", outcome: "done" }], [{ key: "US-1", outcome: "landed" }], [], []]);
 });
 
-test("a test author's check that comes out red gets the author once more, told where the check's output is: tests it fixes land with the story, at its first attempt", { timeout: 120000 }, async (t) => {
+test("tests whose check comes out red in the lane get their author once more, in its worktree, told why and where the check's output is, and the lane goes back to the tip meanwhile: tests it fixes land", { timeout: 120000 }, async (t) => {
   const dirs = scratch(t, [story("US-1")]);
   const lane = laneOf(dirs);
   const check = "test -f fixed.test || { echo badge.test fails; exit 1; }";
-  const roles = { "tests:US-1": [async (call, serial) => {
-    await serial(() => commit(lane, "badge.test"));
-    return authored({ check, added: [{ test: "badge", file: "badge.test", risk: "", overlapCheck: "", sensitivity: "" }] });
-  }, async (call, serial) => {
-    await serial(() => commit(lane, "fixed.test"));
-    return authored({ check, added: [{ test: "badge", file: "badge.test", risk: "", overlapCheck: "", sensitivity: "" }] });
+  const seen = {};
+  const roles = { "tests:US-1": [testsIn("badge.test", check), async (call, serial) => {
+    Object.assign(seen, await serial(() => ({ lane: git(lane, "rev-parse", "HEAD").trim(), tip: git(dirs.repo, "rev-parse", "refs/heads/deliver/board").trim(), mine: git(worktreeIn(call.prompt), "log", "-1", "--format=%s").trim() })));
+    return testsIn("fixed.test", check)(call, serial);
   }] };
   const head = git(dirs.repo, "rev-parse", "HEAD").trim();
 
@@ -2602,17 +2649,19 @@ test("a test author's check that comes out red gets the author once more, told w
   const authors = agentsOf(calls, "tests:US-1");
   assert.equal(authors.length, 2);
   const log = join(dirs.repo, ".omni", "runs", result.run, "jobs", "US-1-tests-1.log");
-  assert.equal(between(authors[1].prompt, "## Your task now\n", "\nReturn raw structured data only."), `An earlier session committed tests in the lane worktree, and their check \`${check}\` failed: its output is in ${log}: read the end of it.\nThe story itself passed its checks and its verifier. Fix the tests, never the production code, so that the check passes, commit the fix, and return the result with the check.`);
+  assert.equal(between(authors[1].prompt, "## Your task now\n", "\nReturn raw structured data only."), `An earlier session committed tests in your worktree, and they did not land on deliver/board: their check \`${check}\` failed: its output is in ${log}.\nThe story itself has landed. Fix the tests, never the production code, so that they land: for a check that failed, read the end of its output and make the check pass; for a rebase conflict, rebase story/US-1 onto deliver/board and resolve it in your tests. Commit the fix, and return the result with the check.`);
   assert.equal(readFileSync(log, "utf8"), "badge.test fails\n");
+  // Asked again, the author found the lane back at the tip, and its own commit where it left it.
+  assert.deepEqual([seen.lane, seen.mine], [seen.tip, "feat: badge.test"]);
   assert.deepEqual(git(dirs.repo, "log", "--format=%s", `${head}..refs/heads/deliver/board`).trim().split("\n"), ["feat: fixed.test", "feat: badge.test", "feat: US-1.txt"]);
-  assert.deepEqual([result.outcomes, findingsOf(dirs, "US-1"), result.notes], [[{ key: "US-1", outcome: "done" }], [], []]);
+  assert.deepEqual([result.outcomes, result.tests, findingsOf(dirs, "US-1"), result.notes], [[{ key: "US-1", outcome: "done" }], [{ key: "US-1", outcome: "landed" }], [], []]);
 });
 
-test("a test author's check still red after the author is asked once more costs the story nothing: its tests are dropped, the verified story lands without them at its first attempt, and the report notes it", { timeout: 120000 }, async (t) => {
+test("tests whose check is still red after their author is asked once more are dropped: the story stays done with no finding, its worktree and branch go, the lane is back at the tip, and the report notes that it landed without regression tests", { timeout: 120000 }, async (t) => {
   const dirs = scratch(t, [story("US-1")]);
   const check = "echo the badge test fails; exit 1";
   // Asked once more, the author gives no check: it is held to the one it gave before.
-  const roles = { "tests:US-1": [testsIn(dirs, "badge.test", check), testsIn(dirs, "badge2.test", "")] };
+  const roles = { "tests:US-1": [testsIn("badge.test", check), testsIn("badge2.test", "")] };
   const head = git(dirs.repo, "rev-parse", "HEAD").trim();
 
   const { result, error, calls } = await deliver(dirs, {}, roles);
@@ -2620,21 +2669,24 @@ test("a test author's check still red after the author is asked once more costs 
   assert.equal(error, null);
   assert.equal(agentsOf(calls, "tests:US-1").length, 2);
   assert.deepEqual(git(dirs.repo, "log", "--format=%s", `${head}..refs/heads/deliver/board`).trim(), "feat: US-1.txt");
-  const note = `US-1 landed without regression tests: the test author's check \`${check}\` failed again, after the author was asked once more.`;
-  assert.deepEqual([result.outcomes, findingsOf(dirs, "US-1"), result.notes], [[{ key: "US-1", outcome: "done" }], [], [note]]);
+  const log = join(dirs.repo, ".omni", "runs", result.run, "jobs", "US-1-tests-2.log");
+  const why = `their check \`${check}\` failed: its output is in ${log}, after the author was asked once more`;
+  const note = `US-1 landed without regression tests: ${why}.`;
+  assert.deepEqual([result.outcomes, result.tests, findingsOf(dirs, "US-1"), result.notes], [[{ key: "US-1", outcome: "done" }], [{ key: "US-1", outcome: "dropped", detail: why }], [], [note]]);
   assert.ok(readFileSync(result.report, "utf8").includes(`\n${note}\n`), readFileSync(result.report, "utf8"));
   const lane = laneOf(dirs);
-  assert.deepEqual([git(lane, "status", "--porcelain"), dirs.story("US-1").status], ["", "done"]);
+  assert.deepEqual([git(lane, "rev-parse", "HEAD").trim(), git(lane, "status", "--porcelain"), dirs.story("US-1").status], [git(dirs.repo, "rev-parse", "refs/heads/deliver/board").trim(), "", "done"]);
+  assert.deepEqual([existsSync(dirs.worktree("US-1")), git(dirs.repo, "branch", "--list", "story/US-1").trim()], [false, ""]);
 });
 
-test("a lane that is dirty when lane-land runs, from something the test author left running, is refused as the lane's state: the story lands without its tests at its first attempt, and the report notes it", { timeout: 120000 }, async (t) => {
+test("a lane that is dirty when lane-land runs, from something an agent left running, is refused as the lane's state: the lane goes back to the story as it was checked, and the story lands at its first attempt", { timeout: 120000 }, async (t) => {
   const dirs = scratch(t, [story("US-1")]);
   const lane = laneOf(dirs);
   let late = false;
-  // A file that appears after the last lane-clean, as a process the author
-  // left running would write it: lane-clean and lane-land go in one call, so
-  // the file is there before it, and written once more as soon as lane-clean
-  // has thrown it away.
+  // A file that appears after the last lane-clean, as a process an agent left
+  // running would write it: lane-clean and lane-land go in one call, so the
+  // file is there before it, and written once more as soon as lane-clean has
+  // thrown it away.
   const fault = (call) => {
     if (call.label === "courier:lane-clean+lane-land:US-1" && !late) {
       late = true;
@@ -2651,37 +2703,101 @@ test("a lane that is dirty when lane-land runs, from something the test author l
   };
   const head = git(dirs.repo, "rev-parse", "HEAD").trim();
 
-  const { result, error } = await deliver(dirs, {}, { "tests:US-1": [testsIn(dirs, "badge.test")] }, { fault });
+  const { result, error, logs } = await deliver(dirs, {}, {}, { fault });
 
   assert.equal(error, null);
   assert.deepEqual(git(dirs.repo, "log", "--format=%s", `${head}..refs/heads/deliver/board`).trim(), "feat: US-1.txt");
-  assert.deepEqual([result.outcomes, findingsOf(dirs, "US-1"), result.notes], [[{ key: "US-1", outcome: "done" }], [], ["US-1 landed without regression tests: lane-land refused the lane the test author left: the lane worktree has uncommitted changes in 1 file (late.log): what lands must be what was checked, so lane-clean it and check it again."]]);
+  assert.ok(logs.includes("US-1: lane-land refused the lane as the verifier left it: the lane worktree has uncommitted changes in 1 file (late.log): what lands must be what was checked, so lane-clean it and check it again; the lane goes back to the story as it was checked"), logs.join("\n"));
+  assert.deepEqual([result.outcomes, findingsOf(dirs, "US-1"), result.notes], [[{ key: "US-1", outcome: "done" }], [], []]);
 });
 
-test("a test author whose test finds a defect sends the story back for its next attempt, with the defect as its finding, and the lane goes back to the tip", { timeout: 120000 }, async (t) => {
+test("a defect the test author's test finds after the story has landed opens a thread that names the story, with the test, the observed and the expected, and sends nothing back: the story stays done with no finding and no attempt used, its tests are dropped, and the report notes both", { timeout: 120000 }, async (t) => {
   const dirs = scratch(t, [story("US-1")]);
   const roles = { "tests:US-1": [authored({ status: "found_defect", defect: { test: "badge_is_red", observed: "pink", expected: "red" } })] };
 
   const { result, error, calls } = await deliver(dirs, {}, roles);
 
   assert.equal(error, null);
-  assert.deepEqual(findingsOf(dirs, "US-1"), [["testing", "[attempt 1] The test author's test badge_is_red found a defect. Observed: pink. Expected: red", [], true]]);
-  const sent = stepsOf(calls).map((s) => s.name);
-  assert.ok(sent.includes("lane-reset") && sent.indexOf("lane-reset") < sent.indexOf("rework"), sent.join("\n"));
-  assert.deepEqual([agentsOf(calls, "impl:US-1").length, result.outcomes], [2, [{ key: "US-1", outcome: "done" }]]);
+  const [defect] = questions(dirs);
+  assert.deepEqual([questions(dirs).length, defect.title], [1, "US-1: its tests found a defect after it landed"]);
+  assert.equal(defect.posts[0].body, "US-1 has landed on deliver/board, and the test author's test badge_is_red found a defect in it. Observed: pink. Expected: red.\n\nThe story is done, and this uses none of its attempts: the test did not land, and the story is not sent back. Decide what becomes of the defect, such as a story of its own.\n");
+  assert.deepEqual([dirs.story("US-1").status, dirs.story("US-1").blocked, dirs.story("US-1").links, findingsOf(dirs, "US-1")], ["done", false, [], []]);
+  assert.deepEqual([agentsOf(calls, "impl:US-1").length, timeline(dirs, "US-1").slice(-1), stepsNamed(calls, "rework").length, stepsNamed(calls, "finding").length], [1, ["move done"], 0, 0]);
+  assert.equal(dirs.state().calls.filter((c) => c.argv[0] === "story" && (c.argv[1] === "edit" || c.argv[1] === "block")).length, 0);
+  const why = `its tests found a defect in it (thread ${defect.id})`;
+  assert.deepEqual([result.outcomes, result.tests], [[{ key: "US-1", outcome: "done" }], [{ key: "US-1", outcome: "dropped", detail: why }]]);
+  assert.deepEqual(result.notes, [`The tests of US-1 found a defect after it landed (thread ${defect.id}).`, `US-1 landed without regression tests: ${why}.`]);
+  assert.deepEqual([existsSync(dirs.worktree("US-1")), git(dirs.repo, "branch", "--list", "story/US-1").trim()], [false, ""]);
 });
 
-test("a test author that is blocked opens a thread with its reason, which blocks the story in reviewed with no attempt used, and the lane goes back to the tip", { timeout: 120000 }, async (t) => {
-  const dirs = scratch(t, [story("US-1")]);
-  const roles = { "tests:US-1": [authored({ status: "blocked", blockers: "No test runner for the badge." })] };
+test("a test author that is blocked opens a thread with its reason, which names the story and does not block it, and one that returns nothing is asked again after 30 s and after 2 minutes: either way the story stays done and its tests are dropped, which the report notes", { timeout: 120000 }, async (t) => {
+  const dirs = ordered(t, [story("US-1"), story("US-2")]);
+  const roles = { "tests:US-1": [authored({ status: "blocked", blockers: "No test runner for the badge." })], "tests:US-2": [null, null, null] };
+
+  const { result, error, calls, sleeps } = await deliver(dirs, {}, roles);
+
+  assert.equal(error, null);
+  const [blocked] = questions(dirs);
+  assert.deepEqual([questions(dirs).length, blocked.title, blocked.posts[0].body], [1, "US-1: the test author is blocked", "No test runner for the badge.\n"]);
+  assert.deepEqual(["US-1", "US-2"].map((key) => [dirs.story(key).status, dirs.story(key).blocked, dirs.story(key).links, dirs.story(key).findings || []]), [["done", false, [], []], ["done", false, [], []]]);
+  assert.deepEqual([agentsOf(calls, "tests:US-2").length, sleeps], [3, [30, 120]]);
+  assert.deepEqual(result.tests, [
+    { key: "US-1", outcome: "dropped", detail: `the test author is blocked (thread ${blocked.id})` },
+    { key: "US-2", outcome: "dropped", detail: "the test author returned nothing, 3 times" },
+  ]);
+  assert.deepEqual(result.notes, [`US-1 landed without regression tests: the test author is blocked (thread ${blocked.id}).`, "US-2 landed without regression tests: the test author returned nothing, 3 times."]);
+  assert.deepEqual([existsSync(dirs.worktree("US-1")), existsSync(dirs.worktree("US-2")), result.halted], [false, false, null]);
+});
+
+test("a story's tests are written outside the lane's lock, one author at a time: the next story is tested and lands while the first story's author still writes, whose tests then land on the tip that moved; the second author starts once those have landed, from a worktree that holds them and with their names in its prompt; and the run's report waits for the last tests", { timeout: 120000 }, async (t) => {
+  // US-2 waits on US-1, so it reaches the lane only once the author of US-1 is at work.
+  const dirs = ordered(t, [story("US-1"), story("US-2", { blocked_by: ["US-1"] })]);
+  const seen = {};
+  const roles = {
+    // The author of US-1 writes until US-2 is done, or for 30 s.
+    "tests:US-1": [async (call, serial) => {
+      for (let i = 0; i < 600 && dirs.story("US-2").status !== "done"; i++) await pause(50);
+      seen.second = dirs.story("US-2").status;
+      return testsIn("US-1.test")(call, serial);
+    }],
+    "tests:US-2": [async (call, serial) => {
+      seen.mine = await serial(() => git(worktreeIn(call.prompt), "log", "--format=%s", "-3").trim().split("\n"));
+      return testsIn("US-2.test")(call, serial);
+    }],
+  };
+  const head = git(dirs.repo, "rev-parse", "HEAD").trim();
 
   const { result, error, calls } = await deliver(dirs, {}, roles);
 
   assert.equal(error, null);
-  const [blocked] = questions(dirs);
-  assert.deepEqual([blocked.title, blocked.posts[0].body], ["US-1: the test author is blocked", "No test runner for the badge.\n"]);
-  assert.deepEqual([dirs.story("US-1").status, dirs.story("US-1").blocked, dirs.story("US-1").findings || [], result.outcomes], ["reviewed", true, [], [{ key: "US-1", outcome: "blocked", thread: blocked.id }]]);
-  assert.equal(agentsOf(calls, "courier:lane-reset:US-1").length, 1);
+  assert.deepEqual(seen, { second: "done", mine: ["feat: US-1.test", "feat: US-2.txt", "feat: US-1.txt"] });
+  assert.deepEqual(git(dirs.repo, "log", "--format=%s", `${head}..refs/heads/deliver/board`).trim().split("\n"), ["feat: US-2.test", "feat: US-1.test", "feat: US-2.txt", "feat: US-1.txt"]);
+  assert.deepEqual([result.outcomes.map((o) => [o.key, o.outcome]), result.tests, result.notes], [[["US-1", "done"], ["US-2", "done"]], [{ key: "US-1", outcome: "landed" }, { key: "US-2", outcome: "landed" }], []]);
+  assert.deepEqual(["US-1", "US-2"].map((key) => dirs.story(key).files_changed), [["US-1.txt", "US-1.test"], ["US-2.txt", "US-2.test"]]);
+  const [second] = agentsOf(calls, "tests:US-2");
+  assert.ok(second.prompt.includes("\n## Tests added earlier in this run (part of the existing suite; do not re-test what they pin)\n- [US-1] US-1.test (US-1.test)\n"), second.prompt);
+  const labels = calls.map((c) => c.label);
+  assert.ok(labels.lastIndexOf("courier:lane-clean+lane-land:US-2") < labels.indexOf("final") && labels.indexOf("final") < labels.indexOf("courier:finish"), labels.join("\n"));
+  assert.deepEqual([existsSync(dirs.worktree("US-1")), existsSync(dirs.worktree("US-2")), git(dirs.repo, "branch", "--list", "story/*").trim()], [false, false, ""]);
+});
+
+test("a story is taken only while the calls set aside for it and for the landed stories' tests in flight fit under the cap: one that fits once those tests have ended waits for them, and is taken then", { timeout: 120000 }, async (t) => {
+  // US-1 has landed after some 22 calls. US-2, which waited on it, needs 30 more, and the tests of US-1 another 30 while they are in flight: over 75 with them, under it without.
+  const source = capped({ AGENT_CAP: 75, STORY_CALLS: 30, CHECK_CALLS: 1 });
+  const dirs = ordered(t, [story("US-1"), story("US-2", { blocked_by: ["US-1"] })]);
+  const seen = {};
+  const roles = { "tests:US-1": [async (call, serial) => {
+    // Long enough for a claim of US-2, which is a list and a claim away.
+    await pause(1500);
+    Object.assign(seen, { first: dirs.story("US-1").status, claims: claimsOf(dirs, "US-2") });
+    return testsIn("US-1.test")(call, serial);
+  }] };
+
+  const { result, error, logs } = await deliver(dirs, {}, roles, { source });
+
+  assert.equal(error, null);
+  assert.deepEqual(seen, { first: "done", claims: [] });
+  assert.deepEqual([result.outcomes.map((o) => [o.key, o.outcome]), result.tests.map((o) => [o.key, o.outcome])], [[["US-1", "done"], ["US-2", "done"]], [["US-1", "landed"], ["US-2", "none"]]], logs.join("\n"));
 });
 
 test("a lane stop whose release fails stops the lane all the same, with its thread, and the report notes the release", { timeout: 120000 }, async (t) => {

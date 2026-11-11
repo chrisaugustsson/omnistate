@@ -127,24 +127,33 @@
 // - job-kill {id}, or {start}, the opId of a job-start whose answer never
 //   came back: id (null when that start made no job), killed, done, and once
 //   done result
-// - lane-prepare {key}: key, outcome: ready with base and candidate; conflict
-//   with files and count; dirty with files and count (uncommitted changes, a
-//   rebase in progress or an index.lock in the story's worktree);
+// - lane-prepare {key, clean?}: key, outcome: ready with base and candidate;
+//   conflict with files and count; dirty with files and count (uncommitted
+//   changes, a rebase in progress or an index.lock in the story's worktree);
 //   wrong_branch with head (the branch checked out, null when detached) and
 //   commits (those not on story/<key>); missing or infra. Every outcome but
 //   ready and conflict has a reason. dirty and wrong_branch are the story's
 //   to fix, and count as an attempt; conflict does not; infra is not the
-//   story's.
+//   story's. With clean, for the tests of a story that has landed, what is
+//   uncommitted in the worktree is thrown away first, and ready has cleaned
+//   ({discarded, count}) when there was any.
 // - lane-clean {}: discarded and count: what it threw away
 // - lane-base {} and lane-reset {}: tip
 // - lane-candidate {candidate}: head; the lane worktree back at the candidate
-//   lane-prepare gave, without what the test author committed
-// - lane-land {key, base}: key, landed, with base, final, files (how many)
-//   and removed when landed, reason when refused, and inLane true when the
-//   lane worktree's state refused it (a branch checked out, uncommitted
-//   changes, a HEAD that does not descend from the base or hold the story);
-//   refused for deliver/<slug> checked out in the lane, it puts the branch
-//   back at the base and detaches the lane
+//   lane-prepare gave, without what an agent left there
+// - lane-land {key, base, keep?, tests?}: key, landed, with base, final, files
+//   (how many) and removed when landed, reason when refused, and inLane true
+//   when the lane worktree's state refused it (a branch checked out,
+//   uncommitted changes, a HEAD that does not descend from the base or hold
+//   the story); refused for deliver/<slug> checked out in the lane, it puts
+//   the branch back at the base and detaches the lane. With keep, the story's
+//   worktree and branch stay, for its test author (removed false). With
+//   tests, what lands is that author's commits, on a story that is done:
+//   their files join the story's, and nothing else of the story is written
+// - tests-prepare {key}: key, path, branch, tip; the worktree of a story that
+//   has landed, on story/<key>, clean, at the tip of deliver/<slug>
+// - tests-drop {key}: key, removed; that worktree and its branch gone, with
+//   the tests in them
 // - finish {report: {outcomes: [{key, outcome, detail?}], council: {settled,
 //   majority, asked}, journeys?: [line], notes?: [line]}}: thread, posted, report,
 //   stopped. The blocked stories and their threads come from the board
@@ -158,12 +167,15 @@
 // most 20.
 //
 // The lane, story by story: lane-prepare; the checks as jobs in the lane
-// worktree; the verifier; the test author; lane-clean, so that the test
-// author's check runs on exactly what lands; that check; lane-clean again, for
-// what the check left behind; lane-land, which refuses a lane worktree with
-// uncommitted changes. When the author's tests cannot land, lane-candidate
-// puts the lane back at the story as its checks and verifier found it, and
-// the story lands without them.
+// worktree; the verifier; lane-clean, for what it left behind; lane-land
+// with keep, which refuses a lane worktree with uncommitted changes. When
+// lane-land refuses the lane for its state, lane-candidate puts it back at
+// the story as its checks and verifier found it, and the story lands from
+// that. The story's tests come after it has landed, outside the lane's lock:
+// tests-prepare, the test author in the story's worktree, then a turn in the
+// lane with lane-prepare with clean, the author's check as a job, lane-clean
+// and lane-land with tests; tests-drop when they do not land. start removes
+// the worktree of a done story that a stopped run left for its author.
 //
 // Left as they are:
 // - A job's command can leave members of its group running in the background
@@ -793,11 +805,13 @@ const laneToTip = (b) => {
 // to delete, past a courier's Bash call. A worktree that cannot be moved
 // stays, and says so: the story has landed all the same. So does a folder in
 // its place that is not the story's own worktree of this checkout on
-// story/<key>, and the branch with it.
-const removeWorktree = (b, key) => {
+// story/<key>, and the branch with it. whatever: the worktree of a story
+// that has landed already, kept for its test author, goes whatever it has
+// checked out, with what the author left in it.
+const removeWorktree = (b, key, whatever = false) => {
   const wt = b.worktreeOf(key)
   if (fs.existsSync(wt)) {
-    if (!isWorktree(b.root, wt) || !ownTree(wt) || headRef(wt) !== `refs/heads/story/${key}`) return false
+    if (!isWorktree(b.root, wt) || !ownTree(wt) || (!whatever && headRef(wt) !== `refs/heads/story/${key}`)) return false
     try {
       const bin = path.join(b.storiesDir, '_trash')
       fs.mkdirSync(bin, { recursive: true })
@@ -955,6 +969,7 @@ const STAGES = ['implementing', 'review', 'testing']
 // which takes in the agents between them; in its rebases, which lane-prepare
 // times apart from the lane's checkout; and in its jobs, by name in order. A
 // count after a time says how many there were.
+const WRITING = 'test writing'
 const timingTable = (records, jobs) => {
   const at = (iso) => Date.parse(iso)
   const keyed = records.filter((r) => r.key).sort((x, y) => at(x.started) - at(y.started))
@@ -962,7 +977,10 @@ const timingTable = (records, jobs) => {
   const keys = [...new Set([...keyed.map((r) => r.key), ...ended.map((j) => j.key)])]
   if (keys.length === 0) return '- none'
   const names = [...new Set(ended.map((j) => j.name))].sort()
-  const columns = [...STAGES, 'rebase', ...names.map((n) => `job ${n}`)]
+  // A story's time from tests-prepare on is its test author's, after it
+  // landed, and not its testing stage's.
+  const written = keyed.some((r) => r.step === 'tests-prepare') ? [WRITING] : []
+  const columns = [...STAGES, ...written, 'rebase', ...names.map((n) => `job ${n}`)]
   const add = (times, column, ms) => {
     const [sum, n] = times.get(column) || [0, 0]
     times.set(column, [sum + ms, n + 1])
@@ -975,9 +993,9 @@ const timingTable = (records, jobs) => {
     let open = null
     const close = () => { if (open) add(times, open.stage, open.to - open.from) }
     for (const r of mine) {
-      if (r.step === 'claim' && r.ok) {
+      if ((r.step === 'claim' && r.ok) || r.step === 'tests-prepare') {
         close()
-        open = { stage: r.stage, from: at(r.started), to: at(r.ended) }
+        open = { stage: r.step === 'claim' ? r.stage : WRITING, from: at(r.started), to: at(r.ended) }
       } else if (open) open.to = Math.max(open.to, at(r.ended))
       if (r.step === 'rebase') add(times, 'rebase', r.ms)
     }
@@ -989,7 +1007,7 @@ const timingTable = (records, jobs) => {
     })
     return `| ${key} | ${took(Math.max(...spans.map((s) => s[1])) - Math.min(...spans.map((s) => s[0])))} | ${cells.join(' | ')} |`
   })
-  const head = ['Story', 'Total', ...STAGES, 'rebase', ...names]
+  const head = ['Story', 'Total', ...STAGES, ...written, 'rebase', ...names]
   return [`| ${head.join(' | ')} |`, `|${head.map(() => '---').join('|')}|`, ...rows, '', 'A time with (n) after it adds up n of them: claims of the stage, rebases, or runs of the job.'].join('\n')
 }
 // The report, modelled on the one omni-deliver.js posts: what the script knows
@@ -1017,7 +1035,7 @@ const reportText = (b, info, report) => {
   return `${[
     `# Run ${b.runId} on ${b.feature}`,
     ...list(report.notes).map(String),
-    `## Landed on ${b.branch}\n${lines(landed.map((l) => `${named(l.key)}: ${commitsOf(l).join('; ') || 'no commits'}`))}${landed.length ? `\n\nBring them into your branch with \`git merge --ff-only ${b.branch}\`.` : ''}`,
+    `## Landed on ${b.branch}\n${lines(landed.map((l) => `${named(l.key)}${l.tests ? ', its tests' : ''}: ${commitsOf(l).join('; ') || 'no commits'}`))}${landed.length ? `\n\nBring them into your branch with \`git merge --ff-only ${b.branch}\`.` : ''}`,
     `## Blocked\n${unread || lines(stories.filter((s) => s.blocked && s.status !== 'done' && s.status !== 'cancelled').map((s) => `${named(s.key)}: thread ${(s.links || []).map((l) => l.thread_id).filter(Boolean).join(', ') || '(none linked)'}`))}`,
     `## Outcomes\n${lines(list(report.outcomes).filter((o) => o.key).map((o) => `${named(o.key)}: ${o.outcome}${o.detail ? `: ${o.detail}` : ''}`))}`,
     `## Council\n- ${settled} question${settled === 1 ? '' : 's'} settled by the council, ${count(council.majority)} of them by a majority of 2, ${count(council.asked)} sent to the human`,
@@ -1438,6 +1456,17 @@ const STEPS = {
     if (!hasBranch(b.root, branch)) return outcome('missing', { reason: `no branch ${branch}` })
     if (!isWorktree(b.root, wt) || !ownTree(wt)) return outcome('missing', { reason: `${wt} is not a worktree of ${b.root} of its own, so git does nothing in it` })
     if (marker && rebasingIn(wt) === ref) tryRun('git', ['-C', wt, 'rebase', '--abort'])
+    // clean: what is uncommitted in the worktree is thrown away first, and the
+    // body says what, as cleaned. For a landed story's test author, whose
+    // commits are all that lands: a mutant or a report it left costs it nothing.
+    let cleaned = null
+    if (p.clean === true && rebasingIn(wt) === null && !indexLockIn(wt)) {
+      const files = changedFiles(wt)
+      if (files.length) {
+        cleanTree(b, wt)
+        cleaned = { discarded: files.slice(0, LISTED), count: files.length }
+      }
+    }
     const dirty = changedFiles(wt)
     const left = { files: dirty.slice(0, LISTED), count: dirty.length }
     const rebasing = rebasingIn(wt)
@@ -1474,7 +1503,7 @@ const STEPS = {
     }
     const candidate = b.git(['rev-parse', ref]).trim()
     laneAt(b, candidate)
-    return outcome('ready', { base, candidate })
+    return outcome('ready', { base, candidate, ...(cleaned ? { cleaned } : {}) })
   })(),
 
   // Throws away what is uncommitted in the lane worktree, as start does
@@ -1495,19 +1524,19 @@ const STEPS = {
   'lane-reset': (b) => laneToTip(b),
   // The lane worktree back at the candidate lane-prepare checked out, clean
   // and detached: the story as its checks and its verifier found it, without
-  // the tests its author could not get to land.
+  // what an agent left in the lane.
   'lane-candidate': (b, p) => missing(p, 'candidate') || (() => {
     if (!/^[0-9a-f]{40,64}$/.test(p.candidate)) return { ok: false, error: `the candidate is a commit's full hash, not ${p.candidate}` }
     laneAt(b, p.candidate)
     return { head: b.git(['-C', b.lane, 'rev-parse', 'HEAD']).trim() }
   })(),
 
-  // Lands the lane worktree's HEAD, the tested candidate with what the test
-  // author committed on top, by a compare-and-swap of deliver/<slug> from the
-  // base. Refused (landed false) unless that HEAD is detached, with nothing
-  // uncommitted, descends from the base and holds story/<key>, and unless the
+  // Lands the lane worktree's HEAD, the tested candidate, by a
+  // compare-and-swap of deliver/<slug> from the base. Refused (landed false)
+  // unless that HEAD is detached, with nothing uncommitted, descends from the
+  // base and holds story/<key>, and unless the
   // branch is still at the base; inLane says that the lane worktree's state
-  // refused it, which a test author can leave. A branch at the lane's HEAD
+  // refused it, which an agent can leave. A branch at the lane's HEAD
   // proves nothing: a commit made in the lane with deliver/<slug> checked out
   // moves the branch there too. So a lane with deliver/<slug> checked out
   // puts the branch back at the base, by a compare-and-swap from where it is,
@@ -1517,7 +1546,11 @@ const STEPS = {
   // Only this op's record of the swap it made lets a repeat, after a try that
   // was cut off, skip it. Then the landed tree must be the tested one, and
   // the story is done: its files recorded, its criteria ticked (a human check
-  // pending), its open findings resolved, its worktree and branch gone.
+  // pending), its open findings resolved, its worktree and branch gone. With
+  // keep, the worktree and the branch stay, for the story's test author. With
+  // tests, what lands is that author's tests, on a story that is done: their
+  // files join the story's, nothing else is written, and the worktree and
+  // the branch go.
   'lane-land': (b, p, { marker, mark }) => missing(p, 'key', 'base') || (() => {
     const refused = (reason, inLane = false) => ({ key: p.key, landed: false, reason, ...(inLane ? { inLane } : {}) })
     let final = marker && marker.swapped
@@ -1549,19 +1582,46 @@ const STEPS = {
     const landedTree = b.git(['rev-parse', `refs/heads/${b.branch}^{tree}`]).trim()
     const finalTree = b.git(['rev-parse', `${final}^{tree}`]).trim()
     if (landedTree !== finalTree) return { ok: false, key: p.key, error: `${b.branch} holds the tree ${short(landedTree)} after the landing, not ${short(finalTree)}, the tree of ${short(final)} that was tested` }
-    updateRun(b.root, b.runId, (info) => ({ ...info, landed: [...(info.landed || []).filter((l) => l.final !== final), { key: p.key, base: p.base, final }] }))
+    updateRun(b.root, b.runId, (info) => ({ ...info, landed: [...(info.landed || []).filter((l) => l.final !== final), { key: p.key, base: p.base, final, ...(p.tests === true ? { tests: true } : {}) }] }))
     const files = b.git(['-c', 'core.quotePath=false', 'diff', '--name-only', '-z', p.base, final]).split('\0').filter(Boolean)
     try {
-      if (files.length) b.write('files', p.key, files)
-      const story = b.readStory(p.key)
-      ;(story.criteria || []).forEach((c, i) => { if (!c.ticked) b.write('tick', p.key, ['--criterion', String(i), ...(criterionOf(c).human_check ? ['--pending'] : [])]) })
-      ;(story.findings || []).forEach((f, i) => { if (!f.resolved) b.write('resolve', p.key, ['--finding', String(i)]) })
-      if (story.status !== 'done') b.write('move', p.key, ['--to', 'done'])
+      if (p.tests === true) {
+        const had = b.readStory(p.key).files_changed || []
+        const all = [...new Set([...had, ...files])]
+        if (all.length > had.length) b.write('files', p.key, all)
+      } else {
+        if (files.length) b.write('files', p.key, files)
+        const story = b.readStory(p.key)
+        ;(story.criteria || []).forEach((c, i) => { if (!c.ticked) b.write('tick', p.key, ['--criterion', String(i), ...(criterionOf(c).human_check ? ['--pending'] : [])]) })
+        ;(story.findings || []).forEach((f, i) => { if (!f.resolved) b.write('resolve', p.key, ['--finding', String(i)]) })
+        if (story.status !== 'done') b.write('move', p.key, ['--to', 'done'])
+      }
     } catch (e) {
-      return { ok: false, key: p.key, landed: true, base: p.base, final, error: `landed on ${b.branch} at ${short(final)}, but the story is not done: ${failure(e)}`, retry: retryable(e) }
+      return { ok: false, key: p.key, landed: true, base: p.base, final, error: `landed on ${b.branch} at ${short(final)}, but ${p.tests === true ? 'the files of its tests are not on the story' : 'the story is not done'}: ${failure(e)}`, retry: retryable(e) }
     }
-    return { key: p.key, landed: true, base: p.base, final, files: files.length, removed: removeWorktree(b, p.key) }
+    return { key: p.key, landed: true, base: p.base, final, files: files.length, removed: p.keep === true ? false : removeWorktree(b, p.key) }
   })(),
+
+  // The worktree of a story that has landed, for its test author: on
+  // story/<key>, clean, at the tip of deliver/<slug>, which holds the story
+  // and every test that landed since. Refused when story/<key> holds a commit
+  // that is not on deliver/<slug>, which would be lost.
+  'tests-prepare': (b, p) => missing(p, 'key') || (() => {
+    const wt = b.worktreeOf(p.key)
+    const branch = `story/${p.key}`
+    if (!fs.existsSync(wt) || !isWorktree(b.root, wt) || !ownTree(wt) || !hasBranch(b.root, branch)) return { ok: false, error: `${wt} is not the worktree of ${p.key} on ${branch}, which its landing kept for the test author`, retry: false }
+    const tip = tipOf(b)
+    if (!isAncestorIn(b.root, `refs/heads/${branch}`, tip)) return { ok: false, error: `${branch} holds commits that are not on ${b.branch}, so it is not brought to its tip`, retry: false }
+    if (rebasingIn(wt) !== null) tryRun('git', ['-C', wt, 'rebase', '--abort'])
+    if (headRef(wt) !== `refs/heads/${branch}`) b.git(['-C', wt, 'checkout', '-q', '-f', branch])
+    cleanTree(b, wt)
+    b.git(['-C', wt, 'reset', '-q', '--hard', tip])
+    return { key: p.key, path: wt, branch, tip }
+  })(),
+
+  // The worktree and the branch of a story that has landed go, with the
+  // tests its author did not get to land.
+  'tests-drop': (b, p) => missing(p, 'key') || { key: p.key, removed: removeWorktree(b, p.key, true) },
 
   // Posts the run's report on its thread, from a body file, after stopping
   // the run's jobs that still run, and gives the lock up. The report is also
@@ -1598,7 +1658,7 @@ const STEPS = {
 }
 // The steps whose bodies are recorded under their opId, so that a repeat does
 // not write twice. The others only read, or wait: a repeat runs them again.
-const WRITES = new Set(['claim', 'rework', 'release', 'move', 'block', 'unblock', 'finding', 'decision', 'obligations', 'files', 'thread-open', 'exhaust', 'unblock-pass', 'worktree', 'clarity-record', 'checks-set', 'job-start', 'job-kill', 'lane-prepare', 'lane-clean', 'lane-base', 'lane-reset', 'lane-candidate', 'lane-land', 'finish'])
+const WRITES = new Set(['claim', 'rework', 'release', 'move', 'block', 'unblock', 'finding', 'decision', 'obligations', 'files', 'thread-open', 'exhaust', 'unblock-pass', 'worktree', 'clarity-record', 'checks-set', 'job-start', 'job-kill', 'lane-prepare', 'lane-clean', 'lane-base', 'lane-reset', 'lane-candidate', 'lane-land', 'tests-prepare', 'tests-drop', 'finish'])
 
 // ---- start: the lock, reconcile, the deliver branch, the checks ------------
 // A start repeated by a retried courier comes within minutes of the first.
@@ -1746,6 +1806,15 @@ const startRun = (b, log) => {
   // The feature's stories as keys and counts: the script lists them itself
   // when it needs more.
   const stories = b.listStories()
+  // A story lands before its tests are written, and its worktree is kept for
+  // their author: a run that stopped before that author was done left the
+  // worktree of a story that is done, which goes, with the tests in it.
+  for (const story of stories) {
+    if (story.status !== 'done' || !(fs.existsSync(b.worktreeOf(story.key)) || hasBranch(root, `story/${story.key}`))) continue
+    log.push(removeWorktree(b, story.key, true)
+      ? `Removed the worktree of ${story.key}, which is done: a run that stopped left it for its test author, and its regression tests were not written`
+      : `${b.worktreeOf(story.key)}, the worktree a run that stopped left of ${story.key}, which is done, could not be removed: move it away`)
+  }
   const counts = {}
   for (const s of stories) counts[s.status] = (counts[s.status] || 0) + 1
   return {
