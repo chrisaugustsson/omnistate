@@ -1,8 +1,10 @@
-import { useState } from "react";
+import { useCallback, useState } from "react";
 import { Outlet, createFileRoute, notFound, redirect } from "@tanstack/react-router";
 import { Menu } from "lucide-react";
 import { loadSession } from "@/api/auth";
 import { AppSidebar } from "@/components/app-sidebar";
+import { useShortcut } from "@/components/palette/palette";
+import { SIDEBAR_PANE, usePane } from "@/lib/pane";
 import { LiveProvider } from "@/live/context";
 
 // Every page of a workspace is under /w/<workspace id>/. The layout checks the
@@ -22,15 +24,26 @@ export const Route = createFileRoute("/w/$workspaceId")({
 
 // The shell: the sidebar on the stone canvas, and the page on a white panel
 // inset next to it. The panel is the page's scroll container, so the viewers
-// can fill its height.
+// can fill its height. From the md width up the reader can fold the sidebar
+// to a rail, with its button or ⌘B, to give the page the width.
 function WorkspaceLayout() {
   const { user, workspace, workspaces } = Route.useRouteContext();
   const [menuOpen, setMenuOpen] = useState(false);
+  const [sidebar, setSidebar] = usePane(SIDEBAR_PANE);
+  useShortcut("b", useCallback(() => setSidebar(!sidebar), [sidebar, setSidebar]));
 
   return (
     <LiveProvider workspaceId={workspace.id}>
       <div className="flex h-dvh bg-canvas">
-        <AppSidebar workspace={workspace} workspaces={workspaces} user={user} open={menuOpen} onClose={() => setMenuOpen(false)} />
+        <AppSidebar
+          workspace={workspace}
+          workspaces={workspaces}
+          user={user}
+          open={menuOpen}
+          onClose={() => setMenuOpen(false)}
+          shown={sidebar}
+          onShown={setSidebar}
+        />
         <div className="flex min-w-0 flex-1 flex-col md:py-2 md:pr-2">
           <div className="flex h-12 shrink-0 items-center gap-2 border-b bg-background px-3 md:hidden">
             <button

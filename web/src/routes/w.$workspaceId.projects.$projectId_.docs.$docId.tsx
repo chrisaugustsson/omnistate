@@ -36,6 +36,7 @@ import { Button } from "@/components/ui/button";
 import { CommentsPanel } from "@/components/viewer/comments";
 import { DesignSystemViewer } from "@/components/viewer/design-system";
 import { InteractionsSection, LayerIcon, MonoValue, PropertyTable, ScrollingRow, TokenChip } from "@/components/viewer/design";
+import { useReviewPane } from "@/lib/pane";
 import { cn } from "@/lib/utils";
 import { PlayMode, type PlayBoard, type PlayFlow } from "@/components/viewer/play";
 import { useReloading, type Reloading } from "@/lib/reloading";
@@ -209,6 +210,7 @@ function HtmlDocViewer({
     selectedRef.current = selected;
   });
   const [openComment, setOpenComment] = useState<string | null>(null);
+  const [review, setReview] = useReviewPane(selected, comments.value ?? null);
 
   // A link to another block of the doc selects that block and scrolls to it.
   useEffect(() => {
@@ -225,11 +227,12 @@ function HtmlDocViewer({
     onOpened();
     if (!found) return;
     setOpenComment(found.id);
+    setReview(true);
     if (!found.orphaned && found.node !== selectedRef.current) {
       setSelected(found.node);
       setReveal(found.node);
     }
-  }, [comment, comments.value, onOpened]);
+  }, [comment, comments.value, onOpened, setReview]);
 
   const html = head.value;
   const present = useMemo(() => (html === null ? null : blockIds(html)), [html]);
@@ -271,8 +274,20 @@ function HtmlDocViewer({
 
   return (
     <main className="flex min-h-full flex-col lg:h-full lg:min-h-[560px]">
-      <ViewerToolbar workspaceId={workspaceId} projectId={projectId} doc={doc.value} icon={<FileText />} docId={docId} />
-      <div className="flex min-h-0 flex-1 flex-col lg:grid lg:grid-cols-[minmax(0,1fr)_20rem]">
+      <ViewerToolbar
+        workspaceId={workspaceId}
+        projectId={projectId}
+        doc={doc.value}
+        icon={<FileText />}
+        docId={docId}
+        review={{ shown: review, onShown: setReview }}
+      />
+      <div
+        className={cn(
+          "flex min-h-0 flex-1 flex-col lg:grid",
+          review ? "lg:grid-cols-[minmax(0,1fr)_20rem]" : "lg:grid-cols-1",
+        )}
+      >
         <div className="relative flex min-h-0 flex-col bg-canvas px-3 py-4 sm:px-6 sm:py-6 lg:px-8">
           <FloatingAlerts>
             {(doc.failed || head.failed) && (
@@ -280,11 +295,11 @@ function HtmlDocViewer({
             )}
           </FloatingAlerts>
           {html === "" && (
-            <div className="mx-auto mb-4 w-full max-w-[56rem]">
+            <div className="mb-4 w-full">
               <PaneEmpty icon={<FileText />}>This doc has no content yet.</PaneEmpty>
             </div>
           )}
-          <div className="mx-auto flex h-[78vh] min-h-0 w-full max-w-[56rem] flex-col overflow-hidden rounded-xl bg-white shadow-panel ring-1 ring-black/[0.04] lg:h-auto lg:flex-1">
+          <div className="flex h-[78vh] min-h-0 w-full flex-col overflow-hidden rounded-xl bg-white shadow-panel ring-1 ring-black/[0.04] lg:h-auto lg:flex-1">
             <ViewerFrame
               workspaceId={workspaceId}
               html={html}
@@ -297,7 +312,9 @@ function HtmlDocViewer({
           </div>
         </div>
         <aside
+          id="review-pane"
           aria-label="Review"
+          hidden={!review}
           className="border-t bg-background lg:min-h-0 lg:overflow-y-auto lg:border-t-0 lg:border-l"
         >
           <CommentsPanel
@@ -624,6 +641,7 @@ function DesignViewer({
   // The board play mode was left on, which the address bar names once instead of the selection's board.
   const leftOn = useRef<string | null>(null);
   const [openComment, setOpenComment] = useState<string | null>(null);
+  const [review, setReview] = useReviewPane(selected, comments.value ?? null);
   // The modes the reader chose: the shared Mode select under '', each own-list collection under its name.
   const [chosenModes, setChosenModes] = useState<Record<string, string>>({});
   // Counts the times the renderer drew a page or another mode, so that the inspect panel asks again.
@@ -824,8 +842,9 @@ function DesignViewer({
     onOpened();
     if (!found) return;
     setOpenComment(found.id);
+    setReview(true);
     if (!found.orphaned && found.node !== selectedRef.current) setTarget(found.node);
-  }, [comment, comments.value, onOpened]);
+  }, [comment, comments.value, onOpened, setReview]);
   // A link to a board shows the page that holds it; a board that is not there leaves the first page.
   useEffect(() => {
     if (!boardTarget || pages.length === 0) return;
@@ -1093,6 +1112,7 @@ function DesignViewer({
         doc={doc.value}
         icon={<PenTool />}
         docId={docId}
+        review={{ shown: review, onShown: setReview }}
       >
         {doc.value && (
           <Button
@@ -1139,9 +1159,19 @@ function DesignViewer({
             </ToolbarSelect>
           ))}
       </ViewerToolbar>
-      <div className="flex min-h-0 flex-1 flex-col md:grid md:grid-cols-2 lg:grid-cols-[13.5rem_minmax(0,1fr)_17rem] xl:grid-cols-[15.5rem_minmax(0,1fr)_19rem]">
+      <div
+        className={cn(
+          "flex min-h-0 flex-1 flex-col md:grid",
+          review
+            ? "md:grid-cols-2 lg:grid-cols-[13.5rem_minmax(0,1fr)_17rem] xl:grid-cols-[15.5rem_minmax(0,1fr)_19rem]"
+            : "md:grid-cols-1 lg:grid-cols-[13.5rem_minmax(0,1fr)] xl:grid-cols-[15.5rem_minmax(0,1fr)]",
+        )}
+      >
         <div
-          className="relative order-1 h-[62vh] min-h-80 overflow-hidden bg-muted md:col-span-2 lg:order-2 lg:col-span-1 lg:h-auto lg:min-h-0"
+          className={cn(
+            "relative order-1 h-[62vh] min-h-80 overflow-hidden bg-muted lg:order-2 lg:col-span-1 lg:h-auto lg:min-h-0",
+            review && "md:col-span-2",
+          )}
           style={{
             backgroundImage: "radial-gradient(circle at 1px 1px, oklch(0.5 0.012 60 / 0.22) 1px, transparent 0)",
             backgroundSize: "16px 16px",
@@ -1268,7 +1298,9 @@ function DesignViewer({
           </section>
         </aside>
         <aside
+          id="review-pane"
           aria-label="Review"
+          hidden={!review}
           className="order-3 border-t bg-background md:border-l lg:min-h-0 lg:overflow-y-auto lg:border-t-0"
         >
           <CommentsPanel

@@ -1,6 +1,6 @@
 import { Fragment, type ReactNode, type SelectHTMLAttributes } from "react";
 import { Link } from "@tanstack/react-router";
-import { ChevronDown, ChevronRight, TriangleAlert } from "lucide-react";
+import { ChevronDown, ChevronRight, PanelRightClose, PanelRightOpen, TriangleAlert } from "lucide-react";
 import { PILLARS } from "@/components/project/items";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { useHome } from "@/lib/use-home";
@@ -25,6 +25,7 @@ export function ViewerToolbar({
   icon,
   docId,
   view = "doc",
+  review,
   children,
 }: {
   workspaceId: string;
@@ -35,6 +36,8 @@ export function ViewerToolbar({
   /** The doc's ID; given, the bar has the doc's Doc and Activity tabs, `view` being the open one. */
   docId?: string;
   view?: "doc" | "activity";
+  /** The review pane beside the view; given, the bar ends with the button that hides and shows it. */
+  review?: { shown: boolean; onShown: (shown: boolean) => void };
   /** The controls on the right. */
   children?: ReactNode;
 }) {
@@ -104,6 +107,19 @@ export function ViewerToolbar({
         </nav>
       )}
       {children && <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:flex-nowrap">{children}</div>}
+      {review && (
+        <button
+          type="button"
+          aria-label={review.shown ? "Hide the review pane" : "Show the review pane"}
+          aria-expanded={review.shown}
+          aria-controls="review-pane"
+          title={review.shown ? "Hide the review pane" : "Show the review pane"}
+          className="flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-none"
+          onClick={() => review.onShown(!review.shown)}
+        >
+          {review.shown ? <PanelRightClose aria-hidden className="size-4" /> : <PanelRightOpen aria-hidden className="size-4" />}
+        </button>
+      )}
     </header>
   );
 }
