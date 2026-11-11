@@ -35,8 +35,10 @@ holds:
   its text, criteria, decisions, findings and linked doc nodes. Its prompt
   says how to tell the findings of this attempt budget, marked
   `[attempt N]` and open, from those that used no attempt and from those
-  before the human's latest answer, and it reads the linked docs with
-  `omni doc read`.
+  before the human's latest answer, and it reads the nodes the story links
+  with `omni doc read <doc> --node <id>`, not the whole docs, which can be
+  hundreds of KB. The clarity check reads the spec, architecture and db docs
+  whole.
 - An agent that needs a check's output reads the job's log by the path the
   prompt names. A finding or a thread about a check names the job, and the
   helper adds the end of its log.

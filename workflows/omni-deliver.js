@@ -502,7 +502,7 @@ Read the story ${ctx.key} first, from OmniState, with ${storyRead(ctx, role)}. I
 - title and text: what the story is; files_planned: the files it plans to change; blocked_by: the ids of the stories it waits on.
 - criteria: its acceptance criteria, numbered from 0 in the order they come; human_check true marks one that a human confirms later.
 - decisions: each a question, the choice taken, and by whom, agent or human. ${decisions}${docs ? `
-- links: each one with a doc_id and a node_id is a node of a doc the story links. Read each of those docs once, with \`${omniAs(role)} doc read <doc_id>\`, and find in it each linked node: the element whose data-omni-id is the node_id.` : ''}${findings ? `
+- links: each one with a doc_id and a node_id is a node of a doc the story links. Read the linked nodes of each of those docs in one call, with \`${omniAs(role)} doc read <doc_id> --node <node_id>\`, with one --node for each node of that doc: it prints each node with what is inside it. A doc can be hundreds of KB, so read one whole, without --node, only when a linked node cannot be understood without the rest of it.` : ''}${findings ? `
 - findings: each with its stage, text, files and resolved. An open one has resolved false: one whose text starts with [attempt N] is what failed attempt N since the human's latest answer, and one without that number used no attempt, such as a rebase conflict. A resolved one whose text starts with [attempt N] failed before the human's latest answer, and says what failed before it. ${findingCounts(ctx, findings)}` : ''}`
 const findingCounts = (ctx, task) => {
   const { open, uncounted, earlier } = ctx.findings
@@ -597,7 +597,7 @@ const clarityPrompt = (ctx, file) => `You check ONE story of the feature "${feat
 ${storySection(ctx, 'clarity', { decisions: 'They are settled: a gap one of them already settles is NOT raised again.' })}
 
 ## The shared parts
-The rule below refers to the feature's Spec, Architecture, DB and UI docs. List them with \`${omniAs('clarity')} doc list\` and read each once with \`${omniAs('clarity')} doc read <doc>\`. Treat them as the shared parts of every story: a criterion they already settle is not a gap. The story's links name the nodes of them it rests on.
+The rule below refers to the feature's Spec, Architecture, DB and UI docs. List them with \`${omniAs('clarity')} doc list\`, which gives each doc's pillar, and read each spec, architecture and db doc once, whole, with \`${omniAs('clarity')} doc read <doc>\`. A ui doc can be hundreds of KB: read of it only the nodes the story links, as above, and another part of it only when a criterion names it. Treat these docs as the shared parts of every story: a criterion they already settle is not a gap. The story's links name the nodes of them it rests on.
 
 ${BOARD}
 ${TWO_IMPLEMENTATIONS}${BLOCKING_OR_MINOR}${TESTS_AND_IMPACT}
@@ -963,7 +963,7 @@ ${BOARD}
 
 ${resultFile(file)}
 ## Your task now
-1. Each story was checked on its own. Find the user journeys in the feature's docs (\`${omniAs('final')} doc list\`, then \`${omniAs('final')} doc read <doc>\`) and in these stories (\`${omniAs('final')} story read <key>\`) that span several of them (one story's output is another's input, a flow through several screens or endpoints), and exercise up to 3 of them for real, with the real components. Report each with its outcome.
+1. Each story was checked on its own. Find the user journeys in these stories (\`${omniAs('final')} story read <key>\`) and in the feature's docs (\`${omniAs('final')} doc list\`, which gives each doc's pillar, then \`${omniAs('final')} doc read <doc>\` for a spec doc; a ui doc can be hundreds of KB, so read of it the nodes the stories link, with \`${omniAs('final')} doc read <doc> --node <node_id>\`, one --node for each) that span several of them (one story's output is another's input, a flow through several screens or endpoints), and exercise up to 3 of them for real, with the real components. Report each with its outcome.
 2. Stop every process and remove every container you started for the journeys, and confirm none is left.
 Do NOT change any code. healthy is false if the lane's last check failed or a journey fails; a failure is reported, not repaired.
 Return raw structured data only.`
@@ -990,7 +990,7 @@ const VOTE_SCHEMA = {
 }
 const readingText = (reading, ctx, code) => {
   if (reading.id === 'spec') {
-    return `You read the spec, and nothing else: the story's linked docs and the feature's decisions. The story's links with a doc_id and a node_id are the doc nodes it links: read each of those docs once, with \`${omniAs('council')} doc read <doc_id>\`, and find in it each linked node, the element whose data-omni-id is the node_id; a story with no such link links no doc node. The feature's decisions are those on its stories: \`${omniAs('council')} story list --json\` gives every story with its decisions. Pick what they say; when they say nothing about the question, pick none.`
+    return `You read the spec, and nothing else: the story's linked docs and the feature's decisions. The story's links with a doc_id and a node_id are the doc nodes it links: read the linked nodes of each of those docs in one call, with \`${omniAs('council')} doc read <doc_id> --node <node_id>\`, with one --node for each node of that doc, and a doc whole, without --node, only when a node cannot be understood without the rest of it; a story with no such link links no doc node. The feature's decisions are those on its stories: \`${omniAs('council')} story list --json\` gives every story with its decisions. Pick what they say; when they say nothing about the question, pick none.`
   }
   if (reading.id === 'code') {
     return `You read the code, and nothing else: ${code ? `the story's worktree ${code}` : `the tip of ${branch}, with \`git -C ${root} grep -n <pattern> refs/heads/${branch}\` and \`git -C ${root} show refs/heads/${branch}:<path>\``}. Pick what the code already does or plainly expects: an existing behaviour, a convention, an interface. Quote it, with path:line as its source.`

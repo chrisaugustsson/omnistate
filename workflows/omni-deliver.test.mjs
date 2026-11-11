@@ -1482,7 +1482,7 @@ test("an implementer's question the council settles becomes an agent decision an
   for (const reading of ["spec", "code", "user"]) {
     const [c] = agentsOf(calls, `council:US-1:${reading}`);
     assert.ok(c.prompt.includes(`\`OMNI_RUN=${result.run} OMNI_ROLE=council OMNI_FEATURE='board' omni story read US-1 --json\``), c.prompt);
-    assert.equal(c.prompt.includes("doc read <doc_id>"), reading === "spec", reading);
+    assert.equal(c.prompt.includes("doc read <doc_id> --node <node_id>"), reading === "spec", reading);
     assert.doesNotMatch(c.prompt, /The badge is red/);
   }
   const [blinking] = questions(dirs);
@@ -1732,7 +1732,7 @@ test("prompts give the context first and the criteria and the task last, tell th
   for (const [prompt, role] of [[clarity.prompt, "clarity"], [impl.prompt, "impl"], [review.prompt, "review"]]) {
     assert.equal(resultFileIn(prompt), join(dirs.repo, ".omni", "runs", result.run, "out", `${role}-US-1-1.json`));
     assert.ok(prompt.includes(`\n## The story\nRead the story US-1 first, from OmniState, with \`OMNI_RUN=${result.run} OMNI_ROLE=${role} OMNI_FEATURE='board' omni story read US-1 --json\`. It prints the story as JSON:\n`), prompt);
-    assert.ok(prompt.includes(`\n- links: each one with a doc_id and a node_id is a node of a doc the story links. Read each of those docs once, with \`OMNI_RUN=${result.run} OMNI_ROLE=${role} OMNI_FEATURE='board' omni doc read <doc_id>\`, and find in it each linked node: the element whose data-omni-id is the node_id.\n`), prompt);
+    assert.ok(prompt.includes(`\n- links: each one with a doc_id and a node_id is a node of a doc the story links. Read the linked nodes of each of those docs in one call, with \`OMNI_RUN=${result.run} OMNI_ROLE=${role} OMNI_FEATURE='board' omni doc read <doc_id> --node <node_id>\`, with one --node for each node of that doc: it prints each node with what is inside it. A doc can be hundreds of KB, so read one whole, without --node, only when a linked node cannot be understood without the rest of it.\n`), prompt);
   }
   assert.ok(clarity.prompt.includes(`\`OMNI_RUN=${result.run} OMNI_ROLE=clarity OMNI_FEATURE='board' omni doc list\``));
   assert.match(clarity.prompt, /\n- decisions: each a question, the choice taken, and by whom, agent or human\. They are settled: a gap one of them already settles is NOT raised again\.\n/);
