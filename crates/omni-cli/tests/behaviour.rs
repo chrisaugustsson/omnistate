@@ -1,4 +1,4 @@
-//! US-201 to US-203: `omni behaviour add`, `read`, `edit` and `list`, tested as the built binary against
+//! US-201 to US-204: `omni behaviour add`, `read`, `edit`, `list` and `move`, tested as the built binary against
 //! a mock HTTP server. The API's own rules (the root, slugs, levels, the
 //! chain) are in crates/omni-api/tests/behaviour.rs; these tests pin what the
 //! CLI adds on top: naming a node by its path or by `.` for the root, which
@@ -23,6 +23,9 @@
 //!   (<status>)`, indented two spaces per level below the first line, the
 //!   title for an empty summary and the root's title for its slug. A feature
 //!   without a tree prints nothing.
+//! - `omni behaviour move <node> --to <parent>` posts to the move route of
+//!   the node the list gives, with its listed `version` as `expected_version`
+//!   and the listed id of `<parent>` as `parent_id`, and prints the new path.
 
 mod common;
 
@@ -79,8 +82,9 @@ fn listed() -> Value {
 }
 
 /// An API that lists `listed()`, reads the root, answers a create with a
-/// situation under the story, and answers an edit of the story with the
-/// story at the status the request sent.
+/// situation under the story, answers an edit of the story with the
+/// story at the status the request sent, and answers a move of the story
+/// with it under the other story.
 fn mock() -> MockServer {
     MockServer::start(|request| {
         let base = tree_path();
@@ -98,6 +102,16 @@ fn mock() -> MockServer {
                     "customer-buys-product/user-presses-the-buy-button",
                     2,
                     "User presses the buy button"
+                ) }),
+            ),
+            ("POST", path) if path == format!("{base}/nodes/{STORY}/move") => Reply::json(
+                200,
+                &json!({ "node": node(
+                    STORY,
+                    Some(OTHER),
+                    "customer-returns-product/customer-buys-product",
+                    2,
+                    "Buys"
                 ) }),
             ),
             ("PATCH", path) if path == format!("{base}/nodes/{STORY}") => {
@@ -296,6 +310,40 @@ fn behavior_is_the_same_flag_as_behaviour() {
     assert_eq!(
         sent(&server, "PATCH"),
         vec![json!({ "expected_version": 3, "behaviour": "A confirmation appears." })]
+    );
+}
+
+#[test]
+fn move_sends_the_listed_version_and_the_parents_id_and_prints_the_new_path() {
+    let server = mock();
+    let home = logged_in(&server);
+
+    let out = run(
+        &home,
+        &[
+            "behaviour",
+            "move",
+            "customer-buys-product",
+            "--to",
+            "customer-returns-product",
+        ],
+    );
+
+    assert_eq!(out.code, 0, "stderr: {}", out.stderr);
+    assert_eq!(
+        out.stdout,
+        "customer-returns-product/customer-buys-product\n"
+    );
+    let moves: Vec<String> = server
+        .requests()
+        .into_iter()
+        .filter(|r| r.method == "POST")
+        .map(|r| r.path)
+        .collect();
+    assert_eq!(moves, vec![format!("{}/nodes/{STORY}/move", tree_path())]);
+    assert_eq!(
+        posts(&server),
+        vec![json!({ "expected_version": 3, "parent_id": OTHER })]
     );
 }
 

@@ -18,7 +18,7 @@
 //!   placeholders of a path with the IDs of the seeded records; a path with
 //!   another placeholder, or a registry route without a case, fails the suite.
 //!   A body may hold `<comment_node>`, the paragraph of `{doc_id}` that the
-//!   seeded comment is pinned to.
+//!   seeded comment is pinned to, and `<node>`, the `{node_id}` behaviour node.
 //! - Workspace A's credentials against workspace B's workspace and IDs, and
 //!   against B's IDs under A's own workspace, are always 404
 //!   `{"error": "not_found"}` with nothing of B in the body, and the answer is
@@ -292,6 +292,12 @@ const CASES: &[Case] = &[
         "PATCH",
         "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/nodes/{node_id}",
         Some(r#"{"expected_version":1,"title":"intruder"}"#),
+        Kind::Workspace,
+    ),
+    case(
+        "POST",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/nodes/{node_id}/move",
+        Some(r#"{"expected_version":1,"parent_id":"<node>"}"#),
         Kind::Workspace,
     ),
     case(
@@ -1324,10 +1330,13 @@ fn fill(template: &str, workspace: &Side, record: &Side) -> String {
 }
 
 /// The body of `case` for calls about the records of `record`: its
-/// `<comment_node>` is the node of `record`'s seeded comment.
+/// `<comment_node>` is the node of `record`'s seeded comment, and its
+/// `<node>` is `record`'s behaviour node.
 fn body_of(case: &Case, record: &Side) -> Option<String> {
-    case.body
-        .map(|body| body.replace("<comment_node>", &record.comment_node))
+    case.body.map(|body| {
+        body.replace("<comment_node>", &record.comment_node)
+            .replace("<node>", &record.node_id)
+    })
 }
 
 fn names_a_record(template: &str) -> bool {

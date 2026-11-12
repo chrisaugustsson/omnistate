@@ -1,4 +1,4 @@
-//! US-201 to US-203: the behaviour tree of a feature, through the API. Run with
+//! US-201 to US-204: the behaviour tree of a feature, through the API. Run with
 //! `--features stack-tests` in the Compose test container, which reaches
 //! Postgres at `postgres:5432`.
 //!
@@ -42,6 +42,14 @@
 //!   order; a node of another feature is 404. `GET /nodes/{id}` also gives
 //!   `children`: the direct children by position, each `{id, path, slug,
 //!   title, summary, status}`.
+//! - `POST /nodes/{id}/move` with `{expected_version, parent_id}` makes the
+//!   node the last child of the parent, with everything below it; ids keep,
+//!   only the moved node's `version` goes up, and it emits one
+//!   `behaviour.node_changed` with `fields: ["parent_id", "position"]` and
+//!   the new `path`. Its own parent is accepted like any other. Refused with
+//!   nothing changed: the node itself or a node below it (409 `cycle`), the
+//!   root (422), a parent with a child of that slug (409 `slug_taken`), a
+//!   parent of another feature (404), a stale version (409 `conflict`).
 
 mod common;
 
@@ -1278,4 +1286,342 @@ fn a_read_gives_the_direct_children_in_the_order_they_were_added_without_the_gra
             }
         ])
     );
+}
+
+// ---------------------------------------------------------------------------
+// Moving a node (US-204)
+// ---------------------------------------------------------------------------
+
+fn move_node(
+    f: &Fixture,
+    project: &str,
+    feature: &str,
+    auth: Auth,
+    node: &str,
+    body: &Value,
+) -> Response {
+    call(
+        f,
+        "POST",
+        &format!("{}/nodes/{node}/move", tree_path(f, project, feature)),
+        auth,
+        Some(body),
+    )
+}
+
+/// The tree of the move criteria: `customer-buys-product/user-presses-buy/
+/// product-out-of-stock` and the story `customer-checks-out` with one
+/// situation, `user-pays`. Returns `(press, out_of_stock, checks_out)`.
+fn checkout_tree(f: &Fixture, project: &str, feature: &str) -> (Value, Value, Value) {
+    let buys = add(
+        f,
+        project,
+        feature,
+        &json!({ "title": STORY, "slug": "customer-buys-product" }),
+    );
+    let press = add(
+        f,
+        project,
+        feature,
+        &json!({ "title": "User presses buy", "slug": "user-presses-buy", "parent_id": id_of(&buys) }),
+    );
+    let out_of_stock = add(
+        f,
+        project,
+        feature,
+        &json!({
+            "title": "Product is out of stock",
+            "slug": "product-out-of-stock",
+            "parent_id": id_of(&press)
+        }),
+    );
+    let checks_out = add(
+        f,
+        project,
+        feature,
+        &json!({ "title": "Customer checks out", "slug": "customer-checks-out" }),
+    );
+    add(
+        f,
+        project,
+        feature,
+        &json!({ "title": "User pays", "slug": "user-pays", "parent_id": id_of(&checks_out) }),
+    );
+    (press, out_of_stock, checks_out)
+}
+
+/// The tree as listed: each node's path, id and version, in tree order.
+fn shape(f: &Fixture, project: &str, feature: &str) -> Vec<Value> {
+    listed(f, project, feature)
+        .iter()
+        .map(|node| json!([node["path"], node["id"], node["version"]]))
+        .collect()
+}
+
+#[test]
+fn a_move_puts_the_node_last_under_the_new_parent_with_its_subtree_and_bumps_only_its_version() {
+    let (f, _) = ready();
+    let (project, feature) = new_feature(f, &unique("Checkout"));
+    let (press, out_of_stock, checks_out) = checkout_tree(f, &project, &feature);
+
+    let moved = must(
+        move_node(
+            f,
+            &project,
+            &feature,
+            Auth::Agent,
+            &id_of(&press),
+            &json!({ "expected_version": 1, "parent_id": id_of(&checks_out) }),
+        ),
+        200,
+        "move the node",
+    )["node"]
+        .clone();
+
+    assert_eq!(moved["id"], press["id"]);
+    assert_eq!(moved["path"], "customer-checks-out/user-presses-buy");
+    assert_eq!(moved["version"], 2);
+    let below = read_node(f, &project, &feature, &id_of(&out_of_stock));
+    assert_eq!(
+        below["path"],
+        "customer-checks-out/user-presses-buy/product-out-of-stock"
+    );
+    assert_eq!(below["version"], 1);
+    assert_eq!(
+        paths_of(&listed(f, &project, &feature)),
+        vec![
+            json!(""),
+            json!("customer-buys-product"),
+            json!("customer-checks-out"),
+            json!("customer-checks-out/user-pays"),
+            json!("customer-checks-out/user-presses-buy"),
+            json!("customer-checks-out/user-presses-buy/product-out-of-stock"),
+        ]
+    );
+    assert_eq!(
+        events_of(&project, "behaviour.node_changed"),
+        vec![json!({
+            "feature_id": feature,
+            "node_id": press["id"],
+            "path": "customer-checks-out/user-presses-buy",
+            "fields": ["parent_id", "position"],
+        })]
+    );
+}
+
+#[test]
+fn a_move_to_the_parent_it_already_has_puts_it_last_and_is_announced() {
+    // Settled decision: not a slug clash with itself, but a move like any other.
+    let (f, _) = ready();
+    let (project, feature) = new_feature(f, &unique("Checkout"));
+    let (press, _, _) = checkout_tree(f, &project, &feature);
+    let buys = read_node(f, &project, &feature, &id_of(&press))["parent_id"].clone();
+    add(
+        f,
+        &project,
+        &feature,
+        &json!({ "title": "User adds a coupon", "slug": "user-adds-a-coupon", "parent_id": buys }),
+    );
+
+    let moved = must(
+        move_node(
+            f,
+            &project,
+            &feature,
+            Auth::Agent,
+            &id_of(&press),
+            &json!({ "expected_version": 1, "parent_id": buys }),
+        ),
+        200,
+        "move the node to its own parent",
+    )["node"]
+        .clone();
+
+    assert_eq!(moved["path"], "customer-buys-product/user-presses-buy");
+    assert_eq!(moved["version"], 2);
+    assert_eq!(
+        paths_of(&listed(f, &project, &feature))[1..4].to_vec(),
+        vec![
+            json!("customer-buys-product"),
+            json!("customer-buys-product/user-adds-a-coupon"),
+            json!("customer-buys-product/user-presses-buy"),
+        ]
+    );
+    assert_eq!(events_of(&project, "behaviour.node_changed").len(), 1);
+}
+
+#[test]
+fn a_move_to_the_node_itself_or_below_it_is_409_cycle_and_changes_nothing() {
+    let (f, _) = ready();
+    let (project, feature) = new_feature(f, &unique("Checkout"));
+    let (press, out_of_stock, _) = checkout_tree(f, &project, &feature);
+    let before = shape(f, &project, &feature);
+
+    let to_itself = move_node(
+        f,
+        &project,
+        &feature,
+        Auth::Agent,
+        &id_of(&press),
+        &json!({ "expected_version": 1, "parent_id": id_of(&press) }),
+    );
+    let below_itself = move_node(
+        f,
+        &project,
+        &feature,
+        Auth::Agent,
+        &id_of(&press),
+        &json!({ "expected_version": 1, "parent_id": id_of(&out_of_stock) }),
+    );
+
+    assert_error(&to_itself, 409, "cycle");
+    assert_error(&below_itself, 409, "cycle");
+    assert_eq!(shape(f, &project, &feature), before);
+    assert_eq!(
+        events_of(&project, "behaviour.node_changed"),
+        Vec::<Value>::new()
+    );
+}
+
+#[test]
+fn moving_the_root_is_422_and_changes_nothing() {
+    let (f, _) = ready();
+    let (project, feature) = new_feature(f, &unique("Checkout"));
+    let (press, _, _) = checkout_tree(f, &project, &feature);
+    let chain = must(
+        read(f, &project, &feature, &id_of(&press)),
+        200,
+        "read the node",
+    )["chain"]
+        .clone();
+    let root = chain[0]["id"]
+        .as_str()
+        .expect("the root has an id")
+        .to_string();
+    let before = shape(f, &project, &feature);
+
+    let response = move_node(
+        f,
+        &project,
+        &feature,
+        Auth::Agent,
+        &root,
+        &json!({ "expected_version": 1, "parent_id": id_of(&press) }),
+    );
+
+    assert_eq!(response.status, 422, "body: {}", response.text());
+    assert_eq!(shape(f, &project, &feature), before);
+    assert_eq!(
+        events_of(&project, "behaviour.node_changed"),
+        Vec::<Value>::new()
+    );
+}
+
+#[test]
+fn a_move_where_the_new_parent_has_a_child_with_the_slug_is_409_slug_taken_and_changes_nothing() {
+    let (f, _) = ready();
+    let (project, feature) = new_feature(f, &unique("Checkout"));
+    let (press, _, checks_out) = checkout_tree(f, &project, &feature);
+    add(
+        f,
+        &project,
+        &feature,
+        &json!({ "title": "User presses buy", "slug": "user-presses-buy", "parent_id": id_of(&checks_out) }),
+    );
+    let before = shape(f, &project, &feature);
+
+    let response = move_node(
+        f,
+        &project,
+        &feature,
+        Auth::Agent,
+        &id_of(&press),
+        &json!({ "expected_version": 1, "parent_id": id_of(&checks_out) }),
+    );
+
+    assert_error(&response, 409, "slug_taken");
+    assert_eq!(shape(f, &project, &feature), before);
+    assert_eq!(
+        events_of(&project, "behaviour.node_changed"),
+        Vec::<Value>::new()
+    );
+}
+
+#[test]
+fn a_move_with_a_stale_version_is_409_with_the_current_version_and_changes_nothing() {
+    let (f, _) = ready();
+    let (project, feature) = new_feature(f, &unique("Checkout"));
+    let (press, _, checks_out) = checkout_tree(f, &project, &feature);
+    edit(
+        f,
+        &project,
+        &feature,
+        &id_of(&press),
+        &json!({ "expected_version": 1, "status": "done" }),
+    );
+    let before = shape(f, &project, &feature);
+
+    let response = move_node(
+        f,
+        &project,
+        &feature,
+        Auth::Agent,
+        &id_of(&press),
+        &json!({ "expected_version": 1, "parent_id": id_of(&checks_out) }),
+    );
+
+    assert_eq!(response.status, 409, "body: {}", response.text());
+    assert_eq!(
+        response.json(),
+        json!({ "error": "conflict", "current_version": 2 })
+    );
+    assert_eq!(shape(f, &project, &feature), before);
+    assert_eq!(events_of(&project, "behaviour.node_changed").len(), 1);
+}
+
+#[test]
+fn a_move_under_a_node_of_another_feature_is_404_and_changes_nothing() {
+    let (f, _) = ready();
+    let (project, feature) = new_feature(f, &unique("Checkout"));
+    let (other_project, other_feature) = new_feature(f, &unique("Returns"));
+    let (press, _, _) = checkout_tree(f, &project, &feature);
+    let theirs = add(
+        f,
+        &other_project,
+        &other_feature,
+        &json!({ "title": "Return" }),
+    );
+    let before = shape(f, &project, &feature);
+
+    let response = move_node(
+        f,
+        &project,
+        &feature,
+        Auth::Agent,
+        &id_of(&press),
+        &json!({ "expected_version": 1, "parent_id": id_of(&theirs) }),
+    );
+
+    assert_error(&response, 404, "not_found");
+    assert_eq!(shape(f, &project, &feature), before);
+}
+
+#[test]
+fn a_move_with_an_api_key_without_a_run_is_400_identity_required_and_changes_nothing() {
+    let (f, _) = ready();
+    let (project, feature) = new_feature(f, &unique("Checkout"));
+    let (press, _, checks_out) = checkout_tree(f, &project, &feature);
+    let before = shape(f, &project, &feature);
+
+    let response = move_node(
+        f,
+        &project,
+        &feature,
+        Auth::AgentWithoutRun,
+        &id_of(&press),
+        &json!({ "expected_version": 1, "parent_id": id_of(&checks_out) }),
+    );
+
+    assert_error(&response, 400, "identity_required");
+    assert_eq!(shape(f, &project, &feature), before);
 }
