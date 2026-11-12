@@ -319,3 +319,131 @@ describe("the details with nothing chosen", () => {
     expect(details.textContent).toContain("3 questions wait for an answer.");
   });
 });
+
+// US-228: a person answers a waiting question in the details with
+// POST .../behaviour/questions/<question>/answers, then the node is read again.
+describe("answering a waiting question", () => {
+  const ANSWERS_PATH = `/api/v1/w/${WORKSPACE_ID}/projects/${PROJECT_ID}/features/${FEATURE_ID}/behaviour/questions/q-wait/answers`;
+  const WAITING = { ...question("q-wait", "What does a search result show?", { state: "open" }), version: 3 };
+  const ANSWERED = question("q-wait", "What does a search result show?", { answers: [answer("Name and handicap", PERSON_ME, "human", TODAY)] });
+
+  /**
+   * GET .../behaviour/nodes/search answers with `questions()` as they are at
+   * that moment; a POST of an answer is handed to `post` with its body.
+   */
+  function fakeSearch(questions: () => unknown[], post: (body: unknown) => Promise<Response> | Response) {
+    const read = () => ({
+      node: { id: "search", parent_id: "story", path: "search", position: 0, level: 2, title: "Player searches for a player", summary: "", status: "open", situation: "", behaviour: "", needs_pass: false, created_at: LONG_AGO, created_by: AGENT, updated_at: LONG_AGO, version: 1 },
+      chain: [],
+      children: [],
+      siblings: [],
+      questions: questions(),
+      rules: [],
+    });
+    const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+        if (url === `${NODE_PATH}search` && (init?.method ?? "GET") === "GET") return json(200, read());
+        if (url === ANSWERS_PATH && init?.method === "POST") return post(JSON.parse(String(init.body)));
+        return json(404, { error: "not_found" });
+      }),
+    );
+  }
+
+  const accepted = (body: unknown) => new Response(JSON.stringify({ question: body }), { status: 201, headers: { "content-type": "application/json" } });
+
+  async function fieldOf(details: HTMLElement) {
+    await waitFor(() => expect(within(questionEl(details, "q-wait")).queryByRole("textbox", { name: "Your answer" })).not.toBeNull());
+    const waiting = questionEl(details, "q-wait");
+    return { field: within(waiting).getByRole("textbox", { name: "Your answer" }) as HTMLTextAreaElement, button: within(waiting).getByRole("button", { name: "Answer" }) as HTMLButtonElement };
+  }
+
+  test("on a node with nodes below it says only this node now waits for the next grill pass", async () => {
+    let questions: unknown[] = [WAITING];
+    fakeSearch(
+      () => questions,
+      () => {
+        questions = [ANSWERED];
+        return accepted(ANSWERED);
+      },
+    );
+    const details = renderChosen(TREE[2]);
+    const { field, button } = await fieldOf(details);
+
+    fireEvent.change(field, { target: { value: "Name and handicap" } });
+    fireEvent.click(button);
+
+    await waitFor(() => expect(questionEl(details, "q-wait").textContent).toContain("Recorded. This node now waits for the next grill pass."));
+    expect(details.textContent).not.toContain("below it");
+  });
+
+  test("sends the trimmed text with the question's version, and Answer is disabled while the text is only spaces", async () => {
+    const sent: unknown[] = [];
+    fakeSearch(
+      () => [WAITING],
+      (body) => {
+        sent.push(body);
+        return accepted(ANSWERED);
+      },
+    );
+    const details = renderChosen(TREE[2]);
+    const { field, button } = await fieldOf(details);
+    expect(button.disabled).toBe(true);
+
+    fireEvent.change(field, { target: { value: "   " } });
+    expect(button.disabled).toBe(true);
+
+    fireEvent.change(field, { target: { value: "  Name and handicap \n" } });
+    expect(button.disabled).toBe(false);
+    fireEvent.click(button);
+
+    await waitFor(() => expect(sent).toEqual([{ expected_version: 3, answer: "Name and handicap" }]));
+  });
+
+  test("keeps Answer disabled while the answer is on its way, and on a failure other than 409 says it could not be saved and keeps the typed text", async () => {
+    let fail: (response: Response) => void = () => {};
+    fakeSearch(
+      () => [WAITING],
+      () => new Promise<Response>((resolve) => (fail = resolve)),
+    );
+    const details = renderChosen(TREE[2]);
+    const { field, button } = await fieldOf(details);
+
+    fireEvent.change(field, { target: { value: "Name and handicap" } });
+    fireEvent.click(button);
+    expect(button.disabled).toBe(true);
+
+    fail(new Response(JSON.stringify({ error: "internal" }), { status: 500, headers: { "content-type": "application/json" } }));
+
+    await waitFor(() => expect(questionEl(details, "q-wait").textContent).toContain("The answer could not be saved. Try again in a moment."));
+    const after = within(questionEl(details, "q-wait")).getByRole("textbox", { name: "Your answer" }) as HTMLTextAreaElement;
+    expect(after.value).toBe("Name and handicap");
+    expect(within(questionEl(details, "q-wait")).getByRole("button", { name: "Answer" })).toHaveProperty("disabled", false);
+  });
+
+  test("the line under the answered question goes once another node is chosen and this one is chosen again", async () => {
+    let questions: unknown[] = [WAITING];
+    fakeSearch(
+      () => questions,
+      () => {
+        questions = [ANSWERED];
+        return accepted(ANSWERED);
+      },
+    );
+    const props = { tree: TREE, me: ME, onChoose: () => {}, workspaceId: WORKSPACE_ID, projectId: PROJECT_ID, featureId: FEATURE_ID };
+    const { rerender } = render(<Details node={TREE[2]} {...props} />);
+    const details = screen.getByRole("region", { name: "Details" });
+    const { field, button } = await fieldOf(details);
+    fireEvent.change(field, { target: { value: "Name and handicap" } });
+    fireEvent.click(button);
+    await waitFor(() => expect(details.textContent).toContain("Recorded."));
+
+    rerender(<Details node={TREE[3]} {...props} />);
+    rerender(<Details node={TREE[2]} {...props} />);
+
+    await waitFor(() => expect(questionEl(details, "q-wait")).not.toBeNull());
+    expect(details.textContent).not.toContain("Recorded.");
+  });
+});

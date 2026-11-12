@@ -613,3 +613,91 @@ describe("the Behaviour screen's details", () => {
     expect(details.querySelector('[data-question="q-theirs"]')!.textContent).toContain("A member");
   });
 });
+
+// US-228: after a person's answer, accepted or turned away with a 409, the
+// screen reads the tree, the open questions and the chosen node again.
+describe("answering a waiting question in the Behaviour screen", () => {
+  const ANSWERS_PATH = `${API}/features/${FEATURE_ID}/behaviour/questions/q1/answers`;
+  const STORY = "Player: create an account and get set up";
+  const given = (text: string, userId: string) => ({ answer: text, at: AT, author: { kind: "human", user_id: userId }, given_by: "human" });
+  const answered = (text: string, userId: string) => ({ ...openQuestion("q1", SIGNS_UP, BY_AGENT), state: "answered", answer: given(text, userId), answers: [given(text, userId)], version: 2 });
+
+  function readOf(questions: unknown[]) {
+    return {
+      node: { ...node(SIGNS_UP, SIGN_UP_STORY, TREE[2].title), level: 2, situation: "", behaviour: "", created_at: AT, created_by: BY_AGENT, updated_at: AT },
+      chain: [],
+      children: [],
+      siblings: [],
+      questions,
+      rules: [],
+    };
+  }
+
+  /**
+   * The tree with one question an agent asked on "Player signs up with an
+   * email" and one on the node below it. When an answer is posted, the server
+   * has moved on (the node needs another pass, its question is answered with
+   * `answer`) and the POST answers with `status`.
+   */
+  function fakeAnswering(status: number, answer: { text: string; by: string }) {
+    const list = { status: 200, body: { nodes: TREE } };
+    const questions = [openQuestion("q1", SIGNS_UP, BY_AGENT), openQuestion("q2", CONFIRMS, BY_AGENT)];
+    const reads: Record<string, unknown> = { [SIGNS_UP]: readOf([questions[0]]) };
+    fakeApi(list, [], questions, reads);
+    const api = globalThis.fetch;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+        if (new URL(url, "http://localhost:3000").pathname !== ANSWERS_PATH || init?.method !== "POST") return api(input, init);
+        const now = answered(answer.text, answer.by);
+        list.body = { nodes: TREE.map((one) => (one.id === SIGNS_UP ? { ...one, needs_pass: true, needs_pass_since: AT, status: "open" } : one)) };
+        questions.splice(0, 1);
+        reads[SIGNS_UP] = readOf([now]);
+        const body = status === 201 ? { question: now } : { error: "already_answered" };
+        return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+      }),
+    );
+  }
+
+  const badge = (aside: HTMLElement) => rows(aside).find((one) => within(one).queryByText(STORY))!.querySelector('[data-mark="waiting"]');
+
+  /** Chooses "Player signs up with an email", closes its story, types an answer and presses Answer. */
+  async function answerSignsUp() {
+    renderAt(BEHAVIOUR_PATH);
+    const aside = await folders();
+    const storyRow = () => rows(aside).find((one) => within(one).queryByText(STORY))!;
+    fireEvent.click(within(storyRow()).getByRole("button"));
+    fireEvent.click(within(aside).getByText("Player signs up with an email"));
+    fireEvent.click(within(storyRow()).getByRole("button"));
+    await waitFor(() => expect(badge(aside)?.textContent).toBe("2"));
+    const details = screen.getByRole("region", { name: "Details" });
+    const field = await within(details).findByRole("textbox", { name: "Your answer" });
+    fireEvent.change(field, { target: { value: "Name and handicap" } });
+    fireEvent.click(within(details).getByRole("button", { name: "Answer" }));
+    return { aside, details };
+  }
+
+  test("an accepted answer shows the node needing another grill pass and drops the closed story's count by one", async () => {
+    fakeAnswering(201, { text: "Name and handicap", by: USER.id });
+    const { aside, details } = await answerSignsUp();
+
+    await waitFor(() => expect(within(details).queryByText("↻ Needs another grill pass")).not.toBeNull());
+    expect(details.textContent).toContain("Nothing is rewritten until the grill is started again on the feature.");
+    await waitFor(() => expect(badge(aside)?.textContent).toBe("1"));
+    expect(details.querySelector('[data-question="q1"]')!.textContent).toContain("You");
+  });
+
+  test("a 409 reads the node again and shows the other member's answer, and the tree and the counts follow it", async () => {
+    fakeAnswering(409, { text: "Name and club", by: "0192d7a0-1111-7000-8000-000000000002" });
+    const { aside, details } = await answerSignsUp();
+
+    await waitFor(() => expect(details.querySelector('[data-question="q1"]')!.textContent).toContain("Someone answered this first; it has been reloaded."));
+    const q1 = details.querySelector<HTMLElement>('[data-question="q1"]')!;
+    expect(q1.textContent).toContain("Name and club");
+    expect(q1.textContent).toContain("A member");
+    expect(within(q1).queryByRole("textbox", { name: "Your answer" })).toBeNull();
+    await waitFor(() => expect(within(details).queryByText("↻ Needs another grill pass")).not.toBeNull());
+    await waitFor(() => expect(badge(aside)?.textContent).toBe("1"));
+  });
+});
