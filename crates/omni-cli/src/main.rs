@@ -227,6 +227,11 @@ Usage:
                                       rewrite a node's text or set its status; reads the node
                                       first and sends its version (a stale one is exit 3);
                                       prints the path and the status. The root has no slug
+  omni behaviour move <node> --to <parent>
+                                      move a node, with everything below it, to be the last child
+                                      of <parent> (an ID, a path or .); prints the new path. Not
+                                      to the node itself or below it (409), not the root, not
+                                      where a sibling has the slug (409)
   omni wait --thread <id> --posts <n> [--concluded] [--timeout <s>]
                                       wait until the thread has n posts that you may read (a
                                       sealed thread counts none of the others' posts until you

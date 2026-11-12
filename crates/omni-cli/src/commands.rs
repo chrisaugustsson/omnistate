@@ -127,6 +127,8 @@ pub fn run(args: &Args) -> Result<()> {
         ["behaviour" | "behavior", "list", node] => behaviour::list(args, Some(node)),
         ["behaviour" | "behavior", "edit", node] => behaviour::edit(args, Some(node)),
         ["behaviour" | "behavior", "edit"] => behaviour::edit(args, None),
+        ["behaviour" | "behavior", "move", node] => behaviour::move_node(args, Some(node)),
+        ["behaviour" | "behavior", "move"] => behaviour::move_node(args, None),
         ["behaviour" | "behavior", ..] => {
             bail!("usage: omni behaviour add|read|list|edit; see `omni --help`")
         }

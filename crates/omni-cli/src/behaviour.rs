@@ -1,4 +1,4 @@
-//! `omni behaviour add`, `read`, `list` and `edit`: the behaviour tree of a feature. A node is
+//! `omni behaviour add`, `read`, `list`, `edit` and `move`: the behaviour tree of a feature. A node is
 //! named by its uuid, by its path (the slugs from the story down, joined by
 //! `/`) or by `.` for the root. The project and the feature are found as for
 //! `omni story add`.
@@ -14,6 +14,8 @@ const ADD_USAGE: &str =
 const READ_USAGE: &str = "omni behaviour read <node>";
 const EDIT_USAGE: &str = "omni behaviour edit <node> [--title <t>] [--slug <s>] [--summary <text>] \
      [--situation <text>] [--behaviour <text>] [--status open|done|out-of-scope]";
+
+const MOVE_USAGE: &str = "omni behaviour move <node> --to <parent>";
 
 fn unreadable() -> CliError {
     CliError::new(
@@ -235,5 +237,34 @@ pub fn edit(args: &Args, node: Option<&str>) -> Result<()> {
         None => bail!("the server's answer has no node path; try again"),
     };
     say(&format!("{path}  {}", node.str_at("status").unwrap_or("?")));
+    Ok(())
+}
+
+/// `omni behaviour move <node> --to <parent>`
+pub fn move_node(args: &Args, node: Option<&str>) -> Result<()> {
+    let (Some(given), Some(to)) = (node, &args.to) else {
+        bail!("this command needs a node and --to <parent>: {MOVE_USAGE}");
+    };
+    let agent = agent(args)?;
+    let base = behaviour_path(args, &agent)?;
+    let (id, version) = node_ref(&agent, &base, given)?;
+    let (parent_id, _) = node_ref(&agent, &base, to)?;
+    let body = format!(
+        "{{\"expected_version\":{version},\"parent_id\":{}}}",
+        quote(&parent_id)
+    );
+    let response =
+        agent.request_conflicting("POST", &format!("{base}/nodes/{id}/move"), body.as_bytes())?;
+    let text = response.text();
+    if args.json {
+        say(text.trim_end());
+        return Ok(());
+    }
+    let answer = Value::parse(&text).map_err(|_| unreadable())?;
+    let node = answer.get("node").unwrap_or(&answer);
+    match node.str_at("path") {
+        Some(path) => say(path),
+        None => bail!("the server's answer has no node path; try again"),
+    }
     Ok(())
 }

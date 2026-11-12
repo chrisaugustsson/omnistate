@@ -137,6 +137,14 @@ pub struct PatchNodeRequest {
     pub status: Option<String>,
 }
 
+#[derive(Deserialize, ToSchema)]
+pub struct MoveNodeRequest {
+    /// The `version` the caller last read.
+    pub expected_version: i64,
+    /// The node's new parent; the node becomes its last child.
+    pub parent_id: String,
+}
+
 #[derive(sqlx::FromRow)]
 struct NodeRow {
     id: String,
@@ -769,6 +777,115 @@ pub async fn patch_node(
         "behaviour.node_changed",
         &json!({
             "feature_id": feature_id, "node_id": node.id, "path": node.path, "fields": fields,
+        }),
+    )
+    .await?;
+    tx.commit().await.map_err(ApiError::database)?;
+    state.live.announce(&request.workspace_id, &project_id);
+    Ok(Json(NodeResponse { node }))
+}
+
+/// Moves a node, with everything below it, to be the last child of another node.
+#[utoipa::path(
+    post,
+    path = "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/nodes/{node_id}/move",
+    params(
+        ("workspace_id" = String, Path, description = "The workspace's UUID"),
+        ("project_id" = String, Path, description = "The project's UUID"),
+        ("feature_id" = String, Path, description = "The feature's UUID"),
+        ("node_id" = String, Path, description = "The node's UUID"),
+    ),
+    request_body = MoveNodeRequest,
+    responses(
+        (status = 200, description = "The node with its new `path`, `position` and `version`", body = NodeResponse),
+        (status = 400, description = "The body is not JSON of the expected shape (`invalid_request`), or an API key without `X-Omni-Run` and `X-Omni-Role` (`identity_required`)", body = ErrorBody),
+        (status = 401, description = "No valid API key or session", body = ErrorBody),
+        (status = 404, description = "No such node, or no such parent, in this feature, project and workspace", body = ErrorBody),
+        (status = 409, description = "`conflict` with `current_version` when `expected_version` is stale; else `cycle` (the parent is the node or below it) or `slug_taken` (the parent has a child with the node's slug)", body = StoryConflictBody),
+        (status = 422, description = "The node is the root (`root_cannot_move`)", body = ErrorBody),
+    )
+)]
+pub async fn move_node(
+    State(state): State<AppState>,
+    request: WorkspaceRequest,
+    identity: AgentIdentity,
+    Path((_, project_id, feature_id, node_id)): Path<(String, String, String, String)>,
+    body: Bytes,
+) -> Result<Json<NodeResponse>, StoryError> {
+    require_identity(&request.actor, &identity)?;
+    let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
+    let feature_id = parse_uuid(&feature_id).ok_or(ApiError::NotFound)?;
+    let node_id = parse_uuid(&node_id).ok_or(ApiError::NotFound)?;
+    let step = parse_body::<MoveNodeRequest>(&body)?;
+    let parent_id = parse_uuid(&step.parent_id).ok_or(ApiError::NotFound)?;
+
+    let mut tx = state.workspace_tx(&request.workspace_id).await?;
+    require_feature(&mut tx, &project_id, &feature_id).await?;
+    let current: Option<(i32, bool, Option<String>)> = sqlx::query_as(
+        "SELECT version, parent_id IS NULL, slug FROM behaviour_nodes \
+         WHERE id = $1::uuid AND feature_id = $2::uuid AND project_id = $3::uuid FOR UPDATE",
+    )
+    .bind(&node_id)
+    .bind(&feature_id)
+    .bind(&project_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(ApiError::database)?;
+    let (version, is_root, slug) = current.ok_or(ApiError::NotFound)?;
+    if i64::from(version) != step.expected_version {
+        return Err(StoryError::Stale(version));
+    }
+    if is_root {
+        return Err(invalid_field("root_cannot_move").into());
+    }
+    let tree = Tree::load(&mut tx, &feature_id).await?;
+    if tree.find(&parent_id).is_none() {
+        return Err(ApiError::NotFound.into());
+    }
+    let mut above = Some(parent_id.as_str());
+    while let Some(id) = above {
+        if id == node_id {
+            return Err(ApiError::conflict("cycle").into());
+        }
+        above = tree
+            .find(id)
+            .and_then(|at| tree.rows[at].parent_id.as_deref());
+    }
+    let (taken,): (bool,) = sqlx::query_as(
+        "SELECT EXISTS (SELECT 1 FROM behaviour_nodes WHERE parent_id = $1::uuid \
+         AND slug = $2 AND id <> $3::uuid)",
+    )
+    .bind(&parent_id)
+    .bind(&slug)
+    .bind(&node_id)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(ApiError::database)?;
+    if taken {
+        return Err(ApiError::conflict("slug_taken").into());
+    }
+    sqlx::query(
+        "UPDATE behaviour_nodes SET parent_id = $2::uuid, \
+         position = (SELECT COALESCE(MAX(position) + 1, 0) FROM behaviour_nodes \
+                     WHERE parent_id = $2::uuid AND id <> $1::uuid), \
+         version = version + 1, updated_at = clock_timestamp() WHERE id = $1::uuid",
+    )
+    .bind(&node_id)
+    .bind(&parent_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(ApiError::database)?;
+    let tree = Tree::load(&mut tx, &feature_id).await?;
+    let at = tree.find(&node_id).ok_or(ApiError::Unavailable)?;
+    let node = tree.body(at);
+    live::emit(
+        &mut tx,
+        &request.workspace_id,
+        &project_id,
+        "behaviour.node_changed",
+        &json!({
+            "feature_id": feature_id, "node_id": node.id, "path": node.path,
+            "fields": ["parent_id", "position"],
         }),
     )
     .await?;

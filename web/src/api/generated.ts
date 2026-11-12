@@ -622,6 +622,12 @@ export const ManifestSchema = z.object({
 });
 export type Manifest = z.infer<typeof ManifestSchema>;
 
+export const MoveNodeRequestSchema = z.object({
+  expected_version: z.number().int(),
+  parent_id: z.string(),
+});
+export type MoveNodeRequest = z.infer<typeof MoveNodeRequestSchema>;
+
 export const MoveStoryRequestSchema = z.object({
   expected_version: z.number().int(),
   run: z.string(),
@@ -975,6 +981,7 @@ export const schemas = {
   Manifest: ManifestSchema,
   ManifestBoard: ManifestBoardSchema,
   ManifestPage: ManifestPageSchema,
+  MoveNodeRequest: MoveNodeRequestSchema,
   MoveStoryRequest: MoveStoryRequestSchema,
   NewCriterion: NewCriterionSchema,
   NodeBody: NodeBodySchema,
@@ -1360,6 +1367,17 @@ export const operations = {
   },
   "PATCH /api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/nodes/{node_id}": {
     request: PatchNodeRequestSchema,
+    responses: {
+      "200": NodeResponseSchema,
+      "400": ErrorBodySchema,
+      "401": ErrorBodySchema,
+      "404": ErrorBodySchema,
+      "409": StoryConflictBodySchema,
+      "422": ErrorBodySchema,
+    },
+  },
+  "POST /api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/nodes/{node_id}/move": {
+    request: MoveNodeRequestSchema,
     responses: {
       "200": NodeResponseSchema,
       "400": ErrorBodySchema,

@@ -359,6 +359,10 @@ pub fn router(state: AppState) -> Router {
             get(behaviour::show_node).patch(behaviour::patch_node),
         )
         .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/nodes/{node_id}/move",
+            post(behaviour::move_node),
+        )
+        .route(
             "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories",
             get(stories::list_stories).post(stories::create_story),
         )
