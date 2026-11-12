@@ -22,7 +22,12 @@ Hub screens:
 
 ## Decisions
 
+- Is a friend a separate role? → No, friends are other players.
+
 ## Constraints
+
+- Scores are kept per player.
+- Prices include VAT. (from player-runs-session/logs-last-drill)
 
 ## Children
 

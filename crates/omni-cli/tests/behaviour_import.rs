@@ -21,9 +21,24 @@
 //!   stderr naming the node by its path below the root, exit 1, and nothing
 //!   is sent; a missing pointer target names the field and the path as
 //!   written. `--check` sends no request at all and prints `would import
-//!   <n> nodes (<n> stories), <n> same-as, <n> handoffs`; the import sends one
-//!   `POST .../behaviour/import` and prints the same counts after `imported`.
-//!   A refused import (`tree_not_empty`) is exit 1 with the API's code.
+//!   <n> nodes (<n> stories), <n> same-as, <n> handoffs, <n> questions (<n> by
+//!   default, <n> open), <n> rules`; the import sends one `POST
+//!   .../behaviour/import` and prints the same counts after `imported`. A
+//!   refused import (`tree_not_empty`) is exit 1 with the API's code.
+//!
+//! US-215 adds the three list sections of a node:
+//!
+//! - `Decisions`: `- <question> → <old> → <new>` is one question with its
+//!   answers oldest first; a line ending in `(default)` loses the marker and
+//!   its answers are `by: "agent"`, any other line's `by: "human"`.
+//! - `Open questions`: one open question per line; the node keeps its status.
+//! - `Constraints`: one rule per line, scoped by the level it stands in (root
+//!   `feature`, story `story`, situation `node`), its text verbatim with a
+//!   `(default)` kept. `(from <path>)` moves the rule to the node at that path
+//!   with the scope of where the line stood, the marker stripped.
+//! - A section line not starting with `- `, a decision without ` → ` and a
+//!   `(from …)` path that names no node are problems: one line naming the
+//!   node and the line, exit 1, nothing sent.
 
 mod common;
 
@@ -36,7 +51,8 @@ use serde_json::{Value, json};
 const PROJECT: &str = "01900000-0000-7000-8000-0000000000b1";
 const FEATURE: &str = "01900000-0000-7000-8000-0000000000f1";
 
-const COUNTS: &str = "10 nodes (3 stories), 1 same-as, 1 handoffs";
+const COUNTS: &str =
+    "10 nodes (3 stories), 1 same-as, 1 handoffs, 4 questions (1 by default, 1 open), 4 rules";
 
 fn import_path() -> String {
     format!("/api/v1/w/{WORKSPACE}/projects/{PROJECT}/features/{FEATURE}/behaviour/import")
@@ -416,4 +432,128 @@ fn an_import_into_a_feature_with_a_tree_exits_1_with_tree_not_empty() {
     assert_eq!(out.code, 1, "stdout: {}", out.stdout);
     assert!(out.stderr.contains("tree_not_empty"), "{}", out.stderr);
     assert_eq!(out.stdout, "");
+}
+
+/// The rule with `text` among the rules sent on the node at `path`.
+fn rule<'a>(nodes: &'a [Value], path: &str, text: &str) -> &'a Value {
+    at(nodes, path)["rules"]
+        .as_array()
+        .expect("rules")
+        .iter()
+        .find(|rule| rule["text"] == text)
+        .unwrap_or_else(|| panic!("no rule {text:?} on {path:?}"))
+}
+
+#[test]
+fn a_decision_is_one_question_with_its_answers_oldest_first_and_default_gives_them_to_the_agent() {
+    let server = accepting();
+    let out = import(&server, &fixture());
+    assert_eq!(out.code, 0, "stderr: {}", out.stderr);
+    let nodes = sent_nodes(&server);
+    assert_eq!(
+        at(&nodes, "player-runs-session/logs-last-drill")["questions"],
+        json!([
+            {
+                "question": "Guest checkout?",
+                "answers": [
+                    { "answer": "Yes", "by": "human" },
+                    { "answer": "No, login required", "by": "human" }
+                ]
+            },
+            {
+                "question": "Is the score shown at once?",
+                "answers": [{ "answer": "Yes, on the summary.", "by": "agent" }]
+            }
+        ])
+    );
+    assert_eq!(
+        at(&nodes, "")["questions"],
+        json!([{
+            "question": "Is a friend a separate role?",
+            "answers": [{ "answer": "No, friends are other players.", "by": "human" }]
+        }])
+    );
+}
+
+#[test]
+fn an_open_question_is_sent_without_answers_and_its_node_keeps_its_status() {
+    let server = accepting();
+    let out = import(&server, &fixture());
+    assert_eq!(out.code, 0, "stderr: {}", out.stderr);
+    let nodes = sent_nodes(&server);
+    let story = at(&nodes, "player-runs-session");
+    assert_eq!(
+        story["questions"],
+        json!([{ "question": "Should a session pause on a phone call?", "answers": [] }])
+    );
+    assert_eq!(story["status"], "done");
+}
+
+#[test]
+fn a_constraint_is_scoped_by_the_level_it_stands_in_and_from_moves_it_to_that_node() {
+    let server = accepting();
+    let out = import(&server, &fixture());
+    assert_eq!(out.code, 0, "stderr: {}", out.stderr);
+    let nodes = sent_nodes(&server);
+    assert_eq!(
+        at(&nodes, "")["rules"],
+        json!([{ "text": "Scores are kept per player.", "scope": "feature" }])
+    );
+    assert_eq!(
+        at(&nodes, "player-runs-session")["rules"],
+        json!([{ "text": "A session has at least one drill.", "scope": "story" }])
+    );
+    let drill = "player-runs-session/logs-last-drill";
+    assert_eq!(at(&nodes, drill)["rules"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        rule(&nodes, drill, "Prices include VAT.")["scope"],
+        "feature"
+    );
+    assert_eq!(
+        rule(
+            &nodes,
+            drill,
+            "The summary lists drills in the order played. (default)"
+        )["scope"],
+        "node"
+    );
+}
+
+#[test]
+fn a_section_line_without_a_dash_a_decision_without_an_arrow_and_an_unknown_from_path_are_each_one_line_and_nothing_is_sent()
+ {
+    let tree = copy_of_fixture();
+    let root = &tree.path;
+    rewrite(
+        &root.join("player-runs-session/logs-last-drill/node.md"),
+        "- Guest checkout? → Yes → No, login required",
+        "- Guest checkout?",
+    );
+    rewrite(
+        &root.join("player-runs-session/node.md"),
+        "- Should a session pause on a phone call?",
+        "Should a session pause on a phone call?",
+    );
+    rewrite(
+        &root.join("node.md"),
+        "(from player-runs-session/logs-last-drill)",
+        "(from player-runs-session/nowhere)",
+    );
+    let server = accepting();
+    let out = import(&server, root);
+    assert_eq!(out.code, 1, "stdout: {}", out.stdout);
+    assert_eq!(out.stdout, "");
+    for (node, line) in [
+        ("player-runs-session/logs-last-drill", "Guest checkout?"),
+        (
+            "player-runs-session",
+            "Should a session pause on a phone call?",
+        ),
+        (".", "Prices include VAT."),
+    ] {
+        let named: Vec<&str> = out.stderr.lines().filter(|l| l.contains(line)).collect();
+        assert_eq!(named.len(), 1, "{line} in stderr: {}", out.stderr);
+        assert!(named[0].starts_with(node), "{node} in {}", named[0]);
+    }
+    assert!(server.requests().is_empty());
 }
