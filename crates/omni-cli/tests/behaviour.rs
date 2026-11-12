@@ -1,4 +1,4 @@
-//! US-201 to US-204: `omni behaviour add`, `read`, `edit`, `list` and `move`, tested as the built binary against
+//! US-201 to US-205: `omni behaviour add`, `read`, `edit`, `list` and `move`, tested as the built binary against
 //! a mock HTTP server. The API's own rules (the root, slugs, levels, the
 //! chain) are in crates/omni-api/tests/behaviour.rs; these tests pin what the
 //! CLI adds on top: naming a node by its path or by `.` for the root, which
@@ -26,6 +26,13 @@
 //! - `omni behaviour move <node> --to <parent>` posts to the move route of
 //!   the node the list gives, with its listed `version` as `expected_version`
 //!   and the listed id of `<parent>` as `parent_id`, and prints the new path.
+//! - `--same-as <node>` and `--handoff <node>` on `add` and `edit` send the
+//!   listed id of that node as `same_as` or `handoff`; `--same-as ""` in
+//!   `edit` sends `null`. A uuid the list does not have is exit 1 with
+//!   `not_found: no node <id> in this feature`, and nothing is sent. Both
+//!   flags together are sent, and the API's 422 is the error. `list` ends
+//!   the line of a node with a pointer in ` → same-as <path>` or
+//!   ` → handoff <path>`.
 
 mod common;
 
@@ -54,7 +61,9 @@ fn summary(id: &str, parent: Option<&str>, path: &str, level: i64, title: &str) 
         "title": title,
         "summary": "",
         "status": "open",
-        "version": 1
+        "version": 1,
+        "same_as": null,
+        "handoff": null
     })
 }
 
@@ -82,7 +91,7 @@ fn listed() -> Value {
 }
 
 /// An API that lists `listed()`, reads the root, answers a create with a
-/// situation under the story, answers an edit of the story with the
+/// situation under the story (422 `two_pointers` when it has both), answers an edit of the story with the
 /// story at the status the request sent, and answers a move of the story
 /// with it under the other story.
 fn mock() -> MockServer {
@@ -94,16 +103,22 @@ fn mock() -> MockServer {
                 200,
                 &json!({ "node": node(ROOT, None, "", 0, "Checkout"), "chain": [] }),
             ),
-            ("POST", path) if path == format!("{base}/nodes") => Reply::json(
-                201,
-                &json!({ "node": node(
-                    NEW,
-                    Some(STORY),
-                    "customer-buys-product/user-presses-the-buy-button",
-                    2,
-                    "User presses the buy button"
-                ) }),
-            ),
+            ("POST", path) if path == format!("{base}/nodes") => {
+                let sent: Value = serde_json::from_slice(&request.body).expect("a JSON body");
+                if sent.get("same_as").is_some() && sent.get("handoff").is_some() {
+                    return Reply::json(422, &json!({ "error": "two_pointers" }));
+                }
+                Reply::json(
+                    201,
+                    &json!({ "node": node(
+                        NEW,
+                        Some(STORY),
+                        "customer-buys-product/user-presses-the-buy-button",
+                        2,
+                        "User presses the buy button"
+                    ) }),
+                )
+            }
             ("POST", path) if path == format!("{base}/nodes/{STORY}/move") => Reply::json(
                 200,
                 &json!({ "node": node(
@@ -471,4 +486,178 @@ fn list_of_a_feature_without_a_tree_prints_nothing_and_exits_0() {
 
     assert_eq!(out.code, 0, "stderr: {}", out.stderr);
     assert_eq!(out.stdout, "");
+}
+
+#[test]
+fn add_with_a_handoff_path_posts_the_listed_id_of_that_node() {
+    let server = mock();
+    let home = logged_in(&server);
+
+    let out = run(
+        &home,
+        &[
+            "behaviour",
+            "add",
+            "--parent",
+            "customer-buys-product",
+            "--title",
+            "User goes to checkout",
+            "--slug",
+            "user-goes-to-checkout",
+            "--handoff",
+            "customer-returns-product",
+        ],
+    );
+
+    assert_eq!(out.code, 0, "stderr: {}", out.stderr);
+    assert_eq!(
+        posts(&server),
+        vec![json!({
+            "title": "User goes to checkout",
+            "slug": "user-goes-to-checkout",
+            "parent_id": STORY,
+            "handoff": OTHER
+        })]
+    );
+}
+
+#[test]
+fn edit_same_as_a_path_sends_its_id_and_an_empty_same_as_sends_null() {
+    let server = mock();
+    let home = logged_in(&server);
+
+    let set = run(
+        &home,
+        &[
+            "behaviour",
+            "edit",
+            "customer-buys-product",
+            "--same-as",
+            "customer-returns-product",
+        ],
+    );
+    let cleared = run(
+        &home,
+        &[
+            "behaviour",
+            "edit",
+            "customer-buys-product",
+            "--same-as",
+            "",
+        ],
+    );
+
+    assert_eq!(set.code, 0, "stderr: {}", set.stderr);
+    assert_eq!(cleared.code, 0, "stderr: {}", cleared.stderr);
+    assert_eq!(
+        sent(&server, "PATCH"),
+        vec![
+            json!({ "expected_version": 3, "same_as": OTHER }),
+            json!({ "expected_version": 3, "same_as": null }),
+        ]
+    );
+}
+
+#[test]
+fn a_pointer_to_a_uuid_the_feature_does_not_have_exits_1_with_not_found_and_sends_nothing() {
+    // Settled decision: resolved locally rather than sent for the API's 422.
+    let server = mock();
+    let home = logged_in(&server);
+    let foreign = "01900000-0000-7000-8000-0000000009f9";
+
+    let out = run(
+        &home,
+        &[
+            "behaviour",
+            "edit",
+            "customer-buys-product",
+            "--same-as",
+            foreign,
+        ],
+    );
+
+    assert_eq!(out.code, 1, "stdout: {}", out.stdout);
+    assert!(
+        out.stderr
+            .contains(&format!("not_found: no node {foreign} in this feature")),
+        "{:?}",
+        out.stderr
+    );
+    assert!(sent(&server, "PATCH").is_empty());
+}
+
+#[test]
+fn same_as_and_handoff_together_are_sent_and_the_apis_422_is_the_error() {
+    // Settled decision: no local usage error, so omni refuses as the API does.
+    let server = mock();
+    let home = logged_in(&server);
+
+    let out = run(
+        &home,
+        &[
+            "behaviour",
+            "add",
+            "--title",
+            "User goes to checkout",
+            "--same-as",
+            "customer-buys-product",
+            "--handoff",
+            "customer-returns-product",
+        ],
+    );
+
+    assert_eq!(out.code, 1, "stdout: {}", out.stdout);
+    assert!(out.stderr.contains("two_pointers"), "{:?}", out.stderr);
+    assert_eq!(
+        posts(&server),
+        vec![json!({
+            "title": "User goes to checkout",
+            "same_as": STORY,
+            "handoff": OTHER
+        })]
+    );
+}
+
+#[test]
+fn list_ends_the_line_of_a_node_with_a_pointer_in_the_pointer_and_its_path() {
+    let mut nodes = story_nodes();
+    nodes[2]["handoff"] = json!({ "id": OTHER, "path": "customer-returns-product" });
+    let mut sold_out = with(
+        summary(
+            NEW,
+            Some(STORY),
+            "customer-buys-product/product-is-sold-out",
+            2,
+            "Product is sold out",
+        ),
+        Some("product-is-sold-out"),
+        "",
+        "open",
+    );
+    sold_out["same_as"] = json!({
+        "id": OUT,
+        "path": "customer-buys-product/user-presses-buy/product-out-of-stock"
+    });
+    nodes.push(sold_out);
+    let server = MockServer::start(move |request| {
+        let base = tree_path();
+        match (request.method.as_str(), request.path.as_str()) {
+            ("GET", path) if path == base || path == format!("{base}?under={STORY}") => {
+                Reply::json(200, &json!({ "nodes": nodes }))
+            }
+            _ => Reply::json(404, &json!({ "error": "not_found" })),
+        }
+    });
+    let home = logged_in(&server);
+
+    let out = run(&home, &["behaviour", "list", "customer-buys-product"]);
+
+    assert_eq!(out.code, 0, "stderr: {}", out.stderr);
+    assert_eq!(
+        out.stdout,
+        "customer-buys-product — Customer buys a product. (open)\n\
+         \x20 user-presses-buy — Product goes to the cart, or the user sees why it can't. (done)\n\
+         \x20   product-out-of-stock — Product is out of stock (open) → handoff customer-returns-product\n\
+         \x20 product-is-sold-out — Product is sold out (open) → same-as customer-buys-product/user-presses-buy/product-out-of-stock\n"
+    );
 }

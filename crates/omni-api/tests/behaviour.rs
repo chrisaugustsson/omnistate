@@ -1,4 +1,4 @@
-//! US-201 to US-204: the behaviour tree of a feature, through the API. Run with
+//! US-201 to US-205: the behaviour tree of a feature, through the API. Run with
 //! `--features stack-tests` in the Compose test container, which reaches
 //! Postgres at `postgres:5432`.
 //!
@@ -41,7 +41,7 @@
 //! - `GET /?under=<id>` lists that node and every node below it, in tree
 //!   order; a node of another feature is 404. `GET /nodes/{id}` also gives
 //!   `children`: the direct children by position, each `{id, path, slug,
-//!   title, summary, status}`.
+//!   title, summary, status, same_as, handoff}`.
 //! - `POST /nodes/{id}/move` with `{expected_version, parent_id}` makes the
 //!   node the last child of the parent, with everything below it; ids keep,
 //!   only the moved node's `version` goes up, and it emits one
@@ -50,6 +50,16 @@
 //!   nothing changed: the node itself or a node below it (409 `cycle`), the
 //!   root (422), a parent with a child of that slug (409 `slug_taken`), a
 //!   parent of another feature (404), a stale version (409 `conflict`).
+//! - `POST /nodes` and `PATCH /nodes/{id}` take `same_as` or `handoff`, a node
+//!   id of the feature (`null` in a PATCH clears it; left out keeps it). The
+//!   read's `node` gives a pointer as `{id, path, title, summary}`, the list
+//!   and `children` as `{id, path}`, else `null`. Refused with nothing
+//!   written: both pointers on one node (422 `two_pointers`), a node of
+//!   another feature (422 `pointer_target_unknown`), the node itself (422
+//!   `pointer_to_itself`), a child added or moved under a node with a pointer
+//!   (409 `points_elsewhere`), a pointer set on a node with a child (409
+//!   `has_children`). The database refuses a pointer out of the feature and
+//!   two pointers on one row.
 
 mod common;
 
@@ -1274,7 +1284,9 @@ fn a_read_gives_the_direct_children_in_the_order_they_were_added_without_the_gra
                 "slug": "user-presses-buy",
                 "title": "User presses buy",
                 "summary": "Product goes to the cart, or the user sees why it can't.",
-                "status": "done"
+                "status": "done",
+                "same_as": null,
+                "handoff": null
             },
             {
                 "id": id_of(&pay),
@@ -1282,7 +1294,9 @@ fn a_read_gives_the_direct_children_in_the_order_they_were_added_without_the_gra
                 "slug": "user-pays",
                 "title": "User pays",
                 "summary": "",
-                "status": "open"
+                "status": "open",
+                "same_as": null,
+                "handoff": null
             }
         ])
     );
@@ -1624,4 +1638,362 @@ fn a_move_with_an_api_key_without_a_run_is_400_identity_required_and_changes_not
 
     assert_error(&response, 400, "identity_required");
     assert_eq!(shape(f, &project, &feature), before);
+}
+
+// ---------------------------------------------------------------------------
+// Same-as and handoff pointers (US-205)
+// ---------------------------------------------------------------------------
+
+/// The tree as listed: each node's path, version and pointers, in tree order.
+fn pointers(f: &Fixture, project: &str, feature: &str) -> Vec<Value> {
+    listed(f, project, feature)
+        .iter()
+        .map(|node| {
+            json!([
+                node["path"],
+                node["version"],
+                node["same_as"],
+                node["handoff"]
+            ])
+        })
+        .collect()
+}
+
+#[test]
+fn a_handoff_reads_back_with_the_targets_path_title_and_summary_and_lists_with_its_path() {
+    let (f, _) = ready();
+    let (project, feature) = new_feature(f, &unique("Checkout"));
+    let (press, out_of_stock, checks_out) = checkout_tree(f, &project, &feature);
+    edit(
+        f,
+        &project,
+        &feature,
+        &id_of(&checks_out),
+        &json!({ "expected_version": 1, "summary": "The customer pays and gets a receipt." }),
+    );
+
+    let goes = add(
+        f,
+        &project,
+        &feature,
+        &json!({
+            "title": "User goes to checkout",
+            "slug": "user-goes-to-checkout",
+            "parent_id": id_of(&press),
+            "handoff": id_of(&checks_out)
+        }),
+    );
+    let deep = add(
+        f,
+        &project,
+        &feature,
+        &json!({ "title": "User pays later", "handoff": id_of(&out_of_stock) }),
+    );
+
+    let node = read_node(f, &project, &feature, &id_of(&goes));
+    assert_eq!(
+        node["handoff"],
+        json!({
+            "id": id_of(&checks_out),
+            "path": "customer-checks-out",
+            "title": "Customer checks out",
+            "summary": "The customer pays and gets a receipt."
+        })
+    );
+    assert_eq!(node["same_as"], Value::Null);
+    assert_eq!(
+        read_node(f, &project, &feature, &id_of(&deep))["handoff"]["path"],
+        "customer-buys-product/user-presses-buy/product-out-of-stock"
+    );
+    let entry = json!({ "id": id_of(&checks_out), "path": "customer-checks-out" });
+    let listed_goes = listed(f, &project, &feature)
+        .into_iter()
+        .find(|node| node["id"] == goes["id"])
+        .expect("the new node is listed");
+    assert_eq!(listed_goes["handoff"], entry);
+    assert_eq!(listed_goes["same_as"], Value::Null);
+    let children = must(
+        read(f, &project, &feature, &id_of(&press)),
+        200,
+        "read the parent",
+    )["children"]
+        .clone();
+    assert_eq!(
+        children[1]["path"],
+        "customer-buys-product/user-presses-buy/user-goes-to-checkout"
+    );
+    assert_eq!(children[1]["handoff"], entry);
+    assert_eq!(children[1]["same_as"], Value::Null);
+}
+
+#[test]
+fn a_same_as_set_by_an_edit_stays_through_other_edits_and_null_clears_it() {
+    let (f, _) = ready();
+    let (project, feature) = new_feature(f, &unique("Checkout"));
+    let (_, out_of_stock, checks_out) = checkout_tree(f, &project, &feature);
+    let sold_out = add(
+        f,
+        &project,
+        &feature,
+        &json!({ "title": "Product is sold out", "parent_id": id_of(&checks_out) }),
+    );
+    let target = json!({
+        "id": id_of(&out_of_stock),
+        "path": "customer-buys-product/user-presses-buy/product-out-of-stock",
+        "title": "Product is out of stock",
+        "summary": ""
+    });
+
+    edit(
+        f,
+        &project,
+        &feature,
+        &id_of(&sold_out),
+        &json!({ "expected_version": 1, "same_as": id_of(&out_of_stock) }),
+    );
+    assert_eq!(
+        read_node(f, &project, &feature, &id_of(&sold_out))["same_as"],
+        target
+    );
+
+    edit(
+        f,
+        &project,
+        &feature,
+        &id_of(&sold_out),
+        &json!({ "expected_version": 2, "title": "Product sold out" }),
+    );
+    assert_eq!(
+        read_node(f, &project, &feature, &id_of(&sold_out))["same_as"],
+        target
+    );
+
+    edit(
+        f,
+        &project,
+        &feature,
+        &id_of(&sold_out),
+        &json!({ "expected_version": 3, "same_as": null }),
+    );
+    let node = read_node(f, &project, &feature, &id_of(&sold_out));
+    assert_eq!(node["same_as"], Value::Null);
+    assert_eq!(node["handoff"], Value::Null);
+    assert_eq!(node["version"], 4);
+}
+
+#[test]
+fn both_pointers_on_one_node_are_422_two_pointers_and_nothing_is_written() {
+    // Settled decision: its own code, so the three pointer refusals differ.
+    let (f, _) = ready();
+    let (project, feature) = new_feature(f, &unique("Checkout"));
+    let (press, out_of_stock, checks_out) = checkout_tree(f, &project, &feature);
+    let sold_out = add(
+        f,
+        &project,
+        &feature,
+        &json!({ "title": "Product is sold out", "parent_id": id_of(&checks_out), "same_as": id_of(&out_of_stock) }),
+    );
+    let before = pointers(f, &project, &feature);
+
+    let added = post_node(
+        f,
+        &project,
+        &feature,
+        Auth::Agent,
+        &json!({
+            "title": "User goes to checkout",
+            "parent_id": id_of(&press),
+            "same_as": id_of(&out_of_stock),
+            "handoff": id_of(&checks_out)
+        }),
+    );
+    let both = patch_node(
+        f,
+        &project,
+        &feature,
+        Auth::Agent,
+        &id_of(&out_of_stock),
+        &json!({ "expected_version": 1, "same_as": id_of(&sold_out), "handoff": id_of(&checks_out) }),
+    );
+    let beside_stored = patch_node(
+        f,
+        &project,
+        &feature,
+        Auth::Agent,
+        &id_of(&sold_out),
+        &json!({ "expected_version": 1, "handoff": id_of(&press) }),
+    );
+
+    assert_error(&added, 422, "two_pointers");
+    assert_error(&both, 422, "two_pointers");
+    assert_error(&beside_stored, 422, "two_pointers");
+    assert_eq!(pointers(f, &project, &feature), before);
+}
+
+#[test]
+fn a_pointer_to_a_node_of_another_feature_is_422_pointer_target_unknown_and_nothing_is_written() {
+    let (f, _) = ready();
+    let (project, feature) = new_feature(f, &unique("Checkout"));
+    let (other_project, other_feature) = new_feature(f, &unique("Returns"));
+    let (press, out_of_stock, _) = checkout_tree(f, &project, &feature);
+    let theirs = add(
+        f,
+        &other_project,
+        &other_feature,
+        &json!({ "title": "Customer checks out" }),
+    );
+    let before = pointers(f, &project, &feature);
+
+    let added = post_node(
+        f,
+        &project,
+        &feature,
+        Auth::Agent,
+        &json!({ "title": "User goes to checkout", "parent_id": id_of(&press), "handoff": id_of(&theirs) }),
+    );
+    let edited = patch_node(
+        f,
+        &project,
+        &feature,
+        Auth::Agent,
+        &id_of(&out_of_stock),
+        &json!({ "expected_version": 1, "same_as": id_of(&theirs) }),
+    );
+
+    assert_error(&added, 422, "pointer_target_unknown");
+    assert_error(&edited, 422, "pointer_target_unknown");
+    assert_eq!(pointers(f, &project, &feature), before);
+    assert_eq!(
+        events_of(&project, "behaviour.node_changed"),
+        Vec::<Value>::new()
+    );
+}
+
+#[test]
+fn a_node_pointing_at_itself_is_422_pointer_to_itself_and_changes_nothing() {
+    let (f, _) = ready();
+    let (project, feature) = new_feature(f, &unique("Checkout"));
+    let (_, out_of_stock, _) = checkout_tree(f, &project, &feature);
+    let before = pointers(f, &project, &feature);
+
+    let response = patch_node(
+        f,
+        &project,
+        &feature,
+        Auth::Agent,
+        &id_of(&out_of_stock),
+        &json!({ "expected_version": 1, "same_as": id_of(&out_of_stock) }),
+    );
+
+    assert_error(&response, 422, "pointer_to_itself");
+    assert_eq!(pointers(f, &project, &feature), before);
+}
+
+#[test]
+fn adding_or_moving_a_node_under_one_with_a_pointer_is_409_points_elsewhere_and_changes_nothing() {
+    let (f, _) = ready();
+    let (project, feature) = new_feature(f, &unique("Checkout"));
+    let (press, out_of_stock, checks_out) = checkout_tree(f, &project, &feature);
+    let goes = add(
+        f,
+        &project,
+        &feature,
+        &json!({
+            "title": "User goes to checkout",
+            "slug": "user-goes-to-checkout",
+            "parent_id": id_of(&press),
+            "handoff": id_of(&checks_out)
+        }),
+    );
+    let before = pointers(f, &project, &feature);
+
+    let added = post_node(
+        f,
+        &project,
+        &feature,
+        Auth::Agent,
+        &json!({ "title": "x", "parent_id": id_of(&goes) }),
+    );
+    let moved = move_node(
+        f,
+        &project,
+        &feature,
+        Auth::Agent,
+        &id_of(&out_of_stock),
+        &json!({ "expected_version": 1, "parent_id": id_of(&goes) }),
+    );
+
+    assert_error(&added, 409, "points_elsewhere");
+    assert_error(&moved, 409, "points_elsewhere");
+    assert_eq!(pointers(f, &project, &feature), before);
+}
+
+#[test]
+fn a_pointer_on_a_node_that_has_a_child_is_409_has_children_and_changes_nothing() {
+    let (f, _) = ready();
+    let (project, feature) = new_feature(f, &unique("Checkout"));
+    let (press, _, checks_out) = checkout_tree(f, &project, &feature);
+    let before = pointers(f, &project, &feature);
+
+    let response = patch_node(
+        f,
+        &project,
+        &feature,
+        Auth::Agent,
+        &id_of(&press),
+        &json!({ "expected_version": 1, "same_as": id_of(&checks_out) }),
+    );
+
+    assert_error(&response, 409, "has_children");
+    assert_eq!(pointers(f, &project, &feature), before);
+}
+
+/// The SQLSTATE of setting `assignments` on the node `id` as the admin role.
+fn sqlstate_of_update(id: &str, assignments: &str) -> String {
+    block(async {
+        let mut conn = admin_connection().await;
+        let error = sqlx::query(&format!(
+            "UPDATE behaviour_nodes SET {assignments} WHERE id = $1::uuid"
+        ))
+        .bind(id)
+        .execute(&mut conn)
+        .await
+        .expect_err("the database refuses the pointer");
+        error
+            .as_database_error()
+            .and_then(|e| e.code())
+            .map(|code| code.to_string())
+            .unwrap_or_default()
+    })
+}
+
+#[test]
+fn the_database_refuses_a_pointer_out_of_the_feature_and_two_pointers_on_one_node() {
+    // FR-10: the database, not only the API, keeps a pointer in its feature.
+    let (f, _) = ready();
+    let (project, feature) = new_feature(f, &unique("Checkout"));
+    let (other_project, other_feature) = new_feature(f, &unique("Returns"));
+    let (press, out_of_stock, checks_out) = checkout_tree(f, &project, &feature);
+    let theirs = add(
+        f,
+        &other_project,
+        &other_feature,
+        &json!({ "title": "Customer checks out" }),
+    );
+
+    let out_of_feature = sqlstate_of_update(
+        &id_of(&out_of_stock),
+        &format!("handoff_id = '{}'::uuid", id_of(&theirs)),
+    );
+    let two = sqlstate_of_update(
+        &id_of(&out_of_stock),
+        &format!(
+            "same_as_id = '{}'::uuid, handoff_id = '{}'::uuid",
+            id_of(&press),
+            id_of(&checks_out)
+        ),
+    );
+
+    assert_eq!(out_of_feature, "23503", "a foreign key violation");
+    assert_eq!(two, "23514", "a check violation");
 }
