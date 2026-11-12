@@ -149,6 +149,66 @@ export const CancelStoryRequestSchema = z.object({
 });
 export type CancelStoryRequest = z.infer<typeof CancelStoryRequestSchema>;
 
+export const PointerDetailBodySchema = z.object({
+  id: z.string(),
+  path: z.string(),
+  summary: z.string(),
+  title: z.string(),
+});
+export type PointerDetailBody = z.infer<typeof PointerDetailBodySchema>;
+
+export const NodeBodySchema = z.object({
+  behaviour: z.string(),
+  created_at: z.string(),
+  created_by: z.record(z.string(), z.unknown()),
+  handoff: z.union([
+    z.null(),
+    PointerDetailBodySchema,
+  ]).optional(),
+  id: z.string(),
+  level: z.number().int(),
+  needs_pass: z.boolean(),
+  needs_pass_since: z.string().nullable().optional(),
+  parent_id: z.string().nullable().optional(),
+  path: z.string(),
+  position: z.number().int(),
+  same_as: z.union([
+    z.null(),
+    PointerDetailBodySchema,
+  ]).optional(),
+  situation: z.string(),
+  slug: z.string().nullable().optional(),
+  status: z.string(),
+  summary: z.string(),
+  title: z.string(),
+  updated_at: z.string(),
+  version: z.number().int(),
+});
+export type NodeBody = z.infer<typeof NodeBodySchema>;
+
+export const QuestionBodySchema = z.object({
+  answer: z.union([
+    z.null(),
+    AnswerBodySchema,
+  ]).optional(),
+  answered_by: z.string().nullable().optional(),
+  answers: z.array(AnswerBodySchema),
+  asked_by: z.record(z.string(), z.unknown()),
+  created_at: z.string(),
+  id: z.string(),
+  node_id: z.string(),
+  node_path: z.string(),
+  question: z.string(),
+  state: z.string(),
+  version: z.number().int(),
+});
+export type QuestionBody = z.infer<typeof QuestionBodySchema>;
+
+export const ChainNodeBodySchema = z.intersection(NodeBodySchema, z.object({
+  questions: z.array(QuestionBodySchema),
+}));
+export type ChainNodeBody = z.infer<typeof ChainNodeBodySchema>;
+
 export const CheckCriterionRequestSchema = z.object({
   criterion: z.number().int(),
   expected_version: z.number().int(),
@@ -666,43 +726,6 @@ export const MoveStoryRequestSchema = z.object({
 });
 export type MoveStoryRequest = z.infer<typeof MoveStoryRequestSchema>;
 
-export const PointerDetailBodySchema = z.object({
-  id: z.string(),
-  path: z.string(),
-  summary: z.string(),
-  title: z.string(),
-});
-export type PointerDetailBody = z.infer<typeof PointerDetailBodySchema>;
-
-export const NodeBodySchema = z.object({
-  behaviour: z.string(),
-  created_at: z.string(),
-  created_by: z.record(z.string(), z.unknown()),
-  handoff: z.union([
-    z.null(),
-    PointerDetailBodySchema,
-  ]).optional(),
-  id: z.string(),
-  level: z.number().int(),
-  needs_pass: z.boolean(),
-  needs_pass_since: z.string().nullable().optional(),
-  parent_id: z.string().nullable().optional(),
-  path: z.string(),
-  position: z.number().int(),
-  same_as: z.union([
-    z.null(),
-    PointerDetailBodySchema,
-  ]).optional(),
-  situation: z.string(),
-  slug: z.string().nullable().optional(),
-  status: z.string(),
-  summary: z.string(),
-  title: z.string(),
-  updated_at: z.string(),
-  version: z.number().int(),
-});
-export type NodeBody = z.infer<typeof NodeBodySchema>;
-
 export const PointerBodySchema = z.object({
   id: z.string(),
   path: z.string(),
@@ -758,24 +781,6 @@ export const NodeListResponseSchema = z.object({
 });
 export type NodeListResponse = z.infer<typeof NodeListResponseSchema>;
 
-export const QuestionBodySchema = z.object({
-  answer: z.union([
-    z.null(),
-    AnswerBodySchema,
-  ]).optional(),
-  answered_by: z.string().nullable().optional(),
-  answers: z.array(AnswerBodySchema),
-  asked_by: z.record(z.string(), z.unknown()),
-  created_at: z.string(),
-  id: z.string(),
-  node_id: z.string(),
-  node_path: z.string(),
-  question: z.string(),
-  state: z.string(),
-  version: z.number().int(),
-});
-export type QuestionBody = z.infer<typeof QuestionBodySchema>;
-
 export const ReachRuleBodySchema = z.object({
   id: z.string(),
   node_id: z.string(),
@@ -786,11 +791,12 @@ export const ReachRuleBodySchema = z.object({
 export type ReachRuleBody = z.infer<typeof ReachRuleBodySchema>;
 
 export const NodeReadResponseSchema = z.object({
-  chain: z.array(NodeBodySchema),
+  chain: z.array(ChainNodeBodySchema),
   children: z.array(NodeChildBodySchema),
   node: NodeBodySchema,
   questions: z.array(QuestionBodySchema),
   rules: z.array(ReachRuleBodySchema),
+  siblings: z.array(NodeChildBodySchema),
 });
 export type NodeReadResponse = z.infer<typeof NodeReadResponseSchema>;
 
@@ -1075,6 +1081,7 @@ export const schemas = {
   BlockStoryRequest: BlockStoryRequestSchema,
   BoardBody: BoardBodySchema,
   CancelStoryRequest: CancelStoryRequestSchema,
+  ChainNodeBody: ChainNodeBodySchema,
   CheckCriterionRequest: CheckCriterionRequestSchema,
   ClaimStoryRequest: ClaimStoryRequestSchema,
   CollectionBody: CollectionBodySchema,

@@ -480,6 +480,29 @@
         ],
         "type": "object"
       },
+      "ChainNodeBody": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/NodeBody"
+          },
+          {
+            "properties": {
+              "questions": {
+                "description": "The node's own questions, oldest first.",
+                "items": {
+                  "$ref": "#/components/schemas/QuestionBody"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "questions"
+            ],
+            "type": "object"
+          }
+        ],
+        "description": "A node above the one read, with its questions."
+      },
       "CheckCriterionRequest": {
         "properties": {
           "criterion": {
@@ -2361,9 +2384,9 @@
       "NodeReadResponse": {
         "properties": {
           "chain": {
-            "description": "The nodes above it, the root first.",
+            "description": "The nodes above it, the root first, each with its own questions.",
             "items": {
-              "$ref": "#/components/schemas/NodeBody"
+              "$ref": "#/components/schemas/ChainNodeBody"
             },
             "type": "array"
           },
@@ -2390,12 +2413,20 @@
               "$ref": "#/components/schemas/ReachRuleBody"
             },
             "type": "array"
+          },
+          "siblings": {
+            "description": "The other children of the node's parent, by position; empty for the root.",
+            "items": {
+              "$ref": "#/components/schemas/NodeChildBody"
+            },
+            "type": "array"
           }
         },
         "required": [
           "node",
           "chain",
           "children",
+          "siblings",
           "questions",
           "rules"
         ],

@@ -135,24 +135,134 @@ pub fn read(args: &Args, node: Option<&str>) -> Result<()> {
     }
     let answer = Value::parse(&text).map_err(|_| unreadable())?;
     let node = answer.get("node").ok_or_else(unreadable)?;
+    let mut blocks: Vec<String> = Vec::new();
+    for above in answer.get("chain").and_then(Value::as_array).unwrap_or(&[]) {
+        blocks.push(read_block(above));
+    }
+    blocks.push(format!("=== this node ===\n{}", read_block(node)));
+    let mut out = blocks.join("\n\n");
+    let mut sections: Vec<String> = Vec::new();
+    let rules: Vec<String> = answer
+        .get("rules")
+        .and_then(Value::as_array)
+        .unwrap_or(&[])
+        .iter()
+        .map(|rule| {
+            let from = match rule.str_at("node_path") {
+                Some("") | None => ".",
+                Some(path) => path,
+            };
+            format!(
+                "- {} ({}, from {from})",
+                rule.str_at("text").unwrap_or_default(),
+                rule.str_at("scope").unwrap_or("?")
+            )
+        })
+        .collect();
+    if !rules.is_empty() {
+        sections.push(format!("Rules that apply here:\n{}", rules.join("\n")));
+    }
+    for (heading, key) in [("Children:", "children"), ("Siblings:", "siblings")] {
+        let lines: Vec<String> = answer
+            .get(key)
+            .and_then(Value::as_array)
+            .unwrap_or(&[])
+            .iter()
+            .map(|entry| {
+                let title = entry.str_at("title").unwrap_or_default();
+                let summary = entry.str_at("summary").filter(|s| !s.is_empty());
+                format!(
+                    "- {} — {} ({})",
+                    entry.str_at("slug").unwrap_or(title),
+                    summary.unwrap_or(title),
+                    entry.str_at("status").unwrap_or("?")
+                )
+            })
+            .collect();
+        if !lines.is_empty() {
+            sections.push(format!("{heading}\n{}", lines.join("\n")));
+        }
+    }
+    for section in sections {
+        out.push_str("\n\n");
+        out.push_str(&section);
+    }
+    say(&out);
+    Ok(())
+}
+
+/// One node as a block of the text read: title, path line, texts, decisions
+/// and open questions, a line left out when its value is empty.
+fn read_block(node: &Value) -> String {
+    let mut lines = vec![format!("# {}", node.str_at("title").unwrap_or_default())];
     let path = match node.str_at("path") {
         Some("") => ".",
         Some(path) => path,
         None => "?",
     };
     let level = match node.get("level") {
-        Some(Value::Number(n)) => n.as_str(),
+        Some(Value::Number(n)) if n == "0" => "feature",
+        Some(Value::Number(n)) if n == "1" => "story",
+        Some(Value::Number(_)) => "situation",
         _ => "?",
     };
-    say(&format!(
-        "{path}  level {level}  {}",
+    let mut head = format!(
+        "path: {path}  level: {level}  status: {}",
         node.str_at("status").unwrap_or("?")
-    ));
-    say(node.str_at("title").unwrap_or_default());
-    if let Some(summary) = node.str_at("summary").filter(|s| !s.is_empty()) {
-        say(summary);
+    );
+    if let Some(Value::Bool(true)) = node.get("needs_pass") {
+        head.push_str("  needs another pass");
     }
-    Ok(())
+    for (word, key) in [("same-as", "same_as"), ("handoff", "handoff")] {
+        if let Some(target) = node.get(key).and_then(|p| p.str_at("path")) {
+            head.push_str(&format!("  {word}: {target}"));
+        }
+    }
+    lines.push(head);
+    for (label, key) in [
+        ("Summary", "summary"),
+        ("Situation", "situation"),
+        ("Behaviour", "behaviour"),
+    ] {
+        if let Some(text) = node.str_at(key).filter(|t| !t.is_empty()) {
+            lines.push(format!("{label}: {text}"));
+        }
+    }
+    let questions = node
+        .get("questions")
+        .and_then(Value::as_array)
+        .unwrap_or(&[]);
+    let mut decisions = Vec::new();
+    let mut open = Vec::new();
+    for question in questions {
+        let text = question.str_at("question").unwrap_or_default();
+        match question.get("answer") {
+            Some(current @ Value::Object(_)) => {
+                let marker = if current.str_at("given_by") == Some("agent") {
+                    " (default)"
+                } else {
+                    ""
+                };
+                decisions.push(format!(
+                    "- {text} → {}{marker}",
+                    current.str_at("answer").unwrap_or_default()
+                ));
+            }
+            _ => open.push(format!(
+                "- {text}  [{}]",
+                question.str_at("id").unwrap_or_default()
+            )),
+        }
+    }
+    if !decisions.is_empty() {
+        lines.push("Decisions:".to_string());
+        lines.extend(decisions);
+    }
+    if !open.is_empty() {
+        lines.push("Open questions:".to_string());
+        lines.extend(open);
+    }
+    lines.join("\n")
 }
 
 /// `omni behaviour list [<node>]`

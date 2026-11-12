@@ -130,13 +130,24 @@ pub struct NodeChildBody {
     pub handoff: Option<PointerBody>,
 }
 
+/// A node above the one read, with its questions.
+#[derive(Serialize, ToSchema)]
+pub struct ChainNodeBody {
+    #[serde(flatten)]
+    pub node: NodeBody,
+    /// The node's own questions, oldest first.
+    pub questions: Vec<QuestionBody>,
+}
+
 #[derive(Serialize, ToSchema)]
 pub struct NodeReadResponse {
     pub node: NodeBody,
-    /// The nodes above it, the root first.
-    pub chain: Vec<NodeBody>,
+    /// The nodes above it, the root first, each with its own questions.
+    pub chain: Vec<ChainNodeBody>,
     /// The direct children, by position.
     pub children: Vec<NodeChildBody>,
+    /// The other children of the node's parent, by position; empty for the root.
+    pub siblings: Vec<NodeChildBody>,
     /// The node's own questions, oldest first.
     pub questions: Vec<QuestionBody>,
     /// Every rule in force that reaches the node: `feature` rules first, then `story`, then `node` rules from the root down.
@@ -1013,18 +1024,24 @@ pub async fn show_node(
     .map_err(ApiError::database)?;
     tx.commit().await.map_err(ApiError::database)?;
     let at = tree.find(&node_id).ok_or(ApiError::NotFound)?;
-    let questions = all
-        .into_iter()
-        .filter(|question| question.node_id == node_id)
-        .map(|question| question.body(&tree))
-        .collect();
+    let mut by_node: HashMap<String, Vec<QuestionBody>> = HashMap::new();
+    for question in all {
+        by_node
+            .entry(question.node_id.clone())
+            .or_default()
+            .push(question.body(&tree));
+    }
+    let questions = by_node.remove(&node_id).unwrap_or_default();
     let mut chain = Vec::new();
     let mut above = tree.rows[at]
         .parent_id
         .as_deref()
         .and_then(|id| tree.find(id));
     while let Some(parent) = above {
-        chain.push(tree.body(parent));
+        chain.push(ChainNodeBody {
+            questions: by_node.remove(&tree.rows[parent].id).unwrap_or_default(),
+            node: tree.body(parent),
+        });
         above = tree.rows[parent]
             .parent_id
             .as_deref()
@@ -1039,9 +1056,19 @@ pub async fn show_node(
         .filter(|(_, row)| row.parent_id.as_deref() == Some(id))
         .map(|(child, _)| tree.child(child))
         .collect();
+    let siblings = match tree.rows[at].parent_id.as_deref() {
+        Some(parent) => tree
+            .rows
+            .iter()
+            .enumerate()
+            .filter(|(sibling, row)| *sibling != at && row.parent_id.as_deref() == Some(parent))
+            .map(|(sibling, _)| tree.child(sibling))
+            .collect(),
+        None => Vec::new(),
+    };
     let mut above_or_self: Vec<usize> = chain
         .iter()
-        .filter_map(|node| tree.find(&node.id))
+        .filter_map(|entry| tree.find(&entry.node.id))
         .collect();
     above_or_self.push(at);
     // The story is the node at level 1 on the way down, the story node included.
@@ -1089,6 +1116,7 @@ pub async fn show_node(
         node: tree.body(at),
         chain,
         children,
+        siblings,
         questions,
         rules,
     }))

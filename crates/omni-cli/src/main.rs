@@ -214,8 +214,9 @@ Usage:
                                       creates the root, titled with the feature's name); prints
                                       the node's path. The slug is derived from the title when
                                       left out. `behavior` is the same word
-  omni behaviour read <node>          print a node's path, level, status, title and summary, or
-                                      with --json the node and the nodes above it. <node> is an
+  omni behaviour read <node>          print the nodes above it and the node as text blocks, then
+                                      the rules that apply, its children and siblings, or with
+                                      --json the same as JSON. <node> is an
                                       ID, a path (slugs from the story down, joined by /) or . for
                                       the root
   omni behaviour list [<node>]        print the summary line of every node of the feature, or of
