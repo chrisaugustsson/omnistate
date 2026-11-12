@@ -185,7 +185,7 @@ describe("dragging and scrolling the graph", () => {
 });
 
 describe("the story labels", () => {
-  test("are shown below 46% and gone at 51%, with one label per story by its short title", async () => {
+  test("are shown below 46% and gone at 51%, with one label per story by its short title; below 30% boxes are bars", async () => {
     const { container } = render(<Graph nodes={testTree()} />);
     await zoomTo100();
     expect(screen.queryByRole("button", { name: SET_UP_STORY })).toBeNull();
@@ -203,6 +203,12 @@ describe("the story labels", () => {
     expect(container.querySelectorAll("[data-story-label]")).toHaveLength(13);
     expect(screen.getByRole("button", { name: SET_UP_STORY }).hasAttribute("data-story-label")).toBe(true);
     expect(screen.getByRole("button", { name: PICK_PROGRAM_STORY }).hasAttribute("data-story-label")).toBe(true);
+
+    // At 36% boxes still show their text; at 26% they are bars.
+    expect(graphArea(container).hasAttribute("data-far")).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: "Zoom out" }));
+    await waitFor(() => expect(zoomShown()).toBe("26%"));
+    expect(graphArea(container).hasAttribute("data-far")).toBe(true);
   });
 
   test("pressing a story's label fits that story's block in the graph area, at no more than 100%", async () => {
@@ -222,12 +228,12 @@ describe("the story labels", () => {
 
     fireEvent.click(screen.getByRole("button", { name: PICK_PROGRAM_STORY }));
     await waitFor(() => expect(currentView(container).k).toBeGreaterThan(opening.k * 2));
-    // Wait for the move to land: the view stops changing.
-    let last = currentView(container);
+    // Wait for the move to land: two samples 150ms apart show the same view.
+    let last: View | undefined;
     await waitFor(
       () => {
         const now = currentView(container);
-        const still = now.x === last.x && now.y === last.y && now.k === last.k;
+        const still = last !== undefined && now.x === last.x && now.y === last.y && now.k === last.k;
         last = now;
         expect(still).toBe(true);
       },
