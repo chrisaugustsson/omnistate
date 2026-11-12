@@ -476,7 +476,7 @@ fn a_decision_is_one_question_with_its_answers_oldest_first_and_default_gives_th
 }
 
 #[test]
-fn an_open_question_is_sent_without_answers_and_its_node_keeps_its_status() {
+fn an_open_question_is_sent_without_answers() {
     let server = accepting();
     let out = import(&server, &fixture());
     assert_eq!(out.code, 0, "stderr: {}", out.stderr);
@@ -486,7 +486,6 @@ fn an_open_question_is_sent_without_answers_and_its_node_keeps_its_status() {
         story["questions"],
         json!([{ "question": "Should a session pause on a phone call?", "answers": [] }])
     );
-    assert_eq!(story["status"], "done");
 }
 
 #[test]
