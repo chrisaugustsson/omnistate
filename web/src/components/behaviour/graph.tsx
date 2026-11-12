@@ -204,7 +204,7 @@ export function Graph({
                   "absolute left-0 top-0 flex items-center gap-1.5 rounded-lg border bg-background px-[9px] text-[12.5px] leading-[1.28] group-data-[far]:rounded-[3px] group-data-[far]:border-transparent group-data-[far]:bg-muted-foreground/35",
                   node.status === "out_of_scope" && "border-dashed bg-transparent text-muted-foreground group-data-[far]:border group-data-[far]:border-dashed group-data-[far]:border-muted-foreground group-data-[far]:bg-transparent",
                   node.needs_pass && "border-dashed border-foreground group-data-[far]:border-transparent group-data-[far]:bg-foreground",
-                  waiting.has(node.id) && "group-data-[far]:bg-signal",
+                  waiting.has(node.id) && !node.needs_pass && "group-data-[far]:bg-signal",
                 )}
                 style={{ width: box.w, height: box.h, transform: `translate(${box.x}px, ${box.y}px)` }}
               >
