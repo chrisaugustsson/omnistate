@@ -55,3 +55,21 @@ export async function answerQuestion(
   );
   return done.question;
 }
+
+const ask = operations["POST /api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/nodes/{node_id}/questions"];
+
+/** A person's question or remark on a node; it opens the node again for the next grill pass. */
+export async function askQuestion(
+  workspaceId: string,
+  projectId: string,
+  featureId: string,
+  nodeId: string,
+  body: { question: string },
+) {
+  const done = await callApi(
+    "POST",
+    `/api/v1/w/${workspaceId}/projects/${projectId}/features/${featureId}/behaviour/nodes/${encodeURIComponent(nodeId)}/questions`,
+    { body, response: ask.responses["201"] },
+  );
+  return done.question;
+}

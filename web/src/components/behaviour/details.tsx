@@ -1,5 +1,5 @@
 import { useCallback, useState } from "react";
-import { answerQuestion, loadNode, type TreeNode } from "@/api/behaviour";
+import { answerQuestion, askQuestion, loadNode, type TreeNode } from "@/api/behaviour";
 import { ApiError } from "@/api/client";
 import type { AnswerBody, QuestionBody } from "@/api/generated";
 import { Alert, AlertDescription } from "@/components/ui/alert";
@@ -127,6 +127,10 @@ function Chosen({
     reload();
     onWritten();
   };
+  const asked = () => {
+    reload();
+    onWritten();
+  };
   const byId = new Map(tree.map((one) => [one.id, one]));
   const label = (id: string) => (byId.has(id) ? shortTitle(byId.get(id)!) : "");
   const crumbs = ancestorsOf(tree, listed.id).reverse();
@@ -210,7 +214,7 @@ function Chosen({
               <Text source={read.node.behaviour} className="mt-1.5 space-y-2 text-[13px] leading-relaxed" />
             </>
           )}
-          <Questions questions={read.questions} me={me} ids={ids} said={said} below={descendantsOf(tree, listed.id).length} onWritten={written} />
+          <Questions questions={read.questions} me={me} ids={ids} said={said} below={descendantsOf(tree, listed.id).length} onWritten={written} nodeId={listed.id} onAsked={asked} />
           <Rules rules={read.rules} nodeId={read.node.id} byId={byId} />
         </>
       )}
@@ -354,6 +358,8 @@ function Questions({
   said,
   below,
   onWritten,
+  nodeId,
+  onAsked,
 }: {
   questions: QuestionBody[];
   me: string | null;
@@ -361,6 +367,8 @@ function Questions({
   said: Record<string, string>;
   below: number;
   onWritten: (id: string, message: string) => void;
+  nodeId: string;
+  onAsked: () => void;
 }) {
   const sorted = questions.map((question, at) => ({ question, at })).sort((a, b) => rank(a.question) - rank(b.question) || a.at - b.at);
   const waiting = questions.filter((question) => question.state === "open" && question.asked_by.kind !== "human").length;
@@ -382,8 +390,9 @@ function Questions({
               waits ? (
                 <AnswerField question={question} ids={ids} onWritten={onWritten} />
               ) : (
-              <p className="mt-1.5 text-xs text-muted-foreground">
-                {`${who({ author: question.asked_by, given_by: "human" }, me)} · ${fmtDate(question.created_at)} · Remark, waits for the next grill pass`}
+              <p className="mt-1.5 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                <span className={cn(pill, "bg-transparent shadow-[inset_0_0_0_1px_var(--input)]")}>Remark</span>
+                <span>{`${who({ author: question.asked_by, given_by: "human" }, me)} · ${fmtDate(question.created_at)} · waits for the next grill pass`}</span>
               </p>
               )
             ) : (
@@ -416,6 +425,48 @@ function Questions({
           </div>
         );
       })}
+      <RemarkField ids={ids} nodeId={nodeId} onAsked={onAsked} />
+    </>
+  );
+}
+
+/** The field for a question or remark on any node. */
+function RemarkField({ ids, nodeId, onAsked }: { ids: Ids; nodeId: string; onAsked: () => void }) {
+  const [text, setText] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const send = async () => {
+    const question = text.trim();
+    if (!question || busy) return;
+    setBusy(true);
+    setError("");
+    try {
+      await askQuestion(ids.workspaceId, ids.projectId, ids.featureId, nodeId, { question });
+      setText("");
+      setBusy(false);
+      onAsked();
+    } catch {
+      setBusy(false);
+      setError("The remark could not be saved. Try again in a moment.");
+    }
+  };
+  return (
+    <>
+      <h3 className="mt-5 text-[11.5px] font-semibold uppercase tracking-wide text-muted-foreground">Add a question or remark</h3>
+      <textarea
+        aria-label="Add a question or remark"
+        placeholder="Something that is missing or wrong here. The next grill pass takes it up."
+        value={text}
+        onChange={(event) => setText(event.target.value)}
+        className="mt-2 block min-h-16 w-full resize-y rounded-lg border border-input bg-background px-2.5 py-2 text-[13.5px] leading-normal"
+      />
+      <div className="mt-2 flex items-center gap-2">
+        <Button type="button" size="sm" disabled={busy || text.trim() === ""} onClick={send}>
+          Add to this node
+        </Button>
+        <span className="text-xs text-muted-foreground">Opens the node again.</span>
+      </div>
+      {error && <p className="mt-2 text-xs text-foreground">{error}</p>}
     </>
   );
 }
