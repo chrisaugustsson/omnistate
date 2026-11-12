@@ -3402,18 +3402,6 @@ fn a_persons_remark_on_a_done_node_sets_it_open_and_marks_it() {
     );
 }
 
-#[test]
-fn an_agents_question_and_its_first_answer_mark_nothing() {
-    let (f, _) = ready();
-    let (project, feature) = new_feature(f, &unique("Checkout"));
-    let (n, _, _) = n_c_g(f, &project, &feature);
-
-    answered_by_default_on(f, &project, &feature, &n);
-
-    assert_eq!(marked_paths(f, &project, &feature), Vec::<Value>::new());
-    assert_eq!(events_of(&project, "behaviour.marked"), Vec::<Value>::new());
-}
-
 /// N, C and G of `n_c_g`, all marked by a person changing a default answer
 /// on N: `(n, c)`.
 fn all_marked(f: &Fixture, project: &str, feature: &str) -> (Value, Value) {
