@@ -217,6 +217,11 @@ Usage:
                                       with --json the node and the nodes above it. <node> is an
                                       ID, a path (slugs from the story down, joined by /) or . for
                                       the root
+  omni behaviour list [<node>]        print the summary line of every node of the feature, or of
+                                      <node> and the nodes below it, in tree order, indented two
+                                      spaces per level: `<slug> — <summary> (<status>)`; the title
+                                      stands in for an empty summary and for the root's slug.
+                                      With --json the API's list
   omni behaviour edit <node> [--title <t>] [--slug <s>] [--summary <text>]
                      [--situation <text>] [--behaviour <text>] [--status open|done|out-of-scope]
                                       rewrite a node's text or set its status; reads the node

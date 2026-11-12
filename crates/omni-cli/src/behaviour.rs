@@ -1,4 +1,4 @@
-//! `omni behaviour add`, `read` and `edit`: the behaviour tree of a feature. A node is
+//! `omni behaviour add`, `read`, `list` and `edit`: the behaviour tree of a feature. A node is
 //! named by its uuid, by its path (the slugs from the story down, joined by
 //! `/`) or by `.` for the root. The project and the feature are found as for
 //! `omni story add`.
@@ -139,6 +139,50 @@ pub fn read(args: &Args, node: Option<&str>) -> Result<()> {
     say(node.str_at("title").unwrap_or_default());
     if let Some(summary) = node.str_at("summary").filter(|s| !s.is_empty()) {
         say(summary);
+    }
+    Ok(())
+}
+
+/// `omni behaviour list [<node>]`
+pub fn list(args: &Args, node: Option<&str>) -> Result<()> {
+    let agent = agent(args)?;
+    let base = behaviour_path(args, &agent)?;
+    let url = match node {
+        Some(given) => format!("{base}?under={}", node_ref(&agent, &base, given)?.0),
+        None => base,
+    };
+    let response = agent.request("GET", &url, None)?;
+    let text = response.text();
+    if args.json {
+        say(text.trim_end());
+        return Ok(());
+    }
+    let body = Value::parse(&text).map_err(|_| unreadable())?;
+    let nodes = body
+        .get("nodes")
+        .and_then(Value::as_array)
+        .ok_or_else(unreadable)?;
+    let level_of = |node: &Value| match node.get("level") {
+        Some(Value::Number(n)) => n.parse::<usize>().map_err(|_| unreadable()),
+        _ => Err(unreadable()),
+    };
+    let Some(first) = nodes.first() else {
+        return Ok(());
+    };
+    let top = level_of(first)?;
+    for node in nodes {
+        let title = node.str_at("title").unwrap_or_default();
+        let name = match node.str_at("slug") {
+            Some(slug) if level_of(node)? > 0 => slug,
+            _ => title,
+        };
+        let summary = node.str_at("summary").filter(|s| !s.is_empty());
+        say(&format!(
+            "{}{name} — {} ({})",
+            "  ".repeat(level_of(node)?.saturating_sub(top)),
+            summary.unwrap_or(title),
+            node.str_at("status").unwrap_or("?")
+        ));
     }
     Ok(())
 }

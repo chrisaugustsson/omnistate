@@ -15,7 +15,7 @@ use crate::threads::require_identity;
 use crate::workspace::{Actor, WorkspaceRequest, parse_uuid};
 use axum::Json;
 use axum::body::Bytes;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -77,11 +77,30 @@ pub struct NodeResponse {
     pub node: NodeBody,
 }
 
+/// A direct child of a node, as the read of the node gives it.
+#[derive(Serialize, ToSchema)]
+pub struct NodeChildBody {
+    pub id: String,
+    pub path: String,
+    pub slug: Option<String>,
+    pub title: String,
+    pub summary: String,
+    /// `open`, `done` or `out_of_scope`.
+    pub status: String,
+}
+
 #[derive(Serialize, ToSchema)]
 pub struct NodeReadResponse {
     pub node: NodeBody,
     /// The nodes above it, the root first.
     pub chain: Vec<NodeBody>,
+    /// The direct children, by position.
+    pub children: Vec<NodeChildBody>,
+}
+
+#[derive(Deserialize)]
+pub struct ListQuery {
+    under: Option<String>,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -224,6 +243,19 @@ impl Tree {
             summary: row.summary.clone(),
             status: row.status.clone(),
             version: row.version,
+        }
+    }
+
+    fn child(&self, at: usize) -> NodeChildBody {
+        let (path, _) = self.place(at);
+        let row = &self.rows[at];
+        NodeChildBody {
+            id: row.id.clone(),
+            path,
+            slug: row.slug.clone(),
+            title: row.title.clone(),
+            summary: row.summary.clone(),
+            status: row.status.clone(),
         }
     }
 
@@ -517,30 +549,43 @@ pub async fn create_node(
         ("workspace_id" = String, Path, description = "The workspace's UUID"),
         ("project_id" = String, Path, description = "The project's UUID"),
         ("feature_id" = String, Path, description = "The feature's UUID"),
+        ("under" = Option<String>, Query, description = "Only this node and the nodes below it"),
     ),
     responses(
         (status = 200, description = "Every node of the feature in tree order; empty when the feature has no tree", body = NodeListResponse),
         (status = 401, description = "No valid API key or session", body = ErrorBody),
-        (status = 404, description = "No such feature in this project and workspace", body = ErrorBody),
+        (status = 404, description = "No such feature in this project and workspace, or `under` is not a node of it", body = ErrorBody),
     )
 )]
 pub async fn list_nodes(
     State(state): State<AppState>,
     request: WorkspaceRequest,
     Path((_, project_id, feature_id)): Path<(String, String, String)>,
+    Query(query): Query<ListQuery>,
 ) -> Result<Json<NodeListResponse>, ApiError> {
     let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
     let feature_id = parse_uuid(&feature_id).ok_or(ApiError::NotFound)?;
+    let under = match &query.under {
+        Some(id) => Some(parse_uuid(id).ok_or(ApiError::NotFound)?),
+        None => None,
+    };
     let mut tx = state.workspace_tx(&request.workspace_id).await?;
     require_project(&mut tx, &project_id).await?;
     require_feature(&mut tx, &project_id, &feature_id).await?;
     let tree = Tree::load(&mut tx, &feature_id).await?;
     tx.commit().await.map_err(ApiError::database)?;
-    let nodes = tree
-        .in_order()
-        .into_iter()
-        .map(|at| tree.summary(at))
-        .collect();
+    let mut order = tree.in_order();
+    if let Some(under) = under {
+        let top = tree.find(&under).ok_or(ApiError::NotFound)?;
+        let start = order.iter().position(|at| *at == top).unwrap_or(0);
+        let level = tree.place(top).1;
+        let below = order[start + 1..]
+            .iter()
+            .take_while(|at| tree.place(**at).1 > level)
+            .count();
+        order = order[start..=start + below].to_vec();
+    }
+    let nodes = order.into_iter().map(|at| tree.summary(at)).collect();
     Ok(Json(NodeListResponse { nodes }))
 }
 
@@ -587,9 +632,18 @@ pub async fn show_node(
             .and_then(|id| tree.find(id));
     }
     chain.reverse();
+    let id = tree.rows[at].id.as_str();
+    let children = tree
+        .rows
+        .iter()
+        .enumerate()
+        .filter(|(_, row)| row.parent_id.as_deref() == Some(id))
+        .map(|(child, _)| tree.child(child))
+        .collect();
     Ok(Json(NodeReadResponse {
         node: tree.body(at),
         chain,
+        children,
     }))
 }
 

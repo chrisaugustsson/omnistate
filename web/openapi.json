@@ -2120,6 +2120,41 @@
         ],
         "type": "object"
       },
+      "NodeChildBody": {
+        "description": "A direct child of a node, as the read of the node gives it.",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "slug": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "description": "`open`, `done` or `out_of_scope`.",
+            "type": "string"
+          },
+          "summary": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "path",
+          "title",
+          "summary",
+          "status"
+        ],
+        "type": "object"
+      },
       "NodeListResponse": {
         "properties": {
           "nodes": {
@@ -2144,13 +2179,21 @@
             },
             "type": "array"
           },
+          "children": {
+            "description": "The direct children, by position.",
+            "items": {
+              "$ref": "#/components/schemas/NodeChildBody"
+            },
+            "type": "array"
+          },
           "node": {
             "$ref": "#/components/schemas/NodeBody"
           }
         },
         "required": [
           "node",
-          "chain"
+          "chain",
+          "children"
         ],
         "type": "object"
       },
@@ -6643,6 +6686,15 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "description": "Only this node and the nodes below it",
+            "in": "query",
+            "name": "under",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -6674,7 +6726,7 @@
                 }
               }
             },
-            "description": "No such feature in this project and workspace"
+            "description": "No such feature in this project and workspace, or `under` is not a node of it"
           }
         },
         "summary": "The nodes of a feature's behaviour tree, without their text.",

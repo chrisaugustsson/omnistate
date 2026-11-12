@@ -123,10 +123,12 @@ pub fn run(args: &Args) -> Result<()> {
         ["behaviour" | "behavior", "add"] => behaviour::add(args),
         ["behaviour" | "behavior", "read"] => behaviour::read(args, None),
         ["behaviour" | "behavior", "read", node] => behaviour::read(args, Some(node)),
+        ["behaviour" | "behavior", "list"] => behaviour::list(args, None),
+        ["behaviour" | "behavior", "list", node] => behaviour::list(args, Some(node)),
         ["behaviour" | "behavior", "edit", node] => behaviour::edit(args, Some(node)),
         ["behaviour" | "behavior", "edit"] => behaviour::edit(args, None),
         ["behaviour" | "behavior", ..] => {
-            bail!("usage: omni behaviour add|read|edit; see `omni --help`")
+            bail!("usage: omni behaviour add|read|list|edit; see `omni --help`")
         }
         ["story", "add"] => stories::add(args, None),
         ["story", "add", file] => stories::add(args, Some(file)),

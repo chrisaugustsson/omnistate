@@ -648,6 +648,16 @@ export const NodeBodySchema = z.object({
 });
 export type NodeBody = z.infer<typeof NodeBodySchema>;
 
+export const NodeChildBodySchema = z.object({
+  id: z.string(),
+  path: z.string(),
+  slug: z.string().nullable().optional(),
+  status: z.string(),
+  summary: z.string(),
+  title: z.string(),
+});
+export type NodeChildBody = z.infer<typeof NodeChildBodySchema>;
+
 export const NodeSummaryBodySchema = z.object({
   id: z.string(),
   level: z.number().int(),
@@ -669,6 +679,7 @@ export type NodeListResponse = z.infer<typeof NodeListResponseSchema>;
 
 export const NodeReadResponseSchema = z.object({
   chain: z.array(NodeBodySchema),
+  children: z.array(NodeChildBodySchema),
   node: NodeBodySchema,
 });
 export type NodeReadResponse = z.infer<typeof NodeReadResponseSchema>;
@@ -968,6 +979,7 @@ export const schemas = {
   NewCriterion: NewCriterionSchema,
   NodeBody: NodeBodySchema,
   NodeBox: NodeBoxSchema,
+  NodeChildBody: NodeChildBodySchema,
   NodeListResponse: NodeListResponseSchema,
   NodeReadResponse: NodeReadResponseSchema,
   NodeResponse: NodeResponseSchema,

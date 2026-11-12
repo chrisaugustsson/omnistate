@@ -10,8 +10,8 @@ use crate::activity::{
 use crate::api_keys::{ApiKeyBody, CreatedKeyResponse, KeyListResponse, KeyResponse};
 use crate::attachments::{AttachmentBody, AttachmentResponse};
 use crate::behaviour::{
-    CreateNodeRequest, NodeBody, NodeListResponse, NodeReadResponse, NodeResponse, NodeSummaryBody,
-    PatchNodeRequest,
+    CreateNodeRequest, NodeBody, NodeChildBody, NodeListResponse, NodeReadResponse, NodeResponse,
+    NodeSummaryBody, PatchNodeRequest,
 };
 use crate::boards::{BoardBody, Manifest, ManifestBoard, ManifestPage};
 use crate::comments::{
@@ -207,6 +207,7 @@ use utoipa::OpenApi;
         PatchNodeRequest,
         NodeBody,
         NodeSummaryBody,
+        NodeChildBody,
         NodeResponse,
         NodeReadResponse,
         NodeListResponse,
