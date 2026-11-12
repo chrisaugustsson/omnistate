@@ -6,6 +6,7 @@ import { featureNames } from "@/components/project/items";
 import { useHome } from "@/lib/use-home";
 import { useReloading } from "@/lib/reloading";
 import { Folders } from "./folders";
+import { Graph } from "./graph";
 import { childrenOf } from "./tree";
 
 // A feature's Behaviour screen: folders on the left, the graph in the middle and
@@ -76,7 +77,9 @@ export function BehaviourScreen({
               </p>
               <Folders nodes={nodes} open={open} onToggle={toggle} />
             </aside>
-            <main aria-label="Tree as a graph" className="min-w-0" />
+            <main aria-label="Tree as a graph" className="min-w-0">
+              <Graph nodes={nodes} />
+            </main>
             <section aria-label="Details" className="border-l" />
           </>
         )}
