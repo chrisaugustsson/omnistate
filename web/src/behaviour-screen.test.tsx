@@ -62,8 +62,22 @@ const TREE = [
 
 type Behaviour = { status: number; body: unknown };
 
-/** A fake of the API whose behaviour list answers with `behaviour`. */
-function fakeApi(behaviour: Behaviour) {
+/** A feature of the project's home data. */
+function feature(id: string, name: string) {
+  return {
+    feature: { id, project_id: PROJECT_ID, name, description: "", created_at: AT },
+    docs: 0,
+    waiting: 0,
+    stories: { total: 0, open: 0, done: 0 },
+    last_activity: null,
+  };
+}
+
+/**
+ * A fake of the API whose behaviour list answers with `behaviour` and whose
+ * home data holds `features`, or never arrives when `features` is "pending".
+ */
+function fakeApi(behaviour: Behaviour, features: unknown[] | "pending" = []) {
   const json = (status: number, body: unknown) =>
     new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
   vi.stubGlobal(
@@ -79,10 +93,11 @@ function fakeApi(behaviour: Behaviour) {
         case `/api/v1/w/${WORKSPACE_ID}/projects`:
           return json(200, { projects: [{ id: PROJECT_ID, name: "Trainer", created_at: AT }] });
         case `${API}/home`:
+          if (features === "pending") return new Promise<Response>(() => {});
           return json(200, {
             project_id: PROJECT_ID,
             app: { last_activity: null },
-            features: [],
+            features,
             docs: [],
             threads: [],
             waiting: { comments: [] },
@@ -239,5 +254,35 @@ describe("the Behaviour screen with no tree or a failed load", () => {
     expect(await screen.findByText("The behaviour tree could not be loaded. Try again in a moment.")).toBeTruthy();
     expect(screen.queryByRole("complementary", { name: "Tree as folders" })).toBeNull();
     expect(screen.queryByText("No behaviour has been written for this feature yet.")).toBeNull();
+  });
+});
+
+// US-222: the screen takes the whole window. The app's sidebar is left out, and
+// the top bar links back to the feature by the name the project's home data
+// gives it, never by the tree's root title.
+describe("the Behaviour screen's frame and top bar", () => {
+  test("leaves out the app's sidebar", async () => {
+    fakeApi({ status: 200, body: { nodes: TREE } });
+    renderAt(BEHAVIOUR_PATH);
+    await folders();
+    expect(screen.queryByRole("navigation", { name: "Project" })).toBeNull();
+  });
+
+  test("links back to the feature page by the feature's name while the first row shows the root title", async () => {
+    fakeApi({ status: 200, body: { nodes: TREE } }, [feature(FEATURE_ID, "Putting basics")]);
+    renderAt(BEHAVIOUR_PATH);
+    const aside = await folders();
+    const back = await screen.findByRole("link", { name: "‹ Putting basics" });
+    expect(back.getAttribute("href")).toBe(`${PROJECT_PATH}/features/${FEATURE_ID}`);
+    expect(rowTexts(aside)[0]).toBe("Disc golf putting trainer");
+  });
+
+  test("before the home data arrives the back link reads only the arrow, not the root title", async () => {
+    fakeApi({ status: 200, body: { nodes: TREE } }, "pending");
+    renderAt(BEHAVIOUR_PATH);
+    await folders();
+    const back = screen.getByRole("link", { name: "‹" });
+    expect(back.textContent).toBe("‹ ");
+    expect(back.getAttribute("href")).toBe(`${PROJECT_PATH}/features/${FEATURE_ID}`);
   });
 });
