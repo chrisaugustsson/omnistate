@@ -7,6 +7,7 @@ export const Route = createFileRoute("/w/$workspaceId/projects/$projectId_/featu
 });
 
 function BehaviourRoute() {
+  const { user } = Route.useRouteContext();
   const { workspaceId, projectId, featureId } = Route.useParams();
-  return <BehaviourScreen workspaceId={workspaceId} projectId={projectId} featureId={featureId} />;
+  return <BehaviourScreen workspaceId={workspaceId} projectId={projectId} featureId={featureId} me={user.id} />;
 }

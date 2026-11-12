@@ -20,10 +20,12 @@ export function BehaviourScreen({
   workspaceId,
   projectId,
   featureId,
+  me = null,
 }: {
   workspaceId: string;
   projectId: string;
   featureId: string;
+  me?: string | null;
 }) {
   const load = useCallback(() => loadTree(workspaceId, projectId, featureId), [workspaceId, projectId, featureId]);
   const { value: nodes, failed } = useReloading(load);
@@ -138,7 +140,16 @@ export function BehaviourScreen({
             <main aria-label="Tree as a graph" className="min-w-0">
               <Graph nodes={nodes} waiting={waiting} chosenId={chosen} onChoose={(id) => choose(id, "graph")} reveal={reveal} />
             </main>
-            <Details node={chosenNode} />
+            <Details
+              node={chosenNode}
+              tree={nodes}
+              me={me}
+              onChoose={(id) => choose(id, "details")}
+              workspaceId={workspaceId}
+              projectId={projectId}
+              featureId={featureId}
+              waitingCount={[...waiting.values()].reduce((sum, count) => sum + count, 0)}
+            />
           </>
         )}
       </div>

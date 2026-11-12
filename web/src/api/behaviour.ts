@@ -26,3 +26,14 @@ export async function loadOpenQuestions(workspaceId: string, projectId: string, 
   );
   return loaded.questions;
 }
+
+const read = operations["GET /api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/nodes/{node_id}"];
+
+/** One node in full: its text, questions with all their answers, and the rules that reach it. */
+export function loadNode(workspaceId: string, projectId: string, featureId: string, nodeId: string) {
+  return callApi(
+    "GET",
+    `/api/v1/w/${workspaceId}/projects/${projectId}/features/${featureId}/behaviour/nodes/${encodeURIComponent(nodeId)}`,
+    { response: read.responses["200"] },
+  );
+}
