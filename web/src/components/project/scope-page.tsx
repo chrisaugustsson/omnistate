@@ -236,6 +236,15 @@ export function ScopePage({ workspaceId, projectId, featureId }: Params & { feat
                 Stories {summary?.stories?.open ?? 0}/{summary?.stories?.total ?? 0}
               </Link>
             )}
+            {featureId && (
+              <Link
+                to="/w/$workspaceId/projects/$projectId/features/$featureId/behaviour"
+                params={{ ...params, featureId }}
+                className="inline-flex h-7 items-center rounded-lg border px-2.5 text-[12.5px] text-foreground/80 transition-colors hover:bg-accent"
+              >
+                Behaviour
+              </Link>
+            )}
             {PILLARS.map(({ pillar, title: label }) => (
               <a
                 key={pillar}
