@@ -2353,28 +2353,43 @@ impl IntoResponse for ImportError {
 
 /// Every problem of an imported tree, by the rules of the single writes, in body order.
 fn import_problems(nodes: &[ImportNode]) -> Vec<ImportProblem> {
-    let mut problems = Vec::new();
-    let mut say = |key: &str, problem: String| {
-        problems.push(ImportProblem {
-            key: key.to_string(),
-            problem,
-        });
+    // Each problem carries the place of its node in the body, so the list can be put in body
+    // order after the passes over the whole body.
+    let mut problems: Vec<(usize, ImportProblem)> = Vec::new();
+    let mut say = |place: usize, key: &str, problem: String| {
+        problems.push((
+            place,
+            ImportProblem {
+                key: key.to_string(),
+                problem,
+            },
+        ));
     };
     let mut at: HashMap<&str, usize> = HashMap::new();
     for (i, node) in nodes.iter().enumerate() {
         if at.insert(node.key.as_str(), i).is_some() {
             say(
+                i,
                 &node.key,
                 format!("key \"{}\" is used by more than one node", node.key),
             );
         }
     }
-    let roots: Vec<&ImportNode> = nodes.iter().filter(|n| n.parent.is_none()).collect();
+    let roots: Vec<(usize, &ImportNode)> = nodes
+        .iter()
+        .enumerate()
+        .filter(|(_, n)| n.parent.is_none())
+        .collect();
     if roots.is_empty() {
-        say("", "no node has parent null, so there is no root".into());
-    }
-    for extra in roots.iter().skip(1) {
         say(
+            nodes.len(),
+            "",
+            "no node has parent null, so there is no root".into(),
+        );
+    }
+    for (place, extra) in roots.iter().skip(1) {
+        say(
+            *place,
             &extra.key,
             "parent is null but the tree already has a root".into(),
         );
@@ -2382,19 +2397,24 @@ fn import_problems(nodes: &[ImportNode]) -> Vec<ImportProblem> {
     let has_children: std::collections::HashSet<&str> =
         nodes.iter().filter_map(|n| n.parent.as_deref()).collect();
     let mut slugs: std::collections::HashSet<(&str, &str)> = std::collections::HashSet::new();
-    for node in nodes {
+    for (place, node) in nodes.iter().enumerate() {
         let key = node.key.as_str();
         let is_root = node.parent.is_none();
         if node.title.trim().is_empty() {
-            say(key, "title is blank".into());
+            say(place, key, "title is blank".into());
         }
         match node.parent.as_deref() {
             Some(parent) if !at.contains_key(parent) => {
-                say(key, format!("parent \"{parent}\" is not a key in the body"));
+                say(
+                    place,
+                    key,
+                    format!("parent \"{parent}\" is not a key in the body"),
+                );
             }
             Some(parent) => {
                 if !slug_fits(&node.slug) {
                     say(
+                        place,
                         key,
                         format!(
                             "slug \"{}\" does not fit lowercase words joined by - and 80 characters",
@@ -2403,6 +2423,7 @@ fn import_problems(nodes: &[ImportNode]) -> Vec<ImportProblem> {
                     );
                 } else if !slugs.insert((parent, node.slug.as_str())) {
                     say(
+                        place,
                         key,
                         format!(
                             "slug \"{}\" is taken by a sibling under \"{parent}\"",
@@ -2417,12 +2438,14 @@ fn import_problems(nodes: &[ImportNode]) -> Vec<ImportProblem> {
             && !matches!(status, "open" | "done" | "out_of_scope")
         {
             say(
+                place,
                 key,
                 format!("status \"{status}\" is not open, done or out_of_scope"),
             );
         }
         if node.same_as.is_some() && node.handoff.is_some() {
             say(
+                place,
                 key,
                 "same_as and handoff are both set; a node has one pointer".into(),
             );
@@ -2430,9 +2453,10 @@ fn import_problems(nodes: &[ImportNode]) -> Vec<ImportProblem> {
         for (field, target) in [("same_as", &node.same_as), ("handoff", &node.handoff)] {
             if let Some(target) = target {
                 if target == key {
-                    say(key, format!("{field} points at the node itself"));
+                    say(place, key, format!("{field} points at the node itself"));
                 } else if !at.contains_key(target.as_str()) {
                     say(
+                        place,
                         key,
                         format!("{field} \"{target}\" is not a key in the body"),
                     );
@@ -2441,6 +2465,7 @@ fn import_problems(nodes: &[ImportNode]) -> Vec<ImportProblem> {
         }
         if (node.same_as.is_some() || node.handoff.is_some()) && has_children.contains(key) {
             say(
+                place,
                 key,
                 "has a pointer and children; a node with a pointer has no children".into(),
             );
@@ -2450,23 +2475,26 @@ fn import_problems(nodes: &[ImportNode]) -> Vec<ImportProblem> {
             && (nodes[p].same_as.is_some() || nodes[p].handoff.is_some())
         {
             say(
+                place,
                 key,
                 format!("parent \"{parent}\" has a pointer and so cannot have children"),
             );
         }
         for question in &node.questions {
             if question.question.trim().is_empty() {
-                say(key, "a question is blank".into());
+                say(place, key, "a question is blank".into());
             }
             for answer in &question.answers {
                 if answer.answer.trim().is_empty() {
                     say(
+                        place,
                         key,
                         format!("an answer to \"{}\" is blank", question.question),
                     );
                 }
                 if !matches!(answer.by.as_str(), "human" | "agent") {
                     say(
+                        place,
                         key,
                         format!("answer by \"{}\" is not human or agent", answer.by),
                     );
@@ -2475,10 +2503,11 @@ fn import_problems(nodes: &[ImportNode]) -> Vec<ImportProblem> {
         }
         for rule in &node.rules {
             if rule.text.trim().is_empty() {
-                say(key, "a rule text is blank".into());
+                say(place, key, "a rule text is blank".into());
             }
             if !scope_known(&rule.scope) {
                 say(
+                    place,
                     key,
                     format!(
                         "rule scope \"{}\" is not node, story or feature",
@@ -2486,13 +2515,17 @@ fn import_problems(nodes: &[ImportNode]) -> Vec<ImportProblem> {
                     ),
                 );
             } else if is_root && rule.scope == "story" {
-                say(key, "a rule of the root cannot have scope story".into());
+                say(
+                    place,
+                    key,
+                    "a rule of the root cannot have scope story".into(),
+                );
             }
         }
     }
     if roots.len() == 1 {
         let mut reached: std::collections::HashSet<&str> = std::collections::HashSet::new();
-        reached.insert(roots[0].key.as_str());
+        reached.insert(roots[0].1.key.as_str());
         let mut grew = true;
         while grew {
             grew = false;
@@ -2505,18 +2538,20 @@ fn import_problems(nodes: &[ImportNode]) -> Vec<ImportProblem> {
                 }
             }
         }
-        for node in nodes {
+        for (place, node) in nodes.iter().enumerate() {
             if node.parent.as_deref().is_some_and(|p| at.contains_key(p))
                 && !reached.contains(node.key.as_str())
             {
                 say(
+                    place,
                     &node.key,
                     "parent chain never reaches the root; the tree has a cycle".into(),
                 );
             }
         }
     }
-    problems
+    problems.sort_by_key(|(place, _)| *place);
+    problems.into_iter().map(|(_, problem)| problem).collect()
 }
 
 /// Reads a whole tree into a feature that has none, all or nothing.
