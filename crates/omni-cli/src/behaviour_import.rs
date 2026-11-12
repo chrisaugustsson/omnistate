@@ -26,6 +26,22 @@ struct Node {
     handoff: String,
     /// The children in order, as paths.
     children: Vec<String>,
+    questions: Vec<Question>,
+    rules: Vec<Rule>,
+}
+
+struct Question {
+    question: String,
+    /// Oldest first.
+    answers: Vec<String>,
+    by_agent: bool,
+}
+
+struct Rule {
+    text: String,
+    scope: &'static str,
+    /// Where a `(from ...)` marker says it belongs; empty for the node it stands in.
+    from: Option<String>,
 }
 
 /// The parts of a `node.md`, as `scripts/build.py` `parse_node` reads it.
@@ -183,6 +199,68 @@ fn read_folder(
         .trim()
         .to_string();
     let section = |name: &str| parsed.sections.get(name).cloned().unwrap_or_default();
+    let mut questions = Vec::new();
+    let mut rules = Vec::new();
+    let at = shown(path);
+    let scope = if path.is_empty() {
+        "feature"
+    } else if !path.contains('/') {
+        "story"
+    } else {
+        "node"
+    };
+    let lines_of = |name: &str, problems: &mut Vec<String>| -> Vec<String> {
+        let mut out = Vec::new();
+        for line in section(name).lines() {
+            if line.trim().is_empty() {
+                continue;
+            }
+            match line.trim().strip_prefix("- ") {
+                Some(item) => out.push(item.trim().to_string()),
+                None => problems.push(format!(
+                    "{at}: a line in {name} does not start with `- `: {line}"
+                )),
+            }
+        }
+        out
+    };
+    for item in lines_of("Decisions", problems) {
+        let (text, by_agent) = match item.strip_suffix("(default)") {
+            Some(text) => (text.trim_end().to_string(), true),
+            None => (item.clone(), false),
+        };
+        let mut parts = text.split(" → ").map(|part| part.trim().to_string());
+        let question = parts.next().unwrap_or_default();
+        let answers: Vec<String> = parts.collect();
+        if answers.is_empty() {
+            problems.push(format!("{at}: a Decisions line has no ` → `: - {item}"));
+            continue;
+        }
+        questions.push(Question {
+            question,
+            answers,
+            by_agent,
+        });
+    }
+    for item in lines_of("Open questions", problems) {
+        questions.push(Question {
+            question: item,
+            answers: Vec::new(),
+            by_agent: false,
+        });
+    }
+    for item in lines_of("Constraints", problems) {
+        let mut text = item.clone();
+        let mut from = None;
+        if text.ends_with(')') {
+            if let Some(open) = text.rfind(" (from ") {
+                from = Some(text[open + 7..text.len() - 1].trim().to_string());
+                text.truncate(open);
+                text = text.trim_end().to_string();
+            }
+        }
+        rules.push(Rule { text, scope, from });
+    }
     nodes.push(Node {
         path: path.to_string(),
         slug: name.to_string(),
@@ -194,6 +272,8 @@ fn read_folder(
         same_as: parsed.same_as.clone(),
         handoff: parsed.handoff.clone(),
         children: order.iter().map(|name| join(path, name)).collect(),
+        questions,
+        rules,
     });
     for name in order {
         read_folder(&dir.join(&name), &join(path, &name), nodes, problems)?;
@@ -243,6 +323,19 @@ fn read_tree(root: &Path) -> Result<std::result::Result<Vec<Node>, Vec<String>>>
             }
         }
     }
+    for node in &nodes {
+        for rule in &node.rules {
+            if let Some(from) = &rule.from {
+                if !paths.contains(from.as_str()) || from.is_empty() {
+                    problems.push(format!(
+                        "{}: the `(from {from})` path names no node: - {}",
+                        shown(&node.path),
+                        rule.text
+                    ));
+                }
+            }
+        }
+    }
     if problems.is_empty() {
         Ok(Ok(nodes))
     } else {
@@ -257,9 +350,14 @@ fn counts(nodes: &[Node]) -> String {
         .count();
     let same_as = nodes.iter().filter(|node| !node.same_as.is_empty()).count();
     let handoffs = nodes.iter().filter(|node| !node.handoff.is_empty()).count();
+    let questions: Vec<&Question> = nodes.iter().flat_map(|node| &node.questions).collect();
+    let by_default = questions.iter().filter(|q| q.by_agent).count();
+    let open = questions.iter().filter(|q| q.answers.is_empty()).count();
+    let rules: usize = nodes.iter().map(|node| node.rules.len()).sum();
     format!(
-        "{} nodes ({stories} stories), {same_as} same-as, {handoffs} handoffs",
-        nodes.len()
+        "{} nodes ({stories} stories), {same_as} same-as, {handoffs} handoffs, {} questions ({by_default} by default, {open} open), {rules} rules",
+        nodes.len(),
+        questions.len()
     )
 }
 
@@ -288,6 +386,14 @@ fn body_of(nodes: &[Node]) -> String {
             path.to_string()
         }
     };
+    // Each rule belongs to the node it stands in, or the one its `(from ...)` names.
+    let mut held: HashMap<&str, Vec<&Rule>> = HashMap::new();
+    for node in nodes {
+        for rule in &node.rules {
+            let at = rule.from.as_deref().unwrap_or(node.path.as_str());
+            held.entry(at).or_default().push(rule);
+        }
+    }
     let items: Vec<String> = nodes
         .iter()
         .map(|node| {
@@ -317,6 +423,40 @@ fn body_of(nodes: &[Node]) -> String {
                     fields.push(format!("\"{name}\":{}", quote(&key(&target))));
                 }
             }
+            let questions: Vec<String> = node
+                .questions
+                .iter()
+                .map(|q| {
+                    let by = if q.by_agent { "agent" } else { "human" };
+                    let answers: Vec<String> = q
+                        .answers
+                        .iter()
+                        .map(|a| format!("{{\"answer\":{},\"by\":\"{by}\"}}", quote(a)))
+                        .collect();
+                    format!(
+                        "{{\"question\":{},\"answers\":[{}]}}",
+                        quote(&q.question),
+                        answers.join(",")
+                    )
+                })
+                .collect();
+            fields.push(format!("\"questions\":[{}]", questions.join(",")));
+            let rules: Vec<String> = held
+                .get(node.path.as_str())
+                .map(|rules| {
+                    rules
+                        .iter()
+                        .map(|rule| {
+                            format!(
+                                "{{\"text\":{},\"scope\":\"{}\"}}",
+                                quote(&rule.text),
+                                rule.scope
+                            )
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            fields.push(format!("\"rules\":[{}]", rules.join(",")));
             format!("{{{}}}", fields.join(","))
         })
         .collect();
