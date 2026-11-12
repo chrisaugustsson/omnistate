@@ -449,3 +449,157 @@ describe("answering a waiting question", () => {
     expect(details.textContent).not.toContain("Recorded.");
   });
 });
+
+// US-229: any answered question, also one given by default, can be changed with
+// POST .../behaviour/questions/<question>/answers and `change: true`. A change
+// marks the node and every node below it for the next grill pass.
+describe("changing an answer", () => {
+  const ANSWERS_PATH = `/api/v1/w/${WORKSPACE_ID}/projects/${PROJECT_ID}/features/${FEATURE_ID}/behaviour/questions/q-default/answers`;
+  const BY_DEFAULT = { ...question("q-default", "What does a search result show?", { answers: [answer("Name only", AGENT, "agent")] }), version: 4 };
+  const CHANGED_BY_OTHER = question("q-default", "What does a search result show?", {
+    answers: [answer("Name only", AGENT, "agent"), answer("Name and club", PERSON_OTHER, "human", TODAY)],
+  });
+  // `search` has one child and one grandchild below it: 2 nodes below.
+  const DEEP_TREE = [...TREE, listed("deeper", "none", 4, "The search is cleared")];
+  // Without `none`, `search` has nothing below it.
+  const LEAF_TREE = TREE.slice(0, 3);
+
+  /**
+   * GET .../behaviour/nodes/search answers with `questions()` as they are at
+   * that moment; a POST to the question's answers is handed to `post` with its body.
+   */
+  function fakeSearch(questions: () => unknown[], post: (body: unknown) => Promise<Response> | Response) {
+    const read = () => ({
+      node: { id: "search", parent_id: "story", path: "search", position: 0, level: 2, title: "Player searches for a player", summary: "", status: "answered", situation: "", behaviour: "", needs_pass: false, created_at: LONG_AGO, created_by: AGENT, updated_at: LONG_AGO, version: 1 },
+      chain: [],
+      children: [],
+      siblings: [],
+      questions: questions(),
+      rules: [],
+    });
+    const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+        if (url === `${NODE_PATH}search` && (init?.method ?? "GET") === "GET") return json(200, read());
+        if (url === ANSWERS_PATH && init?.method === "POST") return post(JSON.parse(String(init.body)));
+        return json(404, { error: "not_found" });
+      }),
+    );
+  }
+
+  const accepted = (body: unknown) => new Response(JSON.stringify({ question: body }), { status: 201, headers: { "content-type": "application/json" } });
+
+  async function openChange(details: HTMLElement) {
+    await waitFor(() => expect(questionEl(details, "q-default")).not.toBeNull());
+    fireEvent.click(within(questionEl(details, "q-default")).getByRole("button", { name: "Change" }));
+    return within(questionEl(details, "q-default")).getByRole("textbox", { name: "New answer" }) as HTMLTextAreaElement;
+  }
+
+  const save = (details: HTMLElement) => fireEvent.click(within(questionEl(details, "q-default")).getByRole("button", { name: "Save new answer" }));
+
+  test("an answer given by default opens in the field, and saving sends the trimmed text as a change and says this node and every node below it wait", async () => {
+    const sent: unknown[] = [];
+    fakeSearch(
+      () => [BY_DEFAULT],
+      (body) => {
+        sent.push(body);
+        return accepted(BY_DEFAULT);
+      },
+    );
+    const details = renderChosen(TREE[2], DEEP_TREE);
+    const field = await openChange(details);
+    expect(field.value).toBe("Name only");
+    expect(questionEl(details, "q-default").textContent).toContain("The old answer is kept under the new one. Saving marks this node and the 2 below it for the next grill pass.");
+
+    fireEvent.change(field, { target: { value: "  Name and handicap \n" } });
+    save(details);
+
+    await waitFor(() => expect(questionEl(details, "q-default").textContent).toContain("Recorded. This node and the 2 below it now wait for the next grill pass."));
+    expect(sent).toEqual([{ expected_version: 4, answer: "Name and handicap", change: true }]);
+    expect(within(questionEl(details, "q-default")).queryByRole("textbox", { name: "New answer" })).toBeNull();
+  });
+
+  test("on a node with nothing below it leaves out the nodes below, before and after saving", async () => {
+    fakeSearch(
+      () => [BY_DEFAULT],
+      () => accepted(BY_DEFAULT),
+    );
+    const details = renderChosen(TREE[2], LEAF_TREE);
+    const field = await openChange(details);
+    expect(questionEl(details, "q-default").textContent).toContain("The old answer is kept under the new one.");
+    expect(questionEl(details, "q-default").textContent).not.toContain("Saving marks");
+
+    fireEvent.change(field, { target: { value: "Name and handicap" } });
+    save(details);
+
+    await waitFor(() => expect(questionEl(details, "q-default").textContent).toContain("Recorded. This node now waits for the next grill pass."));
+    expect(details.textContent).not.toContain("below it");
+  });
+
+  test("saving the same text with spaces around it, saving an empty text and Cancel each close the field and send nothing", async () => {
+    const sent: unknown[] = [];
+    fakeSearch(
+      () => [BY_DEFAULT],
+      (body) => {
+        sent.push(body);
+        return accepted(BY_DEFAULT);
+      },
+    );
+    const details = renderChosen(TREE[2], DEEP_TREE);
+    const closed = () => within(questionEl(details, "q-default")).queryByRole("textbox", { name: "New answer" });
+
+    fireEvent.change(await openChange(details), { target: { value: "  Name only \n" } });
+    save(details);
+    expect(closed()).toBeNull();
+
+    fireEvent.change(await openChange(details), { target: { value: "   " } });
+    save(details);
+    expect(closed()).toBeNull();
+
+    fireEvent.change(await openChange(details), { target: { value: "Name and handicap" } });
+    fireEvent.click(within(questionEl(details, "q-default")).getByRole("button", { name: "Cancel" }));
+    expect(closed()).toBeNull();
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(sent).toEqual([]);
+    expect(details.textContent).not.toContain("Recorded.");
+  });
+
+  test("a 409 closes the field, reads the node again and shows the other member's answer with the earlier one beneath", async () => {
+    let questions: unknown[] = [BY_DEFAULT];
+    fakeSearch(
+      () => questions,
+      () => {
+        questions = [CHANGED_BY_OTHER];
+        return new Response(JSON.stringify({ error: "version_conflict" }), { status: 409, headers: { "content-type": "application/json" } });
+      },
+    );
+    const details = renderChosen(TREE[2], DEEP_TREE);
+    fireEvent.change(await openChange(details), { target: { value: "Name and handicap" } });
+    save(details);
+
+    await waitFor(() => expect(questionEl(details, "q-default").textContent).toContain("Name and club"));
+    const changed = questionEl(details, "q-default");
+    expect(changed.textContent).toContain("Someone changed this first; it has been reloaded.");
+    expect(changed.textContent).not.toContain("Recorded.");
+    expect(within(changed).queryByRole("textbox", { name: "New answer" })).toBeNull();
+    expect(changed.querySelector("s")!.textContent).toBe("Name only");
+  });
+
+  test("on a failure other than 409 says it could not be saved and keeps the field open with the typed text", async () => {
+    fakeSearch(
+      () => [BY_DEFAULT],
+      () => new Response(JSON.stringify({ error: "internal" }), { status: 500, headers: { "content-type": "application/json" } }),
+    );
+    const details = renderChosen(TREE[2], DEEP_TREE);
+    fireEvent.change(await openChange(details), { target: { value: "Name and handicap" } });
+    save(details);
+
+    await waitFor(() => expect(questionEl(details, "q-default").textContent).toContain("The answer could not be saved. Try again in a moment."));
+    const field = within(questionEl(details, "q-default")).getByRole("textbox", { name: "New answer" }) as HTMLTextAreaElement;
+    expect(field.value).toBe("Name and handicap");
+    expect(within(questionEl(details, "q-default")).getByRole("button", { name: "Save new answer" })).toHaveProperty("disabled", false);
+  });
+});
