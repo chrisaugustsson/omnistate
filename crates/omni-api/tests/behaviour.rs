@@ -1,4 +1,4 @@
-//! US-201 and US-202: the behaviour tree of a feature, through the API. Run with
+//! US-201 to US-203: the behaviour tree of a feature, through the API. Run with
 //! `--features stack-tests` in the Compose test container, which reaches
 //! Postgres at `postgres:5432`.
 //!
@@ -38,6 +38,10 @@
 //!   stored node (422 `invalid_slug` on the root, 409 `slug_taken`). Children
 //!   of an `out_of_scope` node keep their status. A new slug moves the paths
 //!   below and keeps the ids. There is no DELETE (405).
+//! - `GET /?under=<id>` lists that node and every node below it, in tree
+//!   order; a node of another feature is 404. `GET /nodes/{id}` also gives
+//!   `children`: the direct children by position, each `{id, path, slug,
+//!   title, summary, status}`.
 
 mod common;
 
@@ -1091,5 +1095,187 @@ fn delete_on_a_node_is_405_and_the_node_stays() {
     assert_eq!(
         paths_of(&listed(f, &project, &feature)),
         vec![json!(""), json!("buy")]
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Listing below a node, and the children of a read (US-203)
+// ---------------------------------------------------------------------------
+
+fn listed_under(f: &Fixture, project: &str, feature: &str, under: &str) -> Response {
+    call(
+        f,
+        "GET",
+        &format!("{}?under={under}", tree_path(f, project, feature)),
+        Auth::Agent,
+        None,
+    )
+}
+
+#[test]
+fn under_a_node_lists_it_and_everything_below_and_not_its_next_sibling_or_the_next_story() {
+    let (f, _) = ready();
+    let (project, feature) = new_feature(f, &unique("Checkout"));
+    let buy = add(
+        f,
+        &project,
+        &feature,
+        &json!({ "title": "Buy", "slug": "buy" }),
+    );
+    let press = add(
+        f,
+        &project,
+        &feature,
+        &json!({ "title": "Press", "slug": "press", "parent_id": id_of(&buy) }),
+    );
+    add(
+        f,
+        &project,
+        &feature,
+        &json!({ "title": "Out of stock", "slug": "out-of-stock", "parent_id": id_of(&press) }),
+    );
+    add(
+        f,
+        &project,
+        &feature,
+        &json!({ "title": "Pay", "slug": "pay", "parent_id": id_of(&buy) }),
+    );
+    let ret = add(
+        f,
+        &project,
+        &feature,
+        &json!({ "title": "Return", "slug": "return" }),
+    );
+    add(
+        f,
+        &project,
+        &feature,
+        &json!({ "title": "Refund", "slug": "refund", "parent_id": id_of(&ret) }),
+    );
+
+    let story = must(
+        listed_under(f, &project, &feature, &id_of(&buy)),
+        200,
+        "list under the story",
+    );
+    let situation = must(
+        listed_under(f, &project, &feature, &id_of(&press)),
+        200,
+        "list under the situation",
+    );
+
+    assert_eq!(
+        paths_of(story["nodes"].as_array().expect("`nodes` is a list")),
+        vec![
+            json!("buy"),
+            json!("buy/press"),
+            json!("buy/press/out-of-stock"),
+            json!("buy/pay")
+        ]
+    );
+    assert_eq!(
+        paths_of(situation["nodes"].as_array().expect("`nodes` is a list")),
+        vec![json!("buy/press"), json!("buy/press/out-of-stock")]
+    );
+}
+
+#[test]
+fn under_a_node_of_another_feature_is_404() {
+    let (f, _) = ready();
+    let (project, feature) = new_feature(f, &unique("Checkout"));
+    let (other_project, other_feature) = new_feature(f, &unique("Returns"));
+    add(
+        f,
+        &project,
+        &feature,
+        &json!({ "title": STORY, "slug": "buy" }),
+    );
+    let theirs = add(
+        f,
+        &other_project,
+        &other_feature,
+        &json!({ "title": "Return" }),
+    );
+
+    let response = listed_under(f, &project, &feature, &id_of(&theirs));
+
+    assert_error(&response, 404, "not_found");
+}
+
+#[test]
+fn a_read_gives_the_direct_children_in_the_order_they_were_added_without_the_grandchildren() {
+    let (f, _) = ready();
+    let (project, feature) = new_feature(f, &unique("Checkout"));
+    let story = add(
+        f,
+        &project,
+        &feature,
+        &json!({
+            "title": STORY,
+            "slug": "customer-buys-product",
+            "summary": "Customer buys a product."
+        }),
+    );
+    let press = add(
+        f,
+        &project,
+        &feature,
+        &json!({
+            "title": "User presses buy",
+            "slug": "user-presses-buy",
+            "summary": "Product goes to the cart, or the user sees why it can't.",
+            "parent_id": id_of(&story)
+        }),
+    );
+    add(
+        f,
+        &project,
+        &feature,
+        &json!({
+            "title": "Product is out of stock",
+            "slug": "product-out-of-stock",
+            "parent_id": id_of(&press)
+        }),
+    );
+    let pay = add(
+        f,
+        &project,
+        &feature,
+        &json!({ "title": "User pays", "slug": "user-pays", "parent_id": id_of(&story) }),
+    );
+    edit(
+        f,
+        &project,
+        &feature,
+        &id_of(&press),
+        &json!({ "expected_version": 1, "status": "done" }),
+    );
+
+    let read = must(
+        read(f, &project, &feature, &id_of(&story)),
+        200,
+        "read the story",
+    );
+
+    assert_eq!(
+        read["children"],
+        json!([
+            {
+                "id": id_of(&press),
+                "path": "customer-buys-product/user-presses-buy",
+                "slug": "user-presses-buy",
+                "title": "User presses buy",
+                "summary": "Product goes to the cart, or the user sees why it can't.",
+                "status": "done"
+            },
+            {
+                "id": id_of(&pay),
+                "path": "customer-buys-product/user-pays",
+                "slug": "user-pays",
+                "title": "User pays",
+                "summary": "",
+                "status": "open"
+            }
+        ])
     );
 }

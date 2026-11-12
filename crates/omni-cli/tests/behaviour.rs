@@ -1,4 +1,4 @@
-//! US-201 and US-202: `omni behaviour add`, `read` and `edit`, tested as the built binary against
+//! US-201 to US-203: `omni behaviour add`, `read`, `edit` and `list`, tested as the built binary against
 //! a mock HTTP server. The API's own rules (the root, slugs, levels, the
 //! chain) are in crates/omni-api/tests/behaviour.rs; these tests pin what the
 //! CLI adds on top: naming a node by its path or by `.` for the root, which
@@ -18,6 +18,11 @@
 //!   `expected_version` and the fields given; `--status out-of-scope` is sent
 //!   as `out_of_scope`, and `--behavior` is `--behaviour`. It prints
 //!   `<path>  <status>` from the answer.
+//! - `omni behaviour list [<node>]` lists the feature, or `?under=` the node
+//!   the list gives at that path, one line per node: `<slug> — <summary>
+//!   (<status>)`, indented two spaces per level below the first line, the
+//!   title for an empty summary and the root's title for its slug. A feature
+//!   without a tree prints nothing.
 
 mod common;
 
@@ -292,4 +297,130 @@ fn behavior_is_the_same_flag_as_behaviour() {
         sent(&server, "PATCH"),
         vec![json!({ "expected_version": 3, "behaviour": "A confirmation appears." })]
     );
+}
+
+const PRESS: &str = "01900000-0000-7000-8000-000000000204";
+const OUT: &str = "01900000-0000-7000-8000-000000000205";
+
+fn with(mut node: Value, slug: Option<&str>, summary: &str, status: &str) -> Value {
+    node["slug"] = json!(slug);
+    node["summary"] = json!(summary);
+    node["status"] = json!(status);
+    node
+}
+
+/// The story `customer-buys-product`, then `user-presses-buy` below it and
+/// `product-out-of-stock` (no summary) below that.
+fn story_nodes() -> Vec<Value> {
+    vec![
+        with(
+            summary(STORY, Some(ROOT), "customer-buys-product", 1, "Buys"),
+            Some("customer-buys-product"),
+            "Customer buys a product.",
+            "open",
+        ),
+        with(
+            summary(
+                PRESS,
+                Some(STORY),
+                "customer-buys-product/user-presses-buy",
+                2,
+                "User presses buy",
+            ),
+            Some("user-presses-buy"),
+            "Product goes to the cart, or the user sees why it can't.",
+            "done",
+        ),
+        with(
+            summary(
+                OUT,
+                Some(PRESS),
+                "customer-buys-product/user-presses-buy/product-out-of-stock",
+                3,
+                "Product is out of stock",
+            ),
+            Some("product-out-of-stock"),
+            "",
+            "open",
+        ),
+    ]
+}
+
+/// The whole tree: the root (no slug), the story with its nodes, then a
+/// second story.
+fn whole_tree() -> Value {
+    let mut nodes = vec![with(
+        summary(ROOT, None, "", 0, "Checkout"),
+        None,
+        "",
+        "open",
+    )];
+    nodes.extend(story_nodes());
+    nodes.push(with(
+        summary(OTHER, Some(ROOT), "customer-returns-product", 1, "Returns"),
+        Some("customer-returns-product"),
+        "Customer sends a product back.",
+        "open",
+    ));
+    json!({ "nodes": nodes })
+}
+
+/// An API that lists `nodes` for the whole tree and the story's nodes for
+/// `?under=` the story.
+fn list_mock(nodes: Value) -> MockServer {
+    MockServer::start(move |request| {
+        let base = tree_path();
+        match (request.method.as_str(), request.path.as_str()) {
+            ("GET", path) if path == base => Reply::json(200, &nodes),
+            ("GET", path) if path == format!("{base}?under={STORY}") => {
+                Reply::json(200, &json!({ "nodes": story_nodes() }))
+            }
+            _ => Reply::json(404, &json!({ "error": "not_found" })),
+        }
+    })
+}
+
+#[test]
+fn list_of_a_story_prints_its_nodes_indented_below_it_with_the_title_for_an_empty_summary() {
+    let server = list_mock(whole_tree());
+    let home = logged_in(&server);
+
+    let out = run(&home, &["behaviour", "list", "customer-buys-product"]);
+
+    assert_eq!(out.code, 0, "stderr: {}", out.stderr);
+    assert_eq!(
+        out.stdout,
+        "customer-buys-product — Customer buys a product. (open)\n\
+         \x20 user-presses-buy — Product goes to the cart, or the user sees why it can't. (done)\n\
+         \x20   product-out-of-stock — Product is out of stock (open)\n"
+    );
+}
+
+#[test]
+fn list_of_the_feature_names_the_root_by_its_title_and_indents_the_stories_below_it() {
+    let server = list_mock(whole_tree());
+    let home = logged_in(&server);
+
+    let out = run(&home, &["behaviour", "list"]);
+
+    assert_eq!(out.code, 0, "stderr: {}", out.stderr);
+    assert_eq!(
+        out.stdout,
+        "Checkout — Checkout (open)\n\
+         \x20 customer-buys-product — Customer buys a product. (open)\n\
+         \x20   user-presses-buy — Product goes to the cart, or the user sees why it can't. (done)\n\
+         \x20     product-out-of-stock — Product is out of stock (open)\n\
+         \x20 customer-returns-product — Customer sends a product back. (open)\n"
+    );
+}
+
+#[test]
+fn list_of_a_feature_without_a_tree_prints_nothing_and_exits_0() {
+    let server = list_mock(json!({ "nodes": [] }));
+    let home = logged_in(&server);
+
+    let out = run(&home, &["behaviour", "list"]);
+
+    assert_eq!(out.code, 0, "stderr: {}", out.stderr);
+    assert_eq!(out.stdout, "");
 }
