@@ -187,6 +187,8 @@ describe("the details of a chosen node", () => {
     expect(heading).toBe("Questions 4 · 1 open");
     expect(within(questionEl(details, "q-default")).getByText("By default")).toBeTruthy();
     expect(within(questionEl(details, "q-rest")).queryByText("By default")).toBeNull();
+    expect(within(questionEl(details, "q-remark")).queryByRole("textbox", { name: "Your answer" })).toBeNull();
+    expect(within(questionEl(details, "q-waiting")).getByRole("textbox", { name: "Your answer" })).toBeTruthy();
   });
 
   test("shows the current answer once with who and when, and the earlier one struck through beneath it with who and when", async () => {
