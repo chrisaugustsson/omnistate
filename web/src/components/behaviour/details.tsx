@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { useReloading } from "@/lib/reloading";
 import { cn } from "@/lib/utils";
 import { Text } from "./text";
-import { ancestorsOf, descendantsOf, shortTitle } from "./tree";
+import { ancestorsOf, shortTitle } from "./tree";
 
 // The chosen node, read in full: path, title, status, text, questions with their answers, rules.
 
@@ -121,7 +121,6 @@ function Chosen({
   const { value: read, failed, reload } = useReloading(load);
   // What to say under a question after a write; it lasts until another node is chosen.
   const [said, setSaid] = useState<Record<string, string>>({});
-  const below = descendantsOf(tree, listed.id).length;
   const written = (id: string, message: string) => {
     setSaid((before) => ({ ...before, [id]: message }));
     reload();
@@ -210,7 +209,7 @@ function Chosen({
               <Text source={read.node.behaviour} className="mt-1.5 space-y-2 text-[13px] leading-relaxed" />
             </>
           )}
-          <Questions questions={read.questions} me={me} ids={ids} said={said} below={below} onWritten={written} />
+          <Questions questions={read.questions} me={me} ids={ids} said={said} onWritten={written} />
           <Rules rules={read.rules} nodeId={read.node.id} byId={byId} />
         </>
       )}
@@ -224,12 +223,10 @@ type Ids = { workspaceId: string; projectId: string; featureId: string };
 function AnswerField({
   question,
   ids,
-  below,
   onWritten,
 }: {
   question: QuestionBody;
   ids: Ids;
-  below: number;
   onWritten: (id: string, message: string) => void;
 }) {
   const [text, setText] = useState("");
@@ -242,10 +239,7 @@ function AnswerField({
     setError("");
     try {
       await answerQuestion(ids.workspaceId, ids.projectId, ids.featureId, question.id, { expected_version: question.version, answer });
-      onWritten(
-        question.id,
-        below > 0 ? `Recorded. This node and the ${below} below it now wait for the next grill pass.` : "Recorded. This node now waits for the next grill pass.",
-      );
+      onWritten(question.id, "Recorded. This node now waits for the next grill pass.");
     } catch (failure) {
       setBusy(false);
       if (failure instanceof ApiError && failure.status === 409) {
@@ -278,14 +272,12 @@ function Questions({
   me,
   ids,
   said,
-  below,
   onWritten,
 }: {
   questions: QuestionBody[];
   me: string | null;
   ids: Ids;
   said: Record<string, string>;
-  below: number;
   onWritten: (id: string, message: string) => void;
 }) {
   const sorted = questions.map((question, at) => ({ question, at })).sort((a, b) => rank(a.question) - rank(b.question) || a.at - b.at);
@@ -306,7 +298,7 @@ function Questions({
             <p className="text-[13.5px] font-medium leading-snug">{question.question}</p>
             {question.state === "open" ? (
               waits ? (
-                <AnswerField question={question} ids={ids} below={below} onWritten={onWritten} />
+                <AnswerField question={question} ids={ids} onWritten={onWritten} />
               ) : (
               <p className="mt-1.5 text-xs text-muted-foreground">
                 {`${who({ author: question.asked_by, given_by: "human" }, me)} · ${fmtDate(question.created_at)} · Remark, waits for the next grill pass`}
