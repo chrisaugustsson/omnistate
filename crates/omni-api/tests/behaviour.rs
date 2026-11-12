@@ -4748,6 +4748,15 @@ fn a_pointer_to_a_key_not_in_the_body_and_a_bad_slug_are_both_listed_and_nothing
         problem_keys(&refused),
         vec![json!("twice"), json!("buy-now")]
     );
+    // Each problem is a readable sentence naming the field and the bad value.
+    let problems = refused.json()["problems"].clone();
+    let pointer = problems[0]["problem"].as_str().expect("a sentence");
+    assert!(
+        pointer.contains("same_as") && pointer.contains("nowhere"),
+        "{pointer}"
+    );
+    let slug = problems[1]["problem"].as_str().expect("a sentence");
+    assert!(slug.contains("slug") && slug.contains("Bad Slug"), "{slug}");
     assert_eq!(listed(f, &project, &feature), Vec::<Value>::new());
     assert_eq!(behaviour_events(&project), Vec::<Value>::new());
 }
