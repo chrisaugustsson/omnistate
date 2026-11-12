@@ -86,6 +86,7 @@ export type AnswerBody = z.infer<typeof AnswerBodySchema>;
 export const AnswerRequestSchema = z.object({
   answer: z.string(),
   by: z.string().nullable().optional(),
+  change: z.boolean().optional(),
   expected_version: z.number().int(),
 });
 export type AnswerRequest = z.infer<typeof AnswerRequestSchema>;
@@ -753,6 +754,7 @@ export const QuestionBodySchema = z.object({
     AnswerBodySchema,
   ]).optional(),
   answered_by: z.string().nullable().optional(),
+  answers: z.array(AnswerBodySchema),
   asked_by: z.record(z.string(), z.unknown()),
   created_at: z.string(),
   id: z.string(),
@@ -1505,6 +1507,13 @@ export const operations = {
       "401": ErrorBodySchema,
       "404": ErrorBodySchema,
       "422": ErrorBodySchema,
+    },
+  },
+  "GET /api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/questions/{question_id}": {
+    responses: {
+      "200": QuestionResponseSchema,
+      "401": ErrorBodySchema,
+      "404": ErrorBodySchema,
     },
   },
   "POST /api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/questions/{question_id}/answers": {

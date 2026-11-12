@@ -104,6 +104,8 @@ pub struct Args {
     /// questions --default`.
     pub answer: Option<String>,
     pub default_answers: bool,
+    /// `omni behaviour answer --change`.
+    pub change: bool,
     pub json: bool,
     pub help: bool,
     pub version: bool,
@@ -154,6 +156,10 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Args> {
             }
             "--open" => {
                 parsed.open = true;
+                continue;
+            }
+            "--change" => {
+                parsed.change = true;
                 continue;
             }
             "--default" => {

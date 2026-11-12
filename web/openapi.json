@@ -274,6 +274,10 @@
               "null"
             ]
           },
+          "change": {
+            "description": "`true` to change the answer of an answered question: a new answer is stored\nand the earlier ones stay. An agent's own answer never replaces a person's\n(409 `answered_by_human`). Without it an answered question is 409\n`already_answered`; with it an open one is 409 `not_answered`.",
+            "type": "boolean"
+          },
           "expected_version": {
             "description": "The question's `version` as the caller read it.",
             "format": "int64",
@@ -2835,6 +2839,13 @@
               "null"
             ]
           },
+          "answers": {
+            "description": "Every answer, oldest first; the last one is the current answer.",
+            "items": {
+              "$ref": "#/components/schemas/AnswerBody"
+            },
+            "type": "array"
+          },
           "asked_by": {
             "description": "`{kind: \"agent\", run, role, model, harness}` or `{kind: \"human\", user_id}`.",
             "type": "object"
@@ -2873,7 +2884,8 @@
           "state",
           "asked_by",
           "version",
-          "created_at"
+          "created_at",
+          "answers"
         ],
         "type": "object"
       },
@@ -7719,6 +7731,86 @@
         "x-omni-access": "both"
       }
     },
+    "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/questions/{question_id}": {
+      "get": {
+        "operationId": "show_question",
+        "parameters": [
+          {
+            "description": "The workspace's UUID",
+            "in": "path",
+            "name": "workspace_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The project's UUID",
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The feature's UUID",
+            "in": "path",
+            "name": "feature_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The question's UUID",
+            "in": "path",
+            "name": "question_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QuestionResponse"
+                }
+              }
+            },
+            "description": "The question, with `answers` oldest first"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No valid API key or session"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No such question in this feature, project and workspace"
+          }
+        },
+        "summary": "One question of a feature's behaviour tree with every answer it has had.",
+        "tags": [
+          "crate::behaviour"
+        ],
+        "x-omni-access": "both"
+      }
+    },
     "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/questions/{question_id}/answers": {
       "post": {
         "operationId": "answer_question",
@@ -7819,7 +7911,7 @@
                 }
               }
             },
-            "description": "`already_answered`, else `conflict` with `current_version` when `expected_version` is stale"
+            "description": "`already_answered` (an answer without `change` on an answered question), `not_answered` (`change` on an open one), `conflict` with `current_version` when `expected_version` is stale, else `answered_by_human` (an agent's own answer on a question a person answered)"
           },
           "422": {
             "content": {
@@ -7832,7 +7924,7 @@
             "description": "A blank answer (`invalid_answer`), a `by` other than `human` and `agent`, or `agent` from a session (`invalid_by`)"
           }
         },
-        "summary": "Answers an open question.",
+        "summary": "Answers an open question, or with `change` an answered one.",
         "tags": [
           "crate::behaviour"
         ],

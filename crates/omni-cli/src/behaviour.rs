@@ -1,4 +1,4 @@
-//! `omni behaviour add`, `read`, `list`, `edit`, `move`, `ask`, `answer` and `questions`: the behaviour tree of a feature. A node is
+//! `omni behaviour add`, `read`, `list`, `edit`, `move`, `ask`, `answer`, `question` and `questions`: the behaviour tree of a feature. A node is
 //! named by its uuid, by its path (the slugs from the story down, joined by
 //! `/`) or by `.` for the root. The project and the feature are found as for
 //! `omni story add`.
@@ -17,7 +17,8 @@ const EDIT_USAGE: &str = "omni behaviour edit <node> [--title <t>] [--slug <s>] 
      [--same-as <node>] [--handoff <node>]";
 
 const MOVE_USAGE: &str = "omni behaviour move <node> --to <parent>";
-const ANSWER_USAGE: &str = "omni behaviour answer <question id> <answer> [--by human]";
+const ANSWER_USAGE: &str = "omni behaviour answer <question id> <answer> [--change] [--by human]";
+const QUESTION_USAGE: &str = "omni behaviour question <question id>";
 const ASK_USAGE: &str = "omni behaviour ask <node> <question>";
 
 fn unreadable() -> CliError {
@@ -406,17 +407,101 @@ pub fn answer(args: &Args, question: Option<&str>, answer: Option<&str>) -> Resu
     if let Some(by) = &args.by {
         body.push_str(&format!(",\"by\":{}", quote(by)));
     }
+    if args.change {
+        body.push_str(",\"change\":true");
+    }
     body.push('}');
-    let response = agent.request_conflicting(
-        "POST",
-        &format!("{base}/questions/{given}/answers"),
-        body.as_bytes(),
-    )?;
+    let response = agent
+        .request_conflicting(
+            "POST",
+            &format!("{base}/questions/{given}/answers"),
+            body.as_bytes(),
+        )
+        .map_err(refused_not_stale)?;
     let text = response.text();
     if args.json {
         say(text.trim_end());
         return Ok(());
     }
     say(given);
+    Ok(())
+}
+
+/// Exit 3 is for a stale version only: any other 409 code (`already_answered`,
+/// `not_answered`, `answered_by_human`) ends with exit 1 and the API's code.
+fn refused_not_stale(error: CliError) -> CliError {
+    let message = error.to_string();
+    match message
+        .strip_prefix("conflict: ")
+        .and_then(|rest| rest.strip_suffix(" ; read it again"))
+    {
+        Some(code) if code != "conflict" => {
+            CliError::new(format!("{code}: the server answered HTTP 409"))
+        }
+        _ => error,
+    }
+}
+
+/// Who gave an answer: `person`, or `agent <run>/<role>`.
+fn giver(answer: &Value) -> String {
+    if answer.str_at("given_by") == Some("human") {
+        return "person".to_string();
+    }
+    let author = answer.get("author");
+    format!(
+        "agent {}/{}",
+        author.and_then(|a| a.str_at("run")).unwrap_or("?"),
+        author.and_then(|a| a.str_at("role")).unwrap_or("?")
+    )
+}
+
+/// `omni behaviour question <question id>`
+pub fn question(args: &Args, question: Option<&str>) -> Result<()> {
+    let Some(given) = question else {
+        bail!("this command needs a question ID: {QUESTION_USAGE}");
+    };
+    let agent = agent(args)?;
+    let base = behaviour_path(args, &agent)?;
+    let response = agent.request("GET", &format!("{base}/questions/{given}"), None)?;
+    let text = response.text();
+    if args.json {
+        say(text.trim_end());
+        return Ok(());
+    }
+    let body = Value::parse(&text).map_err(|_| unreadable())?;
+    let question = body.get("question").ok_or_else(unreadable)?;
+    let path = match question.str_at("node_path") {
+        Some("") => ".",
+        Some(path) => path,
+        None => "?",
+    };
+    say(&format!(
+        "{path}  {}  {}",
+        question.str_at("id").unwrap_or("?"),
+        question.str_at("question").unwrap_or_default()
+    ));
+    let answers = question
+        .get("answers")
+        .and_then(Value::as_array)
+        .ok_or_else(unreadable)?;
+    let line = |answer: &Value| {
+        let default = if answer.str_at("given_by") == Some("agent") {
+            " (default)"
+        } else {
+            ""
+        };
+        format!(
+            "{} — {}{default}, {}",
+            answer.str_at("answer").unwrap_or_default(),
+            giver(answer),
+            answer.str_at("at").unwrap_or("?")
+        )
+    };
+    if let Some((current, earlier)) = answers.split_last() {
+        say(&format!("answer: {}", line(current)));
+        for answer in earlier {
+            say(&format!("earlier: {}", line(answer)));
+        }
+    }
     Ok(())
 }

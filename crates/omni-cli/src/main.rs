@@ -246,11 +246,19 @@ Usage:
                                       create the question already answered; a done node stays
                                       done. The answer is an agent's own (a default) unless
                                       --by human says a person gave it
-  omni behaviour answer <question ID> <answer> [--by human]
+  omni behaviour answer <question ID> <answer> [--change] [--by human]
                                       answer an open question; prints its ID. The answer is
                                       yours, a default, unless --by human says a person gave it
                                       and you only wrote it down (409 already_answered if it
-                                      has an answer)
+                                      has an answer). --change gives an answered question a new
+                                      answer and keeps the old ones (409 not_answered on an open
+                                      one); your own answer never replaces a person's (409
+                                      answered_by_human: ask a new question on the node). These
+                                      409s exit 1; only a stale version exits 3
+  omni behaviour question <question ID>
+                                      print the question, its current answer and the earlier
+                                      ones, each with who (`person` or `agent <run>/<role>`)
+                                      and when. With --json the API's question
   omni behaviour questions [<node>] [--open|--default]
                                       print `<node path>  <question ID>  <question>` for every
                                       question of the feature, or of <node> and the nodes below
@@ -316,6 +324,7 @@ Options (before or after the command):
   --status <status>     `omni story list`: only the stories in this status
   --open                `omni thread list`: only the threads without a conclusion; `omni behaviour questions`: only the open ones
   --default             `omni behaviour questions`: only the answers an agent gave on its own
+  --change              `omni behaviour answer`: change the answer of an answered question
   --answer <text>       `omni behaviour ask`: create the question answered
   --pickable            `omni story list`: only the stories that can be picked
   --summary             `omni story list`: count the stories per status; `omni post` takes

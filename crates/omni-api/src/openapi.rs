@@ -112,6 +112,7 @@ use utoipa::OpenApi;
         crate::behaviour::move_node,
         crate::behaviour::ask_question,
         crate::behaviour::list_questions,
+        crate::behaviour::show_question,
         crate::behaviour::answer_question,
         crate::stories::create_story,
         crate::stories::list_stories,

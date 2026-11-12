@@ -141,11 +141,13 @@ pub fn run(args: &Args) -> Result<()> {
             behaviour::answer(args, Some(question), None)
         }
         ["behaviour" | "behavior", "answer"] => behaviour::answer(args, None, None),
+        ["behaviour" | "behavior", "question", id] => behaviour::question(args, Some(id)),
+        ["behaviour" | "behavior", "question"] => behaviour::question(args, None),
         ["behaviour" | "behavior", "questions"] => behaviour::questions(args, None),
         ["behaviour" | "behavior", "questions", node] => behaviour::questions(args, Some(node)),
         ["behaviour" | "behavior", ..] => {
             bail!(
-                "usage: omni behaviour add|read|list|edit|move|ask|answer|questions; see `omni --help`"
+                "usage: omni behaviour add|read|list|edit|move|ask|answer|question|questions; see `omni --help`"
             )
         }
         ["story", "add"] => stories::add(args, None),
