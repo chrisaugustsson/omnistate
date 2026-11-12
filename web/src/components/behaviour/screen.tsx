@@ -28,13 +28,13 @@ export function BehaviourScreen({
   me?: string | null;
 }) {
   const load = useCallback(() => loadTree(workspaceId, projectId, featureId), [workspaceId, projectId, featureId]);
-  const { value: nodes, failed } = useReloading(load);
+  const { value: nodes, failed, reload: reloadTree } = useReloading(load);
   // How many questions wait on each node; a question a person asked is a remark and does not wait.
   const loadWaiting = useCallback(
     () => loadOpenQuestions(workspaceId, projectId, featureId).catch(() => []),
     [workspaceId, projectId, featureId],
   );
-  const { value: openQuestions } = useReloading(loadWaiting);
+  const { value: openQuestions, reload: reloadQuestions } = useReloading(loadWaiting);
   const waiting = useMemo(() => {
     const counts = new Map<string, number>();
     for (const question of openQuestions ?? []) {
@@ -148,6 +148,10 @@ export function BehaviourScreen({
               workspaceId={workspaceId}
               projectId={projectId}
               featureId={featureId}
+              onWritten={() => {
+                reloadTree();
+                reloadQuestions();
+              }}
               waitingCount={[...waiting.values()].reduce((sum, count) => sum + count, 0)}
             />
           </>

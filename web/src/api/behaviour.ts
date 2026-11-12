@@ -37,3 +37,21 @@ export function loadNode(workspaceId: string, projectId: string, featureId: stri
     { response: read.responses["200"] },
   );
 }
+
+const answer = operations["POST /api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/questions/{question_id}/answers"];
+
+/** A person's answer to a question; `change` replaces an answer already given. A 409 means someone got there first. */
+export async function answerQuestion(
+  workspaceId: string,
+  projectId: string,
+  featureId: string,
+  questionId: string,
+  body: { expected_version: number; answer: string; change?: boolean },
+) {
+  const done = await callApi(
+    "POST",
+    `/api/v1/w/${workspaceId}/projects/${projectId}/features/${featureId}/behaviour/questions/${encodeURIComponent(questionId)}/answers`,
+    { body, response: answer.responses["201"] },
+  );
+  return done.question;
+}

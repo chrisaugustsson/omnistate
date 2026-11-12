@@ -1,11 +1,13 @@
-import { useCallback } from "react";
-import { loadNode, type TreeNode } from "@/api/behaviour";
+import { useCallback, useState } from "react";
+import { answerQuestion, loadNode, type TreeNode } from "@/api/behaviour";
+import { ApiError } from "@/api/client";
 import type { AnswerBody, QuestionBody } from "@/api/generated";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
 import { useReloading } from "@/lib/reloading";
 import { cn } from "@/lib/utils";
 import { Text } from "./text";
-import { ancestorsOf, shortTitle } from "./tree";
+import { ancestorsOf, descendantsOf, shortTitle } from "./tree";
 
 // The chosen node, read in full: path, title, status, text, questions with their answers, rules.
 
@@ -28,6 +30,8 @@ export function who(answer: Pick<AnswerBody, "author" | "given_by">, me: string 
   if (answer.given_by === "human") return `A person, written down by agent ${agentName(author)}`;
   return `Agent ${agentName(author)}, nobody was asked`;
 }
+
+const CONFLICT = "Someone answered this first; it has been reloaded.";
 
 const pill = "h-5 whitespace-nowrap rounded-full bg-muted px-2 text-[11.5px] font-medium leading-5 text-muted-foreground";
 
@@ -56,6 +60,7 @@ export function Details({
   featureId,
   waitingCount = 0,
   onShowOpen,
+  onWritten,
 }: {
   node: TreeNode | null;
   tree: TreeNode[];
@@ -66,6 +71,8 @@ export function Details({
   featureId: string;
   waitingCount?: number;
   onShowOpen?: () => void;
+  /** After a write, accepted or not: the tree and the open questions need reading again. */
+  onWritten?: () => void;
 }) {
   return (
     <section aria-label="Details" className="min-h-0 overflow-y-auto border-l">
@@ -77,6 +84,7 @@ export function Details({
           me={me}
           onChoose={onChoose}
           ids={{ workspaceId, projectId, featureId }}
+          onWritten={onWritten ?? (() => {})}
         />
       ) : (
         <p className="px-6 py-10 text-[13px] leading-relaxed text-muted-foreground">
@@ -97,18 +105,28 @@ function Chosen({
   me,
   onChoose,
   ids,
+  onWritten,
 }: {
   node: TreeNode;
   tree: TreeNode[];
   me: string | null;
   onChoose: (id: string) => void;
   ids: { workspaceId: string; projectId: string; featureId: string };
+  onWritten: () => void;
 }) {
   const load = useCallback(
     () => loadNode(ids.workspaceId, ids.projectId, ids.featureId, listed.id),
     [ids.workspaceId, ids.projectId, ids.featureId, listed.id],
   );
-  const { value: read, failed } = useReloading(load);
+  const { value: read, failed, reload } = useReloading(load);
+  // What to say under a question after a write; it lasts until another node is chosen.
+  const [said, setSaid] = useState<Record<string, string>>({});
+  const below = descendantsOf(tree, listed.id).length;
+  const written = (id: string, message: string) => {
+    setSaid((before) => ({ ...before, [id]: message }));
+    reload();
+    onWritten();
+  };
   const byId = new Map(tree.map((one) => [one.id, one]));
   const label = (id: string) => (byId.has(id) ? shortTitle(byId.get(id)!) : "");
   const crumbs = ancestorsOf(tree, listed.id).reverse();
@@ -141,13 +159,23 @@ function Chosen({
       </p>
       <h2 className="mt-1 text-[15px] font-semibold leading-snug">{listed.title}</h2>
       <div className="mt-2 flex flex-wrap items-center gap-1.5">
-        <span className={cn(pill, status === "open" && "bg-signal-soft text-foreground")}>
-          {status === "open" ? "Open" : status === "out_of_scope" ? "Out of scope" : "Done"}
-        </span>
+        {listed.needs_pass ? (
+          <span className={cn(pill, "bg-transparent text-foreground shadow-[inset_0_0_0_1px_var(--foreground)]")}>↻ Needs another grill pass</span>
+        ) : (
+          <span className={cn(pill, status === "open" && "bg-signal-soft text-foreground")}>
+            {status === "open" ? "Open" : status === "out_of_scope" ? "Out of scope" : "Done"}
+          </span>
+        )}
         {level === 1 && <span className={pill}>User story</span>}
         {level === 0 && <span className={pill}>Feature</span>}
         {defaults > 0 && <span className={pill}>{defaults} answered by default</span>}
       </div>
+      {listed.needs_pass && (
+        <p className="mt-3 rounded-lg border border-dashed border-foreground px-3 py-2.5 text-[12.5px] leading-normal">
+          Waits for the next grill pass{listed.needs_pass_since ? ` since ${fmtDate(listed.needs_pass_since)}` : ""}. Something here or above was
+          answered, changed or remarked. Nothing is rewritten until the grill is started again on the feature.
+        </p>
+      )}
       {listed.summary && <p className="mt-3 text-[13.5px] leading-relaxed">{listed.summary}</p>}
       {pointer("↪", "Same as", node?.same_as ?? (listed.same_as && { id: listed.same_as.id }))}
       {pointer("⇢", "Hands off to", node?.handoff ?? (listed.handoff && { id: listed.handoff.id }))}
@@ -182,7 +210,7 @@ function Chosen({
               <Text source={read.node.behaviour} className="mt-1.5 space-y-2 text-[13px] leading-relaxed" />
             </>
           )}
-          <Questions questions={read.questions} me={me} />
+          <Questions questions={read.questions} me={me} ids={ids} said={said} below={below} onWritten={written} />
           <Rules rules={read.rules} nodeId={read.node.id} byId={byId} />
         </>
       )}
@@ -190,7 +218,76 @@ function Chosen({
   );
 }
 
-function Questions({ questions, me }: { questions: QuestionBody[]; me: string | null }) {
+type Ids = { workspaceId: string; projectId: string; featureId: string };
+
+/** The field and button under a waiting question. */
+function AnswerField({
+  question,
+  ids,
+  below,
+  onWritten,
+}: {
+  question: QuestionBody;
+  ids: Ids;
+  below: number;
+  onWritten: (id: string, message: string) => void;
+}) {
+  const [text, setText] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const send = async () => {
+    const answer = text.trim();
+    if (!answer || busy) return;
+    setBusy(true);
+    setError("");
+    try {
+      await answerQuestion(ids.workspaceId, ids.projectId, ids.featureId, question.id, { expected_version: question.version, answer });
+      onWritten(
+        question.id,
+        below > 0 ? `Recorded. This node and the ${below} below it now wait for the next grill pass.` : "Recorded. This node now waits for the next grill pass.",
+      );
+    } catch (failure) {
+      setBusy(false);
+      if (failure instanceof ApiError && failure.status === 409) {
+        onWritten(question.id, CONFLICT);
+      } else setError("The answer could not be saved. Try again in a moment.");
+    }
+  };
+  return (
+    <>
+      <textarea
+        aria-label="Your answer"
+        placeholder="Your answer"
+        value={text}
+        onChange={(event) => setText(event.target.value)}
+        className="mt-2 block min-h-16 w-full resize-y rounded-lg border border-input bg-background px-2.5 py-2 text-[13.5px] leading-normal"
+      />
+      <div className="mt-2 flex items-center gap-2">
+        <Button type="button" size="sm" disabled={busy || text.trim() === ""} onClick={send}>
+          Answer
+        </Button>
+        <span className="text-xs text-muted-foreground">Nobody has answered this yet.</span>
+      </div>
+      {error && <p className="mt-2 text-xs text-foreground">{error}</p>}
+    </>
+  );
+}
+
+function Questions({
+  questions,
+  me,
+  ids,
+  said,
+  below,
+  onWritten,
+}: {
+  questions: QuestionBody[];
+  me: string | null;
+  ids: Ids;
+  said: Record<string, string>;
+  below: number;
+  onWritten: (id: string, message: string) => void;
+}) {
   const sorted = questions.map((question, at) => ({ question, at })).sort((a, b) => rank(a.question) - rank(b.question) || a.at - b.at);
   const waiting = questions.filter((question) => question.state === "open" && question.asked_by.kind !== "human").length;
   return (
@@ -208,9 +305,13 @@ function Questions({ questions, me }: { questions: QuestionBody[]; me: string | 
           <div key={question.id} data-question={question.id} className={cn("mt-2 border-t py-3", waits && "-mx-2 rounded-md border-t-0 bg-signal-soft px-2")}>
             <p className="text-[13.5px] font-medium leading-snug">{question.question}</p>
             {question.state === "open" ? (
+              waits ? (
+                <AnswerField question={question} ids={ids} below={below} onWritten={onWritten} />
+              ) : (
               <p className="mt-1.5 text-xs text-muted-foreground">
-                {waits ? "Nobody has answered this yet." : `${who({ author: question.asked_by, given_by: "human" }, me)} · ${fmtDate(question.created_at)} · Remark, waits for the next grill pass`}
+                {`${who({ author: question.asked_by, given_by: "human" }, me)} · ${fmtDate(question.created_at)} · Remark, waits for the next grill pass`}
               </p>
+              )
             ) : (
               answer && (
                 <>
@@ -223,6 +324,12 @@ function Questions({ questions, me }: { questions: QuestionBody[]; me: string | 
                   </p>
                 </>
               )
+            )}
+            {said[question.id] && (
+              <p className="mt-2 flex gap-1.5 text-xs leading-normal">
+                {said[question.id] !== CONFLICT && <span className="font-semibold">↻</span>}
+                {said[question.id]}
+              </p>
             )}
             {earlier.map((one, at) => (
               <div key={at} className="mt-2 border-l-2 pl-2.5 text-[12.5px] leading-normal text-muted-foreground">
