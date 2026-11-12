@@ -862,9 +862,27 @@ fn no_change_or_the_status_stale_is_422_even_with_a_stale_version() {
         &id_of(&story),
         &json!({ "expected_version": 1, "status": "stale" }),
     );
+    let blank_title = patch_node(
+        f,
+        &project,
+        &feature,
+        Auth::Agent,
+        &id_of(&story),
+        &json!({ "expected_version": 1, "title": "  " }),
+    );
+    let bad_slug = patch_node(
+        f,
+        &project,
+        &feature,
+        Auth::Agent,
+        &id_of(&story),
+        &json!({ "expected_version": 1, "slug": "Buy Now" }),
+    );
 
     assert_error(&empty, 422, "no_changes");
     assert_error(&stale, 422, "invalid_status");
+    assert_error(&blank_title, 422, "invalid_title");
+    assert_error(&bad_slug, 422, "invalid_slug");
     let node = read_node(f, &project, &feature, &id_of(&story));
     assert_eq!(node["status"], "done");
     assert_eq!(node["version"], 2);
