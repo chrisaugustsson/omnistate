@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { TreeNode } from "@/api/behaviour";
 import { cn } from "@/lib/utils";
-import { animateTo, bringIntoView, centreOn, fit, fitBlock, zoomAt, type View } from "./camera";
-import { elbow, layoutBlocks, planColumns } from "./layout";
+import { animateTo, bringIntoView, centreOn, fit, fitBlock, tween, zoomAt, type View } from "./camera";
+import { elbow, layoutBlocks, planColumns, type Rect } from "./layout";
 import { Minimap } from "./minimap";
 import { Legend, Marks } from "./marks";
 import { ancestorsOf, childrenOf, descendantsOf, shortTitle } from "./tree";
@@ -18,6 +18,9 @@ const BUTTON_ZOOM = 1.4;
 const FOLD_MS = 220;
 // A press that moves less than this is a click, not a drag.
 const DRAG_FROM = 4;
+
+/** A fold's slide under way: where the boxes started and the eased progress. */
+type Slide = { from: ReadonlyMap<string, Rect>; e: number } | null;
 
 /** The tree of `nodes` as story blocks, fitted into the area it stands in when it opens. */
 export function Graph({
@@ -83,6 +86,27 @@ export function Graph({
   }, []);
   const columns = useMemo(() => (area ? planColumns(nodes, shown, area) : []), [nodes, shown, area]);
   const { boxes, bounds, blocks } = useMemo(() => layoutBlocks(nodes, { shown, folded, columns }), [nodes, shown, folded, columns]);
+  const byId = useMemo(() => new Map(nodes.map((node) => [node.id, node])), [nodes]);
+  // While a fold moves, the boxes slide from where they stood in the same frames as the view, so the pressed box stays still.
+  const [slide, setSlideState] = useState<Slide>(null);
+  const slideRef = useRef<Slide>(null);
+  const setSlide = (next: Slide) => {
+    slideRef.current = next;
+    setSlideState(next);
+  };
+  const placeAt = useCallback((slide: Slide) => {
+    if (!slide) return boxes;
+    const at = new Map<string, Rect>();
+    for (const [id, box] of boxes) {
+      // A box coming back starts where the nearest box above it stood.
+      let from = slide.from.get(id);
+      for (let up = byId.get(id)?.parent_id; !from && up; up = byId.get(up)?.parent_id) from = slide.from.get(up);
+      from ??= box;
+      at.set(id, { ...box, x: from.x + (box.x - from.x) * slide.e, y: from.y + (box.y - from.y) * slide.e });
+    }
+    return at;
+  }, [boxes, byId]);
+  const placed = useMemo(() => placeAt(slide), [placeAt, slide]);
   useEffect(() => {
     if (area && area.w > 0 && area.h > 0 && boxes.size && !view) setView(fit(bounds, area));
   }, [area, boxes, bounds, view]);
@@ -129,12 +153,27 @@ export function Graph({
   // Folding keeps the pressed box where it is on screen: the view moves as far as the box does, in the same time.
   const pressFold = (id: string) => {
     const current = viewRef.current;
-    const before = boxes.get(id);
+    // Where the boxes stand now, in step with the view even between a frame's move and its render.
+    const from = placeAt(slideRef.current);
+    const before = from.get(id);
     if (current && before && areaRef.current) {
       const next = new Set(folded);
       if (!next.delete(id)) next.add(id);
       const after = layoutBlocks(nodes, { shown, folded: next, columns }).boxes.get(id);
-      if (after) moveTo({ k: current.k, x: current.x + (before.x - after.x) * current.k, y: current.y + (before.y - after.y) * current.k }, FOLD_MS);
+      if (after) {
+        const target = { k: current.k, x: current.x + (before.x - after.x) * current.k, y: current.y + (before.y - after.y) * current.k };
+        stopMove.current();
+        // The boxes stand where they were in the same render that applies the fold, before the first frame.
+        setSlide({ from, e: 0 });
+        const stop = tween(FOLD_MS, (e) => {
+          setView(e === 1 ? target : { k: current.k, x: current.x + (target.x - current.x) * e, y: current.y + (target.y - current.y) * e });
+          setSlide(e === 1 ? null : { from, e });
+        });
+        stopMove.current = () => {
+          stop();
+          setSlide(null);
+        };
+      }
     }
     onFold?.(id);
   };
@@ -258,18 +297,17 @@ export function Graph({
     setView(centreOn(current, { x, y, w: 0, h: 0 }, areaRef.current));
   };
   const far = !!view && view.k < BARS_BELOW;
-  const byId = useMemo(() => new Map(nodes.map((node) => [node.id, node])), [nodes]);
   const titles = useMemo(() => new Map(nodes.map((node) => [node.id, shortTitle(node)])), [nodes]);
-  // The lines from the chosen node up to its story are drawn in ink, above the rest.
+  // The lines from the chosen node up to its story are drawn in ink, above the rest; none while a fold hides it.
   const inkIds = useMemo(() => {
-    if (!chosenId) return new Set<string>();
+    if (!chosenId || !boxes.has(chosenId)) return new Set<string>();
     const above = ancestorsOf(nodes, chosenId);
     return new Set([chosenId, ...above.slice(0, -1)]);
-  }, [nodes, chosenId]);
+  }, [nodes, chosenId, boxes]);
   const lines: { id: string; d: string }[] = [];
-  for (const [id, box] of boxes) {
+  for (const [id, box] of placed) {
     const parent = byId.get(id)?.parent_id;
-    const above = parent ? boxes.get(parent) : undefined;
+    const above = parent ? placed.get(parent) : undefined;
     if (above) lines.push({ id, d: elbow(above, box) });
   }
   lines.sort((a, b) => Number(inkIds.has(a.id)) - Number(inkIds.has(b.id)));
@@ -305,7 +343,7 @@ export function Graph({
             ))}
           </svg>
           {nodes.map((node) => {
-            const box = boxes.get(node.id);
+            const box = placed.get(node.id);
             if (!box) return null;
             return (
               <div
@@ -324,7 +362,7 @@ export function Graph({
                   waiting.has(node.id) && !node.needs_pass && "group-data-[far]:bg-signal",
                   "transition-transform duration-[220ms] ease-[cubic-bezier(0.23,1,0.32,1)] motion-reduce:transition-none",
                 )}
-                style={{ width: box.w, height: box.h, transform: `translate(${box.x}px, ${box.y}px)` }}
+                style={{ width: box.w, height: box.h, transform: `translate(${box.x}px, ${box.y}px)`, transition: slide ? "none" : undefined }}
               >
                 {node.status === "open" && (waiting.has(node.id) || !node.needs_pass) && (
                   <span aria-hidden data-open-ring className="size-2 shrink-0 rounded-full border-2 border-signal group-data-[far]:invisible" />

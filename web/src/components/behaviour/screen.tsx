@@ -78,11 +78,11 @@ export function BehaviourScreen({
     if (!nodes) return;
     setChosen(id);
     const above = ancestorsOf(nodes, id);
-    // Pressing a closed row with children also opens it.
-    if (from === "folders" && filter === "all" && nodes.some((node) => node.parent_id === id)) above.push(id);
-    // A fold that hides the node is undone.
+    // A fold that hides the node is undone; a fold on the node itself stays.
     setFolded((before) => (above.some((one) => before.has(one)) ? new Set([...before].filter((one) => !above.includes(one))) : before));
-    setOpen((before) => (above.every((one) => before.has(one)) ? before : new Set([...before, ...above])));
+    // Pressing a closed row with children also opens it.
+    const opened = from === "folders" && filter === "all" && nodes.some((node) => node.parent_id === id) ? [...above, id] : above;
+    setOpen((before) => (opened.every((one) => before.has(one)) ? before : new Set([...before, ...opened])));
     if (from !== "graph") setReveal({ id, ms: from === "keys" ? 0 : 240, n: ++revealCount.current });
   };
   const chooseRef = useRef(choose);

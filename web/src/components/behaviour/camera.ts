@@ -88,9 +88,19 @@ export function ease(x: number): number {
  * Lands at once with no steps in between when `ms` is 0 or the system asks for reduced motion.
  */
 export function animateTo(from: View, target: View, ms: number, apply: (view: View) => void): () => void {
+  return tween(ms, (e) =>
+    apply(e === 1 ? target : { x: from.x + (target.x - from.x) * e, y: from.y + (target.y - from.y) * e, k: from.k + (target.k - from.k) * e }),
+  );
+}
+
+/**
+ * Calls `step` with the eased progress from 0 to 1 over `ms`, once per frame; returns a function that stops it.
+ * Calls it once with 1 when `ms` is 0 or the system asks for reduced motion.
+ */
+export function tween(ms: number, step: (e: number) => void): () => void {
   const reduced = typeof matchMedia !== "undefined" && matchMedia("(prefers-reduced-motion: reduce)").matches;
   if (!ms || reduced) {
-    apply(target);
+    step(1);
     return () => {};
   }
   const start = performance.now();
@@ -99,18 +109,17 @@ export function animateTo(from: View, target: View, ms: number, apply: (view: Vi
     cancelAnimationFrame(frame);
     clearTimeout(landing);
   };
-  // Lands on the target even where frames are not being drawn.
+  // Lands at the end even where frames are not being drawn.
   const landing = setTimeout(() => {
     cancelAnimationFrame(frame);
-    apply(target);
+    step(1);
   }, ms + 120);
-  const step = (now: number) => {
+  const onFrame = (now: number) => {
     const u = Math.max(0, Math.min(1, (now - start) / ms));
-    const e = ease(u);
-    apply({ x: from.x + (target.x - from.x) * e, y: from.y + (target.y - from.y) * e, k: from.k + (target.k - from.k) * e });
-    if (u < 1) frame = requestAnimationFrame(step);
+    step(u < 1 ? ease(u) : 1);
+    if (u < 1) frame = requestAnimationFrame(onFrame);
     else clearTimeout(landing);
   };
-  frame = requestAnimationFrame(step);
+  frame = requestAnimationFrame(onFrame);
   return stop;
 }
