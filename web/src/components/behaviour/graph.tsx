@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { TreeNode } from "@/api/behaviour";
 import { cn } from "@/lib/utils";
-import { animateTo, centreOn, fit, fitBlock, zoomAt, type View } from "./camera";
+import { animateTo, bringIntoView, centreOn, fit, fitBlock, zoomAt, type View } from "./camera";
 import { elbow, layoutBlocks, planColumns } from "./layout";
 import { Minimap } from "./minimap";
 import { Legend, Marks } from "./marks";
-import { shortTitle } from "./tree";
+import { ancestorsOf, descendantsOf, shortTitle } from "./tree";
 
 // The graph: every node but the root as a box, one block per story, drawn with absolutely
 // placed divs and one svg inside a single container that carries the view.
@@ -23,11 +23,17 @@ export function Graph({
   nodes,
   waiting = NONE,
   chosenId = null,
+  onChoose,
+  reveal = null,
 }: {
   nodes: TreeNode[];
   /** How many questions wait on each node. */
   waiting?: ReadonlyMap<string, number>;
   chosenId?: string | null;
+  /** A box was pressed. */
+  onChoose?: (id: string) => void;
+  /** A request, new each time, to bring a chosen node into sight over `ms`. */
+  reveal?: { id: string; ms: number; n: number } | null;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const [area, setArea] = useState<{ w: number; h: number } | null>(null);
@@ -80,14 +86,36 @@ export function Graph({
   const fitAll = (ms: number) => {
     if (areaRef.current) moveTo(fit(boundsRef.current, areaRef.current), ms);
   };
+  const fitBoxAndBelow = (id: string) => {
+    const ids = [id, ...descendantsOf(nodes, id)];
+    const shown = ids.map((one) => boxes.get(one)).filter((box) => !!box);
+    if (!shown.length || !areaRef.current) return;
+    const x = Math.min(...shown.map((box) => box.x));
+    const y = Math.min(...shown.map((box) => box.y));
+    const right = Math.max(...shown.map((box) => box.x + box.w));
+    const bottom = Math.max(...shown.map((box) => box.y + box.h));
+    moveTo(fitBlock({ x, y, w: right - x, h: bottom - y }, areaRef.current), 260);
+  };
   const fitBlockOf = (id: string) => {
     const block = blocks.get(id);
     if (block && areaRef.current) moveTo(fitBlock(block, areaRef.current), 260);
   };
 
+  // A node chosen outside the graph is brought into sight by the rules of bringIntoView.
+  const handled = useRef<number | null>(null);
+  useEffect(() => {
+    const current = viewRef.current;
+    if (!reveal || !current || !areaRef.current || handled.current === reveal.n) return;
+    handled.current = reveal.n;
+    const box = boxes.get(reveal.id);
+    if (!box) return;
+    const target = bringIntoView(current, box, areaRef.current, { isStory: blocks.has(reveal.id), blockBounds: blocks.get(reveal.id) });
+    if (target) moveTo(target, reveal.ms);
+  }, [reveal, view, boxes, blocks, moveTo]);
+
   // Pan by dragging, zoom by wheel, pinch and the key F.
   const pointers = useRef(new Map<number, { x: number; y: number }>());
-  const gesture = useRef<{ x: number; y: number; view: View; moved: boolean; pinch?: { distance: number; view: View } } | null>(null);
+  const gesture = useRef<{ x: number; y: number; view: View; moved: boolean; id?: string; pinch?: { distance: number; view: View } } | null>(null);
   const local = (event: { clientX: number; clientY: number }) => {
     const at = ref.current!.getBoundingClientRect();
     return { x: event.clientX - at.left, y: event.clientY - at.top };
@@ -126,7 +154,8 @@ export function Graph({
       const [a, b] = [...pointers.current.values()];
       gesture.current = { x: 0, y: 0, view: current, moved: true, pinch: { distance: Math.hypot(a.x - b.x, a.y - b.y), view: current } };
     } else {
-      gesture.current = { ...local(event), view: current, moved: false };
+      const pressed = (event.target as HTMLElement).closest<HTMLElement>("[data-node]");
+      gesture.current = { ...local(event), view: current, moved: false, id: pressed?.dataset.node };
     }
   };
   const onPointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
@@ -146,8 +175,21 @@ export function Graph({
     g.moved = true;
     setView({ ...g.view, x: g.view.x + dx, y: g.view.y + dy });
   };
+  const lastPress = useRef<{ id: string; at: number } | null>(null);
   const onPointerEnd = (event: React.PointerEvent<HTMLDivElement>) => {
     pointers.current.delete(event.pointerId);
+    const g = gesture.current;
+    // A press that did not drag chooses its box; a second press on it soon after fits it with all under it.
+    if (event.type === "pointerup" && g?.id && !g.moved && !g.pinch && pointers.current.size === 0) {
+      const now = performance.now();
+      if (lastPress.current && lastPress.current.id === g.id && now - lastPress.current.at < 400) {
+        lastPress.current = null;
+        fitBoxAndBelow(g.id);
+      } else {
+        lastPress.current = { id: g.id, at: now };
+      }
+      if (g.id !== chosenId) onChoose?.(g.id);
+    }
     if (!pointers.current.size) gesture.current = null;
   };
   const goTo = (x: number, y: number) => {
@@ -159,12 +201,19 @@ export function Graph({
   const far = !!view && view.k < BARS_BELOW;
   const byId = useMemo(() => new Map(nodes.map((node) => [node.id, node])), [nodes]);
   const titles = useMemo(() => new Map(nodes.map((node) => [node.id, shortTitle(node)])), [nodes]);
+  // The lines from the chosen node up to its story are drawn in ink, above the rest.
+  const inkIds = useMemo(() => {
+    if (!chosenId) return new Set<string>();
+    const above = ancestorsOf(nodes, chosenId);
+    return new Set([chosenId, ...above.slice(0, -1)]);
+  }, [nodes, chosenId]);
   const lines: { id: string; d: string }[] = [];
   for (const [id, box] of boxes) {
     const parent = byId.get(id)?.parent_id;
     const above = parent ? boxes.get(parent) : undefined;
     if (above) lines.push({ id, d: elbow(above, box) });
   }
+  lines.sort((a, b) => Number(inkIds.has(a.id)) - Number(inkIds.has(b.id)));
   return (
     <div
       ref={ref}
@@ -187,7 +236,13 @@ export function Graph({
             height={Math.ceil(bounds.y + bounds.h + 400)}
           >
             {lines.map((line) => (
-              <path key={line.id} d={line.d} fill="none" stroke="currentColor" strokeWidth={1.5} />
+              <path
+                key={line.id}
+                d={line.d}
+                fill="none"
+                stroke={inkIds.has(line.id) ? "var(--foreground)" : "currentColor"}
+                strokeWidth={inkIds.has(line.id) ? 2 : 1.5}
+              />
             ))}
           </svg>
           {nodes.map((node) => {
@@ -200,7 +255,9 @@ export function Graph({
                 data-waiting={waiting.has(node.id) || undefined}
                 data-pass={node.needs_pass || undefined}
                 data-status={node.status}
+                data-chosen={node.id === chosenId || undefined}
                 className={cn(
+                  node.id === chosenId && "ring-2 ring-foreground ring-offset-1 ring-offset-background",
                   "absolute left-0 top-0 flex items-center gap-1.5 rounded-lg border bg-background px-[9px] text-[12.5px] leading-[1.28] group-data-[far]:rounded-[3px] group-data-[far]:border-transparent group-data-[far]:bg-muted-foreground/35",
                   node.status === "out_of_scope" && "border-dashed bg-transparent text-muted-foreground group-data-[far]:border group-data-[far]:border-dashed group-data-[far]:border-muted-foreground group-data-[far]:bg-transparent",
                   node.needs_pass && "border-dashed border-foreground group-data-[far]:border-transparent group-data-[far]:bg-foreground",

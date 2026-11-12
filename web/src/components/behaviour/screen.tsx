@@ -1,13 +1,14 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "@tanstack/react-router";
 import { loadOpenQuestions, loadTree } from "@/api/behaviour";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { featureNames } from "@/components/project/items";
 import { useHome } from "@/lib/use-home";
 import { useReloading } from "@/lib/reloading";
+import { Details } from "./details";
 import { Folders } from "./folders";
 import { Graph } from "./graph";
-import { childrenOf } from "./tree";
+import { ancestorsOf, childrenOf } from "./tree";
 
 // A feature's Behaviour screen: folders on the left, the graph in the middle and
 // the details of the chosen node on the right. This owns the screen's state.
@@ -49,6 +50,48 @@ export function BehaviourScreen({
       if (!after.delete(id)) after.add(id);
       return after;
     });
+  // One chosen node for all three parts; a choice made outside the graph also brings it into sight.
+  const [chosen, setChosen] = useState<string | null>(null);
+  const [reveal, setReveal] = useState<{ id: string; ms: number; n: number } | null>(null);
+  const revealCount = useRef(0);
+  const choose = (id: string, from: "folders" | "graph" | "search" | "details" | "keys") => {
+    if (!nodes) return;
+    setChosen(id);
+    const above = ancestorsOf(nodes, id);
+    setOpen((before) => (above.every((one) => before.has(one)) ? before : new Set([...before, ...above])));
+    if (from !== "graph") setReveal({ id, ms: from === "keys" ? 0 : 240, n: ++revealCount.current });
+  };
+  const chooseRef = useRef(choose);
+  chooseRef.current = choose;
+  // The arrow keys choose, unless a field has focus or ⌘, Ctrl or Alt is held.
+  useEffect(() => {
+    if (!nodes) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (!event.key.startsWith("Arrow") || event.metaKey || event.ctrlKey || event.altKey) return;
+      const target = event.target as HTMLElement | null;
+      if (target && (["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName) || target.isContentEditable)) return;
+      const children = childrenOf(nodes);
+      const root = (children.get(null) ?? [])[0];
+      if (!root) return;
+      const node = chosen ? nodes.find((one) => one.id === chosen) : undefined;
+      let to: string | undefined;
+      if (!node) to = (children.get(root.id) ?? [])[0]?.id;
+      else {
+        const brothers = children.get(node.parent_id ?? null) ?? [];
+        const at = brothers.findIndex((one) => one.id === node.id);
+        if (event.key === "ArrowLeft") to = node.parent_id && node.parent_id !== root.id ? node.parent_id : undefined;
+        else if (event.key === "ArrowRight") to = (children.get(node.id) ?? [])[0]?.id;
+        else if (event.key === "ArrowUp") to = node.parent_id ? brothers[at - 1]?.id : undefined;
+        else if (event.key === "ArrowDown") to = node.parent_id ? brothers[at + 1]?.id : undefined;
+      }
+      if (!to) return;
+      event.preventDefault();
+      chooseRef.current(to, "keys");
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [nodes, chosen]);
+  const chosenNode = useMemo(() => nodes?.find((node) => node.id === chosen) ?? null, [nodes, chosen]);
   const stories = useMemo(() => {
     if (!nodes) return 0;
     const root = (childrenOf(nodes).get(null) ?? [])[0];
@@ -88,12 +131,12 @@ export function BehaviourScreen({
               <p className="px-4 pb-1.5 pt-3 text-[11.5px] text-muted-foreground">
                 {plural(stories, "story", "stories")} · {plural(nodes.length, "node", "nodes")}
               </p>
-              <Folders nodes={nodes} open={open} waiting={waiting} onToggle={toggle} />
+              <Folders nodes={nodes} open={open} waiting={waiting} onToggle={toggle} chosenId={chosen} onChoose={(id) => choose(id, "folders")} />
             </aside>
             <main aria-label="Tree as a graph" className="min-w-0">
-              <Graph nodes={nodes} waiting={waiting} />
+              <Graph nodes={nodes} waiting={waiting} chosenId={chosen} onChoose={(id) => choose(id, "graph")} reveal={reveal} />
             </main>
-            <section aria-label="Details" className="border-l" />
+            <Details node={chosenNode} />
           </>
         )}
       </div>
