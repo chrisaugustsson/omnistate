@@ -73,6 +73,19 @@ describe("layoutBlocks on the test tree in a 748 x 844 graph area", () => {
     expect(misplaced).toEqual([]);
   });
 
+  // US-232: which story stands in which column is the same before and after any fold.
+  test("folding every story leaves each story's box in the column it stood in", () => {
+    const stories = nodes.filter((n) => n.parent_id === "feature").map((n) => n.id);
+    const folded = layoutBlocks(nodes, {
+      shown: null,
+      folded: new Set(stories),
+      columns: planColumns(nodes, null, { w: 748, h: 844 }),
+    });
+
+    expect(folded.boxes.size).toBe(13);
+    expect(stories.map((id) => folded.boxes.get(id)!.x)).toEqual(stories.map((id) => layout.boxes.get(id)!.x));
+  });
+
   test("on opening the whole drawing fits inside the graph area at a zoom between 13% and 15%", () => {
     const view = fit(layout.bounds, { w: 748, h: 844 });
 

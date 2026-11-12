@@ -356,3 +356,44 @@ describe("a box's status and marks", () => {
     expect(box(container, SHARES_LINK).querySelector('[data-mark="default"]')).toBeNull();
   });
 });
+
+// US-232: a box with nodes under it carries a pill at its right edge, "−" while
+// they are shown and "+N" for the N nodes a fold hides, with a signal dot when
+// one of the hidden nodes has a waiting question. Under a filter only the nodes
+// it shows count, and a box with none of its children shown has no pill.
+describe("the fold pills", () => {
+  const STORY = "player-adds-friend";
+  const SEARCHES = "player-adds-friend/player-searches-for-player";
+  const SHARES_LINK = "player-adds-friend/player-shares-invite-link";
+  const NO_PLAYER = `${SEARCHES}/no-player-found`;
+  const pill = (container: HTMLElement, id: string) => container.querySelector(`[data-node="${id}"] [data-fold]`);
+  const dot = (container: HTMLElement, id: string) => container.querySelector(`[data-node="${id}"] [data-fold] [data-fold-dot]`);
+
+  test("a folded box reads +N for every node under it, with a dot only when a node under it has a waiting question", () => {
+    const waiting = new Map([[SEARCHES, 1]]);
+    const { container, rerender } = render(<Graph nodes={testTree()} waiting={waiting} />);
+    expect(pill(container, STORY)?.textContent).toBe("−");
+    expect(pill(container, NO_PLAYER)).toBeNull();
+
+    rerender(<Graph nodes={testTree()} waiting={waiting} folded={new Set([STORY])} />);
+    expect(pill(container, STORY)?.textContent).toBe("+32");
+    expect(dot(container, STORY)).not.toBeNull();
+    expect(container.querySelectorAll("[data-node]")).toHaveLength(322 - 32);
+
+    // The question waits on the searches box itself, not on a node its fold hides.
+    rerender(<Graph nodes={testTree()} waiting={waiting} folded={new Set([SEARCHES])} />);
+    expect(pill(container, SEARCHES)?.textContent).toBe("+7");
+    expect(dot(container, SEARCHES)).toBeNull();
+    expect(pill(container, STORY)?.textContent).toBe("−");
+  });
+
+  test("under a filter a fold counts only the nodes it shows, and a box with none of its children shown has no pill", () => {
+    const shown = new Set(["feature", STORY, SEARCHES, NO_PLAYER, `${SEARCHES}/request-sent`, SHARES_LINK]);
+    const { container, rerender } = render(<Graph nodes={testTree()} shown={shown} />);
+    expect(pill(container, SEARCHES)?.textContent).toBe("−");
+    expect(pill(container, SHARES_LINK)).toBeNull();
+
+    rerender(<Graph nodes={testTree()} shown={shown} folded={new Set([STORY])} />);
+    expect(pill(container, STORY)?.textContent).toBe("+4");
+  });
+});

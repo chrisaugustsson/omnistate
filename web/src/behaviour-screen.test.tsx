@@ -6,7 +6,7 @@
 // The app is rendered with its own router on a memory history and the
 // browser's fetch is replaced by a fake of the API.
 import { RouterProvider, createMemoryHistory } from "@tanstack/react-router";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { getRouter } from "./router";
 import { testTree } from "./testing/behaviour-test-tree";
@@ -575,6 +575,154 @@ describe("choosing a node in the Behaviour screen", () => {
     expect(detailsTitle()).toBe("As a player, I want to create an account and get set up, so that my practice is saved");
     expect(fireEvent.keyDown(document.body, { key: "ArrowLeft" })).toBe(true);
     field.remove();
+  });
+
+  // US-232: folds belong to the graph. A fold pill hides what lies under its box
+  // and the pressed box stays where it is on screen; choosing a node a fold
+  // hides undoes that fold. While the chosen node is hidden no box carries the
+  // chosen look and no line toward it is inked.
+  describe("folding the graph", () => {
+    const FRIEND_STORY = "player-adds-friend";
+    const NO_PLAYER = `${SEARCHES}/no-player-found`;
+    const inkLines = () => document.querySelectorAll('main svg path[stroke="var(--foreground)"]');
+    const boxCount = () => document.querySelectorAll("main [data-node]").length;
+    const pillOf = (id: string) => document.querySelector<HTMLElement>(`main [data-node="${id}"] [data-fold]`)!;
+    const foldButton = () => screen.getByRole("button", { name: /^(Fold|Unfold) all stories$/ });
+
+    /** Presses a fold pill the way a pointer does: down, up and click. */
+    function pressPill(id: string) {
+      press(pillOf(id));
+      fireEvent.click(pillOf(id));
+    }
+
+    test("folding the box above the chosen node takes away its chosen look and ink lines, and unfolding brings them back", async () => {
+      fakeApi({ status: 200, body: { nodes: testTree() } });
+      renderAt(BEHAVIOUR_PATH);
+      await folders();
+      await openingView();
+      press(boxOf(NO_PLAYER));
+
+      pressPill(SEARCHES);
+
+      expect(pillOf(SEARCHES).textContent).toBe("+7");
+      expect(document.querySelectorAll("main [data-chosen]")).toHaveLength(0);
+      expect(inkLines()).toHaveLength(0);
+      expect(detailsTitle()).toBe("No username matches the search");
+      expect(rowOf(NO_PLAYER)!.getAttribute("aria-current")).toBe("true");
+
+      pressPill(SEARCHES);
+
+      expect(boxOf(NO_PLAYER).hasAttribute("data-chosen")).toBe(true);
+      expect(inkLines()).toHaveLength(2);
+    });
+
+    test("pressing the row of a folded box that a fold above hides undoes only the fold above", async () => {
+      fakeApi({ status: 200, body: { nodes: testTree() } });
+      renderAt(BEHAVIOUR_PATH);
+      const aside = await folders();
+      await openingView();
+      // Opening a folder changes no box.
+      fireEvent.click(within(rowOf(FRIEND_STORY)!).getByRole("button"));
+      expect(boxCount()).toBe(322);
+      const rowsBefore = rowTexts(aside);
+
+      pressPill(SEARCHES);
+      pressPill(FRIEND_STORY);
+
+      // Folding changes no row in the folders.
+      expect(rowTexts(aside)).toEqual(rowsBefore);
+      expect(pillOf(FRIEND_STORY).textContent).toBe("+32");
+      expect(boxCount()).toBe(322 - 32);
+
+      fireEvent.click(rowOf(SEARCHES)!);
+
+      expect(pillOf(FRIEND_STORY).textContent).toBe("−");
+      expect(pillOf(SEARCHES).textContent).toBe("+7");
+      expect(boxCount()).toBe(322 - 7);
+      expect(boxOf(SEARCHES).hasAttribute("data-chosen")).toBe(true);
+    });
+
+    test("the pressed box stays at the same place on screen in every frame of the fold", async () => {
+      fakeApi({ status: 200, body: { nodes: testTree() } });
+      renderAt(BEHAVIOUR_PATH);
+      await folders();
+      await openingView();
+      const onScreen = () => {
+        const view = currentView();
+        const box = rectOf(boxOf(FRIEND_STORY));
+        return { x: view.x + box.x * view.k, y: view.y + box.y * view.k };
+      };
+      const inDrawing = rectOf(boxOf(FRIEND_STORY));
+      const before = onScreen();
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "requestAnimationFrame", "cancelAnimationFrame", "performance"] });
+      try {
+        pressPill(FRIEND_STORY);
+        const frames: { x: number; y: number }[] = [onScreen()];
+        for (let t = 0; t < 400; t += 16) {
+          act(() => vi.advanceTimersByTime(16));
+          frames.push(onScreen());
+        }
+
+        // The box moves in the drawing, so the view has to follow it.
+        expect(rectOf(boxOf(FRIEND_STORY)).y).not.toBeCloseTo(inDrawing.y, 0);
+        const off = frames.map((at) => Math.max(Math.abs(at.x - before.x), Math.abs(at.y - before.y)));
+        expect(Math.max(...off)).toBeLessThan(0.5);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    test("Fold all stories leaves the 13 stories and eases to fit them, and Unfold all stories brings back all 322 and the whole drawing", async () => {
+      fakeApi({ status: 200, body: { nodes: testTree() } });
+      renderAt(BEHAVIOUR_PATH);
+      await folders();
+      const opening = await openingView();
+
+      fireEvent.click(screen.getByRole("button", { name: "Fold all stories" }));
+
+      expect(boxCount()).toBe(13);
+      expect(foldButton().textContent).toBe("Unfold all stories");
+      // An eased move has not started yet; a jump would have moved the view already.
+      expect(currentView()).toEqual(opening);
+      await waitFor(() => expect(currentView().k).toBeGreaterThan(opening.k));
+      const view = await landed();
+      for (const box of document.querySelectorAll<HTMLElement>("main [data-node]")) {
+        const rect = rectOf(box);
+        expect(view.x + rect.x * view.k).toBeGreaterThanOrEqual(0);
+        expect(view.y + rect.y * view.k).toBeGreaterThanOrEqual(0);
+        expect(view.x + (rect.x + rect.w) * view.k).toBeLessThanOrEqual(AREA.w);
+        expect(view.y + (rect.y + rect.h) * view.k).toBeLessThanOrEqual(AREA.h);
+      }
+
+      fireEvent.click(foldButton());
+
+      expect(boxCount()).toBe(322);
+      expect(foldButton().textContent).toBe("Fold all stories");
+      await waitFor(() => expect(currentView().k).toBeLessThan(view.k));
+      const whole = await landed();
+      expect(whole.k).toBeCloseTo(opening.k, 6);
+      expect(whole.x).toBeCloseTo(opening.x, 6);
+      expect(whole.y).toBeCloseTo(opening.y, 6);
+    });
+
+    test("the fold button reads Unfold all stories exactly while every story is folded, and a pill press chooses nothing", async () => {
+      fakeApi({ status: 200, body: { nodes: testTree() } });
+      renderAt(BEHAVIOUR_PATH);
+      await folders();
+      await openingView();
+      fireEvent.click(screen.getByRole("button", { name: "Fold all stories" }));
+
+      pressPill(FRIEND_STORY);
+
+      expect(foldButton().textContent).toBe("Fold all stories");
+      expect(boxCount()).toBe(13 + 32);
+      expect(document.querySelectorAll("main [data-chosen]")).toHaveLength(0);
+      expect(detailsTitle()).toBeNull();
+
+      pressPill(FRIEND_STORY);
+
+      expect(foldButton().textContent).toBe("Unfold all stories");
+    });
   });
 });
 
