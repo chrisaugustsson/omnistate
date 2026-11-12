@@ -1,4 +1,4 @@
-//! US-201: `omni behaviour add` and `read`, tested as the built binary against
+//! US-201 and US-202: `omni behaviour add`, `read` and `edit`, tested as the built binary against
 //! a mock HTTP server. The API's own rules (the root, slugs, levels, the
 //! chain) are in crates/omni-api/tests/behaviour.rs; these tests pin what the
 //! CLI adds on top: naming a node by its path or by `.` for the root, which
@@ -13,6 +13,11 @@
 //!   posted.
 //! - `omni behaviour read .` reads the root and prints its empty path as `.`.
 //! - `behavior` is a second spelling of the command word.
+//! - `omni behaviour edit <node>` sends a `PATCH` to the node the list gives
+//!   (by uuid or path) with the `version` the list gives as
+//!   `expected_version` and the fields given; `--status out-of-scope` is sent
+//!   as `out_of_scope`, and `--behavior` is `--behaviour`. It prints
+//!   `<path>  <status>` from the answer.
 
 mod common;
 
@@ -56,17 +61,21 @@ fn node(id: &str, parent: Option<&str>, path: &str, level: i64, title: &str) -> 
 }
 
 /// The feature's tree: the root and two stories, the one the tests add
-/// under second, so a resolver that takes the first story is caught.
+/// under second, so a resolver that takes the first story is caught. That
+/// story was written twice, so its version is 3.
 fn listed() -> Value {
+    let mut story = summary(STORY, Some(ROOT), "customer-buys-product", 1, "Buys");
+    story["version"] = json!(3);
     json!({ "nodes": [
         summary(ROOT, None, "", 0, "Checkout"),
         summary(OTHER, Some(ROOT), "customer-returns-product", 1, "Returns"),
-        summary(STORY, Some(ROOT), "customer-buys-product", 1, "Buys")
+        story
     ] })
 }
 
-/// An API that lists `listed()`, reads the root, and answers a create with a
-/// situation under the story.
+/// An API that lists `listed()`, reads the root, answers a create with a
+/// situation under the story, and answers an edit of the story with the
+/// story at the status the request sent.
 fn mock() -> MockServer {
     MockServer::start(|request| {
         let base = tree_path();
@@ -86,6 +95,13 @@ fn mock() -> MockServer {
                     "User presses the buy button"
                 ) }),
             ),
+            ("PATCH", path) if path == format!("{base}/nodes/{STORY}") => {
+                let sent: Value = serde_json::from_slice(&request.body).expect("a JSON body");
+                let mut story = node(STORY, Some(ROOT), "customer-buys-product", 1, "Buys");
+                story["status"] = sent["status"].clone();
+                story["version"] = json!(4);
+                Reply::json(200, &json!({ "node": story }))
+            }
             _ => Reply::json(404, &json!({ "error": "not_found" })),
         }
     })
@@ -106,10 +122,14 @@ fn run(home: &Scratch, args: &[&str]) -> Out {
 }
 
 fn posts(server: &MockServer) -> Vec<Value> {
+    sent(server, "POST")
+}
+
+fn sent(server: &MockServer, method: &str) -> Vec<Value> {
     server
         .requests()
         .into_iter()
-        .filter(|r| r.method == "POST")
+        .filter(|r| r.method == method)
         .map(|r| serde_json::from_slice(&r.body).expect("the request body is JSON"))
         .collect()
 }
@@ -192,4 +212,84 @@ fn behavior_is_the_same_command_word() {
 
     assert_eq!(out.code, 0, "stderr: {}", out.stderr);
     assert!(out.stdout.contains("Checkout"), "{:?}", out.stdout);
+}
+
+#[test]
+fn edit_by_id_sends_the_listed_version_with_the_new_text_and_prints_path_and_status() {
+    let server = mock();
+    let home = logged_in(&server);
+
+    let out = run(
+        &home,
+        &[
+            "behaviour",
+            "edit",
+            STORY,
+            "--situation",
+            "The user is on a product page and presses buy.",
+            "--behaviour",
+            "The product is added to the cart and a confirmation appears.",
+            "--status",
+            "done",
+        ],
+    );
+
+    assert_eq!(out.code, 0, "stderr: {}", out.stderr);
+    assert_eq!(out.stdout, "customer-buys-product  done\n");
+    assert_eq!(
+        sent(&server, "PATCH"),
+        vec![json!({
+            "expected_version": 3,
+            "situation": "The user is on a product page and presses buy.",
+            "behaviour": "The product is added to the cart and a confirmation appears.",
+            "status": "done",
+        })]
+    );
+}
+
+#[test]
+fn edit_status_out_of_scope_sends_and_prints_out_of_scope() {
+    let server = mock();
+    let home = logged_in(&server);
+
+    let out = run(
+        &home,
+        &[
+            "behaviour",
+            "edit",
+            "customer-buys-product",
+            "--status",
+            "out-of-scope",
+        ],
+    );
+
+    assert_eq!(out.code, 0, "stderr: {}", out.stderr);
+    assert_eq!(out.stdout, "customer-buys-product  out_of_scope\n");
+    assert_eq!(
+        sent(&server, "PATCH"),
+        vec![json!({ "expected_version": 3, "status": "out_of_scope" })]
+    );
+}
+
+#[test]
+fn behavior_is_the_same_flag_as_behaviour() {
+    let server = mock();
+    let home = logged_in(&server);
+
+    let out = run(
+        &home,
+        &[
+            "behaviour",
+            "edit",
+            "customer-buys-product",
+            "--behavior",
+            "A confirmation appears.",
+        ],
+    );
+
+    assert_eq!(out.code, 0, "stderr: {}", out.stderr);
+    assert_eq!(
+        sent(&server, "PATCH"),
+        vec![json!({ "expected_version": 3, "behaviour": "A confirmation appears." })]
+    );
 }

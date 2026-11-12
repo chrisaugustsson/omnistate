@@ -1,4 +1,4 @@
-//! US-201: the behaviour tree of a feature, through the API. Run with
+//! US-201 and US-202: the behaviour tree of a feature, through the API. Run with
 //! `--features stack-tests` in the Compose test container, which reaches
 //! Postgres at `postgres:5432`.
 //!
@@ -29,6 +29,15 @@
 //!   `situation` and `behaviour` text.
 //! - Each created node, the root included, emits `behaviour.node_created`
 //!   with `{feature_id, node_id, parent_id, path}`.
+//! - `PATCH /nodes/{id}` with `{expected_version, title?, slug?, summary?,
+//!   situation?, behaviour?, status?}` overwrites the fields given, adds 1 to
+//!   `version` and emits `behaviour.node_changed` with `{feature_id, node_id,
+//!   path, fields}`, the fields in schema order. The body's shape is checked
+//!   first (422 `no_changes`, `invalid_status`), then the version (409
+//!   `{"error": "conflict", "current_version": n}`), then what depends on the
+//!   stored node (422 `invalid_slug` on the root, 409 `slug_taken`). Children
+//!   of an `out_of_scope` node keep their status. A new slug moves the paths
+//!   below and keeps the ids. There is no DELETE (405).
 
 mod common;
 
@@ -704,5 +713,365 @@ fn the_first_add_announces_the_root_and_the_node_and_a_later_add_announces_its_p
                 "path": "customer-buys-product/user-presses-the-buy-button",
             }),
         ]
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Rewriting a node and setting its status (US-202)
+// ---------------------------------------------------------------------------
+
+fn patch_node(
+    f: &Fixture,
+    project: &str,
+    feature: &str,
+    auth: Auth,
+    node: &str,
+    body: &Value,
+) -> Response {
+    call(
+        f,
+        "PATCH",
+        &format!("{}/nodes/{node}", tree_path(f, project, feature)),
+        auth,
+        Some(body),
+    )
+}
+
+/// Edits a node as the agent; returns the `node` of the answer.
+fn edit(f: &Fixture, project: &str, feature: &str, node: &str, body: &Value) -> Value {
+    must(
+        patch_node(f, project, feature, Auth::Agent, node, body),
+        200,
+        "edit a node",
+    )["node"]
+        .clone()
+}
+
+fn read_node(f: &Fixture, project: &str, feature: &str, node: &str) -> Value {
+    must(read(f, project, feature, node), 200, "read the node")["node"].clone()
+}
+
+#[test]
+fn an_edit_overwrites_the_text_adds_1_to_the_version_and_announces_the_fields_in_schema_order() {
+    let (f, _) = ready();
+    let (project, feature) = new_feature(f, &unique("Checkout"));
+    let story = add(
+        f,
+        &project,
+        &feature,
+        &json!({ "title": STORY, "slug": "customer-buys-product", "summary": "Buying." }),
+    );
+
+    edit(
+        f,
+        &project,
+        &feature,
+        &id_of(&story),
+        &json!({
+            "status": "done",
+            "behaviour": "The product is added to the cart and a confirmation appears.",
+            "situation": "The user is on a product page and presses buy.",
+            "expected_version": 1,
+        }),
+    );
+
+    let node = read_node(f, &project, &feature, &id_of(&story));
+    assert_eq!(
+        node["situation"],
+        "The user is on a product page and presses buy."
+    );
+    assert_eq!(
+        node["behaviour"],
+        "The product is added to the cart and a confirmation appears."
+    );
+    assert_eq!(node["status"], "done");
+    assert_eq!(node["version"], 2);
+    assert_eq!(node["title"], STORY);
+    assert_eq!(node["summary"], "Buying.");
+    assert_eq!(
+        events_of(&project, "behaviour.node_changed"),
+        vec![json!({
+            "feature_id": feature,
+            "node_id": story["id"],
+            "path": "customer-buys-product",
+            "fields": ["situation", "behaviour", "status"],
+        })]
+    );
+}
+
+#[test]
+fn a_stale_version_is_409_with_the_current_version_and_changes_nothing() {
+    let (f, _) = ready();
+    let (project, feature) = new_feature(f, &unique("Checkout"));
+    let story = add(f, &project, &feature, &json!({ "title": STORY }));
+    edit(
+        f,
+        &project,
+        &feature,
+        &id_of(&story),
+        &json!({ "expected_version": 1, "status": "done" }),
+    );
+
+    let response = patch_node(
+        f,
+        &project,
+        &feature,
+        Auth::Agent,
+        &id_of(&story),
+        &json!({ "expected_version": 1, "title": "Another title", "status": "open" }),
+    );
+
+    assert_eq!(response.status, 409, "body: {}", response.text());
+    assert_eq!(
+        response.json(),
+        json!({ "error": "conflict", "current_version": 2 })
+    );
+    let node = read_node(f, &project, &feature, &id_of(&story));
+    assert_eq!(node["title"], STORY);
+    assert_eq!(node["status"], "done");
+    assert_eq!(node["version"], 2);
+    assert_eq!(events_of(&project, "behaviour.node_changed").len(), 1);
+}
+
+#[test]
+fn no_change_or_the_status_stale_is_422_even_with_a_stale_version() {
+    let (f, _) = ready();
+    let (project, feature) = new_feature(f, &unique("Checkout"));
+    let story = add(f, &project, &feature, &json!({ "title": STORY }));
+    edit(
+        f,
+        &project,
+        &feature,
+        &id_of(&story),
+        &json!({ "expected_version": 1, "status": "done" }),
+    );
+
+    let empty = patch_node(
+        f,
+        &project,
+        &feature,
+        Auth::Agent,
+        &id_of(&story),
+        &json!({ "expected_version": 1 }),
+    );
+    let stale = patch_node(
+        f,
+        &project,
+        &feature,
+        Auth::Agent,
+        &id_of(&story),
+        &json!({ "expected_version": 1, "status": "stale" }),
+    );
+
+    assert_error(&empty, 422, "no_changes");
+    assert_error(&stale, 422, "invalid_status");
+    let node = read_node(f, &project, &feature, &id_of(&story));
+    assert_eq!(node["status"], "done");
+    assert_eq!(node["version"], 2);
+}
+
+#[test]
+fn a_slug_on_the_root_is_422_and_with_a_stale_version_409() {
+    let (f, _) = ready();
+    let (project, feature) = new_feature(f, &unique("Checkout"));
+    let story = add(f, &project, &feature, &json!({ "title": STORY }));
+    let root = story["parent_id"].as_str().expect("a root").to_string();
+
+    let current = patch_node(
+        f,
+        &project,
+        &feature,
+        Auth::Agent,
+        &root,
+        &json!({ "expected_version": 1, "slug": "checkout" }),
+    );
+    let stale = patch_node(
+        f,
+        &project,
+        &feature,
+        Auth::Agent,
+        &root,
+        &json!({ "expected_version": 2, "slug": "checkout" }),
+    );
+
+    assert_error(&current, 422, "invalid_slug");
+    assert_eq!(stale.status, 409, "body: {}", stale.text());
+    assert_eq!(
+        stale.json(),
+        json!({ "error": "conflict", "current_version": 1 })
+    );
+    let node = read_node(f, &project, &feature, &root);
+    assert_eq!(node["path"], "");
+    assert_eq!(node["version"], 1);
+}
+
+#[test]
+fn out_of_scope_leaves_the_node_and_its_children_in_the_tree_with_their_own_status() {
+    let (f, _) = ready();
+    let (project, feature) = new_feature(f, &unique("Checkout"));
+    let story = add(
+        f,
+        &project,
+        &feature,
+        &json!({ "title": STORY, "slug": "buy" }),
+    );
+    let pressed = add(
+        f,
+        &project,
+        &feature,
+        &json!({ "title": "Press", "parent_id": id_of(&story) }),
+    );
+    add(
+        f,
+        &project,
+        &feature,
+        &json!({ "title": "Sold out", "parent_id": id_of(&story) }),
+    );
+    edit(
+        f,
+        &project,
+        &feature,
+        &id_of(&pressed),
+        &json!({ "expected_version": 1, "status": "done" }),
+    );
+
+    edit(
+        f,
+        &project,
+        &feature,
+        &id_of(&story),
+        &json!({ "expected_version": 1, "status": "out_of_scope" }),
+    );
+
+    let statuses: Vec<(Value, Value)> = listed(f, &project, &feature)
+        .iter()
+        .map(|node| (node["path"].clone(), node["status"].clone()))
+        .collect();
+    assert_eq!(
+        statuses,
+        vec![
+            (json!(""), json!("open")),
+            (json!("buy"), json!("out_of_scope")),
+            (json!("buy/press"), json!("done")),
+            (json!("buy/sold-out"), json!("open")),
+        ]
+    );
+    assert_eq!(
+        read_node(f, &project, &feature, &id_of(&pressed))["status"],
+        "done"
+    );
+}
+
+#[test]
+fn a_new_slug_gives_the_node_and_those_below_a_new_path_and_keeps_the_ids() {
+    let (f, _) = ready();
+    let (project, feature) = new_feature(f, &unique("Checkout"));
+    let story = add(
+        f,
+        &project,
+        &feature,
+        &json!({ "title": STORY, "slug": "buy" }),
+    );
+    let pressed = add(
+        f,
+        &project,
+        &feature,
+        &json!({ "title": "Press", "parent_id": id_of(&story) }),
+    );
+
+    let renamed = edit(
+        f,
+        &project,
+        &feature,
+        &id_of(&story),
+        &json!({ "expected_version": 1, "slug": "customer-buys-product" }),
+    );
+
+    assert_eq!(renamed["id"], story["id"]);
+    assert_eq!(renamed["path"], "customer-buys-product");
+    let below = read_node(f, &project, &feature, &id_of(&pressed));
+    assert_eq!(below["path"], "customer-buys-product/press");
+}
+
+#[test]
+fn a_new_slug_a_sibling_has_is_409_slug_taken_and_changes_nothing() {
+    let (f, _) = ready();
+    let (project, feature) = new_feature(f, &unique("Checkout"));
+    add(
+        f,
+        &project,
+        &feature,
+        &json!({ "title": STORY, "slug": "buy" }),
+    );
+    let returns = add(
+        f,
+        &project,
+        &feature,
+        &json!({ "title": "Return a product", "slug": "return" }),
+    );
+
+    let response = patch_node(
+        f,
+        &project,
+        &feature,
+        Auth::Agent,
+        &id_of(&returns),
+        &json!({ "expected_version": 1, "slug": "buy" }),
+    );
+
+    assert_error(&response, 409, "slug_taken");
+    let node = read_node(f, &project, &feature, &id_of(&returns));
+    assert_eq!(node["path"], "return");
+    assert_eq!(node["version"], 1);
+}
+
+#[test]
+fn an_edit_with_an_api_key_without_a_run_is_400_identity_required_and_changes_nothing() {
+    let (f, _) = ready();
+    let (project, feature) = new_feature(f, &unique("Checkout"));
+    let story = add(f, &project, &feature, &json!({ "title": STORY }));
+
+    let response = patch_node(
+        f,
+        &project,
+        &feature,
+        Auth::AgentWithoutRun,
+        &id_of(&story),
+        &json!({ "expected_version": 1, "status": "done" }),
+    );
+
+    assert_error(&response, 400, "identity_required");
+    let node = read_node(f, &project, &feature, &id_of(&story));
+    assert_eq!(node["status"], "open");
+    assert_eq!(node["version"], 1);
+}
+
+#[test]
+fn delete_on_a_node_is_405_and_the_node_stays() {
+    let (f, _) = ready();
+    let (project, feature) = new_feature(f, &unique("Checkout"));
+    let story = add(
+        f,
+        &project,
+        &feature,
+        &json!({ "title": STORY, "slug": "buy" }),
+    );
+
+    let response = call(
+        f,
+        "DELETE",
+        &format!(
+            "{}/nodes/{}",
+            tree_path(f, &project, &feature),
+            id_of(&story)
+        ),
+        Auth::Agent,
+        None,
+    );
+
+    assert_eq!(response.status, 405, "body: {}", response.text());
+    assert_eq!(
+        paths_of(&listed(f, &project, &feature)),
+        vec![json!(""), json!("buy")]
     );
 }
