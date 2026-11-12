@@ -722,6 +722,15 @@ describe("choosing a node in the Behaviour screen", () => {
       pressPill(FRIEND_STORY);
 
       expect(foldButton().textContent).toBe("Unfold all stories");
+
+      // P40: an inner fold stays when the fold above it is opened again.
+      fireEvent.click(foldButton());
+      pressPill(SEARCHES);
+      pressPill(FRIEND_STORY);
+      pressPill(FRIEND_STORY);
+
+      expect(pillOf(SEARCHES).textContent).toBe("+7");
+      expect(boxCount()).toBe(322 - 7);
     });
   });
 });
