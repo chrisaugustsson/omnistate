@@ -1,4 +1,4 @@
-//! `omni behaviour add` and `read`: the behaviour tree of a feature. A node is
+//! `omni behaviour add`, `read` and `edit`: the behaviour tree of a feature. A node is
 //! named by its uuid, by its path (the slugs from the story down, joined by
 //! `/`) or by `.` for the root. The project and the feature are found as for
 //! `omni story add`.
@@ -12,6 +12,8 @@ use crate::projects::{creation_feature, is_uuid, project_id};
 const ADD_USAGE: &str =
     "omni behaviour add --title <t> [--slug <s>] [--summary <text>] [--parent <node>]";
 const READ_USAGE: &str = "omni behaviour read <node>";
+const EDIT_USAGE: &str = "omni behaviour edit <node> [--title <t>] [--slug <s>] [--summary <text>] \
+     [--situation <text>] [--behaviour <text>] [--status open|done|out-of-scope]";
 
 fn unreadable() -> CliError {
     CliError::new(
@@ -138,5 +140,56 @@ pub fn read(args: &Args, node: Option<&str>) -> Result<()> {
     if let Some(summary) = node.str_at("summary").filter(|s| !s.is_empty()) {
         say(summary);
     }
+    Ok(())
+}
+
+/// `omni behaviour edit <node> [--title <t>] [--slug <s>] [--summary <text>]
+/// [--situation <text>] [--behaviour <text>] [--status open|done|out-of-scope]`
+pub fn edit(args: &Args, node: Option<&str>) -> Result<()> {
+    let Some(given) = node else {
+        bail!("this command needs a node: {EDIT_USAGE}");
+    };
+    let mut fields: Vec<String> = Vec::new();
+    for (name, value) in [
+        ("title", &args.title),
+        ("slug", &args.slug),
+        ("summary", &args.summary),
+        ("situation", &args.situation),
+        ("behaviour", &args.behaviour),
+    ] {
+        if let Some(value) = value {
+            fields.push(format!("\"{name}\":{}", quote(value)));
+        }
+    }
+    if let Some(status) = &args.status {
+        let status = match status.as_str() {
+            "open" | "done" => status.as_str(),
+            "out-of-scope" | "out_of_scope" => "out_of_scope",
+            other => bail!("{other:?} is not a status: use open, done or out-of-scope"),
+        };
+        fields.push(format!("\"status\":{}", quote(status)));
+    }
+    if fields.is_empty() {
+        bail!("this command needs something to change: {EDIT_USAGE}");
+    }
+    let agent = agent(args)?;
+    let base = behaviour_path(args, &agent)?;
+    let (id, version) = node_ref(&agent, &base, given)?;
+    let body = format!("{{\"expected_version\":{version},{}}}", fields.join(","));
+    let response =
+        agent.request_conflicting("PATCH", &format!("{base}/nodes/{id}"), body.as_bytes())?;
+    let text = response.text();
+    if args.json {
+        say(text.trim_end());
+        return Ok(());
+    }
+    let answer = Value::parse(&text).map_err(|_| unreadable())?;
+    let node = answer.get("node").unwrap_or(&answer);
+    let path = match node.str_at("path") {
+        Some("") => ".",
+        Some(path) => path,
+        None => bail!("the server's answer has no node path; try again"),
+    };
+    say(&format!("{path}  {}", node.str_at("status").unwrap_or("?")));
     Ok(())
 }

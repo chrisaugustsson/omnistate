@@ -2,13 +2,15 @@
 //! the feature, its children are user stories and the nodes below them are
 //! situations. The level and the path of a node are worked out from the
 //! parents and the slugs, never stored. Every write stores who made it and adds
-//! 1 to the node's `version`. Adding a node emits `behaviour.node_created`.
+//! 1 to the node's `version`. Adding a node emits `behaviour.node_created`, changing one
+//! `behaviour.node_changed`.
 
 use crate::AppState;
 use crate::docs::AgentIdentity;
 use crate::live;
 use crate::projects::{parse_body, require_project};
 use crate::session::{ApiError, ErrorBody};
+use crate::stories::{StoryConflictBody, StoryError};
 use crate::threads::require_identity;
 use crate::workspace::{Actor, WorkspaceRequest, parse_uuid};
 use axum::Json;
@@ -99,6 +101,21 @@ pub struct CreateNodeRequest {
     pub summary: Option<String>,
     /// The node's parent. A child of the root when left out.
     pub parent_id: Option<String>,
+}
+
+#[derive(Deserialize, ToSchema)]
+pub struct PatchNodeRequest {
+    /// The `version` the caller last read.
+    pub expected_version: i64,
+    /// Not blank.
+    pub title: Option<String>,
+    /// As on creation; the root has none.
+    pub slug: Option<String>,
+    pub summary: Option<String>,
+    pub situation: Option<String>,
+    pub behaviour: Option<String>,
+    /// `open`, `done` or `out_of_scope`.
+    pub status: Option<String>,
 }
 
 #[derive(sqlx::FromRow)]
@@ -574,4 +591,134 @@ pub async fn show_node(
         node: tree.body(at),
         chain,
     }))
+}
+
+/// Rewrites a node's text or sets its status.
+#[utoipa::path(
+    patch,
+    path = "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/nodes/{node_id}",
+    params(
+        ("workspace_id" = String, Path, description = "The workspace's UUID"),
+        ("project_id" = String, Path, description = "The project's UUID"),
+        ("feature_id" = String, Path, description = "The feature's UUID"),
+        ("node_id" = String, Path, description = "The node's UUID"),
+    ),
+    request_body = PatchNodeRequest,
+    responses(
+        (status = 200, description = "The node with its new `version`", body = NodeResponse),
+        (status = 400, description = "The body is not JSON of the expected shape (`invalid_request`), or an API key without `X-Omni-Run` and `X-Omni-Role` (`identity_required`)", body = ErrorBody),
+        (status = 401, description = "No valid API key or session", body = ErrorBody),
+        (status = 404, description = "No such node in this feature, project and workspace", body = ErrorBody),
+        (status = 409, description = "`conflict` with `current_version` when `expected_version` is stale; checked before the rest. Else `slug_taken`", body = StoryConflictBody),
+        (status = 422, description = "No field but `expected_version` (`no_changes`), a blank title (`invalid_title`), a slug that does not fit or one on the root (`invalid_slug`), or a status other than `open`, `done` and `out_of_scope` (`invalid_status`)", body = ErrorBody),
+    )
+)]
+pub async fn patch_node(
+    State(state): State<AppState>,
+    request: WorkspaceRequest,
+    identity: AgentIdentity,
+    Path((_, project_id, feature_id, node_id)): Path<(String, String, String, String)>,
+    body: Bytes,
+) -> Result<Json<NodeResponse>, StoryError> {
+    require_identity(&request.actor, &identity)?;
+    let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
+    let feature_id = parse_uuid(&feature_id).ok_or(ApiError::NotFound)?;
+    let node_id = parse_uuid(&node_id).ok_or(ApiError::NotFound)?;
+    let patch = parse_body::<PatchNodeRequest>(&body)?;
+    let mut fields: Vec<&str> = Vec::new();
+    for (name, present) in [
+        ("title", patch.title.is_some()),
+        ("slug", patch.slug.is_some()),
+        ("summary", patch.summary.is_some()),
+        ("situation", patch.situation.is_some()),
+        ("behaviour", patch.behaviour.is_some()),
+        ("status", patch.status.is_some()),
+    ] {
+        if present {
+            fields.push(name);
+        }
+    }
+    if fields.is_empty() {
+        return Err(invalid_field("no_changes").into());
+    }
+    let title = patch.title.as_ref().map(|title| title.trim().to_string());
+    if title.as_ref().is_some_and(|title| title.is_empty()) {
+        return Err(invalid_field("invalid_title").into());
+    }
+    if patch.slug.as_deref().is_some_and(|slug| !slug_fits(slug)) {
+        return Err(invalid_field("invalid_slug").into());
+    }
+    if patch
+        .status
+        .as_deref()
+        .is_some_and(|status| !["open", "done", "out_of_scope"].contains(&status))
+    {
+        return Err(invalid_field("invalid_status").into());
+    }
+
+    let mut tx = state.workspace_tx(&request.workspace_id).await?;
+    require_feature(&mut tx, &project_id, &feature_id).await?;
+    let current: Option<(i32, bool)> = sqlx::query_as(
+        "SELECT version, parent_id IS NULL FROM behaviour_nodes \
+         WHERE id = $1::uuid AND feature_id = $2::uuid AND project_id = $3::uuid FOR UPDATE",
+    )
+    .bind(&node_id)
+    .bind(&feature_id)
+    .bind(&project_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(ApiError::database)?;
+    let (version, is_root) = current.ok_or(ApiError::NotFound)?;
+    if i64::from(version) != patch.expected_version {
+        return Err(StoryError::Stale(version));
+    }
+    if is_root && patch.slug.is_some() {
+        return Err(invalid_field("invalid_slug").into());
+    }
+    if let Some(slug) = &patch.slug {
+        let (taken,): (bool,) = sqlx::query_as(
+            "SELECT EXISTS (SELECT 1 FROM behaviour_nodes WHERE slug = $2 AND id <> $1::uuid \
+             AND parent_id = (SELECT parent_id FROM behaviour_nodes WHERE id = $1::uuid))",
+        )
+        .bind(&node_id)
+        .bind(slug)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(ApiError::database)?;
+        if taken {
+            return Err(ApiError::conflict("slug_taken").into());
+        }
+    }
+    sqlx::query(
+        "UPDATE behaviour_nodes SET title = COALESCE($2, title), slug = COALESCE($3, slug), \
+         summary = COALESCE($4, summary), situation = COALESCE($5, situation), \
+         behaviour = COALESCE($6, behaviour), status = COALESCE($7, status), \
+         version = version + 1, updated_at = clock_timestamp() WHERE id = $1::uuid",
+    )
+    .bind(&node_id)
+    .bind(&title)
+    .bind(&patch.slug)
+    .bind(&patch.summary)
+    .bind(&patch.situation)
+    .bind(&patch.behaviour)
+    .bind(&patch.status)
+    .execute(&mut *tx)
+    .await
+    .map_err(ApiError::database)?;
+    let tree = Tree::load(&mut tx, &feature_id).await?;
+    let at = tree.find(&node_id).ok_or(ApiError::Unavailable)?;
+    let node = tree.body(at);
+    live::emit(
+        &mut tx,
+        &request.workspace_id,
+        &project_id,
+        "behaviour.node_changed",
+        &json!({
+            "feature_id": feature_id, "node_id": node.id, "path": node.path, "fields": fields,
+        }),
+    )
+    .await?;
+    tx.commit().await.map_err(ApiError::database)?;
+    state.live.announce(&request.workspace_id, &project_id);
+    Ok(Json(NodeResponse { node }))
 }

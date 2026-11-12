@@ -94,6 +94,9 @@ pub struct Args {
     /// `omni behaviour add --slug <s> --parent <node>`.
     pub slug: Option<String>,
     pub parent: Option<String>,
+    /// `omni behaviour edit --situation <text> --behaviour <text>`.
+    pub situation: Option<String>,
+    pub behaviour: Option<String>,
     pub json: bool,
     pub help: bool,
     pub version: bool,
@@ -206,6 +209,8 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Args> {
             }
             "--slug" => &mut parsed.slug,
             "--parent" => &mut parsed.parent,
+            "--situation" => &mut parsed.situation,
+            "--behaviour" | "--behavior" => &mut parsed.behaviour,
             "--priority" => &mut parsed.priority,
             "--number-from" => &mut parsed.number_from,
             "--status" => &mut parsed.status,

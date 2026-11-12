@@ -572,7 +572,7 @@ export type LiveClientMessage = z.infer<typeof LiveClientMessageSchema>;
 export const LiveErrorCodeSchema = z.enum(["not_found", "invalid_request", "unavailable"]);
 export type LiveErrorCode = z.infer<typeof LiveErrorCodeSchema>;
 
-export const LiveEventNameSchema = z.enum(["behaviour.node_created", "comment.created", "comment.replied", "comment.deleted", "comment.status_changed", "doc.changed", "doc.created", "doc.deleted", "doc.renamed", "feature.created", "feature.deleted", "feature.renamed", "post.created", "project.renamed", "story.cancelled", "story.changed", "story.created", "thread.concluded", "thread.created"]);
+export const LiveEventNameSchema = z.enum(["behaviour.node_created", "behaviour.node_changed", "comment.created", "comment.replied", "comment.deleted", "comment.status_changed", "doc.changed", "doc.created", "doc.deleted", "doc.renamed", "feature.created", "feature.deleted", "feature.renamed", "post.created", "project.renamed", "story.cancelled", "story.changed", "story.created", "thread.concluded", "thread.created"]);
 export type LiveEventName = z.infer<typeof LiveEventNameSchema>;
 
 export const LiveServerMessageSchema = z.union([
@@ -677,6 +677,17 @@ export const NodeResponseSchema = z.object({
   node: NodeBodySchema,
 });
 export type NodeResponse = z.infer<typeof NodeResponseSchema>;
+
+export const PatchNodeRequestSchema = z.object({
+  behaviour: z.string().nullable().optional(),
+  expected_version: z.number().int(),
+  situation: z.string().nullable().optional(),
+  slug: z.string().nullable().optional(),
+  status: z.string().nullable().optional(),
+  summary: z.string().nullable().optional(),
+  title: z.string().nullable().optional(),
+});
+export type PatchNodeRequest = z.infer<typeof PatchNodeRequestSchema>;
 
 export const PatchStoryRequestSchema = z.object({
   blocked_by: z.array(z.string()).nullable().optional(),
@@ -962,6 +973,7 @@ export const schemas = {
   NodeResponse: NodeResponseSchema,
   NodeSummaryBody: NodeSummaryBodySchema,
   OpResultBody: OpResultBodySchema,
+  PatchNodeRequest: PatchNodeRequestSchema,
   PatchStoryRequest: PatchStoryRequestSchema,
   PostBody: PostBodySchema,
   PostResponse: PostResponseSchema,
@@ -1332,6 +1344,17 @@ export const operations = {
       "200": NodeReadResponseSchema,
       "401": ErrorBodySchema,
       "404": ErrorBodySchema,
+    },
+  },
+  "PATCH /api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/nodes/{node_id}": {
+    request: PatchNodeRequestSchema,
+    responses: {
+      "200": NodeResponseSchema,
+      "400": ErrorBodySchema,
+      "401": ErrorBodySchema,
+      "404": ErrorBodySchema,
+      "409": StoryConflictBodySchema,
+      "422": ErrorBodySchema,
     },
   },
   "POST /api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/docs": {

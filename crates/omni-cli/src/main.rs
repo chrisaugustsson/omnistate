@@ -217,6 +217,11 @@ Usage:
                                       with --json the node and the nodes above it. <node> is an
                                       ID, a path (slugs from the story down, joined by /) or . for
                                       the root
+  omni behaviour edit <node> [--title <t>] [--slug <s>] [--summary <text>]
+                     [--situation <text>] [--behaviour <text>] [--status open|done|out-of-scope]
+                                      rewrite a node's text or set its status; reads the node
+                                      first and sends its version (a stale one is exit 3);
+                                      prints the path and the status. The root has no slug
   omni wait --thread <id> --posts <n> [--concluded] [--timeout <s>]
                                       wait until the thread has n posts that you may read (a
                                       sealed thread counts none of the others' posts until you
@@ -267,6 +272,8 @@ Options (before or after the command):
   --timeout <seconds>   how long `omni wait` waits; without it, as long as it takes
   --slug <slug>         `omni behaviour add`: the node's slug, lowercase words joined by -
   --parent <node>       `omni behaviour add`: the node to add under (an ID, a path or .)
+  --situation <text>    `omni behaviour edit`: when the node applies
+  --behaviour <text>    `omni behaviour edit`: what the product does then (`--behavior` too)
   --priority <n>        `omni story add`: the story's priority, 0 to 3 (3 by default)
   --number-from <n>     `omni story add`: the number the project's first story starts after
   --status <status>     `omni story list`: only the stories in this status
@@ -293,7 +300,7 @@ Exit codes:
   1  the command failed: usage, login, network or API error (the message says which)
   2  `omni wait` timed out before its condition was met; `omni tokens set` or `remove` refused
      the change before sending it
-  3  `omni story` write refused as a conflict: the story changed, read it again
+  3  a write that lost to a newer version of a record (a story, a node): read it again
 ";
 
 fn main() -> ExitCode {

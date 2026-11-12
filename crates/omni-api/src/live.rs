@@ -110,6 +110,8 @@ pub enum LiveErrorCode {
 pub enum LiveEventName {
     #[serde(rename = "behaviour.node_created")]
     BehaviourNodeCreated,
+    #[serde(rename = "behaviour.node_changed")]
+    BehaviourNodeChanged,
     #[serde(rename = "comment.created")]
     CommentCreated,
     #[serde(rename = "comment.replied")]

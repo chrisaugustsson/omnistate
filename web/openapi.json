@@ -1749,6 +1749,7 @@
         "description": "Every event the API emits, as `<entity>.<action>`.",
         "enum": [
           "behaviour.node_created",
+          "behaviour.node_changed",
           "comment.created",
           "comment.replied",
           "comment.deleted",
@@ -2258,6 +2259,58 @@
           "revision",
           "created",
           "removed"
+        ],
+        "type": "object"
+      },
+      "PatchNodeRequest": {
+        "properties": {
+          "behaviour": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "expected_version": {
+            "description": "The `version` the caller last read.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "situation": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "slug": {
+            "description": "As on creation; the root has none.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "description": "`open`, `done` or `out_of_scope`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "summary": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "title": {
+            "description": "Not blank.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "expected_version"
         ],
         "type": "object"
       },
@@ -6816,6 +6869,124 @@
           }
         },
         "summary": "One node with the nodes above it.",
+        "tags": [
+          "crate::behaviour"
+        ],
+        "x-omni-access": "both"
+      },
+      "patch": {
+        "operationId": "patch_node",
+        "parameters": [
+          {
+            "description": "The workspace's UUID",
+            "in": "path",
+            "name": "workspace_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The project's UUID",
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The feature's UUID",
+            "in": "path",
+            "name": "feature_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The node's UUID",
+            "in": "path",
+            "name": "node_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PatchNodeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NodeResponse"
+                }
+              }
+            },
+            "description": "The node with its new `version`"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The body is not JSON of the expected shape (`invalid_request`), or an API key without `X-Omni-Run` and `X-Omni-Role` (`identity_required`)"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No valid API key or session"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No such node in this feature, project and workspace"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StoryConflictBody"
+                }
+              }
+            },
+            "description": "`conflict` with `current_version` when `expected_version` is stale; checked before the rest. Else `slug_taken`"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No field but `expected_version` (`no_changes`), a blank title (`invalid_title`), a slug that does not fit or one on the root (`invalid_slug`), or a status other than `open`, `done` and `out_of_scope` (`invalid_status`)"
+          }
+        },
+        "summary": "Rewrites a node's text or sets its status.",
         "tags": [
           "crate::behaviour"
         ],

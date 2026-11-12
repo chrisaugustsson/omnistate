@@ -123,8 +123,10 @@ pub fn run(args: &Args) -> Result<()> {
         ["behaviour" | "behavior", "add"] => behaviour::add(args),
         ["behaviour" | "behavior", "read"] => behaviour::read(args, None),
         ["behaviour" | "behavior", "read", node] => behaviour::read(args, Some(node)),
+        ["behaviour" | "behavior", "edit", node] => behaviour::edit(args, Some(node)),
+        ["behaviour" | "behavior", "edit"] => behaviour::edit(args, None),
         ["behaviour" | "behavior", ..] => {
-            bail!("usage: omni behaviour add|read; see `omni --help`")
+            bail!("usage: omni behaviour add|read|edit; see `omni --help`")
         }
         ["story", "add"] => stories::add(args, None),
         ["story", "add", file] => stories::add(args, Some(file)),
@@ -270,7 +272,7 @@ impl Agent {
     }
 
     /// Like `request`, but a 409 is the error `conflict: <the API's error> ;
-    /// read the story again`, which ends the command with exit code 3.
+    /// read it again`, which ends the command with exit code 3.
     pub(crate) fn request_conflicting(
         &self,
         method: &str,
@@ -287,7 +289,7 @@ impl Agent {
                 .unwrap_or_else(|| "conflict".to_string());
             return Err(CliError::with_code(
                 3,
-                format!("conflict: {code} ; read the story again"),
+                format!("conflict: {code} ; read it again"),
             ));
         }
         checked(response)
