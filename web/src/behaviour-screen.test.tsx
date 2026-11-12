@@ -86,8 +86,9 @@ const BY_PERSON = { kind: "human", user_id: USER.id };
  * A fake of the API whose behaviour list answers with `behaviour` and whose
  * home data holds `features`, or never arrives when `features` is "pending".
  * The open questions are `questions`; without them that request fails.
+ * Reading a node in full answers from `reads`, keyed by node id.
  */
-function fakeApi(behaviour: Behaviour, features: unknown[] | "pending" = [], questions?: unknown[]) {
+function fakeApi(behaviour: Behaviour, features: unknown[] | "pending" = [], questions?: unknown[], reads: Record<string, unknown> = {}) {
   const json = (status: number, body: unknown) =>
     new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
   vi.stubGlobal(
@@ -120,6 +121,10 @@ function fakeApi(behaviour: Behaviour, features: unknown[] | "pending" = [], que
           if (!questions) return json(404, { error: "not_found" });
           return json(200, { questions });
         default:
+          if (path.startsWith(`${API}/features/${FEATURE_ID}/behaviour/nodes/`)) {
+            const read = reads[decodeURIComponent(path.split("/").at(-1)!)];
+            if (read) return json(200, read);
+          }
           return json(404, { error: "not_found" });
       }
     }),
@@ -565,5 +570,46 @@ describe("choosing a node in the Behaviour screen", () => {
     expect(detailsTitle()).toBe("As a player, I want to create an account and get set up, so that my practice is saved");
     expect(fireEvent.keyDown(document.body, { key: "ArrowLeft" })).toBe(true);
     field.remove();
+  });
+});
+
+describe("the Behaviour screen's details", () => {
+  test("name the signed-in member's own answer You and another member's A member", async () => {
+    const answer = (text: string, userId: string) => ({ answer: text, at: AT, author: { kind: "human", user_id: userId }, given_by: "human" });
+    const answered = (id: string, text: string, given: ReturnType<typeof answer>) => ({
+      id,
+      node_id: SIGN_UP_STORY,
+      node_path: "",
+      question: text,
+      state: "answered",
+      asked_by: BY_AGENT,
+      answer: given,
+      answers: [given],
+      created_at: AT,
+      version: 1,
+    });
+    const read = {
+      node: { ...node(SIGN_UP_STORY, ROOT, TREE[1].title), level: 1, situation: "", behaviour: "", created_at: AT, created_by: BY_AGENT, updated_at: AT },
+      chain: [],
+      children: [],
+      siblings: [],
+      questions: [
+        answered("q-mine", "Which putt counts?", answer("Inside the circle", USER.id)),
+        answered("q-theirs", "Who keeps score?", answer("The player", "0192d7a0-1111-7000-8000-000000000002")),
+      ],
+      rules: [],
+    };
+    fakeApi({ status: 200, body: { nodes: TREE } }, [], [], { [SIGN_UP_STORY]: read });
+    renderAt(BEHAVIOUR_PATH);
+    const aside = await folders();
+
+    fireEvent.click(row(aside, "Player: create an account and get set up"));
+
+    const details = screen.getByRole("region", { name: "Details" });
+    await waitFor(() => expect(details.querySelector('[data-question="q-mine"]')).not.toBeNull());
+    const mine = details.querySelector<HTMLElement>('[data-question="q-mine"]')!;
+    expect(mine.textContent).toContain("You");
+    expect(mine.textContent).not.toContain("A member");
+    expect(details.querySelector('[data-question="q-theirs"]')!.textContent).toContain("A member");
   });
 });
