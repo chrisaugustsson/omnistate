@@ -5,7 +5,7 @@ import { animateTo, bringIntoView, centreOn, fit, fitBlock, zoomAt, type View } 
 import { elbow, layoutBlocks, planColumns } from "./layout";
 import { Minimap } from "./minimap";
 import { Legend, Marks } from "./marks";
-import { ancestorsOf, descendantsOf, shortTitle } from "./tree";
+import { ancestorsOf, childrenOf, descendantsOf, shortTitle } from "./tree";
 
 // The graph: every node but the root as a box, one block per story, drawn with absolutely
 // placed divs and one svg inside a single container that carries the view.
@@ -15,6 +15,7 @@ const NONE: ReadonlyMap<string, number> = new Map();
 const BARS_BELOW = 0.3;
 const LABELS_BELOW = 0.46;
 const BUTTON_ZOOM = 1.4;
+const FOLD_MS = 220;
 // A press that moves less than this is a click, not a drag.
 const DRAG_FROM = 4;
 
@@ -28,6 +29,9 @@ export function Graph({
   shown = null,
   matching = null,
   fitN = 0,
+  fitMs = 0,
+  folded = NO_FOLDS,
+  onFold,
 }: {
   nodes: TreeNode[];
   /** How many questions wait on each node. */
@@ -43,6 +47,12 @@ export function Graph({
   matching?: ReadonlySet<string> | null;
   /** Changes each time the whole drawing is to be fitted again. */
   fitN?: number;
+  /** How long that fit takes, in ms. */
+  fitMs?: number;
+  /** The nodes whose children are folded away. */
+  folded?: ReadonlySet<string>;
+  /** A fold pill was pressed. */
+  onFold?: (id: string) => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const [area, setArea] = useState<{ w: number; h: number } | null>(null);
@@ -72,7 +82,7 @@ export function Graph({
     return () => observer.disconnect();
   }, []);
   const columns = useMemo(() => (area ? planColumns(nodes, shown, area) : []), [nodes, shown, area]);
-  const { boxes, bounds, blocks } = useMemo(() => layoutBlocks(nodes, { shown, folded: NO_FOLDS, columns }), [nodes, shown, columns]);
+  const { boxes, bounds, blocks } = useMemo(() => layoutBlocks(nodes, { shown, folded, columns }), [nodes, shown, folded, columns]);
   useEffect(() => {
     if (area && area.w > 0 && area.h > 0 && boxes.size && !view) setView(fit(bounds, area));
   }, [area, boxes, bounds, view]);
@@ -85,8 +95,8 @@ export function Graph({
   useEffect(() => {
     if (fitted.current === fitN) return;
     fitted.current = fitN;
-    if (areaRef.current && areaRef.current.w > 0 && boundsRef.current.w > 0) moveTo(fit(boundsRef.current, areaRef.current), 0);
-  }, [fitN, moveTo]);
+    if (areaRef.current && areaRef.current.w > 0 && boundsRef.current.w > 0) moveTo(fit(boundsRef.current, areaRef.current), fitMs);
+  }, [fitN, fitMs, moveTo]);
   const middle = () => ({ x: (areaRef.current?.w ?? 0) / 2, y: (areaRef.current?.h ?? 0) / 2 });
   const zoomBy = (factor: number) => {
     const current = viewRef.current;
@@ -98,6 +108,35 @@ export function Graph({
     if (!current || !areaRef.current) return;
     if (box) moveTo(centreOn({ ...current, k: 1 }, box, areaRef.current), 240);
     else moveTo(zoomAt(current, middle(), 1 / current.k), 160);
+  };
+  // Under a filter only the shown nodes count as children.
+  const below = useMemo(() => {
+    const kids = childrenOf(nodes);
+    const count = (id: string): { n: number; waits: boolean } => {
+      let n = 0;
+      let waits = false;
+      for (const child of kids.get(id) ?? []) {
+        if (shown && !shown.has(child.id)) continue;
+        const inner = count(child.id);
+        n += 1 + inner.n;
+        waits ||= inner.waits || waiting.has(child.id);
+      }
+      return { n, waits };
+    };
+    const kidsShown = (id: string) => (kids.get(id) ?? []).some((child) => !shown || shown.has(child.id));
+    return { count, kidsShown };
+  }, [nodes, shown, waiting]);
+  // Folding keeps the pressed box where it is on screen: the view moves as far as the box does, in the same time.
+  const pressFold = (id: string) => {
+    const current = viewRef.current;
+    const before = boxes.get(id);
+    if (current && before && areaRef.current) {
+      const next = new Set(folded);
+      if (!next.delete(id)) next.add(id);
+      const after = layoutBlocks(nodes, { shown, folded: next, columns }).boxes.get(id);
+      if (after) moveTo({ k: current.k, x: current.x + (before.x - after.x) * current.k, y: current.y + (before.y - after.y) * current.k }, FOLD_MS);
+    }
+    onFold?.(id);
   };
   const fitAll = (ms: number) => {
     if (areaRef.current) moveTo(fit(boundsRef.current, areaRef.current), ms);
@@ -283,6 +322,7 @@ export function Graph({
                   node.status === "out_of_scope" && "border-dashed bg-transparent text-muted-foreground group-data-[far]:border group-data-[far]:border-dashed group-data-[far]:border-muted-foreground group-data-[far]:bg-transparent",
                   node.needs_pass && "border-dashed border-foreground group-data-[far]:border-transparent group-data-[far]:bg-foreground",
                   waiting.has(node.id) && !node.needs_pass && "group-data-[far]:bg-signal",
+                  "transition-transform duration-[220ms] ease-[cubic-bezier(0.23,1,0.32,1)] motion-reduce:transition-none",
                 )}
                 style={{ width: box.w, height: box.h, transform: `translate(${box.x}px, ${box.y}px)` }}
               >
@@ -295,6 +335,9 @@ export function Graph({
                 <span className="flex shrink-0 items-center gap-1 group-data-[far]:invisible">
                   <Marks node={node} waiting={waiting} titleOf={titles} />
                 </span>
+                {below.kidsShown(node.id) && (
+                  <FoldPill folded={folded.has(node.id)} hidden={below.count(node.id)} onPress={() => pressFold(node.id)} />
+                )}
               </div>
             );
           })}
@@ -350,5 +393,23 @@ export function Graph({
         </>
       )}
     </div>
+  );
+}
+
+/** The pill at a box's right edge: "−" folds what lies under it, "+N" shows the N hidden nodes again. */
+function FoldPill({ folded, hidden, onPress }: { folded: boolean; hidden: { n: number; waits: boolean }; onPress: () => void }) {
+  return (
+    <button
+      type="button"
+      data-no-pan
+      data-fold
+      aria-expanded={!folded}
+      title={folded ? `Show the ${hidden.n} nodes under this one` : "Fold what lies under this node"}
+      onClick={onPress}
+      className="absolute left-full top-1/2 ml-1.5 -mt-[9px] flex h-[18px] min-w-[18px] cursor-pointer items-center justify-center gap-[3px] whitespace-nowrap rounded-full border border-input bg-background px-[5px] text-[10.5px] font-medium leading-4 tabular-nums text-muted-foreground hover:border-muted-foreground hover:text-foreground active:scale-95"
+    >
+      {folded ? `+${hidden.n}` : "−"}
+      {folded && hidden.waits && <span aria-hidden data-fold-dot className="size-1.5 rounded-full bg-signal" />}
+    </button>
   );
 }

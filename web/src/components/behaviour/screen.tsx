@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "@tanstack/react-router";
 import { loadOpenQuestions, loadTree } from "@/api/behaviour";
 import { cn } from "@/lib/utils";
+import { Button } from "@/components/ui/button";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { featureNames } from "@/components/project/items";
 import { useHome } from "@/lib/use-home";
@@ -59,16 +60,28 @@ export function BehaviourScreen({
   const revealCount = useRef(0);
   const [filter, setFilterState] = useState<Filter>("all");
   const [fitN, setFitN] = useState(0);
+  const [fitMs, setFitMs] = useState(0);
   const setFilter = (next: Filter) => {
     setFilterState(next);
+    setFitMs(0);
     setFitN((n) => n + 1);
   };
+  // Folds belong to the graph; the folders keep their own open and closed rows.
+  const [folded, setFolded] = useState<ReadonlySet<string>>(new Set());
+  const foldOne = (id: string) =>
+    setFolded((before) => {
+      const after = new Set(before);
+      if (!after.delete(id)) after.add(id);
+      return after;
+    });
   const choose = (id: string, from: "folders" | "graph" | "search" | "details" | "keys") => {
     if (!nodes) return;
     setChosen(id);
     const above = ancestorsOf(nodes, id);
     // Pressing a closed row with children also opens it.
     if (from === "folders" && filter === "all" && nodes.some((node) => node.parent_id === id)) above.push(id);
+    // A fold that hides the node is undone.
+    setFolded((before) => (above.some((one) => before.has(one)) ? new Set([...before].filter((one) => !above.includes(one))) : before));
     setOpen((before) => (above.every((one) => before.has(one)) ? before : new Set([...before, ...above])));
     if (from !== "graph") setReveal({ id, ms: from === "keys" ? 0 : 240, n: ++revealCount.current });
   };
@@ -113,6 +126,20 @@ export function BehaviourScreen({
   const choices = ([["all", "All"], ["open", "Only open"], ["default", "Only by default"], ["needs_pass", "Only needing a grill pass"]] as const).filter(
     ([name]) => name !== "needs_pass" || counts.needs_pass > 0 || filter === "needs_pass",
   );
+  // The stories with something under them that the filter shows.
+  const foldable = useMemo(() => {
+    if (!nodes) return [];
+    const kids = childrenOf(nodes);
+    const root = (kids.get(null) ?? [])[0];
+    const shown = under?.shown;
+    return (root ? (kids.get(root.id) ?? []) : []).filter((story) => (kids.get(story.id) ?? []).some((child) => !shown || shown.has(child.id)));
+  }, [nodes, under]);
+  const allFolded = foldable.length > 0 && foldable.every((story) => folded.has(story.id));
+  const foldAll = () => {
+    setFolded(allFolded ? new Set() : new Set(foldable.map((story) => story.id)));
+    setFitMs(260);
+    setFitN((n) => n + 1);
+  };
   const stories = useMemo(() => {
     if (!nodes) return 0;
     const root = (childrenOf(nodes).get(null) ?? [])[0];
@@ -167,6 +194,9 @@ export function BehaviourScreen({
                 {counts.answers > 0 && ` · ${counts.answers} answers were given by default`}
                 {counts.needs_pass > 0 && ` · ${plural(counts.needs_pass, "node waits", "nodes wait")} for the next grill pass`}
               </p>
+              <Button type="button" variant="outline" size="sm" onClick={foldAll} className="ml-auto shrink-0">
+                {allFolded ? "Unfold all stories" : "Fold all stories"}
+              </Button>
             </>
           )}
         </header>
@@ -196,6 +226,9 @@ export function BehaviourScreen({
                 shown={under?.shown ?? null}
                 matching={under?.matching ?? null}
                 fitN={fitN}
+                fitMs={fitMs}
+                folded={folded}
+                onFold={foldOne}
               />
               {under && (
                 <p data-no-pan className="absolute right-3 top-3 flex items-center gap-2 rounded-lg border bg-background px-2.5 py-1.5 text-[11.5px] text-muted-foreground">
