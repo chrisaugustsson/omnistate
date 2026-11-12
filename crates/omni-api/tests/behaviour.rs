@@ -1,4 +1,4 @@
-//! US-201 to US-212: the behaviour tree of a feature, through the API. Run with
+//! US-201 to US-213: the behaviour tree of a feature, through the API. Run with
 //! `--features stack-tests` in the Compose test container, which reaches
 //! Postgres at `postgres:5432`.
 //!
@@ -119,6 +119,16 @@
 //! - Each `chain` entry of the read carries its own `questions`, and the read
 //!   gives `siblings`: the other children of the parent by position, as
 //!   `children` entries; none for the root.
+//! - `POST /import` with `{nodes: [{key, parent, slug, title, ..., same_as?,
+//!   handoff?, questions?, rules?}]}` stores a whole tree into a feature with
+//!   no node, in one go: 201 `{nodes, questions, answers, rules}`, siblings in
+//!   body order, a question's answers oldest first with the last current, the
+//!   root titled as in the body, statuses as given and no node marked. It
+//!   emits one `behaviour.imported` with `{feature_id, nodes, questions,
+//!   rules}` and nothing else. Refused with nothing written: a feature with a
+//!   node (409 `tree_not_empty`), a body with problems (422 `invalid_import`
+//!   with `problems: [{key, problem}]` in body order), an API key without a
+//!   run (400).
 
 mod common;
 
@@ -4507,4 +4517,320 @@ fn the_siblings_are_the_other_children_of_the_parent_by_position_and_none_for_th
             "handoff": null
         })
     );
+}
+
+// ---------------------------------------------------------------------------
+// Importing a whole tree
+// ---------------------------------------------------------------------------
+
+fn import(f: &Fixture, project: &str, feature: &str, auth: Auth, body: &Value) -> Response {
+    call(
+        f,
+        "POST",
+        &format!("{}/import", tree_path(f, project, feature)),
+        auth,
+        Some(body),
+    )
+}
+
+/// The `key` of each problem of a 422 `invalid_import`, in the answer's order.
+fn problem_keys(response: &Response) -> Vec<Value> {
+    assert_eq!(response.status, 422, "body: {}", response.text());
+    let body = response.json();
+    assert_eq!(body["error"], "invalid_import", "{body}");
+    body["problems"]
+        .as_array()
+        .expect("`problems` is a list")
+        .iter()
+        .map(|problem| problem["key"].clone())
+        .collect()
+}
+
+/// Every `behaviour.*` live event of a project as `[event, data]`, oldest first.
+fn behaviour_events(project: &str) -> Vec<Value> {
+    block(async {
+        let mut conn = admin_connection().await;
+        let rows = sqlx::query_scalar::<_, String>(
+            "select json_build_array(event, data::jsonb)::text from live_events \
+             where project_id = $1::uuid and event like 'behaviour.%' order by seq",
+        )
+        .bind(project)
+        .fetch_all(&mut conn)
+        .await
+        .unwrap_or_else(|e| panic!("read the live events: {e}"));
+        rows.iter().map(|text| parse(text)).collect()
+    })
+}
+
+/// The questions of the feature, as `GET /questions` gives them.
+fn all_questions(f: &Fixture, project: &str, feature: &str) -> Vec<Value> {
+    must(
+        call(
+            f,
+            "GET",
+            &format!("{}/questions", tree_path(f, project, feature)),
+            Auth::Agent,
+            None,
+        ),
+        200,
+        "list the questions",
+    )["questions"]
+        .as_array()
+        .expect("`questions` is a list")
+        .clone()
+}
+
+const SOLD_OUT_IMPORT: &str = "What happens when the product is sold out?";
+
+/// Criterion 1's body: a root, one story with a `story` rule, and two
+/// situations, the second a `same_as` of the first, which holds a question
+/// answered first by an agent (A) and then by a person (B). The second
+/// situation has one open question. The slugs are not in alphabetical order.
+fn checkout_import() -> Value {
+    json!({ "nodes": [
+        { "key": "root", "parent": null, "slug": "ignored", "title": "Checkout as imported" },
+        {
+            "key": "story", "parent": "root", "slug": "customer-buys-product", "title": STORY,
+            "rules": [{ "text": "Prices include VAT", "scope": "story" }]
+        },
+        {
+            "key": "press", "parent": "story", "slug": "user-presses-buy",
+            "title": "User presses the buy button",
+            "questions": [{
+                "question": SOLD_OUT_IMPORT,
+                "answers": [{ "answer": "A", "by": "agent" }, { "answer": "B", "by": "human" }]
+            }]
+        },
+        {
+            "key": "twice", "parent": "story", "slug": "clicks-twice",
+            "title": "User clicks buy twice", "same_as": "press",
+            "questions": [{ "question": "Does a second click add a second item?" }]
+        }
+    ]})
+}
+
+#[test]
+fn problems_found_over_the_whole_body_are_listed_at_their_nodes_place_in_the_body() {
+    // The verifier's defect: the second root's problem came before the
+    // problem of the root above it in the body.
+    let (f, _) = ready();
+    let (project, feature) = new_feature(f, &unique("Checkout"));
+
+    let refused = import(
+        f,
+        &project,
+        &feature,
+        Auth::Agent,
+        &json!({ "nodes": [
+            { "key": "r", "parent": null, "title": "R", "rules": [{ "text": "x", "scope": "story" }] },
+            { "key": "r2", "parent": null, "title": "R2" }
+        ]}),
+    );
+
+    assert_eq!(problem_keys(&refused), vec![json!("r"), json!("r2")]);
+    assert_eq!(listed(f, &project, &feature), Vec::<Value>::new());
+}
+
+#[test]
+fn an_import_stores_the_nodes_in_body_order_with_their_pointer_answers_and_rules() {
+    let (f, _) = ready();
+    let (project, feature) = new_feature(f, &unique("Checkout"));
+
+    let imported = must(
+        import(f, &project, &feature, Auth::Agent, &checkout_import()),
+        201,
+        "import the tree",
+    );
+
+    assert_eq!(
+        imported,
+        json!({ "nodes": 4, "questions": 2, "answers": 2, "rules": 1 })
+    );
+    let nodes = listed(f, &project, &feature);
+    assert_eq!(
+        paths_of(&nodes),
+        vec![
+            json!(""),
+            json!("customer-buys-product"),
+            json!("customer-buys-product/user-presses-buy"),
+            json!("customer-buys-product/clicks-twice"),
+        ]
+    );
+    assert_eq!(nodes[0]["title"], "Checkout as imported");
+    assert_eq!(
+        nodes[3]["same_as"],
+        json!({ "id": nodes[2]["id"], "path": "customer-buys-product/user-presses-buy" })
+    );
+    let press = read_node(
+        f,
+        &project,
+        &feature,
+        nodes[2]["id"].as_str().expect("an id"),
+    );
+    assert_eq!(press["created_by"]["kind"], "agent");
+    assert_eq!(press["created_by"]["run"], "t1");
+    assert_eq!(press["created_by"]["role"], "grill");
+    let questions = all_questions(f, &project, &feature);
+    assert_eq!(questions.len(), 2, "{questions:?}");
+    assert_eq!(questions[1]["state"], "open");
+    let answered = question_read(f, &project, &feature, &questions[0]);
+    assert_eq!(answered["question"], SOLD_OUT_IMPORT);
+    assert_eq!(answered["state"], "answered");
+    assert_eq!(answered["answered_by"], "human");
+    assert_eq!(answered["answer"]["answer"], "B");
+    let given: Vec<Value> = answered["answers"]
+        .as_array()
+        .expect("`answers` is a list")
+        .iter()
+        .map(|answer| json!([answer["answer"], answer["given_by"]]))
+        .collect();
+    assert_eq!(given, vec![json!(["A", "agent"]), json!(["B", "human"])]);
+    assert_eq!(
+        rule_rows(f, &project, &feature, ""),
+        vec![json!([
+            "customer-buys-product",
+            "story",
+            "Prices include VAT",
+            false,
+            1
+        ])]
+    );
+}
+
+#[test]
+fn an_import_into_a_feature_with_a_node_is_409_tree_not_empty_and_changes_nothing() {
+    let (f, _) = ready();
+    let (project, feature) = new_feature(f, &unique("Checkout"));
+    must(
+        import(f, &project, &feature, Auth::Agent, &checkout_import()),
+        201,
+        "import the tree",
+    );
+    let before = listed(f, &project, &feature);
+    let (other_project, started) = new_feature(f, &unique("Checkout"));
+    add(f, &other_project, &started, &json!({ "title": STORY }));
+    let started_before = listed(f, &other_project, &started);
+
+    let again = import(f, &project, &feature, Auth::Agent, &checkout_import());
+    let into_started = import(f, &other_project, &started, Auth::Agent, &checkout_import());
+
+    assert_error(&again, 409, "tree_not_empty");
+    assert_error(&into_started, 409, "tree_not_empty");
+    assert_eq!(listed(f, &project, &feature), before);
+    assert_eq!(listed(f, &other_project, &started), started_before);
+    assert_eq!(all_questions(f, &project, &feature).len(), 2);
+    assert_eq!(events_of(&project, "behaviour.imported").len(), 1);
+    assert_eq!(events_of(&other_project, "behaviour.imported").len(), 0);
+}
+
+#[test]
+fn a_pointer_to_a_key_not_in_the_body_and_a_bad_slug_are_both_listed_and_nothing_is_written() {
+    let (f, _) = ready();
+    let (project, feature) = new_feature(f, &unique("Checkout"));
+
+    let refused = import(
+        f,
+        &project,
+        &feature,
+        Auth::Agent,
+        &json!({ "nodes": [
+            { "key": "root", "parent": null, "title": "Checkout" },
+            { "key": "story", "parent": "root", "slug": "customer-buys-product", "title": STORY },
+            {
+                "key": "twice", "parent": "story", "slug": "clicks-twice",
+                "title": "User clicks buy twice", "same_as": "nowhere"
+            },
+            { "key": "buy-now", "parent": "story", "slug": "Bad Slug", "title": "Buy now" }
+        ]}),
+    );
+
+    assert_eq!(
+        problem_keys(&refused),
+        vec![json!("twice"), json!("buy-now")]
+    );
+    assert_eq!(listed(f, &project, &feature), Vec::<Value>::new());
+    assert_eq!(behaviour_events(&project), Vec::<Value>::new());
+}
+
+#[test]
+fn nodes_whose_parents_form_a_cycle_are_listed_and_nothing_is_written() {
+    let (f, _) = ready();
+    let (project, feature) = new_feature(f, &unique("Checkout"));
+
+    let refused = import(
+        f,
+        &project,
+        &feature,
+        Auth::Agent,
+        &json!({ "nodes": [
+            { "key": "root", "parent": null, "title": "Checkout" },
+            { "key": "story", "parent": "root", "slug": "customer-buys-product", "title": STORY },
+            { "key": "a", "parent": "b", "slug": "a", "title": "A" },
+            { "key": "b", "parent": "a", "slug": "b", "title": "B" }
+        ]}),
+    );
+
+    assert_eq!(problem_keys(&refused), vec![json!("a"), json!("b")]);
+    assert_eq!(listed(f, &project, &feature), Vec::<Value>::new());
+}
+
+#[test]
+fn a_persons_import_is_announced_once_marks_nothing_and_keeps_a_done_node_with_an_open_question_done()
+ {
+    let (f, _) = ready();
+    let (project, feature) = new_feature(f, &unique("Checkout"));
+
+    must(
+        import(
+            f,
+            &project,
+            &feature,
+            Auth::Session,
+            &json!({ "nodes": [
+                {
+                    "key": "root", "parent": null, "title": "Checkout",
+                    "rules": [{ "text": "Prices include VAT", "scope": "feature" }]
+                },
+                {
+                    "key": "story", "parent": "root", "slug": "customer-buys-product",
+                    "title": STORY, "status": "done",
+                    "questions": [
+                        { "question": SOLD_OUT_IMPORT, "answers": [{ "answer": "B", "by": "human" }] },
+                        { "question": "Does a second click add a second item?" }
+                    ]
+                }
+            ]}),
+        ),
+        201,
+        "import the tree",
+    );
+
+    assert_eq!(
+        behaviour_events(&project),
+        vec![json!([
+            "behaviour.imported",
+            { "feature_id": feature, "nodes": 2, "questions": 2, "rules": 1 }
+        ])]
+    );
+    let nodes = listed(f, &project, &feature);
+    assert_eq!(nodes[1]["status"], "done");
+    assert_eq!(nodes[0]["needs_pass"], false);
+    assert_eq!(nodes[1]["needs_pass"], false);
+}
+
+#[test]
+fn an_import_with_an_api_key_without_a_run_is_400_identity_required_and_writes_nothing() {
+    let (f, _) = ready();
+    let (project, feature) = new_feature(f, &unique("Checkout"));
+
+    let refused = import(
+        f,
+        &project,
+        &feature,
+        Auth::AgentWithoutRun,
+        &checkout_import(),
+    );
+
+    assert_error(&refused, 400, "identity_required");
+    assert_eq!(listed(f, &project, &feature), Vec::<Value>::new());
 }

@@ -344,6 +344,12 @@ const CASES: &[Case] = &[
     ),
     case(
         "POST",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/import",
+        Some(r#"{"nodes":[{"key":"r","parent":null,"title":"intruder"}]}"#),
+        Kind::Workspace,
+    ),
+    case(
+        "POST",
         "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories",
         Some(r#"{"title":"intruder","text":"","topic":"","criteria":[]}"#),
         Kind::Workspace,
