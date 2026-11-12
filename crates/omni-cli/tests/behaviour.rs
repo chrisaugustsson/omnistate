@@ -1172,6 +1172,19 @@ fn rules_prints_scope_path_id_and_text_per_line_without_the_withdrawn_and_the_ro
              story  customer-buys-product  {RULE}  {BUY_DISABLED}\n"
         )
     );
+
+    let out = run(&home, &["behaviour", "rules", "--json"]);
+
+    assert_eq!(out.code, 0, "stderr: {}", out.stderr);
+    let listed: Value = serde_json::from_str(&out.stdout).expect("JSON on stdout");
+    let withdrawn: Vec<&Value> = listed["rules"]
+        .as_array()
+        .expect("a rules list")
+        .iter()
+        .filter(|rule| rule["id"] == WITHDRAWN_RULE)
+        .collect();
+    assert_eq!(withdrawn.len(), 1, "stdout: {}", out.stdout);
+    assert_eq!(withdrawn[0]["withdrawn"], json!(true));
 }
 
 #[test]
