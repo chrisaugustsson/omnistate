@@ -221,6 +221,7 @@ export function BehaviourScreen({
                 reloadQuestions();
               }}
               waitingCount={waitingTotal}
+              onShowOpen={() => setFilter("open")}
             />
           </>
         )}
