@@ -243,6 +243,10 @@ describe("the details of a chosen node", () => {
 
     details = renderChosen(listed("none", "search", 3, "No player is found", { status: "out_of_scope" }));
     expect(pills(details)).toEqual(["Out of scope"]);
+    cleanup();
+
+    details = renderChosen(TREE[0]);
+    expect(pills(details)).toEqual(["Done", "Feature"]);
   });
 
   test("says which other nodes point at the node, as links that choose them", async () => {
@@ -268,16 +272,25 @@ describe("the details of a chosen node", () => {
     expect(onChoose).toHaveBeenCalledWith("handoff");
   });
 
-  test("a node with a pointer shows Same as or Hands off to with a link that chooses the target", async () => {
+  test("a node with a pointer shows ↪ Same as or ⇢ Hands off to with a link that chooses the target, and not the other", async () => {
     fakeNode({});
-    const pointing = listed("none", "search", 3, "No player is found", { same_as: { id: "search" } as TreeNode["same_as"] });
     const onChoose = vi.fn();
-    const details = renderChosen(pointing, [...TREE.slice(0, 3), pointing], onChoose);
+    const same = listed("none", "search", 3, "No player is found", { same_as: { id: "search" } as TreeNode["same_as"] });
+    let details = renderChosen(same, [...TREE.slice(0, 3), same], onChoose);
 
-    const line = within(details).getByText(/↪ Same as/);
+    let line = within(details).getByText(/↪ Same as/);
     fireEvent.click(within(line).getByRole("button", { name: "Player searches for a player" }));
     expect(onChoose).toHaveBeenCalledWith("search");
     expect(within(details).queryByText(/Hands off to/)).toBeNull();
+    cleanup();
+
+    const handoff = listed("none", "search", 3, "No player is found", { handoff: { id: "story" } as TreeNode["handoff"] });
+    details = renderChosen(handoff, [...TREE.slice(0, 3), handoff], onChoose);
+
+    line = within(details).getByText(/⇢ Hands off to/);
+    fireEvent.click(within(line).getByRole("button", { name: "Player: add a friend" }));
+    expect(onChoose).toHaveBeenLastCalledWith("story");
+    expect(within(details).queryByText(/Same as/)).toBeNull();
   });
 });
 
